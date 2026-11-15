@@ -5560,6 +5560,7 @@ mod tests {
     /// nothing selected gives no "nothing is selected" error notice.
     #[test]
     fn explore_click_asking_only_wms_clears_without_a_notice() {
+        let _turn = crate::fetching::turn();
         let mut h = selection_harness();
         let url = "https://wms.example.org/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=over&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image%2Fpng";
         h.state_mut().run("map.addTiles", json!({"url": url, "name": "Over", "overlay": true})).unwrap();

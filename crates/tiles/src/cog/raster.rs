@@ -203,7 +203,7 @@ const MAX_FAILED: usize = 4096;
 /// pushed it out draw the map as they land.
 fn tile_landed(key: (String, usize, u32), r: &Result<Bands, String>) {
     match r {
-        Err(e) if !crate::cache::keep_failure(e, &crate::cache::current_still()) => return,
+        Err(e) if e == super::REACH_CHANGED || !crate::cache::keep_failure(e, &crate::cache::current_still()) => return,
         Err(e) => {
             let until = Instant::now() + crate::cache::retry_wait(e, RETRY);
             remember_failed(&mut failed().lock().unwrap_or_else(|e| e.into_inner()), key, until);
@@ -219,7 +219,7 @@ fn tile_landed(key: (String, usize, u32), r: &Result<Bands, String>) {
 #[doc(hidden)]
 pub fn asked(file: &str, level: usize) -> usize {
     let t = tiles().lock().unwrap_or_else(|e| e.into_inner());
-    t.map.iter().filter(|((u, l, _), s)| u == file && *l == level && matches!(s, TileState::Ready(..) | TileState::Loading(_))).count()
+    t.map.iter().filter(|((u, l, _), s)| u == file && *l == level && matches!(s, TileState::Ready(..) | TileState::Loading(..))).count()
 }
 
 /// Forgets the failed tiles of `file` (`None`: of every file), so they are asked for at once: a
@@ -281,11 +281,11 @@ pub fn window(url: &str, level: usize, cols: (u32, u32), rows: (u32, u32), bands
         let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
         for &c in &chunks {
             let key = (file.to_string(), level, c);
-            match t.used(&key) {
+            match t.used(&key, info.reach) {
                 Some(b) => {
                     kept.insert(c, b);
                 }
-                None if t.map.contains_key(&key) => {}
+                None if matches!(t.map.get(&key), Some(super::TileState::Loading(..))) => {}
                 None => ask.push(c),
             }
         }
@@ -317,7 +317,7 @@ pub fn window(url: &str, level: usize, cols: (u32, u32), rows: (u32, u32), bands
         let key = (file.to_string(), level, c);
         get_tile(info.clone(), file.to_string(), level, c, Box::new(move |r| tile_landed(key, &r)));
         // A tile the file leaves out (a sparse file's) is kept at once: not waited for.
-        if let Some(b) = tiles().lock().unwrap_or_else(|e| e.into_inner()).used(&(file.to_string(), level, c)) {
+        if let Some(b) = tiles().lock().unwrap_or_else(|e| e.into_inner()).used(&(file.to_string(), level, c), info.reach) {
             kept.insert(c, b);
         }
     }
@@ -334,7 +334,7 @@ pub fn window(url: &str, level: usize, cols: (u32, u32), rows: (u32, u32), bands
     // Until they arrive, its missing tiles show the levels kept (the one zoomed from), not holes.
     if !gaps.is_empty() {
         // The tiles kept, looked up one at a time: the cache isn't held while the gaps fill.
-        let kept = |o: usize, c: u32| tiles().lock().unwrap_or_else(|e| e.into_inner()).used(&(file.to_string(), o, c));
+        let kept = |o: usize, c: u32| tiles().lock().unwrap_or_else(|e| e.into_inner()).used(&(file.to_string(), o, c), info.reach);
         stand_in(&info, level, (c0, c1), (r0, r1), bands, &mut data, &gaps, kept);
     }
     let t = info.layout.transform_of(l);
@@ -497,6 +497,7 @@ mod tests {
         Info {
             layout: *layout,
             header: Sparse::default(),
+            reach: crate::address::Reach::Local,
             transformer,
             bounds: [0.0; 4],
             merc: [0.0; 4],
@@ -533,7 +534,10 @@ mod tests {
         let _turn = crate::cache::turn();
         let file = "test://past-last-band.tif";
         let info = info_of(example_with(&Example { size: 64, tile: 16, ..Example::default() }));
-        super::super::infos().lock().unwrap().insert(file.to_string(), super::super::State::Ready(Arc::new(info)));
+        super::super::infos()
+            .lock()
+            .unwrap()
+            .insert(file.to_string(), super::super::State::Ready(Arc::new(info), crate::cache::ceiling_for(file)));
         let e = window(file, 0, (0, 16), (0, 16), &[usize::MAX], ColorHint::Gray).unwrap_err();
         assert_eq!(e, format!("the GeoTIFF has 1 bands, not {}", usize::MAX));
     }
@@ -541,11 +545,12 @@ mod tests {
     /// A window's missing tiles are filled from the level kept, but not its own no-data pixels.
     #[test]
     fn stand_ins_fill_only_the_tiles_missing() {
+        let _turn = crate::cache::turn();
         let info = info_of(example_with(&Example { size: 64, tile: 16, ..Example::default() }));
         let file = "test://stand-in.tif";
         // Level 1 (32 a side) kept: its tile 0 is level 0's pixels 0 to 32, all 7.
         let mut t = Tiles::default();
-        let _ = t.keep((file.to_string(), 1, 0), Arc::new(vec![vec![7.0; 16 * 16]].into()), 256);
+        let _ = t.keep((file.to_string(), 1, 0), Arc::new(vec![vec![7.0; 16 * 16]].into()), 256, crate::address::Reach::Local);
         // Level 0's tile 0 here, one pixel of it no data; tile 1, right of it, not yet.
         let mut own = vec![3.0; 16 * 16];
         own[16 + 1] = f32::NAN;
@@ -553,7 +558,7 @@ mod tests {
         let (cols, rows) = ((0, 32), (0, 16));
         let (mut data, gaps) = assemble(&info, 0, cols, rows, &[0], |c| (c == 0).then(|| own.clone()));
         assert_eq!(gaps.len(), 1);
-        stand_in(&info, 0, cols, rows, &[0], &mut data, &gaps, |o, c| t.used(&(file.to_string(), o, c)));
+        stand_in(&info, 0, cols, rows, &[0], &mut data, &gaps, |o, c| t.used(&(file.to_string(), o, c), info.reach));
         let at = |x: usize, y: usize| data[0][y * 32 + x];
         assert_eq!((at(0, 0), at(20, 5), at(31, 15)), (3.0, 7.0, 7.0), "tile 1 from level 1");
         assert!(at(1, 1).is_nan(), "tile 0's no-data pixel stays empty");
@@ -594,6 +599,8 @@ mod tests {
         assert!(!failed().lock().unwrap().contains_key(&key(4)), "a retired window read must not delay a live caller");
         tile_landed(key(4), &Err("HTTP 503".into()));
         assert!(failed().lock().unwrap().contains_key(&key(4)), "a live server failure still waits before retrying");
+        tile_landed(key(5), &Err(super::super::REACH_CHANGED.into()));
+        assert!(!failed().lock().unwrap().contains_key(&key(5)), "a policy change retries without a resource cooldown");
     }
 
     /// Failed tiles are forgotten with their file (a login or a connection changed: asked for at
@@ -635,5 +642,33 @@ mod tests {
         assert_eq!(file_name("https://x.org/a/scene.tif?sig=1"), "scene.tif");
         assert_eq!(file_name("https://api.maxar.com/analytics/v1/raster/ortho/geotiff?function=f"), "geotiff");
         assert_eq!(file_name("https://x.org/"), "x.org");
+    }
+    #[test]
+    fn a_window_reloads_ready_tiles_rejected_by_a_template_restriction() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let _turn = crate::cache::turn();
+        let file = example_with(&Example { size: 32, tile: 16, ..Example::default() });
+        let mut info = info_of(file.clone());
+        info.reach = crate::address::Reach::Public;
+        let url = "https://cog-window-reload.example/a.tif";
+        let key = (url.to_string(), 0, 0);
+        super::super::tiles().lock().unwrap().keep(key, Arc::new(vec![vec![99.0; 256]].into()), 256, crate::address::Reach::Local);
+        crate::cache::restrict_to_public("https://cog-window-reload.example/{s}.tif");
+        super::super::infos()
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), super::super::State::Ready(Arc::new(info), crate::address::Reach::Public));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = asked.clone();
+        crate::cache::set_fetcher(move |address, done| {
+            count.fetch_add(1, Ordering::Relaxed);
+            let (a, b) = crate::cache::split_range(&address).1.unwrap();
+            done(Ok(file[a as usize..((b + 1) as usize).min(file.len())].to_vec()));
+        });
+        let _ = window(url, 0, (0, 16), (0, 16), &[0], ColorHint::Gray).unwrap();
+        assert!(asked.load(Ordering::Relaxed) > 0, "a rejected ready tile is queued for replacement");
+        let result = window(url, 0, (0, 16), (0, 16), &[0], ColorHint::Gray).unwrap();
+        assert!(!result.pending && result.raster.is_some());
+        super::super::forget_file(url);
     }
 }

@@ -5042,7 +5042,7 @@ impl RustGisApp {
                 return self.run("ui.dialog", json!({"name": "addUrl"}));
             };
             let url = raw_url.trim();
-            let (check_origin, public) = rustgis_engine::cmd::layer::request_origin(p)?;
+            let (check_origin, public) = rustgis_engine::cmd::layer::request_origin_for(&self.session, p)?;
             if check_origin.is_some() || public {
                 rustgis_engine::render::rustgis_tiles::address::check_reach(
                     url,
@@ -5059,13 +5059,13 @@ impl RustGisApp {
                     normalized.to_mut()["url"] = json!(url);
                 }
                 std::borrow::Cow::Owned(
-                    rustgis_engine::service_logins::request_params(&mut self.session, normalized.as_ref())
+                    rustgis_engine::cmd::layer::asset_request_params(&mut self.session, normalized.as_ref())
                         .map_err(|e| connectionui::translated(&e))?
                         .into_owned(),
                 )
             };
             let p = bound.as_ref();
-            let (bound_origin, bound_public) = rustgis_engine::cmd::layer::request_origin(p)?;
+            let (bound_origin, bound_public) = rustgis_engine::cmd::layer::request_origin_for(&self.session, p)?;
             let check_origin = bound_origin.or(check_origin);
             let public = public || bound_public;
             let bound_url = p.get("url").and_then(Value::as_str).unwrap_or(url);

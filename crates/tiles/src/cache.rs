@@ -135,6 +135,19 @@ pub(crate) fn caller_callback<T: Send + 'static>(
     })
 }
 
+/// A waiter's retry belongs to that request, independently of the shared loader that wakes it.
+/// Every subsequent stage still checks this captured lifetime and its own network ceiling.
+pub(crate) fn caller_retry<T: Send + 'static>(
+    then: Box<dyn FnOnce(Result<T, String>) + Send>,
+) -> Box<dyn FnOnce(Result<T, String>) + Send> {
+    let still = current_still();
+    Box::new(move |result| {
+        rustgis_data::source::remote::with_captured_still(still, || {
+            then(check_still(&current_still()).and(result));
+        });
+    })
+}
+
 type Fetcher = Box<dyn Fn(String, crate::address::Reach, FetchedDone, &'static [u16]) + Send + Sync>;
 /// Hands back a decoded picture: [`RAW`] pixels, or the encoded bytes it was given when it
 /// couldn't decode them (they are decoded here then).
@@ -374,9 +387,34 @@ impl PublicTemplate {
 
 fn split_url_parts(url: &str) -> Option<(String, &str, &str)> {
     let (scheme, rest) = url.split_once("://")?;
-    let sep = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let mut depth = 0usize;
+    let mut sep = rest.len();
+    for (at, ch) in rest.char_indices() {
+        match ch {
+            '{' => depth = depth.saturating_add(1),
+            '}' => depth = depth.saturating_sub(1),
+            '/' | '?' | '#' if depth == 0 => {
+                sep = at;
+                break;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
     let authority = &rest[..sep];
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let mut depth = 0usize;
+    let mut host_at = 0usize;
+    for (at, ch) in authority.char_indices() {
+        match ch {
+            '{' => depth = depth.saturating_add(1),
+            '}' => depth = depth.saturating_sub(1),
+            '@' if depth == 0 => host_at = at + 1,
+            _ => {}
+        }
+    }
+    let authority = &authority[host_at..];
     if authority.is_empty() {
         return None;
     }
@@ -2021,11 +2059,16 @@ pub fn tiff_header_length(value: &str) -> Option<u64> {
 /// the web), counted as a fetch under way. A request signed for S3 isn't made (its signature is
 /// for a GET): it answers with nothing known.
 pub fn head(url: &str, done: HeadDone) {
+    head_with_ceiling(url, ceiling_for(url), done);
+}
+
+/// Keeps a multi-request reader's original ceiling, narrowed by current restrictions.
+pub(crate) fn head_with_ceiling(url: &str, ceiling: crate::address::Reach, done: HeadDone) {
     if let Err(e) = check_current() {
         done(Err(e));
         return;
     }
-    let ceiling = ceiling_for(url);
+    let ceiling = ceiling.min(ceiling_for(url));
     let still = current_still();
     let done: HeadDone = Box::new(move |r| with_optional_still(still, || done(r)));
     if let Err(e) = crate::address::check_reach(url, ceiling) {
@@ -2103,11 +2146,18 @@ fn fetch_reached(url: String, ceiling: crate::address::Reach, done: FetchedDone,
 /// Like [`fetch_bytes`], counted as a fetch under way (so exports [`wait`] for it) and drawing
 /// again when it lands: for what the map needs before it can ask for tiles (a PMTiles header).
 pub(crate) fn fetch_counted(url: String, done: Done) {
+    let ceiling = ceiling_for(&url);
+    fetch_counted_with_ceiling(url, ceiling, done);
+}
+
+/// Counts a range read while retaining its reader's starting network ceiling.
+pub(crate) fn fetch_counted_with_ceiling(url: String, ceiling: crate::address::Reach, done: Done) {
     IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
-    fetch_bytes(
+    fetch_reached(
         url,
+        ceiling,
         Box::new(move |r| {
-            done(r);
+            done(r.map(|f| f.bytes));
             finished();
         }),
         &[],
@@ -3095,7 +3145,7 @@ mod native {
                 super::with_progress(progress, || {
                     let _scope = capture.enter();
                     let r = super::check_current().map_err(Failure::from).and_then(|_| {
-                        get_fetched_omitting(&public_agent(timeout), &url, omit).map(|mut f| {
+                        fetch_answer(&public_agent(timeout), &url, Reach::Public, true, omit).map(|mut f| {
                             f.origin = f.origin.narrow_reach(Reach::Public);
                             f
                         })
@@ -4325,7 +4375,10 @@ mod tests {
         let url = download_address("http://localhost:9/picture.png", 1024);
         native::download_public_within(url, std::time::Duration::from_secs(5), &[], Box::new(move |r| drop(tx.send(r))));
         let err = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap_err().message;
-        assert!(err.contains("resolves to this computer or the local network"), "{err}");
+        assert!(
+            err.contains("resolves to this computer or the local network") || err.contains("can't point into the local network"),
+            "{err}"
+        );
     }
 
     /// A public download asked for by a request that has since ended sends nothing, as any
@@ -7156,5 +7209,24 @@ mod tests {
         let agent = native::fixture_agent(listener, listener, false);
         let fetched = native::post_fetched_with(&agent, "http://internal.example/search", "{}", crate::address::Reach::Local).unwrap();
         assert_eq!(fetched.origin.reach(), crate::address::Reach::Local);
+    }
+    #[test]
+    fn switch_delimiters_do_not_split_a_restricted_template_authority() {
+        let _turn = turn();
+        let template = "http://{switch:127.0.0.1,unused/}/{z}/{x}/{y}.png";
+        restrict_to_public(template);
+        let tile = crate::template::expand(template, crate::template::TileId { z: 0, x: 0, y: 0 }, 256, false, &[]);
+        assert_eq!(ceiling_for(&tile), crate::address::Reach::Public);
+        assert!(matches!(get_tile(&tile, Want::Image), State::Failed(_)));
+    }
+    #[test]
+    fn unclosed_authority_placeholders_do_not_hide_a_local_host() {
+        let _turn = turn();
+        assert!(split_url_parts("http://a{b@10.0.0.5/x").is_none());
+        let template = "http://a{b@10.0.0.5/{z}/{x}/{y}.png";
+        restrict_to_public(template);
+        let tile = crate::template::expand(template, crate::template::TileId { z: 0, x: 0, y: 0 }, 256, false, &[]);
+        assert_eq!(ceiling_for(&tile), crate::address::Reach::Public);
+        assert!(matches!(get_tile(&tile, Want::Image), State::Failed(_)));
     }
 }

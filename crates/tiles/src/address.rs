@@ -60,6 +60,16 @@ impl Origin {
         Ok(self)
     }
 
+    /// Retains this trusted origin's address while narrowing its observed reach.
+    /// This constructor is for in-process transport/UI code, never document deserialization.
+    pub fn with_observed_reach(url: &str, reach: Reach) -> Result<Self, String> {
+        check_reach(url, Reach::Local)?;
+        if reach == Reach::Forbidden {
+            return Err("a forbidden origin cannot supply assets".into());
+        }
+        Ok(Self { url: url.into(), reach })
+    }
+
     /// Final fetched address after redirects (retaining only verified login bindings).
     pub fn url(&self) -> &str {
         &self.url
@@ -79,7 +89,7 @@ impl Origin {
     }
 
     /// Checks a descendant without replacing the document's observed reach with host spelling.
-    pub(crate) fn check(&self, url: &str) -> Result<(), String> {
+    pub fn check(&self, url: &str) -> Result<(), String> {
         // Expansion can introduce a selector that was hidden from document joining.
         // Only the supplying document's own selection may survive that boundary.
         let (plain, _) = crate::s3::split_anonymous(url);

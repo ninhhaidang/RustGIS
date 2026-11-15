@@ -678,6 +678,12 @@ struct PutAside {
 pub struct Session {
     pub(crate) boxes: box_edit::Cache,
     policy: policy::State,
+    /// Project generation and trusted exact asset provenance, never serialized.
+    pub(crate) document_assets: (u64, std::collections::BTreeMap<(String, String), crate::render::rustgis_tiles::address::Origin>),
+    /// Project generation and admitted catalog-node provenance, scoped by connection definition.
+    pub(crate) browse_origins: (u64, std::collections::BTreeMap<(String, String, String), crate::render::rustgis_tiles::address::Origin>),
+    /// A native transport answer scoped over one synchronous connection.browse dispatch.
+    pub(crate) browse_response: Option<(String, String, crate::render::rustgis_tiles::address::Origin)>,
     pub project: Project,
     pub path: Option<PathBuf>,
     /// What was run in this session (#797), whatever project was open: kept in memory only, so
@@ -1237,6 +1243,9 @@ impl Session {
             keep_tool: false,
             active_layout: None,
             policy: Default::default(),
+            document_assets: Default::default(),
+            browse_origins: Default::default(),
+            browse_response: None,
             trusted_tasks: Default::default(),
             task_running: false,
             trusted_models: Default::default(),

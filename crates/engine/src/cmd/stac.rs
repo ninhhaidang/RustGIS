@@ -129,17 +129,38 @@ pub(super) fn collections(s: &mut Session, p: &Value) -> CmdResult {
         } else {
             stac::collections_url(&api)
         };
-        let bytes = crate::render::rustgis_tiles::cache::download_blocking(&url)?;
-        collections_json(&api, &bytes)
+        let fetched = crate::render::rustgis_tiles::cache::download_blocking_with_origin(&url)?;
+        collections_json_from_origin(s, &api, &fetched.bytes, &fetched.origin)
     }
 }
 
-pub(super) fn collections_json(api: &str, bytes: &[u8]) -> CmdResult {
+pub(super) fn collections_json(s: &mut Session, api: &str, bytes: &[u8]) -> CmdResult {
+    collections_json_from_origin(s, api, bytes, &crate::render::rustgis_tiles::address::Origin::named(api))
+}
+
+fn collections_json_from_origin(
+    s: &mut Session,
+    api: &str,
+    bytes: &[u8],
+    origin: &crate::render::rustgis_tiles::address::Origin,
+) -> CmdResult {
     if stac::catalog::is_static(api) {
-        let c = stac::catalog::parse_children(bytes, api)?;
-        return Ok(
-            json!({"count": c.len(), "static": true, "collections": c.iter().map(|c| json!({"id": c.url, "title": c.title})).collect::<Vec<_>>()}),
-        );
+        let listing = stac::catalog::parse_children_noted(bytes, origin)?;
+        if listing.refused > 0 {
+            s.warn(format!("{} catalog links were refused by the document's network reach", listing.refused));
+        }
+        if listing.skipped > 0 {
+            s.warn(format!("{} catalog links were left out because their addresses are missing, invalid or not HTTP(S)", listing.skipped));
+        }
+        if listing.omitted > 0 {
+            s.warn(format!("{} catalog links were left out because the listing limit was reached", listing.omitted));
+        }
+        let c = listing.links;
+        let mut out = json!({"count": c.len(), "static": true, "collections": c.iter().map(|c| json!({"id": c.url, "title": c.title})).collect::<Vec<_>>()});
+        if listing.refused > 0 || listing.omitted > 0 || listing.skipped > 0 {
+            out["truncated"] = json!(true);
+        }
+        return Ok(out);
     }
     let c = stac::parse_collections(bytes)?;
     Ok(json!({"count": c.len(), "collections": c.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>()}))
@@ -288,10 +309,18 @@ fn search_static(s: &mut Session, p: &Value, root: &str) -> CmdResult {
         let walk = stac::catalog::walk_blocking(root, filter, search.limit);
         let complete = walk.complete();
         let (read, failed) = (walk.reads, walk.failed);
+        let refused = walk.refused();
+        if refused > 0 {
+            s.warn(format!("{refused} catalog links were refused by the document's network reach"));
+        }
+        let skipped = walk.skipped();
+        if skipped > 0 {
+            s.warn(format!("{skipped} catalog links were left out because their addresses are missing, invalid or not HTTP(S)"));
+        }
         let items = walk.into_items();
         let all = b(p, "properties").unwrap_or(false);
         let mut out = json!({"count": items.len(), "items": items.iter().map(|i| stac::item_json_with(i, all)).collect::<Vec<_>>(),
-            "complete": complete, "read": read, "failed": failed});
+            "complete": complete, "read": read, "failed": failed, "refused": refused, "skipped": skipped});
         if let Some(n) = note {
             out["note"] = json!(n);
         }
@@ -325,11 +354,16 @@ fn item(p: &Value) -> Result<Item, String> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let bytes = crate::render::rustgis_tiles::cache::download_blocking(url)?;
-        let mut i = stac::parse_item(&bytes, url)?;
-        i.url.get_or_insert_with(|| url.to_string());
-        Ok(i)
+        item_downloaded(crate::render::rustgis_tiles::cache::download_blocking_fetched(url)?, url)
     }
+}
+
+/// Revalidates the item at its fresh transport-observed origin, including any redirects.
+#[cfg(not(target_arch = "wasm32"))]
+fn item_downloaded(fetched: crate::render::rustgis_tiles::cache::Fetched, requested: &str) -> Result<Item, String> {
+    let mut item = stac::parse_item_from_origin(&fetched.bytes, &fetched.origin)?;
+    item.url.get_or_insert_with(|| requested.to_string());
+    Ok(item)
 }
 
 fn add_asset(s: &mut Session, p: &Value) -> CmdResult {
@@ -345,6 +379,10 @@ fn add_asset(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(not(target_arch = "wasm32"))]
     let href = stac::sign_blocking(&href)?;
     let mut add = json!({"url": href, "name": name});
+    // This value comes from the freshly fetched item (or a conservative JSON parser), never a caller's reach claim.
+    if i.origin_reach == crate::render::rustgis_tiles::address::Reach::Public {
+        add["fromDocument"] = json!(true);
+    }
     if let Some(connection) = p.get("connection") {
         add["connection"] = connection.clone();
     }
@@ -1496,6 +1534,7 @@ mod deferred_asset_tests {
         assert_eq!(requests.len(), 1);
         let request = requests.remove(0);
         let mut params = request.params().clone();
+        assert_eq!(params["fromDocument"], true);
         let download = s.download_started_for(&request).unwrap();
         assert!(
             s.download_landed(
@@ -1516,5 +1555,46 @@ mod deferred_asset_tests {
         assert_eq!(layer.connection, connection);
         assert_eq!(layer.name, "Downloaded asset");
         assert_eq!(layer.dataset.features.len(), 1);
+    }
+    #[test]
+    fn refetched_assets_use_the_observed_item_origin_instead_of_its_hostname() {
+        use crate::render::rustgis_tiles::{address::Origin, cache::Fetched};
+        let requested = "https://catalog.corp.example/item.json";
+        let bytes = json!({"type":"Feature","id":"scene","geometry":null,"properties":{},
+            "assets":{"data":{"href":"http://10.0.0.5/scene.geojson","roles":["data"]}},"links":[]})
+        .to_string()
+        .into_bytes();
+        let local = Origin::connected(requested, "10.0.0.5".parse().unwrap()).unwrap();
+        let item = item_downloaded(Fetched { bytes: bytes.clone(), origin: local }, requested).unwrap();
+        assert_eq!(item.asset_href(Some("data")).unwrap().1, "http://10.0.0.5/scene.geojson");
+        let public = Origin::connected("https://redirected.example/item.json", "93.184.216.34".parse().unwrap()).unwrap();
+        let item = item_downloaded(Fetched { bytes, origin: public }, requested).unwrap();
+        assert!(item.asset_href(Some("data")).is_err());
+    }
+
+    #[test]
+    fn partial_collection_listings_report_omissions_and_duplicates_stay_quiet() {
+        let api = "https://public.example/catalog.json";
+        let mut session = Session::new(crate::Project::default());
+        for (count, refused) in [(1999, false), (2001, true)] {
+            let mut links: Vec<Value> =
+                (0..count).map(|i| json!({"rel":"child","href":format!("https://public.example/{i}.json")})).collect();
+            links.extend([links[0].clone(), links[1].clone()]);
+            if refused {
+                links.push(json!({"rel":"child","href":"http://10.0.0.5/private.json"}));
+                links.push(json!({"rel":"child","href":"ftp://files.example/catalog.json"}));
+            }
+            let text = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let mark = session.notice_mark();
+            let result = collections_json(&mut session, api, text.as_bytes()).unwrap();
+            assert_eq!(result["count"], count.min(2000));
+            assert_eq!(result.get("truncated").and_then(Value::as_bool).unwrap_or(false), refused);
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), if refused { 3 } else { 0 });
+            if refused {
+                assert!(notices.iter().any(|n| n.text.contains("1 catalog links were refused")));
+                assert!(notices.iter().any(|n| n.text.contains("1 catalog links were left out because their addresses")));
+            }
+        }
     }
 }

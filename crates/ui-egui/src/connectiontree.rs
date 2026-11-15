@@ -10,7 +10,7 @@ use std::sync::Arc;
 use egui::collapsing_header::CollapsingState;
 use egui::{Label, RichText, Sense, Ui};
 use rustgis_engine::connections::{Connection, DATABASE_KINDS};
-use rustgis_engine::render::rustgis_tiles::stac;
+use rustgis_engine::render::rustgis_tiles::{address::Origin, cache, stac};
 use rustgis_engine::sources::Source;
 use serde_json::{Value, json};
 
@@ -44,6 +44,7 @@ struct Signing {
     name: String,
     origin: Option<String>,
     connection: Option<String>,
+    public: bool,
     slot: Slot<Result<Vec<u8>, String>>,
 }
 
@@ -111,12 +112,16 @@ pub enum Entry {
 /// A level whose answer is on its way.
 pub struct Fetch {
     node: String,
+    opened: u64,
+    requested: String,
+    public: bool,
+    first_origin: Option<Origin>,
     /// The first answer, and the further documents a service's discovery asked for.
     first: Option<String>,
     documents: Vec<Value>,
     /// The address being fetched.
     pending: String,
-    slot: Slot<Result<Vec<u8>, String>>,
+    slot: Slot<Result<cache::Fetched, String>>,
 }
 
 pub struct Listing {
@@ -159,14 +164,31 @@ fn start(app: &mut RustGisApp, c: &Connection, node: &str) {
             },
             Some(url) => Entry::Loading(Fetch {
                 node: node.to_string(),
+                opened: app.session.opened,
+                requested: url.to_string(),
+                public: v.get("fromDocument").and_then(Value::as_bool) == Some(true),
+                first_origin: None,
                 first: None,
                 documents: Vec::new(),
                 pending: url.to_string(),
-                slot: crate::fetch_into(url),
+                slot: fetch_node(url, v.get("fromDocument").and_then(Value::as_bool) == Some(true)),
             }),
         },
     };
     app.ui.connection_tree.entries.insert((c.id.clone(), node.to_string()), entry);
+}
+
+/// Carries the probe's reach through the asynchronous transport, independently of later overrides.
+fn fetch_node(url: &str, public: bool) -> Slot<Result<cache::Fetched, String>> {
+    let slot: Slot<Result<cache::Fetched, String>> = Slot::default();
+    let land = slot.clone();
+    let done = Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r));
+    if public {
+        cache::download_public_with_origin(url, done);
+    } else {
+        cache::download_with_origin(url, done);
+    }
+    slot
 }
 
 fn listing(v: &Value, first: Option<String>, documents: Vec<Value>) -> Listing {
@@ -189,11 +211,12 @@ fn listing(v: &Value, first: Option<String>, documents: Vec<Value>) -> Listing {
 
 /// An answer arrived: asks again with it (and what came before). A service's discovery may need
 /// further documents, which are fetched in turn.
-fn advance(app: &mut RustGisApp, id: &str, mut f: Fetch, bytes: Vec<u8>) -> Entry {
-    let Ok(text) = crate::service_text(bytes) else {
+fn advance(app: &mut RustGisApp, id: &str, mut f: Fetch, fetched: cache::Fetched) -> Entry {
+    let Ok(text) = crate::service_text(fetched.bytes) else {
         return Entry::Failed(tl!("The answer isn't UTF-8 text").to_string());
     };
     if f.first.is_none() {
+        f.first_origin = Some(fetched.origin);
         f.first = Some(text);
     } else {
         f.documents.push(json!({"url": f.pending, "text": text}));
@@ -203,12 +226,17 @@ fn advance(app: &mut RustGisApp, id: &str, mut f: Fetch, bytes: Vec<u8>) -> Entr
     if !f.documents.is_empty() {
         p["documents"] = json!(f.documents);
     }
-    match app.session.run("connection.browse", &p) {
+    let answer = if let Some(origin) = &f.first_origin {
+        app.session.browse_from_origin(&p, &f.requested, f.opened, origin.clone())
+    } else {
+        app.session.run("connection.browse", &p)
+    };
+    match answer {
         Err(e) => Entry::Failed(e),
         Ok(v) => match v["next"].as_str() {
             Some(next) => {
                 f.pending = next.to_string();
-                f.slot = crate::fetch_into(next);
+                f.slot = fetch_node(next, f.public);
                 Entry::Loading(f)
             }
             None => Entry::Ready(Arc::new(listing(&v, f.first, f.documents))),
@@ -248,6 +276,9 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             Ok(token) => {
                 stac::remember_token(&signing.token_url, &token);
                 let mut p = json!({"url": stac::sign(&signing.href, &token), "name": signing.name, "zoom": true});
+                if signing.public {
+                    p["fromDocument"] = json!(true);
+                }
                 if let Some(connection) = signing.connection {
                     p["connection"] = json!(connection);
                 }
@@ -296,7 +327,14 @@ fn add_from(
                 run_add_url(app, params, origin)?;
             }
             "stac.addAsset" => {
-                add_asset(app, child["href"].as_str().unwrap_or(""), params["name"].as_str().unwrap_or(""), origin, connection)?;
+                add_asset(
+                    app,
+                    child["href"].as_str().unwrap_or(""),
+                    params["name"].as_str().unwrap_or(""),
+                    origin,
+                    connection,
+                    child["fromDocument"] == true,
+                )?;
             }
             _ => {
                 run_named(app, command, params, origin)?;
@@ -309,8 +347,18 @@ fn add_from(
 
 /// A STAC asset by its address, signed first when it needs a token (one in hand is used; one to
 /// fetch is fetched off the frame and the asset added when it lands).
-fn add_asset(app: &mut RustGisApp, href: &str, name: &str, origin: Option<&str>, connection: Option<&str>) -> Result<(), String> {
+fn add_asset(
+    app: &mut RustGisApp,
+    href: &str,
+    name: &str,
+    origin: Option<&str>,
+    connection: Option<&str>,
+    public: bool,
+) -> Result<(), String> {
     let mut p = json!({"url": href, "name": name, "zoom": true});
+    if public {
+        p["fromDocument"] = json!(true);
+    }
     if let Some(connection) = connection {
         p["connection"] = json!(connection);
     }
@@ -326,7 +374,7 @@ fn add_asset(app: &mut RustGisApp, href: &str, name: &str, origin: Option<&str>,
         let slot = crate::fetch_into(&token_url);
         let (href, name, origin) = (href.to_string(), name.to_string(), origin.map(str::to_string));
         let connection = connection.map(str::to_string);
-        app.ui.connection_tree.tokens.push(Signing { opened: app.session.opened, token_url, href, name, origin, connection, slot });
+        app.ui.connection_tree.tokens.push(Signing { opened: app.session.opened, token_url, href, name, origin, connection, public, slot });
     }
     Ok(())
 }
@@ -1168,8 +1216,9 @@ mod tests {
             });
             let mut app = RustGisApp::with_sample();
             let (text, _) = app.session.project.saved_text(None).unwrap();
-            add_asset(&mut app, &href, "Old asset", None, None).unwrap();
+            add_asset(&mut app, &href, "Old asset", None, None, true).unwrap();
             assert_eq!(app.ui.connection_tree.tokens.len(), 1);
+            assert!(app.ui.connection_tree.tokens[0].public);
             assert_eq!(sent.lock().unwrap().as_slice(), std::slice::from_ref(&token_url));
             let finish = || {
                 for done in std::mem::take(&mut *held.lock().unwrap()) {
@@ -1209,6 +1258,7 @@ mod tests {
                     "a current signing response starts exactly its asset download"
                 );
                 assert_eq!(app.ui.downloads.len(), 1);
+                assert_eq!(app.ui.downloads[0].params["fromDocument"], true);
                 assert!(stac::cached_token(&token_url).is_some());
             }
         }

@@ -152,13 +152,13 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
     // A chosen host or switch value that carries a URL delimiter would move the split between the
     // authority and the rest of the address (a subdomain of `192.168.1.5/x?` reaches another host),
     // so the delimiters are percent-encoded where the value goes in.
-    let pick = |opts: &[&str]| -> String {
+    let pick = |opts: &[&str], authority: bool| -> String {
         if opts.is_empty() {
             return String::new();
         }
         let i = (u64::from(t.x) + u64::from(t.y)) as usize % opts.len();
         let value = opts.get(i).copied().unwrap_or_default();
-        value.replace('/', "%2F").replace('?', "%3F").replace('#', "%23").replace('@', "%40")
+        if authority { value.replace('/', "%2F").replace('?', "%3F").replace('#', "%23").replace('@', "%40") } else { value.to_string() }
     };
     let mut out = String::with_capacity(template.len() + 16);
     let mut rest = template;
@@ -171,6 +171,7 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
             break;
         };
         let token = after.get(..close).unwrap_or_default();
+        let authority = out.split_once("://").is_some_and(|(_, rest)| !rest.contains(['/', '?', '#']));
         let value = match token {
             "z" | "zoom" => Some(t.z.to_string()),
             "x" => Some(t.x.to_string()),
@@ -180,7 +181,7 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
             "s" => {
                 let subs: Vec<&str> =
                     if subdomains.is_empty() { vec!["a", "b", "c"] } else { subdomains.iter().map(String::as_str).collect() };
-                Some(pick(&subs))
+                Some(pick(&subs, authority))
             }
             "bbox-epsg-3857" => {
                 let e = t.extent();
@@ -189,7 +190,7 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
             "width" | "height" => Some(tile_size.to_string()),
             "r" => Some(String::new()),
             "ratio" => Some("1".into()),
-            _ => token.strip_prefix("switch:").map(|opts| pick(&opts.split(',').map(str::trim).collect::<Vec<_>>())),
+            _ => token.strip_prefix("switch:").map(|opts| pick(&opts.split(',').map(str::trim).collect::<Vec<_>>(), authority)),
         };
         match value {
             Some(v) => out.push_str(&v),
@@ -489,5 +490,14 @@ mod tests {
         assert_eq!(joined, malformed_child);
         let malformed_base = crate::s3::anonymous(&crate::s3::anonymous("https://tiles.example/style.json"));
         assert!(crate::address::check(&join(&malformed_base, "tile/0"), None).is_err());
+    }
+    #[test]
+    fn switches_in_paths_and_queries_keep_delimiters() {
+        let t = TileId { z: 0, x: 0, y: 0 };
+        assert_eq!(
+            expand("https://tiles.example/{switch:a/b,c}/{z}?q={switch:x/y,z}", t, 256, false, &[]),
+            "https://tiles.example/a/b/0?q=x/y"
+        );
+        assert_eq!(expand("https://{switch:a/b,c}.example/{z}", t, 256, false, &[]), "https://a%2Fb.example/0");
     }
 }

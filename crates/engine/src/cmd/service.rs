@@ -531,12 +531,33 @@ pub(crate) enum Downloaded {
 /// ArcGIS layer's description says it is drawn (its `drawingInfo`), when it says.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<(Downloaded, Option<Value>), String> {
+    download_layer_with(s, name, url, max, pbf, |url, max, timeout, ceiling| {
+        crate::render::rustgis_tiles::cache::download_blocking_with_origin_within(url, max, timeout, &[], ceiling)
+    })
+}
+
+/// Drives pagination with an origin-aware transport; kept separate to test DNS provenance.
+#[cfg(not(target_arch = "wasm32"))]
+fn download_layer_with(
+    s: &mut Session,
+    name: &str,
+    url: &str,
+    max: usize,
+    pbf: bool,
+    mut fetch: impl FnMut(
+        &str,
+        usize,
+        std::time::Duration,
+        crate::render::rustgis_tiles::address::Reach,
+    ) -> Result<crate::render::rustgis_tiles::cache::Fetched, String>,
+) -> Result<(Downloaded, Option<Value>), String> {
     use crate::render::rustgis_tiles::{address, cache};
     use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, begin_with_pbf, max_paged_features};
     let mut until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     let mut left = max;
     let mut step = if pbf { begin_with_pbf(url, max_paged_features()) } else { begin(url, max_paged_features()) };
     let mut drawing = None;
+    let mut previous: Option<address::Origin> = None;
     let (downloaded, note) = loop {
         let pages = match step {
             Step::Done(bytes, note) => break (Downloaded::Bytes(bytes), note),
@@ -546,7 +567,8 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
             Step::Fetch(pages) => pages,
         };
         let describing = pages.describing();
-        let answer = address::check(pages.next_url(), Some(pages.referrer())).and_then(|()| {
+        let allowed = previous.as_ref().map_or_else(|| address::check(pages.next_url(), None), |origin| origin.check(pages.next_url()));
+        let answer = allowed.and_then(|()| {
             let wait = until.saturating_duration_since(std::time::Instant::now());
             // A layer's description is small: one that hangs is given up on, and its features
             // asked for as they are.
@@ -558,11 +580,10 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
             }
             // A description has a small budget of its own.
             let budget = if describing { left.min(DESCRIPTION_MAX) } else { left };
-            let page = if address::reach(pages.referrer()) == address::Reach::Public {
-                cache::download_public_omitting_within(pages.next_url(), budget, wait, &[])?
-            } else {
-                cache::download_blocking_within(pages.next_url(), budget, wait)?
-            };
+            let ceiling = previous.as_ref().map_or(address::Reach::Local, |origin| origin.reach()).min(cache::ceiling_for(url));
+            let fetched = fetch(pages.next_url(), budget, wait, ceiling)?;
+            previous = Some(fetched.origin);
+            let page = fetched.bytes;
             if page.len() > left {
                 return Err("the pages are larger than RustGIS downloads".into());
             }
@@ -1821,5 +1842,36 @@ mod tests {
         let url = r["url"].as_str().unwrap();
         assert!(url.starts_with("https://x.org/wfs") && !url.contains("hunter2"), "{r}");
         assert_eq!(r["pending"], true);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn service_pages_follow_observed_reach_instead_of_hostname_spelling() {
+        use crate::render::rustgis_tiles::{
+            address::{Origin, Reach},
+            cache::Fetched,
+        };
+        let root = "https://gis.corp.example/collections/a/items?limit=1";
+        for (peer, succeeds) in [("10.0.0.5", true), ("93.184.216.34", false)] {
+            let mut s = Session::new(crate::Project::default());
+            let mut seen = Vec::new();
+            let result = download_layer_with(&mut s, "test", root, 65536, false, |url, _, _, ceiling| {
+                seen.push(ceiling);
+                let links = if seen.len() == 1 { json!([{"rel":"next","href":"http://10.0.0.5/page2"}]) } else { json!([]) };
+                let body = json!({"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{}}],"links":links});
+                Ok(Fetched {
+                    bytes: body.to_string().into_bytes(),
+                    origin: Origin::connected(url, peer.parse().unwrap()).unwrap().narrow_reach(ceiling),
+                })
+            });
+            let (Downloaded::Bytes(bytes), _) = result.unwrap() else { panic!("GeoJSON pages") };
+            let result: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(result["features"].as_array().unwrap().len(), if succeeds { 2 } else { 1 });
+            assert_eq!(seen, if succeeds { vec![Reach::Local, Reach::Local] } else { vec![Reach::Local] });
+            if succeeds {
+                assert!(s.notices_since(0).is_empty());
+            } else {
+                assert!(s.notices_since(0).iter().any(|notice| notice.text.contains("local network")));
+            }
+        }
     }
 }

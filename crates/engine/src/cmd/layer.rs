@@ -3816,6 +3816,77 @@ pub fn request_origin(p: &Value) -> Result<(Option<&str>, bool), String> {
     Ok((origin, public))
 }
 
+/// Selects observed provenance registered by native UI code for this exact asset and document.
+/// JSON alone cannot grant that provenance; unregistered requests keep the conservative parser.
+pub fn request_origin_for<'a>(s: &Session, p: &'a Value) -> Result<(Option<&'a str>, bool), String> {
+    let parsed = request_origin(p)?;
+    if s.document_assets.0 != s.opened {
+        return Ok(parsed);
+    }
+    let Some(from) = p.get("from").and_then(Value::as_str).map(str::trim) else { return Ok(parsed) };
+    let Some(url) = p.get("url").and_then(Value::as_str).map(str::trim) else { return Ok(parsed) };
+    let key = (crate::render::rustgis_tiles::logins::inner(url.trim()).to_string(), from.to_string());
+    let Some(origin) = s.document_assets.1.get(&key) else { return Ok(parsed) };
+    let plain = crate::render::rustgis_tiles::logins::inner(url);
+    let selected = if s.policy_user() && plain != url {
+        p.get("connection")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| crate::service_logins::bind_logged_in(s, id, plain).map(|bound| bound == url))
+            .transpose()?
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    // Only a native user's explicit, live session login can replace the document's binding.
+    // Its plain destination still has to pass the document's observed network reach.
+    origin.check(if selected { plain } else { url })?;
+    Ok((
+        Some(from),
+        origin.reach() == crate::render::rustgis_tiles::address::Reach::Public
+            || p.get("fromDocument").and_then(Value::as_bool) == Some(true),
+    ))
+}
+
+/// Binds an asset request without letting normalization invent a document's login selection.
+/// Registered plain assets stay anonymous until the native user names a connection; already
+/// bound document assets retain their verified binding.
+pub fn asset_request_params<'a>(s: &mut Session, p: &'a Value) -> Result<std::borrow::Cow<'a, Value>, String> {
+    let url = p.get("url").and_then(Value::as_str).map(str::trim);
+    let from = p.get("from").and_then(Value::as_str).map(str::trim);
+    let selected = p.get("connection").and_then(Value::as_str).is_some_and(|id| !id.trim().is_empty());
+    let registered_plain = url.zip(from).is_some_and(|(url, from)| {
+        let plain = crate::render::rustgis_tiles::logins::inner(url);
+        s.document_assets.0 == s.opened && plain == url && s.document_assets.1.contains_key(&(plain.to_string(), from.to_string()))
+    });
+    if registered_plain && !selected {
+        let mut anonymous = p.clone();
+        anonymous["anonymous"] = json!(true);
+        return crate::service_logins::request_params(s, &anonymous).map(|p| std::borrow::Cow::Owned(p.into_owned()));
+    }
+    crate::service_logins::request_params(s, p)
+}
+
+impl Session {
+    /// Records an exact asset's transport-observed provenance from trusted native UI dispatch.
+    /// Non-user ingress cannot populate this runtime-only table, and a full table fails closed.
+    pub fn remember_document_asset(&mut self, url: &str, origin: crate::render::rustgis_tiles::address::Origin) -> Result<(), String> {
+        if !self.policy_user() {
+            return Err("only native UI dispatch records document provenance".into());
+        }
+        origin.check(url)?;
+        if self.document_assets.0 != self.opened {
+            self.document_assets = (self.opened, Default::default());
+        }
+        let key = (crate::render::rustgis_tiles::logins::inner(url.trim()).to_string(), origin.url().to_string());
+        if self.document_assets.1.len() >= 16_384 && !self.document_assets.1.contains_key(&key) {
+            return Err("too many document assets are open; reopen the project to register more".into());
+        }
+        self.document_assets.1.insert(key, origin);
+        Ok(())
+    }
+}
+
 /// Network reach ceiling implied by `(origin, public)` from [`request_origin`].
 pub fn origin_ceiling(origin: Option<&str>, public: bool) -> crate::render::rustgis_tiles::address::Reach {
     use crate::render::rustgis_tiles::{address, logins};
@@ -3850,16 +3921,16 @@ pub fn mark_url_reach(url: &str, origin: Option<&str>, public: bool) {
 }
 
 fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
-    let (origin, public) = request_origin(p)?;
+    let (origin, public) = request_origin_for(s, p)?;
     if (origin.is_some() || public)
         && let Some(raw) = ps(p, "url").map(str::trim).filter(|u| !u.is_empty())
     {
         let _ = web_address(raw)?;
         crate::render::rustgis_tiles::address::check_reach(raw, origin_ceiling(origin, public))?;
     }
-    let bound = crate::service_logins::request_params(s, p)?;
+    let bound = asset_request_params(s, p)?;
     let p = bound.as_ref();
-    let (origin, public) = request_origin(p).map_err(|e| e.to_string()).map(|(o, pub_)| (o.or(origin), pub_ || public))?;
+    let (origin, public) = request_origin_for(s, p).map_err(|e| e.to_string()).map(|(o, pub_)| (o.or(origin), pub_ || public))?;
     if !s.import_completion(p) {
         no_geolibre_state(p)?;
     }
@@ -6230,5 +6301,79 @@ mod tests {
         let (origin, public) = super::request_origin(&params).unwrap();
         assert!(public);
         assert_eq!(super::origin_ceiling(origin, public), crate::render::rustgis_tiles::address::Reach::Public);
+    }
+    #[test]
+    fn observed_local_asset_reach_cannot_be_granted_by_json() {
+        use crate::render::rustgis_tiles::address::{Origin, Reach};
+        let mut s = Session::new(crate::Project::default());
+        let from = "https://catalog.corp.example/item.json";
+        let asset = "http://10.0.0.5/scene.geojson";
+        let p = json!({"url":asset,"from":from,"fromDocument":false});
+        assert!(super::request_origin_for(&s, &p).unwrap().1);
+        let origin = Origin::connected(from, "10.0.0.5".parse().unwrap()).unwrap();
+        s.remember_document_asset(asset, origin).unwrap();
+        let (origin, public) = super::request_origin_for(&s, &p).unwrap();
+        assert!(!public);
+        assert_eq!(super::origin_ceiling(origin, public), Reach::Local);
+        let other = json!({"url":"http://10.0.0.6/other.geojson","from":from,"fromDocument":false});
+        assert!(super::request_origin_for(&s, &other).unwrap().1);
+        let public = json!({"url":asset,"from":from,"fromDocument":true});
+        assert!(super::request_origin_for(&s, &public).unwrap().1);
+    }
+    #[test]
+    fn observed_asset_allowances_do_not_cross_project_generations() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut s = Session::new(crate::Project::default());
+        let from = "https://project-scoped.corp.example/item.json";
+        let asset = "http://10.0.0.5/project-scoped.geojson";
+        let p = json!({"url":asset,"from":from,"fromDocument":false});
+        let origin = Origin::connected(from, "10.0.0.5".parse().unwrap()).unwrap();
+        s.remember_document_asset(asset, origin.clone()).unwrap();
+        s.remember_document_asset("http://10.0.0.5/another.geojson", origin.clone()).unwrap();
+        assert!(!super::request_origin_for(&s, &p).unwrap().1);
+        s.run("project.new", &json!({})).unwrap();
+        assert!(super::request_origin_for(&s, &p).unwrap().1);
+        let normalized = super::asset_request_params(&mut s, &p).unwrap().into_owned();
+        assert!(normalized.get("anonymous").is_none(), "stale registrations must not change normalization");
+        assert!(s.run_leaving_downloads("layer.addUrl", &p).unwrap_err().contains("local network"));
+        assert!(s.take_url_requests().is_empty());
+        s.remember_document_asset(asset, origin).unwrap();
+        assert_eq!(s.document_assets.0, s.opened);
+        assert_eq!(s.document_assets.1.len(), 1, "a new project's registration releases the previous project's table and budget");
+        assert!(!super::request_origin_for(&s, &p).unwrap().1);
+    }
+
+    #[test]
+    fn registered_assets_accept_only_an_explicit_live_native_login() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut s = Session::new(crate::Project::default());
+        let from = "https://catalog.example/item.json";
+        let asset = "https://assets.example/scene.geojson";
+        s.remember_document_asset(asset, Origin::named(from)).unwrap();
+        let spaced = json!({"url":format!("  {asset}  "),"from":from});
+        assert!(super::request_origin_for(&s, &spaced).is_ok());
+        let connection = s
+            .run("connection.new", &json!({"kind":"ogcapi","address":"https://assets.example","auth":"header","keyName":"X-Key"}))
+            .unwrap();
+        s.run("connection.login", &json!({"id":connection["id"],"apiKey":"synthetic-registered-asset"})).unwrap();
+        let plain = json!({"url":asset,"from":from,"connection":connection["id"]});
+        assert!(super::request_origin_for(&s, &plain).is_ok());
+        let mut implicit = plain.clone();
+        implicit.as_object_mut().unwrap().remove("connection");
+        assert!(super::request_origin_for(&s, &implicit).is_ok());
+        let anonymous = super::asset_request_params(&mut s, &implicit).unwrap().into_owned();
+        assert_eq!(anonymous["url"], implicit["url"], "normalization cannot invent a login selection");
+        assert!(anonymous.get("connection").is_none());
+        assert!(super::request_origin_for(&s, &anonymous).is_ok());
+        let bound = super::asset_request_params(&mut s, &plain).unwrap().into_owned();
+        assert_ne!(bound["url"], plain["url"]);
+        assert!(super::request_origin_for(&s, &bound).is_ok());
+        let mut unselected = bound.clone();
+        unselected.as_object_mut().unwrap().remove("connection");
+        assert!(super::request_origin_for(&s, &unselected).is_err());
+        unselected["connection"] = json!("another-connection");
+        assert!(super::request_origin_for(&s, &unselected).is_err());
+        s.run("connection.logout", &json!({"id":connection["id"]})).unwrap();
+        assert!(super::request_origin_for(&s, &bound).is_err());
     }
 }

@@ -999,7 +999,7 @@ fn answered(s: &mut Session, c: &Connection, text: &str) -> CmdResult {
             super::service::layers(s, &json!({"url": c.address, "connection":c.id, "type": c.kind, "text": text}))
         }
         "csw" => super::service::catalog_search(s, &json!({"url": c.address, "connection":c.id, "text": text})),
-        "stac" => super::stac::collections_json(&stac::api(Some(&c.address))?, text.as_bytes()),
+        "stac" => super::stac::collections_json(s, &stac::api(Some(&c.address))?, text.as_bytes()),
         "s3" => {
             if let Some(bucket) = first_bucket(c) {
                 let l = s3::parse_list(text.as_bytes())?;

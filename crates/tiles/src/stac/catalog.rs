@@ -62,35 +62,74 @@ pub fn parse_children(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
 
 /// Like [`parse_children`], carrying the observed post-redirect [`crate::address::Origin`] and reach.
 pub fn parse_children_from_origin(bytes: &[u8], origin: &crate::address::Origin) -> Result<Vec<Child>, String> {
-    let v = super::json(bytes)?;
-    if !v.is_object() || !matches!(v.get("type").and_then(Value::as_str), Some("Catalog" | "Collection")) {
-        return Err("the answer isn't a STAC catalog or collection".into());
-    }
-    let mut seen = HashSet::new();
-    let mut out: Vec<Child> = links(&v, "child", origin.url())
-        .into_iter()
-        .filter(|(url, _)| is_web(url) && origin.check(url).is_ok() && seen.insert(url.clone()))
-        .take(MAX_CHILDREN)
-        .map(|(url, title)| Child { title: if title.is_empty() { label_of(&url) } else { title }, url })
-        .collect();
-    out.sort_by_key(|c| c.title.to_lowercase());
-    Ok(out)
+    parse_children_noted(bytes, origin).map(|listing| listing.links)
+}
+
+/// A bounded link listing and the counted reasons it is incomplete.
+#[derive(Debug, Default)]
+pub struct LinkListing {
+    /// Unique accepted web links retained for display.
+    pub links: Vec<Child>,
+    /// Unique links inspected but refused by the document's network reach.
+    pub refused: usize,
+    /// Inspected links with missing, invalid or non-HTTP(S) addresses.
+    pub skipped: usize,
+    /// Accepted links beyond the output cap, plus raw links beyond the inspection cap.
+    pub omitted: usize,
+}
+
+/// Lists children, reporting refused links and omissions without discarding usable children.
+pub fn parse_children_noted(bytes: &[u8], origin: &crate::address::Origin) -> Result<LinkListing, String> {
+    let mut listing = parse_links_noted(bytes, origin, "child")?;
+    listing.links.sort_by_key(|c| c.title.to_lowercase());
+    Ok(listing)
 }
 
 /// The items (`item` links) of a catalog's or collection's document fetched from `from`: web
 /// addresses only, in the order the document gives them.
 pub fn parse_item_links(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
+    parse_item_links_noted(bytes, &crate::address::Origin::named(from)).map(|listing| listing.links)
+}
+
+/// Lists items, reporting refused links and omissions without discarding usable items.
+pub fn parse_item_links_noted(bytes: &[u8], origin: &crate::address::Origin) -> Result<LinkListing, String> {
+    parse_links_noted(bytes, origin, "item")
+}
+
+/// Inspects bounded input, counts every refusal within that bound, and caps only unique accepted links.
+fn parse_links_noted(bytes: &[u8], origin: &crate::address::Origin, rel: &str) -> Result<LinkListing, String> {
     let v = super::json(bytes)?;
     if !v.is_object() || !matches!(v.get("type").and_then(Value::as_str), Some("Catalog" | "Collection")) {
         return Err("the answer isn't a STAC catalog or collection".into());
     }
+    let mut listing = LinkListing { omitted: of_rel(&v, rel).count().saturating_sub(MAX_LINKS), ..Default::default() };
     let mut seen = HashSet::new();
-    Ok(links(&v, "item", from)
-        .into_iter()
-        .filter(|(url, _)| is_web(url) && crate::address::check(url, Some(from)).is_ok() && seen.insert(url.clone()))
-        .take(MAX_CHILDREN)
-        .map(|(url, title)| Child { title: if title.is_empty() { label_of(&url) } else { title }, url })
-        .collect())
+    let mut refused = HashSet::new();
+    for link in of_rel(&v, rel).take(MAX_LINKS) {
+        let Some(url) = link.get("href").and_then(Value::as_str).and_then(|href| resolve(origin.url(), href)) else {
+            listing.skipped += 1;
+            continue;
+        };
+        if !is_web(&url) {
+            listing.skipped += 1;
+            continue;
+        }
+        let title = text(link.get("title"));
+        if origin.check(&url).is_err() {
+            refused.insert(url);
+            continue;
+        }
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        if listing.links.len() == MAX_CHILDREN {
+            listing.omitted += 1;
+            continue;
+        }
+        listing.links.push(Child { title: if title.is_empty() { label_of(&url) } else { title }, url });
+    }
+    listing.refused = refused.len();
+    Ok(listing)
 }
 
 /// The links of a relation, resolved against `from`: (address, title), the first
@@ -280,6 +319,8 @@ pub struct Walk {
     asked: Vec<(String, usize, bool)>,
     /// Observed network reach of the root document once it lands.
     root_reach: Option<crate::address::Reach>,
+    refused: usize,
+    skipped: usize,
     filter: Filter,
     limit: usize,
     found: Vec<Item>,
@@ -300,6 +341,8 @@ impl Walk {
             visited: HashSet::new(),
             asked: Vec::new(),
             root_reach: None,
+            refused: 0,
+            skipped: 0,
             filter,
             limit: limit.clamp(1, super::MAX_ITEMS),
             found: Vec::new(),
@@ -346,7 +389,24 @@ impl Walk {
 
     /// Whether everything below the start was read (so the items are all that match).
     pub fn complete(&self) -> bool {
-        self.finished() && self.items.is_empty() && self.folders.is_empty() && !self.cut && self.failed == 0
+        self.finished()
+            && self.items.is_empty()
+            && self.folders.is_empty()
+            && !self.cut
+            && self.failed == 0
+            && self.refused == 0
+            && self.skipped == 0
+    }
+
+    /// Number of inspected link references refused by their supplying origin's reach.
+    /// Counts references rather than retaining addresses across the entire walk.
+    pub fn refused(&self) -> usize {
+        self.refused
+    }
+
+    /// Number of inspected links with missing, invalid or non-HTTP(S) addresses.
+    pub fn skipped(&self) -> usize {
+        self.skipped
     }
 
     /// The items found.
@@ -402,9 +462,21 @@ impl Walk {
                 for (rel, queue) in [("item", true), ("child", false)] {
                     // Links past the most followed leave the walk incomplete, and say so.
                     self.cut |= too_many(&v, rel);
-                    for (u, _) in links(&v, rel, from) {
+                    for link in of_rel(&v, rel).take(MAX_LINKS) {
+                        let Some(u) = link.get("href").and_then(Value::as_str).and_then(|href| resolve(from, href)) else {
+                            self.skipped += 1;
+                            continue;
+                        };
                         // A document on the web can't send the walk into the local network.
-                        if !is_web(&u) || self.visited.contains(&u) || origin.check(&u).is_err() {
+                        if !is_web(&u) {
+                            self.skipped += 1;
+                            continue;
+                        }
+                        if self.visited.contains(&u) {
+                            continue;
+                        }
+                        if origin.check(&u).is_err() {
+                            self.refused += 1;
                             continue;
                         }
                         if self.items.len() + self.folders.len() >= MAX_QUEUE {
@@ -771,5 +843,120 @@ mod tests {
         let boxed = Filter::from_search(&Search { bbox: Some([5.0, 5.0, 6.0, 6.0]), ..Default::default() }, None).unwrap();
         assert!(boxed.shape.is_none() && !boxed.keeps(&a, None));
         assert!(Filter::from_search(&at(500.0, 0.0), None).is_ok(), "a shape off the globe is refused when it is sent, not here");
+    }
+    #[test]
+    fn refused_children_are_counted_and_make_a_walk_incomplete() {
+        let body = json!({"type":"Catalog","id":"test","links":[
+            {"rel":"child","href":"http://10.0.0.5/catalog.json"},
+            {"rel":"child","href":"http://10.0.0.5/catalog.json"},
+            {"rel":"item","href":"http://127.0.0.1/item.json"}
+        ]})
+        .to_string()
+        .into_bytes();
+        let origin = crate::address::Origin::named("https://public.example/catalog.json");
+        let listing = parse_children_noted(&body, &origin).unwrap();
+        assert!(listing.links.is_empty());
+        assert_eq!(listing.refused, 1);
+        let mut walk = Walk::new(origin.url(), Filter::default(), 50);
+        let url = walk.next_url().unwrap();
+        walk.land_fetched(&url, Ok(crate::cache::Fetched { bytes: body, origin }));
+        assert!(walk.finished());
+        assert!(!walk.complete());
+        assert_eq!(walk.refused(), 3);
+        let clean = br#"{"type":"Catalog","id":"empty","links":[]}"#;
+        let origin = crate::address::Origin::named("https://public.example/empty.json");
+        assert_eq!(parse_children_noted(clean, &origin).unwrap().refused, 0);
+        let mut walk = Walk::new(origin.url(), Filter::default(), 50);
+        let url = walk.next_url().unwrap();
+        walk.land(&url, Ok(clean.to_vec()));
+        assert!(walk.complete());
+        assert_eq!(walk.refused(), 0);
+    }
+    #[test]
+    fn listings_count_invalid_and_non_web_links_but_clean_input_stays_quiet() {
+        let origin = crate::address::Origin::named("https://public.example/catalog.json");
+        for rel in ["child", "item"] {
+            let mut links = vec![json!({"rel":rel,"href":"./good.json"})];
+            let clean = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let listing = parse_links_noted(clean.as_bytes(), &origin, rel).unwrap();
+            assert_eq!((listing.links.len(), listing.refused, listing.skipped, listing.omitted), (1, 0, 0, 0));
+            links.extend([
+                json!({"rel":rel,"href":"ftp://files.example/catalog.json"}),
+                json!({"rel":rel,"href":""}),
+                json!({"rel":rel,"href":42}),
+                json!({"rel":rel}),
+                json!({"rel":rel,"href":"bad\naddress"}),
+            ]);
+            let lossy = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let listing = parse_links_noted(lossy.as_bytes(), &origin, rel).unwrap();
+            assert_eq!((listing.links.len(), listing.refused, listing.skipped, listing.omitted), (1, 0, 5, 0));
+        }
+    }
+
+    #[test]
+    fn walks_count_invalid_links_and_mark_the_result_incomplete() {
+        for skipped in [false, true] {
+            let links = if skipped {
+                json!([
+                    {"rel":"child","href":"ftp://files.example/catalog.json"},
+                    {"rel":"item","href":""}, {"rel":"child"}
+                ])
+            } else {
+                json!([])
+            };
+            let body = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let mut walk = Walk::new("https://public.example/catalog.json", Filter::default(), 50);
+            let url = walk.next_url().unwrap();
+            walk.land(&url, Ok(body.into_bytes()));
+            assert!(walk.finished());
+            assert_eq!(walk.complete(), !skipped);
+            assert_eq!(walk.skipped(), if skipped { 3 } else { 0 });
+            assert_eq!(walk.refused(), 0);
+        }
+    }
+
+    #[test]
+    fn refusal_counts_cover_references_across_documents_without_retaining_addresses() {
+        let root = "https://refusal-count.example/catalog.json";
+        let mut walk = Walk::new(root, Filter::default(), 50);
+        let url = walk.next_url().unwrap();
+        let children: Vec<Value> = (0..4).map(|i| json!({"rel":"child","href":format!("{i}.json")})).collect();
+        walk.land(&url, Ok(json!({"type":"Catalog","id":"root","links":children}).to_string().into_bytes()));
+        let refused: Vec<Value> = (0..MAX_LINKS).map(|_| json!({"rel":"child","href":"http://10.0.0.5/private.json"})).collect();
+        let body = json!({"type":"Catalog","id":"child","links":refused}).to_string().into_bytes();
+        while let Some(url) = walk.next_url() {
+            walk.land(&url, Ok(body.clone()));
+        }
+        assert!(walk.finished());
+        assert!(!walk.complete());
+        assert_eq!(walk.refused(), 4 * MAX_LINKS);
+        assert_eq!(walk.reads, 5);
+        assert_eq!(walk.visited.len(), 5, "refused addresses never enter the visited or pending document sets");
+    }
+
+    #[test]
+    fn listing_limits_keep_unique_links_and_count_every_omission() {
+        let origin = crate::address::Origin::named("https://public.example/catalog.json");
+        let mut children: Vec<Value> =
+            (0..MAX_CHILDREN).map(|i| json!({"rel":"child","href":format!("https://public.example/{i}.json")})).collect();
+        children.push(json!({"rel":"child","href":"http://10.0.0.5/catalog.json"}));
+        let body = json!({"type":"Catalog","id":"large","links":children});
+        let listing = parse_children_noted(body.to_string().as_bytes(), &origin).unwrap();
+        assert_eq!((listing.links.len(), listing.refused, listing.omitted), (MAX_CHILDREN, 1, 0));
+        children.push(json!({"rel":"child","href":"https://public.example/extra.json"}));
+        let body = json!({"type":"Catalog","id":"limited","links":children});
+        let listing = parse_children_noted(body.to_string().as_bytes(), &origin).unwrap();
+        assert_eq!((listing.links.len(), listing.refused, listing.omitted), (MAX_CHILDREN, 1, 1));
+        let mut duplicates: Vec<Value> =
+            (0..MAX_CHILDREN - 1).map(|i| json!({"rel":"child","href":format!("https://public.example/{i}.json")})).collect();
+        duplicates.extend([duplicates[0].clone(), duplicates[1].clone()]);
+        let body = json!({"type":"Catalog","id":"duplicates","links":duplicates});
+        let listing = parse_children_noted(body.to_string().as_bytes(), &origin).unwrap();
+        assert_eq!((listing.links.len(), listing.refused, listing.omitted), (MAX_CHILDREN - 1, 0, 0));
+        let items: Vec<Value> =
+            (0..MAX_LINKS + 1).map(|i| json!({"rel":"item","href":format!("https://public.example/{i}.json")})).collect();
+        let body = json!({"type":"Catalog","id":"items","links":items});
+        let listing = parse_item_links_noted(body.to_string().as_bytes(), &origin).unwrap();
+        assert_eq!((listing.links.len(), listing.refused, listing.omitted), (MAX_CHILDREN, 0, MAX_LINKS + 1 - MAX_CHILDREN));
     }
 }

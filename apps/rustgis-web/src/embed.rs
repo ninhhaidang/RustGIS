@@ -70,7 +70,6 @@ const UI_EMBED: &[&str] = &[
     "ui.catalogView",
     "ui.commandSearch",
     "ui.coordinateFormat",
-    "ui.gp.open",
     "ui.identify",
     "ui.itemPopups",
     "ui.language",
@@ -321,6 +320,7 @@ mod tests {
             assert!(runnable(safe), "{safe}");
         }
         for blocked in [
+            "ui.gp.open",
             "ui.",
             "ui.addUrl",
             "ui.openUrl",

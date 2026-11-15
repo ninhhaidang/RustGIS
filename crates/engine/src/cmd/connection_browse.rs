@@ -29,8 +29,8 @@ enum Level {
     Catalogue,
     StacRoot { api: String },
     StacCollection { api: String, id: String },
-    StacCatalog { url: String },
-    StacItem { url: String },
+    StacCatalog { url: String, origin: address::Origin },
+    StacItem { url: String, origin: address::Origin },
     S3Root,
     S3Prefix { bucket: String, prefix: String },
 }
@@ -39,7 +39,7 @@ enum Level {
 const SERVICE_TYPES: [&str; 7] = ["auto", "wms", "wmts", "wfs", "wcs", "ogcapi", "arcgis"];
 
 /// The level a connection's `node` names (its top level when empty).
-fn level(c: &Connection, node: &str) -> Result<Level, String> {
+fn level(c: &Connection, node: &str, observed: Option<&address::Origin>) -> Result<Level, String> {
     let kind = c.kind.as_str();
     let not_a_node = || format!("'{node}' isn't a node of {}", c.name);
     if node.is_empty() {
@@ -93,16 +93,18 @@ fn level(c: &Connection, node: &str) -> Result<Level, String> {
         if kind != "stac" {
             return Err(not_a_node());
         }
-        address::check(url, Some(&c.address))?;
-        return Ok(Level::StacCatalog { url: url.to_string() });
+        let origin = observed.cloned().unwrap_or_else(|| address::Origin::named(&c.address));
+        origin.check(url)?;
+        return Ok(Level::StacCatalog { url: url.to_string(), origin });
     }
     if let Some(url) = node.strip_prefix("item:") {
         // A static catalog's item: its own file, read when opened.
         if kind != "stac" {
             return Err(not_a_node());
         }
-        address::check(url, Some(&c.address))?;
-        return Ok(Level::StacItem { url: url.to_string() });
+        let origin = observed.cloned().unwrap_or_else(|| address::Origin::named(&c.address));
+        origin.check(url)?;
+        return Ok(Level::StacItem { url: url.to_string(), origin });
     }
     if let Some(rest) = node.strip_prefix("s3:") {
         let (bucket, prefix) = rest
@@ -141,7 +143,7 @@ fn fetch_url(s: &Session, c: &Connection, level: &Level, conn: Option<&s3::Conne
         Level::StacCollection { api, id } => {
             Some(stac::search_url(api, &stac::Search { collections: vec![id.clone()], limit: ITEMS, ..stac::Search::default() })?)
         }
-        Level::StacCatalog { url } | Level::StacItem { url } => Some(url.clone()),
+        Level::StacCatalog { url, .. } | Level::StacItem { url, .. } => Some(url.clone()),
         Level::S3Root => match (super::first_bucket(c), conn) {
             (Some(_), _) => None,
             (None, Some(conn)) if conn.credentials.is_some() => Some(super::through(s, c, conn, s3::buckets_url(conn))?),
@@ -159,13 +161,15 @@ fn fetch_url(s: &Session, c: &Connection, level: &Level, conn: Option<&s3::Conne
 
 /// What a level reads, fetched here (waiting for it).
 #[cfg(not(target_arch = "wasm32"))]
-fn download(url: &str) -> Result<String, String> {
-    let bytes = crate::render::rustgis_tiles::cache::download_blocking(url)?;
-    Ok(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+fn download(url: &str, ceiling: address::Reach) -> Result<(String, address::Origin), String> {
+    use crate::render::rustgis_tiles::cache;
+    let fetched = cache::download_blocking_with_origin_within(url, cache::MAX_DOWNLOAD, cache::BLOCKING_TIMEOUT, &[], ceiling)?;
+    let text = String::from_utf8(fetched.bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    Ok((text, fetched.origin))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn download(_: &str) -> Result<String, String> {
+fn download(_: &str, _: address::Reach) -> Result<(String, address::Origin), String> {
     Err("in the web app, expand the connection under Data Sources › Connections".into())
 }
 
@@ -202,16 +206,29 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
     if ps(p, "answer").map(str::len).into_iter().chain(documents).sum::<usize>() > super::super::service::MAX_GROUP_BYTES {
         return Err("answer and documents are too large to read".into());
     }
-    let level = level(&c, node)?;
+    let observed = node_origin(s, &c, node);
+    let level = level(&c, node, observed.as_ref())?;
+    let ceiling = match &level {
+        Level::StacCatalog { origin, .. } | Level::StacItem { origin, .. } => origin.reach(),
+        _ => address::Reach::Local,
+    };
     let conn = s3_login(s, &c, &level)?;
     let url = fetch_url(s, &c, &level, conn.as_ref())?;
     let url = match url {
         Some(url) if crate::service_logins::is_service(&c) => Some(crate::service_logins::request(s, Some(&c.id), &url)?),
         other => other,
     };
+    if ceiling == address::Reach::Public
+        && let Some(url) = &url
+    {
+        crate::render::rustgis_tiles::cache::restrict_to_public(url);
+    }
     let mut out = json!({"connection": c.id, "node": node});
     if b(p, "probe").unwrap_or(false) {
         out["fetch"] = json!(url);
+        if ceiling == address::Reach::Public {
+            out["fromDocument"] = json!(true);
+        }
         return Ok(out);
     }
     let found = match &level {
@@ -223,25 +240,38 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
         }
         _ => {
             let at = url.as_deref().unwrap_or("");
-            let text: Cow<str> = match ps(p, "answer") {
-                Some(a) => Cow::Borrowed(a),
-                None => Cow::Owned(download(at)?),
+            let (text, origin): (Cow<str>, address::Origin) = match ps(p, "answer") {
+                Some(a) => {
+                    let origin = match s.browse_response.take() {
+                        Some((id, supplied_node, origin)) if id == c.id && supplied_node == node => origin,
+                        _ => address::Origin::named(at).narrow_reach(address::Reach::Public),
+                    };
+                    (Cow::Borrowed(a), origin)
+                }
+                None => {
+                    let (text, origin) = download(at, ceiling)?;
+                    (Cow::Owned(text), origin)
+                }
             };
             let bytes = text.as_bytes();
-            match &level {
+            let found = match &level {
                 Level::Catalogue => catalogue(s, &c, &text, &mut out)?,
-                Level::StacRoot { api } if stac::catalog::is_static(api) => catalogs(bytes, api)?,
+                Level::StacRoot { api } if stac::catalog::is_static(api) => catalogs(s, bytes, &origin)?,
                 Level::StacRoot { .. } => collections(bytes)?,
-                Level::StacCatalog { url } => catalogs(bytes, url)?,
-                Level::StacItem { url } => item_file(bytes, url)?,
-                Level::StacCollection { .. } => items(bytes, at)?,
+                Level::StacCatalog { .. } => catalogs(s, bytes, &origin)?,
+                Level::StacItem { .. } => item_file(s, bytes, &origin)?,
+                Level::StacCollection { .. } => items(s, bytes, &origin)?,
                 Level::S3Root => buckets(s3::parse_buckets(bytes)?.into_iter()),
                 Level::S3Prefix { bucket, prefix } => {
                     let binding = conn.as_ref().and_then(|conn| super::saved_binding(s, &c, conn));
                     objects(bytes, bucket, prefix, binding.as_deref())?
                 }
                 Level::Database | Level::DatabaseSchema { .. } | Level::Service { .. } => Found::default(),
+            };
+            if matches!(&level, Level::StacCatalog { .. }) || matches!(&level, Level::StacRoot { api } if stac::catalog::is_static(api)) {
+                remember_node_origins(s, &c, &found.children, &origin, node.is_empty())?;
             }
+            found
         }
     };
     let mut children = found.children;
@@ -261,6 +291,82 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
         out["matched"] = json!(m);
     }
     Ok(out)
+}
+
+impl Session {
+    /// Completes a native UI transport response without accepting provenance through JSON.
+    /// A fresh probe checks the exact request and current project before one command consumes it.
+    pub fn browse_from_origin(&mut self, params: &Value, requested: &str, opened: u64, origin: address::Origin) -> CmdResult {
+        if !self.policy_user() {
+            return Err("only native UI dispatch supplies a fetched browse origin".into());
+        }
+        if self.opened != opened {
+            return Err("the project changed while the connection was being read; browse again".into());
+        }
+        let connection = super::found(self, params)?.clone();
+        let node = ps(params, "node").unwrap_or("");
+        let probe = self.run("connection.browse", &json!({"id":connection.id,"node":node,"probe":true}))?;
+        if probe.get("fetch").and_then(Value::as_str) != Some(requested) {
+            return Err("the connection changed while it was being read; browse again".into());
+        }
+        let ceiling =
+            if probe.get("fromDocument").and_then(Value::as_bool) == Some(true) { address::Reach::Public } else { address::Reach::Local };
+        let previous = self.browse_response.replace((connection.id, node.to_string(), origin.narrow_reach(ceiling)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run("connection.browse", params)));
+        self.browse_response = previous;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+}
+
+/// A node's provenance is runtime-only and belongs to this project and connection definition.
+fn node_origin(s: &Session, c: &Connection, node: &str) -> Option<address::Origin> {
+    if s.browse_origins.0 != s.opened {
+        return None;
+    }
+    let root = s.browse_origins.1.get(&(c.id.clone(), c.address.clone(), String::new()));
+    let origin = match s.browse_origins.1.get(&(c.id.clone(), c.address.clone(), node.to_string())) {
+        Some(origin) => origin.clone(),
+        None => root.map(|_| address::Origin::named(&c.address))?,
+    };
+    Some(match root {
+        Some(root) => origin.narrow_reach(root.reach()),
+        None => origin,
+    })
+}
+
+/// Retains only nodes actually admitted by a fetched or conservatively named document origin.
+/// Neither reach nor provenance is reconstructed from caller-supplied JSON fields.
+fn remember_node_origins(s: &mut Session, c: &Connection, children: &[Value], origin: &address::Origin, root: bool) -> Result<(), String> {
+    if c.address.len() > MAX_NODE || origin.url().len() > MAX_NODE {
+        return Err(format!("catalog source addresses exceed the {MAX_NODE}-byte provenance limit"));
+    }
+    if s.browse_origins.0 != s.opened {
+        s.browse_origins = (s.opened, Default::default());
+    }
+    let mut keys = Vec::new();
+    if root {
+        keys.push((c.id.clone(), c.address.clone(), String::new()));
+    }
+    for child in children {
+        if let Some(node) = ps(child, "node") {
+            let mut public = json!(node);
+            public_addresses(&mut public);
+            if let Some(node) = public.as_str() {
+                keys.push((c.id.clone(), c.address.clone(), node.to_string()));
+            }
+        }
+    }
+    let added = keys.iter().filter(|key| !s.browse_origins.1.contains_key(*key)).count();
+    if s.browse_origins.1.len().saturating_add(added) > 16_384 {
+        return Err("too many catalog nodes are open in this session; reopen the project to browse more".into());
+    }
+    for key in keys {
+        s.browse_origins.1.insert(key, origin.clone());
+    }
+    Ok(())
 }
 
 /// Browse candidates persist public addresses plus a connection id, not a live capability.
@@ -506,66 +612,128 @@ fn collections(bytes: &[u8]) -> Result<Found, String> {
 /// What a static catalog's document lists below it: its catalogs and collections (`child` links)
 /// and its items (`item` links), each a node read when it is opened (an item's file holds its
 /// assets).
-fn catalogs(bytes: &[u8], from: &str) -> Result<Found, String> {
-    let mut dropped = false;
+fn catalogs(s: &mut Session, bytes: &[u8], origin: &address::Origin) -> Result<Found, String> {
+    let mut dropped = 0usize;
+    let mut omitted = 0usize;
+    let mut skipped = 0usize;
+    let mut refused = 0usize;
     let mut children = Vec::new();
     for (prefix, what, list) in [
-        ("catalog", "catalog", stac::catalog::parse_children(bytes, from)?),
-        ("item", "item", stac::catalog::parse_item_links(bytes, from)?),
+        ("catalog", "catalog", stac::catalog::parse_children_noted(bytes, origin)?),
+        ("item", "item", stac::catalog::parse_item_links_noted(bytes, origin)?),
     ] {
-        for c in list {
+        refused += list.refused;
+        omitted += list.omitted;
+        skipped += list.skipped;
+        for c in list.links {
             let node = format!("{prefix}:{}", c.url);
             if node_ok(&node) {
                 children.push(json!({"key": node, "node": node, "name": c.title, "what": what}));
             } else {
-                dropped = true;
+                dropped += 1;
             }
         }
     }
+    if refused > 0 {
+        s.notify(format!("{refused} catalog links were refused by the document's network reach"), false);
+    }
+    if skipped > 0 {
+        s.notify(format!("{skipped} catalog links were left out because their addresses are missing, invalid or not HTTP(S)"), false);
+    }
+    omitted += children.len().saturating_sub(MAX_CHILDREN);
+    if omitted > 0 {
+        s.notify(format!("{omitted} catalog links were left out because the listing limit was reached"), false);
+    }
+    if dropped > 0 {
+        s.notify(
+            format!("{dropped} catalog links were left out because their node addresses are too long or contain control characters"),
+            false,
+        );
+    }
     let mut found = Found::new(children);
-    found.truncated |= dropped;
+    found.truncated |= dropped > 0 || refused > 0 || omitted > 0 || skipped > 0;
     Ok(found)
 }
 
-/// The assets of an item that can be added, each with the `stac.addAsset` that adds it.
-fn assets_of(item: &stac::Item) -> Vec<Value> {
-    item.assets
-        .iter()
-        .take(MAX_CHILDREN)
-        .filter_map(|a| {
-            let (key, href) = item.asset_href(Some(&a.key)).ok()?;
-            let mut params = json!({"asset": key, "name": format!("{} {key}", item.id)});
-            match &item.url {
-                Some(u) => params["url"] = json!(u),
-                None => params["item"] = stac::item_json_with(item, false),
-            }
-            Some(json!({
-                "key": format!("{}#{key}", item.url.as_deref().unwrap_or(&item.id)),
-                "name": if a.title.is_empty() { key.as_str() } else { a.title.as_str() },
-                "what": "asset",
-                "detail": a.media_type,
-                "href": href,
-                "add": {"command": "stac.addAsset", "params": params},
-            }))
-        })
-        .collect()
+#[derive(Default)]
+struct AssetListing {
+    children: Vec<Value>,
+    skipped: usize,
+}
+
+/// The usable assets, retaining a count of unsupported or refused entries.
+fn assets_of(item: &stac::Item) -> AssetListing {
+    let mut listing = AssetListing::default();
+    for a in item.assets.iter().take(MAX_CHILDREN) {
+        let Ok((key, href)) = item.asset_href(Some(&a.key)) else {
+            listing.skipped += 1;
+            continue;
+        };
+        let mut params = json!({"asset": key, "name": format!("{} {key}", item.id)});
+        match &item.url {
+            Some(u) => params["url"] = json!(u),
+            None => params["item"] = stac::item_json_with(item, false),
+        }
+        listing.children.push(json!({
+            "key": format!("{}#{key}", item.url.as_deref().unwrap_or(&item.id)),
+            "name": if a.title.is_empty() { key.as_str() } else { a.title.as_str() },
+            "what": "asset",
+            "detail": a.media_type,
+            "href": href,
+            "fromDocument": item.origin_reach == address::Reach::Public,
+            "add": {"command": "stac.addAsset", "params": params},
+        }));
+    }
+    listing
+}
+
+/// One counted notice per parsing-loss kind for this document, with a redacted source address.
+fn listing_notices(s: &mut Session, origin: &address::Origin, losses: stac::ParseLosses) {
+    let source = crate::sources::address_in_message(origin.url());
+    for (count, kind, reason) in [
+        (losses.skipped_items, "STAC items", "they were invalid"),
+        (losses.omitted_items, "STAC items", "the response limit was reached"),
+        (losses.skipped_assets, "STAC assets", "their addresses were missing, invalid, unsupported or refused"),
+        (losses.omitted_assets, "STAC assets", "the response limit was reached"),
+    ] {
+        if count > 0 {
+            s.notify(format!("{source}: {count} {kind} were left out because {reason}"), false);
+        }
+    }
 }
 
 /// A static catalog's item (its own file): its assets.
-fn item_file(bytes: &[u8], from: &str) -> Result<Found, String> {
-    Ok(Found::new(assets_of(&stac::parse_item(bytes, from)?)))
+fn item_file(s: &mut Session, bytes: &[u8], origin: &address::Origin) -> Result<Found, String> {
+    let stac::ParsedItem { item, mut losses } = stac::parse_item_noted(bytes, origin)?;
+    let listing = assets_of(&item);
+    losses.skipped_assets += listing.skipped;
+    listing_notices(s, origin, losses);
+    let mut found = Found::new(listing.children);
+    found.truncated |= !losses.is_empty();
+    Ok(found)
 }
 
 /// The items of a collection's search, each with the assets that can be added.
-fn items(bytes: &[u8], from: &str) -> Result<Found, String> {
-    let (list, next) = stac::parse_items(bytes, from)?;
-    let matched = stac::parse_matched(bytes);
-    let truncated = next.is_some() || matched.is_some_and(|m| m > list.len() as u64);
+fn items(s: &mut Session, bytes: &[u8], origin: &address::Origin) -> Result<Found, String> {
+    let stac::ItemListing { items: list, next, next_refused, matched, mut losses } = stac::parse_items_noted(bytes, origin)?;
     let children = list
         .iter()
         .take(MAX_CHILDREN)
-        .map(|item| json!({"key": format!("item:{}", item.url.as_deref().unwrap_or(&item.id)), "name": item.id, "what": "item", "detail": item.datetime, "children": assets_of(item)}))
+        .map(|parsed| {
+            let item = &parsed.item;
+            let listing = assets_of(item);
+            losses.skipped_assets += listing.skipped;
+            let mut child = json!({"key": format!("item:{}", item.url.as_deref().unwrap_or(&item.id)), "name": item.id, "what": "item", "detail": item.datetime, "children": listing.children});
+            if listing.skipped > 0 || !parsed.losses.is_empty() { child["truncated"] = json!(true); }
+            child
+        })
         .collect();
+    listing_notices(s, origin, losses);
+    if next_refused {
+        let source = crate::sources::address_in_message(origin.url());
+        s.notify(format!("{source}: 1 next-page link was refused by the document's network reach"), false);
+    }
+    let truncated = next.is_some() || next_refused || matched.is_some_and(|m| m > list.len() as u64) || !losses.is_empty();
     Ok(Found { children, truncated, matched })
 }
 
@@ -647,13 +815,20 @@ mod tests {
         assert_eq!(root.children[1]["name"], "tiger");
         for child in &root.children {
             let node = child["node"].as_str().unwrap();
-            let parsed =
-                super::level(&crate::connections::Connection { kind: "postgres".into(), name: "gis".into(), ..Default::default() }, node)
-                    .unwrap();
+            let parsed = super::level(
+                &crate::connections::Connection { kind: "postgres".into(), name: "gis".into(), ..Default::default() },
+                node,
+                None,
+            )
+            .unwrap();
             assert!(matches!(parsed, super::Level::DatabaseSchema { .. }));
             assert!(
-                super::level(&crate::connections::Connection { kind: "service".into(), name: "gis".into(), ..Default::default() }, node)
-                    .is_err()
+                super::level(
+                    &crate::connections::Connection { kind: "service".into(), name: "gis".into(), ..Default::default() },
+                    node,
+                    None
+                )
+                .is_err()
             );
         }
 
@@ -675,7 +850,7 @@ mod tests {
             assert!(super::node_ok(node), "generated schema node must pass command validation: {node:?}");
             for kind in ["postgres", "mysql", "sqlserver"] {
                 let connection = crate::connections::Connection { kind: kind.into(), ..Default::default() };
-                let super::Level::DatabaseSchema { schema } = super::level(&connection, node).unwrap() else {
+                let super::Level::DatabaseSchema { schema } = super::level(&connection, node, None).unwrap() else {
                     panic!("schema node must select a database schema");
                 };
                 assert_eq!(schema, name);
@@ -690,7 +865,7 @@ mod tests {
     fn invalid_encoded_schema_nodes_are_rejected() {
         let connection = crate::connections::Connection { kind: "postgres".into(), ..Default::default() };
         for node in ["schema:", "schema:!", "schema:_w", "schema:YQ=="] {
-            assert!(super::level(&connection, node).is_err(), "{node}");
+            assert!(super::level(&connection, node, None).is_err(), "{node}");
         }
     }
 
@@ -701,5 +876,273 @@ mod tests {
         assert_eq!(tiger.children.len(), 2);
         assert!(!tiger.truncated);
         assert_eq!(tiger.matched, None);
+    }
+    #[test]
+    fn catalog_browsing_reports_refused_children_and_items_and_keeps_clean_input_quiet() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let from = "https://catalog.corp.example/catalog.json";
+        for (local, lossy) in [(false, false), (false, true), (true, true)] {
+            let mut links = vec![json!({"rel":"child","href":"https://public.example/child.json"})];
+            if lossy {
+                links.extend([
+                    json!({"rel":"child","href":"http://10.0.0.5/catalog.json"}),
+                    json!({"rel":"item","href":"http://10.0.0.5/item.json"}),
+                    json!({"rel":"item","href":"http://10.0.0.5/item.json"}),
+                ]);
+            }
+            let origin = if local { Origin::connected(from, "10.0.0.5".parse().unwrap()).unwrap() } else { Origin::named(from) };
+            let text = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let mark = session.notice_mark();
+            let found = super::catalogs(&mut session, text.as_bytes(), &origin).unwrap();
+            let refused = lossy && !local;
+            assert_eq!(found.truncated, refused);
+            assert_eq!(found.children.len(), if lossy && local { 3 } else { 1 });
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(refused));
+            if refused {
+                assert!(notices[0].text.contains("2 catalog links were refused"));
+            }
+        }
+    }
+    #[test]
+    fn partial_catalog_browsing_keeps_usable_nodes_and_reports_both_listing_limits() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let origin = Origin::named("https://public.example/catalog.json");
+        for count in [super::MAX_CHILDREN, super::MAX_CHILDREN + 1, 2501] {
+            let mut links: Vec<Value> =
+                (0..count).map(|i| json!({"rel":"child","href":format!("https://public.example/{i}.json")})).collect();
+            links.extend([links[0].clone(), links[0].clone()]);
+            let text = json!({"type":"Catalog","id":"test","links":links}).to_string();
+            let mark = session.notice_mark();
+            let found = super::catalogs(&mut session, text.as_bytes(), &origin).unwrap();
+            let omitted = count - super::MAX_CHILDREN;
+            assert_eq!(found.children.len(), super::MAX_CHILDREN);
+            assert_eq!(found.truncated, omitted > 0);
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(omitted > 0));
+            if omitted > 0 {
+                assert!(notices[0].text.contains(&format!("{omitted} catalog links were left out")));
+            }
+        }
+    }
+    #[test]
+    fn admitted_intranet_nodes_keep_their_origin_and_cannot_be_granted_by_json() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let saved = session.run("connection.new", &json!({"kind":"stac","address":"https://catalog.corp.example/catalog.json"})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let body = json!({"type":"Catalog","id":"test","links":[
+            {"rel":"child","href":"http://10.0.0.5/catalog.json"},
+            {"rel":"item","href":"http://10.0.0.5/item.json"}
+        ]})
+        .to_string();
+        let fake = json!({"id":connection.id,"node":"catalog:http://10.0.0.5/catalog.json","probe":true,"origin":{"reach":"Local"},"fromDocument":false});
+        assert!(super::browse(&mut session, &fake).is_err());
+        let origin = Origin::connected(&connection.address, "10.0.0.5".parse().unwrap()).unwrap();
+        let found = super::catalogs(&mut session, body.as_bytes(), &origin).unwrap();
+        super::remember_node_origins(&mut session, &connection, &found.children, &origin, true).unwrap();
+        for child in &found.children {
+            let node = child["node"].as_str().unwrap();
+            let probe = super::browse(&mut session, &json!({"id":connection.id,"node":node,"probe":true})).unwrap();
+            assert_eq!(probe["fetch"], node.split_once(':').unwrap().1);
+            let mut changed = connection.clone();
+            changed.address = "https://another.example/catalog.json".into();
+            assert!(super::node_origin(&session, &changed, node).is_none());
+        }
+        // A later public root narrows older private node grants even when it no longer lists them.
+        let public = Origin::connected(&connection.address, "93.184.216.34".parse().unwrap()).unwrap();
+        super::remember_node_origins(&mut session, &connection, &[], &public, true).unwrap();
+        assert!(super::browse(&mut session, &fake).is_err());
+        super::remember_node_origins(&mut session, &connection, &found.children, &origin, true).unwrap();
+        session.opened += 1;
+        assert!(super::browse(&mut session, &fake).is_err(), "another project cannot inherit a node's local allowance");
+    }
+
+    #[test]
+    fn invalid_catalog_children_are_counted_in_connection_notices() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let origin = Origin::named("https://public.example/catalog.json");
+        let body = json!({"type":"Catalog","id":"test","links":[
+            {"rel":"child","href":"ftp://files.example/catalog.json"}, {"rel":"item","href":""}
+        ]})
+        .to_string();
+        let mark = session.notice_mark();
+        let found = super::catalogs(&mut session, body.as_bytes(), &origin).unwrap();
+        assert!(found.children.is_empty());
+        assert!(found.truncated);
+        let notices = session.notices_since(mark);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].text.contains("2 catalog links were left out because their addresses"));
+    }
+
+    #[test]
+    fn ui_browse_origin_is_scoped_to_the_current_request_and_project() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let mut session = crate::Session::new(crate::Project::default());
+        let requested = "https://ui-origin.corp.example/catalog.json";
+        let saved = session.run("connection.new", &json!({"kind":"stac","address":requested})).unwrap();
+        let id = saved["id"].as_str().unwrap();
+        let body = json!({"type":"Catalog","id":"test","links":[{"rel":"child","href":"http://10.0.0.7/catalog.json"}]}).to_string();
+        let params = json!({"id":id,"answer":body,"origin":{"reach":"Local"}});
+        let raw = session.run("connection.browse", &params).unwrap();
+        assert!(raw["children"].as_array().unwrap().is_empty());
+        let origin = Origin::connected(requested, "10.0.0.7".parse().unwrap()).unwrap();
+        let opened = session.opened;
+        let found = session.browse_from_origin(&params, requested, opened, origin.clone()).unwrap();
+        assert_eq!(found["children"][0]["node"], "catalog:http://10.0.0.7/catalog.json");
+        assert!(session.browse_response.is_none());
+        assert!(session.browse_from_origin(&params, "https://changed.example/catalog.json", opened, origin.clone()).is_err());
+        session.opened += 1;
+        assert!(session.browse_from_origin(&params, requested, opened, origin.clone()).is_err());
+        let opened = session.opened;
+        // Observed Public redirects narrow a locally named entry point as well.
+        let public = Origin::connected("https://public.example/catalog.json", "93.184.216.34".parse().unwrap()).unwrap();
+        let found = session.browse_from_origin(&params, requested, opened, public).unwrap();
+        assert!(found["children"].as_array().unwrap().is_empty());
+        assert!(session.browse_response.is_none());
+    }
+
+    #[test]
+    fn listed_assets_carry_the_observed_items_public_download_ceiling() {
+        use crate::render::rustgis_tiles::address::Origin;
+        let requested = "https://catalog.corp.example/item.json";
+        let mut session = crate::Session::new(crate::Project::default());
+        for (peer, href, public) in
+            [("10.0.0.5", "http://10.0.0.5/scene.geojson", false), ("93.184.216.34", "https://public.example/scene.geojson", true)]
+        {
+            let body = json!({"type":"Feature","id":"scene","geometry":null,"properties":{},
+                "assets":{"data":{"href":href,"roles":["data"]}},"links":[]})
+            .to_string();
+            let origin = Origin::connected(requested, peer.parse().unwrap()).unwrap();
+            let found = super::item_file(&mut session, body.as_bytes(), &origin).unwrap();
+            assert_eq!(found.children[0]["href"], href);
+            assert_eq!(found.children[0]["fromDocument"], public);
+        }
+    }
+
+    #[test]
+    fn collection_search_assets_keep_the_responses_observed_origin() {
+        let mut session = crate::Session::new(crate::Project::default());
+        let requested = "https://search.corp.example/search";
+        let body = json!({"type":"FeatureCollection","features":[{
+            "type":"Feature","id":"scene","geometry":null,"properties":{},
+            "assets":{"data":{"href":"http://10.0.0.5/scene.geojson","roles":["data"]}},"links":[]
+        }]})
+        .to_string();
+        let local = super::address::Origin::connected(requested, "10.0.0.5".parse().unwrap()).unwrap();
+        let found = super::items(&mut session, body.as_bytes(), &local).unwrap();
+        assert_eq!(found.children[0]["children"][0]["href"], "http://10.0.0.5/scene.geojson");
+        assert_eq!(found.children[0]["children"][0]["fromDocument"], false);
+        let public = super::address::Origin::connected(requested, "93.184.216.34".parse().unwrap()).unwrap();
+        let found = super::items(&mut session, body.as_bytes(), &public).unwrap();
+        assert!(found.children[0]["children"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unusable_assets_are_counted_once_per_listing_and_clean_assets_stay_quiet() {
+        let mut session = crate::Session::new(crate::Project::default());
+        let origin = super::address::Origin::named("https://public.example/item.json");
+        for bad in [None, Some("http://10.0.0.5/private.geojson"), Some("ftp://files.example/scene.geojson")] {
+            let mut item = json!({"type":"Feature","id":"scene","geometry":null,"properties":{},"links":[],
+                "assets":{"data":{"href":"https://public.example/scene.geojson","roles":["data"]}}});
+            if let Some(href) = bad {
+                item["assets"]["bad"] = json!({"href":href,"roles":["data"]});
+            }
+            let mark = session.notice_mark();
+            let found = super::item_file(&mut session, item.to_string().as_bytes(), &origin).unwrap();
+            assert_eq!(found.children.len(), 1);
+            assert_eq!(found.truncated, bad.is_some());
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(bad.is_some()));
+            if bad.is_some() {
+                assert!(notices[0].text.contains("1 STAC assets were left out"));
+                assert!(notices[0].text.contains("public.example/item.json"));
+            }
+            let mut second = item.clone();
+            second["id"] = json!("scene2");
+            let body = json!({"type":"FeatureCollection","features":[item,second]}).to_string();
+            let mark = session.notice_mark();
+            let found = super::items(&mut session, body.as_bytes(), &origin).unwrap();
+            assert_eq!(found.truncated, bad.is_some());
+            for child in &found.children {
+                assert_eq!(child["children"].as_array().unwrap().len(), 1);
+                assert_eq!(child.get("truncated").and_then(Value::as_bool).unwrap_or(false), bad.is_some());
+            }
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(bad.is_some()));
+            if bad.is_some() {
+                assert!(notices[0].text.contains("2 STAC assets were left out"));
+            }
+        }
+    }
+
+    #[test]
+    fn browse_reports_parser_caps_and_invalid_entries_and_clean_lists_stay_quiet() {
+        let mut session = crate::Session::new(crate::Project::default());
+        let origin = super::address::Origin::named("https://public.example/search");
+        let item = |id: usize| json!({"type":"Feature","id":id.to_string(),"properties":{},"assets":{}});
+        for (count, omitted) in [(3, 0), (201, 1)] {
+            let body = json!({"features":(0..count).map(item).collect::<Vec<_>>()}).to_string();
+            let mark = session.notice_mark();
+            let found = super::items(&mut session, body.as_bytes(), &origin).unwrap();
+            assert_eq!(found.children.len(), count.min(200));
+            assert_eq!(found.truncated, omitted > 0);
+            let notices = session.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(omitted > 0));
+            if omitted > 0 {
+                assert!(notices[0].text.contains("1 STAC items were left out because the response limit"));
+            }
+        }
+        let body = json!({"features":[item(0),{"type":"Feature"}]}).to_string();
+        let mark = session.notice_mark();
+        let found = super::items(&mut session, body.as_bytes(), &origin).unwrap();
+        assert_eq!(found.children.len(), 1);
+        assert!(found.truncated);
+        assert!(session.notices_since(mark)[0].text.contains("1 STAC items were left out because they were invalid"));
+
+        let mut feature = item(0);
+        for i in 0..101 {
+            feature["assets"][format!("a{i:03}")] = json!({"href":format!("https://public.example/{i}.geojson")});
+        }
+        let mark = session.notice_mark();
+        let found = super::item_file(&mut session, feature.to_string().as_bytes(), &origin).unwrap();
+        assert_eq!(found.children.len(), 100);
+        assert!(found.truncated);
+        let notices = session.notices_since(mark);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].text.contains("1 STAC assets were left out because the response limit"));
+
+        let body = json!({"features":[item(0)],"links":[{"rel":"next","href":"http://10.0.0.5/next"}]}).to_string();
+        let mark = session.notice_mark();
+        assert!(super::items(&mut session, body.as_bytes(), &origin).unwrap().truncated);
+        assert!(session.notices_since(mark)[0].text.contains("1 next-page link was refused"));
+    }
+
+    #[test]
+    fn public_catalog_nodes_keep_a_public_transport_ceiling_after_a_local_entrypoint() {
+        use crate::render::rustgis_tiles::address::{Origin, Reach};
+        let mut session = crate::Session::new(crate::Project::default());
+        let saved = session.run("connection.new", &json!({"kind":"stac","address":"http://localhost/catalog.json"})).unwrap();
+        let connection = session.connections.connections.iter().find(|c| c.id == saved["id"].as_str().unwrap()).unwrap().clone();
+        let url = "https://public-node-ceiling.example/child.json";
+        let body = json!({"type":"Catalog","id":"test","links":[{"rel":"child","href":url}]}).to_string();
+        let origin = Origin::connected("https://public.example/final.json", "93.184.216.34".parse().unwrap()).unwrap();
+        let found = super::catalogs(&mut session, body.as_bytes(), &origin).unwrap();
+        super::remember_node_origins(&mut session, &connection, &found.children, &origin, true).unwrap();
+        let probe = super::browse(&mut session, &json!({"id":connection.id,"node":found.children[0]["node"],"probe":true})).unwrap();
+        assert!(
+            super::browse(&mut session, &json!({"id":connection.id,"node":"catalog:http://10.0.0.8/private.json","probe":true})).is_err()
+        );
+        let unlisted = super::browse(
+            &mut session,
+            &json!({"id":connection.id,"node":"catalog:https://unlisted-public-node.example/catalog.json","probe":true}),
+        )
+        .unwrap();
+        assert_eq!(unlisted["fromDocument"], true);
+        assert_eq!(probe["fromDocument"], true);
+        assert_eq!(crate::render::rustgis_tiles::cache::ceiling_for(url), Reach::Public);
     }
 }
