@@ -464,6 +464,35 @@ pub fn ring_area_is_ambiguous(ring: &[Coord]) -> bool {
         || (full && beyond(authalic_ring_area_m2(ring), wgs84_surface))
 }
 
+/// How many times a lon/lat ring that never reaches a pole winds around one: each step of
+/// longitude taken the short way round (within ±180°; an edge of exactly a whole turn as [`ring_lon_steps`]
+/// reads it), summed, in whole turns. A ring cut at ±180° and closed along the pole, the form
+/// RustGIS takes for a polygon around a pole, reaches the pole and gives 0; so does any ring whose
+/// steps cancel. A loop such as a parallel written all the way round (`[0, 80]`, `[30, 80]`, …,
+/// `[330, 80]`) gives ±1, and the analysis plane, which reads longitude and latitude as x and y,
+/// sees it as a line with no area. 0 for a ring with fewer than three vertices or a coordinate
+/// that isn't a longitude and latitude.
+pub fn ring_pole_turns(ring: &[Coord]) -> i64 {
+    if ring.len() < 3 || !ring.iter().all(|c| c.is_finite() && c.y.abs() <= 90.0) || ring.iter().any(|c| at_pole(c.y)) {
+        return 0;
+    }
+    let short = |d: f64| if d.abs() > 180.0 { wrap_lon(d) } else { d };
+    let edges = || ring.iter().zip(ring.iter().cycle().skip(1));
+    // Every step goes the short way round, however far it was written; only an edge of exactly a
+    // whole turn may be one (a seam at ±180° is not), which [`ring_lon_steps`] decides. Most rings
+    // have none, and are summed without building a list.
+    let whole = |d: f64| (d.abs() - 360.0).abs() <= NEAR_DEG;
+    let total: f64 = if edges().any(|(a, b)| whole(b.x - a.x)) {
+        let read = ring_lon_steps(ring);
+        edges().enumerate().map(|(i, (a, b))| if whole(b.x - a.x) { read.get(i).map_or(0.0, |&(d, _)| d) } else { short(b.x - a.x) }).sum()
+    } else {
+        edges().map(|(a, b)| short(b.x - a.x)).sum()
+    };
+    let turns = (total / 360.0).round();
+    // A ring's steps are finite, so its turns are too; a loop winds at most once per vertex.
+    if turns.is_finite() && turns.abs() <= ring.len() as f64 { turns as i64 } else { 0 }
+}
+
 /// The perimeter (metres) and the unsigned enclosed area (square metres) of a lon/lat ring on the
 /// WGS 84 ellipsoid. The ring is closed along a geodesic to its first point, whatever its winding,
 /// so the perimeter and area come from one pass over the ring, not two. A ring gives the
@@ -1784,5 +1813,41 @@ mod tests {
         assert_eq!(e, Extent::new(-1.0, 2.0, 1.0, 5.0));
         assert!(e.intersects(&Extent::new(0.0, 0.0, 3.0, 3.0)));
         assert!(!e.intersects(&Extent::EMPTY));
+    }
+
+    /// A ring looping around a pole without being cut at ±180° (#1354) winds once around it, each
+    /// way, from 0° or from -180°, around either pole; written twice round it winds twice. The cut
+    /// form, a ring through a pole, an ordinary ring and one with a coordinate missing don't.
+    #[test]
+    fn rings_looping_around_a_pole_count_their_turns() {
+        let parallel = |lat: f64, from: f64, step: f64, n: usize| -> Vec<Coord> {
+            let mut r: Vec<Coord> = (0..n).map(|i| Coord::new(from + step * i as f64, lat)).collect();
+            r.push(Coord::new(from, lat));
+            r
+        };
+        assert_eq!(ring_pole_turns(&parallel(80.0, 0.0, 30.0, 12)), 1, "the issue's 12-point loop");
+        assert_eq!(ring_pole_turns(&parallel(80.0, 0.0, -30.0, 12)), -1, "the other way round");
+        assert_eq!(ring_pole_turns(&parallel(80.0, -180.0, 30.0, 12)), 1, "from -180°");
+        assert_eq!(ring_pole_turns(&parallel(-75.0, 0.0, 45.0, 8)), 1, "around the south pole");
+        assert_eq!(ring_pole_turns(&parallel(80.0, 0.0, 30.0, 24)), 2, "twice round");
+        // Longitudes written past ±180° (0 to 330 and on) loop the same way.
+        assert_eq!(ring_pole_turns(&parallel(60.0, 170.0, 40.0, 9)), 1);
+        // The cut form RustGIS takes: along the cap's edge from -180° to 180°, then along the pole.
+        let cut = [(-180.0, 80.0), (0.0, 80.0), (180.0, 80.0), (180.0, 90.0), (-180.0, 90.0), (-180.0, 80.0)];
+        assert_eq!(ring_pole_turns(&cut.map(|(x, y)| Coord::new(x, y))), 0);
+        // The cut form without the pole vertices: a seam at ±180°, no loop.
+        let seam = [(-180.0, 80.0), (180.0, 80.0), (180.0, 85.0), (-180.0, 85.0), (-180.0, 80.0)];
+        assert_eq!(ring_pole_turns(&seam.map(|(x, y)| Coord::new(x, y))), 0);
+        let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)];
+        assert_eq!(ring_pole_turns(&square.map(|(x, y)| Coord::new(x, y))), 0);
+        // A cell across the antimeridian, written unsplit: steps cancel.
+        let across = [(170.0, 0.0), (-170.0, 0.0), (-170.0, 10.0), (170.0, 10.0), (170.0, 0.0)];
+        assert_eq!(ring_pole_turns(&across.map(|(x, y)| Coord::new(x, y))), 0);
+        let mut missing = parallel(80.0, 0.0, 30.0, 12);
+        if let Some(c) = missing.get_mut(3) {
+            c.x = f64::NAN;
+        }
+        assert_eq!(ring_pole_turns(&missing), 0, "a coordinate missing");
+        assert_eq!(ring_pole_turns(&[Coord::new(0.0, 80.0), Coord::new(180.0, 80.0)]), 0, "too short");
     }
 }

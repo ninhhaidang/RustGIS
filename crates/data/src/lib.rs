@@ -58,7 +58,7 @@ pub mod xml;
 pub mod zip;
 
 pub use date::{Date, DateTime};
-pub use geometry::{Geometry, GeometryType, Measure, VertexId, ambiguous_area_message};
+pub use geometry::{Geometry, GeometryType, Measure, VertexId, ambiguous_area_message, pole_loop_count, pole_loop_message};
 pub use rustgis_geom::{Coord, Extent};
 pub use value::{Field, FieldType, Value};
 

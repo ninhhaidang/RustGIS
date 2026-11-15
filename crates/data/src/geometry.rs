@@ -23,6 +23,46 @@ pub fn ambiguous_area_message<'a>(geometries: impl Iterator<Item = &'a Geometry>
     })
 }
 
+/// A counted explanation when features of `layers` have `rings` rings, in `features` features, that loop around
+/// a pole without being cut at ±180° ([`rustgis_geom::ring_pole_turns`]): taken the short way
+/// round in longitude, such a ring goes around the pole, but longitude and latitude read as x and
+/// y, as the analysis plane reads them, give another shape (a ring along one parallel, a line).
+pub fn pole_loop_message(layers: &[&str], rings: usize, features: usize) -> Option<String> {
+    if rings == 0 {
+        return None;
+    }
+    let names: Vec<String> = layers.iter().map(|l| format!("'{l}'")).collect();
+    let names = match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    // Subject and object forms: "it goes … cut it", "they go … cut them".
+    let (rings_text, verb, they, them, encloses) = if rings == 1 {
+        ("1 ring".to_string(), "goes", "it", "it", "encloses")
+    } else {
+        (format!("{rings} rings"), "go", "they", "them", "enclose")
+    };
+    let features_text = if features == 1 { "1 feature".to_string() } else { format!("{features} features") };
+    Some(format!(
+        "{names}: {rings_text} in {features_text} {verb} around a pole without reaching it, each step in longitude taken the short way; the analysis reads longitude and latitude as x and y, so it doesn't see the area {they} {encloses} (along one parallel, none at all); if {they} {verb} around the pole on purpose, cut {them} at ±180° and close {them} along the pole"
+    ))
+}
+
+/// The rings that loop around a pole ([`Geometry::pole_loop_rings`]) in these features, and the
+/// features that have any: what [`pole_loop_message`] says.
+pub fn pole_loop_count<'a>(geometries: impl Iterator<Item = &'a Geometry>) -> (usize, usize) {
+    let (mut rings, mut features) = (0usize, 0usize);
+    for geometry in geometries {
+        let count = geometry.pole_loop_rings();
+        if count > 0 {
+            features += 1;
+            rings += count;
+        }
+    }
+    (rings, features)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GeometryType {
@@ -140,6 +180,15 @@ impl Geometry {
     pub fn ambiguous_area_rings(&self) -> usize {
         match self {
             Geometry::Polygon(polys) => polys.iter().flatten().filter(|r| rustgis_geom::ring_area_is_ambiguous(r)).count(),
+            _ => 0,
+        }
+    }
+
+    /// Rings, holes included, that loop around a pole without being cut at ±180°
+    /// ([`rustgis_geom::ring_pole_turns`]).
+    pub fn pole_loop_rings(&self) -> usize {
+        match self {
+            Geometry::Polygon(polys) => polys.iter().flatten().filter(|r| rustgis_geom::ring_pole_turns(r) != 0).count(),
             _ => 0,
         }
     }

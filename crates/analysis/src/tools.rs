@@ -5966,12 +5966,13 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     }
     let (zones_shapeless, classes_shapeless) = (shapeless(zones, &zone_rows), shapeless(classes, &class_rows));
     // Features with a ring that jumps across the antimeridian unsplit: the overlay, like the map,
-    // takes such a ring the long way round, while `area_km2` takes its ground shape.
+    // takes such a ring the long way round, while `area_km2` takes its ground shape. A ring that
+    // loops around a pole jumps too, but is no crossing: it has a notice of its own (#1354).
     let unsplit = |ds: &Dataset, rs: &[usize]| {
         let jumps = |g: &Geometry| {
             has_shape(g)
                 && matches!(g, Geometry::Polygon(polys) if polys.iter().flatten().any(|r| {
-                    r.iter().zip(r.iter().cycle().skip(1)).any(|(a, b)| (b.x - a.x).abs() > 180.0)
+                    r.iter().zip(r.iter().cycle().skip(1)).any(|(a, b)| (b.x - a.x).abs() > 180.0) && rustgis_geom::ring_pole_turns(r) == 0
                 }))
         };
         rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(jumps)).count()
@@ -7770,6 +7771,128 @@ mod tests {
             Output::Layer(d) | Output::Table(d) | Output::Update { dataset: d, .. } => d,
             Output::Selection { .. } | Output::Layers(_) | Output::File { .. } => panic!("expected a dataset"),
         }
+    }
+
+    /// A polygon looping around a pole without being cut at ±180° (#1354): the tools that read
+    /// areas in the analysis plane don't see the area it goes around, and now say so, once per
+    /// layer with a count, instead of dropping it without a word. Cut at ±180° and closed along
+    /// the pole, the same cap says nothing; tools that don't read areas in the plane say nothing.
+    #[test]
+    fn a_polygon_looping_around_a_pole_is_said_not_dropped() {
+        let ring = |pts: &[(f64, f64)]| Geometry::Polygon(vec![vec![pts.iter().map(|&(x, y)| Coord::new(x, y)).collect()]]);
+        let lp: Vec<(f64, f64)> = (0..=12).map(|i| (f64::from(i % 12) * 30.0, 80.0)).collect();
+        let cut = [(-180.0, 80.0), (0.0, 80.0), (180.0, 80.0), (180.0, 90.0), (-180.0, 90.0), (-180.0, 80.0)];
+        let about = |t: &str| t.contains("around a pole without reaching it");
+        let run_with_cap = |cap: Geometry| {
+            let mut caps = Dataset::new("loop", GeometryType::Polygon, vec![Field::new("v", FieldType::Double)]);
+            caps.push(Some(cap), vec![Value::Float(1.0)]);
+            let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+            pts.push(Some(Geometry::Point(Coord::new(45.0, 85.0))), vec![Value::Float(1.0)]);
+            let m = Map(HashMap::from([("loop".to_string(), caps), ("pts".to_string(), pts)]));
+            let said = |r: &ToolResult| r.messages.iter().filter(|t| about(t)).cloned().collect::<Vec<_>>();
+            let sj = crate::run("spatialJoin", &m, &serde_json::json!({"target": "pts", "join": "loop"})).unwrap();
+            // Clip refuses a mask with no area: the loop is said in its reason, after one period.
+            let clip = match crate::run("clip", &m, &serde_json::json!({"input": "pts", "clip": "loop"})) {
+                Ok(r) => said(&r),
+                Err(e) => {
+                    assert!(!e.contains(".."), "{e}");
+                    e.split(". ").filter(|t| about(t)).map(str::to_string).collect()
+                }
+            };
+            let ftp = crate::run("featureToPoint", &m, &serde_json::json!({"input": "loop"})).unwrap();
+            let dissolve = crate::run("dissolve", &m, &serde_json::json!({"input": "loop"})).unwrap();
+            // Statistics read attributes only: nothing to say.
+            let stats = crate::run("summaryStatistics", &m, &serde_json::json!({"input": "loop", "field": "v"})).unwrap();
+            assert!(said(&stats).is_empty(), "{:?}", stats.messages);
+            let buffer = crate::run("buffer", &m, &serde_json::json!({"input": "loop", "distance": 10})).unwrap();
+            [said(&sj), clip, said(&ftp), said(&dissolve), said(&buffer)]
+        };
+        let note = "'loop': 1 ring in 1 feature goes around a pole without reaching it, each step in longitude taken the short way; the analysis reads longitude and latitude as x and y, so it doesn't see the area it encloses (along one parallel, none at all); if it goes around the pole on purpose, cut it at ±180° and close it along the pole";
+        for said in run_with_cap(ring(&lp)) {
+            assert_eq!(said, [note]);
+        }
+        for said in run_with_cap(ring(&cut)) {
+            assert!(said.is_empty(), "{said:?}");
+        }
+        // The same layer named twice, whatever the case of its name, is said once.
+        let mut caps = Dataset::new("loop", GeometryType::Polygon, vec![]);
+        caps.push(Some(ring(&lp)), vec![]);
+        caps.push(Some(ring(&lp)), vec![]);
+        caps.push(Some(sq(0.0, 0.0, 1.0)), vec![]);
+        struct Ci(HashMap<String, Dataset>, Vec<usize>);
+        impl Inputs for Ci {
+            fn dataset(&self, layer: &str) -> Option<&Dataset> {
+                self.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(layer)).map(|(_, d)| d)
+            }
+            fn selection(&self, _: &str) -> &[usize] {
+                &self.1
+            }
+        }
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+        pts.push(Some(Geometry::Point(Coord::new(0.5, 0.5))), vec![]);
+        let all = Ci(HashMap::from([("loop".to_string(), caps.clone()), ("pts".to_string(), pts.clone())]), vec![]);
+        let r = crate::run("spatialJoin", &all, &serde_json::json!({"target": "Loop", "join": "loop"})).unwrap();
+        let said: Vec<&String> = r.messages.iter().filter(|t| about(t)).collect();
+        assert_eq!(
+            said,
+            [
+                "'loop': 2 rings in 2 features go around a pole without reaching it, each step in longitude taken the short way; the analysis reads longitude and latitude as x and y, so it doesn't see the area they enclose (along one parallel, none at all); if they go around the pole on purpose, cut them at ±180° and close them along the pole"
+            ]
+        );
+        // Two layers with loops: one notice naming both, with their counts together.
+        let mut more = caps.clone();
+        more.name = "more".into();
+        let two = Ci(HashMap::from([("loop".to_string(), caps.clone()), ("more".to_string(), more)]), vec![]);
+        let r = crate::run("union", &two, &serde_json::json!({"input": "loop", "overlay": "more"})).unwrap();
+        let said: Vec<&String> = r.messages.iter().filter(|t| about(t)).collect();
+        assert_eq!(said.len(), 1, "{:?}", r.messages);
+        assert!(said[0].starts_with("'loop' and 'more': 4 rings in 4 features go around"), "{said:?}");
+        // A row selected twice is read, and counted, once.
+        let twice = Ci(HashMap::from([("loop".to_string(), caps.clone())]), vec![0, 0]);
+        let r = crate::run("featureToPoint", &twice, &serde_json::json!({"input": "loop"})).unwrap();
+        assert!(r.messages.iter().any(|t| about(t) && t.contains("1 ring in 1 feature")), "{:?}", r.messages);
+        // Clip's refusal names the layer as stored: the note joins it however the name was typed.
+        let only_loops = {
+            let mut d = Dataset::new("Loop", GeometryType::Polygon, vec![]);
+            d.push(Some(ring(&lp)), vec![]);
+            d
+        };
+        let typed = Ci(HashMap::from([("Loop".to_string(), only_loops), ("pts".to_string(), pts.clone())]), vec![]);
+        let e = crate::run("clip", &typed, &serde_json::json!({"input": "pts", "clip": "LOOP"})).unwrap_err();
+        assert!(e.contains("'Loop': 1 ring in 1 feature goes around a pole"), "{e}");
+        // Only the selected square: a tool reading the selection says nothing; Count Points, which
+        // reads every polygon whatever is selected, says what it read.
+        let third = Ci(HashMap::from([("loop".to_string(), caps.clone()), ("pts".to_string(), pts)]), vec![2]);
+        let r = crate::run("featureToPoint", &third, &serde_json::json!({"input": "loop"})).unwrap();
+        assert!(!r.messages.iter().any(|t| about(t)), "{:?}", r.messages);
+        let r = crate::run("countPoints", &third, &serde_json::json!({"polygons": "loop", "points": "pts"})).unwrap();
+        assert!(r.messages.iter().any(|t| about(t) && t.contains("2 rings")), "{:?}", r.messages);
+        // An error that doesn't name the layer with loops is left as it was, even one about an area.
+        let e = crate::run("spatialJoin", &all, &serde_json::json!({"target": "pts", "join": "loop", "match": "Nowhere"})).unwrap_err();
+        assert!(!about(&e), "{e}");
+        let e = crate::run("spatialJoin", &all, &serde_json::json!({"target": "study_area", "join": "loop"})).unwrap_err();
+        assert!(!about(&e), "{e}");
+        // A loop layer named `area` and a field error naming 'area': not a refusal of no area.
+        let mut area = caps.clone();
+        area.name = "area".into();
+        let named = Ci(HashMap::from([("area".to_string(), area)]), vec![]);
+        let e = crate::run("dissolve", &named, &serde_json::json!({"input": "area", "field": "area"})).unwrap_err();
+        assert!(!about(&e), "{e}");
+        // One layer read through two names with different selections: every row read through
+        // either is counted, once. Spatial Join reads the square (row 2) as target and a loop
+        // (row 1) as join.
+        struct ByName(HashMap<String, Dataset>);
+        impl Inputs for ByName {
+            fn dataset(&self, layer: &str) -> Option<&Dataset> {
+                self.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(layer)).map(|(_, d)| d)
+            }
+            fn selection(&self, layer: &str) -> &[usize] {
+                if layer == "Loop" { &[2] } else { &[1] }
+            }
+        }
+        let both = ByName(HashMap::from([("loop".to_string(), caps.clone())]));
+        let r = crate::run("spatialJoin", &both, &serde_json::json!({"target": "Loop", "join": "loop"})).unwrap();
+        assert!(r.messages.iter().any(|t| about(t) && t.contains("1 ring in 1 feature")), "{:?}", r.messages);
     }
 
     #[test]

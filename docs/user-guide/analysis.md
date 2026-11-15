@@ -231,7 +231,11 @@ where that map shows it: about 48 km at 84.5°N for an edge from (0°, 80°N) to
 pole is a line in these coordinates, not a point, so Minimum Bounding Geometry of points spread
 around a pole spans their longitudes (a flat polygon with no area, for points on one parallel,
 and the tool says how many hulls have no area), not the cap they
-enclose on the ground. The globe draws a long edge along the great circle between its ends, so near
+enclose on the ground. For the same reason a polygon whose ring goes around a pole without reaching
+it (written all the way round a parallel, say, rather than cut at ±180° and closed along the pole)
+is another shape in these coordinates, a line along that parallel; the overlays, joins, containment,
+zone, buffer and distance tools say how many such rings they read, and in which layers, and leave
+the data as it is. The globe draws a long edge along the great circle between its ends, so near
 a pole it shows a little poleward of where the tools take it: about 850 m at the middle of a 10°
 edge along 88°N (as everywhere, the tools take an edge as straight on the map, not on the globe).
 Beyond 85.05°, the dangle check measures line ends about their pole (on WGS 84's curvature there,

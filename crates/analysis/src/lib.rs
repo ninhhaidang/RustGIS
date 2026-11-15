@@ -588,12 +588,122 @@ pub fn run(id: &str, inputs: &dyn Inputs, params: &Value) -> Result<ToolResult, 
     // A bug in a tool must not take the app down.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         validate_pole_inputs(spec, inputs, &p)?;
-        match source_of(spec) {
+        let result = match source_of(spec) {
             Some((_, runner)) => runner(spec, inputs, &p),
             None => (spec.run)(inputs, &p),
-        }
+        };
+        with_pole_loop_notes(result, spec, inputs, &p)
     }))
     .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", spec.name)))
+}
+
+/// A tool's result with [`pole_loop_note`] added: to its messages, or to a refusal of polygons
+/// with no area (Clip's `none of the 1 feature(s) of 'loop' covers anything: a polygon with no
+/// area`) that names a layer with such rings, which they may be the reason for; then only those
+/// layers are read. Another error (`no layer named 'study_area'`, `no field named 'area'`) is left
+/// as it is.
+fn with_pole_loop_notes(result: Result<ToolResult, String>, spec: &ToolSpec, inputs: &dyn Inputs, p: &Value) -> Result<ToolResult, String> {
+    match result {
+        Ok(mut r) => {
+            r.messages.extend(pole_loop_note(spec, inputs, p, |_| true));
+            Ok(r)
+        }
+        // The tools' refusal of an input with no area says "with no area" (`tools::NO_AREA`).
+        Err(e) if !e.contains("with no area") => Err(e),
+        Err(e) => {
+            // Tools name a layer as it is stored, which may differ in case from how it was given.
+            let lower = e.to_lowercase();
+            match pole_loop_note(spec, inputs, p, |stored| lower.contains(&format!("'{}'", stored.to_lowercase()))) {
+                Some(note) => Err(format!("{}. {note}", e.trim_end_matches(['.', ' ']))),
+                None => Err(e),
+            }
+        }
+    }
+}
+
+/// Tools that read polygons as areas in the analysis plane, where longitude and latitude are x
+/// and y: overlays, joins, containment, zones, buffers and distances from inside. Others copy a
+/// geometry, read only its attributes, or measure it on the ground (Calculate Geometry), so a loop
+/// around a pole is nothing to them.
+const READ_AREAS_IN_THE_PLANE: &[&str] = &[
+    "buffer",
+    "near",
+    "zonalStats",
+    "clip",
+    "erase",
+    "intersect",
+    "identity",
+    "union",
+    "symmetricalDifference",
+    "update",
+    "split",
+    "countPoints",
+    "spatialJoin",
+    "selectByLocation",
+    "featureToPoint",
+    "dissolve",
+    "tabulateIntersection",
+];
+
+/// Whether a tool reads every row of an input whatever is selected in it.
+fn reads_all_rows(tool: &str, param: &str) -> bool {
+    matches!((tool, param), ("selectByLocation", "input") | ("countPoints", "polygons"))
+}
+
+/// What a tool's vector inputs hold that it can't read as areas: rings that loop around a pole
+/// without being cut at ±180° (#1354), in one notice with a count naming each layer that has
+/// them, for the tools that read areas in the analysis plane ([`READ_AREAS_IN_THE_PLANE`]), which
+/// takes longitude and latitude as x and y and so doesn't see the area such a ring goes around.
+/// Only the layers whose stored name `read` accepts are read. The rows counted are those the tool
+/// reads, each once: the layer's selection, or every row without one or where the tool reads them
+/// all ([`reads_all_rows`]). The walk over their vertices looks at Cancel between features, and
+/// stops there; a run canceled meanwhile is refused by [`run_under`] all the same.
+fn pole_loop_note(spec: &ToolSpec, inputs: &dyn Inputs, p: &Value, read: impl Fn(&str) -> bool) -> Option<String> {
+    if !READ_AREAS_IN_THE_PLANE.contains(&spec.id) {
+        return None;
+    }
+    // Each layer once, with every row the tool reads of it through any of the names it was given
+    // by (Spatial Join may read one layer as target and join, through different selections):
+    // `None` for all of them.
+    let mut reads: Vec<(&rustgis_data::Dataset, Option<Vec<usize>>)> = Vec::new();
+    let (mut layers, mut rings, mut features) = (Vec::new(), 0usize, 0usize);
+    let params =
+        spec.params.iter().filter(|param| matches!(param.kind, ParamKind::Layer | ParamKind::PolygonLayer | ParamKind::VectorLayer));
+    for param in params {
+        let Some(name) = p.get(param.name).and_then(Value::as_str) else { continue };
+        let Some(ds) = inputs.dataset(name) else { continue };
+        if !read(&ds.name) {
+            continue;
+        }
+        let selected = inputs.selection(name);
+        let these = if selected.is_empty() || reads_all_rows(spec.id, param.name) { None } else { Some(selected.to_vec()) };
+        match reads.iter_mut().find(|(s, _)| std::ptr::eq(*s, ds)) {
+            Some((_, rows)) => match (rows.as_mut(), these) {
+                (Some(rows), Some(these)) => rows.extend(these),
+                (Some(_), None) => *rows = None,
+                (None, _) => {}
+            },
+            None => reads.push((ds, these)),
+        }
+    }
+    for (ds, rows) in reads {
+        let rows: Box<dyn Iterator<Item = usize>> = match rows {
+            None => Box::new(0..ds.features.len()),
+            Some(mut rows) => {
+                rows.sort_unstable();
+                rows.dedup();
+                Box::new(rows.into_iter())
+            }
+        };
+        let geometries = rows.take_while(|_| control::check().is_ok()).filter_map(|r| ds.features.get(r).and_then(|f| f.geometry.as_ref()));
+        let (r, f) = rustgis_data::pole_loop_count(geometries);
+        if r > 0 {
+            layers.push(ds.name.as_str());
+            rings += r;
+            features += f;
+        }
+    }
+    rustgis_data::pole_loop_message(&layers, rings, features)
 }
 
 /// Validates the rows a pole-aware tool reads, on either execution path.
@@ -621,8 +731,7 @@ fn validate_pole_inputs(spec: &ToolSpec, inputs: &dyn Inputs, p: &Value) -> Resu
                 && let Some(ds) = inputs.dataset(name)
             {
                 let selected = inputs.selection(name);
-                let reads_all = matches!((spec.id, param.name), ("selectByLocation", "input") | ("countPoints", "polygons"));
-                if selected.is_empty() || reads_all {
+                if selected.is_empty() || reads_all_rows(spec.id, param.name) {
                     validate_latitudes(ds, 0..ds.features.len())?;
                 } else {
                     validate_latitudes(ds, selected.iter().copied())?;
@@ -676,10 +785,11 @@ pub fn run_resolved(
         let params = tool.resolve_params(params)?;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             validate_pole_inputs(tool.spec, inputs, &params)?;
-            match tool.runner {
+            let result = match tool.runner {
                 Some(runner) => runner(tool.spec, inputs, &params),
                 None => (tool.spec.run)(inputs, &params),
-            }
+            };
+            with_pole_loop_notes(result, tool.spec, inputs, &params)
         }))
         .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", tool.spec.name)))
     })
