@@ -5,6 +5,11 @@ name: CI
 # `ci:full`. A manual run tests on every platform, or on Linux alone when asked (a fork checking a
 # branch before its pull request runs the pull request's own checks).
 # Adding the label runs that platform straight away (ci-label.yml); later pushes include it here.
+#
+# A pull request's tests cover the packages it changes and those that depend on them (`select`);
+# pushes to main, labelled runs, manual runs on every platform and changes to Cargo.lock,
+# rust-toolchain, .github/ or .config/ test the whole workspace. `Tests pass` is the check to
+# require: it fails when any job here failed, whichever ran.
 
 on:
   push:
@@ -174,6 +179,33 @@ jobs:
       - name: Validate the fixture projects against the schema
         run: pipx run check-jsonschema==0.39.0 --schemafile schema/project.schema.json --default-filetype json schema/fixtures/*.rgis
 
+  # The packages whose tests this run needs, for `test` (.github/scripts/test-selection.sh). Only
+  # tests are narrowed: lint, the wasm build, licences and the schema check run whole every time.
+  select:
+    name: Tests to run
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+    steps:
+      # The history, without file contents, to find where the branch left the base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Only main saves the cache (see test-rust.yml).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: .github/scripts/test-selection.sh >> "$GITHUB_OUTPUT"
+
   plan:
     name: Platforms
     runs-on: ubuntu-latest
@@ -192,10 +224,11 @@ jobs:
         run: echo "os=$(.github/scripts/platforms.sh)" >> "$GITHUB_OUTPUT"
 
   test:
-    needs: plan
+    needs: [plan, select]
     uses: ./.github/workflows/test-rust.yml
     with:
       os: ${{ needs.plan.outputs.os }}
+      packages: ${{ needs.select.outputs.packages }}
       # The release build runs nightly; `ci:full` asks for it before merging.
       release-build: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
 
@@ -236,3 +269,41 @@ jobs:
                 --body "$body. A retry hides a flaky test from the run, so it is listed here. Fix the test; if it waits on a timer, wait for completion instead (\`cargo xtask test-hygiene\`)."
             fi
           done
+
+  # The check to require before merging, so the list of required checks needn't follow the jobs
+  # above (a runner that only a label adds, a job added later). It fails if any of them failed or
+  # was cancelled. A skipped job passes only when it was meant to skip: `ios` and `android` skip
+  # unless their conditions below hold (the same as on the jobs), and every other job always runs.
+  tests_pass:
+    name: Tests pass
+    needs: [lint, wasm, ios, android, licenses, schema, plan, select, test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUNS_IOS: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+            || contains(github.event.pull_request.labels.*.name, 'ci:macos')
+            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          RUNS_ANDROID: >-
+            ${{ github.event_name == 'push'
+            || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+            || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        run: |
+          set -euo pipefail
+          meant_to_run() {
+            case "$1" in ios) echo "$RUNS_IOS" ;; android) echo "$RUNS_ANDROID" ;; *) echo true ;; esac
+          }
+          failed=0
+          for job in $(jq -r 'keys[]' <<<"$NEEDS"); do
+            result="$(jq -r --arg job "$job" '.[$job].result' <<<"$NEEDS")"
+            if [ "$result" = success ] || { [ "$result" = skipped ] && [ "$(meant_to_run "$job")" = false ]; }; then
+              echo "$job: $result"
+            else
+              echo "::error::$job: $result"
+              failed=1
+            fi
+          done
+          exit "$failed"

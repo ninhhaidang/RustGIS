@@ -66,6 +66,13 @@ bug to fix, not a retry to rely on; the retries are a stopgap for tests that wai
 (`cargo xtask test-hygiene`) and go back to zero once those are gone. `cargo xtask ci` still runs
 `cargo test` locally.
 
+A pull request's CI runs the tests of the packages it changes and those that depend on them, as
+`cargo xtask changed --list` finds them. The whole workspace is tested for a push to `main`, a
+`ci:` label, a manual run on every platform, a change to `Cargo.lock`, `rust-toolchain*`, `.github/`
+or `.config/`, and a file outside every package that nothing includes. Lint, the wasm build, the
+licence check and the schema check always run whole. The `Tests pass` job fails when any other job
+does; it is the check to require before merging.
+
 Workflow actions are pinned to full commit SHAs with the previous version or branch in a comment.
 Dependabot's existing GitHub Actions updates keep these pins current. When changing an action,
 resolve the commit in that action's own repository and keep the version comment in step.

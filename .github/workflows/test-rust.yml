@@ -1,7 +1,8 @@
 name: Rust tests
 
-# The workspace's tests and layering check on each runner in `os` (a JSON list), for CI and CI on
-# label, and the release build of the apps as well for the nightly run.
+# The workspace's tests (or those of the `packages` given) and layering check on each runner in `os`
+# (a JSON list), for CI and CI on label, and the release build of the apps as well for the nightly
+# run.
 #
 # The tests run under cargo-nextest, which runs a test that fails again, up to twice (the `ci`
 # profile in .config/nextest.toml). A test that passes on a retry is flaky: it is listed in the
@@ -20,6 +21,13 @@ on:
         required: false
         type: boolean
         default: false
+      packages:
+        description: >-
+          Cargo's package arguments for the tests: `--workspace`, or `-p <name>` for each package
+          to test (CI's `select` job). The layering check and the release build don't use it.
+        required: false
+        type: string
+        default: --workspace
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,8 +72,13 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-nextest@0.9.151
+      # PACKAGES is several words, so it is left unquoted. A pull request that changes only a
+      # package with no tests runs none (`--no-tests=warn`).
       - name: Tests
-        run: cargo nextest run --workspace --locked --profile ci
+        shell: bash
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: cargo nextest run $PACKAGES --locked --profile ci --no-tests=warn
       - name: Flaky tests
         id: flaky
         if: ${{ !cancelled() }}
@@ -96,8 +109,15 @@ jobs:
           retention-days: 1
       # Nextest doesn't run doctests. The workspace has one, a compile-only example (`no_run`) in
       # rustgis-data's geotiff reader, but it keeps the examples in doc comments compiling.
+      # Only on the whole workspace: for a subset, `cargo test --doc` builds the dependencies again
+      # with other features, which took as long as the tests themselves (7 minutes for a change
+      # to the UI).
       - name: Doctests
-        run: cargo test --doc --workspace --locked
+        if: inputs.packages == '--workspace'
+        shell: bash
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: cargo test --doc $PACKAGES --locked
       - name: Layering check
         run: cargo xtask layers
       - name: Build release apps
