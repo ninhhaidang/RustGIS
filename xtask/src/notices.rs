@@ -7,7 +7,9 @@
 //!
 //! - `THIRD-PARTY-LICENSES.txt`: every crate in the workspace (the desktop app, the command line
 //!   and the web app);
-//! - `apps/rustgis-python/THIRD-PARTY-LICENSES.txt`: the crates in the Python package.
+//! - `apps/rustgis-python/THIRD-PARTY-LICENSES.txt`: the crates in the Python package;
+//! - `apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt`: the crates in the Android and iOS apps, for
+//!   the phone targets (`about.toml`'s targets are the desktop's and the browser's).
 //!
 //! Each distinct licence text appears once, with the crates under it (by name, not version, so a
 //! routine version bump leaves the files alone), followed by the crates' NOTICE files (Apache-2.0
@@ -27,10 +29,15 @@ pub const INSTALL: &str = "cargo install --locked --features cli cargo-about@0.9
 /// The `--check` exit code for files that are out of date (other failures exit with 1).
 pub const STALE: u8 = 2;
 
-/// (output file, package manifest or "" for the whole workspace, what it covers).
-const FILES: &[(&str, &str, &str)] = &[
-    ("THIRD-PARTY-LICENSES.txt", "", "RustGIS (the desktop app, the command line and the web app)"),
-    ("apps/rustgis-python/THIRD-PARTY-LICENSES.txt", "apps/rustgis-python/Cargo.toml", "the rustgis Python package"),
+/// The targets the mobile apps are built for (`build-apk.sh`'s ABIs and `build-ios.sh`'s).
+const PHONES: &[&str] = &["aarch64-linux-android", "x86_64-linux-android", "aarch64-apple-ios", "aarch64-apple-ios-sim"];
+
+/// (output file, package manifest or "" for the whole workspace, what it covers, the targets or
+/// none for `about.toml`'s).
+const FILES: &[(&str, &str, &str, &[&str])] = &[
+    ("THIRD-PARTY-LICENSES.txt", "", "RustGIS (the desktop app, the command line and the web app)", &[]),
+    ("apps/rustgis-python/THIRD-PARTY-LICENSES.txt", "apps/rustgis-python/Cargo.toml", "the rustgis Python package", &[]),
+    ("apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt", "apps/rustgis-mobile/Cargo.toml", "the RustGIS mobile apps (Android and iOS)", PHONES),
 ];
 
 /// Code or data that one of RustGIS's own crates takes from another project. Cargo doesn't see
@@ -287,18 +294,20 @@ fn notice_files(manifest_path: &str) -> Vec<(String, String)> {
     found
 }
 
-/// `cargo about`'s JSON report for `manifest` (the workspace when empty).
-fn about(root: &Path, manifest: &str) -> Result<Value, String> {
+/// `cargo about`'s JSON report for `manifest` (the workspace when empty), for `targets` (none for
+/// `about.toml`'s).
+fn about(root: &Path, manifest: &str, targets: &[&str]) -> Result<Value, String> {
     let mut cmd = Command::new("cargo");
     // --fail: a crate whose licence cargo-about can't work out is an error, not a gap in the file.
-    cmd.args(["about", "generate", "--locked", "--fail", "--format", "json"]).current_dir(root);
+    let mut args = vec!["about", "generate", "--locked", "--fail", "--format", "json"];
     if !manifest.is_empty() {
-        cmd.args(["--manifest-path", manifest]);
+        args.extend(["--manifest-path", manifest]);
     }
-    println!(
-        "$ cargo about generate --locked --fail --format json{}",
-        if manifest.is_empty() { String::new() } else { format!(" --manifest-path {manifest}") }
-    );
+    for target in targets {
+        args.extend(["--target", target]);
+    }
+    cmd.args(&args).current_dir(root);
+    println!("$ cargo {}", args.join(" "));
     let out = cmd.output().map_err(|e| format!("cargo about: {e} (install it with `{INSTALL}`)"))?;
     if !out.status.success() {
         return Err(format!("cargo about failed (install it with `{INSTALL}`):\n{}", String::from_utf8_lossy(&out.stderr)));
@@ -311,8 +320,8 @@ fn about(root: &Path, manifest: &str) -> Result<Value, String> {
 pub fn notices(root: &Path, check: bool) -> Result<(), (u8, String)> {
     let included = included(root).map_err(|e| (1, e))?;
     let mut stale = Vec::new();
-    for (file, manifest, what) in FILES {
-        let wanted = render(&about(root, manifest).map_err(|e| (1, e))?, what, &notice_files, &included);
+    for (file, manifest, what, targets) in FILES {
+        let wanted = render(&about(root, manifest, targets).map_err(|e| (1, e))?, what, &notice_files, &included);
         let path = root.join(file);
         if std::fs::read_to_string(&path).ok().as_deref() == Some(wanted.as_str()) {
             println!("notices: {file} is up to date");

@@ -48,6 +48,8 @@ rm -rf "$app" && mkdir -p "$app"
 cp "$target_dir/$target/$profile/rustgis-mobile" "$app/RustGIS"
 # Without its symbols: they are most of the executable's size.
 if [ "$profile" = release ]; then xcrun strip -x "$app/RustGIS"; fi
+# RustGIS's licence and the notices of the crates it is built from go with every copy.
+cp "$root/LICENSE" "$root/apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt" "$app/"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
 # The build number App Store Connect wants rising with each upload: IOS_BUILD, or the commits.

@@ -49,6 +49,12 @@ The APK is signed with a debug key made in `target/android`. There is no Gradle 
 links the manifest, `javac` and `d8` compile the one Java class, and the Rust library is the rest
 of the app.
 
+Both apps carry RustGIS's `LICENSE` and this folder's `THIRD-PARTY-LICENSES.txt`, the notices of
+the crates the phone builds compile in (in the APK's `assets/`, at the top of `RustGIS.app`).
+`cargo xtask notices` writes that file for the Android and iOS targets, which differ from the
+desktop's (JNI, `android-activity`, the `objc2` UIKit bindings); refresh it after changing the
+dependencies.
+
 ## The phone, from Rust
 
 `rustgis_engine::platform::Platform` is what a front end asks a phone for: files from the system's

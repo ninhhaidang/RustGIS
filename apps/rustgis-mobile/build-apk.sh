@@ -49,6 +49,10 @@ unsigned=$out/unsigned.apk
 # The libraries go in uncompressed and page-aligned, so Android maps them straight from the APK.
 (cd "$out/apk" && zip -q -0 -r "$unsigned" lib)
 (cd "$out/java/dex" && zip -q "$unsigned" classes.dex)
+# RustGIS's licence and the notices of the crates it is built from go with every copy.
+rm -rf "$out/notices" && mkdir -p "$out/notices/assets"
+cp "$root/LICENSE" "$root/apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt" "$out/notices/assets/"
+(cd "$out/notices" && zip -q "$unsigned" assets/LICENSE assets/THIRD-PARTY-LICENSES.txt)
 # -P 16: on 16 KB pages, which Android 15 phones may use (build-tools 35 and later).
 "$tools/zipalign" -f -P 16 4 "$unsigned" "$out/aligned.apk"
 
