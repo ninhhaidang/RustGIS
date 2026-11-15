@@ -250,6 +250,39 @@ impl<'de> Deserialize<'de> for Date {
     }
 }
 
+/// A date is saved as its ISO 8601 text (`2026-03-05`), from year 1 to 9999.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Date {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Date".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A calendar day as ISO 8601 text (YYYY-MM-DD), years 1 to 9999, maybe with spaces around it. The pattern can't tell a day that doesn't exist (2026-02-30); the reader refuses it.",
+            "pattern": "^\\s*([1-9][0-9]{3}|0[1-9][0-9]{2}|00[1-9][0-9]|000[1-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])\\s*$"
+        })
+    }
+}
+
+/// A date-time is saved as its ISO 8601 text, with its offset when it has one.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DateTime {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DateTime".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // The day as for `Date`, then maybe a clock after `T`, `t` or a space (HH:MM, seconds and
+        // up to six fraction digits optional, zeros past them), then maybe `Z` or an offset
+        // (+02, +0200, +02:00) of at most 18 hours, as `MAX_OFFSET_MIN`.
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A date and time as ISO 8601 text, years 1 to 9999, with its offset (Z, +02:00) when it has one, without one when it has none, maybe with spaces around it. The pattern can't tell a day that doesn't exist (2026-02-30) or an instant before year 1 or past year 9999 once its offset is applied (0001-01-01T00:00:00+01:00); the reader refuses them.",
+            "pattern": "^\\s*([1-9][0-9]{3}|0[1-9][0-9]{2}|00[1-9][0-9]|000[1-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])([Tt ]([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,6}0*)?)?([Zz]|[+-]((0[0-9]|1[0-7])(:?[0-5][0-9])?|18(:?00)?))?)?\\s*$"
+        })
+    }
+}
+
 impl Serialize for DateTime {
     /// As its ISO 8601 text, with its offset when it has one (`2026-03-05T14:30:00+02:00`).
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

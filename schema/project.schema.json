@@ -1,0 +1,1086 @@
+{
+  "$defs": {
+    "Coord": {
+      "description": "A 2-D coordinate.",
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "Crs": {
+      "description": "A raster's coordinate system. Saved as its EPSG code, or a custom one as its definition.",
+      "oneOf": [
+        {
+          "enum": [
+            "LonLat",
+            "WebMercator"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Epsg": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "Epsg"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Proj": {
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "proj4": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "proj4",
+                "label"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Proj"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Date": {
+      "description": "A calendar day as ISO 8601 text (YYYY-MM-DD), years 1 to 9999, maybe with spaces around it. The pattern can't tell a day that doesn't exist (2026-02-30); the reader refuses it.",
+      "pattern": "^\\s*([1-9][0-9]{3}|0[1-9][0-9]{2}|00[1-9][0-9]|000[1-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])\\s*$",
+      "type": "string"
+    },
+    "DateTime": {
+      "description": "A date and time as ISO 8601 text, years 1 to 9999, with its offset (Z, +02:00) when it has one, without one when it has none, maybe with spaces around it. The pattern can't tell a day that doesn't exist (2026-02-30) or an instant before year 1 or past year 9999 once its offset is applied (0001-01-01T00:00:00+01:00); the reader refuses them.",
+      "pattern": "^\\s*([1-9][0-9]{3}|0[1-9][0-9]{2}|00[1-9][0-9]|000[1-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])([Tt ]([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,6}0*)?)?([Zz]|[+-]((0[0-9]|1[0-7])(:?[0-5][0-9])?|18(:?00)?))?)?\\s*$",
+      "type": "string"
+    },
+    "Extent": {
+      "description": "An axis-aligned rectangle. An \"empty\" extent has `min > max`.",
+      "properties": {
+        "max_x": {
+          "format": "double",
+          "type": "number"
+        },
+        "max_y": {
+          "format": "double",
+          "type": "number"
+        },
+        "min_x": {
+          "format": "double",
+          "type": "number"
+        },
+        "min_y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_x",
+        "min_y",
+        "max_x",
+        "max_y"
+      ],
+      "type": "object"
+    },
+    "Feature": {
+      "description": "One row: an optional geometry and one value per field.",
+      "properties": {
+        "attrs": {
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "type": "array"
+        },
+        "geometry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Geometry"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "attrs"
+      ],
+      "type": "object"
+    },
+    "Field": {
+      "properties": {
+        "alias": {
+          "default": null,
+          "description": "Display name (the field alias).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "ty": {
+          "$ref": "#/$defs/FieldType"
+        }
+      },
+      "required": [
+        "name",
+        "ty"
+      ],
+      "type": "object"
+    },
+    "FieldType": {
+      "oneOf": [
+        {
+          "enum": [
+            "Integer",
+            "Double",
+            "Text",
+            "Boolean"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Date",
+          "description": "A calendar day.",
+          "type": "string"
+        },
+        {
+          "const": "DateTime",
+          "description": "A moment: a date and time, with or without a zone.",
+          "type": "string"
+        }
+      ]
+    },
+    "Geometry": {
+      "description": "A geometry. Lines hold parts; polygons hold polygons of rings (first ring = exterior).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Point": {
+              "$ref": "#/$defs/Coord"
+            }
+          },
+          "required": [
+            "Point"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "MultiPoint": {
+              "items": {
+                "$ref": "#/$defs/Coord"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "MultiPoint"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Line": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Coord"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Line"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Polygon": {
+              "items": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/Coord"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Polygon"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GeometryType": {
+      "oneOf": [
+        {
+          "enum": [
+            "Point",
+            "Polyline",
+            "Polygon"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "None",
+          "description": "A table with no geometry.",
+          "type": "string"
+        }
+      ]
+    },
+    "GpEnvironment": {
+      "description": "Settings every geoprocessing run honours.",
+      "properties": {
+        "cell_size": {
+          "default": null,
+          "description": "The cell size (degrees) of rasters tools create, when they don't say.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "extent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Extent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tools only process features meeting this longitude/latitude extent (when no features are\nselected)."
+        },
+        "projected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectedCells"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The projected coordinate system the Geostatistical Wizard makes its surface in, and the cell\nsize in its units, when the run doesn't say; `None`: the projected system the layer was read in,\nelse degrees with `cell_size`. Kept apart\nfrom `cell_size` so an older RustGIS, which reads only that, still makes it in degrees rather\nthan reading this system's units as degrees: losing it costs that version the setting, not\nthe raster."
+        }
+      },
+      "type": "object"
+    },
+    "GpRecord": {
+      "description": "One geoprocessing history row.",
+      "properties": {
+        "at": {
+          "description": "When it ran, in seconds since 1970 (UTC); 0 in projects saved before it.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "command": {
+          "description": "The command that ran the tool, when it wasn't `gp.run` with `params`: its id and its\nparameters, such as a point buffered where the map was clicked (`gp.bufferPoint`).",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            true
+          ],
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The tool's id (`buffer`), to run it again (#539); empty in projects saved before it,\nwhere the name finds a built-in tool.",
+          "type": "string"
+        },
+        "messages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "millis": {
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "outputs": {
+          "default": [],
+          "description": "The layers the run added (by name at the time).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "params": true,
+        "tool": {
+          "description": "The tool's name, as shown.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "params",
+        "ok",
+        "messages",
+        "millis"
+      ],
+      "type": "object"
+    },
+    "Job": {
+      "description": "A unit of work tracked in the Workflow Manager.",
+      "properties": {
+        "assigned": {
+          "default": "",
+          "type": "string"
+        },
+        "created": {
+          "description": "Seconds since 1970.",
+          "format": "double",
+          "type": "number"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "extent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Extent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The area the job covers (longitude/latitude), if any."
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "description": "\"new\", \"in progress\", \"on hold\" or \"done\".",
+          "type": "string"
+        },
+        "updated": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "created"
+      ],
+      "type": "object"
+    },
+    "Model": {
+      "description": "A model: geoprocessing steps run in order. A parameter value `%n` stands for the output layer\nof step n (1-based). A model drawn in ModelBuilder keeps its `graph` too, which is what runs;\n`steps` then holds the same tools in run order, for older versions and web tools.",
+      "properties": {
+        "graph": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelGraph"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "steps": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelStep"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ModelEdge": {
+      "description": "An edge from node `from`'s output port to node `to`'s input port (a tool parameter's name).",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "fromPort": {
+          "default": "",
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "toPort": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ModelGraph": {
+      "description": "A model as ModelBuilder draws it: input, tool and output nodes joined by edges from an output\nport to an input port (see `crate::model`).",
+      "properties": {
+        "edges": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelEdge"
+          },
+          "type": "array"
+        },
+        "nodes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelNode"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ModelNode": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ModelNodeKind"
+        },
+        "layer": {
+          "description": "Input nodes: the layer (or standalone table) by name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Output nodes: the name of the layer the result becomes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "description": "Tool nodes: parameter values not supplied by an edge."
+        },
+        "tool": {
+          "description": "Tool nodes: the tool id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "default": 0.0,
+          "description": "Where the node sits on the canvas (its top-left corner).",
+          "format": "float",
+          "type": "number"
+        },
+        "y": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ModelNodeKind": {
+      "oneOf": [
+        {
+          "const": "input",
+          "description": "A layer of the map the model reads.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "A geoprocessing tool.",
+          "type": "string"
+        },
+        {
+          "const": "output",
+          "description": "A result the model keeps, under a name.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelStep": {
+      "properties": {
+        "params": true,
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "params"
+      ],
+      "type": "object"
+    },
+    "OfflineArea": {
+      "description": "A map's data clipped to an extent, to take into the field.",
+      "properties": {
+        "created": {
+          "format": "double",
+          "type": "number"
+        },
+        "data": {
+          "$ref": "#/$defs/Open",
+          "description": "The snapshot: the map's feature layers holding the features meeting the extent."
+        },
+        "extent": {
+          "$ref": "#/$defs/Extent"
+        },
+        "map": {
+          "description": "The map it came from (by name).",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "synced": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "map",
+        "extent",
+        "created",
+        "data"
+      ],
+      "type": "object"
+    },
+    "Open": {
+      "description": "Any object: this schema doesn't describe its fields.",
+      "type": "object"
+    },
+    "ProjectedCells": {
+      "description": "A projected coordinate system for the rasters the environment sets ([`GpEnvironment::projected`]).",
+      "properties": {
+        "cell_size": {
+          "description": "The cell size in the system's units; `None`: the tool's own.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "crs": {
+          "$ref": "#/$defs/Crs",
+          "description": "The system, never one in degrees: `gp.env` refuses those, and opening a project leaves one\nout."
+        }
+      },
+      "required": [
+        "crs"
+      ],
+      "type": "object"
+    },
+    "StyleItem": {
+      "description": "A saved style: a layer's symbology and labels.",
+      "properties": {
+        "geometry": {
+          "$ref": "#/$defs/GeometryType"
+        },
+        "labels": {
+          "$ref": "#/$defs/Open"
+        },
+        "name": {
+          "type": "string"
+        },
+        "renderer": {
+          "$ref": "#/$defs/Open"
+        },
+        "transparency": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "geometry",
+        "renderer",
+        "labels"
+      ],
+      "type": "object"
+    },
+    "Table": {
+      "description": "A standalone table: a dataset without geometry, under an id unique among the project's tables (absent from files written before tables had ids).",
+      "properties": {
+        "crs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Crs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "crs_incomplete": {
+          "default": false,
+          "type": "boolean"
+        },
+        "features": {
+          "items": {
+            "$ref": "#/$defs/Feature"
+          },
+          "type": "array"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "type": "array"
+        },
+        "geometry_type": {
+          "$ref": "#/$defs/GeometryType"
+        },
+        "id": {
+          "default": 0,
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "zm_dropped": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "geometry_type",
+        "fields",
+        "features"
+      ],
+      "type": "object"
+    },
+    "Task": {
+      "description": "A task: steps that each run a command, in order.",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/TaskStep"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "TaskStep": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "instructions": {
+          "default": "",
+          "type": "string"
+        },
+        "params": {
+          "default": null
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "command"
+      ],
+      "type": "object"
+    },
+    "Value": {
+      "oneOf": [
+        {
+          "enum": [
+            "Null"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Int": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "Int"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Float": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "Float"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Bool": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Bool"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Date": {
+              "$ref": "#/$defs/Date"
+            }
+          },
+          "required": [
+            "Date"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "DateTime": {
+              "$ref": "#/$defs/DateTime"
+            }
+          },
+          "required": [
+            "DateTime"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/opengeos/RustGIS/main/schema/project.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A RustGIS project file, as RustGIS reads it. Generated from the Rust types by `cargo xtask schema`; don't edit it by hand. It writes format 1 and reads formats up to 2.",
+  "properties": {
+    "active_map": {
+      "format": "uint",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "data_stores": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "dl_models": {
+      "default": [],
+      "description": "Trained deep learning models.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "folders": {
+      "default": [],
+      "description": "Folder connections shown in the Browser.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "format": {
+      "default": 1,
+      "description": "The format read from disk; serialization always declares the current writer's format.",
+      "format": "uint32",
+      "maximum": 2,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "gp_env": {
+      "$ref": "#/$defs/GpEnvironment",
+      "default": {
+        "cell_size": null,
+        "extent": null
+      },
+      "description": "Geoprocessing environment settings."
+    },
+    "gp_history": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GpRecord"
+      },
+      "type": "array"
+    },
+    "jobs": {
+      "default": [],
+      "description": "Workflow Manager jobs.",
+      "items": {
+        "$ref": "#/$defs/Job"
+      },
+      "type": "array"
+    },
+    "layouts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "link_views": {
+      "default": false,
+      "description": "Maps move together (View › Link Views).",
+      "type": "boolean"
+    },
+    "maps": {
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "models": {
+      "default": [],
+      "description": "Models: chains of tools, each step able to use an earlier step's output.",
+      "items": {
+        "$ref": "#/$defs/Model"
+      },
+      "type": "array"
+    },
+    "name": {
+      "type": "string"
+    },
+    "next_table_id": {
+      "default": 0,
+      "description": "The id the next standalone table gets: removing a table, or undoing its addition, doesn't\nfree its id.",
+      "format": "uint32",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "notebooks": {
+      "default": [],
+      "description": "Notebooks of text and command cells.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "offline_areas": {
+      "default": [],
+      "description": "Offline areas: snapshots of a map's data around an extent, synced back by feature id.",
+      "items": {
+        "$ref": "#/$defs/OfflineArea"
+      },
+      "type": "array"
+    },
+    "presentations": {
+      "default": [],
+      "description": "Presentations: pages of maps, text, images and videos.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "ramps": {
+      "default": [],
+      "description": "Custom colour ramps, offered beside the built-in ones (renderers keep their own copy).",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "reports": {
+      "default": [],
+      "description": "Reports on layers' records.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "requires": {
+      "description": "The capabilities this file needs past its format, each one this RustGIS knows.",
+      "items": {
+        "enum": [],
+        "type": "string"
+      },
+      "maxItems": 256,
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "shared": {
+      "default": [],
+      "description": "Shares made (Publish › Share As › Jobs) and the folders they go to.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    },
+    "styles": {
+      "default": [],
+      "description": "Saved symbology, applied to layers by name.",
+      "items": {
+        "$ref": "#/$defs/StyleItem"
+      },
+      "type": "array"
+    },
+    "tables": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Table"
+      },
+      "type": "array"
+    },
+    "tasks": {
+      "default": [],
+      "description": "Step-by-step tasks: guided command sequences.",
+      "items": {
+        "$ref": "#/$defs/Task"
+      },
+      "type": "array"
+    },
+    "thumbnail": {
+      "description": "The project's thumbnail (base64 PNG).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspaces": {
+      "default": [],
+      "description": "Ortho and reality mapping workspaces.",
+      "items": {
+        "$ref": "#/$defs/Open"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "maps",
+    "active_map"
+  ],
+  "title": "RustGIS project (.rgis)",
+  "type": "object",
+  "x-rustgis-capabilities": [],
+  "x-rustgis-reads-format": 2,
+  "x-rustgis-writes-format": 1
+}

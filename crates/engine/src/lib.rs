@@ -33,6 +33,8 @@ pub mod s3_keys;
 #[cfg(test)]
 mod s3_saved_tests;
 pub mod sample;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod service_logins;
 pub mod sources;
 #[cfg(test)]
@@ -514,6 +516,7 @@ impl Tool {
 
 /// One geoprocessing history row.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GpRecord {
     /// The tool's name, as shown.
     pub tool: String,

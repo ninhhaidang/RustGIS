@@ -12,6 +12,7 @@ workspace = true
 rustgis-geom = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 csv = { workspace = true }
 # Streaming gzip text imports; use the pure-Rust backend in the browser too.
@@ -74,6 +75,10 @@ rustls-native-certs = "0.8"
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 # Safe effective-UID and no-follow operations for private Shapefile index caches.
 rustix = { version = "1.1", features = ["process", "fs"] }
+
+[features]
+# The JSON Schema of the saved types (`cargo xtask schema`).
+schema = ["dep:schemars", "rustgis-geom/schema"]
 
 [dev-dependencies]
 # Writing sample GeoParquet files.

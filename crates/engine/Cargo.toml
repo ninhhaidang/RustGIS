@@ -26,11 +26,14 @@ iana-time-zone = { version = "0.1", features = ["fallback"] }
 sys-locale = { version = "0.3", features = ["js"] }
 # The GeoLibre tool suite (native only: its tools read and write files).
 rustgis-geolibre = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 
 [features]
 geolibre = ["dep:rustgis-geolibre"]
 # Existing in-tree Wasm fixtures for adapter tests; no guest or production interface change.
 testing = ["rustgis-plugins/testing"]
+# The JSON Schema of the project file (`cargo xtask schema`).
+schema = ["dep:schemars", "rustgis-data/schema", "rustgis-geom/schema"]
 
 [dev-dependencies]
 miniz_oxide = { workspace = true }
@@ -51,3 +54,8 @@ image = { workspace = true, features = ["gif"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 postgres = { workspace = true }
 rustls = { workspace = true }
+
+# The project file's JSON Schema (`cargo xtask schema [--check]`).
+[[example]]
+name = "project_schema"
+required-features = ["schema"]

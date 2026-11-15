@@ -35,6 +35,7 @@ pub fn esri_codes() -> impl Iterator<Item = u32> {
 
 /// A raster's coordinate system. Saved as its EPSG code, or a custom one as its definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(into = "SavedCrs", try_from = "SavedCrs")]
 pub enum Crs {
     /// WGS 84 longitude/latitude in degrees (EPSG:4326).
@@ -51,6 +52,7 @@ pub enum Crs {
 /// How a [`Crs`] is saved: a custom system by its PROJ definition, never by its number in a run's
 /// table.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 enum SavedCrs {
     LonLat,
     WebMercator,

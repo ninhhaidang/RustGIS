@@ -66,6 +66,7 @@ pub fn distance_unit_metres(unit: &str) -> Option<f64> {
 
 /// A 2-D coordinate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Coord {
     pub x: f64,
     pub y: f64,
@@ -82,6 +83,7 @@ impl Coord {
 
 /// An axis-aligned rectangle. An "empty" extent has `min > max`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Extent {
     pub min_x: f64,
     pub min_y: f64,

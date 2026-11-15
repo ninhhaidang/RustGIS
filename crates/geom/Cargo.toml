@@ -11,6 +11,11 @@ workspace = true
 [dependencies]
 geographiclib-rs = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[features]
+# The JSON Schema of the saved types (`cargo xtask schema`).
+schema = ["dep:schemars"]
 
 [dev-dependencies]
 proptest = { workspace = true }

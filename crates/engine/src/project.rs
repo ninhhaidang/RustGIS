@@ -70,7 +70,7 @@ pub const READ_FORMAT: u32 = 2;
 pub const CAPABILITIES: &[&str] = &[];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
-const MAX_REQUIRES: usize = 256;
+pub(crate) const MAX_REQUIRES: usize = 256;
 /// The longest capability name kept whole, in bytes: a longer one can't be a known capability
 /// (none is longer, held below), so only its start is kept, marked `…`, for the refusal to show.
 const MAX_CAPABILITY_BYTES: usize = 128;
@@ -338,6 +338,7 @@ pub(crate) fn public_login_params(value: &serde_json::Value) -> Option<serde_jso
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Project {
     /// Read-time adjustments (labels, diagrams, layouts), consumed by the session and never saved.
     #[serde(skip)]
@@ -346,6 +347,7 @@ pub struct Project {
     #[serde(default = "format", serialize_with = "write_format")]
     pub format: u32,
     pub name: String,
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub maps: Vec<Map>,
     pub active_map: usize,
     #[serde(default)]
@@ -357,6 +359,7 @@ pub struct Project {
     #[serde(default)]
     pub gp_history: Vec<GpRecord>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub layouts: Vec<rustgis_map::layout::Layout>,
     /// Folder connections shown in the Browser.
     #[serde(default)]
@@ -366,6 +369,7 @@ pub struct Project {
     pub styles: Vec<StyleItem>,
     /// Custom colour ramps, offered beside the built-in ones (renderers keep their own copy).
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub ramps: Vec<rustgis_map::color::CustomRamp>,
     /// Step-by-step tasks: guided command sequences.
     #[serde(default)]
@@ -378,6 +382,7 @@ pub struct Project {
     pub models: Vec<Model>,
     /// Ortho and reality mapping workspaces.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub workspaces: Vec<crate::cmd::imagery::Workspace>,
     /// Maps move together (View › Link Views).
     #[serde(default)]
@@ -393,20 +398,26 @@ pub struct Project {
     pub offline_areas: Vec<OfflineArea>,
     /// Reports on layers' records.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub reports: Vec<rustgis_map::report::Report>,
     /// Presentations: pages of maps, text, images and videos.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub presentations: Vec<rustgis_map::presentation::Presentation>,
     /// Notebooks of text and command cells.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub notebooks: Vec<crate::cmd::notebook::Notebook>,
     /// Trained deep learning models.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub dl_models: Vec<crate::cmd::deeplearning::DlModel>,
     /// Shares made (Publish › Share As › Jobs) and the folders they go to.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub shared: Vec<crate::cmd::sharing::SharedItem>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub data_stores: Vec<crate::cmd::sharing::DataStore>,
 }
 
@@ -448,6 +459,7 @@ impl Table {
 /// geometry lost to it and Z or M values dropped (absent from files written before tables kept
 /// them). Read field by field, since `flatten` would buffer every row first.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct TableFile {
     #[serde(default)]
     id: u32,
@@ -487,6 +499,22 @@ impl From<TableFile> for Table {
     }
 }
 
+/// A table is saved as [`TableFile`] reads it.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Table {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Table".into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = TableFile::json_schema(generator);
+        schema.insert(
+            "description".into(),
+            "A standalone table: a dataset without geometry, under an id unique among the project's tables (absent from files written before tables had ids).".into(),
+        );
+        schema
+    }
+}
+
 /// The table a name or an id written as text stands for, as its position among `tables`: the
 /// first of that name (names can repeat), else the first of that name ignoring case, else the
 /// one of that id. The one rule commands and tools find a table by.
@@ -513,6 +541,7 @@ impl std::ops::DerefMut for Table {
 
 /// A unit of work tracked in the Workflow Manager.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Job {
     pub id: u32,
     pub name: String,
@@ -533,6 +562,7 @@ pub struct Job {
 
 /// A map's data clipped to an extent, to take into the field.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OfflineArea {
     pub name: String,
     /// The map it came from (by name).
@@ -542,11 +572,13 @@ pub struct OfflineArea {
     #[serde(default)]
     pub synced: f64,
     /// The snapshot: the map's feature layers holding the features meeting the extent.
+    #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub data: Map,
 }
 
 /// Settings every geoprocessing run honours.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GpEnvironment {
     /// Tools only process features meeting this longitude/latitude extent (when no features are
     /// selected).
@@ -579,6 +611,7 @@ impl GpEnvironment {
 
 /// A projected coordinate system for the rasters the environment sets ([`GpEnvironment::projected`]).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProjectedCells {
     /// The system, never one in degrees: `gp.env` refuses those, and opening a project leaves one
     /// out.
@@ -592,6 +625,7 @@ pub struct ProjectedCells {
 /// of step n (1-based). A model drawn in ModelBuilder keeps its `graph` too, which is what runs;
 /// `steps` then holds the same tools in run order, for older versions and web tools.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Model {
     pub name: String,
     #[serde(default)]
@@ -603,6 +637,7 @@ pub struct Model {
 /// A model as ModelBuilder draws it: input, tool and output nodes joined by edges from an output
 /// port to an input port (see `crate::model`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelGraph {
     #[serde(default)]
     pub nodes: Vec<ModelNode>,
@@ -611,6 +646,7 @@ pub struct ModelGraph {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ModelNodeKind {
     /// A layer of the map the model reads.
@@ -623,6 +659,7 @@ pub enum ModelNodeKind {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelNode {
     pub id: String,
     pub kind: ModelNodeKind,
@@ -647,6 +684,7 @@ pub struct ModelNode {
 
 /// An edge from node `from`'s output port to node `to`'s input port (a tool parameter's name).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelEdge {
     pub from: String,
     #[serde(rename = "fromPort", default)]
@@ -657,6 +695,7 @@ pub struct ModelEdge {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelStep {
     pub tool: String,
     pub params: serde_json::Value,
@@ -664,10 +703,13 @@ pub struct ModelStep {
 
 /// A saved style: a layer's symbology and labels.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StyleItem {
     pub name: String,
     pub geometry: rustgis_data::GeometryType,
+    #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub renderer: rustgis_map::Renderer,
+    #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub labels: rustgis_map::Labeling,
     #[serde(default)]
     pub transparency: f32,
@@ -675,6 +717,7 @@ pub struct StyleItem {
 
 /// A task: steps that each run a command, in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Task {
     pub name: String,
     #[serde(default)]
@@ -683,6 +726,7 @@ pub struct Task {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TaskStep {
     pub title: String,
     #[serde(default)]

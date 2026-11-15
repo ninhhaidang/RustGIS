@@ -316,7 +316,10 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
             super::cargo(&["fmt", "--all", "--check"])
                 .and_then(|_| super::cargo(&clippy))
                 .and_then(|_| super::cargo(&test))
-                .and_then(|_| super::layers())?;
+                .and_then(|_| super::layers())
+                // The project schema is generated from types in rustgis-engine and below, so any
+                // change there (which checks rustgis-engine too) checks it.
+                .and_then(|_| if checked.contains("rustgis-engine") { super::schema(true) } else { Ok(()) })?;
             let left_out = packages.len() - checked.len();
             print!("changed: passed. Not checked here, as CI does: the {left_out} packages left out, licences and the other platforms");
             if checked.contains("rustgis-web") {

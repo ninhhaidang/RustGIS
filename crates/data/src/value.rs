@@ -4,6 +4,7 @@ use crate::date::{Date, DateTime};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FieldType {
     Integer,
     Double,
@@ -36,6 +37,7 @@ impl FieldType {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Field {
     pub name: String,
     pub ty: FieldType,
@@ -54,6 +56,7 @@ impl Field {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Value {
     #[default]
     Null,

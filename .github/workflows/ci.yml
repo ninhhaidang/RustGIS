@@ -96,6 +96,28 @@ jobs:
             exit "$status"
           fi
 
+  schema:
+    name: Project schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          # `cargo xtask schema --check` lints the code behind the `schema` feature first.
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Only main saves the cache (see test-rust.yml).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The committed schema matches the types the project is saved from, and the fixture projects
+      # open. `--locked` on the outer run too, so a stale Cargo.lock is refused before xtask starts.
+      - name: Check the project file's schema
+        run: cargo run --locked -q -p xtask -- schema --check
+      # Every fixture, not only those the pull request changes (as pre-commit does), so a change
+      # to the schema alone is checked against them too.
+      - name: Validate the fixture projects against the schema
+        run: pipx run check-jsonschema==0.39.0 --schemafile schema/project.schema.json --default-filetype json schema/fixtures/*.rgis
+
   plan:
     name: Platforms
     runs-on: ubuntu-latest

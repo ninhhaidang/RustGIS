@@ -24,6 +24,9 @@ Before picking work, read [ROADMAP.md](ROADMAP.md) (check Underway) and
 - A file or setting from a newer RustGIS is refused or kept unchanged, never saved again without
   what this version couldn't read; a reader checks the version it is given
   ([saved files](docs/maintaining.md#saved-files-and-settings)).
+- A change to what a project saves runs `cargo xtask schema` and commits
+  `schema/project.schema.json` with it; a change to how a project is read adds or updates a fixture
+  in `schema/fixtures/`.
 
 ## Never hold the window
 On the desktop, a command whose work grows with its input (features, cells, tiles, files,

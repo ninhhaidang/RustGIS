@@ -24,6 +24,7 @@ pub fn ambiguous_area_message<'a>(geometries: impl Iterator<Item = &'a Geometry>
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GeometryType {
     Point,
     Polyline,
@@ -96,6 +97,7 @@ impl Measure {
 
 /// A geometry. Lines hold parts; polygons hold polygons of rings (first ring = exterior).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Geometry {
     Point(Coord),
     MultiPoint(Vec<Coord>),
