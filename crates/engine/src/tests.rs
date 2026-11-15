@@ -15506,6 +15506,19 @@ fn registry_downloads_are_checked() {
     crate::cmd::plugins::install_checked(&e, &bytes).unwrap();
     assert_eq!(crate::cmd::plugins::entry_status(&e)["installed"], "1.0.0");
     assert_eq!(crate::cmd::plugins::entry_status(&e)["runtime"], "wasm");
+    assert!(crate::cmd::plugins::entry_status(&e).get("unavailable").is_none());
+    // A newer release needing a newer RustGIS is listed, not installed or offered as the update
+    // (#1405); one this RustGIS meets is.
+    let needs = rustgis_plugins::registry::Entry { version: "2.0.0".into(), min_rustgis_version: "999.0.0".into(), ..e.clone() };
+    assert_eq!(needs.needs_rustgis(), Some("999.0.0"));
+    let err = crate::cmd::plugins::install_checked(&needs, &bytes).unwrap_err();
+    assert!(err.starts_with("Reg needs RustGIS 999.0.0 or newer (this is ") && err.ends_with("; it wasn't installed"), "{err}");
+    let status = crate::cmd::plugins::entry_status(&needs);
+    assert_eq!((&status["available"], &status["update"]), (&json!(false), &json!(false)));
+    assert!(status["unavailable"].as_str().is_some_and(|w| w.starts_with("Reg needs RustGIS 999.0.0")), "{status}");
+    let meets = rustgis_plugins::registry::Entry { min_rustgis_version: "0.1.0".into(), ..needs.clone() };
+    assert_eq!(meets.needs_rustgis(), None);
+    assert_eq!(crate::cmd::plugins::entry_status(&meets)["update"], json!(true));
     let _ = rustgis_plugins::store::uninstall("eng-reg");
 }
 #[test]

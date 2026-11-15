@@ -642,7 +642,7 @@ fn download(app: &mut RustGisApp, e: &Entry, ctx: &egui::Context) {
     }
     if !e.available() {
         let lang = crate::i18n::current().code();
-        app.plugins.message = Some((false, elsewhere(e, e.translate(lang, &e.name))));
+        app.plugins.message = Some((false, why_not_here(e, e.translate(lang, &e.name))));
         return;
     }
     let slot = fetch(app, &e.package, rp::package::MAX_PACKAGE, Some(ctx.clone()));
@@ -780,8 +780,15 @@ fn here() -> String {
     }
 }
 
-/// Why `e` (shown as `name`) can't be installed here: its packages are for other platforms.
-fn elsewhere(e: &Entry, name: &str) -> String {
+/// Why `e` (shown as `name`) can't be installed here: it needs a newer RustGIS, or its packages
+/// are for other platforms.
+fn why_not_here(e: &Entry, name: &str) -> String {
+    if let Some(min) = e.needs_rustgis() {
+        return crate::i18n::fmt(
+            "{name} {version} needs RustGIS {min} or newer; this is {this}.",
+            &[("name", name), ("version", &e.version), ("min", min), ("this", rp::manifest::RUSTGIS_VERSION)],
+        );
+    }
     crate::i18n::fmt(
         "{name} has no package for {platform}. It is available for: {platforms}.",
         &[("name", name), ("platform", &here()), ("platforms", &e.platforms().join(", "))],
@@ -887,7 +894,8 @@ fn installed_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     let lang = app.lang().code();
     let newer: Vec<(String, String)> = match &app.plugins.registry {
-        Some(Ok(list)) => list.iter().map(|e| (e.id.clone(), e.version.clone())).collect(),
+        // Only a release that can be installed here is offered as an update.
+        Some(Ok(list)) => list.iter().filter(|e| e.available()).map(|e| (e.id.clone(), e.version.clone())).collect(),
         _ => Vec::new(),
     };
     for p in plugins {
@@ -1051,10 +1059,14 @@ fn browse_row(ui: &mut egui::Ui, t: &Tokens, e: &Entry, web: bool) -> bool {
                     "{name} runs as a program on your computer: it needs the desktop app or rustgis-cli.",
                     &[("name", e.translate(lang, &e.name))],
                 ));
+            } else if let Some(min) = e.needs_rustgis() {
+                // Listed for the same reason, and not downloaded only to be refused.
+                ui.label(egui::RichText::new(crate::i18n::fmt("Needs RustGIS {min}", &[("min", min)])).color(t.text_dim))
+                    .on_hover_text(why_not_here(e, e.translate(lang, &e.name)));
             } else if !e.available() {
                 // Listed for the same reason: its packages are for other platforms.
                 ui.label(egui::RichText::new(crate::i18n::fmt("Not available for {platform}", &[("platform", &here())])).color(t.text_dim))
-                    .on_hover_text(elsewhere(e, e.translate(lang, &e.name)));
+                    .on_hover_text(why_not_here(e, e.translate(lang, &e.name)));
             } else {
                 let label = if newer { tl!("Update") } else { tl!("Install") };
                 clicked = crate::widgets::primary_button(ui, label, true, vec2(84.0, 24.0)).clicked();

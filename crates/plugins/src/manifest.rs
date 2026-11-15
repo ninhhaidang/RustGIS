@@ -454,6 +454,16 @@ pub fn version_parts(v: &str) -> Option<[u64; 3]> {
     (n > 0).then_some(out)
 }
 
+/// Whether this RustGIS is at least `min`, a plugin's `minRustgisVersion`. Numbers only: a RustGIS
+/// pre-release (`0.7.0-rc.1`) runs the plugins its release will. An empty or unreadable `min`
+/// asks for nothing (a manifest refuses an unreadable one itself).
+pub fn rustgis_meets(min: &str) -> bool {
+    match version_parts(min) {
+        Some(min) => version_parts(RUSTGIS_VERSION).is_some_and(|this| this >= min),
+        None => true,
+    }
+}
+
 /// Compares two versions by SemVer 2.0.0 precedence: the numbers first, then a pre-release
 /// sorts before its release (`1.0.0-beta.1` < `1.0.0`), and pre-releases compare identifier by
 /// identifier (`beta.2` < `beta.11` < `rc.1`). Build metadata (`+…`) is ignored, and a missing
@@ -697,8 +707,7 @@ impl Manifest {
             if version_parts(&self.min_rustgis_version).is_none() {
                 return Err("plugin.json: minRustgisVersion is not a version number".into());
             }
-            // Numbers only: a RustGIS pre-release (`0.7.0-rc.1`) runs the plugins its release will.
-            if version_parts(RUSTGIS_VERSION) < version_parts(&self.min_rustgis_version) {
+            if !rustgis_meets(&self.min_rustgis_version) {
                 return Err(format!("{} needs RustGIS {} or newer (this is {RUSTGIS_VERSION})", self.name, self.min_rustgis_version));
             }
         }

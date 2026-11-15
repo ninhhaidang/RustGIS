@@ -469,11 +469,20 @@ fn registries_and_blocklists_are_read_defensively() {
         {"id": "bad", "name": "Bad", "version": "1.0.0", "package": "http://insecure.example.com/x.rgplugin", "sha256": sha},
         {"id": "nohash", "name": "No hash", "version": "1.0.0", "package": "x.rgplugin", "sha256": "abc"},
         {"id": "Bad Id", "name": "X", "version": "1.0.0", "package": "x.rgplugin", "sha256": sha},
+        {"id": "bad-min", "name": "X", "version": "1.0.0", "minRustgisVersion": "0.6.x", "package": "x.rgplugin", "sha256": sha},
+        {"id": "a-plugin", "name": "A again", "version": "0.2.0", "package": "https://example.com/a2.rgplugin", "sha256": sha},
         7
     ]})
     .to_string();
     let v = registry::parse(&text, "https://plugins.rustgis.app/registry.json").unwrap();
     assert_eq!(v.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a-plugin", "b-plugin"]);
+    // The plugins skipped are said, by id where it is readable.
+    let (_, notice) = registry::parse_with_notice(&text, "https://plugins.rustgis.app/registry.json").unwrap();
+    let notice = notice.unwrap_or_default();
+    assert!(
+        notice.starts_with("6 plugin(s) in the plugin registry were skipped") && notice.ends_with(": bad, nohash, bad-min, a-plugin"),
+        "{notice}"
+    );
     assert_eq!(v[1].package, "https://plugins.rustgis.app/packages/b/b-1.2.0.rgplugin");
     assert!(v[0].homepage.is_empty(), "only http(s) homepages");
     // Only the name and description keep translations.
@@ -2645,7 +2654,9 @@ fn a_bad_platform_package_is_dropped_alone() {
     // version doesn't know and a registry read whole say nothing.
     let (_, notice) = registry::parse_noting(&text, url, Some("windows")).unwrap();
     let notice = notice.unwrap();
-    assert!(notice.starts_with("6 package(s) for a platform in the plugin registry were skipped"), "{notice}");
+    // A plugin left with no package at all is said as a plugin skipped, first.
+    assert!(notice.starts_with("1 plugin(s) in the plugin registry were skipped") && notice.contains(": g-no-address; "), "{notice}");
+    assert!(notice.contains("; 6 package(s) for a platform in the plugin registry were skipped"), "{notice}");
     assert!(
         notice.ends_with(": a-no-address (Linux), b-no-hash (Linux), c-not-an-object (Linux), d-bad-size (Linux), e-own-too (Linux), …"),
         "{notice}"

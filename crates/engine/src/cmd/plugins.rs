@@ -298,7 +298,9 @@ fn fetch_registry(s: &mut Session, url: &str) -> Result<Vec<rustgis_plugins::reg
 /// A registry entry with what's installed, for the Plugin Manager and the command line.
 pub fn entry_status(e: &rustgis_plugins::registry::Entry) -> Value {
     let installed = rustgis_plugins::get(&e.id).map(|p| p.manifest.version.clone());
-    let update = installed.as_deref().is_some_and(|v| rustgis_plugins::manifest::version_cmp(&e.version, v).is_gt());
+    // Not offered when it can't be installed here (a newer RustGIS needed, or no package for this
+    // platform).
+    let update = e.available() && installed.as_deref().is_some_and(|v| rustgis_plugins::manifest::version_cmp(&e.version, v).is_gt());
     let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
     if let Some(o) = v.as_object_mut() {
         o.insert("installed".into(), json!(installed));
@@ -307,9 +309,12 @@ pub fn entry_status(e: &rustgis_plugins::registry::Entry) -> Value {
         // Said for every plugin (the registry leaves it out for WebAssembly ones): a process
         // plugin isn't sandboxed.
         o.insert("runtime".into(), json!(e.runtime));
-        // Whether it has a package for this platform (one listed with packages for other
-        // platforms has none to install here).
+        // Whether it can be installed here, and if not, why: it needs a newer RustGIS, or its
+        // packages are for other platforms.
         o.insert("available".into(), json!(e.available()));
+        if !e.available() {
+            o.insert("unavailable".into(), json!(e.unavailable()));
+        }
     }
     v
 }
@@ -373,7 +378,8 @@ fn install_from_registry(s: &mut Session, p: &Value) -> CmdResult {
     {
         let entries = fetch_registry(s, url)?;
         let e = entries.iter().find(|e| e.id == id).ok_or_else(|| format!("the registry has no plugin '{id}'"))?;
-        // Not downloaded only to be refused: its packages are for other platforms.
+        // Not downloaded only to be refused: it needs a newer RustGIS, or its packages are for
+        // other platforms.
         if !e.available() {
             return Err(e.unavailable());
         }

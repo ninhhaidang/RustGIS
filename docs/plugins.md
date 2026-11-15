@@ -191,7 +191,9 @@ cargo build --release --target wasm32-unknown-unknown
   `rc.1`), and build metadata is ignored. So **Update** is offered from `1.0.0-beta.1` to
   `1.0.0-beta.2` and to `1.0.0`, never to an equal or older version. `minRustgisVersion`
   compares only the numbers: RustGIS refuses a plugin that needs a newer RustGIS, and a
-  RustGIS pre-release such as `0.7.0-rc.1` runs plugins that need `0.7.0`.
+  RustGIS pre-release such as `0.7.0-rc.1` runs plugins that need `0.7.0`. Browse lists a
+  registry release that needs a newer RustGIS as *Needs RustGIS 0.7.0*, without downloading it
+  or offering it as an update.
 - `permissions`: `edit`, `files` and `network` (see [Safety](#safety)); empty by default.
   Ask only for what you use.
 - `commands[].params`: a string describing the command's parameters for scripts and agents,
@@ -1106,5 +1108,6 @@ one for the platform it runs on. The entry's own `package` and `sha256` are then
 given, they are the package for the platforms `packages` doesn't name (and the only one the web
 app installs). A plugin with no package for your platform stays in the list, marked
 *Not available for* your platform with the platforms it has; `rustgis-cli plugins browse` prints
-`"available": false` for it, and `rustgis-cli plugins get` refuses it with the same reason. A
+`"available": false` for it, as for a release that needs a newer RustGIS, with the reason in
+`unavailable`, and `rustgis-cli plugins get` refuses it with the same reason. A
 RustGIS older than this feature skips an entry that has `packages` only.
