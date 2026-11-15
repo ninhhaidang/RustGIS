@@ -6010,6 +6010,7 @@ mod tests {
             m.view.terrain = Some(rustgis_engine::map::view::Terrain {
                 source: rustgis_engine::map::view::TerrainSource::Layer("dem".into()),
                 exaggeration: 2.0,
+                block: None,
                 water: None,
             });
             m.camera =

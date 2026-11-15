@@ -94,6 +94,25 @@ no terrain is on, or `{"tiles": "https://…/{z}/{x}/{y}.png", "encoding": "terr
 maps; a flat (untilted) view, the globe and other projections stay flat, extruded layers are
 not lifted onto the relief yet, and identify and selection still pick on the flat ground.
 
+A **block diagram** cuts the relief to a box, as geomorphology and soil science figures do:
+`map.terrain` with `"block": {}` draws only the ground inside the DEM layer's extent (for a DEM
+in a projection such as UTM, a north-up box between its corners, close to the largest inside
+it for one turned a little; one turned a lot can leave a sliver past its edges), with the map's sky and fog
+around it, and the box's sides facing the eye as walls from the ground's profile down to a flat
+base. `"extent": [xmin, ymin, xmax, ymax]` gives another box, in the map's units (Web Mercator
+metres, at least 10 a side, not all within ±180 by ±90; needed over elevation tiles, which have no extent of their own; a box
+in degrees, off the world or off the DEM is refused, and the result gives the box cut to as
+numbers, or `"layer"` while the DEM's data isn't read); `"depth"` puts the base
+that many metres below the lowest ground in the box (ground with no height, drawn at 0, counts as 0; default half the box's relief, at least
+100 m; both are stretched by the exaggeration), and `"walls": "#RRGGBB"` colours the walls
+(default `#C8B89A`, a sandy brown). The walls are lit by the way they face the light, as extruded
+walls are, darker toward their foot, and outlined. Left out, the block stays as it was;
+`"block": false` takes it off. It shows in the settled view and in exported maps (over elevation tiles, the walls once the
+box's tiles are read); while the map
+moves the ground is drawn whole, and labels, markers and extruded features outside the box still
+draw (hide those layers, or clip them to the box). The walls are schematic: say so in the
+figure's caption.
+
 **Water** on the terrain lies flat: `map.terrain` with `{"water": {"layer": "Lakes"}}` names a
 polygon layer of water bodies, and inside each polygon the ground is level, at the lowest height
 of the DEM along its shore, instead of rising and falling with a surface model that is noisy or

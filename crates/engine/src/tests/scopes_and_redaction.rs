@@ -586,6 +586,7 @@ fn outputs_redact_urls_capabilities_and_local_paths_across_scopes() {
             encoding: rustgis_map::view::TerrainEncoding::default(),
         },
         exaggeration: 1.5,
+        block: None,
         water: None,
     });
 

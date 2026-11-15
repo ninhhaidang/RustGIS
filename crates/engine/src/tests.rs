@@ -7664,6 +7664,90 @@ fn layout_frames_turn_and_tilt() {
 }
 
 #[test]
+fn terrain_block_is_checked_kept_and_taken_off() {
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    // The DEM covers 10–10.04° E, 45–45.04° N: about x 1113195–1117648, y 5621521–5627821.
+    let inside = json!([1114000, 5622000, 1116000, 5625000]);
+    // Wrong settings are refused before anything changes: a box in degrees, off the Web
+    // Mercator world, or off the DEM among them.
+    for bad in [
+        json!("box"),
+        json!({"extent": [10, 0, 0, 10]}),
+        json!({"extent": [0, 0, 10]}),
+        json!({"extent": "view"}),
+        json!({"extent": [10.0, 45.0, 10.04, 45.04]}),
+        json!({"extent": [0, 0, 1000, 3e7]}),
+        json!({"extent": [0, 0, 1000, 500]}),
+        json!({"depth": -5}),
+        json!({"walls": "#C8B89A80"}),
+        json!({"walls": {"layer": "Countries"}}),
+        json!({"base": 3}),
+    ] {
+        assert!(s.run("map.terrain", &json!({"layer": dem, "block": bad})).is_err(), "{bad}");
+    }
+    let e = s.run("map.terrain", &json!({"layer": dem, "block": {"extent": [10.0, 45.0, 10.04, 45.04]}})).unwrap_err();
+    assert!(e.contains("degrees"), "{e}");
+    assert!(s.map().view.terrain.is_none());
+    // The DEM's extent by default, reported as the box it is cut to, and the default walls.
+    let v = s.run("map.terrain", &json!({"layer": dem, "block": {}})).unwrap();
+    assert_eq!((v["block"]["extent_from"].as_str(), v["block"]["walls"].as_str()), (Some("layer"), Some("#C8B89A")));
+    let cut: Vec<f64> = v["block"]["extent"].as_array().unwrap().iter().filter_map(Value::as_f64).collect();
+    let want = [1_113_195.0, 5_621_521.0, 1_117_648.0, 5_627_821.0];
+    assert!(cut.len() == 4 && cut.iter().zip(want).all(|(c, w)| (c - w).abs() < 2.0), "{cut:?}");
+    // Kept when only the exaggeration changes, and saved with the project.
+    let v = s.run("map.terrain", &json!({"exaggeration": 2, "block": {"extent": inside, "depth": 300, "walls": "#806040"}})).unwrap();
+    assert_eq!(
+        (&v["block"]["extent"], v["block"]["extent_from"].as_str()),
+        (&json!([1114000.0, 5622000.0, 1116000.0, 5625000.0]), Some("box"))
+    );
+    let v = s.run("map.terrain", &json!({"exaggeration": 3})).unwrap();
+    assert_eq!(v["block"]["depth"], 300.0);
+    let saved = serde_json::to_string(&s.map().view).unwrap_or_default();
+    let back: rustgis_map::view::ViewSettings = serde_json::from_str(&saved).unwrap_or_default();
+    assert_eq!(back.terrain, s.map().view.terrain);
+    // false takes it off; a terrain saved without one reads back with none.
+    let v = s.run("map.terrain", &json!({"block": false})).unwrap();
+    assert!(v["block"].is_null());
+    assert!(!serde_json::to_string(&s.map().view).unwrap_or_default().contains("block"));
+    // A block kept from before that a DEM off its box can't take is refused, and the refusal says
+    // it was kept and that "block": false takes it off (a block given in the call isn't said so).
+    s.map_mut().view.terrain = Some(rustgis_map::view::Terrain {
+        source: rustgis_map::view::TerrainSource::Layer(dem.clone()),
+        exaggeration: 1.0,
+        block: Some(rustgis_map::view::TerrainBlock {
+            extent: Some([0.0, 0.0, 1000.0, 1000.0]),
+            depth: None,
+            walls: rustgis_map::view::BLOCK_WALLS,
+        }),
+        water: None,
+    });
+    let e = s.run("map.terrain", &json!({"exaggeration": 2})).unwrap_err();
+    assert!(e.contains("the block is the one kept from before"), "{e}");
+    assert!(s.map().view.terrain.as_ref().is_some_and(|t| t.block.is_some()), "the terrain stays as it was");
+    let e = s.run("map.terrain", &json!({"exaggeration": 2, "block": {"extent": [0, 0, 1000, 1000]}})).unwrap_err();
+    assert!(!e.contains("kept from before"), "{e}");
+    s.run("map.terrain", &json!({"block": false})).unwrap();
+    // Over elevation tiles there's no layer extent: a box is needed, and the terrain stays.
+    let e = s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png", "block": {}})).unwrap_err();
+    assert!(e.contains("needs an extent box"), "{e}");
+    assert!(matches!(&s.map().view.terrain, Some(t) if matches!(t.source, rustgis_map::view::TerrainSource::Layer(_))));
+    // A box in whole degrees over tiles (no DEM to miss) is refused as degrees too.
+    let e =
+        s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png", "block": {"extent": [-50, -25, -40, -15]}})).unwrap_err();
+    assert!(e.contains("degrees"), "{e}");
+    s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png", "block": {"extent": [0, 0, 1000, 1000]}})).unwrap();
+    // A block on the DEM's extent left behind on a switch to tiles; one with a box kept.
+    s.run("map.terrain", &json!({"layer": dem, "block": {}})).unwrap();
+    let v = s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png"})).unwrap();
+    assert!(v["block"].is_null(), "{v}");
+    s.run("map.terrain", &json!({"layer": dem, "block": {"extent": inside}})).unwrap();
+    let v = s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png"})).unwrap();
+    assert_eq!(v["block"]["extent"], json!([1114000.0, 5622000.0, 1116000.0, 5625000.0]));
+}
+
+#[test]
 fn terrain_is_set_from_a_dem_or_tiles() {
     let mut s = world();
     // A source is required, and must be a raster layer or an XYZ URL.
@@ -7724,11 +7808,73 @@ fn terrain_is_set_from_a_dem_or_tiles() {
         if let Some(l) = m.layers.iter_mut().filter(|l| l.is_raster()).nth(1) {
             l.name = first.clone();
         }
-        m.view.terrain =
-            Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(first), exaggeration: 1.0, water: None });
+        m.view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Layer(first),
+            exaggeration: 1.0,
+            block: None,
+            water: None,
+        });
         let mut opened = Session::new(Project::default());
         crate::cmd::project::reset_to(&mut opened, saved);
         assert!(opened.notices.iter().any(|n| n.text.contains("is shared by two layers")), "{:?}", opened.notices);
+    }
+    // A saved block the terrain command would refuse (a box turned inside out) is dropped as the
+    // project opens, and said: the terrain keeps its DEM and draws the whole map.
+    {
+        let mut saved = s.project.clone();
+        saved.maps[0].view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Layer(name.clone()),
+            exaggeration: 1.0,
+            block: Some(rustgis_map::view::TerrainBlock {
+                extent: Some([1116000.0, 5625000.0, 1114000.0, 5622000.0]),
+                depth: None,
+                walls: rustgis_map::view::BLOCK_WALLS,
+            }),
+            water: None,
+        });
+        let mut opened = Session::new(Project::default());
+        crate::cmd::project::reset_to(&mut opened, saved);
+        let t = opened.project.maps[0].view.terrain.clone();
+        assert!(t.as_ref().is_some_and(|t| t.block.is_none()), "{t:?}");
+        assert!(opened.notices.iter().any(|n| n.text.contains("block's extent is")), "{:?}", opened.notices);
+    }
+    // A valid saved block survives the open with its box, and nothing is said of it.
+    {
+        let mut clean = s.project.clone();
+        clean.maps[0].view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Layer(name.clone()),
+            exaggeration: 1.0,
+            block: Some(rustgis_map::view::TerrainBlock {
+                extent: Some([1114000.0, 5622000.0, 1116000.0, 5625000.0]),
+                depth: None,
+                walls: rustgis_map::view::BLOCK_WALLS,
+            }),
+            water: None,
+        });
+        let mut opened = Session::new(Project::default());
+        crate::cmd::project::reset_to(&mut opened, clean);
+        let t = opened.project.maps[0].view.terrain.clone();
+        assert!(t.as_ref().is_some_and(|t| t.block.as_ref().is_some_and(|b| b.extent.is_some())), "{t:?}");
+        assert!(!opened.notices.iter().any(|n| n.text.contains("block diagram")), "{:?}", opened.notices);
+    }
+    // A saved block over elevation tiles with no box (the terrain command refuses one) is dropped as
+    // the project opens, and said with the reason.
+    {
+        let mut saved = s.project.clone();
+        saved.maps[0].view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Tiles {
+                url: "https://e.com/{z}/{x}/{y}.png".into(),
+                encoding: rustgis_map::view::TerrainEncoding::Terrarium,
+            },
+            exaggeration: 1.0,
+            block: Some(rustgis_map::view::TerrainBlock { extent: None, depth: None, walls: rustgis_map::view::BLOCK_WALLS }),
+            water: None,
+        });
+        let mut opened = Session::new(Project::default());
+        crate::cmd::project::reset_to(&mut opened, saved);
+        let t = opened.project.maps[0].view.terrain.clone();
+        assert!(t.as_ref().is_some_and(|t| t.block.is_none()), "{t:?}");
+        assert!(opened.notices.iter().any(|n| n.text.contains("needs an extent box")), "{:?}", opened.notices);
     }
     // Renaming another layer leaves the terrain as it is.
     s.run("layer.rename", &json!({"layer": "Countries", "name": "Paises"})).unwrap();
@@ -11552,6 +11698,22 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water.rgis")).unwrap();
     let water = saved.maps[0].view.terrain.as_ref().and_then(|t| t.water.clone());
     assert_eq!(water, Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: Some("nivel".into()) }));
+}
+
+/// A saved project's block is read back (the schema fixture `terrain_block.rgis`), its walls left
+/// to the default.
+#[test]
+fn terrain_block_is_read_back_from_a_saved_project() {
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_block.rgis")).unwrap();
+    let block = saved.maps[0].view.terrain.as_ref().and_then(|t| t.block.clone());
+    assert_eq!(
+        block,
+        Some(rustgis_map::view::TerrainBlock {
+            extent: Some([-500_000.0, 1_500_000.0, 500_000.0, 2_500_000.0]),
+            depth: Some(150.0),
+            walls: rustgis_map::view::BLOCK_WALLS,
+        })
+    );
 }
 
 /// A 40×40 lon/lat DEM near (10°E, 45°N): a hill in the middle, with a wall to its east.

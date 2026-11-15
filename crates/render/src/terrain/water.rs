@@ -430,6 +430,7 @@ mod tests {
         m.view.terrain = Some(rustgis_map::view::Terrain {
             source: rustgis_map::view::TerrainSource::Layer("dem".into()),
             exaggeration: 2.0,
+            block: None,
             water: Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: level.map(str::to_string) }),
         });
         let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.0, -0.6)), res: 600.0, bearing: 0.0, pitch: 65.0 };

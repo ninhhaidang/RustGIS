@@ -188,8 +188,12 @@ fn terrain_and_roofs_translate_ready_and_deferred_places_without_changing_glyph_
     let camera = Camera { center: Coord::new(0.0, 0.0), res: 600.0, bearing: 0.0, pitch: 45.0 };
     let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera, sky: false };
     let mut hill = crate::tests::hill_map();
-    hill.view.terrain =
-        Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer("dem".into()), exaggeration: 2.0, water: None });
+    hill.view.terrain = Some(rustgis_map::view::Terrain {
+        source: rustgis_map::view::TerrainSource::Layer("dem".into()),
+        exaggeration: 2.0,
+        block: None,
+        water: None,
+    });
     let ground = terrain::Ground::of(&hill, &camera).unwrap();
     let mut blocks = Map::new("roofs");
     let mut ds = Dataset::new("block", GeometryType::Polygon, vec![]);
@@ -246,8 +250,12 @@ fn terrain_lifts_line_places_at_their_own_height() {
     let camera = Camera { center: Coord::new(0.0, 0.0), res: 600.0, bearing: 0.0, pitch: 45.0 };
     let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera, sky: false };
     let mut map = crate::tests::hill_map();
-    map.view.terrain =
-        Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer("dem".into()), exaggeration: 2.0, water: None });
+    map.view.terrain = Some(rustgis_map::view::Terrain {
+        source: rustgis_map::view::TerrainSource::Layer("dem".into()),
+        exaggeration: 2.0,
+        block: None,
+        water: None,
+    });
     let ground = terrain::Ground::of(&map, &camera).unwrap();
     let mut c = curved(&[(30.0, 150.0), (370.0, 150.0)]);
     let before: Vec<_> = (0..c.curves.as_ref().unwrap().positions.len())

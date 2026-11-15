@@ -3024,7 +3024,7 @@ impl Map {
             navigator: _,
             first_person: _,
         } = view;
-        if let Some(view::Terrain { source, exaggeration: _, water: _ }) = terrain {
+        if let Some(view::Terrain { source, exaggeration: _, block: _, water: _ }) = terrain {
             match source {
                 view::TerrainSource::Tiles { url, encoding: _ } => {
                     out.push(Slot { at: SlotPos::Terrain, value: url, address: true, local_path: false })
