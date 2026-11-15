@@ -94,5 +94,5 @@ bundled: the interface uses an installed system sans-serif when one is found, ot
 Ubuntu Light face that ships inside `epaint_default_fonts` (Ubuntu Font Licence 1.0). For an
 interface language in a script those faces lack, the web app downloads one from
 [rustgis-assets](https://github.com/opengeos/rustgis-assets/tree/main/fonts), where each font's
-licence is kept beside it: Noto Sans SC, JP or KR for Chinese, Japanese or Korean, and Vazirmatn
-for Arabic script (both SIL Open Font License 1.1).
+licence is kept beside it: Noto Sans SC, TC, JP or KR for Simplified Chinese, Traditional Chinese,
+Japanese or Korean, and Vazirmatn for Arabic script (both SIL Open Font License 1.1).
