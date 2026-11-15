@@ -1,7 +1,9 @@
 name: Mobile release
 
 # The phone apps (apps/rustgis-mobile, #1902) for a published release: a signed Android APK
-# attached to the release, and a signed iOS build uploaded to TestFlight. A manual run (from main)
+# attached to the release, the Android App Bundle for Google Play signed with the same key (see
+# the README for its role in Play App Signing) kept as a workflow artifact, and a signed iOS build
+# uploaded to TestFlight. A manual run (from main)
 # builds and signs both and keeps them as workflow artifacts; it uploads to TestFlight only when
 # asked. A pull request that changes apps/rustgis-mobile or this workflow builds both with no
 # secrets: the Android APK signed with a throwaway debug key, the iOS app unsigned.
@@ -91,7 +93,24 @@ jobs:
           fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
 
-      - name: Build the APK
+      # The platform the manifest targets (build-apk.sh refuses an older one), named here rather
+      # than left to the runner image.
+      - name: The Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" >/dev/null
+
+      - name: bundletool
+        env:
+          # Pinned by version and digest (GeoLibre's android.yml uses the same).
+          BUNDLETOOL_VERSION: "1.18.3"
+          BUNDLETOOL_SHA256: "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29"
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/bundletool.jar"
+          curl -fsSL -o "$jar" "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          echo "$BUNDLETOOL_SHA256  $jar" | sha256sum -c -
+          echo "BUNDLETOOL=$jar" >> "$GITHUB_ENV"
+
+      - name: Build the APK and the App Bundle
         env:
           # A signing run leaves it unsigned for the sign job; a pull request's is signed with a
           # debug key made for it.
@@ -102,7 +121,9 @@ jobs:
         if: env.SIGNS == 'true'
         with:
           name: android-unsigned
-          path: target/android/aligned.apk
+          path: |
+            target/android/aligned.apk
+            target/android/unsigned.aab
           if-no-files-found: error
           retention-days: 1
 
@@ -146,7 +167,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/release.keystore"
 
-      - name: Check and name the APK
+      - name: Check and name the APK and the App Bundle
         env:
           VERSION: ${{ needs.android-build.outputs.version }}
           # The release key's certificate (CN=RustGIS, O=OpenGeos), as `apksigner verify
@@ -167,11 +188,29 @@ jobs:
             echo "::error::The APK isn't signed with the release key (certificate SHA-256 $RELEASE_CERT_SHA256)."
             exit 1
           fi
+          # The App Bundle, for Google Play, signed with the same key.
+          mkdir -p bundle
+          aab="RustGIS-$VERSION-android.aab"
+          cp target/android/rustgis-mobile.aab "bundle/$aab"
+          jarsigner -verify "bundle/$aab" | tail -1
+          printed="$(keytool -printcert -jarfile "bundle/$aab" | awk '/SHA256:/ { print $2; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          if [ "$printed" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::The App Bundle isn't signed with the release key."
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rustgis-android
           path: dist/*
+          if-no-files-found: error
+
+      # For Google Play, uploaded by hand in the Play Console: not attached to the release, as a
+      # bundle installs only through Play.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rustgis-android-bundle
+          path: bundle/*
           if-no-files-found: error
 
   # Its own job, so only it holds a token that can write to the repository.

@@ -112,6 +112,9 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-ndk
+      # The platform the manifest targets (build-apk.sh refuses an older one).
+      - name: The Android platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" >/dev/null
       - name: Build the APK
         run: apps/rustgis-mobile/build-apk.sh --debug x86_64
 

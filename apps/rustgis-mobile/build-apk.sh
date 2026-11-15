@@ -14,6 +14,11 @@
 # signs it with the release key and builds nothing: CI builds with no secret in the build's
 # environment (every crate's build script runs in it) and signs in a step of its own.
 #
+# With BUNDLETOOL (the path of Google's bundletool jar) it also builds the Android App Bundle
+# Google Play takes (target/android/unsigned.aab), which signing with the release key turns into
+# target/android/rustgis-mobile.aab, the bundle uploaded to Play (see README.md for the key's role
+# in Play App Signing). Without the release key it stays unsigned.
+#
 # Needs: a JDK (keytool, apksigner), the Rust Android targets, cargo-ndk, and an Android SDK with
 # the NDK, build-tools and a platform (see README.md). ANDROID_HOME names the SDK (default ~/Android/Sdk).
 set -euo pipefail
@@ -42,9 +47,20 @@ for need in "${needs[@]}"; do
     [ -d "$need" ] || { echo "build-apk: the Android SDK at $sdk has no NDK, build-tools or platform (see README.md)" >&2; exit 1; }
 done
 out=$root/target/android
+# The platform linked against is at least the API level the manifest targets.
+if [ -z "$sign_only" ]; then
+    target_api=$(sed -n 's/.*targetSdkVersion="\([0-9]*\)".*/\1/p' "$root/apps/rustgis-mobile/AndroidManifest.xml")
+    # The leading API level of android-36, android-37.0 or android-36-ext19.
+    platform_api=$(basename "$platform" | sed 's/^android-//; s/[^0-9].*//')
+    case $target_api$platform_api in *[!0-9]* | "") platform_api=0 ;; esac
+    if [ "$platform_api" -lt "${target_api:-0}" ] || [ -z "$target_api" ]; then
+        echo "build-apk: the app targets API $target_api, and the newest platform in $sdk is $(basename "$platform"): install platforms;android-$target_api" >&2
+        exit 1
+    fi
+fi
 
-# Signs the unsigned APK with the release key; its password is read from the environment, never
-# put on a command line.
+# Signs the unsigned APK, and the App Bundle when there is one, with the release key; its password
+# is read from the environment, never put on a command line.
 sign_release() {
     : "${ANDROID_KEYSTORE:?build-apk: ANDROID_KEYSTORE names no keystore}"
     : "${ANDROID_KEYSTORE_PASSWORD:?build-apk: ANDROID_KEYSTORE is set but ANDROID_KEYSTORE_PASSWORD is not}"
@@ -53,13 +69,22 @@ sign_release() {
         --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out "$out/rustgis-mobile.apk" "$out/aligned.apk"
     rm -f "$out/aligned.apk"
     ls -lh "$out/rustgis-mobile.apk"
+    if [ -f "$out/unsigned.aab" ]; then
+        # jarsigner, as apksigner signs only APKs.
+        cp "$out/unsigned.aab" "$out/rustgis-mobile.aab"
+        jarsigner -keystore "$ANDROID_KEYSTORE" -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -sigalg SHA256withRSA -digestalg SHA-256 "$out/rustgis-mobile.aab" "${ANDROID_KEY_ALIAS:-rustgis}" >/dev/null
+        jarsigner -verify "$out/rustgis-mobile.aab" >/dev/null
+        rm -f "$out/unsigned.aab"
+        ls -lh "$out/rustgis-mobile.aab"
+    fi
 }
 if [ -n "$sign_only" ]; then
     sign_release
     exit 0
 fi
 
-rm -rf "$out/apk" "$out/rustgis-mobile.apk" && mkdir -p "$out/apk"
+rm -rf "$out/apk" "$out/rustgis-mobile.apk" "$out/unsigned.aab" "$out/rustgis-mobile.aab" && mkdir -p "$out/apk"
 targets=()
 for abi in "${abis[@]}"; do targets+=(-t "$abi"); done
 # API 26 (Android 8.0): the oldest the app is linked for.
@@ -69,6 +94,18 @@ for abi in "${abis[@]}"; do targets+=(-t "$abi"); done
 find "$out/apk/lib" -name '*.so' ! -name librustgis_mobile.so -delete
 strip=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip | head -1)
 find "$out/apk/lib" -name librustgis_mobile.so -exec "$strip" {} \;
+# Each segment aligned to 16 KB pages, which Android 15 phones may use and Google Play requires.
+readelf=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)
+while IFS= read -r -d '' so; do
+    # In an assignment of its own, so a readelf that fails stops the script.
+    info=$("$readelf" -lW "$so")
+    for align in $(awk '$1 == "LOAD" { print $NF }' <<< "$info"); do
+        if [ $((align)) -lt 16384 ]; then
+            echo "build-apk: $so has a segment aligned to $align, less than 16 KB" >&2
+            exit 1
+        fi
+    done
+done < <(find "$out/apk/lib" -name '*.so' -print0)
 
 # The activity's Java half, compiled without Gradle: javac, then d8 to Android's bytecode.
 rm -rf "$out/java" && mkdir -p "$out/java/classes" "$out/java/dex"
@@ -106,6 +143,24 @@ cp "$root/LICENSE" "$root/apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt" "$out/no
 # -P 16: on 16 KB pages, which Android 15 phones may use (build-tools 35 and later).
 "$tools/zipalign" -f -P 16 4 "$unsigned" "$out/aligned.apk"
 rm -f "$unsigned"
+
+if [ -n "${BUNDLETOOL:-}" ]; then
+    # The bundle's one module, as bundletool wants it: the manifest and resources linked in
+    # protobuf form, and the dex, libraries and assets the APK has, each in its folder.
+    aab=$out/aab
+    rm -rf "$aab" && mkdir -p "$aab/base/manifest" "$aab/base/dex"
+    "$tools/aapt2" link --proto-format -o "$aab/proto.apk" --manifest "$root/apps/rustgis-mobile/AndroidManifest.xml" \
+        -I "$platform/android.jar" --version-code "$code" --version-name "$version" --replace-version
+    (cd "$aab/base" && unzip -q ../proto.apk && mv AndroidManifest.xml manifest/)
+    cp "$out/java/dex/classes.dex" "$aab/base/dex/"
+    cp -R "$out/apk/lib" "$aab/base/lib"
+    cp -R "$out/notices/assets" "$aab/base/assets"
+    (cd "$aab/base" && zip -q -r ../base.zip .)
+    java -jar "$BUNDLETOOL" build-bundle --modules="$aab/base.zip" --output="$out/unsigned.aab"
+    java -jar "$BUNDLETOOL" validate --bundle="$out/unsigned.aab" >/dev/null
+    rm -rf "$aab"
+    ls -lh "$out/unsigned.aab"
+fi
 
 if [ "${ANDROID_UNSIGNED:-}" = 1 ]; then
     echo "build-apk: $out/aligned.apk is unsigned (ANDROID_UNSIGNED=1): sign it with --sign-only"

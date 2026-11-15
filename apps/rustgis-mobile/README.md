@@ -15,7 +15,7 @@ Once:
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked
 # A JDK (for keytool and apksigner), and an Android SDK in ~/Android/Sdk (or ANDROID_HOME), with:
-sdkmanager "ndk;27.2.12479018" "build-tools;36.0.0" "platforms;android-35" "platform-tools"
+sdkmanager "ndk;27.2.12479018" "build-tools;36.0.0" "platforms;android-36" "platform-tools"
 ```
 
 Then:
@@ -39,8 +39,8 @@ adb push parcels.gpkg /sdcard/Android/data/org.rustgis.mobile/files/
 An emulator for testing without a phone:
 
 ```sh
-sdkmanager "emulator" "system-images;android-35;default;x86_64"
-avdmanager create avd -n rustgis-spike -k "system-images;android-35;default;x86_64" -d pixel_6
+sdkmanager "emulator" "system-images;android-36;default;x86_64"
+avdmanager create avd -n rustgis-spike -k "system-images;android-36;default;x86_64" -d pixel_6
 emulator -avd rustgis-spike -no-window -no-audio -gpu swiftshader_indirect
 adb exec-out screencap -p > shot.png
 ```
@@ -331,6 +331,22 @@ dependencies compile into the app is kept in hand by `Cargo.lock` and reviewed u
 its header lists are the `mobile-release` environment's, which only `main` and `v*` tags may use. A
 pull request that changes `apps/rustgis-mobile` builds both with no secrets: the APK signed with a
 throwaway debug key, the iOS app unsigned.
+
+The same run builds the Android App Bundle Google Play takes (`RustGIS-<version>-android.aab`, the
+`rustgis-android-bundle` artifact), signed with the release key and uploaded
+by hand in the Play Console. `build-apk.sh` makes it when `BUNDLETOOL` names Google's bundletool
+jar: the manifest linked in protobuf form, and the APK's dex, libraries and assets as the bundle's
+one module, signed by `--sign-only` with `jarsigner`. A library with a segment aligned to less
+than 16 KB fails the build, as Play refuses one for apps targeting Android 15 and later. The app
+targets API 36.
+
+The release key has both roles in Play App Signing. When the app is first set up in the Play
+Console, it is given as the app signing key (the Console's option to export and upload a key from
+a Java keystore), not a key Play makes, and no separate upload key is made, so the bundles are
+uploaded signed with it too (Play takes the app signing key as the upload key when there is no
+other). Android installs an update only when it is signed with the certificate the installed copy
+was: with one key, an APK from GitHub and a build from Play update each other. With a key Play
+makes, they can't, and someone moving between them must uninstall first.
 
 The Android release key (`ANDROID_KEYSTORE_BASE64`) can't be replaced: an APK signed with
 another key doesn't install as an update of one signed with it. Keep a copy of the keystore and
