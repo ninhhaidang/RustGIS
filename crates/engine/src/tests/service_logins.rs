@@ -1200,6 +1200,49 @@ fn a_database_password_under_a_web_connections_id_survives_forget_remember_edit_
 }
 
 #[test]
+fn s3_keys_under_a_web_connections_id_survive_forget_remember_edit_and_remove() {
+    let s3 = Secret::new(r#"{"endpoint":null,"accessKeyId":"AKIDEXAMPLE","secretAccessKey":"s3-secret-1979"}"#);
+    for operation in ["forget", "remember", "edit", "remove"] {
+        let store = Arc::new(CountingStore::default());
+        let mut s = session(Some(store.clone()));
+        let id = new(&mut s, json!({"kind":"wms","address":"https://s3-envelope1979.example/wms","auth":"header","keyName":"X-Key"}));
+        s.connections.set_remembered(&id, true);
+        let account = format!("connection/{id}");
+        store.inner.save(&account, &s3).unwrap();
+        let out = match operation {
+            "forget" => s.run("connection.forgetLogin", &json!({"id":id})),
+            "remember" => s.run("connection.login", &json!({"id":id,"apiKey":"web-1979","remember":true})),
+            "edit" => s.run("connection.edit", &json!({"id":id,"keyName":"X-Other"})),
+            _ => s.run("connection.remove", &json!({"id":id})),
+        }
+        .unwrap();
+        if operation == "remember" {
+            assert_eq!(out["warning"], web::NOT_REMEMBERED);
+        }
+        assert_eq!(store.inner.load(&account).unwrap(), Some(s3.clone()), "{operation}");
+    }
+}
+
+#[test]
+fn a_web_envelope_missing_an_identity_field_is_cleared_by_forget_and_remember() {
+    let store = Arc::new(CountingStore::default());
+    let mut s = session(Some(store.clone()));
+    let id = new(&mut s, json!({"kind":"wms","address":"https://partial-envelope.example/wms","auth":"header","keyName":"X-Key"}));
+    let account = format!("connection/{id}");
+    let partial = Secret::new(r#"{"version":1,"origin":"https://partial-envelope.example","auth":"header"}"#);
+    store.inner.save(&account, &partial).unwrap();
+    s.connections.set_remembered(&id, true);
+    s.run("connection.forgetLogin", &json!({"id":id})).unwrap();
+    assert_eq!(store.inner.load(&account).unwrap(), None);
+    store.inner.save(&account, &partial).unwrap();
+    let out = s.run("connection.login", &json!({"id":id,"apiKey":"replaced-partial","remember":true})).unwrap();
+    assert!(out["warning"].is_null());
+    let mut later = session(Some(store));
+    later.load_connections(&s.connections.to_json());
+    assert_eq!(header(&bound(&mut later, &id, "https://partial-envelope.example/wms")).unwrap().1, "replaced-partial");
+}
+
+#[test]
 fn forgetting_a_saved_login_clears_the_failed_read_it_leaves_behind() {
     let store = Arc::new(CountingStore::default());
     let origin = "https://forget-failed1979.example";

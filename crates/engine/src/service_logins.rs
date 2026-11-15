@@ -173,29 +173,30 @@ pub fn load(store: Store<'_>, c: &Connection) -> Loading {
 enum Owner {
     /// Saved for this connection's origin, method, user and header or parameter name.
     Mine,
-    /// Not an envelope at all: no one can use it, so it never blocks this connection.
+    /// Not a JSON object, or a version-1 web envelope missing an identity field: no one can use
+    /// it, so it never blocks this connection.
     Damaged,
-    /// Another identity under the same id, or a newer RustGIS's envelope: left as it is.
+    /// Another identity under the same id, a newer RustGIS's envelope, or another kind's
+    /// credential (database passwords and S3 keys share the `connection/<id>` account and carry no
+    /// `version`): left as it is.
     Other,
 }
 
 const FIELDS: [&str; 6] = ["version", "origin", "auth", "user", "keyName", "secret"];
 
-/// Whose `value` is. It never looks at the secret, and an envelope from a newer version (another
-/// version, or fields this one doesn't know) is someone else's, never damaged.
+/// Whose `value` is. It never looks at the secret. Every object without this version's `version`
+/// and fields (another kind's credential, a newer version's envelope, an unknown shape) is
+/// someone else's, never damaged.
 fn owner(value: &Secret, c: &Connection, origin: Option<&str>) -> Owner {
     let text = value.expose();
     if text.len() > MAX_STORED {
         return Owner::Other;
     }
     let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else { return Owner::Damaged };
-    match o.get("version").map(Value::as_u64) {
-        // A database password's envelope (`kind`, `address`, `password`) shares this account's id
-        // and has no version: another kind's value, never a damaged web login to replace or delete.
-        None | Some(None) if o.contains_key("kind") || o.contains_key("password") => return Owner::Other,
-        None | Some(None) => return Owner::Damaged,
-        Some(Some(1)) if o.keys().all(|k| FIELDS.contains(&k.as_str())) => {}
-        Some(Some(_)) => return Owner::Other,
+    // Database passwords (`kind`, `address`, `password`) and S3 keys (`endpoint`, `accessKeyId`,
+    // `secretAccessKey`) have no version, nor would any other shape this version doesn't know.
+    if o.get("version").and_then(Value::as_u64) != Some(1) || !o.keys().all(|k| FIELDS.contains(&k.as_str())) {
+        return Owner::Other;
     }
     let field = |name: &str| o.get(name).and_then(Value::as_str);
     let (Some(saved_origin), Some(auth), Some(user), Some(key_name)) = (field("origin"), field("auth"), field("user"), field("keyName"))
