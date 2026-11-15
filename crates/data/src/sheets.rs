@@ -67,10 +67,10 @@ pub fn read(bytes: &[u8], name: &str, sheet: Option<&str>, opts: &CsvOptions) ->
 }
 
 /// The columns of one sheet of a workbook (`sheet` as [`read`] takes it), and those its geometry
-/// is read from when none are given.
-pub fn columns(bytes: &[u8], sheet: Option<&str>) -> Result<Columns> {
+/// is read from when none are given, respecting the supplied coordinate system.
+pub fn columns(bytes: &[u8], sheet: Option<&str>, crs: Option<crate::raster::Crs>) -> Result<Columns> {
     let g = grid(bytes, sheet)?;
-    Ok(columns_of(&g.headers, &g.rows))
+    columns_of(&g.headers, &g.rows, crs)
 }
 
 /// A sheet as text: the workbook's sheets, the one picked, its column names and its rows.
@@ -735,15 +735,31 @@ mod tests {
         assert_eq!(ds.fields[1].name, "B", "a column without a heading is named by its letter");
         assert!(read(&book, "book", Some("Missing"), &CsvOptions::default()).is_err());
         // The columns Add Delimited Text offers, found as the sheet is read.
-        let c = columns(&book, None).unwrap();
+        let c = columns(&book, None, None).unwrap();
         assert_eq!(c.names, ["name", "lon", "lat", "pop"]);
         assert_eq!((c.x.as_deref(), c.y.as_deref(), c.delimiter), (Some("lon"), Some("lat"), None));
-        let c = columns(&book, Some("utm")).unwrap();
+        let c = columns(&book, Some("utm"), None).unwrap();
         assert_eq!((c.x.as_deref(), c.y.as_deref()), (Some("easting"), Some("northing")));
-        assert_eq!(columns(&book, Some("Notes")).unwrap().names, ["text", "B"]);
+        assert_eq!(columns(&book, Some("Notes"), None).unwrap().names, ["text", "B"]);
         for cut in (0..book.len()).step_by(61) {
             let _ = read(&book[..cut], "t", None, &CsvOptions::default());
-            let _ = columns(&book[..cut], None);
+            let _ = columns(&book[..cut], None, None);
+        }
+    }
+
+    /// Spreadsheet defaults respect a projected CRS just as the delimited reader does.
+    #[test]
+    fn coordinate_columns_follow_crs() {
+        use crate::raster::Crs;
+        let book = xlsx(&[("Mixed", &[&["X", "Y", "Longitude", "Latitude"], &["1000", "2000", "3", "4"]])]);
+        for (crs, expected) in [
+            (None, ("Longitude", "Latitude")),
+            (Some(Crs::LonLat), ("Longitude", "Latitude")),
+            (Some(Crs::parse("+proj=latlong +datum=WGS84 +no_defs").unwrap()), ("Longitude", "Latitude")),
+            (Some(Crs::parse("EPSG:2263").unwrap()), ("X", "Y")),
+        ] {
+            let c = columns(&book, None, crs).unwrap();
+            assert_eq!((c.x.as_deref(), c.y.as_deref()), (Some(expected.0), Some(expected.1)));
         }
     }
 
@@ -800,7 +816,7 @@ mod tests {
             assert!(read(book, "t.xls", None, &CsvOptions::default()).is_err(), "book {i}");
             // Some damaged headers still list no sheets; none may panic.
             let _ = sheet_names(book);
-            assert!(columns(book, None).is_err(), "book {i}");
+            assert!(columns(book, None, None).is_err(), "book {i}");
         }
     }
 
@@ -892,7 +908,7 @@ mod tests {
         let refuses = |book: &[u8], kind: &str| {
             assert!(check_compound(book).is_err(), "{kind} reached the unchecked BIFF parser");
             assert!(sheet_names(book).is_err(), "{kind}: names");
-            assert!(columns(book, None).is_err(), "{kind}: columns");
+            assert!(columns(book, None, None).is_err(), "{kind}: columns");
             assert!(read(book, "bad.xls", None, &CsvOptions::default()).is_err(), "{kind}: read");
         };
         for kind in [0x002F, 0x0042, 0x0022, 0x0809, 0x0085, 0x0018, 0x0017] {
@@ -1031,7 +1047,7 @@ mod tests {
         let damaged = |book: &[u8], what: &str| {
             let e = read(book, "t.xls", None, &CsvOptions::default()).unwrap_err().to_string();
             assert!(e.contains("damaged") && e.contains(what), "{what}: {e}");
-            assert!(columns(book, None).is_err() && sheet_names(book).is_err(), "{what}");
+            assert!(columns(book, None, None).is_err() && sheet_names(book).is_err(), "{what}");
         };
         // The tables are sound: the check passes it on, and calamine reads it (it has no sheets).
         let sound = small_book(&[FAT, END, END, END], 0, 64, &[END]);

@@ -28,7 +28,7 @@ pub fn commands() -> Vec<C> {
             .view()
             .params(r#"{"path": string, "crs"?: "EPSG:… for a CityJSON model (.city.json, a .json, or in a zip) or a CityGML model (.gml, .xml, or in a zip): it replaces the system a model file names; in a zip, it is used for a model naming none RustGIS knows (as layer.addData)"}"#),
         C::new("info.fileColumns", "List Columns in File", "Home › Add › Add Data › Delimited Text", file_columns).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
-            r#"{"path": "a delimited text file (CSV, TSV, TXT, DAT, or gzip-compressed text) or a spreadsheet", "delimiter"?: ","|";"|"\\t"|"|", "layer"?: "a spreadsheet's sheet (the first by default)"}"#,
+            r#"{"path": "a delimited text file (CSV, TSV, TXT, DAT, or gzip-compressed text) or a spreadsheet", "delimiter"?: ","|";"|"\\t"|"|", "layer"?: "a spreadsheet's sheet (the first by default)", "crs"?: "EPSG:… (or WKT), as layer.addData: a projected system keeps the columns found by name"}"#,
         ),
         C::new("layer.addSql", "Add Data From SQL", "Home › Add", add_sql)
             .roles(&[
@@ -3627,14 +3627,15 @@ fn gzip_columns(plain: &str, prefix: &[u8], p: &Value) -> CmdResult {
 const COLUMNS_PREFIX: usize = 8 << 20;
 
 /// The columns of a delimited text file or a spreadsheet's sheet (`"layer"`), with the separator
-/// (`"delimiter"`, or the one found) and the x/y or WKT columns found by name:
+/// (`"delimiter"`, or the one found) and the x/y or WKT columns found for `"crs"`:
 /// `{"columns", "x", "y", "wkt", "delimiter"}`. `info.fileColumns` for a file's bytes (the web
 /// app's Add Delimited Text).
 pub fn columns_of(name: &str, bytes: &[u8], p: &Value) -> CmdResult {
     let err = |e: rustgis_data::DataError| format!("{name}: {e}");
+    let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()).map(rustgis_data::raster::Crs::parse).transpose()?;
     let c = if rustgis_data::sheets::is_sheet_name(name) {
         let sheet = ps(p, "layer").map(str::trim).filter(|l| !l.is_empty());
-        rustgis_data::sheets::columns(bytes, sheet).map_err(err)?
+        rustgis_data::sheets::columns(bytes, sheet, crs).map_err(err)?
     } else if rustgis_data::io::is_gzip_text_name(name) {
         let prefix = rustgis_data::io::gzip_text_prefix(bytes, COLUMNS_PREFIX).map_err(err)?;
         let plain = name.get(..name.len().saturating_sub(3)).unwrap_or(name);
@@ -3650,7 +3651,7 @@ pub fn columns_of(name: &str, bytes: &[u8], p: &Value) -> CmdResult {
             // Another encoding (Latin-1, UTF-16), as reading the file takes it.
             Err(_) => rustgis_data::io::delimited_text(name, bytes).map_err(err)?.0,
         };
-        rustgis_data::io::csv_columns(&text, parse_delimiter(ps(p, "delimiter"))?).map_err(err)?
+        rustgis_data::io::csv_columns(&text, parse_delimiter(ps(p, "delimiter"))?, crs).map_err(err)?
     } else {
         return Err(format!("{name}: not delimited text (CSV, TSV, TXT, DAT, or gzip-compressed text) or a spreadsheet"));
     };

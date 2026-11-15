@@ -94,8 +94,18 @@ A zipped File Geodatabase must be unzipped first: on the desktop, add the
 **Home › Add › Add Data › Delimited Text…** asks for a CSV or a spreadsheet first, then lists its columns to pick the x and y (or WKT)
 ones from, with the coordinate system (such as `EPSG:2263`) and the separator (changing it reads
 the columns again); `info.fileColumns` lists them for scripts. Add Data finds them itself
-(columns named like longitude/latitude, easting/northing or geometry, and EWKT's `SRID=`) and
-says when coordinates aren't longitude/latitude. A CSV without coordinate columns, or a layer without geometry, opens as a
+(columns named like longitude/latitude, including GTFS `stop_lon`/`stop_lat`, easting/northing or
+geometry, and EWKT's `SRID=`). With no projected coordinate system or explicit column choices,
+if the first pair contains coordinates outside ±180° longitude or ±90° latitude and a more
+specific longitude/latitude pair gives in-range, non-0,0 positions on at least as many rows as
+the first pair gives finite positions, that pair is used for the whole file.
+The published aliases `Longitude Decimal Degrees`/`Latitude Decimal Degrees` and
+`Longitutde`/`Lattitude` are recognised too. The dialog checks its first 1,000 rows to pick
+defaults, and recomputes unchanged defaults when you leave the coordinate-system box or press
+Enter; columns you picked stay picked. A projected system keeps the columns found by name.
+Add Data checks all rows. Coordinates still outside degree ranges are counted in a
+notice. Points placed at exactly 0,0 are also counted in a notice: these often mean missing
+coordinates, but the points are kept. A CSV without coordinate columns, or a layer without geometry, opens as a
 standalone table, listed under the map in Layers; right-click it to open or remove it. Tables
 can share a name: commands and tools take a table's id (`info.project` lists them) as well as its
 name, which stands for the first table of that name. An id given as a number is never taken for

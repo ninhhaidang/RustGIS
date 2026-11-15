@@ -10,6 +10,6 @@ use rustgis_data::sheets;
 
 fuzz_target!(|data: &[u8]| {
     let _ = sheets::sheet_names(data);
-    let _ = sheets::columns(data, None);
+    let _ = sheets::columns(data, None, None);
     let _ = sheets::read(data, "fuzz", None, &CsvOptions::default());
 });
