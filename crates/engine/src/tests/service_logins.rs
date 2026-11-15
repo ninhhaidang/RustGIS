@@ -2056,7 +2056,7 @@ fn a_query_login_authenticates_requests_to_its_server_without_saving_the_key() {
             match cache::get(address, Want::Json) {
                 State::Pending => {
                     assert!(started.elapsed() < std::time::Duration::from_secs(10), "query login fetch timed out");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the query-login fetch
                 }
                 state => break state,
             }
