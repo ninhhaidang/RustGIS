@@ -374,8 +374,9 @@ pub fn raster_land(s: &mut Session, id: u64, m: Made) -> Result<bool, String> {
     Ok(true)
 }
 
-fn out_name(p: &Value, default: String) -> String {
-    ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(200).collect()).unwrap_or(default)
+/// The output's name the parameters give, else `default`; one over 200 characters is refused (#1888).
+fn out_name(p: &Value, default: String) -> Result<String, String> {
+    Ok(super::name_given(p, "the output's name", 200)?.unwrap_or(default))
 }
 
 /// `gp.env`: sets what it's given of the geoprocessing environment (the extent, the projected
@@ -754,7 +755,7 @@ fn new_model(s: &mut Session, p: &Value) -> CmdResult {
 /// whether it may touch files (a graph passed in is the caller's own).
 pub(crate) fn model_graph(s: &Session, p: &Value) -> Result<(String, crate::project::ModelGraph, bool), String> {
     if let Some(g) = p.get("graph").filter(|g| !g.is_null()) {
-        let name = ps(p, "name").unwrap_or("Model").chars().take(200).collect();
+        let name = super::within("name", "a model's name", ps(p, "name").unwrap_or("Model"), MAX_MODEL_NAME)?;
         return Ok((name, crate::model::graph_from_json(g)?, true));
     }
     let model = match ps(p, "name") {
@@ -955,10 +956,15 @@ fn run_model_here(s: &mut Session, p: &Value) -> CmdResult {
     Ok(out)
 }
 
-/// The stored source and destination names used by graph saving and its provenance check.
+/// The stored source and destination names used by graph saving and its provenance check. A name
+/// over its limit is refused, not cut.
 pub(crate) fn model_save_names(p: &Value) -> Result<(String, String), String> {
-    let name: String = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name is required")?.chars().take(200).collect();
-    let new_name: String = ps(p, "rename").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&name).chars().take(200).collect();
+    let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name is required")?;
+    let name = super::within("name", "a model's name", name, MAX_MODEL_NAME)?;
+    let new_name = match ps(p, "rename").map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => super::within("rename", "a model's name", n, MAX_MODEL_NAME)?,
+        None => name.clone(),
+    };
     Ok((name, new_name))
 }
 
@@ -1226,7 +1232,7 @@ fn raster_function(s: &mut Session, p: &Value) -> CmdResult {
 fn function_work(s: &Session, p: &Value) -> Result<Work, String> {
     let src = raster_of(s, ps(p, "layer").ok_or("layer is required")?)?;
     let target = resample_target(s, p)?;
-    let name = out_name(p, format!("{}_{}", src.name, ps(p, "function").unwrap_or("")));
+    let name = out_name(p, format!("{}_{}", src.name, ps(p, "function").unwrap_or("")))?;
     let defaults = s.raster_defaults.clone();
     let mut p = p.clone();
     // Read here, on the command's thread, where an unreadable value is said (#1600); only a remap
@@ -1299,7 +1305,7 @@ fn function_chain_work(s: &Session, p: &Value) -> Result<Work, String> {
         .enumerate()
         .map(|(i, st)| resample_target(s, st).map_err(|e| format!("step {} ({}): {e}", i + 1, func(st))))
         .collect::<Result<_, _>>()?;
-    let named = Some(out_name(p, String::new())).filter(|n| !n.is_empty());
+    let named = Some(out_name(p, String::new())?).filter(|n| !n.is_empty());
     let defaults = s.raster_defaults.clone();
     Ok(Box::new(move || {
         let mut cur: Raster = (*src).clone();
@@ -1354,7 +1360,7 @@ fn suitability_work(s: &Session, p: &Value) -> Result<Work, String> {
         }
         criteria.push((r, band, ranges, c.get("weight").and_then(Value::as_f64).unwrap_or(1.0)));
     }
-    let name = out_name(p, "Suitability".into());
+    let name = out_name(p, "Suitability".into())?;
     Ok(Box::new(move || {
         let mut scored = Vec::new();
         let mut empty = Vec::new();
@@ -1439,7 +1445,7 @@ fn viewshed_work(s: &Session, p: &Value) -> Result<Work, String> {
         }
         Some(other) => return Err(format!("heights must be \"nearest\" or \"bilinear\", not {other}")),
     };
-    let name = out_name(p, format!("{}_viewshed", dem.name));
+    let name = out_name(p, format!("{}_viewshed", dem.name))?;
     let dem_name = dem.name.clone();
     Ok(Box::new(move || {
         let vs = rasterops::viewshed(&dem, band, at, height, radius, heights)?;
@@ -1483,13 +1489,14 @@ fn viewshed_work(s: &Session, p: &Value) -> Result<Work, String> {
 
 fn line_of_sight(s: &mut Session, p: &Value) -> CmdResult {
     let dem = raster_of(s, ps(p, "layer").ok_or("layer is required")?)?;
+    let name = out_name(p, "Line of Sight".into())?;
     let (a, b2) = (point(p, "from")?, point(p, "to")?);
     let band = band_of(p, &dem)?;
     let (seen, prof) =
         rasterops::line_of_sight(&dem, band, a, b2, f(p, "observerHeight").unwrap_or(1.7), f(p, "targetHeight").unwrap_or(0.0), 400)
             .ok_or("the observer is outside the raster or on no-data")?;
     // Visible and hidden stretches as separate lines.
-    let mut ds = Dataset::new(out_name(p, "Line of Sight".into()), GeometryType::Polyline, vec![Field::new("visible", FieldType::Boolean)]);
+    let mut ds = Dataset::new(name, GeometryType::Polyline, vec![Field::new("visible", FieldType::Boolean)]);
     let mut run: Vec<Coord> = Vec::new();
     let mut state: Option<bool> = None;
     for (_, c, _, vis) in &prof {
@@ -1526,6 +1533,7 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     let ds = feature_ds(s, p)?;
     let field = ps(p, "field").ok_or("field is required")?;
     let fi = ds.field_index(field).ok_or_else(|| format!("no field named '{field}'"))?;
+    let name = out_name(p, format!("{}_{field}_idw", ds.name))?;
     // Features without a place or a number are left out, and said (by kind, with a count).
     let (mut no_point, mut no_value) = (0usize, 0usize);
     let mut pts: Vec<(Coord, f64)> = Vec::with_capacity(ds.features.len());
@@ -1574,7 +1582,6 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
             if crs == Crs::LonLat { "degrees".to_string() } else { format!("{}'s units", crs.label()) }
         )
     });
-    let name = out_name(p, format!("{}_{field}_idw", ds.name));
     let power = f(p, "power").unwrap_or(2.0).clamp(0.5, 10.0);
     let neighbors = p.get("neighbors").and_then(Value::as_u64).unwrap_or(12).max(1) as usize;
     Ok(Box::new(move || {
@@ -1653,6 +1660,7 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
     if l.geometry_type() != GeometryType::Polyline {
         return Err("routes run over a line layer".into());
     }
+    let name = out_name(p, format!("Route on {}", l.name))?;
     let cost = ps(p, "costField").map(|n| l.dataset.field_index(n).ok_or_else(|| format!("no field named '{n}'"))).transpose()?;
     let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
     let r = network::shortest_route(
@@ -1664,7 +1672,6 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
         f(p, "snapDistance").unwrap_or(1000.0).clamp(0.0, 1e6),
     )?;
     let source_name = l.name.clone();
-    let name = out_name(p, format!("Route on {}", l.name));
     let mut ds =
         Dataset::new(name, GeometryType::Polyline, vec![Field::new("length_km", FieldType::Double), Field::new("cost", FieldType::Double)]);
     ds.push(Some(Geometry::Line(vec![r.path.clone()])), vec![Attr::Float(r.length_m / 1000.0), Attr::Float(r.cost)]);
@@ -1733,6 +1740,7 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
     if l.geometry_type() != GeometryType::Polygon {
         return Err("points are simulated inside polygons".into());
     }
+    let name = out_name(p, format!("{}_simulated", l.name))?;
     // The selected polygons, or every visible one.
     let rows: Vec<usize> = if l.selection.is_empty() {
         l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect()
@@ -1763,8 +1771,7 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
             network::random_points(&l.dataset, &rows, per, seed)
         }
     };
-    let mut ds =
-        Dataset::new(out_name(p, format!("{}_simulated", l.name)), GeometryType::Point, vec![Field::new("polygon", FieldType::Integer)]);
+    let mut ds = Dataset::new(name, GeometryType::Point, vec![Field::new("polygon", FieldType::Integer)]);
     for (r, c) in &pts {
         ds.push(Some(Geometry::Point(*c)), vec![Attr::Int(*r as i64)]);
     }

@@ -1654,6 +1654,8 @@ pub fn reduce_start(s: &Session, p: &Value) -> Result<ReduceRun, String> {
         ));
     }
     let min_valid = super::cube::min_share(p)?;
+    // The name given, checked before the store is read.
+    let given = super::name_given(p, "the output's name", 200)?;
     let ZarrCube { zt, period } = zarr_cube(s, p)?;
     let steps = super::cube::steps(&zt.dates, period, p)?;
     let months = super::cube::months(p)?;
@@ -1672,7 +1674,7 @@ pub fn reduce_start(s: &Session, p: &Value) -> Result<ReduceRun, String> {
         let m: Vec<String> = months.iter().map(u32::to_string).collect();
         label = format!("{label} (months {})", m.join(","));
     }
-    let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map_or(label, |n| n.chars().take(200).collect());
+    let name = given.unwrap_or(label);
     let root = zt.store.clone();
     Ok(ReduceRun { zt, steps, stat, min_valid, name, root, variable: var })
 }

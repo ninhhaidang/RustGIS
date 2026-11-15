@@ -462,15 +462,16 @@ pub(crate) fn datum_of(def: &str) -> Option<String> {
     param("+R=").map(|_| "a sphere".into())
 }
 
-/// Texts given as one or a list (up to 50), each cut to [`MAX_PUBLICATION_TEXT`] characters.
+/// Texts given as one or a list (up to 50), each of at most [`MAX_PUBLICATION_TEXT`] characters: a
+/// longer one is refused, not cut.
 fn texts_of(p: &Value, k: &str) -> Result<Option<Vec<String>>, String> {
-    let cut = |t: &str| t.chars().take(MAX_PUBLICATION_TEXT).collect::<String>();
+    let within = |t: &str| super::within(k, "a publication layout's text", t, MAX_PUBLICATION_TEXT);
     match p.get(k) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(t)) => Ok(Some(vec![cut(t)])),
+        Some(Value::String(t)) => Ok(Some(vec![within(t)?])),
         Some(Value::Array(a)) if a.len() <= 50 => a
             .iter()
-            .map(|v| v.as_str().map(cut).ok_or_else(|| format!("{k} is a text or a list of texts")))
+            .map(|v| v.as_str().ok_or_else(|| format!("{k} is a text or a list of texts")).and_then(within))
             .collect::<Result<_, _>>()
             .map(Some),
         Some(_) => Err(format!("{k} is a text or a list of up to 50 texts")),
@@ -3255,7 +3256,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
         }
         "legend" => {
             let frame = frame_of(l, p)?;
-            let title = ps(p, "title").unwrap_or("Legend").chars().take(200).collect();
+            let title = super::within("title", "a legend's title", ps(p, "title").unwrap_or("Legend"), 200)?;
             let all_classes = b(p, "allClasses").unwrap_or(false);
             let hide_other = b(p, "hideOther").unwrap_or(false);
             let show_no_data = b(p, "showNoData").unwrap_or(false);
@@ -3274,7 +3275,10 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
         "colorbar" => {
             let frame = frame_of(l, p)?;
             let layer = colorbar_layer(s, l, frame, ps(p, "layer"))?;
-            let title = ps(p, "title").map(|t| t.chars().take(200).collect()).unwrap_or_else(|| layer.clone().unwrap_or_default());
+            let title = match ps(p, "title") {
+                Some(t) => super::within("title", "a colorbar's title", t, 200)?,
+                None => layer.clone().unwrap_or_default(),
+            };
             let orientation = orientation(p)?.unwrap_or_default();
             let rect = match orientation {
                 Orientation::Horizontal => (15.0, ph - 45.0, 80.0, 16.0),
@@ -3295,7 +3299,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
         }
         "text" | "dynamicText" => {
             let default = if kind == "text" { "Text" } else { "{map} · {scale} · {date}" };
-            let text: String = ps(p, "text").unwrap_or(default).chars().take(5000).collect();
+            let text = super::within("text", "a text element's text", ps(p, "text").unwrap_or(default), 5000)?;
             let fonts = rustgis_map::graphics::FONT_SIZE;
             let size = f(p, "size").unwrap_or(12.0).clamp(*fonts.start(), *fonts.end());
             let (italic, align, letter_spacing) = text_style(p, false, TextAlign::Left, 0.0)?;
@@ -4061,6 +4065,10 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             return Err(format!("{k} must be a number of degrees"));
         }
     }
+    // A name, text or title over its limit is refused, not cut.
+    let new_name = super::name_given(p, "an element's name", 200)?;
+    let new_text = ps(p, "text").map(|t| super::within("text", "a text element's text", t, 5000)).transpose()?;
+    let new_title = ps(p, "title").map(|t| super::within("title", "a legend or colorbar's title", t, 200)).transpose()?;
     let li = index(s, p)?;
     // What a publication's scale bar box was measured from, before this change.
     let basis = scale_box_basis(s, li);
@@ -4277,8 +4285,8 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(v) = num("h", MIN_ELEMENT_MM, 5000.0) {
         e.h = v;
     }
-    if let Some(n) = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
-        e.name = n.chars().take(200).collect();
+    if let Some(n) = new_name {
+        e.name = n;
     }
     if let Some(v) = b(p, "visible") {
         e.visible = v;
@@ -4312,8 +4320,8 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(r) = new_rotation {
                 *rotation = r;
             }
-            if let Some(t) = ps(p, "text") {
-                *text = t.chars().take(5000).collect();
+            if let Some(t) = new_text {
+                *text = t;
             }
             if let Some(v) = num("size", *rustgis_map::graphics::FONT_SIZE.start(), *rustgis_map::graphics::FONT_SIZE.end()) {
                 *size = v;
@@ -4335,8 +4343,8 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(n) = new_columns {
                 *columns = n;
             }
-            if let Some(t) = ps(p, "title") {
-                *title = t.chars().take(200).collect();
+            if let Some(t) = new_title {
+                *title = t;
             }
             if let Some(v) = b(p, "allClasses") {
                 *all_classes = v;
@@ -4349,8 +4357,8 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
         ElementKind::Colorbar { layer, title, orientation, ticks: n, tick_side, reverse, .. } => {
-            if let Some(t) = ps(p, "title") {
-                *title = t.chars().take(200).collect();
+            if let Some(t) = new_title {
+                *title = t;
             }
             if let Some((new_layer, new_orientation, new_side)) = colorbar {
                 if let Some(nl) = new_layer {

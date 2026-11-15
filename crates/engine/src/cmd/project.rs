@@ -546,10 +546,14 @@ fn write(s: &mut Session, path: PathBuf) -> CmdResult {
 }
 
 /// Names the project after its file, as Save As does, so a renamed or copied file opens under
-/// its own name.
+/// its own name. A file name over 200 characters is cut to 200, and that is said.
 fn name_from_file(s: &mut Session, file: &std::path::Path) {
     if let Some(stem) = file.file_stem().and_then(|x| x.to_str()).map(str::trim).filter(|x| !x.is_empty()) {
         s.project.name = stem.chars().take(200).collect();
+        let n = stem.chars().count();
+        if n > 200 {
+            s.notify(format!("Open Project: the file's name is {n} characters, so the project's name is its first 200 characters"), false);
+        }
     }
 }
 
@@ -574,7 +578,7 @@ fn save_as(s: &mut Session, p: &Value) -> CmdResult {
 
 fn rename(s: &mut Session, p: &Value) -> CmdResult {
     let n = super::ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name is required")?;
-    s.project.name = n.chars().take(200).collect();
+    s.project.name = super::within("name", "a project's name", n, 200)?;
     Ok(Value::Null)
 }
 

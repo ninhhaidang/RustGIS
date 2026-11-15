@@ -39432,8 +39432,9 @@ fn the_session_log_records_each_command_run_in_the_session() {
     let _ = s.run("project.rename", &json!({"name": "Long", "tags": long}));
     let tags = last(&s).params.to_string();
     assert_eq!(last(&s).params, json!({"name": "Long", "tags": "…"}), "{tags}");
-    // Large values clipped.
-    s.run("project.rename", &json!({"name": "x".repeat(20_000), "note": vec![1; 5_000]})).ok();
+    // Large values clipped. The long text is a key the command doesn't know, because a long name is
+    // now refused before it is logged.
+    s.run("project.rename", &json!({"name": "Big", "text": "x".repeat(20_000), "note": vec![1; 5_000]})).ok();
     let big = last(&s);
     assert!(serde_json::to_vec(&big.params).unwrap().len() <= LOG_PARAMS_BYTES, "{}", big.params.to_string().len());
     // The project carries none of it: a saved project, or its recovery copy, holds no log.
@@ -48146,6 +48147,386 @@ fn names_texts_and_lists_over_their_limit_are_refused_not_cut() {
     assert_eq!(g.project.tasks.iter().find(|t| t.name == "Short").map(|t| t.steps.len()), Some(200));
     assert!(history(&g, mark).is_empty());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The output's name given to the commands that make a layer is refused past 200 characters, not
+/// cut (#2044), as the cube and imagery tools refuse it (#1888): the error gives the length and the
+/// limit, and no layer is added. A name at the limit is taken whole, counted in characters (each
+/// `é` is two bytes). A run started in the background is refused before it starts.
+#[test]
+fn output_names_over_their_limit_are_refused() {
+    let mut s = world();
+    let refused = |r: Result<Value, String>, what: &str| {
+        let e = r.unwrap_err();
+        assert!(e.contains("201 characters") && e.contains("at most 200"), "{what}: {e}");
+    };
+    // Each command's name is told apart by its first character, so the map keeps it as given.
+    let name = |i: usize, n: usize| format!("{i}{}", "é".repeat(n - 1));
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    // A river with more than ten points is long enough for a route between its ends.
+    let river = s
+        .map()
+        .layer_by_name("Rivers")
+        .unwrap()
+        .dataset
+        .features
+        .iter()
+        .filter_map(|f| f.geometry.as_ref())
+        .find_map(|g| match g {
+            rustgis_data::Geometry::Line(p) if p[0].len() > 10 => Some((p[0][0], p[0][p[0].len() - 1])),
+            _ => None,
+        })
+        .unwrap();
+    let commands = [
+        ("raster.function", json!({"layer": dem, "function": "slope"})),
+        ("raster.functionChain", json!({"layer": dem, "steps": [{"function": "slope"}]})),
+        ("analysis.suitability", json!({"criteria": [{"layer": dem, "ranges": [[0, 1000, 1]]}]})),
+        ("analysis.viewshed", json!({"layer": dem, "lon": 10.0055, "lat": 45.0395})),
+        ("analysis.lineOfSight", json!({"layer": dem, "from": [10.0205, 45.0395], "to": [10.0355, 45.0395]})),
+        ("analysis.interpolate", json!({"layer": "Cities", "field": "pop_max", "cellSize": 2})),
+        ("analysis.route", json!({"layer": "Rivers", "from": [river.0.x, river.0.y], "to": [river.1.x, river.1.y]})),
+        ("analysis.simulate", json!({"layer": "Countries", "count": 2})),
+    ];
+    for (i, (command, p)) in commands.iter().enumerate() {
+        let named = |n: usize| {
+            let mut p = p.clone();
+            p["name"] = json!(name(i, n));
+            p
+        };
+        let layers = s.map().layers.len();
+        refused(s.run(command, &named(201)), command);
+        assert_eq!(s.map().layers.len(), layers, "{command}: no layer added");
+        let made = s.run(command, &named(200)).unwrap()["layer"].as_u64().unwrap() as u32;
+        assert_eq!(s.map().layer(made).unwrap().name, name(i, 200), "{command}");
+        // Started in the background, as the app starts it: refused before any run is kept.
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::cmd::workflows::IN_BACKGROUND.iter().any(|(c, ..)| c == command) {
+            let runs = s.raster_runs.len();
+            refused(crate::cmd::workflows::raster_start(&mut s, command, &named(201)).map(|_| Value::Null), command);
+            assert_eq!(s.raster_runs.len(), runs, "{command}: no run kept");
+        }
+    }
+    // A layer pasted as a new one.
+    s.run("select.byAttributes", &json!({"layer": "Cities", "where": "name = 'Paris'"})).unwrap();
+    s.run("edit.copy", &Value::Null).unwrap();
+    let layers = s.map().layers.len();
+    refused(s.run("edit.pasteSpecial", &json!({"name": name(9, 201)})), "pasted layer");
+    assert_eq!(s.map().layers.len(), layers, "nothing pasted");
+    let pasted = s.run("edit.pasteSpecial", &json!({"name": name(9, 200)})).unwrap()["layer"].as_u64().unwrap() as u32;
+    assert_eq!(s.map().layer(pasted).unwrap().name, name(9, 200));
+    // A model's name and new name, saved or passed with a graph.
+    let graph = json!({
+        "nodes": [
+            {"id": "i1", "kind": "input", "x": 0, "y": 0, "layer": "Cities"},
+            {"id": "o1", "kind": "output", "x": 240, "y": 0, "name": "Kept"}
+        ],
+        "edges": [{"from": "i1", "fromPort": "out", "to": "o1", "toPort": "in"}]
+    });
+    let at = |n: usize| "é".repeat(n);
+    refused(s.run("model.save", &json!({"name": at(201), "graph": graph})), "model name");
+    refused(s.run("model.save", &json!({"name": "Clean", "rename": at(201), "graph": graph})), "model's new name");
+    refused(s.run("model.validate", &json!({"name": at(201), "graph": graph})), "a graph's model name");
+    assert!(s.project.models.is_empty(), "no model saved");
+    s.run("model.save", &json!({"name": at(200), "graph": graph})).unwrap();
+    s.run("model.save", &json!({"name": at(200), "rename": format!("{}a", at(199)), "graph": graph})).unwrap();
+    let models: Vec<&str> = s.project.models.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(models, [format!("{}a", at(199))]);
+    // The output of a Zarr summary and of an embeddings analysis, refused before the store or the
+    // network is read.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _cache = zarr_cache_lock();
+        let (dir, path) = zarr_store_over_time("over-limit");
+        let layers = s.map().layers.len();
+        refused(s.run("zarr.reduce", &json!({"path": path, "variable": "t", "stat": "mean", "name": at(201)})), "zarr summary");
+        let p = json!({"dataset": "alphaearth", "point": [10.01, 45.01], "bbox": [10.0, 45.0, 10.02, 45.02], "name": at(201)});
+        refused(s.run("embeddings.similarity", &p), "similarity");
+        refused(s.run("embeddings.change", &p), "change");
+        refused(crate::cmd::workflows::raster_start(&mut s, "embeddings.similarity", &p).map(|_| Value::Null), "similarity started");
+        assert_eq!(s.map().layers.len(), layers, "no layer added");
+        let r = s.run("zarr.reduce", &json!({"path": path, "variable": "t", "stat": "mean", "name": at(200)})).unwrap();
+        assert_eq!(s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().name, at(200));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// The names and texts given to projects, layouts, reports, presentations and notebooks are
+/// refused past their limits, not cut (#2044): the error gives the length and the limit, and nothing
+/// changes. A value at its limit is taken whole, counted in characters.
+#[test]
+fn names_and_texts_over_their_limit_are_refused() {
+    use rustgis_map::layout::ElementKind;
+    use rustgis_map::presentation::{Page, PageKind};
+    use rustgis_map::report::Section;
+    let mut s = world();
+    let at = |n: usize| "é".repeat(n);
+    let refused = |r: Result<Value, String>, what: &str, n: usize, limit: usize| {
+        let e = r.unwrap_err();
+        assert!(e.contains(&format!("{n} characters")) && e.contains(&format!("at most {limit}")), "{what}: {e}");
+    };
+    // A project's name.
+    let project = s.project.name.clone();
+    refused(s.run("project.rename", &json!({"name": at(201)})), "project", 201, 200);
+    assert_eq!(s.project.name, project);
+    s.run("project.rename", &json!({"name": at(200)})).unwrap();
+    assert_eq!(s.project.name, at(200));
+    // A layout element's name, title and text, added and updated.
+    s.run("layout.new", &json!({"page": "a4", "template": "map"})).unwrap();
+    let elements = |s: &Session| s.project.layouts[0].elements.len();
+    let value = |s: &Session, id: u32| match &s.project.layouts[0].element(id).unwrap().kind {
+        ElementKind::Legend { title, .. } | ElementKind::Colorbar { title, .. } => title.clone(),
+        ElementKind::Text { text, .. } => text.clone(),
+        _ => String::new(),
+    };
+    let mut added = Vec::new();
+    for (kind, key, limit) in [("legend", "title", 200), ("colorbar", "title", 200), ("text", "text", 5000), ("dynamicText", "text", 5000)]
+    {
+        let before = elements(&s);
+        refused(s.run("layout.addElement", &json!({"kind": kind, key: at(limit + 1)})), kind, limit + 1, limit);
+        assert_eq!(elements(&s), before, "{kind}: no element added");
+        let id = s.run("layout.addElement", &json!({"kind": kind, key: at(limit)})).unwrap()["element"].as_u64().unwrap() as u32;
+        assert_eq!(value(&s, id), at(limit), "{kind}");
+        added.push(id);
+    }
+    let (legend, text) = (added[0], added[2]);
+    for (id, key, limit) in [(text, "name", 200), (text, "text", 5000), (legend, "title", 200)] {
+        let before = s.project.layouts[0].element(id).cloned();
+        // Refused with a change that comes before it in the element, which is left as it was.
+        refused(s.run("layout.update", &json!({"element": id, key: at(limit + 1), "x": 1})), key, limit + 1, limit);
+        assert_eq!(s.project.layouts[0].element(id).cloned(), before, "{key}: the element unchanged");
+        s.run("layout.update", &json!({"element": id, key: at(limit)})).unwrap();
+        let name = s.project.layouts[0].element(id).unwrap().name.clone();
+        assert_eq!(if key == "name" { name } else { value(&s, id) }, at(limit), "{key}");
+    }
+    // A publication layout's texts, given as one or a list.
+    let layouts = s.project.layouts.len();
+    let extent = json!([-10, 35, 30, 60]);
+    refused(s.run("layout.publication", &json!({"extent": extent, "title": at(2001)})), "publication title", 2001, 2000);
+    refused(
+        s.run("layout.publication", &json!({"extent": extent, "sources": ["Natural Earth", at(2001)]})),
+        "publication source",
+        2001,
+        2000,
+    );
+    assert_eq!(s.project.layouts.len(), layouts, "no layout added");
+    // A report's name and title, and a supplemental page's title and text.
+    refused(s.run("report.new", &json!({"layer": "Cities", "name": at(201)})), "report name", 201, 200);
+    refused(s.run("report.new", &json!({"layer": "Cities", "title": at(501)})), "report title", 501, 500);
+    assert!(s.project.reports.is_empty(), "no report added");
+    s.run("report.new", &json!({"layer": "Cities", "name": at(200), "title": at(500)})).unwrap();
+    assert_eq!((s.project.reports[0].name.clone(), s.project.reports[0].title.clone()), (at(200), at(500)));
+    refused(s.run("report.update", &json!({"name": format!("{}a", at(200))})), "report renamed", 201, 200);
+    refused(s.run("report.update", &json!({"title": at(501)})), "report retitled", 501, 500);
+    assert_eq!((s.project.reports[0].name.clone(), s.project.reports[0].title.clone()), (at(200), at(500)));
+    let sections = s.project.reports[0].sections.len();
+    refused(s.run("report.supplementalPage", &json!({"title": at(501)})), "page title", 501, 500);
+    refused(s.run("report.supplementalPage", &json!({"text": at(100_001)})), "page text", 100_001, 100_000);
+    assert_eq!(s.project.reports[0].sections.len(), sections, "no page added");
+    s.run("report.supplementalPage", &json!({"title": at(500), "text": at(100_000)})).unwrap();
+    assert!(
+        matches!(s.project.reports[0].sections.last(), Some(Section::Page { title, text, .. }) if *title == at(500) && *text == at(100_000))
+    );
+    // A presentation's name and title page, and its pages' titles, texts, notes, captions and
+    // video sources.
+    refused(s.run("presentation.new", &json!({"name": at(201)})), "presentation name", 201, 200);
+    refused(s.run("presentation.new", &json!({"title": at(501)})), "title page", 501, 500);
+    assert!(s.project.presentations.is_empty(), "no presentation added");
+    s.run("presentation.new", &json!({"name": at(200), "title": at(500)})).unwrap();
+    assert_eq!((s.project.presentations[0].name.clone(), s.project.presentations[0].pages[0].title.clone()), (at(200), at(500)));
+    s.run("project.thumbnail", &json!({"create": true})).unwrap();
+    let png = s.project.thumbnail.clone().unwrap();
+    let field = |page: &Page, key: &str| match (key, &page.kind) {
+        ("title", _) => page.title.clone(),
+        ("notes", _) => page.notes.clone(),
+        ("text", PageKind::Blank { text, .. }) => text.clone(),
+        ("caption", PageKind::Image { caption, .. } | PageKind::Video { caption, .. }) => caption.clone(),
+        ("source", PageKind::Video { source, .. }) => source.clone(),
+        _ => String::new(),
+    };
+    let new_pages = [
+        ("presentation.mapPage", json!({}), "title", 500),
+        ("presentation.blankPage", json!({}), "title", 500),
+        ("presentation.blankPage", json!({}), "text", 20_000),
+        ("presentation.imagePage", json!({"image": png}), "title", 500),
+        ("presentation.imagePage", json!({"image": png}), "caption", 2000),
+        ("presentation.videoPage", json!({"source": "walk.webm"}), "title", 500),
+        ("presentation.videoPage", json!({"source": "walk.webm"}), "caption", 2000),
+        ("presentation.videoPage", json!({}), "source", 4000),
+    ];
+    for (command, p, key, limit) in new_pages {
+        let with = |n: usize| {
+            let mut p = p.clone();
+            p[key] = json!(at(n));
+            p
+        };
+        let pages = s.project.presentations[0].pages.len();
+        refused(s.run(command, &with(limit + 1)), command, limit + 1, limit);
+        assert_eq!(s.project.presentations[0].pages.len(), pages, "{command}: no page added");
+        s.run(command, &with(limit)).unwrap();
+        assert_eq!(field(s.project.presentations[0].pages.last().unwrap(), key), at(limit), "{command} {key}");
+    }
+    // The title page is a blank one, and the last page a video.
+    let last = s.project.presentations[0].pages.len() - 1;
+    for (page, key, limit) in [(0, "title", 500), (0, "notes", 20_000), (0, "text", 20_000), (last, "caption", 2000)] {
+        let before = s.project.presentations[0].pages[page].clone();
+        refused(s.run("presentation.updatePage", &json!({"page": page, key: at(limit + 1), "seconds": 9})), key, limit + 1, limit);
+        assert_eq!(s.project.presentations[0].pages[page], before, "{key}: the page unchanged");
+        s.run("presentation.updatePage", &json!({"page": page, key: at(limit)})).unwrap();
+        assert_eq!(field(&s.project.presentations[0].pages[page], key), at(limit), "{key}");
+    }
+    // A notebook's name and a cell's source, added and edited.
+    refused(s.run("notebook.new", &json!({"name": at(201)})), "notebook name", 201, 200);
+    assert!(s.project.notebooks.is_empty(), "no notebook added");
+    s.run("notebook.new", &json!({"name": at(200)})).unwrap();
+    assert_eq!(s.project.notebooks[0].name, at(200));
+    let cells = s.project.notebooks[0].cells.clone();
+    refused(s.run("notebook.addCell", &json!({"source": at(200_001)})), "new cell", 200_001, 200_000);
+    refused(s.run("notebook.editCell", &json!({"cell": 0, "source": at(200_001)})), "edited cell", 200_001, 200_000);
+    assert_eq!(s.project.notebooks[0].cells, cells, "the cells unchanged");
+    let cell = s.run("notebook.addCell", &json!({"source": at(200_000), "kind": "markdown"})).unwrap()["cell"].as_u64().unwrap() as usize;
+    assert_eq!(s.project.notebooks[0].cells[cell].source, at(200_000));
+    s.run("notebook.editCell", &json!({"cell": 0, "source": at(200_000)})).unwrap();
+    assert_eq!(s.project.notebooks[0].cells[0].source, at(200_000));
+}
+
+/// A name at its limit told apart from one already there gives way to the number that tells it
+/// apart, so it stays within the limit, and that is said; a short name only gains the number, and
+/// nothing is said (#2044, as `task.new` does in #1888). A project opened from a file named past
+/// a project name's limit takes the first 200 characters, and that is said.
+#[test]
+fn names_cut_to_fit_their_number_are_said() {
+    let mut s = world();
+    let at = |n: usize| "é".repeat(n);
+    let cut = |s: &Session, mark: u64| {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("has that name already")).map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    let runs: [(&str, Value, &str); 3] = [
+        ("report.new", json!({"layer": "Cities"}), "New Report: a report"),
+        ("presentation.new", json!({}), "New Presentation: a presentation"),
+        ("notebook.new", json!({}), "New Notebook: a notebook"),
+    ];
+    for (command, p, said) in runs {
+        let named = |name: String| {
+            let mut p = p.clone();
+            p["name"] = json!(name);
+            p
+        };
+        s.run(command, &named(at(200))).unwrap();
+        let mark = s.notice_mark();
+        let name = s.run(command, &named(at(200))).unwrap()["name"].as_str().unwrap().to_string();
+        assert_eq!((name.chars().count(), name.ends_with(" 2")), (200, true), "{command}: {name}");
+        assert_eq!(cut(&s, mark), [format!("{said} has that name already, so the name given is cut to 198 characters to fit \" 2\"")]);
+        s.run(command, &named("Tour".into())).unwrap();
+        let mark = s.notice_mark();
+        assert_eq!(s.run(command, &named("Tour".into())).unwrap()["name"], "Tour 2", "{command}");
+        assert!(cut(&s, mark).is_empty(), "{command}");
+    }
+    // A report renamed to another's name.
+    let mark = s.notice_mark();
+    s.run("report.update", &json!({"report": "Tour", "name": at(200)})).unwrap();
+    assert_eq!(cut(&s, mark).len(), 1);
+    let names: Vec<usize> = s.project.reports.iter().map(|r| r.name.chars().count()).collect();
+    assert_eq!(names, [200, 200, 200, 6]);
+    // A project file's name.
+    let text = serde_json::to_string(&s.project).unwrap();
+    let said =
+        |s: &Session, mark: u64| s.notices_since(mark).iter().filter(|n| n.text.starts_with("Open Project: the file's name is")).count();
+    let mark = s.notice_mark();
+    s.run("project.openText", &json!({"text": text, "fileName": format!("{}.rgis", at(201))})).unwrap();
+    assert_eq!((s.project.name.clone(), said(&s, mark)), (at(200), 1));
+    let mark = s.notice_mark();
+    s.run("project.openText", &json!({"text": text, "fileName": format!("{}.rgis", at(200))})).unwrap();
+    assert_eq!((s.project.name.clone(), said(&s, mark)), (at(200), 0));
+}
+
+#[test]
+fn a_report_name_made_from_a_long_layer_name_says_what_it_keeps() {
+    let mut s = world();
+    let at = |n: usize| "é".repeat(n);
+    let new_report = |s: &mut Session, layer: &str| {
+        let mark = s.notice_mark();
+        let name = s.run("report.new", &json!({"layer": layer})).unwrap()["name"].as_str().unwrap().to_string();
+        let said = s.notices_since(mark).iter().filter(|n| n.text.starts_with("New Report: ")).map(|n| n.text.clone()).collect::<Vec<_>>();
+        (name, said)
+    };
+    // "{layer} Report" is 207 characters, so the report's name keeps its first 200.
+    s.run("layer.rename", &json!({"layer": "Cities", "name": at(200)})).unwrap();
+    let (name, said) = new_report(&mut s, &at(200));
+    assert_eq!(name, at(200));
+    assert_eq!(said, ["New Report: the report's name is made from the layer's name and keeps its first 200 characters"]);
+    // A second one keeps fewer to fit its number, and one notice gives that count.
+    let (name, said) = new_report(&mut s, &at(200));
+    assert_eq!(name, format!("{} 2", at(198)));
+    assert_eq!(said, ["New Report: the report's name is made from the layer's name and keeps its first 198 characters before \" 2\""]);
+    // "{layer} Report" of exactly 200 characters is kept whole, without a word.
+    s.run("layer.rename", &json!({"layer": at(200), "name": at(193)})).unwrap();
+    let (name, said) = new_report(&mut s, &at(193));
+    assert_eq!((name, said), (format!("{} Report", at(193)), Vec::<String>::new()));
+    // Its number cuts it, and the notice doesn't call it a name given.
+    let (name, said) = new_report(&mut s, &at(193));
+    assert_eq!(name, format!("{} Repo 2", at(193)));
+    assert_eq!(
+        said,
+        ["New Report: a report has that name already, so the name made from the layer's name is cut to 198 characters to fit \" 2\""]
+    );
+}
+
+#[test]
+fn a_report_title_made_from_a_long_layer_name_says_what_it_keeps() {
+    let mut s = world();
+    let title_said = |s: &Session, mark: u64| {
+        s.notices_since(mark)
+            .iter()
+            .filter(|n| n.text.starts_with("New Report: the report's title"))
+            .map(|n| n.text.clone())
+            .collect::<Vec<_>>()
+    };
+    // An imported layer's name isn't held to the 200 characters Rename takes.
+    for (long, kept) in [(format!("{}x", "é".repeat(500)), "é".repeat(500)), ("é".repeat(500), "é".repeat(500))] {
+        crate::cmd::layer::add_dataset(&mut s, rustgis_data::Dataset::new(&long, rustgis_data::GeometryType::Point, Vec::new()));
+        let mark = s.notice_mark();
+        s.run("report.new", &json!({"layer": long})).unwrap();
+        assert_eq!(s.project.reports.last().unwrap().title, kept);
+        let expected = if long.chars().count() > 500 {
+            vec!["New Report: the report's title is the layer's name and keeps its first 500 characters".to_string()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(title_said(&s, mark), expected, "{} characters", long.chars().count());
+    }
+}
+
+#[test]
+fn an_imported_name_cut_to_fit_its_number_says_it_came_from_the_file() {
+    let mut s = world();
+    let cut = |s: &Session, mark: u64| {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("has that name already")).map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    let imports = [
+        ("report.open", json!({"layer": "Countries"}), "Import Report: a report"),
+        ("presentation.import", json!({}), "Import Presentation: a presentation"),
+        ("notebook.open", json!({"cells": []}), "Add and Open Notebook: a notebook"),
+    ];
+    for (command, item, said) in imports {
+        let import = |s: &mut Session, name: &str| {
+            let mut text = item.clone();
+            text["name"] = json!(name);
+            s.run(command, &json!({"text": text.to_string()})).unwrap()["name"].as_str().unwrap().to_string()
+        };
+        let long = "é".repeat(200);
+        import(&mut s, &long);
+        let mark = s.notice_mark();
+        assert_eq!(import(&mut s, &long), format!("{} 2", "é".repeat(198)), "{command}");
+        assert_eq!(
+            cut(&s, mark),
+            [format!("{said} has that name already, so the name from the file is cut to 198 characters to fit \" 2\"")]
+        );
+        import(&mut s, "Tour");
+        let mark = s.notice_mark();
+        assert_eq!(import(&mut s, "Tour"), "Tour 2", "{command}");
+        assert!(cut(&s, mark).is_empty(), "{command}: {:?}", cut(&s, mark));
+    }
 }
 
 /// Serves each file by its path (others are 404) with byte ranges (`bytes=a-b`, `bytes=-n`)

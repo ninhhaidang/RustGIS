@@ -601,7 +601,7 @@ fn analysis(s: &Session, p: &Value) -> Result<Asked, String> {
         None => None,
         Some(_) => Some(f(p, "cellSize").filter(|c| c.is_finite() && *c > 0.0).ok_or("cellSize is a size in metres above 0")?),
     };
-    let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(200).collect());
+    let name = super::name_given(p, "the output's name", 200)?;
     Ok((d, bbox(s, p)?, cell, name))
 }
 

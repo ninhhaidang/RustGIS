@@ -26,10 +26,11 @@ fn need_presentation(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("presentation.new", "New Presentation", "Publish › Presentation", |s, p| {
-            let name = unique_name(s, ps(p, "name").unwrap_or("Presentation"));
+            let given = super::within("name", "a presentation's name", ps(p, "name").unwrap_or("Presentation").trim(), 200)?;
+            let title = page_title(ps(p, "title").unwrap_or(&s.project.name))?;
+            let (name, cut) = unique_name(s, "New Presentation", "the name given", &given);
             let mut pres = Presentation { name: name.clone(), ..Presentation::default() };
             // A title page to start from.
-            let title: String = ps(p, "title").unwrap_or(&s.project.name).chars().take(MAX_TITLE).collect();
             pres.pages.push(Page {
                 title,
                 kind: PageKind::Blank { text: String::new(), background: Rgba::rgb(0x1F, 0x3A, 0x5F) },
@@ -42,6 +43,9 @@ pub fn commands() -> Vec<C> {
             s.project.presentations.push(pres);
             let i = s.project.presentations.len() - 1;
             s.active_presentation = Some(i);
+            if let Some(cut) = cut {
+                s.notify(cut, false);
+            }
             Ok(json!({"presentation": i, "name": name}))
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?, "title"?: the title page's text}"#),
@@ -49,7 +53,8 @@ pub fn commands() -> Vec<C> {
             let text = super::items::read_text(p)?;
             let mut pres: Presentation = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS presentation: {e}"))?;
             let repairs = pres.clamp();
-            pres.name = unique_name(s, &pres.name);
+            let (name, cut) = unique_name(s, "Import Presentation", "the name from the file", &pres.name);
+            pres.name = name;
             let name = pres.name.clone();
             if s.project.presentations.len() >= crate::project::MAX_ITEMS {
                 return Err(format!("a project holds at most {} presentations", crate::project::MAX_ITEMS));
@@ -59,6 +64,9 @@ pub fn commands() -> Vec<C> {
             s.active_presentation = Some(i);
             for notice in crate::project::content_notices(repairs, &name) {
                 s.notify_text(notice, false);
+            }
+            if let Some(cut) = cut {
+                s.notify(cut, false);
             }
             Ok(json!({"presentation": i, "name": name}))
         }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Presentation) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
@@ -86,38 +94,45 @@ pub fn commands() -> Vec<C> {
             let c = map.center_lonlat();
             let center = Coord::new(f(p, "lon").unwrap_or(c.x).clamp(-180.0, 180.0), f(p, "lat").unwrap_or(c.y).clamp(-85.0, 85.0));
             let width_m = f(p, "widthM").unwrap_or(s.view_size.0 * map.ground_res()).clamp(10.0, 4e7);
-            let title = ps(p, "title").unwrap_or(&name).to_string();
+            let title = page_title(ps(p, "title").unwrap_or(&name))?;
             add_page(s, p, title, PageKind::Map { map: name, center, width_m })
         }).inputs(map_page_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"?, "at"?: page index}"#),
         C::new("presentation.blankPage", "Blank Page", "Publish › Page", |s, p| {
             let background = super::layout::color(p, "background", Rgba::rgb(0xFF, 0xFF, 0xFF))?;
-            let text: String = ps(p, "text").unwrap_or("").chars().take(MAX_TEXT).collect();
-            add_page(s, p, ps(p, "title").unwrap_or("").to_string(), PageKind::Blank { text, background })
+            let text = super::within("text", "a page's text", ps(p, "text").unwrap_or(""), MAX_TEXT)?;
+            add_page(s, p, page_title(ps(p, "title").unwrap_or(""))?, PageKind::Blank { text, background })
         }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r##"{"presentation"?, "title"?, "text"?, "background"?: "#RRGGBB"|"#RRGGBBAA", "at"?}"##),
         C::new("presentation.imagePage", "Image Page", "Publish › Page", |s, p| {
+            // The texts are checked before the picture is read.
+            let title = page_title(ps(p, "title").unwrap_or(""))?;
+            let caption = super::within("caption", "a page's caption", ps(p, "caption").unwrap_or(""), MAX_CAPTION)?;
             // A picture opened in the browser arrives as base64 `data`.
             let image = match ps(p, "data") {
                 Some(d) => super::graphics::picture(&json!({"image": d}))?,
                 None => super::graphics::picture(p)?,
             };
-            let caption: String = ps(p, "caption").unwrap_or("").chars().take(MAX_CAPTION).collect();
-            add_page(s, p, ps(p, "title").unwrap_or("").to_string(), PageKind::Image { image, caption })
+            add_page(s, p, title, PageKind::Image { image, caption })
         }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_presentation)
         .params(r#"{"presentation"?, "path"?: PNG/JPEG file, "image"?: base64, "data"?: base64, "title"?, "caption"?, "at"?}"#),
         C::new("presentation.videoPage", "Video Page", "Publish › Page", |s, p| {
-            let source: String = ps(p, "source").map(str::trim).filter(|v| !v.is_empty()).ok_or("source is required (a video file or URL)")?.chars().take(MAX_SOURCE).collect();
+            let source = ps(p, "source").map(str::trim).filter(|v| !v.is_empty()).ok_or("source is required (a video file or URL)")?;
+            let source = super::within("source", "a video page's source", source, MAX_SOURCE)?;
+            // The texts are checked before the poster is read.
+            let title = match ps(p, "title") {
+                Some(t) => page_title(t)?,
+                None => video_label(&source),
+            };
+            let caption = super::within("caption", "a page's caption", ps(p, "caption").unwrap_or(""), MAX_CAPTION)?;
             let poster = match (ps(p, "poster"), ps(p, "posterImage")) {
                 (Some(path), _) => Some(super::graphics::picture(&json!({"path": path}))?),
                 (None, Some(b64)) => Some(super::graphics::picture(&json!({"image": b64}))?),
                 (None, None) => None,
             };
-            let caption: String = ps(p, "caption").unwrap_or("").chars().take(MAX_CAPTION).collect();
-            let title = ps(p, "title").map(str::to_string).unwrap_or_else(|| video_label(&source));
             add_page(s, p, title, PageKind::Video { source, poster, caption })
         }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_presentation)
@@ -227,19 +242,21 @@ fn page_of(input: &impl super::InputSource, p: &Value) -> Result<(usize, usize),
     Ok((i, k))
 }
 
-fn unique_name(s: &Session, base: &str) -> String {
-    let base: String = base.trim().chars().take(200).collect();
-    let base = if base.is_empty() { "Presentation".to_string() } else { base };
+/// A presentation's name told apart by a number (see [`super::numbered_saying`]), with the notice to
+/// give when the number cuts it.
+fn unique_name(s: &Session, command: &str, whose: &str, base: &str) -> (String, Option<String>) {
+    let base = base.trim();
+    let base = if base.is_empty() { "Presentation" } else { base };
     let taken = |n: &str| s.project.presentations.iter().any(|r| r.name.eq_ignore_ascii_case(n));
-    let mut name = base.clone();
-    let mut k = 1;
-    while taken(&name) {
-        k += 1;
-        name = format!("{base} {k}");
-    }
-    name
+    super::numbered_saying(command, "a presentation", whose, base, 200, taken)
 }
 
+/// A page's title of at most [`MAX_TITLE`] characters. A longer one is refused, not cut.
+fn page_title(title: &str) -> Result<String, String> {
+    super::within("title", "a page's title", title, MAX_TITLE)
+}
+
+/// Adds a page titled `title`. The caller has checked it against [`MAX_TITLE`].
 fn add_page(s: &mut Session, p: &Value, title: String, kind: PageKind) -> CmdResult {
     let i = index(s, p)?;
     let pres = s.project.presentations.get_mut(i).ok_or("no presentation")?;
@@ -247,7 +264,7 @@ fn add_page(s: &mut Session, p: &Value, title: String, kind: PageKind) -> CmdRes
         return Err(format!("presentations hold at most {MAX_PAGES} pages"));
     }
     let at = p.get("at").and_then(Value::as_u64).and_then(|k| usize::try_from(k).ok()).unwrap_or(pres.pages.len()).min(pres.pages.len());
-    pres.pages.insert(at, Page { title: title.chars().take(MAX_TITLE).collect(), kind, notes: String::new(), seconds: 5.0 });
+    pres.pages.insert(at, Page { title, kind, notes: String::new(), seconds: 5.0 });
     Ok(json!({"presentation": i, "page": at, "pages": pres.pages.len()}))
 }
 
@@ -257,30 +274,36 @@ fn update_page(s: &mut Session, p: &Value) -> CmdResult {
         Some(_) => Some(super::layout::color(p, "background", Rgba::rgb(0xFF, 0xFF, 0xFF))?),
         None => None,
     };
+    // A text over its limit is refused, not cut, before the page changes.
+    let checked = |k: &str, of: &str, limit: usize| ps(p, k).map(|t| super::within(k, of, t, limit)).transpose();
+    let new_title = checked("title", "a page's title", MAX_TITLE)?;
+    let new_notes = checked("notes", "a page's notes", MAX_TEXT)?;
+    let new_text = checked("text", "a page's text", MAX_TEXT)?;
+    let new_caption = checked("caption", "a page's caption", MAX_CAPTION)?;
     let pres = s.project.presentations.get_mut(i).ok_or("no presentation")?;
     let n = pres.pages.len();
     let page = pres.pages.get_mut(k).ok_or("no page")?;
-    if let Some(t) = ps(p, "title") {
-        page.title = t.chars().take(MAX_TITLE).collect();
+    if let Some(t) = new_title {
+        page.title = t;
     }
-    if let Some(t) = ps(p, "notes") {
-        page.notes = t.chars().take(MAX_TEXT).collect();
+    if let Some(t) = new_notes {
+        page.notes = t;
     }
     if let Some(v) = f(p, "seconds") {
         page.seconds = v.clamp(0.5, 3600.0);
     }
     match &mut page.kind {
         PageKind::Blank { text, background: bg } => {
-            if let Some(t) = ps(p, "text") {
-                *text = t.chars().take(MAX_TEXT).collect();
+            if let Some(t) = new_text {
+                *text = t;
             }
             if let Some(c) = background {
                 *bg = c;
             }
         }
         PageKind::Image { caption, .. } | PageKind::Video { caption, .. } => {
-            if let Some(t) = ps(p, "caption") {
-                *caption = t.chars().take(MAX_CAPTION).collect();
+            if let Some(t) = new_caption {
+                *caption = t;
             }
         }
         PageKind::Map { .. } => {}

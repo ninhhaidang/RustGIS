@@ -156,6 +156,12 @@ pub(crate) fn within(key: &str, of: &str, text: &str, limit: usize) -> Result<St
     Ok(text.to_string())
 }
 
+/// The `name` a command is given, trimmed, when it has at most `max` characters; else an error, as
+/// [`within`] gives. None when no name or a blank one is given.
+pub(crate) fn name_given(p: &Value, of: &str, max: usize) -> Result<Option<String>, String> {
+    ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(|n| within("name", of, n, max)).transpose()
+}
+
 /// `items`, given as a command's `key`, when there are at most `limit`; else an error saying how
 /// many there are and how many `of` takes, rather than the rest dropped without a word (#1888).
 pub(crate) fn at_most<T>(key: &str, of: &str, items: &[T], limit: usize) -> Result<(), String> {
@@ -215,6 +221,31 @@ pub(crate) fn numbered_within(base: &str, max: usize, taken: impl Fn(&str) -> bo
         name = base.chars().take(max.saturating_sub(suffix.len())).chain(suffix.chars()).collect();
     }
     name
+}
+
+/// [`numbered_within`] for an item's name, with the notice to give when the number that tells it
+/// apart cuts the name. It is the same notice `task.new` gives (#1888). `command` is the command's
+/// title, such as "New Report", and `item` is what has that name already, such as "a report".
+/// `whose` says where the name came from: "the name given", or another phrase for a name the
+/// command made or read from a file. `base` is within `max` characters.
+pub(crate) fn numbered_saying(
+    command: &str,
+    item: &str,
+    whose: &str,
+    base: &str,
+    max: usize,
+    taken: impl Fn(&str) -> bool,
+) -> (String, Option<String>) {
+    let name = numbered_within(base, max, taken);
+    // The number cut the name when less of `base` is left before it than was given.
+    let cut = match name.rsplit_once(' ') {
+        Some((kept, number)) if name != base && kept.chars().count() < base.chars().count() => Some(format!(
+            "{command}: {item} has that name already, so {whose} is cut to {} characters to fit \" {number}\"",
+            kept.chars().count()
+        )),
+        _ => None,
+    };
+    (name, cut)
 }
 
 /// A copy's name: the one `given` (trimmed), else `<original> copy` with the original cut so

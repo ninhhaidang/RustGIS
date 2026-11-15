@@ -202,12 +202,10 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 fn paste_special(s: &mut Session, p: &Value) -> CmdResult {
+    // The name given, checked before the clipboard is read.
+    let name = super::name_given(p, "a layer's name", 200)?;
     let mut ds = clip(s, p)?;
-    if let Some(n) = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
-        ds.name = n.chars().take(200).collect();
-    } else {
-        ds.name = format!("{} (pasted)", ds.name);
-    }
+    ds.name = name.unwrap_or_else(|| format!("{} (pasted)", ds.name));
     ds.source = None;
     let n = ds.features.len();
     let id = super::layer::add_dataset(s, ds);

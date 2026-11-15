@@ -122,7 +122,8 @@ fn need_notebook(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("notebook.new", "New Notebook", "Analyze › Notebook", |s, p| {
-            let name = unique_name(s, ps(p, "name").unwrap_or("Notebook"));
+            let given = super::within("name", "a notebook's name", ps(p, "name").unwrap_or("Notebook").trim(), 200)?;
+            let (name, cut) = unique_name(s, "New Notebook", "the name given", &given);
             let nb = Notebook {
                 name: name.clone(),
                 cells: vec![
@@ -134,6 +135,9 @@ pub fn commands() -> Vec<C> {
             let r = push(s, nb)?;
             // Trusted only once it exists.
 
+            if let Some(cut) = cut {
+                s.notify(cut, false);
+            }
             Ok(r)
         })
         .roles(&[])
@@ -145,13 +149,17 @@ pub fn commands() -> Vec<C> {
                 ps(p, "path").map(|x| Path::new(x).file_stem().map_or_else(|| x.to_string(), |n| n.to_string_lossy().into_owned()));
             let mut nb = parse(&text, fallback.as_deref().unwrap_or("Notebook"))?;
             let repairs = nb.clamp();
-            nb.name = unique_name(s, &nb.name);
+            let (name, cut) = unique_name(s, "Add and Open Notebook", "the name from the file", &nb.name);
+            nb.name = name;
             // Trust left over from a removed or undone notebook of this name doesn't carry over.
             s.trusted_notebooks.remove(&nb.name.to_ascii_lowercase());
             let name = nb.name.clone();
             let result = push(s, nb)?;
             for notice in crate::project::content_notices(repairs, &name) {
                 s.notify_text(notice, false);
+            }
+            if let Some(cut) = cut {
+                s.notify(cut, false);
             }
             Ok(result)
         })
@@ -186,13 +194,14 @@ pub fn commands() -> Vec<C> {
                 "markdown" | "text" => CellKind::Markdown,
                 k => return Err(format!("unknown cell kind '{k}'")),
             };
+            let source = super::within("source", "a cell's source", ps(p, "source").unwrap_or(""), MAX_SOURCE)?;
             let nb = s.project.notebooks.get_mut(i).ok_or("no notebook")?;
             if nb.cells.len() >= MAX_CELLS {
                 return Err(format!("notebooks hold at most {MAX_CELLS} cells"));
             }
             let at =
                 p.get("at").and_then(Value::as_u64).and_then(|k| usize::try_from(k).ok()).unwrap_or(nb.cells.len()).min(nb.cells.len());
-            nb.cells.insert(at, Cell::new(kind, ps(p, "source").unwrap_or("")));
+            nb.cells.insert(at, Cell::new(kind, &source));
             Ok(json!({"cell": at, "cells": nb.cells.len()}))
         })
         .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
@@ -201,9 +210,9 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"notebook"?, "kind"?: "code"|"markdown", "source"?, "at"?: index}"#),
         C::new("notebook.editCell", "Edit Cell", "Notebook", |s, p| {
             let (i, k) = cell_of(s, p)?;
-            let source = ps(p, "source").ok_or("source is required")?;
+            let source = super::within("source", "a cell's source", ps(p, "source").ok_or("source is required")?, MAX_SOURCE)?;
             let c = s.project.notebooks.get_mut(i).and_then(|nb| nb.cells.get_mut(k)).ok_or("no cell")?;
-            c.source = source.chars().take(MAX_SOURCE).collect();
+            c.source = source;
             Ok(json!({"cell": k}))
         })
         .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
@@ -281,17 +290,13 @@ fn cell_of(s: &Session, p: &Value) -> Result<(usize, usize), String> {
     Ok((i, k))
 }
 
-fn unique_name(s: &Session, base: &str) -> String {
-    let base: String = base.trim().chars().take(200).collect();
-    let base = if base.is_empty() { "Notebook".to_string() } else { base };
+/// A notebook's name told apart by a number (see [`super::numbered_saying`]), with the notice to
+/// give when the number cuts it.
+fn unique_name(s: &Session, command: &str, whose: &str, base: &str) -> (String, Option<String>) {
+    let base = base.trim();
+    let base = if base.is_empty() { "Notebook" } else { base };
     let taken = |n: &str| s.project.notebooks.iter().any(|r| r.name.eq_ignore_ascii_case(n));
-    let mut name = base.clone();
-    let mut k = 1;
-    while taken(&name) {
-        k += 1;
-        name = format!("{base} {k}");
-    }
-    name
+    super::numbered_saying(command, "a notebook", whose, base, 200, taken)
 }
 
 fn run(s: &mut Session, p: &Value) -> CmdResult {
