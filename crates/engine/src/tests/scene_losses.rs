@@ -79,3 +79,48 @@ fn web_scene_reports_the_feature_limit_and_does_not_count_filtered_rows() {
     assert_eq!(positions(&scene(&mut clean, "clean-limit")), 2);
     assert!(!clean.notices.iter().any(|n| n.text.contains("feature limit")), "{:?}", clean.notices);
 }
+
+#[test]
+fn web_scene_says_per_layer_how_many_extrusions_it_holds_to_its_limit() {
+    let extrude = |s: &mut Session, layer: &str, base: f64| {
+        if let Some(l) = s.map_mut().layers.iter_mut().find(|l| l.name == layer) {
+            l.extrusion = Some(rustgis_map::effects::Extrusion { field: Some("h".into()), base, ..Default::default() });
+        }
+    };
+    let held = |s: &Session| s.notices.iter().filter(|n| n.text.contains("held to the web scene's limit")).count();
+    // Two polygons and a point (its stick) past the scene's top, one polygon within it, and a
+    // polygon past it that draws nothing (skipped, so not held); a second layer whose base alone
+    // is past the top.
+    let short = json!({"type":"Polygon", "coordinates":[[[0.0,0.0],[0.01,0.01],[0.0,0.0]]]});
+    let mut s = mesh_session(json!([
+        mesh_feature(square(0.0, false), 3e6),
+        mesh_feature(square(0.02, false), 2e6),
+        mesh_feature(json!({"type":"Point", "coordinates":[0.03,0.0]}), 4e6),
+        mesh_feature(square(0.04, false), 30.0),
+        mesh_feature(short, 5e6)
+    ]));
+    let text = json!({"type": "FeatureCollection", "features": [mesh_feature(square(0.06, false), 30.0)]}).to_string();
+    let (raised, _) = rustgis_data::io::read_geojson(&text, "Raised").unwrap();
+    s.map_mut().add_dataset(raised);
+    extrude(&mut s, "Mesh", 0.0);
+    extrude(&mut s, "Raised", 2e6);
+    scene(&mut s, "held");
+    for expected in [
+        "3 feature(s) of 'Mesh' had their extrusion base or height held to the web scene's limit: base plus height stays within 1,000 km",
+        "1 feature(s) of 'Raised' had their extrusion base or height held to the web scene's limit: base plus height stays within 1,000 km",
+    ] {
+        assert_eq!(s.notices.iter().filter(|n| n.text == expected).count(), 1, "{expected}: {:?}", s.notices);
+    }
+    assert_eq!(held(&s), 2, "{:?}", s.notices);
+    // A base plus height that reaches the top exactly is drawn whole: nothing said.
+    let mut clean = mesh_session(json!([mesh_feature(square(0.0, false), 30.0), mesh_feature(square(0.02, false), 1e6 - 20.0)]));
+    extrude(&mut clean, "Mesh", 20.0);
+    scene(&mut clean, "held-clean");
+    assert_eq!(held(&clean), 0, "{:?}", clean.notices);
+    // So does one whose fractional base and height sum to the top, though the top less the base
+    // rounds just below the height.
+    let mut fractional = mesh_session(json!([mesh_feature(square(0.0, false), 0.1)]));
+    extrude(&mut fractional, "Mesh", 999_999.9);
+    scene(&mut fractional, "held-fractional");
+    assert_eq!(held(&fractional), 0, "{:?}", fractional.notices);
+}

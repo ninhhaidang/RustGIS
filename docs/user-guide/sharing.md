@@ -144,7 +144,9 @@ in the browser. The Share As commands accept a `path`; without one they use the 
   is shorter is skipped and counted separately, as are holes with fewer than three vertices and
   line parts with a single vertex. A scene carries at most 200,000 visible features with geometry;
   a counted notice says when later features are left out by this limit. Filtered-out features
-  don't count as omissions. An empty result is refused, with the reasons for its omissions.
+  don't count as omissions. An extrusion's base plus height stays within 1,000 km in the scene: a
+  notice per layer says how many of its drawn features had their base or height held to that
+  limit. An empty result is refused, with the reasons for its omissions.
 - **Web Link Chart** (`share.linkChart`): the features joined by the map's relationships as a
   node-link HTML page; `relationship` limits it to one relationship.
 

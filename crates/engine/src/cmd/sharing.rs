@@ -37,6 +37,8 @@ const MAX_FEATURES: usize = 200_000;
 const MAX_PAGE_PICTURES: usize = 64 << 20;
 /// Largest glTF geometry buffer of a web scene.
 const MAX_SCENE_BYTES: usize = 128 << 20;
+/// Highest an extrusion reaches in a web scene (metres): its base and height together stay within it.
+const SCENE_TOP: f64 = 1e6;
 /// Most nodes in a link chart.
 const MAX_NODES: usize = 3000;
 /// Most links in a link chart (its page lays them all out every frame).
@@ -978,6 +980,9 @@ struct SceneBytes {
     skipped_outer: usize,
     holes_dropped: usize,
     single_vertex_lines: usize,
+    /// Per layer, in scene order: its name and how many features had their base or height held
+    /// to [`SCENE_TOP`].
+    held: Vec<(String, usize)>,
 }
 
 impl SceneBytes {
@@ -1001,6 +1006,11 @@ impl SceneBytes {
         }
         if self.single_vertex_lines > 0 {
             notes.push(format!("Skipped {} line part(s) with a single vertex", self.single_vertex_lines));
+        }
+        for (layer, n) in &self.held {
+            notes.push(format!(
+                "{n} feature(s) of '{layer}' had their extrusion base or height held to the web scene's limit: base plus height stays within 1,000 km"
+            ));
         }
         notes
     }
@@ -1041,6 +1051,7 @@ fn gltf(m: &Map, view: (f64, f64)) -> Result<SceneBytes, String> {
             tri.get(k).map_or(0, |(p, i)| p.len() * 12 + i.len() * 4) + lines.get(k).map_or(0, |v| v.len() * 12)
         };
         let (mut built, mut last): (usize, Option<([u8; 4], usize)>) = (0, None);
+        let mut held = 0usize;
         for (row, ft) in l.dataset.features.iter().enumerate() {
             if let Some((k, before)) = last.take() {
                 built += size(&tri, &lines, &k).saturating_sub(before);
@@ -1083,10 +1094,15 @@ fn gltf(m: &Map, view: (f64, f64)) -> Result<SceneBytes, String> {
             }
             let sym = styler.symbol(row);
             // A layer without an extrusion stands flat on the ground; the base and the height
-            // together stay within 1e6 m (the base is never NaN, so the height's cap is a number).
-            let (h, foot) = ex.map_or((0.0, 0.0), |e| {
-                let foot = e.base_metres_at(&l.dataset, row, columns).clamp(0.0, 1e6);
-                ((e.metres_at(&l.dataset, row, columns).clamp(0.0, 1e6 - foot)) as f32, foot as f32)
+            // together stay within SCENE_TOP (the base is never NaN, so the height's cap is a
+            // number); a feature held to it is counted once it draws something.
+            let (h, foot, clipped) = ex.map_or((0.0, 0.0, false), |e| {
+                let (base, height) = (e.base_metres_at(&l.dataset, row, columns), e.metres_at(&l.dataset, row, columns));
+                let foot = base.clamp(0.0, SCENE_TOP);
+                let h = height.clamp(0.0, SCENE_TOP - foot);
+                // Held when the sum passes the top: `SCENE_TOP - foot` can round below a height
+                // that, added to the base, reaches the top exactly.
+                (h as f32, foot as f32, base > foot || base + height > SCENE_TOP)
             });
             // The walls stand from the base, the cap sits on them.
             let top = foot + h;
@@ -1196,6 +1212,11 @@ fn gltf(m: &Map, view: (f64, f64)) -> Result<SceneBytes, String> {
                     }
                 }
             }
+            // A feature adds only to its own colour: it drew something when that grew.
+            held += usize::from(clipped && last.is_some_and(|(k, before)| size(&tri, &lines, &k) > before));
+        }
+        if held > 0 {
+            scene.held.push((l.name.clone(), held));
         }
         let mut primitives = Vec::new();
         let material = |key: [u8; 4], materials: &mut Vec<Value>| -> usize {
