@@ -348,13 +348,15 @@ fn put_saved(list: &mut Vec<Saved>, mut entry: Saved, keep: bool) {
     }
 }
 
-/// Loads the plugins the web app installed in earlier visits.
+/// Restores the registry address from Settings, then reloads the plugins the web app installed in
+/// earlier visits.
 pub fn restore(app: &mut RustGisApp) {
-    if !keeps_prefs() {
-        return;
-    }
+    // The desktop saves this too, so read it before the web-only part.
     if let Some(u) = app.services.load_pref.as_ref().and_then(|l| l("plugin_registry")) {
         app.plugins.url = u;
+    }
+    if !keeps_prefs() {
+        return;
     }
     let (list, kept) = match saved(app) {
         Some(read) => read,
@@ -1553,5 +1555,72 @@ mod tests {
         assert_eq!(app.plugins.message, Some((true, "Removed demo.".to_string())));
         assert!(!file.exists());
         assert_eq!(rp::settings::read("demo").unwrap(), json!({}));
+    }
+
+    /// A registry address set in Settings is still there after a restart, on the desktop too.
+    #[test]
+    fn the_registry_address_survives_a_restart() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        const ADDRESS: &str = "https://plugins.example.invalid/registry.json";
+
+        // Both runs share one prefs store, like prefs.json on the desktop.
+        let prefs = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+        let with_prefs = |app: &mut RustGisApp| {
+            let read = prefs.clone();
+            app.services.load_pref = Some(Box::new(move |key| read.lock().unwrap().get(key).cloned()));
+            let write = prefs.clone();
+            app.services.save_pref = Some(Box::new(move |key, value| {
+                write.lock().unwrap().insert(key.into(), value.into());
+            }));
+        };
+
+        // Nothing saved yet: the default registry.
+        let mut app = RustGisApp::with_sample();
+        with_prefs(&mut app);
+        restore(&mut app);
+        assert_eq!(app.plugins.registry_url(), rp::registry::DEFAULT_URL);
+
+        // First run: type an address into Settings and press Enter to save it.
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(560.0, 600.0)).with_max_steps(8).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                settings_tab(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        h.get_by_role(Role::TextInput).click();
+        h.run();
+        h.get_by_role(Role::TextInput).type_text(&format!("  {ADDRESS} "));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(prefs.lock().unwrap().get("plugin_registry").map(String::as_str), Some(ADDRESS), "saved trimmed");
+        drop(h);
+
+        // Second run on the same prefs: the address should be back without opening the Plugin Manager.
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = asked.clone();
+        let mut app = RustGisApp::with_sample();
+        app.services.fetch = Some(Box::new(move |url: &str, _: Slot<Result<Vec<u8>, String>>| {
+            log.lock().unwrap().push(url.to_string());
+        }));
+        with_prefs(&mut app);
+        restore(&mut app);
+        assert_eq!(app.plugins.url, ADDRESS);
+        assert_eq!(app.plugins.registry_url(), ADDRESS);
+
+        // Refresh should fetch from it rather than the default.
+        refresh(&mut app, &egui::Context::default());
+        assert!(asked.lock().unwrap().iter().any(|u| u == ADDRESS), "{:?}", asked.lock().unwrap());
+        assert!(!asked.lock().unwrap().iter().any(|u| u == rp::registry::DEFAULT_URL), "{:?}", asked.lock().unwrap());
     }
 }
