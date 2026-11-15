@@ -301,8 +301,9 @@ fn walk(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 /// A block diagram's settings (#1914) from `map.terrain`'s `"block"` object: the shape read here,
-/// the values checked by [`rustgis_map::view::TerrainBlock::check`] (as a saved project's are).
-fn terrain_block(b: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainBlock, String> {
+/// the values checked by [`rustgis_map::view::TerrainBlock::check`] (as a saved project's are),
+/// and the walls' layer as the water's is ([`polygon_layer`]).
+fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainBlock, String> {
     if let Some(k) = b.keys().find(|k| !matches!(k.as_str(), "extent" | "depth" | "walls")) {
         return Err(format!("block has no '{k}' (extent, depth, walls)"));
     }
@@ -322,14 +323,50 @@ fn terrain_block(b: &serde_json::Map<String, Value>) -> Result<rustgis_map::view
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_f64().ok_or("block's depth is metres, 0 to 20000")?),
     };
-    let walls = match b.get("walls") {
-        None | Some(Value::Null) => rustgis_map::view::BLOCK_WALLS,
-        Some(Value::String(c)) => rustgis_map::Rgba::from_hex(c).ok_or("block's walls is an opaque colour, #RRGGBB")?,
-        Some(_) => return Err("block's walls is a colour, #RRGGBB".into()),
+    let color = |c: Option<&Value>| match c {
+        None | Some(Value::Null) => Ok(rustgis_map::view::BLOCK_WALLS),
+        Some(Value::String(c)) => rustgis_map::Rgba::from_hex(c).ok_or("block's walls is an opaque colour, #RRGGBB"),
+        Some(_) => Err("block's walls is a colour, #RRGGBB, or {\"color\"?, \"layer\"?}"),
     };
-    let block = rustgis_map::view::TerrainBlock { extent, depth, walls };
+    // A colour, or the colour and a polygon layer that colours the walls where it has a polygon.
+    let (walls, walls_layer) = match b.get("walls") {
+        Some(Value::Object(w)) => {
+            if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "color" | "layer")) {
+                return Err(format!("block's walls has no '{k}' (color, layer)"));
+            }
+            let layer = match w.get("layer") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(n)) => Some(polygon_layer(s, n, "block's walls", "the units the walls show")?),
+                Some(_) => return Err("block's walls' layer is a polygon layer's name".into()),
+            };
+            (color(w.get("color"))?, layer)
+        }
+        other => (color(other)?, None),
+    };
+    let block = rustgis_map::view::TerrainBlock { extent, depth, walls, walls_layer };
     block.check()?;
     Ok(block)
+}
+
+/// The name of the polygon layer `name` for `what` (water, a block's walls), checked: a polygon
+/// layer (`holds` says of what) holding all its polygons, of a name of its own.
+fn polygon_layer(s: &Session, name: &str, what: &str, holds: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("{what} needs a layer: a polygon layer of {holds}"));
+    }
+    let l = s.map().layer_by_name(name).ok_or_else(|| format!("no layer '{name}'"))?;
+    if l.geometry_type() != rustgis_data::GeometryType::Polygon {
+        return Err(format!("'{name}' isn't a polygon layer ({holds})"));
+    }
+    // A layer read in chunks holds only the view's: its polygons would come and go with the view.
+    if l.is_streamed() {
+        return Err(format!("'{name}' is read a view at a time: {what} needs a layer that holds all its polygons"));
+    }
+    if s.map().layers.iter().filter(|o| o.name.eq_ignore_ascii_case(name)).count() > 1 {
+        return Err(format!("more than one layer is called '{name}': give the {what} layer a name of its own, then try again"));
+    }
+    Ok(l.name.clone())
 }
 
 /// A terrain's water (#1915) from `map.terrain`'s `"water"` object, checked: a polygon layer of a
@@ -338,23 +375,9 @@ fn terrain_water(s: &Session, w: &serde_json::Map<String, Value>) -> Result<rust
     if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "layer" | "level")) {
         return Err(format!("water has no '{k}' (layer, level)"));
     }
-    let name = w
-        .get("layer")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .ok_or("water needs a layer: a polygon layer of water bodies")?;
-    let l = s.map().layer_by_name(name).ok_or_else(|| format!("no layer '{name}'"))?;
-    if l.geometry_type() != rustgis_data::GeometryType::Polygon {
-        return Err(format!("'{name}' isn't a polygon layer (water bodies)"));
-    }
-    // A layer read in chunks holds only the view's: its lakes would come and go with the view.
-    if l.is_streamed() {
-        return Err(format!("'{name}' is read a view at a time: water needs a layer that holds all its polygons"));
-    }
-    if s.map().layers.iter().filter(|o| o.name.eq_ignore_ascii_case(name)).count() > 1 {
-        return Err(format!("more than one layer is called '{name}': give the water a name of its own, then try again"));
-    }
+    let name = w.get("layer").and_then(Value::as_str).ok_or("water needs a layer: a polygon layer of water bodies")?;
+    let name = polygon_layer(s, name, "water", "water bodies")?;
+    let l = s.map().layer_by_name(&name).ok_or_else(|| format!("no layer '{name}'"))?;
     let level = match w.get("level") {
         None | Some(Value::Null) => None,
         Some(Value::String(f)) => {
@@ -388,8 +411,8 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
     let block = match p.get("block") {
         None => None,
         Some(Value::Null | Value::Bool(false)) => Some(None),
-        Some(Value::Bool(true)) => Some(Some(terrain_block(&serde_json::Map::new())?)),
-        Some(Value::Object(b)) => Some(Some(terrain_block(b)?)),
+        Some(Value::Bool(true)) => Some(Some(terrain_block(s, &serde_json::Map::new())?)),
+        Some(Value::Object(b)) => Some(Some(terrain_block(s, b)?)),
         Some(_) => return Err("block is an object {\"extent\"?, \"depth\"?, \"walls\"?}, or false to take it off".into()),
     };
     // Left out (or null, as for the exaggeration), the water stays as it was; false takes it off
@@ -532,7 +555,11 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
             (None, Some(d)) => (json!(d), "layer"),
             (None, None) => (json!("layer"), "layer"),
         };
-        json!({"extent": extent, "extent_from": from, "depth": b.depth, "walls": b.walls.hex()})
+        let walls = match &b.walls_layer {
+            Some(l) => json!({"color": b.walls.hex(), "layer": l}),
+            None => json!(b.walls.hex()),
+        };
+        json!({"extent": extent, "extent_from": from, "depth": b.depth, "walls": walls})
     });
     // The terrain keeps its DEM by name: with two layers of that name (a rename can make them),
     // it would draw the first one's heights. Checked for a terrain kept on too.
@@ -555,6 +582,18 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         let e = format!(
             "more than one layer is called '{}': give the water a name of its own, then try again (Terrain stays as it was)",
             w.layer
+        );
+        if let Some(old) = old_terrain {
+            m.view.terrain = Some(old);
+        }
+        return Err(e);
+    }
+    // And the walls' layer (#1914), kept by name as the water's is.
+    if let Some(l) = t.block.as_ref().and_then(|b| b.walls_layer.as_ref())
+        && m.layers.iter().filter(|o| o.name.eq_ignore_ascii_case(l)).count() > 1
+    {
+        let e = format!(
+            "more than one layer is called '{l}': give the block's walls layer a name of its own, then try again (Terrain stays as it was)"
         );
         if let Some(old) = old_terrain {
             m.view.terrain = Some(old);

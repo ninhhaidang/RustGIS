@@ -383,6 +383,16 @@ impl Ground {
     }
 }
 
+/// The layer called `name` on `map` that a block diagram's walls are coloured by (#1914), when it
+/// can be: the only layer of that name, of polygons, holding them all (not read a view at a
+/// time), as `map.terrain` checks it. Otherwise the walls are their own colour.
+pub fn walls_layer<'a>(map: &'a Map, name: &str) -> Option<&'a rustgis_map::Layer> {
+    let mut named = map.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(name));
+    let l = named.next()?;
+    let polygons = l.geometry_type() == rustgis_data::GeometryType::Polygon;
+    (named.next().is_none() && polygons && !l.is_streamed()).then_some(l)
+}
+
 /// The largest north-up Web Mercator box inside a DEM's corners, near enough (the second
 /// smallest and second largest of their x and of their y): its whole extent for a DEM in
 /// geographic or Web Mercator coordinates, a little less for one turned a little by its
@@ -567,6 +577,7 @@ mod tests {
             extent: Some([0.0, 0.0, 200.0, 100.0]),
             depth: Some(1000.0),
             walls: rustgis_map::view::BLOCK_WALLS,
+            walls_layer: None,
         };
         m.view.terrain = Some(rustgis_map::view::Terrain {
             source: rustgis_map::view::TerrainSource::Layer("dem".into()),
@@ -609,6 +620,7 @@ mod tests {
             extent: Some([0.0, 0.0, 5000.0, 5000.0]),
             depth: Some(300.0),
             walls: rustgis_map::view::BLOCK_WALLS,
+            walls_layer: None,
         };
         m.view.terrain = Some(rustgis_map::view::Terrain {
             source: rustgis_map::view::TerrainSource::Tiles {

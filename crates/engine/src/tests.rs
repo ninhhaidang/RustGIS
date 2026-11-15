@@ -7721,7 +7721,7 @@ fn terrain_block_is_checked_kept_and_taken_off() {
         json!({"extent": [0, 0, 1000, 500]}),
         json!({"depth": -5}),
         json!({"walls": "#C8B89A80"}),
-        json!({"walls": {"layer": "Countries"}}),
+        json!({"walls": {"layer": "Nowhere"}}),
         json!({"base": 3}),
     ] {
         assert!(s.run("map.terrain", &json!({"layer": dem, "block": bad})).is_err(), "{bad}");
@@ -7759,6 +7759,7 @@ fn terrain_block_is_checked_kept_and_taken_off() {
             extent: Some([0.0, 0.0, 1000.0, 1000.0]),
             depth: None,
             walls: rustgis_map::view::BLOCK_WALLS,
+            walls_layer: None,
         }),
         water: None,
     });
@@ -7868,6 +7869,7 @@ fn terrain_is_set_from_a_dem_or_tiles() {
                 extent: Some([1116000.0, 5625000.0, 1114000.0, 5622000.0]),
                 depth: None,
                 walls: rustgis_map::view::BLOCK_WALLS,
+                walls_layer: None,
             }),
             water: None,
         });
@@ -7887,6 +7889,7 @@ fn terrain_is_set_from_a_dem_or_tiles() {
                 extent: Some([1114000.0, 5622000.0, 1116000.0, 5625000.0]),
                 depth: None,
                 walls: rustgis_map::view::BLOCK_WALLS,
+                walls_layer: None,
             }),
             water: None,
         });
@@ -7906,7 +7909,12 @@ fn terrain_is_set_from_a_dem_or_tiles() {
                 encoding: rustgis_map::view::TerrainEncoding::Terrarium,
             },
             exaggeration: 1.0,
-            block: Some(rustgis_map::view::TerrainBlock { extent: None, depth: None, walls: rustgis_map::view::BLOCK_WALLS }),
+            block: Some(rustgis_map::view::TerrainBlock {
+                extent: None,
+                depth: None,
+                walls: rustgis_map::view::BLOCK_WALLS,
+                walls_layer: None,
+            }),
             water: None,
         });
         let mut opened = Session::new(Project::default());
@@ -11889,7 +11897,7 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
 }
 
 /// A saved project's block is read back (the schema fixture `terrain_block.rgis`), its walls left
-/// to the default.
+/// to the default, and one whose walls a polygon layer colours (`terrain_block_walls.rgis`).
 #[test]
 fn terrain_block_is_read_back_from_a_saved_project() {
     let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_block.rgis")).unwrap();
@@ -11900,8 +11908,95 @@ fn terrain_block_is_read_back_from_a_saved_project() {
             extent: Some([-500_000.0, 1_500_000.0, 500_000.0, 2_500_000.0]),
             depth: Some(150.0),
             walls: rustgis_map::view::BLOCK_WALLS,
+            walls_layer: None,
         })
     );
+    // Its walls coloured by a polygon layer (`terrain_block_walls.rgis`), the layer kept by name.
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_block_walls.rgis")).unwrap();
+    let block = saved.maps[0].view.terrain.as_ref().and_then(|t| t.block.clone()).unwrap();
+    assert_eq!((block.walls, block.walls_layer.as_deref()), (rustgis_map::Rgba::rgb(128, 96, 64), Some("geologia")));
+}
+
+/// A block's walls coloured by a polygon layer (#1914): the layer checked before anything changes,
+/// reported and saved with the walls' colour, following its renames, and said when it is removed
+/// or a saved project's is missing.
+#[test]
+fn terrain_block_walls_follow_a_polygon_layer() {
+    use base64::Engine;
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let units = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"unidade": "granito"}, "geometry": {"type": "Polygon", "coordinates": [[[10.0, 45.0], [10.02, 45.0], [10.02, 45.04], [10.0, 45.04], [10.0, 45.0]]]}},
+    ]});
+    let data = base64::engine::general_purpose::STANDARD.encode(units.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "geologia.geojson", "data": data.clone()})).unwrap();
+    let geo = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap();
+    for (walls, said) in [
+        (json!({"layer": "Nowhere"}), "no layer"),
+        (json!({"layer": dem}), "isn't a polygon layer"),
+        (json!({"layer": 3}), "polygon layer's name"),
+        (json!({"layer": geo, "pattern": "x"}), "has no 'pattern'"),
+        (json!({"color": "#C8B89A80", "layer": geo}), "opaque colour"),
+        (json!(3), "is a colour"),
+    ] {
+        let e = s.run("map.terrain", &json!({"layer": dem, "block": {"walls": walls}})).unwrap_err();
+        assert!(e.contains(said), "{walls}: {e}");
+    }
+    assert!(s.map().view.terrain.is_none());
+    // Set: reported with the colour off its polygons, and saved with the project.
+    let v = s.run("map.terrain", &json!({"layer": dem, "block": {"walls": {"layer": geo}}})).unwrap();
+    assert_eq!(v["block"]["walls"], json!({"color": "#C8B89A", "layer": geo}));
+    let v = s.run("map.terrain", &json!({"block": {"walls": {"color": "#806040", "layer": geo}}})).unwrap();
+    assert_eq!(v["block"]["walls"], json!({"color": "#806040", "layer": geo}));
+    let saved = serde_json::to_string(&s.map().view).unwrap_or_default();
+    let back: rustgis_map::view::ViewSettings = serde_json::from_str(&saved).unwrap_or_default();
+    assert_eq!(back.terrain, s.map().view.terrain);
+    let walls_layer = |s: &Session| s.map().view.terrain.as_ref().and_then(|t| t.block.as_ref()).and_then(|b| b.walls_layer.clone());
+    // The walls follow their layer's renames.
+    let id = s.map().layer_by_name(&geo).map(|l| l.id).unwrap();
+    s.run("layer.rename", &json!({"layer": id, "name": "litologia"})).unwrap();
+    assert_eq!(walls_layer(&s).as_deref(), Some("litologia"));
+    // A saved project whose walls layer is missing opens with plain walls, said; the name kept.
+    let mut saved = s.project.clone();
+    saved.maps[0].layers.retain(|l| l.is_raster());
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, saved);
+    assert!(opened.notices.iter().any(|n| n.text.contains("walls layer is missing")), "{:?}", opened.notices);
+    assert_eq!(walls_layer(&opened).as_deref(), Some("litologia"));
+    // So does one whose walls layer's name two layers share: which one colours them can't be told.
+    let mut twice = s.project.clone();
+    let mut copy = twice.maps[0].layers.iter().find(|l| l.name == "litologia").cloned().unwrap();
+    copy.id = 9999;
+    twice.maps[0].layers.push(copy);
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, twice);
+    assert!(opened.notices.iter().any(|n| n.text.contains("of a name another layer shares")), "{:?}", opened.notices);
+    let mut clean = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut clean, s.project.clone());
+    assert!(!clean.notices.iter().any(|n| n.text.contains("walls layer")), "{:?}", clean.notices);
+    // Removed: said, and the name kept, so a layer of that name colours the walls again.
+    let mark = s.notice_mark();
+    s.run("layer.remove", &json!({"layer": id})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("walls layer 'litologia' was removed")), "{said:?}");
+    assert_eq!(walls_layer(&s).as_deref(), Some("litologia"));
+    // A plain colour takes the layer off.
+    let v = s.run("map.terrain", &json!({"block": {"walls": "#806040"}})).unwrap();
+    assert_eq!(v["block"]["walls"], json!("#806040"));
+    assert_eq!(walls_layer(&s), None);
+    // The DEM and the walls layer removed together: the terrain goes, said once; nothing is said
+    // of walls it no longer has.
+    s.run("layer.addDataBytes", &json!({"fileName": "geologia.geojson", "data": data})).unwrap();
+    let geo = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| (l.id, l.name.clone())).unwrap();
+    s.run("map.terrain", &json!({"block": {"walls": {"layer": geo.1}}})).unwrap();
+    let dem_id = s.map().layer_by_name(&dem).map(|l| l.id).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.remove", &json!({"layer": [dem_id, geo.0]})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.starts_with("Terrain turned off")), "{said:?}");
+    assert!(!said.iter().any(|t| t.contains("walls layer")), "{said:?}");
+    assert!(s.map().view.terrain.is_none());
 }
 
 /// A 40×40 lon/lat DEM near (10°E, 45°N): a hill in the middle, with a wall to its east.

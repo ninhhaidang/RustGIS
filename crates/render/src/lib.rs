@@ -2749,7 +2749,7 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
     // Walls once the base is settled: over elevation tiles still on their way it would move with
     // each tile (the frame is drawn again when they arrive, `Ground::pending`).
     if let Some(b) = block.as_ref().filter(|b| b.walls_stand(ground)) {
-        block::draw_walls(pm, view, ground, b, &edges, fog, far);
+        block::draw_walls(pm, view, ground, b, &edges, &block::runs(map, b), fog, far);
     }
     true
 }
@@ -9388,7 +9388,12 @@ mod tests {
         let mut m = Map::new("Map");
         m.basemap = rustgis_map::Basemap::Blank;
         m.add_raster("dem", rustgis_map::RasterLayer::from_path(dem, "dem.tif"));
-        let block = |extent| rustgis_map::view::TerrainBlock { extent, depth: Some(1000.0), walls: rustgis_map::view::BLOCK_WALLS };
+        let block = |extent| rustgis_map::view::TerrainBlock {
+            extent,
+            depth: Some(1000.0),
+            walls: rustgis_map::view::BLOCK_WALLS,
+            walls_layer: None,
+        };
         let terrain = |block: Option<rustgis_map::view::TerrainBlock>| {
             Some(rustgis_map::view::Terrain {
                 source: rustgis_map::view::TerrainSource::Layer("dem".into()),
@@ -9428,6 +9433,61 @@ mod tests {
             "{beside:?} vs {fog:?}"
         );
         assert_ne!(beside, px(&whole, 4, top - 4.0));
+    }
+
+    #[test]
+    fn a_block_diagrams_wall_shows_the_unit_under_its_edge() {
+        // #1914: the near wall of a 2 km box, seen from the south, with a red unit over the box's
+        // west half: red below the edge's west half, the walls' sandy brown below its east half.
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        use rustgis_data::{Dataset, Geometry, GeometryType};
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 20.0, bearing: 0.0, pitch: 60.0 };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera, sky: false };
+        let gt = GeoTransform { origin_x: -5000.0, origin_y: 5000.0, pixel_width: 20.0, pixel_height: -20.0 };
+        let dem =
+            Raster::new("dem", 500, 500, vec![vec![500.0; 500 * 500]], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap();
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        m.add_raster("dem", rustgis_map::RasterLayer::from_path(dem, "dem.tif"));
+        let deg = |x: f64, y: f64| rustgis_geom::merc_to_lonlat(Coord::new(x, y));
+        let west = vec![deg(-3000.0, -3000.0), deg(0.0, -3000.0), deg(0.0, 3000.0), deg(-3000.0, 3000.0), deg(-3000.0, -3000.0)];
+        let mut d = Dataset::new("geo", GeometryType::Polygon, Vec::new());
+        d.push(Some(Geometry::Polygon(vec![vec![west]])), Vec::new());
+        m.add_dataset(d);
+        let red = Rgba::rgb(220, 30, 30);
+        if let Some(l) = m.layers.iter_mut().find(|l| l.name == "geo") {
+            l.renderer = rustgis_map::Renderer::Single(rustgis_map::Symbol {
+                fill: red,
+                ..rustgis_map::Symbol::default_for(GeometryType::Polygon, 0)
+            });
+            l.visible = false;
+        }
+        m.view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Layer("dem".into()),
+            exaggeration: 1.0,
+            block: Some(rustgis_map::view::TerrainBlock {
+                extent: Some([-1000.0, -1000.0, 1000.0, 1000.0]),
+                depth: Some(1000.0),
+                walls: rustgis_map::view::BLOCK_WALLS,
+                walls_layer: Some("geo".into()),
+            }),
+            water: None,
+        });
+        let frame = render(&mut m, &view).expect("a frame");
+        let g = terrain::Ground::of(&m, &camera).expect("terrain");
+        // Halfway down the near wall, 500 m each side of its middle.
+        let at = |x: f64| {
+            let edge = Coord::new(x, -1000.0);
+            let (u, v) = camera.ground_px(edge);
+            let y = |metres: f64| {
+                camera.project_raised(u, v, metres / g.per_unit(edge) / camera.res, view.width, view.height).expect("in view")
+            };
+            let ((px, top), (_, foot)) = (y(500.0), y(-500.0));
+            frame.pixmap.pixel(px as u32, ((top + foot) / 2.0) as u32).expect("in the frame").demultiply()
+        };
+        let (w, e) = (at(-500.0), at(500.0));
+        assert!(w.red() > 2 * w.green() && w.red() > 2 * w.blue(), "west: {w:?}");
+        assert!(e.green() > e.blue() + 8 && e.red() < 2 * e.green(), "east: {e:?}");
     }
 
     #[test]

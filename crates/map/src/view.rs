@@ -217,9 +217,14 @@ pub struct TerrainBlock {
     /// half the box's relief, at least [`BLOCK_MIN_DEPTH`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<f64>,
-    /// The walls' colour.
+    /// The walls' colour, and where [`TerrainBlock::walls_layer`] has no polygon.
     #[serde(default = "block_walls")]
     pub walls: crate::color::Rgba,
+    /// A polygon layer, by name (as the terrain's DEM), that colours the walls: along each wall,
+    /// the colour the layer's symbology gives the polygon under the box's edge, its contacts
+    /// straight down (schematic: no dip or thickness). None: the walls are `walls` all along.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walls_layer: Option<String>,
 }
 
 /// The least depth (metres, before exaggeration) of a block diagram's base below its lowest

@@ -472,6 +472,7 @@ mod tests {
                 extent: Some([0.0, 0.0, 5000.0, 5000.0]),
                 depth: Some(300.0),
                 walls: rustgis_map::view::BLOCK_WALLS,
+                walls_layer: None,
             }),
             water: None,
         });
