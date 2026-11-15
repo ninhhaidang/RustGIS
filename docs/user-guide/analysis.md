@@ -38,6 +38,22 @@ map are unchanged. The toolbar says how many columns are hidden, and clicking it
 Hiding the column the rows are sorted by clears the sort. The order and hidden columns are kept
 per table until another project is opened, and are not saved in the project.
 
+**Statistics…** in the same menu shows the count, sum, mean, minimum, maximum and standard
+deviation of a number column in a small window, without making a table. With **Selected only** on
+it covers the selected rows, otherwise every row; the window says which. Empty values are counted
+apart, and numbers that aren't finite (NaN, infinity) are left out and counted in a notice. The
+standard deviation is the population one (divided by n), as in Summary Statistics. A column of
+whole numbers is added up exactly, so a sum, minimum or maximum past 2^53 keeps all its digits;
+when a column mixes whole numbers past 2^53 with decimals, a notice says how many were rounded. A
+sum or mean too large for a decimal number is left out, with a notice. A text or date column gives
+its count, distinct values (up to 100,000 entries or 8 MiB of distinct text; beyond either bound, a notice gives the lower bound), and
+first and last in order. The count runs in the background in the desktop app, with progress and
+Cancel. Scripts run `table.statistics` (`"layer"`, `"field"` or `"index"` (the field's zero-based position in dataset order, for columns of the same name; Move Left/Right does not change it), and `"selected"` for the selected rows only), which
+answers the same numbers as JSON. Headless scripts can call it synchronously. In a desktop
+window, use the column menu or a direct attached-MCP command; synchronous script and embedded
+assistant calls are refused rather than holding the window. It changes nothing in the project,
+so there is nothing to undo. Selected-only results close when the selection changes.
+
 A text column's menu also has **Convert to Date** and **Convert to Date and Time**
 (`edit.convertField`, `"type"`: `date` or `datetime`). A dialog lists only presets that read
 every non-empty value, with a few rows showing the result for each format. Choose a format and

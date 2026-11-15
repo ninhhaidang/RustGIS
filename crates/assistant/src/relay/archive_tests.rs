@@ -57,6 +57,43 @@ fn worker(ahead: reads::ReadAhead) -> Result<reads::Read, String> {
     std::thread::spawn(move || ahead.run(&rustgis_engine::analysis::control::Control::stoppable())).join().unwrap()
 }
 
+#[test]
+fn column_statistics_pause_for_the_read_worker_and_keep_cancel_and_authority() {
+    use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType, Value as Cell};
+    for mode in ["success", "cancel", "revoke"] {
+        let mut s = Session::new(Project::default());
+        let mut ds = Dataset::new("numbers", GeometryType::Point, vec![Field::new("value", FieldType::Double)]);
+        for n in [1.0, 2.0, 3.0] {
+            ds.push(None, vec![Cell::Float(n)]);
+        }
+        s.map_mut().add_dataset(ds);
+        let relay = Relay::start(0).unwrap();
+        let grant = relay.grant(true).unwrap();
+        let (_, rx) = queue(&relay, &grant, command(1, "table.statistics", json!({"layer":"numbers","field":"value"})));
+        assert_eq!(relay.poll(&mut s), 0, "must not count inline");
+        assert!(rx.try_recv().is_err(), "no reply before the worker completes");
+        let ahead = relay.take_archive_read().unwrap();
+        let done = if mode == "cancel" {
+            let control = rustgis_engine::analysis::control::Control::stoppable();
+            control.cancel();
+            std::thread::spawn(move || ahead.run(&control)).join().unwrap()
+        } else {
+            worker(ahead)
+        };
+        if mode == "revoke" {
+            drop(grant);
+        }
+        finish(&relay, &mut s, done);
+        let answer = reply(&rx);
+        assert_eq!(answer["result"]["isError"], mode != "success", "{mode}: {answer}");
+        if mode == "success" {
+            let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"sum\":6") && text.contains("\"mean\":2"), "{text}");
+        }
+        relay.stop();
+    }
+}
+
 fn finish(relay: &Relay, session: &mut Session, done: Result<reads::Read, String>) {
     relay.begin_archive_landing(session);
     let result = done.and_then(|read| reads::read_land(session, read));

@@ -644,6 +644,11 @@ pub fn commands() -> Vec<C> {
         .view()
         .key("Ctrl+T")
         .when(need_feature_layer),
+        C::new("table.statistics", "Column Statistics", "Data › Table", super::table_stats::run)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE)
+            .view()
+            .params(r#"{"layer"?: name|id (default: the active layer), "field": name (the first of that name, not told apart by case) | "index": the field's position in dataset order, from 0 (not the displayed order after Move Left/Right) (tells apart columns of the same name; wins over "field"), "selected"?: bool (only the layer's selected features; default: all)} → a numeric field: {layer, field, kind: "number", selected, rows (features considered), count (numbers used), nulls (null or empty), skipped (not finite numbers: NaN, infinity, or text that isn't a number; said in a notice), sum, mean, min, max (whole numbers are added up exactly: past 2^53 a sum, min or max is a whole number or its digits as text, never rounded), stdDev (the population one, divided by n, as Summary Statistics' STD)}; a sum or other number too large for a decimal is null, said in a notice; a text, date or other field: {…, kind: "text"|"date", count, nulls, distinct (bounded by 100,000 entries and 8 MiB of distinct text: then distinctCapped is true and a notice gives the lower bound), min, max (text by character code, dates by date)}"#),
         C::new("table.close", "Close Table", "Data › Table", |s, _| {
             s.table_layer = None;
             Ok(Value::Null)

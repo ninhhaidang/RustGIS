@@ -2592,6 +2592,8 @@ impl RustGisApp {
     /// Runs a command by id: `ui.*` here, everything else in the engine.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         #[cfg(not(target_arch = "wasm32"))]
+        self.session.statistics_need_read_ahead(self.reads_off_frame);
+        #[cfg(not(target_arch = "wasm32"))]
         if self.reads_off_frame {
             if id == "service.layers" {
                 return readjob::run(self, "service.layers", params);
@@ -2624,6 +2626,11 @@ impl RustGisApp {
             // it found said once it lands (Command Search shows no answer).
             if id == "source.syncState" {
                 return readjob::run_then(self, "source.syncState", params, Some(sync_state_said));
+            }
+            // Counting a column goes over every row of the layer: on a thread of its own, and the
+            // answer shown once it lands (the table's Statistics window).
+            if id == "table.statistics" {
+                return readjob::run_then(self, "table.statistics", params, Some(table::statistics_landed));
             }
             // Publishing hashes, reads and writes the whole file: on a thread of its own, with
             // progress and Cancel, as an export is.
@@ -5749,6 +5756,8 @@ impl RustGisApp {
 
     /// Per-frame work that doesn't draw (theme, fonts, files that arrived).
     pub fn logic(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.session.statistics_need_read_ahead(self.reads_off_frame);
         let _diagnostics = self.session.diagnostics.enter();
         // What this thread draws (an image, a print, a page, a preview, an agent's snapshot)
         // never waits for cast shadows still being worked out: it says they were (Never hold the

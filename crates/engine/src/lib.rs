@@ -977,6 +977,10 @@ pub struct Session {
     /// A read the app made on a thread of its own for the command it runs next, which takes it
     /// instead of reading again ([`cmd::reads`]).
     pub(crate) read_ahead: Option<cmd::reads::Ready>,
+    /// A desktop window owner that must not count column statistics inline. Runtime only;
+    /// worker copies and headless sessions can still use synchronous commands.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) statistics_window_thread: Option<std::thread::ThreadId>,
     /// A model's tools run ahead on a copy of the session, which a model's run here takes
     /// ([`cmd::gp::Ahead::Taking`]), or which that copy records ([`cmd::gp::Ahead::Recording`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1157,6 +1161,13 @@ fn edits_features(id: &str) -> bool {
 }
 
 impl Session {
+    /// Marks this thread as the desktop window owner for column statistics. Adapters with a
+    /// window use the prepared read queue; headless adapters leave this disabled.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn statistics_need_read_ahead(&mut self, enabled: bool) {
+        self.statistics_window_thread = enabled.then(|| std::thread::current().id());
+    }
+
     pub fn new(mut project: Project) -> Self {
         // The engine's tests never add Shapefile indexes to the user's cache (#1230).
         #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1298,6 +1309,8 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             zarr_reads: Default::default(),
             read_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            statistics_window_thread: None,
             #[cfg(not(target_arch = "wasm32"))]
             tools_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]

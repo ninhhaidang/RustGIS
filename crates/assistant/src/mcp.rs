@@ -162,7 +162,10 @@ impl ArchiveBatch {
                 }
                 let (name, args) = tool_request(msg.get("params")?).ok()?;
                 if name != "run_command"
-                    || !matches!(args.get("command").and_then(Value::as_str).map(str::trim), Some("map.reloadTiles" | "map.repairTiles"))
+                    || !matches!(
+                        args.get("command").and_then(Value::as_str).map(str::trim),
+                        Some("map.reloadTiles" | "map.repairTiles" | "table.statistics")
+                    )
                 {
                     return None;
                 }
@@ -227,7 +230,7 @@ impl Server {
         self.handle_scoped(s, message, self.scope(s), Vec::new(), "")
     }
     #[cfg(not(target_arch = "wasm32"))]
-    /// Desktop relay ingress; only direct archive commands pause. Scripts and other transports
+    /// Desktop relay ingress; direct archive and column-statistics commands pause. Scripts and other transports
     /// retain their synchronous contract, and malformed messages keep normal JSON-RPC handling.
     pub(crate) fn start_archive_batch(
         self,

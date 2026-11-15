@@ -12,6 +12,9 @@ mod permission_policy;
 #[path = "tests/review_boundaries.rs"]
 mod review_boundaries;
 
+#[path = "tests/table_statistics.rs"]
+mod table_statistics;
+
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;
 
@@ -46167,6 +46170,14 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         assert!(read.reads());
         let control = Control::cancelled_once_started();
         note(command, read.run(&control).map(|_| ()), &control);
+    }
+
+    // Column Statistics counts every row of a layer on a thread of its own in the desktop app.
+    {
+        let read = crate::cmd::reads::read_ahead(&mut s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"})).unwrap();
+        assert!(read.reads());
+        let control = Control::cancelled_once_started();
+        note("table.statistics", read.run(&control).map(|_| ()), &control);
     }
 
     s.run("layer.addDataText", &json!({"fileName": "calc.csv", "text": "n,day\n1,x\n2,y\n"})).unwrap();

@@ -112,9 +112,12 @@ fn run_presented(
         let r = app.run(command, p);
         return answered(app, then, r);
     }
-    let layer = matches!(command, "layer.loadAll" | "layer.reloadData" | "layer.repairSource" | "labels.convert" | "source.syncState")
-        .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
-        .flatten();
+    let layer = matches!(
+        command,
+        "layer.loadAll" | "layer.reloadData" | "layer.repairSource" | "labels.convert" | "source.syncState" | "table.statistics"
+    )
+    .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
+    .flatten();
     let notice_mark = app.session.notice_mark();
     if layer.is_some() {
         let id = app.session.layer_id(&p)?;
@@ -206,15 +209,19 @@ fn run_presented(
     }
 }
 
-/// Queues an archive read already admitted by the relay, without dispatching another command.
+/// Queues an archive or statistics read already admitted by the relay, without dispatching another command.
 pub fn admitted(app: &mut RustGisApp, ahead: reads::ReadAhead, relay: rustgis_assistant::relay::Relay) {
     let Some((command, params)) = ahead.command() else {
         finish_relay(app, &relay, Err(tl!("This read was already started").to_string()));
         return;
     };
     let params = params.clone();
-    let archive = reads::archive_target(&app.session, &params);
-    let what = archive.as_ref().map(|(_, tile)| tile.name.clone()).unwrap_or_default();
+    let archive = matches!(command, "map.reloadTiles" | "map.repairTiles").then(|| reads::archive_target(&app.session, &params)).flatten();
+    let layer = (command == "table.statistics")
+        .then(|| app.session.layer_id(&params).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
+        .flatten();
+    let what =
+        layer.as_ref().map(|(_, name)| name.clone()).or_else(|| archive.as_ref().map(|(_, tile)| tile.name.clone())).unwrap_or_default();
     let asked = Asked {
         command,
         params,
@@ -222,7 +229,7 @@ pub fn admitted(app: &mut RustGisApp, ahead: reads::ReadAhead, relay: rustgis_as
         what,
         opened: app.session.opened,
         map: app.session.map().instance_id(),
-        layer: None,
+        layer: layer.map(|(instance, _)| instance),
         archive,
         reload: None,
         origin: None,
@@ -304,6 +311,7 @@ fn called<'a>(command: &str, what: &'a str) -> &'a str {
         (false, _) => what,
         (true, "script.run") => tl_raw!("Run Script"),
         (true, "topology.validate") => tl_raw!("Error Inspector"),
+        (true, "table.statistics") => tl_raw!("Column Statistics"),
         (true, "service.add") => tl_raw!("Add Service Layer"),
         (true, _) => tl_raw!("Run Model"),
     }
@@ -1559,6 +1567,68 @@ mod tests {
         landed(&mut app, 60);
         let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         assert!(said.iter().any(|t| t == "places is in step with places.geojson"), "{said:?}");
+    }
+
+    #[test]
+    fn relay_statistics_use_a_field_index_not_an_archive_index_while_queued() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType, Value as V};
+        use std::io::{BufRead, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        let tiles = dir.path().join("context.pmtiles");
+        archive(&tiles, "Context");
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.run("map.addTiles", json!({"url":tiles,"name":"Context","overlay":true})).unwrap();
+        let mut ds = Dataset::new("numbers", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for n in [1, 2, 3] {
+            ds.push(None, vec![V::Int(n)]);
+        }
+        let layer = rustgis_engine::cmd::layer::add_dataset(&mut app.session, ds);
+        app.reads_off_frame = true;
+        app.run("table.statistics", json!({"layer":layer,"index":0})).unwrap();
+        let (relay, _grant, client, ahead) = paused_relay(&mut app, relay_command(1, "table.statistics", json!({"layer":layer,"index":0})));
+        admitted(&mut app, ahead, relay.clone());
+        assert_eq!(app.reads.waiting.len(), 1);
+        // The column index happens to match this unrelated tile archive's index. Removing the
+        // archive while the count waits must not invalidate the column statistics request.
+        app.session.map_mut().tiles.clear();
+        landed(&mut app, 60);
+        let mut text = String::new();
+        BufReader::new(client).read_line(&mut text).unwrap();
+        let answer: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(answer["result"]["isError"], false, "{answer}");
+        assert!(answer["result"]["content"][0]["text"].as_str().unwrap().contains("\"sum\":6"), "{answer}");
+        relay.stop();
+    }
+
+    /// Statistics… counts the column on a thread of its own and keeps the answer for its window
+    /// once it lands; a layer changed meanwhile is left, and nothing is kept.
+    #[test]
+    fn column_statistics_are_counted_on_a_thread_and_kept_for_the_window() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType, Value as V};
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let mut ds = Dataset::new("big", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for i in [9_007_199_254_740_993_i64, 1, 2] {
+            ds.push(None, vec![V::Int(i)]);
+        }
+        let id = rustgis_engine::cmd::layer::add_dataset(&mut app.session, ds);
+        app.session.table_layer = Some(id);
+        app.reads_off_frame = true;
+        let asked = json!({"layer": id, "field": "n", "index": 0});
+        assert_eq!(app.run("table.statistics", asked.clone()).unwrap()["started"], "Column Statistics");
+        assert!(app.table_stats_kept().is_none(), "nothing shown before it lands");
+        landed(&mut app, 60);
+        let kept = app.table_stats_kept().expect("kept once landed");
+        assert_eq!(kept["sum"], 9_007_199_254_740_996_i64, "exact, not rounded");
+        // The layer edited while it counts: left for the user to ask again.
+        app.session.table_layer = Some(id);
+        assert_eq!(app.run("table.statistics", asked).unwrap()["started"], "Column Statistics");
+        app.session
+            .run("edit.addFeature", &json!({"layer": id, "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}, "attributes": {"n": 5}}))
+            .unwrap();
+        let mark = app.session.notice_mark();
+        landed(&mut app, 60);
+        let said: Vec<String> = app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert!(said.iter().any(|t| t.contains("changed while") || t.contains("left")), "{said:?}");
     }
 
     /// The desktop's Add Data reads a Shapefile (in a coordinate system given, as Import
