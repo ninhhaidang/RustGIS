@@ -308,6 +308,7 @@ fn class(
         line_offset: 0.0,
         show_all: false,
         callout: None,
+        square_to: None,
         moved: Vec::new(),
         by,
     })

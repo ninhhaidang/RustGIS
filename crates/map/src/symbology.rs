@@ -2359,6 +2359,10 @@ pub struct LabelClass {
     /// none keeps every label in its spot. Labels along lines aren't moved.
     #[serde(default, deserialize_with = "de_callout", skip_serializing_if = "Option::is_none")]
     pub callout: Option<f32>,
+    /// The line layer a point's label is turned square to when placed
+    /// [`Perpendicular`](LabelPlacement::Perpendicular) (#2263); none labels it as `Auto`.
+    #[serde(default, deserialize_with = "de_square_to", skip_serializing_if = "Option::is_none")]
+    pub square_to: Option<SquareTo>,
     /// Labels moved by hand (the Move Label tool, as QGIS's): each feature's, by its id, drawn
     /// where it was put, a callout's line back to the feature when the class has callouts. At
     /// most [`MAX_MOVED_LABELS`], kept in order of id (so a label's is found without a scan).
@@ -2773,6 +2777,54 @@ fn is_yes(b: &bool) -> bool {
     *b
 }
 
+/// The line layer a [`Perpendicular`](LabelPlacement::Perpendicular) label is turned square to
+/// (#2263): its nearest line within `within` points on the screen, and which way the text runs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SquareTo {
+    /// A line or polygon layer, by name (as the terrain's walls layer).
+    pub layer: String,
+    /// How near its line must be (points, within [`SQUARE_WITHIN`]).
+    #[serde(default = "default_square_within")]
+    pub within: f32,
+    #[serde(default)]
+    pub side: SquareSide,
+}
+
+/// Which way a [`Perpendicular`](LabelPlacement::Perpendicular) label runs from its point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SquareSide {
+    /// To the side of the line the point isn't on (left where it is on the line).
+    #[default]
+    Away,
+    /// Left of the line, as it runs.
+    Left,
+    /// Right of the line, as it runs.
+    Right,
+}
+
+/// How near a [`SquareTo`] line may be asked to be (points).
+pub const SQUARE_WITHIN: std::ops::RangeInclusive<f64> = 1.0..=500.0;
+
+/// A [`SquareTo`]'s `within` brought into [`SQUARE_WITHIN`] (not a number: the default).
+pub fn square_within(v: f64) -> f32 {
+    if v.is_finite() { v.clamp(*SQUARE_WITHIN.start(), *SQUARE_WITHIN.end()) as f32 } else { default_square_within() }
+}
+
+fn default_square_within() -> f32 {
+    20.0
+}
+
+/// A project file's `square_to`: one that doesn't read, or names no layer, is none; its
+/// `within` brought into range.
+fn de_square_to<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SquareTo>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<SquareTo>(v)
+        .ok()
+        .filter(|t| !t.layer.trim().is_empty())
+        .map(|t| SquareTo { within: square_within(f64::from(t.within)), ..t }))
+}
+
 /// Where labels sit relative to their feature's label point.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LabelPlacement {
@@ -2794,6 +2846,10 @@ pub enum LabelPlacement {
     /// Along a line, each character turned with it where it bends, at its middle; points and
     /// polygons are labelled as `Auto`.
     Curved,
+    /// A point's label turned square to the nearest line of [`LabelClass::square_to`], starting
+    /// at the point (#2263); a point with no line that near, lines and polygons as `Auto`. (Not
+    /// in [`ALL`](Self::ALL), the positions a menu offers: it needs its line layer.)
+    Perpendicular,
 }
 
 impl LabelPlacement {
@@ -2831,6 +2887,7 @@ impl LabelPlacement {
             LabelPlacement::BelowLeft => "belowLeft",
             LabelPlacement::Parallel => "parallel",
             LabelPlacement::Curved => "curved",
+            LabelPlacement::Perpendicular => "perpendicular",
         }
     }
     pub fn label(self) -> &'static str {
@@ -2847,10 +2904,11 @@ impl LabelPlacement {
             LabelPlacement::BelowLeft => "Below Left",
             LabelPlacement::Parallel => "Parallel",
             LabelPlacement::Curved => "Curved",
+            LabelPlacement::Perpendicular => "Perpendicular",
         }
     }
     pub fn from_code(s: &str) -> Option<LabelPlacement> {
-        LabelPlacement::ALL.into_iter().find(|p| p.code().eq_ignore_ascii_case(s.trim()))
+        LabelPlacement::ALL.into_iter().chain([LabelPlacement::Perpendicular]).find(|p| p.code().eq_ignore_ascii_case(s.trim()))
     }
     /// The label centre's offset from the label point, in points, for a label `w` wide and `h`
     /// tall next to a marker of size `marker` (0 for lines and polygons).
@@ -2858,8 +2916,14 @@ impl LabelPlacement {
         let gap = marker / 2.0 + 2.0;
         let (dx, dy) = (w / 2.0 + gap, h / 2.0 + gap);
         match self {
-            LabelPlacement::Auto | LabelPlacement::Parallel | LabelPlacement::Curved if is_point => (0.0, -(marker / 2.0 + h * 0.6)),
-            LabelPlacement::Auto | LabelPlacement::Center | LabelPlacement::Parallel | LabelPlacement::Curved => (0.0, 0.0),
+            LabelPlacement::Auto | LabelPlacement::Parallel | LabelPlacement::Curved | LabelPlacement::Perpendicular if is_point => {
+                (0.0, -(marker / 2.0 + h * 0.6))
+            }
+            LabelPlacement::Auto
+            | LabelPlacement::Center
+            | LabelPlacement::Parallel
+            | LabelPlacement::Curved
+            | LabelPlacement::Perpendicular => (0.0, 0.0),
             LabelPlacement::Above => (0.0, -dy),
             LabelPlacement::Below => (0.0, dy),
             LabelPlacement::Left => (-dx, 0.0),
@@ -2930,6 +2994,7 @@ impl LabelClass {
             line_offset: 0.0,
             show_all: false,
             callout: None,
+            square_to: None,
             moved: Vec::new(),
             by: Default::default(),
         }

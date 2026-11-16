@@ -4,7 +4,9 @@
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
 use rustgis_geom::Coord;
 use rustgis_map::symbology::{MAX_LABEL_CLASS_NAME, MAX_LABEL_CLASSES, label_class_name};
-use rustgis_map::{LabelBackground, LabelClass, LabelMatcher, LabelPlacement, Labeling, Layer, Renderer, Rgba, Symbol};
+use rustgis_map::{
+    LabelBackground, LabelClass, LabelMatcher, LabelPlacement, Labeling, Layer, Renderer, Rgba, SquareSide, SquareTo, Symbol,
+};
 use serde_json::{Value, json};
 
 use super::layer::s_req;
@@ -141,8 +143,12 @@ pub fn commands() -> Vec<C> {
                 // A position that isn't a placement name is refused, not dropped for the others (null:
                 // none, as for the other keys).
                 None if p.get("position").is_some_and(|v| !v.is_null()) => return Err("position must be a placement name".into()),
-                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "callout"].iter().any(|k| p.get(k).is_some()) => None,
-                None => return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll or a callout)".into()),
+                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "callout", "to", "side"].iter().any(|k| p.get(k).is_some()) => {
+                    None
+                }
+                None => {
+                    return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll, a callout, to or side)".into());
+                }
             };
             let offset = match p.get("offset") {
                 None => None,
@@ -203,12 +209,33 @@ pub fn commands() -> Vec<C> {
                 Some(Value::Bool(on)) => Some(*on),
                 Some(_) => return Err("otherPositions must be true or false".into()),
             };
+            let to = square_to(s, p)?;
+            let side = match p.get("side") {
+                None => None,
+                Some(v) => Some(serde_json::from_value::<SquareSide>(v.clone()).map_err(|_| "side must be \"away\", \"left\" or \"right\"")?),
+            };
+            // `to: null`: this call takes the line away.
+            let clears = matches!(to, Some(None));
             let id = s.layer_id(p)?;
             let (points, lines) = points_and_lines(s.map().layer(id).ok_or("no such layer")?);
             let done = with_labels(s, p, |labels| {
                 let c = class_in(labels, p)?;
                 if let Some(pos) = pos {
                     c.placement = pos;
+                }
+                if let Some(to) = to {
+                    // (A new layer keeps the side asked before.)
+                    let kept = c.square_to.as_ref().map(|o| o.side);
+                    c.square_to = to.map(|t| SquareTo { side: kept.unwrap_or(t.side), ..t });
+                }
+                if let Some(side) = side {
+                    c.square_to.as_mut().ok_or("side needs a line to be square to: to {\"layer\"}")?.side = side;
+                }
+                // Asked for, or its line taken away, without a line to be square to: refused. (A
+                // class saved so, its line unread, is labelled as auto; edits that touch neither
+                // are taken.)
+                if c.placement == LabelPlacement::Perpendicular && c.square_to.is_none() && (pos.is_some() || clears) {
+                    return Err("perpendicular needs a line layer to be square to: to {\"layer\", \"within\"?}".into());
                 }
                 if let Some(on) = others {
                     c.other_positions = on;
@@ -241,6 +268,11 @@ pub fn commands() -> Vec<C> {
             if let Some(note) = callout_note {
                 s.notify(note, false);
             }
+            // A distance outside the range is brought within it, and says so.
+            if let Some(asked) = p.pointer("/to/within").and_then(number).filter(|w| !rustgis_map::symbology::SQUARE_WITHIN.contains(w)) {
+                let kept = rustgis_map::symbology::square_within(asked);
+                s.notify(format!("within {asked} points adjusted to {kept} (a perpendicular label's line is 1 to 500 points away)"), false);
+            }
             if let Some(asked) = line_offset_asked {
                 let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
                 let kept = rustgis_map::symbology::label_line_offset(asked);
@@ -259,7 +291,7 @@ pub fn commands() -> Vec<C> {
         .inputs(super::Inputs::single_layer)
         .when(need_feature_layer)
         .params(
-            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends) (required without offset, repeat, lineOffset, otherPositions, showAll or callout), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "showAll"?: bool (every label drawn, over the others where they crowd), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon)}"#,
+            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends)|"perpendicular" (a point's, square to the nearest line of `to`, starting at the point; none that near: as auto) (required without offset, repeat, lineOffset, otherPositions, showAll, callout, to or side), "to"?: {"layer": a line or polygon layer's name, "within"?: points (1 to 500; 20)} | null, "side"?: "away" (the side of the line the point isn't on; the default)|"left"|"right" (as the line runs), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; perpendicular: [out along the normal, down as the text reads]; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "showAll"?: bool (every label drawn, over the others where they crowd), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon)}"#,
         ),
         // Labels moved by hand (the Move Label tool, as QGIS's): kept by their feature's id.
         C::new("labels.move", "Move Label", "Labeling › Label Placement", |s, p| {
@@ -432,6 +464,27 @@ pub fn commands() -> Vec<C> {
 /// goes by each feature's geometry.
 fn points_and_lines(l: &Layer) -> (bool, bool) {
     (l.has_geometry(GeometryType::Point), l.has_geometry(GeometryType::Polyline))
+}
+
+/// `labels.placement`'s `to`: the line or polygon layer a perpendicular label is square to, by
+/// name, and how near (points); null clears it, none leaves it.
+fn square_to(s: &Session, p: &Value) -> Result<Option<Option<SquareTo>>, String> {
+    let to = match p.get("to") {
+        None => return Ok(None),
+        Some(Value::Null) => return Ok(Some(None)),
+        Some(v) => v,
+    };
+    let name = to.get("layer").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty());
+    let name = name.ok_or("to is {\"layer\": a line or polygon layer's name, \"within\"?: points}")?;
+    let layer = s.map().layer_by_name(name).ok_or_else(|| format!("no layer named '{name}'"))?;
+    if !layer.has_geometry(GeometryType::Polyline) && !layer.has_geometry(GeometryType::Polygon) {
+        return Err(format!("'{name}' has no lines or polygons to be square to"));
+    }
+    let within = match to.get("within") {
+        None | Some(Value::Null) => rustgis_map::symbology::square_within(f64::NAN),
+        Some(v) => rustgis_map::symbology::square_within(number(v).filter(|w| *w > 0.0).ok_or("within must be a number of points")?),
+    };
+    Ok(Some(Some(SquareTo { layer: layer.name.clone(), within, side: Default::default() })))
 }
 
 /// Whether a class on a layer holding these has other places to try when its label's own is taken:

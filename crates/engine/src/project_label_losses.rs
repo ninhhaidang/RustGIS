@@ -68,6 +68,8 @@ struct Class {
     #[serde(default)]
     callout: Option<serde_json::Value>,
     #[serde(default)]
+    square_to: Option<serde_json::Value>,
+    #[serde(default)]
     line_offset: Option<serde_json::Value>,
     #[serde(default)]
     show_all: Option<serde_json::Value>,
@@ -83,6 +85,8 @@ struct Labels {
     line_offset: Option<serde_json::Value>,
     #[serde(default)]
     show_all: Option<serde_json::Value>,
+    #[serde(default)]
+    square_to: Option<serde_json::Value>,
     #[serde(default)]
     classes: Vec<Class>,
 }
@@ -134,6 +138,17 @@ fn adjusted_line_offset(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_null() && v.as_f64().is_none_or(|n| !rustgis_map::symbology::LABEL_OFFSET.contains(&n)))
 }
 
+/// A perpendicular label's line (#2263) that doesn't read or names no layer (dropped: labelled as
+/// auto), or whose distance or side isn't one (held to its range, or away); null is none.
+fn adjusted_square_to(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|v| {
+        !v.is_null()
+            && (v.get("layer").and_then(serde_json::Value::as_str).is_none_or(|n| n.trim().is_empty())
+                || v.get("within").is_some_and(|w| w.as_f64().is_none_or(|n| !rustgis_map::symbology::SQUARE_WITHIN.contains(&n)))
+                || v.get("side").is_some_and(|s| serde_json::from_value::<rustgis_map::SquareSide>(s.clone()).is_err()))
+    })
+}
+
 /// Whether a "Show all labels" setting is something other than true or false (null is none).
 fn damaged_flag(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_boolean() && !v.is_null())
@@ -147,7 +162,7 @@ fn count<'a>(
     name: &str,
     what: &str,
 ) -> Vec<(ReadPart, String)> {
-    let (mut moves, mut callouts, mut offsets, mut flags) = (0usize, 0usize, 0usize, 0usize);
+    let (mut moves, mut callouts, mut offsets, mut flags, mut squares) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut diagrams = rustgis_map::diagram::DiagramAudit::default();
     for layer in raw {
         diagrams = diagrams.plus(layer.diagram);
@@ -156,11 +171,13 @@ fn count<'a>(
         callouts = callouts.saturating_add(usize::from(adjusted_callout(labels.callout.as_ref())));
         offsets = offsets.saturating_add(usize::from(adjusted_line_offset(labels.line_offset.as_ref())));
         flags = flags.saturating_add(usize::from(damaged_flag(labels.show_all.as_ref())));
+        squares = squares.saturating_add(usize::from(adjusted_square_to(labels.square_to.as_ref())));
         for class in &labels.classes {
             moves = moves.saturating_add(class.moved.0);
             callouts = callouts.saturating_add(usize::from(adjusted_callout(class.callout.as_ref())));
             offsets = offsets.saturating_add(usize::from(adjusted_line_offset(class.line_offset.as_ref())));
             flags = flags.saturating_add(usize::from(damaged_flag(class.show_all.as_ref())));
+            squares = squares.saturating_add(usize::from(adjusted_square_to(class.square_to.as_ref())));
         }
     }
     let retained = retained.flat_map(|labels| labels.in_order()).map(|c| c.moved.len()).fold(0usize, usize::saturating_add);
@@ -179,6 +196,11 @@ fn count<'a>(
     if flags > 0 {
         messages
             .push(format!("{name}: {flags} \"show all labels\" setting(s) that were not true or false read as off while opening {what}"));
+    }
+    if squares > 0 {
+        messages.push(format!(
+            "{name}: {squares} perpendicular label line setting(s) dropped (labelled as auto) or adjusted while opening {what}"
+        ));
     }
     let mut messages: Vec<(ReadPart, String)> = messages.into_iter().map(|m| (ReadPart::Labels, m)).collect();
     let mut found = Vec::new();
