@@ -1686,6 +1686,14 @@ fn an_image_is_a_marker_kept_in_the_project_file_that_an_older_reader_refuses() 
     s.run("project.saveAs", &json!({"path": path.display().to_string()})).unwrap();
     let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved["requires"], json!(["picture-markers"]));
+    // So does the map file a map package holds.
+    for mobile in [false, true] {
+        let pkg = dir.join(if mobile { "mobile.rgismpk" } else { "map.rgismpk" });
+        s.run("map.package", &json!({"path": pkg.display().to_string(), "mobile": mobile})).unwrap();
+        let entries = rustgis_data::zip::read_matching(&std::fs::read(&pkg).unwrap(), |n| n.ends_with(".rgismap")).unwrap();
+        let packed: Value = serde_json::from_slice(&entries[0].1).unwrap();
+        assert_eq!(packed["requires"], json!(["picture-markers"]), "mobile: {mobile}");
+    }
     let mut t = Session::new(Project::default());
     t.run("project.open", &json!({"path": path.display().to_string()})).unwrap();
     assert_eq!(marker(&t), Marker::Picture(Picture::new(&b64)));

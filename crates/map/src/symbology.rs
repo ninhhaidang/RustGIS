@@ -3608,6 +3608,9 @@ mod tests {
             },
         };
         assert!(crate::fills::fills_have_pictures(&[dots(Marker::Circle), dots(m)], |_| true));
+        // Its dots show in a feature of no fill, as the point's image does.
+        assert!(dots(m).draws(none) && !dots(Marker::Circle).draws(none));
+        assert!(!dots(Marker::Picture(Picture::default())).draws(none));
         assert!(!crate::fills::fills_have_pictures(&[dots(Marker::Circle), crate::fills::FillLayer::default()], |_| true));
     }
 

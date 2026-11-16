@@ -847,12 +847,12 @@ fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, Strin
     }
     crate::project::ensure_map_imports_complete(&m)?;
     let name = m.name.clone();
-    let (text, report) = crate::durable::output_owned(m, |m| serde_json::to_string(m).map_err(|e| e.to_string()))?;
+    // With the map file's header, so an older reader refuses what it can't draw.
+    let (bytes, report) = crate::durable::output_owned(m, crate::project::map_file_bytes)?;
     crate::durable::notify(s, &report);
     let kind = if mobile { "mobile map package" } else { "map package" };
     let readme = format!("{} — a RustGIS {kind}.\nAdd it to a project with Data › Import.\n", name);
-    let archive =
-        rustgis_data::zip::write(&[(format!("{}.rgismap", safe(&name)), text.into_bytes()), ("README.txt".into(), readme.into_bytes())])?;
+    let archive = rustgis_data::zip::write(&[(format!("{}.rgismap", safe(&name)), bytes), ("README.txt".into(), readme.into_bytes())])?;
     for said in notes.without_polar().messages("Mobile map package, simplifying") {
         s.notify(said, false);
     }
