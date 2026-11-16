@@ -583,6 +583,114 @@ fn standalone_tables_keep_their_ids_in_the_project_file() {
     assert_eq!(s.table_standalone, None);
 }
 
+/// Export the ranked table itself, preserving ties and the source table; options are validated
+/// before writing. A Summary Statistics result follows the same standalone-table path.
+#[test]
+fn table_export_sorts_stably_and_keeps_the_first_rows() {
+    use rustgis_data::{Dataset, Field, FieldType, GeometryType, Value as Cell};
+    let mut s = world();
+    let mut ds =
+        Dataset::new("ranked", GeometryType::None, vec![Field::new("label", FieldType::Text), Field::new("score", FieldType::Integer)]);
+    for (label, score) in [("z", Some(2)), ("b", None), ("c", Some(10)), ("a", Some(10)), ("d", Some(-1))] {
+        ds.push(None, vec![Cell::Text(label.into()), score.map(Cell::Int).unwrap_or(Cell::Null)]);
+    }
+    let original = ds.clone();
+    let table = s.project.add_table(ds);
+    let dir = std::env::temp_dir().join(format!("rustgis-table-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut export = |file: &str, sort: Value, limit: Value, expected: &[&str], omitted: Option<usize>| {
+        let path = dir.join(file);
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": table, "path": path, "sort": sort, "limit": limit})).unwrap();
+        let csv = std::fs::read_to_string(path).unwrap();
+        let labels: Vec<_> = csv.lines().skip(1).map(|line| line.split(',').next().unwrap()).collect();
+        assert_eq!(labels, expected, "{file}: {csv}");
+        let notices: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("requested limit")).collect();
+        if let Some(n) = omitted {
+            assert_eq!(notices.len(), 1);
+            assert!(notices[0].text.contains(&format!("{n} row(s)")));
+        } else {
+            assert!(notices.is_empty());
+        }
+        assert_eq!(s.project.table(table).unwrap().dataset, original);
+    };
+    let number = json!([{"field": "score", "descending": true}]);
+    export("desc.csv", number.clone(), Value::Null, &["c", "a", "z", "d", "b"], None);
+    export("top.csv", number.clone(), json!(1), &["c"], Some(4));
+    export("text.csv", json!([{"field": "label"}]), Value::Null, &["a", "b", "c", "d", "z"], None);
+    export("asc.csv", json!([{"field": "score"}]), Value::Null, &["d", "z", "c", "a", "b"], None);
+    export("multi.csv", json!([{"field": "score", "descending": true}, {"field": "label"}]), json!(20), &["a", "c", "z", "d", "b"], None);
+    export("default.csv", Value::Null, Value::Null, &["z", "b", "c", "a", "d"], None);
+    export("first.csv", Value::Null, json!(2), &["z", "b"], Some(3));
+    export("empty.csv", number, json!(0), &[], Some(5));
+    for bad in [
+        json!({"sort": [{"field": "missing"}]}),
+        json!({"sort": "score"}),
+        json!({"sort": [{}]}),
+        json!({"sort": [{"field": "score", "descending": "yes"}]}),
+        json!({"limit": -1}),
+        json!({"limit": 1.5}),
+        json!({"limit": "2"}),
+    ] {
+        let path = dir.join("refused.csv");
+        let mut params = bad.clone();
+        params["table"] = json!(table);
+        params["path"] = json!(path);
+        let error = s.run("share.exportTable", &params).unwrap_err();
+        if bad["sort"][0]["field"] == "missing" {
+            assert!(error.contains("no field named 'missing'"), "{error}");
+        }
+        assert!(!path.exists(), "invalid options must not write: {bad}");
+    }
+    s.run(
+        "gp.run",
+        &json!({"tool": "summaryStatistics", "params": {
+            "input": "ranked", "case": ["label"], "statistics": [{"field": "score", "statistic": "SUM"}],
+        }}),
+    )
+    .unwrap();
+    let stats = s.project.tables.last().unwrap().id;
+    let path = dir.join("summary.csv");
+    s.run("share.exportTable", &json!({"table": stats, "path": path, "sort": [{"field": "SUM_score", "descending": true}], "limit": 2}))
+        .unwrap();
+    let csv = std::fs::read_to_string(path).unwrap();
+    assert_eq!(csv.lines().skip(1).map(|line| line.split(',').next().unwrap()).collect::<Vec<_>>(), ["a", "c"]);
+    // The writer turns nonfinite numbers into blank cells; they must sort alongside nulls,
+    // including stable ties between all four forms, and never displace the largest finite row.
+    let mut ds =
+        Dataset::new("nonfinite", GeometryType::None, vec![Field::new("label", FieldType::Text), Field::new("score", FieldType::Double)]);
+    for (label, score) in [
+        ("nan", Cell::Float(f64::NAN)),
+        ("high", Cell::Int(9)),
+        ("inf", Cell::Float(f64::INFINITY)),
+        ("null", Cell::Null),
+        ("low", Cell::Float(-2.5)),
+        ("neg-inf", Cell::Float(f64::NEG_INFINITY)),
+    ] {
+        ds.push(None, vec![Cell::Text(label.into()), score]);
+    }
+    let table = s.project.add_table(ds);
+    for (descending, want) in
+        [(true, vec!["high", "low", "nan", "inf", "null", "neg-inf"]), (false, vec!["low", "high", "nan", "inf", "null", "neg-inf"])]
+    {
+        let path = dir.join(format!("nonfinite-{descending}.geojson"));
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": table, "path": path, "sort": [{"field":"score", "descending":descending}]})).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let rows = written["features"].as_array().unwrap();
+        assert_eq!(rows.iter().map(|row| row["properties"]["label"].as_str().unwrap()).collect::<Vec<_>>(), want);
+        assert!(rows.iter().skip(2).all(|row| row["properties"]["score"].is_null()), "{written}");
+        assert!(s.notices_since(mark).iter().any(|n| n.text.contains("3") && n.text.contains("null")));
+    }
+    let path = dir.join("finite-top.geojson");
+    let mark = s.notice_mark();
+    s.run("share.exportTable", &json!({"table":table,"path":path,"sort":[{"field":"score","descending":true}],"limit":1})).unwrap();
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(written["features"][0]["properties"]["label"], "high");
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("written as null")));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn select_symbolize_undo_redo() {
     let mut s = world();
@@ -43994,6 +44102,7 @@ fn exports_run_on_another_thread() {
     let dir = std::env::temp_dir().join(format!("rustgis-exports-thread-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let at = |name: &str| dir.join(name).display().to_string();
+    s.run("layer.addDataText", &json!({"fileName": "ranks.csv", "text": "name,score\na,1\nb,3\nc,3\n"})).unwrap();
     s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
     for (command, file, p) in [
         ("data.convert", "converted.geojson", json!({"layer": "Cities", "format": "geojson"})),
@@ -44002,6 +44111,7 @@ fn exports_run_on_another_thread() {
         ("layout.export", "layout.png", json!({"dpi": 48})),
         ("layout.export", "layout.pdf", json!({"dpi": 48})),
         ("layout.export", "layout.svg", json!({"dpi": 48})),
+        ("share.exportTable", "ranks.csv", json!({"table": "ranks", "sort": [{"field": "score", "descending": true}], "limit": 2})),
         ("share.exportLayer", "countries.geojson", json!({"layer": "Countries"})),
         ("share.exportLayer", "countries.shp", json!({"layer": "Countries"})),
         ("share.exportLayer", "countries.gpkg", json!({"layer": "Countries", "crs": "EPSG:3857"})),
@@ -47378,6 +47488,8 @@ fn cancel_world(dir: &std::path::Path) -> (Session, String) {
     s.run("layer.addData", &json!({"path": out("towns.shp"), "name": "towns"})).unwrap();
     s.run("edit.setValue", &json!({"layer": "towns", "row": 0, "field": "name", "value": "Renamed"})).unwrap();
     s.run("report.new", &json!({"layer": "Cities"})).unwrap();
+    // A standalone table to export ranked and limited.
+    s.run("layer.addDataText", &json!({"fileName": "ranks.csv", "text": "name,score\na,1\nb,3\n"})).unwrap();
     (s, dem)
 }
 
@@ -47418,6 +47530,10 @@ fn cancel_exports(out: &dyn Fn(&str) -> String, dem: &str) -> Vec<(&'static str,
     vec![
         ("data.convert", json!({"layer": "Cities", "format": "geojson", "path": out("converted.geojson")})),
         ("share.exportLayer", json!({"layer": "Cities", "path": out("cities.geojson")})),
+        (
+            "share.exportTable",
+            json!({"table": "ranks", "path": out("ranks.csv"), "sort": [{"field": "score", "descending": true}], "limit": 1}),
+        ),
         ("share.exportRaster", json!({"layer": dem, "path": out("dem.tif")})),
         ("share.exportMap", json!({"path": out("map.png"), "width": 320, "height": 200})),
         ("map.exportOrbit", json!({"path": out("orbit.zip"), "frames": 3, "width": 96, "height": 64})),

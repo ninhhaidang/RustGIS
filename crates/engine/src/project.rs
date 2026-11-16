@@ -70,8 +70,15 @@ pub const FORMAT: u32 = 2;
 pub const READ_FORMAT: u32 = 2;
 /// The saved additions this RustGIS understands. Writers require only capabilities used by
 /// their payload, so a format-2 reader without them refuses instead of discarding their fields.
-pub const CAPABILITIES: &[&str] =
-    &["terrain-block", "terrain-water", "shaded-relief-effects", "normalized-legend-urls", "field-origin", "slope-percent"];
+pub const CAPABILITIES: &[&str] = &[
+    "terrain-block",
+    "terrain-water",
+    "shaded-relief-effects",
+    "normalized-legend-urls",
+    "field-origin",
+    "slope-percent",
+    "table-export-order",
+];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
 pub(crate) const MAX_REQUIRES: usize = 256;

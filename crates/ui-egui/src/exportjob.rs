@@ -23,6 +23,14 @@ pub struct ExportJob {
     slot: crate::Slot<(Result<Wrote, String>, Option<crate::diskwatch::Write>)>,
     /// The watched file it writes, if any: what scans see there meanwhile is RustGIS's own write.
     writes: Option<String>,
+    /// Export Table's replayable parameters and active layer, captured before it runs.
+    table_step: Option<TableStep>,
+}
+
+/// The same recording inputs as synchronous dispatch, retained until a successful completion.
+struct TableStep {
+    params: Value,
+    active: Option<(String, bool)>,
 }
 
 /// The watched file the export under way writes into: what scans see there meanwhile is the
@@ -43,6 +51,13 @@ pub fn idle(app: &RustGisApp) -> Result<(), String> {
 /// time: a second is refused while the first runs.
 pub fn start(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Value, String> {
     idle(app)?;
+    // Export Table used the synchronous recording path before it moved to this worker.
+    // Other background exports aren't recorded yet.
+    let table_step = if command == "share.exportTable" && app.ws.recording.is_some() {
+        Some(TableStep { params: p.clone(), active: app.layer_acted_on(command, &p) })
+    } else {
+        None
+    };
     // Which watched file it writes is known here; the file itself is looked at on its thread,
     // where a stalled drive holds only the export.
     let mut write = crate::diskwatch::plan_write(app, command, &p);
@@ -70,24 +85,28 @@ pub fn start(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Va
             *out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((wrote, write));
         })
         .map_err(|e| e.to_string())?;
-    app.export_job = Some(ExportJob { started, name, control, slot, writes });
+    app.export_job = Some(ExportJob { started, name, control, slot, writes, table_step });
     Ok(json!({"started": name}))
 }
 
 /// Says what an export wrote once it's done (or why it failed): called every frame. `true` while
 /// one is still running.
 pub fn land(app: &mut RustGisApp) -> bool {
-    let Some(job) = &app.export_job else { return false };
+    let Some(job) = &mut app.export_job else { return false };
     let done = job.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let Some((done, write)) = done else { return true };
     let started = job.started.clone();
+    let table_step = job.table_step.take();
     app.export_job = None;
     // Its notices (a failure among them) are the command's; the answer was for a script, which
     // waits for its own.
-    if let Ok(answer) = exports::export_land(&mut app.session, started, done)
-        && let Some(write) = write
-    {
-        crate::diskwatch::wrote(app, write, &answer);
+    if let Ok(answer) = exports::export_land(&mut app.session, started, done) {
+        if let Some(step) = table_step {
+            app.record_step("share.exportTable", &step.params, step.active);
+        }
+        if let Some(write) = write {
+            crate::diskwatch::wrote(app, write, &answer);
+        }
     }
     false
 }
@@ -124,6 +143,86 @@ pub fn status(app: &RustGisApp, ui: &mut Ui, t: &Tokens) {
 mod tests {
     use super::*;
 
+    /// The desktop command dispatch starts the table export worker, rather than sorting inline.
+    /// Its completion lands through the frame's export finalizer and writes the ranked rows.
+    #[test]
+    fn export_table_dispatches_and_lands_on_the_export_worker() {
+        let mut app = RustGisApp::with_sample();
+        app.run("layer.addDataText", json!({"fileName": "ranks.csv", "text": "name,score\na,1\nc,3\nb,3\n"})).unwrap();
+        app.reads_off_frame = true;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("top.csv");
+        let params = json!({"table": "ranks", "path": path, "sort": [{"field": "score", "descending": true}], "limit": 2});
+        app.ws.recording = Some(Vec::new());
+        assert_eq!(app.run("share.exportTable", params.clone()).unwrap()["started"], "Export Table");
+        assert!(app.export_job.is_some());
+        assert!(app.ws.recording.as_ref().unwrap().is_empty(), "starting is not a successful export");
+        app.session.active_layer = app.session.map().layer_by_name("Countries").map(|l| l.id);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while land(&mut app) {
+            assert!(std::time::Instant::now() < end, "the table export never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: export workers publish completion to the frame's polled slot
+        }
+        let steps = app.ws.recording.as_ref().unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].command, "share.exportTable");
+        assert_eq!(steps[0].params, params, "record the original sort and limit without an unrelated active layer");
+        assert!(!land(&mut app));
+        assert_eq!(app.ws.recording.as_ref().unwrap().len(), 1, "a later frame must not record it twice");
+        let csv = std::fs::read_to_string(path).unwrap();
+        assert_eq!(csv.lines().skip(1).collect::<Vec<_>>(), ["c,3", "b,3"]);
+        assert!(app.session.notices.iter().any(|n| n.text.contains("1 row(s) left out by the requested limit")));
+        // The synchronous dispatcher uses the same recording helper and keeps the same options.
+        app.reads_off_frame = false;
+        let mut again = params;
+        again["path"] = json!(dir.path().join("sync.csv"));
+        app.run("share.exportTable", again.clone()).unwrap();
+        let steps = app.ws.recording.as_ref().unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].command, "share.exportTable");
+        assert_eq!(steps[1].params, again);
+    }
+
+    /// Delivers actual failed and cancelled export runs without a thread timing race. Neither
+    /// may enter Record Task; a written file whose completion is refused is excluded too.
+    #[test]
+    fn export_table_records_only_successful_completions() {
+        for mode in ["failed", "cancelled", "refused"] {
+            let mut app = RustGisApp::with_sample();
+            app.run("layer.addDataText", json!({"fileName":"ranks.csv","text":"number\n1\n2\n"})).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = if mode == "failed" { dir.path().join("missing/top.csv") } else { dir.path().join("top.csv") };
+            let params = json!({"table":"ranks","path":path,"limit":1});
+            app.ws.recording = Some(Vec::new());
+            let active = app.layer_acted_on("share.exportTable", &params);
+            let run = exports::export_start(&mut app.session, "share.exportTable", &params).unwrap();
+            let started = run.started();
+            let control = Control::stoppable();
+            if mode == "cancelled" {
+                control.cancel();
+            }
+            let wrote = run.run(&control);
+            assert_eq!(wrote.is_ok(), mode == "refused", "{mode}");
+            if mode == "refused" {
+                app.session.run("project.new", &json!({})).unwrap();
+            }
+            let slot = crate::Slot::default();
+            *slot.lock().unwrap() = Some((wrote, None));
+            app.export_job = Some(ExportJob {
+                started,
+                name: "Export Table",
+                control,
+                slot,
+                writes: None,
+                table_step: Some(TableStep { params, active }),
+            });
+            assert!(!land(&mut app));
+            assert!(app.export_job.is_none());
+            assert!(app.ws.recording.as_ref().unwrap().is_empty(), "{mode}: must not record a failed completion");
+            assert!(app.session.notices.iter().any(|n| n.error), "{mode}: completion must report its failure");
+        }
+    }
+
     #[test]
     fn export_features_writes_on_a_thread_and_lands() {
         let mut app = RustGisApp::with_sample();
@@ -133,6 +232,7 @@ mod tests {
         let (path, other) = (dir.join("cities.geojson"), dir.join("again.geojson"));
         let pick = |p: &std::path::Path| crate::dialogs::PICKED.with(|c| *c.borrow_mut() = Some(p.display().to_string()));
         pick(&path);
+        app.ws.recording = Some(Vec::new());
         assert_eq!(app.run("ui.exportLayer", json!({"format": "geojson"})).unwrap()["started"], "Export Features");
         // One at a time: a second waits for the first.
         pick(&other);
@@ -145,6 +245,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background export completion
         }
         assert!(app.export_job.is_none());
+        assert!(app.ws.recording.as_ref().unwrap().is_empty(), "other background exports remain unrecorded");
         let exported = format!("Exported {}", path.display());
         assert!(app.session.notices.iter().any(|n| n.text == exported && !n.error), "{:?}", app.session.notices.last());
         assert!(!other.exists(), "the refused export wrote nothing");

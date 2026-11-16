@@ -54,6 +54,7 @@ type Start = fn(&Session, &Value) -> Result<Work, String>;
 pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("data.convert", "Data Interop", super::workflows::convert_work),
     ("share.exportLayer", "Export Features", super::share::layer_work),
+    ("share.exportTable", "Export Table", super::share::table_work),
     ("share.exportRaster", "Export Raster", super::raster::export_work),
     ("share.exportMap", "Export Map", super::share::map_work),
     ("map.exportOrbit", "Export Orbit", super::view::orbit_work),

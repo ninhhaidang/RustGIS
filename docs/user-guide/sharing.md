@@ -72,8 +72,28 @@ table. **Data › Export** also writes rasters to GeoTIFF, and **Data Interop** 
 KML, GPX or CSV with WKT. Layouts, reports and presentations export from their own tabs and panes
 (see [Layouts and Reports](layouts.md)).
 
-On the desktop, Export Features, Export Raster, Export Map and Export Layout write their file in
-the background, so the map and the rest of the window stay in use. While one runs, the status bar
+To export the largest rows of a Summary Statistics result, give `share.exportTable` an optional
+`sort` list and `limit`. Each sort key names a stored field; `descending` defaults to `false`.
+Keys are applied in list order. Numbers sort numerically, text sorts case-sensitively, and nulls
+stay last in either direction. Nonfinite numbers (NaN and infinity) sort with nulls.
+Rows equal on every key keep their input order. The limit keeps
+the first N rows **after** sorting (`0` writes an empty table); a limit without a sort keeps the
+first N rows in input order. The limit selects rows before writing; formats that reorder rows,
+such as FlatGeobuf with its spatial index, can change their order in the file. An unknown field
+or invalid option is refused before writing.
+The command says how many rows the requested limit leaves out. Neither the project table nor
+its attribute-table view is changed. On the desktop, the export runs in the background with
+progress and **Cancel**. Without these options, all rows are exported in their stored order.
+Projects containing saved tasks or command notebook cells using these options require the
+`table-export-order` capability, so older readers refuse them instead of exporting different rows.
+
+```json
+{"table": "crashes_Statistics", "path": "top10.csv",
+ "sort": [{"field": "COUNT_crashes", "descending": true}], "limit": 10}
+```
+
+On the desktop, Export Features, Export Table, Export Raster, Export Map and Export Layout write
+their file in the background, so the map and the rest of the window stay in use. While one runs, the status bar
 shows its name, a progress bar (Export Raster's untiled GeoTIFF, Export Map and a one-page layout
 show none) and **Cancel**; when it ends its messages appear as before. One export runs at a time.
 Export Map and Export Layout draw the map and layout as they were when the export started, so

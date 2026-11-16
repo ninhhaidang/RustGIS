@@ -342,25 +342,63 @@ fn write_notices_withdraw_rolled_back_geopackage_layer_refreshes() {
     }
 }
 
+/// A later script failure rolls the session back, but the committed CSV and its translated
+/// omission notice must still describe the rows written to disk.
+#[test]
+fn write_notices_keep_table_limit_after_a_failed_script() {
+    let dir = Files::new();
+    let path = dir.path().join("top.csv");
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName":"ranks.csv","text":"number\n1\n2\n"})).unwrap();
+    let export = json!({"table":"ranks","path":path,"limit":1});
+    let script = format!("share.exportTable {export}\nlayer.remove {{\"layer\":\"missing\"}}");
+    let mark = s.notice_mark();
+    assert!(s.run("script.run", &json!({"script":script})).is_err());
+    let csv = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(csv.lines().collect::<Vec<_>>(), ["number", "1"]);
+    let notices = s.notices_since(mark);
+    assert_eq!(notices.iter().filter(|n| n.text.contains("1 row(s) left out by the requested limit")).count(), 1, "{notices:?}");
+    let loss = notices.iter().find(|n| n.text.contains("left out by the requested limit")).unwrap();
+    assert!(loss.text.contains(&path.display().to_string()));
+    assert!(loss.translated(|key, _| format!("translated:{key}")).unwrap().starts_with("translated:"));
+    assert_eq!(s.project.tables.iter().find(|t| t.dataset.name == "ranks").unwrap().dataset.features.len(), 2);
+}
+
 #[test]
 fn write_notices_keep_table_and_null_losses_in_refused_receipts() {
     use crate::{
         cmd::exports,
         policy::{AgentAccess, Effects, Revocation, Scope},
     };
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     struct Live;
     impl Revocation for Live {
         fn allows(&self, _: Effects) -> bool {
             true
         }
     }
-    for mode in ["table", "layer", "convert"] {
+    for mode in ["table", "layer", "convert", "limitedTable"] {
         for refused in [false, true] {
             let dir = Files::new();
             let mut s = places();
-            let path = dir.path().join(if mode == "table" { "places.gpkg" } else { "places.geojson" });
-            let (command, params, loss) = if mode == "table" {
+            let path = dir.path().join(if matches!(mode, "table" | "limitedTable") { "places.gpkg" } else { "places.geojson" });
+            let (command, params, loss) = if mode == "limitedTable" {
+                s.run("layer.addDataText", &json!({"fileName":"ranks.csv","text":"number\n1\n2\n"})).unwrap();
+                let table = s.project.tables.iter_mut().find(|t| t.dataset.name == "ranks").unwrap();
+                table.dataset.fields[0].ty = FieldType::Double;
+                table.dataset.features[0].attrs[0] = Cell::Float(f64::NAN);
+                s.run("share.exportTable", &json!({"table":"ranks","path":path})).unwrap();
+                let db = rusqlite::Connection::open(&path).unwrap();
+                db.execute("CREATE INDEX old_index ON ranks(number)", []).unwrap();
+                (
+                    "share.exportTable",
+                    json!({"table":"ranks","path":path,"mode":"replaceTable","tableName":"ranks","limit":1}),
+                    "replaced its table ranks, dropping",
+                )
+            } else if mode == "table" {
                 s.run("share.exportLayer", &json!({"layer":"Places","path":path})).unwrap();
                 let db = rusqlite::Connection::open(&path).unwrap();
                 db.execute("CREATE INDEX old_index ON Places(long_attribute_name)", []).unwrap();
@@ -382,7 +420,17 @@ fn write_notices_keep_table_and_null_losses_in_refused_receipts() {
             let scope = Scope::agent(AgentAccess::Allow, false, "write-notices-receipt", None, Arc::new(Live));
             let run = s.with_scope(scope, |s| exports::export_start(s, command, &params)).unwrap().unwrap();
             let started = run.started();
-            let wrote = run.run(&crate::analysis::control::Control::stoppable()).unwrap();
+            let mut wrote = run.run(&crate::analysis::control::Control::stoppable()).unwrap();
+            let finalized = Arc::new(AtomicBool::new(false));
+            let called = finalized.clone();
+            let then = wrote.then.take();
+            wrote.then = Some(Box::new(move |s, out| {
+                called.store(true, Ordering::Relaxed);
+                if let Some(then) = then {
+                    then(s, out)?;
+                }
+                Ok(())
+            }));
             if refused {
                 s.run("project.new", &json!({})).unwrap();
             }
@@ -391,10 +439,22 @@ fn write_notices_keep_table_and_null_losses_in_refused_receipts() {
             assert_eq!(result.is_err(), refused, "{mode}: {result:?}");
             let notices = s.notices_since(mark);
             assert_eq!(notices.iter().filter(|n| n.text.contains(loss)).count(), 1, "{mode}/{refused}: {notices:?}");
+            assert_eq!(finalized.load(Ordering::Relaxed), !refused, "{mode}: finalizer after refusal");
+            if mode == "limitedTable" {
+                for extra in ["1 row(s) left out by the requested limit", "1 attribute value(s) that aren't finite numbers"] {
+                    assert_eq!(notices.iter().filter(|n| n.text.contains(extra)).count(), 1, "{refused}: {notices:?}");
+                    if refused {
+                        assert!(result.as_ref().unwrap_err().contains(extra));
+                    }
+                }
+                let db = rusqlite::Connection::open(&path).unwrap();
+                let count: i64 = db.query_row("SELECT count(*) FROM ranks WHERE number IS NULL", [], |r| r.get(0)).unwrap();
+                assert_eq!(count, 1);
+            }
             if refused {
                 assert!(result.unwrap_err().contains(loss));
             }
-            if mode == "table" {
+            if matches!(mode, "table" | "limitedTable") {
                 let db = rusqlite::Connection::open(&path).unwrap();
                 let indexes: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name='old_index'", [], |r| r.get(0)).unwrap();
                 assert_eq!(indexes, 0);

@@ -1058,7 +1058,8 @@
           "shaded-relief-effects",
           "normalized-legend-urls",
           "field-origin",
-          "slope-percent"
+          "slope-percent",
+          "table-export-order"
         ],
         "type": "string"
       },
@@ -1128,7 +1129,8 @@
     "shaded-relief-effects",
     "normalized-legend-urls",
     "field-origin",
-    "slope-percent"
+    "slope-percent",
+    "table-export-order"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2
