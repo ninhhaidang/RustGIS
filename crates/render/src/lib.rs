@@ -5180,6 +5180,7 @@ fn render_frame(
                                             chars,
                                             advances,
                                             gap: spacing * 1.33,
+                                            size,
                                             overrun,
                                             off,
                                         }),
@@ -5189,7 +5190,7 @@ fn render_frame(
                                 } else {
                                     for (i, at) in line_labels::repeats(line.length(), repeat) {
                                         let Some(((cx, cy), turns)) = line
-                                            .curved(&advances, spacing * 1.33, overrun, Some(at))
+                                            .curved(&advances, spacing * 1.33, size, overrun, Some(at))
                                             .and_then(|c| line_labels::curved_off(c, off))
                                         else {
                                             continue;

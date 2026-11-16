@@ -21,6 +21,7 @@ fn curved(line: &[(f32, f32)]) -> Candidate {
                 chars: "road".chars().map(|c| c.to_string()).collect(),
                 advances: vec![10.0; 4],
                 gap: 0.0,
+                size: 10.0,
                 overrun: 10.0,
                 off: 0.0,
             }),
