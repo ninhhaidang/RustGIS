@@ -549,6 +549,7 @@ fn layout_export_keeps_all_drawn_legend_classes() {
             exclude: vec![],
             columns: 1,
             labels: Default::default(),
+            color: None,
         },
     );
     let expected = layout::render(&page, &mut [base.clone()], 96.0, &layout::PageInfo::default()).unwrap();

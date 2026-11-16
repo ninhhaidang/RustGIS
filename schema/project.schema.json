@@ -1064,7 +1064,8 @@
           "table-export-order",
           "tabulate-intersection-unit",
           "layout-element-background",
-          "picture-markers"
+          "picture-markers",
+          "layout-element-ink"
         ],
         "type": "string"
       },
@@ -1140,7 +1141,8 @@
     "table-export-order",
     "tabulate-intersection-unit",
     "layout-element-background",
-    "picture-markers"
+    "picture-markers",
+    "layout-element-ink"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

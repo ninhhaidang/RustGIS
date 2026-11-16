@@ -841,8 +841,12 @@ fn is_one_column(columns: &usize) -> bool {
     *columns == 1
 }
 
+/// The dark grey a scale bar draws in by default, and a legend, colorbar, table or chart without
+/// an ink of its own ([`ElementKind::ink`]).
+pub const INK: Rgba = Rgba::rgb(0x22, 0x22, 0x22);
+
 fn ink() -> Rgba {
-    Rgba::rgb(0x22, 0x22, 0x22)
+    INK
 }
 
 fn white() -> Rgba {
@@ -973,6 +977,10 @@ pub enum ElementKind {
         /// keeps its name everywhere else. A layer not in it shows its name.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         labels: BTreeMap<String, String>,
+        /// The colour of its text and lines (#2257); none, the dark grey of [`INK`]. Left out
+        /// when none, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<Rgba>,
     },
     /// The colour scale of a raster layer in a frame's map: a gradient bar for a stretch, steps
     /// for classes, a block per value for unique values and colour tables (#326).
@@ -997,6 +1005,10 @@ pub enum ElementKind {
         /// the top of a vertical one (the bottom by default).
         #[serde(default)]
         reverse: bool,
+        /// The colour of its text and lines (#2257); none, the dark grey of [`INK`]. Left out
+        /// when none, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<Rgba>,
     },
     /// Text; dynamic tokens (`{page}`, `{date}`, `{scale}`…) expand when drawn.
     Text {
@@ -1039,6 +1051,10 @@ pub enum ElementKind {
         layer: String,
         #[serde(default = "rows")]
         rows: usize,
+        /// The colour of its text and lines (#2257); none, the dark grey of [`INK`]. Left out
+        /// when none, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<Rgba>,
     },
     /// A bar chart of a numeric field of a layer in a frame's map, one bar per feature.
     Chart {
@@ -1048,6 +1064,10 @@ pub enum ElementKind {
         /// Bars are labelled with this field, if set.
         #[serde(default)]
         label: Option<String>,
+        /// The colour of its labels and title (#2257); none, the dark grey of [`INK`]. Its bars
+        /// keep their own colour. Left out when none, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<Rgba>,
     },
     /// A rectangle drawn on the page (a neatline or a backdrop). `width` is the outline's, in
     /// points (0: none).
@@ -1164,6 +1184,34 @@ impl ElementKind {
     /// draws its map and the paper behind it itself.
     pub fn takes_background(&self) -> bool {
         !matches!(self, ElementKind::MapFrame { .. })
+    }
+
+    /// Whether an element of this kind takes an ink (#2257): a legend, colorbar, table or chart,
+    /// whose text and lines are otherwise dark grey. The other kinds' colours are their own options.
+    pub fn takes_ink(&self) -> bool {
+        matches!(self, ElementKind::Legend { .. } | ElementKind::Colorbar { .. } | ElementKind::Table { .. } | ElementKind::Chart { .. })
+    }
+
+    /// Its ink, when it [takes one](ElementKind::takes_ink) and has one; `None` draws in [`INK`].
+    pub fn ink(&self) -> Option<Rgba> {
+        match self {
+            ElementKind::Legend { color, .. }
+            | ElementKind::Colorbar { color, .. }
+            | ElementKind::Table { color, .. }
+            | ElementKind::Chart { color, .. } => *color,
+            _ => None,
+        }
+    }
+
+    /// Its ink to change, when it [takes one](ElementKind::takes_ink).
+    pub fn ink_mut(&mut self) -> Option<&mut Option<Rgba>> {
+        match self {
+            ElementKind::Legend { color, .. }
+            | ElementKind::Colorbar { color, .. }
+            | ElementKind::Table { color, .. }
+            | ElementKind::Chart { color, .. } => Some(color),
+            _ => None,
+        }
     }
 
     /// The map frame this element belongs to.
@@ -2436,5 +2484,31 @@ mod tests {
         assert_eq!(l.hit(38.0, 45.0), Some(t));
         assert_eq!(l.hit(36.0, 45.0), None, "past the padding");
         assert_eq!(l.element(t).unwrap().background_box(), (37.0, 37.0, 26.0, 16.0));
+    }
+
+    /// A legend's, colorbar's, table's or chart's ink (#2257): none in a layout saved before it,
+    /// not written when none, and read back when set. Other kinds have none to set.
+    #[test]
+    fn inks_are_saved_and_read_back() {
+        let text = r#"{"name":"x","width":100,"height":100,"elements":[
+            {"id":1,"name":"f","x":0,"y":0,"w":50,"h":50,"kind":{"MapFrame":{"map":"M","center":{"x":0,"y":0},"scale":1000000}}},
+            {"id":2,"name":"l","x":0,"y":0,"w":10,"h":10,"kind":{"Legend":{"frame":1,"title":"L"}}},
+            {"id":3,"name":"c","x":0,"y":0,"w":10,"h":10,"kind":{"Colorbar":{"frame":1}}},
+            {"id":4,"name":"t","x":0,"y":0,"w":10,"h":10,"kind":{"Table":{"frame":1,"layer":"A"}}},
+            {"id":5,"name":"g","x":0,"y":0,"w":10,"h":10,"kind":{"Chart":{"frame":1,"layer":"A","field":"n"}}}]}"#;
+        let mut l: Layout = serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}"));
+        assert!(l.elements[1..].iter().all(|e| e.kind.takes_ink() && e.kind.ink().is_none()), "the default ink in an older layout");
+        assert!(!l.elements[0].kind.takes_ink(), "a map frame has no ink");
+        let saved = serde_json::to_string(&l).unwrap();
+        assert!(!saved.contains("\"color\""), "none is not written: {saved}");
+        let white = Rgba::new(255, 255, 255, 230);
+        for e in &mut l.elements[1..] {
+            *e.kind.ink_mut().unwrap() = Some(white);
+        }
+        let back: Layout = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert!(back.elements[1..].iter().all(|e| e.kind.ink() == Some(white)), "{back:?}");
+        assert_eq!(back, l);
+        let mut text = ElementKind::text("t", 12.0, Rgba::rgb(0, 0, 0), false);
+        assert!(!text.takes_ink() && text.ink_mut().is_none(), "a text's colour is its own option");
     }
 }

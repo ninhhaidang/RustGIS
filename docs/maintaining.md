@@ -127,6 +127,15 @@ refuses them instead of opening the layout and saving it again, or running the c
 without the background. Layout files (`.rgislayout`) carry no format header yet and are not
 covered (#2277).
 
+Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
+`layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
+grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands
+that set one need nothing: an older reader refuses `color` on those elements, so the command
+fails there instead of losing the ink. A saved `layout.import` whose `text` gives an element an
+ink requires `layout-element-ink`, and one whose `text` gives an element a background requires
+`layout-element-background`, since an older reader would read that layout without them. Layout
+files are not covered, as for backgrounds (#2277).
+
 ## New dependencies
 
 A proposal for a dependency answers:

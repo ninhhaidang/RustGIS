@@ -463,6 +463,7 @@ mod tests {
                 exclude: vec![],
                 columns: 1,
                 labels: Default::default(),
+                color: None,
             },
         );
         assert_eq!(picture_dpi(&layout, 600.0, |e| !written_as_svg(e)), 600.0);
@@ -503,6 +504,7 @@ mod tests {
                 exclude: vec![],
                 columns: 1,
                 labels: Default::default(),
+                color: None,
             },
         );
         let info = PageInfo::default();

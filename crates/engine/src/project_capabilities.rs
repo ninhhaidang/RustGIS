@@ -61,6 +61,9 @@ impl Project {
         {
             required.push("layout-element-background");
         }
+        if !required.contains(&"layout-element-ink") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.ink().is_some())) {
+            required.push("layout-element-ink");
+        }
         required
     }
 
@@ -85,6 +88,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("tabulate-intersection-unit", command_uses_tabulate_unit),
     ("layout-element-background", command_uses_element_background),
     ("picture-markers", command_uses_picture_marker),
+    ("layout-element-ink", command_uses_element_ink),
 ];
 
 /// A layout command that gives an element a background: an older reader warns that it ignores
@@ -93,9 +97,35 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
 fn command_uses_element_background(id: &str, params: &Value) -> bool {
     match id {
         "layout.addElement" | "layout.update" => params.get("background").is_some_and(|b| !b.is_null()),
+        "layout.import" => imported_layout_uses(params, "\"background\"", |e| e.background.is_some()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_background)),
         _ => false,
     }
+}
+
+/// A layout command that gives a legend, colorbar, table or chart an ink (#2257). Only an
+/// imported layout's: an older reader refuses "color" on those elements in `layout.addElement`
+/// and `layout.update`, so such a command fails there instead of losing the ink.
+fn command_uses_element_ink(id: &str, params: &Value) -> bool {
+    match id {
+        "layout.import" => imported_layout_uses(params, "\"color\"", |e| e.kind.ink().is_some()),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_ink)),
+        _ => false,
+    }
+}
+
+/// Whether a `layout.import` carries its layout as `"text"` with an element `uses`: an older
+/// reader reads it without the keys it doesn't know. One read from a `"path"` is a layout file,
+/// which carries no format header yet (#2277). Every save asks, so a text without the feature's
+/// `key` (a saved layout writes it only when set) isn't read through, unless it has a backslash:
+/// JSON may spell the key with escapes (`"\u0063olor"`).
+fn imported_layout_uses(params: &Value, key: &str, uses: fn(&rustgis_map::layout::Element) -> bool) -> bool {
+    params
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|t| t.contains(key) || t.contains('\\'))
+        .and_then(|t| serde_json::from_str::<rustgis_map::layout::Layout>(t).ok())
+        .is_some_and(|l| l.elements.iter().any(uses))
 }
 
 /// Require only executable payloads being saved: graph files omit steps, web tools omit graphs.
@@ -458,6 +488,62 @@ mod tests {
         both["tasks"] = json!([{"name": "Task", "steps": [{"title": "Panel", "command": "layout.update", "params": {"element": 2, "background": {}}}]}]);
         let saved = serde_json::to_value(Project::from_json(&both.to_string()).unwrap()).unwrap();
         assert_eq!(saved["requires"], json!(["layout-element-background"]));
+    }
+
+    /// A legend's, colorbar's, table's or chart's ink is required where it is saved, so an older
+    /// reader refuses the project instead of drawing them dark grey and saving them so (#2257).
+    /// A saved command that sets one needs nothing: an older reader refuses its "color".
+    #[test]
+    fn element_ink_capability_follows_saved_layouts() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_element_ink.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-element-ink"]));
+        let inks = |p: &Project| p.layouts[0].elements.iter().map(|e| e.kind.ink()).collect::<Vec<_>>();
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(inks(&reopened), inks(&fixture));
+        assert_eq!(inks(&fixture).iter().filter(|i| i.is_some()).count(), 4, "{:?}", inks(&fixture));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let Some(ink) = e.kind.ink_mut() {
+                *ink = None;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "default inks need nothing");
+        let mut document = base.clone();
+        document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Ink", "command": "layout.update", "params": {"element": 2, "color": "#FFFFFF"}}]}]);
+        assert!(serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap().get("requires").is_none());
+        // A layout imported from its text keeps unknown keys out in an older reader, so a saved
+        // import of one with an ink or a background needs them; one without, or from a path, doesn't.
+        let layout = &saved["layouts"][0];
+        let mut plain = layout.clone();
+        for e in plain["elements"].as_array_mut().unwrap() {
+            if let Some(kind) = e["kind"].as_object_mut().and_then(|k| k.values_mut().next()).and_then(Value::as_object_mut) {
+                kind.remove("color");
+            }
+        }
+        let mut boxed = plain.clone();
+        boxed["elements"][1]["background"] = json!({"fill": [255, 255, 255, 255]});
+        for (params, required) in [
+            (json!({"text": layout.to_string()}), json!(["layout-element-ink"])),
+            // The same key spelled with an escape is the same key.
+            (json!({"text": layout.to_string().replace("\"color\"", "\"\\u0063olor\"")}), json!(["layout-element-ink"])),
+            (json!({"text": boxed.to_string()}), json!(["layout-element-background"])),
+            (json!({"text": plain.to_string()}), Value::Null),
+            (json!({"path": "inks.rgislayout"}), Value::Null),
+            (json!({"text": "not a layout"}), Value::Null),
+        ] {
+            let script = format!("layout.import= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Import", "command": "layout.import", "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Import", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), required, "{params}");
+            }
+        }
     }
 
     #[test]

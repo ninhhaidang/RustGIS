@@ -9065,9 +9065,6 @@ fn layout_colours_are_refused_for_elements_without_them() {
     let red = "#B91C1C";
     // Added: a kind without the colour is refused, nothing added; with it, it is applied.
     let refused = [
-        ("legend", "color", "only text, lines"),
-        ("table", "color", "only text, lines"),
-        ("colorbar", "color", "only text, lines"),
         ("northArrow", "color", "only text, lines"),
         ("legend", "fill", "take a fill"),
         ("table", "fill", "take a fill"),
@@ -9103,6 +9100,9 @@ fn layout_colours_are_refused_for_elements_without_them() {
         ("circle", "color"),
         ("grid", "color"),
         ("scaleBar", "color"),
+        ("legend", "color"),
+        ("colorbar", "color"),
+        ("table", "color"),
         ("scaleBar", "fill"),
         ("northArrow", "fill"),
         ("northArrow", "outline"),
@@ -9133,9 +9133,7 @@ fn layout_colours_are_refused_for_elements_without_them() {
     let scale = find(&s, "scaleBar");
     let table = s.run("layout.addElement", &json!({"kind": "table"})).unwrap()["element"].as_u64().unwrap();
     for (el, key, said) in [
-        (legend, "color", "take a color"),
         (u64::from(frame), "color", "take a color"),
-        (table, "color", "take a color"),
         (legend, "fill", "take a fill"),
         (table, "fill", "take a fill"),
         (legend, "outline", "take an outline"),
@@ -33244,6 +33242,66 @@ fn layout_element_backgrounds_from_commands() {
     s.run("layout.import", &json!({"text": file.to_string()})).unwrap();
     assert_eq!(said(&s), 1, "{:?}", s.notices);
     assert!(s.project.layouts.last().unwrap().elements.iter().all(|e| e.kind.takes_background() || e.background.is_none()));
+}
+
+/// A legend, colorbar, table or chart takes an ink (#2257): added with it, changed, given the
+/// default again with null, undone and kept by a copy and a save; a bad colour is refused with
+/// nothing changed, and on a locked element a null is a change too.
+#[test]
+fn layout_element_inks_from_commands() {
+    use rustgis_map::Rgba;
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let ink = |s: &Session, id: u32| s.project.layouts[li].element(id).unwrap().kind.ink();
+    let white = Rgba::rgb(255, 255, 255);
+    let mut added = Vec::new();
+    for p in [
+        json!({"kind": "legend", "color": "#FFFFFF"}),
+        json!({"kind": "colorbar", "color": "#FFFFFF"}),
+        json!({"kind": "table", "layer": "Countries", "color": "#FFFFFF"}),
+        json!({"kind": "chart", "layer": "Countries", "field": "pop_est", "color": "#FFFFFF"}),
+    ] {
+        let id = s.run("layout.addElement", &p).unwrap_or_else(|e| panic!("{p}: {e}"))["element"].as_u64().unwrap() as u32;
+        assert_eq!(ink(&s, id), Some(white), "{p}");
+        added.push(id);
+    }
+    // None given, or null: the default dark grey.
+    for p in [json!({"kind": "legend"}), json!({"kind": "table", "layer": "Countries", "color": null})] {
+        let id = s.run("layout.addElement", &p).unwrap()["element"].as_u64().unwrap() as u32;
+        assert_eq!(ink(&s, id), None, "{p}");
+    }
+    let legend = added[0];
+    s.run("layout.update", &json!({"element": legend, "color": "#33445580"})).unwrap();
+    assert_eq!(ink(&s, legend), Some(Rgba::new(0x33, 0x44, 0x55, 0x80)));
+    // A change of something else keeps it; a copy and a save keep it.
+    s.run("layout.update", &json!({"element": legend, "title": "Key"})).unwrap();
+    assert_eq!(ink(&s, legend), Some(Rgba::new(0x33, 0x44, 0x55, 0x80)));
+    let copy = s.run("layout.duplicateElement", &json!({"element": legend})).unwrap()["element"].as_u64().unwrap() as u32;
+    assert_eq!(ink(&s, copy), ink(&s, legend));
+    let back: rustgis_map::layout::Layout = serde_json::from_str(&serde_json::to_string(&s.project.layouts[li]).unwrap()).unwrap();
+    assert_eq!(back, s.project.layouts[li]);
+    // null gives the default again, and undo brings the ink back.
+    s.run("layout.update", &json!({"element": legend, "color": null})).unwrap();
+    assert_eq!(ink(&s, legend), None);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(ink(&s, legend), Some(Rgba::new(0x33, 0x44, 0x55, 0x80)));
+    // Refused, and nothing changes.
+    let before = s.project.layouts[li].clone();
+    for (cmd, p) in [
+        ("layout.update", json!({"element": added[2], "color": "white"})),
+        ("layout.update", json!({"element": added[3], "color": 7, "x": 1})),
+        ("layout.addElement", json!({"kind": "colorbar", "color": "#12"})),
+    ] {
+        let err = s.run(cmd, &p).unwrap_err();
+        assert!(err.contains("color must be"), "{p}: {err}");
+    }
+    assert_eq!(s.project.layouts[li], before);
+    // Locked, a colour and a null are both changes.
+    s.run("layout.update", &json!({"element": legend, "locked": true})).unwrap();
+    for p in [json!({"element": legend, "color": "#000000"}), json!({"element": legend, "color": null})] {
+        assert!(s.run("layout.update", &p).is_err_and(|e| e.contains("locked")), "{p}");
+    }
 }
 
 #[test]
