@@ -723,6 +723,11 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
     if rustgis_data::source::is_source_name(&name) {
         return super::layer::add_source(s, p, super::layer::Origin::Bytes(&name, std::sync::Arc::new(bytes)), zoom);
     }
+    // A standalone dBASE table is binary too, and uses the usual non-spatial table path.
+    if name.to_ascii_lowercase().ends_with(".dbf") {
+        let read = rustgis_data::io::read_bytes(&name, &bytes).map_err(|e| e.to_string())?;
+        return super::layer::add_read(s, p, read, zoom);
+    }
     if name.to_ascii_lowercase().ends_with(".gz") && !rustgis_data::io::is_gzip_text_name(&name) {
         return Err(format!("{name}: decompress it first, then add the supported file inside"));
     }

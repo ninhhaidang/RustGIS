@@ -103,9 +103,8 @@ mod native {
     fn parts(path: &Path) -> Vec<(String, PathBuf)> {
         let mut paths = vec![path.to_path_buf()];
         if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("shp")) {
-            for ext in ["shx", "dbf", "prj"] {
-                paths.push(path.with_extension(ext));
-            }
+            // The table in whichever case the reader finds it.
+            paths.extend([path.with_extension("shx"), crate::io::dbf_sidecar(path), path.with_extension("prj")]);
             let cpg = crate::dbf::CPG_SPELLINGS
                 .iter()
                 .map(|e| path.with_extension(e))

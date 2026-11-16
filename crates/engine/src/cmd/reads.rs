@@ -36,6 +36,16 @@ pub(crate) struct ReadWork {
     work: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl ReadWork {
+    /// Lets an alternate file pick consume the same prepared value without choosing its
+    /// reader again when the result lands (a DBF pick routed to its companion Shapefile).
+    pub(crate) fn with_key(mut self, key: String) -> Self {
+        self.key = key;
+        self
+    }
+}
+
 /// A read started for a command, to run on a thread of its own.
 pub struct ReadAhead {
     /// What the read is called, for its progress and a cancelled run's error.

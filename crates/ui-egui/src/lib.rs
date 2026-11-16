@@ -2033,6 +2033,7 @@ impl RustGisApp {
             || rustgis_engine::data::source::is_source_name(name)
             || rustgis_engine::data::io::is_multi_layer_name(name)
             || rustgis_engine::data::sheets::is_sheet_name(name)
+            || lower.ends_with(".dbf")
             || lower.ends_with(".gz")
             || (lower.ends_with(".dat") && std::str::from_utf8(bytes).is_err())
         {
@@ -3962,6 +3963,7 @@ impl RustGisApp {
                             "jpg",
                             "jpeg",
                             "shp",
+                            "dbf",
                             "zip",
                             "gpkg",
                             "parquet",

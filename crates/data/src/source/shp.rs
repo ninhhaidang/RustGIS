@@ -89,7 +89,7 @@ impl ShpSource {
         if let Some(c) = crs {
             c.transformer().map_err(DataError::Format)?;
         }
-        let dbf = path.with_extension("dbf");
+        let dbf = crate::io::dbf_sidecar(path);
         if !dbf.is_file() {
             return Err(bad(format!("{} is missing", dbf.display())));
         }

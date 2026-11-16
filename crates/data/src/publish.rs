@@ -139,6 +139,8 @@ struct Original {
     shp: Vec<u8>,
     shx: Option<Vec<u8>>,
     dbf: Vec<u8>,
+    /// Where its table is, in whichever case the reader found it, so it is written back there.
+    dbf_path: PathBuf,
     prj: Option<Vec<u8>>,
     cpg: Option<(PathBuf, Vec<u8>)>,
 }
@@ -159,7 +161,8 @@ impl Original {
     fn read(path: &Path) -> Result<Original> {
         let missing = |ext: &str| refused(path, format!("its .{ext} isn't there"));
         let shp = read_part(path)?.ok_or_else(|| missing("shp"))?;
-        let dbf = read_part(&path.with_extension("dbf"))?.ok_or_else(|| missing("dbf"))?;
+        let dbf_path = crate::io::dbf_sidecar(path);
+        let dbf = read_part(&dbf_path)?.ok_or_else(|| missing("dbf"))?;
         let shx = read_part(&path.with_extension("shx"))?;
         let prj = read_part(&path.with_extension("prj"))?;
         let mut cpg = None;
@@ -170,7 +173,7 @@ impl Original {
                 break;
             }
         }
-        Ok(Original { shp, shx, dbf, prj, cpg })
+        Ok(Original { shp, shx, dbf, dbf_path, prj, cpg })
     }
 
     /// Its parts as the reader takes them.
@@ -207,6 +210,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
         for ext in ["shx", "dbf", "prj"].into_iter().chain(crate::dbf::CPG_SPELLINGS) {
             refuse_link(path, &path.with_extension(ext))?;
         }
+        refuse_link(path, &crate::io::dbf_sidecar(path))?;
         let changed = synced.files.changed(path)?;
         if changed.is_empty() {
             return Ok(());
@@ -366,7 +370,10 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
         notes.push(format!("{}: its .prj now says {}, the system the layer is in", path.display(), written_crs.label()));
         parts.push(("prj", prj.into_bytes()));
     }
-    let mut targets: Vec<(PathBuf, Vec<u8>)> = parts.into_iter().map(|(e, bytes)| (crate::io::shapefile_part(path, e), bytes)).collect();
+    let mut targets: Vec<(PathBuf, Vec<u8>)> = parts
+        .into_iter()
+        .map(|(e, bytes)| (if e == "dbf" { original.dbf_path.clone() } else { crate::io::shapefile_part(path, e) }, bytes))
+        .collect();
     if let Some((cpg, bytes)) = &original.cpg {
         targets.push((cpg.clone(), bytes.clone()));
     }
@@ -826,6 +833,35 @@ mod tests {
         // Only the reusable lock sidecar remains; no staged or backup parts.
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert!(names.iter().all(|n| !n.starts_with('.') || n == ".parcels.shp.rustgis-lock"), "{names:?}");
+    }
+
+    /// A table named in upper case (`parcels.DBF`) is written back under that name, and an edit
+    /// made to it afterwards outside RustGIS is seen.
+    #[test]
+    fn an_upper_case_table_is_published_under_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parcels.shp");
+        crate::io::write_path(&parcels(), &path).unwrap();
+        let upper = path.with_extension("DBF");
+        std::fs::rename(path.with_extension("dbf"), &upper).unwrap();
+        // On a case-insensitive file system the two names are one file; nothing to check there.
+        if path.with_extension("dbf").exists() {
+            return;
+        }
+        let (mut ds, sync) = read(&path);
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[0].attrs[0] = Value::Text("Smyth".into());
+        ds.features = rows.into();
+        let published = shapefile(&ds, &path, &sync).unwrap();
+        assert!(!path.with_extension("dbf").exists());
+        let (back, _) = crate::io::read_path(&path).unwrap();
+        assert_eq!(back.features.iter().next().unwrap().attrs[0], Value::Text("Smyth".into()));
+        assert!(published.files.changed(&path).unwrap().is_empty());
+        let mut bytes = std::fs::read(&upper).unwrap();
+        let last = bytes.len() - 2;
+        bytes[last] ^= 1;
+        std::fs::write(&upper, bytes).unwrap();
+        assert_eq!(published.files.changed(&path).unwrap(), ["parcels.DBF"]);
     }
 
     /// Reads follow symlinks, but replacement would sever them and leave the target stale.

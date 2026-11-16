@@ -1630,8 +1630,26 @@ fn add_geodatabase(s: &mut Session, p: &Value, path: &str) -> CmdResult {
 
 /// Opens a file through its format's reader. A Shapefile CRS override is applied before any
 /// conversion in both whole-file and streamed paths; the source file is never rewritten.
+/// DBF picks with geometry follow the full Shapefile import path.
 fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     let path = s_req(p, "path")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("dbf")) {
+        if let Some(read) = super::reads::take::<WholeRead>(s, &dbf_shapefile_key(path)) {
+            if let Some(crs) = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()) {
+                super::parse_crs(s, crs)?;
+            }
+            return add_read(s, p, read?, None);
+        }
+        // A standalone table already read stays a table if a companion appears meanwhile.
+        if !super::reads::placed_for(s, &whole_key(path))
+            && let Some(shp) = rustgis_data::io::shapefile_for_dbf(Path::new(path))
+        {
+            let mut q = p.clone();
+            q["path"] = json!(shp.display().to_string());
+            return add_data(s, &q);
+        }
+    }
     let path = &*gdb_path(path);
     // `"as": "scan"` opens a TIFF, PNG or JPEG as a picture with no coordinates, a photo too.
     let scan = super::raster::wants_scan(p, path)?;
@@ -1822,6 +1840,12 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
 
 /// A file Add Data reads whole: the features, and what reading them said.
 type WholeRead = Result<(rustgis_data::Dataset, rustgis_data::ReadReport), String>;
+
+/// A companion Shapefile read belongs to the initiating DBF pick even if the files go away.
+#[cfg(not(target_arch = "wasm32"))]
+fn dbf_shapefile_key(path: &str) -> String {
+    format!("dbf-shapefile:{path}")
+}
 
 /// The key Add Data's whole read of `path` is taken by (see [`super::reads`]).
 fn whole_key(path: &str) -> String {
@@ -2015,8 +2039,8 @@ fn read_synced(path: &str, read: impl FnOnce() -> WholeRead) -> WholeRead {
 
 /// Add Data's read of the file `p` names, made before it runs ([`super::reads`]): a raster read
 /// whole or converted by GDAL, a GeoJSON read whole, delimited text, a spreadsheet or a city model
-/// (CityJSON or CityGML) or DXF drawing read into its layers, a Shapefile read whole. `None` for
-/// any other file, which [`add_data`] reads as it adds it. Each is picked only where `add_data`
+/// (CityJSON or CityGML) or DXF drawing read into its layers, a Shapefile read whole, or a
+/// standalone dBASE table. `None` for any other file, which [`add_data`] reads as it adds it. Each is picked only where `add_data`
 /// takes that read, so a read made is never wasted; a few it makes whole are left to it (a `.json`
 /// with a coordinate system or layer given, a large GeoJSON that isn't a FeatureCollection).
 #[cfg(not(target_arch = "wasm32"))]
@@ -2024,6 +2048,11 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
     use super::reads::ahead;
     const NAME: &str = "Add Data";
     let path = gdb_path(ps(p, "path")?).into_owned();
+    if let Some(shp) = rustgis_data::io::shapefile_for_dbf(Path::new(&path)) {
+        let mut q = p.clone();
+        q["path"] = json!(shp.display().to_string());
+        return add_data_ahead(&q).map(|work| work.with_key(dbf_shapefile_key(&path)));
+    }
     let scan = super::raster::wants_scan(p, &path).ok()?;
     if !scan && rustgis_data::photo::is_photo_name(&path) && !rustgis_data::raster::world::places(Path::new(&path)) {
         return None;
@@ -2086,7 +2115,7 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
     if rustgis_data::sheets::is_sheet_name(&path) {
         return Some(ahead(NAME, key, move || read_sheet_file(&q, &path)));
     }
-    (geojson || is_delimited_name(&path)).then(|| ahead(NAME, key, move || read_whole(&q, &path)))
+    (geojson || is_delimited_name(&path) || lower.ends_with(".dbf")).then(|| ahead(NAME, key, move || read_whole(&q, &path)))
 }
 
 #[cfg(target_arch = "wasm32")]

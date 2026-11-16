@@ -51088,3 +51088,89 @@ fn bookmark_layout_map_names_over_their_limit_are_refused() {
     s.run("map.rename", &json!({"name": long(200)})).unwrap();
     assert_eq!(s.map().name.chars().count(), 200);
 }
+/// DBF imports land in the same table path as non-spatial CSV/GPKG, through desktop read-ahead
+/// and uploaded bytes. Picking attributes with a companion SHP still opens the spatial layer.
+#[test]
+fn standalone_dbf_add_data_uses_tables_and_companion_shapefile() {
+    use base64::Engine;
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
+    let mut data =
+        Dataset::new("places", GeometryType::Point, vec![Field::new("name", FieldType::Text), Field::new("count", FieldType::Integer)]);
+    data.push_next(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Cell::Text("one".into()), Cell::Int(7)]);
+    data.push_next(Some(Geometry::Point(Coord::new(3.0, 4.0))), vec![Cell::Text("two".into()), Cell::Int(12)]);
+    let (parts, _) = rustgis_data::io::shapefile_parts(&data).unwrap();
+    let dbf = parts.iter().find(|(e, _)| *e == "dbf").unwrap().1.clone();
+    let dir = std::env::temp_dir().join(format!("rustgis-add-dbf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("places.DBF");
+    std::fs::write(&path, &dbf).unwrap();
+    let p = json!({"path": path});
+    let mut s = Session::new(Project::default());
+    let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &p).unwrap();
+    assert!(ahead.reads());
+    let control = rustgis_analysis::control::Control::cancelled_once_started();
+    assert!(crate::cmd::reads::read_ahead(&mut s, "layer.addData", &p).unwrap().run(&control).is_err());
+    assert!(control.looked() > 0);
+    let read = ahead.run(&rustgis_analysis::control::Control::new()).unwrap();
+    // A new companion after the read must not turn the prepared table into a layer.
+    let shp = path.with_extension("ShP");
+    let shape_bytes = &parts.iter().find(|(e, _)| *e == "shp").unwrap().1;
+    std::fs::write(&shp, shape_bytes).unwrap();
+    crate::cmd::reads::read_land(&mut s, read).unwrap();
+    std::fs::remove_file(&shp).unwrap();
+    assert!(s.map().layers.is_empty());
+    assert_eq!(s.project.tables.len(), 1);
+    let table = &s.project.tables[0].dataset;
+    assert_eq!(table.features.len(), 2);
+    assert_eq!(table.fields[1].ty, FieldType::Integer);
+    assert_eq!(table.value(1, 1), &Cell::Int(12));
+    let mut uploaded = Session::new(Project::default());
+    uploaded
+        .run("layer.addDataBytes", &json!({"fileName": "places.dbf", "data": base64::engine::general_purpose::STANDARD.encode(&dbf)}))
+        .unwrap();
+    assert_eq!(uploaded.project.tables[0].dataset.features, table.features);
+    let zip = rustgis_data::zip::write(
+        &parts
+            .iter()
+            .map(|(e, b)| (format!("places.{e}"), b.clone()))
+            .chain(std::iter::once(("L_COMM_INFO.dbf".into(), dbf)))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut mixed = Session::new(Project::default());
+    mixed
+        .run("layer.addDataBytes", &json!({"fileName": "county.zip", "data": base64::engine::general_purpose::STANDARD.encode(zip)}))
+        .unwrap();
+    assert_eq!(mixed.map().layers.len(), 1);
+    assert_eq!(mixed.project.tables.len(), 1);
+    assert_eq!(mixed.project.tables[0].dataset.name, "L_COMM_INFO");
+    for (ext, bytes) in &parts {
+        std::fs::write(
+            path.with_extension(match *ext {
+                "shp" => "ShP",
+                "dbf" => "DBF",
+                ext => ext,
+            }),
+            bytes,
+        )
+        .unwrap();
+    }
+    // Read-ahead and dispatch must agree on the SHP path, including the streamed route.
+    for stream in [false, true] {
+        let mut paired = Session::new(Project::default());
+        let p = json!({"path": path, "stream": stream});
+        let ahead = crate::cmd::reads::read_ahead(&mut paired, "layer.addData", &p).unwrap();
+        assert_eq!(ahead.reads(), !stream);
+        let read = ahead.run(&rustgis_analysis::control::Control::new()).unwrap();
+        if !stream {
+            std::fs::remove_file(&shp).unwrap();
+        }
+        crate::cmd::reads::read_land(&mut paired, read).unwrap();
+        std::fs::write(&shp, shape_bytes).unwrap();
+        assert_eq!(paired.map().layers.len(), 1);
+        assert!(paired.project.tables.is_empty());
+        assert_eq!(paired.map().layers[0].dataset.geometry_type, GeometryType::Point);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
