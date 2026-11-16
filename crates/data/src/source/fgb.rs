@@ -35,10 +35,20 @@ impl<T: Read + Seek> ReadSeek for T {}
 
 #[derive(Clone, Debug)]
 enum Input {
-    Path(PathBuf),
+    Path(PathBuf, Option<PathBuf>),
     Bytes(super::Shared),
     /// A file by its web address.
     Remote(Arc<Remote>),
+}
+
+/// Opens the physical conversion while attributing reads to the original local input.
+fn open_input_file(path: &Path, original: Option<&Path>) -> std::io::Result<std::fs::File> {
+    if let Some(original) = original {
+        crate::provenance::path(original);
+        std::fs::File::open(path)
+    } else {
+        crate::provenance::open(path)
+    }
 }
 
 /// A FlatGeobuf file.
@@ -79,7 +89,9 @@ impl FgbOpen {
                     "{} date/time columns are kept as ISO text to read this remote FlatGeobuf by range without scanning every feature",
                     date_columns.len()
                 )),
-                Input::Path(path) => src.classify_dates(BufReader::new(std::fs::File::open(path)?), &date_columns)?,
+                Input::Path(path, original) => {
+                    src.classify_dates(BufReader::new(open_input_file(path, original.as_deref())?), &date_columns)?
+                }
                 Input::Bytes(bytes) => src.classify_dates(Cursor::new(bytes.clone()), &date_columns)?,
             }
         }
@@ -94,7 +106,30 @@ impl FgbSource {
     /// Reads a local header without classifying date columns; finish it on a worker when needed.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn prepare_path(path: &Path, name: &str) -> Result<FgbOpen> {
-        Self::prepare(BufReader::new(std::fs::File::open(path)?), Input::Path(path.to_path_buf()), name)
+        Self::prepare(BufReader::new(crate::provenance::open(path)?), Input::Path(path.to_path_buf(), None), name)
+    }
+
+    /// Reads a GDAL conversion's header, retaining its source identity for later worker reads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prepare_converted_path(path: &Path, name: &str, original: &Path) -> Result<FgbOpen> {
+        Self::prepare(
+            BufReader::new(open_input_file(path, Some(original))?),
+            Input::Path(path.to_path_buf(), Some(original.to_path_buf())),
+            name,
+        )
+    }
+
+    /// Opens a GDAL conversion without treating its cache or workspace file as a user input.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_converted_path(
+        path: &Path,
+        name: &str,
+        original: &Path,
+        workspace: Option<Arc<super::gdal::ReloadWorkspace>>,
+    ) -> Result<Self> {
+        let mut source = Self::prepare_converted_path(path, name, original)?.finish()?;
+        source._workspace = workspace;
+        Ok(source)
     }
 
     /// The same staged open for bytes retained by a project, without copying them.
@@ -104,8 +139,8 @@ impl FgbSource {
     }
 
     pub fn open_path(path: &Path, name: &str) -> Result<Self> {
-        let f = BufReader::new(std::fs::File::open(path)?);
-        Self::new(f, Input::Path(path.to_path_buf()), name)
+        let f = BufReader::new(crate::provenance::open(path)?);
+        Self::new(f, Input::Path(path.to_path_buf(), None), name)
     }
 
     /// Opens a private conversion, keeping its files alive for every shared reader.
@@ -452,7 +487,9 @@ impl FgbSource {
             None
         };
         let r: Option<Box<dyn ReadSeek>> = match &self.input {
-            Input::Path(p) => std::fs::File::open(p).ok().map(|f| Box::new(BufReader::new(f)) as Box<dyn ReadSeek>),
+            Input::Path(p, original) => {
+                open_input_file(p, original.as_deref()).ok().map(|f| Box::new(BufReader::new(f)) as Box<dyn ReadSeek>)
+            }
             Input::Bytes(b) => Some(Box::new(Cursor::new(b.clone()))),
             Input::Remote(f) => Some(Box::new(remote::Reader::new(f.clone()))),
         };
@@ -771,7 +808,7 @@ impl FeatureSource for FgbSource {
 
     fn read(&self, req: &Request) -> Result<Batch> {
         match &self.input {
-            Input::Path(p) => self.read_with(&|| Ok(BufReader::new(std::fs::File::open(p)?)), req, false),
+            Input::Path(p, original) => self.read_with(&|| Ok(BufReader::new(open_input_file(p, original.as_deref())?)), req, false),
             Input::Bytes(b) => self.read_with(&|| Ok(Cursor::new(b.clone())), req, false),
             Input::Remote(f) => self.read_remote(f, req),
         }
@@ -794,7 +831,9 @@ impl FeatureSource for FgbSource {
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
         match &self.input {
-            Input::Path(p) => self.visit_with(&|| Ok(BufReader::new(std::fs::File::open(p)?)), extent, &mut chunks),
+            Input::Path(p, original) => {
+                self.visit_with(&|| Ok(BufReader::new(open_input_file(p, original.as_deref())?)), extent, &mut chunks)
+            }
             Input::Bytes(b) => self.visit_with(&|| Ok(Cursor::new(b.clone())), extent, &mut chunks),
             Input::Remote(_) => Err(DataError::Unsupported("a whole FlatGeobuf by its web address read a chunk at a time".into())),
         }

@@ -76,7 +76,7 @@ fn read_file(dir: &Path, file: &str) -> Result<Option<Vec<u8>>> {
     let path = dir.join(file);
     match std::fs::metadata(&path) {
         Ok(m) if m.len() > MAX_TABLE_BYTES as u64 => Err(DataError::Unsupported(format!("{file} is too large to read here"))),
-        Ok(_) => Ok(Some(std::fs::read(&path)?)),
+        Ok(_) => Ok(Some(crate::provenance::read(&path)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }

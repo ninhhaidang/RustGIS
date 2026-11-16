@@ -271,12 +271,12 @@ pub(crate) fn picture(p: &Value) -> Result<String, String> {
             use std::io::Read;
             // Read at most one byte past the limit, so a huge or endless file is refused.
             let mut bytes = Vec::new();
-            std::fs::File::open(path)
-                .and_then(|f| f.take(MAX_PICTURE as u64 + 1).read_to_end(&mut bytes))
-                .map_err(|e| format!("{path}: {e}"))?;
+            let file = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
+            (&file).take(MAX_PICTURE as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
             if bytes.len() > MAX_PICTURE {
                 return Err("the picture is too large".into());
             }
+            rustgis_data::provenance::buffer(std::path::Path::new(path), &file, &bytes);
             base64::engine::general_purpose::STANDARD.encode(bytes)
         }
         (None, None) => return Err("a picture needs an image or a path".into()),

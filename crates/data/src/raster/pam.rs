@@ -242,7 +242,9 @@ pub fn read(path: &Path) -> Option<Pam> {
             Err(e) => Err(format!("it can't be looked at ({e})")),
             Ok(meta) if !meta.is_file() => continue,
             Ok(meta) if meta.len() > MAX_BYTES => Err(format!("it is over {} MiB", MAX_BYTES >> 20)),
-            Ok(_) => std::fs::read_to_string(&p).map_err(|e| format!("it isn't UTF-8 text ({e})")).and_then(|t| parse_sidecar(&t)),
+            Ok(_) => {
+                crate::provenance::read_to_string(&p).map_err(|e| format!("it isn't UTF-8 text ({e})")).and_then(|t| parse_sidecar(&t))
+            }
         };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match read {

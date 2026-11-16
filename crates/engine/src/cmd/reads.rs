@@ -27,6 +27,7 @@ pub struct Read {
     pub(crate) owner: Continuation,
     pub(crate) source: Option<rustgis_map::source::SourceLayer>,
     pub(crate) ready: Option<Ready>,
+    pub(crate) inputs: Vec<rustgis_data::provenance::Fingerprint>,
 }
 
 /// A reader chosen only after the command and its original input have been admitted.
@@ -54,6 +55,7 @@ pub struct ReadAhead {
     owner: Continuation,
     source: Option<rustgis_map::source::SourceLayer>,
     work: Option<ReadWork>,
+    capture_inputs: bool,
     /// A table write retains its admitted project and table identity across queue waits.
     table: Option<(u64, u32, u64)>,
     preview: Option<rustgis_data::Dataset>,
@@ -112,7 +114,8 @@ impl ReadAhead {
     /// [`rustgis_analysis::control`]). A read that fails gives its failure to the command, which
     /// says it as it would have; only a cancelled run (or a bug in a reader) is an error here.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Read, String> {
-        let ReadAhead { name, op, owner, source, work, table: _, preview: _ } = self;
+        let inputs = self.capture_inputs.then(rustgis_data::provenance::Capture::start);
+        let ReadAhead { name, op, owner, source, work, .. } = self;
         owner.check()?;
         let current = owner.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok());
@@ -128,7 +131,7 @@ impl ReadAhead {
         }))
         .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")));
         res?;
-        Ok(Read { op, owner, source, ready })
+        Ok(Read { op, owner, source, ready, inputs: inputs.as_ref().map_or_else(Vec::new, rustgis_data::provenance::Capture::inputs) })
     }
 }
 
@@ -218,7 +221,7 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
     let table = super::edit::table_edit_in_background(spec.id)
         .and_then(|_| s.named_table(spec, params))
         .and_then(|id| s.project.table(id).map(|t| (s.opened, id, t.instance_id())));
-    Ok(ReadAhead { name, op, owner, source, work, table, preview: None })
+    Ok(ReadAhead { name, op, owner, source, work, table, preview: None, capture_inputs: s.log.on() })
 }
 
 /// Consumes a completed read under its initiating owner, with ordinary command history and undo.

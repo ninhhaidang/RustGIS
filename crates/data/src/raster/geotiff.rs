@@ -1367,7 +1367,7 @@ pub fn read_file(path: &std::path::Path, name: &str) -> Result<Raster> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn read_file_with_nodata(path: &std::path::Path, name: &str, sidecar_nodata: Option<f64>) -> Result<Raster> {
     let path = path.to_path_buf();
-    let open = move || -> std::io::Result<Reader<'static>> { reader(std::io::BufReader::new(std::fs::File::open(&path)?)) };
+    let open = move || -> std::io::Result<Reader<'static>> { reader(std::io::BufReader::new(crate::provenance::open(&path)?)) };
     read_limited_with_nodata(open().map_err(err)?, name, max_samples(), Some(&open), sidecar_nodata)
 }
 

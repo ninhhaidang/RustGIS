@@ -138,7 +138,7 @@ fn said(s: &mut Session, wrote: Wrote) -> CmdResult {
         }
     }
     if let Some(then) = then {
-        then(s, &mut answer)?;
+        rustgis_data::provenance::without(|| then(s, &mut answer))?;
     }
     Ok(answer)
 }
@@ -285,6 +285,9 @@ pub struct Started {
     /// The project it started in, its name as the log keeps it and its `Session::opened`: the
     /// log's entry names that one, not one opened while it ran.
     pub(crate) project: (String, u64),
+    /// Shared with the worker so failed exports retain the reads preceding the error, too.
+    inputs: std::sync::Arc<std::sync::Mutex<Vec<rustgis_data::provenance::Fingerprint>>>,
+    capture_inputs: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -298,17 +301,22 @@ impl ExportRun {
     /// (see [`rustgis_analysis::control`]). A cancelled export leaves no file, or the one there
     /// before.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Wrote, String> {
+        let inputs = self.started.capture_inputs.then(rustgis_data::provenance::Capture::start);
         let ExportRun { name, work, started } = self;
         let owner = started.owner;
         owner.check()?;
         let current = owner.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok());
         // A bug in a writer must not take the app down.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::render::rustgis_tiles::cache::with_still(still, || written_under(name, control, work))
         }))
         .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
-        .map(|w| Wrote { owner: Some(owner), crs_used: rustgis_data::raster::crs::take_used(), ..w })
+        .map(|w| Wrote { owner: Some(owner), crs_used: rustgis_data::raster::crs::take_used(), ..w });
+        if let Some(inputs) = inputs {
+            started.inputs.lock().unwrap_or_else(|e| e.into_inner()).extend(inputs.inputs());
+        }
+        result
     }
 }
 
@@ -323,6 +331,7 @@ pub fn export_start(s: &mut Session, command: &str, p: &Value) -> Result<ExportR
 /// Prepares only a registered, admitted export and seals its initiating authority.
 pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<crate::policy::CommandOp>) -> Result<ExportRun, String> {
     let crate::policy::CommandOp::Registered { spec, params } = op.op() else { return Err("not a registered export".into()) };
+    let inputs = s.log.on().then(rustgis_data::provenance::Capture::start);
     let (command, p) = (spec.id, params);
     let &(_, name, start) =
         IN_BACKGROUND.iter().find(|(c, ..)| *c == command).ok_or_else(|| format!("{command} doesn't run in the background"))?;
@@ -331,8 +340,20 @@ pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
     let current = owner.clone();
     let still = std::sync::Arc::new(move || current.check().is_ok());
     let project = (crate::project_log::kept_name(&s.title()), s.opened);
-    let started = Started { command, params: p.clone(), at: crate::project_log::now_ms(), start: web_time::Instant::now(), owner, project };
+    let started = Started {
+        command,
+        params: p.clone(),
+        at: crate::project_log::now_ms(),
+        start: web_time::Instant::now(),
+        owner,
+        project,
+        inputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        capture_inputs: s.log.on(),
+    };
     let work = crate::render::rustgis_tiles::cache::with_still(still, || start(s, p))?;
+    if let Some(inputs) = inputs {
+        *started.inputs.lock().unwrap_or_else(|e| e.into_inner()) = inputs.inputs();
+    }
     Ok(ExportRun { name, started, work })
 }
 
@@ -341,7 +362,9 @@ pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
 /// its answer: the troubleshooting history files what it says (its failure too) under that
 /// command, and the session's log has its entry, as when it runs here.
 pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String>) -> CmdResult {
-    let Started { command, params, at, start, owner, project } = started;
+    let _inputs = s.log.on().then(rustgis_data::provenance::Capture::start);
+    rustgis_data::provenance::record(started.inputs.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
+    let Started { command, params, at, start, owner, project, .. } = started;
     let before = s.diagnostic_source.replace(command);
     let mark = s.notice_mark();
     let landed: CmdResult = (|| {
@@ -373,7 +396,7 @@ pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String
     if s.log.on() && crate::project_log::is_logged(s, command, &params) {
         let (kept, partial) = crate::project_log::kept_and_partial(&params);
         // The project it started in, not one opened while it ran.
-        s.log.push(crate::project_log::entry(project, command, kept, partial, &landed, at, start.elapsed()));
+        s.log_entry(crate::project_log::entry(project, command, kept, partial, &landed, at, start.elapsed()), false);
     }
     landed
 }

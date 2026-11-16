@@ -1548,7 +1548,7 @@ fn add_photos(s: &mut Session, p: &Value) -> CmdResult {
                         reader.leave_out(format!("{shown}: larger than {} MB", photo::MAX_BYTES >> 20))
                     }
                     // Read, parsed and thumbnailed, then the bytes are dropped before the next.
-                    Ok(_) => match std::fs::read(path) {
+                    Ok(_) => match rustgis_data::provenance::read(path) {
                         Ok(bytes) => reader.add(&shown, &bytes),
                         Err(e) => reader.leave_out(format!("{shown}: {e}")),
                     },
@@ -1691,7 +1691,7 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         && ["crs", "layer"].iter().any(|k| ps(p, k).is_some_and(|c| !c.trim().is_empty()))
         && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= rustgis_data::io::MAX_BYTES)
     {
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         if rustgis_data::io::is_cityjson(path, &bytes) {
             let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
             return add_layers(s, p, &full, &bytes, None, true);
@@ -1827,7 +1827,7 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
             return Err(format!("{path} is too large to open"));
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
         return add_layers(s, p, &full, &bytes, None, true);
     }
@@ -1886,7 +1886,7 @@ fn is_city_model_path(path: &str) -> bool {
         return false;
     }
     let mut head = Vec::new();
-    std::fs::File::open(path)
+    rustgis_data::provenance::open(path)
         .and_then(|f| f.take(rustgis_data::citygml::HEAD_BYTES as u64).read_to_end(&mut head))
         .is_ok_and(|_| rustgis_data::citygml::looks_like_citygml(&head))
 }
@@ -1900,7 +1900,7 @@ fn read_layers_file(p: &Value, path: &str) -> LayersRead {
     if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
         return Err(format!("{path} is too large to open"));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty());
     let reads = match crs {
@@ -1923,9 +1923,12 @@ fn read_layers_file(p: &Value, path: &str) -> LayersRead {
 /// decoding and the bounded file read complete before cancellation can be observed.
 fn read_dxf_file(p: &Value, path: &str) -> LayersRead {
     use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let file = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
     let mut bytes = Vec::new();
-    file.take(rustgis_data::io::MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+    (&file).take(rustgis_data::io::MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() as u64 <= rustgis_data::io::MAX_BYTES {
+        rustgis_data::provenance::buffer(Path::new(path), &file, &bytes);
+    }
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()).map(rustgis_data::raster::Crs::parse).transpose()?;
     Ok((full.clone(), dxf_reads(p, &full, &bytes, crs)?))
@@ -1960,7 +1963,7 @@ fn read_sheet_file(p: &Value, path: &str) -> WholeRead {
     if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
         return Err(format!("{path} is too large to open"));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
     // Read from disk: the table keeps the workbook's path, so an export can't replace it.
     let mut read = read_sheet(p, path, &bytes)?;
     read.0.source = Some(std::path::absolute(path).map_or_else(|_| path.to_string(), |a| a.display().to_string()));
@@ -1975,7 +1978,7 @@ fn read_whole(p: &Value, path: &str) -> WholeRead {
         if meta.len() > rustgis_data::io::MAX_BYTES {
             return Err(format!("{path} is too large to open"));
         }
-        std::fs::read(path).map_err(|e| format!("{path}: {e}"))
+        rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))
     })?;
     if let Some(read) = delimited {
         return Ok(read);
@@ -2474,7 +2477,7 @@ fn file_layers(s: &mut Session, p: &Value) -> CmdResult {
         if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
             return Err(format!("{path} is too large to open"));
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let layers = rustgis_data::sheets::sheet_names(&bytes).map_err(err)?;
         return Ok(json!({"count": layers.len(), "layers": layers}));
     }
@@ -2489,7 +2492,7 @@ fn file_layers(s: &mut Session, p: &Value) -> CmdResult {
         if meta.len() > rustgis_data::io::MAX_BYTES {
             return Err(format!("{path} is too large to open"));
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let layers = rustgis_data::dxf::layers(path, &bytes).map_err(err)?;
         return Ok(json!({"count": layers.len(), "layers": layers}));
     }
@@ -2502,7 +2505,7 @@ fn file_layers(s: &mut Session, p: &Value) -> CmdResult {
         if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
             return Err(format!("{path} is too large to open"));
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let zip = path.to_ascii_lowercase().ends_with(".zip");
         let layers: Vec<String> = match crs.filter(|_| zip || rustgis_data::io::is_city_model(path, &bytes)) {
             Some(crs) => {
@@ -3373,7 +3376,25 @@ pub(crate) fn add_converted(s: &mut Session, p: &Value, label: &str, original: &
         }
         let file = c.path.display().to_string();
         // One layer that can't be added doesn't stop the others.
-        let r = match add_source(s, &q, Origin::Path(&file), None) {
+        let added = match &c.origin {
+            ConvertedOrigin::Gdal(_) => {
+                rustgis_data::source::fgb::FgbSource::open_converted_path(&c.path, &c.name, Path::new(original), None)
+                    .map_err(|e| format!("{original}: {e}"))
+                    .and_then(|opened| add_source_with(s, &q, Origin::Path(&file), Some(Box::new(opened)), None))
+            }
+            ConvertedOrigin::Duckdb(d) => {
+                use rustgis_data::source::{duckdb::Database, parquet::ParquetSource};
+                let database = d.database.as_deref().map(Database::parse);
+                let original = match &database {
+                    Some(Database::File(path)) => Some(path.as_path()),
+                    _ => None,
+                };
+                ParquetSource::open_converted_path(&c.path, &c.name, original, None)
+                    .map_err(|e| format!("{file}: {e}"))
+                    .and_then(|opened| add_source_with(s, &q, Origin::Path(&file), Some(Box::new(opened)), None))
+            }
+        };
+        let r = match added {
             Ok(r) => r,
             Err(e) if !single => {
                 s.notify(format!("{}: {e}", c.name), true);
@@ -3637,18 +3658,18 @@ pub fn columns_in_file(path: &str, p: &Value) -> CmdResult {
         return Err(format!("{path} is too large to open"));
     }
     if rustgis_data::io::is_gzip_text_name(path) {
-        let reader = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+        let reader = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
         let prefix = rustgis_data::io::gzip_text_prefix(reader, COLUMNS_PREFIX).map_err(|e| format!("{path}: {e}"))?;
         let plain = path.get(..path.len().saturating_sub(3)).unwrap_or(path);
         return gzip_columns(plain, &prefix, p);
     }
     let mut bytes = Vec::new();
-    let read = if sheet {
-        std::fs::File::open(path).and_then(|mut f| f.read_to_end(&mut bytes))
-    } else {
-        std::fs::File::open(path).and_then(|f| f.take(COLUMNS_PREFIX as u64).read_to_end(&mut bytes))
-    };
+    let mut file = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let read = if sheet { file.read_to_end(&mut bytes) } else { (&file).take(COLUMNS_PREFIX as u64).read_to_end(&mut bytes) };
     read.map_err(|e| format!("{path}: {e}"))?;
+    if sheet {
+        rustgis_data::provenance::buffer(Path::new(path), &file, &bytes);
+    }
     columns_of(path, &bytes, p)
 }
 

@@ -668,7 +668,8 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
             for n in 2.. {
                 match std::fs::metadata(&path) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-                    Ok(_) if holds(&path, data) => {
+                    // A destination looked at before writing is not an input of the command.
+                    Ok(_) if rustgis_data::provenance::without(|| holds(&path, data)) => {
                         write = false;
                         break;
                     }
@@ -903,7 +904,7 @@ fn holds(path: &Path, data: &[u8]) -> bool {
         return false;
     }
     let mut there = Vec::with_capacity(data.len());
-    std::fs::File::open(path).and_then(|f| f.take(data.len() as u64 + 1).read_to_end(&mut there)).is_ok() && there == data
+    rustgis_data::provenance::open(path).and_then(|f| f.take(data.len() as u64 + 1).read_to_end(&mut there)).is_ok() && there == data
 }
 
 /// What `offline.package` returns.

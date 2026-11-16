@@ -107,7 +107,7 @@ pub fn beside(path: &Path) -> Option<(PathBuf, Result<WorldFile, String>)> {
         let read = if len > MAX_BYTES {
             Err("it is too large to be a world file".to_string())
         } else {
-            std::fs::read_to_string(&found).map_err(|e| e.to_string()).and_then(|t| WorldFile::parse(&t))
+            crate::provenance::read_to_string(&found).map_err(|e| e.to_string()).and_then(|t| WorldFile::parse(&t))
         };
         match read {
             Ok(wf) => return Some((found, Ok(wf))),

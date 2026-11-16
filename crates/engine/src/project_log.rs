@@ -546,6 +546,15 @@ pub(crate) fn entry(
         opened: project.1,
         partial,
         plugin: None,
+        rustgis_version: Some(env!("CARGO_PKG_VERSION").into()),
+        inputs_omitted: 0,
+        inputs: rustgis_data::provenance::current()
+            .into_iter()
+            .map(|mut input| {
+                input.path = Session::redacted(&input.path).into_string();
+                input
+            })
+            .collect(),
     }
 }
 
@@ -604,9 +613,29 @@ pub struct LogEntry {
     /// plugins' commands toward [`LOG_PLUGIN_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
+    /// RustGIS that executed this entry; absent in older exported logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustgis_version: Option<String>,
+    /// Observed local file reads, never output paths inferred from parameters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<rustgis_data::provenance::Fingerprint>,
+    /// Input fingerprints left out past [`LOG_LIST_ITEMS`]; absent in older exported logs.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inputs_omitted: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl LogEntry {
+    /// Keeps whole fingerprints, counting those cut rather than shortening their identities.
+    fn bound_inputs(&mut self) {
+        let omitted = self.inputs.len().saturating_sub(LOG_LIST_ITEMS);
+        self.inputs.truncate(LOG_LIST_ITEMS);
+        self.inputs_omitted = self.inputs_omitted.saturating_add(u64::try_from(omitted).unwrap_or(u64::MAX));
+    }
+
     /// When it started, as `2026-10-30 14:05:09` (UTC).
     pub fn time_utc(&self) -> String {
         let (date, time) = rustgis_map::graphics::civil(self.at / 1000);
@@ -635,6 +664,8 @@ pub struct SessionLog {
     /// commands' (newer than some of the user's still kept), past [`LOG_PLUGIN_LIMIT`].
     dropped: u64,
     dropped_plugin: u64,
+    /// Absolute notice mark for the newest entry's single omission notice, if already said.
+    input_notice: Option<u64>,
 }
 
 impl SessionLog {
@@ -650,10 +681,11 @@ impl SessionLog {
     /// command's past [`LOG_PLUGIN_LIMIT`] the oldest of those; turning the log off
     /// (`project.logCommands`), and clearing it while off, are recorded too, so the log says why
     /// it stops or is empty.
-    pub fn push(&mut self, e: LogEntry) {
+    pub fn push(&mut self, mut e: LogEntry) {
         if self.off && !matches!(e.command.as_str(), "project.logCommands" | "project.clearLog") {
             return;
         }
+        e.bound_inputs();
         let plugin = |e: &LogEntry| e.command.starts_with(rustgis_plugins::PREFIX) || e.plugin.is_some();
         if plugin(&e)
             && self.plugin_entries >= LOG_PLUGIN_LIMIT
@@ -666,6 +698,7 @@ impl SessionLog {
         if plugin(&e) {
             self.plugin_entries += 1;
         }
+        self.input_notice = None;
         self.changes = self.changes.wrapping_add(1);
         self.entries.push_back(e);
         while self.entries.len() > LOG_LIMIT {
@@ -682,6 +715,11 @@ impl SessionLog {
     pub fn join_last(&mut self, mut e: LogEntry) {
         // A session plugin's entry between the steps isn't the user's step to join.
         if let Some(last) = self.entries.back_mut().filter(|l| l.ok && l.command == e.command && l.plugin == e.plugin) {
+            e.inputs.extend(last.inputs.iter().cloned());
+            e.inputs.sort();
+            e.inputs.dedup();
+            e.inputs_omitted = e.inputs_omitted.saturating_add(last.inputs_omitted);
+            e.bound_inputs();
             e.at = last.at;
             e.millis = last.millis.saturating_add(e.millis);
             *last = e;
@@ -745,13 +783,14 @@ impl SessionLog {
     /// line). Entry by entry, so a long log isn't held as text first.
     pub fn write(&self, w: &mut dyn std::io::Write, csv: bool) -> std::io::Result<()> {
         if csv {
-            w.write_all(b"time_utc,at,command,ok,millis,error,params,plugin,project\n")?;
+            w.write_all(b"time_utc,at,command,ok,millis,error,params,plugin,project,rustgis_version,inputs,inputs_omitted\n")?;
         }
         self.entries.iter().try_for_each(|e| write_entry(w, e, csv))
     }
 
     /// Empties the log; how many entries it had.
     pub fn clear(&mut self) -> usize {
+        self.input_notice = None;
         self.plugin_entries = 0;
         self.dropped = 0;
         self.dropped_plugin = 0;
@@ -772,7 +811,7 @@ fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::
     if csv {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             e.time_utc(),
             e.at,
             csv_cell(&e.command),
@@ -781,10 +820,47 @@ fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::
             csv_cell(e.error.as_deref().unwrap_or("")),
             csv_cell(&e.params.to_string()),
             csv_cell(e.plugin.as_deref().unwrap_or("")),
-            csv_cell(&e.project)
+            csv_cell(&e.project),
+            csv_cell(e.rustgis_version.as_deref().unwrap_or("")),
+            csv_cell(&serde_json::to_string(&e.inputs).map_err(std::io::Error::other)?),
+            e.inputs_omitted
         )
     } else {
         serde_json::to_writer(&mut *w, e).map_err(std::io::Error::other)?;
         w.write_all(b"\n")
+    }
+}
+
+impl Session {
+    /// Records a command's entry and says when its input list could not be kept in full.
+    pub(crate) fn log_entry(&mut self, entry: LogEntry, joins: bool) {
+        let before = self.log.changes();
+        if joins {
+            self.log.join_last(entry)
+        } else {
+            self.log.push(entry)
+        }
+        if self.log.changes() == before {
+            return;
+        }
+        if let Some(entry) = self.log.entries.back()
+            && entry.inputs_omitted > 0
+        {
+            let text = format!("Session log omitted {} input fingerprints from this entry (limit {LOG_LIST_ITEMS})", entry.inputs_omitted);
+            if let Some(mark) = self.log.input_notice {
+                // Joining updates the existing notice's total. A notice already consumed or
+                // evicted is not published again for each repeating step.
+                let offset = usize::try_from(self.notice_mark().saturating_sub(mark)).unwrap_or(usize::MAX);
+                if let Some(index) = self.notices.len().checked_sub(offset)
+                    && let Some(notice) = self.notices.get_mut(index)
+                    && notice.text.starts_with("Session log omitted ")
+                {
+                    notice.text = text;
+                }
+            } else {
+                self.log.input_notice = Some(self.notice_mark());
+                self.notify(text, false);
+            }
+        }
     }
 }

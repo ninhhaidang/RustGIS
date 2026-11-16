@@ -3,7 +3,6 @@
 use super::{BUFFER, Place, bad, be_i32, record_box};
 use crate::Result;
 use rusqlite::{Connection, OpenFlags, params};
-use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Mutex;
@@ -258,7 +257,7 @@ impl Index {
 }
 
 fn scan(path: &Path, len: u64, mut visit: impl FnMut(u32, Place, [f32; 4]) -> Result<()>) -> Result<(u32, String)> {
-    let mut f = BufReader::with_capacity(BUFFER, File::open(path)?);
+    let mut f = BufReader::with_capacity(BUFFER, crate::provenance::open(path)?);
     f.seek_relative(100)?;
     let mut pos = 100u64;
     let mut count = 0u32;

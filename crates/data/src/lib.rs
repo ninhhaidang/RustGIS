@@ -38,6 +38,7 @@ pub mod ogc;
 pub mod osm;
 pub mod photo;
 pub mod progress;
+pub mod provenance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod publish;
 pub mod query;

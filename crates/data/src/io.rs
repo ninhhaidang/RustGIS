@@ -315,7 +315,7 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
     let mut out = match ext.as_str() {
         "geojson" | "json" => {
             check_size(path)?;
-            let text = std::fs::read_to_string(path)?;
+            let text = crate::provenance::read_to_string(path)?;
             // A CityJSON model or a TopoJSON topology named .json, as read_bytes reads it.
             let leaf = path.file_name().and_then(|n| n.to_str()).unwrap_or("layer.json");
             if ext == "json" && (is_cityjson(leaf, text.as_bytes()) || crate::topojson::looks_like_topojson(&text)) {
@@ -327,11 +327,11 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
         "csv" | "tsv" | "txt" | "dat" => {
             check_size(path)?;
             let leaf = path.file_name().and_then(|n| n.to_str()).unwrap_or("layer.csv");
-            read_delimited_bytes(leaf, &std::fs::read(path)?, &CsvOptions::default())?
+            read_delimited_bytes(leaf, &crate::provenance::read(path)?, &CsvOptions::default())?
         }
         "gz" => {
             check_size(path)?;
-            read_gzip_text(std::io::BufReader::new(std::fs::File::open(path)?), &path.display().to_string(), &CsvOptions::default())?
+            read_gzip_text(std::io::BufReader::new(crate::provenance::open(path)?), &path.display().to_string(), &CsvOptions::default())?
         }
         "dbf" => {
             check_size(path)?;
@@ -351,11 +351,11 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
         }
         "zip" | "kml" | "kmz" | "gpx" | "gml" | "dxf" | "pbf" | "topojson" => {
             check_size(path)?;
-            read_bytes(&path.display().to_string(), &std::fs::read(path)?)?
+            read_bytes(&path.display().to_string(), &crate::provenance::read(path)?)?
         }
         "xml" => {
             check_size(path)?;
-            let bytes = std::fs::read(path)?;
+            let bytes = crate::provenance::read(path)?;
             if !is_citygml(&path.display().to_string(), &bytes) {
                 return Err(DataError::Unsupported("xml".into()));
             }
@@ -368,13 +368,13 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
             let mid = match mid {
                 Some(m) => {
                     check_size(&m)?;
-                    Some(std::fs::read(m)?)
+                    Some(crate::provenance::read(m)?)
                 }
                 None => None,
             };
-            crate::mapinfo::read_bytes(&std::fs::read(path)?, mid.as_deref(), &name)?
+            crate::mapinfo::read_bytes(&crate::provenance::read(path)?, mid.as_deref(), &name)?
         }
-        "las" | "laz" => crate::lidar::read(std::io::BufReader::new(std::fs::File::open(path)?), &name, None)?,
+        "las" | "laz" => crate::lidar::read(std::io::BufReader::new(crate::provenance::open(path)?), &name, None)?,
         // Read in place by a provider, so there's no size cap on the file, only on the features.
         e if crate::source::EXTENSIONS.contains(&e) => crate::source::materialize(crate::source::open_path(path, None)?.as_ref())?,
         other => return Err(DataError::Unsupported(other.to_string())),
@@ -2470,9 +2470,9 @@ pub fn read_shapefile_in(path: &Path, name: &str, crs: Option<Crs>) -> Result<(D
     }
     let mut notes = Vec::new();
     let parts = ShapefileParts {
-        shp: std::fs::read(path)?,
-        shx: if shx.is_file() { Some(std::fs::read(shx)?) } else { None },
-        dbf: std::fs::read(dbf)?,
+        shp: crate::provenance::read(path)?,
+        shx: if shx.is_file() { Some(crate::provenance::read(shx)?) } else { None },
+        dbf: crate::provenance::read(dbf)?,
         prj: crate::raster::read_prj(path),
         cpg: crate::dbf::read_cpg(path, &mut notes),
     };

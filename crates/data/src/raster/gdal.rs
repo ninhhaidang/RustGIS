@@ -109,7 +109,7 @@ pub fn convert_jpeg2000(bytes: Vec<u8>, crs: Option<&str>, max: u64) -> Result<C
     // Keep that working-space budget separate from the final GeoTIFF's size limit.
     let budget = (bytes.len() as u64).saturating_add(max.saturating_mul(3));
     drop(bytes);
-    let c = convert_in(dir.path(), &src, None, crs, Some(budget))?;
+    let c = crate::provenance::without(|| convert_in(dir.path(), &src, None, crs, Some(budget)))?;
     // A GeoTIFF is larger than the JPEG 2000 it came from (Sentinel-2's about twice).
     if std::fs::metadata(&c.path)?.len() > max {
         return Err(DataError::Format(format!(
@@ -155,7 +155,7 @@ fn plain_ers(src: &Path) -> Result<()> {
     if meta.len() > MAX_HEADER {
         return Err(DataError::Format("too large for an ER Mapper header".into()));
     }
-    let text = String::from_utf8_lossy(&std::fs::read(src)?).into_owned();
+    let text = String::from_utf8_lossy(&crate::provenance::read(src)?).into_owned();
     // Every line naming a key, so a second one can't hide behind the first.
     let values = |key: &str| {
         // GDAL ends a line at a carriage return too.
@@ -176,7 +176,43 @@ fn plain_ers(src: &Path) -> Result<()> {
     if values("DataFile").iter().any(|f| f.contains(['/', '\\', ':']) || f == "..") {
         return Err(DataError::Unsupported("an ER Mapper header whose data file isn't beside it isn't read".into()));
     }
+    for data in values("DataFile") {
+        crate::provenance::path(&src.with_file_name(data));
+    }
     Ok(())
+}
+
+/// Observes only plainly named local companions, without imposing a header validation on conversion.
+/// Failure to inspect this small header affects provenance alone, never whether GDAL can open it.
+fn observe_ers_companions(src: &Path) {
+    use std::io::Read;
+    if !crate::provenance::active() || !src.extension().is_some_and(|e| e.eq_ignore_ascii_case("ers")) {
+        return;
+    }
+    const MAX_HEADER: u64 = 1 << 20;
+    if !std::fs::metadata(src).is_ok_and(|m| m.is_file() && m.len() <= MAX_HEADER) {
+        return;
+    }
+    let Ok(file) = std::fs::File::open(src) else { return };
+    let mut bytes = Vec::new();
+    if (&file).take(MAX_HEADER + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > MAX_HEADER {
+        return;
+    }
+    crate::provenance::buffer(src, &file, &bytes);
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.split(['\r', '\n']) {
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("DataFile")
+        {
+            let name = value.trim().trim_matches('"');
+            if !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', ':']) {
+                let companion = src.with_file_name(name);
+                if companion.is_file() {
+                    crate::provenance::path(&companion);
+                }
+            }
+        }
+    }
 }
 
 fn is_vsi(s: &str) -> bool {
@@ -209,6 +245,7 @@ pub fn subdatasets(src: &Path) -> Result<Vec<(String, String)>> {
 /// Lists subdatasets with the downloaded raster's optional workspace budget.
 fn subdatasets_with_budget(src: &Path, workspace: Option<(&Path, u64)>) -> Result<Vec<(String, String)>> {
     let full = local_regular_file(src)?;
+    crate::provenance::path(&full);
     // Its type and header first, so a file that isn't read says so whether GDAL is installed or not.
     let drivers = drivers(&full)?;
     plain_ers(&full)?;
@@ -446,6 +483,8 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
         return Err(DataError::Format(format!("crs '{c}': give an EPSG code (EPSG:32633), a PROJ string or WKT")));
     }
     let full = local_regular_file(src)?;
+    crate::provenance::path(&full);
+    observe_ers_companions(&full);
     let layer = layer.map(str::trim).filter(|l| !l.is_empty());
     std::fs::create_dir_all(dir)?;
     external::prune(dir, ours, KEEP);
@@ -702,7 +741,7 @@ mod tests {
     /// An ER Mapper header opens only its own data beside it: one linking to another file, or
     /// naming data elsewhere, is refused before GDAL runs (GDAL installed or not).
     #[test]
-    fn er_mapper_headers_open_only_their_own_data() {
+    fn er_mapper_provenance_includes_only_validated_companions() {
         let dir = tempfile::tempdir().unwrap();
         let header = |name: &str, lines: &str| {
             let p = dir.path().join(name);
@@ -710,7 +749,11 @@ mod tests {
             p
         };
         let plain = header("plain.ers", "\tDataSetType\t= ERStorage\n\tDataFile\t= \"plain.dat\"\n");
+        let captured = crate::provenance::Capture::start();
+        std::fs::write(dir.path().join("plain.dat"), b"cells").unwrap();
         assert!(plain_ers(&plain).is_ok());
+        assert!(captured.inputs().iter().any(|i| i.path == dir.path().join("plain.dat").display().to_string() && i.size == Some(5)));
+        drop(captured);
         let linked = header("linked.ers", "\tDataSetType\t= ERStorage\n\tdatasettype = Translated\n");
         assert!(plain_ers(&linked).is_err_and(|e| e.to_string().contains("ERStorage")));
         // Only raw data passes, whatever follows the type's word.
@@ -745,6 +788,35 @@ mod tests {
         assert!(plain_ers(Path::new("/nowhere/a.img")).is_ok());
     }
 
+    /// A reusable conversion must not acquire new ER Mapper validation through logging.
+    #[test]
+    fn er_mapper_provenance_keeps_conversion_cache_hits_compatible() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(dir.path().join("plain.dat"), b"cells").unwrap();
+        for data in ["plain.dat", "../linked.dat"] {
+            let src = dir.path().join("linked.ers");
+            std::fs::write(&src, format!("DatasetHeader Begin\nDataSetType = Translated\nDataFile = \"{data}\"\nDatasetHeader End\n"))
+                .unwrap();
+            let (len, modified) = stamp(&src).unwrap();
+            let key = format!("raster {CONVERSION}\n{}\nNone\nNone\n{len}\n{modified}", src.display());
+            let tag = format!("{:016x}", fnv1a(key.as_bytes()));
+            std::fs::write(cache.join(format!("{tag}.tif")), b"cached conversion").unwrap();
+            std::fs::write(cache.join(format!("{tag}.rkey")), format!("{key}{FOUND}{{}}")).unwrap();
+            for enabled in [false, true] {
+                let capture = enabled.then(crate::provenance::Capture::start);
+                assert!(convert_in(&cache, &src, None, None, None).is_ok());
+                if let Some(capture) = capture {
+                    let inputs = capture.inputs();
+                    assert!(inputs.iter().any(|i| i.path == src.display().to_string()));
+                    assert_eq!(inputs.iter().any(|i| i.path.ends_with("plain.dat")), data == "plain.dat");
+                    assert!(!inputs.iter().any(|i| i.path.ends_with("linked.dat")));
+                }
+            }
+        }
+    }
+
     /// A VRT renamed `.img` isn't opened as a VRT, so the raster it names isn't read.
     #[test]
     fn a_renamed_vrt_isnt_read_when_gdal_is_installed() {
@@ -775,7 +847,7 @@ mod tests {
 
     /// Runs only where GDAL is installed: a NetCDF file's variables, an HGT tile.
     #[test]
-    fn converts_when_gdal_is_installed() {
+    fn raster_conversion_provenance_excludes_cache_files_when_gdal_is_installed() {
         let Some(translate) = program("gdal_translate") else { return };
         if program("gdalinfo").is_none() {
             return;
@@ -801,13 +873,17 @@ mod tests {
             return;
         }
         let cache = dir.join("cache");
+        let captured = crate::provenance::Capture::start();
         let c = convert_in(&cache, &img, None, None, None).unwrap();
         assert!(c.subdataset.is_none() && c.others.is_empty());
-        let r = crate::raster::read_path(&c.path).unwrap();
+        let r = crate::raster::read_converted(&img, &c).unwrap();
         assert_eq!((r.width, r.height), (4, 3));
         // The second time comes from the cache.
         let again = convert_in(&cache, &img, None, None, None).unwrap();
         assert_eq!(again.path, c.path);
+        crate::raster::read_converted(&img, &again).unwrap();
+        assert_eq!(captured.inputs().iter().map(|i| &i.path).collect::<Vec<_>>(), vec![&img.display().to_string()]);
+        drop(captured);
         assert!(convert_in(&cache, &img, Some("x"), None, None).is_err(), "no subdatasets");
         assert!(convert_in(&cache, &img, None, Some("-of"), None).is_err());
         let _ = std::fs::remove_dir_all(&dir);

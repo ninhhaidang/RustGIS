@@ -19,7 +19,7 @@ pub struct LidarSource {
 impl LidarSource {
     /// Opens a local cloud for display without presenting its sample as the whole file.
     pub fn open_path(path: &Path, name: &str) -> Result<LidarSource> {
-        let f = std::io::BufReader::new(std::fs::File::open(path)?);
+        let f = std::io::BufReader::new(crate::provenance::open(path)?);
         Self::from_read(crate::lidar::read_sample(f, name)?)
     }
 

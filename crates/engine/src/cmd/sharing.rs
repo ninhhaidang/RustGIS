@@ -459,7 +459,7 @@ fn upload(s: &mut Session, p: &Value) -> CmdResult {
     // create_new is the real guard (the check above only gives a clearer message): the file is
     // created new, never through an existing file or link. A copy that fails part way is removed,
     // so a retry can write it.
-    let from = std::fs::File::open(src).map_err(|e| format!("{src}: {e}"))?;
+    let from = rustgis_data::provenance::open(src).map_err(|e| format!("{src}: {e}"))?;
     if !from.metadata().is_ok_and(|m| m.len() <= MAX_UPLOAD) {
         return Err(format!("{src}: uploads are at most {} MB", MAX_UPLOAD >> 20));
     }

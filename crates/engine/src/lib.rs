@@ -1032,6 +1032,7 @@ const MAX_URL_REQUESTS: usize = 16;
 
 /// A finished tool run, held until `gp.finish` applies it.
 pub(crate) struct PendingRun {
+    pub(crate) inputs: Vec<rustgis_data::provenance::Fingerprint>,
     pub(crate) continuation: policy::Continuation,
     pub id: u64,
     pub tool: String,
@@ -1599,6 +1600,7 @@ impl Session {
     /// Shared command bookkeeping for ordinary dispatch and execution of an already pinned retry.
     pub(crate) fn command_epilogue(&mut self, id: &str, params: &Value, run: impl FnOnce(&mut Self) -> CmdResult) -> CmdResult {
         let outermost = self.depth == 0;
+        let _inputs = (outermost && self.log.on()).then(rustgis_data::provenance::Capture::start);
         #[cfg(not(target_arch = "wasm32"))]
         let _diagnostic_scope = self.requests_into.as_ref().map_or_else(|| self.diagnostics.enter(), |c| c.enter());
         #[cfg(target_arch = "wasm32")]
@@ -1667,7 +1669,7 @@ impl Session {
                         };
                         let project = (project_log::kept_name(&self.title()), self.opened);
                         let e = project_log::entry(project, id, params, partial, &res, at, start.elapsed());
-                        if joins && res.is_ok() { self.log.join_last(e) } else { self.log.push(e) }
+                        self.log_entry(e, joins && res.is_ok());
                     }
                 }));
                 if logged.is_err() {

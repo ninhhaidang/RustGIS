@@ -132,6 +132,7 @@ fn point(p: &Value, k: &str) -> Result<Coord, String> {
 /// project), what the command says of it besides its layer, and what else the command does once
 /// it is added: made on any thread, added by [`add_made`].
 pub struct Made {
+    inputs: Vec<rustgis_data::provenance::Fingerprint>,
     name: String,
     layer: rustgis_map::RasterLayer,
     extra: Option<Value>,
@@ -166,13 +167,14 @@ pub(crate) fn made_then(raster: Raster, extra: Option<Value>, then: Option<Then>
 
 /// A layer made (styled, say), to be added as `name`.
 pub(crate) fn made_layer(name: String, layer: rustgis_map::RasterLayer, extra: Option<Value>, then: Option<Then>) -> Made {
-    Made { name, layer, extra, then, ran: None, continuation: None }
+    Made { name, layer, extra, then, ran: None, continuation: None, inputs: Vec::new() }
 }
 
 /// Adds a made raster as a layer: the command's answer is the layer's (its id, size and bands) and
 /// what the command says besides (`extra`), and what it does then.
 pub(crate) fn add_made(s: &mut Session, m: Made) -> CmdResult {
-    let Made { name, layer, extra, then, .. } = m;
+    let Made { name, layer, extra, then, inputs, .. } = m;
+    rustgis_data::provenance::record(inputs);
     let mut v = super::raster::add_raster(s, &name, layer)?;
     if let (Some(Value::Object(more)), Some(o)) = (extra, v.as_object_mut()) {
         o.extend(more);
@@ -277,6 +279,7 @@ pub struct RasterRun {
     /// What the command is called, for a cancelled run's error.
     pub name: &'static str,
     work: Work,
+    capture_inputs: bool,
     /// The map it started on, the one its raster is added to.
     map: u64,
     continuation: crate::policy::Continuation,
@@ -287,6 +290,7 @@ impl RasterRun {
     /// Makes the raster, blocking until it's made; `control` stops it and counts its progress (see
     /// [`rustgis_analysis::control`]).
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Made, String> {
+        let inputs = self.capture_inputs.then(rustgis_data::provenance::Capture::start);
         let RasterRun { name, work, map, continuation, .. } = self;
         continuation.check()?;
         let current = continuation.clone();
@@ -296,7 +300,12 @@ impl RasterRun {
             crate::render::rustgis_tiles::cache::with_still(still, || rustgis_analysis::run_under(name, control, work))
         }))
         .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
-        .map(|m| Made { ran: Some((name, map)), continuation: Some(continuation), ..m })
+        .map(|m| Made {
+            ran: Some((name, map)),
+            continuation: Some(continuation),
+            inputs: inputs.as_ref().map_or_else(Vec::new, rustgis_data::provenance::Capture::inputs),
+            ..m
+        })
     }
 }
 
@@ -328,7 +337,7 @@ pub(crate) fn raster_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
         s.raster_runs.remove(0);
     }
     s.raster_runs.push((id, continuation.clone()));
-    Ok(RasterRun { id, name, work, map: s.map().instance_id(), continuation })
+    Ok(RasterRun { id, name, work, map: s.map().instance_id(), continuation, capture_inputs: s.log.on() })
 }
 
 #[cfg(not(target_arch = "wasm32"))]

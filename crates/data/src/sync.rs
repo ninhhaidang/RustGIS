@@ -130,7 +130,8 @@ mod native {
     fn sha256(path: &Path) -> Result<String> {
         use sha2::Digest;
         use std::io::Read;
-        let mut file = std::fs::File::open(path)?;
+        let mut file = crate::provenance::open(path)?;
+        let metadata = file.metadata().ok();
         let mut hasher = sha2::Sha256::new();
         let mut buf = vec![0u8; 1 << 16];
         loop {
@@ -141,7 +142,9 @@ mod native {
             hasher.update(buf.get(..n).unwrap_or_default());
             crate::progress::step(n)?;
         }
-        Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+        let hash: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        crate::provenance::hashed(path, metadata.as_ref(), hash.clone());
+        Ok(hash)
     }
 
     /// Bytes as a progress count.

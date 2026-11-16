@@ -147,7 +147,7 @@ impl GeoJsonSource {
         use serde::de::DeserializeSeed;
         let mut scan = Scan::default();
         let rest = if std::fs::metadata(path)?.len() <= in_memory {
-            let text = std::fs::read_to_string(path)?;
+            let text = crate::provenance::read_to_string(path)?;
             // Its objects and vertices would all become a JSON tree, only to be refused below.
             if crate::cityjson::looks_like_cityjson(&text) {
                 return Err(DataError::Unsupported("only GeoJSON FeatureCollections are read in place".into()));
@@ -155,7 +155,7 @@ impl GeoJsonSource {
             crate::io::stream_features(&text, &mut InText { scan: &mut scan, start: text.as_ptr() as usize }).map_err(bad)?
         } else {
             let read = std::rc::Rc::new(std::cell::Cell::new(0u64));
-            let file = Counting { inner: BufReader::with_capacity(BUFFER, File::open(path)?), read: read.clone() };
+            let file = Counting { inner: BufReader::with_capacity(BUFFER, crate::provenance::open(path)?), read: read.clone() };
             let mut de = serde_json::Deserializer::from_reader(file);
             let rest = Top { scan: &mut scan, read }.deserialize(&mut de).map_err(bad)?;
             // Only whitespace may follow, as when read whole.
@@ -271,7 +271,7 @@ impl FeatureSource for GeoJsonSource {
         let late = req.extent.is_some() && extent.is_none();
         let step = if late { 1 } else { stride(matched as u64, limit).max(1) as usize };
         let mut sample = Sampler::new(limit);
-        let mut f = BufReader::with_capacity(BUFFER, File::open(&self.path)?);
+        let mut f = BufReader::with_capacity(BUFFER, crate::provenance::open(&self.path)?);
         let mut pos = 0u64;
         let mut buf = Vec::new();
         let mut features = Vec::with_capacity(matched.div_ceil(step).min(limit));
@@ -367,7 +367,7 @@ struct Pass {
 
 /// A second pass over the file, made only for a declared coordinate system.
 fn convert_pass(path: &Path, places: &[Place], t: &crate::raster::Transformer) -> Result<Pass> {
-    let mut f = BufReader::with_capacity(BUFFER, File::open(path)?);
+    let mut f = BufReader::with_capacity(BUFFER, crate::provenance::open(path)?);
     let (mut pos, mut buf) = (0u64, Vec::new());
     let mut pass = Pass { failed: Vec::new(), dropped: [0; 3], extent: Extent::EMPTY };
     for (i, place) in places.iter().enumerate() {

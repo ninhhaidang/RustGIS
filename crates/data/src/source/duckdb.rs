@@ -550,6 +550,7 @@ fn prelude(dir: &Path, database: Option<&Database>, confined: bool) -> Result<St
             if !full.is_file() {
                 return Err(DataError::Format(format!("{}: no such database", db.display())));
             }
+            crate::provenance::path(&full);
             s.push_str(&format!(" ATTACH {} AS src (READ_ONLY); USE src;", literal(&full.display().to_string())));
         }
         // PostGIS geometry columns come through as DuckDB geometries with their coordinate system.
@@ -1057,6 +1058,7 @@ fn convert_table_fresh_in(dir: &Path, database: &Path, table: &Table, family: Fa
 fn convert_table_in(dir: &Path, database: &Path, table: &Table, crs: Option<&str>) -> Result<Output> {
     let full = std::path::absolute(database).unwrap_or_else(|_| database.to_path_buf());
     let (len, modified) = stamp(&full)?;
+    crate::provenance::path(&full);
     // Changes not yet checkpointed are in the write-ahead log beside the file.
     let mut wal = full.clone().into_os_string();
     wal.push(".wal");

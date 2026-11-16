@@ -101,7 +101,7 @@ impl ShpSource {
         if shp_len > u64::from(u32::MAX) {
             return Err(bad("the .shp is larger than the format's 4 GB"));
         }
-        let mut f = BufReader::with_capacity(BUFFER, File::open(path)?);
+        let mut f = BufReader::with_capacity(BUFFER, crate::provenance::open(path)?);
         let mut header = [0u8; 100];
         f.read_exact(&mut header).map_err(|_| bad("the .shp header is cut short"))?;
         if be_i32(&header, 0) != Some(9994) {
@@ -363,7 +363,7 @@ struct Cursor {
 
 impl Cursor {
     fn open(path: &Path) -> Result<Cursor> {
-        Ok(Cursor { f: BufReader::with_capacity(BUFFER, File::open(path)?), pos: 0 })
+        Ok(Cursor { f: BufReader::with_capacity(BUFFER, crate::provenance::open(path)?), pos: 0 })
     }
 
     fn read_at(&mut self, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
@@ -479,7 +479,7 @@ fn parse_shape(c: &[u8]) -> std::result::Result<Option<Geometry>, ()> {
 
 /// Reads a `.dbf` header: its row layout and columns.
 fn read_table(path: &Path) -> Result<Table> {
-    let mut f = BufReader::new(File::open(path)?);
+    let mut f = BufReader::new(crate::provenance::open(path)?);
     let mut head = [0u8; 32];
     f.read_exact(&mut head).map_err(|_| bad("the .dbf header is cut short"))?;
     let rows = u64::from(u32::from_le_bytes(head.get(4..8).and_then(|b| b.try_into().ok()).unwrap_or([0; 4])));
@@ -539,7 +539,7 @@ impl Table {
 
 /// The `.dbf`'s column names, in order (read again: the layout above keeps only offsets).
 fn read_names(path: &Path, n: usize, encoding: &dyn shapefile::dbase::Encoding) -> Result<Vec<String>> {
-    let mut f = BufReader::new(File::open(path)?);
+    let mut f = BufReader::new(crate::provenance::open(path)?);
     f.seek(SeekFrom::Start(32))?;
     let mut out = Vec::with_capacity(n);
     let mut d = [0u8; 32];

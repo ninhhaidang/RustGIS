@@ -1010,6 +1010,7 @@ struct Between<'a> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Host for Between<'_> {
+    /// Keeps separately logged requests isolated, while reads retain the polling command's capture.
     fn call(&mut self, op: &str, params: &Value) -> Result<Value, String> {
         let plugin = self.plugin.clone();
         let bridge = |s: &mut Session| {
@@ -1027,34 +1028,44 @@ impl Host for Between<'_> {
         let reads = Bridge::reads_only(op);
         let mutates =
             plugin.manifest.has(Permission::Edit) && (op == "host.addLayer" || self.s.registry.get(op).is_some_and(|c| c.mutates));
+        // Reads remain part of the polling command; only requests with their own entries are isolated.
+        if reads {
+            return self
+                .s
+                .as_session_plugin(plugin.clone(), |s| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bridge(s).0))
+                        .unwrap_or_else(|_| Err(format!("'{op}' failed unexpectedly")))
+                })
+                .and_then(|r| r);
+        }
         // With the plugin's authority, exactly as during one of its commands.
-        self.s
-            .as_session_plugin(plugin.clone(), |s| {
-                if reads {
-                    return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bridge(s).0))
-                        .unwrap_or_else(|_| Err(format!("'{op}' failed unexpectedly")));
-                }
-                let (at, start) = (crate::project_log::now_ms(), web_time::Instant::now());
-                let res = s.guarded(leak(&plugin.manifest.name), mutates, |s| {
-                    let (res, changed, requested) = bridge(s);
-                    // Only left downloads for the app (they add their layers when they land): no step.
-                    s.request_only = res.is_ok() && requested && !changed;
-                    // The answer goes to the program, which says what it makes of a refusal.
-                    s.quiet_failure = res.is_err();
+        // Earlier queued requests have their own entries, separate from the command polling them.
+        rustgis_data::provenance::without(|| {
+            self.s
+                .as_session_plugin(plugin.clone(), |s| {
+                    let _inputs = s.log.on().then(rustgis_data::provenance::Capture::start);
+                    let (at, start) = (crate::project_log::now_ms(), web_time::Instant::now());
+                    let res = s.guarded(leak(&plugin.manifest.name), mutates, |s| {
+                        let (res, changed, requested) = bridge(s);
+                        // Only left downloads for the app (they add their layers when they land): no step.
+                        s.request_only = res.is_ok() && requested && !changed;
+                        // The answer goes to the program, which says what it makes of a refusal.
+                        s.quiet_failure = res.is_err();
+                        res
+                    });
+                    // No command of its own carries it into the session log: it goes in by itself, as
+                    // a command run would.
+                    if s.log.on() && (op == "host.addLayer" || crate::project_log::is_logged(s, op, params)) {
+                        let (kept, partial) = crate::project_log::kept_and_partial(params);
+                        let project = (crate::project_log::kept_name(&s.title()), s.opened);
+                        let mut e = crate::project_log::entry(project, op, kept, partial, &res, at, start.elapsed());
+                        e.plugin = Some(plugin.manifest.id.clone());
+                        s.log_entry(e, false);
+                    }
                     res
-                });
-                // No command of its own carries it into the session log: it goes in by itself, as
-                // a command run would.
-                if s.log.on() && (op == "host.addLayer" || crate::project_log::is_logged(s, op, params)) {
-                    let (kept, partial) = crate::project_log::kept_and_partial(params);
-                    let project = (crate::project_log::kept_name(&s.title()), s.opened);
-                    let mut e = crate::project_log::entry(project, op, kept, partial, &res, at, start.elapsed());
-                    e.plugin = Some(plugin.manifest.id.clone());
-                    s.log.push(e);
-                }
-                res
-            })
-            .and_then(|r| r)
+                })
+                .and_then(|r| r)
+        })
     }
 
     fn log(&mut self, text: &str) {

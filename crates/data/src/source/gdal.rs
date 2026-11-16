@@ -154,6 +154,7 @@ struct Listing {
 fn cached_list(dir: &Path, src: &Path) -> Result<Vec<LayerInfo>> {
     use std::io::{BufReader, Read};
 
+    crate::provenance::path(src);
     let full = std::path::absolute(src).unwrap_or_else(|_| src.to_path_buf());
     drivers(&full)?;
     let signature = stamp(&full)?;
@@ -206,6 +207,7 @@ fn version(text: &str) -> Option<(u32, u32)> {
 
 /// The vector layers of a dataset, from `ogrinfo -json`.
 fn list(src: &Path) -> Result<Vec<LayerInfo>> {
+    crate::provenance::path(src);
     let src = std::path::absolute(src).unwrap_or_else(|_| src.to_path_buf());
     // A file or folder on this computer: GDAL would fetch a `/vsicurl/` address.
     std::fs::metadata(&src)?;
@@ -282,6 +284,7 @@ fn check_crs(crs: Option<&str>) -> Result<()> {
 /// Converts selected layers, reporting failed layers and known feature-count shortfalls across
 /// all their geometry families. Cache hits are checked too, without scanning converted features.
 fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) -> Result<(Vec<Converted>, Vec<String>)> {
+    crate::provenance::path(src);
     check_crs(crs)?;
     if !available() {
         return Err(missing());
@@ -583,17 +586,19 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     }
     // Whether it holds anything: a feature read, not the header's count (which FlatGeobuf may leave
     // out, as 0). A filter matching nothing leaves no file at all.
-    let any = if fresh {
-        // A read failure is not an empty dataset. Never install a corrupt or partially readable
-        // conversion as a successful replacement.
-        let source = super::open_path(&tmp, None)?;
-        !source.read(&super::Request { extent: None, limit: 1 })?.features.is_empty()
-    } else {
-        tmp.exists()
-            && super::open_path(&tmp, None)
-                .ok()
-                .is_some_and(|s| s.read(&super::Request { extent: None, limit: 1 }).is_ok_and(|b| !b.features.is_empty()))
-    };
+    let any = crate::provenance::without(|| {
+        if fresh {
+            // A read failure is not an empty dataset. Never install a corrupt or partially readable
+            // conversion as a successful replacement.
+            let source = super::open_path(&tmp, None)?;
+            Ok::<_, DataError>(!source.read(&super::Request { extent: None, limit: 1 })?.features.is_empty())
+        } else {
+            Ok(tmp.exists()
+                && super::open_path(&tmp, None)
+                    .ok()
+                    .is_some_and(|s| s.read(&super::Request { extent: None, limit: 1 }).is_ok_and(|b| !b.features.is_empty())))
+        }
+    })?;
     // The entry is replaced in an order that never leaves it naming a missing file: the new state
     // first, then the key that vouches for it.
     let _ = std::fs::remove_file(&keyfile);
@@ -864,7 +869,8 @@ mod tests {
 
     /// A KML mixing points and polygons, through GDAL when it is installed (skipped otherwise).
     #[test]
-    fn converts_a_mixed_kml_when_gdal_is_installed() {
+    fn converts_a_mixed_kml_with_source_provenance_when_gdal_is_installed() {
+        use crate::source::FeatureSource;
         if !usable() {
             return;
         }
@@ -881,8 +887,11 @@ mod tests {
         )
         .unwrap();
         let cache = dir.join("cache");
+        let captured = crate::provenance::Capture::start();
         let (out, failed) = convert_in(&cache, &kml, None, None).unwrap();
         assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(captured.inputs().iter().map(|i| &i.path).collect::<Vec<_>>(), vec![&kml.display().to_string()]);
+        drop(captured);
         let kinds: Vec<(String, u64)> = out
             .iter()
             .map(|c| {
@@ -892,7 +901,20 @@ mod tests {
             .collect();
         assert_eq!(kinds, vec![("mixed (points)".to_string(), 2), ("mixed (polygons)".to_string(), 1)], "{kinds:?}");
         // Converted once: the second call reuses the cache.
+        let captured = crate::provenance::Capture::start();
+        cached_list(&cache, &kml).unwrap();
         let (again, _) = convert_in(&cache, &kml, Some("mixed"), None).unwrap();
+        let fresh = convert_one_fresh_in(&cache, &kml, "mixed", Some(Family::Points), None).unwrap();
+        assert_eq!(captured.inputs().iter().map(|i| &i.path).collect::<Vec<_>>(), vec![&kml.display().to_string()]);
+        drop(captured);
+        // Repeated streamed reads attribute both persistent and fresh conversions to the source.
+        for (path, workspace) in [(&again[0].path, None), (&fresh.path, Some(fresh.workspace.clone()))] {
+            let source = super::super::fgb::FgbSource::open_converted_path(path, "mixed", &kml, workspace).unwrap();
+            let captured = crate::provenance::Capture::start();
+            source.read(&super::super::Request { extent: None, limit: 1 }).unwrap();
+            source.visit_chunks(None, 1024, &mut |_| Ok(())).unwrap();
+            assert_eq!(captured.inputs().iter().map(|i| &i.path).collect::<Vec<_>>(), vec![&kml.display().to_string()]);
+        }
         assert_eq!(again.iter().map(|c| &c.path).collect::<Vec<_>>(), out.iter().map(|c| &c.path).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(dir);
     }

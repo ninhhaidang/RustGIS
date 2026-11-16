@@ -141,7 +141,29 @@ isn't itself an entry in the log, as a saved file is). **Clear Log** empties it 
   (the one it opened, for a command that opens one), and `partial`, true when its parameters were
   cut short or had secrets taken out, and, for what a session plugin's program asked
   for between the plugin's commands, `plugin`, that plugin's id (left out of `project.log` and
-  JSON Lines for other entries; an empty cell in CSV).
+  JSON Lines for other entries; an empty cell in CSV). Such a request's inputs belong to its own
+  entry, even when the next command answers it. New entries also carry
+  `rustgis_version`, the version that executed the command, and `inputs`, the local files actually
+  opened by its readers (including sidecars and a script's child commands). SQLite journal/WAL
+  companions present at read time are included too. Each fingerprint has
+  an absolute `path`, `size` in bytes, `modified_ns` (nanoseconds since 1970 UTC, as text), and
+  `sha256` when cheaply available. RustGIS reuses existing digests or hashes buffers already in
+  memory up to 8 MiB; it never rereads a large input just for the log. Streamed, random-access
+  and larger inputs have `sha256: null` and a `hash_unavailable` reason: compare their size and
+  modified time instead, which cannot prove identical content. Unavailable size or modified time
+  is `null`. Repeated identical observations are combined; different observations of one path
+  can appear separately. Each entry keeps at most 100 fingerprints; `inputs_omitted` counts
+  those left out (absent or zero when none), and a notice reports the omission. Joined steps
+  share this limit and update one omission notice with the cumulative count. Turning logging off
+  also stops fingerprint collection on background jobs started while it is off. The log captures local reads RustGIS makes; it cannot enumerate files
+  opened internally by another program or include metadata the browser's upload did not supply.
+  GDAL conversions name the original local file, including cache hits; DuckDB conversions name
+  the explicitly supplied local database, when there is one. Conversion caches and
+  temporary GeoPackage copies and reloads of files just exported are excluded. ER Mapper headers
+  include plainly named `DataFile` companions beside the header when cheaply identifiable;
+  observing them never adds a validation requirement to conversion. Files inside a database folder
+  opened by another program are not enumerated.
+  Older exported entries lack these optional fields, so their version and inputs are unknown.
 - **For the session only:** the log is kept in memory, across the projects opened or made in the
   session, until RustGIS closes or the log is cleared. A saved project, its recovery copy, a
   package or a template carries none of it, so sharing a project shares no log. Reading, writing
@@ -166,7 +188,7 @@ From scripts: `project.log {"since"?, "until"?, "command"?, "failed"?, "limit"?}
 newest last (`command` is an id, or the start of one ending in a dot, `layer.`; `limit` is a whole
 number, 100 by default and at most 1,000, with `count` saying how many match), and
 `project.exportLog {"path": "log.csv"}` writes it out as CSV (one row an entry, the parameters as a
-JSON column, the project last) or JSON Lines (`.jsonl` or `.ndjson`), as the path's extension says;
+JSON column, followed by plugin, project, RustGIS version, inputs as JSON and the count of inputs left out) or JSON Lines (`.jsonl` or `.ndjson`), as the path's extension says;
 any other extension (a `.json`, a project) is refused, whatever `format` is given.
 `project.clearLog` empties it (leaving its own entry) and `project.logCommands {"on": false}` stops
 it (what is there stays).

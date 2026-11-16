@@ -353,7 +353,7 @@ fn info_of(p: &Value) -> Result<(String, zarr::Store, Value), String> {
                 if total > zarr::MAX_READ {
                     return Err(format!("{d}: the coordinates are too large to read"));
                 }
-                if let Ok(b) = std::fs::read(&path) {
+                if let Ok(b) = rustgis_data::provenance::read(&path) {
                     chunks.insert(k, b);
                 }
             }
@@ -1271,7 +1271,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
                     if total > zarr::MAX_READ {
                         return Err(format!("{d}: the coordinates are too large to read"));
                     }
-                    if let Ok(b) = std::fs::read(&path) {
+                    if let Ok(b) = rustgis_data::provenance::read(&path) {
                         chunks.insert(k, b);
                     }
                 }
@@ -1487,7 +1487,7 @@ fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, 
         if total > zarr::MAX_READ {
             return Err(format!("{root}: the series is too large to read"));
         }
-        let b = std::fs::read(&path).map_err(|e| format!("{root}: {k}: {e}"))?;
+        let b = rustgis_data::provenance::read(&path).map_err(|e| format!("{root}: {k}: {e}"))?;
         out.insert(k.clone(), b);
     }
     Ok(out)

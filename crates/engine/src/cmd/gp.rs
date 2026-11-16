@@ -284,6 +284,7 @@ pub fn external_complete(s: &mut Session, id: u64, ran: ExternalOutput) -> Resul
         });
         let tool_id = format!("{}{}", rustgis_geolibre::PREFIX, job.tool);
         s.pending.push(crate::PendingRun {
+            inputs: Vec::new(),
             id,
             continuation,
             tool: job.name.clone(),
@@ -485,6 +486,7 @@ fn complete(
     }
     fit_to_windows(s, &mut result, &full_ids);
     s.pending.push(crate::PendingRun {
+        inputs: Vec::new(),
         id,
         continuation: run.continuation,
         tool: run.name,
@@ -512,11 +514,13 @@ pub struct ToolRun {
     pub tool: &'static str,
     snap: Snapshot<'static>,
     params: Value,
+    capture_inputs: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 /// What a [`ToolRun`] made, for [`tool_complete`].
 pub struct ToolDone {
+    inputs: Vec<rustgis_data::provenance::Fingerprint>,
     result: Result<rustgis_analysis::ToolResult, String>,
     full_ids: FullIds,
 }
@@ -526,32 +530,43 @@ impl ToolRun {
     /// Reads the tool's inputs and runs it, blocking until it ends; `control` stops it and counts
     /// its progress (see [`rustgis_analysis::control`]).
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> ToolDone {
+        let captured = self.capture_inputs.then(rustgis_data::provenance::Capture::start);
         let ToolRun { pin, continuation, snap, params, .. } = self;
         let spec = pin.spec();
         let name = spec.name;
         if let Err(e) = continuation.check() {
-            return ToolDone { result: Err(e), full_ids: FullIds::new() };
+            return ToolDone { inputs: Vec::new(), result: Err(e), full_ids: FullIds::new() };
         }
         if control.is_cancelled() {
-            return ToolDone { result: Err(format!("{name} was cancelled before it started")), full_ids: FullIds::new() };
+            return ToolDone {
+                inputs: Vec::new(),
+                result: Err(format!("{name} was cancelled before it started")),
+                full_ids: FullIds::new(),
+            };
         }
         let current = continuation.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok()) as crate::render::rustgis_tiles::cache::Still;
         // A bug in reading the inputs, like one in a tool, must not take the app down.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::render::rustgis_tiles::cache::with_still(still, || {
                 let inputs = match inputs_of(snap, Some(spec), &params) {
                     Ok(inputs) => inputs,
-                    Err(e) => return ToolDone { result: Err(e), full_ids: FullIds::new() },
+                    Err(e) => return ToolDone { inputs: Vec::new(), result: Err(e), full_ids: FullIds::new() },
                 };
                 let mut result = pin.run(&inputs, &params, control, &|| continuation.check());
                 if let Ok(r) = &mut result {
                     r.messages.extend(inputs.messages.iter().cloned());
                 }
-                ToolDone { result, full_ids: full_ids(&inputs.loaded) }
+                ToolDone { inputs: Vec::new(), result, full_ids: full_ids(&inputs.loaded) }
             })
         }))
-        .unwrap_or_else(|_| ToolDone { result: Err(format!("{name} failed unexpectedly")), full_ids: FullIds::new() })
+        .unwrap_or_else(|_| ToolDone {
+            inputs: Vec::new(),
+            result: Err(format!("{name} failed unexpectedly")),
+            full_ids: FullIds::new(),
+        });
+        done.inputs = captured.as_ref().map_or_else(Vec::new, rustgis_data::provenance::Capture::inputs);
+        done
     }
 }
 
@@ -592,7 +607,7 @@ pub fn tool_start(s: &mut Session, tool: &str, params: &Value) -> Result<ToolRun
     if s.plugin_runs.len() > MAX_ASYNC_RUNS {
         s.plugin_runs.remove(0);
     }
-    Ok(ToolRun { id, tool: spec.id, snap: Snapshot::owned(s), params: resolved, pin, continuation })
+    Ok(ToolRun { id, tool: spec.id, snap: Snapshot::owned(s), params: resolved, pin, continuation, capture_inputs: s.log.on() })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -612,7 +627,11 @@ pub fn tool_abandon(s: &mut Session, id: u64) {
 /// Finishes a run from [`tool_start`] with what [`ToolRun::run`] made: `gp.finish {"id"}` then
 /// applies it like `gp.run` would, with undo and history.
 pub fn tool_complete(s: &mut Session, id: u64, done: ToolDone) -> Result<(), String> {
-    complete(s, id, done.result, Some(done.full_ids))
+    complete(s, id, done.result, Some(done.full_ids))?;
+    if let Some(run) = s.pending.iter_mut().find(|run| run.id == id) {
+        run.inputs = done.inputs;
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -992,6 +1011,7 @@ fn finish(s: &mut Session, p: &Value) -> CmdResult {
     let i = s.pending.iter().position(|r| r.id == id).ok_or("no finished run with that id")?;
     s.check_gp_finish(&s.pending[i].continuation, landing(&s.pending[i].result))?;
     let r = s.pending.remove(i);
+    rustgis_data::provenance::record(r.inputs.clone());
     let c = r.continuation.clone();
     s.resume_gp(&c, landing(&r.result), |s| {
         apply(s, Ran { name: r.tool, id: r.tool_id, command: None, started: r.started }, r.params, r.result, r.millis)
