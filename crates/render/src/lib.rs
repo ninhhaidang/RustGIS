@@ -2751,7 +2751,8 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
     // Walls once the base is settled: over elevation tiles still on their way it would move with
     // each tile (the frame is drawn again when they arrive, `Ground::pending`).
     if let Some(b) = block.as_ref().filter(|b| b.walls_stand(ground)) {
-        block::draw_walls(pm, view, ground, b, &edges, &block::runs(map, b), fog, far);
+        let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
+        block::draw_walls(pm, view, ground, b, &edges, &block::runs(map, b, scale), fog, far);
     }
     true
 }
@@ -9557,6 +9558,36 @@ mod tests {
         let (w, e) = (at(-500.0), at(500.0));
         assert!(w.red() > 2 * w.green() && w.red() > 2 * w.blue(), "west: {w:?}");
         assert!(e.green() > e.blue() + 8 && e.red() < 2 * e.green(), "east: {e:?}");
+        // With blue hatch lines over its fill, the unit's stretch of wall is striped red and blue
+        // up its height; off the unit, the walls stay plain.
+        let blue = Rgba::rgb(20, 40, 230);
+        let hatch = rustgis_map::fills::FillPattern::Hatch { angle: 0.0, spacing: 6.0, width: 2.0, offset: 0.0 };
+        if let Some(l) = m.layers.iter_mut().find(|l| l.name == "geo") {
+            l.fill_layers = vec![
+                rustgis_map::fills::FillLayer { color: None, pattern: rustgis_map::fills::FillPattern::Solid },
+                rustgis_map::fills::FillLayer { color: Some(blue), pattern: hatch },
+            ];
+        }
+        let frame = render(&mut m, &view).expect("a frame");
+        let column = |x: f64| {
+            let edge = Coord::new(x, -1000.0);
+            let (u, v) = camera.ground_px(edge);
+            let y = |metres: f64| {
+                camera.project_raised(u, v, metres / g.per_unit(edge) / camera.res, view.width, view.height).expect("in view")
+            };
+            let ((px, top), (_, foot)) = (y(400.0), y(-400.0));
+            (top as u32..foot as u32).filter_map(|py| frame.pixmap.pixel(px as u32, py)).map(|c| c.demultiply()).collect::<Vec<_>>()
+        };
+        let striped = |c: &[tiny_skia::ColorU8]| {
+            let r = |c: &tiny_skia::ColorU8| u16::from(c.red());
+            let b = |c: &tiny_skia::ColorU8| u16::from(c.blue());
+            let blues = c.iter().filter(|c| b(c) > 2 * r(c)).count();
+            let reds = c.iter().filter(|c| r(c) > 2 * b(c)).count();
+            (blues, reds)
+        };
+        let (blues, reds) = striped(&column(-500.0));
+        assert!(blues >= 3 && reds >= 3, "west: {blues} blue, {reds} red");
+        assert_eq!(striped(&column(500.0)).0, 0, "east");
     }
 
     #[test]
