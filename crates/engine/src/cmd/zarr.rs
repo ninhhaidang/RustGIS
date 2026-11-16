@@ -1495,6 +1495,22 @@ fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, 
     Ok(out)
 }
 
+/// Bytes of a store's files ([`zarr::Part`]s), each kept by its id, as [`store_files`] reads
+/// whole files: a web store's fetched by range, a folder's read in place.
+#[cfg(not(target_arch = "wasm32"))]
+fn store_parts(root: &str, parts: &[zarr::Part]) -> Result<HashMap<String, Vec<u8>>, String> {
+    if is_web(root) {
+        let (got, forbidden) = fetch_parts(root, parts)?;
+        if forbidden > 0 {
+            return Err(crate::sources::message_with_address(root, &format!("access denied (HTTP 403) to {forbidden} of its files")));
+        }
+        return Ok(got);
+    }
+    let mut out = HashMap::new();
+    zarr::read_parts(Path::new(root), parts, &mut out, &mut 0).map_err(|e| format!("{root}: {e}"))?;
+    Ok(out)
+}
+
 /// `zarr.series`: a variable's values along its time dimension at the cell holding a point,
 /// reading only the chunks that hold that cell.
 fn series(s: &mut Session, p: &Value) -> CmdResult {
@@ -1581,7 +1597,14 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         let (row, col) =
             zarr::locate(&store, &var, &coords, x, y).map_err(|e| e.to_string())?.ok_or("the point is outside the variable's grid")?;
         let plan = zarr::plan_series(&store, &src.sel, &dim, from as u64, count as u64, row, col).map_err(|e| e.to_string())?;
-        let chunks = store_files(&src.root, &plan.keys)?;
+        let mut chunks = store_files(&src.root, &plan.keys)?;
+        // A sharded variable: the shards' indexes, then the chunk holding the cell in each.
+        if !plan.parts.is_empty() {
+            chunks.extend(store_parts(&src.root, &plan.parts)?);
+            let inner = zarr::series_inner_parts(&store, &plan, &chunks)
+                .map_err(|e| crate::sources::message_with_address(&src.root, &e.to_string()))?;
+            chunks.extend(store_parts(&src.root, &inner)?);
+        }
         let values = zarr::assemble_series(&store, &plan, &chunks).map_err(|e| e.to_string())?;
         let picked = &dates[from..from + count];
         let labels: Vec<String> = picked.iter().map(|d| rustgis_data::time::format(*d, "YYYY-MM-DD HH:mm")).collect();

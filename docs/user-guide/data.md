@@ -1556,7 +1556,7 @@ a few at a time, in the background.
 Stores are read in pure Rust, in the web app as well as on the desktop: Zarr 2 with consolidated
 metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`, sharded arrays too), chunks
 compressed with blosc (LZ4, zlib or zstd, byte- or bit-shuffled), zlib, gzip, zstd or LZ4, of
-integer or float values, in C or Fortran order. A sharded array's shards are fetched whole, except in a window (below).
+integer or float values, in C or Fortran order. A sharded array's shards are fetched whole, except in a window (below) and in a series at a point (`zarr.series`), which reads each shard's index and then only the chunk holding the cell, by range.
 `_FillValue`, `missing_value` and a Zarr 2 array's fill value are no data; a Zarr 3 array's fill
 value isn't: chunks never written are left empty, but chunks missing from inside a shard show the
 fill value. `scale_factor` and `add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
@@ -1622,6 +1622,9 @@ point. Pick a Zarr layer, then **Pick a Point** on the map. A layer that follows
 gives its period, a slice the whole axis, and `"start"`/`"end"` any other. Only the chunks holding
 that point's cell are read. A store chunked one step at a time, such as ARCO-ERA5's map-oriented
 copy, reads a chunk per step: about 4,000 steps at most, so a long axis needs a shorter period.
+A sharded variable counts the chunks inside its shards the same way, since each one is its own
+request; each shard read also takes one request for its index, which the cap doesn't count, so a
+series with one step per shard makes about twice as many requests as it has steps.
 The chart draws up to six points as lines and marks the time slider's step, and a click on it
 takes the slider to that date. **Export CSV…** writes the date and value of each point.
 

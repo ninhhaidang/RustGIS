@@ -1258,6 +1258,49 @@ fn inner_id(shard: &str, c: usize) -> String {
     format!("{shard}#{c}")
 }
 
+/// The shard holding chunk `idx` (counted in a shard's chunks, `per` of them along each
+/// dimension): its key, and the chunk's place in the shard's row-major order.
+fn shard_of(a: &Array, idx: &[u64], per: &[u64]) -> (String, usize) {
+    let shard: Vec<u64> = idx.iter().zip(per).map(|(u, p)| u / p.max(&1)).collect();
+    let c = idx.iter().zip(per).fold(0u64, |c, (u, p)| c * p + u % p.max(&1));
+    (a.chunk_key(&shard), c as usize)
+}
+
+/// How many chunks a shard holds (`per` along each dimension): an error, not an overflow, when
+/// its index alone would be past what one chunk may hold.
+fn shard_count(a: &Array, per: &[u64]) -> Result<usize> {
+    per.iter()
+        .try_fold(1u64, |n, &p| n.checked_mul(p))
+        .filter(|&n| n.saturating_mul(16) <= MAX_CHUNK_BYTES)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| bad(format!("{}: its shards hold too many chunks to read", a.path)))
+}
+
+/// Adds chunk `idx` (see [`shard_of`]) to the shards read in part; the first chunk of a shard
+/// also adds the [`Part`] reading its index.
+fn read_in_shard(
+    a: &Array,
+    idx: &[u64],
+    per: &[u64],
+    shard_at: &mut HashMap<String, usize>,
+    shards: &mut Vec<ShardRead>,
+    parts: &mut Vec<Part>,
+) -> Result<()> {
+    let Some(Codec::Sharding { index, index_at_end, .. }) = a.codecs.first() else { return Ok(()) };
+    let count = shard_count(a, per)?;
+    let (key, c) = shard_of(a, idx, per);
+    if let Some(s) = shard_at.get(&key).and_then(|&i| shards.get_mut(i)) {
+        s.chunks.push(c);
+        return Ok(());
+    }
+    shard_at.insert(key.clone(), shards.len());
+    let len = index_len(count, index).ok_or_else(|| bad("a shard too large"))? as u64;
+    let span = if *index_at_end { Span::Tail(len) } else { Span::Bytes(0, len - 1) };
+    parts.push(Part { key: key.clone(), span, id: format!("{key}#index") });
+    shards.push(ShardRead { key, count, chunks: vec![c] });
+    Ok(())
+}
+
 /// Whether a 1D array's chunks are its values as they are (no compression), so a window reads
 /// only its own values' bytes of them.
 fn plain(c: &Array) -> bool {
@@ -1493,29 +1536,11 @@ pub fn plan(store: &Store, sel: &Selection) -> Result<Plan> {
                     d => fixed.get(d).copied().unwrap_or(0) / size(d),
                 })
                 .collect();
-            let Some((_, index)) = sharding else {
+            if sharding.is_none() {
                 keys.push(a.chunk_key(&idx));
                 continue;
-            };
-            // The shard holding this chunk, and the chunk's place in the shard's row-major order.
-            let shard: Vec<u64> = idx.iter().zip(&per).map(|(u, p)| u / p.max(&1)).collect();
-            let c = idx.iter().zip(&per).fold(0u64, |c, (u, p)| c * p + u % p.max(&1));
-            let key = a.chunk_key(&shard);
-            match shard_at.get(&key).and_then(|&i| shards.get_mut(i)) {
-                Some(s) => s.chunks.push(c as usize),
-                None => {
-                    shard_at.insert(key.clone(), shards.len());
-                    let count = per.iter().product::<u64>() as usize;
-                    let len = index_len(count, index).ok_or_else(|| bad("a shard too large"))? as u64;
-                    let span = if matches!(a.codecs.first(), Some(Codec::Sharding { index_at_end: false, .. })) {
-                        Span::Bytes(0, len - 1)
-                    } else {
-                        Span::Tail(len)
-                    };
-                    parts.push(Part { key: key.clone(), span, id: format!("{key}#index") });
-                    shards.push(ShardRead { key, count, chunks: vec![c as usize] });
-                }
             }
+            read_in_shard(a, &idx, &per, &mut shard_at, &mut shards, &mut parts)?;
         }
     }
     // A grid placed by its spatial:transform reads no coordinates.
@@ -1561,10 +1586,24 @@ pub fn plan(store: &Store, sel: &Selection) -> Result<Plan> {
 /// index says it doesn't hold, are left out: [`assemble`] leaves the first empty, as a chunk never
 /// written, and gives the second the fill value, as a shard read whole does.
 pub fn inner_parts(store: &Store, plan: &Plan, got: &HashMap<String, Vec<u8>>) -> Result<Vec<Part>> {
-    let Some(a) = store.array(&plan.var) else { return Ok(Vec::new()) };
+    shard_chunk_parts(store, &plan.var, &plan.shards, got, "take a smaller window")
+}
+
+/// [`inner_parts`] for a point's series ([`plan_series`] of a sharded variable): the chunk
+/// holding the cell in each shard.
+pub fn series_inner_parts(store: &Store, plan: &SeriesPlan, got: &HashMap<String, Vec<u8>>) -> Result<Vec<Part>> {
+    shard_chunk_parts(store, &plan.var, &plan.shards, got, "take a shorter period")
+}
+
+/// The bytes of `shards`' chunks of variable `var`, from their indexes in `got`; `smaller` says
+/// how to read less when they are too many. The indexes already read count toward the same
+/// [`MAX_READ`], so both reads together stay under it.
+fn shard_chunk_parts(store: &Store, var: &str, shards: &[ShardRead], got: &HashMap<String, Vec<u8>>, smaller: &str) -> Result<Vec<Part>> {
+    let Some(a) = store.array(var) else { return Ok(Vec::new()) };
     let Some(Codec::Sharding { index, .. }) = a.codecs.first() else { return Ok(Vec::new()) };
-    let (mut parts, mut total) = (Vec::new(), 0u64);
-    for s in &plan.shards {
+    let read: u64 = shards.iter().filter_map(|s| got.get(&format!("{}#index", s.key))).map(|r| r.len() as u64).sum();
+    let (mut parts, mut total) = (Vec::new(), read);
+    for s in shards {
         let Some(raw) = got.get(&format!("{}#index", s.key)) else { continue };
         let idx = shard_index(raw, s.count, index).map_err(|e| bad(format!("{}: {e}", s.key)))?;
         for &c in &s.chunks {
@@ -1578,7 +1617,7 @@ pub fn inner_parts(store: &Store, plan: &Plan, got: &HashMap<String, Vec<u8>>) -
                 .ok_or_else(|| bad(format!("{}: a chunk's place in it is wrong", s.key)))?;
             total = total.saturating_add(len);
             if total > MAX_READ {
-                return Err(bad(format!("{}: the window's chunks are more than {} GB: take a smaller window", a.path, MAX_READ >> 30)));
+                return Err(bad(format!("{}: the chunks to read are more than {} GB: {smaller}", a.path, MAX_READ >> 30)));
             }
             parts.push(Part { key: s.key.clone(), span: Span::Bytes(off, last - 1), id: inner_id(&s.key, c) });
         }
@@ -1805,9 +1844,7 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
             // The chunk's id, and (in a shard) the shard's key and the chunk's place in it.
             let (id, shard) = match inner {
                 Some(_) => {
-                    let shard: Vec<u64> = idx.iter().zip(&per).map(|(u, p)| u / p.max(&1)).collect();
-                    let key = a.chunk_key(&shard);
-                    let c = idx.iter().zip(&per).fold(0u64, |c, (u, p)| c * p + u % p.max(&1)) as usize;
+                    let (key, c) = shard_of(a, &idx, &per);
                     (inner_id(&key, c), Some((key, c)))
                 }
                 None => (a.chunk_key(&idx), None),
@@ -2294,6 +2331,10 @@ pub fn window_of(store: &Store, variable: &str, chunks: &HashMap<String, Vec<u8>
 #[derive(Clone, Debug)]
 pub struct SeriesPlan {
     pub keys: Vec<String>,
+    /// A sharded variable's shard indexes, read first; then [`series_inner_parts`] gives the
+    /// bytes of the chunk holding the cell in each shard, so a shard is never read whole.
+    pub parts: Vec<Part>,
+    shards: Vec<ShardRead>,
     var: String,
     /// The time dimension, and every dimension's step (the cell's, and the others' fixed ones).
     t: usize,
@@ -2342,8 +2383,10 @@ pub fn plan_series(store: &Store, sel: &Selection, dim: &str, from: u64, count: 
     if let Some(v) = at.get_mut(x) {
         *v = col;
     }
-    let ct = a.chunks.get(t).copied().unwrap_or(1).max(1);
-    let (first, last) = (from / ct, (from + count - 1) / ct);
+    // A sharded variable is read by the shards' chunks (see `SeriesPlan::parts`).
+    let unit = series_unit(a);
+    let size = |d: usize| unit.get(d).copied().unwrap_or(1).max(1);
+    let (first, last) = (from / size(t), (from + count - 1) / size(t));
     if last - first + 1 > MAX_CHUNKS as u64 {
         return Err(bad(format!(
             "{count} steps of {} need {} chunks, more than {MAX_CHUNKS}: take a shorter period",
@@ -2351,15 +2394,61 @@ pub fn plan_series(store: &Store, sel: &Selection, dim: &str, from: u64, count: 
             last - first + 1
         )));
     }
-    let keys = (first..=last)
-        .map(|g| {
-            let idx: Vec<u64> = (0..a.shape.len())
-                .map(|d| if d == t { g } else { at.get(d).copied().unwrap_or(0) / a.chunks.get(d).copied().unwrap_or(1).max(1) })
-                .collect();
-            a.chunk_key(&idx)
-        })
-        .collect();
-    Ok(SeriesPlan { keys, var: a.path.clone(), t, at, from, count })
+    let per = shard_per(a);
+    let (mut keys, mut parts, mut shards, mut shard_at) = (Vec::new(), Vec::new(), Vec::new(), HashMap::new());
+    for g in first..=last {
+        let idx: Vec<u64> = (0..a.shape.len()).map(|d| if d == t { g } else { at.get(d).copied().unwrap_or(0) / size(d) }).collect();
+        if per.is_empty() {
+            keys.push(a.chunk_key(&idx));
+        } else {
+            read_in_shard(a, &idx, &per, &mut shard_at, &mut shards, &mut parts)?;
+        }
+    }
+    Ok(SeriesPlan { keys, parts, shards, var: a.path.clone(), t, at, from, count })
+}
+
+/// The chunk shape a point's series finds its cell in: a shard's chunks for a sharded variable,
+/// else its chunks.
+fn series_unit(a: &Array) -> &[u64] {
+    match a.codecs.first() {
+        Some(Codec::Sharding { inner, .. }) => inner,
+        _ => &a.chunks,
+    }
+}
+
+/// A sharded variable's chunks along each dimension of a shard; empty when it isn't sharded.
+fn shard_per(a: &Array) -> Vec<u64> {
+    match a.codecs.first() {
+        Some(Codec::Sharding { inner, .. }) => a.chunks.iter().zip(inner).map(|(s, i)| s / i.max(&1)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Chunk `idx` of a sharded variable's series ([`shard_of`]), decoded from what was read: its
+/// bytes, else the fill value when its shard's index says the shard doesn't hold it (as a shard
+/// read whole gives), else `None` when the shard isn't stored. A chunk the index places but that
+/// wasn't read is an error, not values made up.
+fn shard_chunk(a: &Array, idx: &[u64], per: &[u64], chunks: &HashMap<String, Vec<u8>>) -> Result<Option<(Vec<u8>, DType)>> {
+    let Some(Codec::Sharding { inner, codecs, index, .. }) = a.codecs.first() else { return Ok(None) };
+    // A shard's chunk is held to what a chunk read whole may hold, before it's decoded or filled.
+    let n = inner
+        .iter()
+        .try_fold(1u64, |n, &c| n.checked_mul(c))
+        .filter(|&n| n.saturating_mul(a.dtype.size as u64) <= MAX_CHUNK_BYTES)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| bad(format!("{}: its shards' chunks are too large to read", a.path)))?;
+    let count = shard_count(a, per)?;
+    let (key, c) = shard_of(a, idx, per);
+    if let Some(bytes) = chunks.get(&inner_id(&key, c)) {
+        let (d, little) = decode_chunk(codecs, bytes, inner, a.dtype, a.fill).map_err(|e| bad(format!("{}: {e}", a.path)))?;
+        return Ok(Some((d, DType { little, ..a.dtype })));
+    }
+    let Some(raw) = chunks.get(&format!("{key}#index")) else { return Ok(None) };
+    let placed = shard_index(raw, count, index).map_err(|e| bad(format!("{key}: {e}")))?;
+    if placed.get(c).is_some_and(|&e| e != (u64::MAX, u64::MAX)) {
+        return Err(bad(format!("{}: a chunk of shard {key} wasn't read", a.path)));
+    }
+    Ok(Some((a.dtype.encode(a.fill.unwrap_or(0.0), a.dtype.little).repeat(n), a.dtype)))
 }
 
 /// The values of a [`plan_series`], one a step (`NaN` for no data, or a chunk that wasn't
@@ -2372,7 +2461,9 @@ pub fn assemble_series(store: &Store, plan: &SeriesPlan, chunks: &HashMap<String
     missing.dedup();
     let scale = attr_f64(a, "scale_factor").unwrap_or(1.0);
     let offset = attr_f64(a, "add_offset").unwrap_or(0.0);
-    let chunk = |d: usize| a.chunks.get(d).copied().unwrap_or(1).max(1);
+    let unit = if plan.shards.is_empty() { &a.chunks } else { series_unit(a) };
+    let chunk = |d: usize| unit.get(d).copied().unwrap_or(1).max(1);
+    let per = if plan.shards.is_empty() { Vec::new() } else { shard_per(a) };
     // A cell's place in a chunk, by dimension: saturating, so chunk shapes from a hostile store
     // can't overflow (the value read is then just missing).
     let strides: Vec<u64> = {
@@ -2395,9 +2486,10 @@ pub fn assemble_series(store: &Store, plan: &SeriesPlan, chunks: &HashMap<String
         let g = step / chunk(plan.t);
         if decoded.as_ref().is_none_or(|(k, _)| *k != g) {
             let idx: Vec<u64> = (0..nd).map(|d| step_at(d, step) / chunk(d)).collect();
-            let got = match chunks.get(&a.chunk_key(&idx)) {
-                Some(b) => Some(a.decode_bytes(b)?),
-                None => None,
+            let got = if per.is_empty() {
+                chunks.get(&a.chunk_key(&idx)).map(|b| a.decode_bytes(b)).transpose()?
+            } else {
+                shard_chunk(a, &idx, &per, chunks)?
             };
             decoded = Some((g, got));
         }
@@ -2697,6 +2789,35 @@ pub fn read_metadata(dir: &std::path::Path) -> Result<Store> {
     parse_store(&docs)
 }
 
+/// Reads `parts` of a store's files in folder `dir` into `chunks`, each by its id; a file that
+/// isn't there is left out (never written). `total` counts the bytes read, within [`MAX_READ`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_parts(dir: &std::path::Path, parts: &[Part], chunks: &mut HashMap<String, Vec<u8>>, total: &mut u64) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    for part in parts {
+        let mut f = match crate::provenance::open(dir.join(&part.key)) {
+            Ok(f) => f,
+            // Never written: only a file that isn't there. Any other failure is said.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let len = f.metadata()?.len();
+        let (first, n) = match part.span {
+            Span::Bytes(a, b) => (a, b - a + 1),
+            Span::Tail(n) => (len.saturating_sub(n), n.min(len)),
+        };
+        *total = total.saturating_add(n);
+        if first.saturating_add(n) > len || n > MAX_CHUNK_FILE || *total > MAX_READ {
+            return Err(bad(format!("{}: {} is cut, or the chunks to read are too large", dir.display(), part.key)));
+        }
+        f.seek(SeekFrom::Start(first))?;
+        let mut buf = Vec::new();
+        f.take(n).read_to_end(&mut buf)?;
+        chunks.insert(part.id.clone(), buf);
+    }
+    Ok(())
+}
+
 /// Reads a slice of a store in a folder (`selection` as [`Selection::label`] writes it).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_dir(dir: &std::path::Path, selection: &str, crs: Option<&str>) -> Result<Raster> {
@@ -2733,34 +2854,9 @@ pub fn read_dir_in(store: &Store, dir: &std::path::Path, selection: &str, crs: O
         chunks.insert(k.clone(), crate::provenance::read(&path)?);
     }
     // A window's bytes of files: shards' indexes and coordinates, then the shards' chunks.
-    let mut read = |parts: &[Part], chunks: &mut HashMap<String, Vec<u8>>| -> Result<()> {
-        use std::io::{Read, Seek, SeekFrom};
-        for part in parts {
-            let mut f = match crate::provenance::open(dir.join(&part.key)) {
-                Ok(f) => f,
-                // Never written: only a file that isn't there. Any other failure is said.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            let len = f.metadata()?.len();
-            let (first, n) = match part.span {
-                Span::Bytes(a, b) => (a, b - a + 1),
-                Span::Tail(n) => (len.saturating_sub(n), n.min(len)),
-            };
-            total = total.saturating_add(n);
-            if first.saturating_add(n) > len || n > MAX_CHUNK_FILE || total > MAX_READ {
-                return Err(bad(format!("{}: {} is cut, or the window's chunks are too large to read", dir.display(), part.key)));
-            }
-            f.seek(SeekFrom::Start(first))?;
-            let mut buf = Vec::new();
-            f.take(n).read_to_end(&mut buf)?;
-            chunks.insert(part.id.clone(), buf);
-        }
-        Ok(())
-    };
-    read(&p.parts, &mut chunks)?;
+    read_parts(dir, &p.parts, &mut chunks, &mut total)?;
     let inner = inner_parts(store, &p, &chunks)?;
-    read(&inner, &mut chunks)?;
+    read_parts(dir, &inner, &mut chunks, &mut total)?;
     let crs = crs.map(Crs::parse).transpose().map_err(DataError::Format)?;
     let stem = dir.file_stem().and_then(|s| s.to_str()).unwrap_or("zarr");
     let mut r = assemble(store, &p, &chunks, &format!("{stem} {}", sel.label()), crs)?;
@@ -3696,7 +3792,15 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn read_plan(files: &[(String, Vec<u8>)], p: &Plan) -> HashMap<String, Vec<u8>> {
         let mut got: HashMap<String, Vec<u8>> = files.iter().filter(|(k, _)| p.keys.contains(k)).cloned().collect();
-        for q in &p.parts {
+        got.extend(read_spans(files, &p.parts));
+        got
+    }
+
+    /// The bytes of `parts` of `files`, by their ids (as a web store answers ranges).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_spans(files: &[(String, Vec<u8>)], parts: &[Part]) -> HashMap<String, Vec<u8>> {
+        let mut got = HashMap::new();
+        for q in parts {
             let Some((_, f)) = files.iter().find(|(k, _)| *k == q.key) else { continue };
             let bytes = match q.span {
                 Span::Bytes(a, b) => f[a as usize..=b as usize].to_vec(),
@@ -4070,6 +4174,79 @@ mod tests {
         let mut cut = read_plan(&files, &p);
         cut.insert("y/c/0@8-31".into(), vec![0u8; 16]);
         assert!(assemble(&store, &p, &cut, "v", None).is_err());
+    }
+
+    /// A point's series of a sharded variable reads each shard's index, then by range only the
+    /// chunk holding the cell, never a whole shard (`aef-mosaic`'s are 686 MB at Viçosa, #1720).
+    /// It gives what a shard read whole gives: the fill value for a chunk the shard doesn't hold,
+    /// and no data where the shard isn't stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_series_of_a_sharded_variable_reads_only_the_cells_chunks() {
+        let files = window_store(true);
+        let store = parse_store(&files[..1]).unwrap();
+        let sel = Selection { variable: "v".into(), index: vec![], window: None };
+        let read = |p: &SeriesPlan| {
+            let mut got = read_spans(&files, &p.parts);
+            let inner = series_inner_parts(&store, p, &got).unwrap();
+            got.extend(read_spans(&files, &inner));
+            (inner.into_iter().map(|q| q.id).collect::<Vec<_>>(), got)
+        };
+        let show = |v: Vec<f64>| format!("{v:?}");
+        // Row 3, column 4: chunk 3 of shards (t, 0, 0). Step 0's shard doesn't hold it.
+        let p = plan_series(&store, &sel, "time", 0, 2, 3, 4).unwrap();
+        assert!(p.keys.is_empty(), "{:?}", p.keys);
+        let index = |key: &str| Part { key: key.into(), span: Span::Tail(4 * 16 + 4), id: format!("{key}#index") };
+        assert_eq!(p.parts, [index("v/c/0/0/0"), index("v/c/1/0/0")]);
+        let (ids, got) = read(&p);
+        assert_eq!(ids, ["v/c/1/0/0#3"]);
+        assert_eq!(show(assemble_series(&store, &p, &got).unwrap()), show(vec![-1.0, 1304.0]));
+        // A chunk the index places but whose bytes didn't come is an error, not the fill value.
+        let mut gone = got.clone();
+        gone.remove("v/c/1/0/0#3");
+        assert!(assemble_series(&store, &p, &gone).unwrap_err().to_string().contains("a chunk of shard v/c/1/0/0 wasn't read"));
+        // Row 5, column 7: step 0's shard (0, 1, 1) isn't stored, so no data.
+        let p = plan_series(&store, &sel, "time", 0, 2, 5, 7).unwrap();
+        let (ids, got) = read(&p);
+        assert_eq!(ids, ["v/c/1/1/1#0"]);
+        assert_eq!(show(assemble_series(&store, &p, &got).unwrap()), show(vec![f64::NAN, 1507.0]));
+        // A period of one step reads one shard's index.
+        let p = plan_series(&store, &sel, "time", 1, 1, 0, 0).unwrap();
+        assert_eq!(p.parts, [index("v/c/1/0/0")]);
+        assert_eq!(assemble_series(&store, &p, &read(&p).1).unwrap(), [1000.0]);
+        // From a folder, by range: the same values.
+        let dir = std::env::temp_dir().join(format!("rustgis-zarr-shard-series-{}", std::process::id()));
+        for (k, b) in &files {
+            let path = dir.join(k);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b).unwrap();
+        }
+        let p = plan_series(&store, &sel, "time", 0, 2, 3, 4).unwrap();
+        let (mut got, mut total) = (HashMap::new(), 0);
+        read_parts(&dir, &p.parts, &mut got, &mut total).unwrap();
+        let inner = series_inner_parts(&store, &p, &got).unwrap();
+        read_parts(&dir, &inner, &mut got, &mut total).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(show(assemble_series(&store, &p, &got).unwrap()), show(vec![-1.0, 1304.0]));
+        assert_eq!(total, 2 * 68 + inner.iter().map(|q| if let Span::Bytes(a, b) = q.span { b - a + 1 } else { 0 }).sum::<u64>());
+        // Shards of more chunks than an index read may hold, or chunks larger than a chunk read
+        // whole may be (hostile metadata), are refused, not overflowed or filled.
+        let huge = |shard: [u64; 3], inner: [u64; 3]| {
+            let z = serde_json::json!({"zarr_format": 3, "node_type": "array", "shape": [2, 1u64 << 33, 1u64 << 33], "data_type": "int16",
+                "dimension_names": ["time", "y", "x"], "fill_value": 0,
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": shard}},
+                "codecs": [{"name": "sharding_indexed", "configuration": {"chunk_shape": inner, "codecs": [{"name": "bytes"}],
+                    "index_codecs": [{"name": "bytes"}, {"name": "crc32c"}]}}]});
+            parse_store(&[("zarr.json".into(), z.to_string().into_bytes())]).unwrap()
+        };
+        let one = Selection { variable: "".into(), index: vec![], window: None };
+        let e = plan_series(&huge([1, 1 << 32, 1 << 32], [1, 1, 1]), &one, "time", 0, 1, 0, 0).unwrap_err();
+        assert!(e.to_string().contains("too many chunks"), "{e}");
+        let big = huge([1, 1 << 16, 1 << 16], [1, 1 << 16, 1 << 16]);
+        let p = plan_series(&big, &one, "time", 0, 1, 0, 0).unwrap();
+        let absent = HashMap::from([(p.parts[0].id.clone(), vec![0xffu8; 20])]);
+        let e = assemble_series(&big, &p, &absent).unwrap_err();
+        assert!(e.to_string().contains("too large to read"), "{e}");
     }
 
     /// A window of a sharded variable reads each shard's index by its last bytes, then only the

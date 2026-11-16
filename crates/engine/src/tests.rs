@@ -50542,6 +50542,67 @@ fn a_zarr_window_reads_only_its_chunks_by_range() {
     }
 }
 
+/// A point's series of a sharded Zarr variable (#1720: `aef-mosaic`'s shards are 686 MB) reads
+/// each step's shard index, then the 12 bytes of the chunk holding the cell, by range; never a
+/// shard whole. A folder gives the same values.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_zarr_series_of_a_sharded_variable_reads_only_the_cells_chunks() {
+    // `v` (time 2, lat 4, lon 6; int16, `t·1000 + row·100 + col`) in shards of 1 × 4 × 6 holding
+    // chunks of 1 × 2 × 3, the index at the end; latitudes 3.5 down by 1, longitudes 0.5 up by 1.
+    let coord = |n: u64, attrs: Value| {
+        json!({"zarr_format": 3, "node_type": "array", "shape": [n], "data_type": "float64", "attributes": attrs,
+            "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [n]}}, "codecs": [{"name": "bytes"}], "fill_value": 0})
+    };
+    let v = json!({"zarr_format": 3, "node_type": "array", "shape": [2, 4, 6], "data_type": "int16",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [1, 4, 6]}},
+        "codecs": [{"name": "sharding_indexed", "configuration": {"chunk_shape": [1, 2, 3], "codecs": [{"name": "bytes"}],
+            "index_codecs": [{"name": "bytes"}, {"name": "crc32c"}], "index_location": "end"}}],
+        "fill_value": -1, "dimension_names": ["time", "lat", "lon"]});
+    let root = json!({"zarr_format": 3, "node_type": "group", "consolidated_metadata": {"kind": "inline", "metadata": {
+        "v": v, "lat": coord(4, json!({"units": "degrees_north"})), "lon": coord(6, json!({"units": "degrees_east"})),
+        "time": coord(2, json!({"units": "days since 2000-01-01"}))}}});
+    let f64s = |v: Vec<f64>| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let mut files = vec![
+        ("zarr.json".to_string(), root.to_string().into_bytes()),
+        ("lat/c/0".to_string(), f64s((0..4).map(|i| 3.5 - i as f64).collect())),
+        ("lon/c/0".to_string(), f64s((0..6).map(|i| 0.5 + i as f64).collect())),
+        ("time/c/0".to_string(), f64s(vec![0.0, 366.0])),
+    ];
+    for t in 0..2u64 {
+        let (mut body, mut index) = (Vec::new(), Vec::new());
+        for (iy, ix) in [(0u64, 0u64), (0, 1), (1, 0), (1, 1)] {
+            index.extend([body.len() as u64, 12]);
+            for (r, c) in (0..2).flat_map(|r| (0..3).map(move |c| (r, c))) {
+                body.extend(((t * 1000 + (iy * 2 + r) * 100 + ix * 3 + c) as i16).to_le_bytes());
+            }
+        }
+        body.extend(index.iter().flat_map(|v| v.to_le_bytes()));
+        body.extend([0u8; 4]);
+        files.push((format!("v/c/{t}/0/0"), body));
+    }
+    let dir = std::env::temp_dir().join(format!("rustgis-zarr-shard-series-engine-{}", std::process::id()));
+    for (k, b) in &files {
+        let path = dir.join("s.zarr").join(k);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b).unwrap();
+    }
+    let (base, log) = serve_ranged_files(files.iter().map(|(k, b)| (format!("/s.zarr/{k}"), b.clone())).collect());
+    let mut s = Session::new(Project::default());
+    // At 4.2°E 1.2°N: row 2, column 4, the shard's last chunk (bytes 36–47).
+    let r = s.run("zarr.series", &json!({"url": format!("{base}/s.zarr"), "variable": "v", "lon": 4.2, "lat": 1.2})).unwrap();
+    assert_eq!(r["values"], json!([204.0, 1204.0]));
+    let asked: Vec<(String, String)> = log.lock().unwrap().clone();
+    for t in 0..2 {
+        let mut ranges: Vec<&str> = asked.iter().filter(|(p, _)| *p == format!("/s.zarr/v/c/{t}/0/0")).map(|(_, r)| r.as_str()).collect();
+        ranges.sort();
+        assert_eq!(ranges, ["-68", "36-47"], "{asked:?}");
+    }
+    let from_dir = s.run("zarr.series", &json!({"path": dir.join("s.zarr"), "variable": "v", "lon": 4.2, "lat": 1.2}));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(from_dir.unwrap()["values"], json!([204.0, 1204.0]));
+}
+
 /// A web store whose group places its grid by `spatial:transform` and `proj:code`, as the AlphaEarth
 /// mosaic (#1720), with axes longer than `MAX_COORDS` and no coordinate arrays: a box is placed by
 /// arithmetic and reads only the chunks it touches.
