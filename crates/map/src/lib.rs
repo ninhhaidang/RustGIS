@@ -2750,7 +2750,11 @@ impl Map {
                     && let (Some(a), Some(b)) = (own.chunk_source(), drawn.chunk_source())
                     && std::sync::Arc::ptr_eq(&a, &b)
                 {
-                    own.error.clone_from(&drawn.error);
+                    if drawn.error.is_none() {
+                        own.clear_error();
+                    } else {
+                        own.error.clone_from(&drawn.error);
+                    }
                 }
                 l.adopt_cache(o);
             }

@@ -816,7 +816,7 @@ fn rebind_connection(s: &mut Session, c: &Connection) -> usize {
                     if source.is_open() {
                         let _ = source.reopen();
                     } else {
-                        source.error = None;
+                        source.clear_error();
                     }
                 }
             }

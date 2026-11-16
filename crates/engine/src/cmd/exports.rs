@@ -145,9 +145,9 @@ fn said(s: &mut Session, wrote: Wrote) -> CmdResult {
 
 /// Lands an export drawn on a copy of the map or project (Export Map, Export Layout): what
 /// drawing it said, with each notice's severity; the streamed layers whose source failed on the
-/// copy, marked on their live layers as drawing them there would have (or, where that layer is
-/// gone or opened afresh, said in one notice to be missing from the file); then that it was
-/// written to `path`, or why not. A cancelled one says only that it was cancelled.
+/// copy, reported for this export even when the screen already said them. Matching live layers
+/// keep the failure marked said so subsequent screen frames do not repeat it;
+/// then that it was written to `path`, or why not. A cancelled one says only that it was cancelled.
 pub(crate) fn drawn(
     maps: &[rustgis_map::Map],
     notices: Vec<(rustgis_data::diagnostics::Severity, String)>,
@@ -167,45 +167,51 @@ pub(crate) fn drawn(
             Some((l.instance_id(), l.name.clone(), src.error.clone()?, src.clone()))
         })
         .collect();
-    let refused_notes = failed
-        .first()
-        .map(|(_, name, error, _)| {
-            let n = failed.len();
-            if n == 1 {
-                format!("{path}: {name} isn't in the file, as its source couldn't be read: {error}")
-            } else {
-                format!("{path}: {n} layers aren't in the file, as their sources couldn't be read; the first, {name}: {error}")
-            }
-        })
-        .into_iter()
-        .collect();
+    // Every output needs its own counted notice, independent of screen suppression.
+    use crate::notice_text::NoticeText;
+    let mut source_errors = Vec::new();
+    let mut linked = 0;
+    for (_, name, error, source) in &failed {
+        let path = source.linked_file();
+        linked += usize::from(path.is_some());
+        if source_errors.len() < 5 {
+            source_errors.push(match path {
+                Some(path) => NoticeText::format(
+                    "{name}: {path} ({error})",
+                    [("name", name.clone().into()), ("path", path.to_string().into()), ("error", error.clone().into())],
+                ),
+                None => NoticeText::format("{name}: {error}", [("name", name.clone().into()), ("error", error.clone().into())]),
+            });
+        }
+    }
+    let source_notice = NoticeText::source_errors(failed.len(), source_errors, linked)
+        .map(|message| NoticeText::format("{path}: {message}", [("path", path.clone().into()), ("message", message)]));
+    let refused_notes = source_notice.iter().map(NoticeText::english).collect();
     let written_path = written.is_ok().then(|| path.clone());
     let answer = written.as_ref().map_or(Value::Null, Value::clone);
     let then: Then = Box::new(move |s: &mut Session, _: &mut Value| {
-        let mut missing = Vec::new();
-        for (instance, name, error, copied) in failed {
+        for (instance, _, error, copied) in failed {
             let live = s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()).find(|l| l.instance_id() == instance);
-            match live.and_then(|l| l.source.as_mut()) {
-                // The same open: its failure shows on the layer (it may already).
-                Some(src) if src.same_opening(&copied) => {
-                    src.error.get_or_insert(error);
+            if let Some(src) = live.and_then(|l| l.source.as_mut())
+                && src.same_opening(&copied)
+            {
+                src.error.get_or_insert(error);
+                // The export reports this failure below; the screen need not say it again.
+                if src.error == copied.error {
+                    let _ = src.error_unsaid();
                 }
-                _ => missing.push((name, error)),
             }
         }
-        // One notice for them all, with a count, naming the first.
-        if let Some((name, error)) = missing.first() {
-            let n = missing.len();
-            let mark = s.notice_mark();
-            s.warn(if n == 1 {
-                format!("{path}: {name} isn't in the file, as its source couldn't be read: {error}")
-            } else {
-                format!("{path}: {n} layers aren't in the file, as their sources couldn't be read; the first, {name}: {error}")
-            });
-            if written.is_ok() {
-                s.retain_written_notices(mark);
-            }
+        let mark = s.notice_mark();
+        if let Some(message) = source_notice {
+            s.notify_text(message, true);
         }
+        if written.is_ok() {
+            s.retain_written_notices(mark);
+        }
+        // Background exports land without Session::run's display diagnostics. Source failures
+        // already reported above retain their screen markers, so this cannot duplicate them.
+        s.notice_landed_pixels();
         written?;
         s.notify_written(format!("Exported {path}"), false);
         Ok(())

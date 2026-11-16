@@ -2031,9 +2031,16 @@ impl ArchiveRevision {
         self.0 == archive_revisions(maps).0
     }
 
-    /// Refuses a spanning render before reporting any ordinary drawing failure.
-    pub(crate) fn finish<'a, T>(self, maps: impl IntoIterator<Item = &'a Map>, result: Option<T>, failure: &str) -> Result<T, String> {
-        self.finish_revision(archive_revisions(maps), result, failure)
+    /// Refuses a spanning render before reporting a drawing failure. `failed_source` is the
+    /// live layer identity returned by the read that stopped this render, never a retained
+    /// error chosen from another layer or an earlier render.
+    pub(crate) fn finish<T>(self, map: &Map, failed_source: Option<u64>, result: Option<T>, failure: &str) -> Result<T, String> {
+        let source_error = failed_source.filter(|_| result.is_none()).and_then(|id| {
+            let layer = map.layers.iter().find(|layer| layer.instance_id() == id)?;
+            layer.source.as_ref()?.read_error().map(|why| format!("{}: {why}", layer.name))
+        });
+        let current = archive_revisions([map]);
+        self.finish_revision(current, result, source_error.as_deref().unwrap_or(failure))
     }
 
     /// Checks a composed output against a newly captured revision of the same source set.
@@ -2066,13 +2073,13 @@ pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
 
 /// [`render_with_backend`] on the CPU, as pixels.
 fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
-    render_cpu(map, view, full_res_rasters, false)
+    render_cpu(map, view, full_res_rasters, false, &mut None)
 }
 
 /// [`render_with`] on the CPU, kept as vectors where it can be (`record`, see
 /// [`render_frame`]).
-fn render_cpu(map: &mut Map, view: &View, full_res_rasters: bool, record: bool) -> Option<Rendered> {
-    match render_any(map, view, full_res_rasters, Backend::Cpu, record) {
+fn render_cpu(map: &mut Map, view: &View, full_res_rasters: bool, record: bool, failed_source: &mut Option<u64>) -> Option<Rendered> {
+    match render_any(map, view, full_res_rasters, Backend::Cpu, record, failed_source) {
         Some(RenderOutput::Cpu(r)) => Some(r),
         // The Cpu backend never produces RenderOutput::Gpu.
         Some(RenderOutput::Gpu(_)) | None => None,
@@ -2097,14 +2104,22 @@ pub(crate) fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dir
 /// `full_res_rasters` renders rasters at full resolution (exports); `backend` selects the CPU
 /// pixmap or a GPU scene (see [`Backend`]).
 fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<RenderOutput> {
-    render_any(map, view, full_res_rasters, backend, false)
+    render_any(map, view, full_res_rasters, backend, false, &mut None)
 }
 
 /// [`render_with_backend`], `record` keeping a flat, north-up frame as vectors where it can
 /// ([`render_frame`]).
-fn render_any(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
+/// `failed_source` carries only a fatal source read's live layer identity to the caller.
+fn render_any(
+    map: &mut Map,
+    view: &View,
+    full_res_rasters: bool,
+    backend: Backend,
+    record: bool,
+    failed_source: &mut Option<u64>,
+) -> Option<RenderOutput> {
     let revisions = archive_revisions([&*map]);
-    let output = render_pass(map, view, full_res_rasters, backend, record);
+    let output = render_pass(map, view, full_res_rasters, backend, record, failed_source);
     // A frame stopped part-way (see `cancel`) is no frame.
     if cancel::requested() {
         return None;
@@ -2123,7 +2138,15 @@ fn drawn_scales(map: &Map, camera: &Camera, view: &View) -> Vec<f64> {
 }
 
 /// One entire pass, including all bands and backend fallbacks, under `render_any`'s guard.
-fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
+fn render_pass(
+    map: &mut Map,
+    view: &View,
+    full_res_rasters: bool,
+    backend: Backend,
+    record: bool,
+    failed_source: &mut Option<u64>,
+) -> Option<RenderOutput> {
+    *failed_source = None;
     // A bearing or pitch set directly on the camera may be unnormalised (or no number, which
     // faces north and looks straight down).
     let mut camera = view.camera;
@@ -2159,6 +2182,7 @@ fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Back
             {
                 if let Err(e) = source.open() {
                     source.error = Some(e);
+                    *failed_source = Some(layer.instance_id());
                     return None;
                 }
                 if layer.dataset.fields.is_empty()
@@ -2201,10 +2225,11 @@ fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Back
                 if let Some(s) = map.layer_mut(layer.id).and_then(|l| l.source.as_mut()) {
                     s.error = Some(e.to_string());
                 }
+                *failed_source = Some(layer.instance_id());
                 return None;
             }
             if let Some(source) = map.layer_mut(layer.id).and_then(|l| l.source.as_mut()) {
-                source.error = None;
+                source.clear_error();
             }
             layer.selection = features.iter().enumerate().filter_map(|(r, f)| ids.contains(&f.id).then_some(r)).collect();
             layer.source = None;
@@ -2216,11 +2241,11 @@ fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Back
         // Owner synchronization has already run. Repeating it on the copy could consume a
         // shared pending result before its owner installs it, even for a plain chunk source.
         let mut output = if backend.is_gpu() {
-            gpu_turned(&mut snapshot, &view, full_res_rasters, true)
+            gpu_turned(&mut snapshot, &view, full_res_rasters, true, failed_source)
                 .map(RenderOutput::Gpu)
-                .or_else(|| render_tilted(&mut snapshot, &view, full_res_rasters, true).map(RenderOutput::Cpu))
+                .or_else(|| render_tilted(&mut snapshot, &view, full_res_rasters, true, failed_source).map(RenderOutput::Cpu))
         } else {
-            render_tilted(&mut snapshot, &view, full_res_rasters, true).map(RenderOutput::Cpu)
+            render_tilted(&mut snapshot, &view, full_res_rasters, true, failed_source).map(RenderOutput::Cpu)
         };
         map.adopt_caches(&snapshot);
         if let Some(output) = &mut output {
@@ -2234,24 +2259,24 @@ fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Back
     // The globe turns and tilts itself (`Globe`): one frame.
     if map.projection.is_globe() {
         let view = View { camera, ..*view };
-        return render_frame(map, &view, full_res_rasters, backend, Labels::Own, false);
+        return render_frame(map, &view, full_res_rasters, backend, Labels::Own, false, failed_source);
     }
     {
         let view = View { camera, ..*view };
         if backend.is_gpu()
             && (camera.pitch != 0.0 || camera.bearing != 0.0)
-            && let Some(scene) = gpu_turned(map, &view, full_res_rasters, false)
+            && let Some(scene) = gpu_turned(map, &view, full_res_rasters, false, failed_source)
         {
             return Some(RenderOutput::Gpu(scene));
         }
         if camera.pitch != 0.0 {
-            return render_tilted(map, &view, full_res_rasters, false).map(RenderOutput::Cpu);
+            return render_tilted(map, &view, full_res_rasters, false, failed_source).map(RenderOutput::Cpu);
         }
         if camera.bearing != 0.0 {
-            return render_turned(map, &view, full_res_rasters, record).map(RenderOutput::Cpu);
+            return render_turned(map, &view, full_res_rasters, record, failed_source).map(RenderOutput::Cpu);
         }
     }
-    render_frame(map, view, full_res_rasters, backend, Labels::Own, record)
+    render_frame(map, view, full_res_rasters, backend, Labels::Own, record, failed_source)
 }
 
 /// Persisted local Shapefiles can require complete traversal before a handle is opened.
@@ -2469,7 +2494,14 @@ const LABEL_MIN_DEPTH_SCALE: f64 = 0.3;
 /// ([`Camera::tilt_bands`]), sharp near and coarser toward the horizon (so far tiles come at
 /// lower zoom), then each screen pixel takes its colour from the band under it, fading into fog
 /// and the sky past the view's reach. Labels are placed in the tilted view, upright.
-fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready: bool) -> Option<Rendered> {
+fn render_tilted(
+    map: &mut Map,
+    view: &View,
+    full_res_rasters: bool,
+    sources_ready: bool,
+    failed_source: &mut Option<u64>,
+) -> Option<Rendered> {
+    *failed_source = None;
     let bands_of = view.camera.tilt_bands(view.width, view.height);
     let data_pending = !sources_ready && sync_tilted(map, view, &bands_of, full_res_rasters);
     // Labels are placed in the tilted view: a lock on a flat view's labels doesn't apply.
@@ -2497,7 +2529,7 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
         }
         let v = band_view(view, &b);
         let Some(RenderOutput::Cpu(r)) =
-            render_frame(map, &v, full_res_rasters, Backend::Cpu, Labels::Tilted(view, &mut candidates), false)
+            render_frame(map, &v, full_res_rasters, Backend::Cpu, Labels::Tilted(view, &mut candidates), false, failed_source)
         else {
             let scale = map.ground_res_at(&v.camera) / rustgis_geom::PIXEL_M;
             let complete = sources_ready
@@ -2914,7 +2946,13 @@ fn lift_labels(view: &View, ground: &terrain::Ground, candidates: &mut [Candidat
 /// [`render_tilted`] warps them), with point markers upright over them and labels placed in
 /// the view. `None` when the view needs pictures drawn on the CPU (tiles, rasters, layers drawn
 /// as pictures, icons or extrusions), or the scene isn't plain: the caller draws it on the CPU.
-fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready: bool) -> Option<gpu_scene::GpuScene> {
+fn gpu_turned(
+    map: &mut Map,
+    view: &View,
+    full_res_rasters: bool,
+    sources_ready: bool,
+    failed_source: &mut Option<u64>,
+) -> Option<gpu_scene::GpuScene> {
     use gpu_scene::{CmdClip, DrawCmd, GpuScene, SceneTilt};
     if !gpu_may_turn(map, view) {
         return None;
@@ -2925,7 +2963,9 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
     if view.camera.pitch == 0.0 {
         let (bw, bh) = view.camera.rotated_size(view.width, view.height);
         let north = View { width: bw.ceil() + 2.0, height: bh.ceil() + 2.0, camera: Camera { bearing: 0.0, ..view.camera }, ..*view };
-        let Some(RenderOutput::Gpu(scene)) = render_frame(map, &north, full_res_rasters, Backend::Gpu, Labels::Turned(view), false) else {
+        let Some(RenderOutput::Gpu(scene)) =
+            render_frame(map, &north, full_res_rasters, Backend::Gpu, Labels::Turned(view), false, failed_source)
+        else {
             return None;
         };
         if pictures(&scene.cmds) || scene.labels.iter().any(|l| l.icon.is_some()) {
@@ -2950,7 +2990,7 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
         }
         let v = band_view(view, b);
         let Some(RenderOutput::Gpu(scene)) =
-            render_frame(map, &v, full_res_rasters, Backend::Gpu, Labels::Tilted(view, &mut candidates), false)
+            render_frame(map, &v, full_res_rasters, Backend::Gpu, Labels::Tilted(view, &mut candidates), false, failed_source)
         else {
             if cancel::requested() {
                 map.label_lock = lock;
@@ -3811,10 +3851,12 @@ fn sample_band(v: &View, pm: &Pixmap, m: Coord) -> Option<[f32; 4]> {
 /// A view turned to a bearing, on the CPU: the map is drawn facing north over the box around
 /// the turned view, then turned into place. Labels are placed in the turned view and drawn
 /// upright, as MapLibre keeps them.
-fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool, record: bool) -> Option<Rendered> {
+fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool, record: bool, failed_source: &mut Option<u64>) -> Option<Rendered> {
     let (bw, bh) = view.camera.rotated_size(view.width, view.height);
     let north = View { width: bw.ceil() + 2.0, height: bh.ceil() + 2.0, camera: Camera { bearing: 0.0, ..view.camera }, ..*view };
-    let Some(RenderOutput::Cpu(mut r)) = render_frame(map, &north, full_res_rasters, Backend::Cpu, Labels::Turned(view), record) else {
+    let Some(RenderOutput::Cpu(mut r)) =
+        render_frame(map, &north, full_res_rasters, Backend::Cpu, Labels::Turned(view), record, failed_source)
+    else {
         return None;
     };
     // A recorded north-up frame is placed turned as it is: its vectors turn with it.
@@ -3911,6 +3953,7 @@ fn relief_water(map: &Map, view: &View, labels_to: &Labels, scale: f64) -> Optio
 /// export, which draws everything as it will stay: rasters at full resolution, and labels in
 /// their installed font families, waiting for those to be indexed (`families::find`). A frame on
 /// screen passes `false`, and never waits for the index (`families::find_ready`).
+/// A fatal streamed read sets `failed_source` to the layer that stopped this frame.
 fn render_frame(
     map: &mut Map,
     view: &View,
@@ -3918,7 +3961,9 @@ fn render_frame(
     backend: Backend,
     mut labels_to: Labels<'_>,
     record: bool,
+    failed_source: &mut Option<u64>,
 ) -> Option<RenderOutput> {
+    *failed_source = None;
     let (w, h) = view.pixel_size();
     // Who draws a layer's cast shadows: this map and the layer, by their live identities (a
     // layer's id repeats from map to map: a locator's and its main map's, say).
@@ -4201,7 +4246,7 @@ fn render_frame(
     let tokens = rustgis_map::graphics::TokenValues::of(map, scale);
     let n_layers = map.layers.len();
     // Masks: layers shown only inside another layer's polygons, or left of the swipe divider.
-    let masks = layer_masks(map, &ctx, w, h, &flat, &key, scale)?;
+    let masks = layer_masks(map, &ctx, w, h, &flat, &key, scale, failed_source)?;
     // Bottom first; a higher depth priority draws later (on top) whatever the order.
     let mut order: Vec<usize> = (0..n_layers).rev().collect();
     order.sort_by_key(|i| map.layers.get(*i).map_or(0, |l| l.priority));
@@ -4384,6 +4429,7 @@ fn render_frame(
                     if let Some(s) = &mut layer.source {
                         s.error = Some(e.to_string());
                     }
+                    *failed_source = Some(layer.instance_id());
                     return None;
                 }
             }
@@ -4422,6 +4468,7 @@ fn render_frame(
                     if let Some(source) = &mut layer.source {
                         source.error = Some(e.to_string());
                     }
+                    *failed_source = Some(layer.instance_id());
                     return None;
                 }
             }
@@ -5301,10 +5348,11 @@ fn render_frame(
                 if let Some(s) = &mut layer.source {
                     s.error = Some(e.to_string());
                 }
+                *failed_source = Some(layer.instance_id());
                 return None;
             }
             if let Some(source) = &mut layer.source {
-                source.error = None;
+                source.clear_error();
             }
         } else if let Err(e) = draw_chunk(layer) {
             log::warn!("cannot render layer '{}': {e}", layer.name);
@@ -5316,6 +5364,7 @@ fn render_frame(
             if let Some(source) = &mut layer.source {
                 source.error = Some(e.to_string());
             }
+            *failed_source = Some(layer.instance_id());
             return None;
         }
         if let Some(sheet) = extruded_charts {
@@ -5475,7 +5524,7 @@ fn render_frame(
             // layer) costs more full-screen uploads than a plain CPU rasterization.
             let images = cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count();
             if images > 4 {
-                return render_frame(map, view, full_res_rasters, Backend::Cpu, labels_to, record);
+                return render_frame(map, view, full_res_rasters, Backend::Cpu, labels_to, record, failed_source);
             }
             Some(RenderOutput::Gpu(gpu_scene::GpuScene {
                 clear: mesh::premul(water),
@@ -5531,6 +5580,7 @@ pub(crate) fn blend_mode(b: rustgis_map::effects::Blend) -> tiny_skia::BlendMode
 
 /// The mask of every masked or swiped layer: inside its mask layer's polygons and left of the
 /// swipe divider.
+/// A failed mask read returns its source layer's identity through `failed_source`.
 fn layer_masks(
     map: &mut Map,
     ctx: &Ctx,
@@ -5539,6 +5589,7 @@ fn layer_masks(
     flat: &rustgis_map::projection::Flat,
     key: &str,
     scale: f64,
+    failed_source: &mut Option<u64>,
 ) -> Option<Vec<(u32, tiny_skia::Mask)>> {
     let wanted: Vec<(u32, Option<String>, Option<f64>)> = map
         .layers
@@ -5582,7 +5633,11 @@ fn layer_masks(
                             if let Some(s) = map.layers.get_mut(mi).and_then(|l| l.source.as_mut()) {
                                 s.error = Some(e.to_string());
                             }
+                            *failed_source = map.layers.get(mi).map(|layer| layer.instance_id());
                             return None;
+                        }
+                        if let Some(source) = map.layers.get_mut(mi).and_then(|l| l.source.as_mut()) {
+                            source.clear_error();
                         }
                     } else if let Some(ml) = map.layers.get_mut(mi) {
                         if ctx.globe.is_some() {
@@ -5966,7 +6021,7 @@ pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32)
         (w, h) = (fw, fh);
         let v = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
         // The bands share the read above.
-        if let Some(RenderOutput::Cpu(r)) = render_frame(map, &v, false, Backend::Cpu, Labels::Shared, false) {
+        if let Some(RenderOutput::Cpu(r)) = render_frame(map, &v, false, Backend::Cpu, Labels::Shared, false, &mut None) {
             out.push(TiltPatch { pixmap: r.pixmap, band: rustgis_map::camera::Band { camera, width: w, height: h, depth: b.depth } });
         }
     }
@@ -6702,7 +6757,7 @@ fn wait_for_cast_shadows(map: &Map, view: &View) {
     }
 }
 
-/// Render passes [`render_complete`] makes at most with nothing come since the last (the wait ran
+/// Render passes [`complete`] makes at most with nothing come since the last (the wait ran
 /// out, or nothing was under way): passes that draw what came are bound by its minute alone.
 const IDLE_PASSES: usize = 6;
 
@@ -6710,18 +6765,20 @@ const IDLE_PASSES: usize = 6;
 /// missing (a style, then its sources, then their tiles, or a layer's tiles after its picture
 /// failed) and waits for news of it, at most a minute in all. In the browser, which can't wait,
 /// it draws what has arrived.
+/// Pixel regressions use this convenience wrapper without retaining a fatal source identity.
+#[cfg(test)]
 pub(crate) fn render_complete(map: &mut Map, view: &View) -> Option<Rendered> {
-    complete(map, view, false)
+    complete(map, view, false, &mut None)
 }
 
-/// [`render_complete`] kept as vectors where the frame can be (flat, north up, without view
+/// [`complete`] kept as vectors where the frame can be (flat, north up, without view
 /// effects): its `recorded` canvas; anything else as pixels.
-pub(crate) fn render_complete_recorded(map: &mut Map, view: &View) -> Option<Rendered> {
-    complete(map, view, true)
+pub(crate) fn render_complete_recorded(map: &mut Map, view: &View, failed_source: &mut Option<u64>) -> Option<Rendered> {
+    complete(map, view, true, failed_source)
 }
 
-/// [`render_complete`]'s passes, each recorded when `record`.
-fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
+/// Full-resolution passes, each recorded when `record`, carrying a fatal source's identity.
+fn complete(map: &mut Map, view: &View, record: bool, failed_source: &mut Option<u64>) -> Option<Rendered> {
     // Cast shadows still being worked out are waited for first, unless this draws on the
     // interface's thread (see `on_the_interface_thread`).
     if !NO_SHADOW_WAIT.with(std::cell::Cell::get) {
@@ -6731,7 +6788,7 @@ fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
     // to say: an earlier one's may have been drawn again with them. What frames before it said
     // is kept (see `shadows_said`).
     let before = (SHADOWS_TO_COME.with(|c| c.replace(false)), take_shadow_notices());
-    let r = complete_passes(map, view, record);
+    let r = complete_passes(map, view, record, failed_source);
     SHADOWS_TO_COME.with(|c| c.set(before.0 || c.get()));
     let mut notices = before.1;
     for e in take_shadow_notices() {
@@ -6744,10 +6801,10 @@ fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
 }
 
 /// [`complete`]'s passes, each saying afresh what it drew of cast shadows.
-fn complete_passes(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
+fn complete_passes(map: &mut Map, view: &View, record: bool, failed_source: &mut Option<u64>) -> Option<Rendered> {
     // What had come when it drew: what lands meanwhile is news to the wait.
     let mut drawn_at = rustgis_tiles::cache::generation();
-    let mut r = render_cpu(map, view, true, record)?;
+    let mut r = render_cpu(map, view, true, record, failed_source)?;
     let start = web_time::Instant::now();
     let budget = web_time::Duration::from_secs(60);
     let mut idle = 0;
@@ -6768,7 +6825,7 @@ fn complete_passes(map: &mut Map, view: &View, record: bool) -> Option<Rendered>
         drawn_at = now;
         SHADOWS_TO_COME.with(|c| c.set(false));
         take_shadow_notices();
-        r = render_cpu(map, view, true, record)?;
+        r = render_cpu(map, view, true, record, failed_source)?;
     }
     Some(r)
 }
@@ -6778,12 +6835,14 @@ fn complete_passes(map: &mut Map, view: &View, record: bool) -> Option<Rendered>
 /// Returns an actionable error if a linked archive changes during the complete drawing.
 pub fn render_drawing(map: &mut Map, view: &View) -> Result<vector::Drawing, String> {
     let revisions = archive_revisions([&*map]);
-    let result = render_drawing_inner(map, view);
-    revisions.finish([&*map], result, "could not draw the map")
+    let mut failed_source = None;
+    let result = render_drawing_inner(map, view, &mut failed_source);
+    revisions.finish(map, failed_source, result, "could not draw the map")
 }
 
-fn render_drawing_inner(map: &mut Map, view: &View) -> Option<vector::Drawing> {
-    let r = render_complete_recorded(map, view)?;
+/// Completes the recording, retaining a fatal source's identity through the pixel fallback.
+fn render_drawing_inner(map: &mut Map, view: &View, failed_source: &mut Option<u64>) -> Option<vector::Drawing> {
+    let r = render_complete_recorded(map, view, failed_source)?;
     let mut pm = match r.recorded {
         Some(c) => c,
         None => {
@@ -6847,7 +6906,7 @@ pub fn render_png(map: &mut Map, view: &View) -> Result<Vec<u8>, String> {
     text::scale_bar(&mut pm, view, map.ground_res_at(&view.camera));
     draw_attribution(&mut pm, &r.attribution, view.pixels_per_point as f32, (0.0, 0.0));
     let png = pm.into_pixmap().encode_png().map_err(|e| e.to_string())?;
-    revisions.finish([&*map], Some(png), "could not encode the image")
+    revisions.finish(map, None, Some(png), "could not encode the image")
 }
 
 /// A map drawn as data ([`render_placed`]), with what it holds besides its pixels.
@@ -6904,15 +6963,16 @@ pub fn render_placed(map: &mut Map, view: &View) -> Result<Placed, String> {
     for l in r.unplaced.iter().chain(&r.labels) {
         text::draw(&mut pm, l, view.pixels_per_point as f32);
     }
-    revisions.finish([&*map], Some(Placed { pixmap: pm.into_pixmap(), credits: r.attribution, gaps }), "could not draw the map")
+    revisions.finish(map, None, Some(Placed { pixmap: pm.into_pixmap(), credits: r.attribution, gaps }), "could not draw the map")
 }
 
 /// The map drawn whole for an export, or why it can't be written: a raster read in place whose
 /// tiles haven't come, or that is drawn from less than the view needs.
 fn render_exported(map: &mut Map, view: &View) -> Result<Rendered, String> {
     let revisions = archive_revisions([&*map]);
-    let result = render_complete(map, view);
-    let r = revisions.finish([&*map], result, "could not draw the map")?;
+    let mut failed_source = None;
+    let result = complete(map, view, false, &mut failed_source);
+    let r = revisions.finish(map, failed_source, result, "could not draw the map")?;
     // A raster read in place drawn from less than the view needs isn't written: its tiles still
     // on their way (the browser can't wait; natively the wait ran out), or a coarser level or
     // tiles it couldn't read (`partial`).

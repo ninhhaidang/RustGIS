@@ -22098,6 +22098,259 @@ fn area_review_reports_retain_where_clauses_when_fitted() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn streamed_non_local_source_error_remains_unsaid_for_its_own_reporting() {
+    use rustgis_map::source::SourceLayer;
+
+    let mut session = Session::new(Project::default());
+    let mut source = SourceLayer::default();
+    source.path = Some("https://example.invalid/sites.fgb".into());
+    source.error = Some("the server refused the read".into());
+    assert!(source.linked_file().is_none());
+    let id = session.map_mut().add_streamed("Remote sites", source);
+    let mark = session.notice_mark();
+    for _ in 0..2 {
+        session.notice_landed_rasters();
+    }
+    assert!(session.notices_since(mark).is_empty());
+    // Local-file notices must leave the failure available to the remote source's reporter.
+    let source = session.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap();
+    assert_eq!(source.error_unsaid().as_deref(), Some("the server refused the read"));
+    assert!(source.error_unsaid().is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn streamed_source_recovery_between_notice_passes_reports_the_same_failure_again() {
+    use crate::render;
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    use rustgis_map::source::SourceLayer;
+
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("rustgis-source-recovery-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut data = Dataset::new("sites", GeometryType::Point, vec![]);
+    data.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![]);
+    for ext in ["fgb", "shp"] {
+        let path = dir.join(format!("sites.{ext}"));
+        let parked = dir.join(format!("moved.{ext}"));
+        rustgis_data::io::write_path(&data, &path).unwrap();
+        let source = SourceLayer::from_path(path.to_string_lossy(), None, rustgis_data::source::open_path(&path, None).unwrap());
+        let mut session = Session::new(Project::default());
+        let id = session.map_mut().add_streamed("Survey sites", source);
+        let view = render::View { width: 120.0, height: 90.0, pixels_per_point: 1.0, camera: session.map().camera, sky: false };
+        assert!(render::render_png(session.map_mut(), &view).is_ok());
+        let mark = session.notice_mark();
+        let mut first_error = None;
+        for step in 0..3 {
+            if step == 1 {
+                std::fs::rename(&parked, &path).unwrap();
+            } else {
+                std::fs::rename(&path, &parked).unwrap();
+            }
+            if ext == "fgb" {
+                session.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().reset();
+            }
+            // Complete Shapefile reads happen on a render copy; window reads land on the layer.
+            // Its window stays cached so adopting the complete traversal keeps the owning rows.
+            let result = if ext == "shp" {
+                let mut copy = session.map().clone();
+                let result = render::render_png(&mut copy, &view);
+                session.map_mut().adopt_caches(&copy);
+                result
+            } else {
+                render::render_png(session.map_mut(), &view)
+            };
+            let error = session.map().layer(id).unwrap().source.as_ref().unwrap().error.clone();
+            if step == 1 {
+                assert!(result.is_ok(), "{ext}: {result:?}");
+                assert!(error.is_none(), "{ext}: {error:?}");
+                // No notice pass sees the successful read before the identical failure returns.
+                continue;
+            }
+            assert!(error.is_some(), "{ext}: {result:?}");
+            if step == 0 {
+                first_error = error;
+            } else {
+                assert_eq!(error, first_error, "the failure must be identical");
+            }
+            session.notice_landed_rasters();
+            session.notice_landed_rasters();
+            let notices: Vec<_> = session.notices_since(mark).iter().filter(|n| n.error && n.text.contains("Survey sites")).collect();
+            assert_eq!(notices.len(), if step == 0 { 1 } else { 2 }, "{ext}: {notices:?}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn missing_read_in_place_file_names_layer_and_path_once() {
+    use crate::{
+        cmd::exports::{export_land, export_start},
+        render,
+    };
+    use rustgis_analysis::control::Control;
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    use rustgis_map::source::SourceLayer;
+
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("rustgis-missing-source-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut data = Dataset::new("sites", GeometryType::Point, vec![]);
+    data.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![]);
+    // Both command-line dispatch and the app's worker must report a successful export's gap
+    // immediately for each output, without relying on a later screen frame.
+    let check_exports = |saved: &str, missing: bool, path: &std::path::Path, other: &std::path::Path| {
+        for background in [false, true] {
+            for (command, file) in [
+                ("share.exportMap", "map.png"),
+                ("share.exportMap", "map.tif"),
+                ("layout.export", "page.png"),
+                ("layout.export", "page.pdf"),
+                ("layout.export", "page.svg"),
+            ] {
+                let mut session = Session::new(serde_json::from_str(saved).unwrap());
+                for attempt in 0..2 {
+                    let mark = session.notice_mark();
+                    let output = dir.join(format!("missing-{missing}-background-{background}-attempt-{attempt}-{file}"));
+                    assert!(!output.exists(), "each export must create a new output: {}", output.display());
+                    let params = json!({"path": output, "width": 160, "height": 120, "dpi": 48});
+                    if background {
+                        let run = export_start(&mut session, command, &params).unwrap();
+                        let started = run.started();
+                        export_land(&mut session, started, run.run(&Control::new())).unwrap();
+                    } else {
+                        session.run(command, &params).unwrap();
+                    }
+                    assert!(output.is_file(), "{command} did not write {}", output.display());
+                    let notices: Vec<_> = session.notices_since(mark).iter().filter(|n| n.text.contains("Survey sites")).collect();
+                    assert_eq!(notices.len(), usize::from(missing), "{command} {file} background={background}: {notices:?}");
+                    if missing {
+                        assert!(notices[0].error);
+                        assert!(notices[0].text.contains(output.to_str().unwrap()), "{notices:?}");
+                        for detail in [
+                            "2 linked layers",
+                            "Boundary sites",
+                            path.to_str().unwrap(),
+                            other.to_str().unwrap(),
+                            "moved or deleted",
+                            "Repair Data Source",
+                        ] {
+                            assert!(notices[0].text.contains(detail), "missing {detail:?} in {notices:?}");
+                        }
+                        assert_eq!(notices[0].text.matches("Repair Data Source").count(), 1);
+                    }
+                    session.notice_landed_rasters();
+                    assert_eq!(
+                        session.notices_since(mark).iter().filter(|n| n.text.contains("Survey sites")).count(),
+                        usize::from(missing),
+                        "screen redraw must not repeat the export's failure"
+                    );
+                }
+            }
+        }
+    };
+    for ext in ["shp", "fgb", "parquet", "gpkg"] {
+        let path = dir.join(format!("sites.{ext}"));
+        rustgis_data::io::write_path(&data, &path).unwrap();
+        let mut session = Session::new(Project::default());
+        let source = SourceLayer::from_path(path.to_string_lossy(), None, rustgis_data::source::open_path(&path, None).unwrap());
+        let id = session.map_mut().add_streamed("Survey sites", source);
+        // A moved folder can break several links at once: one counted notice names both.
+        let other = dir.join("boundaries.fgb");
+        if ext == "fgb" {
+            rustgis_data::io::write_path(&data, &other).unwrap();
+            let source = SourceLayer::from_path(other.to_string_lossy(), None, rustgis_data::source::open_path(&other, None).unwrap());
+            session.map_mut().add_streamed("Boundary sites", source);
+        }
+        let view = render::View { width: 160.0, height: 120.0, pixels_per_point: 1.0, camera: session.map().camera, sky: false };
+        let mark = session.notice_mark();
+        assert!(render::render_png(session.map_mut(), &view).is_ok(), "{ext}: intact file");
+        session.notice_landed_rasters();
+        assert!(session.notices_since(mark).is_empty(), "{:?}", session.notices_since(mark));
+        if ext == "fgb" {
+            session.run("layout.new", &json!({"template": "map"})).unwrap();
+        }
+        let saved = serde_json::to_string(&session.project).unwrap();
+        if ext == "fgb" {
+            check_exports(&saved, false, &path, &other);
+        }
+        // Discard the cached window so the next view must read the file again.
+        for layer in &mut session.map_mut().layers {
+            layer.source.as_mut().unwrap().reset();
+        }
+        // GeoParquet and GeoPackage retain open file handles: deleting their paths need not
+        // interrupt a live reader, but reopening must still report the missing file.
+        let mut sessions = if matches!(ext, "parquet" | "gpkg") {
+            drop(session);
+            Vec::new()
+        } else {
+            vec![session]
+        };
+        sessions.push(Session::new(serde_json::from_str(&saved).unwrap()));
+        std::fs::remove_file(&path).unwrap();
+        if ext == "fgb" {
+            std::fs::remove_file(&other).unwrap();
+        }
+        for mut session in sessions {
+            let result = render::render_png(session.map_mut(), &view);
+            let layer = session.map().layer(id).unwrap();
+            let error = format!("{}: {}", layer.name, layer.source.as_ref().unwrap().read_error().unwrap());
+            if ext == "shp" {
+                // The Shapefile reader already refuses a partial drawing; preserve
+                // the named source error at the archive/revision finalizer.
+                assert_eq!(result.unwrap_err(), error);
+            } else {
+                assert!(result.is_ok(), "a failed window source is omitted: {result:?}");
+            }
+            for detail in ["Survey sites", path.to_str().unwrap(), "moved or deleted", "Repair Data Source"] {
+                assert!(error.contains(detail), "missing {detail:?} in {error:?}");
+            }
+            let mark = session.notice_mark();
+            for _ in 0..3 {
+                // The screen draws a copy and adopts its errors before the frame's notices.
+                let mut worker = session.map().clone();
+                let _ = render::render(&mut worker, &view);
+                session.map_mut().adopt_caches(&worker);
+                session.notice_landed_rasters();
+            }
+            let notices: Vec<_> = session.notices_since(mark).iter().filter(|n| n.error).collect();
+            assert_eq!(notices.len(), 1, "{ext}: {notices:?}");
+            for detail in ["Survey sites", path.to_str().unwrap(), "moved or deleted", "Repair Data Source"] {
+                assert!(notices[0].text.contains(detail), "{ext}: missing {detail:?} in {notices:?}");
+            }
+            assert_eq!(notices[0].text.matches("Repair Data Source").count(), 1);
+            if ext == "fgb" {
+                for detail in ["2 linked layers", "Boundary sites", other.to_str().unwrap()] {
+                    assert!(notices[0].text.contains(detail), "missing {detail:?} in {notices:?}");
+                }
+            }
+        }
+        if ext == "fgb" {
+            check_exports(&saved, true, &path, &other);
+            // More broken links than the notice displays still count, and all are marked said.
+            let mut folder = Session::new(serde_json::from_str(&saved).unwrap());
+            let source = folder.map().layer(id).unwrap().source.clone().unwrap();
+            for i in 0..5 {
+                folder.map_mut().add_streamed(format!("Other sites {i}"), source.clone());
+            }
+            assert!(render::render_png(folder.map_mut(), &view).is_ok());
+            let mark = folder.notice_mark();
+            for _ in 0..3 {
+                folder.notice_landed_rasters();
+            }
+            let notices: Vec<_> = folder.notices_since(mark).iter().filter(|n| n.error).collect();
+            assert_eq!(notices.len(), 1, "{notices:?}");
+            assert!(notices[0].text.starts_with("7 linked layers"), "{notices:?}");
+            assert!(notices[0].text.contains("2 more"), "{notices:?}");
+            assert_eq!(notices[0].text.matches("Repair Data Source").count(), 1);
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn area_review_repair_checks_retained_classification_fields() {
     use rustgis_map::{
         color::Ramp,
@@ -39962,13 +40215,17 @@ fn a_layout_exports_to_svg_with_each_element_its_own_group() {
     // A required map-source failure is reported without leaving an incomplete file.
     let dir = std::env::temp_dir().join(format!("rustgis-svg-failure-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    let missing = dir.join("missing.shp");
+    let layer_name = s.map().layers[0].name.clone();
     let mut source = rustgis_map::source::SourceLayer::default();
-    source.path = Some(dir.join("missing.shp").display().to_string());
+    source.path = Some(missing.display().to_string());
     s.map_mut().layers[0].source = Some(source);
     // Use a world view so the missing layer is visible on the exported page.
     s.run("layout.frameZoom", &json!({"to": "full"})).unwrap();
     let error = s.run("layout.export", &json!({"path": out.to_string_lossy(), "dpi": 36})).unwrap_err();
-    assert!(error.contains("map sources"), "{error}");
+    for detail in [layer_name.as_str(), missing.to_str().unwrap(), "Repair Data Source"] {
+        assert!(error.contains(detail), "missing {detail:?} in {error:?}");
+    }
     assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -44230,12 +44487,15 @@ fn exports_run_on_another_thread() {
     let mark = s.notice_mark();
     assert_eq!(land(&mut s, &copy), None, "a source opened afresh keeps its own state");
     let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n");
-    assert!(said.contains("Countries isn't in the file") && said.contains("gone.fgb: not found"), "and the file's gap is said: {said}");
+    assert!(
+        said.contains("1 linked layer could not be read") && said.contains("Countries") && said.contains("gone.fgb: not found"),
+        "and the file's gap is said: {said}"
+    );
     // Opened afresh and failing again: still said, as the file lacks the layer either way.
     s.map_mut().layers[li].source.as_mut().unwrap().error = Some("found.fgb: not found".into());
     let mark = s.notice_mark();
     land(&mut s, &copy);
-    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("Countries isn't in the file")));
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains(&at("drawn.png")) && n.text.contains("Countries")));
     // Several left out: one notice, with a count.
     let mut two = copy.clone();
     let other = two.layers.iter().position(|l| l.name != "Countries").unwrap();
@@ -44245,8 +44505,9 @@ fn exports_run_on_another_thread() {
     two.layers[other].source = Some(gone);
     let mark = s.notice_mark();
     land(&mut s, &two);
-    let missing: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("in the file")).map(|n| n.text.clone()).collect();
-    assert!(missing.len() == 1 && missing[0].contains("2 layers aren't in the file"), "{missing:?}");
+    let missing: Vec<_> =
+        s.notices_since(mark).iter().filter(|n| n.error && n.text.contains(&at("drawn.png"))).map(|n| n.text.clone()).collect();
+    assert!(missing.len() == 1 && missing[0].contains("2 linked layers could not be read"), "{missing:?}");
     s.map_mut().layers[li].source = None;
     // One that lands (or is refused) after another project opened is logged under the project it
     // started in.

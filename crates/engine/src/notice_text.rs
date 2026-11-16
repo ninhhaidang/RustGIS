@@ -33,6 +33,31 @@ impl NoticeText {
             .unwrap_or_else(|| String::new().into())
     }
 
+    /// One counted source-read notice, with at most five supplied layer details and repair
+    /// advice once when any failure names a local file. Callers choose which failures are new.
+    pub(crate) fn source_errors(count: usize, layers: Vec<Self>, linked: usize) -> Option<Self> {
+        if count == 0 {
+            return None;
+        }
+        let more = count.saturating_sub(layers.len());
+        let mut layers = Self::list(layers);
+        if more > 0 {
+            layers = Self::format("{layers}; {count} more", [("layers", layers), ("count", more.to_string().into())]);
+        }
+        let key = match (count, linked == count) {
+            (1, true) => "{count} linked layer could not be read: {layers}",
+            (_, true) => "{count} linked layers could not be read: {layers}",
+            (1, false) => "{count} layer could not be read: {layers}",
+            (_, false) => "{count} layers could not be read: {layers}",
+        };
+        let message = Self::format(key, [("count", count.to_string().into()), ("layers", layers)]);
+        Some(if linked > 0 {
+            Self::format("{message}; {repair}", [("message", message), ("repair", Self::term(rustgis_map::source::REPAIR_SOURCE))])
+        } else {
+            message
+        })
+    }
+
     /// Renders trusted templates through the front end's formatter; literal data bypasses it.
     pub(crate) fn render(&self, format: &impl Fn(&str, &[(&str, &str)]) -> String) -> String {
         match self {
