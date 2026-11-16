@@ -4887,6 +4887,9 @@ pub struct WindowAsked {
     /// The bands the file must have, when the caller needs a number of them (checked from its
     /// header, before anything else is read).
     bands: Option<usize>,
+    /// Whether `cell` was worked out by the caller (not asked for by the user): a window whose full
+    /// image has finer cells than it is the intended read, not something to say.
+    auto_cell: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4896,7 +4899,13 @@ impl WindowAsked {
     /// with that box and `"cellSize"` reads it; a file without `bands` bands is refused from its
     /// header.
     pub(crate) fn of(url: &str, bbox: [f64; 4], cell: Option<f64>, bands: usize) -> WindowAsked {
-        WindowAsked { url: url.to_string(), bbox, cell, name: None, bands: Some(bands) }
+        WindowAsked { url: url.to_string(), bbox, cell, name: None, bands: Some(bands), auto_cell: false }
+    }
+    /// The cell size is the caller's own choice, not the user's: a full image finer than it is
+    /// read without saying so.
+    pub(crate) fn automatic(mut self) -> WindowAsked {
+        self.auto_cell = true;
+        self
     }
 }
 
@@ -4931,7 +4940,7 @@ fn window_settled(s: &Session, p: &Value, url: &str, seen: Option<[f64; 4]>) -> 
         Some(v) => Some(v.as_f64().filter(|c| c.is_finite() && *c > 0.0).ok_or_else(|| named("cellSize is a size above 0".into()))?),
     };
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(String::from);
-    Ok(WindowAsked { url: url.to_string(), bbox, cell, name, bands: None })
+    Ok(WindowAsked { url: url.to_string(), bbox, cell, name, bands: None, auto_cell: false })
 }
 
 /// A window the app reads off the frame: `p`, a `layer.addUrl` with `"bbox"` and its address bound
@@ -4974,6 +4983,13 @@ fn add_cog_window(s: &mut Session, p: &Value, url: &str) -> CmdResult {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_cog_window(asked: &WindowAsked) -> Result<CogWindow, String> {
     read_cog_window_until(asked, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// The cell size to say is finer than the file's own: the one asked, when no level has cells that
+/// small (`fits` false) and the user asked it (not `auto`, a size the caller worked out).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn finer_than_file(cell: Option<f64>, fits: bool, auto: bool) -> Option<f64> {
+    cell.filter(|_| !fits && !auto)
 }
 
 /// [`read_cog_window`]'s raster, giving up within a moment of `stop` being set (the app's Cancel of
@@ -5101,7 +5117,7 @@ pub(crate) fn read_window_raster(asked: &WindowAsked, stop: &std::sync::atomic::
     let fits =
         cell.and_then(|c| (0..layout.levels.len()).rev().find(|i| layout.levels.get(*i).is_some_and(|l| size_of(l) <= c * (1.0 + 1e-9))));
     let level = fits.unwrap_or(0);
-    let finer = cell.filter(|_| fits.is_none());
+    let finer = finer_than_file(cell, fits.is_some(), asked.auto_cell);
     let lv = layout.levels.get(level).ok_or_else(|| named("the file has no image".into()))?;
     let (c0, c1, r0, r1) = window(lv);
     if c1 <= c0 || r1 <= r0 {
@@ -5409,6 +5425,13 @@ fn window_box(s: &Session, p: &Value, seen: Option<[f64; 4]>) -> Result<[f64; 4]
     };
     let (lon, lat) = (|x: f64| (-180.0..=180.0).contains(&x), |y: f64| (-90.0..=90.0).contains(&y));
     if w < e && so < n && lon(w) && lon(e) && lat(so) && lat(n) { Ok([w, so, e, n]) } else { Err(NEED.into()) }
+}
+
+/// A window's box as `layer.addUrl` settles it from `p`'s `"bbox"` (the view, or a box in degrees),
+/// for another command that reads windows.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn window_box_of(s: &Session, p: &Value) -> Result<[f64; 4], String> {
+    window_box(s, p, None)
 }
 
 /// `"bbox": "view"`, in any case or spacing.

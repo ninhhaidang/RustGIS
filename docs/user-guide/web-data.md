@@ -65,6 +65,21 @@ GeoTIFF, else the first point cloud, else the first data asset, preferring HTTP(
 Cloud-optimised GeoTIFF, GeoParquet and FlatGeobuf assets are read in place, and PMTiles a tile
 at a time; other assets download whole (see [Files on the web](data-formats.md#files-on-the-web)).
 
+Sentinel-2 and Landsat publish a file a band, so a card also has two menus (desktop) for what
+several files make. **Bands** offers the colour combinations the item's bands allow (true colour,
+colour infrared, shortwave infrared, false colour urban, agriculture, geology and bathymetric), and
+**Index** the spectral indices (NDVI, NDWI, SAVI, NBR, NDBI and EVI, the formulas of the Indices
+section). Each reads the part of each band's file that is in view, on a thread of its own with
+progress and Cancel in the Workflows pane, with the catalog's scale and offset applied, and adds one
+layer: three bands drawn as red, green and blue, or one band of index values. A band is found by
+its common name (`red`, `nir`, `swir16`…), from a file of its own before a colour image such as
+`visual` or `preview` whose bands carry the same names; bands read on a coarser grid are put on the
+finest one by nearest cell, and a cell with no value in one band is no data in all, which is said.
+Where no cell has a value in every band (the item's data doesn't reach this part of the map), it is
+an error and no layer is added. `stac.addBands` (`"item"`, `"combination"` or `"red"`, `"green"`
+and `"blue"`, `"bbox"`, `"cellSize"`, `"name"`) and `stac.addIndex` (`"item"`, `"index"`, `"bbox"`,
+`"cellSize"`, `"name"`) do the same; the web app makes neither yet.
+
 The commands do the same: `stac.collections` (`"url"`), `stac.search` (`"collections"`,
 `"bbox"` as `[west, south, east, north]` or `"view"`, `"datetime"` such as
 `2024-06-01/2024-06-30`, `"limit"` from 1 to 200, default 10, `"maxCloud"`, `"footprints"`, and

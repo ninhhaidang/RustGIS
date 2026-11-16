@@ -6,6 +6,7 @@
 use serde_json::Value;
 
 pub mod area;
+pub mod bands;
 pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dated;
@@ -65,6 +66,192 @@ pub struct Asset {
     /// Whether its metadata names such codes but they couldn't be read whole (one isn't a number,
     /// or there are more than are kept): its values can't be told from them.
     pub codes_unread: bool,
+    /// Each band of its file as the catalog describes it (`eo:bands`, `raster:bands`, or STAC 1.1's
+    /// `bands`), in file order; empty when it describes none. See [`bands`].
+    pub bands: Vec<BandInfo>,
+    /// Whether the catalog describes more bands than are kept (`bands` stops at the first
+    /// [`MAX_BANDS`]): the ones past them can't be found by name.
+    pub bands_cut: bool,
+    /// Whether JAXA Earth's `je:rasters` gives its first band's scale, offset or no-data as something
+    /// that isn't a number (a string, say): not read, so a band made from it is refused where it is used.
+    pub je_unread: bool,
+    /// Whether a band list (`eo:bands`, `raster:bands`, `bands`) is there but isn't a list: none of its
+    /// numbers or names were read, so every band of the asset is refused where it is used.
+    pub lists_unread: bool,
+    /// How many bands the catalog says the file has (more than `bands` keeps, when it is cut).
+    pub declared_bands: usize,
+}
+
+/// One band of an asset's file, as its catalog describes it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BandInfo {
+    /// Its common name (`red`, `nir`, `swir16`…), lower case; empty when it has none.
+    pub common: String,
+    /// Its `raster:bands` scale and offset: a stored value `v` means `v · scale + offset`.
+    pub scale: Option<f64>,
+    pub offset: Option<f64>,
+    /// Its stored no-data value, when the catalog gives a number (`"nan"` is not one).
+    pub nodata: Option<f64>,
+    /// Whether the catalog gives its scale, offset or no-data as something that isn't a number (a
+    /// string such as `"0.0001"`, or a number that isn't finite): they were not read, and a band
+    /// made from it would come out unscaled, so it is refused where it is used.
+    pub unread: bool,
+}
+
+/// The most bands of one asset that are kept.
+const MAX_BANDS: usize = 64;
+
+/// How many bands an asset describes, before the cut to [`MAX_BANDS`].
+fn declared_bands(asset: &Value) -> usize {
+    let list = |key: &str| asset.get(key).and_then(Value::as_array);
+    let named = list("eo:bands").or_else(|| list("bands"));
+    named.map_or(0, |l| l.len()).max(list("raster:bands").map_or(0, |l| l.len()))
+}
+
+/// The longest common name kept, in characters.
+const MAX_NAME: usize = 32;
+
+/// Whether a band of the asset (or the asset itself) has a common name that `asset_bands` doesn't keep whole: longer
+/// than [`MAX_NAME`] characters (cut), or not text (dropped). Said like the bands past
+/// [`MAX_BANDS`] are (`bands_cut`).
+fn long_name(asset: &Value) -> bool {
+    let name_is_long = |v: &Value| match v {
+        Value::Null => false,
+        Value::String(t) => t.trim().chars().count() > MAX_NAME,
+        _ => true,
+    };
+    let list = |key: &str| asset.get(key).and_then(Value::as_array);
+    // The asset's own `eo:common_name` (a file of one band described by no list) is held to the same.
+    asset.get("eo:common_name").is_some_and(name_is_long)
+        || list("eo:bands").or_else(|| list("bands")).is_some_and(|l| {
+            l.iter().take(MAX_BANDS).any(|b| b.get("common_name").or_else(|| b.get("eo:common_name")).is_some_and(name_is_long))
+        })
+}
+
+/// Whether a band list (`eo:bands`, `raster:bands`, STAC 1.1's `bands`) is there but isn't a list (an
+/// object, or text): none of its numbers or names are read, which is said like an unreadable number.
+fn bands_odd(asset: &Value) -> bool {
+    ["eo:bands", "raster:bands", "bands"].iter().any(|k| asset.get(*k).is_some_and(|v| !v.is_null() && !v.is_array()))
+}
+
+/// Whether JAXA Earth's `je:rasters` gives the number `field` (`scale`, `offset` or `nodata`, as
+/// `dn2value.slope`, `dn2value.offset`, `dn.nodata`) that is there but not a number (a string such
+/// as `"0.0001"`, or one that isn't finite); a no-data may be `"nan"`, `"inf"` or `"-inf"`, as in
+/// [`odd_numbers`].
+fn je_field_odd(asset: &Value, field: &str) -> bool {
+    let Some(je) = asset.get("je:rasters") else { return false };
+    let (group, name, nodata) = match field {
+        "scale" => ("dn2value", "slope", false),
+        "offset" => ("dn2value", "offset", false),
+        "nodata" => ("dn", "nodata", true),
+        _ => return false,
+    };
+    match je.get(group).and_then(|g| g.get(name)) {
+        None | Some(Value::Null) => false,
+        Some(Value::Number(n)) => !n.as_f64().is_some_and(f64::is_finite),
+        Some(Value::String(s)) => !(nodata && matches!(s.as_str(), "nan" | "inf" | "-inf")),
+        Some(_) => true,
+    }
+}
+
+/// Whether any of JAXA's numbers is odd (see [`je_field_odd`]).
+fn je_odd(asset: &Value) -> bool {
+    // Only for a number the asset itself leaves undeclared: a declared one is read before JAXA's.
+    NUMBER_FIELDS.iter().any(|(keys, _)| !declares(Some(asset), keys) && je_field_odd(asset, keys[0]))
+}
+
+/// Whether an asset describes no bands at all (no list, no `eo:common_name`): it is read as one band,
+/// numbered from the asset itself.
+fn describes_no_bands(asset: &Value) -> bool {
+    declared_bands(asset) == 0 && asset.get("eo:common_name").and_then(Value::as_str).is_none()
+}
+
+/// Whether a band's scale, offset or no-data is there but not a number: a string (`"0.0001"`) or
+/// a number that isn't finite. A no-data may be `"nan"`, `"inf"` or `"-inf"`, which the raster
+/// extension allows, and is then not odd. [`item_json`] marks a band it passed on with `rg:unread`.
+fn odd_numbers(band: Option<&Value>) -> bool {
+    let Some(band) = band else { return false };
+    band.get("rg:unread").and_then(Value::as_bool) == Some(true)
+        || NUMBER_FIELDS.iter().any(|(keys, nodata)| odd_field(band, keys, *nodata))
+}
+
+/// The numbers a band carries, each as the keys it may be spelled with (bare or `raster:`), and whether
+/// it is a no-data, which may be `"nan"`, `"inf"` or `"-inf"`.
+const NUMBER_FIELDS: [(&[&str], bool); 3] =
+    [(&["scale", "raster:scale"], false), (&["offset", "raster:offset"], false), (&["nodata", "raster:nodata"], true)];
+
+/// Whether the object gives one of the number's keys at all (a value, odd or not; null is none).
+fn declares(object: Option<&Value>, keys: &[&str]) -> bool {
+    keys.iter().any(|k| object.and_then(|o| o.get(*k)).is_some_and(|v| !v.is_null()))
+}
+
+/// Whether the object's number is there but not a number: a string (`"0.0001"`), an object, or a
+/// number that isn't finite. Without the mark [`item_json`] writes (the asset's is JAXA's).
+fn odd_field(object: &Value, keys: &[&str], nodata: bool) -> bool {
+    keys.iter().any(|k| match object.get(*k) {
+        None | Some(Value::Null) => false,
+        Some(Value::Number(n)) => !n.as_f64().is_some_and(f64::is_finite),
+        Some(Value::String(s)) => !(nodata && matches!(s.as_str(), "nan" | "inf" | "-inf")),
+        Some(_) => true,
+    })
+}
+
+/// Whether an asset that describes no bands (no list, no `eo:common_name`: it is read as one band,
+/// numbered from the asset itself) gives its scale, offset or no-data as something that isn't a number.
+/// For an asset with bands, `asset_bands` marks the ones that would take the asset's number.
+fn lone_odd(asset: &Value) -> bool {
+    declared_bands(asset) == 0
+        && asset.get("eo:common_name").and_then(Value::as_str).is_none()
+        && NUMBER_FIELDS.iter().any(|(keys, nodata)| odd_field(asset, keys, *nodata))
+}
+
+/// The bands an asset describes, from `eo:bands` (names) or STAC 1.1's unified `bands`, and
+/// `raster:bands` (scale, offset, no-data), matched by position. Both spellings of the raster
+/// terms are read (`scale` and `raster:scale`). A band's own declaration of a number (even
+/// `"nodata": "nan"`) is its own: only a band that declares none takes the asset's, then, for the
+/// first band, JAXA's; an asset's number given as text marks the bands that would take it unread.
+/// Hostile input: at most [`MAX_BANDS`], text cut (an asset with more says so in `bands_cut`).
+fn asset_bands(asset: &Value) -> Vec<BandInfo> {
+    let list = |key: &str| asset.get(key).and_then(Value::as_array);
+    let named = list("eo:bands").or_else(|| list("bands"));
+    let raster = list("raster:bands");
+    // STAC's EO extension allows the name on the asset itself, for a file of one band described by no list.
+    let asset_name = asset.get("eo:common_name").and_then(Value::as_str);
+    // An asset whose own number is text makes one band of it, so that band is refused by name.
+    let odd_asset = NUMBER_FIELDS.iter().any(|(keys, nodata)| odd_field(asset, keys, *nodata));
+    let count = declared_bands(asset).max(usize::from(asset_name.is_some() || odd_asset)).min(MAX_BANDS);
+    let number = |band: Option<&Value>, keys: &[&str]| keys.iter().find_map(|k| band?.get(*k)?.as_f64()).filter(|v| v.is_finite());
+    (0..count)
+        .map(|i| {
+            let (named, raster) = (named.and_then(|l| l.get(i)), raster.and_then(|l| l.get(i)));
+            let first = i == 0;
+            // Whether the band declares the number itself, and what it is: that stops every fallback.
+            let own = |keys: &[&str]| declares(raster, keys) || declares(named, keys);
+            let pick = |(keys, _): (&[&str], bool)| {
+                if own(keys) {
+                    number(raster, keys).or_else(|| number(named, keys))
+                } else {
+                    number(Some(asset), keys).or_else(|| first.then(|| band_number(asset, keys[0])).flatten())
+                }
+            };
+            // The asset's number given as text, for a band that takes it from there.
+            let inherited_odd = NUMBER_FIELDS.iter().any(|(keys, nodata)| !own(keys) && odd_field(asset, keys, *nodata))
+                // The first band takes JAXA's number only for a field it, and the asset, leave undeclared.
+                || (first && NUMBER_FIELDS.iter().any(|(keys, _)| !own(keys) && number(Some(asset), keys).is_none() && je_field_odd(asset, keys[0])));
+            BandInfo {
+                common: named
+                    .and_then(|b| b.get("common_name").or_else(|| b.get("eo:common_name")))
+                    .and_then(Value::as_str)
+                    .or_else(|| (first && named.is_none()).then_some(asset_name).flatten())
+                    .map(|t| t.trim().to_ascii_lowercase().chars().take(MAX_NAME).collect())
+                    .unwrap_or_default(),
+                scale: pick(NUMBER_FIELDS[0]),
+                offset: pick(NUMBER_FIELDS[1]),
+                nodata: pick(NUMBER_FIELDS[2]),
+                unread: odd_numbers(raster) || odd_numbers(named) || inherited_odd,
+            }
+        })
+        .collect()
 }
 
 /// An item: a scene (or tile) with its footprint, time and assets.
@@ -600,7 +787,13 @@ pub(crate) fn item_with_reach(f: &Value, from: Option<&str>, reach: Option<crate
                 offset: band_number(a, "offset"),
                 nodata: band_number(a, "nodata"),
                 invalid: invalid.clone().unwrap_or_default(),
-                codes_unread: invalid.is_none(),
+                codes_unread: invalid.is_none() || a.get("rg:codes_unread").and_then(Value::as_bool) == Some(true),
+                bands: asset_bands(a),
+                bands_cut: declared_bands(a) > MAX_BANDS || long_name(a) || a.get("rg:bands_cut").and_then(Value::as_bool) == Some(true),
+                je_unread: (describes_no_bands(a) && je_odd(a)) || lone_odd(a) || a.get("rg:unread").and_then(Value::as_bool) == Some(true),
+                lists_unread: bands_odd(a) || a.get("rg:lists_unread").and_then(Value::as_bool) == Some(true),
+                declared_bands: declared_bands(a)
+                    .max(a.get("rg:band_count").and_then(Value::as_u64).map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX))),
             })
         })
         .collect();
@@ -663,7 +856,8 @@ fn tile_of(p: &Value) -> Option<String> {
 }
 
 /// An asset's first band's number `key` (`scale`, `offset`, `nodata`): from `raster:bands`, else from
-/// `eo:bands`, where some catalogs (Brazil Data Cube's) put it, else from JAXA Earth's `je:rasters`.
+/// `eo:bands`, where some catalogs (Brazil Data Cube's) put it, else from STAC 1.1's unified `bands`
+/// (where it may be `raster:scale`, as [`item_json`] writes it), else from JAXA Earth's `je:rasters`.
 fn band_number(asset: &Value, key: &str) -> Option<f64> {
     let je = || {
         let (group, name) = match key {
@@ -674,9 +868,14 @@ fn band_number(asset: &Value, key: &str) -> Option<f64> {
         };
         asset.get("je:rasters")?.get(group)?.get(name)?.as_f64()
     };
-    ["raster:bands", "eo:bands"]
+    ["raster:bands", "eo:bands", "bands"]
         .iter()
-        .find_map(|b| asset.get(*b)?.as_array()?.first()?.get(key)?.as_f64())
+        .find_map(|b| {
+            let first = asset.get(*b)?.as_array()?.first()?;
+            first.get(key).or_else(|| first.get(format!("raster:{key}")))?.as_f64()
+        })
+        // Or the asset's own (STAC 1.1 lets bands share numbers on the asset, bare or `raster:`).
+        .or_else(|| asset.get(key).or_else(|| asset.get(format!("raster:{key}")))?.as_f64())
         .or_else(je)
         .filter(|v| v.is_finite())
 }
@@ -933,8 +1132,12 @@ pub fn sign_blocking(href: &str) -> Result<String, String> {
     Ok(sign(href, &token))
 }
 
-/// An item as the commands return it (and read back in `stac.addAsset`), with its date and
-/// cloud cover as its properties: small, for the command line and the AI Assistant.
+/// An item as the commands return it (and read back in `stac.addAsset`, `stac.addBands` and
+/// `stac.addIndex`), with its date and cloud cover as its properties: small, for the command line
+/// and the AI Assistant, except that it keeps each band's description (name, scale, offset,
+/// no-data) that the last two need to find and scale the bands: without the catalog's scale and
+/// offset a Sentinel-2 band's values would come out wrong. That is about 1.5 KB more for a Sentinel-2
+/// scene (about 15 KB for `stac.search`'s default 10 items, 290 KB for its most, 200).
 pub fn item_json(i: &Item) -> Value {
     item_json_with(i, false)
 }
@@ -957,9 +1160,67 @@ pub fn item_json_with(i: &Item, all: bool) -> Value {
         "bbox": i.bbox,
         "geometry": i.geometry,
         "properties": props,
-        "assets": i.assets.iter().map(|a| (a.key.clone(), serde_json::json!({"href": a.href, "type": a.media_type, "roles": a.roles, "title": a.title}))).collect::<serde_json::Map<_, _>>(),
+        "assets": i.assets.iter().map(|a| (a.key.clone(), asset_json(a))).collect::<serde_json::Map<_, _>>(),
         "links": i.url.as_ref().map(|u| vec![serde_json::json!({"rel": "self", "href": u})]).unwrap_or_default(),
     })
+}
+
+/// An asset as [`item_json_with`] writes it. Its bands are written as STAC 1.1's `bands` (name,
+/// scale, offset and no-data), which [`item_from_json`] reads back, so an item passed on to a
+/// command (`stac.addBands`) keeps what it needs to find and scale them. An asset that names no
+/// band but has a first band's scale, offset or no-data keeps them as one unnamed band.
+fn asset_json(a: &Asset) -> Value {
+    let number = |v: Option<f64>| v.filter(|v| v.is_finite());
+    let band = |b: &BandInfo| {
+        let mut o = serde_json::Map::new();
+        if !b.common.is_empty() {
+            o.insert("eo:common_name".into(), Value::String(b.common.clone()));
+        }
+        for (key, v) in [("raster:scale", b.scale), ("raster:offset", b.offset), ("nodata", b.nodata)] {
+            if let Some(v) = number(v) {
+                o.insert(key.into(), serde_json::json!(v));
+            }
+        }
+        // That a number was there and not read goes with the band, for the command that gets it.
+        if b.unread {
+            o.insert("rg:unread".into(), Value::Bool(true));
+        }
+        Value::Object(o)
+    };
+    let bands: Vec<Value> = if a.bands.is_empty() {
+        let first = BandInfo { common: String::new(), scale: a.scale, offset: a.offset, nodata: a.nodata, unread: false };
+        if first == BandInfo::default() { Vec::new() } else { vec![band(&first)] }
+    } else {
+        a.bands.iter().map(band).collect()
+    };
+    let mut out = serde_json::json!({"href": a.href, "type": a.media_type, "roles": a.roles, "title": a.title});
+    if let (false, Some(o)) = (bands.is_empty(), out.as_object_mut()) {
+        o.insert("bands".into(), Value::Array(bands));
+    }
+    // That JAXA numbers were there and not read goes with the asset, for the command that gets it.
+    if let (true, Some(o)) = (a.je_unread, out.as_object_mut()) {
+        o.insert("rg:unread".into(), Value::Bool(true));
+    }
+    // That a band list was not a list (so no band of the asset was read) goes with it too, and how
+    // many bands the file has when the catalog describes more than are kept.
+    if let (true, Some(o)) = (a.lists_unread, out.as_object_mut()) {
+        o.insert("rg:lists_unread".into(), Value::Bool(true));
+    }
+    if let (true, Some(o)) = (a.declared_bands > a.bands.len(), out.as_object_mut()) {
+        o.insert("rg:band_count".into(), serde_json::json!(a.declared_bands));
+    }
+    // The failed-retrieval codes, and that they could not be read whole, go with the asset.
+    if let (false, Some(o)) = (a.invalid.is_empty(), out.as_object_mut()) {
+        o.insert("je:rasters".into(), serde_json::json!({"dn": {"error": a.invalid}}));
+    }
+    if let (true, Some(o)) = (a.codes_unread, out.as_object_mut()) {
+        o.insert("rg:codes_unread".into(), Value::Bool(true));
+    }
+    // The cut is kept, so the command that gets this item can say that bands were left out.
+    if let (true, Some(o)) = (a.bands_cut, out.as_object_mut()) {
+        o.insert("rg:bands_cut".into(), Value::Bool(true));
+    }
+    out
 }
 
 /// A GeoJSON FeatureCollection of items' footprints (their geometry, or their bbox), with the
@@ -1297,6 +1558,11 @@ mod tests {
             nodata: None,
             invalid: Vec::new(),
             codes_unread: false,
+            bands: Vec::new(),
+            bands_cut: false,
+            je_unread: false,
+            lists_unread: false,
+            declared_bands: 0,
         }];
         // A Planetary Computer asset is added after signing it with its container's token.
         let (_, href) = pc.asset_href(None).unwrap();
@@ -1421,6 +1687,13 @@ mod tests {
         assert_eq!((band_number(&a, "scale"), band_number(&a, "offset")), (Some(0.0001), Some(-0.1)));
         assert_eq!(band_number(&serde_json::json!({"eo:bands": [{"scale": 0.0001}]}), "scale"), Some(0.0001));
         assert_eq!(band_number(&serde_json::json!({"type": "image/tiff"}), "scale"), None);
+        // STAC 1.1's unified `bands`, with the raster terms bare or prefixed (as `item_json` writes them).
+        assert_eq!(band_number(&serde_json::json!({"bands": [{"raster:scale": 0.5, "raster:offset": 2.0}]}), "scale"), Some(0.5));
+        assert_eq!(band_number(&serde_json::json!({"bands": [{"raster:scale": 0.5, "raster:offset": 2.0}]}), "offset"), Some(2.0));
+        assert_eq!(band_number(&serde_json::json!({"bands": [{"scale": 0.25}]}), "scale"), Some(0.25));
+        // Numbers shared on the asset (STAC 1.1), for a band list that gives none: what `stac.addAsset` scales by.
+        let shared = serde_json::json!({"raster:scale": 0.0001, "raster:offset": -0.1, "bands": [{"eo:common_name": "red"}]});
+        assert_eq!((band_number(&shared, "scale"), band_number(&shared, "offset")), (Some(0.0001), Some(-0.1)));
         assert_eq!(band_number(&serde_json::json!({"raster:bands": [{"nodata": -3000.0}]}), "nodata"), Some(-3000.0));
     }
 }

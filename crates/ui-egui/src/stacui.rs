@@ -1977,6 +1977,12 @@ fn results(app: &mut RustGisApp, ui: &mut egui::Ui) {
     }
     want_thumbs(app);
     let (mut zoom, mut add, mut details) = (None, None, None);
+    // The band combination picked on a card: its item's place and the combination's id.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut bands: Option<(usize, &'static str)> = None;
+    // The spectral index picked on a card, the same way.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut index: Option<(usize, &'static str)> = None;
     // A window starts from its last size: without a floor the list would get egui's 64 px back.
     let tall = (app.ui.stac.items.len() as f32 * 96.0 + if app.ui.stac.details.is_some() { 200.0 } else { 0.0 }).min(440.0);
     egui::ScrollArea::vertical().max_height(440.0).min_scrolled_height(tall).show(ui, |ui| {
@@ -2028,6 +2034,55 @@ fn results(app: &mut RustGisApp, ui: &mut egui::Ui) {
                             if ui.button(tl!("Add")).clicked() {
                                 add = Some(i);
                             }
+                            // The band combinations this item's files can make (the browser has no
+                            // thread to read several files on).
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                // Read once for both menus: this runs every frame, for every card.
+                                let all = stac::bands::bands(item);
+                                // The commands get the item as JSON, without where it came from: an item from a local or
+                                // private network would be refused there, so they are not offered for it.
+                                let public = item.origin_reach == Reach::Public;
+                                let offered = if public { combinations_offered(&all) } else { Vec::new() };
+                                if !offered.is_empty() {
+                                    ui.menu_button(tl!("Bands"), |ui| {
+                                        for (id, name) in &offered {
+                                            if ui.button(menu_name(name)).clicked() {
+                                                bands = Some((i, *id));
+                                                ui.close();
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(tl!("Add the item's bands as one image, for the part of the map in view"));
+                                }
+                                let indices = if public { indices_offered(&all) } else { Vec::new() };
+                                if !public && !all.is_empty() {
+                                    ui.weak(tl!("Bands: public items only")).on_hover_text(tl!(
+                                        "This item is from a local or private network, whose files Bands and Index don't read yet"
+                                    ));
+                                }
+                                if !indices.is_empty() {
+                                    ui.menu_button(tl!("Index"), |ui| {
+                                        for (id, name) in &indices {
+                                            if ui.button(menu_name(name)).clicked() {
+                                                index = Some((i, *id));
+                                                ui.close();
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(tl!("Add a spectral index of the item's bands, for the part of the map in view"));
+                                }
+                                // The item's bands were cut (too many to keep): a combination or index whose
+                                // band is past the cut is missing from the menus, so say why where it is looked for.
+                                // Worked out once per item (it looks at every asset), then kept for the frames after.
+                                let note_id = ui.scope_id().with(("stac.cut_note", &item.collection, &item.id));
+                                let cut = ui.data_mut(|d| d.get_temp_mut_or_insert_with(note_id, || stac::bands::cut_note(item)).clone());
+                                if let Some(cut) = cut {
+                                    ui.weak(tl!("Bands left out")).on_hover_text(cut);
+                                }
+                            }
                             if ui.selectable_label(st.details == Some(i), tl!("Details")).clicked() {
                                 details = Some(i);
                             }
@@ -2047,11 +2102,91 @@ fn results(app: &mut RustGisApp, ui: &mut egui::Ui) {
         app.session.zoom_to(&rustgis_engine::geom::Extent::new(e[0], e[1], e[2], e[3]));
         app.map.invalidate();
     }
+    if let Some((i, id)) = bands {
+        let Some(item) = app.ui.stac.items.get(i).cloned() else { return };
+        add_item_bands(app, &item, id);
+    }
+    if let Some((i, id)) = index {
+        let Some(item) = app.ui.stac.items.get(i).cloned() else { return };
+        add_item_index(app, &item, id);
+    }
     if let Some(i) = add {
         let Some(item) = app.ui.stac.items.get(i).cloned() else { return };
         let key = app.ui.stac.chosen.get(i).cloned().unwrap_or_default();
         add_item_asset(app, &item, Some(key.as_str()).filter(|k| !k.is_empty()));
     }
+}
+
+/// The band combinations an item's files can make, as (id, name): only those whose three bands it
+/// has ([`stac::bands::offered`]), given the item's bands ([`stac::bands::bands`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn combinations_offered(bands: &[stac::bands::Band]) -> Vec<(&'static str, &'static str)> {
+    stac::bands::offered(bands).into_iter().map(|c| (c.id, c.name)).collect()
+}
+
+/// A combination's or index's name (a literal in `stac::bands`) in the current language. Each is
+/// written out as a `tl!` call here so the catalogs list it; a name not in the list (a new one
+/// added there first) shows in English until it is.
+#[cfg(not(target_arch = "wasm32"))]
+fn menu_name(name: &str) -> &str {
+    match name {
+        "True color" => tl!("True color"),
+        "Color infrared" => tl!("Color infrared"),
+        "Shortwave infrared" => tl!("Shortwave infrared"),
+        "False color urban" => tl!("False color urban"),
+        "Agriculture" => tl!("Agriculture"),
+        "Geology" => tl!("Geology"),
+        "Bathymetric" => tl!("Bathymetric"),
+        "NDVI (vegetation)" => tl!("NDVI (vegetation)"),
+        "NDWI (water)" => tl!("NDWI (water)"),
+        "SAVI (vegetation over soil)" => tl!("SAVI (vegetation over soil)"),
+        "NBR (burn ratio)" => tl!("NBR (burn ratio)"),
+        "NDBI (built-up)" => tl!("NDBI (built-up)"),
+        "EVI (enhanced vegetation)" => tl!("EVI (enhanced vegetation)"),
+        other => tl!(other),
+    }
+}
+
+/// The spectral indices an item's files can make, as (id, name): only those whose bands it has
+/// ([`stac::bands::available_indices`]), given the item's bands.
+#[cfg(not(target_arch = "wasm32"))]
+fn indices_offered(bands: &[stac::bands::Band]) -> Vec<(&'static str, &'static str)> {
+    stac::bands::available_indices(bands).into_iter().map(|i| (i.id, i.name)).collect()
+}
+
+/// The Workflows section that shows a band combination's progress and Cancel while it is read: one
+/// no extension owns, so it opens with the Imagery extension off too (its Indices section would not).
+#[cfg(not(target_arch = "wasm32"))]
+const BANDS_SECTION: &str = "rasterFunctions";
+
+/// Adds an item's band combination as one image for the part of the map in view: `stac.addBands`
+/// reads the three files' windows on a thread of its own, with progress and Cancel in the Workflows
+/// pane, and the layer lands when they are read.
+#[cfg(not(target_arch = "wasm32"))]
+fn add_item_bands(app: &mut RustGisApp, item: &Item, combination: &str) {
+    let p = json!({"item": stac::item_json(item), "combination": combination, "bbox": "view"});
+    crate::analysispane::run_elsewhere(app, BANDS_SECTION, "stac.addBands", p);
+}
+
+/// Adds a spectral index of an item's bands as one image for the part of the map in view:
+/// `stac.addIndex` reads the files' windows on a thread of its own, with progress and Cancel in the
+/// Workflows pane, and the layer lands when they are read.
+#[cfg(not(target_arch = "wasm32"))]
+fn add_item_index(app: &mut RustGisApp, item: &Item, index: &str) {
+    let p = json!({"item": stac::item_json(item), "index": index, "bbox": "view"});
+    crate::analysispane::run_elsewhere(app, BANDS_SECTION, "stac.addIndex", p);
+}
+
+/// The browser makes no band combination yet (its menu isn't shown).
+#[cfg(target_arch = "wasm32")]
+fn add_item_bands(app: &mut RustGisApp, _item: &Item, _combination: &str) {
+    app.ui.stac.error = Some(tl!("Band combinations are made on the desktop for now").to_string());
+}
+
+/// The browser makes no index yet (its menu isn't shown).
+#[cfg(target_arch = "wasm32")]
+fn add_item_index(app: &mut RustGisApp, _item: &Item, _index: &str) {
+    app.ui.stac.error = Some(tl!("Indices are made on the desktop for now").to_string());
 }
 
 /// An item's properties, a row each (the first hundred, long values cut).
@@ -2327,6 +2462,71 @@ mod tests {
         assert!(!keeps_preset_sort(&app.ui.stac));
         keep_preset_sort_for_its_api(&mut app.ui.stac);
         assert_eq!((app.ui.stac.sortby.as_str(), app.ui.stac.sort_is_default), ("", false));
+    }
+
+    /// An item with a file a colour band, at an address that never resolves (`.invalid`).
+    fn scene(bands: &[&str]) -> Item {
+        let assets: serde_json::Map<String, serde_json::Value> = bands
+            .iter()
+            .map(|b| {
+                let a = json!({"href": format!("https://scene.invalid/{b}.tif"), "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+                    "eo:bands": [{"common_name": b}]});
+                (b.to_string(), a)
+            })
+            .collect();
+        let feature = json!({"type": "Feature", "id": "scene", "bbox": [0, 0, 1, 1], "properties": {"datetime": "2024-06-01T00:00:00Z"}, "assets": assets});
+        stac::item_from_json(&feature, None).unwrap()
+    }
+
+    #[test]
+    fn a_card_offers_the_band_combinations_its_item_can_make_and_adds_one_in_the_background() {
+        let mut app = RustGisApp::with_sample();
+        assert_eq!(combinations_offered(&stac::bands::bands(&scene(&["red", "green", "blue"]))), [("trueColor", "True color")]);
+        let infrared = combinations_offered(&stac::bands::bands(&scene(&["red", "green", "blue", "nir"])));
+        assert_eq!(infrared.iter().map(|(id, _)| *id).collect::<Vec<_>>(), ["trueColor", "colorInfrared"]);
+        assert!(combinations_offered(&stac::bands::bands(&scene(&["red"]))).is_empty(), "no three bands, no menu");
+        // Picking one starts the command on a thread, without holding the window, whether or not the
+        // Imagery extension is on: its progress is shown in a section no extension owns.
+        assert!(crate::analysispane::section_extension(BANDS_SECTION).is_none());
+        app.run("extension.disable", json!({"id": "imagery"})).unwrap();
+        assert!(crate::analysispane::section_blocked(&app.session, "indices").is_some(), "the Indices section is what was refused");
+        let layers = app.session.map().layers.len();
+        add_item_bands(&mut app, &scene(&["red", "green", "blue"]), "trueColor");
+        assert!(app.workflow.job.is_some() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        // The files are never found: it ends as an error, and no layer is added.
+        // A failed lookup of a name that never resolves can take a runner long to give up: the cap (about a
+        // minute) only guards against a hang.
+        for _ in 0..6000 {
+            if !crate::analysispane::land_job(&mut app) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: the read runs on a thread of its own and lands through land_job, which gives no signal to wait on
+        }
+        assert!(app.workflow.job.is_none());
+        assert!(app.workflow.error.is_some(), "the read's failure is said");
+        assert_eq!(app.session.map().layers.len(), layers);
+    }
+
+    #[test]
+    fn a_card_offers_the_indices_its_item_can_make_and_adds_one_in_the_background() {
+        let mut app = RustGisApp::with_sample();
+        assert!(indices_offered(&stac::bands::bands(&scene(&["red", "green", "blue"]))).is_empty(), "no near infrared, no index");
+        let some = indices_offered(&stac::bands::bands(&scene(&["red", "nir"])));
+        assert_eq!(some.iter().map(|(id, _)| *id).collect::<Vec<_>>(), ["ndvi", "savi"]);
+        let layers = app.session.map().layers.len();
+        add_item_index(&mut app, &scene(&["red", "nir"]), "ndvi");
+        assert!(app.workflow.job.is_some() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        // The files are never found: it ends as an error, and no layer is added.
+        // A failed lookup of a name that never resolves can take a runner long to give up: the cap (about a
+        // minute) only guards against a hang.
+        for _ in 0..6000 {
+            if !crate::analysispane::land_job(&mut app) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: the read runs on a thread of its own and lands through land_job, which gives no signal to wait on
+        }
+        assert!(app.workflow.job.is_none() && app.workflow.error.is_some(), "the read's failure is said");
+        assert_eq!(app.session.map().layers.len(), layers);
     }
 
     #[test]

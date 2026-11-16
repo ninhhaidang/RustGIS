@@ -231,6 +231,8 @@ pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("raster.classifySupervised", "Classification Tools", super::imagery::supervised_work),
     ("raster.change", "Change Detection", super::imagery::change_work),
     ("raster.index", "Indices", super::imagery::index_work),
+    ("stac.addBands", "Add STAC Bands", super::stac_bands::bands_work),
+    ("stac.addIndex", "Add STAC Index", super::stac_bands::index_work),
     ("raster.process", "Process", super::imagery::process_work),
     ("imagery.mosaic", "Build Mosaic", super::imagery::mosaic_work),
     ("dl.classify", "Deep Learning", super::deeplearning::classify_work),

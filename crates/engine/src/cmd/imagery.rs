@@ -1143,13 +1143,10 @@ fn index(s: &mut Session, p: &Value) -> CmdResult {
     super::workflows::made_or_ran(s, p, "raster.index")
 }
 
-/// What a spectral index reads of the session, and the work that makes it.
-pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
-    let r = raster(s, p)?;
-    let bn = |k: &str, d: u64| uint(p, k).unwrap_or(d);
-    let (blue, green, red, nir, swir) = (bn("blue", 1), bn("green", 2), bn("red", 3), bn("nir", 4), bn("swir", 5));
-    let idx = ps(p, "index").ok_or("index is required")?;
-    let expr = match idx {
+/// The band math of a spectral index, over the numbers of the bands it reads (the Indices section's
+/// formulas, and a STAC item's: `stac.addIndex` puts its bands at these numbers).
+pub(crate) fn index_expression(idx: &str, blue: u64, green: u64, red: u64, nir: u64, swir: u64) -> Result<String, String> {
+    Ok(match idx {
         "ndvi" => format!("(b{nir} - b{red}) / (b{nir} + b{red})"),
         "ndwi" => format!("(b{green} - b{nir}) / (b{green} + b{nir})"),
         "savi" => format!("(b{nir} - b{red}) * 1.5 / (b{nir} + b{red} + 0.5)"),
@@ -1157,7 +1154,16 @@ pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Wor
         "ndbi" => format!("(b{swir} - b{nir}) / (b{swir} + b{nir})"),
         "evi" => format!("2.5 * (b{nir} - b{red}) / (b{nir} + 6 * b{red} - 7.5 * b{blue} + 1)"),
         o => return Err(format!("unknown index '{o}'")),
-    };
+    })
+}
+
+/// What a spectral index reads of the session, and the work that makes it.
+pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
+    let r = raster(s, p)?;
+    let bn = |k: &str, d: u64| uint(p, k).unwrap_or(d);
+    let (blue, green, red, nir, swir) = (bn("blue", 1), bn("green", 2), bn("red", 3), bn("nir", 4), bn("swir", 5));
+    let idx = ps(p, "index").ok_or("index is required")?;
+    let expr = index_expression(idx, blue, green, red, nir, swir)?;
     let out = name(p, format!("{}_{idx}", r.name))?;
     Ok(Box::new(move || super::workflows::made(rasterops::derive(&r, &out, vec![rasterops::band_math(&r, &expr)?])?, None)))
 }

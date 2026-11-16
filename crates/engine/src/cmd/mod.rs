@@ -56,6 +56,7 @@ pub mod sources;
 pub mod sql;
 pub mod stac;
 pub mod stac_area;
+pub mod stac_bands;
 pub mod table_stats;
 pub(crate) mod terrain_blocks;
 pub mod tile_export;
@@ -125,6 +126,7 @@ pub fn all() -> Vec<CommandSpec> {
     v.extend(sharing::commands());
     v.extend(stac::commands());
     v.extend(stac_area::commands());
+    v.extend(stac_bands::commands());
     v.extend(portals::commands());
     v.extend(catalogs::commands());
     v.extend(webdata::commands());
