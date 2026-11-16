@@ -26,6 +26,8 @@
   <a href="https://rustgis.app"><img alt="Read the documentation" src="https://img.shields.io/badge/Read-the%20docs-0e9384?style=for-the-badge&logo=materialformkdocs&logoColor=white" height="36"></a>
   <a href="https://rustgis.app/videos/"><img alt="Watch the video tutorials" src="https://img.shields.io/badge/Watch-video%20tutorials-dc2626?style=for-the-badge&logo=youtube&logoColor=white" height="36"></a>
   <a href="https://apps.microsoft.com/detail/9ppjw8h561lq?mode=direct"><img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="36"></a>
+  <a href="https://play.google.com/store/apps/details?id=org.rustgis.mobile"><img alt="Get it on Google Play" src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" height="53"></a>
+  <a href="https://apps.apple.com/app/rustgis/id6834987896"><img alt="Download on the App Store" src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" height="36"></a>
 </p>
 
 <p align="center">
@@ -37,9 +39,8 @@
 - **Fast and small.** One native program, drawn on the GPU, with no runtime to install and no
   server to run.
 - **Runs everywhere.** The same app on Windows, macOS and Linux, compiled to WebAssembly at
-  [web.rustgis.app](https://web.rustgis.app) with nothing to install, and on Android phones and
-  tablets for [field work](docs/user-guide/field-work.md), with iOS to follow through the App
-  Store.
+  [web.rustgis.app](https://web.rustgis.app) with nothing to install, and on Android and iOS
+  phones and tablets for [field work](docs/user-guide/field-work.md).
 - **Local and private.** Your files are read and written on your machine, and nothing is uploaded
   on its own. The network is used only when you ask for it: web basemaps, plugins, the GeoLibre
   tools and the AI model you pick, which receives your questions and the data it reads to answer
@@ -136,8 +137,10 @@ The [user guide](https://rustgis.app/user-guide/) covers each area in detail,
 - **Microsoft Store**: get RustGIS from the
   [Microsoft Store](https://apps.microsoft.com/detail/9ppjw8h561lq) on Windows 10 and 11, which
   installs it in one click and keeps it up to date.
-- **Phones**: signed Android APKs come with each release from v0.7.0; see
-  [Field Work](docs/user-guide/field-work.md) for the phone app and the app stores.
+- **Phones and tablets**: get the field app from [Google Play](https://play.google.com/store/apps/details?id=org.rustgis.mobile) on
+  Android or the [App Store](https://apps.apple.com/app/rustgis/id6834987896) on iPhone and iPad (see
+  [Field Work](docs/user-guide/field-work.md)); releases from v0.7.0 on also carry signed Android
+  APKs.
 - **Package managers**: `winget install OpenGeos.RustGIS`,
   `brew install --cask rustgis` (macOS and Linux), `yay -S rustgis-bin` (AUR), or
   `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` (Fedora).

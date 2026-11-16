@@ -14,6 +14,21 @@ signs the app and keeps it up to date:
 
 [![Get it from Microsoft](https://get.microsoft.com/images/en-us%20dark.svg){ width="200" }](https://apps.microsoft.com/detail/9ppjw8h561lq?mode=direct)
 
+## Phones and tablets
+
+The [field app](user-guide/field-work.md) for collecting and editing data away from a desk is on
+Google Play for Android and on the App Store for iPhone and iPad:
+
+<div class="store-badges" markdown>
+
+[![Get it on Google Play](https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png){ .store-badge-play }](https://play.google.com/store/apps/details?id=org.rustgis.mobile)
+[![Download on the App Store](https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg)](https://apps.apple.com/app/rustgis/id6834987896)
+
+</div>
+
+Releases from v0.7.0 on also carry signed Android APKs (below), for a device without Google
+Play.
+
 ## Download
 
 Each [GitHub release](https://github.com/opengeos/RustGIS/releases/latest) carries ready-to-run
@@ -123,8 +138,8 @@ RUSTGIS_DATA_DIR=/path/to/data cargo build --release
 | Linux (X11 and Wayland) | Supported |
 | macOS | Supported |
 | Windows | Supported |
-| Android | The [field app](user-guide/field-work.md): a touch interface for collecting and editing data (signed APKs with each release) |
-| iOS | The same field app, to follow through the App Store |
+| Android | The [field app](user-guide/field-work.md) from [Google Play](https://play.google.com/store/apps/details?id=org.rustgis.mobile), or the signed APKs with each release from v0.7.0 on |
+| iOS and iPadOS | The [field app](user-guide/field-work.md) from the [App Store](https://apps.apple.com/app/rustgis/id6834987896) |
 | Web browser | Supported: [web.rustgis.app](https://web.rustgis.app) (WebGPU or WebGL2), installable as an app on iOS, Android and desktops ([how](#install-the-web-app)) |
 
 ## Web app

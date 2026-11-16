@@ -1,6 +1,8 @@
-/* The home page's call-to-action row: buttons and the Microsoft Store badge on one line,
-   spaced apart and wrapping onto further lines on narrow screens. */
-.hero-actions p {
+/* The home page's call-to-action row (buttons and the store badges) and the installation
+   page's store badges: on one line, spaced apart and wrapping onto further lines on narrow
+   screens. */
+.hero-actions p,
+.store-badges p {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -12,10 +14,18 @@
   padding-inline: 1.4em;
 }
 
-.hero-actions img {
+.hero-actions img,
+.store-badges img {
   display: block;
   height: 2rem;
   width: auto;
+}
+
+/* Google's badge carries its own transparent margin: taller, with the margin cancelled, it
+   matches the other store badges. */
+img.store-badge-play {
+  height: 2.95rem;
+  margin: -0.475rem -0.4rem;
 }
 
 /* Screenshot captions: right under their image (the figure's Markdown leaves a line break

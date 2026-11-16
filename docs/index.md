@@ -14,6 +14,8 @@ Map operations are commands you can script from the command line, Python or the 
 [Get started](getting-started.md){ .md-button }
 [Compare](comparison/index.md){ .md-button }
 [![Get it from Microsoft](https://get.microsoft.com/images/en-us%20dark.svg)](https://apps.microsoft.com/detail/9ppjw8h561lq?mode=direct)
+[![Get it on Google Play](https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png){ .store-badge-play }](https://play.google.com/store/apps/details?id=org.rustgis.mobile)
+[![Download on the App Store](https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg)](https://apps.apple.com/app/rustgis/id6834987896)
 
 </div>
 
@@ -56,9 +58,9 @@ Map operations are commands you can script from the command line, Python or the 
 
 -   **Field work**
 
-    Carry a map to an Android phone (iOS through the App Store to follow) with its offline
-    basemap, capture points, lines and polygons by touch or at the device's position, record
-    tracks, attach photos, and bring the edits back into the project.
+    Carry a map to an Android or iOS phone or tablet with its offline basemap, capture points,
+    lines and polygons by touch or at the device's position, record tracks, attach photos, and
+    bring the edits back into the project.
     [Field Work](user-guide/field-work.md)
 
 -   **AI Assistant**
