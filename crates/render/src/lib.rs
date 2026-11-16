@@ -9125,6 +9125,8 @@ mod tests {
                 sky: 0.0,
                 fill: 0.0,
                 rock: None,
+                ambient: None,
+                balanced: false,
             };
         };
         let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1200.0, bearing: 0.0, pitch: 0.0 };
@@ -9160,6 +9162,8 @@ mod tests {
             sky: 0.0,
             fill: 0.0,
             rock: None,
+            ambient: None,
+            balanced: false,
         };
         // Drawn only zoomed out past a scale between the centre's and the far band's.
         l.max_scale = Some((centre + farthest) / 2.0);
@@ -9205,6 +9209,8 @@ mod tests {
                 sky: 0.0,
                 fill: 0.0,
                 rock: None,
+                ambient: None,
+                balanced: false,
             };
             // Drawn only zoomed in past 1:1: or in a group drawn only there.
             if grouped {

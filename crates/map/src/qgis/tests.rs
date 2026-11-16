@@ -876,7 +876,9 @@ fn raster_renderers_read_as_rustgis_raster_styles() {
             shadow: 0.0,
             sky: 0.0,
             fill: 0.0,
-            rock: None
+            rock: None,
+            ambient: None,
+            balanced: false,
         }
     );
     assert!(report.notes.iter().any(|n| n.text.contains("saturation")));

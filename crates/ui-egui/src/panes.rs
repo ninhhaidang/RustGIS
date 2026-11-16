@@ -7,7 +7,7 @@ use egui::{Align2, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use rustgis_engine::Session;
 use rustgis_engine::analysis::{ParamKind, tools};
 use rustgis_engine::data::GeometryType;
-use rustgis_engine::map::raster::{Normalizer, RasterLegend, RasterStyle, Rock};
+use rustgis_engine::map::raster::{Normalizer, RasterLegend, RasterStyle, Rock, relief_ambient};
 use rustgis_engine::map::symbology::{
     ClassRef, ClassStyle, Dash, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_EXPRESSION_CLASSES, MAX_LABEL,
     MAX_LINE_MARKER_SIZE, MAX_MARKER_INTERVAL, MAX_STROKE_OFFSET, MAX_STROKE_WIDTH, MAX_STROKES, MIN_MARKER_INTERVAL, OTHER_VALUES,
@@ -6857,8 +6857,9 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
         RasterRenderer::Colormap => {
             ui.label(egui::RichText::new(tl!("Colors from the raster's own color table.")).size(11.5).color(t.text_dim));
         }
-        RasterRenderer::ShadedRelief { band, ramp, azimuth, altitude, z_factor, shadow, sky, fill, rock } => {
+        RasterRenderer::ShadedRelief { band, ramp, azimuth, altitude, z_factor, shadow, sky, fill, rock, ambient, balanced } => {
             let (az, alt, zf, sh, sk, fl) = (*azimuth, *altitude, *z_factor, *shadow, *sky, *fill);
+            let am = relief_ambient(*ambient, *balanced);
             let rp = ramp.as_ref().map(|r| r.name().to_string());
             let relief = move |band: usize, az: f64, alt: f64, zf: f64, sh: f64| {
                 let mut p = json!({
@@ -6879,6 +6880,7 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     ("Cast shadows", sh, 0.0..=1.0, 0.01, 3),
                     ("Sky visibility", sk, 0.0..=1.0, 0.01, 4),
                     ("Fill light", fl, 0.0..=1.0, 0.01, 5),
+                    ("Ambient", am, 0.0..=1.0, 0.01, 6),
                 ] {
                     let input_label = ui.label(tl!(label));
                     let mut x = v;
@@ -6895,6 +6897,7 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                         5 => r.on_hover_text(tl!(
                             "A light from the side opposite the sun that lightens the slopes turned toward it, from 0 (none) to 1"
                         )),
+                        6 => r.on_hover_text(tl!("The share of the colour a slope turned fully from the sun keeps, from 0 to 1")),
                         _ => r,
                     };
                     if drag.settled(ui, &r, &mut x) && x != v {
@@ -6909,6 +6912,7 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                         match which {
                             4 => p["sky"] = json!(x),
                             5 => p["fill"] = json!(x),
+                            6 => p["ambient"] = json!(x),
                             _ => {}
                         }
                         let _ = app.run("raster.symbology", p);
@@ -6916,6 +6920,16 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     ui.end_row();
                 }
             });
+            let mut on = *balanced;
+            if ui
+                .checkbox(&mut on, tl!("Balanced light"))
+                .on_hover_text(tl!("Flat ground keeps the ramp's colour and slopes facing the sun brighten"))
+                .changed()
+            {
+                let mut p = relief(*band, az, alt, zf, sh);
+                p["balanced"] = json!(on);
+                let _ = app.run("raster.symbology", p);
+            }
             rock_on_slopes(app, ui, l.id, *rock, relief(*band, az, alt, zf, sh));
             let mut tint = ramp.is_some();
             if ui.checkbox(&mut tint, tl!("Tint by elevation")).changed() {

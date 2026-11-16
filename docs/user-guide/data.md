@@ -1477,6 +1477,24 @@ with its foot, so its walls come out gentler than they are: 25° to 40° suits i
 can start higher. Missing keys keep the current rock's (or those defaults), and `"rock": false`
 removes it; it is off by default and saved with the project only when set.
 
+**Ambient** and **Balanced light**, on a Shaded Relief layer (`raster.symbology` `"ambient"`, 0 to
+1, and `"balanced"`, true or false), set how the sun's light shades the colour. Each cell is drawn
+at `ambient × sky + (1 − ambient) × h × direct` of its colour, where `h` is how squarely it faces
+the sun (0 to 1), `sky` the share of the sky it sees (1 without sky visibility) and `direct` what
+cast shadows leave of the sun (1 without them); the fill light is added to that. So `ambient` is the
+share a slope turned fully from the sun keeps: lower draws deeper shadows. With the balanced light,
+`h` is divided by its value on flat ground (`sin altitude`), and the sum is held to at most 1.3
+before the fill light is added: flat ground that sees the whole sky is drawn in the ramp's own colour, the colour the legend
+shows, slopes turned to the sun brighten (each channel clamped to 255) and slopes turned away fall
+toward `ambient`. A sun within about 0.1° of the horizon lights no flat ground, so there the
+balanced light is drawn as the plain one, with its own ambient; below about 1° the picture changes
+sharply with small changes of altitude, so keep the sun higher with the balanced light. A layout's colour bar shows the
+colour of flat open ground, so with the balanced light it is the ramp itself; where sky visibility
+hides part of the sky, the ground is drawn darker than the bar. Left unset, `ambient` is
+0.25, as the relief was always drawn, or 0.5 with the balanced light, which keeps about the same
+contrast; `"ambient": null` goes back to that default. A Z factor of 1.5 to 2 suits the balanced
+light on 30 m data. Both are saved with the project only when set.
+
 With **Resampling** set to bilinear, a Shaded Relief layer's light (its hillshade, cast shadows,
 sky visibility and fill light) and its rock tint are blended between the cells' centres, as its
 values are, so a cell drawn over many pixels shades smoothly instead of in squares; nearest keeps

@@ -1200,6 +1200,16 @@ impl Rock {
     }
 }
 
+/// The share of the colour a Shaded Relief slope turned fully from the sun keeps: its `ambient`
+/// when set, or else 0.25 (the light of old), and 0.5 with the `balanced` light, which keeps about
+/// the old light's contrast (#1977).
+pub fn relief_ambient(ambient: Option<f64>, balanced: bool) -> f64 {
+    ambient.unwrap_or(if balanced { 0.5 } else { 0.25 }).clamp(0.0, 1.0)
+}
+
+/// The most a balanced Shaded Relief light multiplies a colour by, on slopes facing the sun.
+const BALANCED_MAX: f64 = 1.3;
+
 fn is_no_light(v: &f64) -> bool {
     *v == 0.0
 }
@@ -1409,7 +1419,11 @@ pub enum RasterRenderer {
     /// ([`crate::shadow::sky`]); 0, the default, leaves it whole. `fill` (0 to 1) is a fill light
     /// from the side opposite the sun, 55° up, that lightens only the slopes turned toward it; 0,
     /// the default, has none. `rock` tints steep slopes toward a rock colour before the lights
-    /// shade them (see [`Rock`]); none, the default, keeps the ramp.
+    /// shade them (see [`Rock`]); none, the default, keeps the ramp. `ambient` (0 to 1) is the
+    /// share of the colour a slope turned fully from the sun keeps; none, the default, is
+    /// [`relief_ambient`]'s. `balanced` divides the sun's light by its value on flat ground, so flat
+    /// ground keeps the ramp's colour and slopes facing the sun brighten (#1977); off, the default,
+    /// lights as before.
     ShadedRelief {
         band: usize,
         ramp: Option<Ramp>,
@@ -1424,6 +1438,10 @@ pub enum RasterRenderer {
         fill: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rock: Option<Rock>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ambient: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        balanced: bool,
     },
 }
 
@@ -1980,22 +1998,15 @@ impl<'a> Colorizer<'a> {
         self.color_lit(vals, hillshade, None, None, None)
     }
 
-    /// [`Colorizer::color`], with Shaded Relief's ambient light scaled by `ambient` (0–255, the
+    /// [`Colorizer::color`], with Shaded Relief's ambient light scaled by `sky` (0–255, the
     /// share of it the sky a cell sees leaves, see [`RasterRenderer::ShadedRelief`]'s `sky`),
     /// `fill` (0–255, a share of the colour) added for its fill light (its `fill`), and its colour
     /// moved `rock` (0–255) of the way to its rock colour (its `rock`, see [`Rock::share`]).
-    pub fn color_lit(
-        &self,
-        vals: &[f32],
-        hillshade: Option<u8>,
-        ambient: Option<u8>,
-        fill: Option<u8>,
-        rock: Option<u8>,
-    ) -> Option<[u8; 4]> {
+    pub fn color_lit(&self, vals: &[f32], hillshade: Option<u8>, sky: Option<u8>, fill: Option<u8>, rock: Option<u8>) -> Option<[u8; 4]> {
         // The renderer masks values as it samples them (they arrive as NaN); this is for other callers.
         let mask = &self.style.mask;
         if mask.is_empty() || !vals.iter().any(|v| mask.hides(*v)) {
-            return self.paint(vals, hillshade, ambient, fill, rock);
+            return self.paint(vals, hillshade, sky, fill, rock);
         }
         // Masked values are no data. The renderer bands are at most three.
         let mut kept = [f32::NAN; 3];
@@ -2004,10 +2015,10 @@ impl<'a> Colorizer<'a> {
                 *k = *v;
             }
         }
-        self.paint(kept.get(..vals.len().min(3)).unwrap_or(&kept), hillshade, ambient, fill, rock)
+        self.paint(kept.get(..vals.len().min(3)).unwrap_or(&kept), hillshade, sky, fill, rock)
     }
 
-    fn paint(&self, vals: &[f32], hillshade: Option<u8>, ambient: Option<u8>, fill: Option<u8>, rock: Option<u8>) -> Option<[u8; 4]> {
+    fn paint(&self, vals: &[f32], hillshade: Option<u8>, sky: Option<u8>, fill: Option<u8>, rock: Option<u8>) -> Option<[u8; 4]> {
         let v0 = *vals.first()?;
         let c = match &self.style.renderer {
             RasterRenderer::Rgb { .. } => {
@@ -2034,7 +2045,7 @@ impl<'a> Colorizer<'a> {
                 }
                 *self.palette.get(i as usize)?
             }
-            RasterRenderer::ShadedRelief { ramp, rock: steep, .. } => {
+            RasterRenderer::ShadedRelief { ramp, rock: steep, altitude, ambient: setting, balanced, .. } => {
                 let h = hillshade.unwrap_or(180) as f64 / 255.0;
                 let base = if ramp.is_some() { *self.ramp_lut.get(self.byte(0, v0) as usize)? } else { [255, 255, 255, 255] };
                 // Steep ground first takes on the rock colour; the light then shades either.
@@ -2044,9 +2055,20 @@ impl<'a> Colorizer<'a> {
                 };
                 // Multiply the tint by the hillshade, keeping some ambient light (less of it where
                 // the terrain hides part of the sky), and adding the fill light on its own.
-                let a = 0.25 * ambient.map_or(1.0, |a| f64::from(a) / 255.0);
+                let share = relief_ambient(*setting, *balanced);
+                let a = share * sky.map_or(1.0, |s| f64::from(s) / 255.0);
                 let f = fill.map_or(0.0, |f| f64::from(f) / 255.0);
-                let m = |c: u8| (c as f64 * (a + 0.75 * h + f)).round().clamp(0.0, 255.0) as u8;
+                // Flat ground's hillshade, rounded as the hillshade is: 0 for a sun on the horizon,
+                // which lights no flat ground to balance against, so that is lit as unbalanced.
+                let flat = (255.0 * altitude.clamp(0.0, 90.0).to_radians().sin()).round();
+                let lit = if *balanced && flat > 0.0 {
+                    // The sun's light over its value on flat ground: flat ground keeps the ramp's
+                    // colour, slopes facing the sun brighten.
+                    (a + (1.0 - share) * h * 255.0 / flat).min(BALANCED_MAX)
+                } else {
+                    a + (1.0 - share) * h
+                };
+                let m = |c: u8| (c as f64 * (lit + f)).round().clamp(0.0, 255.0) as u8;
                 [m(base[0]), m(base[1]), m(base[2]), 255]
             }
         };
@@ -2396,7 +2418,19 @@ mod tests {
 
     /// A Shaded Relief without a ramp or rock, lit from `azimuth` and `altitude`.
     fn grey_relief(azimuth: f64, altitude: f64, z_factor: f64, shadow: f64, sky: f64) -> RasterRenderer {
-        RasterRenderer::ShadedRelief { band: 0, ramp: None, azimuth, altitude, z_factor, shadow, sky, fill: 0.0, rock: None }
+        RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp: None,
+            azimuth,
+            altitude,
+            z_factor,
+            shadow,
+            sky,
+            fill: 0.0,
+            rock: None,
+            ambient: None,
+            balanced: false,
+        }
     }
 
     /// The legend names a class as the file does (#889), and gives the value of one it doesn't.
@@ -2943,6 +2977,8 @@ mod tests {
             sky: 0.0,
             fill: 0.0,
             rock,
+            ambient: None,
+            balanced: false,
         };
         let (mut rocky, mut plain) = (RasterStyle::default_for(&r), RasterStyle::default_for(&r));
         (rocky.renderer, plain.renderer) = (relief(Some(rock)), relief(None));
@@ -2975,6 +3011,80 @@ mod tests {
         assert!(!saved.contains("rock"), "{saved}");
         let saved = serde_json::to_string(&relief(Some(rock))).unwrap();
         assert_eq!(serde_json::from_str::<RasterRenderer>(&saved).unwrap(), relief(Some(rock)));
+    }
+
+    /// Ambient and the balanced light (#1977): unset, the relief is lit as before; `ambient` is the
+    /// share a slope turned from the sun keeps; balanced, flat ground keeps the ramp's colour,
+    /// slopes facing the sun brighten up to 1.3, and every other light still shades it. Each is
+    /// saved only when set.
+    #[test]
+    fn balanced_light_keeps_flat_ground_at_the_ramps_colour() {
+        assert_eq!((relief_ambient(None, false), relief_ambient(None, true), relief_ambient(Some(2.0), true)), (0.25, 0.5, 1.0));
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 10.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r = Raster::new("dem", 10, 10, vec![vec![5.0; 100]], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap();
+        let tinted_relief = |ramp, altitude, ambient, balanced| RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp,
+            azimuth: 315.0,
+            altitude,
+            z_factor: 1.0,
+            shadow: 0.0,
+            sky: 0.0,
+            fill: 0.0,
+            rock: None,
+            ambient,
+            balanced,
+        };
+        let relief = |altitude, ambient, balanced| tinted_relief(None, altitude, ambient, balanced);
+        // Grey relief: white shaded, so a channel is 255 times the light.
+        let paint = |renderer: RasterRenderer, h: u8, sky: Option<u8>, fill: Option<u8>| {
+            let mut style = RasterStyle::default_for(&r);
+            style.renderer = renderer;
+            Colorizer::new(&style, &r, None).color_lit(&[5.0], Some(h), sky, fill, None).map(|c| c[0])
+        };
+        let grey = |f: f64| Some((255.0 * f).round().clamp(0.0, 255.0) as u8);
+        for h in [0u8, 90, 180, 255] {
+            let hf = f64::from(h) / 255.0;
+            assert_eq!(paint(relief(45.0, None, false), h, None, None), grey(0.25 + 0.75 * hf), "unset: as before");
+            assert_eq!(paint(relief(45.0, Some(0.4), false), h, None, None), grey(0.4 + 0.6 * hf));
+        }
+        for altitude in [20.0, 45.0, 70.0] {
+            // Flat ground's hillshade, as `hillshade` rounds it: the ramp's own colour.
+            let flat = hillshade(&[0.0; 9], 1.0, 1.0, 315.0, altitude, 1.0);
+            for ambient in [None, Some(0.2), Some(0.8)] {
+                assert_eq!(paint(relief(altitude, ambient, true), flat, None, None), Some(255), "{altitude}° {ambient:?}");
+            }
+            // Turned away, the ambient share; facing the sun, brighter, up to 1.3 times.
+            assert_eq!(paint(relief(altitude, None, true), 0, None, None), grey(0.5));
+            let lit = (0.5 + 0.5 * 255.0 / f64::from(flat)).min(1.3);
+            assert!(lit > 1.0);
+            assert_eq!(paint(relief(altitude, None, true), 255, None, None), Some(255), "white: clamped");
+            // On a ramp's colour, flat ground is that colour, and a slope facing the sun it times 1.3 at most.
+            let mut style = RasterStyle::default_for(&r);
+            style.renderer = tinted_relief(Some(Ramp::Terrain), altitude, None, true);
+            let tinted = Colorizer::new(&style, &r, None);
+            let ramp = tinted.color_lit(&[5.0], Some(flat), None, None, None).unwrap();
+            let bright = |c: u8| (f64::from(c) * lit).round().min(255.0) as u8;
+            let lit_ramp = tinted.color_lit(&[5.0], Some(255), None, None, None).unwrap();
+            assert_eq!(lit_ramp, [bright(ramp[0]), bright(ramp[1]), bright(ramp[2]), 255]);
+            assert!(lit_ramp.iter().zip(ramp).take(3).any(|(l, c)| *l > c), "brighter than the ramp: {lit_ramp:?} {ramp:?}");
+            // The sky dims the ambient share, the fill light adds to it, as before.
+            let sky_fill = 0.5 * 128.0 / 255.0 + 0.5 * f64::from(flat / 2) / f64::from(flat) + 30.0 / 255.0;
+            assert_eq!(paint(relief(altitude, None, true), flat / 2, Some(128), Some(30)), grey(sky_fill));
+        }
+
+        // A sun on the horizon lights no flat ground (its hillshade rounds to 0): balanced is
+        // lit as unbalanced, with its own ambient.
+        for h in [0u8, 40, 120] {
+            assert_eq!(paint(relief(0.0, None, true), h, None, None), paint(relief(0.0, Some(0.5), false), h, None, None));
+        }
+
+        // Saved only when set, and read back as it was.
+        let saved = serde_json::to_string(&relief(45.0, None, false)).unwrap();
+        assert!(!saved.contains("ambient") && !saved.contains("balanced"), "{saved}");
+        let set = relief(45.0, Some(0.35), true);
+        let saved = serde_json::to_string(&set).unwrap();
+        assert_eq!(serde_json::from_str::<RasterRenderer>(&saved).unwrap(), set);
     }
 
     /// A tower lit from the east, drawn as Shaded Relief with `shadow`.

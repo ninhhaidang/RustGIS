@@ -199,6 +199,8 @@ mod tests {
             sky: 0.0,
             fill: 0.0,
             rock: None,
+            ambient: None,
+            balanced: false,
         };
         let e = export(&layer, 2, 2, 1.0).err().unwrap_or_else(|| panic!("an archive without its shadows"));
         assert!(e.contains("cast shadows") && e.contains("read in place"), "{e}");
@@ -231,6 +233,8 @@ mod tests {
             sky: 0.0,
             fill: 0.0,
             rock: None,
+            ambient: None,
+            balanced: false,
         };
         let _cancelled = rustgis_data::progress::install(Some(std::sync::Arc::new(Cancelled)));
         let e = export(&layer, 0, 0, 1.0).err().unwrap_or_else(|| panic!("an archive without its shadows"));

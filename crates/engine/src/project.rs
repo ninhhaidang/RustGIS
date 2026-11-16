@@ -77,6 +77,7 @@ pub const CAPABILITIES: &[&str] = &[
     "normalized-legend-urls",
     "field-origin",
     "slope-percent",
+    "shaded-relief-light",
     "table-export-order",
     "tabulate-intersection-unit",
     "layout-element-background",

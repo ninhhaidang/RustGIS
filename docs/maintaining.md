@@ -97,7 +97,8 @@ release has no such file format. Current-writer examples do not replace these hi
 
 New project saves and map/layer exports write format 2. Their `requires` header names only
 features present in the saved payload: `terrain-block`, `terrain-water`,
-`shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour) and
+`shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour),
+`shaded-relief-light` (a Shaded Relief's ambient or balanced light) and
 `normalized-legend-urls` for normalized legend addresses. Project
 requirements include offline map snapshots. `table-export-order` protects saved task commands,
 command notebook cells and replayable history using Export Table sort or limit options.

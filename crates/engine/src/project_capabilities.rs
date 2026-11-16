@@ -153,22 +153,45 @@ fn relief_effects(layer: &Layer) -> bool {
     })
 }
 
+/// Whether a layer sets Shaded Relief's ambient or balanced light (#1977): newer than
+/// `shaded-relief-effects`, so a reader that knows only that would drop them.
+fn relief_light(layer: &Layer) -> bool {
+    layer.raster.as_ref().is_some_and(
+        |r| matches!(&r.style.renderer, RasterRenderer::ShadedRelief { ambient, balanced, .. } if ambient.is_some() || *balanced),
+    )
+}
+
+/// The renderer capabilities a layer needs, in [`map_capabilities`]'s order.
+fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
+    [(relief_effects(layer), "shaded-relief-effects"), (relief_light(layer), "shaded-relief-light")]
+        .into_iter()
+        .filter_map(|(used, name)| used.then_some(name))
+        .collect()
+}
+
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
-    let (mut block, mut water, mut relief, mut legends) = (false, false, false, false);
+    let (mut block, mut water, mut relief, mut light, mut legends) = (false, false, false, false, false);
     for map in maps {
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
             water |= t.water.is_some();
         }
         relief |= map.layers.iter().any(relief_effects);
+        light |= map.layers.iter().any(relief_light);
         legends |= map.tiles.iter().any(|tile| {
             tile.legends.iter().any(|legend| rustgis_data::login_address::inner(&legend.url).len() > rustgis_map::tiles::MAX_LEGEND_URL)
         });
     }
-    [(block, "terrain-block"), (water, "terrain-water"), (relief, "shaded-relief-effects"), (legends, "normalized-legend-urls")]
-        .into_iter()
-        .filter_map(|(used, name)| used.then_some(name))
-        .collect()
+    [
+        (block, "terrain-block"),
+        (water, "terrain-water"),
+        (relief, "shaded-relief-effects"),
+        (light, "shaded-relief-light"),
+        (legends, "normalized-legend-urls"),
+    ]
+    .into_iter()
+    .filter_map(|(used, name)| used.then_some(name))
+    .collect()
 }
 
 #[derive(Serialize)]
@@ -187,8 +210,7 @@ pub(crate) fn map_file_bytes(map: &Map) -> Result<Vec<u8>, String> {
 
 /// A layer file keeps the same renderer capabilities as the layer saved inside a project.
 pub(crate) fn layer_file_bytes(layer: &Layer) -> Result<Vec<u8>, String> {
-    let requires = if relief_effects(layer) { vec!["shaded-relief-effects"] } else { Vec::new() };
-    serde_json::to_vec(&Item { format: FORMAT, requires, value: layer }).map_err(|e| e.to_string())
+    serde_json::to_vec(&Item { format: FORMAT, requires: layer_capabilities(layer), value: layer }).map_err(|e| e.to_string())
 }
 
 /// Only executable export options require the capability, not fields in unrelated data.
@@ -481,10 +503,13 @@ mod tests {
         }))
         .unwrap();
         let clean = Layer::new_raster(1, "DEM", raster);
-        for field in ["shadow", "sky", "fill", "rock"] {
+        for field in ["shadow", "sky", "fill", "rock", "ambient", "balanced"] {
             let mut value = serde_json::to_value(&clean).unwrap();
-            value["raster"]["style"]["renderer"]["ShadedRelief"][field] =
-                if field == "rock" { serde_json::to_value(rustgis_map::raster::Rock::DEFAULT).unwrap() } else { json!(0.4) };
+            value["raster"]["style"]["renderer"]["ShadedRelief"][field] = match field {
+                "rock" => serde_json::to_value(rustgis_map::raster::Rock::DEFAULT).unwrap(),
+                "balanced" => json!(true),
+                _ => json!(0.4),
+            };
             let layer: Layer = serde_json::from_value(value).unwrap();
             let mut p = Project::new("Relief");
             p.maps[0].layers.push(layer.clone());
@@ -493,7 +518,8 @@ mod tests {
                 json_bytes(&map_file_bytes(p.map()).unwrap()),
                 json_bytes(&layer_file_bytes(&layer).unwrap()),
             ] {
-                assert_eq!(document["requires"], json!(["shaded-relief-effects"]), "{field}: {document}");
+                let needs = if matches!(field, "ambient" | "balanced") { "shaded-relief-light" } else { "shaded-relief-effects" };
+                assert_eq!(document["requires"], json!([needs]), "{field}: {document}");
             }
         }
         assert!(json_bytes(&layer_file_bytes(&clean).unwrap()).get("requires").is_none());

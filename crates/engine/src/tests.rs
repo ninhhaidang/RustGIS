@@ -4728,6 +4728,43 @@ fn shaded_relief_keeps_its_fill_light() {
     assert_eq!(fill(&t), 0.45, "back when opened");
 }
 
+/// Shaded Relief's ambient and balanced light (#1977) are set, clamped, kept when left out, saved
+/// only when set, and back when the project is opened again; a null ambient is the default again.
+#[test]
+fn shaded_relief_keeps_its_ambient_and_balanced_light() {
+    let mut s = with_raster();
+    let light = |s: &Session| match s.map().layers.iter().find_map(|l| l.raster.as_ref()).map(|r| &r.style.renderer) {
+        Some(rustgis_map::RasterRenderer::ShadedRelief { ambient, balanced, .. }) => (*ambient, *balanced),
+        other => panic!("{other:?}"),
+    };
+    let saved = |s: &mut Session| {
+        let text = s.project.saved_text(None).unwrap().0;
+        (text.matches("\"ambient\"").count(), text.matches("\"balanced\"").count())
+    };
+    let (a0, b0) = saved(&mut s);
+    s.run("raster.symbology", &json!({"type": "shadedRelief"})).unwrap();
+    assert_eq!((light(&s), saved(&mut s)), ((None, false), (a0, b0)), "unset, and not saved");
+    s.run("raster.symbology", &json!({"type": "shadedRelief", "ambient": 0.4, "balanced": true})).unwrap();
+    s.run("raster.symbology", &json!({"type": "shadedRelief", "azimuth": 200})).unwrap();
+    assert_eq!((light(&s), saved(&mut s)), ((Some(0.4), true), (a0 + 1, b0 + 1)), "left out, kept");
+    s.run("raster.symbology", &json!({"type": "shadedRelief", "ambient": 3})).unwrap();
+    assert_eq!(light(&s), (Some(1.0), true));
+    s.run("raster.symbology", &json!({"type": "shadedRelief", "ambient": null})).unwrap();
+    assert_eq!(light(&s), (None, true), "null: the default");
+    assert!(s.run("raster.symbology", &json!({"type": "shadedRelief", "ambient": "dark"})).is_err());
+    s.run("raster.symbology", &json!({"type": "shadedRelief", "ambient": "0.35"})).unwrap();
+    assert_eq!(light(&s), (Some(0.35), true), "a number as text, as other keys take");
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("rustgis-ambient-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ambient.rgis");
+    s.run("project.saveAs", &json!({"path": path.display().to_string()})).unwrap();
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": path.display().to_string()})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(light(&t), (Some(0.35), true), "back when opened");
+}
+
 /// Shaded Relief's rock on steep slopes (#1913): an object turns it on, its missing keys from the
 /// current rock or the defaults; kept when left out; `false` removes it; a `from` not below `to`
 /// or a bad colour is refused; saved with the project only when set.

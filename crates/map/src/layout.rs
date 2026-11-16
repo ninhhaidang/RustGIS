@@ -1789,7 +1789,15 @@ pub fn color_scale(rl: &RasterLayer) -> Option<ColorScale> {
     let band = style.renderer.bands().first().copied().unwrap_or(0);
     let stats = view_stats.and_then(|s| s.first()).or_else(|| r.bands.get(band).map(|b| &b.stats))?;
     let colorizer = Colorizer::new(&style, r, view_stats);
-    let shade = matches!(style.renderer, RasterRenderer::ShadedRelief { .. }).then_some(255);
+    // A relief's bar is the colour of its flat ground: under the balanced light (#1977), flat
+    // ground's own hillshade, which keeps the ramp's colour; under the plain light, full light.
+    let shade = match style.renderer {
+        RasterRenderer::ShadedRelief { altitude, balanced: true, .. } => {
+            Some(crate::raster::hillshade(&[0.0; 9], 1.0, 1.0, 0.0, altitude, 1.0))
+        }
+        RasterRenderer::ShadedRelief { .. } => Some(255),
+        _ => None,
+    };
     let at = |v: f64| colorizer.color(&[v as f32], shade).map(Rgba);
     match &style.renderer {
         RasterRenderer::Stretch { .. } | RasterRenderer::ShadedRelief { ramp: Some(_), .. } => {
@@ -1842,6 +1850,42 @@ pub fn color_scale(rl: &RasterLayer) -> Option<ColorScale> {
 mod tests {
     use super::*;
     use crate::symbology::MAX_DASH_STEP;
+
+    /// Under the balanced light (#1977) flat ground is drawn in the ramp's own colour, so a relief's
+    /// colour bar is that colour, whatever the sun's height; under the plain light, the ramp.
+    #[test]
+    fn a_balanced_reliefs_colour_bar_is_its_flat_ground() {
+        use crate::Ramp;
+        use crate::raster::{Colorizer, RasterLayer, hillshade};
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 10.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r =
+            Raster::new("dem", 10, 10, vec![(0..100).map(|v| v as f32).collect()], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32")
+                .unwrap();
+        for (altitude, balanced) in [(45.0, true), (20.0, true), (45.0, false)] {
+            let mut rl = RasterLayer::from_path(r.clone(), "dem.tif");
+            rl.style.renderer = RasterRenderer::ShadedRelief {
+                band: 0,
+                ramp: Some(Ramp::Terrain),
+                azimuth: 315.0,
+                altitude,
+                z_factor: 1.0,
+                shadow: 0.0,
+                sky: 0.0,
+                fill: 0.0,
+                rock: None,
+                ambient: None,
+                balanced,
+            };
+            let Some(ColorScale::Ramp { lo, hi, colors }) = color_scale(&rl) else { panic!("a ramp") };
+            let colorizer = Colorizer::new(&rl.style, &r, None);
+            let flat = if balanced { hillshade(&[0.0; 9], 1.0, 1.0, 315.0, altitude, 1.0) } else { 255 };
+            for (i, c) in colors.iter().enumerate() {
+                let v = lo + (hi - lo) * i as f64 / (colors.len() - 1) as f64;
+                assert_eq!(Some(c.0), colorizer.color(&[v as f32], Some(flat)), "{altitude}° balanced {balanced}: sample {i}");
+            }
+        }
+    }
 
     #[test]
     fn elements_are_arranged_in_the_drawing_order() {

@@ -98,6 +98,8 @@ fn renderer_style(node: Node, pipe: Node, r: Node, kind: &str, layer: &str, repo
                 sky: 0.0,
                 fill: 0.0,
                 rock: None,
+                ambient: None,
+                balanced: false,
             };
             (renderer, Stretch::None)
         }
