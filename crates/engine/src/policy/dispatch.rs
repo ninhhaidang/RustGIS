@@ -124,7 +124,7 @@ impl Session {
         let CallKind::Command { id, params } = &call.kind else {
             return Err("only standalone archive or column-statistics commands can prepare a scoped read".into());
         };
-        if !matches!(id.as_str(), "map.reloadTiles" | "map.repairTiles" | "table.statistics") {
+        if !matches!(id.as_str(), "map.reloadTiles" | "map.repairTiles" | "table.statistics" | "edit.previewShapeConversion") {
             return Err("only standalone archive or column-statistics commands can prepare a scoped read".into());
         }
         let capture = |s: &mut Session| s.capture_read(id, params);
@@ -156,15 +156,25 @@ impl Session {
                 | "service.add"
                 | "source.syncState"
                 | "table.statistics"
+                | "edit.previewShapeConversion"
         ) && crate::cmd::edit::table_edit_in_background(command).is_none()
         {
             return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State and Column Statistics prepare background work".into());
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
+        // Scoped previews retain the raw invocation that was approved. Their admitted owner
+        // pins the resolved target; landing rechecks that these selectors still name it.
         if matches!(
             command,
-            "layer.loadAll" | "layer.reloadData" | "layer.repairSource" | "labels.convert" | "source.syncState" | "table.statistics"
-        ) || (command == "edit.convertField" && params.get("table").is_none_or(Value::is_null))
+            "layer.loadAll"
+                | "layer.reloadData"
+                | "layer.repairSource"
+                | "labels.convert"
+                | "source.syncState"
+                | "table.statistics"
+                | "edit.previewShapeConversion"
+        ) && (command != "edit.previewShapeConversion" || self.policy_user())
+            || (command == "edit.convertField" && params.get("table").is_none_or(Value::is_null))
         {
             let id = self.layer_id(&Value::Object(params.clone()))?;
             params.insert("layer".into(), json!(id));
@@ -941,6 +951,7 @@ impl Session {
                 };
                 let result = match txn {
                     Txn::Own => self.guarded(spec.label, spec.mutates, run),
+                    Txn::Shared if spec.id == "edit.applyShapeConversion" => self.savepoint(spec.label, run),
                     Txn::Shared => run(self),
                 };
                 self.url_completion_landed(spec.id, &params, &result);

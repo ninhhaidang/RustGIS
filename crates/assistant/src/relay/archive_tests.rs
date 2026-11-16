@@ -607,3 +607,34 @@ fn archive_batch_resumes_same_context_after_validation_failure_or_cancellation()
         relay.stop();
     }
 }
+
+#[test]
+fn shape_conversion_preview_uses_the_worker_without_implicitly_applying() {
+    use rustgis_engine::data::{Dataset, GeometryType};
+    let mut s = Session::new(Project::default());
+    let id = s.map_mut().add_dataset(Dataset::new("Polygons", GeometryType::Polygon, vec![]));
+    s.active_layer = Some(id);
+    s.run("edit.enable", &json!({"on":true})).unwrap();
+    s.run("edit.addFeature", &json!({"geometry":{"type":"Polygon","coordinates":[[[0.,0.],[0.01,0.],[0.01,0.01],[0.,0.01],[0.,0.]]]}}))
+        .unwrap();
+    let depth = s.undo_depth();
+    let relay = Relay::start(0).unwrap();
+    let grant = relay.grant(true).unwrap();
+    let (_, rx) = queue(&relay, &grant, command(1, "edit.previewShapeConversion", json!({"layer":id,"row":0,"kind":"circle"})));
+    assert_eq!(relay.poll(&mut s), 0);
+    assert!(rx.try_recv().is_err());
+    let done = worker(relay.take_archive_read().unwrap());
+    finish(&relay, &mut s, done);
+    let answer = reply(&rx);
+    assert!(answer.get("error").is_none(), "{answer}");
+    let result = answer.get("result").expect("preview returned no result");
+    assert_eq!(result["isError"], false, "{answer}");
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let proposal: rustgis_engine::shape_conversion::Proposal = serde_json::from_str(text).unwrap();
+    assert_eq!((proposal.layer, proposal.row), (id, 0));
+    assert!(matches!(proposal.shape, rustgis_engine::shape_conversion::Shape::Circle(_)));
+    assert!(proposal.current(&s));
+    assert_eq!(s.undo_depth(), depth);
+    assert!(s.circle_spec(id, 0).is_none());
+    relay.stop();
+}

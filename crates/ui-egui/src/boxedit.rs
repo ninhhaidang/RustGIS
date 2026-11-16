@@ -339,6 +339,7 @@ pub(crate) fn panel(app: &mut RustGisApp, ui: &mut egui::Ui) {
     }
 }
 pub(crate) fn context_menu(app: &mut RustGisApp, ui: &mut egui::Ui) {
+    crate::shapeconvert::menu(app, ui);
     if selected(app).is_some() {
         if ui.button(tl!("Edit Box Dimensions")).clicked() {
             app.ui.open_right(RightPane::Editing);

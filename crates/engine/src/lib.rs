@@ -24,6 +24,7 @@ pub mod policy;
 pub mod prefs;
 pub mod project;
 mod roles;
+pub mod shape_conversion;
 pub use peer::Peer;
 pub(crate) use roles::{Document, ParamRole, Role};
 mod parameters;
@@ -1183,7 +1184,7 @@ fn edits_features(id: &str) -> bool {
 }
 
 impl Session {
-    /// Marks this thread as the desktop window owner for column statistics. Adapters with a
+    /// Marks this thread as the desktop window owner for column statistics and shape fitting. Adapters with a
     /// window use the prepared read queue; headless adapters leave this disabled.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn statistics_need_read_ahead(&mut self, enabled: bool) {
@@ -1787,9 +1788,12 @@ impl Session {
     /// the active one; a command that takes a standalone table is checked against the one they
     /// name.
     fn conditions(&mut self, spec: &CommandSpec, params: &Value) -> (Option<&'static str>, Option<u32>, Option<u32>) {
-        let named = match params.get("layer") {
+        // Apply carries its explicit target inside the preview, even when another layer is
+        // active. Conditions and the streamed-edit preflight must judge that same target.
+        let layer_params = if spec.id == "edit.applyShapeConversion" { params.get("preview").unwrap_or(params) } else { params };
+        let named = match layer_params.get("layer") {
             Some(serde_json::Value::Array(list)) => list.first().and_then(|v| self.layer_id(&serde_json::json!({"layer": v})).ok()),
-            Some(_) => self.layer_id(params).ok(),
+            Some(_) => self.layer_id(layer_params).ok(),
             None => None,
         };
         let active = self.active_layer;
@@ -1844,6 +1848,22 @@ impl Session {
     /// Runs `f` as the command `label`: when it `mutates`, the project is snapshotted for undo
     /// and restored if `f` fails or panics.
     pub(crate) fn guarded(&mut self, label: &'static str, mutates: bool, f: impl FnOnce(&mut Session) -> CmdResult) -> CmdResult {
+        self.guarded_inner(label, mutates, true, f)
+    }
+
+    /// An atomic host-call savepoint. The enclosing plugin transaction owns Undo; a guest may
+    /// handle this call's error and still succeed, so failure must restore its changes here.
+    pub(crate) fn savepoint(&mut self, label: &'static str, f: impl FnOnce(&mut Session) -> CmdResult) -> CmdResult {
+        self.guarded_inner(label, true, false, f)
+    }
+
+    fn guarded_inner(
+        &mut self,
+        label: &'static str,
+        mutates: bool,
+        record_undo: bool,
+        f: impl FnOnce(&mut Session) -> CmdResult,
+    ) -> CmdResult {
         let snapshot = mutates.then(|| self.project.clone());
         let construction_snapshot = self.constructions.clone();
         let trust = (self.trusted_tasks.clone(), self.trusted_models.clone(), self.trusted_notebooks.clone());
@@ -1890,6 +1910,7 @@ impl Session {
             // [`Session::request_url`]) changed nothing: no undo step, nothing to save yet. The
             // session's own flag says so, not the answer, which a plugin's command could forge.
             (Ok(_), Some(_)) if std::mem::take(&mut self.request_only) => {}
+            (Ok(_), Some(_)) if !record_undo => {}
             (Ok(_), Some(mut snap)) => {
                 // A successful script may publish and then remove the layer. Its undo
                 // snapshot still needs the committed file record, even without a live layer

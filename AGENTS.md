@@ -43,8 +43,8 @@ is out of scope.
 - A new background raster command or export, or a tool whose work grows with its input, goes in
   the lists in `crates/engine/src/tests.rs` (`cancel_rasters`, `cancel_exports`, `cancel_tools`);
   `cancel_rasters` and `cancel_exports` must match the background registries. A read-ahead command
-  (`reads::prepare`, such as `service.layers`) has no list: add its call to
-  `long_commands_stop_when_cancelled_while_they_run` by hand.
+  (`reads::prepare`, such as `service.layers` or `edit.previewShapeConversion`) has no list: add
+  its call to `long_commands_stop_when_cancelled_while_they_run` by hand.
   `long_commands_stop_when_cancelled_while_they_run` fails one that never looks at Cancel;
   `cancelling_at_each_check_leaves_nothing_behind` cancels each command of the three lists at its
   first three checks and its last, and fails one that leaves the project, its undo steps or the

@@ -198,6 +198,48 @@ pub fn wasm_with_host_call(request: &serde_json::Value) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// Calls the host, handles its error as data, and returns a successful plugin result.
+/// Exercises host-call rollback when the guest does not propagate the host's failure.
+pub fn wasm_with_handled_host_error(request: &serde_json::Value) -> Vec<u8> {
+    let request = request.to_string();
+    let encode = |text: &str| text.bytes().map(|byte| format!("\\{byte:02x}")).collect::<String>();
+    let heap = (request.len().div_ceil(65536) + 1) * 65536;
+    let output = heap + 65536;
+    let prefix = r#"{"ok":{"handled":"#;
+    let body = output + prefix.len();
+    wat::parse_str(format!(
+        r#"
+        (module
+            (import "rustgis" "call" (func $call (param i32 i32) (result i32)))
+            (import "rustgis" "result" (func $result (param i32)))
+            (memory (export "memory") {pages})
+            (global $heap (mut i32) (i32.const {heap}))
+            (data (i32.const 0) "{request}")
+            (data (i32.const {output}) "{prefix}")
+            (func (export "rustgis_alloc") (param $n i32) (result i32)
+                (local $p i32)
+                (local.set $p (global.get $heap))
+                (global.set $heap (i32.add (global.get $heap) (local.get $n)))
+                (local.get $p))
+            (func (export "rustgis_call") (param i32 i32) (result i64)
+                (local $len i32)
+                (local.set $len (call $call (i32.const 0) (i32.const {length})))
+                (call $result (i32.const {body}))
+                (i32.store8 (i32.add (i32.const {body}) (local.get $len)) (i32.const 125))
+                (i32.store8 (i32.add (i32.const {body_plus_one}) (local.get $len)) (i32.const 125))
+                (i64.or (i64.shl (i64.const {output}) (i64.const 32))
+                    (i64.extend_i32_u (i32.add (local.get $len) (i32.const {extra}))))))
+        "#,
+        pages = output / 65536 + 2,
+        request = encode(&request),
+        prefix = encode(prefix),
+        length = request.len(),
+        body_plus_one = body + 1,
+        extra = prefix.len() + 2,
+    ))
+    .unwrap_or_default()
+}
+
 /// A manifest for the test module with a panel like the Historical Imagery plugin's: texts, a
 /// checkbox and a stepped slider running the echo command `q`, a range kept by the host, buttons,
 /// and `p` as its state command.

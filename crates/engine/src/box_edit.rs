@@ -211,7 +211,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     remember(s, id, row, b.clone())?;
     Ok(json!({"row":row,"box":b}))
 }
-fn remember(s: &mut Session, id: u32, row: usize, spec: BoxSpec) -> Result<(), String> {
+pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: BoxSpec) -> Result<(), String> {
     let key = Cache::key(s, id, row).ok_or("box source changed")?;
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for boxes".into());

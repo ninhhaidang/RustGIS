@@ -121,6 +121,7 @@ fn run(app: &mut RustGisApp, id: &str, params: serde_json::Value) {
 pub fn show(app: &mut RustGisApp, ui: &mut Ui, c: Coord) {
     let c = place(c);
     ui.set_min_width(240.0);
+    crate::shapeconvert::menu(app, ui);
     let format = app.map.coord_format;
     let earth = app.session.map().body().is_earth();
     let (coords, fell_back) = coordinate_row(c, format, earth);

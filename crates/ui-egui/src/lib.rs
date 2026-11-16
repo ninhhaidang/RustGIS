@@ -105,6 +105,7 @@ mod scriptcomplete;
 mod searchbox;
 mod serviceui;
 mod sessionlog;
+mod shapeconvert;
 mod shortcutfile;
 mod shortcutui;
 mod showme;
@@ -1163,6 +1164,7 @@ pub struct RustGisApp {
     pub session: Session,
     pub(crate) boxes: boxedit::State,
     pub(crate) circles: circleedit::State,
+    pub(crate) conversion: shapeconvert::State,
     pub ui: UiState,
     pub map: mapview::MapView,
     pub dialogs: dialogs::Dialogs,
@@ -1465,6 +1467,7 @@ impl RustGisApp {
             session: s,
             boxes: boxedit::State::default(),
             circles: circleedit::State::default(),
+            conversion: shapeconvert::State::default(),
             ui,
             map: mapview::MapView::default(),
             dialogs: dialogs::Dialogs::default(),
@@ -2663,6 +2666,9 @@ impl RustGisApp {
             }
             // Counting a column goes over every row of the layer: on a thread of its own, and the
             // answer shown once it lands (the table's Statistics window).
+            if id == "edit.previewShapeConversion" {
+                return readjob::run_shape_conversion(self, params);
+            }
             if id == "table.statistics" {
                 return readjob::run_then(self, "table.statistics", params, Some(table::statistics_landed));
             }
@@ -3034,6 +3040,10 @@ impl RustGisApp {
         // Export Table writes a file without changing the project, but remains a replayable
         // task step. Other exports keep their existing recording behavior.
         let Some(spec) = self.session.registry.get(id).filter(|c| c.mutates || id == "share.exportTable").copied() else { return };
+        if id == "edit.applyShapeConversion" {
+            self.session.notify(tl!("Shape conversion isn't recorded: its preview belongs to this session. Convert the polygon explicitly after reopening the project."), false);
+            return;
+        }
         // Downloaded data is kept for this session only, and adding it uses it up: a task
         // couldn't add it again.
         // A result handed over by the app (`ran`: a summary worked out on a thread) is used up
@@ -4180,6 +4190,21 @@ impl RustGisApp {
                 }
             }
             // Project items: save (a file dialog, or a download on the web) and open.
+            "ui.previewShapeConversion" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    return readjob::run_shape_conversion(self, p.clone());
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let result = self.run("edit.previewShapeConversion", p.clone());
+                    shapeconvert::landed(self, p.get("request").and_then(Value::as_u64), Landed::Ran(result.clone()));
+                    return result;
+                }
+            }
+            "ui.convertShape" => {
+                shapeconvert::open(self, p)?;
+            }
             "ui.saveItem" => {
                 let kind = p.get("kind").and_then(Value::as_str).ok_or("kind is required")?;
                 // A field package makes an offline area first: one not saved after all goes again.

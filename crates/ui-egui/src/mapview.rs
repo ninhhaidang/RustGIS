@@ -2756,25 +2756,35 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
         app.map.kept_lonlat = Some((c, app.session.map().instance_id(), app.session.opened));
     }
     let tool = app.session.tool;
+    if resp.secondary_clicked()
+        && let Some(c) = resp.interact_pointer_pos().and_then(|p| screen_to_lonlat(app, rect, p))
+    {
+        crate::shapeconvert::pick(app, c, ui.input(|i| i.modifiers.alt));
+    }
     crate::boxedit::cancel_stale(app);
     crate::circleedit::cancel_stale(app);
     if tool == Tool::RotatedBox {
         if resp.secondary_clicked() {
-            if let Some(c) = resp.interact_pointer_pos().and_then(|p| screen_to_lonlat(app, rect, p)) {
-                crate::boxedit::click(app, c, false, false);
-            }
             app.map.popup = None;
         }
         resp.context_menu(|ui| crate::boxedit::context_menu(app, ui));
     }
     if tool == Tool::Circle {
         if resp.secondary_clicked() {
-            if let Some(c) = resp.interact_pointer_pos().and_then(|p| screen_to_lonlat(app, rect, p)) {
-                crate::circleedit::click(app, c, false, false);
-            }
             app.map.popup = None;
         }
         resp.context_menu(|ui| crate::circleedit::context_menu(app, ui));
+    }
+    // Selection-area tools return early below; their right-click must still open the menu.
+    if resp.secondary_clicked() && !matches!(tool, Tool::RotatedBox | Tool::Circle) {
+        app.map.menu_lonlat = app.map.pointer_lonlat;
+        app.map.menu_text = resp.interact_pointer_pos().and_then(|p| text_graphic_at(app, ui.ctx(), rect, p));
+    }
+    // No menu off the Earth (a globe's corners): there is no place for it to act on.
+    if !matches!(tool, Tool::RotatedBox | Tool::Circle)
+        && let Some(c) = app.map.menu_lonlat
+    {
+        resp.context_menu(|ui| crate::mapmenu::show(app, ui, c));
     }
     cancel_changed_selection(app, rect);
 
@@ -3370,16 +3380,6 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     {
         ui.ctx().set_cursor_icon(icon);
     }
-    if resp.secondary_clicked() && !matches!(tool, Tool::RotatedBox | Tool::Circle) {
-        app.map.menu_lonlat = app.map.pointer_lonlat;
-        app.map.menu_text = resp.interact_pointer_pos().and_then(|p| text_graphic_at(app, ui.ctx(), rect, p));
-    }
-    // No menu off the Earth (a globe's corners): there is no place for it to act on.
-    if !matches!(tool, Tool::RotatedBox | Tool::Circle)
-        && let Some(c) = app.map.menu_lonlat
-    {
-        resp.context_menu(|ui| crate::mapmenu::show(app, ui, c));
-    }
     if hover.is_some() && (matches!(tool, Tool::Measure | Tool::MeasureArea) || tool.draws_edit()) && !app.map.sketch.is_empty() {
         ui.ctx().request_repaint();
     }
@@ -3567,6 +3567,7 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
     if app.session.tool == Tool::Circle {
         crate::circleedit::draw(app, p, rect, accent);
     }
+    crate::shapeconvert::draw(app, p, rect);
     // The navigator: a compass, zoom buttons and a pan pad in the top-left corner.
     if app.session.map().view.navigator {
         navigator(app, ui, p, rect, t);

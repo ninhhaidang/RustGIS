@@ -147,7 +147,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
         json!({"row":row,"circle":b,"polygonEdges":b.segments()?,"approximation":"straight edges; tolerance is in construction-grid units before projection"}),
     )
 }
-fn remember(s: &mut Session, id: u32, row: usize, spec: CircleSpec) -> Result<(), String> {
+pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: CircleSpec) -> Result<(), String> {
     let key = Cache::key(s, id, row).ok_or("circle source changed")?;
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for circles".into());

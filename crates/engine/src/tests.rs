@@ -48423,6 +48423,20 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         note(command, read.run(&control).map(|_| ()), &control);
     }
 
+    // Shape fitting uses the same cancellable read queue, without modifying its source.
+    {
+        let mut shapes = Session::new(Project::default());
+        let id = shapes.map_mut().add_dataset(rustgis_data::Dataset::new("Conversion", rustgis_data::GeometryType::Polygon, vec![]));
+        shapes.active_layer = Some(id);
+        shapes.run("edit.enable", &json!({"on":true})).unwrap();
+        shapes.run("edit.addBox", &json!({"box":{"center":[0,0],"width":100,"height":60,"angle":25}})).unwrap();
+        let read =
+            crate::cmd::reads::read_ahead(&mut shapes, "edit.previewShapeConversion", &json!({"layer":id,"row":0,"kind":"rotatedBox"}))
+                .unwrap();
+        let control = Control::cancelled_once_started();
+        note("edit.previewShapeConversion", read.run(&control).map(|_| ()), &control);
+    }
+
     // Column Statistics counts every row of a layer on a thread of its own in the desktop app.
     {
         let read = crate::cmd::reads::read_ahead(&mut s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"})).unwrap();
