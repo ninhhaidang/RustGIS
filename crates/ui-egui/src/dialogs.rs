@@ -655,10 +655,11 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY)
                 }
-                crate::exprcomplete::expr_edit(ui, egui::Id::unique("cf_expression"), &mut app.dialogs.text, ds, style)
-                    .labelled_by(input_label.id);
+                let id = egui::Id::unique("cf_expression");
+                crate::exprcomplete::expr_edit(ui, id, &mut app.dialogs.text, ds, style).labelled_by(input_label.id);
+                // Read once no suggestion is offered: a word still being chosen isn't an error yet.
                 let text = app.dialogs.text.trim();
-                let reads = data(app).filter(|_| !text.is_empty()).map(|d| rustgis_engine::cmd::edit::check_calculation(text, d));
+                let reads = data(app).filter(|_| !text.is_empty() && !crate::exprcomplete::offering(ui, id)).map(|d| rustgis_engine::cmd::edit::check_calculation(text, d));
                 if let Some(Err(e)) = reads {
                     let t = Tokens::get(ui.ctx());
                     ui.label(egui::RichText::new(crate::i18n::fmt("Invalid: {error}", &[("error", &e)])).small().color(t.red));
@@ -2885,6 +2886,33 @@ mod tests {
         h.run();
         assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_none(), "the signature closed");
         assert_eq!(h.state().dialogs.open, Some("calculateField"), "Escape took the signature, not the dialog");
+    }
+
+    /// A word still being chosen from the suggestions isn't called invalid: `pop_` (with
+    /// `pop_est` offered) shows no error; `pop_x`, which nothing matches, does.
+    #[test]
+    fn calculate_field_reads_the_expression_once_no_suggestion_is_offered() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+        app.run("layer.addDataText", json!({"fileName": "pops.csv", "text": "pop_est,name\n1,a\n"})).unwrap();
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        let id = app.session.project.tables[0].id;
+        app.run("ui.dialog", json!({"name": "calculateField", "table": id})).unwrap();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("cf_expression")));
+        h.run();
+        // Counted, as the Field box may show `pop_est` too.
+        let shown = |h: &egui_kittest::Harness<'static, RustGisApp>| h.query_all_by_role_and_label(Role::Button, "pop_est").count();
+        h.event(egui::Event::Text("pop_".into()));
+        h.run();
+        let offered = shown(&h);
+        assert!(h.query_by_label_contains("Invalid:").is_none(), "no error while it is offered");
+        h.event(egui::Event::Text("x".into()));
+        h.run();
+        assert_eq!(shown(&h) + 1, offered, "the field was offered, and no longer is");
+        assert!(h.query_by_label_contains("no field named 'pop_x'").is_some(), "the error once nothing is");
     }
 
     /// The app in a harness, its fonts installed on the first pass (the dialog draws on the next).

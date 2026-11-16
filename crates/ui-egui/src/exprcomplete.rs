@@ -155,6 +155,13 @@ fn store(ui: &Ui, id: Id, state: State) {
     ui.data_mut(|d| d.insert_temp(id.with("expr_complete"), state));
 }
 
+/// Whether the [`expr_edit`] box `id` shows its suggestion list: the word there is still being
+/// chosen (`pop_`, with `pop_est` offered, isn't a missing field yet).
+pub(crate) fn offering(ui: &Ui, id: Id) -> bool {
+    // Read in place: `load` would copy the whole state (the offer's lists) for one flag.
+    ui.data_mut(|d| d.get_temp_mut_or_default::<State>(id.with("expr_complete")).list.is_open())
+}
+
 /// A single-line box for an expression over `ds` (none: no suggestions nor signature, as both
 /// come from reading the expression against its fields), its id `id`, styled by
 /// `style` (hint, font, width…), with the suggestion list, and the signature of the call the
