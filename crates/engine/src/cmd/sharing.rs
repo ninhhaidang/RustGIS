@@ -1390,13 +1390,17 @@ fn link_chart(s: &Session, rel: Option<&str>) -> Result<(String, Option<String>)
         }
         // The features a key relates to are counted once, however many features share it.
         let mut counted: HashSet<String> = HashSet::new();
+        // Where a key's destinations already in the chart sit among its destinations, found when
+        // the chart has no room for another one and kept while it stays that size: a full chart
+        // then looks at these only, not at every destination of every feature.
+        let mut in_chart: HashMap<String, (usize, Vec<usize>)> = HashMap::new();
         for orow in 0..o.dataset.features.len() {
             let Some(key) = key_of(&o.dataset, orow, ok) else { continue };
             let Some(drows) = by_key.get(&key) else { continue };
             related.insert((om, o.id, orow));
             // Counted in 64 bits: relations can pass `usize` in the browser (32 bits).
             relations += drows.len() as u64;
-            if counted.insert(key) {
+            if counted.insert(key.clone()) {
                 related.extend(drows.iter().map(|&drow| (dm, d.id, drow)));
             }
             if links.len() >= MAX_LINKS {
@@ -1407,29 +1411,49 @@ fn link_chart(s: &Session, rel: Option<&str>) -> Result<(String, Option<String>)
             // out; one already in the chart may still be linked.
             // Up to 200 links drawn from it: destinations the chart has no room for don't count
             // toward them, so a later one it can draw still is.
-            let origin = (om, o.id, orow);
-            let mut a = index.get(&origin).copied();
+            let mut a = index.get(&(om, o.id, orow)).copied();
+            // A feature the chart has no room for can't be drawn, so none of its links can be.
             if a.is_none() && nodes.len() >= MAX_NODES {
                 continue;
             }
             let mut drawn_here = 0;
-            for &drow in drows {
+            let mut i = 0;
+            while i < drows.len() {
                 if drawn_here >= MAX_FEATURE_LINKS || links.len() >= MAX_LINKS {
                     break;
                 }
-                let destination = (dm, d.id, drow);
-                let new = usize::from(a.is_none()) + usize::from(destination != origin && !index.contains_key(&destination));
+                let drow = drows[i];
+                // A feature related to itself is one end, not two.
+                let origin_new = a.is_none();
+                let dest_new = !index.contains_key(&(dm, d.id, drow)) && !(origin_new && (om, o.id, orow) == (dm, d.id, drow));
+                let new = usize::from(origin_new) + usize::from(dest_new);
                 if nodes.len() + new > MAX_NODES {
+                    // No room for a destination the chart doesn't hold: on to the next one it
+                    // does, or to the feature itself.
+                    let (at, rows) = in_chart.entry(key.clone()).or_insert((usize::MAX, Vec::new()));
+                    if *at != nodes.len() {
+                        *rows = (0..drows.len()).filter(|&j| index.contains_key(&(dm, d.id, drows[j]))).collect();
+                        *at = nodes.len();
+                    }
+                    let next_held = rows.get(rows.partition_point(|&j| j <= i)).copied();
+                    let next_self =
+                        if origin_new && (om, o.id) == (dm, d.id) { drows.binary_search(&orow).ok().filter(|&j| j > i) } else { None };
+                    match next_held.into_iter().chain(next_self).min() {
+                        Some(j) => i = j,
+                        None => break,
+                    }
                     continue;
                 }
                 let (Some(from), Some(to)) =
                     (a.or_else(|| node(&mut index, &mut nodes, om, o, orow, gi)), node(&mut index, &mut nodes, dm, d, drow, gi))
                 else {
+                    i += 1;
                     continue;
                 };
                 a = Some(from);
                 links.push(json!({"source": from, "target": to, "relationship": r.name}));
                 drawn_here += 1;
+                i += 1;
             }
         }
     }

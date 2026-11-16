@@ -12927,6 +12927,27 @@ fn a_link_chart_says_what_its_limits_leave_out() {
     t.run("share.linkChart", &json!({})).unwrap();
     // First draws 1 link (2 features), Fill 1,499 (2,997), and Last its one link to x (1 more).
     assert_eq!((drawn("Relationships").0, drawn("Relationships").1), (1501, 3000));
+    // A feature related to itself is one end, not two: with the chart at 2,999, its link still
+    // fits. On a session of its own, with First and Fill as above.
+    let mut u = world();
+    u.run("share.dataStore", &json!({"name": "out", "path": dir.to_str().unwrap()})).unwrap();
+    add(&mut u, "self_first_a.csv", &["x".to_string()]);
+    add(&mut u, "self_first_b.csv", &["x".to_string()]);
+    add(&mut u, "past_fill_one.csv", &fill_one);
+    add(&mut u, "past_fill_many.csv", &fill_many);
+    add(&mut u, "past_self.csv", &["z".to_string()]);
+    for (name, origin, destination) in
+        [("First", "self_first_a", "self_first_b"), ("Fill", "past_fill_one", "past_fill_many"), ("Self", "past_self", "past_self")]
+    {
+        u.run(
+            "data.relate",
+            &json!({"name": name, "origin": origin, "originKey": "key", "destination": destination, "destinationKey": "key"}),
+        )
+        .unwrap();
+    }
+    u.run("share.linkChart", &json!({})).unwrap();
+    // First draws 1 link (2 features), Fill 1,499 (2,997), and Self its feature's link to itself (1 more).
+    assert_eq!((drawn("Relationships").0, drawn("Relationships").1), (1501, 3000));
     // A feature isn't drawn alone: one feature related to 2 (3 features), then pairs. After 1,498
     // pairs the chart holds 2,999, and a pair needs 2 more: the rest are left out whole, rather
     // than an origin drawn without its link.
