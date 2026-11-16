@@ -101,7 +101,7 @@ fn greek_registration_and_fallback() {
 fn traditional_chinese_registration_and_fallback() {
     let tw = Lang::from_code("zh-tw").unwrap_or(Lang::EN);
     assert_eq!(Lang::from_code("zh-TW"), Some(tw));
-    assert_eq!(tw.name(), "繁體中文（台灣）");
+    assert_eq!(tw.name(), "繁體中文（臺灣）");
     assert_eq!(tw.english(), "Chinese (Traditional, Taiwan)");
     assert_eq!(tw.script(), Script::Cjk(CjkFont::TraditionalChinese));
     assert_eq!(tr(tw, "Open"), "開啟");

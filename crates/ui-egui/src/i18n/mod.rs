@@ -114,7 +114,7 @@ pub static LANGUAGES: [LangInfo; 22] = [
     // Taiwan's wording (GIS terms after the National Academy for Educational Research's
     // glossary), drawn in a Traditional Chinese face with Taiwan's glyph forms where one is
     // installed (Microsoft JhengHei, PingFang TC, Noto Sans CJK TC) or on the web.
-    lang!("zh-tw", "繁體中文（台灣）", "Chinese (Traditional, Taiwan)", Script::Cjk(CjkFont::TraditionalChinese), "zh-tw.tsv"),
+    lang!("zh-tw", "繁體中文（臺灣）", "Chinese (Traditional, Taiwan)", Script::Cjk(CjkFont::TraditionalChinese), "zh-tw.tsv"),
     lang!("ja", "日本語", "Japanese", Script::Cjk(CjkFont::Japanese), "ja.tsv"),
     lang!("ko", "한국어", "Korean", Script::Cjk(CjkFont::Korean), "ko.tsv"),
     lang!("ka", "ქართული", "Georgian", Script::Alphabetic, "ka.tsv"),

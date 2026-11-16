@@ -9,6 +9,7 @@ use rustgis_map::PopupMode;
 use serde_json::{Value, json};
 
 use super::{f, need_layer, need_layers, need_selection, ps};
+use crate::notice_text::NoticeText;
 use crate::{CmdResult, CommandSpec as C, Session};
 
 #[path = "select_info.rs"]
@@ -157,10 +158,14 @@ fn by_attributes(s: &mut Session, p: &Value) -> CmdResult {
     rows.retain(|r| drawn.get(*r).is_none_or(|d| *d));
     let n = rows.len();
     set(s, id, rows, mode(p));
-    s.notify(format!("{n} features selected"), false);
+    // Templates, so a translated interface says them in its language (the CLI keeps English).
+    s.notify_text(NoticeText::format("{n} features selected", [("n", n.to_string().into())]), false);
     if matched > n {
-        s.notify(
-            format!("{} more features match but aren't drawn (the layer's definition query, time window or display filters hide them), and aren't selected", matched - n),
+        s.notify_text(
+            NoticeText::format(
+                "{n} more features match but aren't drawn (the layer's definition query, time window or display filters hide them), and aren't selected",
+                [("n", (matched - n).to_string().into())],
+            ),
             false,
         );
     }

@@ -709,6 +709,10 @@ fn tools_read_the_features_a_definition_query_keeps() {
     let r = s.run("select.byAttributes", &json!({"layer": "Cities", "where": "pop_max > 0"})).unwrap();
     assert_eq!(r["selected"], json!(big));
     assert!(said(&s, mark, &format!("{} more features match but aren't drawn", cities - big)));
+    // Both notices are templates a translated interface says in its language; the CLI keeps English.
+    let localized: Vec<String> = s.notices_since(mark).iter().filter_map(|n| n.translated(|key, _| format!("<{key}>"))).collect();
+    assert!(localized.contains(&"<{n} features selected>".to_string()), "{localized:?}");
+    assert!(localized.iter().any(|t| t.starts_with("<{n} more features match but aren't drawn")), "{localized:?}");
     // A query that hides every feature: a Select tool selects nothing, rather than being refused.
     query(&mut s, "Cities", "pop_max < 0");
     s.run("gp.run", &json!({"tool": "selectByAttributes", "params": {"input": "Cities", "where": "pop_max > 0"}})).unwrap();

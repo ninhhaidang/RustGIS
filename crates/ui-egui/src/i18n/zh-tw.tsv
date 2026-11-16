@@ -4706,3 +4706,214 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 ● {n}  {lon}°, {lat}°  ·  pixel {col}, {row}	● {n}  {lon}°，{lat}°  ·  像素 {col}，{row}
 ● {n}  {v}	● {n}  {v}
 ＋ Add field	＋ 新增欄位
+ · {n} more left out: zoom in for them	 · 另有 {n} 個未列出：放大地圖即可看到
+ · {n} tile-years had a second file; the first was taken	 · 有 {n} 個圖磚年份另有第二個檔案；已採用第一個
+A PostgreSQL/PostGIS connection (host=… port=… dbname=… user=…, or a postgresql:// address), a MySQL or MariaDB address (mysql://user@host:3306/database), a SQL Server address (mssql://user@host:1433/database) or a DuckDB file. PostGIS, MySQL, MariaDB and SQL Server tables are read live, large ones a view at a time; the password is kept until RustGIS closes, never in the project.	PostgreSQL/PostGIS 連線（host=… port=… dbname=… user=…，或 postgresql:// 位址）、MySQL 或 MariaDB 位址（mysql://user@host:3306/database）、SQL Server 位址（mssql://user@host:1433/database），或 DuckDB 檔案。PostGIS、MySQL、MariaDB 和 SQL Server 的資料表會即時讀取，大型資料表一次讀取一個畫面範圍；密碼只保留到 RustGIS 關閉，不會存入專案。
+A theme file must be a JSON object.	主題檔案必須是 JSON 物件。
+Checking rows: {done} of {total}	正在檢查列：{done} / {total}
+Choose what the text means. Dates are never guessed.	選擇文字代表的意思。日期一律不會用猜的。
+Date format scan stopped	已停止掃描日期格式
+First year of 100-year window	100 年區間的起始年
+In the web app, give the store's web address (https://…)	在網頁版中，請提供儲存區的網址（https://…）
+Include two-digit years	包含兩位數年份
+No preset reads every non-empty value. Use an explicit format with edit.convertField, or correct the text first.	沒有任何預設格式能讀取所有非空值。請用 edit.convertField 指定格式，或先修正文字。
+No settings folder to keep a theme in.	沒有可存放主題的設定資料夾。
+Picture unavailable: only https:// pictures are fetched	無法顯示圖片：只會擷取 https:// 圖片
+Send the login over unencrypted http://	透過未加密的 http:// 傳送登入資訊
+Sign in to ArcGIS	登入 ArcGIS
+The connection's address has no http:// or https:// origin a login can go to.	此連線的位址沒有可供登入的 http:// 或 https:// 來源。
+The release's checksums don't list {name}.	發行版本的檢查碼清單中沒有 {name}。
+This connection uses unencrypted http://. Tick the confirmation before sending its password or key.	此連線使用未加密的 http://。傳送密碼或金鑰前，請先勾選確認。
+a theme file is at most {limit} KB	主題檔案最大 {limit} KB
+any	不限
+asset	資產
+bucket	儲存貯體
+cancelled	已取消
+catalog	目錄
+classes	分類數
+collection	集合
+coverage	覆蓋資料
+decade	十年
+download	下載
+duplicate colour {name}	顏色 {name} 重複
+east	東
+empty for AWS; https://… for others	AWS 請留空；其他請填 https://…
+epochs	訓練週期數
+factor	因子
+features	圖徵
+file	檔案
+folder	資料夾
+half	一半
+is not a #RRGGBB colour: {text}	不是 #RRGGBB 顏色：{text}
+is not a #RRGGBB or #RRGGBBAA colour: {text}	不是 #RRGGBB 或 #RRGGBBAA 顏色：{text}
+item	項目
+lat	緯度
+latest	最新
+lon	經度
+map	地圖
+no free file name for {name}	{name} 沒有可用的檔名
+north	北
+number	數字
+record	記錄
+schema	結構描述
+seed	亂數種子
+service	服務
+style	樣式
+table	資料表
+this is not a file	這不是檔案
+time	時間
+ui.mcpRelay: port {port} is not a port number (0 to 65535)	ui.mcpRelay：埠 {port} 不是有效的埠號（0 到 65535）
+ui.scale accepts only the factor parameter	ui.scale 只接受 factor 參數
+ui.scale needs a number at factor	ui.scale 的 factor 必須是數字
+ui.theme accepts only the dark parameter	ui.theme 只接受 dark 參數
+ui.theme needs true or false at dark	ui.theme 的 dark 必須是 true 或 false
+ui.themeFile accepts only the name parameter	ui.themeFile 只接受 name 參數
+ui.themeFile needs a name string	ui.themeFile 需要 name 字串
+value	值
+year	年
+{actions} · 1 project edit	{actions} · 1 項專案編輯
+{actions} · {count} project edits	{actions} · {count} 項專案編輯
+{area} acres	{area} 英畝
+{area} ft²	{area} 平方英尺
+{area} mi²	{area} 平方英里
+{command} isn't recorded: its parameters are over 4 MB, too much for a task to keep. Add that data to the project before recording.	未記錄 {command}：它的參數超過 4 MB，任務無法保存。請先把這些資料加入專案再錄製。
+{command} isn't recorded: its parameters may hold a password, key or token (one is named like it, an address carries one, or they nest too deep to check), and a task would keep it.	未記錄 {command}：它的參數可能含有密碼、金鑰或權杖（參數名稱看起來像、位址中帶有，或巢狀太深無法檢查），任務會保存它們。
+{command} isn't recorded: the downloaded data is kept for this session only, so a task couldn't add it again.	未記錄 {command}：下載的資料只保留在本次工作階段，任務無法再次加入。
+{command}'s step keeps its key parameter. If that is an access key, delete the step (Edit Steps) before sharing the task.	{command} 的步驟保留了它的金鑰參數。如果那是存取金鑰，分享任務前請刪除該步驟（編輯步驟）。
+{count} entries	{count} 筆記錄
+{count} more: type part of a name	還有 {count} 個：請輸入部分名稱
+{count} of {total} entries	{count} / {total} 筆記錄
+{c}° (in degrees only)	{c}°（僅限以度為單位）
+{date}: {n} features	{date}：{n} 個圖徵
+{distance} ft	{distance} 英尺
+{distance} mi	{distance} 英里
+{e}: access denied (check the connection's keys, region and the bucket's name)	{e}：拒絕存取（請檢查連線的金鑰、區域和儲存貯體名稱）
+{field}: total {sum}	{field}：總計 {sum}
+{file} changed since {layer} was read from it ({parts})	{layer} 從 {file} 讀取後，該檔案已變更（{parts}）
+{file} has changed since this copy was made.	建立此副本後，{file} 已變更。
+{id} wasn't loaded: {error}	未載入 {id}：{error}
+{id} wasn't removed: {error}	未移除 {id}：{error}
+{key} is used by {command}.	{key} 已被 {command} 使用。
+{kind} {title}: {count} layers	{kind} {title}：{count} 個圖層
+{kind} · {res} · {dims} values · {years}	{kind} · {res} · {dims} 個值 · {years}
+{language} cells don't run here: open this notebook in Jupyter to run them.	這裡無法執行 {language} 儲存格：請在 Jupyter 中開啟此筆記本來執行。
+{layers} tiles, {dates} dates: the time slider steps through them	{layers} 個圖磚、{dates} 個日期：時間滑桿會逐一切換
+{layer} (first rows only)	{layer}（僅前幾列）
+{layer} is in step with {file}	{layer} 與 {file} 一致
+{layer} was edited since it was read from {file}	{layer} 從 {file} 讀取後已被編輯
+{layer} was edited, and {file} changed, since the layer was read from it ({parts})	{layer} 從 {file} 讀取後，圖層已被編輯，檔案也已變更（{parts}）
+{layer}: {added} added, {modified} changed, {deleted} deleted	{layer}：新增 {added} 個、變更 {modified} 個、刪除 {deleted} 個
+{name} (built-in fallback)	{name}（內建備用）
+{name} (dated tiles)	{name}（含日期的圖磚）
+{name} (download)	{name}（下載）
+{name} (downloading…)	{name}（下載中…）
+{name} (not in the layer)	{name}（不在圖層中）
+{name} (not installed)	{name}（未安裝）
+{name} (panel)	{name}（面板）
+{name} (tool)	{name}（工具）
+{name} ({acc}% accurate)	{name}（正確率 {acc}%）
+{name} ({n} images)	{name}（{n} 張影像）
+{name} ({n} nodes)	{name}（{n} 個節點）
+{name} ({n} steps)	{name}（{n} 個步驟）
+{name} changed after it was checked: download it again.	{name} 在檢查後已變更：請重新下載。
+{name} doesn't match the release's checksum: the download is damaged.	{name} 與發行版本的檢查碼不符：下載的檔案已損毀。
+{name} is already set by {path}	{name} 已由 {path} 設定
+{name} is not a text file: RustGIS opens GeoJSON, CSV, GeoTIFF and .rgis here	{name} 不是文字檔：RustGIS 在這裡可開啟 GeoJSON、CSV、GeoTIFF 和 .rgis
+{name} is off: its tab and commands are hidden.	{name} 已關閉：它的頁籤和命令已隱藏。
+{name} is on.	{name} 已開啟。
+{name} now reads {n} project sources	{name} 現在讀取 {n} 個專案來源
+{name} now reads {n} project sources; {failed} could not be read	{name} 現在讀取 {n} 個專案來源；{failed} 個無法讀取
+{name} now reads {n} project sources; {reading} still being read	{name} 現在讀取 {n} 個專案來源；{reading} 個仍在讀取
+{name} now reads {n} project sources; {reading} still being read and {failed} could not be read	{name} 現在讀取 {n} 個專案來源；{reading} 個仍在讀取，{failed} 個無法讀取
+{name} {version} needs RustGIS {min} or newer; this is {this}.	{name} {version} 需要 RustGIS {min} 或更新版本；目前版本為 {this}。
+{name}: 1 control character at an end of the name was removed	{name}：已移除名稱開頭或結尾的 1 個控制字元
+{name}: 1 control character in the name was shown as a space	{name}：名稱中的 1 個控制字元已顯示為空格
+{name}: 1 size was held to what the window draws	{name}：1 個尺寸已限制在視窗可繪製的範圍內
+{name}: another layer has this name, so its profile would be read from that one: rename one of them	{name}：另一個圖層也用這個名稱，剖面會從那個圖層讀取：請重新命名其中一個
+{name}: extends {wanted}, which is not a built-in theme	{name}：延伸自 {wanted}，但它不是內建主題
+{name}: its request can't carry an area, so the whole layer is asked for	{name}：它的請求無法帶有範圍，因此會要求整個圖層
+{name}: missing {names}	{name}：缺少 {names}
+{name}: not in it: {said}	{name}：不在其中：{said}
+{name}: the name was longer than {limit} characters, so it was cut	{name}：名稱超過 {limit} 個字元，已截斷
+{name}: theme schema {found} is not {schema}	{name}：主題結構描述 {found} 不是 {schema}
+{name}: unknown {names}	{name}：未知的 {names}
+{name}: {n} control characters at the ends of the name were removed	{name}：已移除名稱開頭或結尾的 {n} 個控制字元
+{name}: {n} control characters in the name were shown as spaces	{name}：名稱中的 {n} 個控制字元已顯示為空格
+{name}: {n} sizes were held to what the window draws	{name}：{n} 個尺寸已限制在視窗可繪製的範圍內
+{n} additional geocoding candidates were not used; the first match was kept for each address.	另有 {n} 個地理編碼候選結果未使用；每個地址都保留第一個符合的結果。
+{n} addresses couldn't be looked up ({why}); run again later for them	有 {n} 個地址無法查詢（{why}）；請稍後再為它們執行一次
+{n} buckets	{n} 個儲存貯體
+{n} catalog links were left out because the listing limit was reached	已達清單上限，略過 {n} 個目錄連結
+{n} catalog links were left out because their addresses are missing, invalid or not HTTP(S)	略過 {n} 個目錄連結，因為它們的位址缺少、無效或不是 HTTP(S)
+{n} catalog links were refused by the document's network reach	有 {n} 個目錄連結因文件的網路存取範圍而遭拒
+{n} catalogs and collections	{n} 個目錄和集合
+{n} characters	{n} 個字元
+{n} classes	{n} 個分類
+{n} collections	{n} 個集合
+{n} colors between	中間 {n} 種顏色
+{n} datasets on {portal}	{portal} 上的 {n} 個資料集
+{n} downloads	{n} 個下載
+{n} edits	{n} 項編輯
+{n} errors	{n} 個錯誤
+{n} features in view	畫面中有 {n} 個圖徵
+{n} files	{n} 個檔案
+{n} found where the map is	在地圖所在範圍找到 {n} 個
+{n} found; the map holds more than one search reads: zoom in for the rest	找到 {n} 個；地圖範圍內的數量超過一次搜尋能讀取的上限：放大地圖可看到其餘的
+{n} installed plugins couldn't be read (from a newer RustGIS, or damaged): they aren't loaded, and are kept as they were.	有 {n} 個已安裝的外掛無法讀取（來自較新版本的 RustGIS，或已損毀）：它們不會被載入，並保持原樣。
+{n} items in {bucket}	{bucket} 中有 {n} 個項目
+{n} layers in {k} categories	{k} 個類別中有 {n} 個圖層
+{n} layers: choose the ones to add.	{n} 個圖層：請選擇要新增的圖層。
+{n} more bookmarks aren't listed. Type in the filter to narrow the list.	還有 {n} 個書籤未列出。請在篩選框輸入文字縮小範圍。
+{n} more classes aren't listed: the list's limit doesn't change how they're drawn	還有 {n} 個分類未列出：清單上限不影響它們的繪製方式
+{n} more panes	還有 {n} 個窗格
+{n} nodes need attention (marked !).	有 {n} 個節點需要處理（標示 !）。
+{n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out	地理編碼器的 {n} 個地點沒有可用的位置（沒有坐標，或坐標無法讀取），已略過
+{n} of {count}	{n} / {count}
+{n} of {m} are listed.	列出 {n} / {m} 個。
+{n} of {total} selected	已選取 {n} / {total} 筆
+{n} other dropped files weren't opened: drop them again once you've answered about the unsaved changes.	其他 {n} 個拖放的檔案未開啟：回答是否儲存變更後，請再拖放一次。
+{n} plugins weren't loaded: {ids}. Open Plugins › Plugin Manager to see them.	有 {n} 個外掛未載入：{ids}。請開啟「外掛 › 外掛管理員」查看。
+{n} point(s) taken off: they were read on {old} on another map.	移除了 {n} 個點：它們是在另一個地圖的 {old} 上讀取的。
+{n} point(s) taken off: they were read on {old}, not on {now}.	移除了 {n} 個點：它們是在 {old} 上讀取的，不是 {now}。
+{n} point(s) taken off: {old} has changed or gone since they were read.	移除了 {n} 個點：讀取後 {old} 已變更或不存在。
+{n} preview links were refused by the document's network reach	有 {n} 個預覽連結因文件的網路存取範圍而遭拒
+{n} raster(s) couldn't be read, so they are left out.	有 {n} 個網格無法讀取，已略過。
+{n} raster(s) left out: another layer has the same name. Rename them to chart them.	略過 {n} 個網格：另有圖層同名。請重新命名後再繪製圖表。
+{n} records in the catalogue	目錄中有 {n} 筆記錄
+{n} rows	{n} 列
+{n} selected	已選取 {n} 個
+{n} shown, more in the folder	顯示 {n} 個，資料夾中還有更多
+{n} tables with geometry	{n} 個含幾何的資料表
+{n} theme adjustment notice(s): {details}. Open Settings > Theme for all details.	{n} 則主題調整通知：{details}。請開啟「設定 › 主題」查看完整說明。
+{n} theme files were refused. Open Settings > Theme for the reason.	{n} 個主題檔案被拒絕。請開啟「設定 › 主題」查看原因。
+{path}: the theme is unchanged, but a recovery copy remains at {recovery}; compare the files before removing it and retrying.	{path}：主題未變更，但在 {recovery} 留有一份復原副本；請先比對檔案，再移除它並重試。
+{path}: the theme was written, but save completion failed: {reason}. A recovery copy may remain at {recovery}; compare the files before removing it and retrying.	{path}：主題已寫入，但儲存未能完成：{reason}。{recovery} 可能留有一份復原副本；請先比對檔案，再移除它並重試。
+{pick}: click the map · Esc cancels	{pick}：點選地圖 · 按 Esc 取消
+{pick}: drag a box on the map · Esc cancels	{pick}：在地圖上拖曳矩形框 · 按 Esc 取消
+{place} {count} commands.	{place} {count} 個命令。
+{reason}; the previous theme is kept at {recovery}; restoration failed: {restore}	{reason}；先前的主題保留在 {recovery}；還原失敗：{restore}
+{section} is part of the {name} extension, which is off; turn it on in Plugins › Extensions	{section} 屬於已關閉的 {name} 擴充功能；請在「外掛 › 擴充功能」開啟它
+{shown} of {matched} records	{shown} / {matched} 筆記錄
+{southwest} to {northeast}	{southwest} 至 {northeast}
+{start} – to date	{start} – 至今
+{time} · {distance} to go	{time} · 還有 {distance}
+{tool} is still running: wait for it, or cancel it.	{tool} 仍在執行：請等候它完成，或取消它。
+{tool} made {layer}	{tool} 產生了 {layer}
+{tool} ran	已執行 {tool}
+{tool} tool active · Esc to stop	{tool}工具使用中 · 按 Esc 停止
+{tool} was stopped: its project was closed while it ran.	{tool} 已停止：執行時它的專案已關閉。
+{type} · {format}, read in place · a sample of {n} of the {matched} features in view matching the definition query (zoom in to see them all) · {renderer}	{type} · {format}，就地讀取 · 畫面中符合定義查詢的 {matched} 個圖徵中，取樣 {n} 個（放大可看到全部）· {renderer}
+{type} · {n} features · {renderer}	{type} · {n} 個圖徵 · {renderer}
+{url}: access denied (HTTP 403)	{url}：拒絕存取（HTTP 403）
+{url}: access denied (HTTP 403) to {count} of the slice’s chunks	{url}：切片中有 {count} 個區塊拒絕存取（HTTP 403）
+{url}: downloaded after its project was closed, so it wasn't added	{url}：下載完成時它的專案已關閉，因此未加入
+{url}: its project was closed while it was read, so it wasn't added	{url}：讀取時它的專案已關閉，因此未加入
+{url}: its read didn't start: {error}	{url}：無法開始讀取：{error}
+{url}: not a STAC item or collection	{url}：不是 STAC 項目或集合
+{url}: only HTTPS addresses are allowed	{url}：只允許 HTTPS 位址
+{url}: {count} windows are being read already: ask again once one has been added	{url}：已有 {count} 個視窗正在讀取：請等其中一個加入後再要求
+{value}% cloud	雲量 {value}%
+{what} must be a number	{what}必須是數字
+{w} × {h} mm · {zoom}% · drag to move (Alt: no snapping), Shift-drag a map frame to pan it, wheel to zoom	{w} × {h} mm · {zoom}% · 拖曳可移動（按住 Alt 不貼齊），按住 Shift 拖曳地圖框可平移其地圖，滾輪可縮放
+{n} features selected	已選取 {n} 個圖徵
+{n} more features match but aren't drawn (the layer's definition query, time window or display filters hide them), and aren't selected	另有 {n} 個圖徵符合條件但未繪製（被圖層的定義查詢、時間區間或顯示篩選隱藏），因此未選取
