@@ -39,6 +39,10 @@ getrandom = "0.4"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
+[features]
+# Lets other crates' tests sign in to Copernicus Data Space at a fake endpoint on 127.0.0.1.
+testing = []
+
 [dev-dependencies]
 # Tests write Brotli-compressed PMTiles archives.
 brotli = { version = "~9.0.0", default-features = false, features = ["std"] }

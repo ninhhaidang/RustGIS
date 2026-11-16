@@ -28,6 +28,7 @@ mod connectionui;
 #[cfg(not(target_arch = "wasm32"))]
 mod connectui;
 mod coordreadout;
+mod copernicusui;
 mod cswui;
 mod cubesui;
 mod diagnosticlog;
@@ -908,6 +909,8 @@ pub struct UiState {
     pub session_log: sessionlog::State,
     /// NASA Earthaccess: the dataset, the granules found and the request under way.
     pub earthaccess: earthaccessui::State,
+    /// Copernicus Data Space: the sign-in being typed and what the last one said.
+    pub copernicus: copernicusui::State,
     /// Add From Service › Sign in to ArcGIS.
     pub arcgis: arcgisui::State,
     /// USGS NLDI: the point traced, its COMID, the navigation and the request under way.
@@ -1081,6 +1084,7 @@ impl Default for UiState {
             cubes: Default::default(),
             session_log: Default::default(),
             earthaccess: Default::default(),
+            copernicus: Default::default(),
             arcgis: Default::default(),
             nldi: Default::default(),
             geocode: Default::default(),

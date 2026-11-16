@@ -14,6 +14,7 @@ them, and the network permission when a plugin does. `ui.dialog` opens a panel o
 |---|---|---|
 | ArcGIS Portal… | Public items on ArcGIS Online or another portal | [Web services](#web-services) |
 | Boundaries… | A country's administrative boundaries (geoBoundaries) | [OpenStreetMap and administrative boundaries](#openstreetmap-and-administrative-boundaries) |
+| Copernicus Data Space… | Sign in to read CDSE's COGs (CLMS products, Sentinel mosaics) | [Copernicus Data Space](#copernicus-data-space) |
 | Dynamical… | Weather and climate Zarr stores | [Web services](#web-services) |
 | Earthdata GIS… | NASA's Earth science imagery, maps and features | [Web services](#web-services) |
 | Fields of the World… | Agricultural field boundaries, worldwide | [Fields of the World](#fields-of-the-world) |
@@ -571,7 +572,11 @@ The [Copernicus Data Space Ecosystem](https://dataspace.copernicus.eu) (CDSE) pu
 Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land
 Cover 100 m and 10 m, Tree Cover Density…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its
 [STAC catalog](https://stac.dataspace.copernicus.eu/v1) is open, but its files need a sign-in with
-a free CDSE account. `copernicus.login` signs in with the account's username and password (and
+a free CDSE account. **Home › Add › Web Data › Copernicus Data Space…** signs in from a
+panel: username, password, the one-time code for an account with two-factor authentication, and
+**Remember on this computer** (`remember`, below). It shows whether a sign-in is kept, as whom and
+until when its token is renewed, and **Sign out** runs `copernicus.logout`. The panel is for the
+desktop app only for now. `copernicus.login` signs in with the account's username and password (and
 `"totp"`, the one-time code, for an account with two-factor authentication). The password is sent
 only to CDSE's sign-in server (`identity.dataspace.copernicus.eu`), and kept only if remembered
 (below). The token it

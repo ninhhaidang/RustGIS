@@ -5168,6 +5168,7 @@ dependencies = [
  "rustgis-assistant",
  "rustgis-engine",
  "rustgis-plugins",
+ "rustgis-tiles",
  "rustix 1.1.6",
  "serde",
  "serde_json",

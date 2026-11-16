@@ -122,8 +122,11 @@ pub struct Info {
     pub username: String,
     /// When the access token expires (Unix seconds).
     pub expires_at: i64,
-    /// Until when it is renewed (Unix seconds), if it can be.
+    /// Until when it is renewed (Unix seconds), if it can be and that is said.
     pub renews_until: Option<i64>,
+    /// Whether it is renewed at all (a refresh token was given): with no `renews_until`, until
+    /// CDSE refuses the refresh token.
+    pub renews: bool,
 }
 
 /// The sign-in kept, if one is.
@@ -134,6 +137,7 @@ pub fn signed_in() -> Option<Info> {
         username: s.username.clone(),
         expires_at: s.expires_at,
         renews_until: s.refresh.as_ref().map(|_| s.refresh_expires_at).filter(|t| *t < i64::MAX),
+        renews: s.refresh.is_some(),
     })
 }
 
@@ -232,6 +236,19 @@ pub fn is_remembered() -> bool {
         read_store(&mut known, store.as_ref());
     }
     matches!(*known, Known::Kept { .. })
+}
+
+/// [`is_remembered`] for a frame: never waits and never reads the store (the system may ask for
+/// it to be unlocked). `false` until it has been read, off the frame: by `restore` at launch, or
+/// a sign-in or sign-out. `None` while the store is in use (a sign-in with the remembered one under
+/// way, which may wait up to a request's timeout).
+pub fn is_remembered_now() -> Option<bool> {
+    let known = match REMEMBERED.known.try_lock() {
+        Ok(k) => k,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    Some(matches!(*known, Known::Kept { .. }))
 }
 
 /// The username and password as the store keeps them.
@@ -552,6 +569,8 @@ pub fn refused_message(url: &str) -> String {
     }
 }
 
+#[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+pub use native::set_test_token_url;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{Restored, authorization_fresh, login, restore};
 
@@ -633,15 +652,29 @@ mod native {
 
     /// The token endpoint: [`TOKEN_URL`](super::TOKEN_URL), or a test's fake one.
     fn token_url() -> String {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Some(url) = TEST_TOKEN_URL.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return url;
         }
         super::TOKEN_URL.to_string()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) static TEST_TOKEN_URL: Mutex<Option<String>> = Mutex::new(None);
+
+    /// Points `login` at a fake token endpoint on this computer (`http://127.0.0.1:<port>/…`), or
+    /// back at CDSE's with `None`, for other crates' tests (the `testing` feature). Panics on any
+    /// other address, so a password is never sent elsewhere.
+    #[cfg(feature = "testing")]
+    pub fn set_test_token_url(url: Option<&str>) {
+        // The host itself, not a prefix: `http://127.0.0.1:@elsewhere/` has 127.0.0.1 as user info.
+        let local = |u: &str| {
+            let port = u.strip_prefix("http://127.0.0.1:").and_then(|r| r.split('/').next()).unwrap_or("");
+            !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+        };
+        assert!(url.is_none_or(local), "a test token endpoint is on 127.0.0.1");
+        *TEST_TOKEN_URL.lock().unwrap_or_else(|e| e.into_inner()) = url.map(str::to_string);
+    }
 
     /// What signing in with the remembered sign-in did.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

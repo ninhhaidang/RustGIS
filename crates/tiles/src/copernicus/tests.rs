@@ -114,7 +114,7 @@ fn a_sign_in_exchanges_the_password_for_tokens_at_the_token_endpoint() {
     assert!(!request.to_ascii_lowercase().contains("authorization:"), "the sign-in host never gets a token: {request}");
     assert_eq!(info.username, USER);
     assert!((info.expires_at - now_secs() - 1800).abs() <= 5);
-    assert!(info.renews_until.is_some_and(|t| (t - now_secs() - 3600).abs() <= 5));
+    assert!(info.renews_until.is_some_and(|t| (t - now_secs() - 3600).abs() <= 5) && info.renews);
     assert_eq!(authorization(DATA).as_deref(), Some("Bearer access-one"));
     assert_eq!(authorization(&endpoint), None);
     assert_eq!(authorization(TOKEN_URL), None);
@@ -317,11 +317,13 @@ fn a_remembered_sign_in_signs_in_again_when_none_is_kept_and_a_sign_out_deletes_
     // A new run: nothing kept for the session, the store not read yet.
     set_secret_store(Some(store.0.clone()));
     logout();
+    assert_eq!(is_remembered_now(), Some(false), "a frame's read never loads the store");
     assert_eq!(authorization_fresh_using("https://example.com/x.tif", None, |_, _, _| panic!("no renewal")), None);
     assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "another host doesn't sign in");
     assert_eq!(authorization_fresh_using(DATA, None, |_, _, _| panic!("no renewal")).as_deref(), Some("Bearer access-one"));
     let request = asked.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(request.ends_with("&username=synthetic.user%40example.invalid&password=synthetic%20pa%26ss%3Dword%25"), "{request}");
+    assert_eq!(is_remembered_now(), Some(true), "read once the sign-in has used it");
     // Both tokens expired: it signs in again rather than ending.
     {
         let mut st = state();
