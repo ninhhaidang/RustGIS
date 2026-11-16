@@ -3720,8 +3720,21 @@ fn geopackage_export_adds_and_replaces_tables_and_keeps_the_others() {
     rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE VIEW recent_permits AS SELECT * FROM permits").unwrap();
     let mut fewer = permits.clone();
     fewer.features.truncate(1);
+    // The replaced table's `last_change` (here later than now, as a pinned time can be) is moved
+    // past, so saving edits loaded before can't take the new table for the old one.
+    let stamp = |p: &Path| {
+        rusqlite::Connection::open(p)
+            .unwrap()
+            .query_row("SELECT last_change FROM gpkg_contents WHERE table_name = 'permits'", [], |r| r.get::<_, String>(0))
+            .unwrap()
+    };
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE gpkg_contents SET last_change = '2999-01-01T00:00:00.000Z' WHERE table_name = 'permits'", [])
+        .unwrap();
     let replaced = write_path_to(&fewer, &path, Crs::WebMercator, &to(GpkgMode::ReplaceTable, None)).unwrap();
     assert_eq!(replaced.1, Some(GpkgWritten { table: "permits".into(), replaced: true, dependents: vec!["recent_permits".into()] }));
+    assert_eq!(stamp(&path), "2999-01-01T00:00:00.001Z");
     assert_eq!(gpkg_tables(&path), ["owners", "parcels", "permits"]);
     let s = open_path(&path, Some("permits")).unwrap();
     assert_eq!(s.info().count, Some(1));

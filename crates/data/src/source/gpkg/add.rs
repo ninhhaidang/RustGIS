@@ -21,6 +21,7 @@ pub(super) fn write_features(
     fields: &[Field],
     crs: Crs,
     replace: bool,
+    pinned: Option<i64>,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<GpkgWritten> {
     let file = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -46,8 +47,13 @@ pub(super) fn write_features(
         let srs_id = if geometry_type == GeometryType::None { 0 } else { srs_id(&tx, crs)? };
         // The views and triggers naming a replaced table, when one is.
         let replaced = Cell::new(None);
+        // The replaced table's `last_change`, which the new one's moves past.
+        let replaced_stamp = Cell::new(None);
         let mut make = |multi, mixed| {
             let layout = plan(name, geometry_type, fields, multi, mixed, srs_id);
+            if let Some(t) = stamp(&tx, &layout.table)? {
+                replaced_stamp.set(Some(t));
+            }
             replaced.set(make_room(&tx, &file, &layout.table, replace)?);
             if layout.has_geom {
                 tx.execute_batch(FEATURE_METADATA).map_err(err)?;
@@ -67,7 +73,7 @@ pub(super) fn write_features(
             Err(Redo::Mixed) => mixed = true,
             Err(Redo::Renumber) => keep_ids = false,
             Ok((layout, extent)) => {
-                register(&tx, &layout, extent)?;
+                register(&tx, &layout, extent, pinned, replaced_stamp.take().as_deref())?;
                 // A cancel that came while it was written rolls it all back; the last look, as
                 // committing writes the table, and a Cancel after it finds it written.
                 crate::progress::check()?;
@@ -78,6 +84,14 @@ pub(super) fn write_features(
         }
     }
     Err(DataError::Format("GeoPackage: the export didn't settle on a table".into()))
+}
+
+/// The `last_change` the contents give `table`, as text, if it is listed.
+fn stamp(conn: &Connection, table: &str) -> Result<Option<String>> {
+    conn.query_row("SELECT CAST(last_change AS TEXT) FROM gpkg_contents WHERE lower(table_name) = lower(?1)", [table], |r| r.get(0))
+        .optional()
+        .map_err(err)
+        .map(Option::flatten)
 }
 
 /// Refuses a database without a GeoPackage's contents and spatial reference systems, or marked

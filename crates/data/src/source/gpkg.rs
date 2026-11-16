@@ -653,13 +653,14 @@ pub fn write_in(ds: &crate::Dataset, path: &Path, crs: Crs) -> Result<()> {
 /// a table of) the GeoPackage at `path` when it exists, its other tables left as they were.
 pub fn write_table_in(ds: &crate::Dataset, path: &Path, crs: Crs, target: &GpkgTable) -> Result<GpkgWritten> {
     let name = target.name.as_deref().unwrap_or(&ds.name);
+    let pinned = pinned_time()?;
     if let Some(replace) = into_existing(path, target)? {
-        return add::write_features(path, name, table_kind(ds), &ds.fields, crs, replace, &mut |put| put(&ds.features));
+        return add::write_features(path, name, table_kind(ds), &ds.fields, crs, replace, pinned, &mut |put| put(&ds.features));
     }
     check_new_destination(path)?;
     let tmp = temp_database_beside(path)?;
     let conn = Connection::open(&tmp).map_err(err)?;
-    let table = build(&conn, ds, name, crs)?;
+    let table = build(&conn, ds, name, crs, pinned)?;
     install(conn, tmp, path)?;
     Ok(GpkgWritten { table, replaced: false, dependents: Vec::new() })
 }
@@ -711,8 +712,9 @@ pub(crate) fn write_features_in(
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<GpkgWritten> {
     let name = target.name.as_deref().unwrap_or(name);
+    let pinned = pinned_time()?;
     if let Some(replace) = into_existing(path, target)? {
-        return add::write_features(path, name, geometry_type, fields, crs, replace, feed);
+        return add::write_features(path, name, geometry_type, fields, crs, replace, pinned, feed);
     }
     check_new_destination(path)?;
     let (mut multi_points, mut mixed, mut keep_ids) = (None, false, true);
@@ -726,7 +728,7 @@ pub(crate) fn write_features_in(
             Err(Redo::Mixed) => mixed = true,
             Err(Redo::Renumber) => keep_ids = false,
             Ok((layout, extent)) => {
-                finish(&conn, &layout, extent)?;
+                finish(&conn, &layout, extent, pinned)?;
                 install(conn, tmp, path)?;
                 return Ok(GpkgWritten { table: layout.table, replaced: false, dependents: Vec::new() });
             }
@@ -838,7 +840,7 @@ fn destination_error(path: &Path, error: std::io::Error) -> DataError {
 
 /// Builds a whole layer's GeoPackage on `conn`, its table `name` chosen from all its features;
 /// returns the table's name as written.
-fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs) -> Result<String> {
+fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs, pinned: Option<i64>) -> Result<String> {
     let multi_points = ds.features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))));
     let kind = table_kind(ds);
     let mixed = ds.features.iter().any(|f| other_kind(f, kind));
@@ -851,7 +853,7 @@ fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs) -> Result
     if insert(conn, &layout, &ds.features, keep_ids)?.is_some() {
         return Err(DataError::Format("GeoPackage: a feature doesn't fit the table chosen for the layer".into()));
     }
-    finish(conn, &layout, ds.extent())?;
+    finish(conn, &layout, ds.extent(), pinned)?;
     Ok(layout.table)
 }
 
@@ -1084,16 +1086,17 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
     Ok(None)
 }
 
-/// [`register`]s the table and commits.
-fn finish(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
-    register(conn, layout, extent)?;
+/// [`register`]s the table, in a new file, and commits.
+fn finish(conn: &Connection, layout: &Layout, extent: Extent, pinned: Option<i64>) -> Result<()> {
+    register(conn, layout, extent, pinned, None)?;
     conn.execute_batch("COMMIT;").map_err(err)
 }
 
 /// Records the table in the GeoPackage's contents with its `extent` (identified by its table
 /// name, numbered if another table already has that identifier) and adds the triggers that keep its
-/// spatial index in step with edits.
-fn register(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
+/// spatial index in step with edits. Its `last_change` is the `pinned` time ([`pinned_time`]) or
+/// now, and past the `last_change` of the table it `replaced`, if any.
+fn register(conn: &Connection, layout: &Layout, extent: Extent, pinned: Option<i64>, replaced: Option<&str>) -> Result<()> {
     let Layout { table, geom, has_geom, geom_type, srs_id, table_q: t, geom_q: g, fid_q: i, rtree_q: rt, .. } = layout;
     let (has_geom, srs_id) = (*has_geom, *srs_id);
     let e = extent;
@@ -1111,9 +1114,19 @@ fn register(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
         }
         identifier = format!("{table}_{i}");
     }
+    // The time of the export, or the pinned one; a replaced table's always moves past the one it
+    // replaces, since saving edits takes an unchanged `last_change` for an unchanged table.
+    let last_change: String = conn
+        .query_row(
+            "SELECT CASE WHEN julianday(?2) >= julianday(t) THEN strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '+0.001 seconds') ELSE t END
+             FROM (SELECT COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'unixepoch'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) AS t)",
+            rusqlite::params![pinned, replaced],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
     conn.execute(
         "INSERT INTO gpkg_contents (table_name, data_type, identifier, last_change, min_x, min_y, max_x, max_y, srs_id)
-            VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?4, ?5, ?6, ?7, ?8)",
+            VALUES (?1, ?2, ?3, ?9, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             table,
             if has_geom { "features" } else { "attributes" },
@@ -1122,7 +1135,8 @@ fn register(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
             bounds[1],
             bounds[2],
             bounds[3],
-            srs
+            srs,
+            last_change
         ],
     )
     .map_err(err)?;
@@ -1263,6 +1277,27 @@ fn value(v: ValueRef<'_>, ty: FieldType, unread: &mut Vec<usize>, rounded: Optio
     }
 }
 
+/// The time a new table's `last_change` records, when `SOURCE_DATE_EPOCH` sets one
+/// ([`source_date_epoch`]). Read before an export writes anything, so a bad value refuses it at once.
+fn pinned_time() -> Result<Option<i64>> {
+    source_date_epoch(std::env::var_os("SOURCE_DATE_EPOCH").as_deref())
+}
+
+/// `SOURCE_DATE_EPOCH` read: seconds since 1970 as a whole number, as reproducible builds use it,
+/// so the same export run twice writes the same bytes. Unset or empty, the table records the time
+/// it is written. A value that isn't such a number (text that isn't Unicode included), or lies
+/// past year 9999, refuses the export rather than being ignored.
+fn source_date_epoch(raw: Option<&std::ffi::OsStr>) -> Result<Option<i64>> {
+    let raw = raw.map(|r| r.to_string_lossy());
+    let Some(raw) = raw.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return Ok(None) };
+    match raw.parse::<i64>() {
+        Ok(secs) if (0..=253_402_300_799).contains(&secs) => Ok(Some(secs)),
+        _ => Err(DataError::Format(format!(
+            "SOURCE_DATE_EPOCH is {raw:?}: it must be a whole number of seconds since 1970, up to the end of year 9999"
+        ))),
+    }
+}
+
 /// An SQL identifier, quoted.
 fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
@@ -1274,4 +1309,31 @@ fn err(e: rusqlite::Error) -> DataError {
 
 fn not_gpkg(e: rusqlite::Error) -> DataError {
     DataError::Format(format!("not a GeoPackage: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_date_epoch;
+    use std::ffi::OsStr;
+
+    /// Whole seconds from 1970 to the end of year 9999 pin the time; unset or blank leaves it the
+    /// export's; anything else, text that isn't Unicode included, refuses the export.
+    #[test]
+    fn source_date_epoch_takes_whole_seconds_and_refuses_the_rest() {
+        let read = |raw: Option<&OsStr>| source_date_epoch(raw).map_err(|e| e.to_string());
+        assert_eq!(read(None), Ok(None));
+        for (raw, secs) in
+            [("", None), ("  ", None), ("0", Some(0)), (" 1000000000 ", Some(1_000_000_000)), ("253402300799", Some(253_402_300_799))]
+        {
+            assert_eq!(read(Some(OsStr::new(raw))), Ok(secs), "{raw:?}");
+        }
+        for raw in ["-1", "253402300800", "1.5", "yesterday"] {
+            assert!(read(Some(OsStr::new(raw))).is_err_and(|e| e.contains("SOURCE_DATE_EPOCH")), "{raw:?}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(read(Some(OsStr::from_bytes(b"10\xff"))).is_err(), "not Unicode");
+        }
+    }
 }
