@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The platforms to test on, as a JSON list of runners. Pushes to main and releases test on every
 # platform, and so does a manual run unless it asks for `linux` (PLATFORMS), which tests there
-# alone, whatever the labels; a pull request on Linux, plus macOS when it's labelled `ci:macos` and
+# alone, whatever the labels, and so does the merge queue (`merge_group`); a pull request on Linux, plus macOS when it's labelled `ci:macos` and
 # Windows (x64 and ARM64) when it's labelled `ci:windows` (`ci:full` asks for both). For the label
 # just added (the `CI on label` workflow), only the platform that label asks for: the pull
 # request's own run already covers Linux.
@@ -21,7 +21,7 @@ asks() {
 
 os=()
 [ "${ACTION:-}" = labeled ] || os+=(ubuntu-latest)
-if [ "${EVENT:-}" = workflow_dispatch ] && [ "${PLATFORMS:-all}" = linux ]; then
+if [ "${EVENT:-}" = merge_group ] || { [ "${EVENT:-}" = workflow_dispatch ] && [ "${PLATFORMS:-all}" = linux ]; }; then
   jq -cn '$ARGS.positional' --args ${os[@]+"${os[@]}"}
   exit 0
 fi

@@ -16,8 +16,11 @@ for the conventions.
    needs a maintainer to add `preview` or re-run the workflow; returning contributors' previews
    publish automatically.
 
-A maintainer's `automerge` label approves and squash-merges a pull request after its required
-checks pass. Pushing again removes the label and disables auto-merge; removing the label also
+Pull requests merge through a merge queue: the queue tests each one merged with `main` and the
+pull requests ahead of it, and squash-merges it only if that passes, so two changes that pass apart
+but break together never reach `main`. The queue runs CI's Linux jobs; the Python package, Docker
+images and the phone apps are tested by the push to `main` after the merge. A maintainer's `automerge` label approves a pull request and
+adds it to the queue after its required checks pass. Pushing again removes the label and disables auto-merge; removing the label also
 disables it.
 
 A maintainer's `claude-autofix` label has Claude bring a pull request up to date: it merges the base

@@ -218,7 +218,9 @@ jobs:
           #
           # This stays true only as long as no step in this job executes the
           # checkout. Do not add a build, install, or test step here — put it in
-          # ci.yml, which runs under `pull_request` and gets no secrets.
+          # ci.yml, which runs under `pull_request` and `merge_group` with a
+          # read-only token and uses no secrets (the merge queue runs queued
+          # fork code in this repository, so a secret there would reach it).
           allow-unsafe-pr-checkout: true
 
       # Claude cannot fetch the diff itself (no token in its subprocesses — see

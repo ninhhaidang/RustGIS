@@ -6,6 +6,17 @@ name: CI
 # branch before its pull request runs the pull request's own checks).
 # Adding the label runs that platform straight away (ci-label.yml); later pushes include it here.
 #
+# The merge queue tests a pull request merged with main and the pull requests ahead of it with this
+# workflow's jobs as an unlabelled pull request runs them (Linux, the changed packages), so two that
+# pass apart but break together are stopped before main. `Tests pass` is the only check the ruleset
+# requires. The other pull request workflows (python.yml, mobile.yml, docs, Docker, fuzz) don't run
+# in the queue: Python and Docker are tested on the push to main, and the phone apps through this
+# workflow's `ios` and `android` jobs there.
+#
+# Queued commits can carry a fork's code, and the queue runs them in this repository: the token is
+# read-only (`permissions` below, `flaky` asks for issues on pushes only), and no job here may use a
+# secret.
+#
 # A pull request's tests cover the packages it changes and those that depend on them (`select`);
 # pushes to main, labelled runs, manual runs on every platform and changes to Cargo.lock,
 # rust-toolchain, .github/ or .config/ test the whole workspace. `Tests pass` is the check to
@@ -15,6 +26,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
     inputs:
       platforms:
@@ -29,6 +41,9 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always

@@ -11,7 +11,8 @@
 #
 # From the event: EVENT (github.event_name), BASE_REF (github.base_ref, a pull request's base
 # branch), LABELS (the pull request's labels, as JSON) and PLATFORMS (a manual run's choice). A
-# manual run on Linux alone (a fork checking a branch) compares with main.
+# manual run on Linux alone (a fork checking a branch) and the merge queue (`merge_group`, whose
+# commit is main with the queued pull requests on top) compare with main.
 set -euo pipefail
 
 # Chooses the whole workspace, for the reason in $1.
