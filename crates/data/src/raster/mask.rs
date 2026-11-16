@@ -99,25 +99,28 @@ pub(super) fn read<R: Read + Seek>(dec: &mut Decoder<R>, index: usize, step: u32
     let (offsets, counts) = if tiled { (Tag::TileOffsets, Tag::TileByteCounts) } else { (Tag::StripOffsets, Tag::StripByteCounts) };
     let offsets = dec.find_tag_unsigned_vec::<u64>(offsets).map_err(err)?.unwrap_or_default();
     let counts = dec.find_tag_unsigned_vec::<u64>(counts).map_err(err)?.unwrap_or_default();
-    let (across, down) = (w.div_ceil(cw), h.div_ceil(ch));
-    let n = (across as usize).saturating_mul(down as usize);
-    if offsets.len() < n || counts.len() < n {
-        return Err(err("a transparency mask's chunk index is shorter than its image"));
-    }
+    // Counted in `u64`: a chunk count, a chunk's corner and the next multiple of `step` pass
+    // `u32::MAX` in an image that wide (a panic in a debug build, a wrap in a release build).
+    let (across, down) = (u64::from(w.div_ceil(cw)), u64::from(h.div_ceil(ch)));
+    let n = usize::try_from(across * down)
+        .ok()
+        .filter(|n| offsets.len() >= *n && counts.len() >= *n)
+        .ok_or_else(|| err("a transparency mask's chunk index is shorter than its image"))?;
     let row_bytes = (cw as usize).div_ceil(8);
     let (ow, oh) = (w.div_ceil(step) as usize, h.div_ceil(step) as usize);
-    let mut out = vec![false; ow.saturating_mul(oh)];
+    let mut out = super::filled(ow, oh, false)?;
+    let step = u64::from(step);
     for c in 0..n {
         crate::progress::check()?;
-        let (x0, y0) = ((c as u32 % across) * cw, (c as u32 / across) * ch);
-        let (dw, dh) = (cw.min(w - x0), ch.min(h - y0));
-        // The first sampled column and row at or after the chunk's corner; none inside it: skipped.
-        let (sx, sy) = (x0.div_ceil(step) * step, y0.div_ceil(step) * step);
-        if sx >= x0 + dw || sy >= y0 + dh {
+        let (x0, y0) = ((c as u64 % across) * u64::from(cw), (c as u64 / across) * u64::from(ch));
+        let tile =
+            Tile { x0, y0, dw: u64::from(cw).min(u64::from(w).saturating_sub(x0)), dh: u64::from(ch).min(u64::from(h).saturating_sub(y0)) };
+        // No sampled pixel inside the chunk: skipped.
+        if tile.first(step).is_none() {
             continue;
         }
         // A tile holds every row, padded; a strip only the image's.
-        let rows = if tiled { ch } else { dh } as usize;
+        let rows = if tiled { ch as u64 } else { tile.dh } as usize;
         let need =
             row_bytes.checked_mul(rows).filter(|n| *n <= MAX_CHUNK_BYTES).ok_or_else(|| err("a transparency mask's chunk is too large"))?;
         let (Some(&offset), Some(&count)) = (offsets.get(c), counts.get(c)) else { continue };
@@ -138,22 +141,57 @@ pub(super) fn read<R: Read + Seek>(dec: &mut Decoder<R>, index: usize, step: u32
                 .map_err(|_| err("a transparency mask's chunk doesn't decompress"))?,
             _ => packbits(&encoded, need),
         };
-        if decoded.len() < row_bytes.saturating_mul(dh as usize) {
+        if (decoded.len() as u64) < (row_bytes as u64).saturating_mul(tile.dh) {
             return Err(err("a transparency mask's chunk is shorter than its image"));
         }
-        for y in (sy..y0 + dh).step_by(step as usize) {
-            let row = decoded.get((y - y0) as usize * row_bytes..).unwrap_or_default();
-            for x in (sx..x0 + dw).step_by(step as usize) {
-                let (bx, bit) = ((x - x0) as usize / 8, (x - x0) % 8);
+        tile.sample(&mut out, ow, step, &decoded, row_bytes, lsb_first);
+    }
+    Ok(out)
+}
+
+/// Where a mask chunk lies in the image: its corner, then the columns and rows of it the image
+/// holds, in `u64`.
+#[derive(Clone, Copy)]
+struct Tile {
+    x0: u64,
+    y0: u64,
+    dw: u64,
+    dh: u64,
+}
+
+impl Tile {
+    /// The first sampled column and row at or after the chunk's corner, if the chunk holds any
+    /// sampled pixel (every `step`-th column and row from the image's corner).
+    fn first(self, step: u64) -> Option<(u64, u64)> {
+        let (sx, sy) = (self.x0.div_ceil(step) * step, self.y0.div_ceil(step) * step);
+        (sx < self.x0 + self.dw && sy < self.y0 + self.dh).then_some((sx, sy))
+    }
+
+    /// Puts the chunk's sampled pixels into `out`, `ow` to a row: `decoded` is its rows of
+    /// `row_bytes` bytes, a pixel a bit, the first of a byte its high bit unless `lsb_first`.
+    fn sample(self, out: &mut [bool], ow: usize, step: u64, decoded: &[u8], row_bytes: usize, lsb_first: bool) {
+        let Some((sx, sy)) = self.first(step) else { return };
+        let by = usize::try_from(step).unwrap_or(usize::MAX);
+        for y in (sy..self.y0 + self.dh).step_by(by) {
+            let row = usize::try_from(y - self.y0)
+                .ok()
+                .and_then(|r| r.checked_mul(row_bytes))
+                .and_then(|at| decoded.get(at..))
+                .unwrap_or_default();
+            for x in (sx..self.x0 + self.dw).step_by(by) {
+                let (bx, bit) = (usize::try_from((x - self.x0) / 8).unwrap_or(usize::MAX), (x - self.x0) % 8);
                 let Some(byte) = row.get(bx) else { continue };
                 let on = if lsb_first { byte >> bit & 1 } else { byte >> (7 - bit) & 1 } == 1;
-                if let Some(slot) = out.get_mut((y / step) as usize * ow + (x / step) as usize) {
+                let at = usize::try_from(y / step)
+                    .ok()
+                    .and_then(|r| r.checked_mul(ow))
+                    .and_then(|at| at.checked_add(usize::try_from(x / step).ok()?));
+                if let Some(slot) = at.and_then(|at| out.get_mut(at)) {
                     *slot = on;
                 }
             }
         }
     }
-    Ok(out)
 }
 
 /// PackBits-decodes `input`, at most `max` bytes of it.
@@ -294,5 +332,39 @@ mod tests {
         let mut dec = Decoder::new(std::io::Cursor::new(bytes)).expect("decoder");
         // The overview's mask isn't the first image's, so the scan goes on past it and fails.
         assert!(matches!(find(&mut dec, 1, (10, 7)), Found::Unscanned(_)));
+    }
+
+    /// A mask as wide as `u32` counts, in tiles of 2^20 pixels, sampled every 2^20th pixel: the
+    /// last tile ends where `u32` does, and the next multiple of the step is past it.
+    #[test]
+    fn tiles_of_an_image_as_wide_as_u32_holds_are_sampled_and_the_walk_ends() {
+        let step = 1u64 << 20;
+        let last = Tile { x0: 4095 << 20, y0: 0, dw: (1 << 20) - 1, dh: 1 };
+        assert_eq!(last.first(step), Some((4095 << 20, 0)));
+        for lsb_first in [false, true] {
+            let mut row = vec![0u8; 1 << 17];
+            row[0] = if lsb_first { 0x01 } else { 0x80 };
+            let mut out = vec![false; 4096];
+            last.sample(&mut out, 4096, step, &row, row.len(), lsb_first);
+            assert_eq!(out.iter().filter(|on| **on).count(), 1, "lsb_first {lsb_first}");
+            assert!(out[4095], "lsb_first {lsb_first}");
+        }
+        // Three pixels from 4,294,967,292: the next multiple of 2^20 is 2^32, past them.
+        let end = Tile { x0: u64::from(u32::MAX) - 3, y0: 0, dw: 3, dh: 1 };
+        assert_eq!(end.first(step), None);
+        let tall = Tile { x0: 0, y0: u64::from(u32::MAX) - 3, dw: 1, dh: 3 };
+        assert_eq!(tall.first(step), None);
+        let mut out = vec![false; 4];
+        end.sample(&mut out, 4, step, &[0xff], 1, false);
+        assert_eq!(out, [false; 4]);
+    }
+
+    /// A mask whose image is too large to hold is an error saying so, not a panic on a vector
+    /// of more than `isize::MAX` bytes.
+    #[test]
+    fn a_mask_too_large_to_hold_is_an_error() {
+        let mut dec = Decoder::new(std::io::Cursor::new(striped(u32::MAX, u32::MAX, u32::MAX, 1, &[vec![0]]))).expect("decoder");
+        let e = read(&mut dec, 0, 1).unwrap_err().to_string();
+        assert!(e.contains("not enough memory"), "{e}");
     }
 }

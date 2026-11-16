@@ -1579,8 +1579,9 @@ the root's `spatial:dimensions` and the coordinates its dimensions name are then
 (`raster.zarrInfo` without one says so). The Add Data › Zarr dialog can't name a variable before
 it connects yet: give it the address of one array.
 Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and say so. A
-store by web address must allow the browser to fetch it (CORS) for the web app;
-Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
+blosc or LZ4 chunk whose header claims more bytes than its data can make, or whose blocks lie
+outside it, is refused, naming the array. A store by web address must allow the browser to fetch it
+(CORS) for the web app; Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
 
 ```sh
 rustgis-cli run --cmd 'layer.addZarr={"url":"https://storage.googleapis.com/gcp-public-data-arco-era5/ar/1959-2022-full_37-1h-0p25deg-chunk-1.zarr-v2","variable":"2m_temperature","index":{"time":539100}}'

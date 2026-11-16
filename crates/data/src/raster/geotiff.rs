@@ -1088,14 +1088,25 @@ impl Chunks {
         u64::from(self.per_plane) * self.planes as u64
     }
 
+    /// Where chunk `c` of a plane lies: its corner, then the columns and rows of it the image
+    /// holds (the rest is padding). In `u64`: `x0 + cw` and the next multiple of a step pass
+    /// `u32::MAX` in an image that wide, which in `u32` panics in a debug build and wraps in a
+    /// release build.
+    fn span(&self, c: u32) -> (u64, u64, u64, u64) {
+        let across = self.across.max(1);
+        let (x0, y0) = (u64::from(c % across) * u64::from(self.cw), u64::from(c / across) * u64::from(self.ch));
+        let (w, h) = (u64::from(self.w), u64::from(self.h));
+        (x0, y0, u64::from(self.cw).min(w.saturating_sub(x0)), u64::from(self.ch).min(h.saturating_sub(y0)))
+    }
+
     /// Chunk `i` (counting through every plane) as (plane, chunk index in the file), when it holds
     /// a kept row and column; a chunk holding none is skipped unread.
     fn wanted(&self, i: u64, k: u32) -> Option<(usize, u32)> {
         let plane = usize::try_from(i / u64::from(self.per_plane.max(1))).ok()?;
         let c = u32::try_from(i % u64::from(self.per_plane.max(1))).ok()?;
-        let (x0, y0) = ((c % self.across) * self.cw, (c / self.across) * self.ch);
-        let rows = self.ch.min(self.h.saturating_sub(y0));
-        if y0.div_ceil(k) * k >= y0 + rows || x0.div_ceil(k) * k >= x0 + self.cw.min(self.w - x0) {
+        let (x0, y0, cols, rows) = self.span(c);
+        let k = u64::from(k.max(1));
+        if y0.div_ceil(k) * k >= y0 + rows || x0.div_ceil(k) * k >= x0 + cols {
             return None;
         }
         let index = u32::try_from(plane).ok()?.checked_mul(self.per_plane)?.checked_add(c)?;
@@ -1104,7 +1115,8 @@ impl Chunks {
 
     /// Copies every `k`-th pixel each way of chunk `c` of `plane` (decoded as `values`) into
     /// `bands`, each `ow` pixels wide, counting in `rounded` (by band) the pixels copied whose bit
-    /// is set in `changed` (from [`rounded_bits`]).
+    /// is set in `changed` (from [`rounded_bits`]). Values of none of the chunk's shapes are an
+    /// error: a row length guessed from them would put pixels in other pixels' places.
     fn place(
         &self,
         bands: &mut [Vec<f32>],
@@ -1115,34 +1127,45 @@ impl Chunks {
         c: u32,
         k: u32,
         ow: usize,
-    ) {
+    ) -> Result<()> {
         let c = c % self.per_plane.max(1);
-        let (x0, y0) = ((c % self.across) * self.cw, (c / self.across) * self.ch);
-        let rows = self.ch.min(self.h.saturating_sub(y0));
+        let (x0, y0, cols, rows) = self.span(c);
+        let k = u64::from(k.max(1));
         // The chunk's row length: the data width, or the full tile width when padded. The tiff
         // crate gives a bottom tile of every band after the first, when the bands are stored
         // apart, its padding rows too (issue #544), so the row count can't tell it alone. Where two
         // shapes have the same size, the data width wins: both the tiff crate and our LZW decoder
         // return chunks as wide as the data.
         let per_pixel = self.samples.max(1);
-        let dw = self.cw.min(self.w.saturating_sub(x0)) as usize;
-        let shapes = [(dw, rows), (dw, self.ch), (self.cw as usize, rows), (self.cw as usize, self.ch)];
+        let (dw, data_rows, cw, ch) = (cols as usize, rows as usize, self.cw as usize, self.ch as usize);
+        let shapes = [(dw, data_rows), (dw, ch), (cw, data_rows), (cw, ch)];
         let stride = shapes
             .iter()
-            .find(|(cols, r)| cols.saturating_mul(*r as usize).saturating_mul(per_pixel) == values.len())
-            .map_or(values.len() / (rows as usize).max(1) / per_pixel, |(cols, _)| *cols)
-            .max(1);
+            .find(|(w, r)| w.saturating_mul(*r).saturating_mul(per_pixel) == values.len())
+            .map(|(w, _)| (*w).max(1))
+            .ok_or_else(|| {
+                err(format!(
+                    "a strip or tile decodes to {} values, not the {dw} × {data_rows} pixels of {per_pixel} samples it holds",
+                    values.len()
+                ))
+            })?;
         let mut y = y0.div_ceil(k) * k;
         while y < y0 + rows {
             let mut x = x0.div_ceil(k) * k;
-            while x < (x0 + self.cw).min(self.w) {
-                let src = ((y - y0) as usize * stride + (x - x0) as usize) * self.samples;
+            while x < x0 + cols {
+                // With `stride` one of the chunk's shapes, every position is inside `values`; the
+                // checked arithmetic only keeps a product from being computed unchecked.
+                let src = usize::try_from(y - y0)
+                    .ok()
+                    .and_then(|row| row.checked_mul(stride))
+                    .and_then(|at| at.checked_add(usize::try_from(x - x0).ok()?))
+                    .and_then(|at| at.checked_mul(self.samples));
                 let dst = (y / k) as usize * ow + (x / k) as usize;
                 for b in 0..self.samples {
                     let band = if self.planar { plane } else { b };
-                    if let (Some(v), Some(slot)) = (values.get(src + b), bands.get_mut(band).and_then(|v| v.get_mut(dst))) {
+                    let at = src.unwrap_or(usize::MAX).saturating_add(b);
+                    if let (Some(v), Some(slot)) = (values.get(at), bands.get_mut(band).and_then(|v| v.get_mut(dst))) {
                         *slot = *v;
-                        let at = src + b;
                         if let Some(bits) = changed
                             && bits.get(at / 64).is_some_and(|w| w >> (at % 64) & 1 == 1)
                             && let Some(n) = rounded.get_mut(band)
@@ -1155,6 +1178,7 @@ impl Chunks {
             }
             y += k;
         }
+        Ok(())
     }
 }
 
@@ -1210,7 +1234,7 @@ fn decimate<R: Read + Seek>(
             let (mut values, dt) = to_f32(buf, (ow, oh))?;
             super::lerc::blank(&mut values, gaps.as_deref());
             data_type = dt;
-            chunks.place(&mut bands, &values, changed.as_deref(), &mut rounded, plane, index, k, ow);
+            chunks.place(&mut bands, &values, changed.as_deref(), &mut rounded, plane, index, k, ow)?;
         }
         crate::progress::step(1)?;
     }
@@ -1280,10 +1304,16 @@ fn decimate_parallel(
                         Err(e) => return fail(e),
                     };
                     super::lerc::blank(&mut values, gaps.as_deref());
-                    if let Ok(mut o) = out.lock() {
-                        let (bands, data_type, rounded) = &mut *o;
-                        *data_type = dt;
-                        chunks.place(bands, &values, changed.as_deref(), rounded, plane, index, k, ow);
+                    let placed = match out.lock() {
+                        Ok(mut o) => {
+                            let (bands, data_type, rounded) = &mut *o;
+                            *data_type = dt;
+                            chunks.place(bands, &values, changed.as_deref(), rounded, plane, index, k, ow)
+                        }
+                        Err(_) => Err(err("a chunk couldn't be decoded")),
+                    };
+                    if let Err(e) = placed {
+                        return fail(e);
                     }
                 }
                 Err(e) => return fail(e),
@@ -2138,6 +2168,104 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The chunks of a `w × h` image in `cw × ch` tiles, `samples` to a pixel, as [`Chunks::new`]
+    /// lays them out from a file's tags.
+    fn chunk_grid(w: u32, h: u32, cw: u32, ch: u32, samples: usize) -> Chunks {
+        let (across, down) = (w.div_ceil(cw), h.div_ceil(ch));
+        Chunks { w, h, cw, ch, across, per_plane: across * down, planes: 1, samples, planar: false }
+    }
+
+    /// Every `k`-th pixel each way, whatever the chunks' shape and whether the edge ones are
+    /// padded: the same pixels, in the same places.
+    #[test]
+    fn decimation_keeps_the_same_pixels_whatever_the_chunk_shape() {
+        let value = |x: u32, y: u32, s: usize| (y * 1000 + x * 10) as f32 + s as f32;
+        for (cw, ch) in [(13, 8), (5, 3), (4, 8), (13, 1), (1, 1), (7, 5)] {
+            for padded in [false, true] {
+                for k in 1..=9u32 {
+                    let chunks = chunk_grid(13, 8, cw, ch, 2);
+                    let (ow, oh) = (13u32.div_ceil(k) as usize, 8u32.div_ceil(k) as usize);
+                    let mut bands = vec![vec![f32::NAN; ow * oh]; 2];
+                    for i in 0..chunks.count() {
+                        let Some((plane, index)) = chunks.wanted(i, k) else { continue };
+                        let (x0, y0) = ((index % chunks.across) * cw, (index / chunks.across) * ch);
+                        let (dw, rows) = if padded { (cw, ch) } else { (cw.min(13 - x0), ch.min(8 - y0)) };
+                        let mut values = Vec::new();
+                        for y in y0..y0 + rows {
+                            for x in x0..x0 + dw {
+                                values.extend([value(x, y, 0), value(x, y, 1)]);
+                            }
+                        }
+                        chunks.place(&mut bands, &values, None, &mut [0, 0], plane, index, k, ow).unwrap();
+                    }
+                    for (s, band) in bands.iter().enumerate() {
+                        let want: Vec<f32> =
+                            (0..oh as u32).flat_map(|r| (0..ow as u32).map(move |c| (c * k, r * k))).map(|(x, y)| value(x, y, s)).collect();
+                        assert_eq!(band, &want, "chunks of {cw} × {ch}, padded {padded}, every {k}th, band {s}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// An image `u32` can just count the width (or height) of, in chunks of 2^20 pixels, every 2^20th
+    /// pixel: the last chunk ends where `u32` does, so `x0 + cw` and the walk's last step pass it.
+    /// In `u32` that panics in a debug build and wraps into an endless walk in a release build.
+    #[test]
+    fn decimating_an_image_as_wide_or_tall_as_u32_holds_places_its_last_pixel_and_ends() {
+        let k = 1u32 << 20;
+        for wide in [true, false] {
+            let chunks = if wide { chunk_grid(u32::MAX, 1, k, 1, 1) } else { chunk_grid(1, u32::MAX, 1, k, 1) };
+            assert_eq!(chunks.count(), 4096);
+            assert!((0..4096).all(|i| chunks.wanted(i, k) == Some((0, i as u32))));
+            // The last chunk holds one pixel fewer than the others; its first is kept.
+            let mut values = vec![0.0f32; k as usize - 1];
+            values[0] = 7.0;
+            let mut band = vec![vec![f32::NAN; 4096]];
+            chunks.place(&mut band, &values, None, &mut [0], 0, 4095, k, if wide { 4096 } else { 1 }).unwrap();
+            assert_eq!(band[0].iter().filter(|v| !v.is_nan()).count(), 1, "wide {wide}");
+            assert_eq!(band[0][4095], 7.0, "wide {wide}");
+        }
+    }
+
+    /// The next multiple of the step after a chunk's corner is past `u32` there: nothing of the
+    /// chunk is kept, as it isn't below the end of it, not a multiple wrapped round to 0. Where a
+    /// kept pixel is the second last, its next step ends the walk.
+    #[test]
+    fn a_step_that_passes_u32_ends_the_chunk_instead_of_wrapping() {
+        // Chunks of 3 pixels; the last holds the three pixels from 4,294,967,292.
+        let chunks = chunk_grid(u32::MAX, 1, 3, 1, 1);
+        let last = chunks.across - 1;
+        assert_eq!(chunks.span(last), (4_294_967_292, 0, 3, 1));
+        assert_eq!(chunks.wanted(u64::from(last), 1 << 20), None);
+        assert_eq!(chunks.wanted(u64::from(last), 2), Some((0, last)));
+        // Every second pixel keeps 4,294,967,292 and 4,294,967,294; the output isn't made (it would
+        // hold 2 GiB): the walk ending is what is checked.
+        let mut bands = vec![Vec::new()];
+        chunks.place(&mut bands, &[1.0, 2.0, 3.0], None, &mut [0], 0, last, 2, 1 << 31).unwrap();
+        assert!(bands[0].is_empty());
+        // Chunks of no width or height, and an image of no width, are nothing, not a division by 0.
+        let none = chunk_grid(0, 0, 1, 1, 1);
+        assert_eq!(none.count(), 0);
+        assert_eq!(none.span(0), (0, 0, 0, 0));
+    }
+
+    /// A decoded strip or tile whose values make none of its shapes is refused: a row length
+    /// guessed from them would put pixels in other pixels' places, or leave them empty unsaid.
+    #[test]
+    fn a_chunk_of_none_of_its_shapes_is_refused_not_guessed() {
+        // One 4 × 2 tile; 5 values make neither 4 × 2 nor any padded shape.
+        let chunks = chunk_grid(4, 2, 4, 2, 1);
+        let mut bands = vec![vec![f32::NAN; 8]];
+        let e = chunks.place(&mut bands, &[1.0, 2.0, 3.0, 4.0, 5.0], None, &mut [0], 0, 0, 1, 4).unwrap_err().to_string();
+        assert!(e.contains("decodes to 5 values, not the 4 × 2 pixels"), "{e}");
+        assert!(bands[0].iter().all(|v| v.is_nan()), "nothing placed from a refused chunk");
+        // All 8 are placed where they belong.
+        let all: Vec<f32> = (0..8).map(|v| v as f32).collect();
+        chunks.place(&mut bands, &all, None, &mut [0], 0, 0, 1, 4).unwrap();
+        assert_eq!(bands[0], all);
     }
 
     /// Who holds the rights (the Copyright tag) is written by both writers and read back, as the

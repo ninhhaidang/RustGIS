@@ -910,15 +910,34 @@ fn unzstd(d: &[u8], want: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The most bytes an LZ4 block can make from each byte of itself: a match's length grows by up to
+/// 255 for every byte that extends it, so no sequence expands more. A header claiming more than
+/// that is wrong, whatever the chunk's size.
+/// See the length extensions in the LZ4 block format:
+/// <https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md>.
+const LZ4_MAX_RATIO: usize = 255;
+
+/// The `len` bytes LZ4 block `src` decompresses to (`what` names it in errors). `len` is a
+/// header's claim, so it is held to what `src` can make before any room is made for it: a few
+/// bytes of input never ask for a gigabyte.
+fn lz4_block(src: &[u8], len: usize, what: &str) -> Result<Vec<u8>> {
+    if len > src.len().saturating_mul(LZ4_MAX_RATIO) {
+        return Err(bad(format!("{what} claims more bytes than its data can hold")));
+    }
+    let mut out = vec![0u8; len];
+    let got = lz4_flex::block::decompress_into(src, &mut out).map_err(|e| bad(format!("{what}: {e}")))?;
+    if got != len {
+        return Err(bad(format!("{what} holds {got} bytes, not the {len} it says")));
+    }
+    Ok(out)
+}
+
 fn numcodecs_lz4(d: &[u8], want: usize) -> Result<Vec<u8>> {
     let n = d.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize).ok_or_else(|| bad("a cut LZ4 chunk"))?;
     if n > want.max(1) {
         return Err(bad("an LZ4 chunk larger than its array's chunks"));
     }
-    let mut out = vec![0u8; n];
-    let got = lz4_flex::block::decompress_into(d.get(4..).unwrap_or_default(), &mut out).map_err(|e| bad(format!("an LZ4 chunk: {e}")))?;
-    out.truncate(got);
-    Ok(out)
+    lz4_block(d.get(4..).unwrap_or_default(), n, "an LZ4 chunk")
 }
 
 /// Byte unshuffle: element `j`'s byte `i` was stored at `i * n + j`.
@@ -949,10 +968,19 @@ pub fn blosc_decode(d: &[u8], want: usize) -> Result<Vec<u8>> {
     blosc(d, want)
 }
 
+/// `d[at..at + len]`, if `d` holds it. The end is added with a check: offsets and lengths come
+/// from a chunk's own headers, and `at + len` wraps a 32-bit `usize` (the browser's).
+fn span(d: &[u8], at: usize, len: usize) -> Option<&[u8]> {
+    d.get(at..at.checked_add(len)?)
+}
+
 /// A blosc (version 1) frame: a 16-byte header, then blocks compressed with LZ4, zlib or zstd,
-/// each byte-shuffled and possibly split into a stream per byte of the type.
+/// each byte-shuffled and possibly split into a stream per byte of the type. The header's sizes
+/// are claims: the table of block starts and every stream are found in the frame before room is
+/// made for what they describe, and a frame that decodes to less than it says is an error.
 fn blosc(d: &[u8], want: usize) -> Result<Vec<u8>> {
-    let h = d.get(..16).ok_or_else(|| bad("a cut blosc chunk"))?;
+    let cut = || bad("a cut blosc chunk");
+    let h = d.get(..16).ok_or_else(cut)?;
     let flags = h[2];
     let typesize = usize::from(h[3]).max(1);
     let le = |o: usize| u32::from_le_bytes([h[o], h[o + 1], h[o + 2], h[o + 3]]) as usize;
@@ -962,19 +990,25 @@ fn blosc(d: &[u8], want: usize) -> Result<Vec<u8>> {
     }
     // Stored as it is.
     if flags & 0x2 != 0 {
-        return Ok(d.get(16..16 + nbytes).ok_or_else(|| bad("a cut blosc chunk"))?.to_vec());
+        return Ok(span(d, 16, nbytes).ok_or_else(cut)?.to_vec());
     }
-    if blocksize == 0 || nbytes == 0 {
+    if nbytes == 0 {
         return Ok(Vec::new());
+    }
+    if blocksize == 0 {
+        return Err(bad("a blosc chunk with blocks of no size"));
     }
     let codec = flags >> 5;
     let nblocks = nbytes.div_ceil(blocksize);
-    let mut out = Vec::with_capacity(nbytes);
-    for b in 0..nblocks {
-        let start = d
-            .get(16 + 4 * b..20 + 4 * b)
-            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
-            .ok_or_else(|| bad("a cut blosc chunk"))?;
+    let table = nblocks.checked_mul(4).and_then(|n| span(d, 16, n)).ok_or_else(cut)?;
+    // Reserve from the bytes present, not the decoded length claimed by the header; grow only
+    // as blocks actually decode.
+    let mut out = Vec::with_capacity(nbytes.min(d.len()));
+    for (b, start) in table.as_chunks::<4>().0.iter().enumerate() {
+        let start = u32::from_le_bytes(*start) as usize;
+        if start < 16 + table.len() {
+            return Err(bad("a blosc block starts inside its header or block table"));
+        }
         let bsize = if b + 1 == nblocks { nbytes - b * blocksize } else { blocksize };
         // A stream per byte of the type, unless the block wasn't split; the last, shorter block
         // never is.
@@ -982,40 +1016,48 @@ fn blosc(d: &[u8], want: usize) -> Result<Vec<u8>> {
         let split = !leftover && flags & 0x10 == 0 && typesize <= 16 && blocksize / typesize >= 128;
         let streams = if split { typesize } else { 1 };
         let ssize = bsize / streams;
-        let mut block = Vec::with_capacity(bsize);
+        let mut block = Vec::new();
         let mut at = start;
         for s in 0..streams {
             let this = if s + 1 == streams { bsize - ssize * (streams - 1) } else { ssize };
-            let cbytes = d.get(at..at + 4).map(|s| i32::from_le_bytes([s[0], s[1], s[2], s[3]])).ok_or_else(|| bad("a cut blosc chunk"))?;
+            let cbytes = span(d, at, 4).map(|s| i32::from_le_bytes([s[0], s[1], s[2], s[3]])).ok_or_else(cut)?;
             at += 4;
             let cb = usize::try_from(cbytes).map_err(|_| bad("a blosc stream of special values isn't read"))?;
-            let src = d.get(at..at + cb).ok_or_else(|| bad("a cut blosc chunk"))?;
+            let src = span(d, at, cb).ok_or_else(cut)?;
             at += cb;
             if cb == this {
                 block.extend_from_slice(src);
                 continue;
             }
             let part = match codec {
-                1 => {
-                    let mut o = vec![0u8; this];
-                    let n = lz4_flex::block::decompress_into(src, &mut o).map_err(|e| bad(format!("a blosc LZ4 block: {e}")))?;
-                    o.truncate(n);
-                    o
-                }
+                1 => lz4_block(src, this, "a blosc LZ4 block")?,
                 3 => inflate(src, true, this)?,
                 4 => unzstd(src, this)?,
                 0 => return Err(bad("blosc's own codec (blosclz) isn't read: use LZ4, zlib or zstd")),
                 2 => return Err(bad("snappy blosc chunks aren't read")),
                 c => return Err(bad(format!("blosc codec {c} isn't read"))),
             };
-            block.extend_from_slice(part.get(..this.min(part.len())).unwrap_or_default());
+            if part.len() != this {
+                return Err(bad(format!("a blosc stream holds {} bytes, not the {this} it says", part.len())));
+            }
+            block.extend_from_slice(&part);
         }
         if flags & 0x4 != 0 {
             block = bitunshuffle(&block, typesize, h[0]);
         } else if flags & 0x1 != 0 && typesize > 1 {
             block = unshuffle(&block, typesize);
         }
+        // Grown as Vec would (doubling), but never past the `nbytes` the blocks add up to, so a
+        // valid chunk holds no more than it did when `nbytes` was reserved at once.
+        if out.capacity() - out.len() < block.len() {
+            let rest = nbytes.saturating_sub(out.len()).max(block.len());
+            out.try_reserve_exact(rest.min(out.len().max(block.len())))
+                .map_err(|_| bad(format!("not enough memory for a blosc chunk of {nbytes} bytes")))?;
+        }
         out.extend_from_slice(&block);
+    }
+    if out.len() != nbytes {
+        return Err(bad(format!("a blosc chunk holds {} bytes, not the {nbytes} it says", out.len())));
     }
     Ok(out)
 }
@@ -2975,7 +3017,10 @@ mod tests {
         // Two full blocks split in four streams, then a shorter one that isn't split.
         let raw: Vec<u8> = (0..2700u32).flat_map(|v| ((v % 97) as f32 * 1.5).to_le_bytes()).collect();
         let f = blosc_blocks(&raw, 4, 4096);
-        assert_eq!(blosc(&f, raw.len()).unwrap(), raw);
+        let got = blosc(&f, raw.len()).unwrap();
+        assert_eq!(got, raw);
+        // Grown block by block from the frame's size, never holding more than the chunk.
+        assert!(f.len() < raw.len() && got.capacity() <= raw.len(), "capacity {} for {} bytes", got.capacity(), raw.len());
     }
 
     fn f32s(v: &[f32]) -> Vec<u8> {
@@ -3665,6 +3710,96 @@ mod tests {
         let st = read_metadata(&dir).unwrap();
         assert!(st.array("v").is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A header's claim of how many bytes a chunk makes is held to what its data can make, before
+    /// room is made for it: a few bytes never ask for a gigabyte.
+    #[test]
+    fn an_lz4_claim_is_held_to_what_its_data_can_make() {
+        let framed = |claim: usize, body: &[u8]| {
+            let mut f = (claim as u32).to_le_bytes().to_vec();
+            f.extend(body);
+            f
+        };
+        let gib = 1usize << 30;
+        let e = numcodecs_lz4(&framed(gib, &[0xf0, 1, 2]), gib).unwrap_err().to_string();
+        assert!(e.contains("claims more bytes than its data can hold"), "{e}");
+        // 255 bytes for each byte of the block is the most LZ4 makes: one more is refused before
+        // the decoder, the most is the decoder's to judge (this body isn't a block).
+        let junk = [0xffu8; 6];
+        let e = numcodecs_lz4(&framed(255 * junk.len() + 1, &junk), gib).unwrap_err().to_string();
+        assert!(e.contains("claims more bytes"), "{e}");
+        let e = numcodecs_lz4(&framed(255 * junk.len(), &junk), gib).unwrap_err().to_string();
+        assert!(e.contains("an LZ4 chunk:") && !e.contains("claims more bytes"), "{e}");
+        // A chunk that compresses as far as LZ4 goes is still read.
+        let zeros = vec![0u8; 1 << 20];
+        let block = lz4_block(&zeros);
+        assert!(block.len() * 255 >= zeros.len());
+        assert_eq!(numcodecs_lz4(&framed(zeros.len(), &block), zeros.len()).unwrap(), zeros);
+        assert!(numcodecs_lz4(&framed(zeros.len() + 1, &block), zeros.len() + 1).is_err());
+    }
+
+    #[test]
+    fn a_blosc_frame_is_found_in_its_bytes_before_room_is_made_for_it() {
+        // A 16-byte header (version, LZ4 version, flags, type size, then the sizes), `rest` after.
+        let frame = |nbytes: u32, blocksize: u32, flags: u8, rest: &[u8]| {
+            let mut f = vec![2u8, 1, flags, 1];
+            f.extend(nbytes.to_le_bytes());
+            f.extend(blocksize.to_le_bytes());
+            f.extend(0u32.to_le_bytes());
+            f.extend(rest);
+            f
+        };
+        let (gib, lz4) = (1usize << 30, 1u8 << 5);
+        let one_block = |cb: i32, stream: &[u8]| [&20u32.to_le_bytes()[..], &cb.to_le_bytes(), stream].concat();
+        // One block of a gigabyte made from one byte.
+        let e = blosc(&frame(1 << 30, 1 << 30, lz4, &one_block(1, &[0])), gib).unwrap_err().to_string();
+        assert!(e.contains("claims more bytes than its data can hold"), "{e}");
+        // A gigabyte in blocks of one byte has a table of four gigabytes: not in a few bytes.
+        let e = blosc(&frame(1 << 30, 1, lz4, &one_block(1, &[0])), gib).unwrap_err().to_string();
+        assert!(e.contains("a cut blosc chunk"), "{e}");
+        // Blocks of no size are not an empty chunk; a chunk of no bytes is.
+        let e = blosc(&frame(64, 0, lz4, &[]), gib).unwrap_err().to_string();
+        assert!(e.contains("blocks of no size"), "{e}");
+        assert!(blosc(&frame(0, 0, lz4, &[]), gib).unwrap().is_empty());
+        assert!(blosc(&frame(0, 64, 0x2, &[]), gib).unwrap().is_empty());
+        assert!(blosc(&frame(8, 0, 0x2, &[1, 2, 3]), gib).is_err());
+        // A block starting past the end of the frame, or whose stream does.
+        let raw: Vec<u8> = (0..4000u32).flat_map(|v| (v as f32).to_le_bytes()).collect();
+        let good = blosc_frame(&raw, 4);
+        assert_eq!(blosc(&good, raw.len()).unwrap(), raw);
+        // Offsets into the header or the block table must not be treated as compressed streams.
+        for start in [0u32, 4, 16, 19] {
+            let mut inside = good.clone();
+            inside[16..20].copy_from_slice(&start.to_le_bytes());
+            assert!(blosc(&inside, raw.len()).is_err(), "block starts at {start}");
+        }
+        let mut far = good.clone();
+        far[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(blosc(&far, raw.len()).unwrap_err().to_string().contains("a cut blosc chunk"));
+        let mut long = good.clone();
+        long[20..24].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(blosc(&long, raw.len()).unwrap_err().to_string().contains("a cut blosc chunk"));
+        // A frame that decodes to less than it says isn't a shorter chunk.
+        let mut short = good;
+        short[4..8].copy_from_slice(&(raw.len() as u32 + 4).to_le_bytes());
+        short[8..12].copy_from_slice(&(raw.len() as u32 + 4).to_le_bytes());
+        let e = blosc(&short, raw.len() + 4).unwrap_err().to_string();
+        assert!(e.contains("not the"), "{e}");
+    }
+
+    /// Offsets and lengths read from a chunk are added with a check: `at + len` wraps a 32-bit
+    /// `usize` (the browser's) as it does a 64-bit one at these values.
+    #[test]
+    fn a_span_whose_end_overflows_is_not_in_the_chunk() {
+        let d = [1u8, 2, 3, 4];
+        assert_eq!(span(&d, 1, 2), Some(&d[1..3]));
+        assert_eq!(span(&d, 4, 0), Some(&d[4..]));
+        assert_eq!(span(&d, 5, 0), None);
+        assert_eq!(span(&d, usize::MAX, 4), None);
+        assert_eq!(span(&d, 1, usize::MAX), None);
+        assert_eq!(span(&d, usize::MAX - 3, 4), None);
+        assert_eq!(span(&d, u32::MAX as usize, 4), None);
     }
 
     #[test]
