@@ -111,14 +111,24 @@ pub fn sqlite(path: &Path) {
         return;
     }
     self::path(path);
+    // SQLite names its companions after the database with symbolic links resolved (on unix). A
+    // linked folder gives them beside the path as opened too, which is the name the user knows; a
+    // link to the file itself gives them only beside its target.
+    #[cfg(unix)]
+    let resolved = std::fs::canonicalize(path).ok();
+    #[cfg(not(unix))]
+    let resolved: Option<std::path::PathBuf> = None;
     for suffix in ["-wal", "-shm", "-journal"] {
-        let mut companion = path.as_os_str().to_os_string();
-        companion.push(suffix);
-        let companion = Path::new(&companion);
-        if let Ok(metadata) = std::fs::metadata(companion)
-            && metadata.is_file()
-        {
-            observe(companion, Some(&metadata), None);
+        let named = |base: &Path| {
+            let mut companion = base.as_os_str().to_os_string();
+            companion.push(suffix);
+            std::path::PathBuf::from(companion)
+        };
+        let found = std::iter::once(named(path))
+            .chain(resolved.as_deref().map(named))
+            .find_map(|c| std::fs::metadata(&c).ok().filter(Metadata::is_file).map(|m| (c, m)));
+        if let Some((companion, metadata)) = found {
+            observe(&companion, Some(&metadata), None);
         }
     }
 }
