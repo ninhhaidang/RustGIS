@@ -164,26 +164,40 @@ fn invisible(c: char) -> bool {
         || matches!(c, '\u{AD}' | '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{2064}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{E0100}'..='\u{E01EF}')
 }
 
-/// An installed CJK face for `region`, parsed once; `None` when there is none (or on the web).
+/// A CJK face for `region`, parsed once: an installed one, else the one the web app downloaded
+/// (`None` until it has). An installed face is looked for once; a downloaded one once it's there.
 fn cjk(region: CjkRegion) -> Option<&'static FontRef<'static>> {
     static FACES: [OnceLock<Option<FontRef<'static>>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static DOWNLOADED: [OnceLock<Option<FontRef<'static>>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let slot = match region {
-        CjkRegion::SimplifiedChinese => &FACES[0],
-        CjkRegion::Japanese => &FACES[1],
-        CjkRegion::Korean => &FACES[2],
-        CjkRegion::TraditionalChinese => &FACES[3],
+        CjkRegion::SimplifiedChinese => 0,
+        CjkRegion::Japanese => 1,
+        CjkRegion::Korean => 2,
+        CjkRegion::TraditionalChinese => 3,
     };
-    slot.get_or_init(|| crate::fonts::cjk_font(region).and_then(|(b, i)| FontRef::try_from_slice_and_index(b, *i).ok())).as_ref()
+    let parse = |(b, i): &'static (Vec<u8>, u32)| FontRef::try_from_slice_and_index(b, *i).ok();
+    // A test can run in a process of its own with no installed face, as in the browser, so the
+    // downloaded faces are tested alike whatever fonts the machine has.
+    let none_installed = cfg!(test) && std::env::var_os("RUSTGIS_TEST_NO_INSTALLED_CJK").is_some();
+    let installed =
+        if none_installed { None } else { FACES.get(slot)?.get_or_init(|| crate::fonts::cjk_font(region).and_then(parse)).as_ref() };
+    installed.or_else(|| {
+        let downloaded = crate::fonts::downloaded_cjk_font(region)?;
+        DOWNLOADED.get(slot)?.get_or_init(|| parse(downloaded)).as_ref()
+    })
 }
 
 /// The CJK faces to try for `c`, the region whose glyph style suits it first: Hangul looks for a
 /// Korean face, kana for a Japanese one, everything else (Han ideographs) for Simplified Chinese.
-fn cjk_order(c: char) -> [CjkRegion; 3] {
-    use CjkRegion::{Japanese as Jp, Korean as Kr, SimplifiedChinese as Sc};
+/// Traditional Chinese comes last: on the desktop it is tried only for a character no other face
+/// has, so what draws each character there doesn't change, and in the browser it is the face a
+/// Traditional Chinese interface downloads.
+fn cjk_order(c: char) -> [CjkRegion; 4] {
+    use CjkRegion::{Japanese as Jp, Korean as Kr, SimplifiedChinese as Sc, TraditionalChinese as Tc};
     match c {
-        '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}' => [Kr, Sc, Jp],
-        '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => [Jp, Sc, Kr],
-        _ => [Sc, Jp, Kr],
+        '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}' => [Kr, Sc, Jp, Tc],
+        '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => [Jp, Sc, Kr, Tc],
+        _ => [Sc, Jp, Kr, Tc],
     }
 }
 
@@ -259,8 +273,11 @@ pub fn line_count(text: &str) -> usize {
 /// Repeated measurements share a bounded retention cache; fonts are discovered once per process.
 /// Long strings and non-finite sizes keep the uncached behavior, including its glyph limit.
 pub fn measure(text: &str, size: f32, bold: bool) -> f32 {
-    static WIDTHS: OnceLock<widths::Cache> = OnceLock::new();
-    WIDTHS.get_or_init(widths::Cache::default).measure(text, size, bold, || measure_uncached(text, size, bold))
+    // Keyed by the faces handed over at run time too: a width measured before a downloaded CJK
+    // face arrived left its characters out.
+    static WIDTHS: OnceLock<widths::Cache<(bool, u32)>> = OnceLock::new();
+    let key = (bold, crate::fonts::fonts_added());
+    WIDTHS.get_or_init(widths::Cache::default).measure(text, size, key, || measure_uncached(text, size, bold))
 }
 
 /// The original measurement, including em scaling, font fallbacks and the missing-font estimate.
@@ -279,8 +296,8 @@ pub fn measure_in(text: &str, size: f32, face: Face) -> f32 {
     }
     // Labels in a named family are measured as often as those in the label font (every feature,
     // every frame), so they share its retention, keyed by the whole face.
-    static WIDTHS: OnceLock<widths::Cache<(bool, bool, bool, Option<u16>)>> = OnceLock::new();
-    let key = (face.bold, face.italic, face.serif, face.family);
+    static WIDTHS: OnceLock<widths::Cache<(bool, bool, bool, Option<u16>, u32)>> = OnceLock::new();
+    let key = (face.bold, face.italic, face.serif, face.family, crate::fonts::fonts_added());
     WIDTHS.get_or_init(widths::Cache::default).measure(text, size, key, || {
         let Some((f, _)) = face_font(face) else {
             return text.chars().count() as f32 * size * 0.6;
@@ -418,12 +435,14 @@ fn spaced_line_width(line: &str, size: f32, face: Face, spacing: f32, ppp: f32) 
 
 /// How many glyphs a line is drawn with in `face` (letter spacing goes between them): shaped once
 /// for each line and face, as a size doesn't change it, and kept while the lines kept are few.
+/// Keyed by the faces handed over at run time too: a line shaped before a downloaded CJK face
+/// arrived left its characters out.
 fn letters_of(line: &str, face: Face) -> usize {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    static KEPT: OnceLock<Mutex<HashMap<(String, Face), usize>>> = OnceLock::new();
+    static KEPT: OnceLock<Mutex<HashMap<(String, Face, u32), usize>>> = OnceLock::new();
     let kept = KEPT.get_or_init(Mutex::default);
-    let key = (line.to_string(), face);
+    let key = (line.to_string(), face, crate::fonts::fonts_added());
     if let Some(n) = kept.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return *n;
     }
@@ -1314,6 +1333,59 @@ mod coverage_tests {
             super::text_at(c, &ch.to_string(), 40.0, 20.0, 24.0, rustgis_map::Rgba::rgb(0, 0, 0), false, super::Align::Center, false)
         });
         assert!(pm.pixels().iter().any(|p| p.alpha() > 0), "the fallback glyph was not drawn");
+    }
+
+    /// Traditional Chinese is the last face tried for every script, so on the desktop a character
+    /// another face has (a kanji only the Japanese face has, say) is drawn by that face as before.
+    #[test]
+    fn traditional_chinese_is_the_last_cjk_face_tried() {
+        use crate::fonts::CjkRegion::{Japanese as Jp, Korean as Kr, SimplifiedChinese as Sc, TraditionalChinese as Tc};
+        assert_eq!(super::cjk_order('\u{6F22}'), [Sc, Jp, Kr, Tc]);
+        assert_eq!(super::cjk_order('\u{304B}'), [Jp, Sc, Kr, Tc]);
+        assert_eq!(super::cjk_order('\u{D55C}'), [Kr, Sc, Jp, Tc]);
+    }
+
+    /// In the browser no CJK font is installed: the face the web app downloads is checked, kept
+    /// once a region and handed back to share, and draws what the label font lacks, in exports and
+    /// the layout view; widths measured before it arrived are measured again. The test runs in a
+    /// process of its own with no installed CJK face and the built-in label font, so it checks the
+    /// same on every machine and its faces reach no other test. egui's icon face stands in for a
+    /// downloaded one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn draws_with_a_downloaded_face_where_none_is_installed() {
+        if std::env::var_os("RUSTGIS_TEST_NO_INSTALLED_CJK").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "text::coverage_tests::draws_with_a_downloaded_face_where_none_is_installed", "--nocapture"])
+                .env("RUSTGIS_TEST_NO_INSTALLED_CJK", "1")
+                .env("RUSTGIS_BUILTIN_FONTS", "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"), "the test didn't run in the child process");
+            return;
+        }
+        use crate::fonts::{CjkRegion, add_downloaded_cjk_font, downloaded_cjk_font, fonts_added};
+        use epaint_default_fonts::{EGUI_ICONS, HACK_REGULAR};
+        let icon = "\u{E618}";
+        assert!(!super::covers(icon, false), "the built-in label font has no icons");
+        let (before, added) = (super::measure(icon, 10.0, false), fonts_added());
+        let letters = super::letters_of("\u{E618}\u{E618}", super::Face::default());
+        assert!(add_downloaded_cjk_font(CjkRegion::Japanese, b"not a font".to_vec()).is_err());
+        assert!(downloaded_cjk_font(CjkRegion::Japanese).is_none());
+        assert_eq!(add_downloaded_cjk_font(CjkRegion::Japanese, EGUI_ICONS.to_vec()), Ok(EGUI_ICONS), "the kept bytes are shared");
+        assert_eq!(fonts_added(), added + 1);
+        assert_eq!(add_downloaded_cjk_font(CjkRegion::Japanese, HACK_REGULAR.to_vec()), Err(HACK_REGULAR.to_vec()), "one face a region");
+        assert_eq!(fonts_added(), added + 1);
+        assert!(super::covers(icon, false));
+        let spaced = super::letters_of("\u{E618}\u{E618}", super::Face::default());
+        assert!(spaced > letters, "a letter count shaped before the face arrived was kept: {letters} then {spaced}");
+        assert!(super::measure(icon, 10.0, false) > before, "a width cached before the face arrived was kept");
+        let mut pm = tiny_skia::Pixmap::new(80, 40).unwrap();
+        crate::canvas::with_canvas(&mut pm, |c| {
+            super::text_at(c, icon, 40.0, 20.0, 24.0, rustgis_map::Rgba::rgb(0, 0, 0), false, super::Align::Center, false)
+        });
+        assert!(pm.pixels().iter().any(|p| p.alpha() > 0), "the downloaded face's glyph was not drawn");
     }
 
     /// A text asking for a serif (#517) where none is installed is drawn in the label font, slanted

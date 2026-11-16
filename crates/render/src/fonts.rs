@@ -413,6 +413,52 @@ fn draws_cjk(bytes: &[u8], index: u32, region: CjkRegion) -> bool {
     })
 }
 
+/// The CJK faces the web app downloaded for its interface or its labels, by region: the web app
+/// has no installed fonts, so without these the renderer (exported images, PDFs and the layout
+/// view) would leave CJK text out. Each region's face is kept once and never freed.
+static DOWNLOADED_CJK: [OnceLock<(Vec<u8>, u32)>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+
+/// How many faces have been handed over at run time ([`add_downloaded_cjk_font`]): cached text
+/// widths measured before one arrived are stale.
+static FONTS_ADDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn downloaded_slot(region: CjkRegion) -> &'static OnceLock<(Vec<u8>, u32)> {
+    match region {
+        CjkRegion::SimplifiedChinese => &DOWNLOADED_CJK[0],
+        CjkRegion::Japanese => &DOWNLOADED_CJK[1],
+        CjkRegion::Korean => &DOWNLOADED_CJK[2],
+        CjkRegion::TraditionalChinese => &DOWNLOADED_CJK[3],
+    }
+}
+
+/// Hands the renderer a CJK face the web app downloaded (face 0 of `bytes`), for the text it
+/// draws where no font is installed. The face is kept for good, and the kept bytes are returned
+/// so the interface can share them instead of holding a second copy of a font several megabytes
+/// in size. The bytes come back unkept when they aren't a usable font or the region has a face
+/// already.
+pub fn add_downloaded_cjk_font(region: CjkRegion, bytes: Vec<u8>) -> Result<&'static [u8], Vec<u8>> {
+    if !valid_font(&bytes, 0) {
+        return Err(bytes);
+    }
+    let mut offered = Some(bytes);
+    let kept = downloaded_slot(region).get_or_init(|| (offered.take().unwrap_or_default(), 0));
+    if let Some(bytes) = offered {
+        return Err(bytes);
+    }
+    FONTS_ADDED.fetch_add(1, std::sync::atomic::Ordering::Release);
+    Ok(&kept.0)
+}
+
+/// The CJK face downloaded for `region`, if one has been handed over.
+pub fn downloaded_cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
+    downloaded_slot(region).get()
+}
+
+/// How many faces have been handed over at run time: a key part for cached text widths.
+pub fn fonts_added() -> u32 {
+    FONTS_ADDED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Whether `bytes` hold a font with face `index` that the font parser accepts. Fonts handed to the
 /// UI are checked first: a corrupt file or an out-of-range face index must never reach it.
 pub fn valid_font(bytes: &[u8], index: u32) -> bool {
