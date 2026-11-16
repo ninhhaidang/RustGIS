@@ -620,13 +620,8 @@ pub(crate) fn add_gdal_path(s: &mut Session, p: &Value, path: &str) -> CmdResult
         Some(read) => read,
         None => read_gdal(path, text("layer"), text("crs")),
     }?;
-    if c.assumed_lonlat {
-        s.notify(format!("{path} doesn't say its coordinate system; its coordinates look like longitude/latitude, so it's read as WGS 84 (give \"crs\" if not)"), false);
-    }
-    if !c.others.is_empty() {
-        let shown: Vec<&str> = c.others.iter().take(20).map(String::as_str).collect();
-        s.notify(format!("{path} has more variables ({}): add one with \"layer\"", shown.join(", ")), false);
-    }
+    // What converting found (a system GDAL assumed, variables not added) is in `r.lost`
+    // ([`raster::read_converted`]), said once with the layer's other losses by `read_notices`.
     let name = text("name").map(str::to_string).unwrap_or_else(|| r.name.clone());
     // A project names the file itself, with the subdataset and coordinate system chosen, and
     // converts it again (from the cache, while it is there) when it opens.

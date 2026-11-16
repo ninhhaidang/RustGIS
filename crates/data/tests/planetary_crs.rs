@@ -846,7 +846,9 @@ fn geotiff_axes_of_the_earth_stay_wgs_84_and_feet_are_converted() {
     // A geographic file with its own Earth ellipsoid (Clarke 1866) is read as it was.
     let clarke = raster::read_bytes("clarke.tif", &geotiff(-180.0, &mars_geographic_keys(""), &[6_378_206.4, 294.978_698_2], "")).unwrap();
     assert_eq!(clarke.crs, Crs::LonLat);
-    assert!(clarke.lost.is_empty(), "{:?}", clarke.lost);
+    // With no EPSG code its datum isn't read: said, once.
+    assert_eq!(clarke.lost.len(), 1, "{:?}", clarke.lost);
+    assert!(clarke.lost[0].contains("its datum isn't read"), "{:?}", clarke.lost);
     // The Earth's semi-major axis in feet (GeogLinearUnits 9002) is still the Earth's.
     let mut keys = mars_geographic_keys("");
     keys[3] += 1;
@@ -961,7 +963,7 @@ fn an_ascii_grid_with_a_mars_prj_says_a_grid_it_doesnt_apply() {
 }
 
 /// An Earth `.prj` next to an ASCII grid that RustGIS can't read leaves the grid in
-/// longitude/latitude, and says so, as a Shapefile's does; one it reads, or none, says nothing.
+/// longitude/latitude and reports the sidecar error; a readable or absent sidecar has no such error.
 #[test]
 fn an_ascii_grid_whose_earth_prj_is_not_read_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -976,8 +978,7 @@ fn an_ascii_grid_whose_earth_prj_is_not_read_says_so() {
         }
         path
     };
-    let said =
-        |r: &raster::Raster| r.lost.iter().filter(|l| l.contains("the .prj file") && l.contains("read as longitude/latitude")).count();
+    let said = |r: &raster::Raster| r.lost.iter().filter(|l| l.contains("the .prj file")).count();
     for (name, prj, why) in [("geocentric", GEOCENTRIC, "GEOCCS"), ("junk", "not a coordinate system", "")] {
         let r = raster::read_path(&write(name, Some(prj))).unwrap();
         assert_eq!(r.crs, Crs::LonLat, "{name}");

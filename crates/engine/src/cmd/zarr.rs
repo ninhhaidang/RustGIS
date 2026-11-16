@@ -520,7 +520,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             // project opens again.
             let mut layer = if sel.window.is_some() {
                 r.source = Some(full.clone());
-                let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
+                let tif = zarr::write_project_slice(&r).map_err(|e| e.to_string())?;
                 let mut layer = RasterLayer::from_bytes(r, format!("{}.tif", store_name(&full)), tif);
                 layer.path = Some(full);
                 layer
@@ -550,7 +550,9 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             crs_lost(&mut r, crs, &store, &sel.variable);
             r.source = Some(u.clone());
             // Kept in the project as a GeoTIFF: a web store isn't fetched again when it opens.
-            let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
+            // The writer refuses systems its keys cannot preserve, as for a directory window or
+            // a slice handed over by the UI.
+            let tif = zarr::write_project_slice(&r).map_err(|e| e.to_string())?;
             let mut layer = RasterLayer::from_bytes(r, format!("{}.tif", store_name(&u)), tif);
             layer.subdataset = Some(sel.label());
             // The coordinate system given for a store that doesn't say, kept as a folder's slice
@@ -1549,33 +1551,33 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         if count == 0 {
             return Err("no step to read".into());
         }
-        // The point in the grid's coordinates. A longitude/latitude grid's are read as such whatever
-        // its WKT says; a shift the WKT gives that isn't applied is still said, as its slices say it.
-        let (x, y) = if zarr::is_lonlat_grid(&store, &var) {
-            if let Some((_, Some(note))) = zarr::grid_crs(&store, &var) {
+        // Use the same system as a slice: degree axes retain a declared geographic datum, while
+        // contradictory projected definitions still fall back to WGS 84.
+        let given = zarr::grid_crs(&store, &var);
+        let lonlat = zarr::is_lonlat_grid(&store, &var);
+        if lonlat {
+            // A typed system is only a fallback. Invalid text wasn't used on degree axes either.
+            let typed = if given.is_none() { src.crs.as_deref().and_then(|text| Crs::parse(text).ok()) } else { None };
+            if let Some(note) = zarr::lonlat_assumption(given.as_ref().map(|(c, _)| *c), typed) {
                 s.warn(format!("{var}: {note}"));
             }
-            (lon, lat)
+        }
+        let crs = if lonlat {
+            given.as_ref().map(|(c, _)| *c).filter(|c| c.is_geographic()).unwrap_or(Crs::LonLat)
+        } else if let Some((c, _)) = &given {
+            *c
         } else {
-            let crs = match zarr::grid_crs(&store, &var) {
-                Some((c, note)) => {
-                    if let Some(note) = note {
-                        s.warn(format!("{var}: {note}"));
-                    }
-                    c
-                }
-                None => {
-                    let given =
-                        src.crs.as_deref().ok_or("the store doesn't say its coordinate system; give \"crs\" (such as EPSG:3035)")?;
-                    super::parse_crs(s, given)?
-                }
-            };
-            let m = crs
-                .transformer()?
-                .from_lonlat(rustgis_geom::Coord::new(lon, lat))
-                .ok_or("the point can't be placed in the store's coordinate system")?;
-            (m.x, m.y)
+            let text = src.crs.as_deref().ok_or("the store doesn't say its coordinate system; give \"crs\" (such as EPSG:3035)")?;
+            super::parse_crs(s, text)?
         };
+        if let Some((_, Some(note))) = given {
+            s.warn(format!("{var}: {note}"));
+        }
+        let m = crs
+            .transformer()?
+            .from_lonlat(rustgis_geom::Coord::new(lon, lat))
+            .ok_or("the point can't be placed in the store's coordinate system")?;
+        let (x, y) = (m.x, m.y);
         let (row, col) =
             zarr::locate(&store, &var, &coords, x, y).map_err(|e| e.to_string())?.ok_or("the point is outside the variable's grid")?;
         let plan = zarr::plan_series(&store, &src.sel, &dim, from as u64, count as u64, row, col).map_err(|e| e.to_string())?;
@@ -1820,7 +1822,7 @@ fn reduce(s: &mut Session, p: &Value) -> CmdResult {
     {
         let run = reduce_start(s, p)?;
         let r = run.run(&std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicUsize::new(0))?;
-        let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
+        let tif = zarr::write_project_slice(&r).map_err(|e| e.to_string())?;
         let mut layer = RasterLayer::from_bytes(r, format!("{}.tif", store_name(&run.root)), tif);
         layer.subdataset = None;
         let mut out = super::raster::add_raster(s, &run.name, layer)?;

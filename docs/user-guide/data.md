@@ -203,7 +203,18 @@ or other WKT:
   and a GeoPackage or FlatGeobuf system read by its EPSG code, say of these only the two above: a transformation that isn't
   applied, and a `BOUNDCRS` without one (typed WKT also says its projection method's formula, as
   below). A Zarr store's `crs` says them only when the slice uses it: a store that gives its own
-  system, or a longitude/latitude grid, doesn't. A PostGIS, MySQL or SQL Server layer's `crs` is
+  system, or a longitude/latitude grid, doesn't. A Zarr store whose axes are longitude/latitude is
+  read in the geographic system it gives (a datum such as ED50, or another body's, said once).
+  With no system, or a projected system on degree axes, it uses WGS 84 and says so once for a
+  slice or a point series. When the store gives no system, the notice names a caller's
+  non-WGS84 `crs` that is ignored on those axes; explicit WGS 84 is not an assumption.
+  A declared store system takes precedence over the caller's fallback. A PROJ definition that names an ellipsoid
+  and no datum shift says so, as a WKT's datum without one does. Point time series use the
+  geographic system too when locating a WGS 84 query. A web store's slice or a directory window
+  is kept in a project as a GeoTIFF; if its keys cannot preserve the declared system (such as
+  another body's or a custom datum shift), adding it is refused rather than relabelling it
+  WGS 84. Imported slices retain the read notices that the GeoTIFF cannot carry.
+  A PostGIS, MySQL or SQL Server layer's `crs` is
   read only for a geometry with no SRID of its own, by its EPSG code, with the same two notices; a
   geometry that has an SRID ignores it, so nothing is said of it. A DuckDB query's `crs` isn't
   read by RustGIS: it goes to DuckDB, which transforms the geometry from it even when the
@@ -1336,7 +1347,7 @@ by picking it. Local ASCII grids can be up to 1 GiB; ASCII-grid uploads are limi
 A TIFF or PNG without coordinates opens as a scan to place with **Georeference**; see
 [Supported Data Formats](data-formats.md). An ASCII grid takes its coordinate system from a `.prj`
 file next to it (as a Shapefile does); otherwise, and always for uploads, it must be in
-longitude/latitude degrees. On the desktop, a GDAL `.aux.xml` file next to a raster (`dem.tif.aux.xml`
+longitude/latitude degrees, and is read as WGS 84 with a notice. On the desktop, a GDAL `.aux.xml` file next to a raster (`dem.tif.aux.xml`
 or `dem.aux.xml`) names its bands from their descriptions, gives the no-data value when the file
 has none, and supplies the band statistics when only an overview of the raster is read. Its
 category names (GDAL's `SetCategoryNames`, one per value) label the classes in the legend of a
@@ -1370,8 +1381,12 @@ table, as land cover such as the NLCD is) or multiband, of any pixel type, tiled
 compressed with Deflate, LZW, PackBits, JPEG, Zstandard or LERC (alone, or wrapped in Deflate or
 Zstandard, as GDAL writes it; samples LERC marks invalid are no-data, and an alpha GDAL kept as
 LERC's mask is put back). JPEG-compressed YCbCr images are shown
-as RGB; other YCbCr and CMYK images aren't read. A rotated or skewed image is resampled to a
-north-up grid as it is read. The coordinate system is an EPSG code,
+as RGB; other YCbCr and CMYK images aren't read. A rotated or skewed image is resampled (nearest pixel)
+to a north-up grid as it is read, and a notice gives the grid's size and cell, and says when the cell had
+to be coarser than the file's original full-resolution cells to stay within the sample limit,
+including when an overview or every few pixels of the image were read. A GeoTIFF with no coordinate system whose
+coordinates fit in degrees is read as WGS 84 with a notice, as is one whose own projection can't be read
+(the notice says why); metres of a system that can't be read are refused. The coordinate system is an EPSG code,
 or the file's own projection described in its GeoKeys (Albers, Lambert conformal conic, transverse
 Mercator, Mercator, Lambert azimuthal, stereographic, equirectangular, sinusoidal and others), which an
 exported GeoTIFF keeps. A raster too large to hold in memory (more than 120 million samples, or

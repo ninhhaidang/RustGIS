@@ -637,8 +637,9 @@ fn summarise(app: &mut RustGisApp, ui: &mut Ui) {
                     let spawned = std::thread::Builder::new().name("zarr-summary".into()).spawn(move || {
                         let _diagnostics = diagnostics.enter();
                         let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            job.run(&cancel, &done)
-                                .and_then(|r| Ok((rustgis_engine::data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?, r.lost)))
+                            job.run(&cancel, &done).and_then(|r| {
+                                Ok((rustgis_engine::data::raster::zarr::write_project_slice(&r).map_err(|e| e.to_string())?, r.lost))
+                            })
                         }))
                         .unwrap_or_else(|_| Err(tl!("The summary failed unexpectedly").to_string()));
                         if let Ok(mut g) = result.lock() {

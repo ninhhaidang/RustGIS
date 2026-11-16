@@ -4,14 +4,21 @@ use super::{ColorHint, Crs, Exact, GeoTransform, Raster, Uncounted, max_samples}
 use crate::{DataError, Result};
 
 /// Reads an ASCII grid. Without a known coordinate system, coordinates that fit in degrees are
-/// taken as WGS 84 longitude/latitude.
+/// taken as WGS 84 longitude/latitude, and the raster says so (`Raster::lost`).
 pub fn read(text: &str, name: &str, crs: Option<Crs>) -> Result<Raster> {
-    read_with_nodata(text, name, crs, None)
+    read_with_nodata(text, name, crs, None, None)
 }
 
 /// [`read`], with the no-data value a sidecar gives (`.aux.xml`): when the grid has none of its
-/// own, its pixels aren't counted as rounded.
-pub(super) fn read_with_nodata(text: &str, name: &str, crs: Option<Crs>, sidecar_nodata: Option<f64>) -> Result<Raster> {
+/// own, its pixels aren't counted as rounded. `crs_issue` explains an unreadable `.prj`, rather than
+/// claiming the file gives no system.
+pub(super) fn read_with_nodata(
+    text: &str,
+    name: &str,
+    crs: Option<Crs>,
+    sidecar_nodata: Option<f64>,
+    crs_issue: Option<&str>,
+) -> Result<Raster> {
     let bad = |m: &str| DataError::Format(format!("ASCII grid: {m}"));
     let mut tokens = text.split_ascii_whitespace().peekable();
     let (mut ncols, mut nrows, mut x, mut y, mut cell, mut dx, mut dy, mut nodata) = (None, None, None, None, None, None, None, None);
@@ -85,14 +92,28 @@ pub(super) fn read_with_nodata(text: &str, name: &str, crs: Option<Crs>, sidecar
         return Err(bad("fewer values than ncols × nrows"));
     }
     let top = y + dy * h as f64;
+    let mut assumed = false;
     let crs = match crs {
         Some(c) => c,
-        None if x >= -180.0 && x + dx * w as f64 <= 180.0 && y >= -90.0 && top <= 90.0 => Crs::LonLat,
-        None => return Err(bad("unknown coordinate system: put a .prj file next to it")),
+        None if x >= -180.0 && x + dx * w as f64 <= 180.0 && y >= -90.0 && top <= 90.0 => {
+            assumed = true;
+            Crs::LonLat
+        }
+        None => {
+            return Err(bad(&crs_issue.map_or_else(
+                || "unknown coordinate system: put a .prj file next to it".to_string(),
+                |why| format!("{why}; unknown coordinate system: give a readable .prj file"),
+            )));
+        }
     };
     let gt = GeoTransform { origin_x: x, origin_y: top, pixel_width: dx, pixel_height: -dy };
     let mut r = Raster::new(name, w, h, vec![data], gt, crs, nodata, ColorHint::Gray, "Float32")?;
     r.lost.extend(super::planetary::note_of(crs));
+    if assumed {
+        r.lost.push(super::assumed_wgs84_note(
+            crs_issue.unwrap_or("it doesn't say its coordinate system (a .prj file next to an ASCII grid does)"),
+        ));
+    }
     if rounded > 0 {
         r.rounded = vec![rounded];
     }
@@ -214,6 +235,24 @@ mod tests {
         assert!(read(&north.replace("89", "88"), "g", None).is_ok());
     }
 
+    /// A grid that gives no coordinate system and is read as WGS 84 says so once, whatever its size;
+    /// one that is given a system says nothing of the kind (AGENTS.md, Never silent).
+    #[test]
+    fn a_grid_read_as_wgs84_says_so() {
+        let text = "ncols 4\nnrows 3\nxllcorner 10\nyllcorner 40\ncellsize 0.5\n1 2 3 4\n5 6 7 8\n9 10 11 12\n";
+        for r in [read(text, "g", None).unwrap(), super::super::read_bytes("g.asc", text.as_bytes()).unwrap()] {
+            assert_eq!(r.crs, Crs::LonLat);
+            assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+            assert!(r.lost[0].contains("doesn't say its coordinate system") && r.lost[0].contains("WGS 84"), "{:?}", r.lost);
+        }
+        // Given a system (WGS 84 itself, or another), the grid is as given and says nothing.
+        for crs in [Crs::LonLat, Crs::WebMercator] {
+            let r = read(text, "g", Some(crs)).unwrap();
+            assert_eq!(r.crs, crs);
+            assert!(r.lost.is_empty(), "{:?}", r.lost);
+        }
+    }
+
     #[test]
     fn reads_grid() {
         let text = "ncols 3\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\nNODATA_value -9999\n1 2 3\n4 -9999 6\n";
@@ -261,7 +300,7 @@ mod tests {
             let header = c.file.map_or(String::new(), |f| format!("NODATA_value {f}\n"));
             let values: Vec<String> = c.samples.iter().map(|v| format!("{v:?}")).collect();
             let text = format!("ncols 2\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\n{header}{}", values.join(" "));
-            let r = read_with_nodata(&text, "c", None, c.sidecar).unwrap();
+            let r = read_with_nodata(&text, "c", None, c.sidecar, None).unwrap();
             assert_eq!(r.rounded.iter().sum::<u64>(), c.counted, "file {:?}, sidecar {:?}", c.file, c.sidecar);
         }
     }

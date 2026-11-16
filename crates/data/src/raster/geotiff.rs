@@ -1683,14 +1683,20 @@ pub(super) fn read_limited_with_nodata(
     };
     transform.pixel_width *= sx;
     transform.pixel_height *= sy;
+    let mut turned = None;
     let (bands, w, h) = match geo.affine {
         Some([x, xc, xr, y, yc, yr]) => {
-            let (bands, ow, oh, north_up) = super::north_up(&bands, w, h, [x, xc * sx, xr * sy, y, yc * sx, yr * sy], max)?;
+            let affine = [x, xc * sx, xr * sy, y, yc * sx, yr * sy];
+            let (bands, ow, oh, north_up) = super::north_up(&bands, w, h, affine, max)?;
+            // The file's own placement, not the scaled one: its pixels are the ones it is coarser than.
+            turned = Some(turned_note([x, xc, xr, y, yc, yr], (ow, oh), &north_up));
             transform = north_up;
             (bands, ow, oh)
         }
         None => (bands, w, h),
     };
+    // What makes a system the file doesn't give one read as WGS 84, said once.
+    let mut assumed = None;
     let crs = match geo.crs {
         Some(c) => c,
         None => {
@@ -1707,6 +1713,20 @@ pub(super) fn read_limited_with_nodata(
                 return Err(DataError::Format(e.clone()));
             }
             if geo.geographic_model || degrees {
+                assumed = Some(match &geo.custom_error {
+                    // The file's own projection couldn't be read, but its coordinates fit in degrees:
+                    // why is said, not dropped.
+                    Some(e) => super::assumed_wgs84_note(&format!(
+                        "its own coordinate system can't be read ({})",
+                        e.strip_prefix("GeoTIFF: ").unwrap_or(e)
+                    )),
+                    None if geo.geographic_model => {
+                        "its geographic coordinate system has no EPSG code, so its datum isn't read; its coordinates are \
+                         read as longitude/latitude on WGS 84"
+                            .to_string()
+                    }
+                    None => super::assumed_wgs84_note("it doesn't say its coordinate system"),
+                });
                 Crs::LonLat
             } else {
                 return Err(err("the file's coordinate system isn't recognised"));
@@ -1721,12 +1741,37 @@ pub(super) fn read_limited_with_nodata(
     r.copyright = copyright.filter(|c| !c.is_empty());
     r.lost.extend(copyright_lost);
     r.lost.extend(super::planetary::note_of(crs));
+    r.lost.extend(assumed);
+    r.lost.extend(turned);
     r.lost.extend(table_lost);
     r.lost.extend(mask_lost);
     if let Some(p) = &described {
         r.apply_pam(p, super::pam::GDAL_METADATA);
     }
     Ok(r)
+}
+
+/// What turning a rotated or skewed image north up says ([`super::north_up`]): its pixels are
+/// resampled, nearest pixel, onto square ones of the same area, coarser when the grid would pass the
+/// sample limit. `affine` is the file's own, at full resolution, `(w, h)` the grid's size and `grid`
+/// its placement.
+fn turned_note(affine: [f64; 6], (w, h): (u32, u32), grid: &GeoTransform) -> String {
+    let [_, xc, xr, _, yc, yr] = affine;
+    let own = (xc * yr - xr * yc).abs().sqrt();
+    // Four significant digits.
+    let short = |v: f64| {
+        let digits = if v.is_finite() && v != 0.0 { (3 - v.abs().log10().floor() as i32).clamp(0, 15) } else { 0 };
+        format!("{v:.*}", digits as usize)
+    };
+    let mut note = format!(
+        "it is rotated or skewed, so it is resampled (nearest pixel) onto a north-up grid of {w} × {h} pixels of {} each; \
+         values are taken from source pixel centres, and the grid's corners beyond the image are empty",
+        short(grid.pixel_width)
+    );
+    if grid.pixel_width > own * (1.0 + 1e-9) {
+        note.push_str(&format!(", and its pixels are coarser than the file's ({}) to keep the grid within the sample limit", short(own)));
+    }
+    note
 }
 
 /// The GeoKey directory a raster's coordinate system is written as, and the user-defined system
@@ -2260,6 +2305,115 @@ mod tests {
         // A degenerate matrix (no area) is refused, not divided by.
         let flat = [30.0, 60.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
         assert!(read(std::io::Cursor::new(tests_support::matrix_tiff(flat, false)), "flat").is_err());
+    }
+
+    /// A 2 × 2 byte image whose upper left corner is `corner`, `step` a pixel, with this GeoKey
+    /// directory (none: the file gives no coordinate system).
+    fn placed_tiff(corner: (f64, f64), step: f64, keys: Option<&[u16]>) -> Vec<u8> {
+        use tiff::encoder::{TiffEncoder, colortype};
+        let mut out = std::io::Cursor::new(Vec::new());
+        let mut enc = TiffEncoder::new(&mut out).unwrap_or_else(|e| panic!("{e}"));
+        let mut img = enc.new_image::<colortype::Gray8>(2, 2).unwrap_or_else(|e| panic!("{e}"));
+        img.encoder().write_tag(Tag::ModelPixelScaleTag, &[step, step, 0.0][..]).unwrap_or_else(|e| panic!("{e}"));
+        img.encoder().write_tag(Tag::ModelTiepointTag, &[0.0f64, 0.0, 0.0, corner.0, corner.1, 0.0][..]).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(keys) = keys {
+            img.encoder().write_tag(Tag::GeoKeyDirectoryTag, keys).unwrap_or_else(|e| panic!("{e}"));
+        }
+        img.write_data(&[1u8, 2, 3, 4]).unwrap_or_else(|e| panic!("{e}"));
+        out.into_inner()
+    }
+
+    /// A grid whose file gives no usable coordinate system but whose coordinates fit in degrees is
+    /// read as WGS 84 and says why, once. A file that gives its system says nothing of the kind, and
+    /// metres of a projection that can't be read are still refused with the reason (AGENTS.md, Never
+    /// silent).
+    #[test]
+    fn a_grid_read_as_wgs84_says_why() {
+        let read_tiff = |bytes: Vec<u8>| read(std::io::Cursor::new(bytes), "g");
+        // No GeoKeys at all.
+        let r = read_tiff(placed_tiff((10.0, 50.0), 0.5, None)).unwrap();
+        assert_eq!(r.crs, Crs::LonLat);
+        assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+        assert!(r.lost[0].contains("doesn't say its coordinate system") && r.lost[0].contains("WGS 84"), "{:?}", r.lost);
+        // Its own projection (a coordinate transformation that isn't supported) can't be read, but its
+        // coordinates fit in degrees: the reason is said, not dropped.
+        let own = [1u16, 1, 0, 3, 1024, 0, 1, 1, 3072, 0, 1, 32767, 3075, 0, 1, 99];
+        let r = read_tiff(placed_tiff((10.0, 50.0), 0.5, Some(&own))).unwrap();
+        assert_eq!(r.crs, Crs::LonLat);
+        assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+        assert!(
+            r.lost[0].starts_with("its own coordinate system can't be read (")
+                && r.lost[0].contains("coordinate transformation 99")
+                && r.lost[0].ends_with("so it's read as WGS 84"),
+            "{:?}",
+            r.lost
+        );
+        // Metres of the same projection are refused, saying why.
+        let e = read_tiff(placed_tiff((500_000.0, 4_000_000.0), 30.0, Some(&own))).unwrap_err().to_string();
+        assert!(e.contains("coordinate transformation 99"), "{e}");
+        // A geographic system with no EPSG code: its datum isn't read.
+        let user = [1u16, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 32767];
+        let r = read_tiff(placed_tiff((10.0, 50.0), 0.5, Some(&user))).unwrap();
+        assert_eq!(r.crs, Crs::LonLat);
+        assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+        assert!(r.lost[0].contains("no EPSG code, so its datum isn't read"), "{:?}", r.lost);
+        // Files that give their system say nothing: WGS 84 by its code, and a UTM zone.
+        let wgs84 = [1u16, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326];
+        let utm = [1u16, 1, 0, 3, 1024, 0, 1, 1, 1025, 0, 1, 1, 3072, 0, 1, 32633];
+        for (bytes, crs) in [
+            (placed_tiff((10.0, 50.0), 0.5, Some(&wgs84)), Crs::LonLat),
+            (placed_tiff((500_000.0, 4_000_000.0), 30.0, Some(&utm)), Crs::from_epsg(32633).unwrap()),
+        ] {
+            let r = read_tiff(bytes).unwrap();
+            assert_eq!(r.crs, crs);
+            assert!(r.lost.is_empty(), "{:?}", r.lost);
+        }
+    }
+
+    /// A rotated or skewed image says it was resampled onto a north-up grid, once, and how; its
+    /// pixels are said to be coarser than the file's only when the grid had to be. A north-up image
+    /// says nothing of the kind.
+    #[test]
+    fn a_turned_image_says_how_it_was_resampled() {
+        let rotated = [30.0, 5.0, 0.0, 400_000.0, 3.0, -30.0, 0.0, 5_000_000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let r = read(std::io::Cursor::new(tests_support::matrix_tiff(rotated, false)), "rot").unwrap();
+        assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+        let said = &r.lost[0];
+        assert!(said.starts_with("it is rotated or skewed, so it is resampled (nearest pixel) onto a north-up grid of "), "{said}");
+        assert!(said.contains(&format!("{} × {} pixels of 30.25 each", r.width, r.height)), "{said}");
+        assert!(!said.contains("coarser"), "{said}");
+        // Past the sample limit the grid is coarser than the file's pixels, and says so.
+        let file = tests_support::matrix_tiff(rotated, false);
+        let r = read_limited(reader(std::io::Cursor::new(&file)).unwrap(), "coarse", 200, None).unwrap();
+        assert!(r.width * r.height <= 200 && r.transform.pixel_width > 30.25);
+        assert_eq!(r.lost.len(), 1, "{:?}", r.lost);
+        assert!(r.lost[0].contains("coarser") && r.lost[0].contains("30.25"), "{:?}", r.lost);
+        // Decimation makes the source read coarser before north_up; compare to the original file.
+        let r = read_limited(reader(std::io::Cursor::new(&file)).unwrap(), "decimated", 50, None).unwrap();
+        assert_eq!(r.overview, Some((20, 10)));
+        assert!(r.width * r.height <= 50);
+        assert!(r.lost.iter().any(|n| n.contains("coarser than the file's (30.25)")), "{:?}", r.lost);
+        // A stored overview also uses the full-resolution affine for the comparison.
+        let mut out = std::io::Cursor::new(Vec::new());
+        {
+            use tiff::encoder::{TiffEncoder, colortype};
+            let mut enc = TiffEncoder::new(&mut out).unwrap();
+            let mut image = enc.new_image::<colortype::Gray8>(20, 10).unwrap();
+            image.encoder().write_tag(Tag::Unknown(34264), &rotated[..]).unwrap();
+            let keys = [1u16, 1, 0, 1, 3072, 0, 1, 32633];
+            image.encoder().write_tag(Tag::GeoKeyDirectoryTag, &keys[..]).unwrap();
+            image.write_data(&[100u8; 200]).unwrap();
+            let mut image = enc.new_image::<colortype::Gray8>(10, 5).unwrap();
+            image.encoder().write_tag(Tag::NewSubfileType, 1u32).unwrap();
+            image.write_data(&[100u8; 50]).unwrap();
+        }
+        let r = read_limited(reader(std::io::Cursor::new(out.into_inner())).unwrap(), "overview", 50, None).unwrap();
+        assert_eq!(r.overview, Some((20, 10)));
+        assert!(r.lost.iter().any(|n| n.contains("coarser than the file's (30.25)")), "{:?}", r.lost);
+        // The same image placed north up needs no resampling, and says nothing.
+        let level = [30.0, 0.0, 0.0, 400_000.0, 0.0, -30.0, 0.0, 5_000_000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let r = read(std::io::Cursor::new(tests_support::matrix_tiff(level, false)), "level").unwrap();
+        assert!(r.lost.is_empty(), "{:?}", r.lost);
     }
 
     #[test]

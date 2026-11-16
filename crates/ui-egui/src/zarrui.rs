@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use egui::vec2;
-use rustgis_engine::data::raster::{Crs, geotiff, zarr};
+use rustgis_engine::data::raster::{Crs, zarr};
 use rustgis_engine::render::rustgis_tiles::cache;
 use serde_json::{Value, json};
 
@@ -170,7 +170,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                     r.lost.push(note);
                 }
                 // What reading the store said: its GeoTIFF doesn't carry it, so it's said here.
-                Ok::<_, String>((geotiff::write(&r, 0).map_err(|e| e.to_string())?, r.lost))
+                Ok::<_, String>((zarr::write_project_slice(&r).map_err(|e| e.to_string())?, r.lost))
             });
             match raster {
                 Ok((tif, lost)) => {
@@ -441,6 +441,60 @@ fn add(app: &mut RustGisApp, sel: zarr::Selection, labels: &[String]) {
 mod tests {
     use super::*;
     use rustgis_engine::{Project, Session};
+
+    /// The dialog refuses a slice whose geographic system cannot survive its GeoTIFF handoff;
+    /// supported non-WGS84 geographic systems retain their datum through `ran`.
+    #[test]
+    fn a_geographic_slice_keeps_its_system_or_is_refused_before_handoff() {
+        let coords = |dim: &str| {
+            json!({
+                "zarr_format": 3, "node_type": "array", "shape": [2], "data_type": "float64",
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2]}},
+                "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+                "fill_value": 0, "dimension_names": [dim]
+            })
+        };
+        for (def, expected) in
+            [("+proj=longlat +a=3396190 +b=3396190 +no_defs", None), ("EPSG:4230", Some(Crs::Epsg(4230))), ("EPSG:4326", Some(Crs::LonLat))]
+        {
+            let elev = json!({
+                "zarr_format": 3, "node_type": "array", "shape": [2, 2], "data_type": "int16",
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+                "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+                "fill_value": 0, "dimension_names": ["lat", "lon"], "attributes": {"crs": def}
+            });
+            let root = json!({"zarr_format": 3, "node_type": "group", "consolidated_metadata": {
+                "kind": "inline", "metadata": {"elev": elev, "lat": coords("lat"), "lon": coords("lon")}
+            }});
+            let store = zarr::parse_store(&[("zarr.json".into(), root.to_string().into_bytes())]).unwrap();
+            let sel = zarr::Selection { variable: "elev".into(), index: vec![], window: None };
+            let plan = zarr::plan(&store, &sel).unwrap();
+            let mut app = RustGisApp::new(Session::new(Project::default()));
+            let st = &mut app.ui.zarr;
+            st.root = "https://example.invalid/geographic.zarr".into();
+            st.web = true;
+            st.store = Some(store);
+            let f64s = |values: [f64; 2]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+            st.got = HashMap::from([
+                ("elev/c/0/0".into(), [1i16, 2, 3, 4].iter().flat_map(|v| v.to_le_bytes()).collect()),
+                ("lat/c/0".into(), f64s([43.1, 43.0])),
+                ("lon/c/0".into(), f64s([-79.1, -79.0])),
+            ]);
+            st.phase = Phase::Read(Box::new((plan, sel, "geographic".into())));
+            poll(&mut app, &egui::Context::default());
+            if let Some(expected) = expected {
+                assert_eq!(app.ui.zarr.error, None, "{def}");
+                let layer = app.session.map().layers.first().unwrap();
+                let raster = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
+                assert_eq!(raster.crs, expected, "{def}");
+                assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0], "{def}");
+            } else {
+                let error = app.ui.zarr.error.as_deref().unwrap();
+                assert!(error.contains("can't be kept in a project") && error.contains("no layer was added"), "{error}");
+                assert!(app.session.map().layers.is_empty());
+            }
+        }
+    }
 
     /// A slice the dialog reads itself (a store by address, or any store in the web app) says what
     /// reading the store said, which its GeoTIFF doesn't carry, and hands a system typed for it to
