@@ -295,11 +295,17 @@ pub fn commands() -> Vec<C> {
             crate::project::ensure_map_imports_complete(&a.data)?;
             let map_name = format!("{} (offline)", a.name);
             if let Some(i) = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(&map_name)) {
+                // An offline map saved before offline copies were unlinked from their tables.
+                let unbound = s.project.maps.get_mut(i).map_or(0, unbind_map_table_edits);
+                note_unbound(s, unbound, &format!("the offline map '{map_name}'"));
                 s.project.active_map = i;
             } else {
                 let mut m = a.data.clone();
                 m.name = map_name;
                 m.renew_instance_id();
+                // An area saved before offline copies were unlinked from their tables.
+                let unbound = unbind_map_table_edits(&mut m);
+                note_unbound(s, unbound, &format!("the offline map '{}'", m.name));
                 // Reading a project checks only maps' layers, not offline snapshots', so their
                 // selections are put right here.
                 for l in &mut m.layers {
@@ -636,10 +642,48 @@ fn snapshot(m: &mut rustgis_map::Map, e: &Extent) -> rustgis_map::Map {
         c.selection.clear();
         // Only part of the rows read: no longer the layer its file's record describes.
         c.synced = None;
+        // Nor the rows a GeoPackage or PostGIS table was loaded with: saved to the table, the rows
+        // left outside the extent would be deleted from it. Its edits go back by Sync or Bring Back.
+        unbind_table_edits(&mut c);
         c.touch_geometry();
         out.layers.push(c);
     }
     out
+}
+
+/// Takes away a layer's link to the GeoPackage or PostGIS table it was loaded from for editing
+/// (`gpkg.saveEdits`, `pg.saveEdits`), for a copy that holds only some of its rows: an offline
+/// area's or a field package's. Saving such a copy to the table would delete every row the copy
+/// lacks. Returns whether it had one.
+pub(crate) fn unbind_table_edits(l: &mut rustgis_map::Layer) -> bool {
+    let had = l.gpkg.is_some() || l.postgis.is_some();
+    l.gpkg = None;
+    l.postgis = None;
+    had
+}
+
+/// [`unbind_table_edits`] for each layer of `m`, as the number of layers that had a link.
+pub(crate) fn unbind_map_table_edits(m: &mut rustgis_map::Map) -> usize {
+    m.layers.iter_mut().map(unbind_table_edits).filter(|had| *had).count()
+}
+
+/// [`unbind_map_table_edits`] for each of `project`'s offline areas' maps (`<area> (offline)`),
+/// as the number of layers that had a link. The project's other maps keep theirs.
+pub(crate) fn unbind_offline_maps(project: &mut crate::project::Project) -> usize {
+    let names: Vec<String> = project.offline_areas.iter().map(|a| format!("{}{}", a.name, super::field::OFFLINE)).collect();
+    project.maps.iter_mut().filter(|m| names.iter().any(|n| m.name.eq_ignore_ascii_case(n))).map(unbind_map_table_edits).sum()
+}
+
+/// Says that `n` layers of an offline copy no longer save to their tables, when `n` isn't 0.
+pub(crate) fn note_unbound(s: &mut Session, n: usize, copy: &str) {
+    if n > 0 {
+        s.notify(
+            format!(
+                "{n} layer(s) of {copy} were loaded for editing from a GeoPackage or PostGIS table: the copy holds only some of their rows, so it doesn't save to the table. Bring its edits back with Sync or Bring Back, then save the table from the map they come back to"
+            ),
+            false,
+        );
+    }
 }
 
 /// Most offline areas a project keeps (each holds a copy of its features).
@@ -681,11 +725,13 @@ pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     }
     let id = crate::project::field_id()?;
     let origin_id = if s.project.origin_id.is_empty() { crate::project::field_id()? } else { s.project.origin_id.clone() };
+    let bound = s.map().layers.iter().filter(|l| !l.is_raster() && (l.gpkg.is_some() || l.postgis.is_some())).count();
     let data = snapshot(s.map_mut(), &e);
     let features: usize = data.layers.iter().map(|l| l.dataset.features.len()).sum();
     let t = now();
     s.project.origin_id = origin_id;
     s.project.offline_areas.push(OfflineArea { id, name: name.clone(), map: s.map().name.clone(), extent: e, created: t, synced: t, data });
+    note_unbound(s, bound, &format!("the offline area '{name}'"));
     Ok(json!({"name": name, "features": features}))
 }
 

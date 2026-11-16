@@ -505,6 +505,7 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
         }
     };
     reset(s, proj);
+    unlink_partial_copies(s, is_field);
     // A package opens as a new, unsaved project (saving writes a plain project file).
     if !is_package {
         name_from_file(s, &path);
@@ -521,6 +522,21 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
     Ok(Value::Null)
 }
 
+/// Unlinks the maps of the project just opened that hold only some of a table's rows from the
+/// GeoPackage or PostGIS tables they were loaded from, as offline copies made now are, and says so:
+/// every map of a field project (`field`, opened from a field package, or one with a field
+/// origin), else a home project's offline maps (`<area> (offline)`). Saved before offline copies
+/// were unlinked, they would delete from the table every row they lack.
+fn unlink_partial_copies(s: &mut Session, field: bool) {
+    if field || s.project.field_origin.is_some() {
+        let unbound = s.project.maps.iter_mut().map(super::workspace::unbind_map_table_edits).sum();
+        super::workspace::note_unbound(s, unbound, "this field project");
+    } else {
+        let unbound = super::workspace::unbind_offline_maps(&mut s.project);
+        super::workspace::note_unbound(s, unbound, "this project's offline maps");
+    }
+}
+
 fn open_text(s: &mut Session, p: &Value) -> CmdResult {
     let text = super::ps(p, "text").ok_or("text is required")?;
     super::connections::clear_active();
@@ -533,6 +549,7 @@ fn open_text(s: &mut Session, p: &Value) -> CmdResult {
         }
     };
     reset(s, proj);
+    unlink_partial_copies(s, false);
     // The browser opens files by name and contents: the name still names the project.
     if let Some(file) = super::ps(p, "fileName") {
         name_from_file(s, std::path::Path::new(file));

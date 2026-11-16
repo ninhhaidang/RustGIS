@@ -913,6 +913,10 @@ pub(crate) fn packaged(path: &str, area: &str, bytes: usize) -> Value {
 }
 
 #[cfg(test)]
+#[path = "field_audit_tests.rs"]
+mod audit;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rustgis_map::tiles::{TileKind, TileLayer};
