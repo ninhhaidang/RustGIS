@@ -292,9 +292,13 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     service's legend picture, the one for the frame's scale (as the Layers pane shows it), a
     pixel a point and narrowed to fit the legend's width, in the order the map draws its layers
     (as the Layers pane lists them); one whose picture can't be loaded (or is wider or taller
-    than 2048 pixels) is left out. Exporting waits up to half a minute for the pictures, as it
-    waits for the map's tiles; in the browser the page is drawn with those that have arrived,
-    and again as the others arrive.
+    than 2048 pixels) is left out. The Layout view does not wait for pictures on either desktop
+    or browser: it draws what has arrived, then redraws once the pending legend pictures finish,
+    not on every unrelated download. Desktop exports wait up to half a minute in all for each
+    page's legend pictures (each page of a map series has its own wait), as they wait for the map's
+    tiles. A page drawn while a legend picture is still on its way stops the export, even if the
+    picture lands afterwards, rather than leave the file silently incomplete. The browser cannot wait:
+    export again once the pictures have arrived.
   - **Its Layers section**: a checkbox for each layer of the frame's map (and each WMS or WMTS
     layer with a legend): untick one to leave it out of the legend while the map still draws it
     (a mask, a highlight, a basemap-like layer). Scripts give the same with
@@ -437,6 +441,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   the other elements' edges and centres, and the line it snapped to is highlighted. Hold Alt to
   place an element freely, or turn **Snap** off in the Page group.
 - **Export** writes PDF (every map series page by default, up to 500), or PNG or SVG of the current page.
+  On desktop, **Cancel** also stops an export while it waits for legend pictures or map tiles;
+  a cancelled export does not replace the destination file.
   A PDF keeps the page as vectors: text, shapes, surrounds and map frames (their features, labels
   and grids, turned with the frame) stay sharp at any zoom or print size, and linear and radial
   gradient fills are PDF gradients. What is pixels by nature is a picture in it at the export's

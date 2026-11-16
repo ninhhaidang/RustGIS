@@ -70,25 +70,35 @@ pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> R
     render_page(layout, maps, dpi, info, true).map(|(pm, _)| pm)
 }
 
-/// [`render`], and whether a map frame on the page drew while some of its tiles, or a read of its
-/// streamed layers or rasters, were still on their way: in the browser, which doesn't wait for
-/// them, the page is drawn again once they land.
-/// Drawn for the Layout view on the interface's thread, its frames don't wait for cast shadows
-/// still being worked out: [`crate::shadows_said`] says so, and the page is drawn again as they
-/// land (natively too, where its tiles were waited for).
-pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Result<(Pixmap, bool), String> {
+/// What a page actually drew without, kept separately so legend-only waits redraw only on completion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PagePending {
+    /// A frame drew without tiles, streamed data or cast shadows still on their way.
+    pub frames: bool,
+    /// A legend drew while one of its own pictures was still on its way.
+    pub legends: bool,
+}
+
+/// [`render`], and whether a frame or legend was drawn while content was still on its way.
+/// The Layout view never waits for legend pictures or cast shadows still being worked out.
+/// Its caller redraws once the missing content lands, on desktop as well as in the browser.
+pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Result<(Pixmap, PagePending), String> {
     render_page(layout, maps, dpi, info, false)
 }
 
 /// [`render_pending`], its frames waiting for cast shadows when `wait_shadows` (an export).
-fn render_page(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo, wait_shadows: bool) -> Result<(Pixmap, bool), String> {
+fn render_page(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo, wait_shadows: bool) -> Result<(Pixmap, PagePending), String> {
+    let _budget = legend_budget();
     let revisions = archive_revisions(layout, maps);
     let mut source_error = None;
     let result = if wait_shadows {
-        render_pending_inner(layout, maps, dpi, info, &mut source_error)
+        render_pending_inner(layout, maps, dpi, info, &mut source_error, true)
     } else {
-        crate::without_shadow_wait(|| render_pending_inner(layout, maps, dpi, info, &mut source_error))
+        crate::without_shadow_wait(|| render_pending_inner(layout, maps, dpi, info, &mut source_error, false))
     };
+    if wait_shadows {
+        finish_legends()?;
+    }
     revisions.finish_revision(archive_revisions(layout, maps), result, source_error.as_deref().unwrap_or("the page is too large to draw"))
 }
 
@@ -98,11 +108,12 @@ fn render_pending_inner(
     dpi: f64,
     info: &PageInfo,
     source_error: &mut Option<String>,
-) -> Option<(Pixmap, bool)> {
+    wait_legends: bool,
+) -> Option<(Pixmap, PagePending)> {
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
-    let mut pending = false;
-    let pm = draw_page(layout, maps, info, k, bounds, None, None, &mut pending, source_error)?.into_pixmap();
+    let mut pending = PagePending::default();
+    let pm = draw_page(layout, maps, info, k, bounds, None, None, (&mut pending, wait_legends), source_error)?.into_pixmap();
     Some((pm, pending))
 }
 
@@ -118,9 +129,11 @@ pub fn render_drawing(
     dpi: f64,
     info: &PageInfo,
 ) -> Result<(crate::vector::Drawing, Vec<(u32, String)>), String> {
+    let _budget = legend_budget();
     let revisions = archive_revisions(layout, maps);
     let mut source_error = None;
     let result = render_drawing_inner(layout, maps, dpi, info, &mut source_error);
+    finish_legends()?;
     revisions.finish_revision(archive_revisions(layout, maps), result, source_error.as_deref().unwrap_or("the page is too large to draw"))
 }
 
@@ -134,7 +147,8 @@ fn render_drawing_inner(
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
     let mut pictured = Vec::new();
-    let drawing = draw_page(layout, maps, info, k, bounds, None, Some(&mut pictured), &mut false, source_error)?.into_drawing()?;
+    let drawing = draw_page(layout, maps, info, k, bounds, None, Some(&mut pictured), (&mut PagePending::default(), true), source_error)?
+        .into_drawing()?;
     Some((drawing, pictured))
 }
 
@@ -247,7 +261,7 @@ pub(crate) fn render_element(
     source_error: &mut Option<String>,
 ) -> Option<Option<(Pixmap, [f64; 4])>> {
     let Some((bounds, k, mm)) = element_bounds(layout, id, dpi)? else { return Some(None) };
-    let pm = draw_page(layout, maps, info, k, bounds, Some(id), None, &mut false, source_error)?.into_pixmap();
+    let pm = draw_page(layout, maps, info, k, bounds, Some(id), None, (&mut PagePending::default(), true), source_error)?.into_pixmap();
     Some(Some((pm, mm)))
 }
 
@@ -264,7 +278,8 @@ pub(crate) fn record_element(
     source_error: &mut Option<String>,
 ) -> Option<Option<(crate::vector::Drawing, [f64; 4], f64)>> {
     let Some((bounds, k, mm)) = element_bounds(layout, id, dpi)? else { return Some(None) };
-    let drawing = draw_page(layout, maps, info, k, bounds, Some(id), Some(pictured), &mut false, source_error)?.into_drawing()?;
+    let drawing = draw_page(layout, maps, info, k, bounds, Some(id), Some(pictured), (&mut PagePending::default(), true), source_error)?
+        .into_drawing()?;
     Some(Some((drawing, mm, k)))
 }
 
@@ -283,9 +298,11 @@ fn element_bounds(layout: &Layout, id: u32, dpi: f64) -> Option<Option<(tiny_ski
 
 /// Draws the selected region with the full layout's frame and dynamic-text context, recorded
 /// when `record` holds a list (see [`render_drawing`]), which gets the names of the frames
-/// drawn as pictures. `pending` is set when a frame drew while some of what it shows was still on
-/// its way (see [`render_pending`]). A source read that stops the page supplies its named error;
-/// the caller checks the page's archive revision before reporting it.
+/// drawn as pictures. `pending` records the frames and legends drawn without content still on
+/// its way (see [`render_pending`]); its flag says whether legend pictures are waited for: the
+/// interactive page never waits for them, exports and other pages wait, as they always did.
+/// A source read that stops the page supplies its named error; the caller checks the page's
+/// archive revision before reporting it.
 fn draw_page(
     layout: &Layout,
     maps: &mut [Map],
@@ -294,7 +311,7 @@ fn draw_page(
     bounds: tiny_skia::IntRect,
     element: Option<u32>,
     mut record: Option<&mut Vec<(u32, String)>>,
-    pending: &mut bool,
+    (pending, wait_legends): (&mut PagePending, bool),
     source_error: &mut Option<String>,
 ) -> Option<Canvas> {
     let ppp = k / PT_PER_MM;
@@ -366,7 +383,9 @@ fn draw_page(
                 // clear of the grid's labels.
                 let grid = grid.as_ref().map(|g| (g, layout.decimal_comma));
                 let mut failed_source = None;
-                let Some(mut frame_pm) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording(), pending, grid, &mut failed_source) else {
+                let Some(mut frame_pm) =
+                    frame_canvas(map, cam, fw, fh, fppp, pm.is_recording(), &mut pending.frames, grid, &mut failed_source)
+                else {
                     if frame_requires_complete(map, &view) {
                         *source_error = failed_source_error(map, failed_source);
                         return None;
@@ -380,7 +399,7 @@ fn draw_page(
                     frame_pm.overflowed() || pm.recorded_cost().saturating_add(frame_pm.recorded_cost()) > crate::vector::max_cost();
                 if frame_pm.is_recording()
                     && too_large
-                    && let Some(pixels) = frame_canvas(map, cam, fw, fh, fppp, false, pending, grid, &mut None)
+                    && let Some(pixels) = frame_canvas(map, cam, fw, fh, fppp, false, &mut pending.frames, grid, &mut None)
                 {
                     frame_pm = pixels;
                     if let Some(list) = record.as_deref_mut() {
@@ -461,9 +480,24 @@ fn draw_page(
                             .unwrap_or(&[])
                     });
                     let scale = map.ground_res_at(&cam) / rustgis_geom::PIXEL_M;
-                    wait_for_tile_legends(map, scale, exclude);
+                    // A legend wholly off the canvas (off the page, or outside the element asked
+                    // for) shows none of its pictures: nothing to wait for or to be missing.
+                    let on_canvas = element.is_some() || on_page(layout, e);
+                    // The export's legend clock starts at the first picture actually on its way,
+                    // not at the first legend drawn: a ready legend leaves the budget untouched.
+                    if wait_legends && on_canvas && tile_legends_pending(map, scale, exclude) {
+                        wait_for_tile_legends(map, scale, exclude, legend_deadline())?;
+                    }
                     let opts = LegendOptions { show_no_data: *show_no_data, hide_other: *hide_other, exclude, labels, scale };
-                    legend(&mut pm, r, map, (title, *columns), drawn, opts, ppp);
+                    // Whether a picture was still on its way when the rows were made: the very lookup
+                    // that drew the legend, not an earlier one a retry or an eviction could outdate.
+                    let missing = legend_missing(&mut pm, r, map, (title, *columns), drawn, opts, ppp) && on_canvas;
+                    pending.legends |= missing;
+                    // An export's page drawn without a picture stays incomplete, whenever the
+                    // picture lands after (see `finish_legends`).
+                    if missing && wait_legends && LEGEND_BUDGET.get().is_some() {
+                        LEGEND_MISSING.set(true);
+                    }
                 }
             }
             ElementKind::Colorbar { frame: f, layer, title, orientation, ticks, tick_side, reverse } => {
@@ -2168,11 +2202,18 @@ pub fn tile_legends_pending(map: &Map, scale: f64, exclude: &[String]) -> bool {
     pending
 }
 
+/// Whether an element lies at least partly on `layout`'s page. The page's drawing and the redraw
+/// gate ([`legends_pending`]) share this one test, in millimetres, so no drawing resolution can make
+/// them disagree about a legend at the page's edge.
+fn on_page(layout: &Layout, e: &rustgis_map::layout::Element) -> bool {
+    e.x + e.w > 0.0 && e.y + e.h > 0.0 && e.x < layout.width && e.y < layout.height
+}
+
 /// Whether a legend on the page `layout` lists a WMS or WMTS layer whose legend picture is still
-/// on its way, at its frame's scale: in the browser, which doesn't wait for them, the page is
-/// drawn again once it lands.
+/// on its way, at its frame's scale. The interactive page is drawn again once it lands. A legend
+/// wholly off the page shows none of its pictures, so it is not waited for.
 pub fn legends_pending(layout: &Layout, maps: &[Map]) -> bool {
-    layout.elements.iter().filter(|e| e.visible).any(|e| {
+    layout.elements.iter().filter(|e| e.visible && on_page(layout, e)).any(|e| {
         let ElementKind::Legend { frame, exclude, .. } = &e.kind else { return false };
         let Some(ElementKind::MapFrame { map, center, scale, bearing, pitch, .. }) = layout.element(*frame).map(|f| &f.kind) else {
             return false;
@@ -2183,16 +2224,90 @@ pub fn legends_pending(layout: &Layout, maps: &[Map]) -> bool {
     })
 }
 
-/// Waits (natively, up to half a minute) for the legend pictures a legend of `map` at 1:`scale`
+/// Refuses an export stopped during a legend wait, or that drew a legend whose picture was still
+/// on its way: it stays refused if the picture lands afterwards, as the file would still lack it.
+/// The browser cannot wait; it asks the caller to export again once the pictures land.
+pub(crate) fn finish_legends() -> Result<(), String> {
+    rustgis_data::progress::check().map_err(|e| e.to_string())?;
+    if crate::cancel::requested() {
+        return Err(rustgis_data::DataError::Cancelled.to_string());
+    }
+    if LEGEND_MISSING.get() {
+        return Err(
+            "legend pictures were still on their way when the export stopped waiting for them; export again once they arrive".into()
+        );
+    }
+    Ok(())
+}
+
+/// How long an export waits, natively, for all the legend pictures it shows.
+const LEGEND_WAIT: web_time::Duration = web_time::Duration::from_secs(30);
+
+thread_local! {
+    /// While an export draws on this thread: `Some`, holding the deadline for its legend pictures
+    /// once its first legend has waited. Every page, element and fallback picture of that export
+    /// shares it.
+    static LEGEND_BUDGET: std::cell::Cell<Option<Option<web_time::Instant>>> = const { std::cell::Cell::new(None) };
+    /// Whether a legend of the export drawing on this thread was drawn without a picture.
+    static LEGEND_MISSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A shorter [`LEGEND_WAIT`] for a test to reach.
+    #[cfg(test)]
+    static TEST_LEGEND_WAIT: std::cell::Cell<Option<web_time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Ends the budget [`legend_budget`] opened when dropped, even by a panic.
+pub(crate) struct LegendBudget(bool);
+
+impl Drop for LegendBudget {
+    fn drop(&mut self) {
+        if self.0 {
+            LEGEND_BUDGET.set(None);
+            LEGEND_MISSING.set(false);
+        }
+    }
+}
+
+/// Opens one legend-wait budget for the export drawing on this thread, unless one is open (an
+/// export of several pages or elements, each drawn through its own call, shares it).
+pub(crate) fn legend_budget() -> LegendBudget {
+    let opened = LEGEND_BUDGET.get().is_none();
+    if opened {
+        LEGEND_BUDGET.set(Some(None));
+        LEGEND_MISSING.set(false);
+    }
+    LegendBudget(opened)
+}
+
+/// When the open budget's legend wait ends, started by the first legend that waits.
+fn legend_deadline() -> web_time::Instant {
+    #[cfg(test)]
+    let wait = TEST_LEGEND_WAIT.get().unwrap_or(LEGEND_WAIT);
+    #[cfg(not(test))]
+    let wait = LEGEND_WAIT;
+    let fresh = web_time::Instant::now() + wait;
+    match LEGEND_BUDGET.get() {
+        Some(Some(deadline)) => deadline,
+        Some(None) => {
+            LEGEND_BUDGET.set(Some(Some(fresh)));
+            fresh
+        }
+        None => fresh,
+    }
+}
+
+/// Waits (natively, until `deadline`) for the legend pictures a legend of `map` at 1:`scale`
 /// shows, as a frame waits for its tiles: a page needs them all. Only for those: not for the
-/// cache's other fetches, nor for a layer the legend leaves out (`exclude`).
-fn wait_for_tile_legends(map: &Map, scale: f64, exclude: &[String]) {
-    let start = web_time::Instant::now();
-    let budget = web_time::Duration::from_secs(30);
+/// cache's other fetches, nor for a layer the legend leaves out (`exclude`). `None` when the
+/// run was cancelled meanwhile.
+fn wait_for_tile_legends(map: &Map, scale: f64, exclude: &[String], deadline: web_time::Instant) -> Option<()> {
     // In the browser, which can't wait, the page draws what has arrived.
-    while cfg!(not(target_arch = "wasm32")) && tile_legends_pending(map, scale, exclude) && start.elapsed() < budget {
+    while cfg!(not(target_arch = "wasm32")) && web_time::Instant::now() < deadline && tile_legends_pending(map, scale, exclude) {
+        if crate::cancel::requested() || rustgis_data::progress::check().is_err() {
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
+    Some(())
 }
 
 /// The widest and tallest legend picture shown, in pixels, as in the Layers pane, and the largest
@@ -2214,6 +2329,17 @@ const LEGEND_COLUMN_GAP: f32 = 10.0;
 /// frame draws: only the layers listed there, with their classes. Without, every class of every
 /// visible layer. `opts` leaves out `<all other values>` and the layers it names, either way.
 fn legend_rows<'a>(map: &'a Map, drawn: Option<&[(u32, Vec<LegendEntry>)]>, opts: &LegendOptions<'a>) -> Vec<LegendRow<'a>> {
+    legend_rows_missing(map, drawn, opts).0
+}
+
+/// [`legend_rows`], and whether a WMS or WMTS legend picture was still on its way when the lookup
+/// that makes its rows was made (the row is then left out).
+fn legend_rows_missing<'a>(
+    map: &'a Map,
+    drawn: Option<&[(u32, Vec<LegendEntry>)]>,
+    opts: &LegendOptions<'a>,
+) -> (Vec<LegendRow<'a>>, bool) {
+    let mut missing = false;
     let excluded = |name: &str| opts.exclude.iter().any(|n| n.eq_ignore_ascii_case(name));
     let mut rows = Vec::new();
     // In the order the map draws them and the Layers pane lists them, top first.
@@ -2226,7 +2352,7 @@ fn legend_rows<'a>(map: &'a Map, drawn: Option<&[(u32, Vec<LegendEntry>)]>, opts
             // A WMS or WMTS layer's legend is its service's picture, whatever the frame draws of it.
             rustgis_map::Drawn::Tile(i) => {
                 if let Some(t) = map.tiles.get(i).filter(|t| tile_listed(t) && !excluded(&t.name))
-                    && let Some(p) = tile_legend(t, opts.scale, &mut false)
+                    && let Some(p) = tile_legend(t, opts.scale, &mut missing)
                 {
                     rows.push(LegendRow::Head(opts.shown(&t.name)));
                     rows.push(LegendRow::Picture(p));
@@ -2273,7 +2399,7 @@ fn legend_rows<'a>(map: &'a Map, drawn: Option<&[(u32, Vec<LegendEntry>)]>, opts
         rows.push(LegendRow::Head(opts.shown(&l.name)));
         rows.extend(entries.into_iter().map(|en| LegendRow::Class(l, en)));
     }
-    rows
+    (rows, missing)
 }
 
 /// The legend of a frame's map: its title, and its rows ([`legend_rows`]) under it in `columns`
@@ -2281,7 +2407,7 @@ fn legend_rows<'a>(map: &'a Map, drawn: Option<&[(u32, Vec<LegendEntry>)]>, opts
 /// less, each is filled in turn and the last rows are left out. In a box too narrow they close up,
 /// so that none is left out for it: long labels run into the next, and the last column's past the
 /// box, as a long label does in one column.
-fn legend(
+fn legend_missing(
     pm: &mut Canvas,
     r: Rect,
     map: &Map,
@@ -2289,7 +2415,7 @@ fn legend(
     drawn: Option<&[(u32, Vec<LegendEntry>)]>,
     opts: LegendOptions,
     ppp: f64,
-) {
+) -> bool {
     let ppp = ppp as f32;
     let mut y = r.y();
     if !title.is_empty() {
@@ -2297,7 +2423,7 @@ fn legend(
         text::text_at(pm, title, r.x(), y + line / 2.0, 12.0 * 1.33 * ppp, LEGEND_TEXT, true, text::Align::Left, false);
         y += line * 1.3;
     }
-    let rows = legend_rows(map, drawn, &opts);
+    let (rows, missing) = legend_rows_missing(map, drawn, &opts);
     let columns = columns.clamp(1, MAX_LEGEND_COLUMNS);
     let starts = flow(&rows, columns, balanced(&rows, columns, opts.scale).1.min((r.bottom() - y) / ppp), opts.scale).0;
     let across = (column_parts(&rows, &starts).map(|part| widest(part, opts.scale)).sum::<f32>()
@@ -2312,6 +2438,21 @@ fn legend(
         legend_column(pm, column, part, columns > 1, map, &opts, ppp);
         x = right + LEGEND_COLUMN_GAP * ppp * close_up;
     }
+    missing
+}
+
+/// [`legend_missing`], for a legend whose missing pictures nobody asks about.
+#[cfg(test)]
+fn legend(
+    pm: &mut Canvas,
+    r: Rect,
+    map: &Map,
+    title_columns: (&str, usize),
+    drawn: Option<&[(u32, Vec<LegendEntry>)]>,
+    opts: LegendOptions,
+    ppp: f64,
+) {
+    legend_missing(pm, r, map, title_columns, drawn, opts, ppp);
 }
 
 /// A column of a legend: its rows from the top of `r`, as many as fit. With `name_with_class`, a
@@ -3224,8 +3365,302 @@ mod tests {
         assert_eq!(clipped_text(&l, &[Map::new("m")], 96.0, &info), vec![(legend, "Legend".into())]);
     }
 
+    /// Shortens the legend wait on this thread until dropped, then puts back what was there (a test
+    /// run on one thread, `--test-threads=1`, shares it with the tests after).
+    struct ShortLegendWait(Option<web_time::Duration>);
+
+    fn short_legend_wait(wait: web_time::Duration) -> ShortLegendWait {
+        ShortLegendWait(TEST_LEGEND_WAIT.replace(Some(wait)))
+    }
+
+    impl Drop for ShortLegendWait {
+        fn drop(&mut self) {
+            TEST_LEGEND_WAIT.set(self.0);
+        }
+    }
+
     /// No layer labelled: every layer under its name.
     static NO_LABELS: BTreeMap<String, String> = BTreeMap::new();
+
+    fn legend_page(url: &str) -> (Layout, Vec<Map>) {
+        let (mut page, mut maps) = vector_page();
+        // Only the legend is painted; its hidden frame still provides the map and scale.
+        page.elements[0].visible = false;
+        page.add(
+            "Legend",
+            (10.0, 20.0, 100.0, 60.0),
+            ElementKind::Legend {
+                frame: page.elements[0].id,
+                title: String::new(),
+                all_classes: true,
+                hide_other: false,
+                show_no_data: false,
+                exclude: Vec::new(),
+                columns: 1,
+                labels: BTreeMap::new(),
+            },
+        );
+        let mut tile = rustgis_map::TileLayer::new("Walls", rustgis_map::TileKind::Raster, "https://tiles.test/red/{z}/{x}/{y}.png");
+        tile.legends = vec![rustgis_data::ogc::Legend { url: url.into(), ..Default::default() }];
+        maps[0].tiles.push(tile);
+        (page, maps)
+    }
+
+    fn red_picture() -> Vec<u8> {
+        let mut image = Pixmap::new(24, 24).unwrap();
+        image.fill(tiny_skia::Color::from_rgba8(220, 20, 20, 255));
+        image.encode_png().unwrap()
+    }
+
+    #[test]
+    fn an_interactive_page_does_not_wait_for_legend_pictures() {
+        use std::sync::mpsc;
+        let url = "https://tiles.test/waits/interactive-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (page, mut maps) = legend_page(url);
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = render_pending(&page, &mut maps, 72.0, &PageInfo::default());
+            tx.send((page, maps, result)).unwrap();
+        });
+        let done = fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        // test-wait: an interactive render must finish while the legend fetch is deliberately held.
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        // Always release the fetch, even if the responsiveness assertion below fails.
+        done(Ok(red_picture()));
+        let (page, mut maps, short) = result.expect("the UI must not wait for the legend fetch");
+        assert!(short.unwrap().1.legends, "the incomplete page stays pending");
+        worker.join().unwrap();
+        wait_for_tile_legends(&maps[0], 1e6, &[], web_time::Instant::now() + LEGEND_WAIT).unwrap();
+        let (whole, pending) = render_pending(&page, &mut maps, 72.0, &PageInfo::default()).unwrap();
+        assert_eq!(pending, PagePending::default(), "ready content does not keep the page pending");
+        assert!(whole.pixels().iter().any(|p| p.red() > 200 && p.green() < 60), "the completed picture is painted");
+        let exported = render(&page, &mut maps, 72.0, &PageInfo::default()).unwrap();
+        assert_eq!(whole.data(), exported.data(), "ready interactive and complete rendering agree");
+    }
+
+    #[test]
+    fn a_page_waits_for_its_legends_only_until_its_deadline() {
+        let url = "https://tiles.test/waits/deadline-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (_, maps) = legend_page(url);
+        // A deadline already passed ends the wait at once, with the picture still on its way.
+        assert_eq!(wait_for_tile_legends(&maps[0], 1e6, &[], web_time::Instant::now()), Some(()));
+        assert!(tile_legends_pending(&maps[0], 1e6, &[]));
+        fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+    }
+
+    #[test]
+    fn an_export_shares_one_legend_deadline_across_its_calls() {
+        assert!(LEGEND_BUDGET.get().is_none());
+        {
+            let _export = legend_budget();
+            let first = legend_deadline();
+            {
+                let _inner = legend_budget();
+                assert_eq!(legend_deadline(), first, "a call inside the export keeps its deadline");
+            }
+            assert_eq!(legend_deadline(), first, "the inner call didn't end the export's budget");
+        }
+        assert!(LEGEND_BUDGET.get().is_none(), "the budget ends with the export");
+        let _next = legend_budget();
+        assert!(LEGEND_BUDGET.get() == Some(None), "the next export starts afresh");
+    }
+
+    #[test]
+    fn a_legend_whose_picture_is_ready_does_not_start_the_exports_legend_clock() {
+        let url = "https://tiles.test/waits/ready-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (page, mut maps) = legend_page(url);
+        assert!(tile_legends_pending(&maps[0], 1e6, &[]), "the picture is asked for");
+        fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+        wait_for_tile_legends(&maps[0], 1e6, &[], web_time::Instant::now() + LEGEND_WAIT).unwrap();
+        assert!(!tile_legends_pending(&maps[0], 1e6, &[]), "the picture has landed");
+        let _export = legend_budget();
+        render_drawing_inner(&page, &mut maps, 72.0, &PageInfo::default(), &mut None).unwrap();
+        assert!(LEGEND_BUDGET.get() == Some(None), "a legend with nothing to wait for leaves the clock unstarted");
+        assert!(finish_legends().is_ok());
+        // A later legend whose picture is first asked for now still gets the whole wait.
+        let before = web_time::Instant::now();
+        assert!(legend_deadline() >= before + LEGEND_WAIT);
+    }
+
+    #[test]
+    fn an_svg_export_gives_up_on_held_legends_at_one_deadline() {
+        let url = "https://tiles.test/waits/svg-deadline-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (mut page, mut maps) = legend_page(url);
+        let frame = page.elements[0].id;
+        page.add(
+            "Second legend",
+            (10.0, 5.0, 100.0, 10.0),
+            ElementKind::Legend {
+                frame,
+                title: String::new(),
+                all_classes: true,
+                hide_other: false,
+                show_no_data: false,
+                exclude: Vec::new(),
+                columns: 1,
+                labels: BTreeMap::new(),
+            },
+        );
+        // The thread-local budget and the shortened wait belong to this worker alone.
+        let worker = std::thread::spawn(move || {
+            TEST_LEGEND_WAIT.set(Some(web_time::Duration::from_millis(50)));
+            crate::svg::layout_svg(&page, &mut maps, 72.0, &PageInfo::default()).map(|_| ())
+        });
+        let done = fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let result = worker.join().unwrap();
+        done(Err("test fetch released".into()));
+        assert!(result.unwrap_err().contains("still on their way"), "no successful SVG without its legend");
+    }
+
+    #[test]
+    fn an_export_drawn_without_a_legend_picture_stays_refused_when_the_picture_lands_later() {
+        let url = "https://tiles.test/waits/late-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (page, mut maps) = legend_page(url);
+        // A wait that has ended before it begins: the legend is drawn with its picture missing.
+        let _short = short_legend_wait(web_time::Duration::ZERO);
+        let _export = legend_budget();
+        render_drawing_inner(&page, &mut maps, 72.0, &PageInfo::default(), &mut None).unwrap();
+        fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+        wait_for_tile_legends(&maps[0], 1e6, &[], web_time::Instant::now() + LEGEND_WAIT).unwrap();
+        assert!(!tile_legends_pending(&maps[0], 1e6, &[]), "the picture has landed");
+        // What was drawn still lacks it: landing later doesn't make the export complete.
+        assert!(finish_legends().unwrap_err().contains("still on their way"));
+    }
+
+    #[test]
+    fn an_off_page_legend_does_not_hold_any_export_up() {
+        let url = "https://tiles.test/waits/off-page-legend.png";
+        let _held = crate::tiles::tests::hold_fetch(url);
+        let (mut page, mut maps) = legend_page(url);
+        let legend = page.elements.last().map(|e| e.id).unwrap();
+        page.element_mut(legend).unwrap().x = 1000.0;
+        // No wait at all: were the legend's picture waited for or counted missing, each fails.
+        let _short = short_legend_wait(web_time::Duration::ZERO);
+        let info = PageInfo::default();
+        // Drawn nowhere, its picture is neither waited for nor missing from the file.
+        render(&page, &mut maps, 72.0, &info).unwrap();
+        render_drawing(&page, &mut maps, 72.0, &info).unwrap();
+        crate::svg::layout_svg(&page, &mut maps, 72.0, &info).unwrap();
+    }
+
+    #[test]
+    fn a_legend_says_from_the_lookup_that_draws_it_whether_a_picture_is_missing() {
+        let url = "https://tiles.test/waits/lookup-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (_, maps) = legend_page(url);
+        let opts = || LegendOptions { show_no_data: false, hide_other: false, exclude: &[], labels: &NO_LABELS, scale: 1e6 };
+        let mut canvas = Canvas::new(200, 200).unwrap();
+        let draw = |canvas: &mut Canvas| {
+            legend_missing(canvas, Rect::from_xywh(0.0, 0.0, 200.0, 200.0).unwrap(), &maps[0], ("", 1), None, opts(), 1.0)
+        };
+        assert!(draw(&mut canvas), "drawn while its picture is on its way");
+        fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+        wait_for_tile_legends(&maps[0], 1e6, &[], web_time::Instant::now() + LEGEND_WAIT).unwrap();
+        assert!(!draw(&mut canvas), "drawn with it");
+    }
+
+    #[test]
+    fn only_an_on_page_legend_is_waited_for_by_the_redraw() {
+        let url = "https://tiles.test/waits/redraw-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (mut page, maps) = legend_page(url);
+        let legend = page.elements.last().map(|e| e.id).unwrap();
+        page.element_mut(legend).unwrap().x = 1000.0;
+        assert!(!legends_pending(&page, &maps), "off the page: not waited for");
+        assert!(fetch.try_recv().is_err(), "nor is its picture asked for");
+        page.element_mut(legend).unwrap().x = 10.0;
+        assert!(legends_pending(&page, &maps), "on the page, its picture is on its way");
+        fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+    }
+
+    #[test]
+    fn the_drawing_and_the_redraw_gate_agree_on_a_legend_at_the_pages_edge() {
+        // The page is 120 mm wide: 0.01 mm of the legend on it counts; none does not, at whatever
+        // resolution the page is drawn (a sub-pixel sliver must not make them disagree).
+        for (x, on_page) in [(119.99, true), (120.0, false)] {
+            let url = format!("https://tiles.test/waits/edge-legend-{x}.png");
+            let fetch = crate::tiles::tests::hold_fetch(&url);
+            let (mut page, mut maps) = legend_page(&url);
+            let legend = page.elements.last().map(|e| e.id).unwrap();
+            page.element_mut(legend).unwrap().x = x;
+            assert_eq!(legends_pending(&page, &maps), on_page, "the redraw gate at x = {x}");
+            let _short = short_legend_wait(web_time::Duration::ZERO);
+            let _export = legend_budget();
+            render_drawing_inner(&page, &mut maps, 72.0, &PageInfo::default(), &mut None).unwrap();
+            assert_eq!(finish_legends().is_err(), on_page, "the page's drawing at x = {x}");
+            if on_page {
+                fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap()(Ok(red_picture()));
+            }
+        }
+    }
+
+    #[test]
+    fn an_export_includes_a_legend_that_arrives_while_it_waits() {
+        let url = "https://tiles.test/waits/export-legend.png";
+        let fetch = crate::tiles::tests::hold_fetch(url);
+        let (page, mut maps) = legend_page(url);
+        let worker = std::thread::spawn(move || render(&page, &mut maps, 72.0, &PageInfo::default()));
+        let done = fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(!worker.is_finished(), "a complete export waits for the held picture");
+        done(Ok(red_picture()));
+        let image = worker.join().unwrap().unwrap();
+        assert!(image.pixels().iter().any(|p| p.red() > 200 && p.green() < 60), "not a successful page without its picture");
+    }
+
+    #[test]
+    fn cancelled_legend_waits_return_no_export() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        struct Probe {
+            flag: Arc<AtomicBool>,
+            waiting: mpsc::SyncSender<()>,
+        }
+        impl rustgis_data::progress::Probe for Probe {
+            fn cancelled(&self) -> bool {
+                let _ = self.waiting.try_send(());
+                self.flag.load(Ordering::Relaxed)
+            }
+            fn begin(&self, _: u64) {}
+            fn advance(&self, _: u64) {}
+        }
+        for kind in 0..4 {
+            let url = format!("https://tiles.test/waits/cancelled-legend-{kind}.png");
+            let fetch = crate::tiles::tests::hold_fetch(&url);
+            let (page, mut maps) = legend_page(&url);
+            let flag = Arc::new(AtomicBool::new(false));
+            let cancel = flag.clone();
+            let (waiting, observed) = mpsc::sync_channel(1);
+            let (tx, rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let probe_flag = if kind == 3 { Arc::new(AtomicBool::new(false)) } else { flag.clone() };
+                let _probe = rustgis_data::progress::install(Some(Arc::new(Probe { flag: probe_flag, waiting })));
+                let _frame = (kind == 3).then(|| crate::cancel::install(flag));
+                let info = PageInfo::default();
+                let result = match kind {
+                    0 | 3 => render(&page, &mut maps, 72.0, &info).map(|_| ()),
+                    1 => render_drawing(&page, &mut maps, 72.0, &info).map(|_| ()),
+                    _ => crate::svg::layout_svg(&page, &mut maps, 72.0, &info).map(|_| ()),
+                };
+                tx.send(result).unwrap();
+            });
+            let done = fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            observed.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            cancel.store(true, Ordering::Relaxed);
+            // test-wait: cancellation must finish before the deliberately pending fetch is released.
+            let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+            done(Err("test fetch released".into()));
+            assert_eq!(result.unwrap(), Err(rustgis_data::DataError::Cancelled.to_string()), "format {kind}");
+            worker.join().unwrap();
+        }
+    }
 
     /// A frame drawn over another takes its rectangle out of the other's: the bands above and below
     /// it and the strips beside it are left, a strip too narrow to point into is dropped, and one
@@ -3398,7 +3833,7 @@ mod tests {
                 .collect();
             (hits.len(), hits.iter().max().copied().unwrap_or(0))
         };
-        wait_for_tile_legends(&map, 1e6, &[]);
+        wait_for_tile_legends(&map, 1e6, &[], web_time::Instant::now() + LEGEND_WAIT).unwrap();
         let (ink, right) = red(&map, 300.0, &[], 1e6);
         assert!(ink > 200 * 200, "the picture is drawn: {ink} px");
         assert!(right < 6 + 256, "a pixel a point: {right}");

@@ -882,6 +882,17 @@ pub(crate) mod tests {
     static HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static HELD: std::sync::Mutex<Vec<rustgis_tiles::cache::Done>> = std::sync::Mutex::new(Vec::new());
 
+    /// Per-address controlled fetches, shared by render regressions without replacing the fetcher.
+    static WAITING: std::sync::Mutex<std::collections::BTreeMap<String, std::sync::mpsc::Sender<rustgis_tiles::cache::Done>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    pub(crate) fn hold_fetch(url: &str) -> std::sync::mpsc::Receiver<rustgis_tiles::cache::Done> {
+        serve();
+        let (tx, rx) = std::sync::mpsc::channel();
+        WAITING.lock().unwrap().insert(url.to_string(), tx);
+        rx
+    }
+
     pub(crate) static PRIVATE_SPRITE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// Serves tiles and documents for `https://tiles.test/…` without a network. Under `split/`,
@@ -896,6 +907,10 @@ pub(crate) mod tests {
                 pm.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
                 pm.encode_png().unwrap()
             };
+            if let Some(tx) = WAITING.lock().unwrap().remove(&url) {
+                let _ = tx.send(done);
+                return;
+            }
             if url.starts_with("https://tiles.test/red/") || url.starts_with("https://tiles.test/split/11/") {
                 done(Ok(color(220, 20, 20)));
             } else if url.starts_with("https://tiles.test/split/13/") {
@@ -1494,7 +1509,7 @@ pub(crate) mod tests {
         HOLD.store(true, Ordering::SeqCst);
         let short = {
             let _wait = rustgis_data::progress::install(Some(std::sync::Arc::new(Cancelled)));
-            crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending)
+            crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending.frames)
         };
         // Answered now, and those asked for later at once: the next drawing waits for them.
         HOLD.store(false, Ordering::SeqCst);
@@ -1506,7 +1521,7 @@ pub(crate) mod tests {
             done(Ok(tiny_skia::Pixmap::new(256, 256).unwrap().encode_png().unwrap()));
         }
         assert_eq!(short, Ok(true), "drawn before its tiles landed");
-        let whole = crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending);
+        let whole = crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending.frames);
         assert_eq!(whole, Ok(false), "drawn once they have");
     }
 }

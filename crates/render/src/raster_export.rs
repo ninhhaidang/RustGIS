@@ -81,6 +81,10 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
         let size = 2.0 * half / f64::from(1u32 << z);
         for y in y0..=y1 {
             for x in x0..=x1 {
+                rustgis_data::progress::check().map_err(|e| e.to_string())?;
+                if crate::cancel::requested() {
+                    return Err(rustgis_data::DataError::Cancelled.to_string());
+                }
                 let center = Coord::new(-half + (f64::from(x) + 0.5) * size, half - (f64::from(y) + 0.5) * size);
                 let view =
                     View { width: 256.0, height: 256.0, pixels_per_point: 1.0, camera: Camera::new(center, size / 256.0), sky: false };
@@ -93,6 +97,10 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
                     Some(address) => {
                         let mut idle = 0;
                         loop {
+                            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+                            if crate::cancel::requested() {
+                                return Err(rustgis_data::DataError::Cancelled.to_string());
+                            }
                             let drawn_at = crate::rustgis_tiles::cache::generation();
                             match raster::draw_in_place(&mut image, address, r, &layer.style, stats, &view, opacity, true, place, light) {
                                 Ok(false) => break,
@@ -111,7 +119,11 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
                             if left.is_zero() || idle >= IDLE_WAITS {
                                 return Err(format!("{}: its tiles didn't all arrive, so the archive isn't written", r.name));
                             }
-                            crate::rustgis_tiles::cache::wait_for_news(drawn_at, left.min(web_time::Duration::from_secs(30)));
+                            crate::rustgis_tiles::cache::wait_for_news_unless(
+                                drawn_at,
+                                left.min(web_time::Duration::from_secs(30)),
+                                || crate::cancel::requested() || rustgis_data::progress::check().is_err(),
+                            );
                             if crate::rustgis_tiles::cache::generation() == drawn_at {
                                 idle += 1;
                             } else {
@@ -134,6 +146,10 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
             }
         }
     }
+    rustgis_data::progress::check().map_err(|e| e.to_string())?;
+    if crate::cancel::requested() {
+        return Err(rustgis_data::DataError::Cancelled.to_string());
+    }
     if tiles.is_empty() {
         return Err("the raster has no visible pixels in the requested tiles".into());
     }
@@ -153,6 +169,53 @@ mod tests {
     use super::*;
     use crate::rustgis_tiles::cache::{self, Payload, State, Want};
     use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+
+    #[test]
+    fn cancelling_a_pending_raster_read_returns_no_archive() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        struct Probe(Arc<AtomicBool>);
+        impl rustgis_data::progress::Probe for Probe {
+            fn cancelled(&self) -> bool {
+                self.0.load(Ordering::Relaxed)
+            }
+            fn begin(&self, _: u64) {}
+            fn advance(&self, _: u64) {}
+        }
+        let address = "https://tiles.test/waits/cancelled-raster.tif";
+        let fetch = crate::tiles::tests::hold_fetch(&format!("{address}{}0-65535", cache::RANGE));
+        let mut overview = Raster::new(
+            "pending",
+            4,
+            4,
+            vec![(0..16).map(|v| v as f32).collect()],
+            GeoTransform { origin_x: -180.0, origin_y: 80.0, pixel_width: 90.0, pixel_height: -40.0 },
+            Crs::LonLat,
+            None,
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap();
+        overview.overview = Some((4096, 4096));
+        let layer = RasterLayer::in_place(overview, address);
+        let flag = Arc::new(AtomicBool::new(false));
+        let cancel = flag.clone();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _probe = rustgis_data::progress::install(Some(Arc::new(Probe(flag))));
+            tx.send(export(&layer, 0, 0, 1.0)).unwrap();
+        });
+        let done = fetch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        cancel.store(true, Ordering::Relaxed);
+        // test-wait: export cancellation must complete while the raster header remains held.
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        done(Err("test fetch released".into()));
+        assert_eq!(result.unwrap(), Err(rustgis_data::DataError::Cancelled.to_string()));
+        worker.join().unwrap();
+    }
 
     #[test]
     fn tile_ranges_respect_exact_and_near_boundaries() {
