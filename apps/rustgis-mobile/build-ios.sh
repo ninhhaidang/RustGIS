@@ -115,21 +115,31 @@ done
 plutil -lint -s "$app/Info.plist"
 printf 'APPL????' > "$app/PkgInfo"
 
-# The icon, which build.rs drew from the logo's code: an asset catalog of its one 1024-pixel
-# image, compiled by actool into the bundle, with the keys it adds merged into Info.plist.
-# (Cargo keeps it in build/rustgis-mobile-<hash>/out, or build/rustgis-mobile/<hash>/out in newer
+# The icon, which build.rs drew from the logo's code: an asset catalog of its 1024-pixel images
+# (the icon, and the dark and tinted ones iOS 18 and later show when asked), compiled by actool
+# into the bundle, with the keys it adds merged into Info.plist.
+# (Cargo keeps them in build/rustgis-mobile-<hash>/out, or build/rustgis-mobile/<hash>/out in newer
 # versions: the newest of either.)
-icon=$(find "$target_dir/$target/$profile/build" -path '*rustgis-mobile*' -name AppIcon.png -exec ls -t {} + 2>/dev/null | head -1)
+icon=$(find "$target_dir/$target/$profile/build" -path '*rustgis-mobile*' -name AppIcon.png -exec ls -t {} + 2>/dev/null | head -1) || true
 [ -n "$icon" ] || { echo "build-ios: build.rs drew no AppIcon.png" >&2; exit 1; }
 assets=$out/Assets.xcassets
 rm -rf "$assets" && mkdir -p "$assets/AppIcon.appiconset"
-cp "$icon" "$assets/AppIcon.appiconset/AppIcon.png"
+for name in AppIcon AppIcon-Dark AppIcon-Tinted; do
+    [ -f "$(dirname "$icon")/$name.png" ] || { echo "build-ios: build.rs drew no $name.png" >&2; exit 1; }
+    cp "$(dirname "$icon")/$name.png" "$assets/AppIcon.appiconset/"
+done
 cat > "$assets/Contents.json" <<'JSON'
 { "info": { "author": "xcode", "version": 1 } }
 JSON
 cat > "$assets/AppIcon.appiconset/Contents.json" <<'JSON'
 {
-  "images": [{ "filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" }],
+  "images": [
+    { "filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" },
+    { "appearances": [{ "appearance": "luminosity", "value": "dark" }],
+      "filename": "AppIcon-Dark.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" },
+    { "appearances": [{ "appearance": "luminosity", "value": "tinted" }],
+      "filename": "AppIcon-Tinted.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" }
+  ],
   "info": { "author": "xcode", "version": 1 }
 }
 JSON

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- RustGIS on Android (#1902): a NativeActivity that loads librustgis_mobile.so. Its one Java
-     class (java/org/rustgis/mobile/MainActivity.java) is what reaches the system's file picker. -->
+     class (java/org/rustgis/mobile/MainActivity.java) is what reaches the system's file picker. Its
+     launcher icon (@mipmap/ic_launcher) is drawn by build.rs from the logo's code. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.rustgis.mobile"
     android:versionCode="1"
@@ -30,6 +31,8 @@
 
     <application
         android:label="RustGIS"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:hasCode="true"
         android:allowBackup="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">

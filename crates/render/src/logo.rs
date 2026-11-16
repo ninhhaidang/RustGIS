@@ -3,7 +3,8 @@
 //! rustgis-assets; this keeps the app free of image files.
 
 use tiny_skia::{
-    Color, FillRule, GradientStop, LineCap, LinearGradient, Mask, Paint, PathBuilder, Pixmap, Point, SpreadMode, Stroke, Transform,
+    BlendMode, Color, FillRule, GradientStop, LineCap, LinearGradient, Mask, Paint, PathBuilder, Pixmap, Point, SpreadMode, Stroke,
+    Transform,
 };
 
 const C: f32 = 256.0;
@@ -29,9 +30,32 @@ const RUST: ((u8, u8, u8), (u8, u8, u8)) = ((0xE4, 0x78, 0x3D), (0xA8, 0x3F, 0x2
 
 /// The logo as a premultiplied RGBA pixmap of `size`×`size` pixels (16..=1024).
 pub fn pixmap(size: u32) -> Option<Pixmap> {
+    draw(size, false)
+}
+
+/// The logo as one opaque white shape on a transparent background, `size`×`size` pixels
+/// (16..=1024): its white parts (the globe's gaps, the ring around it, the orbit's outline) are
+/// cut out, so it still reads as the logo in one colour. For the icons a phone tints itself:
+/// Android's themed icons (the adaptive icon's monochrome layer) and iOS's tinted app icons.
+pub fn monochrome(size: u32) -> Option<Pixmap> {
+    draw(size, true)
+}
+
+fn draw(size: u32, mono: bool) -> Option<Pixmap> {
     let size = size.clamp(16, 1024);
     let mut pm = Pixmap::new(size, size)?;
     let t = Transform::from_scale(size as f32 / 512.0, size as f32 / 512.0);
+    // In one colour, every colour is the shape and white cuts holes in it (as much as its alpha).
+    // These closures shadow the module's `gradient` and `solid`, which they call by path
+    // (`self::`) so that what they call doesn't depend on the order they are declared in.
+    let gradient = |a, b, x0, y0, x1, y1| if mono { self::solid(255, 255, 255, 255) } else { self::gradient(a, b, x0, y0, x1, y1) };
+    let solid = |r, g, b, a| {
+        let mut p = self::solid(r, g, b, a);
+        if mono {
+            p.blend_mode = BlendMode::DestinationOut;
+        }
+        p
+    };
     let rust = gradient(RUST.0, RUST.1, 0.0, 0.0, 512.0, 512.0);
 
     // Cog.
@@ -225,6 +249,21 @@ mod tests {
             assert_eq!(px.len() as u32, w * w * 4);
             assert!(px.chunks(4).any(|c| c[3] == 255), "logo has opaque pixels");
         }
+    }
+
+    #[test]
+    fn monochrome_is_white_with_the_white_parts_cut_out() {
+        let pm = super::monochrome(512).unwrap();
+        let at = |x: u32, y: u32| pm.pixel(x, y).unwrap();
+        // Every pixel is white or clear (premultiplied: each channel equals the alpha).
+        assert!(pm.pixels().iter().all(|p| p.red() == p.alpha() && p.green() == p.alpha() && p.blue() == p.alpha()));
+        // A cog tooth is solid, the corner and the ring between cog and globe are clear.
+        assert_eq!(at(256, 14).alpha(), 255);
+        assert_eq!(at(2, 2).alpha(), 0);
+        assert_eq!(at(256, 256 + 175).alpha(), 0);
+        // A globe segment is solid, and the gap between two segments is clear.
+        assert_eq!(at(180, 180).alpha(), 255);
+        assert_eq!(at(214, 262).alpha(), 0);
     }
 
     #[test]

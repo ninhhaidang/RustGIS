@@ -46,8 +46,10 @@ adb exec-out screencap -p > shot.png
 ```
 
 The APK is signed with a debug key made in `target/android`. There is no Gradle project: `aapt2`
-links the manifest, `javac` and `d8` compile the one Java class, and the Rust library is the rest
-of the app.
+links the manifest and the launcher icon, `javac` and `d8` compile the one Java class, and the Rust
+library is the rest of the app. The icon is an adaptive icon drawn by `build.rs` from the same code
+as the desktop's window icon: the logo on white, with a monochrome layer that themed icons (Android
+13 and later, and launchers that tint icons) draw in their own colour.
 
 Both apps carry RustGIS's `LICENSE` and this folder's `THIRD-PARTY-LICENSES.txt`, the notices of
 the crates the phone builds compile in (in the APK's `assets/`, at the top of `RustGIS.app`).
@@ -283,7 +285,8 @@ Development or Distribution identity in the keychain) and `IOS_PROFILE` (a provi
 `org.rustgis.mobile`) it signs the app and packs `target/ios/RustGIS.ipa`, for a device or for
 TestFlight. There is no Xcode project: cargo builds the executable and the script makes the bundle
 around it, with `ios/Info.plist`, the app icon (the logo, drawn by `build.rs` from the same code as
-the desktop's window icon and compiled with `actool`), and the build keys Xcode's own builds
+the desktop's window icon and compiled with `actool`, with the dark and tinted variants iOS 18 and
+later show), and the build keys Xcode's own builds
 record. The build number is the commit count, or `IOS_BUILD` (a device build from a shallow
 clone, which can't count them, is refused without it).
 

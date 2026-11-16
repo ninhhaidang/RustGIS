@@ -133,9 +133,22 @@ if [ -z "$code" ]; then
     fi
 fi
 
+# The launcher icon, which build.rs drew from the logo's code into its out folder, compiled for
+# linking. (Cargo keeps it in build/rustgis-mobile-<hash>/out, or build/rustgis-mobile/<hash>/out in
+# newer versions: the newest of either, of this profile's Android builds.)
+target_dir=${CARGO_TARGET_DIR:-target}
+case $target_dir in /*) ;; *) target_dir=$root/$target_dir ;; esac
+built=release
+[ -n "$profile" ] || built=debug
+icon=$(find "$target_dir"/*-linux-android*/"$built"/build -path '*rustgis-mobile*' -path '*/res/*' -name ic_launcher.xml \
+    -exec ls -t {} + 2>/dev/null | head -1) || true
+[ -n "$icon" ] || { echo "build-apk: build.rs drew no launcher icon" >&2; exit 1; }
+rm -rf "$out/res" && mkdir -p "$out/res"
+"$tools/aapt2" compile --dir "$(dirname "$(dirname "$icon")")" -o "$out/res/compiled.zip"
+
 unsigned=$out/unsigned.apk
 "$tools/aapt2" link -o "$unsigned" --manifest "$root/apps/rustgis-mobile/AndroidManifest.xml" -I "$platform/android.jar" \
-    --version-code "$code" --version-name "$version" --replace-version
+    --version-code "$code" --version-name "$version" --replace-version "$out/res/compiled.zip"
 # The libraries go in uncompressed and page-aligned, so Android maps them straight from the APK.
 (cd "$out/apk" && zip -q -0 -r "$unsigned" lib)
 (cd "$out/java/dex" && zip -q "$unsigned" classes.dex)
@@ -153,7 +166,7 @@ if [ -n "${BUNDLETOOL:-}" ]; then
     aab=$out/aab
     rm -rf "$aab" && mkdir -p "$aab/base/manifest" "$aab/base/dex"
     "$tools/aapt2" link --proto-format -o "$aab/proto.apk" --manifest "$root/apps/rustgis-mobile/AndroidManifest.xml" \
-        -I "$platform/android.jar" --version-code "$code" --version-name "$version" --replace-version
+        -I "$platform/android.jar" --version-code "$code" --version-name "$version" --replace-version "$out/res/compiled.zip"
     (cd "$aab/base" && unzip -q ../proto.apk && mv AndroidManifest.xml manifest/)
     cp "$out/java/dex/classes.dex" "$aab/base/dex/"
     cp -R "$out/apk/lib" "$aab/base/lib"
