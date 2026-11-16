@@ -203,16 +203,27 @@ fn plugin_tool_and_parameter_limits_stay_bounded() {
     let mut m = json!({"id": "bounded", "name": "Bounded", "version": "1.0.0",
         "commands": (0..256).map(|i| json!({"id": format!("c{i}"), "label": "Layer"})).collect::<Vec<_>>(),
         "tools": (0..64).map(|i| json!({"id": format!("t{i}"), "name": "Tool"})).collect::<Vec<_>>()});
-    m["tools"][0]["params"] =
-        json!((0..32).map(|i| json!({"name": format!("p{i}"), "label": "Parameter", "kind": "text"})).collect::<Vec<_>>());
-    assert!(Manifest::parse(&m.to_string()).is_ok());
+    let params =
+        |n: usize| json!((0..n).map(|i| json!({"name": format!("p{i}"), "label": "Parameter", "kind": "text"})).collect::<Vec<_>>());
+    // The old limit, one past it and the new one are all accepted.
+    for n in [32, 33, 64] {
+        m["tools"][0]["params"] = params(n);
+        assert!(Manifest::parse(&m.to_string()).is_ok(), "{n} parameters");
+    }
     let mut too_many_tools = m.clone();
     too_many_tools["tools"].as_array_mut().unwrap().push(json!({"id": "t64", "name": "Tool"}));
     let e = Manifest::parse(&too_many_tools.to_string()).unwrap_err();
     assert!(e.contains("at most 256 commands and 64 tools"), "{e}");
-    m["tools"][0]["params"].as_array_mut().unwrap().push(json!({"name": "p32", "label": "Parameter", "kind": "text"}));
+    // A command's dialog fields are held to the same limit.
+    let mut wide_dialog = m.clone();
+    wide_dialog["commands"][0]["form"] = params(64);
+    assert!(Manifest::parse(&wide_dialog.to_string()).is_ok());
+    wide_dialog["commands"][0]["form"].as_array_mut().unwrap().push(json!({"name": "p64", "label": "Parameter", "kind": "text"}));
+    let e = Manifest::parse(&wide_dialog.to_string()).unwrap_err();
+    assert!(e.contains("more than 64 parameters"), "{e}");
+    m["tools"][0]["params"].as_array_mut().unwrap().push(json!({"name": "p64", "label": "Parameter", "kind": "text"}));
     let e = Manifest::parse(&m.to_string()).unwrap_err();
-    assert!(e.contains("more than 32 parameters"), "{e}");
+    assert!(e.contains("more than 64 parameters"), "{e}");
 }
 
 /// A command's dialog fields are checked like a tool's parameters, take raster layers, and

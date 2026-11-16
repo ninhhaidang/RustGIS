@@ -32,6 +32,9 @@ struct Dialog {
     asked: Option<Value>,
     /// The last run's report, or its error.
     result: Option<Result<String, String>>,
+    /// What Run, the reasons it waits and the result took last frame. The fields leave that
+    /// much room, so they don't push them out of a window too short for both (#1964).
+    footer: f32,
 }
 
 /// `ui.pluginForm`: `{"plugin": id, "command": id}` opens that plugin command's dialog.
@@ -71,7 +74,7 @@ pub fn open(app: &mut RustGisApp, p: &Value) -> Result<Value, String> {
             .collect(),
         None => defaults,
     };
-    state.open = Some(Dialog { plugin: key.0, command: key.1, values, texts: HashMap::new(), asked: None, result: None });
+    state.open = Some(Dialog { plugin: key.0, command: key.1, values, texts: HashMap::new(), asked: None, result: None, footer: 0.0 });
     Ok(Value::Null)
 }
 
@@ -224,22 +227,31 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                 ui.label(RichText::new(m.translate(&lang, &c.help)).weak());
                 ui.separator();
             }
-            egui::Grid::new(("plugin_form_grid", &d.plugin, &d.command)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                // A field lists the fields of the layer chosen above it.
-                let mut layer: Option<String> = None;
-                for f in &c.form {
-                    let text = m.translate(&lang, &f.label);
-                    let mut label = ui.label(if f.required { format!("{text} *") } else { text.to_string() });
-                    if !f.help.is_empty() {
-                        label = label.on_hover_text(m.translate(&lang, &f.help));
+            // A form of many fields scrolls rather than growing past the screen, so Run and the
+            // reasons it waits stay in view (#1964). It leaves them the room they took last
+            // frame (a row's worth before the first), and never takes the window's last rows.
+            let row = ui.spacing().interact_size.y;
+            let footer = if d.footer > 0.0 { d.footer } else { row + 2.0 * ui.spacing().item_spacing.y + 6.0 };
+            let room = (ui.available_height() - footer).max(row).min(460.0);
+            egui::ScrollArea::vertical().id_salt("plugin_form_fields").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                egui::Grid::new(("plugin_form_grid", &d.plugin, &d.command)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    // A field lists the fields of the layer chosen above it.
+                    let mut layer: Option<String> = None;
+                    for f in &c.form {
+                        let text = m.translate(&lang, &f.label);
+                        let mut label = ui.label(if f.required { format!("{text} *") } else { text.to_string() });
+                        if !f.help.is_empty() {
+                            label = label.on_hover_text(m.translate(&lang, &f.help));
+                        }
+                        field(app, ui, f, &mut d.values, &mut d.texts, layer.as_deref(), m, &lang).labelled_by(label.id);
+                        if layer_kind(&f.kind).is_some() {
+                            layer = d.values.get(&f.name).and_then(Value::as_str).map(str::to_string);
+                        }
+                        ui.end_row();
                     }
-                    field(app, ui, f, &mut d.values, &mut d.texts, layer.as_deref(), m, &lang).labelled_by(label.id);
-                    if layer_kind(&f.kind).is_some() {
-                        layer = d.values.get(&f.name).and_then(Value::as_str).map(str::to_string);
-                    }
-                    ui.end_row();
-                }
+                });
             });
+            let footer_top = ui.cursor().top();
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let running = d.asked.is_some();
@@ -277,6 +289,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                     },
                 );
             }
+            d.footer = ui.cursor().top() - footer_top;
         });
     if run {
         let params = form_params(&c.form, &d.values);
@@ -449,6 +462,11 @@ mod tests {
 
     /// The test plugin, with dialogs on its echo command `q` and its failing command `e`.
     fn launch(plugin: &str) -> egui_kittest::Harness<'static, RustGisApp> {
+        launch_in(plugin, 860.0)
+    }
+
+    /// The same, in a window `height` points tall: a short one leaves a dialog little room.
+    fn launch_in(plugin: &str, height: f32) -> egui_kittest::Harness<'static, RustGisApp> {
         let mut m: Value = serde_json::from_str(&plugins::testing::manifest(plugin, &["edit"])).unwrap();
         let form = json!([
             {"name": "input", "label": "Input", "kind": "vectorLayer", "required": true},
@@ -459,6 +477,10 @@ mod tests {
         ]);
         let commands = m["commands"].as_array_mut().unwrap();
         commands.push(json!({"id": "q", "label": "Echo", "form": form}));
+        // A form at the manifest's limit of 64 fields (#1964).
+        commands.push(json!({"id": "qw", "label": "Echo Long", "form":
+            (0..64).map(|i| json!({"name": format!("p{i}"), "label": format!("Field {i}"), "kind": "text"}))
+                .collect::<Vec<_>>()}));
         // Echoes too (the test plugin answers by the id's first letter), with optional fields only.
         commands.push(json!({"id": "qq", "label": "Echo Optional", "form": [
             {"name": "count", "label": "Count", "kind": "number"},
@@ -471,7 +493,7 @@ mod tests {
         let manifest = m.to_string();
         let zip = plugins::testing::zip_of(&[("plugin.json", manifest.as_bytes()), ("plugin.wasm", &plugins::testing::wasm())]);
         plugins::load(plugins::Package::from_zip(&zip).unwrap(), "test").unwrap();
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 860.0)).with_max_steps(64).build_ui_state(
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, height)).with_max_steps(64).build_ui_state(
             |ui, app: &mut RustGisApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -559,6 +581,42 @@ mod tests {
         let echoed: Value = serde_json::from_str(answer).unwrap();
         assert_eq!(echoed["params"], json!({"count": 2.5, "agree": false}));
         plugins::unload("ui-dialog-optional");
+    }
+
+    /// A dialog at the manifest's limit of 64 fields scrolls, so Run and the reasons it waits
+    /// stay on screen (#1964).
+    #[test]
+    fn a_long_form_keeps_run_in_view() {
+        let mut h = launch("ui-dialog-long");
+        h.state_mut().run_by_user("plugin:ui-dialog-long/qw", Value::Null).unwrap();
+        h.run();
+        let run = h.get_by_label("Run").rect();
+        assert!(run.max.y <= h.ctx.content_rect().max.y, "Run is off screen: {run:?}");
+        // Every field is still there to fill in; none is required, so Run goes ahead.
+        h.get_by_label("Run").click();
+        h.run();
+        let Some(Ok(answer)) = &dialog(&h).result else { panic!("{:?}", dialog(&h).result) };
+        let echoed: Value = serde_json::from_str(answer).unwrap();
+        assert_eq!(echoed["params"], json!({}), "optional fields left alone are left out");
+        plugins::unload("ui-dialog-long");
+    }
+
+    /// The same in a window too short for the fields and the footer both: the fields give up the
+    /// room, not Run (#1964).
+    #[test]
+    fn a_long_form_keeps_run_in_view_in_a_short_window() {
+        let mut h = launch_in("ui-dialog-short", 420.0);
+        h.state_mut().run_by_user("plugin:ui-dialog-short/qw", Value::Null).unwrap();
+        h.run();
+        let run = h.get_by_label("Run").rect();
+        assert!(run.max.y <= h.ctx.content_rect().max.y, "Run is off screen: {run:?} in {:?}", h.ctx.content_rect());
+        // The answer shows below Run, and it too stays in the window.
+        h.get_by_label("Run").click();
+        h.run();
+        assert!(matches!(&dialog(&h).result, Some(Ok(_))), "{:?}", dialog(&h).result);
+        let run = h.get_by_label("Run").rect();
+        assert!(run.max.y <= h.ctx.content_rect().max.y, "Run is off screen with a result: {run:?}");
+        plugins::unload("ui-dialog-short");
     }
 
     /// While the dialog's run waits to start, an answer of the same command run with other

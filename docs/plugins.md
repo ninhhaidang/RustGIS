@@ -244,7 +244,7 @@ cargo build --release --target wasm32-unknown-unknown
 - `skills` (optional) lists skills for the AI Assistant that the package carries. See
   [Skills](#skills).
 
-A manifest can declare at most 256 commands, 64 tools and 32 parameters per tool or command dialog.
+A manifest can declare at most 256 commands, 64 tools and 64 parameters per tool or command dialog.
 
 A package is a zip archive, conventionally named `<id>-<version>.rgplugin`. It holds
 `plugin.json` at its root or inside one top-level folder; `entry` is relative to that manifest.
