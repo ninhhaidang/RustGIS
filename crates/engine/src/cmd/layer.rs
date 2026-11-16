@@ -5,7 +5,8 @@ use std::path::Path;
 use rustgis_data::{GeometryType, photo};
 use rustgis_map::symbology::{ClassRef, ClassStyle, LABEL_SIZE, MAX_STROKES};
 use rustgis_map::{
-    ClassMethod, Glyph, HiddenFills, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, Marker, NoFill, Placements, Ramp, Renderer, Rgba,
+    ClassMethod, Glyph, HiddenFills, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, Marker, NoFill, Picture, Placements, Ramp,
+    Renderer, Rgba,
 };
 use serde_json::{Value, json};
 
@@ -403,10 +404,22 @@ pub fn commands() -> Vec<C> {
             if shape.is_some() && ch.is_some() {
                 return Err("give a shape or a char, not both".into());
             }
+            // Refused before the image is kept: a call that changes nothing keeps nothing.
+            if p.get("image").is_some_and(|v| !v.is_null()) && (shape.is_some() || ch.is_some()) {
+                return Err("give a shape, a char or an image, only one".into());
+            }
+            let id = s.layer_id(p)?;
+            s.map().layer(id).ok_or("no such layer")?;
+            // Decoded here, on the UI thread, as any command runs: at most 2 MiB of base64, whose
+            // declared size is checked before the decoder, capped in memory, runs.
+            let image = picture(p)?;
             with(s, p, |l| {
                 l.renderer.map_symbols(|sym| {
                     if let Some(m) = shape {
                         sym.marker = m;
+                    }
+                    if let Some(img) = image {
+                        sym.marker = Marker::Picture(img);
                     }
                     let was = match sym.marker {
                         Marker::Char(g) => Some(g),
@@ -425,7 +438,7 @@ pub fn commands() -> Vec<C> {
             })
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
-        .params(r#"{"layer"?, "shape"?: "circle"|"square"|"triangle"|"diamond"|"star", "char"?: text (a character of a font as the marker, its first; sized by the font's em), "font"?: text (the installed family the character is drawn from; "" or one not installed: the label font), "size"?: number}"#),
+        .params(r#"{"layer"?, "shape"?: "circle"|"square"|"triangle"|"diamond"|"star", "char"?: text (a character of a font as the marker, its first; sized by the font's em), "font"?: text (the installed family the character is drawn from; "" or one not installed: the label font), "image"?: text (a PNG or JPEG image as base64, at most 2 MiB, as the marker: as wide as the size, as tall as its proportions make it; its fill and outline don't show), "size"?: number}"#),
         C::new("layer.transparency", "Transparency", "Style › Effects", |s, p| {
             let t = f(p, "value").ok_or("value (0–100) is required")?.clamp(0.0, 100.0) as f32;
             with(s, p, |l| l.transparency = t)
@@ -1352,6 +1365,27 @@ fn character(p: &Value) -> Result<Option<char>, String> {
         Some(Value::String(c)) => c.chars().next().map(Some).ok_or_else(|| "char is a character".into()),
         Some(_) => Err("char is a character".into()),
     }
+}
+
+/// `layer.marker`'s `image`: a PNG or JPEG image as base64, which must decode.
+fn picture(p: &Value) -> Result<Option<Picture>, String> {
+    const WHAT: &str = "image is a PNG or JPEG image as base64";
+    let b64 = match p.get("image") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(b64)) => b64.trim(),
+        Some(_) => return Err(WHAT.into()),
+    };
+    if b64.len() > rustgis_map::symbology::MAX_PICTURE_BYTES {
+        return Err(format!("image is at most {} MiB of base64", rustgis_map::symbology::MAX_PICTURE_BYTES >> 20));
+    }
+    if !rustgis_render::picture_marker_readable(b64) {
+        return Err(WHAT.into());
+    }
+    let picture = Picture::new(b64);
+    if picture.is_default() {
+        return Err("no more images can be kept this session: restart RustGIS to use another".into());
+    }
+    Ok(Some(picture))
 }
 
 /// A stroke's `markers`: what it draws along the line instead of a line, and where.
@@ -3525,6 +3559,9 @@ pub(crate) fn add_layer_text(s: &mut Session, text: &str) -> CmdResult {
     }
     for notice in crate::project::label_losses::layer_notices(text, &layer, true) {
         s.notify(notice, false);
+    }
+    for notice in crate::project::picture_notices([&layer], []) {
+        s.notify_text(notice, false);
     }
     // A binding in a file is no authority to use a login here.
     crate::s3_connections::clear_bindings(layer.addresses_mut());

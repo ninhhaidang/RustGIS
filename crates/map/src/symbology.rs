@@ -20,10 +20,13 @@ pub enum Marker {
     Star,
     /// A character of a font, as QGIS's font markers draw one: the size is the font's em.
     Char(Glyph),
+    /// A PNG or JPEG image, as QGIS's raster image markers draw one: the size is its width, its
+    /// height as the image's proportions make it. Its fill and outline don't change it.
+    Picture(Picture),
 }
 
 impl Marker {
-    /// The shapes (every marker but [`Marker::Char`]).
+    /// The shapes (every marker but [`Marker::Char`] and [`Marker::Picture`]).
     pub const ALL: [Marker; 5] = [Marker::Circle, Marker::Square, Marker::Triangle, Marker::Diamond, Marker::Star];
     pub fn label(self) -> &'static str {
         match self {
@@ -33,6 +36,7 @@ impl Marker {
             Marker::Diamond => "Diamond",
             Marker::Star => "Star",
             Marker::Char(_) => "Character",
+            Marker::Picture(_) => "Image",
         }
     }
 }
@@ -102,6 +106,121 @@ impl<'de> Deserialize<'de> for FontName {
     }
 }
 
+/// The most different pictures kept (each is kept for the rest of the run), and the most bytes
+/// of base64 they take together; past either, a new one is [`Picture::default`].
+pub const MAX_PICTURES: usize = 1024;
+pub const MAX_PICTURES_BYTES: usize = 64 << 20;
+/// The longest picture kept, in bytes of base64 (2 MiB): a marker's image is an icon.
+pub const MAX_PICTURE_BYTES: usize = 2 << 20;
+
+/// A picture marker's image: a PNG or JPEG as base64, kept once for the rest of the run so a
+/// symbol showing one stays `Copy`. The same image is the same `Picture`, so two are compared
+/// (and hashed, for the sprites a point layer is stamped from) by where it's kept, not by its
+/// bytes. Empty (the default) for an image that wasn't kept: one longer than
+/// [`MAX_PICTURE_BYTES`], or past [`MAX_PICTURES`] or [`MAX_PICTURES_BYTES`] (from a crafted
+/// file); that one, like one that doesn't decode, is drawn as a circle.
+#[derive(Clone, Copy, Default)]
+pub struct Picture(&'static str);
+
+/// Where [`Picture::is_dropped`] points: an image a file gave that wasn't kept.
+static DROPPED: &str = "(dropped)";
+
+impl Picture {
+    pub fn new(base64: &str) -> Picture {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static KEPT: OnceLock<Mutex<(HashSet<&'static str>, usize)>> = OnceLock::new();
+        let base64 = base64.trim();
+        if base64.is_empty() || base64.len() > MAX_PICTURE_BYTES {
+            return Picture::default();
+        }
+        let mut kept = KEPT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let (pictures, bytes) = &mut *kept;
+        if let Some(p) = pictures.get(base64) {
+            return Picture(p);
+        }
+        if pictures.len() >= MAX_PICTURES || *bytes + base64.len() > MAX_PICTURES_BYTES {
+            return Picture::default();
+        }
+        let p: &'static str = Box::leak(base64.to_owned().into_boxed_str());
+        pictures.insert(p);
+        *bytes += p.len();
+        Picture(p)
+    }
+
+    /// [`Picture::new`] for an image a file gives: one that isn't kept is [`Picture::is_dropped`],
+    /// so the reader can say so.
+    pub fn read(base64: &str) -> Picture {
+        let p = Picture::new(base64);
+        if p.is_default() && !base64.trim().is_empty() { Picture(DROPPED) } else { p }
+    }
+
+    /// The image as base64 (empty: none kept).
+    pub fn base64(self) -> &'static str {
+        if self.is_dropped() { "" } else { self.0 }
+    }
+
+    /// No image: none given, or one not kept.
+    pub fn is_default(&self) -> bool {
+        self.0.is_empty() || self.is_dropped()
+    }
+
+    /// An image a file gave that wasn't kept (too long, past what a run keeps, or not text): drawn
+    /// as a circle, and lost when the file is saved again.
+    pub fn is_dropped(self) -> bool {
+        std::ptr::eq(self.0, DROPPED)
+    }
+}
+
+impl PartialEq for Picture {
+    fn eq(&self, other: &Picture) -> bool {
+        // Empty ones are equal wherever their `""` is.
+        std::ptr::eq(self.0, other.0) || (self.0.is_empty() && other.0.is_empty())
+    }
+}
+
+impl Eq for Picture {}
+
+impl std::hash::Hash for Picture {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        if self.0.is_empty() { 0usize.hash(h) } else { (self.0.as_ptr() as usize, self.0.len()).hash(h) }
+    }
+}
+
+impl std::fmt::Debug for Picture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Picture({} bytes)", self.0.len())
+    }
+}
+
+impl Serialize for Picture {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.base64())
+    }
+}
+
+impl<'de> Deserialize<'de> for Picture {
+    /// One not kept, or not text (a crafted file): no image, drawn as a circle and
+    /// [`Picture::is_dropped`] for the reader to say so, and the rest still reads.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Image {
+            Text(String),
+            Other(serde::de::IgnoredAny),
+        }
+        Ok(match Image::deserialize(d)? {
+            Image::Text(b64) => Picture::read(&b64),
+            Image::Other(_) => Picture(DROPPED),
+        })
+    }
+}
+
+/// Whether any of `strokes` draws an image as its markers that `f` holds true for.
+pub fn strokes_have_pictures(strokes: &[LineStroke], f: impl Fn(Picture) -> bool) -> bool {
+    strokes.iter().any(|s| s.markers.is_some_and(|m| matches!(m.mark, LineMark::Marker(Marker::Picture(p)) if f(p))))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Symbol {
     pub fill: Rgba,
@@ -127,11 +246,14 @@ const LAYER_COLORS: [[u8; 3]; 8] = [
 
 impl Symbol {
     /// Whether anything is drawn with this symbol for a `g` feature: a line its stroke, an area
-    /// or point its fill or an outline with a width (a point of size 0 nothing).
+    /// or point its fill or an outline with a width, a point its image (a point of size 0
+    /// nothing).
     pub fn draws(&self, g: GeometryType) -> bool {
         match g {
             GeometryType::Polyline => self.stroke.a() > 0,
             GeometryType::Point if self.size <= 0.0 => false,
+            // An image shows whatever its fill and outline.
+            GeometryType::Point if matches!(self.marker, Marker::Picture(p) if !p.is_default()) => true,
             _ => self.fill.a() > 0 || (self.stroke.a() > 0 && self.stroke_width > 0.0),
         }
     }
@@ -1937,9 +2059,36 @@ impl Renderer {
         }
     }
 
-    /// Whether any symbol is a character of a font ([`Marker::Char`]).
-    pub fn has_char_markers(&self) -> bool {
-        let char = |s: &Symbol| matches!(s.marker, Marker::Char(_));
+    /// Whether any marker it draws is an image ([`Marker::Picture`]): a symbol's, or one in a
+    /// class's stacked strokes or dot fills.
+    pub fn has_picture_markers(&self) -> bool {
+        self.any_picture(|_| true)
+    }
+
+    /// Whether any image it draws as a marker (as [`Renderer::has_picture_markers`] finds them)
+    /// is one `f` holds true for.
+    pub fn any_picture(&self, f: impl Fn(Picture) -> bool + Copy) -> bool {
+        let symbol = |s: &Symbol| matches!(s.marker, Marker::Picture(p) if f(p));
+        match self {
+            Renderer::Single(s) | Renderer::Proportional { base: s, .. } => symbol(s),
+            Renderer::Unique { classes, other, class_strokes, other_strokes, class_fills, other_fills, .. } => {
+                symbol(other)
+                    || classes.iter().any(|c| symbol(&c.1))
+                    || class_strokes.values().chain([other_strokes]).any(|s| strokes_have_pictures(s, f))
+                    || class_fills.values().chain([other_fills]).any(|fl| crate::fills::fills_have_pictures(fl, f))
+            }
+            Renderer::Graduated { symbols, class_strokes, class_fills, .. } => {
+                symbols.iter().any(symbol)
+                    || class_strokes.values().any(|s| strokes_have_pictures(s, f))
+                    || class_fills.values().any(|fl| crate::fills::fills_have_pictures(fl, f))
+            }
+        }
+    }
+
+    /// Whether any symbol is a character of a font ([`Marker::Char`]) or an image
+    /// ([`Marker::Picture`]): markers the GPU has no template for.
+    pub fn has_char_or_picture_markers(&self) -> bool {
+        let char = |s: &Symbol| matches!(s.marker, Marker::Char(_) | Marker::Picture(_));
         match self {
             Renderer::Single(s) | Renderer::Proportional { base: s, .. } => char(s),
             Renderer::Unique { classes, other, .. } => char(other) || classes.iter().any(|c| char(&c.1)),
@@ -3395,6 +3544,71 @@ mod tests {
         assert_eq!(g.font.as_str().chars().count(), MAX_FONT_NAME);
         // Names are kept once each: the same name is the same one.
         assert!(std::ptr::eq(FontName::new("Some Family").as_str(), FontName::new("Some Family ").as_str()));
+    }
+
+    /// A picture marker is written with its image, and read back as the same kept image; one a
+    /// crafted file makes too long, or not text, is no image (drawn as a circle), and the rest
+    /// still reads.
+    #[test]
+    fn picture_markers_keep_their_image_once_and_bound_what_a_file_gives() {
+        let m = Marker::Picture(Picture::new(" iVBORw0KGgo= "));
+        let v = serde_json::to_value(m).unwrap();
+        assert_eq!(v, serde_json::json!({"Picture": "iVBORw0KGgo="}));
+        let back: Marker = serde_json::from_value(v).unwrap();
+        assert_eq!(back, m);
+        let Marker::Picture(p) = back else { panic!() };
+        assert!(std::ptr::eq(p.base64(), Picture::new("iVBORw0KGgo=").base64()), "kept once");
+        assert_ne!(p, Picture::new("iVBORw0KGgp="));
+        assert_eq!(format!("{p:?}"), "Picture(12 bytes)");
+        for junk in
+            [serde_json::json!(7), serde_json::json!(["a"]), serde_json::Value::Null, serde_json::json!("x".repeat(MAX_PICTURE_BYTES + 1))]
+        {
+            let read: Marker = serde_json::from_value(serde_json::json!({"Picture": junk})).unwrap();
+            let Marker::Picture(p) = read else { panic!() };
+            assert!(p.is_dropped() && p.is_default(), "not kept, and the reader can say so");
+            // Written again it's no image; read back, nothing more is dropped.
+            assert_eq!(serde_json::to_value(read).unwrap(), serde_json::json!({"Picture": ""}));
+        }
+        let empty: Marker = serde_json::from_value(serde_json::json!({"Picture": " "})).unwrap();
+        assert!(matches!(empty, Marker::Picture(p) if p.is_default() && !p.is_dropped()));
+        // No image is one, however it came.
+        let hash = |p: Picture| {
+            use std::hash::{BuildHasher, BuildHasherDefault};
+            BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(p)
+        };
+        assert_eq!(Picture::default(), Picture::new(" "));
+        assert_eq!(hash(Picture::default()), hash(Picture::new(" ")));
+        let s: Symbol = serde_json::from_value(
+            serde_json::json!({"fill": [1, 2, 3, 255], "stroke": [0, 0, 0, 255], "stroke_width": 1.0, "size": 7.0, "marker": {"Picture": 5}}),
+        )
+        .unwrap();
+        assert_eq!(s.size, 7.0);
+        assert_eq!(Marker::Picture(p).label(), "Image");
+        assert!(Renderer::Single(Symbol { marker: m, ..s }).has_char_or_picture_markers());
+        assert!(!Renderer::Single(Symbol { marker: Marker::Circle, ..s }).has_char_or_picture_markers());
+        // An image shows with no fill or outline, as long as it has a size; no image doesn't.
+        let none = Rgba::new(0, 0, 0, 0);
+        let hollow = Symbol { fill: none, stroke: none, marker: m, ..s };
+        assert!(hollow.draws(GeometryType::Point) && !Symbol { size: 0.0, ..hollow }.draws(GeometryType::Point));
+        assert!(!Symbol { marker: Marker::Picture(Picture::default()), ..hollow }.draws(GeometryType::Point));
+        // Stacked strokes and dot fills keep images too.
+        let mark = LineMarkers { mark: LineMark::Marker(m), ..LineMarkers::default() };
+        assert!(strokes_have_pictures(&[LineStroke::default(), LineStroke { markers: Some(mark), ..LineStroke::default() }], |_| true));
+        assert!(!strokes_have_pictures(&[LineStroke::default()], |_| true));
+        let dots = |marker| crate::fills::FillLayer {
+            color: None,
+            pattern: crate::fills::FillPattern::Dots {
+                marker,
+                size: 2.0,
+                outline: None,
+                outline_width: 0.0,
+                spacing: [6.0, 6.0],
+                displacement: [0.0, 0.0],
+                offset: [0.0, 0.0],
+            },
+        };
+        assert!(crate::fills::fills_have_pictures(&[dots(Marker::Circle), dots(m)], |_| true));
+        assert!(!crate::fills::fills_have_pictures(&[dots(Marker::Circle), crate::fills::FillLayer::default()], |_| true));
     }
 
     /// A project file is read with at most `MAX_LABEL_CLASSES` classes, and only that many count

@@ -33,7 +33,13 @@ impl Project {
         if !self.origin_id.is_empty() || self.field_origin.is_some() || self.offline_areas.iter().any(|area| !area.id.is_empty()) {
             required.push("field-origin");
         }
-        required.extend(COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| self.uses_commands(uses).then_some(name)));
+        // Saved symbology keeps its images too.
+        if !required.contains(&"picture-markers") && self.styles.iter().any(|s| s.renderer.has_picture_markers()) {
+            required.push("picture-markers");
+        }
+        let commands: Vec<&'static str> =
+            COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| self.uses_commands(uses).then_some(name)).collect();
+        required.extend(commands.into_iter().filter(|name| !required.contains(name)).collect::<Vec<_>>());
         if self.tasks.iter().any(|task| task.steps.iter().any(|step| command_uses_table_export_order(&step.command, &step.params)))
             || self.gp_history.iter().any(|record| {
                 command_uses_table_export_order(&record.id, &record.params)
@@ -78,6 +84,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("slope-percent", command_uses_percent_slope),
     ("tabulate-intersection-unit", command_uses_tabulate_unit),
     ("layout-element-background", command_uses_element_background),
+    ("picture-markers", command_uses_picture_marker),
 ];
 
 /// A layout command that gives an element a background: an older reader warns that it ignores
@@ -137,6 +144,16 @@ fn command_uses_tabulate_unit(id: &str, params: &Value) -> bool {
     }
 }
 
+/// `layer.marker` given an image: an older reader would leave its `image` out and keep the marker
+/// it had.
+fn command_uses_picture_marker(id: &str, params: &Value) -> bool {
+    match id {
+        "layer.marker" => params.get("image").is_some_and(Value::is_string),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_picture_marker)),
+        _ => false,
+    }
+}
+
 /// Use the executor's line grammar; comments/invalid lines are not executable commands, and
 /// script_line refuses nested scripts, so this check cannot recurse through script.run.
 fn script_uses(script: &str, uses: CommandCheck) -> bool {
@@ -163,14 +180,18 @@ fn relief_light(layer: &Layer) -> bool {
 
 /// The renderer capabilities a layer needs, in [`map_capabilities`]'s order.
 fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
-    [(relief_effects(layer), "shaded-relief-effects"), (relief_light(layer), "shaded-relief-light")]
-        .into_iter()
-        .filter_map(|(used, name)| used.then_some(name))
-        .collect()
+    [
+        (relief_effects(layer), "shaded-relief-effects"),
+        (relief_light(layer), "shaded-relief-light"),
+        (layer.has_picture_markers(), "picture-markers"),
+    ]
+    .into_iter()
+    .filter_map(|(used, name)| used.then_some(name))
+    .collect()
 }
 
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
-    let (mut block, mut water, mut relief, mut light, mut legends) = (false, false, false, false, false);
+    let (mut block, mut water, mut relief, mut light, mut legends, mut pictures) = (false, false, false, false, false, false);
     for map in maps {
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
@@ -178,6 +199,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         }
         relief |= map.layers.iter().any(relief_effects);
         light |= map.layers.iter().any(relief_light);
+        pictures |= map.layers.iter().any(Layer::has_picture_markers);
         legends |= map.tiles.iter().any(|tile| {
             tile.legends.iter().any(|legend| rustgis_data::login_address::inner(&legend.url).len() > rustgis_map::tiles::MAX_LEGEND_URL)
         });
@@ -188,6 +210,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (relief, "shaded-relief-effects"),
         (light, "shaded-relief-light"),
         (legends, "normalized-legend-urls"),
+        (pictures, "picture-markers"),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))
@@ -238,6 +261,16 @@ mod tests {
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// A saved image marker reads back as the image it was, and saving names it again.
+    #[test]
+    fn picture_markers_fixture_reads_its_image() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/picture_markers.rgis")).unwrap();
+        let rustgis_map::Renderer::Single(symbol) = &fixture.styles[0].renderer else { panic!("a single symbol") };
+        let rustgis_map::Marker::Picture(picture) = symbol.marker else { panic!("an image marker") };
+        assert!(picture.base64().starts_with("iVBORw0KGgo") && !picture.is_dropped());
+        assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["picture-markers"]));
     }
 
     /// All replayable project containers require the unit only when it differs from km².

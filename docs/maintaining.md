@@ -106,6 +106,11 @@ Earlier format-2 readers refuse unknown required
 capabilities instead of opening and later saving away those settings; legacy format-1 files
 still open.
 
+Projects, map files and layer files whose symbology draws an image as a marker (`Marker::Picture`:
+a symbol's, a stacked stroke's or a dot fill's, saved styles included), or whose replayable
+commands set one (`layer.marker` with an `image`), require `picture-markers`:
+an older reader must refuse them rather than fail on the marker or lose it.
+
 Projects, model files and web tools that save a percent-slope function require `slope-percent`:
 an older reader must refuse them rather than run the saved function in degrees. Project
 requirements also cover executable task steps, replayable history and notebook command cells.

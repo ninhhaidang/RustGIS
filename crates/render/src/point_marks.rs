@@ -83,6 +83,13 @@ pub(crate) fn draw(pm: &mut Canvas, x: f32, y: f32, sym: &Symbol, strokes: &[Lin
         let (dx, dy) = (ox * cos - oy * sin, ox * sin + oy * cos);
         let t = Transform::from_rotate(angle).post_translate(x + dx, y + dy);
         let size = m.size * ppp;
+        // An image: its halo in the first pass, the image in the second; one that doesn't decode
+        // as a circle, below.
+        if let LineMark::Marker(rustgis_map::Marker::Picture(p)) = m.shape
+            && crate::picture_marker(pm, p, size.max(ppp), t, 1.0, if ink { None } else { halo }, ink, ppp)
+        {
+            continue;
+        }
         let hash = matches!(m.shape, LineMark::Hash);
         let path = match m.shape {
             LineMark::Marker(shape) => marker_path(0.0, 0.0, size.max(ppp) / 2.0, shape),
@@ -203,6 +210,27 @@ mod tests {
         crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &chr, 0.0, None, 1.0));
         assert!(pm.pixels().iter().any(|p| p.alpha() > 200));
         assert!(reach(&sym, &strokes) >= 23.0 && plain(&[], 0.0) && !plain(&strokes, 0.0) && !plain(&[], 1.0));
+    }
+
+    /// An image turns with the point: its 40 × 20 turned a quarter clockwise stands 20 × 40, its
+    /// left (red) half on top; a selection rings it.
+    #[test]
+    fn a_picture_marker_turns_with_its_point_and_is_ringed_when_selected() {
+        let picture = rustgis_map::Picture::new(&crate::tests::picture_png());
+        let sym = Symbol { marker: Marker::Picture(picture), size: 40.0, ..Symbol::default_for(GeometryType::Point, 0) };
+        let rgb = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).filter(|p| p.alpha() > 200).map(|p| (p.red(), p.green(), p.blue()));
+        let red = |c: Option<(u8, u8, u8)>| c.is_some_and(|(r, g, b)| r > 200 && g < 60 && b < 60);
+        let blue = |c: Option<(u8, u8, u8)>| c.is_some_and(|(r, g, b)| b > 200 && r < 60 && g < 60);
+        let mut pm = Pixmap::new(100, 100).unwrap();
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &[], 90.0, None, 1.0));
+        assert!(red(rgb(&pm, 50, 40)) && blue(rgb(&pm, 50, 60)), "turned: red on top");
+        assert!(red(rgb(&pm, 50, 32)) && rgb(&pm, 64, 50).is_none() && rgb(&pm, 36, 50).is_none(), "20 wide, 40 tall");
+        let cyan = Rgba::rgb(0, 255, 255);
+        let mut pm = Pixmap::new(100, 100).unwrap();
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &[], 90.0, Some(cyan), 1.0));
+        let halo = |c: Option<(u8, u8, u8)>| c.is_some_and(|(r, g, b)| r < 60 && g > 200 && b > 200);
+        assert!(halo(rgb(&pm, 50, 29)) && halo(rgb(&pm, 60, 40)) && red(rgb(&pm, 50, 40)), "ringed, under the image");
+        assert!(reach(&sym, &[]) >= 40.0 * 0.5 * 1.25f32.sqrt());
     }
 
     #[test]

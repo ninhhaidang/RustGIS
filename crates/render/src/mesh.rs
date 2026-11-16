@@ -304,7 +304,7 @@ pub(crate) fn stroke_lines(
 pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32, halo: Option<Rgba>) -> Vec<PointInstance> {
     let r = (s.size.max(1.0) * ppp) / 2.0;
     let shape = match s.marker {
-        Marker::Circle | Marker::Char(_) => 0,
+        Marker::Circle | Marker::Char(_) | Marker::Picture(_) => 0,
         Marker::Square => 1,
         Marker::Triangle => 2,
         Marker::Diamond => 3,
@@ -360,8 +360,8 @@ fn append_geometry(
 ) -> Result<(), TessError> {
     // What the layer's mesh has left: tessellation stops once a part passes it.
     let room = |v: &Vec<MeshVertex>| limit.saturating_sub(v.len());
-    // A character has no shape template: its layer draws on the CPU.
-    if matches!(s.marker, Marker::Char(_)) && matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
+    // A character or an image has no shape template: its layer draws on the CPU.
+    if matches!(s.marker, Marker::Char(_) | Marker::Picture(_)) && matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
         return Err(TessError::Refused);
     }
     match g {

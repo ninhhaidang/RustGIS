@@ -1665,6 +1665,121 @@ fn a_character_of_a_font_is_a_marker_on_points_and_along_lines() {
 }
 
 #[test]
+fn an_image_is_a_marker_kept_in_the_project_file_that_an_older_reader_refuses() {
+    use base64::Engine;
+    use rustgis_map::{Marker, Picture};
+    let mut s = world();
+    let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([200, 30, 30, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    let depth = s.undo_depth();
+    s.run("layer.marker", &json!({"layer": "Cities", "image": format!(" {b64}\n"), "size": 20})).unwrap();
+    assert_eq!(marker(&s), Marker::Picture(Picture::new(&b64)));
+    assert_eq!(s.undo_depth(), depth + 1);
+    // Kept in the project file, which names it for an older reader to refuse; drawn in an export.
+    let dir = std::env::temp_dir().join(format!("rustgis-pictures-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pictures.rgis");
+    s.run("project.saveAs", &json!({"path": path.display().to_string()})).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["requires"], json!(["picture-markers"]));
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": path.display().to_string()})).unwrap();
+    assert_eq!(marker(&t), Marker::Picture(Picture::new(&b64)));
+    t.run("share.exportMap", &json!({"path": dir.join("map.png").display().to_string(), "width": 320, "height": 200})).unwrap();
+    // An image the file gives that isn't kept, or that isn't an image, is said, not drawn as a
+    // circle silently; the rest reads, and a clean file says nothing.
+    let saved_text = std::fs::read_to_string(&path).unwrap();
+    let opened = |text: String| {
+        let mut u = Session::new(Project::default());
+        let mark = u.notice_mark();
+        u.run("project.openText", &json!({"text": text})).unwrap();
+        let said: Vec<String> = u.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        (u, said)
+    };
+    let (_, said) = opened(saved_text.clone());
+    assert!(!said.iter().any(|n| n.contains("Image markers")), "{said:?}");
+    let too_long = "A".repeat(rustgis_map::symbology::MAX_PICTURE_BYTES + 4);
+    let (u, said) = opened(saved_text.replace(&b64, &too_long));
+    assert!(said.iter().any(|n| n.contains("Image markers in \"Cities\" weren't kept")), "{said:?}");
+    assert!(matches!(marker(&u), Marker::Picture(p) if p.is_dropped()));
+    // A PNG cut after its header reads as one until it's decoded.
+    let cut = base64::engine::general_purpose::STANDARD.encode(&png[..40]);
+    for junk in ["bm90IGFuIGltYWdl", cut.as_str()] {
+        let (_, said) = opened(saved_text.replace(&b64, junk));
+        assert!(said.iter().any(|n| n.contains("Image markers in \"Cities\" aren't PNG or JPEG images")), "{said:?}");
+        assert!(!said.iter().any(|n| n.contains("weren't kept")), "{said:?}");
+    }
+    // So does a map file or a layer file added on its own.
+    let map = serde_json::to_string(t.map()).unwrap();
+    let layer = serde_json::to_string(t.map().layer_by_name("Cities").unwrap()).unwrap();
+    for (command, text) in [("map.import", map), ("layer.addLayerFile", layer)] {
+        let said = |text: String| {
+            let mut w = world();
+            let mark = w.notices_given();
+            w.run(command, &json!({"text": text})).unwrap();
+            w.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<String>>()
+        };
+        assert!(!said(text.clone()).iter().any(|n| n.contains("Image markers")), "{command}");
+        let lost = said(text.replace(&b64, &too_long));
+        assert!(lost.iter().any(|n| n.contains("Image markers in \"Cities\" weren't kept")), "{command}: {lost:?}");
+    }
+    // And a styles file.
+    let mut w = world();
+    w.run("layer.marker", &json!({"layer": "Cities", "image": b64})).unwrap();
+    w.run("style.new", &json!({"layer": "Cities", "name": "Icons"})).unwrap();
+    let styles = serde_json::to_string(&w.project.styles).unwrap().replace(&b64, &too_long);
+    let mark = w.notices_given();
+    w.run("style.add", &json!({"text": styles})).unwrap();
+    let said: Vec<String> = w.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|n| n.contains("Image markers in \"Icons\" weren't kept")), "{said:?}");
+    // A layer file names it too.
+    let layer = dir.join("cities.rgislayer");
+    t.run("layer.save", &json!({"layer": "Cities", "path": layer.display().to_string()})).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&layer).unwrap()).unwrap();
+    assert_eq!(saved["requires"], json!(["picture-markers"]));
+    std::fs::remove_dir_all(&dir).ok();
+    // A shape takes its place, and the file no longer names it.
+    s.run("layer.marker", &json!({"layer": "Cities", "shape": "circle"})).unwrap();
+    assert_eq!(marker(&s), Marker::Circle);
+    assert!(serde_json::to_value(&s.project).unwrap().get("requires").is_none());
+    // A saved style keeps its image, and the project names it while it keeps the style.
+    s.run("layer.marker", &json!({"layer": "Cities", "image": b64})).unwrap();
+    s.run("style.new", &json!({"layer": "Cities", "name": "Icons"})).unwrap();
+    s.run("layer.marker", &json!({"layer": "Cities", "shape": "circle"})).unwrap();
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers"]));
+    // A task that sets one names it too (once), and one that only sizes doesn't.
+    let mut project = s.project.clone();
+    project.styles.clear();
+    let task = |params: Value| {
+        serde_json::from_value(json!({"name": "Icons", "steps": [{"title": "Icon", "command": "layer.marker", "params": params}]})).unwrap()
+    };
+    project.tasks = vec![task(json!({"size": 9}))];
+    assert!(serde_json::to_value(&project).unwrap().get("requires").is_none());
+    project.tasks = vec![task(json!({"image": b64})), task(json!({"image": b64}))];
+    assert_eq!(serde_json::to_value(&project).unwrap()["requires"], json!(["picture-markers"]));
+    let depth = s.undo_depth();
+    for (bad, says) in [
+        (json!({"layer": "Cities", "image": 7}), "PNG or JPEG image as base64"),
+        (json!({"layer": "Cities", "image": "bm90IGFuIGltYWdl"}), "PNG or JPEG image as base64"),
+        (json!({"layer": "Cities", "image": "%%%"}), "PNG or JPEG image as base64"),
+        (json!({"layer": "Cities", "image": "A".repeat(rustgis_map::symbology::MAX_PICTURE_BYTES + 4)}), "at most 2 MiB"),
+        (json!({"layer": "Cities", "image": b64, "shape": "star"}), "only one"),
+        (json!({"layer": "Cities", "image": b64, "char": "x"}), "only one"),
+        // No layer: refused before the image is kept.
+        (json!({"layer": "Nowhere", "image": b64}), "Nowhere"),
+    ] {
+        let err = s.run("layer.marker", &bad).unwrap_err();
+        assert!(err.contains(says), "{err}");
+    }
+    assert_eq!(s.undo_depth(), depth);
+    assert_eq!(marker(&s), Marker::Circle);
+}
+
+#[test]
 fn a_point_takes_stacked_marks_and_turns_by_a_field() {
     use rustgis_map::{Glyph, LineMark, Marker};
     let mut s = world();
