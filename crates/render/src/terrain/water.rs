@@ -1330,6 +1330,8 @@ mod tests {
             sky: 0.0,
             fill: 0.0,
             rock: None,
+            ambient: None,
+            balanced: false,
         };
         m.view.terrain.as_mut().unwrap().water.as_mut().unwrap().glint = glint;
         camera.center = lonlat_to_merc(Coord::new(0.35, -0.3));
