@@ -23,18 +23,34 @@ impl DateFormat {
             return Ok(Self { format: format.into(), pivot });
         }
         let mut codes = Vec::new();
+        let mut previous_variable = false;
         let mut chars = format.chars();
         while let Some(c) = chars.next() {
             if c != '%' {
+                previous_variable = false;
                 continue;
             }
-            let code = chars.next().ok_or("unfinished % in date format")?;
+            let mut code = chars.next().ok_or("unfinished % in date format")?;
+            let unpadded = code == '-';
+            if unpadded {
+                code = chars.next().ok_or("unfinished %- in date format")?;
+                if !matches!(code, 'm' | 'd' | 'H') {
+                    return Err("%- is supported only for month (%-m), day (%-d) and 24-hour clock (%-H)".into());
+                }
+            }
             if code == '%' {
+                previous_variable = false;
                 continue;
             }
-            if !matches!(code, 'Y' | 'y' | 'm' | 'd' | 'H' | 'M' | 'S' | 'f' | 'z') {
-                return Err(format!("unsupported date format code %{code}: use %Y, %y, %m, %d, %H, %M, %S, %f, %z or %%"));
+            if !matches!(code, 'Y' | 'y' | 'm' | 'd' | 'H' | 'I' | 'p' | 'M' | 'S' | 'f' | 'z') {
+                return Err(format!(
+                    "unsupported date format code %{code}: use %Y, %y, %m, %d, %H, %-m, %-d, %-H, %I, %p, %M, %S, %f, %z or %%"
+                ));
             }
+            if previous_variable && matches!(code, 'Y' | 'y' | 'm' | 'd' | 'H' | 'I' | 'M' | 'S' | 'f') {
+                return Err("put a separator between a variable-width date code and the following digit code".into());
+            }
+            previous_variable = unpadded || code == 'I';
             if codes.contains(&code) {
                 return Err(format!("date format repeats %{code}"));
             }
@@ -50,12 +66,16 @@ impl DateFormat {
         } else if pivot.is_some() {
             return Err("pivotYear requires a pattern containing %y".into());
         }
-        if codes.contains(&'H') != codes.contains(&'M')
-            || (codes.contains(&'S') && !codes.contains(&'H'))
+        let clock = codes.contains(&'H') || codes.contains(&'I');
+        if codes.contains(&'I') != codes.contains(&'p') || (codes.contains(&'I') && codes.contains(&'H')) {
+            return Err("12-hour time needs both %I and %p, without %H or %-H".into());
+        }
+        if clock != codes.contains(&'M')
+            || (codes.contains(&'S') && !clock)
             || (codes.contains(&'f') && !codes.contains(&'S'))
-            || (codes.contains(&'z') && !codes.contains(&'H'))
+            || (codes.contains(&'z') && !clock)
         {
-            return Err("time needs %H and %M; %S needs a time, %f needs %S, and %z needs a time".into());
+            return Err("time needs an hour (%H, %-H or %I with %p) and %M; %S needs a time, %f needs %S, and %z needs a time".into());
         }
         Ok(Self { format: format.into(), pivot })
     }
@@ -98,6 +118,7 @@ impl DateFormat {
         let (mut year, mut month, mut day) = (0, 0, 0);
         let (mut hour, mut minute, mut second) = (0, 0, 0);
         let (mut fraction, mut zone) = ("", "");
+        let mut pm = None;
         let mut rest = text;
         let mut pattern = self.format.chars();
         while let Some(c) = pattern.next() {
@@ -105,9 +126,25 @@ impl DateFormat {
                 rest = rest.strip_prefix(c)?;
                 continue;
             }
-            let code = pattern.next()?;
+            let mut code = pattern.next()?;
+            let unpadded = code == '-';
+            if unpadded {
+                code = pattern.next()?;
+            }
             if code == '%' {
                 rest = rest.strip_prefix('%')?;
+                continue;
+            }
+            if code == 'p' {
+                let marker = rest.get(..2)?;
+                pm = Some(if marker.eq_ignore_ascii_case("am") {
+                    false
+                } else if marker.eq_ignore_ascii_case("pm") {
+                    true
+                } else {
+                    return None;
+                });
+                rest = rest.get(2..)?;
                 continue;
             }
             if code == 'f' {
@@ -134,7 +171,13 @@ impl DateFormat {
                 rest = rest.get(len..)?;
                 continue;
             }
-            let len = if code == 'Y' { 4 } else { 2 };
+            let len = if unpadded || code == 'I' {
+                rest.bytes().take(2).take_while(u8::is_ascii_digit).count()
+            } else if code == 'Y' {
+                4
+            } else {
+                2
+            };
             let digits = rest.get(..len)?;
             if !digits.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
@@ -149,7 +192,7 @@ impl DateFormat {
                 }
                 'm' => month = n,
                 'd' => day = n,
-                'H' => hour = n,
+                'H' | 'I' => hour = n,
                 'M' => minute = n,
                 'S' => second = n,
                 _ => return None,
@@ -157,6 +200,12 @@ impl DateFormat {
         }
         if !rest.is_empty() {
             return None;
+        }
+        if let Some(pm) = pm {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            hour = hour % 12 + if pm { 12 } else { 0 };
         }
         let date = Date::from_ymd(year, month, day)?;
         let frac = if fraction.is_empty() { String::new() } else { format!(".{fraction}") };
@@ -251,6 +300,7 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("YYYY-MM-DD HH:MM:SS", "%Y-%m-%d %H:%M:%S"),
     ("YYYYMMDD HH:MM:SS", "%Y%m%d %H:%M:%S"),
     ("DD.MM.YYYY HH:MM:SS", "%d.%m.%Y %H:%M:%S"),
+    ("M/D/YYYY h:MM:SS AM/PM", "%-m/%-d/%Y %I:%M:%S %p"),
     ("MM/DD/YY", "%m/%d/%y"),
     ("DD/MM/YY", "%d/%m/%y"),
     ("YY-MM-DD", "%y-%m-%d"),
@@ -281,6 +331,8 @@ mod tests {
         assert_eq!(read("%d/%m/%Y", "03/05/2026"), "2026-05-03");
         assert_eq!(read("%Y%m%d", "20260305"), "2026-03-05");
         assert_eq!(read("%d.%m.%Y", "05.03.2026"), "2026-03-05");
+        assert_eq!(read("%m%d%Y", "01232021"), "2021-01-23");
+        assert!(DateFormat::new("%m/%d/%Y", None).unwrap().parse("6/3/2021", FieldType::Date).0.is_null());
         for bad in ["%m/%d/%y", "%Y-%m", "%Y-%m-%d %Q", "%Y-%m-%d %S", "%Y%y%m%d", "%Y%m%d%", "%Y%m%d%m"] {
             assert!(DateFormat::new(bad, None).is_err(), "{bad}");
         }
@@ -291,6 +343,60 @@ mod tests {
         assert!(DateFormat::new("iso", Some(1926)).is_err());
         for s in ["20260229", "202603050", "2026年03月05", "00000305"] {
             assert!(DateFormat::new("%Y%m%d", None).unwrap().parse(s, FieldType::Date).0.is_null());
+        }
+    }
+
+    #[test]
+    fn unpadded_dates_and_twelve_hour_clocks_are_explicit() {
+        for bad in ["%-m%-d-%Y", "%-m%d%Y", "%-d%Y-%m", "%m/%d/%Y %-H%M", "%m/%d/%Y %I%M %p", "%m/%d/%Y %I%f:%M:%S %p"] {
+            assert!(DateFormat::new(bad, None).unwrap_err().contains("separator"), "{bad}");
+        }
+        let f = DateFormat::new("%-m/%d-%Y", None).unwrap();
+        assert_eq!(f.parse("1/12-2021", FieldType::Date).0.to_string(), "2021-01-12");
+        let pattern = "%-m/%-d/%Y %I:%M:%S %p";
+        assert!(PRESETS.iter().any(|(_, p)| *p == pattern));
+        let f = DateFormat::new(pattern, None).unwrap();
+        for (text, expected) in [
+            ("6/23/2021 5:00:00 AM", "2021-06-23T05:00:00"),
+            ("6/3/2021 12:30:00 aM", "2021-06-03T00:30:00"),
+            ("12/03/2021 12:00:00 PM", "2021-12-03T12:00:00"),
+            ("06/23/2021 05:00:00 pm", "2021-06-23T17:00:00"),
+        ] {
+            assert_eq!(f.parse(text, FieldType::DateTime), (Value::DateTime(DateTime::parse(expected).unwrap()), false));
+        }
+        for bad in [
+            "6/23/2021 13:00:00 PM",
+            "6/23/2021 0:00:00 AM",
+            "6/23/2021 5:60:00 AM",
+            "6/23/2021 5:00:60 AM",
+            "6/23/2021 5:00:00 XM",
+            "6/23/2021 5:00:00 AM trailing",
+            "13/23/2021 5:00:00 AM",
+            "6/31/2021 5:00:00 AM",
+            "006/23/2021 5:00:00 AM",
+        ] {
+            assert_eq!(f.parse(bad, FieldType::DateTime), (Value::Null, false), "{bad}");
+        }
+        assert!(f.parse("6/23/2021 5:00:00 AM", FieldType::Date).0.is_null());
+        assert_eq!(f.parse("6/23/2021 12:00:00 AM", FieldType::Date).0.to_string(), "2021-06-23");
+        let f = DateFormat::new("%-m/%-d/%Y %-H:%M:%S", None).unwrap();
+        assert_eq!(f.parse("6/3/2021 5:00:00", FieldType::DateTime).0.to_string(), "2021-06-03T05:00:00");
+        assert_eq!(f.parse("06/03/2021 23:00:00", FieldType::DateTime).0.to_string(), "2021-06-03T23:00:00");
+        assert!(f.parse("6/3/2021 24:00:00", FieldType::DateTime).0.is_null());
+        let f = DateFormat::new("%m/%d/%Y %H:%M:%S", None).unwrap();
+        assert_eq!(f.parse("06/23/2021 05:00:00", FieldType::DateTime).0.to_string(), "2021-06-23T05:00:00");
+        assert!(f.parse("06/23/2021 5:00:00", FieldType::DateTime).0.is_null());
+        for bad in [
+            "%-m/%m/%-d/%Y",
+            "%m/%-d/%d/%Y",
+            "%m/%d/%Y %H:%-H:%M",
+            "%m/%d/%Y %I:%M",
+            "%m/%d/%Y %H:%M %p",
+            "%m/%d/%Y %I:%M %p %H",
+            "%m/%d/%Y %-M",
+            "%m/%d/%Y %-",
+        ] {
+            assert!(DateFormat::new(bad, None).is_err(), "{bad}");
         }
     }
 

@@ -66,11 +66,22 @@ For commands, `format` is optional and defaults to `"iso"`: ISO 8601 (`2026-03-0
 `2026-03-05T14:30:00+02:00`, or with a space for the `T`). An explicit numeric pattern uses
 `%Y` (four-digit year), `%m` (month), `%d` (day), `%H` (24-hour clock), `%M` (minute),
 `%S` (second), `%f` (fractional second digits), `%z` (`Z`, `+0200` or `+02:00`), and `%%` (a
-literal percent). Month, day, hour, minute, second and `%y` take two digits. Other characters
+literal percent). `%m`, `%d`, `%H`, `%M`, `%S` and `%y` take exactly two digits. Other characters
 match literally; surrounding whitespace is ignored. For example:
 
 ```json
 {"layer":"Permits","field":"issued","type":"datetime","format":"%m/%d/%Y %H:%M"}
+```
+
+For a month, day or 24-hour clock written with one or two digits, use `%-m`, `%-d` or `%-H`.
+Each reads up to two digits; separate these fields with punctuation or spaces. The fixed-width
+`%m`, `%d` and `%H` keep their meaning, including in compact patterns such as `%m%d%Y`.
+`%I` reads a one- or two-digit 12-hour clock (1 to 12), paired with `%p` for case-insensitive
+`AM` or `PM`: 12 AM is midnight and 12 PM is noon. Do not combine it with `%H` or `%-H`.
+The dialog offers **M/D/YYYY h:MM:SS AM/PM** for text such as `6/23/2021 5:00:00 AM`:
+
+```json
+{"layer":"Permits","field":"issued","type":"datetime","format":"%-m/%-d/%Y %I:%M:%S %p"}
 ```
 
 `%y` requires `pivotYear`, the first year of a 100-year window (1 to 9900). For example,

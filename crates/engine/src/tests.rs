@@ -50689,6 +50689,36 @@ fn convert_field_uses_explicit_date_formats() {
     }
 }
 
+/// County-export clocks retain their wall time, with invalid hours counted and undoable.
+#[test]
+fn convert_field_reads_county_permit_dates_and_counts_bad_hours() {
+    use rustgis_data::FieldType;
+    let mut s = Session::new(Project::default());
+    let bad = "6/23/2021 13:00:00 PM";
+    let csv = format!("issued\n6/23/2021 5:00:00 AM\n6/23/2021 12:30:00 AM\n6/23/2021 12:00:00 PM\n{bad}\n");
+    s.run("layer.addDataText", &json!({"fileName":"permits.csv", "text":csv})).unwrap();
+    let params = json!({"table":"permits", "field":"issued", "type":"datetime", "format":"%-m/%-d/%Y %I:%M:%S %p"});
+    let before = s.project.tables[0].dataset.clone();
+    let mark = s.notice_mark();
+    assert_eq!(s.run("edit.convertField", &params).unwrap(), json!({"converted":3, "null":1}));
+    let ds = &s.project.tables[0].dataset;
+    assert_eq!(ds.fields[0].ty, FieldType::DateTime);
+    for (row, expected) in ["2021-06-23T05:00:00", "2021-06-23T00:30:00", "2021-06-23T12:00:00"].iter().enumerate() {
+        assert_eq!(ds.value(row, 0).to_string(), *expected);
+    }
+    assert!(ds.value(3, 0).is_null());
+    let notices = s.notices_since(mark);
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].text.contains("1 row") && notices[0].text.contains(bad));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project.tables[0].dataset, before);
+    s.run("edit.setValue", &json!({"table":"permits", "field":"issued", "row":3, "value":"6/23/2021 1:00:00 pM"})).unwrap();
+    let mark = s.notice_mark();
+    assert_eq!(s.run("edit.convertField", &params).unwrap(), json!({"converted":4, "null":0}));
+    assert_eq!(s.project.tables[0].dataset.value(3, 0).to_string(), "2021-06-23T13:00:00");
+    assert!(s.notices_since(mark).is_empty());
+}
+
 /// Prepared layer and table conversions preserve undo and refuse intervening row edits. This
 /// also guards against consuming a prepared result as the other target's result type.
 #[test]
