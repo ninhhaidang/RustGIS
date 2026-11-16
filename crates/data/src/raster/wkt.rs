@@ -1750,7 +1750,8 @@ fn wgs84_like(datum: Option<&Node>) -> Option<&'static str> {
 /// A national datum's bundled EPSG definition. Match the datum, never just the projected
 /// system's title, and require the published ellipsoid so a locally modified grid is not
 /// silently assigned a different datum. These are the same Helmert approximations used when
-/// the file supplies an EPSG code; regional grid transformations are not inferred.
+/// the file supplies an EPSG code; regional grid transformations are not inferred. Datums not
+/// named here are looked up by their Esri name ([`super::esri_datums`]).
 fn national_datum(datum: Option<&Node>) -> Option<&'static str> {
     let datum = datum?;
     let name = norm(datum.title());
@@ -1771,20 +1772,26 @@ fn national_datum(datum: Option<&Node>) -> Option<&'static str> {
             }
         }
         "S_JTSK" | "SYSTEM_JEDNOTNE_TRIGONOMETRICKE_SITE_KATASTRALNI" | "SYSTEM_OF_THE_UNIFIED_TRIGONOMETRICAL_CADASTRAL_NETWORK" => 4156,
-        _ => return None,
+        other => super::esri_datums::geographic(other)?,
     };
     let def = epsg_proj4(code)?;
     ellipsoid_matches(datum, def).then_some(def)
 }
 
 /// Whether the file's ellipsoid axes agree with a known definition within a centimetre.
+///
+/// When the definition names one of PROJ's [`ELLIPSOIDS`], the file may also give that ellipsoid's
+/// EPSG flattening. They differ for Clarke 1880 (RGS) only: PROJ's `clrk80` has a minor axis 10 cm
+/// longer than the one ESRI WKT writes for Arc 1960, Minna, Adindan and the other datums on it.
 fn ellipsoid_matches(datum: &Node, def: &str) -> bool {
     let Some(proj) = earth_params(def) else { return false };
     let Some(sph) = datum.child_of(&["SPHEROID", "ELLIPSOID"]) else { return false };
     let (Some(actual_a), Some(rf)) = (sph.num(0), sph.num(1)) else { return false };
-    let (a, b) = (proj.a, proj.b);
     let actual_b = if rf > 0.0 { actual_a * (1.0 - 1.0 / rf) } else { actual_a };
-    (actual_a - a).abs() < 0.01 && (actual_b - b).abs() < 0.01
+    let agrees = |b: f64| (actual_a - proj.a).abs() < 0.01 && (actual_b - b).abs() < 0.01;
+    let ellps = def.split_whitespace().find_map(|t| t.strip_prefix("+ellps="));
+    let epsg_rf = ELLIPSOIDS.iter().find(|e| Some(e.0) == ellps).map(|e| e.2).filter(|rf| *rf > 0.0);
+    agrees(proj.b) || epsg_rf.is_some_and(|rf| agrees(proj.a * (1.0 - 1.0 / rf)))
 }
 
 /// Whether the file gives the datum a `TOWGS84` shift other than none, which then wins over the
@@ -1880,9 +1887,10 @@ fn datum_note(geog: Option<&Node>) -> Option<String> {
 fn earth(geog: Option<&Node>) -> String {
     let datum = geog.and_then(|g| g.child("DATUM"));
     let known = wgs84_like(datum).map(str::to_string).or_else(|| {
+        // Some definitions give their ellipsoid by its axes (NTF, Kalianpur, Arc 1950 …).
         national_datum(datum).map(|def| {
             def.split_whitespace()
-                .filter(|p| p.starts_with("+ellps=") || p.starts_with("+datum=") || p.starts_with("+towgs84="))
+                .filter(|p| ["+ellps=", "+a=", "+b=", "+rf=", "+datum=", "+towgs84="].iter().any(|k| p.starts_with(k)))
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -2480,11 +2488,12 @@ pub(crate) mod tests {
     /// (ch. 7, eqs. 7-6 and 7-7) give.
     #[test]
     fn mercator_variant_a_guidance_note_example() {
-        let wkt = r#"PROJCS["Makassar_NEIEZ",GEOGCS["GCS_Makassar",DATUM["D_Makassar",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Variant_A"],PARAMETER["False_Easting",3900000.0],PARAMETER["False_Northing",900000.0],PARAMETER["Central_Meridian",110.0],PARAMETER["Scale_Factor",0.997],UNIT["Meter",1.0]]"#;
+        let wkt = r#"PROJCS["Makassar_NEIEZ",GEOGCS["GCS_Makassar",DATUM["D_Local",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Variant_A"],PARAMETER["False_Easting",3900000.0],PARAMETER["False_Northing",900000.0],PARAMETER["Central_Meridian",110.0],PARAMETER["Scale_Factor",0.997],UNIT["Meter",1.0]]"#;
         let (crs, note) = read_wkt(wkt).unwrap();
-        // Makassar has no shift to WGS 84 in the file: said, and left out, so longitude/latitude
-        // on its own datum is what goes in.
-        assert!(note.is_some_and(|n| n.contains("D_Makassar")));
+        // The datum is renamed: Makassar now takes its EPSG shift (#2258), and this example needs a
+        // datum without one. Such a datum is said and left out, so longitude/latitude on its own
+        // datum goes in, as the example gives it.
+        assert!(note.is_some_and(|n| n.contains("D_Local")));
         let m = crs.transformer().unwrap().from_lonlat(Coord::new(120.0, -3.0)).unwrap();
         assert!((m.x - 5_009_726.58).abs() < 0.01 && (m.y - 569_150.82).abs() < 0.01, "{m:?}");
         let (a, f) = (6_377_397.155f64, 1.0f64 / 299.152_812_8);
@@ -2927,14 +2936,17 @@ pub(crate) mod tests {
         assert!(read_wkt(nad83).unwrap().0.custom_def().is_some_and(|d| d.proj4.contains("+towgs84=1,2,3")));
         let zero = utm_24s.replace(r#"DATUM["D_SIRGAS_2000","#, r#"DATUM["D_SIRGAS_2000",TOWGS84[0,0,0,0,0,0,0],"#);
         assert_eq!(read_wkt(&zero), Ok((Crs::Epsg(31984), None)));
-        // Brazil's older datums keep the note: without TOWGS84 they're tens of metres off.
-        for (datum, spheroid) in [
-            ("D_South_American_1969", r#"SPHEROID["GRS_1967_Truncated",6378160.0,298.25]"#),
-            ("D_Corrego_Alegre", r#"SPHEROID["International_1924",6378388.0,297.0]"#),
-        ] {
-            let old = format!(r#"GEOGCS["GCS_old",DATUM["{datum}",{spheroid}],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#);
-            assert!(read_wkt(&old).unwrap().1.is_some_and(|n| n.contains(datum)), "{datum}");
-        }
+        // Brazil's older datums: SAD69 keeps the note, as its systems have two shifts in EPSG,
+        // and Corrego Alegre takes the shift of its EPSG definition.
+        let old = |datum: &str, spheroid: &str| {
+            read_wkt(&format!(r#"GEOGCS["GCS_old",DATUM["{datum}",{spheroid}],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#))
+                .unwrap()
+        };
+        let (_, note) = old("D_South_American_1969", r#"SPHEROID["GRS_1967_Truncated",6378160.0,298.25]"#);
+        assert!(note.is_some_and(|n| n.contains("D_South_American_1969")));
+        let (crs, note) = old("D_Corrego_Alegre", r#"SPHEROID["International_1924",6378388.0,297.0]"#);
+        assert_eq!(note, None);
+        assert!(crs.custom_def().is_some_and(|d| d.proj4.contains("+towgs84=-205.57,168.77,-4.12")));
     }
 
     #[test]
@@ -3033,6 +3045,64 @@ pub(crate) mod tests {
             let row = include_str!("esri_datum_corpus.tsv").lines().find(|l| l.starts_with(&format!("{code}\t"))).unwrap();
             let changed = row.split('\t').nth(5).unwrap().replace(from, to);
             assert!(crs_from_wkt(&changed).is_err(), "{changed}");
+        }
+    }
+
+    /// An Esri datum name alone isn't enough: another ellipsoid, an unknown name and the names the
+    /// table leaves out keep the note, and a `TOWGS84` in the file wins.
+    #[test]
+    fn esri_datum_names_respect_the_file_definition() {
+        let row = include_str!("esri_datum_corpus.tsv").lines().find(|l| l.starts_with("3123\t")).unwrap();
+        let wkt = row.split('\t').nth(5).unwrap();
+        let clarke = r#"SPHEROID["Clarke_1866",6378206.4,294.978698213898]"#;
+        for changed in [
+            wkt.replace(clarke, r#"SPHEROID["International_1924",6378388.0,297.0]"#),
+            wkt.replace("D_Philippine_Reference_System_1992", "D_Local"),
+        ] {
+            let (crs, note) = read_wkt(&changed).unwrap();
+            assert!(note.is_some(), "{changed}");
+            assert!(!crs.custom_def().unwrap().proj4.contains("+towgs84="));
+        }
+        let explicit = wkt.replace(clarke, &format!("{clarke},TOWGS84[1,2,3]"));
+        let (crs, note) = read_wkt(&explicit).unwrap();
+        assert_eq!(note, None);
+        assert!(crs.custom_def().unwrap().proj4.contains("+towgs84=1,2,3 "), "{}", crs.custom_def().unwrap().proj4);
+        // SAD69 is left out because Brazil's systems on it have another shift than EPSG:4618, and
+        // NAD27 because it shifts by a grid. RGF93 is in the table with a null shift.
+        let sad69 = r#"GEOGCS["GCS_South_American_1969",DATUM["D_South_American_1969",SPHEROID["GRS_1967_Truncated",6378160.0,298.25]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        let nad27 = r#"GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.978698213898]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        for kept in [sad69, nad27] {
+            let (crs, note) = read_wkt(kept).unwrap();
+            assert!(note.is_some(), "{kept}");
+            assert!(!crs.custom_def().unwrap().proj4.contains("+towgs84="), "{kept}");
+        }
+        let rgf93 = r#"GEOGCS["GCS_RGF_1993",DATUM["D_RGF_1993",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        assert_eq!(read_wkt(rgf93).unwrap().1, None);
+    }
+
+    /// The table of Esri datum names (#2258) is in order, holds names as [`norm`] writes them
+    /// without `D_`, and gives systems whose bundled definition is one Helmert step without a grid.
+    /// The names the reader matches itself aren't in it.
+    #[test]
+    fn esri_datum_table_is_sound() {
+        let names = super::super::esri_datums::NAMES;
+        assert!(names.len() > 300, "{}", names.len());
+        for pair in names.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "out of order at {}", pair[1].0);
+        }
+        for &(name, code) in names {
+            assert!(norm(name) == name && !name.starts_with("D_"), "{name}");
+            assert_eq!(super::super::esri_datums::geographic(name), Some(code));
+            let def = epsg_proj4(code).unwrap();
+            assert!(earth_of(def).is_some() && !def.contains("+nadgrids="), "EPSG:{code}: {def}");
+        }
+        // The names `wkt.rs` reads itself aren't in the table.
+        for name in ["WGS_1984", "EUROPEAN_1950", "OSGB_1936", "CH1903", "S_JTSK"] {
+            assert_eq!(super::super::esri_datums::geographic(name), None, "{name}");
+        }
+        // The lookup takes a name only as `national_datum` passes it: normalized, without `D_`.
+        for name in ["D_PULKOVO_1942", "pulkovo_1942"] {
+            assert_eq!(super::super::esri_datums::geographic(name), None, "{name}");
         }
     }
 
@@ -3529,24 +3599,25 @@ pub(crate) mod tests {
         const ESRI: &str = r#"PROJCS["NTF_Paris_Lambert_Zone_II",GEOGCS["GCS_NTF_Paris",DATUM["Nouvelle_Triangulation_Francaise_(Paris)",SPHEROID["Clarke_1880_IGN",6378249.2,293.466021293627]],PRIMEM["Paris",2.33722917],UNIT["Grad",0.0157079632679489]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",600000.0],PARAMETER["False_Northing",2200000.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",52.0],PARAMETER["Scale_Factor",0.99987742],PARAMETER["Latitude_Of_Origin",52.0],UNIT["Meter",1.0]]"#;
         const WKT2: &str = r#"PROJCRS["NTF (Paris) / Lambert zone II",BASEGEOGCRS["NTF (Paris)",DATUM["Nouvelle Triangulation Francaise (Paris)",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,LENGTHUNIT["metre",1]]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.0157079632679489]],ID["EPSG",4807]],CONVERSION["Lambert zone II",METHOD["Lambert Conic Conformal (1SP)",ID["EPSG",9801]],PARAMETER["Latitude of natural origin",52,ANGLEUNIT["grad",0.0157079632679489],ID["EPSG",8801]],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["grad",0.0157079632679489],ID["EPSG",8802]],PARAMETER["Scale factor at natural origin",0.99987742,SCALEUNIT["unity",1],ID["EPSG",8805]],PARAMETER["False easting",600000,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",2200000,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["metre",1]]]"#;
         let xy = Coord::new(549_826.63, 2_192_990.71);
-        // PROJ 9.8.1's position on NTF itself (EPSG:4275, from Greenwich): these systems have no
-        // shift to WGS 84 here, so RustGIS reads them on NTF.
-        let ntf = Coord::new(1.680_720_205, 46.735_054_487);
+        // PROJ 9.9.0's position in WGS 84 with EPSG:27572's shift. The datum's Esri name now gives
+        // these systems that shift (#2258).
+        let wgs84 = Coord::new(1.679_999_997, 46.734_999_981);
         // The prime meridian is in that unit too, as PROJ reads it, but for Paris at 2.33722917,
         // the degrees GDAL and Esri write: Paris in grads (2.5969213, as WKT1 defines it) is the
         // same place, and another meridian at 2.33722917 is 2.33722917 grads, 0.233722917° west
         // of Paris.
         let paris_in_grads = GDAL.replace(r#"PRIMEM["Paris",2.33722917"#, r#"PRIMEM["Paris",2.5969213"#);
         let another = GDAL.replace(r#"PRIMEM["Paris""#, r#"PRIMEM["Another""#);
-        let west = Coord::new(1.446_997_288, 46.735_054_487);
-        // A central meridian of 10 grads is 9° east of Paris's (PROJ 9.8.1 places the point there).
+        let west = Coord::new(1.446_268_033, 46.734_998_500);
+        // A central meridian of 10 grads is 9° east of Paris's (PROJ 9.9.0 places the point there,
+        // in WGS 84 with the same shift).
         let ten = GDAL.replace(r#"PARAMETER["central_meridian",0]"#, r#"PARAMETER["central_meridian",10]"#);
-        let east = Coord::new(10.680_720_205, 46.735_054_487);
+        let east = Coord::new(10.680_356_166, 46.735_042_705);
         let cases = [
-            ("WKT1", GDAL, ntf),
-            ("Esri", ESRI, ntf),
-            ("WKT2", WKT2, ntf),
-            ("Paris in grads", &paris_in_grads, ntf),
+            ("WKT1", GDAL, wgs84),
+            ("Esri", ESRI, wgs84),
+            ("WKT2", WKT2, wgs84),
+            ("Paris in grads", &paris_in_grads, wgs84),
             ("another", &another, west),
             ("a central meridian of 10 grads", &ten, east),
         ];

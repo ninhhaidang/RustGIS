@@ -13,6 +13,7 @@ pub mod crs;
 pub(crate) mod epsg_axes;
 mod epsg_gap;
 mod esri;
+mod esri_datums;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;
 pub mod geotiff;

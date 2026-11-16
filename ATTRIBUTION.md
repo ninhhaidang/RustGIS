@@ -44,15 +44,21 @@ The map's ESRI codes (`crates/data/src/raster/esri.rs`) are Esri's projected coo
 from Esri's [projection-engine-db-doc](https://github.com/Esri/projection-engine-db-doc)
 (Apache-2.0), as imported into the [PROJ](https://proj.org) 9.7.1 database (MIT) and written as
 PROJ definitions by PROJ 9.7.1.
+The Esri datum names (`crates/data/src/raster/esri_datums.rs`) are from the same
+projection-engine-db-doc, as imported into the PROJ 9.9.0 database (MIT), and matched there to
+EPSG geographic systems (EPSG dataset v13.102) through pyproj 3.8.0.
 Coordinates are transformed by [terrio-crs](https://github.com/opengeos/terrio) (MIT), which
 carries its own tables derived from the EPSG Geodetic Parameter Dataset (© IOGP, under its terms
 of use) through PROJ's database; its NOTICE, with their sources, is in THIRD-PARTY-LICENSES.txt.
 The WKT2 test corpus (`crates/data/src/raster/wkt2_corpus.tsv`) is 60 of those EPSG and Esri
 coordinate systems written as WKT2 by PROJ 9.7.1, through pyproj 3.7.2.
-The ESRI datum test corpus (`crates/data/src/raster/esri_datum_corpus.tsv`) contains 13 EPSG
-coordinate systems written as ESRI WKT1 through pyproj 3.7.2; reference coordinates use PROJ
-with the bundled `crs-definitions` Helmert definitions. The OSGB36, Amersfoort and GGRS87 WKT2
-reference coordinates use those same transformations.
+The ESRI datum test corpus (`crates/data/src/raster/esri_datum_corpus.tsv`) contains 42 EPSG
+coordinate systems written as ESRI WKT1, 13 of them through pyproj 3.7.2 and 17 Italian ones by
+GDAL 3.13; reference coordinates use PROJ with the bundled `crs-definitions` Helmert definitions.
+The OSGB36, Amersfoort and GGRS87 WKT2 reference coordinates use those same transformations, as
+do those of NTF (Paris) / Lambert zone II (EPSG:27572), computed by PROJ 9.9.0 through pyproj
+3.8.0. The 12 rows for the Esri datum names were written by PROJ 9.9.0 through pyproj 3.8.0, with
+reference coordinates computed the same way.
 
 The GeoLibre tool suite ([geolibre-rust](https://github.com/opengeos/geolibre-rust), MIT, built
 on [whitebox-wasm](https://github.com/opengeos/whitebox-wasm), MIT OR Apache-2.0) is not part of
