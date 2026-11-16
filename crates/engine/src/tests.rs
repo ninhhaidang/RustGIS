@@ -51801,13 +51801,24 @@ fn a_save_refuses_coordinates_that_arent_numbers_and_keeps_the_file() {
     let layer = s.map_mut().layer_mut(id).unwrap();
     layer.dataset.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 10.0), Coord::new(f64::NAN, 10.5)]])), vec![]);
     layer.dataset.push(Some(Geometry::Point(Coord::new(f64::INFINITY, 0.0))), vec![]);
+    // Ids that aren't their rows (2 and 3), as after deletions: they're named by id, as the
+    // attribute table shows them.
+    assert_eq!(layer.dataset.features.len(), 3);
+    layer.dataset.features = layer
+        .dataset
+        .features
+        .iter()
+        .zip([1, 20, 30])
+        .map(|(f, id)| {
+            let mut f = f.clone();
+            f.id = id;
+            f
+        })
+        .collect();
     layer.touch_geometry();
-    // Named by their ids, as the attribute table shows them.
-    let ids: Vec<String> = layer.dataset.features.iter().skip(1).map(|f| f.id.to_string()).collect();
-    let said = format!("2 feature(s) in 'ways' (ids {}) have a coordinate that isn't a number", ids.join(", "));
     for ((cmd, file), was) in saves.iter().zip(&before) {
         let e = s.run(cmd, &json!({"path": path(file)})).unwrap_err();
-        assert!(e.contains(&said), "{cmd}: {e}");
+        assert!(e.contains("2 feature(s) in 'ways' (ids 20, 30) have a coordinate that isn't a number"), "{cmd}: {e}");
         assert_eq!(&std::fs::read(path(file)).unwrap(), was, "{cmd} kept the file as it was");
     }
     // Their geometry gone, the features save and open again.

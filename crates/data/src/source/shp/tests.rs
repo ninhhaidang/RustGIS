@@ -22,6 +22,166 @@ fn dir() -> PathBuf {
 fn write_shapefile(ds: &Dataset, path: &Path) {
     crate::io::write_path(ds, path).unwrap();
 }
+/// A streamed Shapefile is framed by its records' own boxes (#1985): the header's box stands for
+/// them only when it frames them all. One with a corner that isn't a number (an infinity, a NaN),
+/// or stale (smaller than the shapes), is set aside with a note, so a NaN shape doesn't lose the
+/// layer its extent, nor does a false "not longitude/latitude" note come with it. A file whose
+/// records have no finite box (every shape null, under a 0, 0, 0, 0 header), or no records at
+/// all, has no extent rather than Null Island. A clean header is used as it is, without a note.
+/// A cached index whose stored box isn't one is built again, not believed.
+#[test]
+fn a_streamed_shapefile_is_framed_by_its_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path().to_path_buf();
+    let write = |name: &str, points: &[Option<(f64, f64)>]| {
+        let mut ds = Dataset::new("pts", GeometryType::Point, vec![]);
+        for p in points {
+            ds.push(p.map(|(x, y)| Geometry::Point(Coord::new(x, y))), vec![]);
+        }
+        let path = folder.join(name);
+        write_shapefile(&ds, &path);
+        path
+    };
+    // Little-endian f64s: the header's box at 36, 44, 52, 60; the first record's point x at 112.
+    let patch = |path: &Path, at: usize, v: f64| {
+        let mut b = std::fs::read(path).unwrap();
+        b[at..at + 8].copy_from_slice(&v.to_le_bytes());
+        std::fs::write(path, b).unwrap();
+    };
+    let three = [Some((10.0, 20.0)), Some((11.0, 21.0)), Some((12.0, 22.0))];
+    let whole = Extent::new(10.0, 20.0, 12.0, 22.0);
+    let has = |s: &ShpSource, what: &str| s.info().notes.iter().any(|n| n.contains(what));
+    const SET_ASIDE: &str = "header's bounding box doesn't frame its shapes";
+    cache::with_index_dir(folder.join("cache"), || {
+        let open = |p: &Path| {
+            let s = ShpSource::open_path(p, "pts").unwrap();
+            assert!(s.info().indexed);
+            s
+        };
+        let clean = open(&write("clean.shp", &three));
+        assert_eq!(clean.info().extent, whole, "a clean header is used as it is");
+        assert!(!has(&clean, SET_ASIDE) && !has(&clean, "not longitude/latitude"), "{:?}", clean.info().notes);
+        // Coordinates f32 can't hold, the records' boxes rounded outward past them: the header,
+        // exact, still frames them, with nothing said (projected, as UTM's are).
+        let odd = [Some((10.1, 20.3)), Some((12.7, 22.9))];
+        let s = open(&write("odd.shp", &odd));
+        assert_eq!(s.info().extent, Extent::new(10.1, 20.3, 12.7, 22.9));
+        assert!(!has(&s, SET_ASIDE), "{:?}", s.info().notes);
+        let utm = [Some((500_000.123, 4_500_000.789)), Some((512_345.678, 4_512_345.678))];
+        let s = open(&write("utm.shp", &utm));
+        assert!(!has(&s, SET_ASIDE), "{:?}", s.info().notes);
+        // A corner that isn't a number, or one too small for the shapes: the records' boxes.
+        // (An inverted header too: its min x past its max.)
+        for (k, (at, v)) in [(44, f64::INFINITY), (52, f64::NEG_INFINITY), (60, f64::NAN), (52, 11.0), (36, 13.0)].into_iter().enumerate() {
+            let p = write(&format!("corner-{k}.shp"), &three);
+            patch(&p, at, v);
+            let s = open(&p);
+            assert_eq!(s.info().extent, whole, "corner at {at} = {v}");
+            assert!(has(&s, SET_ASIDE), "corner at {at} = {v}: {:?}", s.info().notes);
+            assert!(!has(&s, "not longitude/latitude"), "corner at {at} = {v}: {:?}", s.info().notes);
+        }
+        // A NaN shape and the box its writer made from it: the other shapes frame the layer.
+        let p = write("nan-shape.shp", &three);
+        patch(&p, 112, f64::NAN);
+        patch(&p, 36, f64::NAN);
+        let s = open(&p);
+        assert_eq!(s.info().extent, Extent::new(11.0, 21.0, 12.0, 22.0));
+        assert!(has(&s, SET_ASIDE) && !has(&s, "not longitude/latitude"), "{:?}", s.info().notes);
+        // Every record null (its shape type, at 108 + 28 per record, set to 0) under the 0, 0, 0, 0
+        // box writers give such a file: no extent, not Null Island.
+        let p = write("null.shp", &three);
+        let mut b = std::fs::read(&p).unwrap();
+        for at in [108, 136, 164] {
+            b[at..at + 4].copy_from_slice(&0i32.to_le_bytes());
+        }
+        b[36..68].fill(0);
+        std::fs::write(&p, b).unwrap();
+        let s = open(&p);
+        assert!(s.info().extent.is_empty(), "{:?}", s.info().extent);
+        // A file of no records, its header box 0, 0, 0, 0 (its length, at 24, in 16-bit words).
+        let p = write("empty.shp", &three);
+        for file in [p.clone(), p.with_extension("shx")] {
+            let mut b = std::fs::read(&file).unwrap();
+            b.truncate(100);
+            b[24..28].copy_from_slice(&50i32.to_be_bytes());
+            b[36..68].fill(0);
+            std::fs::write(&file, b).unwrap();
+        }
+        let s = open(&p);
+        assert_eq!(s.info().count, Some(0));
+        assert!(s.info().extent.is_empty(), "{:?}", s.info().extent);
+    });
+    // A cached index whose stored box isn't one (inverted, as damage or a planted file could
+    // leave it) is built again.
+    let planted = folder.join("planted-cache");
+    cache::with_index_dir(planted.clone(), || {
+        let p = write("planted.shp", &three);
+        patch(&p, 52, f64::NAN);
+        drop(ShpSource::open_path(&p, "pts").unwrap());
+        let db_path = std::fs::read_dir(&planted)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "sqlite"))
+            .unwrap();
+        // Inverted, or none while its records are covered: either way not the rule it was built by.
+        for stored in ["'[12,22,10,20]'", "'null'"] {
+            let db = rusqlite::Connection::open(&db_path).unwrap();
+            assert_eq!(db.execute(&format!("UPDATE metadata SET bounds = {stored}"), []).unwrap(), 1);
+            drop(db);
+            let s = ShpSource::open_path(&p, "pts").unwrap();
+            assert!(s.info().indexed, "{stored}: built again, not scanned: {:?}", s.info().notes);
+            assert_eq!(s.info().extent, whole, "{stored}: {:?}", s.info().extent);
+        }
+    });
+}
+/// A record of no points (an empty geometry, which some writers give a 0, 0, 0, 0 box) has no box,
+/// so it doesn't stretch the layer's extent to 0, 0 and set aside a header that's right.
+#[test]
+fn an_empty_shape_has_no_box() {
+    // Shape type, the box, then a polygon's counts of parts and points, or a multipoint's points.
+    let record = |shape: i32, counts: &[i32]| {
+        let mut raw = shape.to_le_bytes().to_vec();
+        for v in [0.0f64, 0.0, 0.0, 0.0] {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        for c in counts {
+            raw.extend_from_slice(&c.to_le_bytes());
+        }
+        raw
+    };
+    let none = |b: [f32; 4]| b.iter().all(|v| v.is_nan());
+    assert!(none(record_box(&record(5, &[0, 0]))), "an empty polygon");
+    assert!(none(record_box(&record(3, &[0, 0]))), "an empty line");
+    assert!(none(record_box(&record(8, &[0]))), "an empty multipoint");
+    assert!(none(record_box(&record(5, &[0, 4]))), "a polygon of no parts");
+    assert!(none(record_box(&record(5, &[1, -1]))), "a count that can't be");
+    assert_eq!(record_box(&record(5, &[1, 4])), [0.0; 4], "a polygon with points keeps its box");
+    assert_eq!(record_box(&record(8, &[2])), [0.0; 4], "a multipoint with points keeps its box");
+    // A whole file: a multipoint emptied (its box, at 112, made 0, 0, 0, 0 and its count of
+    // points, at 144, 0) under a header that's right. The header stands, with nothing said, as
+    // the index and a scan of the records both read it.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![]);
+    for (x, y) in [(10.0, 20.0), (12.0, 22.0)] {
+        ds.push(Some(Geometry::MultiPoint(vec![Coord::new(x, y), Coord::new(x + 0.5, y + 0.5)])), vec![]);
+    }
+    let path = tmp.path().join("multi.shp");
+    write_shapefile(&ds, &path);
+    let mut b = std::fs::read(&path).unwrap();
+    assert_eq!(i32::from_le_bytes(b[108..112].try_into().unwrap()), 8, "a multipoint file");
+    b[112..144].fill(0);
+    b[144..148].copy_from_slice(&0i32.to_le_bytes());
+    std::fs::write(&path, &b).unwrap();
+    let (count, _, bounds) = index::scanned(&path, b.len() as u64).unwrap();
+    assert_eq!((count, bounds), (2, Some([12.0, 22.0, 12.5, 22.5])));
+    cache::with_index_dir(tmp.path().join("cache"), || {
+        let s = ShpSource::open_path(&path, "pts").unwrap();
+        assert!(s.info().indexed);
+        assert_eq!(s.info().extent, Extent::new(10.0, 20.0, 12.5, 22.5), "the header, as written");
+        assert!(!s.info().notes.iter().any(|n| n.contains("doesn't frame")), "{:?}", s.info().notes);
+    });
+}
 fn points_shapefile(path: &Path) {
     let mut ds = Dataset::new("grid", GeometryType::Point, vec![]);
     for x in 0..30 {

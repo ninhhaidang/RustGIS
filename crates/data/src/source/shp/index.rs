@@ -31,10 +31,10 @@ impl DiskIndex {
         use super::cache;
         use crate::source::external::{fnv1a, stamp};
         let canonical = path.canonicalize()?;
-        let signature = format!("shp-index-v2:{canonical:?}:{:?}", stamp(path)?);
+        let signature = format!("shp-index-v3:{canonical:?}:{:?}", stamp(path)?);
         let mut dir = cache::index_dir();
         let budget = cache::index_budget();
-        let key = format!("{:016x}-{:016x}", fnv1a(format!("shp-index-v2:{canonical:?}").as_bytes()), fnv1a(signature.as_bytes()));
+        let key = format!("{:016x}-{:016x}", fnv1a(format!("shp-index-v3:{canonical:?}").as_bytes()), fnv1a(signature.as_bytes()));
         let pinned = cache::pin_index(&dir, &key, budget).or_else(|_| {
             dir = cache::index_fallback_dir();
             cache::pin_index(&dir, &key, budget)
@@ -48,6 +48,10 @@ impl DiskIndex {
             && saved == signature
             && covered <= count
             && let Ok(bounds) = serde_json::from_str::<Option<[f32; 4]>>(&bounds)
+            // Held to the rule it was built by: a damaged or planted entry is built again rather
+            // than giving the layer a box that isn't one (#1985).
+            && bounds.is_none_or(usable)
+            && bounds.is_some() == (covered > 0)
             && db.prepare("SELECT id, offset, len FROM records LIMIT 0").is_ok()
             && db.prepare("SELECT id FROM bounds LIMIT 0").is_ok()
         {
@@ -82,20 +86,16 @@ impl DiskIndex {
             let mut bounds = tx.prepare("INSERT INTO bounds VALUES(?1,?2,?3,?4,?5)").map_err(sql)?;
             scan(path, len, |id, place, b| {
                 record.execute(params![id, place.offset, place.len]).map_err(sql)?;
-                let [x0, y0, x1, y1] = b;
-                if b.iter().all(|v| v.is_finite()) && x0 <= x1 && y0 <= y1 {
+                if union(&mut all_bounds, b) {
+                    let [x0, y0, x1, y1] = b;
                     bounds.execute(params![id, x0, x1, y0, y1]).map_err(sql)?;
                     covered += 1;
-                    all_bounds = Some(match all_bounds {
-                        Some([a, b, x, y]) => [a.min(x0), b.min(y0), x.max(x1), y.max(y1)],
-                        None => [x0, y0, x1, y1],
-                    });
                 }
                 Ok(())
             })?
         };
         // Do not retain an index built while the original file was being replaced/edited.
-        if signature != format!("shp-index-v2:{canonical:?}:{:?}", stamp(path)?) {
+        if signature != format!("shp-index-v3:{canonical:?}:{:?}", stamp(path)?) {
             return Err(bad("the .shp changed while its spatial index was being built"));
         }
         let bounds_json = serde_json::to_string(&all_bounds).map_err(|e| bad(e.to_string()))?;
@@ -193,6 +193,40 @@ impl DiskIndex {
 pub(super) struct Index {
     storage: Storage,
     pub count: u64,
+    /// The union of the records' finite boxes (rounded outward to f32): `None` when no record has
+    /// one (every shape null or empty, or a coordinate that isn't a number).
+    pub bounds: Option<[f32; 4]>,
+}
+
+/// Whether `b` is a box: its corners numbers, in order.
+fn usable(b: [f32; 4]) -> bool {
+    let [x0, y0, x1, y1] = b;
+    b.iter().all(|v| v.is_finite()) && x0 <= x1 && y0 <= y1
+}
+
+/// `b` added to `all` when it's a box ([`usable`]); whether it was. The index's R-tree and its
+/// `bounds` take the same records by it, so a covered index's bounds frame every record.
+fn union(all: &mut Option<[f32; 4]>, b: [f32; 4]) -> bool {
+    if !usable(b) {
+        return false;
+    }
+    let [x0, y0, x1, y1] = b;
+    *all = Some(match *all {
+        Some([a, b, x, y]) => [a.min(x0), b.min(y0), x.max(x1), y.max(y1)],
+        None => [x0, y0, x1, y1],
+    });
+    true
+}
+
+/// The records counted by scanning their headers, with any note on a truncated file and their
+/// boxes' union: what a disk index holds, for when none can be written.
+pub(super) fn scanned(path: &Path, len: u64) -> Result<(u32, String, Option<[f32; 4]>)> {
+    let mut bounds = None;
+    let (count, note) = scan(path, len, |_, _, b| {
+        union(&mut bounds, b);
+        Ok(())
+    })?;
+    Ok((count, note, bounds))
 }
 enum Storage {
     Disk(DiskIndex),
@@ -201,14 +235,14 @@ enum Storage {
 impl Index {
     pub fn open(path: &Path, len: u64, notes: &mut Vec<String>) -> Result<Self> {
         match DiskIndex::open(path, len, notes) {
-            Ok(disk) => Ok(Self { count: disk.count, storage: Storage::Disk(disk) }),
+            Ok(disk) => Ok(Self { count: disk.count, bounds: disk.bounds, storage: Storage::Disk(disk) }),
             Err(error) => {
-                let (count, note) = scan(path, len, |_, _, _| Ok(()))?;
+                let (count, note, bounds) = scanned(path, len)?;
                 notes.push(format!("spatial index unavailable ({error}); reading the .shp by scanning record headers"));
                 if !note.is_empty() {
                     notes.push(note);
                 }
-                Ok(Self { count: u64::from(count), storage: Storage::Scan { path: path.to_path_buf(), len } })
+                Ok(Self { count: u64::from(count), bounds, storage: Storage::Scan { path: path.to_path_buf(), len } })
             }
         }
     }
@@ -261,7 +295,8 @@ fn scan(path: &Path, len: u64, mut visit: impl FnMut(u32, Place, [f32; 4]) -> Re
     f.seek_relative(100)?;
     let mut pos = 100u64;
     let mut count = 0u32;
-    let mut head = [0u8; 44];
+    // A record's header, its shape type and box, and its counts of parts and points.
+    let mut head = [0u8; 52];
     let mut note = String::new();
     while pos + 8 <= len {
         let want = (len - pos).min(head.len() as u64) as usize;
@@ -284,4 +319,32 @@ fn scan(path: &Path, len: u64, mut visit: impl FnMut(u32, Place, [f32; 4]) -> Re
         }
     }
     Ok((count, note))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Coord, Dataset, Geometry, GeometryType};
+
+    /// Scanning record headers, when no index can be written, gathers the records' boxes as an
+    /// index does (`union`): a NaN shape's box is left out, the others framed (#1985).
+    #[test]
+    fn scanning_gathers_the_records_boxes_as_an_index_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pts.shp");
+        let mut ds = Dataset::new("pts", GeometryType::Point, vec![]);
+        for (x, y) in [(10.0, 20.0), (11.0, 21.0), (12.0, 22.0)] {
+            ds.push(Some(Geometry::Point(Coord::new(x, y))), vec![]);
+        }
+        crate::io::write_path(&ds, &path).unwrap();
+        // The first record's point x, at 112.
+        let mut b = std::fs::read(&path).unwrap();
+        b[112..120].copy_from_slice(&f64::NAN.to_le_bytes());
+        std::fs::write(&path, &b).unwrap();
+        let (count, note, bounds) = scanned(&path, b.len() as u64).unwrap();
+        assert_eq!((count, note.as_str()), (3, ""));
+        assert_eq!(bounds, Some([11.0, 21.0, 12.0, 22.0]));
+        assert!(usable([0.0, 0.0, 1.0, 1.0]));
+        assert!(!usable([f32::NAN, 0.0, 1.0, 1.0]) && !usable([2.0, 0.0, 1.0, 1.0]) && !usable([0.0, 0.0, f32::INFINITY, 1.0]));
+    }
 }
