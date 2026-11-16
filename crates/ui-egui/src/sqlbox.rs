@@ -33,9 +33,6 @@ struct Draft {
     check: Option<(String, u64, Result<(usize, usize), String>)>,
 }
 
-/// The longest list of fields offered as chips (a wider table is typed).
-const MAX_CHIPS: usize = 40;
-
 /// The box in `slot` for `owner`'s clause, `stored` in the project, over the fields of `ds`.
 /// `count` runs only on Check: how many features match a clause that reads, of how many; its
 /// answer shows while `version` (whatever the count depends on: the project's revision, the
@@ -109,7 +106,7 @@ fn editor(
     if std::mem::take(&mut d.focus) {
         r.request_focus();
     }
-    chips(ui, &mut d.text, ds);
+    crate::dialogs::field_chips(ui, &ds.fields, &mut d.text);
     let text = d.text.trim().to_string();
     // Live syntax and field checks must not scan geometry or invalidate a retained clause.
     // Check and the command handling Apply perform the full data validation.
@@ -171,25 +168,4 @@ fn editor(
         ui.label(RichText::new(tl!("Not applied yet.")).small().color(t.text_dim));
     }
     apply
-}
-
-/// The layer's fields, the common operators and the language's functions and variables, each
-/// added to the clause where it ends.
-fn chips(ui: &mut Ui, text: &mut String, ds: &Dataset) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(tl!("Fields:")).small().weak());
-        for f in ds.fields.iter().take(MAX_CHIPS) {
-            if ui.small_button(&f.name).clicked() {
-                crate::dialogs::add_word(text, &crate::exprcomplete::field_ref(&f.name));
-            }
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        for op in ["=", "<>", ">", "<", ">=", "<=", "LIKE", "IN", "IS NULL", "AND", "OR", "NOT"] {
-            if ui.small_button(op).clicked() {
-                crate::dialogs::add_word(text, op);
-            }
-        }
-        crate::dialogs::expr_menus(ui, text);
-    });
 }
