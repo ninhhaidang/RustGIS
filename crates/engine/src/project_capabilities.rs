@@ -191,11 +191,14 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
 }
 
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
-    let (mut block, mut water, mut relief, mut light, mut legends, mut pictures) = (false, false, false, false, false, false);
+    let (mut block, mut water, mut shore, mut relief, mut light, mut legends, mut pictures) =
+        (false, false, false, false, false, false, false);
     for map in maps {
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
             water |= t.water.is_some();
+            // A shore band other than the default, which an older reader would save away.
+            shore |= t.water.as_ref().is_some_and(|w| w.shore != rustgis_map::view::WATER_SHORE);
         }
         relief |= map.layers.iter().any(relief_effects);
         light |= map.layers.iter().any(relief_light);
@@ -207,6 +210,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
     [
         (block, "terrain-block"),
         (water, "terrain-water"),
+        (shore, "terrain-water-shore"),
         (relief, "shaded-relief-effects"),
         (light, "shaded-relief-light"),
         (legends, "normalized-legend-urls"),
@@ -523,6 +527,12 @@ mod tests {
         assert!(clean.get("requires").is_none());
         assert!(json_bytes(&map_file_bytes(p.map()).unwrap()).get("requires").is_none());
         assert!(Project::from_json(include_str!("../../../schema/fixtures/terrain_water_v2.rgis")).is_ok());
+        // A shore band other than the default is named too (#1915); the default needs nothing more.
+        let mut shore = Project::from_json(include_str!("../../../schema/fixtures/terrain_water_shore_v2.rgis")).unwrap();
+        assert_eq!(serde_json::to_value(&shore).unwrap()["requires"], json!(["terrain-water", "terrain-water-shore"]));
+        assert_eq!(shore.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.shore), Some(0.0));
+        shore.maps[0].view.terrain.as_mut().and_then(|t| t.water.as_mut()).unwrap().shore = rustgis_map::view::WATER_SHORE;
+        assert_eq!(serde_json::to_value(&shore).unwrap()["requires"], json!(["terrain-water"]));
         let mut unknown = saved;
         unknown["requires"] = json!(["future-terrain"]);
         assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-terrain"));

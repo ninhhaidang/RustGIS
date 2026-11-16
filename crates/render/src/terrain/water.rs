@@ -72,6 +72,8 @@ struct Lake {
     /// Metres, before exaggeration.
     level: f64,
     edges: Slabs,
+    /// Its outline and its holes' (islands'), for the shore band.
+    rings: Vec<Vec<Coord>>,
 }
 
 /// A polygon's edges, by horizontal strip of its box: whether a point is inside (even-odd, holes
@@ -284,7 +286,7 @@ impl Water {
                 continue;
             };
             extent = extent.union(&e);
-            lakes.push(Lake { edges: Slabs::new(&rings, &e), extent: e, level });
+            lakes.push(Lake { edges: Slabs::new(&rings, &e), extent: e, level, rings });
         }
         let side = ((lakes.len() as f64).sqrt().ceil() as usize * 2).clamp(1, MAX_GRID);
         let (w, h) = (extent.width().max(f64::MIN_POSITIVE), extent.height().max(f64::MIN_POSITIVE));
@@ -651,6 +653,82 @@ impl Glint {
     }
 }
 
+/// How far inside the water's outline its shore band reaches, in logical pixels (#1915): a few,
+/// as relief artists draw it.
+const SHORE_PX: f32 = 4.0;
+
+/// The strokes the shore band is drawn with, each narrower than the one before, so it fades from
+/// the outline inward in as many steps.
+const SHORE_STEPS: u16 = 4;
+
+impl Water {
+    /// The outlines of the lakes reaching into `frame` (a north-up frame), their islands' too,
+    /// as one path in its pixels; `None` when none does. Each lake's outline turns one way and
+    /// its islands' the other, so the path filled non-zero is every lake's water, islands out,
+    /// where lakes overlap too.
+    fn outlines(&self, frame: &crate::View) -> Option<tiny_skia::Path> {
+        let seen = frame.camera.extent(frame.width, frame.height);
+        let ppp = frame.pixels_per_point;
+        let mut path = tiny_skia::PathBuilder::new();
+        // A lake with a vertex that isn't a number is left out whole: one such vertex would
+        // leave the path without bounds (no band at all), and a hole drawn without its outer ring
+        // would be painted.
+        for lake in self.lakes.iter().filter(|l| l.extent.intersects(&seen) && l.rings.iter().flatten().all(|c| c.is_finite())) {
+            for (k, ring) in lake.rings.iter().enumerate() {
+                // Twice the ring's signed area: positive turning counter-clockwise.
+                let turn: f64 = ring.iter().zip(ring.iter().cycle().skip(1)).map(|(a, b)| a.x * b.y - b.x * a.y).sum();
+                let along = (turn >= 0.0) == (k == 0);
+                let points = ring.iter().map(|c| frame.camera.to_screen(*c, frame.width, frame.height));
+                let mut first = true;
+                let mut put = |(x, y): (f64, f64)| {
+                    let (x, y) = ((x * ppp) as f32, (y * ppp) as f32);
+                    if std::mem::take(&mut first) { path.move_to(x, y) } else { path.line_to(x, y) }
+                };
+                if along {
+                    points.for_each(&mut put)
+                } else {
+                    points.rev().for_each(&mut put)
+                }
+                path.close();
+            }
+        }
+        path.finish()
+    }
+}
+
+/// Darkens the terrain's water along its shores (#1915) on `pm`, a north-up frame drawn for
+/// `frame`: a band [`SHORE_PX`] wide inside each lake's outline and around its islands, toward
+/// black by `darkness` (0 to 1) at the outline and fading to nothing at its inner edge. Strokes
+/// of the outlines cut to the water, so a recording canvas keeps them as vectors.
+pub(crate) fn paint_shore(pm: &mut crate::Canvas, water: &Water, frame: &crate::View, darkness: f64) {
+    if darkness.is_nan() || darkness <= 0.0 {
+        return;
+    }
+    let Some(outlines) = water.outlines(frame) else { return };
+    let Some(mut band) = pm.sub(pm.width(), pm.height()) else { return };
+    // The darkness a point reaches under `m` of the strokes, the widest `m` lying over it:
+    // `darkness` with all of them, at the outline, falling in equal steps inward. Each stroke
+    // takes the point from one step to the next, so full darkness still fades rather than
+    // painting every stroke opaque.
+    let steps = f64::from(SHORE_STEPS);
+    let reached = |m: f64| darkness.min(1.0) * m / steps;
+    let mut paint = tiny_skia::Paint::default();
+    // Centred on the outline, each stroke reaches half its width inside.
+    let reach = 2.0 * SHORE_PX * frame.pixels_per_point.max(0.0) as f32;
+    for k in 1..=SHORE_STEPS {
+        // Stroke `k` is the `m`th widest, so its opacity is the one that takes `reached(m - 1)`
+        // to `reached(m)`.
+        let m = f64::from(SHORE_STEPS - k + 1);
+        let step = 1.0 - (1.0 - reached(m)) / (1.0 - reached(m - 1.0));
+        paint.set_color(tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, step as f32).unwrap_or(tiny_skia::Color::BLACK));
+        let width = reach * f32::from(k) / f32::from(SHORE_STEPS);
+        let stroke = tiny_skia::Stroke { width, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+        band.stroke_path(&outlines, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    }
+    let clip = crate::vector::Clip { path: outlines, rule: tiny_skia::FillRule::Winding, transform: tiny_skia::Transform::identity() };
+    pm.place(band, tiny_skia::Transform::identity(), 1.0, rustgis_map::effects::Blend::Normal, Some(clip));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,8 +753,14 @@ mod tests {
             source: rustgis_map::view::TerrainSource::Layer("dem".into()),
             exaggeration: 2.0,
             block: None,
-            // No glint unless a test asks for one: it would brighten the water's colours.
-            water: Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: level.map(str::to_string), glint: 0.0 }),
+            // No glint or shore band unless a test asks for one: they would change the water's
+            // colours.
+            water: Some(rustgis_map::view::TerrainWater {
+                layer: "lagos".into(),
+                level: level.map(str::to_string),
+                glint: 0.0,
+                shore: 0.0,
+            }),
         });
         let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.0, -0.6)), res: 600.0, bearing: 0.0, pitch: 65.0 };
         (m, camera)
@@ -851,7 +935,7 @@ mod tests {
             .map(|(i, rings)| {
                 let mut extent = Extent::EMPTY;
                 rings.iter().flatten().for_each(|p| extent.expand(*p));
-                Lake { extent, level: i as f64, edges: Slabs::new(rings, &extent) }
+                Lake { extent, level: i as f64, edges: Slabs::new(rings, &extent), rings: rings.clone() }
             })
             .collect();
         for budget in [3, 32, 512] {
@@ -1423,5 +1507,183 @@ mod tests {
         let (a, e) = (GLINT_SUN.0.to_radians(), GLINT_SUN.1.to_radians());
         let want = [a.sin() * e.cos(), -a.cos() * e.cos(), e.sin()];
         assert!(north_west.iter().zip(want).all(|(s, w)| (s - w).abs() < 1e-9), "{north_west:?} against {want:?}");
+    }
+
+    /// The test hill's lake drawn in mid-blue over a Shaded Relief, seen from straight above
+    /// (`pitch` 0) or tilted, its shore band at `shore`.
+    fn shored(shore: f64, pitch: f64) -> (Map, crate::View) {
+        let (mut m, mut view) = glinting(315.0, 0.0);
+        m.view.terrain.as_mut().unwrap().water.as_mut().unwrap().shore = shore;
+        view.camera.center = lonlat_to_merc(Coord::new(0.35, if pitch > 0.0 { -0.3 } else { -0.05 }));
+        view.camera.pitch = pitch;
+        (m, view)
+    }
+
+    /// The water is darker along its shore (#1915 part 4), from straight above: just inside the
+    /// lake's outline it goes toward black, a few pixels in it is untouched, and so is the land
+    /// just outside.
+    #[test]
+    fn a_lake_is_darker_along_its_shore() {
+        let drawn = |shore: f64| {
+            let (mut m, view) = shored(shore, 0.0);
+            let pm = crate::render_complete(&mut m, &view).unwrap().pixmap;
+            // The lake's western shore, halfway between its south shore and the island.
+            let (x, y) = view.camera.to_screen(lonlat_to_merc(Coord::new(0.2, -0.1)), view.width, view.height);
+            let at = |dx: f64| {
+                let c = pm.pixel((x + dx) as u32, y as u32).unwrap();
+                [c.red(), c.green(), c.blue(), c.alpha()]
+            };
+            (at(1.5), at(12.0), at(-3.0), pm)
+        };
+        let (edge, inside, land, off) = drawn(0.0);
+        let (dark_edge, dark_inside, dark_land, on) = drawn(1.0);
+        assert!(dark_edge[..3].iter().zip(&edge[..3]).all(|(d, e)| d < e), "darker at the shore: {dark_edge:?} from {edge:?}");
+        assert_eq!(dark_edge[3], edge[3], "alpha kept");
+        assert_eq!(dark_inside, inside, "a few pixels in, untouched");
+        assert_eq!(dark_land, land, "the land outside untouched");
+        // Only darker anywhere, never lighter.
+        for (d, e) in on.pixels().iter().zip(off.pixels()) {
+            assert!(d.red() <= e.red() && d.green() <= e.green() && d.blue() <= e.blue(), "{d:?} from {e:?}");
+        }
+    }
+
+    /// At its darkest (`shore` 1) the band still fades inward: black at the outline, lighter a few
+    /// pixels in.
+    #[test]
+    fn a_black_shore_still_fades_inward() {
+        let (mut m, view) = shored(1.0, 0.0);
+        let pm = crate::render_complete(&mut m, &view).unwrap().pixmap;
+        let (x, y) = view.camera.to_screen(lonlat_to_merc(Coord::new(0.2, -0.1)), view.width, view.height);
+        let at =
+            |dx: f64| pm.pixel((x + dx) as u32, y as u32).map(|c| u32::from(c.red()) + u32::from(c.green()) + u32::from(c.blue())).unwrap();
+        let (edge, inner) = (at(1.5), at(3.5));
+        assert!(edge < inner, "lighter a few pixels in: {inner} after {edge} at the outline");
+    }
+
+    /// A lake with a vertex that isn't a number (a bad row) takes no band, and leaves the others
+    /// theirs.
+    #[test]
+    fn a_lake_with_a_bad_vertex_leaves_the_others_their_band() {
+        let banded = |bad: bool| {
+            let (mut m, view) = shored(1.0, 0.0);
+            if bad {
+                let l = m.layers.iter_mut().find(|l| l.name == "lagos").unwrap();
+                let mut ring = square(0.6, -0.2, 0.05);
+                ring[1] = Coord::new(f64::NAN, -0.2);
+                l.dataset.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![rustgis_data::Value::Float(1234.0)]);
+            }
+            western_shore(&mut m, &view).0
+        };
+        let (_, view) = shored(0.0, 0.0);
+        let (mut m, _) = shored(0.0, 0.0);
+        let plain = western_shore(&mut m, &view).0;
+        assert_ne!(banded(false), plain, "the band is drawn");
+        assert_eq!(banded(true), banded(false), "and still is beside a lake with a bad vertex");
+    }
+
+    /// A tilted view's water is darker along its shore too, in the drape's bands and drawn whole,
+    /// and the land never is.
+    #[test]
+    fn a_tilted_views_lake_is_darker_along_its_shore() {
+        let near_shore = [(0.203, -0.1), (0.497, -0.15), (0.3, -0.197)];
+        let land = [(0.1, 0.0), (0.6, -0.3)];
+        let (mut m, view) = shored(0.0, 65.0);
+        let (edge, dry) = (in_bands(&mut m, &view, &near_shore), in_bands(&mut m, &view, &land));
+        assert_eq!(edge.len(), near_shore.len(), "every point is in a band");
+        let (mut m, view) = shored(1.0, 65.0);
+        let (dark_edge, dark_dry) = (in_bands(&mut m, &view, &near_shore), in_bands(&mut m, &view, &land));
+        assert_eq!(dark_dry, dry, "the land isn't darkened");
+        for (d, e) in dark_edge.iter().zip(&edge) {
+            assert!(d.iter().zip(e).all(|(d, e)| d < e), "darker at the shore: {d:?} from {e:?}");
+        }
+        let whole = |shore: f64| {
+            let (mut m, view) = shored(shore, 65.0);
+            crate::render_complete(&mut m, &view).unwrap().pixmap
+        };
+        let (off, on) = (whole(0.0), whole(1.0));
+        let mut darker = 0;
+        for (d, e) in on.pixels().iter().zip(off.pixels()) {
+            if d != e {
+                assert!(d.red() <= e.red() && d.green() <= e.green() && d.blue() <= e.blue() && d.alpha() == e.alpha(), "{d:?} {e:?}");
+                darker += 1;
+            }
+        }
+        assert!(darker > 50, "{darker} pixels along the shore");
+    }
+
+    /// At full darkness the band still fades inward: just inside the outline it darkens the
+    /// water without painting it solid black, as every stroke at full opacity would.
+    #[test]
+    fn a_full_dark_shore_band_is_not_solid_black() {
+        let (mut m, view) = shored(1.0, 0.0);
+        let (edge, _) = western_shore(&mut m, &view);
+        assert!(edge.iter().any(|&c| c > 0), "lit a little just inside the outline: {edge:?}");
+    }
+
+    /// The lake's western shore just inside, and a few pixels in, in a flat view's picture.
+    fn western_shore(m: &mut Map, view: &crate::View) -> ([u8; 3], [u8; 3]) {
+        let pm = crate::render_complete(m, view).unwrap().pixmap;
+        let (x, y) = view.camera.to_screen(lonlat_to_merc(Coord::new(0.2, -0.1)), view.width, view.height);
+        let at = |dx: f64| pm.pixel((x + dx) as u32, y as u32).map(|c| [c.red(), c.green(), c.blue()]).unwrap();
+        (at(1.5), at(12.0))
+    }
+
+    /// The band needs no Shaded Relief, and goes with the water layer: none while that layer
+    /// isn't drawn (hidden or out of its scale range). Two lakes on one another still get it.
+    #[test]
+    fn the_shore_band_goes_with_the_water_layer_not_the_relief() {
+        let flat = |shore: f64, setup: &dyn Fn(&mut Map)| {
+            let (mut m, view) = shored(shore, 0.0);
+            setup(&mut m);
+            western_shore(&mut m, &view)
+        };
+        let id = |m: &Map, name: &str| m.layers.iter().find(|l| l.name == name).map(|l| l.id).unwrap();
+        let no_relief = |m: &mut Map| {
+            let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+            m.layer_mut(dem).unwrap().visible = false;
+        };
+        let (edge, inside) = flat(0.0, &no_relief);
+        let (dark, dark_inside) = flat(1.0, &no_relief);
+        assert!(dark.iter().zip(&edge).all(|(d, e)| d < e), "darker without a relief: {dark:?} from {edge:?}");
+        assert_eq!(dark_inside, inside);
+        // The same lake twice: the band is drawn, not cancelled by the overlap.
+        let twice = |m: &mut Map| {
+            use rustgis_data::Value;
+            let lagos = id(m, "lagos");
+            let lake = vec![square(0.2, -0.2, 0.3), square(0.33, -0.02, 0.04)];
+            m.layer_mut(lagos).unwrap().dataset.push(Some(Geometry::Polygon(vec![lake])), vec![Value::Null]);
+        };
+        let (edge, _) = flat(0.0, &twice);
+        let (dark, _) = flat(1.0, &twice);
+        assert!(dark.iter().zip(&edge).all(|(d, e)| d < e), "darker with two lakes in one: {dark:?} from {edge:?}");
+        // The water layer hidden, or out of its scale range: no band.
+        let hidden = |m: &mut Map| {
+            let lagos = id(m, "lagos");
+            m.layer_mut(lagos).unwrap().visible = false;
+        };
+        assert_eq!(flat(1.0, &hidden), flat(0.0, &hidden), "no band while the water layer is hidden");
+        let out_of_range = |m: &mut Map| {
+            let lagos = id(m, "lagos");
+            m.layer_mut(lagos).unwrap().max_scale = Some(1e12);
+        };
+        assert_eq!(flat(1.0, &out_of_range), flat(0.0, &out_of_range), "no band out of the water layer's scale range");
+    }
+
+    /// Over elevation tiles still on their way, a frame with the band waits for them, without a
+    /// Shaded Relief too; with the band off, its water isn't read for it.
+    #[test]
+    fn a_shore_band_over_tiles_on_their_way_leaves_the_frame_pending() {
+        let pending = |shore: f64| {
+            let (mut m, view) = shored(shore, 0.0);
+            let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+            m.layer_mut(dem).unwrap().visible = false;
+            m.view.terrain.as_mut().unwrap().source = rustgis_map::view::TerrainSource::Tiles {
+                url: "https://shore-band.invalid/{z}/{x}/{y}.png".into(),
+                encoding: TerrainEncoding::Terrarium,
+            };
+            crate::render(&mut m, &view).unwrap().tiles_pending
+        };
+        assert!(pending(0.35), "the band's shore tiles are waited for");
+        assert!(!pending(0.0), "nothing read without the band");
     }
 }

@@ -1055,6 +1055,7 @@
         "enum": [
           "terrain-block",
           "terrain-water",
+          "terrain-water-shore",
           "shaded-relief-effects",
           "normalized-legend-urls",
           "field-origin",
@@ -1130,6 +1131,7 @@
   "x-rustgis-capabilities": [
     "terrain-block",
     "terrain-water",
+    "terrain-water-shore",
     "shaded-relief-effects",
     "normalized-legend-urls",
     "field-origin",

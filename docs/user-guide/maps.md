@@ -151,7 +151,11 @@ tone. The relief's ramp colours them at the water's level. A tilted view adds a 
 where the flat water would reflect the sun toward the eye, it goes toward white, broad and faint,
 so it shines a little on the sun's side. `"glint"` sets how much, 0 (none) to 1 (white at the
 brightest point), 0.3 by default. The sun is the first Shaded Relief layer drawn at the view's centre (its azimuth and altitude; shown, within its scale range and its groups'), or from the north-west at 45° without one. A flat view, seen from straight
-above, has no glint.
+above, has no glint. The water is darker along its shore, flat or tilted: a band a few pixels
+wide inside each lake's outline and around its islands, drawn over the water layer's fill,
+toward black at the outline and fading inward, as relief artists draw the edge of a lake.
+`"shore"` sets how dark it is at the outline, 0 (none) to 1 (black), 0.35 by default. It is
+drawn with the water layer, so it shows only where that layer is drawn.
 
 <figure markdown="span">
   ![Mount Rainier in USGS imagery draped over Terrarium elevation tiles, tilted 65°](https://assets.rustgis.app/images/terrain.webp)

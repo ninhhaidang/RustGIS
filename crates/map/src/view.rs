@@ -288,6 +288,10 @@ pub struct TerrainWater {
     /// 0 (none) to 1 (white at the brightest point).
     #[serde(default = "water_glint")]
     pub glint: f64,
+    /// How dark the band along the water's shore is at the outline, 0 (none) to 1 (black),
+    /// fading to nothing a few pixels inside it.
+    #[serde(default = "water_shore")]
+    pub shore: f64,
 }
 
 /// A terrain's water's sun glint when none is given (#1915): broad and faint.
@@ -295,6 +299,14 @@ pub const WATER_GLINT: f64 = 0.3;
 
 fn water_glint() -> f64 {
     WATER_GLINT
+}
+
+/// A terrain's water's shore band when none is given (#1915): a soft darkening, as relief
+/// artists draw the edge of a lake.
+pub const WATER_SHORE: f64 = 0.35;
+
+fn water_shore() -> f64 {
+    WATER_SHORE
 }
 
 /// The most a terrain's heights are exaggerated.

@@ -12242,7 +12242,7 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     // Set: the pond off the DEM, with no level either, stays on the ground, said once.
     let mark = s.notice_mark();
     let v = s.run("map.terrain", &json!({"water": {"layer": lagos, "level": "nivel"}})).unwrap();
-    assert_eq!(v["water"], json!({"layer": lagos, "level": "nivel", "glint": 0.3}));
+    assert_eq!(v["water"], json!({"layer": lagos, "level": "nivel", "glint": 0.3, "shore": 0.35}));
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert_eq!(said.iter().filter(|t| t.contains(&format!("1 polygon of '{lagos}' has no height along its shore"))).count(), 1, "{said:?}");
     // Another change keeps it, and it is saved with the project.
@@ -12307,6 +12307,15 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
         assert!(e.contains("glint is a number from 0 to 1"), "{e}");
     }
     assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.glint), Some(0.8));
+    // The shore band the same: 0.35 when left out, 0 to 1 when given, anything else refused.
+    assert_eq!(v["water"]["shore"], json!(rustgis_map::view::WATER_SHORE));
+    let v = s.run("map.terrain", &json!({"water": {"layer": mar, "shore": 0.0}})).unwrap();
+    assert_eq!(v["water"]["shore"], json!(0.0));
+    for bad in [json!(2), json!(-0.5), json!(true)] {
+        let e = s.run("map.terrain", &json!({"water": {"layer": mar, "shore": bad}})).unwrap_err();
+        assert!(e.contains("shore is a number from 0 to 1"), "{e}");
+    }
+    assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.shore), Some(0.0));
     // Removing the water's layer is said; the water keeps its name, for a layer of that name to
     // bring it back.
     let sea_id = s.map().layer_by_name(&mar).map(|l| l.id).unwrap();
@@ -12322,10 +12331,15 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     // A saved project's water is read back (the schema fixture `terrain_water.rgis`).
     let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water.rgis")).unwrap();
     let water = saved.maps[0].view.terrain.as_ref().and_then(|t| t.water.clone());
-    // Saved before the glint (#1915 part 3), it takes the default.
+    // Saved before the glint and the shore band (#1915 parts 3 and 4), it takes their defaults.
     assert_eq!(
         water,
-        Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: Some("nivel".into()), glint: rustgis_map::view::WATER_GLINT })
+        Some(rustgis_map::view::TerrainWater {
+            layer: "lagos".into(),
+            level: Some("nivel".into()),
+            glint: rustgis_map::view::WATER_GLINT,
+            shore: rustgis_map::view::WATER_SHORE,
+        })
     );
     // One saved with its glint off keeps it off (`terrain_water_glint.rgis`).
     let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water_glint.rgis")).unwrap();
@@ -12339,6 +12353,18 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
         assert_eq!(p.maps[0].view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.glint), Some(kept), "{edited}");
         let said: Vec<String> = p.take_read_notices(&crate::project::ALL_PARTS).iter().map(|n| n.english()).collect();
         assert_eq!(said.iter().filter(|t| t.contains("terrain water glint(s) outside 0 to 1")).count(), 1, "{said:?}");
+    }
+    // One saved with its shore band off keeps it off (`terrain_water_shore.rgis`); one out of
+    // range is brought into 0 to 1, said once.
+    let text = include_str!("../../../schema/fixtures/terrain_water_shore.rgis");
+    let mut clean = Project::from_json(text).unwrap();
+    assert_eq!(clean.maps[0].view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.shore), Some(0.0));
+    assert!(!clean.take_read_notices(&crate::project::ALL_PARTS).iter().any(|n| n.english().contains("shore")));
+    for (edited, kept) in [("1.5", 1.0), ("-0.5", 0.0)] {
+        let mut p = Project::from_json(&text.replace("\"shore\":0.0", &format!("\"shore\":{edited}"))).unwrap();
+        assert_eq!(p.maps[0].view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.shore), Some(kept), "{edited}");
+        let said: Vec<String> = p.take_read_notices(&crate::project::ALL_PARTS).iter().map(|n| n.english()).collect();
+        assert_eq!(said.iter().filter(|t| t.contains("terrain water shore band(s) outside 0 to 1")).count(), 1, "{said:?}");
     }
 }
 
