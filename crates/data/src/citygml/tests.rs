@@ -2627,3 +2627,84 @@ fn an_extension_of_2_0_keeps_its_own_properties_named_as_3_0s() {
     assert_eq!(value(buildings, row_of(buildings, "p1"), "parent"), Value::Null, "no part made");
     assert_eq!(value(buildings, row_of(buildings, "b1"), "buildingPart"), Value::Text("#p1".into()));
 }
+
+/// An object of type `ty` with a floor and a roof 5 above it, as a member: in 2.0's building
+/// namespace, or in 3.0's core.
+fn raised(ty: &str, v3: bool) -> String {
+    let faces = format!(
+        "<gml:MultiSurface><gml:surfaceMember>{}</gml:surfaceMember><gml:surfaceMember>{}</gml:surfaceMember></gml:MultiSurface>",
+        polygon(&format!("{ty}-f"), &square(0.0, 0.0, 10.0, 0.0)),
+        polygon(&format!("{ty}-r"), &square(0.0, 0.0, 10.0, 5.0)),
+    );
+    if v3 {
+        format!(r#"<cityObjectMember><{ty} gml:id="{ty}"><lod1MultiSurface>{faces}</lod1MultiSurface></{ty}></cityObjectMember>"#)
+    } else {
+        format!(
+            r#"<core:cityObjectMember><bldg:{ty} gml:id="{ty}"><bldg:lod1MultiSurface>{faces}</bldg:lod1MultiSurface></bldg:{ty}></core:cityObjectMember>"#
+        )
+    }
+}
+
+/// Whether the layer of objects of type `ty` comes in extruded by `height` on `base_height`.
+fn stands_in(out: &[(Dataset, ReadReport)], ty: &str) -> bool {
+    let name = format!("m {ty}");
+    let (_, report) = out.iter().find(|(d, _)| d.name == name).unwrap_or_else(|| panic!("no layer {name}"));
+    report.extrusion.as_ref().is_some_and(|x| x.height_field == "height" && x.base_field == "base_height")
+}
+
+/// Volumes come in extruded by their CityGML names, 2.0's and 3.0's; surfaces on or below the
+/// ground, what lies inside another object and an extension's type stay flat (#2161).
+#[test]
+fn volumes_come_in_extruded_and_surfaces_flat() {
+    let standing_2 =
+        ["Building", "BuildingPart", "BuildingInstallation", "Bridge", "BridgeConstructionElement", "CityFurniture", "GenericCityObject"];
+    let flat_2 = [
+        "Road",
+        "Railway",
+        "Track",
+        "Square",
+        "TransportationComplex",
+        "WaterBody",
+        "LandUse",
+        "PlantCover",
+        "Tunnel",
+        "Room",
+        "IntBuildingInstallation",
+        "BuildingFurniture",
+        "NoiseBarrier",
+    ];
+    let members: String = standing_2.iter().chain(&flat_2).map(|ty| raised(ty, false)).collect();
+    let out = read("m.gml", &lonlat(&members), None).unwrap();
+    for ty in standing_2 {
+        assert!(stands_in(&out, ty), "2.0 {ty} should come in extruded");
+    }
+    for ty in flat_2 {
+        assert!(!stands_in(&out, ty), "2.0 {ty} should come in flat");
+    }
+    let standing_3 = [
+        "BuildingConstructiveElement",
+        "BridgeConstructiveElement",
+        "TunnelInstallation",
+        "GenericOccupiedSpace",
+        "OtherConstruction",
+        "SolitaryVegetationObject",
+    ];
+    let flat_3 = [
+        "Waterway",
+        "HollowSpace",
+        "BuildingRoom",
+        "Storey",
+        "BuildingUnit",
+        "GenericUnoccupiedSpace",
+        "GenericLogicalSpace",
+        "GenericThematicSurface",
+    ];
+    let members: String = standing_3.iter().chain(&flat_3).map(|ty| raised(ty, true)).collect();
+    let out = read("m.gml", &model3("EPSG:4326", &members), None).unwrap();
+    for ty in standing_3 {
+        assert!(stands_in(&out, ty), "3.0 {ty} should come in extruded");
+    }
+    for ty in flat_3 {
+        assert!(!stands_in(&out, ty), "3.0 {ty} should come in flat");
+    }
+}

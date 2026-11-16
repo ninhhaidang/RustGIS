@@ -35,10 +35,49 @@ pub(crate) const MAX_PARENT_VISITS: usize = if cfg!(target_arch = "wasm32") { 50
 pub(crate) const MAX_TYPE_IN_NAME: usize = 64;
 /// The fields every row starts with.
 const LEAD: [&str; 4] = ["id", "type", "parent", "lod"];
+/// How tall an object is, from its lowest point to its highest.
+const HEIGHT: &str = "height";
+/// How far an object's lowest point is above the lowest point of the topmost object it is part of.
+const BASE_HEIGHT: &str = "base_height";
 /// The fields every row ends with.
-const HEIGHTS: [&str; 4] = ["z_min", "z_max", "height", "base_height"];
+const HEIGHTS: [&str; 4] = ["z_min", "z_max", HEIGHT, BASE_HEIGHT];
 /// Most names listed in one notice.
 const MAX_LISTED: usize = 16;
+/// The object types that come in extruded: volumes standing above the ground, by their CityJSON
+/// names and the CityGML 1.0, 2.0 and 3.0 names where they differ. Surfaces on or below the ground
+/// (roads, water, land, tunnels), what lies inside another object (rooms, storeys, furniture) and
+/// any other type (an extension's) stay flat: raised by their height range, they would stand as
+/// walls across the model or hide what holds them.
+const STANDING: &[&str] = &[
+    "Building",
+    "BuildingPart",
+    "BuildingInstallation",
+    "BuildingConstructiveElement",
+    "Bridge",
+    "BridgePart",
+    "BridgeInstallation",
+    "BridgeConstructiveElement",
+    "BridgeConstructionElement",
+    "TunnelInstallation",
+    "CityFurniture",
+    "SolitaryVegetationObject",
+    "GenericCityObject",
+    "GenericOccupiedSpace",
+    "OtherConstruction",
+];
+
+/// The parts whose volumes stand for their object's: a building of parts stands in them.
+const PARTS: [&str; 2] = ["BuildingPart", "BridgePart"];
+
+/// Whether a layer of objects of type `ty` comes in extruded ([`STANDING`]).
+fn stands(ty: &str) -> bool {
+    STANDING.contains(&ty)
+}
+
+/// Whether an object has a height to stand by: its highest point above its lowest.
+fn rises(b: &Built) -> bool {
+    b.z.is_some_and(|(lo, hi)| (hi - lo).is_finite() && hi > lo)
+}
 
 /// Whether a name is one of the fields every row has, which a same-named attribute gives way to.
 fn is_reserved(name: &str) -> bool {
@@ -877,8 +916,8 @@ fn properties<'a>(b: &'a Built, lod: Option<&'a str>, names: &'a HashMap<String,
     let heights = [
         ("z_min", number(lo)),
         ("z_max", number(hi)),
-        ("height", number(lo.zip(hi).map(|(l, h)| h - l))),
-        ("base_height", number(lo.zip(b.ground).map(|(l, g)| l - g))),
+        (HEIGHT, number(lo.zip(hi).map(|(l, h)| h - l))),
+        (BASE_HEIGHT, number(lo.zip(b.ground).map(|(l, g)| l - g))),
     ];
     let own = b.attributes.iter().map(|(k, v)| (names.get(k).map_or(k.as_str(), String::as_str), Cow::Borrowed(v)));
     fixed.into_iter().map(|(k, v)| (k, Cow::Owned(v))).chain(own).chain(heights.into_iter().map(|(k, v)| (k, Cow::Owned(v)))).collect()
@@ -928,6 +967,16 @@ pub(crate) fn unique_names(names: Vec<String>) -> Vec<String> {
 /// any. Those that draw something come first: a file named `.json` adds only the first layer, and
 /// the cap leaves out the last.
 fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Counts) -> Vec<(Dataset, ReadReport)> {
+    // The objects whose parts stand with polygons of their own: their heights take in the parts'
+    // (`raise_parents`), so standing too they would cover the lower parts with the tallest one.
+    let carried: HashSet<&str> = rows
+        .iter()
+        .filter(|r| r.family == Family::Polygon && r.geometry.is_some())
+        .filter_map(|r| built.get(r.object))
+        .filter(|b| PARTS.contains(&b.ty.as_str()) && rises(b))
+        .flat_map(|b| b.parent_ids.iter().map(String::as_str))
+        .filter(|id| !id.is_empty())
+        .collect();
     let mut groups: BTreeMap<(String, Family), Vec<(Row, &Built)>> = BTreeMap::new();
     for row in rows {
         let Some(b) = built.get(row.object) else { continue };
@@ -957,7 +1006,14 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
             .collect(),
     );
     let mut out = Vec::with_capacity(total.min(MAX_LAYERS));
-    for (((_, family), rows), name) in sorted.into_iter().zip(names) {
+    for (((ty, family), rows), name) in sorted.into_iter().zip(names) {
+        // A layer of volumes stands on its base, when one of them has a height to stand by, unless
+        // every one of them stands in its parts.
+        let drawn = || rows.iter().filter(|(r, _)| r.geometry.is_some());
+        let standing = family == Family::Polygon
+            && stands(&ty)
+            && drawn().any(|(_, b)| rises(b))
+            && !drawn().all(|(_, b)| carried.contains(b.id.as_str()));
         let renames = attribute_names(rows.iter().map(|(_, b)| *b), counts);
         // Typed as the GeoJSON reader types properties, without writing them out and reading them
         // back: first every value for the types, then each row's, one row at a time.
@@ -1000,6 +1056,9 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
             ds.push_next(row.geometry, attrs);
         }
         let mut report = ReadReport::default();
+        if standing {
+            report.extrusion = Some(crate::SuggestedExtrusion { height_field: HEIGHT.into(), base_field: BASE_HEIGHT.into() });
+        }
         ds.crs = (crs != Crs::LonLat).then_some(crs);
         ds.drop_zm(&mut report, z_dropped);
         out.push((ds, report));

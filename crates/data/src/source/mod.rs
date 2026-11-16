@@ -641,6 +641,7 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         synced: None,
         unread_dates: unread_dates.clone(),
         rounded_dates: rounded.clone(),
+        extrusion: None,
     };
     report.messages.extend(unread_dates.into_iter().chain(rounded).map(|n| format!("{}: {n}", info.name)));
     if ds.geometry_type == GeometryType::None

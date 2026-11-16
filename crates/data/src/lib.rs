@@ -433,6 +433,17 @@ pub struct ReadReport {
     /// What it says of date-times it rounded to the microsecond ([`source::rounded_dates_note`]),
     /// also in `messages`.
     pub rounded_dates: Option<String>,
+    /// The extrusion the reader suggests for the layer (a city model's volumes): applied when the
+    /// layer is added, and only then; a reload keeps the layer's own.
+    pub extrusion: Option<SuggestedExtrusion>,
+}
+
+/// An extrusion a reader suggests for a layer of polygons: heights from one field, on a base from
+/// another.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SuggestedExtrusion {
+    pub height_field: String,
+    pub base_field: String,
 }
 
 /// What a read says when it drops Z or M values (see [`Dataset::zm_dropped`]): from `features` of

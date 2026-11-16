@@ -1654,3 +1654,129 @@ fn a_degenerate_template_still_says_rings_placing_flattens() {
     let out = read("m.city.json", &instanced(flat, templates), None).unwrap();
     assert!(says(&out, "4 rings with fewer than three different points are left out"), "{:?}", messages_of(&out));
 }
+
+/// Whether the layer named `name` comes in extruded by `height` on `base_height`.
+fn stands_in(out: &[(Dataset, ReadReport)], name: &str) -> bool {
+    let (_, report) = out.iter().find(|(d, _)| d.name == name).unwrap_or_else(|| panic!("no layer '{name}'"));
+    match &report.extrusion {
+        None => false,
+        Some(x) => {
+            assert_eq!((x.height_field.as_str(), x.base_field.as_str()), ("height", "base_height"));
+            true
+        }
+    }
+}
+
+/// Volumes come in extruded; surfaces on or below the ground, what lies inside another object and
+/// an extension's type stay flat (#2161).
+#[test]
+fn volumes_come_in_extruded_and_surfaces_flat() {
+    let standing = [
+        "Building",
+        "BuildingPart",
+        "BuildingInstallation",
+        "BuildingConstructiveElement",
+        "Bridge",
+        "BridgePart",
+        "BridgeInstallation",
+        "BridgeConstructiveElement",
+        "TunnelInstallation",
+        "CityFurniture",
+        "SolitaryVegetationObject",
+        "GenericCityObject",
+        "OtherConstruction",
+    ];
+    let flat = [
+        "Road",
+        "Railway",
+        "Waterway",
+        "TransportSquare",
+        "WaterBody",
+        "LandUse",
+        "PlantCover",
+        "Tunnel",
+        "TunnelPart",
+        "TunnelHollowSpace",
+        "BuildingRoom",
+        "BuildingStorey",
+        "BuildingUnit",
+        "BuildingFurniture",
+        "BridgeRoom",
+        "BridgeFurniture",
+        "TunnelFurniture",
+        "+NoiseBarrier",
+    ];
+    let objects: serde_json::Map<String, Json> = standing
+        .iter()
+        .chain(&flat)
+        .map(|ty| (format!("o-{ty}"), json!({"type": ty, "geometry": [{"type": "Solid", "lod": "2", "boundaries": box_shell()}]})))
+        .collect();
+    let out = read("m.city.json", &doc(box_vertices(), Json::Object(objects)), None).unwrap();
+    for ty in standing {
+        assert!(stands_in(&out, &format!("m {ty}")), "{ty} should come in extruded");
+    }
+    for ty in flat {
+        assert!(!stands_in(&out, &format!("m {ty}")), "{ty} should come in flat");
+    }
+}
+
+/// Only a type's polygons stand, and only when one of them has a height: its lines and points, and
+/// a building with none, stay flat. `+GenericCityObject` (1.1) is `GenericCityObject`.
+#[test]
+fn lines_points_and_flat_volumes_come_in_flat() {
+    let bytes = doc(
+        box_vertices(),
+        json!({
+            "a": {"type": "Building", "geometry": [{"type": "MultiSurface", "lod": "1", "boundaries": [[[4, 5, 6, 7]]]}]},
+            "l": {"type": "CityFurniture", "geometry": [{"type": "MultiLineString", "lod": "1", "boundaries": [[0, 1, 6]]}]},
+            "b": {"type": "Bridge", "geometry": [{"type": "MultiPoint", "lod": "1", "boundaries": [0, 6]}]},
+            "c": {"type": "+GenericCityObject", "geometry": [{"type": "Solid", "lod": "2", "boundaries": box_shell()}]},
+        }),
+    );
+    let out = read("m.city.json", &bytes, None).unwrap();
+    assert!(!stands_in(&out, "m Building"), "a building's footprint at one height has none to stand by");
+    assert_eq!(out.iter().find(|(d, _)| d.name == "m CityFurniture").map(|(d, _)| d.geometry_type), Some(GeometryType::Polyline));
+    assert!(!stands_in(&out, "m CityFurniture"), "lines rising from 0 to 5 m still stay lines");
+    assert!(!stands_in(&out, "m Bridge"));
+    assert!(stands_in(&out, "m GenericCityObject"));
+}
+
+/// A building that stands in its parts (an outline at LoD 0, its volume in its `BuildingPart`s)
+/// stays flat, so its tallest part doesn't cover the others; one with no parts, or parts drawing no
+/// polygons, still stands, as do all of them when only some stand in parts.
+#[test]
+fn a_building_of_parts_stands_in_them() {
+    let outline = json!([{"type": "MultiSurface", "lod": "0", "boundaries": [[[0, 1, 2, 3]]]}]);
+    let solid = json!([{"type": "Solid", "lod": "2", "boundaries": box_shell()}]);
+    let all_in_parts = doc(
+        box_vertices(),
+        json!({
+            "b": {"type": "Building", "children": ["p"], "geometry": outline},
+            "p": {"type": "BuildingPart", "parents": ["b"], "geometry": solid},
+        }),
+    );
+    let out = read("m.city.json", &all_in_parts, None).unwrap();
+    assert!(!stands_in(&out, "m Building"), "its parts carry its volume");
+    assert!(stands_in(&out, "m BuildingPart"));
+
+    let some_in_parts = doc(
+        box_vertices(),
+        json!({
+            "b": {"type": "Building", "children": ["p"], "geometry": outline},
+            "p": {"type": "BuildingPart", "parents": ["b"], "geometry": solid},
+            "c": {"type": "Building", "geometry": solid},
+        }),
+    );
+    let out = read("m.city.json", &some_in_parts, None).unwrap();
+    assert!(stands_in(&out, "m Building"), "a building of its own still stands");
+
+    let installed = doc(
+        box_vertices(),
+        json!({
+            "b": {"type": "Building", "children": ["i"], "geometry": solid},
+            "i": {"type": "BuildingInstallation", "parents": ["b"], "geometry": solid},
+        }),
+    );
+    let out = read("m.city.json", &installed, None).unwrap();
+    assert!(stands_in(&out, "m Building"), "an installation isn't a part");
+}

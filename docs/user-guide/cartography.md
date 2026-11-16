@@ -731,6 +731,11 @@ the height or the factor. The `layer.extrusionBase` command does the same (`fiel
 and on a tilted map drawn without the graphics card, extrusions are painted in the order they
 stand on the ground, so a part raised over a building behind it may be painted under it.
 
+A city model (CityJSON or CityGML) comes in standing: when it is added, the polygon layers of its
+volumes are extruded by `height` on `base_height`, and its surfaces stay flat (see
+[Data formats](data-formats.md), CityJSON). **Style › Extrusion › Type › None** turns one off, and undo
+takes the layers away with their extrusion. Other data with the same fields comes in flat.
+
 Layers that go together, such as a city model's layers, are raised at once: pick them in the
 Layers pane, right-click one of them and choose **Extrusion › None** or **By** a numeric field
 every one of them has (**By height**) and, once all are extruded, **Extrusion Base › Ground** or

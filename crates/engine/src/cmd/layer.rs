@@ -5610,6 +5610,9 @@ pub(crate) fn add_read(
     let id = add_dataset(s, ds);
     if let Some(l) = s.map_mut().layer_mut(id) {
         l.synced = synced;
+        if let Some(x) = report.extrusion {
+            stand(l, &x);
+        }
     }
     if zoom.unwrap_or(empty_before)
         && let Some(e) = s.map().layer(id).map(|l| l.extent())
@@ -5617,6 +5620,20 @@ pub(crate) fn add_read(
         s.zoom_to(&e);
     }
     Ok(json!({"layer": id, "features": n}))
+}
+
+/// Extrudes a layer just added as its reader suggests (a city model's buildings and bridges): by
+/// its height field, on its base field, each only when it is numeric. A layer that isn't of
+/// polygons, or has no numeric height field, stays flat; the height where the field holds no number
+/// is 0, so an object with none stays flat too.
+fn stand(l: &mut rustgis_map::Layer, x: &rustgis_data::SuggestedExtrusion) {
+    if l.dataset.geometry_type != GeometryType::Polygon {
+        return;
+    }
+    let numeric = |n: &str| super::effects::numeric_field(&l.dataset, n).ok();
+    let Some(field) = numeric(&x.height_field) else { return };
+    let base_field = numeric(&x.base_field);
+    l.extrusion = Some(rustgis_map::effects::Extrusion { field: Some(field), base_field, ..Default::default() });
 }
 
 fn add_sample(s: &mut Session, p: &Value) -> CmdResult {

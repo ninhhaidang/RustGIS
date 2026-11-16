@@ -236,8 +236,10 @@ fn extrusion(s: &mut Session, p: &Value) -> CmdResult {
         } else {
             let own = field.map(|n| numeric_field(&l.dataset, n)).transpose()?;
             // A new extrusion starts at 1,000 m, so it shows; an extruded layer keeps its own height
-            // (the fallback where the field holds no number), as it keeps its factor.
-            let height = l.extrusion.as_ref().map(|x| x.height).filter(|h| h.is_finite()).unwrap_or(1000.0);
+            // (the fallback where the field holds no number), as it keeps its factor. A constant
+            // height of 0 shows nothing, so one kept at 0 (a city model's fallback) starts at
+            // 1,000 m too.
+            let height = l.extrusion.as_ref().map(|x| x.height).filter(|h| h.is_finite() && (t != "height" || *h > 0.0)).unwrap_or(1000.0);
             let keep = l.extrusion.clone().unwrap_or_default();
             Some(Extrusion {
                 field: own,
@@ -272,7 +274,7 @@ fn extrusion(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 /// The name of the numeric field `n` (matched as `field_index` matches), or why there is none.
-fn numeric_field(ds: &rustgis_data::Dataset, n: &str) -> Result<String, String> {
+pub(crate) fn numeric_field(ds: &rustgis_data::Dataset, n: &str) -> Result<String, String> {
     ds.field_index(n)
         .and_then(|i| ds.fields.get(i))
         .filter(|f| f.ty.is_numeric())

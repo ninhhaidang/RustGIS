@@ -51793,3 +51793,55 @@ fn standalone_dbf_add_data_uses_tables_and_companion_shapefile() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A city model's buildings come in standing by `height` on `base_height`, its roads flat; one undo
+/// takes the layers away with their extrusion. Other data with the same columns comes in flat
+/// (#2161).
+#[test]
+fn a_city_models_volumes_come_in_extruded() {
+    let shell = json!([[[[0, 3, 2, 1]], [[4, 5, 6, 7]], [[0, 1, 5, 4]]]]);
+    let model = json!({
+        "type": "CityJSON",
+        "version": "2.0",
+        "transform": {"scale": [0.001, 0.001, 1.0], "translate": [0.0, 0.0, 0.0]},
+        "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/4326"},
+        "vertices": [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 12], [10, 0, 12], [10, 10, 12], [0, 10, 12]],
+        "CityObjects": {
+            "b": {"type": "Building", "geometry": [{"type": "Solid", "lod": "2", "boundaries": shell}]},
+            "r": {"type": "Road", "geometry": [{"type": "Solid", "lod": "2", "boundaries": shell}]},
+        },
+    })
+    .to_string();
+    for picked in [None, Some("Building")] {
+        let mut s = Session::new(Project::default());
+        let mut params = json!({"fileName": "m.city.json", "text": model});
+        if let Some(want) = picked {
+            params["layer"] = json!(want);
+        }
+        s.run("layer.addDataText", &params).unwrap();
+        let x = s.map().layer_by_name("m Building").and_then(|l| l.extrusion.clone()).expect("the building stands");
+        assert_eq!((x.field.as_deref(), x.base_field.as_deref()), (Some("height"), Some("base_height")));
+        assert_eq!((x.height, x.factor), (0.0, 1.0), "an object without a height stays flat");
+        if picked.is_none() {
+            assert!(s.map().layer_by_name("m Road").is_some_and(|l| l.extrusion.is_none()), "a road stays flat");
+        }
+        s.run("edit.undo", &Value::Null).unwrap();
+        assert!(s.map().layers.is_empty(), "one undo takes the model away");
+    }
+    // Named `.json`, the first layer comes in alone, standing too.
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName": "m.json", "text": model})).unwrap();
+    assert!(s.map().layer_by_name("m Building").is_some_and(|l| l.extrusion.is_some()));
+    // Its fallback of 0 isn't kept for a constant height, which would show nothing; a field keeps it.
+    s.run("layer.extrusion", &json!({"layer": "m Building", "type": "field", "field": "height"})).unwrap();
+    assert_eq!(s.map().layer_by_name("m Building").and_then(|l| l.extrusion.as_ref()).map(|x| x.height), Some(0.0));
+    s.run("layer.extrusion", &json!({"layer": "m Building", "type": "height"})).unwrap();
+    assert_eq!(s.map().layer_by_name("m Building").and_then(|l| l.extrusion.as_ref()).map(|x| x.height), Some(1000.0));
+    let geojson = json!({"type": "FeatureCollection", "features": [{"type": "Feature",
+        "properties": {"type": "Building", "height": 12.0, "base_height": 0.0},
+        "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}}]})
+    .to_string();
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName": "b.geojson", "text": geojson})).unwrap();
+    assert!(s.map().layers.iter().all(|l| l.extrusion.is_none()), "only a reader that knows the type extrudes");
+}
