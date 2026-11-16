@@ -1553,6 +1553,7 @@ impl RustGisApp {
         // store, installed before prefs.
         self.session.database_logins.set_store(services.secrets.clone());
         rustgis_engine::render::rustgis_tiles::earthdata::set_secret_store(services.secrets.clone());
+        rustgis_engine::render::rustgis_tiles::copernicus::set_secret_store(services.secrets.clone());
         self.services = services;
         shortcutui::load(&mut self);
         sourcespane::load_connections(&mut self);

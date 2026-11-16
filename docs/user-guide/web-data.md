@@ -573,7 +573,8 @@ Cover 100 m and 10 m, Tree Cover Density…) and the Sentinel-1 and Sentinel-2 m
 [STAC catalog](https://stac.dataspace.copernicus.eu/v1) is open, but its files need a sign-in with
 a free CDSE account. `copernicus.login` signs in with the account's username and password (and
 `"totp"`, the one-time code, for an account with two-factor authentication). The password is sent
-once, to CDSE's sign-in server (`identity.dataspace.copernicus.eu`), and never kept. The token it
+only to CDSE's sign-in server (`identity.dataspace.copernicus.eu`), and kept only if remembered
+(below). The token it
 gives is kept until RustGIS closes, never in the project, and renewed before it expires; once it
 can't be renewed any more (after a long pause), the sign-in ends and `copernicus.status` says so.
 The token is sent only over HTTPS to CDSE's data servers (`download.dataspace.copernicus.eu` and
@@ -584,8 +585,19 @@ A collection's items list each band as an asset whose `alternate.https` address 
 server: add it with `layer.addUrl` (`"cog": true`, since the address ends in `$value`, and `"bbox"`
 for a window) and it is read in place, as any COG. A plugin does the same and never sees the token. `copernicus.status` reports the sign-in (as whom, when the token
 expires, until when it is renewed); `copernicus.logout` forgets it and empties the download cache.
-Signing in is for the desktop app and the command line; it isn't remembered between runs (a
-password typed in a command line stays in the shell's history).
+Signing in is for the desktop app and the command line (a password typed in a command line stays
+in the shell's history).
+
+With `"remember": true`, the username and password are also kept on this computer, in the system's
+credential store (Windows Credential Manager, the macOS Keychain, the Secret Service on Linux; the
+command line's only when it opts in to saved secrets), never in the project or a setting. RustGIS
+then signs in by itself (sending the remembered password to CDSE's sign-in server): the desktop app
+when it starts, the command line when a command names a file on CDSE, and either one again
+whenever the sign-in ends.
+Signing in without `remember` deletes the one remembered before, and so does `copernicus.logout`;
+if CDSE refuses it (after a password change), it is deleted and `copernicus.status` says the
+sign-in expired. An account with two-factor authentication isn't remembered, since each sign-in
+needs its one-time code. `copernicus.status` says whether a sign-in is remembered.
 
 ```sh
 rustgis-cli run --cmd 'copernicus.login={"username":"you@example.org","password":"…"}' --cmd 'layer.addUrl={"url":"https://download.dataspace.copernicus.eu/odata/v1/Products(…)/Nodes(…)/Nodes(….tif)/$value","cog":true,"bbox":[-43.0,-20.84,-42.75,-20.65]}'

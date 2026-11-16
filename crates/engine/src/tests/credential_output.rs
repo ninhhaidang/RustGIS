@@ -1043,7 +1043,10 @@ fn copernicus_sign_in_secrets_stay_out_of_history_and_errors() {
     // A one-time code given as a number (its leading zeros lost) is refused, not dropped.
     let e = s.run("copernicus.login", &json!({"username": "reader@example.invalid", "password": SECRET, "totp": 246810})).unwrap_err();
     assert!(e.contains("totp is text") && !e.contains(SECRET) && !e.contains("246810"), "{e}");
+    // A mistyped `remember` is refused before anything is sent (or a remembered one deleted).
+    let e = s.run("copernicus.login", &json!({"username": "reader@example.invalid", "password": SECRET, "remember": "yes"})).unwrap_err();
+    assert!(e.contains("remember is true or false") && !e.contains(SECRET), "{e}");
     let status = s.run("copernicus.status", &Value::Null).unwrap();
-    assert_eq!(status, json!({"signedIn": false, "expired": false}));
+    assert_eq!(status, json!({"signedIn": false, "remembered": false, "expired": false}));
     assert_eq!(s.run("copernicus.logout", &Value::Null).unwrap(), status);
 }

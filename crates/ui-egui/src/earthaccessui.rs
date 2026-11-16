@@ -486,6 +486,8 @@ pub(crate) fn restore(app: &mut RustGisApp, ctx: &egui::Context) {
         let ctx = ctx.clone();
         let read = std::thread::Builder::new().name("earthdata-token".into()).spawn(move || {
             earthdata::restore();
+            // The Copernicus Data Space sign-in remembered in the same store signs in too.
+            rustgis_engine::render::rustgis_tiles::copernicus::restore();
             ctx.request_repaint();
         });
         if read.is_err() {

@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 /// Whether a parameter is the address of a file on an Earthdata data host. Walks with a list, not
 /// by recursion: parameters are hostile.
-fn names_earthdata_host(params: &Value) -> bool {
+fn names_host(params: &Value, is_host: fn(&str) -> bool) -> bool {
     let mut left = vec![params];
     while let Some(value) = left.pop() {
         match value {
-            Value::String(text) if crate::render::rustgis_tiles::earthdata::is_data_host(text) => return true,
+            Value::String(text) if is_host(text) => return true,
             Value::Array(items) => left.extend(items),
             Value::Object(fields) => left.extend(fields.values()),
             _ => {}
@@ -772,8 +772,13 @@ impl<'a> Builder<'a> {
                 // The command line and Python read the remembered token only for a command that
                 // needs it, and it must be read before this snapshot or the command's first
                 // request changes the account and cancels it (#1626). The app reads it at launch.
-                if session.saved_secrets_opted_in && names_earthdata_host(params) {
+                if session.saved_secrets_opted_in && names_host(params, crate::render::rustgis_tiles::earthdata::is_data_host) {
                     crate::render::rustgis_tiles::earthdata::restore();
+                }
+                // Likewise the Copernicus Data Space sign-in remembered on this computer.
+                #[cfg(not(target_arch = "wasm32"))]
+                if session.saved_secrets_opted_in && names_host(params, crate::render::rustgis_tiles::copernicus::is_data_host) {
+                    crate::render::rustgis_tiles::copernicus::restore();
                 }
                 self.auth = Some(Arc::new(super::scope::RuntimeAccounts::capture(session)?));
             }

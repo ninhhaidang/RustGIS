@@ -274,3 +274,195 @@ fn a_renewal_lands_only_on_the_sign_in_it_was_for() {
     assert!(!identity.is_current(), "a renewal changes the identity");
     logout();
 }
+
+/// A credential store in memory for the test, and a fake token endpoint for `restore`; both
+/// taken away at the end, even when the test fails.
+struct Remembering(Arc<rustgis_data::secrets::MemorySecrets>);
+
+impl Remembering {
+    fn new(endpoint: &str) -> Remembering {
+        let store = Arc::new(rustgis_data::secrets::MemorySecrets::new());
+        set_secret_store(Some(store.clone()));
+        *TEST_TOKEN_URL.lock().unwrap_or_else(|e| e.into_inner()) = Some(endpoint.to_string());
+        Remembering(store)
+    }
+
+    fn kept(&self) -> Option<String> {
+        self.0.load(ACCOUNT).unwrap().map(|s| s.expose().to_string())
+    }
+}
+
+impl Drop for Remembering {
+    fn drop(&mut self) {
+        set_secret_store(None);
+        *TEST_TOKEN_URL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        logout();
+    }
+}
+
+#[test]
+fn a_remembered_sign_in_signs_in_again_when_none_is_kept_and_a_sign_out_deletes_it() {
+    let _turn = crate::cache::turn();
+    logout();
+    let (base, asked) = serve(|_| json_answer(200, &grant("access-one", "refresh-one", 1800, 3600)));
+    let store = Remembering::new(&base);
+    let (info, warning) = login_remembering_at(&base, USER, PASSWORD, None, true).unwrap();
+    assert_eq!((info.username.as_str(), warning), (USER, None));
+    let _ = asked.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The username and password are in the store, and only there: never a token.
+    let kept = store.kept().unwrap();
+    assert_eq!(read_remembered(&kept), Some((USER.to_string(), PASSWORD.to_string())));
+    assert!(!kept.contains("access-one") && !kept.contains("refresh-one"), "{kept}");
+    assert!(is_remembered());
+    // A new run: nothing kept for the session, the store not read yet.
+    set_secret_store(Some(store.0.clone()));
+    logout();
+    assert_eq!(authorization_fresh_using("https://example.com/x.tif", None, |_, _, _| panic!("no renewal")), None);
+    assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "another host doesn't sign in");
+    assert_eq!(authorization_fresh_using(DATA, None, |_, _, _| panic!("no renewal")).as_deref(), Some("Bearer access-one"));
+    let request = asked.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(request.ends_with("&username=synthetic.user%40example.invalid&password=synthetic%20pa%26ss%3Dword%25"), "{request}");
+    // Both tokens expired: it signs in again rather than ending.
+    {
+        let mut st = state();
+        let s = st.session.as_mut().unwrap();
+        s.expires_at = now_secs() - 1;
+        s.refresh_expires_at = now_secs() - 1;
+    }
+    assert_eq!(authorization_fresh(DATA).as_deref(), Some("Bearer access-one"));
+    assert!(asked.recv_timeout(Duration::from_secs(5)).unwrap().contains("grant_type=password"));
+    assert!(!expired());
+    // A sign-out deletes it: nothing signs in again.
+    assert_eq!(forget(), Ok(()));
+    assert!(store.kept().is_none() && !is_remembered() && signed_in().is_none());
+    assert_eq!(authorization_fresh(DATA), None);
+    assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "a forgotten sign-in isn't used");
+}
+
+#[test]
+fn a_sign_in_not_to_be_remembered_deletes_the_one_before_and_two_factor_is_never_kept() {
+    let _turn = crate::cache::turn();
+    logout();
+    let (base, _asked) = serve(|_| json_answer(200, &grant("access", "refresh", 1800, 3600)));
+    // No store (the command line without saved secrets): kept for the session only.
+    set_secret_store(None);
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, None, true).unwrap().1, Some(NO_STORE));
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, None, false).unwrap().1, None);
+    let store = Remembering::new(&base);
+    login_remembering_at(&base, USER, PASSWORD, None, true).unwrap();
+    assert!(store.kept().is_some());
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, None, false).unwrap().1, None);
+    assert!(store.kept().is_none() && !is_remembered());
+    login_remembering_at(&base, USER, PASSWORD, None, true).unwrap();
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, Some("123456"), true).unwrap().1, Some(TWO_FACTOR));
+    assert!(store.kept().is_none(), "a two-factor account's password isn't remembered, and the one before is gone");
+    assert!(signed_in().is_some(), "kept for the session");
+    // A refused sign-in leaves the one remembered before.
+    login_remembering_at(&base, USER, PASSWORD, None, true).unwrap();
+    let (refusing, _) = serve(|_| json_answer(401, r#"{"error":"invalid_grant","error_description":"Invalid user credentials"}"#));
+    assert!(login_remembering_at(&refusing, USER, "wrong", None, false).is_err());
+    assert!(store.kept().is_some());
+    // A store that refuses, not read yet: kept for the session, and a password an earlier run
+    // remembered may still be there, which is said first, even with a one-time code.
+    use rustgis_data::secrets::{MemorySecrets, SecretError};
+    for totp in [None, Some("123456")] {
+        set_secret_store(Some(Arc::new(MemorySecrets::failing(SecretError::Denied))));
+        assert_eq!(login_remembering_at(&base, USER, PASSWORD, totp, true).unwrap().1, Some(NOT_FORGOTTEN));
+        assert!(!is_remembered(), "not claimed remembered: nothing was found");
+    }
+    // Read and refused at launch: still may hold one, said first; never claimed remembered, and a
+    // sign-out says it couldn't delete it.
+    set_secret_store(Some(Arc::new(MemorySecrets::failing(SecretError::Denied))));
+    assert!(!is_remembered());
+    assert_eq!(restore(), Restored::Nothing);
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, Some("123456"), true).unwrap().1, Some(NOT_FORGOTTEN));
+    assert_eq!(forget(), Err(NOT_FORGOTTEN));
+    assert!(!is_remembered());
+    // No credential store on this system: nothing could have been kept.
+    set_secret_store(Some(Arc::new(MemorySecrets::failing(SecretError::Unavailable("none".into())))));
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, None, true).unwrap().1, Some(NOT_REMEMBERED));
+    assert!(signed_in().is_some());
+}
+
+#[test]
+fn a_refused_remembered_sign_in_is_deleted_and_an_unreachable_host_is_tried_again_later() {
+    let _turn = crate::cache::turn();
+    logout();
+    let answer = Arc::new(Mutex::new(json_answer(503, "{}")));
+    let (base, asked) = {
+        let answer = answer.clone();
+        serve(move |_| answer.lock().unwrap().clone())
+    };
+    let store = Remembering::new(&base);
+    store.0.save(ACCOUNT, &remembered_value(USER, PASSWORD)).unwrap();
+    // Down: kept, and not tried again at once.
+    assert_eq!(restore(), Restored::Nothing);
+    let _ = asked.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(restore(), Restored::Nothing);
+    assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "held off after an unreachable host");
+    assert!(store.kept().is_some() && is_remembered() && !expired());
+    // A refused client says nothing of the password: kept, tried again later.
+    *lock(&REMEMBERED.known) = Known::Kept { retry_at: 0 };
+    *answer.lock().unwrap() = json_answer(401, r#"{"error":"invalid_client","error_description":"Invalid client credentials"}"#);
+    assert_eq!(restore(), Restored::Nothing);
+    let _ = asked.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(store.kept().is_some() && !expired());
+    // Refused (the password was changed): deleted, and the user is told to sign in again.
+    *lock(&REMEMBERED.known) = Known::Kept { retry_at: 0 };
+    *answer.lock().unwrap() = json_answer(401, r#"{"error":"invalid_grant","error_description":"Invalid user credentials"}"#);
+    assert_eq!(restore(), Restored::Refused);
+    assert!(store.kept().is_none() && !is_remembered() && expired());
+    assert!(refused_message(DATA).contains("sign-in expired: sign in again"), "{}", refused_message(DATA));
+    // Damaged: deleted, never sent, and said: the sign-in ended, sign in again.
+    logout();
+    assert!(!expired());
+    store.0.save(ACCOUNT, &rustgis_data::secrets::Secret::new("not json")).unwrap();
+    set_secret_store(Some(store.0.clone()));
+    let _ = asked.try_iter().count();
+    assert_eq!(restore(), Restored::Damaged);
+    assert!(asked.recv_timeout(Duration::from_millis(200)).is_err());
+    assert!(store.kept().is_none() && !is_remembered() && expired());
+    assert!(refused_message(DATA).contains("sign-in expired: sign in again"), "{}", refused_message(DATA));
+    // A clean one gives no such report.
+    logout();
+    store.0.save(ACCOUNT, &remembered_value(USER, PASSWORD)).unwrap();
+    set_secret_store(Some(store.0.clone()));
+    *answer.lock().unwrap() = json_answer(200, &grant("access", "refresh", 1800, 3600));
+    assert_eq!(restore(), Restored::SignedIn);
+    assert!(!expired());
+}
+
+/// A store that reads and saves but refuses to delete (a policy-locked keychain).
+struct Undeletable(rustgis_data::secrets::MemorySecrets);
+
+impl SecretStore for Undeletable {
+    fn load(&self, account: &str) -> Result<Option<rustgis_data::secrets::Secret>, SecretError> {
+        self.0.load(account)
+    }
+    fn save(&self, account: &str, value: &rustgis_data::secrets::Secret) -> Result<(), SecretError> {
+        self.0.save(account, value)
+    }
+    fn delete(&self, _account: &str) -> Result<(), SecretError> {
+        Err(SecretError::Denied)
+    }
+}
+
+#[test]
+fn a_remembered_sign_in_that_couldnt_be_deleted_is_never_signed_in_with() {
+    let _turn = crate::cache::turn();
+    logout();
+    let (base, asked) = serve(|_| json_answer(200, &grant("access", "refresh", 1800, 3600)));
+    let _clean = Remembering::new(&base);
+    let store = Arc::new(Undeletable(rustgis_data::secrets::MemorySecrets::new()));
+    store.save(ACCOUNT, &remembered_value("earlier.user@example.invalid", "earlier")).unwrap();
+    // A new run, the store unread: signing in without `remember` can't delete the earlier one.
+    set_secret_store(Some(store.clone()));
+    assert_eq!(login_remembering_at(&base, USER, PASSWORD, None, false).unwrap().1, Some(NOT_FORGOTTEN));
+    let _ = asked.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!is_remembered(), "an intervening status doesn't make it usable again");
+    // The session ends: the earlier account isn't signed in with.
+    logout();
+    assert_eq!(restore(), Restored::Nothing);
+    assert_eq!(authorization_fresh(DATA), None);
+    assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "the earlier password is never sent");
+}
