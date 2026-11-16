@@ -20,7 +20,7 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("raster.zarrInfo", "Zarr Variables", "Home › Add › Add Data › Zarr", info).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files))
             .view()
-            .params(r#"{"path": "a Zarr store's folder" | "url": "https://… a store with consolidated metadata", "bbox"?: [west, south, east, north] (in the grid's coordinates: the window of cells it is in a variable's grid, for layer.addZarr's cells), "variable"?: (with bbox; default the first)} → variables with their dimensions, chunks and shards' chunks (innerChunks)"#),
+            .params(r#"{"path": "a Zarr store's folder" | "url": "https://… a store (one with no consolidated metadata needs variable)", "bbox"?: [west, south, east, north] (in the grid's coordinates: the window of cells it is in a variable's grid, for layer.addZarr's cells), "variable"?: (its path in the store: with bbox, or for a store with no consolidated metadata; default the first)} → variables with their dimensions, chunks and shards' chunks (innerChunks)"#),
         C::new("zarr.series", "Time Series at a Point", "View › Time Series", series).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).view().params(
             r#"{"lon", "lat", "layer"? (a Zarr layer: its store, variable and steps; default the active layer) | "path": folder | "url": "https://…", "variable"?, "index"?: {"level": 0} (the other dimensions' steps), "start"?, "end"?: dates (default: the layer's period, else the whole axis), "crs"?: for a projected store that doesn't say} → dates, values (null for no data) and labels along the variable's time dimension at the cell holding the point (desktop)"#,
         ),
@@ -238,24 +238,76 @@ mod transport_tests {
     }
 }
 
-/// A store's metadata from its web address.
+/// Rounds of [`zarr::member_keys`] a store whose root lists no arrays is read in: the variable
+/// and its groups, then its dimensions' coordinates, then theirs (none, in the stores seen).
 #[cfg(not(target_arch = "wasm32"))]
-fn store_at(url: &str) -> Result<zarr::Store, String> {
+const MEMBER_ROUNDS: usize = 3;
+
+/// A store's metadata from its web address ([`read_store`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn store_at(url: &str, variable: &str) -> Result<zarr::Store, String> {
+    read_store(url, variable).map(|(store, _)| store)
+}
+
+/// A store's metadata from its web address, and whether it holds only what was found from
+/// `variable`. A root group that lists no arrays (no consolidated metadata,
+/// [`zarr::lists_no_arrays`]) has them found by name from `variable` ([`zarr::member_keys`]), in up
+/// to [`MEMBER_ROUNDS`] rounds; with no `variable`, that is refused.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_store(url: &str, variable: &str) -> Result<(zarr::Store, bool), String> {
     let keys: Vec<String> = zarr::METADATA_KEYS.iter().map(|k| k.to_string()).collect();
     let (got, forbidden) = fetch(url, &keys)?;
     // Every metadata file refused: access is denied, not a store without metadata.
     if got.is_empty() && forbidden > 0 {
         return Err(crate::sources::message_with_address(url, "access denied (HTTP 403)"));
     }
-    let docs: Vec<(String, Vec<u8>)> = got.into_iter().collect();
-    zarr::parse_store(&docs).map_err(|e| crate::sources::message_with_address(url, &e.to_string()))
+    let mut docs: Vec<(String, Vec<u8>)> = got.into_iter().collect();
+    let partial = zarr::lists_no_arrays(&docs);
+    if partial {
+        if variable.trim().is_empty() {
+            return Err(crate::sources::message_with_address(
+                url,
+                "the store's root has no consolidated metadata, so its arrays aren't listed: give the variable's name (\"variable\"), or the address of one array",
+            ));
+        }
+        let mut tried = std::collections::HashSet::new();
+        for round in 0..MEMBER_ROUNDS {
+            let next: Vec<String> = zarr::member_keys(&docs, variable).into_iter().filter(|k| tried.insert(k.clone())).collect();
+            if next.is_empty() {
+                break;
+            }
+            let (found, refused) = fetch(url, &next)?;
+            // The variable's own files refused: access is denied. Later rounds' coordinates may
+            // just not exist, which S3 answers with 403 too (`is_absent`).
+            if round == 0 && refused > 0 && found.is_empty() {
+                return Err(crate::sources::message_with_address(url, "access denied (HTTP 403)"));
+            }
+            docs.extend(found);
+        }
+    }
+    // Found by name from the variable: one that isn't there is said, not read as an empty store.
+    let name = variable.trim().trim_matches('/');
+    let store = zarr::parse_store(&docs).ok().filter(|st| !partial || st.array(name).is_some());
+    let store = match store {
+        Some(st) => st,
+        None if partial => {
+            return Err(crate::sources::message_with_address(
+                url,
+                &format!("no array named {name} in the store, whose root has no consolidated metadata: check the variable's path"),
+            ));
+        }
+        None => zarr::parse_store(&docs).map_err(|e| crate::sources::message_with_address(url, &e.to_string()))?,
+    };
+    Ok((store, partial))
 }
 
 /// `raster.zarrInfo`. It reads the store's metadata and coordinates on the UI thread, with no
 /// Cancel, as it did before windows: the Add Data › Zarr dialog reads them off the frame, and none
 /// of the background paths takes a command that answers with what a store holds yet. A `"bbox"`
 /// adds the variable's two map coordinates, read whole: at most `MAX_COORDS` values each (32 MB
-/// as Float64), each file a download of at most 60 s.
+/// as Float64), each file a download of at most 60 s. A store whose root lists no arrays is read
+/// in up to [`MEMBER_ROUNDS`] more rounds of metadata files ([`store_at`]), each at most
+/// `zarr::member_keys`' 163 names (one or two files each), fetched several at a time.
 fn info(_s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
@@ -309,7 +361,7 @@ fn info_of(p: &Value) -> Result<(String, zarr::Store, Value), String> {
             Ok((d, store, v))
         }
         Source::Url(u) => {
-            let store = store_at(&u)?;
+            let store = store_at(&u, ps(p, "variable").unwrap_or(""))?;
             let (chunks, _) = fetch(&u, &zarr::info_keys(&store))?;
             let v = zarr::info(&store, &chunks);
             Ok((u, store, v))
@@ -480,7 +532,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             super::raster::add_raster(s, &name, layer)
         }
         Source::Url(u) => {
-            let store = store_at(&u)?;
+            let store = store_at(&u, &sel.variable)?;
             pick_variable(&store, &mut sel)?;
             let cut = place_window(&u, &store, &mut sel, asked)?;
             let plan = zarr::plan(&store, &sel).map_err(|e| crate::sources::message_with_address(&u, &e.to_string()))?;
@@ -525,8 +577,8 @@ fn slices() -> &'static std::sync::Mutex<Vec<(String, std::sync::Arc<raster::Ras
 
 /// Web stores' metadata, read once per run (the last few stores).
 #[cfg(not(target_arch = "wasm32"))]
-fn stores() -> &'static std::sync::Mutex<Vec<(String, std::sync::Arc<zarr::Store>)>> {
-    static S: std::sync::OnceLock<std::sync::Mutex<Vec<(String, std::sync::Arc<zarr::Store>)>>> = std::sync::OnceLock::new();
+fn stores() -> &'static std::sync::Mutex<Vec<CachedStore>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<Vec<CachedStore>>> = std::sync::OnceLock::new();
     S.get_or_init(Default::default)
 }
 
@@ -536,15 +588,26 @@ fn is_web(store: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
-/// A web store's metadata, from the run's cache when it was read before.
+/// A web store kept by [`cached_store`]: its address, the variable its arrays were found from (for
+/// a store whose root lists no arrays; `None` for one that lists them all), and its metadata.
 #[cfg(not(target_arch = "wasm32"))]
-fn cached_store(url: &str) -> Result<std::sync::Arc<zarr::Store>, String> {
-    if let Some((_, st)) = stores().lock().ok().and_then(|c| c.iter().find(|(u, _)| u == url).cloned()) {
+type CachedStore = (String, Option<String>, std::sync::Arc<zarr::Store>);
+
+/// A web store's metadata, from the run's cache when it was read before. A store whose root lists
+/// no arrays holds only those found from the variable it was read for, so it is taken from the
+/// cache only for that same variable, and each variable read of it is kept beside the others
+/// (among the last four kept): a nested `g/v` read first doesn't stand in for the root's `v`.
+#[cfg(not(target_arch = "wasm32"))]
+fn cached_store(url: &str, variable: &str) -> Result<std::sync::Arc<zarr::Store>, String> {
+    let wanted = variable.trim().trim_matches('/');
+    let fits = |(u, found_from, _): &&CachedStore| u == url && found_from.as_deref().is_none_or(|v| v == wanted);
+    if let Some((_, _, st)) = stores().lock().ok().and_then(|c| c.iter().find(fits).cloned()) {
         return Ok(st);
     }
-    let st = std::sync::Arc::new(store_at(url)?);
+    let (st, partial) = read_store(url, variable)?;
+    let st = std::sync::Arc::new(st);
     if let Ok(mut c) = stores().lock() {
-        c.push((url.to_string(), st.clone()));
+        c.push((url.to_string(), partial.then(|| wanted.to_string()), st.clone()));
         let excess = c.len().saturating_sub(4);
         c.drain(..excess);
     }
@@ -736,7 +799,7 @@ pub(crate) fn read_slice(zt: &ZarrTime, i: usize) -> Result<Option<raster::Raste
     let sel = zt.selection(i);
     let crs = zt.crs.as_deref().map(str::trim).filter(|c| !c.is_empty());
     let (read, st) = if is_web(&zt.store) {
-        let st = cached_store(&zt.store)?;
+        let st = cached_store(&zt.store, &zt.variable)?;
         let plan = zarr::plan(&st, &zarr::Selection::parse(&sel)).map_err(|e| e.to_string())?;
         let (chunks, forbidden) = fetch(&zt.store, &plan.keys)?;
         // A chunk refused (HTTP 403) isn't one never written: it's said, not read as fill.
@@ -1216,7 +1279,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
                 (full, std::sync::Arc::new(store), chunks)
             }
             Source::Url(u) => {
-                let store = cached_store(&u)?;
+                let store = cached_store(&u, &sel.variable)?;
                 (u, store, HashMap::new())
             }
         };
@@ -1224,7 +1287,10 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
         let chunks =
             if chunks.is_empty() && is_web(&root) { fetch(&root, &zarr::coordinate_keys(&store, &sel.variable))?.0 } else { chunks };
         let (dim, dates) = zarr::time_axis(&store, &sel.variable, &chunks).ok_or_else(|| {
-            format!("{} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\")", sel.variable)
+            format!(
+                "{} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\", or of whole years, such as 2017)",
+                sel.variable
+            )
         })?;
         // Each date is a step: an axis out of order or with a date twice (stores joined end to end)
         // can't be followed step by step.
@@ -1444,7 +1510,7 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         }
         let mut src = series_source(s, p)?;
         let store = if is_web(&src.root) {
-            cached_store(&src.root)?
+            cached_store(&src.root, &src.sel.variable)?
         } else {
             std::sync::Arc::new(zarr::read_metadata(Path::new(&src.root)).map_err(|e| format!("{}: {e}", src.root))?)
         };
@@ -1454,7 +1520,7 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         keys.extend(zarr::map_coordinate_keys(&store, &var));
         let coords = store_files(&src.root, &keys)?;
         let (dim, dates) = zarr::time_axis(&store, &var, &coords)
-            .ok_or_else(|| format!("{var} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\")"))?;
+            .ok_or_else(|| format!("{var} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\", or of whole years, such as 2017)"))?;
         // A period is found along the axis in order, as following the slider takes it.
         if !dates.iter().all(|d| d.is_finite()) || !dates.windows(2).all(|w| w[0] < w[1]) {
             return Err(format!("{var}'s time axis isn't in increasing order without repeats, so its series can't be read by date"));
@@ -1699,15 +1765,18 @@ pub fn zarr_cube(s: &Session, p: &Value) -> Result<ZarrCube, String> {
         ));
     }
     let store = if is_web(&src.root) {
-        cached_store(&src.root)?
+        cached_store(&src.root, &src.sel.variable)?
     } else {
         std::sync::Arc::new(zarr::read_metadata(Path::new(&src.root)).map_err(|e| format!("{}: {e}", src.root))?)
     };
     pick_variable(&store, &mut src.sel)?;
     let var = src.sel.variable.clone();
     let coords = store_files(&src.root, &zarr::coordinate_keys(&store, &var))?;
-    let (dim, dates) = zarr::time_axis(&store, &var, &coords)
-        .ok_or_else(|| format!("{var} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\")"))?;
+    let (dim, dates) = zarr::time_axis(&store, &var, &coords).ok_or_else(|| {
+        format!(
+            "{var} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\", or of whole years, such as 2017)"
+        )
+    })?;
     // Every step a date, so a period and months pick the steps they say (a summary takes them
     // in any order; a trend asks for time order itself, in `cube_from`).
     if !dates.iter().all(|d| d.is_finite()) {

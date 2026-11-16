@@ -49431,8 +49431,9 @@ fn an_imported_name_cut_to_fit_its_number_says_it_came_from_the_file() {
     }
 }
 
-/// Serves each file by its path (others are 404) with byte ranges (`bytes=a-b`, `bytes=-n`)
-/// answered 206, keeping each request's path and range (empty for a whole file).
+/// Serves each file by its path (others are 404, or 403 as S3 answers when a file `/!403` is
+/// listed) with byte ranges (`bytes=a-b`, `bytes=-n`) answered 206, keeping each request's path
+/// and range (empty for a whole file).
 #[cfg(not(target_arch = "wasm32"))]
 fn serve_ranged_files(files: Vec<(String, Vec<u8>)>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
     use std::io::{Read, Write};
@@ -49459,7 +49460,8 @@ fn serve_ranged_files(files: Vec<(String, Vec<u8>)>) -> (String, std::sync::Arc<
                 let range = req.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(|r| r.trim().to_string()));
                 log.lock().unwrap().push((path.clone(), range.clone().unwrap_or_default()));
                 let Some((_, body)) = files.iter().find(|(p, _)| *p == path) else {
-                    let _ = write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let missing = if files.iter().any(|(p, _)| p == "/!403") { "403 Forbidden" } else { "404 Not Found" };
+                    let _ = write!(s, "HTTP/1.1 {missing}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     return;
                 };
                 let (status, part) = match range.as_deref().and_then(|r| r.split_once('-')) {
@@ -49653,6 +49655,85 @@ fn a_zarr_box_on_a_spatial_transform_reads_no_coordinates() {
     let asked: Vec<String> = log.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
     assert!(asked.iter().all(|p| !p.starts_with("/s.zarr/v/") || p == "/s.zarr/v/c/0/0/0" || p == "/s.zarr/v/c/0/0/1"), "{asked:?}");
     assert!(asked.iter().all(|p| !p.starts_with("/s.zarr/x") && !p.starts_with("/s.zarr/y")), "{asked:?}");
+}
+
+/// A web store whose root lists no arrays (no consolidated metadata), as the AlphaEarth mosaic
+/// (#1720): its variable is found by name, and its `time` of whole years is a time axis, so the
+/// series at a point is read by year.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_zarr_store_without_consolidated_metadata_is_read_by_its_variables_name() {
+    // `emb` (time 3, y 4, x 6; int8, `10·step + row`) in one chunk per step, placed by the root's
+    // transform: 0.5° cells from (-43°, -20°).
+    let bytes = json!([{"name": "bytes", "configuration": {"endian": "little"}}]);
+    let emb = json!({"zarr_format": 3, "node_type": "array", "shape": [3, 4, 6], "data_type": "int8",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [1, 4, 6]}}, "codecs": bytes, "fill_value": -128,
+        "dimension_names": ["time", "y", "x"]});
+    let time = json!({"zarr_format": 3, "node_type": "array", "shape": [3], "data_type": "int32",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [3]}}, "codecs": bytes, "fill_value": 0,
+        "dimension_names": ["time"]});
+    let root = json!({"zarr_format": 3, "node_type": "group", "attributes": {"proj:code": "EPSG:4326",
+        "spatial:dimensions": ["y", "x"], "spatial:transform": [0.5, 0.0, -43.0, 0.0, -0.5, -20.0], "spatial:shape": [4, 6]}});
+    let mut files = vec![
+        ("/s.zarr/zarr.json".to_string(), root.to_string().into_bytes()),
+        ("/s.zarr/emb/zarr.json".to_string(), emb.to_string().into_bytes()),
+        ("/s.zarr/time/zarr.json".to_string(), time.to_string().into_bytes()),
+        ("/s.zarr/time/c/0".to_string(), [2017i32, 2018, 2025].iter().flat_map(|y| y.to_le_bytes()).collect()),
+    ];
+    for t in 0..3u8 {
+        files.push((format!("/s.zarr/emb/c/{t}/0/0"), (0..4u8).flat_map(|r| [10 * t + r; 6]).collect()));
+    }
+    let (base, log) = serve_ranged_files(files.clone());
+    let url = format!("{base}/s.zarr");
+    let mut s = Session::new(Project::default());
+    // With no variable, the store's arrays can't be listed, and that is said.
+    let e = s.run("raster.zarrInfo", &json!({"url": url})).unwrap_err();
+    assert!(e.contains("no consolidated metadata") && e.contains("\"variable\""), "{e}");
+    let info = s.run("raster.zarrInfo", &json!({"url": url, "variable": "emb"})).unwrap();
+    assert_eq!(info["variables"][0]["name"], "emb", "{info}");
+    assert_eq!(info["variables"][0]["dims"][0]["labels"], json!(["2017", "2018", "2025"]), "{info}");
+    // A variable that isn't there is said, not answered with an empty list.
+    let e = s.run("raster.zarrInfo", &json!({"url": url, "variable": "emv"})).unwrap_err();
+    assert!(e.contains("no array named emv"), "{e}");
+    // At 42.2°W 20.8°S: row 1, so 10·step + 1 by year.
+    let r = s.run("zarr.series", &json!({"url": url, "variable": "emb", "lon": -42.2, "lat": -20.8})).unwrap();
+    assert_eq!(r["values"], json!([1.0, 11.0, 21.0]), "{r}");
+    assert_eq!(r["dates"].as_array().map(Vec::len), Some(3), "{r}");
+    assert!(r["labels"][0].as_str().is_some_and(|l| l.starts_with("2017-01-01")), "{r}");
+    // The missing coordinates are asked for once in each of the three store reads (zarrInfo with
+    // emb, with emv, then zarr.series).
+    let asked: Vec<String> = log.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+    assert_eq!(asked.iter().filter(|p| p.as_str() == "/s.zarr/y/zarr.json").count(), 3, "one store read per command: {asked:?}");
+
+    // A nested g/emb (50 + 10·step + row) read first doesn't stand in for the root's emb in the
+    // run's store cache.
+    let mut nested = files.clone();
+    nested.push(("/s.zarr/g/emb/zarr.json".to_string(), emb.to_string().into_bytes()));
+    for t in 0..3u8 {
+        nested.push((format!("/s.zarr/g/emb/c/{t}/0/0"), (0..4u8).flat_map(|r| [50 + 10 * t + r; 6]).collect()));
+    }
+    let (base, _) = serve_ranged_files(nested);
+    let at = |v: &str| json!({"url": format!("{base}/s.zarr"), "variable": v, "lon": -42.2, "lat": -20.8});
+    assert_eq!(s.run("zarr.series", &at("g/emb")).unwrap()["values"], json!([51.0, 61.0, 71.0]));
+    assert_eq!(s.run("zarr.series", &at("emb")).unwrap()["values"], json!([1.0, 11.0, 21.0]));
+
+    // A host answering 403 for files that don't exist (S3 without listing): the missing
+    // coordinates aren't taken for access denied, but a missing variable is.
+    files.push(("/!403".to_string(), Vec::new()));
+    let (base, _) = serve_ranged_files(files.clone());
+    let url = format!("{base}/s.zarr");
+    let info = s.run("raster.zarrInfo", &json!({"url": url, "variable": "emb"})).unwrap();
+    assert_eq!(info["variables"][0]["dims"][0]["labels"], json!(["2017", "2018", "2025"]), "{info}");
+    let e = s.run("raster.zarrInfo", &json!({"url": url, "variable": "nothing"})).unwrap_err();
+    assert!(e.contains("access denied"), "{e}");
+    // With no coordinate stored at all, every round after the variable's gets only 403s: the
+    // variable is still read, with no labels.
+    files.retain(|(p, _)| !p.starts_with("/s.zarr/time/"));
+    let (base, _) = serve_ranged_files(files);
+    let url = format!("{base}/s.zarr");
+    let info = s.run("raster.zarrInfo", &json!({"url": url, "variable": "emb"})).unwrap();
+    assert_eq!(info["variables"][0]["name"], "emb", "{info}");
+    assert!(info["variables"][0]["dims"][0].get("labels").is_none(), "{info}");
 }
 
 /// `layer.rename` refuses a name over 200 characters (once trimmed) rather than cutting it

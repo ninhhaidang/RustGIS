@@ -1511,6 +1511,11 @@ the store's web address, or (on the desktop) its folder, and **Connect** lists i
 (`raster.zarrInfo`). A variable's map is its latitude/longitude (or y/x) dimensions; its other
 dimensions, such as time or pressure level, are picked a step at a time with a slider, labelled by
 their coordinates (CF time units as dates, the `noleap` and `360_day` model calendars included).
+A coordinate of whole years from 1000 to 9999 with no CF units (integers named `time` or `year`,
+or marked `axis: "T"` or `standard_name: "time"`, with no units or units of years, as the
+AlphaEarth mosaic's `2017…2025`) is a time axis too, each year on its 1 January, for the time
+slider and a series at a point. Step counts in that range stored the same way (no units, named
+`time`) would be read as years too: give such a coordinate CF units.
 **Add to Map** adds that step as a raster layer named after the variable and step (`tas
 2014-07-15`), and the dialog stays open to add others. Only the chunks the step needs are fetched,
 a few at a time, in the background.
@@ -1532,6 +1537,11 @@ dimensions are those `spatial:dimensions` names. `proj:code`, `proj:wkt2` or `pr
 the coordinate system, after the variable's own attributes and its grid mapping, and before a
 `spatial_ref` or `crs` array beside it. A variable opened by its own address doesn't see its
 groups' attributes: open the store's address with `"variable"` instead.
+A web store whose root lists no arrays (a Zarr 3 root `zarr.json` with no consolidated metadata,
+or a Zarr 2 `.zgroup` with no `.zmetadata`) needs `"variable"`: its array, the groups above it,
+the root's `spatial:dimensions` and the coordinates its dimensions name are then found by name
+(`raster.zarrInfo` without one says so). The Add Data › Zarr dialog can't name a variable before
+it connects yet: give it the address of one array.
 Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and say so. A
 store by web address must allow the browser to fetch it (CORS) for the web app;
 Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
