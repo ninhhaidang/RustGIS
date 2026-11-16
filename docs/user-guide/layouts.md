@@ -419,6 +419,16 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   series still turns its pages. **Duplicate** makes an unlocked copy, and a map frame isn't
   deleted while one of its surrounds is locked. Scripts lock and unlock with `layout.update`
   `{"locked": true}` or `{"locked": false}`.
+- **Background**: every element but a map frame can have a box drawn behind it, which moves,
+  resizes, hides and turns with it, in the app and in PDF, PNG and SVG exports: a light box under
+  a legend or a scale bar over a busy map, or under a text on a dark page. Turn on **Background**
+  in the Format pane, then pick its **Fill** and **Outline** colours, the **Outline width** (0 for
+  none), the **Corner radius** and the **Padding**, how far the box reaches past the element on
+  every side; the element itself is drawn as before. It starts white with no outline, and a
+  duplicate keeps it. From a command:
+  `layout.update={"element":4,"background":{"fill":"#FFFFFFCC","radius":1,"padding":1.5}}`; the keys
+  not given keep theirs, and `"background":null` removes it. `layout.addElement` takes it too. A
+  map frame draws its own map and paper, so a background on one is refused.
 - **Rulers and guides**: rulers start on along the top and left and show millimetres from the page's corner.
   Drag out of a ruler to add a guide, drag a guide to move it, and drag it back onto a ruler to
   remove it. Guides are saved with the layout but never printed or exported. **Clear Guides**

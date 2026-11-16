@@ -79,6 +79,7 @@ pub const CAPABILITIES: &[&str] = &[
     "slope-percent",
     "table-export-order",
     "tabulate-intersection-unit",
+    "layout-element-background",
 ];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
@@ -2190,7 +2191,7 @@ pub(crate) fn layout_notices(
     let adjusted = total(|r| r.elements_adjusted);
     if adjusted > 0 {
         notices.push(format!(
-            "{name}: {adjusted} layout element(s) with a value out of range, a repeated id, an over-long name or a missing map frame reference repaired {when} (in {})",
+            "{name}: {adjusted} layout element(s) with a value out of range, a repeated id, an over-long name, a missing map frame reference or a background on a map frame repaired {when} (in {})",
             layout_names(repairs, |r| r.elements_adjusted)
         ));
     }

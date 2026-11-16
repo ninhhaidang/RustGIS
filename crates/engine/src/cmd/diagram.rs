@@ -542,7 +542,7 @@ mod tests {
             "1 diagram(s) that could not be read or named no field removed",
             "1 diagram category(ies) with a blank field name",
             "1 diagram category(ies) repeating an earlier field kept",
-            "1 layout element(s) with a value out of range, a repeated id, an over-long name or a missing map frame reference repaired while opening the project (in \"Poster\")",
+            "1 layout element(s) with a value out of range, a repeated id, an over-long name, a missing map frame reference or a background on a map frame repaired while opening the project (in \"Poster\")",
         ] {
             assert!(said.iter().any(|t| t.contains(text)), "{text}: {said:?}");
         }

@@ -1060,7 +1060,8 @@
           "field-origin",
           "slope-percent",
           "table-export-order",
-          "tabulate-intersection-unit"
+          "tabulate-intersection-unit",
+          "layout-element-background"
         ],
         "type": "string"
       },
@@ -1132,7 +1133,8 @@
     "field-origin",
     "slope-percent",
     "table-export-order",
-    "tabulate-intersection-unit"
+    "tabulate-intersection-unit",
+    "layout-element-background"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

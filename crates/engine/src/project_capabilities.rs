@@ -49,6 +49,12 @@ impl Project {
         {
             required.push("table-export-order");
         }
+        // Saved layouts as well as saved commands: an older reader keeps neither.
+        if !required.contains(&"layout-element-background")
+            && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.background.is_some()))
+        {
+            required.push("layout-element-background");
+        }
         required
     }
 
@@ -68,8 +74,22 @@ impl Project {
 }
 
 type CommandCheck = fn(&str, &Value) -> bool;
-const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] =
-    &[("slope-percent", command_uses_percent_slope), ("tabulate-intersection-unit", command_uses_tabulate_unit)];
+const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
+    ("slope-percent", command_uses_percent_slope),
+    ("tabulate-intersection-unit", command_uses_tabulate_unit),
+    ("layout-element-background", command_uses_element_background),
+];
+
+/// A layout command that gives an element a background: an older reader warns that it ignores
+/// the key and makes the element without one. `null` only takes a background away, which an
+/// older reader's elements never have.
+fn command_uses_element_background(id: &str, params: &Value) -> bool {
+    match id {
+        "layout.addElement" | "layout.update" => params.get("background").is_some_and(|b| !b.is_null()),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_background)),
+        _ => false,
+    }
+}
 
 /// Require only executable payloads being saved: graph files omit steps, web tools omit graphs.
 pub(crate) fn model_capabilities(steps: &[ModelStep], graph: Option<&ModelGraph>) -> Vec<&'static str> {
@@ -323,6 +343,62 @@ mod tests {
         ]);
         let project = Project::from_json(&document.to_string()).unwrap();
         assert!(serde_json::to_value(&project).unwrap().get("requires").is_none());
+    }
+
+    /// A layout element's background is required where it is saved, so an older reader refuses
+    /// the project instead of opening it and saving it again without the background.
+    #[test]
+    fn element_background_capability_follows_saved_layouts() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_element_background.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-element-background"]));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        let backgrounds = |p: &Project| p.layouts[0].elements.iter().map(|e| e.background).collect::<Vec<_>>();
+        assert_eq!(backgrounds(&reopened), backgrounds(&fixture));
+        assert!(backgrounds(&fixture)[1].is_some_and(|b| b.padding == 1.5));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            e.background = None;
+        }
+        assert!(serde_json::to_value(&clean).unwrap().get("requires").is_none());
+        // A saved command that gives an element a background needs it too; one that takes it
+        // away or sets none doesn't.
+        let base = serde_json::to_value(&clean).unwrap();
+        for (background, required) in
+            [(Some(json!({"fill": "#FFFFFF"})), true), (Some(json!({})), true), (Some(Value::Null), false), (None, false)]
+        {
+            let mut params = json!({"element": 2, "x": 5});
+            if let Some(b) = background {
+                params["background"] = b;
+            }
+            let script = format!("# Panel\nlayout.update= {params}");
+            for (field, value) in [
+                ("tasks", json!([{"name": "Task", "steps": [{"title": "Panel", "command": "layout.update", "params": params}]}])),
+                (
+                    "tasks",
+                    json!([{"name": "Script", "steps": [{"title": "Panel", "command": "script.run", "params": {"script": script}}]}]),
+                ),
+                ("notebooks", json!([{"name": "Notebook", "cells": [{"kind": "code", "source": script}]}])),
+                (
+                    "gp_history",
+                    json!([{"tool": "Panel", "params": {}, "command": ["layout.addElement", params], "ok": true, "messages": [], "millis": 0}]),
+                ),
+            ] {
+                let mut document = base.clone();
+                document[field] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                if required {
+                    assert_eq!(saved["requires"], json!(["layout-element-background"]), "{field} {params}");
+                } else {
+                    assert!(saved.get("requires").is_none(), "{field} {params}");
+                }
+            }
+        }
+        // Both a saved background and a saved command: listed once.
+        let mut both = saved.clone();
+        both["tasks"] = json!([{"name": "Task", "steps": [{"title": "Panel", "command": "layout.update", "params": {"element": 2, "background": {}}}]}]);
+        let saved = serde_json::to_value(Project::from_json(&both.to_string()).unwrap()).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-element-background"]));
     }
 
     #[test]

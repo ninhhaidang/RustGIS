@@ -32880,6 +32880,86 @@ fn layout_elements_duplicate_offset_on_top_and_undo() {
     assert!(s.project.layouts[li].element(id).is_none(), "undone");
 }
 
+/// An element's background (#2257) from commands: given when added, its keys changed one at a time
+/// (the others kept), copied with the element, taken away with null, and refused on a map frame,
+/// a grid or an extent indicator, on a locked element, and when it isn't a box of known keys.
+#[test]
+fn layout_element_backgrounds_from_commands() {
+    use rustgis_map::Rgba;
+    use rustgis_map::layout::Background;
+    let mut s = world();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let frame = s.project.layouts[li].first_frame().unwrap();
+    let background = |s: &Session, id: u32| s.project.layouts[li].element(id).unwrap().background;
+    let added = s
+        .run(
+            "layout.addElement",
+            &json!({"kind": "text", "text": "Title", "x": 10, "y": 10, "background": {"fill": "#FFFFFFCC", "padding": 1.5}}),
+        )
+        .unwrap();
+    let title = added["element"].as_u64().unwrap() as u32;
+    assert_eq!(background(&s, title), Some(Background { padding: 1.5, ..Background::filled(Rgba::new(255, 255, 255, 204)) }));
+    // A key changed alone keeps the others; an empty box is the default one.
+    s.run("layout.update", &json!({"element": title, "background": {"outline": "#000000", "width": 0.5, "radius": 2}})).unwrap();
+    let b = background(&s, title).unwrap();
+    assert_eq!((b.fill, b.outline, b.width, b.radius, b.padding), (Rgba::new(255, 255, 255, 204), Rgba::rgb(0, 0, 0), 0.5, 2.0, 1.5));
+    let legend = s.project.layouts[li].elements.iter().find(|e| e.name == "Legend").unwrap().id;
+    s.run("layout.update", &json!({"element": legend, "background": {}})).unwrap();
+    assert_eq!(background(&s, legend), Some(Background::filled(Rgba::rgb(255, 255, 255))));
+    // Past their limits, the numbers are held to them.
+    s.run("layout.update", &json!({"element": legend, "background": {"padding": 1e9}})).unwrap();
+    assert_eq!(background(&s, legend).unwrap().padding, rustgis_map::layout::MAX_BACKGROUND_PADDING);
+    // A copy keeps it; null takes it away, and undo brings it back.
+    let copy = s.run("layout.duplicateElement", &json!({"element": title})).unwrap()["element"].as_u64().unwrap() as u32;
+    assert_eq!(background(&s, copy), background(&s, title));
+    s.run("layout.update", &json!({"element": title, "background": null})).unwrap();
+    assert_eq!(background(&s, title), None);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(background(&s, title), Some(b));
+    // A map frame takes none, so taking it away changes nothing.
+    s.run("layout.update", &json!({"element": frame, "background": null})).unwrap();
+    assert_eq!(background(&s, frame), None);
+    // Refused, and nothing changes.
+    let before = s.project.layouts[li].clone();
+    for (p, said) in [
+        (json!({"element": frame, "background": {"fill": "#FFFFFF"}}), "map frame"),
+        (json!({"element": title, "background": "#FFFFFF"}), "an object"),
+        (json!({"element": title, "background": {"colour": "#FFFFFF"}}), "'colour'"),
+        (json!({"element": title, "background": {"fill": "white"}}), "fill must be"),
+        (json!({"element": title, "background": {"padding": -1}}), "padding is millimetres"),
+        (json!({"element": title, "background": {"width": "thick"}}), "width is points"),
+    ] {
+        let err = s.run("layout.update", &p).unwrap_err();
+        assert!(err.contains(said), "{p}: {err}");
+    }
+    for kind in [json!({"kind": "grid"}), json!({"kind": "extentIndicator", "of": frame})] {
+        let mut p = kind.clone();
+        p["background"] = json!({"fill": "#FFFFFF"});
+        let err = s.run("layout.addElement", &p).unwrap_err();
+        assert!(err.contains("map frame"), "{p}: {err}");
+    }
+    assert_eq!(s.project.layouts[li], before);
+    // Locked, its background is a change like any other, null too.
+    s.run("layout.update", &json!({"element": title, "locked": true})).unwrap();
+    for p in [json!({"element": title, "background": {"fill": "#000000"}}), json!({"element": title, "background": null})] {
+        assert!(s.run("layout.update", &p).is_err_and(|e| e.contains("locked")), "{p}");
+    }
+    assert_eq!(background(&s, title), Some(b));
+    // A hand-edited file with a background on its map frame says it was taken off; a clean one
+    // says nothing.
+    let mut file = serde_json::to_value(&s.project.layouts[li]).unwrap();
+    let said = |s: &Session| s.notices.iter().filter(|n| n.text.contains("a background on a map frame")).count();
+    let quiet = s.notices.len();
+    s.run("layout.import", &json!({"text": file.to_string()})).unwrap();
+    assert_eq!(s.notices.len(), quiet, "{:?}", s.notices);
+    let held = file["elements"].as_array_mut().unwrap().iter_mut().find(|e| e["id"] == json!(frame)).unwrap();
+    held["background"] = json!({"fill": [255, 255, 255, 255]});
+    s.run("layout.import", &json!({"text": file.to_string()})).unwrap();
+    assert_eq!(said(&s), 1, "{:?}", s.notices);
+    assert!(s.project.layouts.last().unwrap().elements.iter().all(|e| e.kind.takes_background() || e.background.is_none()));
+}
+
 #[test]
 fn locked_layout_elements_take_no_change_until_unlocked() {
     use rustgis_map::layout::ElementKind;

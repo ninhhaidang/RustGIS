@@ -85,6 +85,9 @@ fn elements(
     let mut written = 0usize;
     for e in layout.elements.iter().filter(|e| e.visible) {
         let _ = writeln!(s, r#"<g id="element-{}" inkscape:label="{}" inkscape:groupmode="layer">"#, e.id, esc(&e.name));
+        // Its background first, as a shape of its own (#2257): the content drawn as a picture
+        // below leaves it out (`draw_page` draws backgrounds only on the whole page).
+        background(&mut s, e);
         let (x, y, w, h) = (e.x, e.y, e.w, e.h);
         match &e.kind {
             ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation } => {
@@ -306,6 +309,28 @@ fn stroke(color: rustgis_map::Rgba, width: f64, dash: Option<&rustgis_map::symbo
     } else {
         r#" stroke="none""#.into()
     }
+}
+
+/// An element's background (#2257) as a `<rect>`: its box grown by the padding, its corners
+/// rounded as the page rounds them (at most half the shorter side), turned with a turned text.
+fn background(s: &mut String, e: &rustgis_map::layout::Element) {
+    let Some(b) = e.background else { return };
+    let (x, y, w, h) = e.background_box();
+    let _ = write!(
+        s,
+        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="{}"{}{}"#,
+        num(x),
+        num(y),
+        num(w),
+        num(h),
+        num(b.radius.min(w.min(h) / 2.0).max(0.0)),
+        paint("fill", b.fill),
+        stroke(b.outline, b.width, None)
+    );
+    if e.rotation() != 0.0 {
+        let _ = write!(s, r#" transform="rotate({} {} {})""#, num(e.rotation()), num(e.x + e.w / 2.0), num(e.y + e.h / 2.0));
+    }
+    s.push_str("/>\n");
 }
 
 /// ` fill="#rrggbb"` (or stroke), with its opacity when it isn't opaque.
@@ -598,5 +623,37 @@ mod tests {
         assert_eq!(esc("valid\u{fffe}\u{ffff}\t🙂"), "valid\t🙂");
         assert_eq!(paint("fill", rustgis_map::Rgba::new(255, 0, 16, 128)), r##" fill="#ff0010" fill-opacity="0.502""##);
         assert_eq!(stroke(rustgis_map::Rgba::rgb(0, 0, 0), 0.0, None), r#" stroke="none""#);
+    }
+
+    /// An element's background (#2257) is a `<rect>` of its own under the element, its box grown
+    /// by the padding, turned with a turned text; an element with none has none.
+    #[test]
+    fn a_background_is_its_own_rect_under_the_element() {
+        use rustgis_map::layout::{Background, ElementKind};
+        let svg = |turn: f64, background: Option<Background>| {
+            let mut layout = Layout::new("L", 100.0, 100.0);
+            let mut kind = ElementKind::text("Fonte", 12.0, rustgis_map::Rgba::rgb(0, 0, 0), false);
+            if let ElementKind::Text { rotation, .. } = &mut kind {
+                *rotation = turn;
+            }
+            let id = layout.add("T", (40.0, 40.0, 20.0, 10.0), kind);
+            layout.element_mut(id).unwrap().background = background;
+            layout_svg(&layout, &mut [], 96.0, &PageInfo::default()).unwrap().0
+        };
+        // The page's own paper is a rect too: the background is one more, and none by default.
+        let plain = svg(0.0, None).matches("<rect").count();
+        let b = Background {
+            outline: rustgis_map::Rgba::rgb(0, 0, 0),
+            width: 1.0,
+            radius: 2.0,
+            padding: 1.5,
+            ..Background::filled(rustgis_map::Rgba::new(255, 255, 255, 204))
+        };
+        let s = svg(0.0, Some(b));
+        let rect = r##"<rect x="38.5" y="38.5" width="23" height="13" rx="2" fill="#ffffff" fill-opacity="0.8""##;
+        assert_eq!(s.matches("<rect").count(), plain + 1, "{s}");
+        assert!(s.find(rect).is_some_and(|at| at < s.find("<text").unwrap_or(0)), "under the text: {s}");
+        let turned = svg(90.0, Some(b));
+        assert!(turned.contains(r#"stroke-width="0.265" transform="rotate(90 50 45)"/>"#), "turned about the box's centre: {turned}");
     }
 }

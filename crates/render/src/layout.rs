@@ -344,6 +344,11 @@ fn draw_page(
         // Each element is a layer of the recording, named after it (#1815) and identified by its
         // id: the same layer on every page of a series, whatever other elements draw there.
         pm.layer_with_id(if e.name.trim().is_empty() { e.kind.code() } else { &e.name }, u64::from(e.id));
+        // Its background under its content (#2257), on the whole page only: an element drawn
+        // alone is an SVG's picture of it, whose background the SVG writes as a shape of its own.
+        if element.is_none() {
+            draw_background(&mut pm, e, k, (f64::from(bounds.x()), f64::from(bounds.y())));
+        }
         let (x, y, ew, eh) =
             ((e.x * k - f64::from(bounds.x())) as f32, (e.y * k - f64::from(bounds.y())) as f32, (e.w * k) as f32, (e.h * k) as f32);
         let Some(r) = Rect::from_xywh(x, y, ew.max(1.0), eh.max(1.0)) else { continue };
@@ -755,6 +760,26 @@ pub fn expand(t: &str, layout: &Layout, info: &PageInfo, frame: Option<(&Map, ru
 fn dashed(stroke: Stroke, dash: Option<&rustgis_map::symbology::Dash>, ppp: f64, path: &tiny_skia::Path) -> Stroke {
     let dash = dash.and_then(|d| crate::dash_steps(d, ppp as f32, path)).and_then(|steps| tiny_skia::StrokeDash::new(steps, 0.0));
     Stroke { dash, ..stroke }
+}
+
+/// An element's background (#2257): its box grown by the padding, at `k` pixels a millimetre from
+/// `origin` (pixels), filled, outlined when the outline has a width, its corners rounded, turned
+/// about the element's centre with a turned text.
+fn draw_background(pm: &mut Canvas, e: &rustgis_map::layout::Element, k: f64, origin: (f64, f64)) {
+    let Some(b) = e.background else { return };
+    let (bx, by, bw, bh) = e.background_box();
+    let Some(r) =
+        Rect::from_xywh((bx * k - origin.0) as f32, (by * k - origin.1) as f32, ((bw * k) as f32).max(1.0), ((bh * k) as f32).max(1.0))
+    else {
+        return;
+    };
+    let turn = Transform::from_rotate_at(e.rotation() as f32, r.x() + r.width() / 2.0, r.y() + r.height() / 2.0);
+    let path = rounded_rect(r, (b.radius * k) as f32).unwrap_or_else(|| PathBuilder::from_rect(r));
+    pm.fill_path(&path, &paint(b.fill, 1.0), FillRule::Winding, turn, None);
+    if b.width > 0.0 {
+        let stroke = Stroke { width: (b.width * k / PT_PER_MM) as f32, ..Stroke::default() };
+        pm.stroke_path(&path, &paint(b.outline, 1.0), &stroke, turn, None);
+    }
 }
 
 /// A rectangle with its corners rounded by `rad` pixels (at most half its shorter side), each a
@@ -6042,5 +6067,51 @@ Elaboração: RustGIS",
         let [(w, h), ..] = legend_sizes_mm(&mut map, 1e6, true, true, (&[], &NO_LABELS)).unwrap();
         assert!((h - f64::from(LEGEND_ROW + 48.0) * mm).abs() < 1e-6, "{h} mm");
         assert!((w - f64::from(48.0 + 12.0 + text::measure("a", 8.5, false)) * mm).abs() < 1e-4, "{w} mm");
+    }
+
+    /// An element's background (#2257) is drawn under it on the page, grown by its padding and
+    /// turned with a turned text; drawn alone, as an SVG's picture of it, the element leaves it to
+    /// the SVG's own shape.
+    #[test]
+    fn a_background_is_drawn_under_its_element_and_turns_with_it() {
+        use rustgis_map::layout::Background;
+        let px = |mm: f64| (mm * 96.0 / 25.4).round() as u32;
+        let red = |pm: &Pixmap, x: f64, y: f64| rgb(pm, px(x), px(y)) == (255, 0, 0);
+        let page = |turn: f64, background: Option<Background>| {
+            let mut l = Layout::new("L", 100.0, 100.0);
+            let mut kind = ElementKind::text("", 12.0, Rgba::rgb(0, 0, 0), false);
+            if let ElementKind::Text { rotation, .. } = &mut kind {
+                *rotation = turn;
+            }
+            let id = l.add("T", (40.0, 40.0, 20.0, 10.0), kind);
+            l.element_mut(id).unwrap().background = background;
+            (l, id)
+        };
+        let back = Background { padding: 5.0, ..Background::filled(Rgba::rgb(255, 0, 0)) };
+        let (plain, _) = page(0.0, None);
+        assert!(!red(&render(&plain, &mut [], 96.0, &PageInfo::default()).unwrap(), 45.0, 45.0), "none by default");
+        let (l, id) = page(0.0, Some(back));
+        let pm = render(&l, &mut [], 96.0, &PageInfo::default()).unwrap();
+        assert!(red(&pm, 45.0, 45.0), "inside the box");
+        assert!(red(&pm, 37.0, 37.0), "in the padding");
+        assert!(!red(&pm, 33.0, 45.0), "past the padding");
+        // Turned 90°, the box (and so its background) stands upright about its centre (50, 45).
+        let (turned, _) = page(90.0, Some(Background::filled(Rgba::rgb(255, 0, 0))));
+        let pm = render(&turned, &mut [], 96.0, &PageInfo::default()).unwrap();
+        assert!(red(&pm, 50.0, 37.0), "above the unturned box, inside the turned one");
+        assert!(!red(&pm, 42.0, 45.0), "left of the turned box");
+        // Clockwise, as the text turns: at 30° the box's right end dips below its centre line, at
+        // -30° it rises (90° alone would look the same either way).
+        let at = |turn: f64| {
+            red(
+                &render(&page(turn, Some(Background::filled(Rgba::rgb(255, 0, 0)))).0, &mut [], 96.0, &PageInfo::default()).unwrap(),
+                59.0,
+                46.0,
+            )
+        };
+        assert!(at(30.0) && !at(-30.0), "turned clockwise");
+        // Alone, the element's picture holds no background.
+        let (alone, _) = render_element(&l, id, &mut [], 96.0, &PageInfo::default(), &mut None).unwrap().unwrap();
+        assert!(alone.pixels().iter().all(|c| c.alpha() == 0 || c.green() > 0), "no red in the element's own picture");
     }
 }
