@@ -1425,9 +1425,11 @@ from its low end up to, but not including, its high end: `[21, 22, 1]` maps clas
 ranges that can match nothing, and another says when a remap, or a suitability whose criteria
 score no cell in common, leaves no cells with values.
 
-Network routing rebuilds its graph for each request and solves each edge length on WGS 84.
-Large line networks can therefore take longer to route than with spherical lengths; repeated
-routes do not currently share a cached graph.
+Network routing solves each edge length on WGS 84 and reuses the most recent network graph
+across repeated routes, including command, model and script loops. Editing the network, changing
+its visible rows or choosing a different cost field rebuilds the graph. Route ends and snap
+distance are checked separately for each request. The cache holds at most one graph with up to
+256 MiB of heap storage (including its row list); larger networks are rebuilt for each request.
 
 Rasters these make are kept in the project. **Environments** (`gp.env`) set an extent from the map
 view, full extent, a layer or a longitude/latitude box (or `null` to clear it). For tools that

@@ -2,8 +2,9 @@
 //! attribute similarity and neighbourhood summaries.
 
 use std::collections::{BinaryHeap, HashMap};
+use std::sync::{Arc, Mutex, Weak};
 
-use rustgis_data::{Dataset, Geometry};
+use rustgis_data::{Dataset, Feature, Geometry};
 use rustgis_geom::{Coord, EARTH_RADIUS_M, WGS84_MIN_RADIUS_M, haversine_m, wgs84_distance_m};
 
 /// A shortest route: its path, length in metres, cost, and the line rows it uses.
@@ -36,11 +37,157 @@ fn key(c: Coord) -> (i64, i64) {
     ((c.x * 1e7).round() as i64, (c.y * 1e7).round() as i64)
 }
 
+type Edge = (usize, f64, f64, usize); // (to, cost, length, row)
+type Segment = (usize, usize, f64, usize); // (from, to, weight, row)
+
+/// Immutable topology: snapped route ends belong only to each query's working copy.
+struct Network {
+    nodes: Vec<Coord>,
+    adj: Vec<Vec<Edge>>,
+    segs: Vec<Segment>,
+    skipped_segments: usize,
+}
+
+impl Network {
+    /// Builds edges in source order, preserving shortest-path tie breaking and arithmetic.
+    fn build(ds: &Dataset, rows: &[usize], cost_field: Option<usize>) -> Result<Self, String> {
+        let route_error = |reason, skipped| route_error(ds, reason, skipped);
+        let mut skipped_segments = 0;
+        let mut ids: HashMap<(i64, i64), usize> = HashMap::new();
+        let mut nodes: Vec<Coord> = Vec::new();
+        let mut adj: Vec<Vec<Edge>> = Vec::new();
+        let mut segs: Vec<Segment> = Vec::new();
+        let node = |c: Coord, ids: &mut HashMap<(i64, i64), usize>, nodes: &mut Vec<Coord>, adj: &mut Vec<Vec<Edge>>| {
+            *ids.entry(key(c)).or_insert_with(|| {
+                nodes.push(c);
+                adj.push(Vec::new());
+                nodes.len() - 1
+            })
+        };
+        let mut pace = crate::control::Pace::default();
+        crate::control::begin(rows.len());
+        for (i, r) in rows.iter().enumerate() {
+            crate::control::check()?;
+            crate::control::reached(i);
+            let Some(Geometry::Line(parts)) = ds.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
+            // A cost multiplies each edge's length; no value means 1, and zero or less closes the
+            // line (impassable).
+            let weight = match cost_field.map(|fi| ds.value(*r, fi).as_f64()) {
+                Some(Some(w)) if w.is_finite() && w > 0.0 => w,
+                Some(Some(_)) => continue,
+                _ => 1.0,
+            };
+            for part in parts {
+                for w in part.windows(2) {
+                    if pace.stop(4096) {
+                        return Err(crate::control::Cancelled.into());
+                    }
+                    let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
+                    // Non-finite coordinates cast to ordinary integer keys (NaN becomes zero).
+                    // Keep unroutable segments out before they can corrupt a valid shared node.
+                    if !a.is_finite() || !b.is_finite() || a.y.abs() > 90.0 || b.y.abs() > 90.0 {
+                        skipped_segments += 1;
+                        continue;
+                    }
+                    let (ia, ib) = (node(*a, &mut ids, &mut nodes, &mut adj), node(*b, &mut ids, &mut nodes, &mut adj));
+                    let len = wgs84_distance_m(*a, *b);
+                    if let Some(v) = adj.get_mut(ia) {
+                        v.push((ib, len * weight, len, *r));
+                    }
+                    if let Some(v) = adj.get_mut(ib) {
+                        v.push((ia, len * weight, len, *r));
+                    }
+                    segs.push((ia, ib, weight, *r));
+                    // Checked per segment, so one huge feature can't grow the network unbounded.
+                    if segs.len() > 10_000_000 || nodes.len() > 5_000_000 {
+                        return Err(route_error("the network is too large".into(), skipped_segments));
+                    }
+                }
+            }
+        }
+        if segs.is_empty() && skipped_segments > 0 {
+            return Err(route_error("no usable network remains".into(), skipped_segments));
+        }
+        crate::control::finish();
+        Ok(Self { nodes, adj, segs, skipped_segments })
+    }
+
+    /// Heap storage retained by the cache, including spare capacity in every adjacency list.
+    fn bytes(&self) -> usize {
+        size_of::<Network>()
+            .saturating_add(2 * size_of::<usize>())
+            .saturating_add(self.nodes.capacity().saturating_mul(size_of::<Coord>()))
+            .saturating_add(self.adj.capacity().saturating_mul(size_of::<Vec<Edge>>()))
+            .saturating_add(self.segs.capacity().saturating_mul(size_of::<Segment>()))
+            .saturating_add(self.adj.iter().fold(0usize, |n, edges| n.saturating_add(edges.capacity().saturating_mul(size_of::<Edge>()))))
+    }
+}
+
+const GRAPH_CACHE_BYTES: usize = 256 << 20;
+
+struct CachedNetwork {
+    features: Weak<Vec<Feature>>,
+    rows: Vec<usize>,
+    cost_field: Option<usize>,
+    graph: Arc<Network>,
+}
+
+static NETWORK: Mutex<Option<CachedNetwork>> = Mutex::new(None);
+
+/// Reuses one bounded graph across calls and workers, without retaining the source features.
+/// Mutable feature access invalidates the weak allocation identity, including in-place edits.
+fn network_for(
+    cache: &Mutex<Option<CachedNetwork>>,
+    ds: &Dataset,
+    rows: &[usize],
+    cost_field: Option<usize>,
+) -> Result<Arc<Network>, String> {
+    crate::control::check()?;
+    let features = ds.features.allocation_key();
+    {
+        let cached = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = cached.as_ref().filter(|c| c.features.ptr_eq(&features) && c.rows == rows && c.cost_field == cost_field) {
+            return Ok(cached.graph.clone());
+        }
+    }
+    // Build outside the lock: another run can check Cancel while this one builds its graph.
+    let graph = Arc::new(Network::build(ds, rows, cost_field)?);
+    let bytes = graph.bytes().saturating_add(rows.len().saturating_mul(size_of::<usize>()));
+    crate::control::check()?;
+    let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
+    *cached = (bytes <= GRAPH_CACHE_BYTES).then(|| CachedNetwork { features, rows: rows.to_vec(), cost_field, graph: graph.clone() });
+    Ok(graph)
+}
+
+/// Preserve clean-network errors; failed partial routes must still disclose omissions.
+fn route_error(ds: &Dataset, reason: String, skipped_segments: usize) -> String {
+    if skipped_segments == 0 {
+        reason
+    } else {
+        format!("{reason}; {skipped_segments} segments with invalid coordinates were omitted from '{}'", ds.name)
+    }
+}
+
 /// The shortest route between two points over the lines of `rows`, joining where vertices
 /// coincide. Each edge costs its length (on the WGS 84 ellipsoid) times the row's `cost_field`
 /// value (1 when empty; lines costing zero or less are closed). Each
 /// end snaps to the nearest point on a line (within `snap_m`), where the route starts or stops.
+/// Repeated calls share one graph up to 256 MiB; edits, row order/visibility and cost field changes
+/// rebuild it. Snapping and endpoint attachments remain specific to each call.
 pub fn shortest_route(
+    ds: &Dataset,
+    rows: &[usize],
+    from: Coord,
+    to: Coord,
+    cost_field: Option<usize>,
+    snap_m: f64,
+) -> Result<Route, String> {
+    shortest_route_with(&NETWORK, ds, rows, from, to, cost_field, snap_m)
+}
+
+/// Keeps endpoint validation, graph reuse and search on the same path for any cache owner.
+fn shortest_route_with(
+    cache: &Mutex<Option<CachedNetwork>>,
     ds: &Dataset,
     rows: &[usize],
     from: Coord,
@@ -54,68 +201,32 @@ pub fn shortest_route(
     if [from, to].iter().any(|c| !c.is_finite() || c.y.abs() > 90.0) {
         return Err("a route end has invalid coordinates".into());
     }
-    // Preserve clean-network errors; failed partial routes must still disclose omissions.
-    let route_error = |reason: String, skipped_segments: usize| {
-        if skipped_segments == 0 {
-            reason
-        } else {
-            format!("{reason}; {skipped_segments} segments with invalid coordinates were omitted from '{}'", ds.name)
-        }
-    };
-    let mut skipped_segments = 0;
-    let mut ids: HashMap<(i64, i64), usize> = HashMap::new();
-    let mut nodes: Vec<Coord> = Vec::new();
-    let mut adj: Vec<Vec<(usize, f64, f64, usize)>> = Vec::new(); // (to, cost, length, row)
-    let mut segs: Vec<(usize, usize, f64, usize)> = Vec::new(); // (from, to, weight, row)
-    let node = |c: Coord, ids: &mut HashMap<(i64, i64), usize>, nodes: &mut Vec<Coord>, adj: &mut Vec<Vec<(usize, f64, f64, usize)>>| {
-        *ids.entry(key(c)).or_insert_with(|| {
-            nodes.push(c);
-            adj.push(Vec::new());
-            nodes.len() - 1
-        })
-    };
-    for r in rows {
-        let Some(Geometry::Line(parts)) = ds.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
-        // A cost multiplies each edge's length; no value means 1, and zero or less closes the
-        // line (impassable).
-        let weight = match cost_field.map(|fi| ds.value(*r, fi).as_f64()) {
-            Some(Some(w)) if w.is_finite() && w > 0.0 => w,
-            Some(Some(_)) => continue,
-            _ => 1.0,
-        };
-        for part in parts {
-            for w in part.windows(2) {
-                let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
-                // Non-finite coordinates cast to ordinary integer keys (NaN becomes zero).
-                // Keep unroutable segments out before they can corrupt a valid shared node.
-                if !a.is_finite() || !b.is_finite() || a.y.abs() > 90.0 || b.y.abs() > 90.0 {
-                    skipped_segments += 1;
-                    continue;
-                }
-                let (ia, ib) = (node(*a, &mut ids, &mut nodes, &mut adj), node(*b, &mut ids, &mut nodes, &mut adj));
-                let len = wgs84_distance_m(*a, *b);
-                if let Some(v) = adj.get_mut(ia) {
-                    v.push((ib, len * weight, len, *r));
-                }
-                if let Some(v) = adj.get_mut(ib) {
-                    v.push((ia, len * weight, len, *r));
-                }
-                segs.push((ia, ib, weight, *r));
-                // Checked per segment, so one huge feature can't grow the network unbounded.
-                if segs.len() > 10_000_000 || nodes.len() > 5_000_000 {
-                    return Err(route_error("the network is too large".into(), skipped_segments));
-                }
-            }
-        }
-    }
-    if segs.is_empty() && skipped_segments > 0 {
-        return Err(route_error("no usable network remains".into(), skipped_segments));
-    }
+    let graph = network_for(cache, ds, rows, cost_field)?;
+    route_on(&graph, ds, from, to, snap_m)
+}
+
+/// Runs the original search on a private copy, so endpoint attachments never leak across calls.
+/// Cloning the node and adjacency vectors is one step without a Cancel check inside it.
+fn route_on(graph: &Network, ds: &Dataset, from: Coord, to: Coord, snap_m: f64) -> Result<Route, String> {
+    crate::control::check()?;
+    let mut nodes = graph.nodes.clone();
+    let mut adj = graph.adj.clone();
+    let segs = &graph.segs;
+    let skipped_segments = graph.skipped_segments;
+    let route_error = |reason, skipped| route_error(ds, reason, skipped);
     // The closest point on any segment: (segment, fraction along it, the point, metres away).
-    let nearest = |p: Coord, nodes: &[Coord]| -> Option<(usize, f64, Coord, f64)> {
+    let nearest = |p: Coord, nodes: &[Coord]| -> Result<Option<(usize, f64, Coord, f64)>, String> {
+        crate::control::check()?;
         let k = p.y.to_radians().cos().max(0.01);
-        segs.iter()
+        let mut stopped = false;
+        let mut pace = crate::control::Pace::default();
+        let nearest = segs
+            .iter()
             .enumerate()
+            .take_while(|_| {
+                stopped = pace.stop(4096);
+                !stopped
+            })
             .filter_map(|(i, (a, b, _, _))| {
                 let (a, b) = (*nodes.get(*a)?, *nodes.get(*b)?);
                 let (dx, dy) = ((b.x - a.x) * k, b.y - a.y);
@@ -137,11 +248,15 @@ pub fn shortest_route(
                 }
                 let distance = wgs84_distance_m(q, p);
                 if distance.is_finite() && best.as_ref().is_none_or(|b| distance < b.3) { Some((i, t, q, distance)) } else { best }
-            })
+            });
+        if stopped {
+            return Err(crate::control::Cancelled.into());
+        }
+        Ok(nearest)
     };
     // Each end becomes a node on its segment, joined to the segment's two ends.
-    let attach = |p: Coord, nodes: &mut Vec<Coord>, adj: &mut Vec<Vec<(usize, f64, f64, usize)>>| -> Result<(usize, usize, f64), String> {
-        let (si, t, q, d) = nearest(p, nodes).ok_or_else(|| route_error("the layer has no lines".into(), skipped_segments))?;
+    let attach = |p: Coord, nodes: &mut Vec<Coord>, adj: &mut Vec<Vec<Edge>>| -> Result<(usize, usize, f64), String> {
+        let (si, t, q, d) = nearest(p, nodes)?.ok_or_else(|| route_error("the layer has no lines".into(), skipped_segments))?;
         if d > snap_m {
             return Err(route_error(
                 format!("a route end is more than {} from the network", rustgis_geom::format_distance(snap_m)),
@@ -192,7 +307,13 @@ pub fn shortest_route(
         *d = 0.0;
     }
     heap.push(State(0.0, s));
+    crate::control::begin(nodes.len());
+    let mut visited = 0;
+    let mut pace = crate::control::Pace::default();
     while let Some(State(d, u)) = heap.pop() {
+        crate::control::check()?;
+        visited += 1;
+        crate::control::reached(visited);
         if u == t {
             break;
         }
@@ -200,6 +321,9 @@ pub fn shortest_route(
             continue;
         }
         for &(v, c, len, row) in adj.get(u).map(Vec::as_slice).unwrap_or(&[]) {
+            if pace.stop(4096) {
+                return Err(crate::control::Cancelled.into());
+            }
             let nd = d + c;
             if nd < dist.get(v).copied().unwrap_or(f64::INFINITY) {
                 if let Some(x) = dist.get_mut(v) {
@@ -222,6 +346,7 @@ pub fn shortest_route(
     let mut at = t;
     path.push(nodes.get(t).copied().unwrap_or(to));
     while let Some(Some((p, len, row))) = prev.get(at) {
+        crate::control::check()?;
         path.push(nodes.get(*p).copied().unwrap_or(from));
         length += len;
         if used.last() != Some(row) {
@@ -232,6 +357,7 @@ pub fn shortest_route(
     path.reverse();
     used.reverse();
     used.dedup();
+    crate::control::finish();
     Ok(Route { path, length_m: length, cost, rows: used, skipped_segments })
 }
 
@@ -940,6 +1066,68 @@ mod tests {
         near.push(Some(Geometry::Point(c(0.0, 85.0))), vec![]);
         let (found, bounded) = within_counted(&near, &[0], c(0.01, 85.0), 10_000.0);
         assert!(found.len() == 1 && bounded == 0, "{found:?} {bounded}");
+    }
+
+    /// Repeated pairs reuse topology without retaining endpoint edits; every graph input
+    /// invalidates it, even an attribute/geometry mutation with no other strong feature owner.
+    #[test]
+    fn route_graph_reuse_preserves_results_and_follows_network_edits() {
+        let cache = Mutex::new(None);
+        let mut ds = Dataset::new(
+            "roads",
+            GeometryType::Polyline,
+            vec![Field::new("cost", FieldType::Double), Field::new("other", FieldType::Double)],
+        );
+        ds.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(0.09, 0.0)]])), vec![Value::Float(1.0), Value::Float(2.0)]);
+        let from = Coord::new(0.03, 0.0001);
+        let to = Coord::new(0.06, -0.0001);
+        let before = shortest_route_with(&cache, &ds, &[0], from, to, None, 50.0).unwrap();
+        let graph = cache.lock().unwrap().as_ref().unwrap().graph.clone();
+        assert_eq!(ds.features.allocation_key().strong_count(), 1, "the cache must not retain feature data");
+        let shared = network_for(&cache, &ds.clone(), &[0], None).unwrap();
+        assert!(Arc::ptr_eq(&graph, &shared), "another pair must not rebuild unchanged topology");
+        // A different pair attaches different interior nodes, then the original pair repeats.
+        shortest_route_with(&cache, &ds, &[0], Coord::new(0.02, 0.0), Coord::new(0.08, 0.0), None, 1.0).unwrap();
+        let after = shortest_route_with(&cache, &ds, &[0], from, to, None, 50.0).unwrap();
+        assert!(Arc::ptr_eq(&graph, &cache.lock().unwrap().as_ref().unwrap().graph), "queries must keep the original graph");
+        assert_eq!(before, after);
+        assert_eq!(before.length_m.to_bits(), after.length_m.to_bits());
+        assert_eq!(before.cost.to_bits(), after.cost.to_bits());
+        assert!(before.path.iter().zip(&after.path).all(|(a, b)| a.x.to_bits() == b.x.to_bits() && a.y.to_bits() == b.y.to_bits()));
+        assert!(shortest_route_with(&cache, &ds, &[0], from, to, None, 1.0).is_err(), "a cache hit still obeys this pair's snap distance");
+        assert_eq!((shared.nodes.len(), shared.segs.len()), (2, 1), "query nodes stay out of the graph");
+        let cost = network_for(&cache, &ds, &[0], Some(0)).unwrap();
+        assert!(!Arc::ptr_eq(&shared, &cost));
+        let other = network_for(&cache, &ds, &[0], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&cost, &other));
+        assert_eq!(route_on(&other, &ds, from, to, 50.0).unwrap().cost.to_bits(), (before.cost * 2.0).to_bits());
+        ds.features[0].attrs[1] = Value::Float(3.0);
+        let edited = network_for(&cache, &ds, &[0], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&other, &edited));
+        assert_eq!(edited.adj[0][0].1.to_bits(), (edited.adj[0][0].2 * 3.0).to_bits());
+        ds.features[0].geometry = Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(0.18, 0.0)]]));
+        let moved = network_for(&cache, &ds, &[0], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&edited, &moved));
+        assert_eq!(moved.nodes[1], Coord::new(0.18, 0.0));
+        ds.push(Some(Geometry::Line(vec![vec![Coord::new(0.18, 0.0), Coord::new(0.20, 0.0)]])), vec![Value::Float(1.0), Value::Float(1.0)]);
+        let added = network_for(&cache, &ds, &[0, 1], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&moved, &added));
+        let reversed = network_for(&cache, &ds, &[1, 0], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&added, &reversed), "row order participates in tie breaking");
+        let filtered = network_for(&cache, &ds, &[1], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&reversed, &filtered));
+        assert_eq!(filtered.segs.len(), 1);
+        let replaced = Dataset::new("roads", GeometryType::Polyline, ds.fields.clone());
+        let empty = network_for(&cache, &replaced, &[1], Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&filtered, &empty), "a replacement with the same name is a different network");
+        assert!(empty.segs.is_empty());
+        // Cancellation reaches cold construction and cached queries, without publishing partial graphs.
+        let control = crate::control::Control::cancelled_once_started();
+        assert!(crate::run_under("Route", &control, || Network::build(&ds, &[0, 1], None)).is_err());
+        assert!(control.looked() > 0);
+        let control = crate::control::Control::cancelled_once_started();
+        assert!(crate::run_under("Route", &control, || route_on(&filtered, &ds, from, to, 50.0)).is_err());
+        assert!(control.looked() > 0);
     }
 
     #[test]
