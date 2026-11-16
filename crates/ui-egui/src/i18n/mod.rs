@@ -403,9 +403,11 @@ thread_local! {
     /// The same, in logical order, for messages whose placeholders are filled
     /// ([`fmt`]) or whose segments are joined ([`location`]) before they are shown.
     static PLUGIN_RAW_STRINGS: std::cell::RefCell<std::collections::HashSet<&'static str>> = Default::default();
-    /// Plugin lookups this frame and the ones before, misses included: (plugin revision, language,
-    /// logical and display results). `tr` runs for every label every frame.
-    static PLUGIN_CACHE_MAP: std::cell::RefCell<(u64, &'static str, std::collections::HashMap<String, Option<(&'static str, &'static str)>>)> =
+    /// Plugin lookups this frame and the ones before, misses included: (plugin and GeoLibre
+    /// translation revisions, language, logical and display results). `tr` runs for every label
+    /// every frame.
+    #[allow(clippy::type_complexity)]
+    static PLUGIN_CACHE_MAP: std::cell::RefCell<((u64, u64), &'static str, std::collections::HashMap<String, Option<(&'static str, &'static str)>>)> =
         Default::default();
 }
 
@@ -420,9 +422,10 @@ fn leak_once(seen: &mut std::collections::HashSet<&'static str>, s: String) -> &
     kept
 }
 
-/// `s` translated by a loaded plugin's `i18n`, in logical order and in display form.
+/// `s` translated by a loaded plugin's `i18n`, else by the GeoLibre tool translations kept for
+/// `lang` (#2224), in logical order and in display form.
 fn plugin_tr_pair(lang: Lang, s: &str) -> Option<(&'static str, &'static str)> {
-    let revision = rustgis_engine::plugins::revision();
+    let revision = (rustgis_engine::plugins::revision(), rustgis_engine::cmd::gp::geolibre_language_revision());
     PLUGIN_CACHE_MAP.with_borrow_mut(|(rev, code, map)| {
         if *rev != revision || *code != lang.code() || map.len() > PLUGIN_CACHE {
             *rev = revision;
@@ -432,7 +435,9 @@ fn plugin_tr_pair(lang: Lang, s: &str) -> Option<(&'static str, &'static str)> {
         if let Some(hit) = map.get(s) {
             return *hit;
         }
-        let found = rustgis_engine::plugins::translate(lang.code(), s).map(|t| {
+        let translated =
+            rustgis_engine::plugins::translate(lang.code(), s).or_else(|| rustgis_engine::cmd::gp::geolibre_translate(lang.code(), s));
+        let found = translated.map(|t| {
             let shown = rtl::visual(&t);
             let raw = PLUGIN_RAW_STRINGS.with_borrow_mut(|seen| leak_once(seen, t));
             let vis = PLUGIN_STRINGS.with_borrow_mut(|seen| leak_once(seen, shown));

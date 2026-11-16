@@ -5289,6 +5289,9 @@ fn hostile_params_never_panic(shard: usize) {
                 | "gp.installGeolibre"
                 // Deletes the installed GeoLibre runner.
                 | "gp.uninstallGeolibre"
+                // Downloads GeoLibre's tool translations, and deletes the kept ones.
+                | "gp.installGeolibreLanguage"
+                | "gp.uninstallGeolibreLanguage"
                 | "plugin.registry"
                 | "plugin.installFromRegistry"
                 // Ask Earth Search when no API is given.
@@ -14587,6 +14590,11 @@ fn plugin_edits_are_one_undo_step() {
     for op in ["script.run", "project.new", "edit.undo", "plugin.uninstall", "plugin:eng-edit/h", "gp.setGeolibre", "gp.uninstallGeolibre"]
     {
         assert!(forward(&mut s, "eng-edit", op, json!({})).is_err(), "{op}");
+    }
+    // With a valid locale, so the refusal is the policy's, not a missing parameter.
+    for op in ["gp.installGeolibreLanguage", "gp.uninstallGeolibreLanguage"] {
+        let e = forward(&mut s, "eng-edit", op, json!({"locale": "pt"})).unwrap_err();
+        assert!(e.contains("reserved actions"), "{op}: {e}");
     }
     // Files need their own permission.
     let e = forward(&mut s, "eng-edit", "layer.addData", json!({"path": "/etc/passwd"})).unwrap_err();

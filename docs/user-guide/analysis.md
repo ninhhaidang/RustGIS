@@ -1344,6 +1344,22 @@ you located yourself, and one on your `PATH` are left alone; RustGIS looks for a
 You can install the tools again at any time. In the browser,
 **Remove** unloads the tools and stops loading them when RustGIS starts.
 
+**In your language.** The tools' names, descriptions, parameters and toolboxes come in English.
+GeoLibre translates them into some twenty languages, in
+[language packs](https://github.com/opengeos/geolibre-language-packs) of about 2 MB each that it
+keeps out of its builds, and RustGIS reads the same packs. With the interface in a language GeoLibre
+has a pack for, click **Translate tools** beside *GeoLibre* at the top of the Tools pane: RustGIS
+downloads that language's pack from `languages.geolibre.app`, checks it as GeoLibre does (its format
+and version, text only, 5 MB at most) and keeps it in a `geolibre-languages` folder in its data
+folder, so it works offline from then on, and in later sessions, whenever the interface is in that
+language. **Remove translations** deletes it. Find Tools then finds a tool by its translated name as
+well as its English one, with or without accents (`curvas de nivel` finds *Curvas de nível a partir
+de raster*). Only what the tools show is translated: scripts, the command line and the layers a
+tool adds keep the English names. From the command line, `gp.installGeolibreLanguage`
+(`{"locale": "pt"}`) downloads a pack, `gp.importGeolibreLanguage` (`{"path": …}`) reads one from a
+file (one you made or edited, in the same format), `gp.uninstallGeolibreLanguage` deletes one, and
+`gp.geolibre` lists them under `languages`. The browser shows the tools in English.
+
 To install it yourself instead, download the archive for your platform
 (`geolibre-<version>-<platform>.tar.gz`, or `.zip` on Windows), unpack it anywhere, and click
 **Locate…** to pick the `geolibre` program; RustGIS remembers it.

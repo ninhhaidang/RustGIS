@@ -46,8 +46,24 @@ pub fn commands() -> Vec<C> {
         C::new("gp.geolibre", "GeoLibre Tools", "Analyze › Geoprocessing", |_, _| {
             let mut status = geolibre_status();
             status["passedOver"] = json!(geolibre_passed_over());
+            status["languages"] = geolibre_languages();
             Ok(status)
         }).roles(&[]).effects(crate::policy::Effects::NONE).view(),
+        C::new("gp.installGeolibreLanguage", "Download GeoLibre Tool Translations", "Analyze › Geoprocessing", install_geolibre_language_cmd)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
+            .view()
+            .params(r#"{"locale": "the language's code, such as \"pt\" (one GeoLibre publishes a pack for)"}"#),
+        C::new("gp.importGeolibreLanguage", "Import GeoLibre Tool Translations", "Analyze › Geoprocessing", import_geolibre_language)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files))
+            .view()
+            .params(r#"{"path": "a GeoLibre language pack (.json)"}"#),
+        C::new("gp.uninstallGeolibreLanguage", "Remove GeoLibre Tool Translations", "Analyze › Geoprocessing", uninstall_geolibre_language)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
+            .view()
+            .params(r#"{"locale": "the language's code"}"#),
         C::new("gp.installGeolibre", "Install GeoLibre Tools", "Analyze › Geoprocessing", |_, _| {
             let path = install_geolibre(&|_, _| {})?;
             #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
@@ -133,6 +149,143 @@ pub fn geolibre_passed_over() -> Option<String> {
     }
     #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
     None
+}
+
+/// The GeoLibre tool translations (#2224): the languages GeoLibre publishes a pack for, the ones
+/// kept in the data folder, and the one in use.
+fn geolibre_languages() -> Value {
+    #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+    {
+        let errors: serde_json::Map<String, Value> =
+            rustgis_geolibre::langpack::load_errors().into_iter().map(|(locale, e)| (locale, Value::String(e))).collect();
+        json!({"available": rustgis_geolibre::langpack::LOCALES, "installed": rustgis_geolibre::langpack::kept(),
+            "active": rustgis_geolibre::langpack::active_locale(), "errors": errors})
+    }
+    #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
+    {
+        json!({"available": [], "installed": [], "active": null, "errors": {}})
+    }
+}
+
+/// Whether GeoLibre publishes tool translations for `locale`, and this build can download them.
+pub fn geolibre_language_available(locale: &str) -> bool {
+    #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+    {
+        rustgis_geolibre::langpack::url(locale).is_some()
+    }
+    #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
+    {
+        let _ = locale;
+        false
+    }
+}
+
+/// Whether tool translations for `locale` are in use (kept in the data folder, read the first
+/// time this is asked, then from memory).
+pub fn geolibre_language_in_use(locale: &str) -> bool {
+    #[cfg(feature = "geolibre")]
+    {
+        rustgis_geolibre::langpack::in_use(locale)
+    }
+    #[cfg(not(feature = "geolibre"))]
+    {
+        let _ = locale;
+        false
+    }
+}
+
+/// `english`, a GeoLibre tool's text (its name, summary, a parameter's label or help, a toolbox
+/// name), in `locale`, from the translations kept for it; the interface's catalogue falls back to
+/// it as to a plugin's `i18n`. `None` without them.
+pub fn geolibre_translate(locale: &str, english: &str) -> Option<String> {
+    #[cfg(feature = "geolibre")]
+    {
+        rustgis_geolibre::langpack::translate(locale, english)
+    }
+    #[cfg(not(feature = "geolibre"))]
+    {
+        let _ = (locale, english);
+        None
+    }
+}
+
+/// Why the tool translations kept for `locale` can't be used (a damaged file, another format
+/// version), once they were tried: the Tools pane shows it beside **Translate tools**.
+pub fn geolibre_language_error(locale: &str) -> Option<String> {
+    #[cfg(feature = "geolibre")]
+    {
+        rustgis_geolibre::langpack::load_error(locale)
+    }
+    #[cfg(not(feature = "geolibre"))]
+    {
+        let _ = locale;
+        None
+    }
+}
+
+/// Changes whenever [`geolibre_translate`] may answer differently (translations installed or
+/// removed, the tools reloaded), so a cache of its answers starts over.
+pub fn geolibre_language_revision() -> u64 {
+    #[cfg(feature = "geolibre")]
+    {
+        rustgis_geolibre::langpack::revision()
+    }
+    #[cfg(not(feature = "geolibre"))]
+    0
+}
+
+/// Downloads GeoLibre's tool translations for `locale` (about 2 MB), keeps them and puts them in
+/// use; returns how many of the listed tools they name. Blocks on one request: the app calls it from a
+/// background thread. Native only.
+pub fn install_geolibre_language(locale: &str) -> Result<usize, String> {
+    #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+    {
+        rustgis_geolibre::langpack::download(locale)
+    }
+    #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
+    {
+        let _ = locale;
+        Err("this build can't download GeoLibre tool translations".into())
+    }
+}
+
+/// `gp.installGeolibreLanguage`. It runs where it is called, without Cancel, because its work
+/// doesn't grow with anything the user has: one request for one file, read up to 5 MB and given
+/// up after 60 s, then one parse, the same for every project. The Tools pane's button, the way
+/// the app downloads a pack, runs it on a thread of its own; called from a script, the command line
+/// or Python, it waits for that one request like `gp.installGeolibre` waits for the runner's.
+fn install_geolibre_language_cmd(_s: &mut Session, p: &Value) -> CmdResult {
+    let locale = ps(p, "locale").map(str::trim).filter(|l| !l.is_empty()).ok_or("give the language's \"locale\", such as \"pt\"")?;
+    let tools = install_geolibre_language(locale)?;
+    Ok(json!({"locale": locale, "tools": tools}))
+}
+
+fn import_geolibre_language(_s: &mut Session, p: &Value) -> CmdResult {
+    #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+    {
+        let path = ps(p, "path").map(str::trim).filter(|p| !p.is_empty()).ok_or("give the pack's \"path\"")?;
+        let (locale, tools) = rustgis_geolibre::langpack::import(std::path::Path::new(path))?;
+        Ok(json!({"locale": locale, "tools": tools}))
+    }
+    #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
+    {
+        let _ = p;
+        Err("this build can't import GeoLibre tool translations".into())
+    }
+}
+
+fn uninstall_geolibre_language(_s: &mut Session, p: &Value) -> CmdResult {
+    #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+    {
+        let locale = ps(p, "locale").map(str::trim).filter(|l| !l.is_empty()).ok_or("give the language's \"locale\"")?;
+        rustgis_geolibre::langpack::remove(locale)?;
+        Ok(geolibre_languages())
+    }
+    #[cfg(not(all(feature = "geolibre", not(target_arch = "wasm32"))))]
+    {
+        let _ = p;
+        Err("this build keeps no GeoLibre tool translations".into())
+    }
 }
 
 /// Downloads and installs the pinned GeoLibre runner release for this platform; returns the
