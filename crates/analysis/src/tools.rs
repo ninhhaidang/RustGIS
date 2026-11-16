@@ -3,6 +3,7 @@
 mod check_geometry;
 mod geometry;
 mod repair_geometry;
+mod tabulate_area;
 
 use geo::{BooleanOps, Contains, ConvexHull, CoordsIter, InteriorPoint, Intersects, MultiPolygon, Orient, Relate, orient::Direction};
 use rustgis_data::raster::{Crs, Transformer};
@@ -907,6 +908,57 @@ pub static TOOLS: &[ToolSpec] = &[
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: kriging_interpolation,
+    },
+    ToolSpec {
+        id: "tabulateArea",
+        name: "Tabulate Area",
+        toolbox: "Analysis › Raster",
+        summary: "Tabulates each raster class by polygon zone, as area or cell count in a standalone table.",
+        params: &[
+            P {
+                name: "raster",
+                label: "Input Raster",
+                kind: K::RasterLayer,
+                required: true,
+                default: "",
+                help: "Categorical raster; each distinct valid band value is a class.",
+            },
+            P {
+                name: "zones",
+                label: "Zone Polygons",
+                kind: K::PolygonLayer,
+                required: true,
+                default: "",
+                help: "Cells are included by their centres, without partial-cell weighting.",
+            },
+            P {
+                name: "zoneField",
+                label: "Zone Field",
+                kind: K::Field,
+                required: false,
+                default: "",
+                help: "One field whose equal values form a zone; empty gives one row per feature.",
+            },
+            P { name: "band", label: "Band", kind: K::Number, required: false, default: "1", help: "1-based categorical band number." },
+            P {
+                name: "measure",
+                label: "Measure",
+                kind: K::Choice(&["Area", "Count"]),
+                required: false,
+                default: "\"Area\"",
+                help: "Area of whole cells, or their count.",
+            },
+            P {
+                name: "unit",
+                label: "Area Unit",
+                kind: K::Choice(&["km2", "m2", "ha", "ac", "ft2", "mi2"]),
+                required: false,
+                default: "\"km2\"",
+                help: "Square kilometres, square metres, hectares, acres, square feet or square miles; ignored for Count.",
+            },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "Output table name." },
+        ],
+        run: tabulate_area::run,
     },
     ToolSpec {
         id: "zonalStats",
@@ -14972,6 +15024,195 @@ mod tests {
         assert!(crate::param_applies("spatialJoin", "merge", &with("", "")));
         assert!(!crate::param_applies("spatialJoin", "merge", &with("", "Join one to many")));
         assert!(crate::param_applies("buffer", "units", &with("", "")));
+    }
+
+    /// A 30 m projected categorical grid: two zones, one missing cell, and a zone outside.
+    /// The zones' metadata records a different source CRS; their stored geometry stays WGS 84.
+    #[test]
+    fn tabulate_area_counts_areas_nodata_and_grouped_zones() {
+        use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+        let raster = Raster::new(
+            "cover",
+            4,
+            2,
+            vec![vec![11., 21., 21., 41., 11., -9999., 41., 41.]],
+            GeoTransform { origin_x: 0., origin_y: 60., pixel_width: 30., pixel_height: -30. },
+            Crs::Epsg(32631),
+            Some(-9999.),
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap();
+        let polygon = |x: f64| sq(x, 0., 60.).map_coords(&|c| raster.transformer().to_lonlat(c).unwrap());
+        let mut zones = Dataset::new("zones", GeometryType::Polygon, vec![Field::new("tract", FieldType::Text)]);
+        zones.crs = Some(Crs::Epsg(26916));
+        for (x, name) in [(0., "a"), (60., "b"), (300., "c")] {
+            zones.push(Some(polygon(x)), vec![Value::Text(name.into())]);
+        }
+        let mut m = RasterMap { datasets: HashMap::from([("zones".into(), zones)]), rasters: HashMap::from([("cover".into(), &raster)]) };
+        let params = serde_json::json!({"raster": "cover", "zones": "zones", "zoneField": "TRACT", "measure": "Count"});
+        let result = crate::run("tabulateArea", &m, &params).unwrap();
+        assert!(!result.messages.iter().any(|m| m.contains("uses the raster projection")));
+        assert!(result.messages.iter().any(|m| m.starts_with("1 NoData")));
+        assert!(result.messages.iter().any(|m| m.starts_with("1 zone(s) contained no valid")));
+        let Output::Table(table) = result.output else { panic!("a table") };
+        assert_eq!(table.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["tract", "class_11", "class_21", "class_41"]);
+        let counts = [[2, 1, 0], [0, 1, 3], [0, 0, 0]];
+        for (row, expected) in table.features.iter().zip(counts) {
+            assert_eq!(row.attrs.get(1..).unwrap(), expected.map(Value::Int));
+        }
+        for unit in ["m2", "km2", "ac"] {
+            let mut p = params.clone();
+            p["measure"] = Json::from("Area");
+            p["unit"] = Json::from(unit);
+            let result = crate::run("tabulateArea", &m, &p).unwrap();
+            assert!(result.messages.iter().any(|m| m.contains("uses the raster projection (EPSG:32631)")));
+            let Output::Table(area) = result.output else { panic!("a table") };
+            for (row, expected) in area.features.iter().zip(counts) {
+                for (value, count) in row.attrs.iter().skip(1).zip(expected) {
+                    assert_eq!(*value, Value::Float(count as f64 * 900. / rustgis_data::Measure::Area.unit(unit).unwrap()));
+                }
+            }
+        }
+        // Grouping combines the masks, so duplicate overlapping features don't double-count.
+        let zones = m.datasets.get_mut("zones").unwrap();
+        zones.push(Some(polygon(0.)), vec![Value::Text("a".into())]);
+        for threads in [1, 2, 7] {
+            let got = tabulate_area::run_on(&m, &params, Some(threads)).unwrap();
+            let Output::Table(grouped) = got.output else { panic!("a table") };
+            assert_eq!(grouped.features, table.features);
+        }
+        let mut per_feature = params.clone();
+        per_feature.as_object_mut().unwrap().remove("zoneField");
+        let Output::Table(each) = crate::run("tabulateArea", &m, &per_feature).unwrap().output else { panic!("a table") };
+        assert_eq!(each.features.len(), 4);
+        assert_eq!(each.fields[0].name, "zone_id");
+        // Clean zones produce no NoData notice.
+        let zones = m.datasets.get_mut("zones").unwrap();
+        zones.features = vec![zones.features[1].clone()].into();
+        let clean = crate::run("tabulateArea", &m, &params).unwrap();
+        assert!(!clean.messages.iter().any(|m| m.contains("NoData")), "{:?}", clean.messages);
+    }
+
+    /// Geographic area uses the shared ellipsoid measurement; counts and areas stay identical
+    /// across workers. Missing zone geometry is counted in a notice.
+    #[test]
+    fn tabulate_area_geographic_invalid_geometry_and_limits() {
+        use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+        let raster = Raster::new(
+            "cover",
+            2,
+            1,
+            vec![vec![-0., 2.5]],
+            GeoTransform { origin_x: 0., origin_y: 1., pixel_width: 1., pixel_height: -1. },
+            Crs::LonLat,
+            None,
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap();
+        let mut zones = Dataset::new("zones", GeometryType::Polygon, vec![]);
+        zones.push(Some(sq(0., 0., 2.)), vec![]);
+        zones.push(None, vec![]);
+        let m = RasterMap { datasets: HashMap::from([("zones".into(), zones)]), rasters: HashMap::from([("cover".into(), &raster)]) };
+        let p = serde_json::json!({"raster":"cover", "zones":"zones", "unit":"m2"});
+        let one = tabulate_area::run_on(&m, &p, Some(1)).unwrap();
+        let many = tabulate_area::run_on(&m, &p, Some(3)).unwrap();
+        assert_eq!(one.messages, many.messages);
+        assert!(!one.messages.iter().any(|m| m.contains("uses the raster projection")));
+        assert!(one.messages.iter().any(|m| m.starts_with("1 zone feature(s)")));
+        let (Output::Table(a), Output::Table(b)) = (one.output, many.output) else { panic!("tables") };
+        assert_eq!(a.features, b.features);
+        let expected =
+            rustgis_geom::wgs84_ring_perimeter_area_m2(&[Coord::new(0., 1.), Coord::new(1., 1.), Coord::new(1., 0.), Coord::new(0., 0.)]).1;
+        assert_eq!(a.features[0].attrs[1], Value::Float(expected));
+        assert_eq!(a.fields[1].name, "class_0");
+        for bad in [serde_json::json!({"band": [1, 2]}), serde_json::json!({"band": 0}), serde_json::json!({"unit":"degrees"})] {
+            let mut bad_params = p.clone();
+            bad_params.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+            assert!(crate::run("tabulateArea", &m, &bad_params).is_err());
+        }
+        let many_classes = Raster::new(
+            "cover",
+            1001,
+            1,
+            vec![(0..1001).map(|i| i as f32).collect()],
+            raster.transform,
+            Crs::LonLat,
+            None,
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap();
+        let m = RasterMap { datasets: m.datasets, rasters: HashMap::from([("cover".into(), &many_classes)]) };
+        assert!(crate::run("tabulateArea", &m, &p).unwrap_err().contains("more than 1000 classes"));
+    }
+
+    /// Web Mercator and longitude/latitude grids covering the same strips give ground acres.
+    /// A per-cell geographic reference tolerates only longitude-rounding noise; 32 overlapping
+    /// zones exercise the shared row cache across worker batches with bit-exact thread results.
+    #[test]
+    fn tabulate_area_ground_acres_and_row_cache_are_deterministic() {
+        use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+        let (w, h) = (4, 3);
+        let gt = GeoTransform { origin_x: -90.12345, origin_y: 35.0003, pixel_width: 0.0003, pixel_height: -0.0003 };
+        let band: Vec<f32> = (0..w * h).map(|i| if i % 2 == 0 { 1. } else { 2. }).collect();
+        let geo = Raster::new("geo", w, h, vec![band.clone()], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        let top = rustgis_geom::lonlat_to_merc(gt.to_world(0., 0.));
+        let bottom = rustgis_geom::lonlat_to_merc(gt.to_world(f64::from(w), f64::from(h)));
+        let merc_gt = GeoTransform {
+            origin_x: top.x,
+            origin_y: top.y,
+            pixel_width: (bottom.x - top.x) / f64::from(w),
+            pixel_height: (bottom.y - top.y) / f64::from(h),
+        };
+        let merc = Raster::new("merc", w, h, vec![band], merc_gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap();
+        let lower = gt.to_world(0., f64::from(h));
+        let mut zones = Dataset::new("zones", GeometryType::Polygon, vec![]);
+        for _ in 0..32 {
+            zones.push(Some(sq(gt.origin_x - 0.001, lower.y - 0.001, 0.004)), vec![]);
+        }
+        let m = RasterMap {
+            datasets: HashMap::from([("zones".into(), zones)]),
+            rasters: HashMap::from([("geo".into(), &geo), ("merc".into(), &merc)]),
+        };
+        let divisor = rustgis_data::Measure::Area.unit("ac").unwrap();
+        let mut old = [0.; 2];
+        for row in 0..h {
+            for col in 0..w {
+                let (x, y) = (f64::from(col), f64::from(row));
+                let corners = [(x, y), (x + 1., y), (x + 1., y + 1.), (x, y + 1.)].map(|(c, r)| gt.to_world(c, r));
+                old[(col % 2) as usize] += rustgis_geom::wgs84_ring_perimeter_area_m2(&corners).1;
+            }
+        }
+        let mut geographic = Vec::new();
+        for raster in ["geo", "merc"] {
+            let p = serde_json::json!({"raster":raster,"zones":"zones","unit":"ac"});
+            let one = tabulate_area::run_on(&m, &p, Some(1)).unwrap();
+            assert!(!one.messages.iter().any(|m| m.contains("uses the raster projection")));
+            let Output::Table(table) = &one.output else { panic!("a table") };
+            for (i, expected) in old.iter().enumerate() {
+                let actual = table.features[0].attrs[i + 1].as_f64().unwrap();
+                assert!(
+                    (actual - expected / divisor).abs() <= expected.abs() / divisor * 1e-9,
+                    "{raster}: {actual} vs {}",
+                    expected / divisor
+                );
+                if raster == "geo" {
+                    geographic.push(actual);
+                } else {
+                    assert!((actual - geographic[i]).abs() <= geographic[i] * 1e-9);
+                    let planar = (merc_gt.pixel_width * merc_gt.pixel_height).abs() * f64::from(w * h / 2) / divisor;
+                    assert!(actual < planar * 0.8, "Web Mercator ground area must be smaller than its grid area at Memphis");
+                }
+            }
+            for threads in [2, 7] {
+                let many = tabulate_area::run_on(&m, &p, Some(threads)).unwrap();
+                let Output::Table(parallel) = many.output else { panic!("a table") };
+                assert_eq!(parallel.features, table.features, "{raster}, {threads} threads");
+                assert_eq!(many.messages, one.messages);
+            }
+        }
     }
 
     /// Zones worked out on several threads give the same statistics, bit for bit, as on one, in

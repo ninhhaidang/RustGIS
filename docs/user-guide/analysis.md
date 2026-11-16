@@ -386,6 +386,7 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | IDW Interpolation | `idwInterpolation` | Analysis › Interpolation |
 | Ordinary Kriging | `kriging` | Analysis › Interpolation |
 | Zonal Statistics | `zonalStats` | Analysis › Raster |
+| Tabulate Area | `tabulateArea` | Analysis › Raster |
 | Kernel Density | `kernelDensity` | Analysis › Density |
 
 **Raster to PMTiles** (`rasterToPmtiles`) writes Web Mercator PNG tiles using the raster's current
@@ -1958,6 +1959,58 @@ rustgis-cli run --cmd 'cube.reduce={"layers":["ndvi_2015","ndvi_2016","ndvi_2017
 rustgis-cli run --data cobertura_1985.tif --data cobertura_1986.tif --data cobertura_1987.tif --cmd 'cube.reduce={"layers":["cobertura_1985","cobertura_1986","cobertura_1987"],"stat":"changes"}'
 rustgis-cli run --cmd 'cube.reduce={"url":"https://data.inpe.br/bdc/stac/v1","collection":"mod13q1-6.1","asset":"NDVI","bbox":[-44.8,-7.5,-44.3,-7.0],"start":"2001","end":"2025","cellSize":1000,"stat":"mean","by":"year","minValid":0.5,"name":"NDVI"}' --save urucui.rgis
 ```
+
+## Categorical raster area by zone
+
+**Tabulate Area** (`tabulateArea`) makes a standalone table with one row per polygon zone
+and one column per raster class: for example, acres of each land-cover class in each census
+tract. Open it in the Tools pane. Choose `raster`, `zones`, and a 1-based `band` (default 1).
+Only selected zone features are used when the layer has a selection. With no `zoneField`, each
+feature gets a row identified by its `zone_id` (the feature ID, as text). With one field,
+equal values form one zone, sorted by value; null values form their own zone. Overlapping parts
+or features of the same zone count a cell once. Different overlapping zones each count it.
+
+The output has a `class_<value>` column for every distinct valid value in the chosen band,
+sorted numerically, including classes absent from the zones. A name colliding with the zone
+field gets a numeric suffix. Classes absent from a zone have zero values. Zones outside the
+raster, or containing no valid cells, still have rows of zeros and are counted in a notice.
+NoData and non-finite cells are excluded and their count **inside zones** is reported, once per
+zone; overlapping zones can therefore report the same missing cell more than once.
+
+`measure: "Area"` is the default. `unit` uses the same conversions as Calculate Geometry:
+`km2` (default, as in Tabulate Intersection), `m2`, `ha`, `ac`, `ft2` or `mi2`.
+`measure: "Count"` instead puts integer cell counts in the class columns.
+
+Cells are counted by **centre**, as in Zonal Statistics: a cell whose centre is inside a zone
+contributes its whole area; there is no partial-cell weighting. Polygon coordinates are stored
+in WGS 84 and transformed onto the raster's grid; the polygon layer's original CRS metadata
+is not applied again. Invalid features and parts that cannot be placed on the raster are
+counted in notices, with valid features and grid-projected parts retained.
+
+For geographic and **Web Mercator** rasters, cell corners are transformed to WGS 84 and
+measured on the ellipsoid using geodesic edges. This gives ground area instead of Web
+Mercator's inflated map area. WGS 84 longitude/latitude and Web Mercator grids share a cache
+of cell areas by raster row; every worker uses the same first-column representative, keeping
+results identical across thread counts. Other geographic datums and axis orders retain
+per-cell measurement because their transformed cell areas can also vary across a row.
+A cell whose area cannot be measured causes an error.
+
+Other projected rasters use the absolute pixel width times pixel height, converted from the
+CRS's linear units to square metres. The tool reports this **area in the raster's projection**
+in a notice. RustGIS does not currently classify equal-area projections, so all projected
+rasters except Web Mercator receive that notice for Area measurements. Use an equal-area
+raster for ground-area summaries: a 30 m equal-area raster contributes 900 m²
+(900 / 4046.8564224 acres) per cell. Count measurements need no area conversion or notice.
+
+```json
+{"tool":"tabulateArea","params":{"raster":"LandCover","zones":"Tracts","zoneField":"GEOID","unit":"ac","output":"CoverAcres"}}
+```
+
+Use this with `gp.run`, then export the resulting table as CSV. Like Pivot Table, the tool
+refuses more than 1,000 class columns or 10 million output values. On the desktop it runs in
+the background with progress and Cancel; independent zones use several threads within the
+mask memory budget. Each zone's mask is filled as one step before its cells are scanned, so
+Cancel can wait for that mask fill to finish.
 
 ## Zonal statistics and polygon clipping
 

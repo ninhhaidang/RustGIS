@@ -47430,7 +47430,7 @@ fn cancel_exports(out: &dyn Fn(&str) -> String, dem: &str) -> Vec<(&'static str,
 /// The tools whose work grows past a second or two on real data: buffers, overlays, joins, hulls,
 /// densities and interpolation. A new long tool is added here (AGENTS.md › Never hold the window).
 #[cfg(not(target_arch = "wasm32"))]
-fn cancel_tools() -> Vec<(&'static str, Value)> {
+fn cancel_tools(dem: &str) -> Vec<(&'static str, Value)> {
     vec![
         ("buffer", json!({"input": "Cities", "distance": 100})),
         ("dissolve", json!({"input": "Countries"})),
@@ -47449,6 +47449,7 @@ fn cancel_tools() -> Vec<(&'static str, Value)> {
         ("convexHull", json!({"input": "Countries", "group": "All", "output": "Hulls_all"})),
         ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
         ("kriging", json!({"input": "Cities", "field": "pop_max"})),
+        ("tabulateArea", json!({"raster": dem, "zones": "Countries"})),
     ]
 }
 
@@ -47563,7 +47564,7 @@ fn long_commands_stop_when_cancelled_while_they_run() {
     note("layer.repairSource", read.run(&control).map(|_| ()), &control);
     std::fs::remove_file(replacement).unwrap();
 
-    let tools = cancel_tools();
+    let tools = cancel_tools(&dem);
     for (tool, params) in &tools {
         // The parameters are good: a run that isn't cancelled succeeds.
         s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap_or_else(|e| panic!("{tool}: {e}"));
@@ -47685,7 +47686,10 @@ fn cancelling_at_each_check_leaves_nothing_behind() {
                     while s.undo_depth() > before.1 {
                         s.undo();
                     }
-                    if state(s) != before {
+                    let mut after = state(s);
+                    // Table ids are never reused: undo keeps the counter (see the standalone-table removal regression).
+                    after.0["next_table_id"] = before.0["next_table_id"].clone();
+                    if after != before {
                         problems.push(format!("{what}, look {n} of {total}: undoing the run again doesn't give the project back"));
                     }
                 }
@@ -47722,7 +47726,7 @@ fn cancelling_at_each_check_leaves_nothing_behind() {
         };
         sweep(&mut s, command, false, command == "source.publish", &attempt);
     }
-    for (tool, params) in cancel_tools() {
+    for (tool, params) in cancel_tools(&dem) {
         let attempt = |s: &mut Session, control: &Arc<Control>| {
             let run = crate::cmd::gp::tool_start(s, tool, &params)?;
             let id = run.id;

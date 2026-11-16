@@ -629,6 +629,7 @@ const READ_AREAS_IN_THE_PLANE: &[&str] = &[
     "buffer",
     "near",
     "zonalStats",
+    "tabulateArea",
     "clip",
     "erase",
     "intersect",
