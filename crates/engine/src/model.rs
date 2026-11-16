@@ -972,8 +972,9 @@ pub(crate) fn check_file(v: &Value) -> Result<(), String> {
 /// Imports also accept legacy envelopes without a version.
 pub fn to_file(name: &str, g: &ModelGraph) -> Value {
     let mut file = json!({"$schema": SCHEMA, "version": FILE_VERSION, "name": name, "graph": g});
-    if crate::project::model_uses_percent_slope(&[], Some(g)) {
-        file["requires"] = json!(["slope-percent"]);
+    let required = crate::project::model_capabilities(&[], Some(g));
+    if !required.is_empty() {
+        file["requires"] = json!(required);
     }
     file
 }
@@ -988,8 +989,9 @@ pub(crate) fn to_web_tool_file(name: &str, steps: &[ModelStep]) -> Value {
         })
         .collect();
     let mut file = json!({"format": "RustGIS web tool", "version": WEB_TOOL_VERSION, "name": name, "steps": steps, "parameters": params});
-    if crate::project::model_uses_percent_slope(steps, None) {
-        file["requires"] = json!(["slope-percent"]);
+    let required = crate::project::model_capabilities(steps, None);
+    if !required.is_empty() {
+        file["requires"] = json!(required);
     }
     file
 }
@@ -997,6 +999,81 @@ pub(crate) fn to_web_tool_file(name: &str, steps: &[ModelStep]) -> Value {
 mod tests {
     use super::*;
     use crate::Project;
+
+    /// Graph and web-tool envelopes reflect only their saved executable payload, and default
+    /// km² remains readable without the capability even if the omitted representation needs it.
+    #[test]
+    fn tabulate_unit_files_require_only_the_saved_payload_capability() {
+        for unit in [None, Some("km2"), Some("ac")] {
+            let mut params = json!({"zones":"Zones", "classes":"Classes"});
+            if let Some(unit) = unit {
+                params["areaUnit"] = json!(unit);
+            }
+            let mut graph = ModelGraph {
+                nodes: vec![ModelNode {
+                    id: "t".into(),
+                    kind: ModelNodeKind::Tool,
+                    tool: Some("tabulateIntersection".into()),
+                    params: params.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let steps = vec![ModelStep { tool: "tabulateIntersection".into(), params }];
+            let mut project = Project::default();
+            let mut omitted = graph.clone();
+            omitted.nodes[0].params["areaUnit"] = json!("ac");
+            project.models.push(crate::project::Model { name: "Tabulate".into(), steps, graph: Some(omitted) });
+            let mut session = Session::new(project);
+            let (_, bytes, _) = crate::cmd::sharing::share_bytes(&mut session, "webTool", &json!({"model":"Tabulate"})).unwrap();
+            for file in [to_file("Tabulate", &graph), serde_json::from_slice::<Value>(&bytes).unwrap()] {
+                if unit == Some("ac") {
+                    assert_eq!(file["requires"], json!(["tabulate-intersection-unit"]));
+                } else {
+                    assert!(file.get("requires").is_none());
+                }
+                check_file(&file).unwrap();
+                let mut future = file;
+                future["requires"] = json!(["future-area-unit"]);
+                assert!(check_file(&future).unwrap_err().contains("future-area-unit"));
+            }
+            graph.nodes[0].kind = ModelNodeKind::Input;
+            assert!(to_file("Input", &graph).get("requires").is_none());
+        }
+        let steps = [ModelStep { tool: "buffer".into(), params: json!({"areaUnit":"ac"}) }];
+        assert!(to_web_tool_file("Other", &steps).get("requires").is_none());
+    }
+
+    /// Adding either capability must preserve the other in project, graph and web-tool headers.
+    #[test]
+    fn saved_command_capabilities_accumulate_independently() {
+        let mut steps = vec![
+            ModelStep { tool: "raster.function".into(), params: json!({"function":"slope", "units":"percent"}) },
+            ModelStep { tool: "tabulateIntersection".into(), params: json!({"areaUnit":"ac"}) },
+        ];
+        for expected in [json!(["slope-percent", "tabulate-intersection-unit"]), json!(["slope-percent"]), json!([])] {
+            let graph = ModelGraph {
+                nodes: steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, step)| ModelNode {
+                        id: i.to_string(),
+                        kind: ModelNodeKind::Tool,
+                        tool: Some(step.tool.clone()),
+                        params: step.params.clone(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut project = Project::default();
+            project.models.push(crate::project::Model { name: "Both".into(), steps: steps.clone(), graph: Some(graph.clone()) });
+            for file in [serde_json::to_value(&project).unwrap(), to_file("Both", &graph), to_web_tool_file("Both", &steps)] {
+                assert_eq!(file.get("requires").cloned().unwrap_or_else(|| json!([])), expected);
+            }
+            steps.pop();
+        }
+    }
 
     /// File headers follow only the graph/steps actually written, for both function commands.
     /// The ordinary degree forms keep their existing envelopes without a requires field.

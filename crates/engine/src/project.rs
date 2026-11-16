@@ -12,7 +12,7 @@ use crate::GpRecord;
 mod capabilities;
 #[path = "project_label_losses.rs"]
 pub(crate) mod label_losses;
-pub(crate) use capabilities::{layer_file_bytes, map_file_bytes, model_uses_percent_slope};
+pub(crate) use capabilities::{layer_file_bytes, map_file_bytes, model_capabilities};
 
 /// A map export cannot keep runtime-only download reservations, even in a larger project.
 pub(crate) fn ensure_map_imports_complete(map: &Map) -> Result<(), String> {
@@ -78,6 +78,7 @@ pub const CAPABILITIES: &[&str] = &[
     "field-origin",
     "slope-percent",
     "table-export-order",
+    "tabulate-intersection-unit",
 ];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.

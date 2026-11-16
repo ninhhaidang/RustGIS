@@ -7,7 +7,7 @@ mod tabulate_area;
 
 use geo::{BooleanOps, Contains, ConvexHull, CoordsIter, InteriorPoint, Intersects, MultiPolygon, Orient, Relate, orient::Direction};
 use rustgis_data::raster::{Crs, Transformer};
-use rustgis_data::{Coord, Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
+use rustgis_data::{Coord, Dataset, Feature, Field, FieldType, Geometry, GeometryType, Measure, Value};
 use rustgis_geom::Extent;
 use serde_json::Value as Json;
 use std::borrow::Cow;
@@ -655,9 +655,9 @@ pub static TOOLS: &[ToolSpec] = &[
                 name: "zoneFields",
                 label: "Zone Fields",
                 kind: K::Fields { input: "zones" },
-                required: true,
+                required: false,
                 default: "",
-                help: "Zones sharing these fields' values make one zone. Scripts and the AI Assistant can give several fields as a list.",
+                help: "Zones sharing these fields' values make one zone. Leave empty for one zone per feature, identified by zone_row (the zero-based input row). Scripts and the AI Assistant can give several fields as a list.",
             },
             P { name: "classes", label: "Input Class Features", kind: K::PolygonLayer, required: true, default: "", help: "" },
             P {
@@ -675,6 +675,14 @@ pub static TOOLS: &[ToolSpec] = &[
                 required: false,
                 default: "",
                 help: "Numeric fields of the class features whose values are shared out to the zones by the part of each feature's area in them.",
+            },
+            P {
+                name: "areaUnit",
+                label: "Area Unit",
+                kind: K::Choice(&["m2", "km2", "ha", "ac", "ft2", "mi2"]),
+                required: false,
+                default: "\"km2\"",
+                help: "Square metres (m2), square kilometres (km2), hectares (ha), acres (ac), square feet (ft2) or square miles (mi2), as in Calculate Geometry and area(). The area field is named area_<unit>.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -6007,9 +6015,10 @@ fn pivot_column_name(field: &str, v: &Value) -> String {
     if !text || name.is_empty() || name.starts_with(char::is_numeric) { format!("{field}{name}") } else { name }
 }
 
-/// A zone of Tabulate Intersection: the zone features sharing the zone fields' values, as one mask.
+/// A zone of Tabulate Intersection: features sharing the zone fields' values, or one feature
+/// when no zone fields are given, as one mask.
 struct TabulateZone {
-    /// The zone fields' values.
+    /// The zone fields' values, or the zero-based input row when no fields are given.
     key: Vec<Value>,
     /// The lon/lat extent of its features, for the index.
     ext: Extent,
@@ -6031,7 +6040,7 @@ struct TabulateCell {
 }
 
 /// Tabulate Intersection: a row for each zone and class that overlap, holding the zone fields, the
-/// class fields, `area_km2` (the ground area of the class in the zone, class features overlapping
+/// class fields, `area_<unit>` (the ground area of the class in the zone, class features overlapping
 /// each other counted once), `percentage` (that area as a percentage of the zone's) and each sum
 /// field's share: the sum, over the class's features, of the field's value times the part of the
 /// feature's area inside the zone. Rows are sorted by the zone fields' values, then the class
@@ -6041,7 +6050,10 @@ struct TabulateCell {
 /// with no value in a sum field and, with sum fields, class features not wholly inside the zones,
 /// whose values are not wholly shared out.
 ///
-/// `area_km2` is measured on the ellipsoid, as Calculate Geometry Attributes measures it. The
+/// Without zone fields, each feature is a separate zone, identified by `zone_row` (its zero-based
+/// input row); those zones stay in input order, including when a selection is used.
+/// The area defaults to `area_km2` and is measured on the ellipsoid, as Calculate Geometry
+/// Attributes measures it, converted with [`Measure::units`]. The
 /// percentages and shares compare areas measured as the map draws the polygons instead
 /// ([`map_area_m2`]): the overlay cuts along straight lines on the map, which that measure splits
 /// exactly and the ellipsoid's geodesic edges don't, so a feature's shares in zones that cover it
@@ -6056,9 +6068,8 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         }
     }
     let zone_keys = key_fields(zones, p.get("zoneFields"), "Zone Field")?;
-    if zone_keys.is_empty() {
-        return Err("'Zone Fields' is required".into());
-    }
+    let area_unit = p.get("areaUnit").and_then(Json::as_str).unwrap_or("km2");
+    let area_divisor = Measure::Area.unit(area_unit).ok_or("unknown area unit")?;
     let class_keys = key_fields(classes, p.get("classFields"), "Class Field")?;
     let sum_fields = key_fields(classes, p.get("sumFields"), "Sum Field")?;
     for &f in &sum_fields {
@@ -6095,8 +6106,8 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     }
     let (zones_shapeless, classes_shapeless) = (shapeless(zones, &zone_rows), shapeless(classes, &class_rows));
     // Features with a ring that jumps across the antimeridian unsplit: the overlay, like the map,
-    // takes such a ring the long way round, while `area_km2` takes its ground shape. A ring that
-    // loops around a pole jumps too, but is no crossing: it has a notice of its own (#1354).
+    // takes such a ring the long way round, while the area field takes its ground shape. A ring
+    // that loops around a pole jumps too, but is no crossing: it has a notice of its own (#1354).
     let unsplit = |ds: &Dataset, rs: &[usize]| {
         let jumps = |g: &Geometry| {
             has_shape(g)
@@ -6109,7 +6120,7 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     let (zones_unsplit, classes_unsplit) = (unsplit(zones, &zone_rows), unsplit(classes, &class_rows));
     // Features with an edge beyond 85.05° that runs east or west: the overlay, in the analysis
     // plane, takes it straight in longitude and latitude there (the Web Mercator map clamps it),
-    // while `area_km2` takes the shortest way between its ends, which near a pole runs far
+    // while the area field takes the shortest way between its ends, which near a pole runs far
     // poleward of it (#1033).
     let polar = |ds: &Dataset, rs: &[usize]| {
         let max = rustgis_geom::MAX_LAT;
@@ -6122,7 +6133,12 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(across)).count()
     };
     let (zones_polar, classes_polar) = (polar(zones, &zone_rows), polar(classes, &class_rows));
-    let zone_list: Vec<TabulateZone> = crate::stats::group_rows(zones, &zone_rows, &zone_keys)
+    let zone_groups = if zone_keys.is_empty() {
+        zone_rows.iter().map(|&row| crate::stats::Group { key: vec![Value::Int(row as i64)], rows: vec![row] }).collect()
+    } else {
+        crate::stats::group_rows(zones, &zone_rows, &zone_keys)
+    };
+    let zone_list: Vec<TabulateZone> = zone_groups
         .into_iter()
         .map(|group| {
             let shapes: Vec<&Geometry> =
@@ -6281,7 +6297,11 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     let mut out = Dataset::new(
         out_name(p, format!("{}_Tabulate", zones.name)),
         GeometryType::None,
-        zone_keys.iter().filter_map(|&k| zones.fields.get(k).cloned()).collect(),
+        if zone_keys.is_empty() {
+            vec![Field::new("zone_row", FieldType::Integer)]
+        } else {
+            zone_keys.iter().filter_map(|&k| zones.fields.get(k).cloned()).collect()
+        },
     );
     out.crs_incomplete = zones.crs_incomplete || classes.crs_incomplete;
     // A class field, or an output field, whose name is taken gets a suffix (`name_2`).
@@ -6289,9 +6309,9 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         let name = unique_field(&out, &f.name);
         out.fields.push(Field { name, ..f.clone() });
     }
-    for base in
-        ["area_km2", "percentage"].into_iter().chain(sum_fields.iter().filter_map(|&f| classes.fields.get(f).map(|f| f.name.as_str())))
-    {
+    let area_field = unique_field(&out, &format!("area_{area_unit}"));
+    out.fields.push(Field::new(area_field.clone(), FieldType::Double));
+    for base in ["percentage"].into_iter().chain(sum_fields.iter().filter_map(|&f| classes.fields.get(f).map(|f| f.name.as_str()))) {
         let name = unique_field(&out, base);
         out.fields.push(Field::new(name, FieldType::Double));
     }
@@ -6321,7 +6341,7 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         if let Some(message) = rustgis_data::ambiguous_area_message(std::iter::once(covered)) {
             return Err(format!("Tabulate Intersection: {message}"));
         }
-        row.push(Value::Float(ground_area_perimeter(covered).0 / 1e6));
+        row.push(Value::Float(ground_area_perimeter(covered).0 / area_divisor));
         let covered_area = map_area_m2(covered);
         row.push(if zone.map_area_m2 > 0.0 { Value::Float(covered_area / zone.map_area_m2 * 100.0) } else { Value::Null });
         row.extend(cell.sums.into_iter().map(Value::Float));
@@ -6370,7 +6390,7 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     if !unsplit.is_empty() {
         let verb = if zones_unsplit + classes_unsplit == 1 { "crosses" } else { "cross" };
         messages.push(format!(
-            "{} {verb} the antimeridian without being split there: the map draws them the long way round, and their percentages and shares follow the map, while area_km2 follows the ground",
+            "{} {verb} the antimeridian without being split there: the map draws them the long way round, and their percentages and shares follow the map, while {area_field} follows the ground",
             unsplit.join(" and ")
         ));
     }
@@ -6382,7 +6402,7 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     if !polar.is_empty() {
         let verb = if zones_polar + classes_polar == 1 { "has" } else { "have" };
         messages.push(format!(
-            "{} {verb} an edge beyond 85.05° running east or west: the analysis plane takes it straight in longitude and latitude beyond 85.05°, and their percentages and shares follow the plane, while area_km2 takes the shortest way on the ground, which near a pole can differ widely",
+            "{} {verb} an edge beyond 85.05° running east or west: the analysis plane takes it straight in longitude and latitude beyond 85.05°, and their percentages and shares follow the plane, while {area_field} takes the shortest way on the ground, which near a pole can differ widely",
             polar.join(" and ")
         ));
     }

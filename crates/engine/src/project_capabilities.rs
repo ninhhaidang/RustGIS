@@ -3,6 +3,7 @@
 
 use rustgis_map::{Layer, Map, raster::RasterRenderer};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::{FORMAT, ModelGraph, ModelNodeKind, ModelStep, Project};
 
@@ -32,19 +33,7 @@ impl Project {
         if !self.origin_id.is_empty() || self.field_origin.is_some() || self.offline_areas.iter().any(|area| !area.id.is_empty()) {
             required.push("field-origin");
         }
-        if self.models.iter().any(|m| model_uses_percent_slope(&m.steps, m.graph.as_ref()))
-            || self.tasks.iter().any(|t| t.steps.iter().any(|s| command_uses_percent_slope(&s.command, &s.params)))
-            || self.gp_history.iter().any(|h| {
-                command_uses_percent_slope(&h.id, &h.params)
-                    || h.command.as_ref().is_some_and(|(id, params)| command_uses_percent_slope(id, params))
-            })
-            || self.notebooks.iter().any(|n| {
-                n.language().is_none()
-                    && n.cells.iter().any(|c| c.kind == crate::cmd::notebook::CellKind::Code && script_uses_percent_slope(&c.source))
-            })
-        {
-            required.push("slope-percent");
-        }
+        required.extend(COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| self.uses_commands(uses).then_some(name)));
         if self.tasks.iter().any(|task| task.steps.iter().any(|step| command_uses_table_export_order(&step.command, &step.params)))
             || self.gp_history.iter().any(|record| {
                 command_uses_table_export_order(&record.id, &record.params)
@@ -62,14 +51,35 @@ impl Project {
         }
         required
     }
+
+    /// Apply the same capability predicate to every replayable project container.
+    fn uses_commands(&self, uses: CommandCheck) -> bool {
+        self.models.iter().any(|m| model_uses(&m.steps, m.graph.as_ref(), uses))
+            || self.tasks.iter().any(|t| t.steps.iter().any(|s| uses(&s.command, &s.params)))
+            || self.gp_history.iter().any(|h| {
+                uses(if h.id.is_empty() { &h.tool } else { &h.id }, &h.params)
+                    || h.command.as_ref().is_some_and(|(id, params)| uses(id, params))
+            })
+            || self.notebooks.iter().any(|n| {
+                n.language().is_none()
+                    && n.cells.iter().any(|c| c.kind == crate::cmd::notebook::CellKind::Code && script_uses(&c.source, uses))
+            })
+    }
 }
 
-/// Check only the executable payload being saved: graph files omit steps, web tools omit graphs.
-pub(crate) fn model_uses_percent_slope(steps: &[ModelStep], graph: Option<&ModelGraph>) -> bool {
-    steps.iter().any(|s| command_uses_percent_slope(&s.tool, &s.params))
-        || graph.is_some_and(|g| {
-            g.nodes.iter().any(|n| n.kind == ModelNodeKind::Tool && command_uses_percent_slope(n.tool.as_deref().unwrap_or(""), &n.params))
-        })
+type CommandCheck = fn(&str, &Value) -> bool;
+const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] =
+    &[("slope-percent", command_uses_percent_slope), ("tabulate-intersection-unit", command_uses_tabulate_unit)];
+
+/// Require only executable payloads being saved: graph files omit steps, web tools omit graphs.
+pub(crate) fn model_capabilities(steps: &[ModelStep], graph: Option<&ModelGraph>) -> Vec<&'static str> {
+    COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| model_uses(steps, graph, uses).then_some(name)).collect()
+}
+
+/// Traverse executable model nodes with the same predicate used for project commands.
+fn model_uses(steps: &[ModelStep], graph: Option<&ModelGraph>, uses: CommandCheck) -> bool {
+    steps.iter().any(|s| uses(&s.tool, &s.params))
+        || graph.is_some_and(|g| g.nodes.iter().any(|n| n.kind == ModelNodeKind::Tool && uses(n.tool.as_deref().unwrap_or(""), &n.params)))
 }
 
 /// Inspect known command parameters, not arbitrary data that happens to contain unit names.
@@ -81,17 +91,39 @@ fn command_uses_percent_slope(id: &str, params: &serde_json::Value) -> bool {
     match id {
         "raster.function" => percent(params),
         "raster.functionChain" => params.get("steps").and_then(serde_json::Value::as_array).is_some_and(|steps| steps.iter().any(percent)),
-        "script.run" => params.get("script").and_then(serde_json::Value::as_str).is_some_and(script_uses_percent_slope),
+        "script.run" => {
+            params.get("script").and_then(serde_json::Value::as_str).is_some_and(|s| script_uses(s, command_uses_percent_slope))
+        }
+        _ => false,
+    }
+}
+
+/// Inspect known command envelopes; unrelated data containing an areaUnit is not executable.
+/// Blank unit choices use the km² default and need no capability.
+fn command_uses_tabulate_unit(id: &str, params: &Value) -> bool {
+    let non_default = |p: &Value| {
+        p.get("areaUnit").and_then(Value::as_str).map(str::trim).is_some_and(|u| !u.is_empty() && !u.eq_ignore_ascii_case("km2"))
+    };
+    if crate::cmd::gp::tool_id(id) == Some("tabulateIntersection") {
+        return non_default(params);
+    }
+    let tabulate = params.get("tool").and_then(Value::as_str).and_then(crate::cmd::gp::tool_id) == Some("tabulateIntersection");
+    match id {
+        "gp.run" if tabulate => crate::parameters::params_envelope(params.get("params")).is_ok_and(|p| non_default(&p)),
+        // Batch ignores non-object shared params; binding areaUnit itself is refused by older tools.
+        "gp.batch" if tabulate => params.get("params").filter(|p| p.is_object()).is_some_and(non_default),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_tabulate_unit)),
         _ => false,
     }
 }
 
 /// Use the executor's line grammar; comments/invalid lines are not executable commands, and
 /// script_line refuses nested scripts, so this check cannot recurse through script.run.
-fn script_uses_percent_slope(script: &str) -> bool {
-    script.lines().take(crate::cmd::workflows::MAX_SCRIPT_LINES).any(|line| {
-        crate::script_line(line).is_some_and(|parsed| parsed.is_ok_and(|(id, params)| command_uses_percent_slope(&id, &params)))
-    })
+fn script_uses(script: &str, uses: CommandCheck) -> bool {
+    script
+        .lines()
+        .take(crate::cmd::workflows::MAX_SCRIPT_LINES)
+        .any(|line| crate::script_line(line).is_some_and(|parsed| parsed.is_ok_and(|(id, params)| uses(&id, &params))))
 }
 
 fn relief_effects(layer: &Layer) -> bool {
@@ -164,6 +196,80 @@ mod tests {
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// All replayable project containers require the unit only when it differs from km².
+    /// Selection of executable notebook cells follows the notebook runner's language boundary.
+    #[test]
+    fn tabulate_unit_capability_follows_saved_executables() {
+        let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/tabulate_intersection_unit.rgis")).unwrap();
+        assert_eq!(fixture.models[0].steps[0].params["areaUnit"], "ac");
+        assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["tabulate-intersection-unit"]));
+        fixture.models.clear();
+        let base = serde_json::to_value(&fixture).unwrap();
+        for unit in [None, Some(""), Some(" \t\n "), Some("km2"), Some(" KM2 "), Some("ac")] {
+            let mut params = json!({"zones":"Zones", "classes":"Classes"});
+            if let Some(unit) = unit {
+                params["areaUnit"] = json!(unit);
+            }
+            let run = json!({"tool":"tabulateIntersection", "params": params});
+            let script = format!("# Tabulate\ngp.run= {run}");
+            for (field, value) in [
+                ("models", json!([{"name":"Steps", "steps":[{"tool":"tabulateIntersection", "params":params}]}])),
+                (
+                    "models",
+                    json!([{"name":"Graph", "graph":{"nodes":[{"id":"t", "kind":"tool", "tool":"tabulateIntersection", "params":params}]}}]),
+                ),
+                ("tasks", json!([{"name":"Task", "steps":[{"title":"Tabulate", "command":"gp.run", "params":run}]}])),
+                (
+                    "tasks",
+                    json!([{"name":"Alias", "steps":[{"title":"Tabulate", "command":"gp.run", "params":{"tool":"Tabulate Intersection", "params":params}}]}]),
+                ),
+                (
+                    "tasks",
+                    json!([{"name":"Batch", "steps":[{"title":"Tabulate", "command":"gp.batch", "params":{"tool":"tabulateIntersection", "inputs":["Zones"], "params":params}}]}]),
+                ),
+                ("tasks", json!([{"name":"Script", "steps":[{"title":"Tabulate", "command":"script.run", "params":{"script":script}}]}])),
+                ("notebooks", json!([{"name":"Notebook", "cells":[{"kind":"code", "source":script}]}])),
+                (
+                    "gp_history",
+                    json!([{"tool":"Tabulate Intersection", "id":"tabulateIntersection", "params":params, "ok":true, "messages":[], "millis":0}]),
+                ),
+                ("gp_history", json!([{"tool":"Tabulate Intersection", "params":params, "ok":true, "messages":[], "millis":0}])),
+                (
+                    "gp_history",
+                    json!([{"tool":"Tabulate Intersection", "params":{}, "command":["gp.run",run], "ok":true, "messages":[], "millis":0}]),
+                ),
+                (
+                    "tasks",
+                    json!([{"name":"Envelope", "steps":[{"title":"Tabulate", "command":"gp.run", "params":{"tool":"tabulateIntersection", "params":params.to_string()}}]}]),
+                ),
+            ] {
+                let mut document = base.clone();
+                document[field] = value;
+                let project = Project::from_json(&document.to_string()).unwrap();
+                let saved = serde_json::to_value(&project).unwrap();
+                if unit == Some("ac") {
+                    assert_eq!(saved["requires"], json!(["tabulate-intersection-unit"]), "{field}");
+                    assert_eq!(saved["format"], 2);
+                } else {
+                    assert!(saved.get("requires").is_none(), "{field} {unit:?}");
+                    assert_eq!(saved["format"], FORMAT);
+                }
+                assert_eq!(Project::from_json(&saved.to_string()).unwrap().required_capabilities(), project.required_capabilities());
+            }
+        }
+        let mut document = base;
+        let script = "gp.run {\"tool\":\"tabulateIntersection\",\"params\":{\"areaUnit\":\"ac\"}}";
+        document["notebooks"] = json!([
+            {"name":"Notes", "cells":[{"kind":"markdown", "source":script}]},
+            {"name":"Foreign", "cells":[{"kind":"code", "source":script}], "jupyter":{"metadata":{"kernelspec":{"language":"python"}}}},
+            {"name":"Comments", "cells":[{"kind":"code", "source":format!("# {script}\ngp.run {{invalid")}]}
+        ]);
+        let project = Project::from_json(&document.to_string()).unwrap();
+        assert!(serde_json::to_value(&project).unwrap().get("requires").is_none());
+        assert!(!command_uses_tabulate_unit("other", &json!({"areaUnit":"ac"})));
+        assert!(!command_uses_tabulate_unit("tabulateIntersection", &json!({"areaUnit":null})));
     }
 
     /// Every saved executable container protects percent slope, while default/explicit degrees

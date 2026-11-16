@@ -108,6 +108,10 @@ still open.
 Projects, model files and web tools that save a percent-slope function require `slope-percent`:
 an older reader must refuse them rather than run the saved function in degrees. Project
 requirements also cover executable task steps, replayable history and notebook command cells.
+The same saved containers require `tabulate-intersection-unit` for Tabulate Intersection
+with a non-default `areaUnit`, so older readers refuse instead of silently using km².
+Omitted units and explicit `km2` require nothing extra; omitted zone fields need no
+capability because older tools refuse them.
 
 ## New dependencies
 

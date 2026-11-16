@@ -150,6 +150,127 @@ fn clean_input_gives_no_notices() {
     assert_eq!(got.iter().map(|(_, n)| (n[1], n[2])).collect::<Vec<_>>(), [(50.0, 60.0), (50.0, 50.0)]);
 }
 
+/// Every shared area unit converts the same ground area; percentages, totals and default output
+/// retain their existing values, including where an area field name collides with a zone field.
+#[test]
+fn area_units_convert_only_the_area_and_name_its_unit() {
+    let l = layers(zones(), classes());
+    let params = json!({"zones":"zones", "zoneFields":"zone", "classes":"classes", "sumFields":"pop"});
+    let default = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    let messages = default.messages.clone();
+    let baseline = table(default);
+    let spec = rustgis_analysis::TOOLS.iter().find(|t| t.id == "tabulateIntersection").unwrap();
+    let unit = spec.params.iter().find(|p| p.name == "areaUnit").unwrap();
+    assert!(!unit.required);
+    assert_eq!(unit.default, "\"km2\"");
+    let rustgis_analysis::ParamKind::Choice(choices) = unit.kind else { panic!("expected unit choices") };
+    assert_eq!(*choices, rustgis_data::Measure::Area.units().iter().map(|(key, _)| *key).collect::<Vec<_>>());
+    for &(unit, divisor) in rustgis_data::Measure::Area.units() {
+        let mut params = params.clone();
+        params["areaUnit"] = json!(unit);
+        let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+        assert_eq!(result.messages, messages);
+        let out = table(result);
+        assert_eq!(out.fields[1].name, format!("area_{unit}"));
+        assert_eq!(out.features.len(), baseline.features.len());
+        for (got, old) in out.features.iter().zip(baseline.features.iter()) {
+            assert_eq!(got.attrs[0], old.attrs[0]);
+            assert_eq!(got.attrs[2..], old.attrs[2..]);
+            let expected = old.attrs[1].as_f64().unwrap() * 1e6 / divisor;
+            let actual = got.attrs[1].as_f64().unwrap();
+            assert!((actual - expected).abs() <= expected * 1e-12, "{unit}: {actual} != {expected}");
+            if unit == "km2" {
+                assert_eq!(got.attrs, old.attrs);
+            }
+        }
+    }
+    let mut z = zones();
+    z.fields[0].name = "area_ac".into();
+    let out = table(
+        rustgis_analysis::run(
+            "tabulateIntersection",
+            &layers(z, classes()),
+            &json!({"zones":"zones", "zoneFields":"area_ac", "classes":"classes", "areaUnit":"ac"}),
+        )
+        .unwrap(),
+    );
+    assert_eq!(out.fields[0].name, "area_ac");
+    assert_eq!(out.fields[1].name, "area_ac_2");
+}
+
+/// Null optional units match omission exactly, including the table schema and notices.
+#[test]
+fn null_area_unit_keeps_default_output() {
+    let l = layers(zones(), classes());
+    let mut params = json!({"zones":"zones", "zoneFields":"zone", "classes":"classes", "sumFields":"pop"});
+    let default = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    params["areaUnit"] = json!(null);
+    let null = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(null.messages, default.messages);
+    assert_eq!(serde_json::to_value(table(null)).unwrap(), serde_json::to_value(table(default)).unwrap());
+}
+
+/// Geographic notices name the numeric area column after collisions with both grouping fields.
+#[test]
+fn area_notices_use_the_actual_column_name() {
+    let polygon = |points: &[(f64, f64)]| Some(Geometry::Polygon(vec![vec![points.iter().map(|&(x, y)| Coord::new(x, y)).collect()]]));
+    for (zone, class, notice) in [
+        (
+            [(179.0, 0.0), (-179.0, 0.0), (-179.0, 1.0), (179.0, 1.0), (179.0, 0.0)],
+            [(0.0, 0.2), (0.5, 0.2), (0.5, 0.8), (0.0, 0.8), (0.0, 0.2)],
+            "follows the ground",
+        ),
+        (
+            [(0.0, 80.0), (10.0, 80.0), (10.0, 88.0), (0.0, 88.0), (0.0, 80.0)],
+            [(0.0, 84.0), (10.0, 84.0), (10.0, 89.0), (0.0, 89.0), (0.0, 84.0)],
+            "takes the shortest way on the ground",
+        ),
+    ] {
+        let mut z = Dataset::new("zones", GeometryType::Polygon, vec![Field::new("area_ac", FieldType::Text)]);
+        z.push_next(polygon(&zone), vec![Value::Text("A".into())]);
+        let mut c = Dataset::new("classes", GeometryType::Polygon, vec![Field::new("area_ac", FieldType::Text)]);
+        c.push_next(polygon(&class), vec![Value::Text("forest".into())]);
+        let params = json!({"zones":"zones", "zoneFields":"area_ac", "classes":"classes", "classFields":"area_ac", "areaUnit":"ac"});
+        let result = rustgis_analysis::run("tabulateIntersection", &layers(z, c), &params).unwrap();
+        assert!(result.messages.iter().any(|m| m.contains(&format!("while area_ac_3 {notice}"))), "{:?}", result.messages);
+        let out = table(result);
+        assert_eq!(out.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["area_ac", "area_ac_2", "area_ac_3", "percentage"]);
+        assert_eq!(out.fields[2].ty, FieldType::Double);
+    }
+}
+
+/// A fieldless dissolved layer works without a synthetic attribute. Empty lists and strings
+/// behave like omission; a reordered selection retains original row identities and order.
+#[test]
+fn missing_zone_fields_use_individual_input_rows() {
+    let mut z = Dataset::new("zones", GeometryType::Polygon, vec![]);
+    for (x0, x1) in [(0.0, 1.0), (0.0, 2.0), (1.0, 2.0)] {
+        z.push_next(rect(x0, x1), vec![]);
+    }
+    let mut c = Dataset::new("classes", GeometryType::Polygon, vec![]);
+    c.push_next(rect(0.0, 2.0), vec![]);
+    let mut l = layers(z, c);
+    let params = json!({"zones":"zones", "classes":"classes"});
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(result.messages, ["Tabulate Intersection: 3 rows"]);
+    let all = table(result);
+    assert_eq!(all.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["zone_row", "area_km2", "percentage"]);
+    assert_eq!(all.fields[0].ty, FieldType::Integer);
+    assert_eq!(all.features.iter().map(|f| f.attrs[0].clone()).collect::<Vec<_>>(), [Value::Int(0), Value::Int(1), Value::Int(2)]);
+    for empty in [json!(null), json!(""), json!([])] {
+        let mut params = params.clone();
+        params["zoneFields"] = empty;
+        let out = table(rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap());
+        assert_eq!(*out.features, *all.features);
+    }
+    l.selected.insert("zones".into(), vec![2, 0, 2]);
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(result.messages, ["Tabulate Intersection: 2 rows"]);
+    let out = table(result);
+    assert_eq!(out.features.iter().map(|f| f.attrs[0].clone()).collect::<Vec<_>>(), [Value::Int(0), Value::Int(2)]);
+    assert_eq!(out.features.iter().map(|f| &f.attrs).collect::<Vec<_>>(), [&all.features[0].attrs, &all.features[2].attrs]);
+}
+
 #[test]
 fn says_what_it_leaves_out() {
     let mut z = zones();
@@ -506,12 +627,9 @@ fn a_zone_crossing_the_antimeridian_unsplit_is_reported() {
     z.push_next(ring(&[(179.0, 0.0), (-179.0, 0.0), (-179.0, 1.0), (179.0, 1.0), (179.0, 0.0)]), vec![Value::Text("A".into())]);
     let mut c = Dataset::new("classes", GeometryType::Polygon, vec![Field::new("kind", FieldType::Text)]);
     c.push_next(ring(&[(0.0, 0.2), (0.5, 0.2), (0.5, 0.8), (0.0, 0.8), (0.0, 0.2)]), vec![Value::Text("x".into())]);
-    let result = rustgis_analysis::run(
-        "tabulateIntersection",
-        &layers(z, c),
-        &json!({"zones": "zones", "zoneFields": "zone", "classes": "classes"}),
-    )
-    .unwrap();
+    let l = layers(z, c);
+    let params = json!({"zones": "zones", "zoneFields": "zone", "classes": "classes"});
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
     assert_eq!(
         result.messages,
         [
@@ -519,6 +637,10 @@ fn a_zone_crossing_the_antimeridian_unsplit_is_reported() {
             "1 zone feature crosses the antimeridian without being split there: the map draws them the long way round, and their percentages and shares follow the map, while area_km2 follows the ground",
         ]
     );
+    let mut params = params;
+    params["areaUnit"] = json!("ac");
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert!(result.messages.iter().any(|m| m.contains("while area_ac follows the ground")));
 }
 
 #[test]
@@ -547,7 +669,6 @@ fn refuses_inputs_it_cannot_tabulate() {
     l.data.insert("lines".into(), lines);
     let run = |params: serde_json::Value| rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap_err();
     assert_eq!(run(json!({"zones": "zones", "zoneFields": "zone", "classes": "lines"})), "'lines' is not a polygon layer");
-    assert_eq!(run(json!({"zones": "zones", "zoneFields": [], "classes": "classes"})), "'Zone Fields' is required");
     assert_eq!(
         run(json!({"zones": "zones", "zoneFields": "zone", "classes": "classes", "sumFields": "kind"})),
         "the sum field 'kind' is not numeric"

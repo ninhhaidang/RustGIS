@@ -1059,7 +1059,8 @@
           "normalized-legend-urls",
           "field-origin",
           "slope-percent",
-          "table-export-order"
+          "table-export-order",
+          "tabulate-intersection-unit"
         ],
         "type": "string"
       },
@@ -1130,7 +1131,8 @@
     "normalized-legend-urls",
     "field-origin",
     "slope-percent",
-    "table-export-order"
+    "table-export-order",
+    "tabulate-intersection-unit"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2
