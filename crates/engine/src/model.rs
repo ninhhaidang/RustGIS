@@ -968,14 +968,82 @@ pub(crate) fn check_file(v: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// A graph's current file envelope; imports also accept legacy envelopes without a version.
+/// A graph's current file envelope, requiring any capabilities an older reader would misread.
+/// Imports also accept legacy envelopes without a version.
 pub fn to_file(name: &str, g: &ModelGraph) -> Value {
-    json!({"$schema": SCHEMA, "version": FILE_VERSION, "name": name, "graph": g})
+    let mut file = json!({"$schema": SCHEMA, "version": FILE_VERSION, "name": name, "graph": g});
+    if crate::project::model_uses_percent_slope(&[], Some(g)) {
+        file["requires"] = json!(["slope-percent"]);
+    }
+    file
+}
+
+/// Web tools save only steps and their exposed defaults, with capabilities of those steps.
+pub(crate) fn to_web_tool_file(name: &str, steps: &[ModelStep]) -> Value {
+    let params: Vec<Value> = steps
+        .iter()
+        .enumerate()
+        .flat_map(|(i, st)| {
+            st.params.as_object().into_iter().flatten().map(move |(k, v)| json!({"step": i + 1, "tool": st.tool, "name": k, "default": v}))
+        })
+        .collect();
+    let mut file = json!({"format": "RustGIS web tool", "version": WEB_TOOL_VERSION, "name": name, "steps": steps, "parameters": params});
+    if crate::project::model_uses_percent_slope(steps, None) {
+        file["requires"] = json!(["slope-percent"]);
+    }
+    file
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Project;
+
+    /// File headers follow only the graph/steps actually written, for both function commands.
+    /// The ordinary degree forms keep their existing envelopes without a requires field.
+    #[test]
+    fn percent_slope_files_require_the_saved_payload_capability() {
+        for units in [None, Some("degrees"), Some("percent")] {
+            let mut slope = json!({"function": "slope"});
+            if let Some(units) = units {
+                slope["units"] = json!(units);
+            }
+            for (id, params) in [("raster.function", slope.clone()), ("raster.functionChain", json!({"steps": [slope]}))] {
+                let mut graph = ModelGraph {
+                    nodes: vec![ModelNode {
+                        id: "s".into(),
+                        kind: ModelNodeKind::Tool,
+                        tool: Some(id.into()),
+                        params: params.clone(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let steps = [ModelStep { tool: id.into(), params }];
+                let mut project = Project::default();
+                // Web tools omit this graph, so it must not affect the header of degree steps.
+                let percent_graph = serde_json::from_value(json!({"nodes": [
+                    {"id": "s", "kind": "tool", "tool": "raster.function", "params": {"function": "slope", "units": "percent"}}
+                ]}))
+                .unwrap();
+                project.models.push(crate::project::Model { name: "Slope".into(), steps: steps.to_vec(), graph: Some(percent_graph) });
+                let mut session = Session::new(project);
+                let (_, bytes, _) = crate::cmd::sharing::share_bytes(&mut session, "webTool", &json!({"model": "Slope"})).unwrap();
+                let web_tool = serde_json::from_slice::<Value>(&bytes).unwrap();
+                for file in [to_file("Slope", &graph), web_tool] {
+                    if units == Some("percent") {
+                        assert_eq!(file["requires"], json!(["slope-percent"]));
+                    } else {
+                        assert!(file.get("requires").is_none());
+                    }
+                    check_file(&file).unwrap();
+                }
+                graph.nodes[0].kind = ModelNodeKind::Input;
+                assert!(to_file("Input", &graph).get("requires").is_none());
+            }
+        }
+        let steps = [ModelStep { tool: "other".into(), params: json!({"function": "slope", "units": "percent"}) }];
+        assert!(to_web_tool_file("Other", &steps).get("requires").is_none());
+    }
 
     fn session() -> Session {
         let mut s = Session::new(Project::default());

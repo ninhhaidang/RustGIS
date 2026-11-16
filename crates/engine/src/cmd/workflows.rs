@@ -14,6 +14,7 @@ use super::{b, f, ps};
 use crate::project::{Model, ModelStep};
 use crate::{CmdResult, CommandSpec as C, Session};
 
+/// Registers workflow and raster commands with the parameter help used by command clients.
 pub fn commands() -> Vec<C> {
     vec![
         C::new("gp.env", "Environments", "Analyze › Geoprocessing", environments).inputs(environment_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
@@ -54,10 +55,10 @@ pub fn commands() -> Vec<C> {
         C::new("script.run", "Run Script", "Analyze › Geoprocessing", run_script).roles(&[crate::ParamRole { key: "script", role: crate::Role::Script }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Automation))
             .params(r#"{"script": "one command per line: id {json}; # comments"}"#),
         C::new("raster.function", "Raster Functions", "Analyze › Raster", raster_function).inputs(function_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"layer": raster, "function": "slope"|"aspect"|"hillshade"|"ndvi"|"bandMath"|"remap"|"threshold"|"resample" (slope returns degrees, not percent), "band"?: 1-based, "expression"?: "(b4-b3)/(b4+b3)", "ranges"?: [[lo, hi, value]] (lo inclusive, hi exclusive; [21, 22, 1] maps integer class 21 to 1), "value"?: number, "keep"?: bool (remap: keep unmatched cells), "nir"?, "red"?: band numbers (ndvi; default 4 and 3), "azimuth"?, "altitude"?, "zFactor"?, "target"?: raster (resample onto its grid), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
+            r#"{"layer": raster, "function": "slope"|"aspect"|"hillshade"|"ndvi"|"bandMath"|"remap"|"threshold"|"resample", "units"?: "degrees"|"percent" (slope only; default degrees; percent is 100 × tan(angle in radians)), "band"?: 1-based, "expression"?: "(b4-b3)/(b4+b3)", "ranges"?: [[lo, hi, value]] (lo inclusive, hi exclusive; [21, 22, 1] maps integer class 21 to 1), "value"?: number, "keep"?: bool (remap: keep unmatched cells), "nir"?, "red"?: band numbers (ndvi; default 4 and 3), "azimuth"?, "altitude"?, "zFactor"?, "target"?: raster (resample onto its grid), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
         C::new("raster.functionChain", "Function Editor", "Analyze › Raster", function_chain).inputs(chain_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
-            .params(r#"{"layer": raster, "steps": [{"function", … (as raster.function; slope returns degrees, not percent)}], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
+            .params(r#"{"layer": raster, "steps": [{"function", … (as raster.function; slope units: "degrees" (default) or "percent")}], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("analysis.suitability", "Suitability Modeler", "Analyze › Workflows", suitability).inputs(suitability_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"criteria": [{"layer": raster, "band"?: 1-based, "ranges": [[lo, hi, score]] (lo inclusive, hi exclusive; [21, 22, 1] scores integer class 21 as 1), "weight": number}], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
@@ -528,7 +529,7 @@ pub fn gallery_list(kind: &str) -> CmdResult {
             (
                 "raster.function",
                 "Raster Functions",
-                "Slope (degrees), aspect, hillshade, NDVI, band math, remap, threshold and resampling.",
+                "Slope (degrees or percent), aspect, hillshade, NDVI, band math, remap, threshold and resampling.",
             ),
             ("analysis.suitability", "Suitability Modeler", "Weighted overlay of scored rasters."),
             ("analysis.viewshed", "Viewshed", "The cells visible from an observer on a DEM."),
@@ -1171,7 +1172,12 @@ fn apply_function(r: &Raster, p: &Value, target: Option<&Raster>, remaps: &mut R
     let band = band_of(p, r)?;
     let zf = f(p, "zFactor").unwrap_or(1.0).clamp(0.0001, 100_000.0);
     match ps(p, "function").ok_or("function is required")? {
-        "slope" => rasterops::slope(r, band, zf),
+        "slope" => match p.get("units") {
+            None => rasterops::slope(r, band, zf),
+            Some(Value::String(units)) if units == "degrees" => rasterops::slope(r, band, zf),
+            Some(Value::String(units)) if units == "percent" => rasterops::slope_percent(r, band, zf),
+            _ => Err("slope units must be degrees or percent".into()),
+        },
         "aspect" => rasterops::aspect(r, band),
         "hillshade" => {
             rasterops::hillshade(r, band, f(p, "azimuth").unwrap_or(315.0), f(p, "altitude").unwrap_or(45.0).clamp(0.0, 90.0), zf)
@@ -1259,7 +1265,7 @@ fn derive_function(r: &Raster, name: &str, p: &Value, pixels: Vec<f32>) -> Resul
     if ps(p, "function") == Some("slope")
         && let Some(band) = out.bands.first_mut()
     {
-        band.name = "Slope (degrees)".into();
+        band.name = if ps(p, "units") == Some("percent") { "Slope (percent)" } else { "Slope (degrees)" }.into();
     }
     Ok(out)
 }

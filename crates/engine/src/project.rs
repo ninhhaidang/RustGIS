@@ -12,7 +12,7 @@ use crate::GpRecord;
 mod capabilities;
 #[path = "project_label_losses.rs"]
 pub(crate) mod label_losses;
-pub(crate) use capabilities::{layer_file_bytes, map_file_bytes};
+pub(crate) use capabilities::{layer_file_bytes, map_file_bytes, model_uses_percent_slope};
 
 /// A map export cannot keep runtime-only download reservations, even in a larger project.
 pub(crate) fn ensure_map_imports_complete(map: &Map) -> Result<(), String> {
@@ -70,7 +70,8 @@ pub const FORMAT: u32 = 2;
 pub const READ_FORMAT: u32 = 2;
 /// The saved additions this RustGIS understands. Writers require only capabilities used by
 /// their payload, so a format-2 reader without them refuses instead of discarding their fields.
-pub const CAPABILITIES: &[&str] = &["terrain-block", "terrain-water", "shaded-relief-effects", "normalized-legend-urls", "field-origin"];
+pub const CAPABILITIES: &[&str] =
+    &["terrain-block", "terrain-water", "shaded-relief-effects", "normalized-legend-urls", "field-origin", "slope-percent"];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
 pub(crate) const MAX_REQUIRES: usize = 256;

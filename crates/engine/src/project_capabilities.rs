@@ -4,7 +4,7 @@
 use rustgis_map::{Layer, Map, raster::RasterRenderer};
 use serde::{Deserialize, Serialize};
 
-use super::{FORMAT, Project};
+use super::{FORMAT, ModelGraph, ModelNodeKind, ModelStep, Project};
 
 impl Serialize for Project {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -26,14 +26,57 @@ impl<'de> Deserialize<'de> for Project {
 }
 
 impl Project {
-    /// Required features of all maps, including snapshots that can later be restored.
+    /// Required features of all saved maps, snapshots and replayable commands/scripts.
     pub(crate) fn required_capabilities(&self) -> Vec<&'static str> {
         let mut required = map_capabilities(self.maps.iter().chain(self.offline_areas.iter().map(|a| &a.data)));
         if !self.origin_id.is_empty() || self.field_origin.is_some() || self.offline_areas.iter().any(|area| !area.id.is_empty()) {
             required.push("field-origin");
         }
+        if self.models.iter().any(|m| model_uses_percent_slope(&m.steps, m.graph.as_ref()))
+            || self.tasks.iter().any(|t| t.steps.iter().any(|s| command_uses_percent_slope(&s.command, &s.params)))
+            || self.gp_history.iter().any(|h| {
+                command_uses_percent_slope(&h.id, &h.params)
+                    || h.command.as_ref().is_some_and(|(id, params)| command_uses_percent_slope(id, params))
+            })
+            || self.notebooks.iter().any(|n| {
+                n.language().is_none()
+                    && n.cells.iter().any(|c| c.kind == crate::cmd::notebook::CellKind::Code && script_uses_percent_slope(&c.source))
+            })
+        {
+            required.push("slope-percent");
+        }
         required
     }
+}
+
+/// Check only the executable payload being saved: graph files omit steps, web tools omit graphs.
+pub(crate) fn model_uses_percent_slope(steps: &[ModelStep], graph: Option<&ModelGraph>) -> bool {
+    steps.iter().any(|s| command_uses_percent_slope(&s.tool, &s.params))
+        || graph.is_some_and(|g| {
+            g.nodes.iter().any(|n| n.kind == ModelNodeKind::Tool && command_uses_percent_slope(n.tool.as_deref().unwrap_or(""), &n.params))
+        })
+}
+
+/// Inspect known command parameters, not arbitrary data that happens to contain unit names.
+fn command_uses_percent_slope(id: &str, params: &serde_json::Value) -> bool {
+    let percent = |p: &serde_json::Value| {
+        p.get("function").and_then(serde_json::Value::as_str) == Some("slope")
+            && p.get("units").and_then(serde_json::Value::as_str) == Some("percent")
+    };
+    match id {
+        "raster.function" => percent(params),
+        "raster.functionChain" => params.get("steps").and_then(serde_json::Value::as_array).is_some_and(|steps| steps.iter().any(percent)),
+        "script.run" => params.get("script").and_then(serde_json::Value::as_str).is_some_and(script_uses_percent_slope),
+        _ => false,
+    }
+}
+
+/// Use the executor's line grammar; comments/invalid lines are not executable commands, and
+/// script_line refuses nested scripts, so this check cannot recurse through script.run.
+fn script_uses_percent_slope(script: &str) -> bool {
+    script.lines().take(crate::cmd::workflows::MAX_SCRIPT_LINES).any(|line| {
+        crate::script_line(line).is_some_and(|parsed| parsed.is_ok_and(|(id, params)| command_uses_percent_slope(&id, &params)))
+    })
 }
 
 fn relief_effects(layer: &Layer) -> bool {
@@ -88,6 +131,59 @@ mod tests {
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// Every saved executable container protects percent slope, while default/explicit degrees
+    /// and non-executable notebook text stay readable without the capability.
+    #[test]
+    fn slope_percent_capability_follows_saved_executables() {
+        let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/slope_percent.rgis")).unwrap();
+        assert_eq!(fixture.models[0].steps[0].params["steps"][0]["units"], "percent");
+        assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["slope-percent"]));
+        fixture.models.clear();
+        let base = serde_json::to_value(&fixture).unwrap();
+        for units in [None, Some("degrees"), Some("percent")] {
+            let mut slope = json!({"function": "slope", "layer": "DEM"});
+            if let Some(units) = units {
+                slope["units"] = json!(units);
+            }
+            for (id, params) in [("raster.function", slope.clone()), ("raster.functionChain", json!({"layer": "DEM", "steps": [slope]}))] {
+                let script = format!("# Slope\n{id}= {params}");
+                for (field, value) in [
+                    ("models", json!([{"name": "Steps", "steps": [{"tool": id, "params": params}]}])),
+                    ("models", json!([{"name": "Graph", "graph": {"nodes": [{"id": "s", "kind": "tool", "tool": id, "params": params}]}}])),
+                    ("tasks", json!([{"name": "Task", "steps": [{"title": "Slope", "command": id, "params": params}]}])),
+                    (
+                        "tasks",
+                        json!([{"name": "Script", "steps": [{"title": "Slope", "command": "script.run", "params": {"script": script}}]}]),
+                    ),
+                    ("notebooks", json!([{"name": "Notebook", "cells": [{"kind": "code", "source": script}]}])),
+                    (
+                        "gp_history",
+                        json!([{"tool": "Slope", "params": {}, "command": [id, params], "ok": true, "messages": [], "millis": 0}]),
+                    ),
+                ] {
+                    let mut document = base.clone();
+                    document[field] = value;
+                    let project = Project::from_json(&document.to_string()).unwrap();
+                    let saved = serde_json::to_value(&project).unwrap();
+                    if units == Some("percent") {
+                        assert_eq!(saved["requires"], json!(["slope-percent"]), "{id} {field}");
+                    } else {
+                        assert!(saved.get("requires").is_none(), "{id} {field} {units:?}");
+                    }
+                }
+            }
+        }
+        let mut document = base;
+        let script = "raster.function {\"function\":\"slope\",\"units\":\"percent\"}";
+        document["notebooks"] = json!([
+            {"name": "Notes", "cells": [{"kind": "markdown", "source": script}]},
+            {"name": "Foreign", "cells": [{"kind": "code", "source": script}],
+             "jupyter": {"metadata": {"kernelspec": {"language": "python"}}}}
+        ]);
+        let project = Project::from_json(&document.to_string()).unwrap();
+        assert!(serde_json::to_value(&project).unwrap().get("requires").is_none());
     }
 
     #[test]

@@ -202,6 +202,24 @@ pub fn slope(r: &Raster, b: usize, zf: f64) -> Result<Vec<f32>, String> {
     terrain(r, d, zf, |gx, gy| gx.hypot(gy).atan().to_degrees())
 }
 
+/// Slope as percent rise: 100 times the gradient magnitude, equivalent to 100 × tan(angle in radians).
+/// Uses the same Horn gradient, Z factor and no-data handling as [`slope`], without rounding
+/// through degree output first. Refuses output beyond Float32's range with a cell count.
+pub fn slope_percent(r: &Raster, b: usize, zf: f64) -> Result<Vec<f32>, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let d = band(r, b)?;
+    let overflow = AtomicUsize::new(0);
+    let pixels = terrain(r, d, zf, |gx, gy| {
+        let value = 100.0 * gx.hypot(gy);
+        if !value.is_finite() || value > f64::from(f32::MAX) {
+            overflow.fetch_add(1, Ordering::Relaxed);
+        }
+        value
+    })?;
+    let n = overflow.load(Ordering::Relaxed);
+    if n > 0 { Err(format!("{n} percent slope cells exceed the Float32 range")) } else { Ok(pixels) }
+}
+
 /// Aspect: the compass direction the slope faces, in degrees (flat cells are -1).
 pub fn aspect(r: &Raster, b: usize) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;

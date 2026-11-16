@@ -28,6 +28,8 @@ pub struct Workflow {
     pub bilinear: bool,
     pub text: String,
     pub function: String,
+    /// Slope output is degrees unless the user chooses percent rise.
+    pub slope_percent: bool,
     pub chain: Vec<String>,
     pub format: String,
     pub pick: Option<Pick>,
@@ -537,6 +539,8 @@ fn picked(app: &mut RustGisApp, purpose: &str) -> Option<Vec<rustgis_engine::geo
     if done { app.workflow.pick.take().map(|p| p.points) } else { None }
 }
 
+/// Draws the active workflow form; raster functions share their step parameters with the
+/// Function Editor so Apply and Add Step honor the same choices.
 pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // A section whose extension was turned off while it was open: back to the first.
     if app.workflow.section.is_empty() || !section_shown(&app.session, app.workflow.section) {
@@ -619,9 +623,23 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 }
             });
             if app.workflow.function == "slope" {
-                ui.label(egui::RichText::new(tl!("Slope is in degrees (0–90), not percent.")).small().weak());
+                ui.horizontal(|ui| {
+                    let label = ui.label(tl!("Slope units"));
+                    egui::ComboBox::from_id_salt("wf_slope_units")
+                        .selected_text(if app.workflow.slope_percent { tl!("Percent") } else { tl!("Degrees (0–90)") })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut app.workflow.slope_percent, false, tl!("Degrees (0–90)"));
+                            ui.selectable_value(&mut app.workflow.slope_percent, true, tl!("Percent"));
+                        })
+                        .response
+                        .labelled_by(label.id);
+                });
             }
-            let step = json!({"function": app.workflow.function, "expression": app.workflow.text, "value": num(&app.workflow.number, 0.0)});
+            let mut step =
+                json!({"function": app.workflow.function, "expression": app.workflow.text, "value": num(&app.workflow.number, 0.0)});
+            if app.workflow.function == "slope" {
+                step["units"] = json!(if app.workflow.slope_percent { "percent" } else { "degrees" });
+            }
             if app.workflow.section == "rasterFunctions" {
                 if ui.button(tl!("Apply")).clicked() {
                     let mut p = step;

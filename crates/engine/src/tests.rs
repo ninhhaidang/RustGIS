@@ -13267,50 +13267,92 @@ fn a_scan_warped_onto_its_points_is_placed_for_real() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A one-in-one plane returns 45 degrees, with its unit in the band description through both
-/// function paths, GeoTIFF export and project reopening. A following function clears that label.
-/// The geographic case uses the documented centre-latitude approximation; zFactor scales rise.
+/// A one-in-one plane returns 45 degrees by default or 100 percent when requested, with its
+/// unit kept through both function paths, GeoTIFF export and project reopening. A following
+/// function clears that label. Geographic grids use the centre-latitude approximation and
+/// zFactor scales rise in either unit; explicit degrees agrees with the default. Unrepresentable
+/// percent values are errors with a cell count; degree output stays finite.
 #[test]
-fn slope_results_describe_degrees() {
+fn slope_results_use_chosen_units() {
     use base64::Engine;
     use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
     for (crs, cell, top, rise) in [(Crs::WebMercator, 10.0, 30.0, 10.0), (Crs::LonLat, 0.001, 60.0015, 55.66)] {
         for chain in [false, true] {
-            let mut s = world();
-            let gt = GeoTransform { origin_x: 0.0, origin_y: top, pixel_width: cell, pixel_height: -cell };
-            let pixels = (0..9).map(|i| (i % 3) as f32 * rise).collect();
-            let dem = Raster::new("plane", 3, 3, vec![pixels], gt, crs, None, ColorHint::Gray, "Float32").unwrap();
-            let data = base64::engine::general_purpose::STANDARD.encode(geotiff::write(&dem, 0).unwrap());
-            s.run("layer.addDataBytes", &json!({"fileName": "plane.tif", "data": data})).unwrap();
-            let (cmd, params, expected) = if chain {
-                ("raster.functionChain", json!({"layer": "plane", "steps": [{"function": "slope"}], "name": "S"}), 45.0)
-            } else {
-                (
-                    "raster.function",
-                    json!({"layer": "plane", "function": "slope", "zFactor": 0.5, "name": "S"}),
-                    0.5_f64.atan().to_degrees(),
-                )
-            };
-            s.run(cmd, &params).unwrap();
-            let info = s.run("raster.info", &json!({"layer": "S"})).unwrap();
-            assert_eq!(info["bands"][0]["name"], "Slope (degrees)");
-            let out = s.map().layer_by_name("S").unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
-            assert!((f64::from(out.bands[0].data[4]) - expected).abs() < 1e-4, "{crs:?} {cmd}");
-            let back = geotiff::read(std::io::Cursor::new(geotiff::write(out, 0).unwrap()), "S").unwrap();
-            assert_eq!(back.bands[0].name, "Slope (degrees)");
-            let text = serde_json::to_string(&s.project).unwrap();
-            let mut reopened = Session::new(Project::default());
-            reopened.run("project.openText", &json!({"text": text})).unwrap();
-            assert_eq!(reopened.run("raster.info", &json!({"layer": "S"})).unwrap()["bands"][0]["name"], "Slope (degrees)");
-            s.run(
-                "raster.functionChain",
-                &json!({"layer": "plane", "steps": [
-                {"function": "slope"}, {"function": "threshold", "value": 30}
+            for units in [None, Some("degrees"), Some("percent")] {
+                let mut s = world();
+                let gt = GeoTransform { origin_x: 0.0, origin_y: top, pixel_width: cell, pixel_height: -cell };
+                let pixels = (0..9).map(|i| (i % 3) as f32 * rise).collect();
+                let dem = Raster::new("plane", 3, 3, vec![pixels], gt, crs, None, ColorHint::Gray, "Float32").unwrap();
+                let data = base64::engine::general_purpose::STANDARD.encode(geotiff::write(&dem, 0).unwrap());
+                s.run("layer.addDataBytes", &json!({"fileName": "plane.tif", "data": data})).unwrap();
+                let (cmd, mut params, mut expected) = if chain {
+                    ("raster.functionChain", json!({"layer": "plane", "steps": [{"function": "slope"}], "name": "S"}), 45.0)
+                } else {
+                    (
+                        "raster.function",
+                        json!({"layer": "plane", "function": "slope", "zFactor": 0.5, "name": "S"}),
+                        0.5_f64.atan().to_degrees(),
+                    )
+                };
+                if let Some(units) = units {
+                    if chain {
+                        params["steps"][0]["units"] = json!(units);
+                    } else {
+                        params["units"] = json!(units);
+                    }
+                }
+                let band_name = if units == Some("percent") {
+                    expected = if chain { 100.0 } else { 50.0 };
+                    "Slope (percent)"
+                } else {
+                    "Slope (degrees)"
+                };
+                let mut bad = params.clone();
+                if chain {
+                    bad["steps"][0]["units"] = json!("radians");
+                } else {
+                    bad["units"] = json!("radians");
+                }
+                assert!(s.run(cmd, &bad).unwrap_err().contains("slope units must be degrees or percent"));
+                s.run(cmd, &params).unwrap();
+                let info = s.run("raster.info", &json!({"layer": "S"})).unwrap();
+                assert_eq!(info["bands"][0]["name"], band_name);
+                let out = s.map().layer_by_name("S").unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
+                assert!((f64::from(out.bands[0].data[4]) - expected).abs() < 1e-4, "{crs:?} {cmd} {units:?}");
+                let back = geotiff::read(std::io::Cursor::new(geotiff::write(out, 0).unwrap()), "S").unwrap();
+                assert_eq!(back.bands[0].name, band_name);
+                let text = serde_json::to_string(&s.project).unwrap();
+                let mut reopened = Session::new(Project::default());
+                reopened.run("project.openText", &json!({"text": text})).unwrap();
+                assert_eq!(reopened.run("raster.info", &json!({"layer": "S"})).unwrap()["bands"][0]["name"], band_name);
+                s.run(
+                    "raster.functionChain",
+                    &json!({"layer": "plane", "steps": [
+                {"function": "slope", "units": units.unwrap_or("degrees")}, {"function": "threshold", "value": 75}
             ], "name": "mask"}),
-            )
-            .unwrap();
-            assert_ne!(s.run("raster.info", &json!({"layer": "mask"})).unwrap()["bands"][0]["name"], "Slope (degrees)");
+                )
+                .unwrap();
+                assert_ne!(s.run("raster.info", &json!({"layer": "mask"})).unwrap()["bands"][0]["name"], band_name);
+                let mask = s.map().layer_by_name("mask").unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
+                assert_eq!(mask.bands[0].data[4], if units == Some("percent") { 1.0 } else { 0.0 });
+            }
         }
+    }
+    // Finite elevations can overflow percent rise's Float32 storage while degrees stay finite.
+    let mut s = world();
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 3.0, pixel_width: 1.0, pixel_height: -1.0 };
+    let pixels = (0..9).map(|i| (i % 3) as f32 * 1e37).collect();
+    let dem = Raster::new("large", 3, 3, vec![pixels], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap();
+    let data = base64::engine::general_purpose::STANDARD.encode(geotiff::write(&dem, 0).unwrap());
+    s.run("layer.addDataBytes", &json!({"fileName": "large.tif", "data": data})).unwrap();
+    s.run("raster.function", &json!({"layer": "large", "function": "slope", "name": "degrees"})).unwrap();
+    let out = s.map().layer_by_name("degrees").unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
+    assert_eq!(out.bands[0].data[4], 90.0);
+    for (cmd, params) in [
+        ("raster.function", json!({"layer": "large", "function": "slope", "units": "percent"})),
+        ("raster.functionChain", json!({"layer": "large", "steps": [{"function": "slope", "units": "percent"}]})),
+    ] {
+        assert!(s.run(cmd, &params).unwrap_err().contains("9 percent slope cells exceed the Float32 range"));
     }
 }
 

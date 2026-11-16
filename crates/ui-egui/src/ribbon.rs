@@ -1612,6 +1612,7 @@ const GALLERY: &[(&str, &str, &str)] = &[
     ("idwInterpolation", "relief", "IDW\nInterpolation"),
 ];
 
+/// Routes Analyze tab buttons to tools and workflow forms, including the shared raster forms.
 fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
     group(ui, "Geoprocessing", |ui| {
         big(
@@ -1774,7 +1775,7 @@ fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 app,
                 "relief",
                 "Raster Functions",
-                "Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.",
+                "Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.",
                 "ui.pane.workflows",
                 json!({"section": "rasterFunctions"}),
                 false,
@@ -4432,7 +4433,7 @@ fn imagery_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 app,
                 "relief",
                 "Raster Functions",
-                "Slope (degrees), hillshade, NDVI and more.",
+                "Slope (degrees or percent), hillshade, NDVI and more.",
                 "ui.pane.workflows",
                 wf("rasterFunctions"),
                 false,
