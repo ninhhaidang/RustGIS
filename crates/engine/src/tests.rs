@@ -20634,6 +20634,55 @@ fn arcgis_features_read_past_the_record_limit() {
     );
 }
 
+/// `layer.addUrl` with `"service": true` and no app to leave it to (the CLI, a script, a task)
+/// reads an ArcGIS query as `service.add` does: its description, then its pages from the start,
+/// not its first answer cut at the record limit; the layer is known by the address and drawn as
+/// the description says (#1144).
+#[test]
+fn a_service_query_added_by_address_is_read_in_pages_without_the_app() {
+    use ogc_server::{Route, Server, arcgis_page};
+    let q = "where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson";
+    let blocks = "/arcgis/rest/services/B/MapServer/0";
+    let page = |offset: u32| format!("{blocks}/query?{q}&resultOffset={offset}&resultRecordCount=2&orderByFields=OBJECTID");
+    let square = json!({"type": "esriSMS", "style": "esriSMSSquare", "color": [230, 0, 0, 255], "size": 10});
+    let described = json!({"currentVersion": 11.5, "maxRecordCount": 2, "advancedQueryCapabilities": {"supportsPagination": true},
+        "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}], "drawingInfo": {"renderer": {"type": "simple", "symbol": square}}})
+    .to_string();
+    let server = Server::new(vec![
+        // The query as it is: its first answer, cut at the record limit (never asked for).
+        Route::new(&format!("{blocks}/query?{q}"), &arcgis_page(&[3, 0], true)),
+        Route::new(blocks, &described),
+        Route::new(&page(0), &arcgis_page(&[0, 1], true)),
+        Route::new(&page(2), &arcgis_page(&[2, 3], true)),
+        Route::new(&page(4), &arcgis_page(&[4], false)),
+    ]);
+    let url = format!("{}{blocks}/query?{q}", server.base);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addUrl", &json!({"url": url, "name": "Blocks", "service": true})).unwrap();
+    let layer = s.map().layer_by_name("Blocks").unwrap();
+    let ids: Vec<_> = layer.dataset.features.iter().map(|f| f.attrs[0].as_f64()).collect();
+    assert_eq!(ids, [Some(0.0), Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
+    assert_eq!(layer.dataset.source.as_deref(), Some(url.as_str()));
+    let rustgis_map::Renderer::Single(sym) = layer.renderer else { panic!("{:?}", layer.renderer) };
+    assert_eq!((sym.marker, sym.fill), (rustgis_map::symbology::Marker::Square, rustgis_map::Rgba::rgb(230, 0, 0)));
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
+    assert!(!texts.iter().any(|t| t.contains("record limit") || t.contains("aren't read")), "{texts:?}");
+    // Bounds that aren't a geographic rectangle are refused before anything is fetched, as when the
+    // app adds the download.
+    let e = s.run("layer.addUrl", &json!({"url": url, "name": "Bad", "service": true, "bounds": [10, 0, 5, 1]})).unwrap_err();
+    assert!(e.contains("bounds must be"), "{e}");
+    assert!(s.map().layer_by_name("Bad").is_none());
+    let asked: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            let offset = r.query.iter().find(|(k, _)| k == "resultOffset").map(|(_, v)| v.clone()).unwrap_or_default();
+            format!("{} {offset}", r.path.trim_start_matches(blocks))
+        })
+        .collect();
+    assert_eq!(asked, [" ", "/query 0", "/query 2", "/query 4"]);
+}
+
 /// A where clause is encoded as one query value, combined with the area and kept by every
 /// page. Omitting it retains the whole-layer query; a rejected clause fails without a layer.
 #[test]

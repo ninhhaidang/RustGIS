@@ -517,6 +517,49 @@ pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usi
     }
 }
 
+/// A service layer's features at `url` read whole while the command waits, as [`download_layer`]
+/// reads them (in pages, as protocol buffers when an ArcGIS layer lists them), and added with
+/// `p` (a GeoJSON answer under the file name `file` gives it, its axes checked against
+/// `bounds`); then known by `url`, and drawn as its ArcGIS service draws it or said why not
+/// (#2152), each by `name`. With `public`, only internet addresses are fetched. For
+/// `service.add`, and `layer.addUrl` with `"service": true` with no app to leave it to (#1144).
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(clippy::too_many_arguments, reason = "the two adds differ in each of them")]
+pub(crate) fn add_service_layer(
+    s: &mut Session,
+    p: &Value,
+    name: &str,
+    url: &str,
+    bounds: Option<[f64; 4]>,
+    public: bool,
+    zoom: Option<bool>,
+    file: impl FnOnce(&[u8]) -> Result<String, String>,
+) -> CmdResult {
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    let (downloaded, drawing) = download_layer_with(s, name, url, cache::MAX_DOWNLOAD, true, |url, max, timeout, ceiling| {
+        let ceiling = if public { ceiling.min(Reach::Public) } else { ceiling };
+        cache::download_blocking_with_origin_within(url, max, timeout, &[], ceiling)
+    })?;
+    let r = match downloaded {
+        Downloaded::Bytes(bytes) => {
+            let bytes = features_answer(s, name, bytes, bounds);
+            let file = file(&bytes)?;
+            super::raster::add_named_bytes(s, p, file, bytes, zoom)?
+        }
+        // Read in protocol buffer pages: their positions as the service's system places them, so
+        // there are no axes to check.
+        Downloaded::Read(read) => super::layer::add_read(s, p, *read, zoom)?,
+    };
+    mark_service_source(s, &r, url);
+    match &drawing {
+        Some(Ok(drawing)) => apply_drawing_info(s, &r, name, drawing),
+        // Why the service's symbology couldn't be read (#2152).
+        Some(Err(note)) => s.notify(format!("{name}: {note}"), false),
+        None => {}
+    }
+    Ok(r)
+}
+
 /// How an ArcGIS layer's description says it is drawn (its `drawingInfo`), or a note saying why
 /// it couldn't be read; none when there is nothing to say.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1416,25 +1459,9 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                         }
                         r
                     } else {
-                        let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
-                        let (downloaded, drawing) = download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))?;
-                        let r = match downloaded {
-                            Downloaded::Bytes(bytes) => {
-                                let bytes = features_answer(s, &name, bytes, layer.bbox);
-                                super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes, keep_view)?
-                            }
-                            // Read in protocol buffer pages: their positions as the service's system
-                            // places them, so there are no axes to check.
-                            Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
-                        };
-                        mark_service_source(s, &r, from);
-                        match &drawing {
-                            Some(Ok(drawing)) => apply_drawing_info(s, &r, &name, drawing),
-                            // Why the service's symbology couldn't be read (#2152).
-                            Some(Err(note)) => s.notify(format!("{name}: {note}"), false),
-                            None => {}
-                        }
-                        r
+                        let file = |_: &[u8]| Ok(format!("{name}.geojson"));
+                        add_service_layer(s, &json!({"name": name}), &name, from, layer.bbox, false, keep_view, file)
+                            .map_err(|e| slow_whole_layer(e, given))?
                     };
                     // Over an area, the features crossing it: the view stays, or goes to a box given
                     // (the whole layer's bounds would show a country to fill one state).
