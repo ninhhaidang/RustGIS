@@ -4917,3 +4917,6 @@ year	年
 {w} × {h} mm · {zoom}% · drag to move (Alt: no snapping), Shift-drag a map frame to pan it, wheel to zoom	{w} × {h} mm · {zoom}% · 拖曳可移動（按住 Alt 不貼齊），按住 Shift 拖曳地圖框可平移其地圖，滾輪可縮放
 {n} features selected	已選取 {n} 個圖徵
 {n} more features match but aren't drawn (the layer's definition query, time window or display filters hide them), and aren't selected	另有 {n} 個圖徵符合條件但未繪製（被圖層的定義查詢、時間區間或顯示篩選隱藏），因此未選取
+Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	無法下載地圖上 {language} 文字所需的字型，地圖和匯出檔中將缺少這些文字；請在「設定 › 語言」選擇任一語言以重試。
+No installed font draws the {language} text on the map, so it is left out of the map and its exports.	沒有已安裝的字型能繪製地圖上的 {language} 文字，地圖和匯出檔中將缺少這些文字。
+Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	正在下載地圖上 {language} 文字所需的字型。下載完成前匯出的圖片會缺少這些文字。

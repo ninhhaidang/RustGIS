@@ -418,9 +418,112 @@ fn draws_cjk(bytes: &[u8], index: u32, region: CjkRegion) -> bool {
 /// view) would leave CJK text out. Each region's face is kept once and never freed.
 static DOWNLOADED_CJK: [OnceLock<(Vec<u8>, u32)>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
 
-/// How many faces have been handed over at run time ([`add_downloaded_cjk_font`]): cached text
-/// widths measured before one arrived are stale.
-static FONTS_ADDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Changes each time the faces text is drawn in change: a face handed over at run time
+/// ([`add_downloaded_cjk_font`]) or another preferred one ([`prefer_downloaded_cjk`]). Cached text
+/// widths measured before are stale.
+static FONT_GENERATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The downloaded face ideographs are drawn in first ([`prefer_downloaded_cjk`]), as a slot number
+/// one above its index (0 for none).
+static PREFERRED_CJK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The CJK scripts the renderer has met with no face to draw them, one bit each
+/// ([`note_missing_cjk`]), until the interface takes them ([`take_missing_cjk`]).
+static MISSING_CJK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The CJK scripts, by the regional face each calls for: Hangul a Korean face, kana a Japanese
+/// one, ideographs (and CJK punctuation, full-width forms and bopomofo) a Chinese one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CjkScript {
+    Han,
+    Kana,
+    Hangul,
+}
+
+impl CjkScript {
+    /// The CJK script of `c`, `None` for any other character.
+    pub fn of(c: char) -> Option<CjkScript> {
+        match c {
+            '\u{1100}'..='\u{11FF}'
+            | '\u{3130}'..='\u{318F}'
+            | '\u{A960}'..='\u{A97F}'
+            | '\u{AC00}'..='\u{D7FF}'
+            | '\u{FFA0}'..='\u{FFDC}' => Some(CjkScript::Hangul),
+            '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => Some(CjkScript::Kana),
+            '\u{2E80}'..='\u{2FDF}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{3100}'..='\u{312F}'
+            | '\u{31A0}'..='\u{31BF}'
+            | '\u{31C0}'..='\u{31EF}'
+            | '\u{3200}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FFEF}'
+            | '\u{20000}'..='\u{3FFFF}' => Some(CjkScript::Han),
+            _ => None,
+        }
+    }
+
+    fn bit(self) -> u8 {
+        match self {
+            CjkScript::Han => 1,
+            CjkScript::Kana => 2,
+            CjkScript::Hangul => 4,
+        }
+    }
+}
+
+/// Records that `c`, a character the renderer is drawing or measuring, has no face to draw it in,
+/// when it is CJK: the web app, which has no installed fonts, then downloads a face for it
+/// ([`take_missing_cjk`]). Other scripts are left alone.
+pub fn note_missing_cjk(c: char) {
+    if let Some(script) = CjkScript::of(c) {
+        MISSING_CJK.fetch_or(script.bit(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The CJK scripts the renderer has met with no face since the last call, cleared: the text a
+/// map's labels, a layout or an export needed, whatever the interface language.
+pub fn take_missing_cjk() -> Vec<CjkScript> {
+    scripts(MISSING_CJK.swap(0, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The CJK scripts noted since the last [`take_missing_cjk`], left noted: the interface asks for
+/// another frame when one is new to it, as the next frame takes them.
+pub fn peek_missing_cjk() -> Vec<CjkScript> {
+    scripts(MISSING_CJK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn scripts(bits: u8) -> Vec<CjkScript> {
+    [CjkScript::Han, CjkScript::Kana, CjkScript::Hangul].into_iter().filter(|s| bits & s.bit() != 0).collect()
+}
+
+/// Draws ideographs in the face downloaded for `region` first, when there is one, ahead of the
+/// regional order the renderer otherwise follows (the web app passes its interface's region, so a
+/// Traditional Chinese interface draws them in Traditional Chinese forms even after a Simplified
+/// Chinese face was downloaded earlier). Installed faces aren't affected.
+pub fn prefer_downloaded_cjk(region: Option<CjkRegion>) {
+    let slot = region.map_or(0, |r| match r {
+        CjkRegion::SimplifiedChinese => 1,
+        CjkRegion::Japanese => 2,
+        CjkRegion::Korean => 3,
+        CjkRegion::TraditionalChinese => 4,
+    });
+    if PREFERRED_CJK.swap(slot, std::sync::atomic::Ordering::Relaxed) != slot {
+        FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// The region [`prefer_downloaded_cjk`] last set.
+pub fn preferred_downloaded_cjk() -> Option<CjkRegion> {
+    match PREFERRED_CJK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(CjkRegion::SimplifiedChinese),
+        2 => Some(CjkRegion::Japanese),
+        3 => Some(CjkRegion::Korean),
+        4 => Some(CjkRegion::TraditionalChinese),
+        _ => None,
+    }
+}
 
 fn downloaded_slot(region: CjkRegion) -> &'static OnceLock<(Vec<u8>, u32)> {
     match region {
@@ -445,7 +548,7 @@ pub fn add_downloaded_cjk_font(region: CjkRegion, bytes: Vec<u8>) -> Result<&'st
     if let Some(bytes) = offered {
         return Err(bytes);
     }
-    FONTS_ADDED.fetch_add(1, std::sync::atomic::Ordering::Release);
+    FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(&kept.0)
 }
 
@@ -454,9 +557,10 @@ pub fn downloaded_cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)>
     downloaded_slot(region).get()
 }
 
-/// How many faces have been handed over at run time: a key part for cached text widths.
-pub fn fonts_added() -> u32 {
-    FONTS_ADDED.load(std::sync::atomic::Ordering::Acquire)
+/// Changes each time the faces text is drawn in change (a face handed over at run time, another
+/// preferred one): a key part for cached text widths.
+pub fn font_generation() -> u32 {
+    FONT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Whether `bytes` hold a font with face `index` that the font parser accepts. Fonts handed to the
@@ -614,6 +718,33 @@ pub fn script_font_url(script: ScriptFont) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{bold_thickening, synthetic_bold};
+
+    /// The face a CJK character calls for, by its script: ideographs with CJK punctuation,
+    /// full-width forms and bopomofo, kana (half-width too), Hangul; other scripts are no CJK.
+    #[test]
+    fn cjk_scripts_by_character() {
+        use super::CjkScript::{self, Han, Hangul, Kana};
+        let cases = [
+            ('臺', Some(Han)),
+            ('。', Some(Han)),
+            ('Ａ', Some(Han)),
+            ('ㄅ', Some(Han)),
+            ('\u{2000B}', Some(Han)),
+            ('か', Some(Kana)),
+            ('ｶ', Some(Kana)),
+            ('한', Some(Hangul)),
+            ('ㄱ', Some(Hangul)),
+            ('\u{FFA1}', Some(Hangul)),
+            ('A', None),
+            ('é', None),
+            ('Ж', None),
+            ('ش', None),
+            ('\u{E618}', None),
+        ];
+        for (c, script) in cases {
+            assert_eq!(CjkScript::of(c), script, "{c}");
+        }
+    }
 
     /// Bold is thickened by hand only where the bold face is the regular one, with no weight axis
     /// (the built-in face, which the browser has): not where there is a bold file.
