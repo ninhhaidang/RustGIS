@@ -2517,6 +2517,8 @@ fn render_tilted(
     let ground = terrain::Ground::of(map, &view.camera);
     // The bands' Shaded Relief draws this ground's water (see `relief_water`).
     let _water = BandWater::set(ground.as_ref().and_then(|g| g.water().cloned()));
+    // And the sun's glint on it, which each band adds over the water's fill.
+    let _glint = TiltGlint::set(ground.as_ref().and_then(|g| terrain::Glint::of(map, view, g)));
     let mut kept: Vec<(View, (f64, f64), Pixmap)> = Vec::new();
     let last = bands_of.len().saturating_sub(1);
     let (mut attribution, mut tiles_pending, mut tile_errors) = (Vec::<String>::new(), false, Vec::<String>::new());
@@ -3915,6 +3917,31 @@ impl Drop for BandWater {
     fn drop(&mut self) {
         let kept = self.0.take();
         BAND_WATER.with(|w| *w.borrow_mut() = kept);
+    }
+}
+
+thread_local! {
+    /// The sun glint on the terrain's water (#1915) the bands of the tilted view being drawn add to
+    /// their frames ([`render_tilted`], [`render_tilt_drape`]): worked out once for the view, whose
+    /// eye it shines toward, not for each band's own camera. Both draw their bands one after
+    /// another on the thread that sets it: a band drawn on another thread would get no glint.
+    static TILT_GLINT: std::cell::RefCell<Option<std::rc::Rc<terrain::Glint>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The glint the bands of a tilted view add to their frames while it lives (see [`TILT_GLINT`]);
+/// the one before is put back when it is dropped, on every way out of drawing the view.
+struct TiltGlint(Option<std::rc::Rc<terrain::Glint>>);
+
+impl TiltGlint {
+    fn set(glint: Option<terrain::Glint>) -> TiltGlint {
+        TiltGlint(TILT_GLINT.with(|g| g.replace(glint.map(std::rc::Rc::new))))
+    }
+}
+
+impl Drop for TiltGlint {
+    fn drop(&mut self) {
+        let kept = self.0.take();
+        TILT_GLINT.with(|g| g.replace(kept));
     }
 }
 
@@ -5398,6 +5425,12 @@ fn render_frame(
     if let Some(id) = below {
         draw_tiles!(Some(id));
     }
+    // A band of a tilted view: the sun's glint on the terrain's water, over the water's own fill.
+    if matches!(labels_to, Labels::Tilted(..) | Labels::Shared)
+        && let Some(g) = TILT_GLINT.with(|g| g.borrow().clone())
+    {
+        g.paint(pm.pixels(), view);
+    }
     if let Some(g) = &globe {
         globe_shading(pm.pixels(), g, water, space(view, map), view.pixels_per_point as f32);
     }
@@ -6010,6 +6043,8 @@ pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32)
     // The bands' Shaded Relief draws the whole view's water (see `relief_water`).
     let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
     let _water = BandWater::set(relief_water(map, view, &Labels::Own, scale).map(|(w, _)| w));
+    // And the sun's glint on it, toward the view's eye.
+    let _glint = TiltGlint::set(terrain::Ground::of(map, &view.camera).and_then(|g| terrain::Glint::of(map, view, &g)));
     for b in bands {
         let (mut w, mut h) = (b.width * (1.0 + 2.0 * margin), b.height * (1.0 + 2.0 * margin));
         let mut camera = b.camera;

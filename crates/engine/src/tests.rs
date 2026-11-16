@@ -11995,7 +11995,7 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     // Set: the pond off the DEM, with no level either, stays on the ground, said once.
     let mark = s.notice_mark();
     let v = s.run("map.terrain", &json!({"water": {"layer": lagos, "level": "nivel"}})).unwrap();
-    assert_eq!(v["water"], json!({"layer": lagos, "level": "nivel"}));
+    assert_eq!(v["water"], json!({"layer": lagos, "level": "nivel", "glint": 0.3}));
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert_eq!(said.iter().filter(|t| t.contains(&format!("1 polygon of '{lagos}' has no height along its shore"))).count(), 1, "{said:?}");
     // Another change keeps it, and it is saved with the project.
@@ -12050,6 +12050,16 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     // Null is left out, as for the exaggeration (a script's default None): the water stays.
     let v = s.run("map.terrain", &json!({"water": null, "exaggeration": null})).unwrap();
     assert_eq!(v["water"]["layer"], json!(mar));
+    // The glint: 0.3 when left out, 0 to 1 when given; anything else is refused and the water
+    // stays as it was.
+    assert_eq!(v["water"]["glint"], json!(rustgis_map::view::WATER_GLINT));
+    let v = s.run("map.terrain", &json!({"water": {"layer": mar, "glint": 0.8}})).unwrap();
+    assert_eq!(v["water"]["glint"], json!(0.8));
+    for bad in [json!(1.5), json!(-0.1), json!("bright")] {
+        let e = s.run("map.terrain", &json!({"water": {"layer": mar, "glint": bad}})).unwrap_err();
+        assert!(e.contains("glint is a number from 0 to 1"), "{e}");
+    }
+    assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.glint), Some(0.8));
     // Removing the water's layer is said; the water keeps its name, for a layer of that name to
     // bring it back.
     let sea_id = s.map().layer_by_name(&mar).map(|l| l.id).unwrap();
@@ -12065,7 +12075,24 @@ fn terrain_water_is_a_polygon_layer_of_its_own() {
     // A saved project's water is read back (the schema fixture `terrain_water.rgis`).
     let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water.rgis")).unwrap();
     let water = saved.maps[0].view.terrain.as_ref().and_then(|t| t.water.clone());
-    assert_eq!(water, Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: Some("nivel".into()) }));
+    // Saved before the glint (#1915 part 3), it takes the default.
+    assert_eq!(
+        water,
+        Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: Some("nivel".into()), glint: rustgis_map::view::WATER_GLINT })
+    );
+    // One saved with its glint off keeps it off (`terrain_water_glint.rgis`).
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water_glint.rgis")).unwrap();
+    assert_eq!(saved.maps[0].view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.glint), Some(0.0));
+    // A glint out of range (a hand edit) is brought into 0 to 1, said once; a clean file says nothing.
+    let text = include_str!("../../../schema/fixtures/terrain_water_glint.rgis");
+    let mut clean = Project::from_json(text).unwrap();
+    assert!(!clean.take_read_notices(&crate::project::ALL_PARTS).iter().any(|n| n.english().contains("glint")));
+    for (edited, kept) in [("1.5", 1.0), ("-0.5", 0.0)] {
+        let mut p = Project::from_json(&text.replace("\"glint\":0.0", &format!("\"glint\":{edited}"))).unwrap();
+        assert_eq!(p.maps[0].view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.glint), Some(kept), "{edited}");
+        let said: Vec<String> = p.take_read_notices(&crate::project::ALL_PARTS).iter().map(|n| n.english()).collect();
+        assert_eq!(said.iter().filter(|t| t.contains("terrain water glint(s) outside 0 to 1")).count(), 1, "{said:?}");
+    }
 }
 
 /// A saved project's block is read back (the schema fixture `terrain_block.rgis`), its walls left

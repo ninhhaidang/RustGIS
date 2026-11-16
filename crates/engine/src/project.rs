@@ -1413,6 +1413,13 @@ impl Project {
                 // The camera is in the lost projection's units: start from the whole world.
                 m.camera = rustgis_map::Camera::world();
             }
+            // A terrain water's glint from 0 to 1, as `map.terrain` checks it: another value (a hand
+            // edit, or a newer file) is brought into that range, and said.
+            if let Some(w) = m.view.terrain.as_mut().and_then(|t| t.water.as_mut()) {
+                let g = w.glint;
+                w.glint = if g.is_finite() { g.clamp(0.0, 1.0) } else { rustgis_map::view::WATER_GLINT };
+                done.water_glint.add(usize::from(w.glint != g), &m.name);
+            }
             m.camera.clamp();
             // The time slider's window and dated tile addresses, before the addresses are checked.
             m.apply_time();
@@ -1994,6 +2001,7 @@ struct Repaired {
     content_images: Tally,
     content_settings: Tally,
     projection_lost: Tally,
+    water_glint: Tally,
     /// A map whose projection was lost has bookmarks, which stay in that projection's units.
     bookmarks_kept: bool,
     tile_addresses: Tally,
@@ -2108,6 +2116,12 @@ impl Repaired {
         );
         let t = &self.group_parents;
         say(ReadPart::Maps, t, message("{n} group(s) with an invalid parent moved to the top level {when} (in {places})", t, vec![]));
+        let t = &self.water_glint;
+        say(
+            ReadPart::Maps,
+            t,
+            message("{n} terrain water glint(s) outside 0 to 1 brought into that range {when} (in {places})", t, vec![]),
+        );
         let t = &self.projection_lost;
         let bookmarks = if self.bookmarks_kept {
             NoticeText::term("; their bookmarks are still in the old projection's units")

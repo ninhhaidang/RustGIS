@@ -15,7 +15,7 @@ use rustgis_tiles::template::{self, TileId};
 
 mod water;
 
-pub(crate) use water::Water;
+pub(crate) use water::{Glint, Water};
 
 /// Cells along each side of a tilted view's band laid over the relief while the map moves (the
 /// drape, `tilt_drape` in the app): few enough to lay out every frame.

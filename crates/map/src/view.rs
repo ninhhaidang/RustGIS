@@ -284,6 +284,17 @@ pub struct TerrainWater {
     /// shore's lowest height. None: every water body's shore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
+    /// How brightly a tilted view's water shines where it would reflect the sun toward the eye,
+    /// 0 (none) to 1 (white at the brightest point).
+    #[serde(default = "water_glint")]
+    pub glint: f64,
+}
+
+/// A terrain's water's sun glint when none is given (#1915): broad and faint.
+pub const WATER_GLINT: f64 = 0.3;
+
+fn water_glint() -> f64 {
+    WATER_GLINT
 }
 
 /// The most a terrain's heights are exaggerated.

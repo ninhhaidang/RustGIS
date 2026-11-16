@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
         C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A)}, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore)}, or false to take it off (default: as it was), "off"?: true}"##,
+            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A)}, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore), "glint"?: 0 to 1, how brightly a tilted view's water shines where it reflects the sun toward the eye (default 0.3; 0: none)}, or false to take it off (default: as it was), "off"?: true}"##,
         ),
         C::new("map.exportOrbit", "Export Orbit", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportOrbit")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
@@ -370,10 +370,10 @@ fn polygon_layer(s: &Session, name: &str, what: &str, holds: &str) -> Result<Str
 }
 
 /// A terrain's water (#1915) from `map.terrain`'s `"water"` object, checked: a polygon layer of a
-/// name of its own, and a numeric field of it.
+/// name of its own, a numeric field of it, and a glint from 0 to 1.
 fn terrain_water(s: &Session, w: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainWater, String> {
-    if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "layer" | "level")) {
-        return Err(format!("water has no '{k}' (layer, level)"));
+    if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "layer" | "level" | "glint")) {
+        return Err(format!("water has no '{k}' (layer, level, glint)"));
     }
     let name = w.get("layer").and_then(Value::as_str).ok_or("water needs a layer: a polygon layer of water bodies")?;
     let name = polygon_layer(s, name, "water", "water bodies")?;
@@ -390,7 +390,11 @@ fn terrain_water(s: &Session, w: &serde_json::Map<String, Value>) -> Result<rust
         }
         Some(_) => return Err("water's level is a field name".into()),
     };
-    Ok(rustgis_map::view::TerrainWater { layer: l.name.clone(), level })
+    let glint = match w.get("glint") {
+        None | Some(Value::Null) => rustgis_map::view::WATER_GLINT,
+        Some(v) => v.as_f64().filter(|g| (0.0..=1.0).contains(g)).ok_or("water's glint is a number from 0 to 1")?,
+    };
+    Ok(rustgis_map::view::TerrainWater { layer: l.name.clone(), level, glint })
 }
 
 /// Sets the map's terrain: the relief a tilted view drapes the map over, from a DEM raster layer
@@ -507,7 +511,7 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         },
         "exaggeration": t.exaggeration,
         "block": null,
-        "water": t.water.as_ref().map(|w| json!({"layer": w.layer, "level": w.level})),
+        "water": t.water.as_ref().map(|w| json!({"layer": w.layer, "level": w.level, "glint": w.glint})),
     });
     // Over elevation tiles there is no layer's extent to cut the block to.
     if matches!(t.source, TerrainSource::Tiles { .. }) && t.block.as_ref().is_some_and(|b| b.extent.is_none()) {

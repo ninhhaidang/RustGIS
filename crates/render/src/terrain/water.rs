@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, Weak};
 use rustgis_data::raster::Raster;
 use rustgis_data::{Feature, Geometry};
 use rustgis_geom::{Coord, Extent, MERCATOR_R, lonlat_to_merc};
-use rustgis_map::Map;
 use rustgis_map::view::TerrainEncoding;
+use rustgis_map::{Camera, Map};
 use rustgis_tiles::cache;
 
 use super::{Ground, Heights};
@@ -542,6 +542,115 @@ pub(super) fn of(map: &Map, ground: &Ground) -> Option<Arc<Water>> {
     Some(water)
 }
 
+/// How fast a tilted view's glint on the water fades away from the sun's reflection: the power of
+/// the cosine between the water's normal and the direction half-way between the sun and the eye
+/// (Blinn-Phong). Low, so the glint is broad: it is at half its peak with that half-way direction
+/// 14° off the normal.
+const GLINT_SHININESS: i32 = 24;
+
+/// The sun the water glints in when no Shaded Relief layer is drawn: the hillshade's usual one,
+/// azimuth 315° (north-west) and altitude 45°.
+const GLINT_SUN: (f64, f64) = (315.0, 45.0);
+
+/// The least glint (a share of the way to white) worth drawing: under one level of 8-bit colour.
+const GLINT_LEAST: f64 = 0.5 / 255.0;
+
+/// A tilted view's sun glint on the terrain's water (#1915): where the flat water would reflect
+/// the sun toward the eye, its colour goes toward white, broad and faint, so the water shines a
+/// little on the sun's side. The sun is the first Shaded Relief layer drawn at the view's centre's,
+/// or [`GLINT_SUN`].
+pub(crate) struct Glint {
+    water: Arc<Water>,
+    /// The tilted view's camera, and its eye in the frame of [`Camera::ground_px`] (logical px).
+    camera: Camera,
+    eye: [f64; 3],
+    /// Toward the sun, a unit vector in the same frame.
+    sun: [f64; 3],
+    /// The terrain's water's glint, 0 to 1: the share of the way to white at the brightest point.
+    strength: f64,
+    exaggeration: f64,
+    body: f64,
+}
+
+impl Glint {
+    /// The glint on `map`'s terrain water in the tilted `view`, over the `ground` the view lies
+    /// on; `None` in a flat view, without water, or with a glint of 0.
+    pub(crate) fn of(map: &Map, view: &crate::View, ground: &Ground) -> Option<Glint> {
+        let strength = map.view.terrain.as_ref()?.water.as_ref()?.glint;
+        let tilted = view.camera.pitch.is_finite() && view.camera.pitch > 0.0;
+        if !tilted || strength.is_nan() || strength <= 0.0 {
+            return None;
+        }
+        let water = ground.water.clone()?;
+        // A Shaded Relief layer drawn at the view's centre (shown, its groups too, within their
+        // scale ranges), as `relief_water` takes it.
+        let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
+        let (azimuth, altitude) = map
+            .layers
+            .iter()
+            .filter(|l| map.draws_at(l, scale))
+            .find_map(|l| match l.raster.as_ref()?.style.renderer {
+                rustgis_map::RasterRenderer::ShadedRelief { azimuth, altitude, .. } => Some((azimuth, altitude)),
+                _ => None,
+            })
+            .unwrap_or(GLINT_SUN);
+        let (a, e) = (azimuth.to_radians(), altitude.clamp(0.0, 90.0).to_radians());
+        // East and south (the map's x right and y down), turned to the view's bearing as
+        // `Camera::ground_px` turns the map.
+        let (ux, uy) = (a.sin() * e.cos(), -a.cos() * e.cos());
+        let b = view.camera.bearing;
+        let (c, s) = if b == 0.0 || !b.is_finite() { (1.0, 0.0) } else { (b.to_radians().cos(), b.to_radians().sin()) };
+        let (ex, ey, ez) = view.camera.eye(view.height);
+        Some(Glint {
+            water,
+            camera: view.camera,
+            eye: [ex, ey, ez],
+            sun: [ux * c + uy * s, uy * c - ux * s, e.sin()],
+            strength: strength.min(1.0),
+            exaggeration: ground.exaggeration,
+            body: ground.body,
+        })
+    }
+
+    /// Adds the glint to `pm`, a north-up frame drawn for `frame` (a band of the tilted view),
+    /// over what it holds at the water: each pixel inside a lake goes toward white by the glint
+    /// there, its alpha kept.
+    pub(crate) fn paint(&self, pm: &mut tiny_skia::Pixmap, frame: &crate::View) {
+        if !frame.camera.extent(frame.width, frame.height).intersects(&self.water.extent) {
+            return;
+        }
+        let (w, ppp) = (pm.width() as usize, frame.pixels_per_point.max(1e-9));
+        let res = self.camera.res.max(1e-9);
+        let unit = |v: [f64; 3]| {
+            let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            (n > 0.0).then(|| v.map(|c| c / n))
+        };
+        for (i, p) in pm.pixels_mut().iter_mut().enumerate() {
+            if p.alpha() == 0 {
+                continue;
+            }
+            let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+            let m = frame.camera.to_map(x / ppp, y / ppp, frame.width, frame.height);
+            let Some(level) = self.water.level(m) else { continue };
+            // The water's surface, raised to its level as the ground is (`Ground::up_px`).
+            let (u, v) = self.camera.ground_px(m);
+            let up = (level * self.exaggeration / super::per_unit(m, self.body) / res).clamp(-1e7, 1e7);
+            let Some(to_eye) = unit([self.eye[0] - u, self.eye[1] - v, self.eye[2] - up]) else { continue };
+            let Some(half) = unit([self.sun[0] + to_eye[0], self.sun[1] + to_eye[1], self.sun[2] + to_eye[2]]) else { continue };
+            let t = self.strength * half[2].max(0.0).powi(GLINT_SHININESS);
+            if t < GLINT_LEAST {
+                continue;
+            }
+            // Toward white, premultiplied: white at this alpha is the alpha itself.
+            let a = p.alpha();
+            let toward = |c: u8| (f64::from(c) + (f64::from(a) - f64::from(c)) * t).round().clamp(0.0, f64::from(a)) as u8;
+            if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(toward(p.red()), toward(p.green()), toward(p.blue()), a) {
+                *p = c;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,7 +675,8 @@ mod tests {
             source: rustgis_map::view::TerrainSource::Layer("dem".into()),
             exaggeration: 2.0,
             block: None,
-            water: Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: level.map(str::to_string) }),
+            // No glint unless a test asks for one: it would brighten the water's colours.
+            water: Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: level.map(str::to_string), glint: 0.0 }),
         });
         let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.0, -0.6)), res: 600.0, bearing: 0.0, pitch: 65.0 };
         (m, camera)
@@ -1184,5 +1294,124 @@ mod tests {
         // Without a Shaded Relief drawn, nothing is read.
         m.layer_mut(dem).unwrap().visible = false;
         assert!(crate::relief_water(&m, &view, &crate::Labels::Own, scale).is_none());
+    }
+
+    /// The test hill's water seen tilted from the south, with a Shaded Relief whose sun is at
+    /// `azimuth`, 20° high, and the water's glint at `glint`; the water drawn in mid-blue.
+    fn glinting(azimuth: f64, glint: f64) -> (Map, crate::View) {
+        let (mut m, mut camera) = hill_with_water(None);
+        let lagos = m.layers.iter().find(|l| l.name == "lagos").map(|l| l.id).unwrap();
+        let fill = rustgis_map::Rgba::rgb(0x30, 0x60, 0xA0);
+        m.layer_mut(lagos).unwrap().renderer = rustgis_map::Renderer::Single(rustgis_map::Symbol {
+            fill,
+            stroke: fill,
+            stroke_width: 0.0,
+            size: 0.0,
+            marker: rustgis_map::Marker::Circle,
+        });
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        let l = m.layer_mut(dem).unwrap();
+        l.visible = true;
+        l.raster.as_mut().unwrap().style.renderer = rustgis_map::RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp: None,
+            azimuth,
+            altitude: 20.0,
+            z_factor: 1.0,
+            shadow: 0.0,
+            sky: 0.0,
+            fill: 0.0,
+            rock: None,
+        };
+        m.view.terrain.as_mut().unwrap().water.as_mut().unwrap().glint = glint;
+        camera.center = lonlat_to_merc(Coord::new(0.35, -0.3));
+        (m, crate::View { width: 300.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false })
+    }
+
+    /// The colour of each of `points` (longitude, latitude) in the first of a tilted view's drape
+    /// bands that holds it.
+    fn in_bands(m: &mut Map, view: &crate::View, points: &[(f64, f64)]) -> Vec<[u8; 3]> {
+        let patches = crate::render_tilt_drape(m, view, 0.0, 512);
+        points
+            .iter()
+            .filter_map(|(lon, lat)| {
+                patches.iter().find_map(|p| {
+                    let (x, y) = p.band.camera.to_screen(lonlat_to_merc(Coord::new(*lon, *lat)), p.band.width, p.band.height);
+                    let (sx, sy) = (p.pixmap.width() as f64 / p.band.width, p.pixmap.height() as f64 / p.band.height);
+                    p.pixmap.pixel((x * sx) as u32, (y * sy) as u32).filter(|c| c.alpha() > 0).map(|c| [c.red(), c.green(), c.blue()])
+                })
+            })
+            .collect()
+    }
+
+    /// A tilted view's water shines toward white where it reflects the sun toward the eye (#1915
+    /// part 3): brighter with the sun ahead, beyond the lake, than behind the eye; not at all
+    /// with a glint of 0; the land and the island never.
+    #[test]
+    fn a_tilted_views_water_glints_toward_the_sun() {
+        let lake = [(0.25, 0.05), (0.45, -0.15), (0.3, -0.1), (0.47, 0.07)];
+        let land = [(0.35, 0.0), (0.1, 0.0), (0.6, -0.3)];
+        let sum = |c: &[[u8; 3]]| c.iter().flatten().map(|v| u32::from(*v)).sum::<u32>();
+        for azimuth in [0.0, 180.0] {
+            let (mut m, view) = glinting(azimuth, 0.0);
+            let (dull, dull_land) = (in_bands(&mut m, &view, &lake), in_bands(&mut m, &view, &land));
+            assert_eq!(dull.len(), lake.len(), "every lake point is in a band");
+            let (mut m, view) = glinting(azimuth, 1.0);
+            let (shiny, shiny_land) = (in_bands(&mut m, &view, &lake), in_bands(&mut m, &view, &land));
+            assert_eq!(shiny_land, dull_land, "land doesn't glint (sun at {azimuth}°)");
+            for (s, d) in shiny.iter().zip(&dull) {
+                assert!(s.iter().zip(d).all(|(s, d)| s >= d), "toward white: {s:?} from {d:?} (sun at {azimuth}°)");
+            }
+        }
+        let (mut m, view) = glinting(0.0, 1.0);
+        let ahead = in_bands(&mut m, &view, &lake);
+        let (mut m, view) = glinting(180.0, 1.0);
+        let behind = in_bands(&mut m, &view, &lake);
+        let (mut m, view) = glinting(180.0, 0.0);
+        let dull = in_bands(&mut m, &view, &lake);
+        // Ahead the glint whitens the lake by far more than behind the eye.
+        assert!(sum(&ahead) > sum(&behind) + 200, "{ahead:?} against {behind:?} (dull {dull:?})");
+    }
+
+    /// A tilted view drawn whole (as exported, and on screen: terrain keeps it on the CPU) glints
+    /// too: only toward white, and nothing changes in a flat view.
+    #[test]
+    fn a_tilted_export_glints_and_a_flat_one_doesnt() {
+        let drawn = |glint: f64, pitch: f64| {
+            let (mut m, mut view) = glinting(0.0, glint);
+            view.camera.pitch = pitch;
+            // Terrain keeps the view off the GPU scene, which has no glint: the CPU draws it.
+            assert!(!crate::gpu_may_turn(&m, &view));
+            crate::render_complete(&mut m, &view).unwrap().pixmap
+        };
+        let (dull, shiny) = (drawn(0.0, 65.0), drawn(1.0, 65.0));
+        let mut brighter = 0;
+        for (s, d) in shiny.pixels().iter().zip(dull.pixels()) {
+            if s != d {
+                assert!(s.red() >= d.red() && s.green() >= d.green() && s.blue() >= d.blue() && s.alpha() == d.alpha(), "{s:?} {d:?}");
+                brighter += 1;
+            }
+        }
+        assert!(brighter > 100, "{brighter} pixels glint");
+        assert_eq!(drawn(1.0, 0.0).data(), drawn(0.0, 0.0).data(), "a flat view has no glint");
+    }
+
+    /// The glint's sun is a Shaded Relief layer's only when that layer is drawn at the view's
+    /// scale: out of its scale range, or in a hidden group, the north-west sun stands in.
+    #[test]
+    fn the_glints_sun_is_a_drawn_relief_layers() {
+        let (mut m, view) = glinting(90.0, 0.5);
+        let sun = |m: &Map| {
+            let ground = Ground::of(m, &view.camera).unwrap();
+            Glint::of(m, &view, &ground).unwrap().sun
+        };
+        let east = sun(&m);
+        assert!(east[0] > 0.9, "the relief's sun in the east: {east:?}");
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        m.layer_mut(dem).unwrap().max_scale = Some(1e12);
+        let north_west = sun(&m);
+        let (a, e) = (GLINT_SUN.0.to_radians(), GLINT_SUN.1.to_radians());
+        let want = [a.sin() * e.cos(), -a.cos() * e.cos(), e.sin()];
+        assert!(north_west.iter().zip(want).all(|(s, w)| (s - w).abs() < 1e-9), "{north_west:?} against {want:?}");
     }
 }

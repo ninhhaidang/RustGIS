@@ -147,7 +147,11 @@ hidden; its own symbology still draws it. Rivers stay lines. Over elevation tile
 read again until the tiles along the shores have come. A Shaded Relief layer draws the water's
 cells at their level with the even light of flat ground, flat or tilted: no hillshade, cast
 shadow, sky, fill light or rock on the water, so a semi-transparent water fill over it shows one
-tone. The relief's ramp colours them at the water's level.
+tone. The relief's ramp colours them at the water's level. A tilted view adds a soft sun glint:
+where the flat water would reflect the sun toward the eye, it goes toward white, broad and faint,
+so it shines a little on the sun's side. `"glint"` sets how much, 0 (none) to 1 (white at the
+brightest point), 0.3 by default. The sun is the first Shaded Relief layer drawn at the view's centre (its azimuth and altitude; shown, within its scale range and its groups'), or from the north-west at 45° without one. A flat view, seen from straight
+above, has no glint.
 
 <figure markdown="span">
   ![Mount Rainier in USGS imagery draped over Terrarium elevation tiles, tilted 65°](https://assets.rustgis.app/images/terrain.webp)
