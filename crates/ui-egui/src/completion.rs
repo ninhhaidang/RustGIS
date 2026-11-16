@@ -13,7 +13,7 @@ use egui::widgets::text_edit::{TextEditOutput, TextEditState};
 use egui::{Id, Key, Modifiers, Ui};
 
 /// The list's narrowest width.
-const MIN_WIDTH: f32 = 220.0;
+pub(crate) const MIN_WIDTH: f32 = 220.0;
 /// The help's widest line, so a long signature or parameter wraps rather than widen the list
 /// without end.
 pub(crate) const HELP_WIDTH: f32 = 360.0;
@@ -63,6 +63,32 @@ pub(crate) fn popup(ui: &Ui, id: Id, corner: egui::Pos2, room: f32, content: imp
     });
     let rect = area.response.rect;
     (rect, rect.size() + egui::vec2(0.0, area.inner))
+}
+
+/// Shared list/help arrangement for cursor popups and catalog menus.
+pub(crate) fn help_layout(width: f32) -> (egui::Layout, f32) {
+    let beside = (width - MIN_WIDTH - GAP - FRAME).min(HELP_WIDTH);
+    if beside >= HELP_MIN_WIDTH {
+        (egui::Layout::left_to_right(egui::Align::Min), beside)
+    } else {
+        (egui::Layout::top_down(egui::Align::Min), (width - FRAME).clamp(0.0, HELP_WIDTH))
+    }
+}
+
+/// One suggestion's row, shared with the expression catalog menus.
+pub(crate) fn item_row(ui: &mut Ui, item: &str, selected: bool, icon: Option<&str>) -> egui::Response {
+    let label = |ui: &mut Ui| ui.selectable_label(selected, egui::RichText::new(item).monospace());
+    if let Some(icon) = icon {
+        let t = crate::theme::Tokens::get(ui.ctx());
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+            crate::icons::paint(ui.painter(), r, icon, t.icon, t.accent);
+            label(ui)
+        })
+        .inner
+    } else {
+        label(ui)
+    }
 }
 
 /// What was worked out at a cursor, and for which text (its hash) and `with` (whatever else it
@@ -353,32 +379,17 @@ impl<O: Offered> List<O> {
         let (corner, room) = place(cursor, size, screen, row * 3.0);
         // The help beside the list in the room the screen leaves, or under it when that's too narrow
         // to read (a narrow window), so neither is cut off at the screen's edge.
-        let beside = (screen.width() - MIN_WIDTH - GAP - FRAME).min(HELP_WIDTH);
-        let (beside, help_width) =
-            if beside >= HELP_MIN_WIDTH { (true, beside) } else { (false, (screen.width() - FRAME).clamp(0.0, HELP_WIDTH)) };
-        let layout = if beside { egui::Layout::left_to_right(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
+        let (layout, help_width) = help_layout(screen.width());
         let mut clicked = None;
         let scrolled_to = &mut self.scrolled_to;
         let (area, size) = popup(ui, id, corner, room, |ui| {
             ui.with_layout(layout, |ui| {
                 // The help follows the item under the pointer, else the highlighted one.
                 let mut hovered = None;
-                let t = crate::theme::Tokens::get(ui.ctx());
                 ui.vertical(|ui| {
                     ui.set_min_width(MIN_WIDTH);
                     for (i, item) in offer.items().iter().enumerate() {
-                        let label = |ui: &mut Ui| ui.selectable_label(i == selected, egui::RichText::new(item).monospace());
-                        let r = match icon(&offer, item) {
-                            Some(icon) => {
-                                ui.horizontal(|ui| {
-                                    let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                                    crate::icons::paint(ui.painter(), r, icon, t.icon, t.accent);
-                                    label(ui)
-                                })
-                                .inner
-                            }
-                            None => label(ui),
-                        };
+                        let r = item_row(ui, item, i == selected, icon(&offer, item));
                         // Taken as the button goes down, as in a code editor: the press already
                         // takes the focus from the box, and a click (down, then up a frame or more
                         // later) could find the list gone by then. A click still counts

@@ -23,6 +23,13 @@ scale_linear(pop_est, 0, 1e9, 2, 12)
 area('ac') BETWEEN 1 AND 5 AND zoning = 'R-1'
 ```
 
+In Select By Attributes, the Layer Properties Query tab and a label class's SQL query, the
+**Functions** and **Variables** menus list the language's catalog. Hover over an item to see its
+help beside the list (below it in a narrow window): a function's signature, description and
+example, or a variable's description. Clicking appends it to the expression; a function opens
+its argument list, or inserts the complete call when it takes no arguments.
+In short windows, scroll the menu to reach the help below the list.
+
 ## Grammar
 
 Keywords and function names are not case sensitive. Rules are listed from the loosest binding

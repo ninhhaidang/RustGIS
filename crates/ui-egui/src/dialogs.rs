@@ -2283,34 +2283,6 @@ pub(crate) fn add_word(text: &mut String, word: &str) {
     }
 }
 
-/// The Functions and Variables menus beside a clause's buttons, adding to the clause `text`. They
-/// list the language's own catalogs, the ones the parser reads, so one added to the language is
-/// listed here with no change. Each is listed as it is written, with what it gives on hover; a
-/// function is added open, unless it takes no arguments (`pi()`).
-pub(crate) fn expr_menus(ui: &mut egui::Ui, text: &mut String) {
-    ui.menu_button(tl!("Functions ▾"), |ui| {
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for f in rustgis_engine::data::query::functions() {
-                let word = if f.max == 0 { format!("{}()", f.name) } else { format!("{}(", f.name) };
-                let label = egui::RichText::new(f.signature).monospace();
-                if ui.button(label).on_hover_text(tl!(f.description)).clicked() {
-                    add_word(text, &word);
-                    ui.close();
-                }
-            }
-        });
-    });
-    ui.menu_button(tl!("Variables ▾"), |ui| {
-        for v in rustgis_engine::data::query::VARS {
-            let Some(&name) = v.names.first() else { continue };
-            if ui.button(egui::RichText::new(name).monospace()).on_hover_text(tl!(v.description)).clicked() {
-                add_word(text, name);
-                ui.close();
-            }
-        }
-    });
-}
-
 /// The most fields a clause's buttons offer (a wider table is typed).
 const MAX_FIELD_CHIPS: usize = 40;
 
@@ -2336,7 +2308,9 @@ pub(crate) fn field_chips(ui: &mut egui::Ui, fields: &[rustgis_engine::data::Fie
                 add_word(text, op);
             }
         }
-        expr_menus(ui, text);
+        if let Some(word) = crate::exprcomplete::menus(ui) {
+            add_word(text, &word);
+        }
     });
 }
 

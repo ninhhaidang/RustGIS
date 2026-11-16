@@ -1874,7 +1874,7 @@ mod tests {
         let first = functions().find(|f| f.max > 0).unwrap();
         h.get_by_role_and_label(Role::Button, "Functions ▾").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, first.signature).click();
+        h.get_by_role_and_label(Role::Button, &format!("{}()", first.name)).click();
         h.run();
         let var = VARS[0].names[0];
         h.get_by_role_and_label(Role::Button, "Variables ▾").click();

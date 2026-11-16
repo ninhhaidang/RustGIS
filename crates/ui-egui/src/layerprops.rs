@@ -1056,7 +1056,7 @@ mod tests {
         let first = functions().find(|f| f.max > 0).unwrap();
         h.get_by_role_and_label(Role::Button, "Functions ▾").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, first.signature).click();
+        h.get_by_role_and_label(Role::Button, &format!("{}()", first.name)).click();
         h.run();
         assert_eq!(query_box(&h), format!("name = {}(", first.name));
         let var = VARS[0].names[0];

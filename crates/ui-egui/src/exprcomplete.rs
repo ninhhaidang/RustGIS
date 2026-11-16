@@ -127,6 +127,80 @@ fn shown(item: &Item) -> String {
     }
 }
 
+/// Catalog menus use the completion rows and help, but keep ordinary menu clicks and dismissal.
+/// Returns what to append, preserving the clause buttons' insertion behavior.
+pub(crate) fn menus(ui: &mut Ui) -> Option<String> {
+    let mut word = None;
+    ui.menu_button(tl!("Functions ▾"), |ui| {
+        word = catalog_menu(ui, || query::functions().map(Item::Function));
+    });
+    ui.menu_button(tl!("Variables ▾"), |ui| {
+        word = catalog_menu(ui, || VARS.iter().enumerate().filter_map(|(i, v)| v.names.first().map(|&name| Item::Variable(i, name))));
+    });
+    word
+}
+
+fn catalog_menu<I: Iterator<Item = Item>>(ui: &mut Ui, items: impl Fn() -> I) -> Option<String> {
+    let id = ui.scope_id().with("catalog_selection");
+    let (mut selected, mut pointer_leads) = ui.ctx().data_mut(|d| d.get_temp::<(usize, bool)>(id)).unwrap_or((0, true));
+    ui.input(|input| {
+        for event in &input.events {
+            match event {
+                egui::Event::PointerMoved(_) if input.pointer.delta() != egui::Vec2::ZERO => pointer_leads = true,
+                egui::Event::Key { pressed: true, .. } => pointer_leads = false,
+                _ => {}
+            }
+        }
+    });
+    let screen = ui.ctx().content_rect();
+    let (layout, width) = crate::completion::help_layout(screen.width());
+    let mut word = None;
+    // The list's own scroll bounds its rows; this one also keeps stacked help reachable.
+    egui::ScrollArea::vertical().max_height((screen.height() - crate::completion::FRAME).max(0.0)).show(ui, |ui| {
+        ui.with_layout(layout, |ui| {
+            let (mut hovered, mut focused) = (None, None);
+            ui.vertical(|ui| {
+                ui.set_min_width(crate::completion::MIN_WIDTH);
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (i, item) in items().enumerate() {
+                        let r = crate::completion::item_row(ui, &shown(&item), i == selected, None);
+                        if ui.ctx().has_accesskit_node(r.id) {
+                            ui.ctx().accesskit_node_builder(r.id, |node| match &item {
+                                Item::Function(f) => node.set_description(format!("{}\n{}", f.signature, tl!(f.description))),
+                                Item::Variable(i, _) => {
+                                    if let Some(v) = VARS.get(*i) {
+                                        node.set_description(tl!(v.description));
+                                    }
+                                }
+                                _ => {}
+                            });
+                        }
+                        if r.hovered() {
+                            hovered = Some(i);
+                        }
+                        if r.has_focus() {
+                            focused = Some(i);
+                        }
+                        if r.clicked() {
+                            word = Some(match item {
+                                Item::Function(f) if f.max != 0 => format!("{}(", f.name),
+                                _ => shown(&item),
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            selected = if pointer_leads { hovered.or(focused) } else { focused.or(hovered) }.unwrap_or(selected);
+            if let Some(item) = items().nth(selected) {
+                draw_help(ui, &item, None, width);
+            }
+        });
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(id, (selected, pointer_leads)));
+    word
+}
+
 /// The box's state between frames.
 #[derive(Clone, Default)]
 struct State {
@@ -539,6 +613,85 @@ mod tests {
     /// The items offered at the end of `text`.
     fn items(text: &str, asked: bool) -> Vec<String> {
         offer_at(text, text.chars().count(), &ds(), asked).map(|o| o.items).unwrap_or_default()
+    }
+
+    fn catalog_harness(size: egui::Vec2) -> egui_kittest::Harness<'static, ()> {
+        egui_kittest::Harness::builder().with_size(size).allow_missing_glyphs().build_ui(|ui| {
+            let _ = menus(ui);
+        })
+    }
+
+    #[test]
+    fn catalog_rows_describe_functions_and_variables_to_accessibility_clients() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = catalog_harness(egui::vec2(720.0, 600.0));
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Functions ▾").click();
+        h.run();
+        let f = query::functions().find(|f| f.name == "round").unwrap();
+        let row = h.get_by_role_and_label(Role::Button, "round()");
+        let node = row.accesskit_node();
+        let description = node.description().unwrap();
+        assert!(description.contains(f.signature));
+        assert!(description.contains(tl!(f.description)));
+        h.key_press(Key::Escape);
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Variables ▾").click();
+        h.run();
+        let v = &VARS[0];
+        assert_eq!(h.get_by_role_and_label(Role::Button, v.names[0]).accesskit_node().description(), Some(tl!(v.description).to_string()));
+    }
+
+    #[test]
+    fn catalog_help_follows_hover_after_focus_and_then_keyboard_navigation() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = catalog_harness(egui::vec2(720.0, 600.0));
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Functions ▾").click();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "round()").focus();
+        h.run();
+        let round = query::functions().find(|f| f.name == "round").unwrap();
+        let abs = query::functions().find(|f| f.name == "abs").unwrap();
+        assert!(h.query_by_label(round.signature).is_some());
+        h.hover_at(h.get_by_role_and_label(Role::Button, "abs()").rect().center());
+        h.run();
+        assert!(h.query_by_label(abs.signature).is_some(), "hover wins over the later focused row");
+        assert!(h.query_by_label(round.signature).is_none());
+        h.key_press(Key::ArrowDown);
+        h.run();
+        let floor = query::functions().find(|f| f.name == "floor").unwrap();
+        assert!(h.query_by_label(floor.signature).is_some(), "keyboard navigation wins over the stationary pointer");
+    }
+
+    #[test]
+    fn catalog_help_can_be_scrolled_into_a_short_viewport() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = catalog_harness(egui::vec2(420.0, 220.0));
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Functions ▾").click();
+        h.run();
+        let list = h.get_by_role_and_label(Role::Button, "if()").rect();
+        h.hover_at(list.center());
+        for _ in 0..3 {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1000.0),
+                modifiers: Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+            });
+            h.run();
+        }
+        // Scrolling can move another function under the pointer; its help must be reachable too.
+        let help = query::functions()
+            .find_map(|f| h.query_all_by_label(f.example).find(|n| n.accesskit_node().role() == Role::Label))
+            .unwrap()
+            .rect();
+        assert!(h.ctx.content_rect().contains_rect(help), "the help is reachable inside the viewport: {help:?}");
     }
 
     #[test]
