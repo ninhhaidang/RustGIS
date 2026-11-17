@@ -11,20 +11,26 @@
 pub const SHARE: u64 = 4;
 
 /// The computer's physical memory in bytes (a container's limit, when it is lower), read once;
-/// `None` in the browser, or when it can't be read.
+/// `None` in the browser, or when it can't be read. Also `None` in a fuzzing build (cargo-fuzz sets
+/// `cfg(fuzzing)`), so the limits sit at their floors: a quarter of the runner's memory is more than
+/// the fuzzer's 2 GB memory cap, which a header claiming a vast image would reach by design (#1952).
 pub fn physical() -> Option<u64> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(fuzzing)]
+    {
+        None
+    }
+    #[cfg(all(not(fuzzing), not(target_arch = "wasm32")))]
     {
         static MEMORY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
         *MEMORY.get_or_init(read)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(not(fuzzing), target_arch = "wasm32"))]
     {
         None
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(fuzzing), not(target_arch = "wasm32")))]
 fn read() -> Option<u64> {
     let mut s = sysinfo::System::new().ok()?;
     s.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());

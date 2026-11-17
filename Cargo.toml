@@ -133,6 +133,8 @@ pollster = "1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# Set by cargo-fuzz on the fuzz targets' builds (`fuzz/`).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
