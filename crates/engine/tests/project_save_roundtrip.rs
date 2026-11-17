@@ -98,6 +98,8 @@ fn step() -> impl Strategy<Value = (&'static str, Value)> {
         (layer.clone(), color())
             .prop_map(|(l, c)| ("layer.fillLayers", json!({"layer": l, "fills": [{"color": c}, {"pattern": "hatch", "angle": 135}]}))),
         layer.clone().prop_map(|l| ("layer.markerRotation", json!({"layer": l, "field": "pop", "counterclockwise": true}))),
+        (layer.clone(), prop::sample::select(vec!["area", "radius"]))
+            .prop_map(|(l, k)| ("layer.sizeBy", json!({"layer": l, "field": "pop", "minSize": 2, "maxSize": 30, "scaling": k}))),
         (layer.clone(), -5i32..6).prop_map(|(l, v)| ("layer.priority", json!({"layer": l, "value": v}))),
         (layer.clone(), number()).prop_map(|(l, v)| ("layer.referenceScale", json!({"layer": l, "scale": v * 1e4}))),
         layer.clone().prop_map(|l| ("layer.symbolBy", json!({"layer": l, "size": "pop / 10", "fill": "if(pop > 5, '#ff0000', NULL)"}))),

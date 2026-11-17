@@ -109,7 +109,7 @@ impl Session {
         }
         self.capture_read(command, params)
     }
-    /// Admits one standalone archive or column-statistics command before dispatch, retaining its original
+    /// Admits one standalone archive, column-statistics or size-by-field command before dispatch, retaining its original
     /// scope and one-use approval through the worker and landing. Composite/handler capture
     /// remains forbidden, including when an approval cursor is already active.
     pub fn start_scoped_archive_read(
@@ -122,10 +122,17 @@ impl Session {
             return Err("background reads can only start before handler dispatch".into());
         }
         let CallKind::Command { id, params } = &call.kind else {
-            return Err("only standalone archive or column-statistics commands can prepare a scoped read".into());
+            return Err(
+                "only standalone archive, column-statistics, shape-conversion or size-by-field commands can prepare a scoped read".into()
+            );
         };
-        if !matches!(id.as_str(), "map.reloadTiles" | "map.repairTiles" | "table.statistics" | "edit.previewShapeConversion") {
-            return Err("only standalone archive or column-statistics commands can prepare a scoped read".into());
+        if !matches!(
+            id.as_str(),
+            "map.reloadTiles" | "map.repairTiles" | "table.statistics" | "edit.previewShapeConversion" | "layer.sizeBy"
+        ) {
+            return Err(
+                "only standalone archive, column-statistics, shape-conversion or size-by-field commands can prepare a scoped read".into()
+            );
         }
         let capture = |s: &mut Session| s.capture_read(id, params);
         match permit {
@@ -157,9 +164,10 @@ impl Session {
                 | "source.syncState"
                 | "table.statistics"
                 | "edit.previewShapeConversion"
+                | "layer.sizeBy"
         ) && crate::cmd::edit::table_edit_in_background(command).is_none()
         {
-            return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State and Column Statistics prepare background work".into());
+            return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State, Column Statistics and Size by Field prepare background work".into());
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
         // Scoped previews retain the raw invocation that was approved. Their admitted owner
@@ -173,6 +181,7 @@ impl Session {
                 | "source.syncState"
                 | "table.statistics"
                 | "edit.previewShapeConversion"
+                | "layer.sizeBy"
         ) && (command != "edit.previewShapeConversion" || self.policy_user())
             || (command == "edit.convertField" && params.get("table").is_none_or(Value::is_null))
         {

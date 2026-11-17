@@ -219,6 +219,7 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
     [
         (relief_effects(layer), "shaded-relief-effects"),
         (relief_light(layer), "shaded-relief-light"),
+        (layer.size_by.is_some(), super::SIZE_BY_CAPABILITY),
         (layer.has_picture_markers(), "picture-markers"),
     ]
     .into_iter()
@@ -227,8 +228,8 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
 }
 
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
-    let (mut block, mut water, mut shore, mut relief, mut light, mut legends, mut pictures) =
-        (false, false, false, false, false, false, false);
+    let (mut block, mut water, mut shore, mut relief, mut light, mut legends, mut sized, mut pictures) =
+        (false, false, false, false, false, false, false, false);
     for map in maps {
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
@@ -238,6 +239,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         }
         relief |= map.layers.iter().any(relief_effects);
         light |= map.layers.iter().any(relief_light);
+        sized |= map.layers.iter().any(|layer| layer.size_by.is_some());
         pictures |= map.layers.iter().any(Layer::has_picture_markers);
         legends |= map.tiles.iter().any(|tile| {
             tile.legends.iter().any(|legend| rustgis_data::login_address::inner(&legend.url).len() > rustgis_map::tiles::MAX_LEGEND_URL)
@@ -250,6 +252,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (relief, "shaded-relief-effects"),
         (light, "shaded-relief-light"),
         (legends, "normalized-legend-urls"),
+        (sized, super::SIZE_BY_CAPABILITY),
         (pictures, "picture-markers"),
     ]
     .into_iter()

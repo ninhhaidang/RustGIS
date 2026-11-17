@@ -56,6 +56,30 @@ Select a layer in Layers and open **Style › Symbology** (or the Symbology pane
   first. Closing the pane or selecting another layer drops the retry.
 - **Proportional Symbols**: point size grows with a numeric field, chosen as for Graduated Colors.
 
+A point layer of Unique Values or Graduated Colors can also be sized by a number field, its classes
+keeping their colours: **Size by**, under **Rotation**, picks the field. Choose **Use field range**
+to apply its detected bounds, or enter the **Values** drawn smallest and largest and click
+**Apply**. Explicit bounds work even when the field is constant or has no values yet. Set the
+**Sizes** they take (points), and the
+**Scaling**: **By area**, as Proportional Symbols grow, or **By radius**, the size in a straight
+line with the value, as GeoLibre and MapLibre size circles. Values past either end take that end's
+size; a feature whose value is empty or not a number keeps its class's size. A final size of zero
+draws no marker. A web style or web layer shared from it draws the classes' sizes, and says so;
+while its points are aggregated into bins, the bins are drawn instead, and that is said too.
+The legend lists the
+classes, then the smallest, middle and largest size. Switching to another renderer keeps the
+setting unused, for when you switch back; a **Size** by expression, if set, wins over it. By
+command:
+
+```text
+layer.sizeBy={"layer":"Earthquakes","field":"mag","min":2.5,"max":7.5,"minSize":4,"maxSize":36,"scaling":"radius"}
+layer.sizeBy={"layer":"Earthquakes","field":null}
+```
+
+A project, map or layer file containing this setting declares format 2 and the
+`classified-point-size` capability. Readers that cannot keep it refuse the file. Files without
+the setting don't list it; removing the last mapping removes the requirement.
+
 A point's **Shape** is a circle, square, triangle, diamond or star, or a **Character**: any
 character of an installed font, picked under **Font**, as map signs often are (a symbol font's
 church, tree or mine). Its **Size** is the font's size, and the character sits as QGIS draws a

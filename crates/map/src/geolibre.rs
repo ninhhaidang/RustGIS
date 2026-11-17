@@ -256,6 +256,47 @@ mod style_tests {
             }
         }
     }
+
+    /// Colour classes with a proportional size (the hosted earthquakes demo: graduated by depth,
+    /// sized by magnitude) keep both, sized by radius as GeoLibre draws them, without a note; a
+    /// size field that isn't there, or an empty range, keeps the colours with a note.
+    #[test]
+    fn geolibre_colour_classes_keep_their_proportional_size() {
+        let style = |field: &str, max: f64| json!({"style":{"vectorStyleMode":"graduated","vectorStyleProperty":"value","vectorStyleStops":[{"value":0,"color":"#00ff00"},{"value":40,"color":"#ff0000"}],"proportionalSizeEnabled":true,"proportionalSizeProperty":field,"proportionalSizeMinValue":0,"proportionalSizeMaxValue":max,"proportionalSizeMinRadius":2,"proportionalSizeMaxRadius":18}});
+        let (mut l, mut report) = (layer(), Report::default());
+        style::apply(&mut l, &style("value", 100.0), &mut report);
+        assert!(report.notes.is_empty(), "{:?}", report.notes);
+        assert!(matches!(l.renderer, crate::Renderer::Graduated { .. }));
+        let by = l.size_by.clone().unwrap();
+        assert_eq!((by.field.as_str(), by.min, by.max, by.min_size, by.max_size), ("value", 0.0, 100.0, 4.0, 36.0));
+        assert_eq!(by.scaling, crate::symbol_by::SizeScaling::Radius);
+        // 50 of 0–100: halfway in radius, the red class's colour.
+        let sym = l.styler(None).symbol(0);
+        assert_eq!((sym.size, sym.fill.0[..3].to_vec()), (20.0, vec![0xff, 0, 0]));
+        for (field, max) in [("gone", 100.0), ("value", 0.0)] {
+            let (mut l, mut report) = (layer(), Report::default());
+            style::apply(&mut l, &style(field, max), &mut report);
+            assert!(l.size_by.is_none() && matches!(l.renderer, crate::Renderer::Graduated { .. }));
+            assert!(report.notes.iter().any(|n| n.text.contains("fixed size")), "{field}");
+        }
+        // A single symbol sized by a text field keeps its fixed size, and says so.
+        let (mut l, mut report) = (layer(), Report::default());
+        let mut text = style("kind", 100.0);
+        text["style"]["vectorStyleMode"] = json!("single");
+        style::apply(&mut l, &text, &mut report);
+        assert!(!matches!(l.renderer, crate::Renderer::Proportional { .. }));
+        assert!(report.notes.iter().any(|n| n.text.contains("not numeric")), "{:?}", report.notes);
+        // Both renderer paths report when either radii or value bounds are clamped.
+        for mode in ["single", "graduated"] {
+            let (mut l, mut report) = (layer(), Report::default());
+            let mut oversized = style("value", 1e200);
+            oversized["style"]["vectorStyleMode"] = json!(mode);
+            oversized["style"]["proportionalSizeMaxRadius"] = json!(200);
+            style::apply(&mut l, &oversized, &mut report);
+            assert!(report.notes.iter().any(|n| n.text.contains("radii clamped")), "{mode}");
+            assert!(report.notes.iter().any(|n| n.text.contains("value bounds clamped")), "{mode}");
+        }
+    }
 }
 
 /// Public GeoLibre share pages expose their JSON at the same path plus `.geolibre.json`.

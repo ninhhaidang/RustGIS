@@ -107,24 +107,53 @@ pub fn apply(layer: &mut Layer, record: &Value, report: &mut Report) {
     }
     if boolean(st, "proportionalSizeEnabled", false) {
         let field = string(st, "proportionalSizeProperty");
+        let (raw_min, raw_max) = (number(st, "proportionalSizeMinValue", 0.0), number(st, "proportionalSizeMaxValue", 100.0));
+        let (min, max) = (raw_min.clamp(-1e100, 1e100), raw_max.clamp(-1e100, 1e100));
+        let (raw_lo, raw_hi) = (number(st, "proportionalSizeMinRadius", 4.0), number(st, "proportionalSizeMaxRadius", 24.0));
+        let (lo, hi) = (raw_lo.clamp(0.0, 128.0), raw_hi.clamp(0.0, 128.0));
+        let (min_size, max_size) = ((2.0 * lo) as f32, (2.0 * hi) as f32);
+        let mut sized = false;
         if layer.geometry_type() != rustgis_data::GeometryType::Point {
             report.approximated(&name, "proportional sizing is supported only for point markers; using a fixed width");
         } else if mode == "single" || mode.is_empty() {
-            if layer.dataset.field_index(field).is_some() {
-                layer.renderer = Renderer::Proportional {
-                    field: field.into(),
-                    base: symbol,
-                    min: number(st, "proportionalSizeMinValue", 0.0).clamp(-1e100, 1e100),
-                    max: number(st, "proportionalSizeMaxValue", 100.0).clamp(-1e100, 1e100),
-                    min_size: (2.0 * number(st, "proportionalSizeMinRadius", 4.0).clamp(0.0, 128.0)) as f32,
-                    max_size: (2.0 * number(st, "proportionalSizeMaxRadius", 24.0).clamp(0.0, 128.0)) as f32,
-                };
+            if layer.dataset.field_index(field).and_then(|fi| layer.dataset.fields.get(fi)).is_some_and(|f| f.ty.is_numeric()) {
+                layer.renderer = Renderer::Proportional { field: field.into(), base: symbol, min, max, min_size, max_size };
+                sized = true;
                 report.approximated(&name, "proportional sizes use area scaling instead of MapLibre linear radius scaling");
             } else {
-                report.approximated(&name, format!("size field {field} is absent; using a fixed size"));
+                report.approximated(&name, format!("size field {field} is absent or not numeric; using a fixed size"));
             }
+        } else if !matches!(layer.renderer, Renderer::Unique { .. } | Renderer::Graduated { .. }) {
+            report.approximated(&name, "proportional size of a style drawn with the base symbol: size fixed");
+        } else if !layer.dataset.field_index(field).and_then(|fi| layer.dataset.fields.get(fi)).is_some_and(|f| f.ty.is_numeric()) {
+            report.approximated(&name, format!("size field {field} is absent or not numeric; using a fixed size"));
         } else {
-            report.approximated(&name, "combined colour classification and proportional size: colour retained, size fixed");
+            // The colour classes keep their colours, sized as GeoLibre sizes them: the radius in
+            // a straight line with the value, a value missing at the smallest (its class's size).
+            if max <= min {
+                report.approximated(&name, "proportional size range is empty; using a fixed size");
+            } else {
+                layer.renderer.map_symbols(|sym| sym.size = min_size);
+                layer.size_by = Some(crate::symbol_by::SizeBy {
+                    field: layer
+                        .dataset
+                        .field_index(field)
+                        .and_then(|fi| layer.dataset.fields.get(fi))
+                        .map_or_else(|| field.to_string(), |f| f.name.clone()),
+                    min,
+                    max,
+                    min_size,
+                    max_size,
+                    scaling: crate::symbol_by::SizeScaling::Radius,
+                });
+                sized = true;
+            }
+        }
+        if sized && (raw_lo != lo || raw_hi != hi) {
+            report.approximated(&name, "proportional size radii clamped to 0–128 pixels");
+        }
+        if sized && (raw_min != min || raw_max != max) {
+            report.approximated(&name, "proportional size value bounds clamped to ±1e100");
         }
     }
     let labels = &st["labels"];

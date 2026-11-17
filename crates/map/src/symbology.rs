@@ -1580,9 +1580,9 @@ impl Renderer {
             }
             Renderer::Proportional { field, base, min_size, max_size, min, max } => {
                 let Some(v) = ds.field_index(field).and_then(|fi| ds.value(row, fi).as_f64()) else { return *base };
-                let t = if max > min { ((v - min) / (max - min)).clamp(0.0, 1.0) } else { 0.5 };
                 // Area-proportional (Flannery-free square root scaling).
-                Symbol { size: min_size + (max_size - min_size) * t.sqrt() as f32, ..*base }
+                let size = crate::symbol_by::scaled_size(v, *min, *max, *min_size, *max_size, crate::symbol_by::SizeScaling::Area);
+                Symbol { size, ..*base }
             }
         }
     }

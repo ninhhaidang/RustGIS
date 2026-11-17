@@ -665,6 +665,14 @@ pub(crate) fn note_label_classes(s: &mut Session, kind: &str, p: &Value) {
     if let Some(text) = classes {
         s.notify(text, false);
     }
+    // A size mapping has no MapLibre equivalent written for it: its points keep their classes' sizes.
+    let sized = s.layer_id(p).ok().and_then(|id| s.map().layer(id)).and_then(|l| {
+        let by = l.size_by.as_ref().filter(|_| rustgis_map::symbol_by::SizeBy::applies_to(l))?;
+        Some(format!("{}'s style draws its points at their classes' sizes: their sizes by {} aren't in it.", l.name, by.field))
+    });
+    if let Some(text) = sized {
+        s.notify(text, false);
+    }
     let Some(l) = s.layer_id(p).ok().and_then(|id| s.map().layer(id)).filter(|l| l.labels.enabled) else { return };
     let n = l.labels.classes.len().min(MAX_LABEL_CLASSES);
     let clause = l.labels.default.where_.as_deref().is_some_and(|w| !w.trim().is_empty());

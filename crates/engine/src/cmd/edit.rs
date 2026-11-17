@@ -1043,6 +1043,11 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
         l.marker_rotation = None;
         rotation_note = Some(format!("{}: its markers turned by the deleted field {removed}, so they are no longer turned", l.name));
     }
+    let mut size_note = None;
+    if l.size_by.as_ref().is_some_and(|b| b.field.eq_ignore_ascii_case(&removed)) {
+        l.size_by = None;
+        size_note = Some(format!("{}: its markers were sized by the deleted field {removed}, so they keep their class sizes", l.name));
+    }
     // Nor its expressions by feature: one that read the field is removed, and the symbol draws as
     // without it. Judged by the field it read, not by whether its text still parses: a field
     // named like a keyword (`null = 'x'`) would parse again as the keyword, and a name matching
@@ -1069,7 +1074,7 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
             Some(format!("{}: its symbol's {} expressions read the deleted field {removed}, so they are removed", l.name, and_list(many)))
         }
     };
-    for note in [extrusion_note, rotation_note, by_note, label_note, restart_note].into_iter().flatten() {
+    for note in [extrusion_note, rotation_note, size_note, by_note, label_note, restart_note].into_iter().flatten() {
         s.notify(note, false);
     }
     if let Some(note) = diagram_note {

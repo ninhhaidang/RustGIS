@@ -1904,6 +1904,163 @@ fn a_point_takes_stacked_marks_and_turns_by_a_field() {
     assert!(s.map().layer_by_name("Cities").unwrap().marker_rotation.is_none());
 }
 
+/// A streamed layer holds the view's features only, so its size range isn't taken from them.
+#[test]
+fn a_streamed_layer_needs_bounds_for_its_size_mapping() {
+    let path = grid_fgb("sized", 4);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap();
+    let v = view_of(&mut s, rustgis_geom::Extent::new(-180.0, -80.0, 180.0, 80.0));
+    crate::render::render_png(s.map_mut(), &v).unwrap();
+    let id = s.map().layers[0].id;
+    s.run("layer.symbology", &json!({"layer": id, "type": "unique", "field": "i"})).unwrap();
+    let err = s.run("layer.sizeBy", &json!({"layer": id, "field": "x"})).unwrap_err();
+    assert!(err.contains("streamed"), "{err}");
+    s.run("layer.sizeBy", &json!({"layer": id, "field": "x", "min": -180, "max": 180})).unwrap();
+    assert!(s.map().layers[0].size_by.is_some());
+}
+
+/// `layer.sizeBy` sizes a classified point layer by a field, keeping what it isn't given, refusing
+/// what doesn't fit (without an undo step), and is undone and removed like any style.
+#[test]
+fn a_classified_point_layer_is_sized_by_a_field() {
+    let mut s = world();
+    let err = s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"})).unwrap_err();
+    assert!(err.contains("Unique Values or Graduated Colors"), "{err}");
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
+    let r = s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max", "max": 2e7, "scaling": "radius"})).unwrap();
+    let err = s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max", "min": -1e308, "max": 1e308})).unwrap_err();
+    assert!(err.contains("too wide"), "{err}");
+    // Without a field, the mapping keeps its field and takes the new settings; with none to
+    // change, it's refused.
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "maxSize": 30})).unwrap();
+    let by = s.map().layer_by_name("Cities").and_then(|l| l.size_by.clone()).unwrap();
+    assert_eq!((by.field.as_str(), by.max_size), ("pop_max", 30.0));
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "maxSize": 24})).unwrap();
+    // The mapping's field named in another case is still its field: its bounds are kept.
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    s.map_mut().layer_mut(id).and_then(|l| l.size_by.as_mut()).unwrap().field = "POP_MAX".into();
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "maxSize": 24})).unwrap();
+    let by = s.map().layer_by_name("Cities").and_then(|l| l.size_by.clone()).unwrap();
+    assert_eq!((by.field.as_str(), by.max), ("pop_max", 2e7));
+    let (lo, _) = {
+        let l = s.map().layer_by_name("Cities").unwrap();
+        l.dataset.numeric_range(l.dataset.field_index("pop_max").unwrap(), &[]).unwrap()
+    };
+    assert_eq!(r, json!({"field": "pop_max", "min": lo, "max": 2e7, "minSize": 4.0, "maxSize": 24.0, "scaling": "radius"}));
+    // What isn't given keeps the mapping's.
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max", "maxSize": 30})).unwrap();
+    let by = s.map().layer_by_name("Cities").unwrap().size_by.clone().unwrap();
+    assert_eq!((by.max, by.max_size, by.scaling), (2e7, 30.0, rustgis_map::symbol_by::SizeScaling::Radius));
+    let depth = s.undo_depth();
+    for (bad, says) in [
+        (json!({"layer": "Cities", "field": "name"}), "not a numeric field"),
+        (json!({"layer": "Cities", "field": "pop_max", "min": 5, "max": 5}), "must be above min"),
+        (json!({"layer": "Cities", "field": "pop_max", "maxSize": 1e4}), "maxSize is from 0"),
+        (json!({"layer": "Cities", "field": "pop_max", "scaling": "cube"}), "scaling is"),
+        (json!({"layer": "Rivers", "field": "pop_max"}), "point layers"),
+    ] {
+        let err = s.run("layer.sizeBy", &bad).unwrap_err();
+        assert!(err.contains(says), "{bad}: {err}");
+    }
+    assert_eq!(s.undo_depth(), depth);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.map().layer_by_name("Cities").unwrap().size_by.as_ref().map(|b| b.max_size), Some(24.0));
+    // A web style has no size mapping: said, and nothing said once there is none.
+    let dir = std::env::temp_dir().join(format!("rustgis-size-by-style-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cities.json").display().to_string();
+    let web_style_says = |s: &mut Session| {
+        let mark = s.notice_mark();
+        s.run("share.webStyle", &json!({"layer": "Cities", "path": path})).unwrap();
+        s.notices_since(mark).iter().any(|n| n.text.contains("sizes by pop_max aren't in it"))
+    };
+    assert!(web_style_says(&mut s));
+    // Bins drawn instead of the points: said, whichever comes second.
+    let bins_said = |s: &mut Session, command: &str, p: Value| {
+        let mark = s.notice_mark();
+        s.run(command, &p).unwrap();
+        s.notices_since(mark).iter().any(|n| n.text.contains("aggregated into bins"))
+    };
+    assert!(bins_said(&mut s, "layer.aggregation", json!({"layer": "Cities", "shape": "hexagon"})));
+    assert!(bins_said(&mut s, "layer.sizeBy", json!({"layer": "Cities", "maxSize": 24})));
+    assert!(!bins_said(&mut s, "layer.aggregation", json!({"layer": "Cities", "shape": "none"})));
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "field": null})).unwrap();
+    assert!(s.map().layer_by_name("Cities").unwrap().size_by.is_none());
+    assert!(!web_style_says(&mut s));
+    std::fs::remove_dir_all(&dir).ok();
+    let err = s.run("layer.sizeBy", &json!({"layer": "Cities", "maxSize": 30})).unwrap_err();
+    assert!(err.contains("no size mapping"), "{err}");
+    // A saved project's mapping is read back (the schema fixture `size_by.rgis`).
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/size_by.rgis")).unwrap();
+    let by = saved.maps[0].layers[0].size_by.clone().unwrap();
+    assert_eq!((by.field.as_str(), by.min, by.max, by.max_size), ("mag", 2.5, 7.5, 36.0));
+    let invalid = include_str!("../../../schema/fixtures/size_by.rgis").replace("\"radius\"", "\"unknown-scaling\"");
+    assert!(Project::from_json(&invalid).is_err(), "unreadable mapping must not be silently discarded");
+}
+
+/// Desktop range detection lands a worker result without scanning on the window thread, and
+/// rejects a stale result after an edit rather than rescanning on that thread.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_size_field_range_is_prepared_off_the_window_thread() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
+    s.statistics_need_read_ahead(true);
+    let params = json!({"layer": "Cities", "field": "pop_max"});
+    assert!(s.run("layer.sizeBy", &params).unwrap_err().contains("background read queue"));
+    let read = read_ahead(&mut s, "layer.sizeBy", &params).unwrap();
+    assert!(read.reads());
+    let read = read.run(&Control::new()).unwrap();
+    assert!(read_land(&mut s, read).unwrap()["max"].as_f64().unwrap() > 0.0);
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "field": null})).unwrap();
+    let read = read_ahead(&mut s, "layer.sizeBy", &params).unwrap().run(&Control::new()).unwrap();
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Cities").unwrap().dataset.features.get_mut(0).unwrap().attrs.clear();
+    assert!(read_land(&mut s, read).unwrap_err().contains("layer changed"));
+}
+
+/// New mappings name their required reader capability in projects and map/layer items. Removing
+/// the last mapping removes the requirement, so a plain project names none.
+#[test]
+fn size_mappings_require_a_reader_that_keeps_them() {
+    let project = Project::from_json(include_str!("../../../schema/fixtures/size_by.rgis")).unwrap();
+    let mut s = Session::new(project);
+    let (text, _) = s.project.saved_text(None).unwrap();
+    let saved: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(saved["format"], 2);
+    assert_eq!(saved["requires"], json!([crate::project::SIZE_BY_CAPABILITY]));
+    assert!(Project::from_json(&text).unwrap().maps[0].layers[0].size_by.is_some());
+    for kind in ["map", "layer"] {
+        let (_, bytes) = crate::cmd::items::item_bytes(&mut s, kind, &json!({"layer": "Earthquakes"})).unwrap();
+        let mut item: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(item["format"], 2);
+        assert_eq!(item["requires"], saved["requires"]);
+        crate::project::check_format(&item.to_string(), kind).unwrap();
+        item["requires"] = json!(["future-point-size"]);
+        assert!(crate::project::check_format(&item.to_string(), kind).unwrap_err().contains("future-point-size"));
+    }
+    for kind in ["mapPackage", "mobilePackage"] {
+        let (_, bytes) = crate::cmd::items::item_bytes(&mut s, kind, &json!({"tolerance": 0})).unwrap();
+        let entries = rustgis_data::zip::read(&bytes).unwrap();
+        let (_, map) = entries.iter().find(|(name, _)| name.ends_with(".rgismap")).unwrap();
+        let map: Value = serde_json::from_slice(map).unwrap();
+        assert_eq!(map["requires"], saved["requires"]);
+        assert_eq!(map["format"], 2);
+    }
+    s.map_mut().layers[0].size_by = None;
+    let (text, _) = s.project.saved_text(None).unwrap();
+    let saved: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(saved["format"], crate::project::FORMAT);
+    assert!(saved.get("requires").is_none());
+    for kind in ["map", "layer"] {
+        let (_, bytes) = crate::cmd::items::item_bytes(&mut s, kind, &json!({"layer": "Earthquakes"})).unwrap();
+        let item: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(item.get("requires").is_none());
+    }
+}
+
 #[test]
 fn a_symbol_is_set_by_expressions() {
     let mut s = world();
@@ -22830,6 +22987,23 @@ fn repair_source_checks_the_extrusion_base_field() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Deleting the field a size mapping reads removes the mapping and says so; undo brings it back.
+#[test]
+fn deleting_a_field_clears_a_size_mapping_reading_it() {
+    let mut s = world();
+    let sized = |s: &Session| s.map().layer_by_name("Cities").and_then(|l| l.size_by.clone());
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "mag", "type": "double"})).unwrap();
+    s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "mag", "min": 0, "max": 10})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Cities", "field": "MAG"})).unwrap();
+    assert!(sized(&s).is_none());
+    let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("sized by")).map(|n| n.text.clone()).collect();
+    assert_eq!(said, ["Cities: its markers were sized by the deleted field mag, so they keep their class sizes"]);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(sized(&s).map(|b| b.field), Some("mag".into()));
+}
+
 #[test]
 fn deleting_a_field_clears_the_label_expressions_reading_it() {
     // #2147: a label class's expressions by feature stopped reading a deleted field without a
@@ -34887,6 +35061,36 @@ fn ogc_group_refresh_keeps_children_across_rotated_keys_and_rejects_bad_answers(
     t["group"] = group;
     assert!(s.run("service.refresh", &t).unwrap_err().contains("more than 2000"));
     assert_eq!(s.map().layers.len(), 2);
+}
+
+/// A refresh that drops the field a layer's markers are sized by clears the mapping and says so;
+/// one that keeps it keeps the mapping without a word.
+#[test]
+fn ogc_refresh_clears_a_size_mapping_whose_field_goes() {
+    use ogc_server::{ITEMS, Server, fixture_features};
+    let server = Server::group_fixture();
+    let features = |properties: Value| {
+        let mut doc: Value = serde_json::from_str(fixture_features()).unwrap();
+        doc["features"][0]["properties"] = properties;
+        doc.to_string()
+    };
+    server.set(ITEMS, &features(json!({"name":"Place", "value":12})));
+    let mut s = Session::new(Project::default());
+    let group = s.run("service.import", &json!({"url":server.root()})).unwrap()["group"].clone();
+    let layer = s.map().layer_by_name("Places").unwrap().id;
+    s.run("layer.symbology", &json!({"layer":layer, "type":"unique", "field":"name"})).unwrap();
+    s.run("layer.sizeBy", &json!({"layer":layer, "field":"value", "min":0, "max":20})).unwrap();
+    let said = |s: &Session| s.notices.iter().filter(|n| n.text.contains("keep their class sizes (1: Places)")).count();
+    s.run("service.refresh", &json!({"group":group})).unwrap();
+    assert!(s.map().layer(layer).unwrap().size_by.is_some());
+    assert_eq!(said(&s), 0);
+    server.set(ITEMS, &features(json!({"name":"Place"})));
+    s.run("service.refresh", &json!({"group":group})).unwrap();
+    let l = s.map().layer(layer).unwrap();
+    assert!(l.size_by.is_none() && matches!(l.renderer, rustgis_map::Renderer::Unique { .. }), "the colours stay");
+    assert_eq!(said(&s), 1);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert!(s.map().layer(layer).unwrap().size_by.is_some(), "undo brings it back");
 }
 
 #[test]

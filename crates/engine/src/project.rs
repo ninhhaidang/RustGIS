@@ -82,10 +82,13 @@ pub const CAPABILITIES: &[&str] = &[
     "table-export-order",
     "tabulate-intersection-unit",
     "layout-element-background",
+    SIZE_BY_CAPABILITY,
     "picture-markers",
     "layout-element-ink",
     "field-generation",
 ];
+/// Independent marker sizes alongside classified point colours (`Layer::size_by`).
+pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
 pub(crate) const MAX_REQUIRES: usize = 256;

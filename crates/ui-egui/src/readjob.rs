@@ -152,6 +152,19 @@ fn run_presented(
         let r = app.run(command, p);
         return answered(app, then, r);
     }
+    // A field conversion given no layer or table works on the active layer: bound to it now, so
+    // it lands on that layer and its recorded step names it, whichever layer is active by then.
+    if command == "edit.convertField"
+        && ["layer", "table"].iter().all(|k| p.get(*k).is_none_or(Value::is_null))
+        && let Ok(id) = app.session.layer_id(&p)
+    {
+        if p.is_null() {
+            p = json!({});
+        }
+        if let Some(params) = p.as_object_mut() {
+            params.insert("layer".into(), json!(id));
+        }
+    }
     let layer = matches!(
         command,
         "layer.loadAll"
@@ -161,6 +174,7 @@ fn run_presented(
             | "source.syncState"
             | "table.statistics"
             | "edit.previewShapeConversion"
+            | "layer.sizeBy"
     )
     .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
     .flatten();
@@ -263,7 +277,7 @@ pub fn admitted(app: &mut RustGisApp, ahead: reads::ReadAhead, relay: rustgis_as
     };
     let params = params.clone();
     let archive = matches!(command, "map.reloadTiles" | "map.repairTiles").then(|| reads::archive_target(&app.session, &params)).flatten();
-    let layer = (command == "table.statistics")
+    let layer = matches!(command, "table.statistics" | "layer.sizeBy")
         .then(|| app.session.layer_id(&params).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
         .flatten();
     let what =
@@ -358,6 +372,7 @@ fn called<'a>(command: &str, what: &'a str) -> &'a str {
         (true, "script.run") => tl_raw!("Run Script"),
         (true, "topology.validate") => tl_raw!("Error Inspector"),
         (true, "table.statistics") => tl_raw!("Column Statistics"),
+        (true, "layer.sizeBy") => tl_raw!("Size by Field"),
         (true, "service.add") => tl_raw!("Add Service Layer"),
         (true, _) => tl_raw!("Run Model"),
     }
@@ -477,7 +492,13 @@ fn start(app: &mut RustGisApp, mut asked: Asked, p: Value) -> Result<Value, Stri
     if let Err(e) = spawned {
         if matches!(
             asked.command,
-            "map.reloadTiles" | "map.repairTiles" | "service.add" | "service.layers" | "script.run" | "edit.previewShapeConversion"
+            "map.reloadTiles"
+                | "map.repairTiles"
+                | "service.add"
+                | "service.layers"
+                | "script.run"
+                | "edit.previewShapeConversion"
+                | "layer.sizeBy"
         ) || rustgis_engine::cmd::edit::table_edit_in_background(asked.command).is_some()
         {
             let why = crate::i18n::fmt("The background worker could not start ({error}). Retry the command.", &[("error", &e.to_string())]);
@@ -1452,6 +1473,29 @@ mod tests {
         assert!(l.is_streamed() && !l.labels.enabled);
     }
 
+    /// A size mapping set after a read on a thread is recorded naming its layer, as a step from
+    /// the panes is, not by the id the read was bound to (#2130 review).
+    #[test]
+    fn a_size_mapping_read_on_a_thread_is_recorded_by_layer_name() {
+        use rustgis_engine::data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let mut ds =
+            Dataset::new("towns", GeometryType::Point, vec![Field::new("k", FieldType::Text), Field::new("n", FieldType::Integer)]);
+        for (k, n) in [("a", 1), ("b", 5)] {
+            ds.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![V::Text(k.into()), V::Int(n)]);
+        }
+        let id = rustgis_engine::cmd::layer::add_dataset(&mut app.session, ds);
+        app.run("layer.symbology", json!({"layer": id, "type": "unique", "field": "k"})).unwrap();
+        app.reads_off_frame = true;
+        app.ws.recording = Some(Vec::new());
+        app.run("layer.sizeBy", json!({"layer": id, "field": "n"})).unwrap();
+        landed(&mut app, 60);
+        assert!(app.session.map().layer(id).unwrap().size_by.is_some());
+        let steps = app.ws.recording.clone().unwrap();
+        let step = steps.iter().find(|s| s.command == "layer.sizeBy").expect("recorded");
+        assert_eq!(step.params["layer"], json!("towns"));
+    }
+
     /// Task steps cannot bypass the worker through direct or scripted table writes.
     #[test]
     fn a_task_refuses_table_writes_before_scanning_rows() {
@@ -2230,6 +2274,7 @@ mod tests {
         let p = json!({"field":"opened", "type":"date", "format":"%d/%m/%Y"});
         app.session.active_layer = app.session.map().layer_by_name("Cities").map(|l| l.id);
         let depth = app.session.undo_depth();
+        app.ws.recording = Some(Vec::new());
         assert_eq!(app.run_by_user("edit.convertField", p.clone()).unwrap()["started"], "Convert Field");
         assert_eq!(app.session.undo_depth(), depth);
         app.session.active_layer = app.session.map().layers.iter().find(|l| l.name != "Cities").map(|l| l.id);
@@ -2237,6 +2282,9 @@ mod tests {
         let ds = &app.session.map().layer_by_name("Cities").unwrap().dataset;
         assert_eq!(ds.value(0, ds.field_index("opened").unwrap()).to_string(), "2026-05-03");
         assert_eq!(app.session.undo_depth(), depth + 1);
+        // Its step names the layer it was asked for, not the one active when it landed.
+        let steps = app.ws.recording.take().unwrap();
+        assert_eq!(steps.iter().find(|s| s.command == "edit.convertField").map(|s| s.params["layer"].clone()), Some(json!("Cities")));
         app.run("edit.undo", json!({})).unwrap();
         app.session.active_layer = app.session.map().layer_by_name("Cities").map(|l| l.id);
         app.run_by_user("edit.convertField", p).unwrap();

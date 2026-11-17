@@ -2800,6 +2800,9 @@ impl RustGisApp {
             if id == "table.statistics" {
                 return readjob::run_then(self, "table.statistics", params, Some(table::statistics_landed));
             }
+            if id == "layer.sizeBy" {
+                return readjob::run(self, "layer.sizeBy", params);
+            }
             // Publishing hashes, reads and writes the whole file: on a thread of its own, with
             // progress and Cancel, as an export is.
             if id == "source.publish" {
@@ -2852,7 +2855,15 @@ impl RustGisApp {
             self.ui.ribbon_peek = false;
         }
         // Read before the command runs: removing or renaming the active layer changes it.
-        let active = if self.ws.recording.is_some() { self.layer_acted_on(id, &params) } else { None };
+        let active = match &dispatch {
+            _ if self.ws.recording.is_none() => None,
+            // A read on a thread bound to its layer's id (`readjob`): the step names the layer, as
+            // every step does, so it replays on that layer by name. One given no layer names the
+            // layer it acts on, as a command run here does.
+            #[cfg(not(target_arch = "wasm32"))]
+            AppDispatch::Read(_) => self.layer_named(&params).or_else(|| self.layer_acted_on(id, &params)),
+            _ => self.layer_acted_on(id, &params),
+        };
         // A step being edited is known by its place in the task: Undo or Redo of a move or a
         // deletion would leave that place naming another step.
         // What is compared: the task's length and the step at the edit's place (its words and
@@ -3078,6 +3089,16 @@ impl RustGisApp {
         }
         let map = self.session.map();
         let name = active.and_then(|l| map.layer(l)).map(|l| l.name.clone())?;
+        let shared = map.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(&name)).count() > 1;
+        Some((name, shared))
+    }
+
+    /// The name of the layer `params` gives by id, and whether another layer shares it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn layer_named(&self, params: &Value) -> Option<(String, bool)> {
+        let map = self.session.map();
+        let id = params.get("layer").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok())?;
+        let name = map.layer(id)?.name.clone();
         let shared = map.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(&name)).count() > 1;
         Some((name, shared))
     }

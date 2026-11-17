@@ -494,9 +494,15 @@ fn glyph(p: &egui::Painter, at: egui::Pos2, g: Glyph, px: f32, c: egui::Color32)
 
 /// Paints a symbol patch for a layer of geometry type `g`.
 pub fn patch(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType) {
+    patch_sized(p, r, s, g, s.size.clamp(4.0, 14.0), (s.size * 1.4).clamp(8.0, 18.0));
+}
+
+/// [`patch`] with a point drawn `size` across and a character marker at `glyph_px`, as given,
+/// for rows whose sizes compare (size legends).
+fn patch_sized(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType, size: f32, glyph_px: f32) {
     match g {
         GeometryType::Point => {
-            let rad = (s.size.clamp(4.0, 14.0)) / 2.0;
+            let rad = size / 2.0;
             let c = r.center();
             match s.marker {
                 Marker::Square => {
@@ -525,7 +531,7 @@ pub fn patch(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType) {
                 // An outline-only character shows in its outline's colour.
                 Marker::Char(g) => {
                     let col = if s.fill.a() == 0 && s.stroke_width > 0.0 { s.stroke } else { s.fill };
-                    glyph(p, c, g, (s.size * 1.4).clamp(8.0, 18.0), c32(col));
+                    glyph(p, c, g, glyph_px, c32(col));
                 }
                 _ => {
                     p.circle_filled(c, rad, c32(s.fill));
@@ -1971,7 +1977,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         Some(_) => Vec::new(),
         None => l
             .shown_legend(scale)
-            .or_else(|| (!l.in_scale_range(scale)).then(|| l.renderer.legend_for(&l.dataset, &l.visible_rows())))
+            .or_else(|| (!l.in_scale_range(scale)).then(|| l.with_size_legend(l.renderer.legend_for(&l.dataset, &l.visible_rows()))))
             .unwrap_or_default(),
     };
     let has_legend = match &raster_legend {
@@ -2127,11 +2133,20 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
             ui.add_space(74.0);
             ui.label(egui::RichText::new(field).size(11.0).color(t.text_dim));
         });
-        for e in vector_legend.iter().take(40) {
+        // At most 40 classes, then the size rows the legend ends with.
+        let sizes = l.with_size_legend(Vec::new()).len().min(vector_legend.len());
+        let (classes, sized) = vector_legend.split_at(vector_legend.len() - sizes);
+        // The size rows share one scale, so the patch's box keeps them apart.
+        let top = sized.iter().map(|e| e.symbol.size).fold(0.0, f32::max);
+        let k = if top > 14.0 { 14.0 / top } else { 1.0 };
+        for (e, scale) in classes.iter().take(40).map(|e| (e, None)).chain(sized.iter().map(|e| (e, Some(k)))) {
             let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &e.label));
             let pr = Rect::from_center_size(pos2(r.min.x + 84.0, r.center().y), vec2(18.0, 14.0));
-            patch(ui.painter(), pr, &e.symbol, l.geometry_type());
+            match scale {
+                Some(k) => patch_sized(ui.painter(), pr, &e.symbol, l.geometry_type(), e.symbol.size * k, e.symbol.size * k * 1.4),
+                None => patch(ui.painter(), pr, &e.symbol, l.geometry_type()),
+            }
             ui.painter().text(pos2(r.min.x + 100.0, r.center().y), Align2::LEFT_CENTER, &e.label, regular(11.5), t.text);
         }
     }
@@ -4687,6 +4702,9 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if g == GeometryType::Point && !l.graphics {
         ui.add_space(8.0);
         marker_rotation_row(app, ui, &l);
+        if matches!(l.renderer, Renderer::Unique { .. } | Renderer::Graduated { .. }) {
+            size_by_rows(app, ui, &l);
+        }
     }
     if matches!(g, GeometryType::Polyline | GeometryType::Point) && !l.graphics {
         ui.add_space(8.0);
@@ -5947,6 +5965,152 @@ fn marker_rotation_row(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
             {
                 let _ = app.run("layer.markerRotation", json!({"field": r.field, "counterclockwise": ccw}));
             }
+        }
+    });
+}
+
+/// The field a classified point layer's markers are sized by (`layer.sizeBy`), beside its classes'
+/// colours: none, or one of its number fields, with the values and sizes at the two ends and how
+/// the size grows between them.
+fn size_by_rows(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::map::Layer) {
+    use rustgis_engine::map::symbol_by::{MAX_SIZE, SizeBy, SizeScaling};
+    let cur = l.size_by.as_ref();
+    let pending_id = egui::Id::unique(("size_by_pending", l.instance_id()));
+    let mut pending = ui.data_mut(|d| d.get_temp::<(Option<SizeBy>, SizeBy)>(pending_id));
+    // A command, undo or a completed worker supersedes a draft based on the old mapping.
+    if pending.as_ref().is_some_and(|(base, _)| base.as_ref() != cur) {
+        pending = None;
+    }
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Size by"));
+        let selected = pending.as_ref().map(|(_, by)| by.clone()).or_else(|| cur.cloned());
+        let shown = selected.as_ref().map_or_else(|| tl!("None").to_string(), |s| s.field.clone());
+        egui::ComboBox::from_id_salt(("size_by", l.id))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(selected.is_none(), tl!("None")).clicked() {
+                    pending = None;
+                    if cur.is_some() {
+                        let _ = app.run("layer.sizeBy", json!({"layer": l.id, "field": null}));
+                    }
+                }
+                for f in l.dataset.fields.iter().filter(|f| f.ty.is_numeric()) {
+                    let on = pending.as_ref().map(|(_, by)| by).or(cur).is_some_and(|s| s.field == f.name);
+                    if ui.selectable_label(on, &f.name).clicked() && !on {
+                        pending = if cur.is_some_and(|by| by.field == f.name) {
+                            None
+                        } else {
+                            Some((
+                                cur.cloned(),
+                                SizeBy {
+                                    field: f.name.clone(),
+                                    min: 0.0,
+                                    max: 100.0,
+                                    min_size: cur.map_or(4.0, |by| by.min_size),
+                                    max_size: cur.map_or(24.0, |by| by.max_size),
+                                    scaling: cur.map_or(SizeScaling::Area, |by| by.scaling),
+                                },
+                            ))
+                        };
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tl!("Size each point by a number field, keeping its class's colours"))
+            .labelled_by(input_label.id);
+    });
+    let is_pending = pending.is_some();
+    let Some(mut by) = pending.as_ref().map(|(_, by)| by.clone()).or_else(|| cur.cloned()) else {
+        ui.data_mut(|d| d.remove::<(Option<SizeBy>, SizeBy)>(pending_id));
+        return;
+    };
+    let field = by.field.clone();
+    let set = |app: &mut RustGisApp, resp: &egui::Response, p: Value| {
+        if !is_pending && crate::widgets::changed(resp) {
+            crate::widgets::one_step_per_press(app, resp);
+            let mut params = json!({"layer": l.id, "field": field});
+            if let (Some(params), Some(p)) = (params.as_object_mut(), p.as_object()) {
+                params.extend(p.clone());
+            }
+            let _ = app.run("layer.sizeBy", params);
+        }
+    };
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Values"));
+        let resp = ui.add(egui::DragValue::new(&mut by.min).update_while_editing(false).speed(0.1)).labelled_by(input_label.id);
+        set(app, &resp, json!({"min": by.min}));
+        ui.label(tl!("to"));
+        let resp = ui.add(egui::DragValue::new(&mut by.max).update_while_editing(false).speed(0.1)).labelled_by(input_label.id);
+        set(app, &resp, json!({"max": by.max}));
+    });
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Sizes"));
+        let resp = ui
+            .add(egui::DragValue::new(&mut by.min_size).update_while_editing(false).range(0.0..=MAX_SIZE).suffix(" pt"))
+            .labelled_by(input_label.id);
+        set(app, &resp, json!({"minSize": by.min_size}));
+        ui.label(tl!("to"));
+        let resp = ui
+            .add(egui::DragValue::new(&mut by.max_size).update_while_editing(false).range(0.0..=MAX_SIZE).suffix(" pt"))
+            .labelled_by(input_label.id);
+        set(app, &resp, json!({"maxSize": by.max_size}));
+    });
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Scaling"));
+        let name = |k: SizeScaling| match k {
+            SizeScaling::Area => tl!("By area"),
+            SizeScaling::Radius => tl!("By radius"),
+        };
+        egui::ComboBox::from_id_salt(("size_by_scaling", l.id))
+            .selected_text(name(by.scaling))
+            .show_ui(ui, |ui| {
+                for k in [SizeScaling::Area, SizeScaling::Radius] {
+                    if ui.selectable_label(by.scaling == k, name(k)).clicked() && by.scaling != k {
+                        if is_pending {
+                            by.scaling = k;
+                        } else {
+                            let _ = app.run("layer.sizeBy", json!({"layer": l.id, "field": by.field, "scaling": k.code()}));
+                        }
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tl!("By area: a value twice another draws a marker of about twice the area. By radius: twice the size."))
+            .labelled_by(input_label.id);
+    });
+    let mut keep_pending = is_pending;
+    if is_pending {
+        ui.horizontal(|ui| {
+            // Once asked, the scan is under way with its own Cancel (the status bar's): the draft
+            // closes, so its Cancel can't look like it stops the scan.
+            if ui.button(tl!("Use field range")).clicked()
+                && app
+                    .run(
+                        "layer.sizeBy",
+                        json!({"layer": l.id, "field": by.field,
+                        "minSize": by.min_size, "maxSize": by.max_size, "scaling": by.scaling.code()}),
+                    )
+                    .is_ok()
+            {
+                keep_pending = false;
+            }
+            if ui.add_enabled(by.min.is_finite() && by.max.is_finite() && by.max > by.min, egui::Button::new(tl!("Apply"))).clicked() {
+                let _ = app.run(
+                    "layer.sizeBy",
+                    json!({"layer": l.id, "field": by.field, "min": by.min, "max": by.max,
+                    "minSize": by.min_size, "maxSize": by.max_size, "scaling": by.scaling.code()}),
+                );
+            }
+            if ui.button(tl!("Cancel")).clicked() {
+                keep_pending = false;
+            }
+        });
+    }
+    ui.data_mut(|d| {
+        if keep_pending {
+            d.insert_temp(pending_id, (cur.cloned(), by));
+        } else {
+            d.remove::<(Option<SizeBy>, SizeBy)>(pending_id);
         }
     });
 }
@@ -8333,6 +8497,42 @@ mod tests {
         assert!(l.fill_layers.is_empty());
         assert!(l.symbol(2).fill.a() > 0);
         assert!(h.query_by_label("No Fill").is_some());
+    }
+
+    /// A size field with no usable automatic range still exposes bounds and can be applied,
+    /// without changing the layer until Apply is clicked.
+    #[test]
+    fn size_fields_with_constant_or_missing_values_can_be_configured() {
+        use egui_kittest::kittest::Queryable;
+        for value in [rustgis_engine::data::Value::Float(5.0), rustgis_engine::data::Value::Null] {
+            let mut app = RustGisApp::with_sample();
+            let id = layer(&app, "Cities");
+            app.run("layer.symbology", json!({"layer": id, "type": "unique", "field": "name"})).unwrap();
+            let l = app.session.map_mut().layer_mut(id).unwrap();
+            let field = l.dataset.field_index("pop_max").unwrap();
+            for feature in l.dataset.features.iter_mut() {
+                feature.attrs[field] = value.clone();
+            }
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(600.0, 400.0)).with_max_steps(64).build_ui_state(
+                move |ui, app: &mut RustGisApp| {
+                    let l = app.session.map().layer(id).unwrap().clone();
+                    size_by_rows(app, ui, &l);
+                },
+                app,
+            );
+            h.run_steps(3);
+            h.query_all_by_role(egui::accesskit::Role::ComboBox).find(|n| n.value().as_deref() == Some("None")).unwrap().click();
+            h.run_steps(3);
+            h.get_by_label("pop_max").click();
+            h.run_steps(3);
+            let bounds: Vec<_> = h.query_all_by_label("Values").filter_map(|n| n.value()).collect();
+            assert_eq!(bounds, ["0.0", "100.0"]);
+            assert!(h.state().session.map().layer(id).unwrap().size_by.is_none());
+            h.get_by_label("Apply").click();
+            h.run_steps(3);
+            let by = h.state().session.map().layer(id).unwrap().size_by.as_ref().unwrap();
+            assert_eq!((by.field.as_str(), by.min, by.max), ("pop_max", 0.0, 100.0));
+        }
     }
 
     fn symbology_retry_harness() -> egui_kittest::Harness<'static, RustGisApp> {

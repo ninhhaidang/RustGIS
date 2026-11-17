@@ -1072,6 +1072,7 @@
           "table-export-order",
           "tabulate-intersection-unit",
           "layout-element-background",
+          "classified-point-size",
           "picture-markers",
           "layout-element-ink",
           "field-generation"
@@ -1150,6 +1151,7 @@
     "table-export-order",
     "tabulate-intersection-unit",
     "layout-element-background",
+    "classified-point-size",
     "picture-markers",
     "layout-element-ink",
     "field-generation"

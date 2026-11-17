@@ -344,6 +344,7 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
     // whose classes no longer read, drawn with a single symbol.
     let mut notes = Vec::new();
     let mut singled = Vec::new();
+    let mut size_cleared = Vec::new();
     let mut area_notes = Vec::new();
     let mut moved = 0;
     for ((mut child, mut dataset, anonymous), existing) in reads.into_iter().zip(matches) {
@@ -372,6 +373,14 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
                 if invalid_renderer {
                     singled.push(layer.name.clone());
                 }
+            }
+            // A size mapping by a field the service dropped, or that no longer reads as numbers,
+            // sizes nothing: cleared, as deleting its field clears it.
+            let numeric =
+                |field: &str| layer.dataset.field_index(field).and_then(|i| layer.dataset.fields.get(i)).is_some_and(|f| f.ty.is_numeric());
+            if layer.size_by.as_ref().is_some_and(|by| !numeric(&by.field)) {
+                layer.size_by = None;
+                size_cleared.push(layer.name.clone());
             }
             // (Labels by a text expression that still reads need no field.)
             let reads = |t: &Option<String>, ds: &rustgis_data::Dataset| {
@@ -455,6 +464,16 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
                 "layers whose classes read fields the refreshed service no longer has, or no longer read as numbers, or whose class expression no longer reads, are drawn with a single symbol ({}: {})",
                 singled.len(),
                 singled.join(", ")
+            ),
+            false,
+        );
+    }
+    if !size_cleared.is_empty() {
+        s.notify(
+            format!(
+                "layers whose markers were sized by a field the refreshed service no longer has, or that no longer reads as numbers, keep their class sizes ({}: {})",
+                size_cleared.len(),
+                size_cleared.join(", ")
             ),
             false,
         );

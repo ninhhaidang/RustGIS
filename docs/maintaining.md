@@ -77,6 +77,8 @@ same files. New and changed code follows these rules; not every existing reader 
   `.rgis` format 2 before any writes it (`READ_FORMAT` and `CAPABILITIES` in
   `crates/engine/src/project.rs`), so what is added to format 2 after that comes with a capability
   name, added to `CAPABILITIES` where it is read.
+  Independent sizes on classified point layers use `classified-point-size`; only documents
+  containing a `size_by` mapping list that requirement.
 - `schema/project.schema.json` is the JSON Schema of the project file, generated from the types
   it is saved from by `cargo xtask schema`. A pull request that changes what a project saves
   regenerates it and commits it in the same pull request; CI's `cargo xtask schema --check` fails

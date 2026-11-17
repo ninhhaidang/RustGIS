@@ -217,9 +217,10 @@ styles and field labels. The result includes `map`, `layers` and per-layer `note
 approximated presentation from skipped sources. Newer format versions are read as far as possible
 with a note. Unsupported layer kinds and project sections are reported rather than silently lost.
 
-Colour classes and proportional sizes are supported separately. Combined colour-and-size styles
-keep colour and use a fixed size; graduated colour class boundaries are retained; proportional
-sizes use RustGIS's area scaling. Label halos use RustGIS defaults. Tile overlays draw above feature
+Colour classes, proportional sizes and the two combined are supported. A combined
+colour-and-size style keeps its classes' colours and sizes each point by its field, by radius as
+GeoLibre does (**Size by** in the Symbology pane); graduated colour class boundaries are
+retained; a proportional size alone uses RustGIS's area scaling. Label halos use RustGIS defaults. Tile overlays draw above feature
 layers, and nested groups become flat folders with inherited visibility and opacity retained.
 Local data paths require a locally opened project or an explicit `dir`; URL and pasted-text imports cannot read local files without that folder.
 URL data downloaded in the browser fills its reserved layer position when it arrives; wait for

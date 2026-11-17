@@ -95,6 +95,7 @@ pub fn commands() -> Vec<C> {
             };
             let r = with(s, p, |l| l.aggregation = agg)?;
             super::diagram::hidden_notice(s, id);
+            super::layer::size_hidden_notice(s, id);
             Ok(r)
         })
         .roles(&[])

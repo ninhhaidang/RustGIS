@@ -170,6 +170,9 @@ pub(super) fn long_commands(boundaries: bool) {
         assert!(contents(&shapes.project) == before, "edit.previewShapeConversion changed the project after Cancel");
     }
     exercise(&s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
+    // Automatic size bounds scan the numeric field on that queue too.
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
+    exercise(&s, "layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
 
     s.run("layer.addDataText", &json!({"fileName": "calc.csv", "text": "n,day\n1,01/02/2024\n2,02/03/2024\n"})).unwrap();
     s.run("edit.enable", &json!({"on": true})).unwrap();

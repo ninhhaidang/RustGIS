@@ -3226,6 +3226,7 @@ pub fn gpu_may_turn(map: &Map, view: &View) -> bool {
             && !l.has_fills()
             && l.marker_rotation.is_none()
             && l.symbol_by.is_empty()
+            && !(l.size_by.is_some() && rustgis_map::symbol_by::SizeBy::applies_to(l))
             && l.renderer.expression().is_none()
             && (l.extrusion.is_none() || view.camera.pitch != 0.0)
             && !(view.camera.pitch != 0.0 && l.renderer.has_char_or_picture_markers() && stands_up(map, l))
@@ -4711,6 +4712,7 @@ fn render_frame(
                 && layer.diagram.is_none()
                 // Symbols and classes by expression are styled per feature on the CPU.
                 && layer.symbol_by.is_empty()
+                && !(layer.size_by.is_some() && rustgis_map::symbol_by::SizeBy::applies_to(layer))
                 && layer.renderer.expression().is_none()
                 && !upright.contains(&layer.id);
             // Lyon refuses degenerate geometry tiny-skia draws fine, a layer too dense to mesh

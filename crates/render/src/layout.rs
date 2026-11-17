@@ -2019,7 +2019,7 @@ fn complete_shown_legends(
         }
         if any {
             // (A sample of the classes seen: classed again at this scale, by expression.)
-            let mut entries = layer.renderer.legend_at(&sample, &[], Some(scale));
+            let mut entries = layer.with_size_legend(layer.renderer.legend_at(&sample, &[], Some(scale)));
             entries.extend(no_data);
             out.push((layer.id, entries));
         }
@@ -2370,7 +2370,7 @@ fn legend_rows_missing<'a>(
             },
             // A classified raster's every class (#1679).
             None if l.is_raster() => raster_classes(l, true).unwrap_or_default(),
-            None => l.renderer.legend(),
+            None => l.with_size_legend(l.renderer.legend()),
         };
         if drawn.is_none() && opts.show_no_data {
             entries.extend(l.renderer.no_data_legend(&l.dataset, None));
