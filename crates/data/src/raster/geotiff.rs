@@ -1088,6 +1088,21 @@ impl Chunks {
         u64::from(self.per_plane) * self.planes as u64
     }
 
+    /// The bytes the first chunk decodes to at `bits` a sample, each row padded to whole bytes: as
+    /// the tiff crate holds it, cropped to the image, then with a tile's padding, as the LZW and
+    /// LERC readers hold it. The first chunk is the largest (only the last strip and the edge tiles are
+    /// smaller), and one always read, since it holds the image's first pixel.
+    fn first_bytes(&self, bits: u16) -> (u64, u64) {
+        let size = |cols: u32, rows: u32| {
+            let row_bits = u64::from(cols).saturating_mul(self.samples as u64).saturating_mul(u64::from(bits));
+            row_bits.div_ceil(8).saturating_mul(u64::from(rows))
+        };
+        // The tiff crate gives a bottom tile of every band after the first, when the bands are stored
+        // apart, its padding rows too (see `place`); a strip's rows are within the image already.
+        let rows = if self.planes > 1 { self.ch } else { self.ch.min(self.h) };
+        (size(self.cw.min(self.w), rows), size(self.cw, self.ch))
+    }
+
     /// Where chunk `c` of a plane lies: its corner, then the columns and rows of it the image
     /// holds (the rest is padding). In `u64`: `x0 + cw` and the next multiple of a step pass
     /// `u32::MAX` in an image that wide, which in `u32` panics in a debug build and wraps in a
@@ -1182,6 +1197,12 @@ impl Chunks {
     }
 }
 
+/// The most bytes the tiff crate decodes one chunk to, or a whole image to: the sample limit as
+/// 32-bit floats.
+fn decoding_limit() -> usize {
+    max_samples().saturating_mul(4)
+}
+
 /// Fewest chunks worth decoding on more than one thread.
 #[cfg(not(target_arch = "wasm32"))]
 const PARALLEL_CHUNKS: u64 = 16;
@@ -1205,8 +1226,27 @@ fn decimate<R: Read + Seek>(
     crate::progress::check()?;
     let k = k.max(1);
     let (ow, oh) = (w.div_ceil(k) as usize, h.div_ceil(k) as usize);
-    let mut bands = (0..nbands).map(|_| super::filled(ow, oh, f32::NAN)).collect::<Result<Vec<_>>>()?;
     let chunks = Chunks::new(dec, w, h, nbands, planar);
+    // A chunk larger than its decoder takes can't be read: said before the bands are set aside,
+    // which can be gigabytes for a header claiming a vast image (a few hundred bytes of file, found
+    // by fuzzing, #1952). LERC chunks go to its reader only, which holds 8 bytes a sample with a
+    // tile's padding; LZW ones to the tiff crate, then to our reader, which keeps the padding too;
+    // the rest to the tiff crate only, which holds a chunk cropped to the image.
+    let sample_bits = bits(dec);
+    let (cropped, padded) = chunks.first_bytes(sample_bits);
+    // The LZW reader takes 8- to 64-bit samples only.
+    let lzw_reads = lzw(dec) && matches!(sample_bits, 8 | 16 | 32 | 64);
+    let refused = if super::lerc::is_lerc(dec) {
+        let lerc = chunks.first_bytes(64).1;
+        (lerc > super::lerc::MAX_CHUNK_BYTES as u64).then_some(((chunks.cw, chunks.ch), lerc))
+    } else {
+        let tiff = (chunks.cw.min(w), if chunks.planes > 1 { chunks.ch } else { chunks.ch.min(h) });
+        (cropped > decoding_limit() as u64 && (!lzw_reads || padded > super::lzw::MAX_CHUNK_BYTES as u64)).then_some((tiff, cropped))
+    };
+    if let Some(((cols, rows), bytes)) = refused {
+        return Err(err(format!("a strip or tile of {cols} × {rows} pixels is too large to read ({} MB)", bytes >> 20)));
+    }
+    let mut bands = (0..nbands).map(|_| super::filled(ow, oh, f32::NAN)).collect::<Result<Vec<_>>>()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((open, image, limits)) = open
         && chunks.count() >= PARALLEL_CHUNKS
@@ -1423,7 +1463,7 @@ pub(super) fn read_limited_with_nodata(
     let wide_rgb = r.first_is_wide_rgb();
     let limits = {
         let mut l = Limits::default();
-        l.decoding_buffer_size = max_samples().saturating_mul(4);
+        l.decoding_buffer_size = decoding_limit();
         l.intermediate_buffer_size = 256 << 20;
         l.ifd_value_size = 64 << 20;
         l
@@ -2208,6 +2248,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A few hundred bytes claiming an 8-band image of 8 × 4,160,741,449 pixels in one strip (the
+    /// fuzzer's `oom-76cff910…`, #1952): the strip can't be decoded, which is said before the bands
+    /// of the overview made as it is read are set aside (some 2 GB of them on a computer with 16).
+    #[test]
+    fn a_strip_too_large_to_decode_is_refused_before_the_bands_are_set_aside() {
+        let entries: [(u16, u16, u32); 9] = [
+            (256, 4, 8),             // ImageWidth
+            (257, 4, 4_160_741_449), // ImageLength
+            (258, 3, 8),             // BitsPerSample (one value for every sample, as readers allow)
+            (259, 3, 1),             // Compression: none
+            (262, 3, 1),             // PhotometricInterpretation: black is zero
+            (273, 4, 128),           // StripOffsets
+            (277, 3, 8),             // SamplesPerPixel
+            (278, 4, 4_160_741_449), // RowsPerStrip: one strip
+            (279, 4, 135),           // StripByteCounts
+        ];
+        let mut file = b"II*\0".to_vec();
+        file.extend(8u32.to_le_bytes());
+        file.extend((entries.len() as u16).to_le_bytes());
+        for (tag, kind, value) in entries {
+            file.extend(tag.to_le_bytes());
+            file.extend(kind.to_le_bytes());
+            file.extend(1u32.to_le_bytes());
+            file.extend(if kind == 3 { u32::from(value as u16) } else { value }.to_le_bytes());
+        }
+        file.extend(0u32.to_le_bytes());
+        file.resize(128 + 135, 0);
+        let e = read(std::io::Cursor::new(&file), "vast.tif").map(|r| (r.width, r.height)).unwrap_err().to_string();
+        assert!(e.contains("a strip or tile of 8 × 4160741449 pixels is too large to read"), "{e}");
+    }
+
+    /// The first chunk's size as each decoder holds it: rows padded to whole bytes, and a tile larger
+    /// than the image cropped to it for the tiff crate but not for the LZW and LERC readers.
+    #[test]
+    fn the_first_chunk_is_sized_as_its_decoders_hold_it() {
+        // One 1-bit band, 1 × 4,160,741,449 in one strip: a byte a row, not an eighth.
+        assert_eq!(chunk_grid(1, 4_160_741_449, 1, 4_160_741_449, 1).first_bytes(1), (4_160_741_449, 4_160_741_449));
+        // A 1024 × 1024 byte image in one 65536-pixel tile: 1 MB cropped, 4 GB padded.
+        assert_eq!(chunk_grid(1024, 1024, 65536, 65536, 1).first_bytes(8), (1 << 20, 1 << 32));
+        // Bands stored apart: the tiff crate keeps a tile's full height for the later planes.
+        let mut planar = chunk_grid(1024, 1024, 1024, 65536, 1);
+        planar.planes = 2;
+        assert_eq!(planar.first_bytes(8), (1 << 26, 1 << 26));
     }
 
     /// An image `u32` can just count the width (or height) of, in chunks of 2^20 pixels, every 2^20th

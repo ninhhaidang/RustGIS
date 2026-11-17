@@ -14,7 +14,7 @@ use tiff::tags::{ByteOrder, Tag};
 use crate::{DataError, Result};
 
 /// Most bytes in a chunk, compressed or decoded (the decoder's own intermediate limit).
-const MAX_CHUNK_BYTES: usize = 256 << 20;
+pub(super) const MAX_CHUNK_BYTES: usize = 256 << 20;
 
 fn err(e: impl std::fmt::Display) -> DataError {
     DataError::Format(format!("GeoTIFF: {e}"))
