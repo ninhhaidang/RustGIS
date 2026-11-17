@@ -89,6 +89,10 @@ If saving fails, the session login still works and a warning says it was not rem
 session until an explicit `connection.login`. See [Web-service logins](user-guide/data.md#web-service-logins)
 for exact-origin matching and HTTP confirmation.
 
+An ArcGIS token is pasted with `connection.login {"id":"c1","token":"…"}`. A token made from a user
+name and password (`connection.generateToken`) lands only when `connection.tokenStatus` asks, so it
+suits a session that keeps asking, such as Python or the app, more than one `--cmd` per run.
+
 Nothing waits on `run` the way a window does, so a long run takes the bounds the app's panes give
 it on a thread: a trend over a data cube (`cube.trend`) may compare up to 20 billion pairs, ten
 times what the Script pane allows, and a trend's or a summary's STAC search up to 10,000 items,

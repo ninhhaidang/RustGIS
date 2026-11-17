@@ -3096,3 +3096,635 @@ fn a_remembered_query_login_reconnects_on_the_wire_without_leaking_into_history_
         assert!(!public.contains(private), "{private} reached History, recording or saved text: {public}");
     }
 }
+
+/// ArcGIS token connections: a pasted token, or one generated from a user name and password.
+mod arcgis_tokens {
+    use super::*;
+    use crate::policy::{AgentAccess, Effects, Revocation, Scope};
+    use crate::render::rustgis_tiles::arcgis_token::{self, Credential, Done};
+    use crate::render::rustgis_tiles::cache::Still;
+    use rustgis_data::diagnostics::{Filter, History};
+    use std::collections::BTreeMap;
+    use std::sync::{LazyLock, Mutex, Once};
+
+    const FUTURE: i64 = 4_102_444_800_000; // 2100-01-01
+
+    type Handler = Arc<dyn Fn(String, Still, Done) + Send + Sync>;
+
+    static HANDLERS: LazyLock<Mutex<BTreeMap<String, Handler>>> = LazyLock::new(Mutex::default);
+
+    /// Answers the token requests to `endpoint` with `f` (the form the server got, the request's
+    /// predicate, and what to call). The fake transport is installed once for the process; each
+    /// test names an endpoint of its own, so none shares another's answers.
+    fn serve(endpoint: &str, f: impl Fn(String, Still, Done) + Send + Sync + 'static) {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            arcgis_token::set_generator(|endpoint, body, still, done| {
+                let handler = HANDLERS.lock().unwrap().get(&endpoint).cloned();
+                match handler {
+                    Some(handler) => handler(body.expose().to_string(), still, done),
+                    None => done(Err("no fake answers this endpoint".into())),
+                }
+            });
+        });
+        HANDLERS.lock().unwrap().insert(endpoint.to_string(), Arc::new(f));
+    }
+
+    /// One request held by a fake server until the test lands its answer.
+    #[derive(Clone, Default)]
+    struct Held {
+        forms: Arc<Mutex<Vec<String>>>,
+        held: Arc<Mutex<Vec<(Done, Still)>>>,
+    }
+
+    impl Held {
+        fn at(endpoint: &str) -> Held {
+            let held = Held::default();
+            let state = held.clone();
+            serve(endpoint, move |form, still, done| {
+                state.forms.lock().unwrap().push(form);
+                state.held.lock().unwrap().push((done, still));
+            });
+            held
+        }
+
+        fn forms(&self) -> Vec<String> {
+            self.forms.lock().unwrap().clone()
+        }
+
+        /// The oldest request not yet answered: its predicate, and what answers it.
+        fn take(&self) -> (Done, Still) {
+            self.held.lock().unwrap().remove(0)
+        }
+    }
+
+    fn token(text: &str) -> Credential {
+        Credential::new(text, Some(FUTURE)).ok().unwrap()
+    }
+
+    fn arcgis(s: &mut Session, origin: &str) -> String {
+        new(s, json!({"kind":"arcgis","address":format!("{origin}/arcgis/rest/services"),"auth":"arcgis","user":"alice"}))
+    }
+
+    fn visible(s: &mut Session, history: &History) -> String {
+        let (project, _) = s.project.saved_text(None).unwrap();
+        let mut recording = Vec::new();
+        s.log.write(&mut recording, false).unwrap();
+        format!(
+            "{}\n{project}\n{}\n{:?}\n{}\n{:?}",
+            s.connections.to_json(),
+            String::from_utf8(recording).unwrap(),
+            history.records(),
+            history.report(Filter::All),
+            s.notices
+        )
+    }
+
+    struct Allow;
+    impl Revocation for Allow {
+        fn allows(&self, _: Effects) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn arcgis_token_definitions_keep_a_user_and_never_a_key_name() {
+        let mut s = session(None);
+        let id = new(
+            &mut s,
+            json!({"kind":"wms","address":"https://definition-arcgis757.example.test/wms","auth":" ArcGIS ","user":" alice ","keyName":"x"}),
+        );
+        let c = s.connections.find(&id).unwrap();
+        assert_eq!((c.auth.as_str(), c.user.as_str(), c.key_name.as_str()), ("arcgis", "alice", ""));
+        // The user is optional (a pasted token has no use for one), bounded and free of controls.
+        let bare = new(&mut s, json!({"kind":"arcgis","address":"https://definition-arcgis757.example.test/rest","auth":"arcgis"}));
+        assert_eq!(s.connections.find(&bare).unwrap().user, "");
+        for bad in ["a\nb".to_string(), "a".repeat(201)] {
+            let error = s
+                .run(
+                    "connection.new",
+                    &json!({"kind":"arcgis","address":"https://definition-arcgis757.example.test/x","auth":"arcgis","user":bad}),
+                )
+                .unwrap_err();
+            assert!(error.contains("user"), "{error}");
+        }
+        // Editing the user changes the login's identity: the saved token isn't for another user.
+        assert!(s.run("connection.edit", &json!({"id":bare,"user":"bob"})).is_ok());
+    }
+
+    #[test]
+    fn arcgis_token_pasted_login_sends_one_request_only_token_and_leaks_nowhere() {
+        let origin = "https://pasted-arcgis757.example.test";
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        let history = History::default();
+        let _scope = history.enter();
+        s.run("project.openText", &json!({"text":project(origin,&id)})).unwrap();
+        let result = s.run("connection.login", &json!({"id":id,"token":" sentinel-token-757 "})).unwrap();
+        assert_eq!(result["loggedIn"], true);
+        let address = bound(&mut s, &id, &format!("{origin}/arcgis/rest/services/A/MapServer?ToKeN=old&f=json"));
+        let applied = logins::apply(&address).unwrap().unwrap();
+        assert!(applied.arcgis && applied.header.is_none());
+        assert_eq!(applied.url, format!("{origin}/arcgis/rest/services/A/MapServer?f=json&token=sentinel-token-757"));
+        // The address keeps what it was given (its stale token is the user's, not the login's); the login's is not in it.
+        assert!(!address.contains("sentinel-token-757"));
+        // Layers of the project are rebound, request-only too; another origin stays anonymous.
+        let tile = s.map().tiles[0].url.clone();
+        assert!(logins::apply(&tile).unwrap().unwrap().url.ends_with("?token=sentinel-token-757"));
+        for foreign in [
+            "https://elsewhere757.example.test/x",
+            "https://pasted-arcgis757.example.test:8443/x",
+            "http://pasted-arcgis757.example.test/x",
+        ] {
+            assert!(logins::apply(&bound(&mut s, &id, foreign)).unwrap().is_none(), "{foreign}");
+        }
+        let text = format!("{result}\n{}", visible(&mut s, &history));
+        for private in ["sentinel-token-757", "rustgis-login"] {
+            assert!(!text.contains(private), "{private} reached a record: {text}");
+        }
+        // Logging in again with another token replaces the generation; the old one is dead.
+        s.run("connection.login", &json!({"id":id,"token":"replacement-token-757"})).unwrap();
+        assert!(logins::apply(&address).is_err());
+        assert!(logins::apply(&bound(&mut s, &id, &format!("{origin}/a"))).unwrap().unwrap().url.ends_with("?token=replacement-token-757"));
+        s.run("connection.logout", &json!({"id":id})).unwrap();
+        assert!(logins::apply(&tile).is_err());
+        assert_eq!(s.run("connection.login", &json!({"id":id})).unwrap_err(), web::REQUIRED);
+    }
+
+    #[test]
+    fn arcgis_token_login_refuses_what_is_not_a_token_before_changing_anything() {
+        let origin = "https://refusals-arcgis757.example.test";
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        s.run("connection.login", &json!({"id":id,"token":"earlier-token-757"})).unwrap();
+        let earlier = bound(&mut s, &id, &format!("{origin}/a"));
+        for (params, expected) in [
+            (json!({"id":id,"token":5}), "token is text"),
+            (json!({"id":id,"token":"has space"}), arcgis_token::BAD_TOKEN),
+            (json!({"id":id,"token":"é"}), arcgis_token::BAD_TOKEN),
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":"5"}), "expiresAt is a whole number of Unix milliseconds"),
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":1.5}), arcgis_token::BAD_EXPIRY),
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":-1}), arcgis_token::BAD_EXPIRY),
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":0}), arcgis_token::BAD_EXPIRY),
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":u64::MAX}), arcgis_token::BAD_EXPIRY),
+            // Already over: no token is made of it.
+            (json!({"id":id,"token":"refusal-token-757","expiresAt":1}), arcgis_token::EXPIRED),
+            (json!({"id":id,"expiresAt":FUTURE}), "expiresAt goes with a token: give the token it is the expiry of"),
+            (
+                json!({"id":id,"password":"password-757"}),
+                "an ArcGIS token login takes a token, not a password or apiKey (connection.generateToken makes a token from a password)",
+            ),
+            (
+                json!({"id":id,"apiKey":"api-key-757"}),
+                "an ArcGIS token login takes a token, not a password or apiKey (connection.generateToken makes a token from a password)",
+            ),
+            (json!({"id":id,"token":"refusal-token-757","remember":true}), web::NOT_REMEMBERED),
+        ] {
+            let outcome = s.run("connection.login", &params);
+            // No store: remembering is a warning on a login that worked, not a refusal.
+            if expected == web::NOT_REMEMBERED {
+                assert_eq!(outcome.unwrap()["warning"], expected);
+                s.run("connection.login", &json!({"id":id,"token":"earlier-token-757"})).unwrap();
+                continue;
+            }
+            assert_eq!(outcome.unwrap_err(), expected, "{params}");
+            assert!(logins::apply(&earlier).unwrap().unwrap().url.ends_with("?token=earlier-token-757"), "{params} replaced the login");
+        }
+        // Another method's connection takes no token.
+        let basic = new(&mut s, json!({"kind":"wmts","address":format!("{origin}/wmts"),"auth":"basic","user":"ana"}));
+        let error = s.run("connection.login", &json!({"id":basic,"token":"refusal-token-757"})).unwrap_err();
+        assert!(error.contains("set auth to arcgis"), "{error}");
+        // Plain http:// is sent only on explicit confirmation.
+        let http = new(&mut s, json!({"kind":"arcgis","address":"http://refusals-arcgis757.example.test/rest","auth":"arcgis"}));
+        assert_eq!(s.run("connection.login", &json!({"id":http,"token":"http-token-757"})).unwrap_err(), web::INSECURE);
+        assert!(s.run("connection.login", &json!({"id":http,"token":"http-token-757","allowInsecure":true})).is_ok());
+    }
+
+    #[test]
+    fn arcgis_token_rejected_login_preserves_sticky_logout() {
+        let origin = "https://sticky-refusal-arcgis757.example.test";
+        let store = Arc::new(CountingStore::default());
+        let mut s = session(Some(store.clone()));
+        let id = arcgis(&mut s, origin);
+        s.run("connection.login", &json!({"id":id,"token":"remembered-sticky-token-757","remember":true})).unwrap();
+        s.run("connection.logout", &json!({"id":id})).unwrap();
+        let reads = store.reads.load(Ordering::SeqCst);
+        for params in [
+            json!({"id":id,"token":5}),
+            json!({"id":id,"expiresAt":"invalid"}),
+            json!({"id":id,"expiresAt":FUTURE}),
+            json!({"id":id,"token":"has space"}),
+            json!({"id":id,"token":"expired-sticky-token-757","expiresAt":1}),
+            json!({"id":id,"password":5}),
+            json!({"id":id,"apiKey":{}}),
+        ] {
+            assert!(s.run("connection.login", &params).is_err());
+            web::resolve(&mut s, None);
+            assert!(web::request(&mut s, Some(&id), &format!("{origin}/a")).is_err(), "rejected input restored a saved login");
+            assert_eq!(store.reads.load(Ordering::SeqCst), reads, "rejected input cleared sticky Logout");
+        }
+        // A validated explicit reuse still ends Logout and restores the saved token.
+        s.run("connection.login", &json!({"id":id})).unwrap();
+        let address = bound(&mut s, &id, &format!("{origin}/a"));
+        assert!(logins::apply(&address).unwrap().unwrap().url.ends_with("?token=remembered-sticky-token-757"));
+    }
+
+    #[test]
+    fn arcgis_token_generation_retains_no_session_token_of_any_connection() {
+        let origin = "https://retention-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let _server = Held::at(&endpoint);
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        let other = new(
+            &mut s,
+            json!({"kind":"arcgis","address":"https://retention-other-arcgis757.example.test/rest","auth":"arcgis","user":"bob"}),
+        );
+        s.run("connection.login", &json!({"id":id,"token":"target-session-token-757"})).unwrap();
+        s.run("connection.login", &json!({"id":other,"token":"other-session-token-757"})).unwrap();
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"retention-password-757"})).unwrap();
+        let owner = s.web_logins.pending.get(&id).unwrap().owner();
+        for private in ["retention-password-757", "target-session-token-757", "other-session-token-757"] {
+            assert!(!owner.mentions(private), "{private} is retained by the pending generation");
+        }
+        // Logging out of the other connection still ends it: the login set is part of its authority.
+        s.run("connection.logout", &json!({"id":other})).unwrap();
+        assert!(s.run("connection.tokenStatus", &json!({"id":id})).is_err());
+    }
+
+    #[test]
+    fn arcgis_token_generation_by_name_survives_rename_and_same_origin_path_edit() {
+        let origin = "https://named-generation-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let server = Held::at(&endpoint);
+        let mut s = session(None);
+        let name = "Named ArcGIS token connection";
+        let id = new(
+            &mut s,
+            json!({
+                "kind":"arcgis", "name":name, "address":format!("{origin}/arcgis/rest/services"), "auth":"arcgis", "user":"alice"
+            }),
+        );
+        s.run("connection.generateToken", &json!({"id":name,"tokenEndpoint":endpoint,"password":"named-password-757"})).unwrap();
+        s.run("connection.edit", &json!({"id":id,"name":"Renamed token connection","address":format!("{origin}/another/rest/services")}))
+            .unwrap();
+        let (done, still) = server.take();
+        assert!(still());
+        done(Ok(token("named-generated-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["loggedIn"], true);
+        let address = bound(&mut s, &id, &format!("{origin}/a"));
+        assert!(logins::apply(&address).unwrap().unwrap().url.ends_with("?token=named-generated-token-757"));
+    }
+
+    #[test]
+    fn arcgis_token_session_login_expires_and_is_never_replaced_by_anonymous_access() {
+        let origin = "https://expiring-arcgis757.example.test";
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        s.run("project.openText", &json!({"text":project(origin,&id)})).unwrap();
+        let soon = arcgis_token::now_millis().unwrap() + 150;
+        s.run("connection.login", &json!({"id":id,"token":"expiring-token-757","expiresAt":soon})).unwrap();
+        let address = bound(&mut s, &id, &format!("{origin}/a"));
+        assert!(logins::apply(&address).is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(300)); // test-wait: a token's expiry on the real clock is what is under test
+        // Nothing is sent, read from the cache or bound with it; no request goes without it either.
+        assert_eq!(logins::apply(&address).err(), Some(arcgis_token::EXPIRED));
+        assert_eq!(logins::check(&address), Err(arcgis_token::EXPIRED));
+        assert_eq!(web::bind_logged_in(&s, &id, &format!("{origin}/legend")).unwrap_err(), arcgis_token::EXPIRED);
+        let listed = s.run("connection.list", &Value::Null).unwrap();
+        assert_eq!(listed["connections"][0]["loggedIn"], false);
+        // Asking for it ends the generation and its session credential, and asks for a login again.
+        assert_eq!(web::request(&mut s, Some(&id), &format!("{origin}/a")).unwrap_err(), web::TOKEN_EXPIRED);
+        assert!(!s.database_logins.has_session_password(&id));
+        assert!(logins::apply(&address).is_err());
+        assert_eq!(web::request(&mut s, Some(&id), &format!("{origin}/a")).unwrap_err(), web::TOKEN_EXPIRED);
+        // Once ended, a legend at its origin is still refused, until a login replaces it.
+        assert_eq!(web::bind_logged_in(&s, &id, &format!("{origin}/legend")).unwrap_err(), web::TOKEN_EXPIRED);
+        web::resolve(&mut s, None);
+        assert_eq!(requests(&mut s).as_array().unwrap().len(), 1);
+        // Nothing is saved, so a login with nothing typed asks for a token: the expired one isn't offered again.
+        assert_eq!(s.run("connection.login", &json!({"id":id})).unwrap_err(), web::REQUIRED);
+        // A new token logs in again.
+        s.run("connection.login", &json!({"id":id,"token":"renewed-token-757","expiresAt":FUTURE})).unwrap();
+        assert!(logins::apply(&bound(&mut s, &id, &format!("{origin}/a"))).unwrap().unwrap().url.ends_with("?token=renewed-token-757"));
+        assert!(web::bind_logged_in(&s, &id, &format!("{origin}/legend")).is_ok());
+    }
+
+    #[test]
+    fn arcgis_token_remembered_login_restores_unexpired_and_keeps_expired_untouched() {
+        let origin = "https://remembered-arcgis757.example.test";
+        let store = Arc::new(CountingStore::default());
+        let mut s = session(Some(store.clone()));
+        let id = arcgis(&mut s, origin);
+        let account = format!("connection/{id}");
+        s.run("connection.login", &json!({"id":id,"token":"remembered-token-757","expiresAt":FUTURE,"remember":true})).unwrap();
+        assert!(s.connections.find(&id).unwrap().remembered);
+        let saved: Value = serde_json::from_str(store.inner.load(&account).unwrap().unwrap().expose()).unwrap();
+        // The existing envelope; its secret is the private payload.
+        assert_eq!(
+            (saved["version"].clone(), saved["auth"].clone(), saved["user"].clone(), saved["keyName"].clone()),
+            (json!(1), json!("arcgis"), json!("alice"), json!(""))
+        );
+        assert_eq!(saved["origin"], origin);
+        assert_eq!(
+            serde_json::from_str::<Value>(saved["secret"].as_str().unwrap()).unwrap(),
+            json!({"version":1,"token":"remembered-token-757","expiresAt":FUTURE})
+        );
+        // A later session restores it through the opt-in path.
+        let prefs = serde_json::Map::from_iter([(crate::connections::PREF.to_string(), Value::String(s.connections.to_json()))]);
+        let mut later = session(None);
+        crate::prefs::use_saved_secrets(&mut later, &prefs, store.clone());
+        let url = bound(&mut later, &id, &format!("{origin}/a"));
+        assert!(logins::apply(&url).unwrap().unwrap().url.ends_with("?token=remembered-token-757"));
+        drop(later);
+
+        // A saved token that has expired is not used, nor deleted, nor rewritten, nor read twice.
+        let past = Credential::new("expired-token-757", Some(1)).ok().unwrap().payload();
+        let c = s.connections.find(&id).unwrap().clone();
+        assert!(web::save(s.database_logins.secret_store(), &c, past.expose()));
+        let before = store.inner.load(&account).unwrap();
+        let mut expired = session(Some(store.clone()));
+        expired.load_connections(&s.connections.to_json());
+        let reads = store.reads.load(Ordering::SeqCst);
+        expired.run("project.openText", &json!({"text":project(origin,&id)})).unwrap();
+        assert_eq!(store.reads.load(Ordering::SeqCst), reads + 1);
+        assert_eq!(requests(&mut expired).as_array().unwrap().len(), 1, "the login is asked for");
+        assert_eq!(format!("{:?}", expired.notices).matches(web::TOKEN_EXPIRED).count(), 1, "said once");
+        for _ in 0..3 {
+            assert_eq!(web::request(&mut expired, Some(&id), &format!("{origin}/a")).unwrap_err(), web::TOKEN_EXPIRED);
+        }
+        assert_eq!(store.reads.load(Ordering::SeqCst), reads + 1, "the expired payload is not read again");
+        assert_eq!(store.inner.load(&account).unwrap(), before);
+        assert_eq!(store.saves.load(Ordering::SeqCst), 2);
+        assert!(expired.connections.find(&id).unwrap().remembered);
+        // A user other than the one it was saved for, or another method, can't use it.
+        expired.run("connection.edit", &json!({"id":id,"user":"bob"})).unwrap();
+        assert_eq!(store.inner.load(&account).unwrap(), None, "a changed login identity deletes its own saved token");
+    }
+
+    #[test]
+    fn arcgis_token_generation_lands_through_status_and_never_keeps_the_password() {
+        let origin = "https://generated-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let store = Arc::new(MemorySecrets::new());
+        let mut s = session(Some(store.clone()));
+        let id = arcgis(&mut s, origin);
+        let account = format!("connection/{id}");
+        let server = Held::at(&endpoint);
+        let history = History::default();
+        let _scope = history.enter();
+        s.run("project.openText", &json!({"text":project(origin,&id)})).unwrap();
+
+        let started = s
+            .run(
+                "connection.generateToken",
+                &json!({"id":id,"tokenEndpoint":endpoint,"password":"p&= secret-password-757","remember":true}),
+            )
+            .unwrap();
+        assert_eq!(started, json!({"id":id,"pending":true}));
+        // Only the transient form carries the user and the encoded password.
+        assert_eq!(server.forms(), ["f=json&username=alice&password=p%26%3D%20secret-password-757&client=requestip&expiration=60"]);
+        // What the pending operation keeps of its invocation holds no password.
+        let pending = s.web_logins.pending.get(&id).unwrap();
+        assert!(!pending.owner().mentions("secret-password-757"));
+        assert!(pending.owner().mentions(&id), "it keeps the authority it was admitted under");
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap(), json!({"id":id,"pending":true}));
+        // Nothing logged in or saved yet; a second generation is refused before anything is sent.
+        assert_eq!(s.run("connection.list", &Value::Null).unwrap()["connections"][0]["loggedIn"], false);
+        assert_eq!(store.load(&account).unwrap(), None);
+        let again =
+            s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"other-password-757"})).unwrap_err();
+        assert_eq!(again, crate::service_tokens::ALREADY);
+        assert_eq!(server.forms().len(), 1);
+
+        let (done, still) = server.take();
+        assert!(still());
+        done(Ok(token("generated-token-757")));
+        let landed = s.run("connection.tokenStatus", &json!({"id":id})).unwrap();
+        assert_eq!(
+            (landed["pending"].clone(), landed["loggedIn"].clone(), landed["remembered"].clone()),
+            (json!(false), json!(true), json!(true))
+        );
+        assert!(landed.get("warning").is_none());
+        let tile = s.map().tiles[0].url.clone();
+        assert!(logins::apply(&tile).unwrap().unwrap().url.ends_with("?token=generated-token-757"));
+        // Consumed: asking again says nothing is under way.
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap(), json!({"id":id,"pending":false,"loggedIn":true}));
+        assert!(s.web_logins.pending.is_empty());
+        // The saved login is the private payload in the existing envelope: the token, its expiry,
+        // never the password.
+        let kept = store.load(&account).unwrap().unwrap();
+        let kept: Value = serde_json::from_str(kept.expose()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(kept["secret"].as_str().unwrap()).unwrap(),
+            json!({"version":1,"token":"generated-token-757","expiresAt":FUTURE})
+        );
+        let text = format!("{landed}\n{started}\n{kept}\n{}", visible(&mut s, &history));
+        assert!(!text.contains("secret-password-757") && !text.contains("p%26%3D"), "the password reached a record: {text}");
+        let text = format!("{landed}\n{started}\n{}", visible(&mut s, &history));
+        for private in ["generated-token-757", "rustgis-login"] {
+            assert!(!text.contains(private), "{private} reached a record: {text}");
+        }
+        // A later session restores the token (and only an unexpired one).
+        let prefs = serde_json::Map::from_iter([(crate::connections::PREF.to_string(), Value::String(s.connections.to_json()))]);
+        let mut later = session(None);
+        crate::prefs::use_saved_secrets(&mut later, &prefs, store.clone());
+        assert!(
+            logins::apply(&bound(&mut later, &id, &format!("{origin}/a"))).unwrap().unwrap().url.ends_with("?token=generated-token-757")
+        );
+    }
+
+    #[test]
+    fn arcgis_token_generation_is_refused_before_anything_is_sent() {
+        let origin = "https://refused-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counted = sent.clone();
+        serve(&endpoint, move |_, _, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        let nameless = new(&mut s, json!({"kind":"arcgis","address":format!("{origin}/other"),"auth":"arcgis"}));
+        let basic = new(&mut s, json!({"kind":"wmts","address":format!("{origin}/wmts"),"auth":"basic","user":"ana"}));
+        let generate = |s: &mut Session, id: &str, endpoint: &str, password: Value| {
+            s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":password}))
+        };
+        for bad in [
+            "http://refused-arcgis757.example.test/arcgis/tokens/generateToken",
+            "https://other-arcgis757.example.test/arcgis/tokens/generateToken",
+            "https://refused-arcgis757.example.test:8443/arcgis/tokens/generateToken",
+            "https://user:pass@refused-arcgis757.example.test/arcgis/tokens/generateToken",
+            "https://refused-arcgis757.example.test/arcgis/tokens/generateToken?f=json",
+            "https://refused-arcgis757.example.test/arcgis/tokens/generateToken#fragment",
+            "/arcgis/tokens/generateToken",
+        ] {
+            assert_eq!(generate(&mut s, &id, bad, json!("password-757")).unwrap_err(), arcgis_token::BAD_ENDPOINT, "{bad}");
+        }
+        assert_eq!(generate(&mut s, &nameless, &endpoint, json!("password-757")).unwrap_err(), crate::service_tokens::NO_USER);
+        assert_eq!(generate(&mut s, &id, &endpoint, json!("")).unwrap_err(), "password is required");
+        assert_eq!(generate(&mut s, &id, &endpoint, json!("a\nb")).unwrap_err(), crate::service_tokens::BAD_PASSWORD);
+        assert_eq!(generate(&mut s, &id, &endpoint, json!(5)).unwrap_err(), "password is text");
+        assert!(generate(&mut s, &basic, &endpoint, json!("password-757")).unwrap_err().contains("set auth to arcgis"));
+        assert!(generate(&mut s, "no-such-connection", &endpoint, json!("password-757")).is_err());
+        assert!(s.run("connection.generateToken", &json!({"id":id,"password":"password-757"})).unwrap_err().contains("tokenEndpoint"));
+        assert!(
+            s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757","remember":"yes"}))
+                .is_err()
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "a refused generation sends nothing");
+        assert!(s.web_logins.pending.is_empty());
+        // Status and cancel take nothing from their caller and do nothing without an operation.
+        assert_eq!(
+            s.run("connection.tokenStatus", &json!({"id":id,"token":"injected-token-757"})).unwrap(),
+            json!({"id":id,"pending":false,"loggedIn":false})
+        );
+        assert_eq!(s.run("connection.cancelToken", &json!({"id":id})).unwrap(), json!({"id":id,"cancelled":false}));
+    }
+
+    #[test]
+    fn arcgis_token_generation_cancel_failure_and_changes_leave_the_earlier_login() {
+        let origin = "https://races-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let server = Held::at(&endpoint);
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        s.run("project.openText", &json!({"text":project(origin,&id)})).unwrap();
+        s.run("connection.login", &json!({"id":id,"token":"earlier-token-757"})).unwrap();
+        let earlier = || format!("{origin}/arcgis/rest/services");
+        let start = |s: &mut Session| {
+            s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        };
+        let current = |s: &mut Session| logins::apply(&bound(s, &id, &earlier())).unwrap().unwrap().url;
+        let earlier_url = format!("{}?token=earlier-token-757", earlier());
+
+        // Cancelled before an answer: the request is told to stop, the late answer is dropped.
+        start(&mut s);
+        assert_eq!(s.run("connection.cancelToken", &json!({"id":id})).unwrap(), json!({"id":id,"cancelled":true}));
+        let (done, still) = server.take();
+        assert!(!still(), "a cancelled request is told to stop");
+        done(Ok(token("late-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap(), json!({"id":id,"pending":false,"loggedIn":true}));
+        assert_eq!(current(&mut s), earlier_url);
+
+        // Cancelled after the answer arrived: nothing is landed.
+        start(&mut s);
+        let (done, _) = server.take();
+        done(Ok(token("landed-then-cancelled-757")));
+        assert_eq!(s.run("connection.cancelToken", &json!({"id":id})).unwrap()["cancelled"], true);
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["pending"], false);
+        assert_eq!(current(&mut s), earlier_url);
+
+        // A failure is a fixed sentence, consumes the operation and keeps the earlier login.
+        start(&mut s);
+        let (done, _) = server.take();
+        done(Err(arcgis_token::REFUSED.into()));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap_err(), arcgis_token::REFUSED);
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["pending"], false);
+        assert_eq!(current(&mut s), earlier_url);
+
+        // A rename or another path at the same origin keeps the generation's identity.
+        start(&mut s);
+        s.run("connection.edit", &json!({"id":id,"name":"Renamed ArcGIS","address":format!("{origin}/elsewhere/rest/services")})).unwrap();
+        let (done, _) = server.take();
+        done(Ok(token("renamed-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["loggedIn"], true);
+        assert!(current(&mut s).ends_with("?token=renamed-token-757"));
+        s.run("connection.login", &json!({"id":id,"token":"earlier-token-757"})).unwrap();
+
+        // A pasted token replaces a generation under way.
+        start(&mut s);
+        s.run("connection.login", &json!({"id":id,"token":"pasted-over-757"})).unwrap();
+        let (done, still) = server.take();
+        assert!(!still());
+        done(Ok(token("overtaken-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["pending"], false);
+        assert!(current(&mut s).ends_with("?token=pasted-over-757"));
+
+        // Another user, logout and removal end it; their late answers land nowhere.
+        for action in ["user", "logout", "remove"] {
+            start(&mut s);
+            match action {
+                "user" => drop(s.run("connection.edit", &json!({"id":id,"user":"bob"})).unwrap()),
+                "logout" => drop(s.run("connection.logout", &json!({"id":id})).unwrap()),
+                _ => drop(s.run("connection.remove", &json!({"id":id})).unwrap()),
+            }
+            let (done, still) = server.take();
+            assert!(!still(), "{action}");
+            done(Ok(token("never-landed-757")));
+            if action == "remove" {
+                assert!(s.run("connection.tokenStatus", &json!({"id":id})).is_err());
+            } else {
+                assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap(), json!({"id":id,"pending":false,"loggedIn":false}));
+                assert!(s.run("connection.edit", &json!({"id":id,"user":"alice"})).is_ok());
+            }
+        }
+        assert!(s.web_logins.pending.is_empty());
+    }
+
+    #[test]
+    fn arcgis_token_generation_belongs_to_its_caller_project_and_session() {
+        let origin = "https://owners-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        let server = Held::at(&endpoint);
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        let current = s.connections.find(&id).unwrap().clone();
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+
+        // Another caller can neither poll nor cancel it, and doesn't consume or change it.
+        let foreign = Scope::agent(AgentAccess::Full, false, "foreign-arcgis757", None, Arc::new(Allow));
+        let polled = s.with_scope(foreign.clone(), |s| crate::service_tokens::poll(s, &current).err()).unwrap();
+        assert_eq!(polled.as_deref(), Some("this run belongs to another caller"));
+        let cancelled = s.with_scope(foreign, |s| crate::service_tokens::cancel(s, &id)).unwrap();
+        assert_eq!(cancelled.unwrap_err(), "this run belongs to another caller");
+        let (done, still) = server.take();
+        assert!(still() && s.web_logins.pending.contains_key(&id));
+        done(Ok(token("owned-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["loggedIn"], true);
+
+        // A replaced project drops the generation: its answer is refused, whatever it holds.
+        s.run("connection.logout", &json!({"id":id})).unwrap();
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        s.run("project.new", &json!({})).unwrap();
+        let (done, _) = server.take();
+        done(Ok(token("replaced-project-token-757")));
+        let error = s.run("connection.tokenStatus", &json!({"id":id})).unwrap_err();
+        assert!(error.contains("replaced project"), "{error}");
+        assert!(s.web_logins.pending.is_empty());
+        let address = web::request(&mut s, Some(&id), &format!("{origin}/a"));
+        assert!(address.is_err(), "no login was made from it: {address:?}");
+
+        // A generation left behind by a replaced project never blocks a new one for the same id.
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        let (_, stale) = server.take();
+        s.run("project.new", &json!({})).unwrap();
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        assert!(!stale(), "the replaced project's request was stopped");
+        let (done, fresh) = server.take();
+        assert!(fresh());
+        done(Ok(token("new-project-token-757")));
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap()["loggedIn"], true);
+
+        // Dropping the session cancels what is under way.
+        let mut dropped = session(None);
+        let id = arcgis(&mut dropped, origin);
+        dropped.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        let (_, still) = server.take();
+        assert!(still());
+        drop(dropped);
+        assert!(!still(), "a dropped session stops its token request");
+    }
+
+    #[test]
+    fn arcgis_token_generation_that_fails_to_start_says_so() {
+        let origin = "https://no-transport-arcgis757.example.test";
+        let endpoint = format!("{origin}/arcgis/tokens/generateToken");
+        serve(&endpoint, |_, _, done| done(Err(arcgis_token::NO_WORKER.into())));
+        let mut s = session(None);
+        let id = arcgis(&mut s, origin);
+        s.run("connection.generateToken", &json!({"id":id,"tokenEndpoint":endpoint,"password":"password-757"})).unwrap();
+        assert_eq!(s.run("connection.tokenStatus", &json!({"id":id})).unwrap_err(), arcgis_token::NO_WORKER);
+        assert!(s.web_logins.pending.is_empty());
+    }
+}

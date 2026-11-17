@@ -1439,6 +1439,34 @@ impl Session {
             "web":{"selected":self.database_logins.web_selections(),"active":self.web_logins.active_ids()}
         })
     }
+    /// What a continuation compares of the accounts. A token generation belongs to a login
+    /// identity, not to its display name or service path, and it holds identity only: no
+    /// connection's session secret (a live token included) stays in it, since `poll` checks the
+    /// target's login identity itself. Everything else, including which logins are active, keeps
+    /// the full check, so logging in or out of another connection while one is pending ends it.
+    pub(super) fn continuation_accounts(&self, node: &Node) -> Value {
+        let mut accounts = self.policy_accounts();
+        if node.id() != "connection.generateToken" {
+            return accounts;
+        }
+        let id = node.params.get("id").and_then(Value::as_str);
+        if let Some(rows) = accounts.get_mut("connections").and_then(Value::as_array_mut) {
+            for row in rows {
+                let Some(row) = row.as_object_mut() else { continue };
+                row.insert("password".into(), Value::Null);
+                let target = row.get("definition").and_then(|d| d.get("id")).and_then(Value::as_str) == id;
+                let keeps_origin = id
+                    .and_then(|id| self.connections.find(id))
+                    .filter(|c| c.auth == "arcgis" && crate::connections::SERVICE_KINDS.contains(&c.kind.as_str()));
+                if let (true, Some(c), Some(definition)) = (target, keeps_origin, row.get_mut("definition").and_then(Value::as_object_mut))
+                {
+                    definition.insert("name".into(), Value::Null);
+                    definition.insert("address".into(), json!(crate::connections::login_origin(c)));
+                }
+            }
+        }
+        accounts
+    }
 }
 
 /// What a batch's tool reaches beyond a built-in's, without its per-item parameters.

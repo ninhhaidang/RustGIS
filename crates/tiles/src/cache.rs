@@ -2994,6 +2994,7 @@ mod native {
                 } else {
                     req.config().timeout_global(agent.config().timeouts().global).build()
                 };
+                crate::logins::check(url).map_err(str::to_string)?;
                 let (resp, reached) = connected(|| req.call()).map_err(unanswered)?;
                 ceiling = ceiling.min(reached);
                 diagnostics.answered(resp.status().as_u16());
@@ -3085,6 +3086,7 @@ mod native {
                 req = req.header(name.as_str(), value.as_str());
             }
             super::check_current()?;
+            crate::logins::check(url).map_err(str::to_string)?;
             let (mut resp, reached) = connected(|| req.send(body)).map_err(unanswered)?;
             let status = resp.status().as_u16();
             diagnostics.answered(status);
@@ -3343,6 +3345,17 @@ mod native {
         len.trim().parse::<u64>().ok().filter(|len| *len > 0)
     }
 
+    /// The portal sign-in's `X-Esri-Authorization` value for a hop to `at` (renewed first when it
+    /// is about to expire), or `None`. A connection's own ArcGIS token outranks it: with one
+    /// applied (already in the address) the sign-in's token is neither added nor renewed, and a
+    /// refused or expired connection token never falls back to it. A signed S3 request has none.
+    pub(super) fn implicit_arcgis(signed: bool, login: Option<&crate::logins::Applied>, at: &str) -> Option<String> {
+        if signed || login.is_some_and(|applied| applied.arcgis) {
+            return None;
+        }
+        crate::arcgis_auth::authorization_fresh(at)
+    }
+
     /// The answer to `url`; a refusal keeps the server's answer only when `detail` asks for it,
     /// as tiles a server doesn't have are routine and only their status is read. A status in
     /// `omit` is an expected answer: its failure isn't recorded, only noted once per server. A
@@ -3442,10 +3455,8 @@ mod native {
                     req = req.header("Authorization", &auth);
                 }
                 // An ArcGIS sign-in's token goes to the portal and the servers it covers, asked for at
-                // each hop like Earthdata's.
-                if !prepared.signed
-                    && let Some(auth) = crate::arcgis_auth::authorization_fresh(&at)
-                {
+                // each hop like Earthdata's, unless the connection's own ArcGIS token applies.
+                if let Some(auth) = implicit_arcgis(prepared.signed, login.as_ref(), &at) {
                     req = req.header("X-Esri-Authorization", &auth);
                 }
                 diagnostics.sending();
@@ -3456,6 +3467,8 @@ mod native {
                 } else {
                     req.config().timeout_global(agent.config().timeouts().global).build()
                 };
+                // Recheck the original binding even after redirects dropped its credentials.
+                crate::logins::check(url).map_err(str::to_string)?;
                 let (mut resp, reached) = connected(|| req.call()).map_err(unanswered)?;
                 ceiling = ceiling.min(reached);
                 let status = resp.status().as_u16();
@@ -5162,6 +5175,169 @@ Connection: close
         assert!(!foreign.contains(encoded) && !foreign.contains(secret));
         assert!(logins::deactivate(&first));
         assert!(logins::deactivate(&second));
+    }
+
+    /// A connection's ArcGIS token goes in the address as its one `token`, on every hop at its
+    /// own origin (replacing a stale copy, any case or escaping), never to a redirect's other
+    /// origin, and with no portal sign-in header beside it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn arcgis_token_goes_once_to_its_origin_and_never_a_redirect_target() {
+        let _turn = crate::cache::turn();
+        use crate::logins::{self, Method};
+        let (other, other_asked) = serve_recorded(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile".to_vec()]);
+        let (base, asked) = serve_recorded(vec![
+            b"HTTP/1.1 302 Found\r\nLocation: /next?%54oken=stale-two&y=2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            format!("HTTP/1.1 302 Found\r\nLocation: {other}/tile?token=foreign\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_bytes(),
+        ]);
+        let token = "connection-token/+=";
+        let encoded = "connection-token%2F%2B%3D";
+        let first = logins::activate(&base, "arcgis-first", Method::Arcgis { expires_at: None }, token, true).unwrap();
+        let second = logins::activate(&other, "arcgis-second", Method::Arcgis { expires_at: None }, "second-token", true).unwrap();
+        let url = logins::bind(&first, &format!("{base}/start?x=1&ToKeN=stale-one")).unwrap();
+        assert_eq!(native::get(&native::agent(), &url, &[]).unwrap(), b"tile");
+        let timeout = std::time::Duration::from_secs(5);
+        let one = asked.recv_timeout(timeout).unwrap();
+        let two = asked.recv_timeout(timeout).unwrap();
+        assert!(one.starts_with(&format!("GET /start?x=1&token={encoded} HTTP/1.1\r\n")), "{one}");
+        assert!(two.starts_with(&format!("GET /next?y=2&token={encoded} HTTP/1.1\r\n")), "{two}");
+        let foreign = other_asked.recv_timeout(timeout).unwrap();
+        assert!(foreign.starts_with("GET /tile?token=foreign HTTP/1.1\r\n"), "{foreign}");
+        for text in [&one, &two, &foreign] {
+            assert!(!text.contains("stale") && !text.contains("second-token"), "{text}");
+            assert!(!text.to_ascii_lowercase().contains("x-esri-authorization"), "{text}");
+        }
+        assert!(!foreign.contains(encoded) && !foreign.contains(token));
+        assert!(logins::deactivate(&first));
+        assert!(logins::deactivate(&second));
+    }
+
+    /// With a portal sign-in covering the address and the connection's own token applied, only the
+    /// connection's is used: the sign-in's is neither sent nor renewed. Another kind of login, or
+    /// none, still gets the sign-in's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn arcgis_token_outranks_the_portal_sign_in() {
+        let _turn = crate::cache::turn();
+        use crate::{
+            arcgis_auth::{self, Grant},
+            logins::{self, Method},
+        };
+        let portal = "https://explicit-over-portal.example/portal";
+        let origin = "https://explicit-over-portal.example";
+        let url = "https://explicit-over-portal.example/server/rest/services/A/MapServer";
+        let soon = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let grant = Grant { access_token: "portal-token".into(), refresh_token: None, expires_at: soon, username: "ana".into() };
+        arcgis_auth::sign_in(portal, "client", grant, arcgis_auth::scopes_for(portal, None, &[]));
+        let token = logins::activate(origin, "outranks-token", Method::Arcgis { expires_at: None }, "connection-token", false).unwrap();
+        let key = logins::activate(origin, "outranks-key", Method::Header("X-Key".into()), "connection-key", false).unwrap();
+        let explicit = logins::apply(&logins::bind(&token, url).unwrap()).unwrap().unwrap();
+        let keyed = logins::apply(&logins::bind(&key, url).unwrap()).unwrap().unwrap();
+        assert_eq!(explicit.url, format!("{url}?token=connection-token"));
+        assert_eq!(native::implicit_arcgis(false, None, url).as_deref(), Some("Bearer portal-token"));
+        assert_eq!(native::implicit_arcgis(false, Some(&keyed), url).as_deref(), Some("Bearer portal-token"));
+        assert_eq!(native::implicit_arcgis(false, Some(&explicit), url), None);
+        assert_eq!(native::implicit_arcgis(true, None, url), None);
+        assert!(logins::deactivate(&token));
+        assert!(logins::deactivate(&key));
+        arcgis_auth::sign_out(Some(portal));
+    }
+
+    /// Expiry during request preparation prevents the send, not just accepting its answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn arcgis_token_expiry_during_preparation_blocks_native_sends() {
+        if isolate_cache_fixture("cache::tests::arcgis_token_expiry_during_preparation_blocks_native_sends") {
+            return;
+        }
+        let _turn = crate::cache::turn();
+        use crate::{
+            arcgis_token,
+            logins::{self, Method},
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let agent = native::download_agent(std::time::Duration::from_secs(1));
+        for (method, final_check) in [("GET", 2), ("HEAD", 1), ("POST", 1)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let now = arcgis_token::now_millis().unwrap();
+            let expires = now + 60_000;
+            let binding =
+                logins::activate(&base, method, Method::Arcgis { expires_at: Some(expires) }, "preparation-expiry-token", true).unwrap();
+            let clock = logins::clock_for_test(&binding, now).unwrap();
+            let url = logins::bind(&binding, &format!("{base}/prepared")).unwrap();
+            let checks = Arc::new(AtomicUsize::new(0));
+            let observed = checks.clone();
+            let result = with_still(
+                Arc::new(move || {
+                    // GET also checks its continuation before preparing or applying the login.
+                    if observed.fetch_add(1, Ordering::SeqCst) + 1 == final_check {
+                        clock.store(expires, Ordering::SeqCst);
+                    }
+                    true
+                }),
+                || match method {
+                    "GET" => native::get(&agent, &url, &[]).map(|_| ()),
+                    "HEAD" => native::head_with(&agent, &url).map(|_| ()),
+                    _ => native::post_with(&agent, &url, "{}").map(|_| ()),
+                },
+            );
+            assert_eq!(result.unwrap_err(), arcgis_token::EXPIRED, "{method}");
+            assert_eq!(checks.load(Ordering::SeqCst), final_check, "{method}");
+            assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "{method}");
+            assert!(logins::deactivate(&binding));
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn arcgis_token_expiry_blocks_cached_and_in_flight_bytes() {
+        if isolate_cache_fixture("cache::tests::arcgis_token_expiry_blocks_cached_and_in_flight_bytes") {
+            return;
+        }
+        let _turn = crate::cache::turn();
+        use crate::{
+            arcgis_token,
+            logins::{self, Method},
+        };
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let now = arcgis_token::now_millis().unwrap();
+        let expires = now + 60_000;
+        let binding =
+            logins::activate(&base, "expiry-cache-session", Method::Arcgis { expires_at: Some(expires) }, "expiry-cache-token", true)
+                .unwrap();
+        let clock = logins::clock_for_test(&binding, now).unwrap();
+        let cached = logins::bind(&binding, &format!("{base}/cached")).unwrap();
+        store(&cached, Entry::Ready(Arc::new(Payload::Json(serde_json::json!({"private": true}))), 64, None));
+        assert!(peek(&cached).is_some());
+        let pending = logins::bind(&binding, &format!("{base}/pending")).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /pending?token=expiry-cache-token HTTP/1.1"));
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nold-body").unwrap();
+            listener
+        });
+        let worker = std::thread::spawn(move || native::get(&native::agent(), &pending, &[]));
+        started_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        clock.store(expires, std::sync::atomic::Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap_err(), arcgis_token::EXPIRED);
+        let listener = server.join().unwrap();
+        assert!(peek(&cached).is_none());
+        assert!(matches!(get(&cached, Want::Json), State::Failed(_)));
+        assert_eq!(native::get(&native::agent(), &cached, &[]).unwrap_err(), arcgis_token::EXPIRED);
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(logins::deactivate(&binding));
     }
 
     /// A HEAD and a POST carry the query key too, to the address the caller named.

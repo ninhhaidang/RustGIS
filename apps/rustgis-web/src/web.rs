@@ -686,18 +686,26 @@ async fn fetch_reached(
                 let prepared = cache::prepare_get(url)?;
                 let url = prepared.url.as_str();
                 let destination = check_destination(url, ceiling)?;
+                // A connection's own ArcGIS token (already in the login's address) outranks the portal
+                // sign-in: with one applied, the sign-in's token is neither renewed nor added.
+                let target = logins::inherit(bound, url);
+                let mut login = if prepared.signed { None } else { logins::apply(&target).map_err(str::to_string)? };
+                let explicit = login.as_ref().is_some_and(|applied| applied.arcgis);
                 // An ArcGIS sign-in's token, for the portal and the servers it covers, renewed first when it
                 // is about to expire. It goes as the request's `token` parameter, not a header: ArcGIS's
                 // query endpoints answer the header's CORS preflight with an error.
-                if !prepared.signed {
+                if !prepared.signed && !explicit {
                     crate::arcgis::renew_if_due(url, still.clone()).await;
                     cache::check_still(&still)?;
+                    // The renewal suspended this request: its login is looked at once more.
+                    login = logins::apply(&target).map_err(str::to_string)?;
                 }
-                let target = logins::inherit(bound, url);
-                let login = if prepared.signed { None } else { logins::apply(&target).map_err(str::to_string)? };
                 let login_url = login.as_ref().map_or(url, |applied| applied.url.as_str());
-                let arcgis =
-                    if prepared.signed { None } else { rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_auth::with_token(login_url) };
+                let arcgis = if prepared.signed || explicit {
+                    None
+                } else {
+                    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_auth::with_token(login_url)
+                };
                 // Only the request carries credentials: messages and cache keys keep the original address.
                 let request = arcgis.as_deref().unwrap_or(login_url);
                 // URL parsing in a browser can normalize a numeric or escaped hostname. Judge
@@ -1163,6 +1171,8 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             done,
         ));
     });
+    // So are the token requests of ArcGIS connections made from a user and password.
+    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_token::set_generator(crate::arcgis::generate_token);
     let open_inbox = inbox.clone();
     let font_ctx = ctx.clone();
     let (gl_list_ctx, gl_run_ctx) = (ctx.clone(), ctx.clone());

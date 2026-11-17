@@ -9,6 +9,7 @@
 
 pub mod address;
 pub mod arcgis_auth;
+pub mod arcgis_token;
 pub mod boundaries;
 pub mod cache;
 pub mod cog;

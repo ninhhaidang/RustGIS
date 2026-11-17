@@ -1,5 +1,6 @@
 //! Logins of saved web-service connections (WMS, WMTS, WFS, WCS, OGC API, ArcGIS REST, CSW,
-//! STAC): HTTP basic authentication, an API key in a header, or an API key in a query parameter.
+//! STAC): HTTP basic authentication, an API key in a header, an API key in a query parameter, or an
+//! ArcGIS token (pasted, or generated from a user name and password: see [`crate::service_tokens`]).
 //!
 //! The connection keeps the method, user name and header or parameter name, never the password
 //! or key. A secret given to `connection.login` lasts for this session, held by connection id in
@@ -26,7 +27,7 @@ use std::sync::Arc;
 
 use crate::Session;
 use crate::connections::{Connection, LoginReason, LoginRequest, SERVICE_KINDS, WEB, account, login_origin};
-use crate::render::rustgis_tiles::{cache, logins};
+use crate::render::rustgis_tiles::{arcgis_token, cache, logins};
 
 /// A transient secret whose connection identity changed.
 pub const UNUSABLE: &str = "The session login could not be used. Enter it again.";
@@ -47,6 +48,8 @@ pub const OTHERS_LEFT: &str =
     "The login saved under this connection's id belongs to another connection or a newer RustGIS, so it was left unchanged.";
 /// Automatic reads respect a deliberate logout until an explicit login.
 pub const LOGGED_OUT: &str = "This connection is logged out. Log in explicitly to use it again.";
+/// An ArcGIS token past its expiry: a new one is generated or pasted.
+pub const TOKEN_EXPIRED: &str = arcgis_token::EXPIRED;
 /// A login typed for a plain http:// address without the confirmation.
 pub const INSECURE: &str = "This connection's address uses plain http://, so its login would be sent unencrypted. Confirm with allowInsecure: true to send it anyway.";
 /// A password or key that can't be sent.
@@ -54,7 +57,7 @@ pub const BAD_SECRET: &str = "The password or key must be at most 4096 bytes, wi
 /// An API key a header can't carry the same way everywhere (the browser sends Latin-1 only).
 pub const HEADER_ASCII: &str = "An API key sent in a header must use plain ASCII characters.";
 /// A login asked of a connection with nothing to log in with this session.
-pub const REQUIRED: &str = "This connection's login is required: give its password (basic) or apiKey (header, query).";
+pub const REQUIRED: &str = "This connection's login is required: give its password (basic), apiKey (header, query) or token (arcgis).";
 /// A login for a definition that isn't saved.
 pub const UNSAVED: &str = "Save the connection first: a login belongs to a saved connection.";
 /// An address a login can't go to.
@@ -267,6 +270,10 @@ fn method(c: &Connection, secret: &str) -> Option<(logins::Method, String)> {
         "basic" => Some((logins::Method::Header("Authorization".into()), logins::basic(&c.user, secret))),
         "header" => Some((logins::Method::Header(c.key_name.clone()), secret.to_string())),
         "query" => Some((logins::Method::Query(c.key_name.clone()), secret.to_string())),
+        "arcgis" => {
+            let credential = arcgis_token::Credential::parse(secret).ok()?;
+            Some((logins::Method::Arcgis { expires_at: credential.expires_at }, credential.token.expose().to_string()))
+        }
         _ => None,
     }
 }
@@ -278,6 +285,10 @@ pub fn check_secret(secret: &str) -> Result<(), &'static str> {
 
 /// Checks the complete wire credential before a form edit can invalidate an earlier login.
 pub fn check_login_secret(c: &Connection, secret: &str) -> Result<(), String> {
+    // The private payload of a token (its JSON wrapper) isn't a password or key: it has its own checks.
+    if c.auth == "arcgis" {
+        return arcgis_token::Credential::parse(secret).map(drop).map_err(str::to_string);
+    }
     check_secret(secret).map_err(str::to_string)?;
     if c.auth == "basic" && !logins::valid_basic(&c.user, secret) {
         return Err("The encoded Basic login exceeds the supported header size or contains invalid characters.".into());
@@ -375,6 +386,8 @@ pub struct SessionLogins {
     failed: BTreeMap<String, &'static str>,
     /// Connections whose saved-login failure resolution has said already.
     said: BTreeSet<String>,
+    /// Token generations under way, by connection id (see [`crate::service_tokens`]).
+    pub(crate) pending: BTreeMap<String, crate::service_tokens::Pending>,
 }
 
 impl SessionLogins {
@@ -387,6 +400,7 @@ impl SessionLogins {
             logged_out: BTreeSet::new(),
             failed: BTreeMap::new(),
             said: BTreeSet::new(),
+            pending: BTreeMap::new(),
         }
     }
 
@@ -437,6 +451,9 @@ impl Drop for SessionLogins {
         for active in self.active.values() {
             ended |= logins::deactivate(&active.binding);
         }
+        for op in self.pending.values() {
+            op.cancel();
+        }
         if ended {
             clear_cache();
         }
@@ -467,8 +484,9 @@ fn clear_cache() {
 /// Returns the number of addresses that could not be rebound; resolution reports it once.
 pub(crate) fn activate(s: &mut Session, c: &Connection, secret: Option<&Secret>, insecure: bool) -> Result<usize, String> {
     let origin = login_origin(c).ok_or(NO_ORIGIN)?;
-    let next = match secret.and_then(|secret| method(c, secret.expose())) {
-        Some((method, value)) => {
+    let next = match secret {
+        Some(secret) => {
+            let (method, value) = method(c, secret.expose()).ok_or(UNUSABLE)?;
             let binding = logins::activate(&origin, &s.web_logins.owner(&c.id), method, &value, insecure).map_err(str::to_string)?;
             Some(ActiveLogin { origin: origin.clone(), binding, auth: c.auth.clone(), user: c.user.clone(), key_name: c.key_name.clone() })
         }
@@ -538,6 +556,7 @@ pub(crate) fn forget_failure(s: &mut Session, id: &str) {
 /// removed). The login saved on this computer is the caller's to delete.
 pub(crate) fn forget(s: &mut Session, c: &Connection) {
     deactivate(s, c, None);
+    crate::service_tokens::cancel_for(s, &c.id);
     retry(s, &c.id);
     s.database_logins.forget_connection(&c.id);
 }
@@ -572,6 +591,16 @@ pub(crate) fn bind_logged_in(s: &Session, connection: &str, url: &str) -> Result
         return Err(format!("plugins can't set a legend at the address of a saved web-service connection ('{}')", c.name));
     }
     if !logged_in(s, c) {
+        // An expired token is refused, never read anonymously (or with a portal sign-in's token).
+        if c.auth == "arcgis"
+            && let Some(active) = s.web_logins.active.get(&c.id).filter(|a| a.matches(c))
+        {
+            logins::bind(&active.binding, url).map_err(str::to_string)?;
+        }
+        // The expiry stands until a new login replaces the token: nothing falls back to anonymous.
+        if c.auth == "arcgis" && s.web_logins.failed.get(&c.id).copied() == Some(TOKEN_EXPIRED) {
+            return Err(TOKEN_EXPIRED.into());
+        }
         return Ok(url.to_string());
     }
     let Some(active) = s.web_logins.active.get(&c.id) else { return Ok(url.to_string()) };
@@ -583,18 +612,43 @@ pub(crate) fn bind_logged_in(s: &Session, connection: &str, url: &str) -> Result
     })
 }
 
+/// Whether `secret` is an ArcGIS token of `c` that is past its expiry (or expires on a clock that
+/// can't be read). What can't be read as a token isn't judged here: activating it refuses it.
+fn lapsed(c: &Connection, secret: &Secret) -> bool {
+    c.auth == "arcgis" && arcgis_token::Credential::parse(secret.expose()).is_ok_and(|token| token.is_expired(arcgis_token::now_millis()))
+}
+
+/// Ends this session's use of an expired ArcGIS token of `c`: its login generation is revoked
+/// (cached authenticated responses go with it), its session credential is cleared, and the
+/// expiry stands in for the saved login's automatic reads until an explicit login, so the store
+/// isn't asked for the same expired payload again. The saved login itself is left as it is.
+/// The connection stays chosen for its origin, so asking for a new login finds it.
+fn expire(s: &mut Session, c: &Connection) -> String {
+    if let Some(old) = s.web_logins.active.remove(&c.id) {
+        logins::deactivate(&old.binding);
+        clear_cache();
+    }
+    s.database_logins.clear_session_password(&c.id);
+    s.web_logins.failed.insert(c.id.clone(), TOKEN_EXPIRED);
+    TOKEN_EXPIRED.into()
+}
+
 /// The secret `c` logs in with without one typed: the one given this session, else the one
 /// saved on this computer (read once: a failure is kept, and said, until an explicit login).
-/// Nothing is read for a connection logged out this session.
+/// Nothing is read for a connection logged out this session. An expired ArcGIS token is neither
+/// used nor replaced by another: it needs a new one.
 pub fn known_secret(s: &mut Session, c: &Connection) -> Result<Secret, String> {
     if s.web_logins.logged_out.contains(&c.id) {
         return Err(LOGGED_OUT.into());
     }
-    if let Some(secret) = s.database_logins.session_password(&c.id) {
+    if let Some(secret) = s.database_logins.session_password(&c.id).cloned() {
         if !s.web_logins.active.get(&c.id).is_some_and(|a| a.matches(c)) {
             return Err(UNUSABLE.into());
         }
-        return Ok(secret.clone());
+        if lapsed(c, &secret) {
+            return Err(expire(s, c));
+        }
+        return Ok(secret);
     }
     if let Some(error) = s.web_logins.failed.get(&c.id) {
         return Err((*error).into());
@@ -603,6 +657,7 @@ pub fn known_secret(s: &mut Session, c: &Connection) -> Result<Secret, String> {
         return Err(REQUIRED.into());
     }
     let error = match load(s.database_logins.secret_store(), c) {
+        Loading::Found(secret) if lapsed(c, &secret) => TOKEN_EXPIRED,
         Loading::Found(secret) => return Ok(secret),
         Loading::Missing => {
             s.connections.set_remembered(&c.id, false);
@@ -1035,7 +1090,7 @@ pub(crate) fn resolve(s: &mut Session, only: Option<&BTreeSet<String>>) {
                     .any(|r| r.kind == WEB && r.key == origin && r.connections == [c.id.clone()] && r.reason == LoginReason::Password);
                 // A saved login that can't be read is said once per session (the failure is kept
                 // until an explicit login); a missing login or a deliberate logout only asks.
-                let saved_failure = [NONE_SAVED, UNAVAILABLE, SAVED_UNUSABLE].contains(&e.as_str());
+                let saved_failure = [NONE_SAVED, UNAVAILABLE, SAVED_UNUSABLE, TOKEN_EXPIRED].contains(&e.as_str());
                 let say =
                     if saved_failure { s.web_logins.said.insert(c.id.clone()) } else { e != REQUIRED && e != LOGGED_OUT && !already_asked };
                 if say {

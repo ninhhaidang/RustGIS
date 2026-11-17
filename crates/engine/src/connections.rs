@@ -51,8 +51,9 @@ pub const DATABASE_KINDS: &[&str] = &["postgres", "mysql", "sqlserver"];
 /// The web-service kinds, which can log in with a [`SERVICE_AUTH`] method.
 pub const SERVICE_KINDS: &[&str] = &["service", "wms", "wmts", "wfs", "wcs", "ogcapi", "arcgis", "csw", "stac"];
 /// How a web-service connection logs in: not at all, HTTP basic authentication (a user name and a
-/// password), an API key in a header, or an API key in a query parameter.
-pub const SERVICE_AUTH: &[&str] = &["none", "basic", "header", "query"];
+/// password), an API key in a header, an API key in a query parameter, or an ArcGIS token (pasted,
+/// or generated from a user name and password, and sent as the request's `token` parameter).
+pub const SERVICE_AUTH: &[&str] = &["none", "basic", "header", "query", "arcgis"];
 /// The kind of a [`LoginRequest`] for a web service's origin (its `key`).
 pub const WEB: &str = "web";
 pub const S3_CREDENTIALS: &[&str] = &["keys", "profile", "environment", "none"];
@@ -298,6 +299,15 @@ fn clean_login(c: &mut Connection) -> Result<bool, String> {
                 return Err(format!(
                     "basic authentication needs a user of at most {MAX_NAME} characters, without ':' or control characters"
                 ));
+            }
+            Ok(false)
+        }
+        "arcgis" => {
+            // The user names who a token is generated for; it is optional (a pasted token has no
+            // use for one). The token endpoint is given per generation, never kept here.
+            c.key_name.clear();
+            if c.user.chars().count() > MAX_NAME || c.user.chars().any(char::is_control) {
+                return Err(format!("an ArcGIS token login's user must be at most {MAX_NAME} characters, without control characters"));
             }
             Ok(false)
         }
@@ -1211,6 +1221,11 @@ impl DatabaseLogins {
 
     pub fn set_session_password(&mut self, id: &str, password: &str) {
         self.session.insert(id.to_string(), Secret::new(password));
+    }
+
+    /// Drops the password or token given this session for `id`, and nothing else of it.
+    pub(crate) fn clear_session_password(&mut self, id: &str) {
+        self.session.remove(id);
     }
 
     /// Drops a refused session credential and suppresses an equivalent saved value for this run.

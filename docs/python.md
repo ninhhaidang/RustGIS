@@ -277,6 +277,11 @@ login usable. `connection.logout` retains the saved login but blocks automatic r
 rest of the session until an explicit `connection.login`. See
 [Web-service logins](user-guide/data.md#web-service-logins) for matching and HTTP confirmation.
 
+An ArcGIS-token connection (`auth="arcgis"`) takes `s.run("connection.login", id="c1", token="…")`, or
+`s.run("connection.generateToken", id="c1", tokenEndpoint="https://host/arcgis/tokens/generateToken", password="…")`
+and then `s.run("connection.tokenStatus", id="c1")` until its `pending` is false (`connection.cancelToken`
+stops it); the password is sent in that one request and kept nowhere.
+
 ## Data in and out
 
 ```python

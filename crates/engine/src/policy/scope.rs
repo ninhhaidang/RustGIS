@@ -209,6 +209,19 @@ impl Continuation {
     pub(crate) fn native_tool_owner(&self) -> bool {
         matches!(self.scope.kind, Kind::User)
     }
+    /// Whether `text` appears anywhere this continuation retains of its invocation (tests only).
+    #[cfg(test)]
+    pub(crate) fn mentions(&self, text: &str) -> bool {
+        let node = &self.node;
+        [
+            node.params.to_string(),
+            serde_json::Value::Array(node.places.clone()).to_string(),
+            serde_json::to_string(&node.display).unwrap_or_default(),
+            self.accounts.to_string(),
+        ]
+        .iter()
+        .any(|held| held.contains(text))
+    }
     /// Distinguishes two invocations of the same command without exposing their raw nodes.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_run(&self, other: &Self) -> bool {

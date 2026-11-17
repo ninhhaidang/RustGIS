@@ -1153,6 +1153,47 @@ or the browser's `crypto.getRandomValues` in the web app. If that source is miss
 RustGIS refuses the login rather than using a predictable fallback. A failed replacement leaves
 the previous active login usable.
 
+**ArcGIS token** (`"auth": "arcgis"`, on any web-service kind: an ArcGIS-hosted WMS or WMTS needs it
+too) logs in to ArcGIS Server or ArcGIS Enterprise with a token, sent as each request's one `token`
+parameter (a parameter of that name in an address is replaced, whatever its case or escaping, and
+an explicit connection token outranks a portal sign-in's, which is then neither sent nor renewed for
+that request). The connection keeps the method and an optional user; the token is given in one of
+two ways.
+
+- **Paste token**: `connection.login {"id":"c1","token":"…","expiresAt":1893456000000}`. The token is
+  ASCII letters, digits and `- _ . ~ + / =`, at most 4096 bytes. `expiresAt` is optional, in Unix
+  milliseconds and in the future; without it the token is used until the server refuses it, and
+  nothing is renewed or guessed. **Test** with a pasted token uses a temporary login that ends with
+  the test: the saved connection, its session login and its saved login are not used or replaced.
+- **Username and password**: `connection.generateToken {"id":"c1","tokenEndpoint":"https://host/arcgis/tokens/generateToken","password":"…"}`
+  asks the server's `generateToken` for a token for the connection's user (`client=requestip`, 60
+  minutes) and answers `{"id","pending":true}`. The endpoint must be an `https://` address at the
+  connection's own origin, with no user information, query or fragment, and is never taken from a
+  service's answer; a federated portal's sign-in uses the portal sign-in instead. The request runs
+  in the background on the desktop and in the web app (30 seconds at most, answers up to 1 MiB, no
+  redirects, cookies or other login). `connection.tokenStatus {"id":"c1"}` answers
+  `{"pending":true}` until it lands, then `connection.login`'s result with `"pending":false`;
+  `connection.cancelToken {"id":"c1"}` stops it, leaving any earlier login. Only the caller that
+  started it can ask or cancel, and a replaced project, a changed login (user, method or origin), a
+  logout, a removal, a pasted token, a closed form, or logging in or out of another connection ends
+  it. Failures say a fixed sentence, never the
+  server's text. The password is in that one request and is kept nowhere: not in the form once sent,
+  the connection, the session, the saved login, History, recordings or notices.
+  **Test** requires a saved connection, generates through the same commands with Remember off, and
+  leaves the resulting session-only token logged in before testing the service. Cancelling a native
+  request never waits for the worker; one blocking network operation can finish at its 30-second
+  deadline before the worker notices cancellation.
+
+With **Remember on this computer** (`"remember": true`, on `connection.login` or
+`connection.generateToken`) the token and its expiry, never a password, go to the credential store as
+the same versioned login described above. A saved or session token that has expired is not used: the
+login is revoked, cached authenticated responses are not read, nothing falls back to anonymous
+access or a portal sign-in, and the connection asks to log in again (`connection.login` with a new
+token, or `connection.generateToken`). An expired saved token is neither deleted nor rewritten until
+it is forgotten or replaced, and is not read again that session. A token is never renewed
+automatically, since that would need the password. From the command line and Python, poll
+`connection.tokenStatus` until `pending` is false.
+
 A login is sent only to the connection's origin: the same scheme, host and port, for its
 capabilities, listings, tiles, feature pages and refreshes. On the desktop a redirect within that
 origin keeps the login, and a redirect to another origin is followed without it, never getting

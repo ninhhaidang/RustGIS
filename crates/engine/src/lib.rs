@@ -39,6 +39,7 @@ pub mod sample;
 #[cfg(feature = "schema")]
 pub mod schema;
 pub mod service_logins;
+pub mod service_tokens;
 pub mod sources;
 #[cfg(test)]
 mod tests;

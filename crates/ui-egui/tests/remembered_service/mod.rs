@@ -322,3 +322,324 @@ fn service_without_a_store_hides_remember_and_marks_saved_login_unavailable() {
     assert!(h.get_by_role_and_label(Role::Button, "Forget Saved Login").accesskit_node().is_disabled());
     assert!(h.state().session.connections.find(id).unwrap().remembered, "drawing never tries to read the saved login");
 }
+
+mod arcgis_token {
+    use super::*;
+    use rustgis_engine::render::rustgis_tiles::arcgis_token::{self, Credential, Done};
+    use rustgis_engine::render::rustgis_tiles::cache::Still;
+    use rustgis_engine::render::rustgis_tiles::logins;
+    use std::collections::BTreeMap;
+    use std::sync::{LazyLock, Mutex, Once};
+
+    const TOKEN: &str = "pasted-arcgis-widget-token-sentinel";
+    const PASSWORD: &str = "generate-widget-password-sentinel";
+    const FUTURE: i64 = 4_102_444_800_000;
+
+    type Handler = Arc<dyn Fn(String, Still, Done) + Send + Sync>;
+    static HANDLERS: LazyLock<Mutex<BTreeMap<String, Handler>>> = LazyLock::new(Mutex::default);
+
+    /// A token server on this computer that holds each request until the test answers it. Each
+    /// test has its own endpoint, so none shares another's requests.
+    #[derive(Clone, Default)]
+    struct Server {
+        forms: Arc<Mutex<Vec<String>>>,
+        held: Arc<Mutex<Vec<(Done, Still)>>>,
+    }
+
+    impl Server {
+        fn at(endpoint: &str) -> Server {
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                arcgis_token::set_generator(|endpoint, body, still, done| {
+                    let handler = HANDLERS.lock().unwrap().get(&endpoint).cloned();
+                    match handler {
+                        Some(handler) => handler(body.expose().to_string(), still, done),
+                        None => done(Err("no fake answers this endpoint".into())),
+                    }
+                });
+            });
+            let server = Server::default();
+            let state = server.clone();
+            let handler: Handler = Arc::new(move |form, still, done| {
+                state.forms.lock().unwrap().push(form);
+                state.held.lock().unwrap().push((done, still));
+            });
+            HANDLERS.lock().unwrap().insert(endpoint.to_string(), handler);
+            server
+        }
+
+        fn forms(&self) -> Vec<String> {
+            self.forms.lock().unwrap().clone()
+        }
+
+        fn take(&self) -> (Done, Still) {
+            self.held.lock().unwrap().remove(0)
+        }
+    }
+
+    fn form(h: &mut Harness, address: &str) {
+        h.state_mut().run("ui.connection", json!({"kind":"arcgis"})).unwrap();
+        settle(h);
+        type_field(h, "Name", "ArcGIS token login", false);
+        type_field(h, "Address", address, false);
+        h.get_by_role_and_label(Role::ComboBox, "Method").click();
+        settle(h);
+        h.get_by_label("ArcGIS token").click();
+        settle(h);
+        type_field(h, "User", "alice", false);
+    }
+
+    fn generate_mode(h: &mut Harness, endpoint: &str) {
+        h.get_by_label("Username and password").click();
+        settle(h);
+        type_field(h, "Token endpoint", endpoint, false);
+        type_field(h, "Password", PASSWORD, true);
+    }
+
+    fn assert_clean(h: &Harness) {
+        let app = h.state();
+        let st = &app.ui.connection;
+        assert!(st.password.is_empty() && st.token.is_empty() && st.token_expires.is_empty() && !st.remember);
+        let visible = format!(
+            "{}\n{:?}\n{}\n{}\n{}",
+            app.session.connections.to_json(),
+            app.session.notices,
+            app.dialogs.error.as_deref().unwrap_or(""),
+            app.dialogs.info.as_deref().unwrap_or(""),
+            st.warned.as_deref().unwrap_or("")
+        );
+        for private in [TOKEN, PASSWORD, "rustgis-login"] {
+            assert!(!visible.contains(private), "{private} is visible: {visible}");
+        }
+        for entry in app.session.log.entries().filter(|entry| entry.command.starts_with("connection.")) {
+            let params = entry.params.to_string();
+            assert!(!params.contains(TOKEN) && !params.contains(PASSWORD), "{} kept a secret: {params}", entry.command);
+        }
+    }
+
+    #[test]
+    fn arcgis_token_form_pastes_a_masked_token_and_remembers_only_when_asked() {
+        let store = Arc::new(MemorySecrets::new());
+        let mut h = with_store(Some(store.clone()));
+        form(&mut h, "https://widget-arcgis-paste.example/arcgis/rest/services");
+        // Paste is the way in; a token and its expiry are masked and plain; Remember is an opt-in.
+        h.get_by_label("Paste token");
+        assert!(!h.state().ui.connection.token_generate && !h.state().ui.connection.remember);
+        assert!(h.query_by_label("Token endpoint").is_none());
+        type_field(&mut h, "Token", TOKEN, true);
+        type_field(&mut h, "Expires at (Unix milliseconds)", "soon", false);
+        save(&mut h);
+        // An expiry that isn't a time is said, not dropped; nothing is saved.
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("Unix time in milliseconds"));
+        assert!(h.state().session.connections.find("ArcGIS token login").is_none());
+        h.state_mut().ui.connection.token_expires = FUTURE.to_string();
+        settle(&mut h);
+        h.get_by_label("Remember on this computer").click();
+        settle(&mut h);
+        save(&mut h);
+        assert_eq!(h.state().dialogs.open, None);
+        let c = h.state().session.connections.find("ArcGIS token login").unwrap().clone();
+        assert_eq!((c.auth.as_str(), c.user.as_str(), c.remembered), ("arcgis", "alice", true));
+        assert!(web::logged_in(&h.state().session, &c));
+        let saved = store.load(&format!("connection/{}", c.id)).unwrap().unwrap();
+        assert!(saved.expose().contains(TOKEN) && saved.expose().contains(&FUTURE.to_string()));
+        assert_clean(&h);
+    }
+
+    #[test]
+    fn arcgis_token_invalid_replacement_keeps_the_remembered_definition_and_login() {
+        if crate::in_own_process(
+            "remembered_service::arcgis_token::arcgis_token_invalid_replacement_keeps_the_remembered_definition_and_login",
+        ) {
+            return;
+        }
+        let store = Arc::new(MemorySecrets::new());
+        let mut h = with_store(Some(store.clone()));
+        let id = h
+            .state_mut()
+            .run(
+                "connection.new",
+                json!({
+                    "kind":"arcgis", "name":"Existing ArcGIS login",
+                    "address":"https://widget-arcgis-presave.example/arcgis/rest/services",
+                    "auth":"arcgis", "user":"alice"
+                }),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        h.state_mut().run("connection.login", json!({"id":id, "token":TOKEN, "remember":true})).unwrap();
+        let c = h.state().session.connections.find(&id).unwrap().clone();
+        let definition = h.state().session.connections.to_json();
+        let account = format!("connection/{id}");
+        let saved = store.load(&account).unwrap().unwrap().expose().to_string();
+        let bound = web::request(&mut h.state_mut().session, Some(&id), &c.address).unwrap();
+
+        for (generate, password) in [(false, String::new()), (true, "x".repeat(logins::MAX_VALUE + 1)), (true, "invalid\npassword".into())]
+        {
+            h.state_mut().run("ui.connection", json!({"id":id})).unwrap();
+            {
+                let st = &mut h.state_mut().ui.connection;
+                // Either edit changes login identity and would discard the old remembered login.
+                st.user = "bob".into();
+                st.address = "https://widget-arcgis-presave-changed.example/arcgis/rest/services".into();
+                st.token_generate = generate;
+                if generate {
+                    st.password = password;
+                    st.token_endpoint = "https://widget-arcgis-presave-changed.example/arcgis/tokens/generateToken".into();
+                } else {
+                    st.token = "replacement-widget-token".into();
+                    st.token_expires = "1".into(); // Positive, but already expired.
+                }
+            }
+            settle(&mut h);
+            save(&mut h);
+            assert_eq!(
+                h.state().dialogs.error.as_deref(),
+                Some(if generate { rustgis_engine::service_tokens::BAD_PASSWORD } else { arcgis_token::EXPIRED })
+            );
+            assert_eq!(h.state().dialogs.open, Some("editConnection"));
+            assert!(h.state().ui.connection.generating.is_none());
+            assert_eq!(h.state().session.connections.to_json(), definition);
+            assert_eq!(store.load(&account).unwrap().unwrap().expose(), saved);
+            assert!(web::logged_in(&h.state().session, &c));
+            assert_eq!(logins::check(&bound), Ok(()), "the original active binding survives");
+        }
+    }
+
+    #[test]
+    fn arcgis_token_form_generates_in_the_background_and_never_holds_the_password() {
+        if crate::in_own_process(
+            "remembered_service::arcgis_token::arcgis_token_form_generates_in_the_background_and_never_holds_the_password",
+        ) {
+            return;
+        }
+        let endpoint = "https://widget-arcgis-generate.example/arcgis/tokens/generateToken";
+        let server = Server::at(endpoint);
+        let store = Arc::new(MemorySecrets::new());
+        let mut h = with_store(Some(store.clone()));
+        form(&mut h, "https://widget-arcgis-generate.example/arcgis/rest/services");
+        generate_mode(&mut h, endpoint);
+        assert!(h.query_by_label("Expires at (Unix milliseconds)").is_none(), "pasting is another mode");
+        save(&mut h);
+        // The form stays to say how it goes; the password left it with the request.
+        assert!(h.state().dialogs.open.is_some());
+        assert!(h.state().ui.connection.generating.is_some());
+        assert!(h.state().ui.connection.password.is_empty());
+        h.get_by_role_and_label(Role::Button, "Cancel token request");
+        assert_eq!(server.forms(), [format!("f=json&username=alice&password={PASSWORD}&client=requestip&expiration=60")]);
+        // No second Save while it is under way.
+        assert!(h.get_by_role_and_label(Role::Button, "Save").accesskit_node().is_disabled());
+        assert_eq!(server.forms().len(), 1);
+        let c = h.state().session.connections.find("ArcGIS token login").unwrap().clone();
+        assert!(!web::logged_in(&h.state().session, &c));
+
+        let (done, _) = server.take();
+        done(Ok(Credential::new("generated-widget-token", Some(FUTURE)).ok().unwrap()));
+        settle(&mut h);
+        assert_eq!(h.state().dialogs.open, None);
+        assert!(h.state().ui.connection.generating.is_none());
+        assert!(web::logged_in(&h.state().session, &c));
+        // Remember was off: only this session has the token.
+        assert_eq!(store.load(&format!("connection/{}", c.id)).unwrap(), None);
+        assert!(!h.state().session.connections.find(&c.id).unwrap().remembered);
+        assert_clean(&h);
+    }
+
+    #[test]
+    fn arcgis_token_form_says_what_is_missing_before_saving_or_sending() {
+        let endpoint = "https://widget-arcgis-missing.example/arcgis/tokens/generateToken";
+        let server = Server::at(endpoint);
+        let mut h = with_store(Some(Arc::new(MemorySecrets::new())));
+        form(&mut h, "https://widget-arcgis-missing.example/arcgis/rest/services");
+        h.get_by_label("Username and password").click();
+        settle(&mut h);
+        type_field(&mut h, "Password", PASSWORD, true);
+        save(&mut h);
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("token endpoint"));
+        type_field(&mut h, "Token endpoint", "http://widget-arcgis-missing.example/arcgis/tokens/generateToken", false);
+        save(&mut h);
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("https://"), "{:?}", h.state().dialogs.error);
+        h.state_mut().ui.connection.token_endpoint = endpoint.into();
+        h.state_mut().ui.connection.user.clear();
+        settle(&mut h);
+        save(&mut h);
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("user"));
+        assert!(h.state().session.connections.find("ArcGIS token login").is_none(), "nothing was saved");
+        assert!(server.forms().is_empty(), "nothing was sent");
+        // A Test of a token made from a password belongs to a saved connection.
+        h.state_mut().ui.connection.user = "alice".into();
+        settle(&mut h);
+        h.get_by_role_and_label(Role::Button, "Test").click();
+        settle(&mut h);
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("Save the connection"));
+        assert!(h.state().ui.connection.password.is_empty());
+        assert!(server.forms().is_empty());
+    }
+
+    #[test]
+    fn arcgis_token_test_with_an_expiry_but_no_token_says_so_instead_of_using_the_saved_login() {
+        let mut h = with_store(Some(Arc::new(MemorySecrets::new())));
+        let id = h
+            .state_mut()
+            .run(
+                "connection.new",
+                json!({"kind":"arcgis","name":"Orphan expiry","address":"https://widget-arcgis-orphan.example/arcgis/rest/services","auth":"arcgis","user":"alice"}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        h.state_mut().run("connection.login", json!({"id":id,"token":TOKEN})).unwrap();
+        h.state_mut().run("ui.connection", json!({"id":id})).unwrap();
+        settle(&mut h);
+        h.state_mut().ui.connection.token_expires = FUTURE.to_string();
+        settle(&mut h);
+        h.get_by_role_and_label(Role::Button, "Test").click();
+        settle(&mut h);
+        assert!(h.state().dialogs.error.as_deref().unwrap().contains("this expiry is for"), "{:?}", h.state().dialogs.error);
+        assert!(h.state().ui.connection.test.is_none(), "no test ran with the saved login");
+        assert!(h.state().ui.connection.token_expires.is_empty());
+    }
+
+    #[test]
+    fn arcgis_token_form_cancels_its_request_and_closing_it_does_too() {
+        if crate::in_own_process("remembered_service::arcgis_token::arcgis_token_form_cancels_its_request_and_closing_it_does_too") {
+            return;
+        }
+        let endpoint = "https://widget-arcgis-cancel.example/arcgis/tokens/generateToken";
+        let server = Server::at(endpoint);
+        let mut h = with_store(Some(Arc::new(MemorySecrets::new())));
+        form(&mut h, "https://widget-arcgis-cancel.example/arcgis/rest/services");
+        generate_mode(&mut h, endpoint);
+        save(&mut h);
+        let c = h.state().session.connections.find("ArcGIS token login").unwrap().clone();
+        let (done, still) = server.take();
+        assert!(still());
+        h.get_by_role_and_label(Role::Button, "Cancel token request").click();
+        settle(&mut h);
+        assert!(!still(), "Cancel stops the request");
+        assert!(h.state().ui.connection.generating.is_none());
+        assert!(h.state().dialogs.open.is_some(), "the form stays to try again");
+        // What the server then says lands nowhere.
+        done(Ok(Credential::new("late-widget-token", Some(FUTURE)).ok().unwrap()));
+        settle(&mut h);
+        assert!(!web::logged_in(&h.state().session, &c));
+
+        // Closing the form stops a request too, and leaves an earlier login alone.
+        h.state_mut().run("connection.login", json!({"id":c.id,"token":"earlier-widget-token"})).unwrap();
+        h.state_mut().ui.connection.password = PASSWORD.into();
+        h.state_mut().ui.connection.token_generate = true;
+        settle(&mut h);
+        save(&mut h);
+        let (_, still) = server.take();
+        assert!(still());
+        h.get_by_role_and_label(Role::Button, "Cancel").click();
+        settle(&mut h);
+        assert!(!still(), "closing the form stops the request");
+        assert_eq!(h.state().dialogs.open, None);
+        assert!(web::logged_in(&h.state().session, &c), "the earlier login stays");
+        assert_clean(&h);
+    }
+}

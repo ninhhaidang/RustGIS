@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::{b, ps};
 use crate::connections::{Connection, DATABASE_KINDS, DESKTOP_ONLY, KINDS};
-use crate::render::rustgis_tiles::{s3, stac};
+use crate::render::rustgis_tiles::{arcgis_token, s3, stac};
 use crate::s3_keys as keys;
 use crate::service_logins as web;
 use crate::{CmdResult, CommandSpec as C, Session};
@@ -17,6 +17,9 @@ mod browse;
 
 #[path = "connection_logins.rs"]
 mod logins;
+
+#[path = "connection_token.rs"]
+mod token;
 #[cfg(not(target_arch = "wasm32"))]
 use logins::request_password;
 pub(crate) use logins::{clear_active, resolve_keys, resolve_project, restore_active};
@@ -29,7 +32,7 @@ pub fn commands() -> Vec<C> {
             r#"{"kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "group"?: text}"#,
         ),
         C::new("connection.new", "New Connection", "Home › Add › Data Sources", new).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"kind": "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "address"?: "as the kind's add command takes it, without its password or token (postgres:host=… dbname=… user=…, mysql://user@host/db, mssql://user@host/db, a service's or STAC API's https:// address, an S3 endpoint: AWS when absent)", "name"?: "unique (default from the address)", "group"?: text, "options"?: {"region"?: text, "buckets"?: "a,b", "credentials"?: "keys"|"profile"|"environment"|"none", "profile"?: text} (S3 only), "auth"?: "none"|"basic"|"header"|"query": how a web-service connection logs in (basic authentication, an API key in a header, or an API key in a query parameter; the password or key is given to connection.login, never kept here), "user"?: "the basic login's user name", "keyName"?: "the header (auth header, e.g. X-API-Key) or the query parameter (auth query, e.g. api_key) the API key goes in; a query parameter of that name is taken out of the address"} (the result's stripped is true when a password, token or key was left out of the address; strippedParameters names the key parameters left out, to give as keyName with auth query)"#,
+            r#"{"kind": "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "address"?: "as the kind's add command takes it, without its password or token (postgres:host=… dbname=… user=…, mysql://user@host/db, mssql://user@host/db, a service's or STAC API's https:// address, an S3 endpoint: AWS when absent)", "name"?: "unique (default from the address)", "group"?: text, "options"?: {"region"?: text, "buckets"?: "a,b", "credentials"?: "keys"|"profile"|"environment"|"none", "profile"?: text} (S3 only), "auth"?: "none"|"basic"|"header"|"query"|"arcgis": how a web-service connection logs in (basic authentication, an API key in a header, an API key in a query parameter, or an ArcGIS token sent as the request's token parameter, pasted or made by connection.generateToken; the password, key or token is given to connection.login, never kept here), "user"?: "the basic login's user name, or the user connection.generateToken makes an ArcGIS token for", "keyName"?: "the header (auth header, e.g. X-API-Key) or the query parameter (auth query, e.g. api_key) the API key goes in; a query parameter of that name is taken out of the address"} (the result's stripped is true when a password, token or key was left out of the address; strippedParameters names the key parameters left out, to give as keyName with auth query)"#,
         ),
         C::new("connection.edit", "Edit Connection", "Home › Add › Data Sources", edit).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
             r#"{"id": "a connection's id or name", "name"?: text, "group"?: text, "address"?: text, "options"?: "as connection.new (replaces them)", "auth"?: "as connection.new", "user"?: text, "keyName"?: text, "kind"?: "its kind (unchanged)"} (another origin, login method, user or key name ends the web connection's login and deletes its saved one; for a connection this session didn't remember, a store that refuses the cleanup only warns that a saved login may remain)"#,
@@ -37,7 +40,16 @@ pub fn commands() -> Vec<C> {
         C::new("connection.duplicate", "Duplicate Connection", "Home › Add › Data Sources", duplicate).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a connection's id or name", "name"?: text}"#),
         C::new("connection.remove", "Remove Connection", "Home › Add › Data Sources", remove).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a connection's id or name"} (deletes its saved password, keys or login, and ends its web-service session login; for a web-service connection this session didn't remember, a store that refuses the cleanup only warns that a saved login may remain)"#),
         C::new("connection.login", "Log In to Connection", "Home › Add › Data Sources", login_command).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": "a connection's id or name; blank credentials explicitly use this ID's session or saved credentials", "password"?: "a database password, or a web service's basic-authentication password; session-only by default", "apiKey"?: "a web service's API key (auth header or query); session-only by default", "allowInsecure"?: "boolean, default false: confirms sending a web service's login to its plain http:// address, unencrypted", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "temporary S3 credentials, never persisted", "remember"?: "boolean, default false: opt into this computer's credential store for a newly typed database password, web-service password or key, or complete S3 key pair (saved keys mode only). No credentials are stored in connections or projects; a failed save preserves the session login"} (a web service's login is sent only with this session's requests bound to that connection and only to its address's origin: the same scheme, host and port; an API key in the query replaces a parameter of the same name in the address; logging in to one of several connections chooses it for unassigned requests to that address)"#,
+            r#"{"id": "a connection's id or name; blank credentials explicitly use this ID's session or saved credentials", "password"?: "a database password, or a web service's basic-authentication password; session-only by default", "apiKey"?: "a web service's API key (auth header or query); session-only by default", "token"?: "an ArcGIS-token connection's (auth arcgis) pasted token, replacing its login; session-only by default (connection.generateToken makes one from the connection's user and a password)", "expiresAt"?: "integer: the pasted token's expiry, Unix milliseconds in the future; none means it isn't known, so it is never renewed here, and the server's refusal ends its use", "allowInsecure"?: "boolean, default false: confirms sending a web service's login to its plain http:// address, unencrypted", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "temporary S3 credentials, never persisted", "remember"?: "boolean, default false: opt into this computer's credential store for a newly typed database password, web-service password, key or ArcGIS token (with its expiry), or complete S3 key pair (saved keys mode only). No credentials are stored in connections or projects; a failed save preserves the session login; an expired saved token is not used and stays until forgotten or replaced"} (a web service's login is sent only with this session's requests bound to that connection and only to its address's origin: the same scheme, host and port; an API key in the query replaces a parameter of the same name in the address, and an ArcGIS token replaces the address's own token parameter; logging in to one of several connections chooses it for unassigned requests to that address)"#,
+        ),
+        C::new("connection.generateToken", "Generate ArcGIS Token", "Home › Add › Data Sources", token::generate).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Network)).view().params(
+            r#"{"id": "a saved ArcGIS-token connection's id or name; its user is who the token is made for", "tokenEndpoint": "the https:// ArcGIS Server token address at the connection's own origin (https://host/arcgis/tokens/generateToken): no user information, query or fragment, and never taken from a service's answer", "password": "the user's password, sent in this one request's form and never kept", "remember"?: "boolean, default false: keep the resulting token and its expiry (never the password) on this computer"} → {id, pending: true}: the request runs in the background (30 seconds at most); poll connection.tokenStatus, stop it with connection.cancelToken. A token is never renewed automatically: generate another once it has expired"#,
+        ),
+        C::new("connection.tokenStatus", "ArcGIS Token Status", "Home › Add › Data Sources", token::status).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
+            r#"{"id": "the connection's id or name"} → {id, pending: true} while its token is being generated; once done, the token is its login and the result is connection.login's, with pending: false; with nothing under way, {id, pending: false, loggedIn}. A failure says why in a fixed sentence and ends the operation, leaving any earlier login as it was. Only the caller that started the generation can ask"#,
+        ),
+        C::new("connection.cancelToken", "Cancel ArcGIS Token", "Home › Add › Data Sources", token::cancel).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
+            r#"{"id": "the connection's id or name"} → {id, cancelled}: stops its token being generated (nothing is kept from the answer); an earlier login and saved login stay. Only the caller that started the generation can cancel it"#,
         ),
         C::new("connection.logout", "Log Out of Connection", "Home › Add › Data Sources", logout).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
             r#"{"id": "a web-service connection's id or name"} (clears this session's login and its password or key, which is no longer sent; a login saved on this computer stays, and is reused only after an explicit login)"#,
@@ -881,12 +893,19 @@ fn login_command(s: &mut Session, p: &Value) -> CmdResult {
     if web::is_service(&c) {
         let remember = remember_flag(p)?;
         insecure_flag(p)?;
-        let typed = ["password", "apiKey"].iter().any(|key| ps(p, key).is_some_and(|v| !v.is_empty()));
-        if !remember && !typed {
+        let typed = ["password", "apiKey", "token"].iter().any(|key| ps(p, key).is_some_and(|v| !v.is_empty()));
+        if c.auth != "arcgis" && !remember && !typed {
             web::retry(s, &c.id);
         }
     }
     let result = login(s, &c, p)?;
+    finished_login(s, c, answers, result)
+}
+
+/// What a login that worked answers: the connection as `shown` gives it, the sources it reopened
+/// and what it couldn't keep. The tail of `connection.login`, which a generated token's landing
+/// (`connection.tokenStatus`) shares.
+fn finished_login(s: &mut Session, c: Connection, answers: bool, result: Reopened) -> CmdResult {
     if web::is_service(&c) {
         if answers {
             web::adopt(s, &c);
@@ -983,6 +1002,12 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
     if c.id.is_empty() {
         return Err(web::UNSAVED.into());
     }
+    if c.auth == "arcgis" {
+        return arcgis_login(s, c, p, remember, insecure);
+    }
+    if ["token", "expiresAt"].iter().any(|key| p.get(*key).is_some_and(|v| !v.is_null())) {
+        return Err("token and expiresAt are for a connection that logs in with an ArcGIS token: set auth to arcgis first".into());
+    }
     let password = ps(p, "password").filter(|t| !t.is_empty());
     let key = ps(p, "apiKey").filter(|t| !t.is_empty());
     let typed = match (c.auth.as_str(), password, key) {
@@ -993,7 +1018,9 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
             web::activate(s, c, None, false)?;
             return Ok(Reopened::default());
         }
-        ("", ..) => return Err("this connection has no login method: set auth (basic, header or query) with connection.edit first".into()),
+        ("", ..) => {
+            return Err("this connection has no login method: set auth (basic, header, query or arcgis) with connection.edit first".into());
+        }
         ("basic", typed, None) => typed,
         ("basic", _, Some(_)) => return Err("a basic login takes a password, not an apiKey".into()),
         (_, None, typed) => typed,
@@ -1023,6 +1050,81 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
     let mut done = Reopened::default();
     if remember {
         if web::save(s.database_logins.secret_store(), c, typed) {
+            s.connections.set_remembered(&c.id, true);
+        } else {
+            done.warning = Some(web::NOT_REMEMBERED);
+        }
+    }
+    Ok(done)
+}
+
+/// Logs in to a saved ArcGIS-token connection with the token typed (and its expiry, when known),
+/// or else the one given this session or saved on this computer. A password isn't a token:
+/// `connection.generateToken` makes one from it. An expiry that isn't known stays unknown: the
+/// token is used until the server refuses it, never renewed or given a guessed lifetime.
+fn arcgis_login(s: &mut Session, c: &Connection, p: &Value, remember: bool, insecure: bool) -> Result<Reopened, String> {
+    if ["password", "apiKey"].iter().any(|key| p.get(*key).is_some_and(|v| !v.is_null() && v.as_str() != Some(""))) {
+        return Err(
+            "an ArcGIS token login takes a token, not a password or apiKey (connection.generateToken makes a token from a password)".into(),
+        );
+    }
+    let token = match p.get("token") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.trim()).filter(|t| !t.is_empty()),
+        Some(_) => return Err("token is text".into()),
+    };
+    let expires_at = match p.get("expiresAt") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => Some(n.as_i64().filter(|at| *at > 0).ok_or(arcgis_token::BAD_EXPIRY)?),
+        Some(_) => return Err("expiresAt is a whole number of Unix milliseconds".into()),
+    };
+    if expires_at.is_some() && token.is_none() {
+        return Err("expiresAt goes with a token: give the token it is the expiry of".into());
+    }
+    let origin = crate::connections::login_origin(c).ok_or(web::NO_ORIGIN)?;
+    let Some(token) = token else {
+        if remember {
+            return Err("remember keeps the token typed in this login: give it".into());
+        }
+        // Only a fully validated request to reuse this login may clear a deliberate Logout.
+        web::retry(s, &c.id);
+        // Already logged in: choose it again, keeping its binding and its cached tiles.
+        if web::logged_in(s, c) {
+            web::reselect(s, c, &origin);
+            return Ok(Reopened::default());
+        }
+        // Given this session or saved on this computer: confirmed for this origin when typed. An
+        // expired one is refused (known_secret says so), never swapped for another.
+        let secret = web::known_secret(s, c)?;
+        web::activate(s, c, Some(&secret), true)?;
+        return Ok(Reopened::default());
+    };
+    if origin.starts_with("http://") && !insecure {
+        return Err(web::INSECURE.into());
+    }
+    let credential = arcgis_token::Credential::new(token, expires_at)?;
+    let done = activate_token(s, c, &credential, insecure, remember)?;
+    // A token given on purpose replaces a generation still under way for this connection.
+    crate::service_tokens::cancel_for(s, &c.id);
+    Ok(done)
+}
+
+/// Makes `credential` the login of the saved connection `c`, and keeps it on this computer when
+/// asked. Its private payload is what a session or a saved login holds: the token and its expiry,
+/// never a password. A failed save leaves the login as it is and says so.
+fn activate_token(
+    s: &mut Session,
+    c: &Connection,
+    credential: &arcgis_token::Credential,
+    insecure: bool,
+    remember: bool,
+) -> Result<Reopened, String> {
+    let payload = credential.payload();
+    web::check_login_secret(c, payload.expose())?;
+    web::activate(s, c, Some(&payload), insecure)?;
+    let mut done = Reopened::default();
+    if remember {
+        if web::save(s.database_logins.secret_store(), c, payload.expose()) {
             s.connections.set_remembered(&c.id, true);
         } else {
             done.warning = Some(web::NOT_REMEMBERED);
@@ -1127,8 +1229,9 @@ fn test_connection(s: &mut Session, p: &Value, c: Connection) -> CmdResult {
     if DATABASE_KINDS.contains(&c.kind.as_str()) && b(p, "probe").unwrap_or(false) {
         return Ok(json!({"connection":c.id, "fetch":null}));
     }
-    let secrets =
-        ["password", "apiKey", "accessKeyId", "secretAccessKey", "sessionToken"].iter().any(|k| ps(p, k).is_some_and(|v| !v.is_empty()));
+    let secrets = ["password", "apiKey", "token", "accessKeyId", "secretAccessKey", "sessionToken"]
+        .iter()
+        .any(|k| ps(p, k).is_some_and(|v| !v.is_empty()));
     if !DATABASE_KINDS.contains(&c.kind.as_str()) && secrets {
         let mut input = p.clone();
         if let Some(o) = input.as_object_mut() {

@@ -2,6 +2,11 @@
 //! Bare addresses never acquire a service login. Each activation creates a fresh generation;
 //! the owning session revokes its token on replacement, logout and drop.
 
+#[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+};
 use std::{
     collections::BTreeMap,
     fmt,
@@ -87,6 +92,14 @@ pub enum Method {
     Header(String),
     /// The credential is the value of this query parameter, added to each request to the origin.
     Query(String),
+    /// An ArcGIS Server token, sent as the request's one `token` query parameter (a web page can
+    /// send it without a CORS preflight). It stops working at `expires_at` (Unix milliseconds),
+    /// when that is known: bound, checked and applied requests then fail with
+    /// [`crate::arcgis_token::EXPIRED`]. An explicit ArcGIS login outranks the portal sign-in and
+    /// an address's own `token`, and its expiry never falls back to either.
+    Arcgis {
+        expires_at: Option<i64>,
+    },
 }
 
 // Deliberately no Debug: neither credentials nor their derived redaction patterns are printable.
@@ -96,6 +109,8 @@ struct Entry {
     method: Method,
     value: Secret,
     redactions: Vec<Redaction>,
+    #[cfg(test)]
+    clock: Option<Arc<AtomicI64>>,
 }
 
 struct Redaction {
@@ -145,14 +160,27 @@ pub fn activate(origin: &str, owner: &str, method: Method, value: &str, insecure
     activate_with_random(origin, owner, method, value, insecure, fill_random)
 }
 
-/// Validates the login before requesting entropy, then installs a fresh binding and its active
-/// output redactions together; failed validation or entropy leaves the registry unchanged.
 fn activate_with_random(
     origin: &str,
     owner: &str,
     method: Method,
     value: &str,
     insecure: bool,
+    random: impl FnMut(&mut [u8; 16]) -> Result<(), &'static str>,
+) -> Result<String, &'static str> {
+    activate_at(origin, owner, method, value, insecure, crate::arcgis_token::now_millis(), random)
+}
+
+/// Validates the login before requesting entropy, then installs a fresh binding and its active
+/// output redactions together; failed validation or entropy leaves the registry unchanged.
+/// `now` (Unix milliseconds) is the clock an ArcGIS token's expiry is judged by.
+fn activate_at(
+    origin: &str,
+    owner: &str,
+    method: Method,
+    value: &str,
+    insecure: bool,
+    now: Option<i64>,
     mut random: impl FnMut(&mut [u8; 16]) -> Result<(), &'static str>,
 ) -> Result<String, &'static str> {
     rustgis_data::login_address::set_validator(check);
@@ -165,11 +193,23 @@ fn activate_with_random(
     let valid_name = match &method {
         Method::Header(name) => valid_header_name(name),
         Method::Query(name) => valid_query_name(name),
+        Method::Arcgis { .. } => true,
     };
     if !valid_name {
         return Err("The login header or query parameter name is not allowed.");
     }
-    if !valid_value(value) {
+    if let Method::Arcgis { expires_at } = &method {
+        // The token alphabet is narrower than any credential's: nonempty, bounded, no controls.
+        if !crate::arcgis_token::valid_token(value) {
+            return Err(crate::arcgis_token::BAD_TOKEN);
+        }
+        match (*expires_at, now) {
+            (Some(at), _) if at <= 0 => return Err(crate::arcgis_token::BAD_EXPIRY),
+            (Some(_), None) => return Err(crate::arcgis_token::NO_CLOCK),
+            (Some(at), Some(now)) if now >= at => return Err(crate::arcgis_token::EXPIRED),
+            _ => {}
+        }
+    } else if !valid_value(value) {
         return Err("The login credential must be nonempty, within the size limit, and contain no controls.");
     }
     let mut redactions = Vec::with_capacity(4);
@@ -202,7 +242,15 @@ fn activate_with_random(
             }
             entries.insert(
                 binding.clone(),
-                Entry { owner: owner.to_string(), origin: origin.to_string(), method, value: Secret::new(value), redactions },
+                Entry {
+                    owner: owner.to_string(),
+                    origin: origin.to_string(),
+                    method,
+                    value: Secret::new(value),
+                    redactions,
+                    #[cfg(test)]
+                    clock: None,
+                },
             );
             return Ok(binding);
         }
@@ -244,8 +292,35 @@ pub fn owner(binding: &str) -> Option<String> {
     entries().get(binding).map(|entry| entry.owner.clone())
 }
 
+/// Whether the login is live: it exists and, for an ArcGIS token, isn't past its expiry.
 pub fn is_active(binding: &str) -> bool {
-    entries().contains_key(binding)
+    is_active_at(binding, crate::arcgis_token::now_millis())
+}
+
+fn is_active_at(binding: &str, now: Option<i64>) -> bool {
+    entries().get(binding).is_some_and(|entry| live(entry, now).is_ok())
+}
+
+/// A binding-local clock for cache/transport expiry tests; other bindings keep the real clock.
+#[cfg(test)]
+pub(crate) fn clock_for_test(binding: &str, now: i64) -> Option<Arc<AtomicI64>> {
+    let clock = Arc::new(AtomicI64::new(now));
+    entries().get_mut(binding)?.clock = Some(clock.clone());
+    Some(clock)
+}
+
+/// Whether `entry` can be used at `now` (Unix milliseconds): an ArcGIS token past its expiry, or
+/// one that expires on a clock that can't be read, can't. The entry (and with it the token's
+/// redaction) stays until its owner revokes it, so a response still on its way is scrubbed.
+fn live(entry: &Entry, now: Option<i64>) -> Result<(), &'static str> {
+    #[cfg(test)]
+    let now = entry.clock.as_ref().map(|clock| clock.load(Ordering::SeqCst)).or(now);
+    match entry.method {
+        Method::Arcgis { expires_at } if crate::arcgis_token::expired(expires_at, now) => {
+            Err(if now.is_none() { crate::arcgis_token::NO_CLOCK } else { crate::arcgis_token::EXPIRED })
+        }
+        _ => Ok(()),
+    }
 }
 
 pub use rustgis_data::login_address::inner;
@@ -254,8 +329,13 @@ const REVOKED: &str = "The service login is no longer active. Sign in to this co
 
 /// Binds a same-origin address to a live login generation.
 pub fn bind(binding: &str, url: &str) -> Result<String, &'static str> {
+    bind_at(binding, url, crate::arcgis_token::now_millis())
+}
+
+fn bind_at(binding: &str, url: &str, now: Option<i64>) -> Result<String, &'static str> {
     let entries = entries();
     let entry = entries.get(binding).ok_or(REVOKED)?;
+    live(entry, now)?;
     let url = inner(url);
     if origin(url).as_deref() != Some(entry.origin.as_str()) {
         return Err("The service login does not cover this address.");
@@ -267,11 +347,16 @@ pub use rustgis_data::login_address::inherit;
 
 /// Checks runtime authority before any cache (including archive/style/sprite caches) is read.
 pub fn check(address: &str) -> Result<(), &'static str> {
+    check_at(address, crate::arcgis_token::now_millis())
+}
+
+fn check_at(address: &str, now: Option<i64>) -> Result<(), &'static str> {
     let address =
         if rustgis_data::login_address::is_wrapper(address) { address } else { address.split_once('@').map_or(address, |(_, a)| a) };
     let Some(b) = rustgis_data::login_address::parse(address)? else { return Ok(()) };
     let entries = entries();
     let entry = entries.get(b.binding).ok_or(REVOKED)?;
+    live(entry, now)?;
     if entry.origin != b.origin || origin(b.url).as_deref() != Some(b.origin) {
         return Err("The service login does not cover this address.");
     }
@@ -282,6 +367,9 @@ pub fn check(address: &str) -> Result<(), &'static str> {
 pub struct Applied {
     pub url: String,
     pub header: Option<(String, String)>,
+    /// The login is an explicit ArcGIS token (already in `url`): the portal sign-in's own token
+    /// is not added to this request, nor renewed for it.
+    pub arcgis: bool,
 }
 
 impl fmt::Debug for Applied {
@@ -292,15 +380,25 @@ impl fmt::Debug for Applied {
 
 /// Prepares only an explicitly bound login; bare URLs are anonymous.
 pub fn apply(address: &str) -> Result<Option<Applied>, &'static str> {
+    apply_at(address, crate::arcgis_token::now_millis())
+}
+
+fn apply_at(address: &str, now: Option<i64>) -> Result<Option<Applied>, &'static str> {
     let Some(b) = rustgis_data::login_address::parse(address)? else { return Ok(None) };
     let entries = entries();
     let entry = entries.get(b.binding).ok_or(REVOKED)?;
+    live(entry, now)?;
     if entry.origin != b.origin || origin(b.url).as_deref() != Some(b.origin) {
         return Err("The service login does not cover this address.");
     }
     let applied = match &entry.method {
-        Method::Header(name) => Applied { url: b.url.to_string(), header: Some((name.clone(), entry.value.expose().to_string())) },
-        Method::Query(name) => Applied { url: set_query_parameter(b.url, name, Some(entry.value.expose())), header: None },
+        Method::Header(name) => {
+            Applied { url: b.url.to_string(), header: Some((name.clone(), entry.value.expose().to_string())), arcgis: false }
+        }
+        Method::Query(name) => Applied { url: set_query_parameter(b.url, name, Some(entry.value.expose())), header: None, arcgis: false },
+        Method::Arcgis { .. } => {
+            Applied { url: set_query_parameter(b.url, "token", Some(entry.value.expose())), header: None, arcgis: true }
+        }
     };
     Ok(Some(applied))
 }
@@ -859,5 +957,95 @@ mod tests {
         rustgis_data::address::redact_query(&mut marked);
         assert_eq!(marked, "https://marker.example/wmts?zqmarkerlogin9=dataset&layer=a");
         assert!(deactivate(&binding));
+    }
+
+    const EXPIRES: i64 = 2_000_000_000_000;
+
+    fn token_login(origin: &str, owner: &str, token: &str, expires_at: Option<i64>, now: Option<i64>) -> Result<String, &'static str> {
+        activate_at(origin, owner, Method::Arcgis { expires_at }, token, false, now, fill_random)
+    }
+
+    #[test]
+    fn arcgis_token_login_sends_one_request_only_token() {
+        let _turn = crate::cache::turn();
+        let origin = "https://arcgis-token-login.example";
+        let binding = token_login(origin, "arcgis-send", "sentinel-token", None, Some(1)).unwrap();
+        let other = activate(origin, "arcgis-send-other", Method::Header("X-Key".into()), "other-key", false).unwrap();
+        let bound = bind(&binding, &format!("{origin}/arcgis/rest/services?f=json&ToKeN=old&token=older#frag")).unwrap();
+        let applied = apply(&bound).unwrap().unwrap();
+        assert!(applied.arcgis && applied.header.is_none());
+        // The login's token replaces the address's own, however it is spelled: one, once.
+        assert_eq!(applied.url, format!("{origin}/arcgis/rest/services?f=json&token=sentinel-token#frag"));
+        assert_eq!(applied.url.to_ascii_lowercase().matches("token=").count(), 1);
+        assert_eq!(format!("{applied:?}"), "Applied(<redacted>)");
+        // The bound address holds no token of the login, and no other kind of login claims the flag.
+        assert!(!bound.contains("sentinel-token"));
+        let key = apply(&bind(&other, &format!("{origin}/x")).unwrap()).unwrap().unwrap();
+        assert!(!key.arcgis);
+        // Another origin never gets it, bound or inherited.
+        assert!(bind(&binding, "https://foreign.example/arcgis/rest/services").is_err());
+        assert_eq!(inherit(&bound, "https://foreign.example/x"), "https://foreign.example/x");
+        assert!(apply("https://foreign.example/x?token=mine").unwrap().is_none());
+        // Its text is redacted from output as any login's is.
+        assert_eq!(scrub("failed with sentinel-token"), "failed with [redacted]");
+        assert!(deactivate(&binding));
+        assert!(deactivate(&other));
+        assert!(apply(&bound).is_err());
+    }
+
+    #[test]
+    fn arcgis_token_login_expires_on_an_explicit_clock() {
+        let _turn = crate::cache::turn();
+        let origin = "https://arcgis-token-expiry.example";
+        let binding = token_login(origin, "arcgis-expiry", "expiring-token", Some(EXPIRES), Some(EXPIRES - 1)).unwrap();
+        let bound = bind_at(&binding, &format!("{origin}/rest/services"), Some(EXPIRES - 1)).unwrap();
+        // Before the moment: live everywhere.
+        assert!(is_active_at(&binding, Some(EXPIRES - 1)));
+        assert!(check_at(&bound, Some(EXPIRES - 1)).is_ok());
+        assert!(apply_at(&bound, Some(EXPIRES - 1)).unwrap().is_some());
+        // At the moment and after it: nothing is read, sent or bound, however the cache stands.
+        for now in [EXPIRES, EXPIRES + 1, EXPIRES + 86_400_000] {
+            assert!(!is_active_at(&binding, Some(now)), "{now}");
+            assert_eq!(check_at(&bound, Some(now)), Err(crate::arcgis_token::EXPIRED));
+            assert_eq!(apply_at(&bound, Some(now)).err(), Some(crate::arcgis_token::EXPIRED));
+            assert_eq!(bind_at(&binding, &format!("{origin}/rest/services"), Some(now)), Err(crate::arcgis_token::EXPIRED));
+        }
+        // An expiring token on a clock nobody can read is refused, not trusted.
+        assert!(!is_active_at(&binding, None));
+        assert_eq!(check_at(&bound, None), Err(crate::arcgis_token::NO_CLOCK));
+        // Expiry doesn't drop the redaction: a late answer is still scrubbed until the owner revokes it.
+        assert_eq!(scrub("echo expiring-token"), "echo [redacted]");
+        assert!(deactivate(&binding));
+        assert_eq!(check_at(&bound, Some(EXPIRES - 1)), Err(REVOKED));
+
+        // A token of unknown expiry isn't judged by the clock.
+        let open = token_login(origin, "arcgis-open", "open-token", None, None).unwrap();
+        let address = bind_at(&open, &format!("{origin}/rest/services"), None).unwrap();
+        assert!(is_active_at(&open, None) && check_at(&address, None).is_ok() && apply_at(&address, None).unwrap().is_some());
+        assert!(deactivate(&open));
+    }
+
+    #[test]
+    fn arcgis_token_activation_refuses_what_cannot_be_sent_or_is_already_over() {
+        let _turn = crate::cache::turn();
+        let origin = "https://arcgis-token-refusals.example";
+        let live = |token: &str, expires: Option<i64>, now: Option<i64>| token_login(origin, "arcgis-refusals", token, expires, now);
+        for (token, expires, now, expected) in [
+            ("", None, Some(1), crate::arcgis_token::BAD_TOKEN),
+            ("has space", None, Some(1), crate::arcgis_token::BAD_TOKEN),
+            ("new\nline", None, Some(1), crate::arcgis_token::BAD_TOKEN),
+            ("not-ascii-é", None, Some(1), crate::arcgis_token::BAD_TOKEN),
+            ("token", Some(0), Some(1), crate::arcgis_token::BAD_EXPIRY),
+            ("token", Some(-5), Some(1), crate::arcgis_token::BAD_EXPIRY),
+            ("token", Some(EXPIRES), None, crate::arcgis_token::NO_CLOCK),
+            ("token", Some(EXPIRES), Some(EXPIRES), crate::arcgis_token::EXPIRED),
+            ("token", Some(EXPIRES), Some(EXPIRES + 1), crate::arcgis_token::EXPIRED),
+        ] {
+            assert_eq!(live(token, expires, now), Err(expected), "{token:?} {expires:?} {now:?}");
+        }
+        assert_eq!(live(&"a".repeat(MAX_VALUE + 1), None, Some(1)), Err(crate::arcgis_token::BAD_TOKEN));
+        assert_eq!(entries().values().filter(|entry| entry.owner == "arcgis-refusals").count(), 0, "a refusal installs nothing");
+        let ok = live("Ab-_.~+/=09", Some(EXPIRES), Some(EXPIRES - 1)).unwrap();
+        assert!(deactivate(&ok));
     }
 }

@@ -140,7 +140,7 @@ fn encode(s: &str) -> String {
     out
 }
 
-fn form(params: &[(&str, &str)]) -> String {
+pub(crate) fn form(params: &[(&str, &str)]) -> String {
     params.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect::<Vec<_>>().join("&")
 }
 
