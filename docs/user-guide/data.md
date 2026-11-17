@@ -124,6 +124,15 @@ the table's name beside it (`input_name`). The **XY Table To Point** tool
 the project, from two fields of coordinates and their coordinate system. In a text field a single comma is the decimal separator
 (`1,234` is 1.234); thousands separators are not read.
 
+**Use a polygon's published interior point.** To place TIGER interior points, run **XY Table
+To Point** with the polygon layer as **Input Table**. Set **X Field** to `INTPTLON` and **Y Field**
+to `INTPTLAT` (use `INTPTLON20` and `INTPTLAT20` when the fields have that suffix). The tool
+reads signed, zero-padded text directly, such as `-093.1445780` and `+44.9500000`.
+Set the tool's **Coordinate System** (`crs`) to the fields' system: NAD83, `EPSG:4269`, for
+TIGER/Line. Left empty, it places them as WGS 84. The new layer
+keeps the attributes and places points at the published coordinates. Check the tool's messages
+for any rows kept without a point.
+
 Excel `.xls` records, formula operands and sheet bounds are checked before opening, including
 sheets that were not selected. The workbook shares a memory budget across its sheets and retained
 metadata. Value and formula grids are counted separately, with conservative allocation estimates
@@ -358,6 +367,53 @@ database is trusted like the query, since its views run as part of it.
 
 **Home › Add › Add Data** opens a DuckDB database file (`.duckdb`, `.ddb`): every table with a geometry
 column becomes a layer (`"layer"` picks one).
+
+### Count GTFS departures per stop
+
+To count scheduled departures from 07:00 up to but excluding 09:00 on Tuesday, 8 December 2026,
+unzip the feed and run this in **Analyze › SQL** with DuckDB installed. Use the extracted files'
+full paths in `read_csv`. Reading the fields as text keeps IDs such as `006` distinct from `6`.
+
+```sql
+WITH exceptions AS (
+  SELECT service_id, exception_type
+  FROM read_csv('calendar_dates.txt', all_varchar = true)
+  WHERE date = '20261208'
+), active AS (
+  SELECT service_id
+  FROM read_csv('calendar.txt', all_varchar = true)
+  WHERE tuesday = '1' AND '20261208' BETWEEN start_date AND end_date
+    AND service_id NOT IN (SELECT service_id FROM exceptions WHERE exception_type = '2')
+  UNION
+  SELECT service_id FROM exceptions WHERE exception_type = '1'
+)
+SELECT s.stop_id, count(*) AS departures
+FROM read_csv('stop_times.txt', all_varchar = true) AS s
+JOIN read_csv('trips.txt', all_varchar = true) AS t USING (trip_id)
+JOIN active AS a ON a.service_id = t.service_id
+WHERE lpad(s.departure_time, 8, '0') >= '07:00:00'
+  AND lpad(s.departure_time, 8, '0') < '09:00:00'
+  AND s.stop_id IS NOT NULL
+  -- With frequencies.txt in the feed, also leave out its template trips:
+  -- AND t.trip_id NOT IN (SELECT trip_id FROM read_csv('frequencies.txt', all_varchar = true))
+GROUP BY s.stop_id
+ORDER BY s.stop_id
+```
+
+Match date exceptions to the weekly calendar by `service_id`. Type 2 removes service and
+type 1 adds it, even when the ID has no weekly row. Then match active services to trips by
+`service_id` and trips to stop times by `trip_id`. For another date, change both date literals
+and the weekday column. If the feed uses only `calendar_dates.txt`, keep just the additions
+in `active`. If it uses only `calendar.txt`, keep the weekly rule and omit the exception checks.
+
+The time filter pads one-digit hours and uses the feed's local service-day times, where
+`24:30:00` is after midnight on that service day. The result counts timed rows per `stop_id`,
+including repeat visits by a trip. Stops with no departures in the window have no row. The SQL
+pane previews the first 200 rows. This query uses the times in `stop_times.txt`. Frequency-based trips need a
+separate calculation using [`frequencies.txt`](https://gtfs.org/documentation/schedule/reference/#frequenciestxt),
+and their `trip_id`s left out of this query: their stop times are a template, which it would
+count as one departure. When the feed has that file, remove the `-- ` before the
+`AND t.trip_id NOT IN …` line.
 
 ### PostgreSQL and PostGIS
 

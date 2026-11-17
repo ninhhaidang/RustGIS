@@ -389,6 +389,20 @@ A gradient's `from` and `to` are places in the feature's box (`[across, down]`, 
 globe, patterns keep to the screen rather than the map as it turns); the
 legend shows the symbol's colour.
 
+**Hatch only flagged polygons.** Use an overlay to hatch unreliable estimates while keeping
+the choropleth's colours visible.
+
+1. On the choropleth layer, use **Select By Attributes** with `FLAG = 1`, then **Data ›
+   Selection › Make Layer From Selected Features**. Clear the selection on the original layer.
+2. Keep the new layer above the choropleth and rename it **Unreliable estimates (hatched)**.
+   In its **Symbology › Fills**, add one fill and set **Draw** to **Hatch lines**. Set the line
+   colour and spacing so the choropleth shows through. Set **Outline width** to 0 if the
+   choropleth already draws the boundaries.
+3. Include both layers in the [layout legend](layouts.md#layouts). The overlay's swatch
+   uses a solid colour, so keep “(hatched)” in its name or legend label to explain the pattern.
+
+The new layer contains a copy of the selected features. Recreate it if the flag values change.
+
 ### Reference scale
 
 Symbol and label sizes are set in points, and normally keep that size on screen at every scale.

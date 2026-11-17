@@ -236,6 +236,22 @@ many results lost their fraction, how many were past the range and how many were
 that doesn't read as a number at all (`n/a`) is left empty too, for now without a notice. A
 number into a text field is written as RustGIS shows it, to six decimal places.
 
+**Compare codes with different spellings.** With zoning codes in the `current` and `proposed`
+fields of the same parcel layer, add a **Text** field named `changed` and turn editing on.
+Use this expression in **Calculate Field** for `changed`.
+
+```sql
+CASE
+  WHEN current IS NULL OR proposed IS NULL THEN 'Unknown'
+  WHEN replace(current, '-', '') = replace(proposed, '-', '') THEN 'No'
+  ELSE 'Yes'
+END
+```
+
+Here `N-1` and `N1` both compare as `N1`, while `N-1` and `N2` give `Yes`.
+Strip hyphens only when they have no meaning in the coding schemes. Select `changed = 'Yes'`
+to find parcels with a different proposed code.
+
 Calculate Field also takes the forms its earlier calculator took: a field name with spaces
 written bare (`Pop Est * 2`) still works when the text isn't a valid expression, and on a layer
 with a field named `true`, `false` or `null` such forms keep reading it as the field (in other
