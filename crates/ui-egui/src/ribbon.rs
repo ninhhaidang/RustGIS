@@ -1143,16 +1143,11 @@ fn publication_style(id: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// A publication profile's name in the menu: a `tl!` literal each, so the catalogs find it (the
-/// engine's labels, which it matches in English); `None` for a profile added without one.
+/// A publication figure's name in the menu: a `tl!` literal each, so the catalogs find it (the
+/// engine's labels, which it matches in English); `None` for a figure added without one. Sheets
+/// are named by their page size, as New Layout names it.
 fn publication_label(id: &str) -> Option<&'static str> {
     Some(match id {
-        "a4-portrait" => tl!("A4 portrait sheet"),
-        "a4-landscape" => tl!("A4 landscape sheet"),
-        "a3-portrait" => tl!("A3 portrait sheet"),
-        "a3-landscape" => tl!("A3 landscape sheet"),
-        "a2-portrait" => tl!("A2 portrait sheet"),
-        "a2-landscape" => tl!("A2 landscape sheet"),
         "figure-1col" => tl!("Journal figure, 1 column (90 mm)"),
         "figure-1.5col" => tl!("Journal figure, 1.5 columns (140 mm)"),
         "figure-2col" => tl!("Journal figure, 2 columns (190 mm)"),
@@ -1162,13 +1157,34 @@ fn publication_label(id: &str) -> Option<&'static str> {
     })
 }
 
+/// A sheet of `size` (a page size's id) turned `orientation`, as `layout.publication` names it.
+fn publication_sheet(size: &str, orientation: &str) -> Option<&'static rustgis_engine::cmd::layout::PublicationProfile> {
+    let id = format!("{size}-{orientation}");
+    rustgis_engine::cmd::layout::PUBLICATION_PROFILES.iter().find(|p| p.sheet && p.id == id)
+}
+
+/// A page size as the menus name it: `A4 (210 × 297 mm)`, its name translated.
+fn page_label(label: &str, w: f64, h: f64) -> String {
+    format!("{} ({w:.0} × {h:.0} mm)", tl!(label))
+}
+
+/// A sheet's styles as buttons, each making `profile` in it.
+fn publication_style_buttons(app: &mut RustGisApp, ui: &mut Ui, profile: &rustgis_engine::cmd::layout::PublicationProfile) {
+    for (style, name) in rustgis_engine::cmd::layout::PUBLICATION_STYLES {
+        let (name, about) = publication_style(style).unwrap_or_else(|| (tl!(*name), ""));
+        if ui.button(name).on_hover_text(about).clicked() {
+            publication_layout(app, profile, Some(style));
+            ui.close();
+        }
+    }
+}
+
 fn project_group(app: &mut RustGisApp, ui: &mut Ui) {
     group(ui, "Project", |ui| {
         big(ui, app, "new_map", "New\nMap", "Add a new map to the project.", "map.new", Value::Null, false, false);
         big_menu(ui, app, "new_layout", "New\nLayout", "Add a page layout for printing and exporting the map.", |ui, app| {
             for (id, label, w, h) in rustgis_engine::map::layout::PAGES {
-                let text = format!("{} ({w:.0} × {h:.0} mm)", tl!(*label));
-                if ui.button(text).clicked() {
+                if ui.button(page_label(label, *w, *h)).clicked() {
                     let _ = app.run("layout.new", json!({"page": id}));
                     app.ui.tab = "Publish".into();
                     ui.close();
@@ -1176,20 +1192,25 @@ fn project_group(app: &mut RustGisApp, ui: &mut Ui) {
             }
             // A finished sheet or figure of the map view, its texts to fill in on the page.
             ui.menu_button(tl!("Publication Layout"), |ui| {
-                for profile in rustgis_engine::cmd::layout::PUBLICATION_PROFILES {
+                // A sheet on each page size, as listed above; its styles under each orientation, so
+                // the list stays as short as the sizes (a figure leaves the style to its caption).
+                for (id, label, w, h) in rustgis_engine::map::layout::PAGES {
+                    ui.menu_button(page_label(label, *w, *h), |ui| {
+                        if let Some(portrait) = publication_sheet(id, "portrait") {
+                            ui.label(egui::RichText::new(tl!("Portrait")).small().weak());
+                            publication_style_buttons(app, ui, portrait);
+                        }
+                        if let Some(landscape) = publication_sheet(id, "landscape") {
+                            ui.separator();
+                            ui.label(egui::RichText::new(tl!("Landscape")).small().weak());
+                            publication_style_buttons(app, ui, landscape);
+                        }
+                    });
+                }
+                ui.separator();
+                for profile in rustgis_engine::cmd::layout::PUBLICATION_PROFILES.iter().filter(|p| !p.sheet) {
                     let label = publication_label(profile.id).unwrap_or_else(|| tl!(profile.label));
-                    if profile.sheet {
-                        // A sheet is arranged in one of the styles; a figure leaves that to its caption.
-                        ui.menu_button(label, |ui| {
-                            for (style, name) in rustgis_engine::cmd::layout::PUBLICATION_STYLES {
-                                let (name, about) = publication_style(style).unwrap_or_else(|| (tl!(*name), ""));
-                                if ui.button(name).on_hover_text(about).clicked() {
-                                    publication_layout(app, profile, Some(style));
-                                    ui.close();
-                                }
-                            }
-                        });
-                    } else if ui.button(label).clicked() {
+                    if ui.button(label).clicked() {
                         publication_layout(app, profile, None);
                         ui.close();
                     }
@@ -3166,7 +3187,7 @@ fn layout_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 let landscape = layout.width > layout.height;
                 let (pw, ph) = if landscape { (h.max(*w), h.min(*w)) } else { (*w, *h) };
                 let on = (layout.width - pw).abs() < 0.5 && (layout.height - ph).abs() < 0.5;
-                if ui.radio(on, format!("{} ({w:.0} × {h:.0} mm)", tl!(*label))).clicked() {
+                if ui.radio(on, page_label(label, *w, *h)).clicked() {
                     let _ = app.run(
                         "layout.page",
                         json!({"layout": li, "page": id, "orientation": if landscape { "landscape" } else { "portrait" }}),
@@ -6222,13 +6243,21 @@ mod tests {
         assert_eq!(size(h.state()), before);
     }
 
-    /// Every publication profile has its literal name in the menu, the engine's label word for word
-    /// (the test runs in English), so neither can be renamed without the other.
+    /// Every publication figure has its literal name in the menu, the engine's label word for word
+    /// (the test runs in English), so neither can be renamed without the other; every page size
+    /// New Layout lists has its sheet in the menu, portrait and landscape, and the menu offers no
+    /// other sheet.
     #[test]
-    fn every_publication_profile_is_named_by_a_literal() {
-        for p in rustgis_engine::cmd::layout::PUBLICATION_PROFILES {
+    fn every_publication_profile_is_in_the_menu() {
+        use rustgis_engine::cmd::layout::PUBLICATION_PROFILES;
+        for p in PUBLICATION_PROFILES.iter().filter(|p| !p.sheet) {
             assert_eq!(publication_label(p.id), Some(p.label), "{}", p.id);
         }
+        let pages = rustgis_engine::map::layout::PAGES;
+        for (id, ..) in pages {
+            assert!(publication_sheet(id, "portrait").is_some() && publication_sheet(id, "landscape").is_some(), "{id}");
+        }
+        assert_eq!(PUBLICATION_PROFILES.iter().filter(|p| p.sheet).count(), 2 * pages.len());
     }
 
     /// Every sheet style has its literal name in the menu, the engine's name word for word, and
@@ -6262,19 +6291,24 @@ mod tests {
         let open = |h: &mut egui_kittest::Harness<'static, RustGisApp>, path: &[&str]| {
             h.get_by_label("New Layout").click();
             h.run();
+            // A size is listed twice, New Layout's page and Publication Layout's sheet: the
+            // latter, the menu opened last.
             for row in path {
-                h.get_by_label(row).hover();
+                h.query_all_by_label(row).last().unwrap_or_else(|| panic!("{row}")).hover();
                 h.run();
             }
         };
         let before = h.state().session.project.layouts.len();
-        open(&mut h, &["Publication Layout", "A4 portrait sheet"]);
-        h.get_by_label("Panel").click();
+        open(&mut h, &["Publication Layout", "A4 (210 × 297 mm)"]);
+        // The styles under Portrait first, then under Landscape (#2309).
+        assert_eq!(h.query_all_by_label("Panel").count(), 2);
+        h.query_all_by_label("Panel").next().unwrap().click();
         h.run();
         let app = h.state();
         assert_eq!(app.session.project.layouts.len(), before + 1);
         let l = app.session.project.layouts.last().unwrap();
         assert!(l.elements.iter().any(|e| e.name == "Panel Box"), "the panel style");
+        assert!((l.width, l.height) == (210.0, 297.0), "an A4 portrait sheet: {} × {}", l.width, l.height);
         let title = app.session.map().name.clone();
         assert!(
             l.elements.iter().any(|e| matches!(&e.kind, rustgis_engine::map::layout::ElementKind::Text { text, .. } if *text == title)),
@@ -6282,11 +6316,17 @@ mod tests {
         );
         assert_eq!(app.ui.tab, "Publish");
         assert!(h.query_by_label("Banner").is_none(), "the menu closed");
+        // A size in inches, turned landscape.
+        open(&mut h, &["Publication Layout", "Tabloid (279 × 432 mm)"]);
+        h.query_all_by_label("Classic").last().unwrap().click();
+        h.run();
+        let l = h.state().session.project.layouts.last().unwrap();
+        assert!((l.width, l.height) == (431.8, 279.4), "a Tabloid landscape sheet: {} × {}", l.width, l.height);
         // A figure: no styles under it.
         open(&mut h, &["Publication Layout"]);
         h.get_by_label("Journal figure, 1 column (90 mm)").click();
         h.run();
-        assert_eq!(h.state().session.project.layouts.len(), before + 2);
+        assert_eq!(h.state().session.project.layouts.len(), before + 3);
         let l = h.state().session.project.layouts.last().unwrap();
         assert!(l.elements.iter().all(|e| e.name != "Panel Box" && e.name != "Title"), "a figure, its title left to the caption");
     }

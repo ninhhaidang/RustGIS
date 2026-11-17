@@ -9475,6 +9475,28 @@ fn frame_x_mid(s: &Session, li: usize, frame: u32) -> f64 {
     s.project.layouts[li].element(frame).map(|e| e.x + e.w / 2.0).unwrap()
 }
 
+/// Piauí's long NDVI source, which a sheet's footer wraps where its box is narrower.
+const PIAUI_SOURCE: &str =
+    "NDVI: MOD13Q1 v6.1 (NASA LP DAAC), 16-day composites at 250 m, read through the Brazil Data Cube (INPE) and averaged to 1 km";
+
+/// A publication layout of Piauí on `profile`, named after it, with a long source, a subtitle and
+/// a note.
+fn piaui_publication(s: &mut Session, profile: &str) -> Result<Value, String> {
+    s.run(
+        "layout.publication",
+        &json!({"profile": profile, "extent": [-46.8, -11.6, -38.5, -2.2], "name": profile, "title": "PIAUÍ",
+                "subtitle": "Greening and browning of vegetation: NDVI trend, 2001–2025", "sources": [PIAUI_SOURCE, "Boundaries: IBGE 2022"],
+                "note": "Only cells with a significant trend (p < 0.05) are coloured."}),
+    )
+}
+
+/// The scale Piauí fits `frame` at within the graticule's label strips (9 mm beside its sides, 6 mm
+/// along its top and bottom).
+fn piaui_fits(s: &Session, frame: &rustgis_map::layout::Element) -> f64 {
+    let extent = rustgis_geom::Extent::new(-46.8, -11.6, -38.5, -2.2);
+    rustgis_map::layout::fit_scale(s.map(), &extent, frame.w - 18.0, frame.h - 12.0).unwrap().1
+}
+
 /// `layout.publication` (#682): every profile builds a layout that fits its page, the map frame
 /// at a round scale that still fits the extent, the footer boxed in two columns below the map
 /// with long lines wrapped, the tokens filled from the map; a figure leaves its title to the
@@ -9487,8 +9509,6 @@ fn publication_layouts_fit_their_pages() {
     let mut s = world();
     let piaui = json!([-46.8, -11.6, -38.5, -2.2]);
     let mut narrower = 0;
-    let long =
-        "NDVI: MOD13Q1 v6.1 (NASA LP DAAC), 16-day composites at 250 m, read through the Brazil Data Cube (INPE) and averaged to 1 km";
     let profiles = [
         "a4-portrait",
         "a4-landscape",
@@ -9496,6 +9516,14 @@ fn publication_layouts_fit_their_pages() {
         "a3-landscape",
         "a2-portrait",
         "a2-landscape",
+        // The other page sizes' extremes: the smallest (A5 portrait has its own test), the longest
+        // (Legal's 1.65), the largest, and a size in inches (#2309).
+        "a5-landscape",
+        "legal-portrait",
+        "legal-landscape",
+        "a0-portrait",
+        "a0-landscape",
+        "letter-landscape",
         "figure-1col",
         "figure-1.5col",
         "figure-2col",
@@ -9503,16 +9531,10 @@ fn publication_layouts_fit_their_pages() {
         "thesis-half",
     ];
     for profile in profiles {
-        let r = s
-            .run(
-                "layout.publication",
-                &json!({"profile": profile, "extent": piaui, "name": profile, "title": "PIAUÍ", "subtitle": "Greening and browning of vegetation: NDVI trend, 2001–2025",
-                        "sources": [long, "Boundaries: IBGE 2022"], "note": "Only cells with a significant trend (p < 0.05) are coloured."}),
-            )
-            .unwrap_or_else(|e| panic!("{profile}: {e}"));
+        let r = piaui_publication(&mut s, profile).unwrap_or_else(|e| panic!("{profile}: {e}"));
         let l = s.project.layouts.last().unwrap();
         assert_eq!(r["name"], profile);
-        let sheet = profile.starts_with('a');
+        let sheet = crate::cmd::layout::PUBLICATION_PROFILES.iter().find(|p| p.id == profile).unwrap().sheet;
         for e in &l.elements {
             assert!(
                 e.x >= -1e-9 && e.y >= -1e-9 && e.x + e.w <= l.width + 1e-6 && e.y + e.h <= l.height + 1e-6,
@@ -9551,11 +9573,10 @@ fn publication_layouts_fit_their_pages() {
         // A round scale, two significant figures, at which the extent still fits.
         let unit = 10f64.powf(scale.log10().floor() - 1.0);
         assert!(((scale / unit) - (scale / unit).round()).abs() < 1e-6, "{profile}: 1:{scale}");
-        let extent = rustgis_geom::Extent::new(-46.8, -11.6, -38.5, -2.2);
         // Fitted within the graticule's label strips (9 mm beside the frame's sides, 6 mm along its
         // top and bottom), so the labels cover none of the extent.
-        let (_, fits) = rustgis_map::layout::fit_scale(s.map(), &extent, frame.w - 18.0, frame.h - 12.0).unwrap();
-        assert!(fits <= *scale && *scale < fits * 1.1, "{profile}: 1:{scale} for 1:{fits}");
+        let fits = piaui_fits(&s, frame);
+        assert!(fits <= *scale && *scale < fits * 1.1, "{profile}: 1:{scale} for 1:{fits}: {}", r["warnings"]);
         assert_eq!(grid.step, 2.0, "{profile}: Piauí's 9.4° take a 2° graticule");
         let text = |name: &str| {
             l.elements.iter().find(|e| e.name == name).map(|e| match &e.kind {
@@ -9571,12 +9592,14 @@ fn publication_layouts_fit_their_pages() {
             let sources = l.elements.iter().find(|e| e.name == "Sources").unwrap();
             assert!(sources.x + sources.w <= foot.x + foot.w + 1e-6);
             let lines = text("Sources").unwrap();
-            assert!(lines.lines().count() >= 3, "{profile}: {lines}");
+            let pt = 7.0 * l.width.min(l.height) as f32 / 210.0;
+            // Wrapped where it is wider than its box, else a line each: on a page as wide as
+            // Legal's landscape it fits one.
+            let count = lines.lines().count();
+            let wraps = crate::render::report::width_mm(PIAUI_SOURCE, pt, false) > sources.w;
+            assert!(if wraps { count >= 3 } else { count == 2 }, "{profile}: {lines}");
             for line in lines.lines() {
-                assert!(
-                    crate::render::report::width_mm(line, 7.0 * l.width.min(l.height) as f32 / 210.0, false) <= sources.w + 1e-6,
-                    "{profile}: {line}"
-                );
+                assert!(crate::render::report::width_mm(line, pt, false) <= sources.w + 1e-6, "{profile}: {line}");
             }
             // The tokens filled from the map: Web Mercator over WGS 84, the 2° graticule.
             let reference = text("Reference").unwrap();
@@ -9798,7 +9821,7 @@ fn publication_layouts_fit_their_pages() {
     assert_eq!((round_scale(1_234_567.0), round_scale(4_500_000.0), round_scale(999.0)), (1_300_000.0, 4_500_000.0, 1_000.0));
     // Refused: an unknown profile, a malformed extent, a footer that leaves the map no room.
     for (p, said) in [
-        (json!({"profile": "a5-portrait"}), "unknown profile"),
+        (json!({"profile": "b5-portrait"}), "unknown profile"),
         (json!({"profile": 5}), "profile is"),
         (json!({"extent": [10, 0, 5, 1]}), "extent is"),
         (json!({"extent": [10, 0, 11], "profile": "a4-portrait"}), "extent is"),
@@ -10001,6 +10024,11 @@ fn publication_layouts_take_a_style() {
         (json!({"extent": wide, "profile": "a3"}), "a3-landscape"),
         (json!({"extent": wide, "profile": "a4-portrait"}), "a4-portrait"),
         (json!({"extent": piaui, "profile": "a4-landscape"}), "a4-landscape"),
+        // Every page size layout.new takes, by its id in any case (#2309).
+        (json!({"extent": wide, "profile": "Tabloid"}), "tabloid-landscape"),
+        (json!({"extent": piaui, "profile": "a0"}), "a0-portrait"),
+        (json!({"extent": wide, "profile": " a5 "}), "a5-landscape"),
+        (json!({"extent": piaui, "profile": "letter"}), "letter-portrait"),
     ] {
         let r = s.run("layout.publication", &p).unwrap();
         assert_eq!(r["profile"], want, "{p}");
@@ -10021,10 +10049,49 @@ fn publication_layouts_take_a_style() {
     ] {
         assert!(s.run("layout.publication", &bad).is_err(), "{bad}");
     }
-    let e = s.run("layout.publication", &json!({"extent": piaui, "profile": "a5"})).unwrap_err();
-    assert!(e.contains("a4, a3 or a2") && e.contains("a4-portrait"), "{e}");
+    let e = s.run("layout.publication", &json!({"extent": piaui, "profile": "b5"})).unwrap_err();
+    assert!(e.contains("letter, legal, tabloid, a5, a4, a3, a2, a1, a0") && e.contains("a4-portrait"), "{e}");
     assert_eq!(s.project.layouts.len(), before);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// On an A5 portrait sheet, Piauí's legend has no room beside the area at the scale that fits it:
+/// the map is drawn at a smaller one, at most half, what runs on past the extent veiled for the
+/// surrounds, and both are said; every element stays on the page (#2309).
+#[test]
+fn a_publication_on_a5_portrait_keeps_its_legend_at_a_smaller_scale() {
+    let mut s = world();
+    let r = piaui_publication(&mut s, "a5-portrait").unwrap();
+    let l = s.project.layouts.last().unwrap();
+    assert_eq!((l.width, l.height), (148.0, 210.0));
+    for e in &l.elements {
+        assert!(e.x >= -1e-9 && e.y >= -1e-9 && e.x + e.w <= l.width + 1e-6 && e.y + e.h <= l.height + 1e-6, "{} is off the page", e.name);
+    }
+    let frame = l.elements.iter().find(|e| e.kind.code() == "mapFrame").unwrap();
+    let fits = piaui_fits(&s, frame);
+    let scale = r["scale"].as_f64().unwrap();
+    assert!(fits <= scale && scale <= fits * 2.0, "1:{scale} for 1:{fits}");
+    assert_eq!(r["veiled"], true, "{r}");
+    let said = r["warnings"].to_string();
+    assert!(said.contains("to leave the legend room") && said.contains("veiled"), "{said}");
+}
+
+/// Every page size `layout.new` offers has a publication sheet, portrait and landscape, of its
+/// size turned, and none other (#2309).
+#[test]
+fn publication_sheets_follow_the_page_sizes() {
+    use crate::cmd::layout::PUBLICATION_PROFILES;
+    let pages = rustgis_map::layout::PAGES;
+    for (id, label, w, h) in pages {
+        let sheet = |o: &str| PUBLICATION_PROFILES.iter().find(|p| p.id == format!("{id}-{o}")).unwrap_or_else(|| panic!("{id}-{o}"));
+        let (portrait, landscape) = (sheet("portrait"), sheet("landscape"));
+        assert!(portrait.sheet && landscape.sheet, "{id}");
+        assert_eq!((portrait.width, portrait.height), (*w, *h), "{id}");
+        assert_eq!((landscape.width, landscape.height), (*h, *w), "{id}");
+        assert_eq!(portrait.label, format!("{label} portrait sheet"));
+        assert_eq!(landscape.label, format!("{label} landscape sheet"));
+    }
+    assert_eq!(PUBLICATION_PROFILES.iter().filter(|p| p.sheet).count(), 2 * pages.len());
 }
 
 /// A publication layout's locator (#682, part 2): on a sheet, by default, a globe (a new map of

@@ -17,14 +17,16 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
 
 - **Publication layouts**: Home › New Layout › **Publication Layout** builds a finished sheet or
   figure of the map view in one step, with `layout.publication` behind it:
-  - **Sheets** (A4, A3 or A2, portrait or landscape): a frame and margin, the title and subtitle,
+  - **Sheets** (on every page size New Layout lists: Letter, Legal, Tabloid and A5 to A0,
+    portrait or landscape; the menu lists the sizes, each with its styles under Portrait and
+    under Landscape): a frame and margin, the title and subtitle,
     the map, and a footer of two boxed columns (sources, and the cartographic reference; one
     with nothing in it is left out, the other taking the width) with a note and the authorship
     under them. When the legend sits at the right of the map (its right edge in the frame's
     right tenth), starting between 45 % and 70 % of the frame's width, the right column starts
     where the legend does, unless its texts would then need a taller box. Text sizes follow the
-    sheet: an A3's are 1.41 times an A4's. Given its size alone (`"a4"`, the default, `"a3"`
-    or `"a2"`), a sheet is turned to
+    sheet's short side: an A3's are 1.41 times an A4's, an A0's four times. Given its size alone
+    (`"a4"`, the default, or any other: `"letter"`, `"a0"`…), a sheet is turned to
     portrait or landscape, whichever the map comes out larger on: the area's extent east to west
     against north to south, on the map's projection, with the room the style leaves the map. The
     result names the profile chosen (`"profile": "a4-landscape"`); give it with its orientation
