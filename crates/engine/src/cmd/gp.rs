@@ -156,6 +156,7 @@ pub fn geolibre_passed_over() -> Option<String> {
 fn geolibre_languages() -> Value {
     #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
     {
+        rustgis_geolibre::langpack::check_kept();
         let errors: serde_json::Map<String, Value> =
             rustgis_geolibre::langpack::load_errors().into_iter().map(|(locale, e)| (locale, Value::String(e))).collect();
         json!({"available": rustgis_geolibre::langpack::LOCALES, "installed": rustgis_geolibre::langpack::kept(),

@@ -323,6 +323,14 @@ fn tools_key(tools: &[ToolSpec]) -> (usize, usize) {
 
 /// Puts `pack` in use (`None`: none), in place of the one in use.
 pub fn activate(pack: Option<Pack>) {
+    // Only the language put in use is no longer in error: another language's damaged pack stays
+    // said until it's replaced or removed.
+    if let Some(locale) = pack.as_ref().map(|p| p.locale.clone())
+        && let Ok(mut e) = LOAD_ERRORS.lock()
+        && let Some(e) = e.as_mut()
+    {
+        e.remove(&locale);
+    }
     if let Ok(mut a) = ACTIVE.lock() {
         *a = pack.map(|pack| {
             let tools = published();
@@ -331,9 +339,6 @@ pub fn activate(pack: Option<Pack>) {
     }
     if let Ok(mut m) = MISSING.lock() {
         *m = None;
-    }
-    if let Ok(mut e) = LOAD_ERRORS.lock() {
-        *e = None;
     }
     REVISION.fetch_add(1, Ordering::Relaxed);
 }
@@ -428,6 +433,25 @@ fn file(locale: &str) -> Result<std::path::PathBuf, String> {
         return Err(format!("'{locale}' isn't a language code"));
     }
     dir().map(|d| d.join(format!("{locale}.json"))).ok_or_else(|| "can't find the app's data folder".into())
+}
+
+/// Reads every kept pack not in use and not already known to be damaged, and records why one
+/// can't be used, without putting any in use: `gp.geolibre` says a damaged pack even when nothing
+/// asked for its language yet. One read of about 2 MB per kept language.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn check_kept() {
+    let Ok(_lifecycle) = LIFECYCLE.lock() else { return };
+    let active = active_locale();
+    for locale in kept() {
+        if active.as_deref() == Some(locale.as_str()) || load_error(&locale).is_some() {
+            continue;
+        }
+        if let Err(e) = load(&locale)
+            && let Ok(mut errors) = LOAD_ERRORS.lock()
+        {
+            errors.get_or_insert_with(Default::default).insert(locale, e);
+        }
+    }
 }
 
 /// The languages whose packs are kept, sorted.
@@ -536,6 +560,9 @@ pub fn import(path: &std::path::Path) -> Result<(String, usize), String> {
 /// Deletes the pack kept for `locale`, and stops using it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn remove(locale: &str) -> Result<(), String> {
+    // With `check_kept`: a read that failed just before the file went can't record an error for
+    // a pack no longer kept.
+    let _lifecycle = LIFECYCLE.lock().map_err(|_| "the tool translations are in an unusable state".to_string())?;
     let path = file(locale)?;
     if !path.is_file() {
         return Err(format!("no tool translations are kept for '{locale}'"));
@@ -688,6 +715,27 @@ mod tests {
         assert!(!in_use("pt"));
         assert!(load_error("pt").is_some_and(|e| e.contains("JSON")), "{:?}", load_error("pt"));
         assert_eq!(load_errors().len(), 1);
+        // Putting another language's pack in use leaves the damaged one said.
+        std::fs::write(&src, pack_text("fr")).unwrap();
+        import(&src).unwrap();
+        assert!(in_use("fr"));
+        assert!(load_error("pt").is_some(), "pt's error kept after fr is put in use");
+        // A damaged kept pack nothing asked for yet is said by a check that puts nothing in use.
+        if let Ok(mut e) = LOAD_ERRORS.lock() {
+            *e = None;
+        }
+        assert!(load_errors().is_empty());
+        check_kept();
+        assert_eq!(load_errors().iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["pt"]);
+        assert_eq!(active_locale().as_deref(), Some("fr"), "the check changes nothing in use");
+        // A removal waits for a check in progress (it holds `LIFECYCLE`), so the check can't
+        // record an error for a pack already gone.
+        let check = LIFECYCLE.lock().unwrap();
+        let removal = std::thread::spawn(|| remove("fr"));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!removal.is_finished(), "remove ran during a check");
+        drop(check);
+        removal.join().unwrap().unwrap();
         remove("pt").unwrap();
         assert!(kept().is_empty() && load_error("pt").is_none() && !in_use("pt"));
         assert!(remove("pt").is_err(), "nothing left to remove");
