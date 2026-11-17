@@ -41,16 +41,17 @@ is out of scope.
   without a count is fine; Cancel is not optional.
 - A command that must run on the UI thread says why in its doc comment.
 - A new background raster command or export, or a tool whose work grows with its input, goes in
-  the lists in `crates/engine/src/tests.rs` (`cancel_rasters`, `cancel_exports`, `cancel_tools`);
-  `cancel_rasters` and `cancel_exports` must match the background registries. A read-ahead command
-  (`reads::prepare`, such as `service.layers` or `edit.previewShapeConversion`) has no list: add
-  its call to `long_commands_stop_when_cancelled_while_they_run` by hand.
+  the lists in `long_commands` (`crates/engine/src/tests/cancellation.rs`), which both cancel tests
+  run; the raster and export lists must match the background registries. A read-ahead command
+  (`reads::prepare`, such as `service.layers` or `edit.previewShapeConversion`) has no registry:
+  add its call to `long_commands` by hand.
   `long_commands_stop_when_cancelled_while_they_run` fails one that never looks at Cancel;
-  `cancelling_at_each_check_leaves_nothing_behind` cancels each command of the three lists at its
-  first three checks and its last, and fails one that leaves the project, its undo steps or the
-  files changed, or can't run again (read-aheads and commands that read from the network are left
-  out). Passing shows the work looks, not that
-  it looks often: a long step without a check (one union, one read) is said in its doc comment.
+  `cancelling_at_each_check_leaves_nothing_behind` cancels at every check in turn until the command
+  finishes before reaching it, on small fixtures, failing if one needs 256 or more checks. It
+  checks project data, Undo/Redo, files and an immediate retry. Network-bound cases keep only
+  first-check coverage.
+  Passing shows the work looks, not that it looks often: a long step without a check (one union,
+  one read) is said in its doc comment.
 
 ## Use the threads
 Work that splits into independent parts runs on several threads where practical:
