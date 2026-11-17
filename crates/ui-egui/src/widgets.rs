@@ -840,6 +840,75 @@ pub fn color_button(ui: &mut Ui, color: &mut egui::Color32) -> Response {
     egui::color_picker::color_edit_button_srgba(ui, color, egui::color_picker::Alpha::OnlyBlend)
 }
 
+/// A colour button for a symbol's fill, which may be transparent: its hue survives an opacity of
+/// 0, where `Color32` (and [`color_button`]) loses it. The colour picked, if one was.
+pub fn rgba_button(ui: &mut Ui, color: rustgis_engine::map::Rgba) -> (Response, Option<rustgis_engine::map::Rgba>) {
+    // The picker's own state while it shows this colour, as egui keeps it for its buttons: the hue
+    // stays where it was on black or grey, which have none of their own.
+    let id = ui.next_auto_id().with("rgba_button");
+    let kept = ui.data(|d| d.get_temp::<([u8; 4], egui::ecolor::Hsva)>(id)).filter(|(c, _)| *c == color.0);
+    let mut hsva = kept.map_or_else(
+        || {
+            // Construct hue independently of alpha: Color32 discards hidden RGB at zero.
+            let mut hsva = egui::ecolor::Hsva::from_srgb([color.r(), color.g(), color.b()]);
+            hsva.a = f32::from(color.a()) / 255.0;
+            hsva
+        },
+        |(_, hsva)| hsva,
+    );
+    let before = hsva;
+    // egui creates the popup from the context, not this Ui's scoped style.
+    // Borrow linear numeric editing only while a transparent picker is open. The units chosen
+    // when an edit begins hold until it ends (the pointer let go, no number being typed), so they
+    // don't change in the middle of a drag or of typing that moves the opacity to or from 0.
+    // This button's own popup, as egui names it, not any popup.
+    let open = egui::Popup::is_id_open(ui.ctx(), ui.auto_id_with("popup"));
+    let linear_id = id.with("linear");
+    // An edit is a press held down, or typing into one number: the same one, as focus can pass
+    // straight to another; the button itself keeping focus isn't one.
+    let button = ui.next_auto_id();
+    let typing = ui.ctx().memory(|m| m.focused()).filter(|f| *f != button);
+    let pressed = ui.input(|i| i.pointer.any_down());
+    let held = ui
+        .data(|d| d.get_temp::<(Option<egui::Id>, bool)>(linear_id))
+        .filter(|(was, _)| pressed || (typing.is_some() && *was == typing))
+        .map(|(_, linear)| linear);
+    let linear = open && held.unwrap_or(color.a() == 0);
+    if open {
+        ui.data_mut(|d| d.insert_temp(linear_id, (typing, linear)));
+    } else {
+        ui.data_mut(|d| d.remove::<(Option<egui::Id>, bool)>(linear_id));
+    }
+    let styles = linear.then(|| [egui::Theme::Light, egui::Theme::Dark].map(|theme| (theme, ui.ctx().style_of(theme))));
+    if styles.is_some() {
+        ui.ctx().global_style_mut(|style| style.visuals.numeric_color_space = egui::style::NumericColorSpace::Linear);
+    }
+    let response = egui::color_picker::color_edit_button_hsva(ui, &mut hsva, egui::color_picker::Alpha::OnlyBlend);
+    if let Some(styles) = styles {
+        // The popup's numeric-mode button can change both themes; restore both
+        // immediately so no other picker or later frame inherits the override.
+        for (theme, style) in styles {
+            ui.ctx().set_style_of(theme, style);
+        }
+    }
+    let shown = picked_colour(hsva, before, color);
+    // egui's round trip through its own colour model can report a change that isn't one, every
+    // frame the popup is open: only a colour that differs is picked.
+    let picked = (response.changed() && shown != color).then_some(shown);
+    // Kept for the colour the caller holds next frame: the one picked, else this one.
+    ui.data_mut(|d| d.insert_temp(id, (picked.unwrap_or(color).0, hsva)));
+    (response, picked)
+}
+
+/// The colour a picker left at `hsva` for `old`, which it showed as `before`: the picker's colour
+/// when its red, green or blue changed, else `old`'s own channels at the picker's opacity, as an
+/// opacity-only edit leaves channels the picker may not hold exactly (at opacity 0, its own
+/// colour model can't). Both may change in one frame (two accessibility requests).
+pub fn picked_colour(hsva: egui::ecolor::Hsva, before: egui::ecolor::Hsva, old: rustgis_engine::map::Rgba) -> rustgis_engine::map::Rgba {
+    let rgb = rustgis_engine::map::Rgba(hsva.to_srgba_unmultiplied());
+    if hsva.to_srgb() != before.to_srgb() { rgb } else { old.with_alpha(rgb.a()) }
+}
+
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
@@ -861,6 +930,10 @@ mod tests {
         }));
         assert!(!offers_additive(|ui, c| {
             super::color_button(ui, c);
+        }));
+        assert!(!offers_additive(|ui, c| {
+            let [r, g, b, a] = c.to_srgba_unmultiplied();
+            super::rgba_button(ui, rustgis_engine::map::Rgba([r, g, b, a]));
         }));
     }
 

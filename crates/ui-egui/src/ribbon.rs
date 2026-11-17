@@ -4723,12 +4723,15 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
             }
         });
         col(ui, |ui| {
-            let mut c = crate::theme::c32(layer.renderer.base_symbol().fill);
+            // A fill No Fill hides shows the opacity Restore Fill gives back, so a colour picked
+            // here is drawn (#2308).
+            let fill = layer.renderer.base_symbol().fill;
+            let shown = rustgis_engine::cmd::layer::hidden_fill_opacity(layer, None);
             ui.horizontal(|ui| {
-                let resp = crate::widgets::color_button(ui, &mut c);
-                if resp.changed() {
+                let (resp, picked) = crate::widgets::rgba_button(ui, shown.map_or(fill, |a| fill.with_alpha(a)));
+                if let Some(c) = picked {
                     crate::widgets::one_step_per_press(app, &resp);
-                    let _ = app.run("layer.color", json!({"color": crate::theme::rgba(c).hex8()}));
+                    let _ = app.run("layer.color", json!({"color": c.hex8()}));
                 }
                 // A line has no inside: its colour is the line's (the outline is the "Outline" width below).
                 let name = if layer.geometry_type() == GeometryType::Polyline { tl!("Color") } else { tl!("Fill") };
@@ -5778,6 +5781,157 @@ mod tests {
         assert_eq!(color(h.state()), before);
         h.state_mut().run("edit.redo", json!(null)).unwrap();
         assert_eq!(color(h.state()), after);
+    }
+
+    /// A colour picked in the Fill swatch after No Fill is drawn at the opacity No Fill hid, not
+    /// kept at No Fill's 0 (#2308).
+    #[test]
+    fn a_fill_picked_after_no_fill_is_drawn() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let fill = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill;
+        let before = fill(h.state());
+        h.get_by_label("No Fill").click();
+        h.run();
+        assert_eq!(fill(h.state()).a(), 0);
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        // The picker's R/G/B/A numbers come first, then Outline: a new red.
+        let red = if before.r() == 200 { "100" } else { "200" };
+        type_into(&mut h, 0, red);
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let after = fill(h.state());
+        assert_eq!(after.r().to_string(), red, "the colour picked");
+        assert_eq!(after.a(), before.a(), "drawn at the opacity No Fill hid");
+        assert!(h.state().session.map().layer(id).unwrap().no_fill.is_none());
+    }
+
+    /// A fill transparent before No Fill shows so in the Fill swatch, as Restore Fill gives it back,
+    /// and keeps the colour picked there: its hue isn't lost at 0 opacity (#2308).
+    #[test]
+    fn a_transparent_fill_picked_after_no_fill_keeps_its_colour() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.state_mut().run("layer.color", json!({"color": "#33669900"})).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let fill = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill;
+        h.get_by_label("No Fill").click();
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        // A transparent picker edits linear values: a new red, half way up.
+        type_into(&mut h, 0, "0.5");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let after = fill(h.state());
+        assert_eq!((after.r(), after.g(), after.b(), after.a()), (188, 0x66, 0x99, 0), "the new red, the rest kept, still transparent");
+        assert!(h.state().session.map().layer(id).unwrap().no_fill.is_none());
+    }
+
+    /// Opening the Fill swatch and leaving it open picks nothing, for a colour egui's own colour
+    /// model doesn't round-trip exactly too: No Fill stays on, and there is no step to undo.
+    #[test]
+    fn opening_the_fill_swatch_picks_nothing() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.state_mut().run("layer.color", json!({"color": "#0000fcff"})).unwrap();
+        h.state_mut().run("layer.noFill", json!(null)).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let undo = h.state().session.undo_depth();
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        for _ in 0..5 {
+            h.step();
+        }
+        assert!(h.state().session.map().layer(id).unwrap().no_fill.is_some(), "No Fill stays on");
+        assert_eq!(h.state().session.undo_depth(), undo, "nothing to undo");
+    }
+
+    /// Dragging a transparent fill's opacity up in its picker only raises it: the picker's numbers
+    /// keep their units while the drag makes the colour opaque.
+    #[test]
+    fn dragging_a_transparent_fills_opacity_up_raises_it() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.state_mut().run("layer.color", json!({"color": "#33669900"})).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let alpha = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill.a();
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        // R, G, B, then A.
+        let at = h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(3).unwrap().rect().center();
+        let mut seen = vec![alpha(h.state())];
+        drag_by(&mut h, at, |app| seen.push(alpha(app)));
+        seen.push(alpha(h.state()));
+        assert!(seen.windows(2).all(|w| w[1] >= w[0]) && seen.last() > seen.first(), "{seen:?}");
+    }
+
+    /// Typing a transparent fill's opacity, key by key, keeps the picker's units: the number typed
+    /// is the one set, though the colour turns opaque half way through.
+    #[test]
+    fn typing_a_transparent_fills_opacity_keeps_its_units() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.state_mut().run("layer.color", json!({"color": "#33669900"})).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let alpha = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill.a();
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        // R, G, B, then A, in linear units while transparent.
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(3).unwrap().focus();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        for key in ["0", ".", "5", "5"] {
+            h.event(egui::Event::Text(key.into()));
+            h.run();
+        }
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(alpha(h.state()), 140, "0.55 of 255");
+        // Now opaque: the next number, focused straight from this one, is in bytes.
+        let red = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill.r();
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().focus();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("200".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!((red(h.state()), alpha(h.state())), (200, 140), "a red of 200, in bytes");
+    }
+
+    /// Units held for one number don't carry to the next, focused straight from it: an opaque
+    /// fill's opacity typed to 0 makes the red typed next a linear one.
+    #[test]
+    fn the_next_number_takes_the_units_for_the_colour_it_finds() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.state_mut().run("layer.color", json!({"color": "#336699ff"})).unwrap();
+        h.run();
+        let id = h.state().session.active_layer.unwrap();
+        let fill = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().fill;
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        let typed = |h: &mut egui_kittest::Harness<'static, RustGisApp>, nth: usize, text: &str| {
+            h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(nth).unwrap().focus();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.event(egui::Event::Text(text.into()));
+            h.run();
+        };
+        // A, in bytes while opaque, then R straight after, with no Enter between.
+        typed(&mut h, 3, "0");
+        assert_eq!(fill(h.state()).a(), 0);
+        typed(&mut h, 0, "1");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!((fill(h.state()).r(), fill(h.state()).a()), (255, 0), "a full red, in linear units, still transparent");
     }
 
     /// Focuses the harness's `nth` number to type into it, and types `text` over its value.
