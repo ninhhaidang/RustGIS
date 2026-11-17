@@ -1589,7 +1589,18 @@ In a `gp.run` line's `"params"`, a value offers what the tool's parameter takes,
 form does: the layers of its kind (polygon, point, raster, vector; any layer, then the tables),
 the fields of the tool's input that it takes (numeric, holding coordinates), or its choices
 (`"units": "` offers `Kilometers`, `Meters`, …). Accepting one writes its name
-as the line's JSON needs it (`"Big \"lakes\""`). A `{` or `[`
+as the line's JSON needs it (`"Big \"lakes\""`).
+In the string of a key that takes an expression (its type is `sql` or `expression` in the
+command's help: `"where"` in `select.byAttributes`, `"expression"` in `edit.calculateField`,
+`labels.by`'s keys…; in a `gp.run` line, a tool's expression, such as `selectByAttributes`'s
+`"where"`), the list is the one [Calculate Field](expressions.md#calculate-field) shows, anywhere
+in the string: the fields of the line's layer or table (in `gp.run`, of the tool's input, before
+or after it), the functions, the variables and the keywords that fit, with the same help beside.
+Where the line names no layer it can find, it offers the language's words without fields.
+Accepting one writes it as the string needs it, the rest of the string left as written: a field
+begun with an escaped quote is closed with one (`"where": "\"Pop Est\""`), and a function comes
+with its brackets, the cursor inside. A key inside another key's objects, such as a display
+filter's `"where"`, offers nothing yet. A `{` or `[`
 typed closes itself, the cursor inside, unless text follows it or it's in a string or a comment;
 so does a `"` where a string can start (after a space, `{`, `[`, `,` or `:`). A `}` or `]` typed
 before the same one steps over it, as does a `"` typed before the quote that ends its string, and

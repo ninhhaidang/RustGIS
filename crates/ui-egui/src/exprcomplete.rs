@@ -55,6 +55,13 @@ impl Offered for Offer {
     }
 }
 
+impl Offer {
+    /// Where the word it replaces starts (a char index of the expression).
+    pub(crate) fn start(&self) -> usize {
+        self.start
+    }
+}
+
 /// A field as an expression names it: as it is when it reads as a plain name, else in double
 /// quotes (a space, a leading digit, a keyword of the language).
 pub(crate) fn field_ref(name: &str) -> String {
@@ -72,7 +79,7 @@ fn starts_with(name: &str, prefix: &str) -> bool {
 /// what goes there that starts with the word typed (the word typed whole isn't offered again).
 /// Only once a character of the word is typed (a quote begun counts), unless `asked`
 /// (Ctrl+Space).
-fn offer_from(c: &Completion, text: &str, ds: &Dataset, asked: bool) -> Option<Offer> {
+pub(crate) fn offer_from(c: &Completion, text: &str, ds: &Dataset, asked: bool) -> Option<Offer> {
     if c.place == Place::Text || (c.word.is_empty() && !asked) {
         return None;
     }
@@ -225,13 +232,8 @@ pub(crate) fn expr_edit(
         });
         offer
     };
-    let icon = |offer: &Offer, item: &str| matches!(find(offer, item), Some(Item::Field(_))).then_some("field");
-    let draw = |ui: &mut Ui, offer: &Offer, item: &str, width: f32| {
-        if let Some(of) = find(offer, item) {
-            ui.add_space(GAP);
-            draw_help(ui, of, ds, width);
-        }
-    };
+    let icon = |offer: &Offer, item: &str| names_field(offer, item).then_some("field");
+    let draw = |ui: &mut Ui, offer: &Offer, item: &str, width: f32| draw_item(ui, offer, item, ds, width);
     let clicked = state.list.show(ui, id.with("expr_list"), &out, visible, work, icon, draw);
     // The call the cursor is in, kept with the offer `work` worked out for the list this frame
     // (it works one out for the cursor whenever the box has the focus). Shown while no list is open: one open only hides
@@ -397,6 +399,20 @@ fn find<'a>(offer: &'a Offer, item: &str) -> Option<&'a Item> {
     offer.items.iter().position(|i| i == item).and_then(|i| offer.of.get(i))
 }
 
+/// Whether `item` of `offer` is a field, shown after a field's icon.
+pub(crate) fn names_field(offer: &Offer, item: &str) -> bool {
+    matches!(find(offer, item), Some(Item::Field(_)))
+}
+
+/// The help of `item` of `offer` beside the list, after a gap (`draw_help`): the expression box's
+/// list and the Script's show the same.
+pub(crate) fn draw_item(ui: &mut Ui, offer: &Offer, item: &str, ds: Option<&Dataset>, width: f32) {
+    if let Some(of) = find(offer, item) {
+        ui.add_space(GAP);
+        draw_help(ui, of, ds, width);
+    }
+}
+
 /// The help beside the list: a function's signature, coloured as the Script colours one, what
 /// it gives and an example; a field's type and alias; what a variable reads or a keyword does.
 fn draw_help(ui: &mut Ui, item: &Item, ds: Option<&Dataset>, width: f32) {
@@ -536,7 +552,7 @@ fn word_rest(rest: &[char], quote: Option<char>) -> usize {
 /// `text` with `item` of `offer` accepted (`accept`), and where the cursor goes (chars). None
 /// past the longest expression read (`MAX_LEN`, as the box takes no more): nothing is put in
 /// part, as a call left open there couldn't be closed.
-fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
+pub(crate) fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
     let of = find(offer, item)?;
     let chars: Vec<char> = text.chars().collect();
     let (before, rest) = (chars.get(..offer.start)?, chars.get(offer.end..)?);
