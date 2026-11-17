@@ -1130,6 +1130,7 @@ impl Agent {
 /// Commands worth knowing without a search: their parameters come from the registry.
 const COMMON: &[&str] = &[
     "map.goToXY",
+    "map.convertPosition",
     "map.setScale",
     "map.zoomFull",
     "map.basemap",
