@@ -633,8 +633,13 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   in view, centred on the line and kept upright, and may run past its ends by about a letter; a
   line too short for its text, or (curved) one bending more than 25° from one character to the
   next, is left unlabelled. A text over 200 characters long is set straight rather than
-  curved. Points and polygons with these placements are labelled as automatic
-  (`labels.placement={"layer": "Rivers", "position": "curved"}`).
+  curved. Points with these placements, and polygons placed parallel, are labelled as automatic
+  (`labels.placement={"layer": "Rivers", "position": "curved"}`). A polygon placed **Curved**
+  has its label on one line along its centre line, the longest path down the middle of its part
+  in view, as a lake's or a valley's name follows its shape: from its middle, else as near it as
+  the text fits, with the polygon at least half the text's height either side and the centre
+  line trimmed short of its tips. A polygon too short, narrow or sharply bent for its text is
+  labelled as automatic (`labels.placement={"layer": "Lakes", "position": "curved"}`).
 - **Other places round points**: a point's label whose place another label takes tries the
   other places round the point, corners first (above right, above left, below right, below left,
   right, left, above, below, leaving out its own), and goes to the first where

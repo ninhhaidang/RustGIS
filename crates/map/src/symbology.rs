@@ -2992,8 +2992,8 @@ pub enum LabelPlacement {
     /// Along a line, straight, turned to its direction across the text, at its middle; points
     /// and polygons are labelled as `Auto`.
     Parallel,
-    /// Along a line, each character turned with it where it bends, at its middle; points and
-    /// polygons are labelled as `Auto`.
+    /// Along a line, each character turned with it where it bends, at its middle; a polygon's
+    /// along its centre line (#2262), as `Auto` where it doesn't fit; points as `Auto`.
     Curved,
     /// A point's label turned square to the nearest line of [`LabelClass::square_to`], starting
     /// at the point (#2263); a point with no line that near, lines and polygons as `Auto`. (Not

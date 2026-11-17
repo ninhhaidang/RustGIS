@@ -6,6 +6,7 @@
 //! the labels too, for export and the command line.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod area_labels;
 mod block;
 pub mod cancel;
 mod canvas;
@@ -5169,6 +5170,14 @@ fn render_frame(
                         let curving = class.placement == LabelPlacement::Curved
                             && matches!(g, Geometry::Line(_))
                             && raw.graphemes(true).nth(line_labels::MAX_CURVED_CHARS).is_none();
+                        // A polygon's label curved along its centre line (#2262): its text unwrapped,
+                        // kept for that; where it doesn't fit, placed and wrapped as `Auto`.
+                        let mut unwrapped = (class.placement == LabelPlacement::Curved
+                            && matches!(g, Geometry::Polygon(_))
+                            && point.is_some()
+                            && moved.is_none()
+                            && raw.graphemes(true).nth(line_labels::MAX_CURVED_CHARS).is_none())
+                        .then(|| raw.clone());
                         let mut text =
                             if curving || (class.wrap_char.is_none() && class.wrap_length == 0) { raw } else { class.wrap(&raw) };
                         // Placed as at its own size, then that much farther out: the gap between
@@ -5351,6 +5360,12 @@ fn render_frame(
                         {
                             squared = true;
                             places.push((0, lx, ly, Some(angle), Vec::new()));
+                        } else if let (Some(line_text), Geometry::Polygon(polys)) = (unwrapped.as_deref(), g)
+                            && let Some(((cx, cy), glyphs)) =
+                                area_labels::glyphs(ctx, polys, line_text, |c| text::measure_in(c, size, face), spacing * 1.33, size)
+                        {
+                            places.push((0, cx, cy, None, glyphs));
+                            text = unwrapped.take().unwrap_or_default();
                         } else {
                             let (lx, ly) = place(class.placement);
                             // Turned by its angle expression (degrees clockwise), about its centre,
