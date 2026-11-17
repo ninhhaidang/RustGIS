@@ -4920,3 +4920,4 @@ year	年
 Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	無法下載地圖上 {language} 文字所需的字型，地圖和匯出檔中將缺少這些文字；請在「設定 › 語言」選擇任一語言以重試。
 No installed font draws the {language} text on the map, so it is left out of the map and its exports.	沒有已安裝的字型能繪製地圖上的 {language} 文字，地圖和匯出檔中將缺少這些文字。
 Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	正在下載地圖上 {language} 文字所需的字型。下載完成前匯出的圖片會缺少這些文字。
+Some characters of the {language} text on the map aren't in its downloaded font, so they are left out.	地圖上 {language} 文字中有部分字元不在已下載的字型裡，因此略去。
