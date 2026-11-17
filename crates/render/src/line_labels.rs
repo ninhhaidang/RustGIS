@@ -274,6 +274,40 @@ impl Line {
         best
     }
 
+    /// Where text `len` points long is centred on the line's straightest stretches, straightest
+    /// first, at most `most` of them, none within half the text of another (#2265). A stretch's
+    /// straightness is its end-to-end distance over its length along the line; on a tie, the one
+    /// nearer the middle comes first. A line no longer than the text: its middle.
+    pub(super) fn straightest(&self, len: f32, most: usize) -> Vec<f32> {
+        let total = self.length();
+        let slack = total - len;
+        if !(len.is_finite() && len > 0.0 && slack > 0.0) {
+            return vec![total / 2.0];
+        }
+        // A stretch every quarter of the text, at most a few hundred in all, the last at the end.
+        let step = (len / 4.0).max(slack / 256.0);
+        let starts = (slack / step).ceil() as usize;
+        let mut stretches: Vec<(f32, f32)> = (0..=starts)
+            .filter_map(|k| {
+                let s = (k as f32 * step).min(slack);
+                let (a, b) = (self.fwd.at(s)?, self.fwd.at(s + len)?);
+                Some(((b.0 - a.0).hypot(b.1 - a.1) / len, s + len / 2.0))
+            })
+            .collect();
+        let mid = total / 2.0;
+        stretches.sort_by(|a, b| b.0.total_cmp(&a.0).then((a.1 - mid).abs().total_cmp(&(b.1 - mid).abs())));
+        let mut out: Vec<f32> = Vec::with_capacity(most);
+        for (_, at) in stretches {
+            if out.len() >= most {
+                break;
+            }
+            if out.iter().all(|o| (o - at).abs() >= len / 2.0) {
+                out.push(at);
+            }
+        }
+        out
+    }
+
     /// A placement's centre on the path, without laying out its characters.
     pub(super) fn anchor(&self, at: f32) -> Option<(f32, f32)> {
         self.fwd.at(at)
@@ -352,6 +386,56 @@ impl Line {
         }
         Some((centre, out))
     }
+}
+
+/// The words a fitted label abbreviates when it doesn't fit, unless its class says otherwise
+/// (#2265): streams' generic names in English, Portuguese and Spanish.
+const ABBREVIATIONS: &[(&str, &str)] = &[
+    ("Creek", "Cr."),
+    ("River", "R."),
+    ("Canyon", "Cyn."),
+    ("Brook", "Bk."),
+    ("Branch", "Br."),
+    ("Fork", "Fk."),
+    ("Córrego", "Cór."),
+    ("Ribeirão", "Rib."),
+    ("Rio", "R."),
+    ("Riacho", "Rch."),
+    ("Arroio", "Arr."),
+    ("Igarapé", "Ig."),
+    ("Río", "R."),
+    ("Arroyo", "Ao."),
+    ("Quebrada", "Qda."),
+    ("Riachuelo", "Rchlo."),
+    ("Cañada", "Cda."),
+    ("Barranco", "Bco."),
+];
+
+/// `text` with each whole word that `own`, or else the built-in list, abbreviates (matched
+/// ignoring case) put short; `None` when it has no such word (#2265).
+pub(super) fn abbreviated(text: &str, own: &std::collections::BTreeMap<String, String>) -> Option<String> {
+    let short = |word: &str| -> Option<&str> {
+        let lower = word.to_lowercase();
+        own.iter()
+            .find(|(w, _)| w.to_lowercase() == lower)
+            .map(|(_, s)| s.as_str())
+            .or_else(|| ABBREVIATIONS.iter().find(|(w, _)| w.to_lowercase() == lower).map(|(_, s)| *s))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    // Each word with the spaces after it.
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end_matches(char::is_whitespace);
+        match short(word) {
+            Some(s) if !word.is_empty() => {
+                out.push_str(s);
+                out.push_str(&piece[word.len()..]);
+                changed = true;
+            }
+            _ => out.push_str(piece),
+        }
+    }
+    changed.then_some(out)
 }
 
 /// Middle first, then the nearest places either side, at most eight places in all.
@@ -768,5 +852,35 @@ mod tests {
         assert!(spread(&below) < spread(&on), "inside it, closer");
         // A quarter of the way to the bend's centre: they would run together.
         assert!(curved_off(on, -50.0).is_none());
+    }
+
+    /// Whole words only, ignoring case, a class's own over the built-in list, spaces kept (#2265).
+    #[test]
+    fn a_name_is_abbreviated_by_whole_words() {
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(abbreviated("Ribeirão  das Pedras", &none).as_deref(), Some("Rib.  das Pedras"));
+        assert_eq!(abbreviated("Mill CREEK", &none).as_deref(), Some("Mill Cr."));
+        assert_eq!(abbreviated("Riozinho", &none), None, "not inside a word");
+        assert_eq!(abbreviated("", &none), None);
+        let own = std::collections::BTreeMap::from([("creek".to_owned(), "Ck".to_owned()), ("Fundo".to_owned(), "Fdo.".to_owned())]);
+        assert_eq!(abbreviated("Creek Fundo\n", &own).as_deref(), Some("Ck Fdo.\n"));
+    }
+
+    /// Straightest first, none within half the text of another; a line no longer than the text,
+    /// its middle (#2265).
+    #[test]
+    fn the_straightest_stretches_come_first() {
+        // A zigzag 200 points long, then 200 points straight.
+        let mut line: Vec<(f32, f32)> = (0..=20).map(|i| (i as f32 * 10.0, if i % 2 == 1 { 8.0 } else { 0.0 })).collect();
+        line.push((400.0, 0.0));
+        let line = Line::new(&line).unwrap();
+        let at = line.straightest(60.0, 4);
+        assert!(!at.is_empty() && at.len() <= 4, "{at:?}");
+        let x = |d: f32| line.anchor(d).unwrap().0;
+        assert!(x(at[0]) > 230.0, "on the straight half: {at:?}");
+        assert!(at.iter().enumerate().all(|(i, a)| at.iter().skip(i + 1).all(|b| (a - b).abs() >= 30.0)), "{at:?}");
+        assert!(at.iter().all(|d| (30.0..=line.length() - 30.0).contains(d)), "{at:?}");
+        assert_eq!(Line::new(&[(0.0, 0.0), (50.0, 0.0)]).unwrap().straightest(60.0, 4), vec![25.0]);
+        assert_eq!(Line::new(&[(0.0, 0.0), (50.0, 0.0)]).unwrap().straightest(f32::NAN, 4), vec![25.0]);
     }
 }

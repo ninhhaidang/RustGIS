@@ -2512,6 +2512,17 @@ pub struct LabelClass {
     /// [`Perpendicular`](LabelPlacement::Perpendicular) (#2263); none labels it as `Auto`.
     #[serde(default, deserialize_with = "de_square_to", skip_serializing_if = "Option::is_none")]
     pub square_to: Option<SquareTo>,
+    /// Along a line placed curved, how the label fits the room its line gives (#2265): off places
+    /// it as before; [`LabelFit::Auto`] abbreviates a name that doesn't fit and sets one that takes
+    /// more than a third of the line on its straightest stretch.
+    #[serde(default, deserialize_with = "de_fit", skip_serializing_if = "LabelFit::is_off")]
+    pub fit: LabelFit,
+    /// The words a fitted label abbreviates when it doesn't fit, each to its abbreviation (#2265):
+    /// whole words, matched ignoring case, taking the place of the built-in list's for the same
+    /// word. At most [`MAX_ABBREVIATIONS`], each word and abbreviation at most
+    /// [`MAX_ABBREVIATION_CHARS`] characters.
+    #[serde(default, deserialize_with = "de_abbreviations", skip_serializing_if = "BTreeMap::is_empty")]
+    pub abbreviations: BTreeMap<String, String>,
     /// Labels moved by hand (the Move Label tool, as QGIS's): each feature's, by its id, drawn
     /// where it was put, a callout's line back to the feature when the class has callouts. At
     /// most [`MAX_MOVED_LABELS`], kept in order of id (so a label's is found without a scan).
@@ -2964,6 +2975,54 @@ fn default_square_within() -> f32 {
     20.0
 }
 
+/// How a label along a line fits the room the line gives ([`LabelClass::fit`], #2265).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LabelFit {
+    /// Placed as its placement says, whatever room there is.
+    #[default]
+    Off,
+    /// Abbreviated when it doesn't fit, and set on the line's straightest stretch when it takes
+    /// more than a third of it.
+    Auto,
+}
+
+impl LabelFit {
+    pub fn is_off(&self) -> bool {
+        *self == LabelFit::Off
+    }
+}
+
+/// Most words a class abbreviates ([`LabelClass::abbreviations`]).
+pub const MAX_ABBREVIATIONS: usize = 256;
+
+/// Most characters in an abbreviated word, or in its abbreviation.
+pub const MAX_ABBREVIATION_CHARS: usize = 64;
+
+/// Whether `word` → `short` can be kept in [`LabelClass::abbreviations`]: one word (no spaces),
+/// each side not blank and at most [`MAX_ABBREVIATION_CHARS`] characters.
+pub fn is_abbreviation(word: &str, short: &str) -> bool {
+    let fine = |s: &str| !s.trim().is_empty() && s.chars().nth(MAX_ABBREVIATION_CHARS).is_none();
+    fine(word) && fine(short) && !word.chars().any(char::is_whitespace)
+}
+
+/// A project file's `fit`: one that doesn't read is off.
+fn de_fit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LabelFit, D::Error> {
+    Ok(lenient::<D, LabelFit>(d)?.unwrap_or_default())
+}
+
+/// A project file's `abbreviations`: those [`is_abbreviation`] keeps, at most
+/// [`MAX_ABBREVIATIONS`]; one that isn't an object of texts is none.
+fn de_abbreviations<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let all = lenient::<D, BTreeMap<String, serde_json::Value>>(d)?.unwrap_or_default();
+    Ok(all
+        .into_iter()
+        .filter_map(|(w, s)| Some((w, s.as_str()?.to_owned())))
+        .filter(|(w, s)| is_abbreviation(w, s))
+        .take(MAX_ABBREVIATIONS)
+        .collect())
+}
+
 /// A project file's `square_to`: one that doesn't read, or names no layer, is none; its
 /// `within` brought into range.
 fn de_square_to<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SquareTo>, D::Error> {
@@ -3144,6 +3203,8 @@ impl LabelClass {
             show_all: false,
             callout: None,
             square_to: None,
+            fit: LabelFit::Off,
+            abbreviations: BTreeMap::new(),
             moved: Vec::new(),
             by: Default::default(),
         }

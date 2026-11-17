@@ -657,6 +657,17 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   the setting does nothing there or at a position off the line. Off by default, for the same reason
   as round points, and Lock keeps the place each label took
   (`labels.placement={"layer": "Rivers", "position": "curved", "otherPositions": true}`).
+- **Names that fit their line**: a Curved label with `"fit": "auto"` is fitted to the room its
+  line gives, as hand-lettered maps name streams. A name that can't follow the line anywhere it is
+  tried is abbreviated (whole words: Córrego → Cór., Ribeirão → Rib., Rio → R., Creek → Cr.,
+  River → R., Arroyo → Ao., from a built-in English, Portuguese and Spanish list, or the class's
+  own `"abbreviations"`, which go first) and tried again; still too long, it is left out. A name
+  that takes more than a third of the line goes on its straightest stretch rather than at the
+  middle: the stretch whose ends are farthest apart for its length. With other places along the
+  line on, the next straightest stretches are its other places. Text size by a stream's
+  importance (a Strahler order or a class field) comes from label classes or `labels.by` `"size"`
+  (`labels.placement={"layer": "Rivers", "position": "curved", "fit": "auto", "abbreviations":
+  {"Creek": "Ck"}}`).
 - **Lock** keeps the labelled features fixed while you pan and zoom; **Pause** stops drawing
   labels for faster navigation; **View Unplaced** draws the labels that didn't fit in red. They
   apply to the whole map, so they are on the ribbon (Labeling › Map Labeling), not in the pane.

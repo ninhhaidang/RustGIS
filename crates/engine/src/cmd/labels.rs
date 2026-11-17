@@ -3,7 +3,7 @@
 
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
 use rustgis_geom::Coord;
-use rustgis_map::symbology::{MAX_LABEL_CLASS_NAME, MAX_LABEL_CLASSES, label_class_name};
+use rustgis_map::symbology::{LabelFit, MAX_LABEL_CLASS_NAME, MAX_LABEL_CLASSES, label_class_name};
 use rustgis_map::{
     LabelBackground, LabelClass, LabelMatcher, LabelPlacement, Labeling, Layer, Renderer, Rgba, SquareSide, SquareTo, Symbol,
 };
@@ -143,12 +143,43 @@ pub fn commands() -> Vec<C> {
                 // A position that isn't a placement name is refused, not dropped for the others (null:
                 // none, as for the other keys).
                 None if p.get("position").is_some_and(|v| !v.is_null()) => return Err("position must be a placement name".into()),
-                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "callout", "to", "side"].iter().any(|k| p.get(k).is_some()) => {
+                None if ["offset", "repeat", "lineOffset", "otherPositions", "showAll", "callout", "to", "side", "fit", "abbreviations"]
+                    .iter()
+                    .any(|k| p.get(k).is_some()) =>
+                {
                     None
                 }
                 None => {
-                    return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll, a callout, to or side)".into());
+                    return Err("position is required (or an offset, a repeat, a lineOffset, otherPositions, showAll, a callout, to, side, fit or abbreviations)".into());
                 }
+            };
+            // Along a line placed curved, the label fitted to the room the line gives (#2265).
+            let fit = match p.get("fit") {
+                None => None,
+                Some(Value::Null) => Some(LabelFit::Off),
+                Some(v) => Some(serde_json::from_value::<LabelFit>(v.clone()).map_err(|_| "fit must be \"auto\" or \"off\"")?),
+            };
+            // The words it abbreviates when it doesn't fit (null or {}: the built-in list alone).
+            let abbreviations = match p.get("abbreviations") {
+                None => None,
+                Some(Value::Null) => Some(std::collections::BTreeMap::new()),
+                Some(Value::Object(o)) => {
+                    let mut kept = std::collections::BTreeMap::new();
+                    for (word, short) in o {
+                        let short = short.as_str().filter(|s| rustgis_map::symbology::is_abbreviation(word, s)).ok_or_else(|| {
+                            format!(
+                                "abbreviations: {word:?} must be one word abbreviated to a text, each at most {} characters",
+                                rustgis_map::symbology::MAX_ABBREVIATION_CHARS
+                            )
+                        })?;
+                        kept.insert(word.clone(), short.to_owned());
+                    }
+                    if kept.len() > rustgis_map::symbology::MAX_ABBREVIATIONS {
+                        return Err(format!("abbreviations: at most {} words", rustgis_map::symbology::MAX_ABBREVIATIONS));
+                    }
+                    Some(kept)
+                }
+                Some(_) => return Err("abbreviations must be an object of words and their abbreviations, as {\"Creek\": \"Cr.\"}".into()),
             };
             let offset = match p.get("offset") {
                 None => None,
@@ -252,6 +283,12 @@ pub fn commands() -> Vec<C> {
                 if let Some(a) = show_all {
                     c.show_all = a;
                 }
+                if let Some(f) = fit {
+                    c.fit = f;
+                }
+                if let Some(a) = abbreviations.clone() {
+                    c.abbreviations = a;
+                }
                 match callout {
                     Some(Callout::Off) => c.callout = None,
                     Some(Callout::On) => c.callout = Some(c.callout.unwrap_or(rustgis_map::symbology::DEFAULT_CALLOUT)),
@@ -291,7 +328,7 @@ pub fn commands() -> Vec<C> {
         .inputs(super::Inputs::single_layer)
         .when(need_feature_layer)
         .params(
-            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends)|"perpendicular" (a point's, square to the nearest line of `to`, starting at the point; none that near: as auto) (required without offset, repeat, lineOffset, otherPositions, showAll, callout, to or side), "to"?: {"layer": a line or polygon layer's name, "within"?: points (1 to 500; 20)} | null, "side"?: "away" (the side of the line the point isn't on; the default)|"left"|"right" (as the line runs), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; perpendicular: [out along the normal, down as the text reads]; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "showAll"?: bool (every label drawn, over the others where they crowd), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon)}"#,
+            r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends)|"perpendicular" (a point's, square to the nearest line of `to`, starting at the point; none that near: as auto) (required without offset, repeat, lineOffset, otherPositions, showAll, callout, to, side, fit or abbreviations), "to"?: {"layer": a line or polygon layer's name, "within"?: points (1 to 500; 20)} | null, "side"?: "away" (the side of the line the point isn't on; the default)|"left"|"right" (as the line runs), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; perpendicular: [out along the normal, down as the text reads]; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "lineOffset"?: points (-200 to 200) between a line and its label's nearest edge, above the line as the text reads, negative below it (0 or null: on the line; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "fit"?: "auto"|"off" (curved along a line: "auto" abbreviates a name that can't follow the line, and sets one longer than a third of it on its straightest stretch; "off" or null: as placed), "abbreviations"?: {word: abbreviation} (whole words a fitted label puts short, ignoring case, over the built-in English, Portuguese and Spanish list, as {"Creek": "Cr.", "Córrego": "Cór."}; null or {}: the built-in list alone), "showAll"?: bool (every label drawn, over the others where they crowd), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon)}"#,
         ),
         // Labels moved by hand (the Move Label tool, as QGIS's): kept by their feature's id.
         C::new("labels.move", "Move Label", "Labeling › Label Placement", |s, p| {

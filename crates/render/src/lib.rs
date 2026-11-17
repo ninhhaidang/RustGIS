@@ -5257,11 +5257,56 @@ fn render_frame(
                                     .collect()
                             };
                             if curving {
-                                let chars: Vec<String> = text.graphemes(true).map(String::from).collect();
-                                let advances: Vec<f32> = chars.iter().map(|c| text::measure_in(c, size, face)).collect();
+                                let measure = |t: &str| -> (Vec<String>, Vec<f32>) {
+                                    let chars: Vec<String> = t.graphemes(true).map(String::from).collect();
+                                    let advances = chars.iter().map(|c| text::measure_in(c, size, face)).collect();
+                                    (chars, advances)
+                                };
+                                let (mut chars, mut advances) = measure(&text);
+                                // Fitted to its line (#2265): abbreviated when the full name can't
+                                // follow it anywhere it is tried, and set on its straightest
+                                // stretches when it takes more than a third of it. The places it
+                                // can follow, best first; none: placed as without `fit`.
+                                let mut fitted: Option<Vec<f32>> = None;
+                                if class.fit == rustgis_map::symbology::LabelFit::Auto {
+                                    let gap = spacing * 1.33;
+                                    let follows = |advances: &[f32]| -> Vec<f32> {
+                                        let len = line_labels::curved_len(advances, gap);
+                                        // Where it will be placed: a repeat's places as they are.
+                                        let tried = match (locked_at, repeat) {
+                                            (Some(at), _) => vec![at],
+                                            (None, Some(_)) => {
+                                                line_labels::repeats(line.length(), repeat).into_iter().map(|(_, d)| d).collect()
+                                            }
+                                            (None, None) if 3.0 * len > line.length() => line.straightest(len, 8),
+                                            (None, None) => line_labels::positions(line.length(), len, overrun),
+                                        };
+                                        tried
+                                            .into_iter()
+                                            .filter(|d| {
+                                                line.curved(advances, gap, size, overrun, Some(*d))
+                                                    .and_then(|c| line_labels::curved_off(c, off))
+                                                    .is_some()
+                                            })
+                                            .collect()
+                                    };
+                                    let mut at = follows(&advances);
+                                    if at.is_empty()
+                                        && let Some(short) = line_labels::abbreviated(&text, &class.abbreviations)
+                                    {
+                                        let (c, a) = measure(&short);
+                                        at = follows(&a);
+                                        if !at.is_empty() {
+                                            (text, chars, advances) = (short, c, a);
+                                        }
+                                    }
+                                    // (A locked label keeps its own place; only its text is fitted.)
+                                    fitted = Some(at).filter(|at| !at.is_empty() && locked_at.is_none());
+                                }
+                                let first = locked_at.or_else(|| fitted.as_ref().and_then(|f| f.first().copied()));
                                 if try_others {
                                     let width = line_labels::curved_len(&advances, spacing * 1.33);
-                                    let positions = positions(width);
+                                    let positions = fitted.clone().unwrap_or_else(|| positions(width));
                                     // A saved slot the curve cannot take has no truthful preview either (as for a
                                     // straight line): never draw one at the anchor or the middle.
                                     if lock.as_ref().and_then(|k| k.get(&key)).is_some_and(|won| usize::from(won.place) >= positions.len())
@@ -5269,12 +5314,12 @@ fn render_frame(
                                         continue;
                                     }
                                     line_places = Some(LinePlaces { anchors: anchors(&positions), ..Default::default() });
-                                    let Some((cx, cy)) = line.anchor(locked_at.unwrap_or(line.length() / 2.0)) else { continue };
-                                    let angle = line.parallel(width, overrun, locked_at).map(|(_, _, a)| a);
+                                    let Some((cx, cy)) = line.anchor(first.unwrap_or(line.length() / 2.0)) else { continue };
+                                    let angle = line.parallel(width, overrun, first).map(|(_, _, a)| a);
                                     // Off the line as its curves will be (by the line's direction
                                     // where the text can't fit, as a tilted view's preview is).
                                     let (cx, cy) =
-                                        angle.or_else(|| line.direction(locked_at.unwrap_or(line.length() / 2.0))).map_or((cx, cy), |a| {
+                                        angle.or_else(|| line.direction(first.unwrap_or(line.length() / 2.0))).map_or((cx, cy), |a| {
                                             let (x, y, _) = line_labels::parallel_off((cx, cy, a), off);
                                             (x, y)
                                         });
@@ -5295,7 +5340,12 @@ fn render_frame(
                                         locked,
                                     ));
                                 } else {
-                                    for (i, at) in line_labels::repeats(line.length(), repeat) {
+                                    // Fitted without a repeat: on the best place it follows.
+                                    let along = match (&fitted, repeat) {
+                                        (Some(at), None) => at.first().map(|d| (0, *d)).into_iter().collect(),
+                                        _ => line_labels::repeats(line.length(), repeat),
+                                    };
+                                    for (i, at) in along {
                                         let Some(((cx, cy), turns)) = line
                                             .curved(&advances, spacing * 1.33, size, overrun, Some(at))
                                             .and_then(|c| line_labels::curved_off(c, off))
@@ -12351,6 +12401,81 @@ mod tests {
         let dark = pm.pixels().iter().filter(|p| p.alpha() > 200 && p.red() < 120).count();
         assert!(dark > 30, "{dark} text pixels");
         assert_eq!(label_boxes(curved).0.len(), 10);
+    }
+
+    /// Fitted to its line (#2265): a name too long for a short line is abbreviated, one too long
+    /// even then is left out, and on a line half zigzag, half straight, a long name goes on the
+    /// straight half; off, each is placed as before.
+    #[test]
+    fn a_fitted_river_name_is_abbreviated_or_set_on_the_straightest_stretch() {
+        let face = text::Face { bold: false, italic: false, serif: false, family: None };
+        let width = |t: &str| t.graphemes(true).map(|c| text::measure_in(c, 12.0, face)).sum::<f32>();
+        // 1° of longitude is about 74 points at this scale; a line between the full name's length
+        // and its abbreviation's, less the overrun (the text's size) at each end.
+        let degrees = |points: f32| points / (111_320.0 / 1500.0);
+        let short_line = degrees((width("Ribeirão das Pedras") + width("Rib. das Pedras")) / 2.0 - 24.0);
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rivers", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        let level = |y: f64, len: f32| Geometry::Line(vec![vec![Coord::new(-1.0, y), Coord::new(-1.0 + f64::from(len), y)]]);
+        d.push(Some(level(1.0, short_line)), vec![Value::Text("Ribeirão das Pedras".into())]);
+        d.push(Some(level(0.5, degrees(20.0))), vec![Value::Text("Córrego Fundo".into())]);
+        // A zigzag from -1.5° to 0°, then straight to 1.5°.
+        let mut bent: Vec<Coord> =
+            (0..=15).map(|i| Coord::new(-1.5 + f64::from(i) * 0.1, -1.0 + if i % 2 == 1 { 0.08 } else { 0.0 })).collect();
+        bent.push(Coord::new(1.5, -1.0));
+        d.push(Some(Geometry::Line(vec![bent])), vec![Value::Text("Rio Doce do Norte".into())]);
+        let id = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 400.0, height: 400.0, pixels_per_point: 1.0, camera, sky: false };
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.field = "name".into();
+        l.labels.default.size = 12.0;
+        l.labels.default.placement = rustgis_map::LabelPlacement::Curved;
+        let r = render(&mut m, &view).unwrap();
+        assert!(r.labels.iter().all(|l| !l.text.starts_with("Rib")), "off: too long for its line");
+        m.layer_mut(id).unwrap().labels.default.fit = rustgis_map::symbology::LabelFit::Auto;
+        let r = render(&mut m, &view).unwrap();
+        let texts: Vec<&str> = r.labels.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.contains(&"Rib. das Pedras"), "{texts:?}");
+        let short = r.labels.iter().find(|l| l.text == "Rib. das Pedras").unwrap();
+        assert_eq!(short.glyphs.iter().map(|g| g.text.as_str()).collect::<String>(), "Rib. das Pedras");
+        assert!(texts.iter().all(|t| !t.starts_with("Cór")), "too short even abbreviated: {texts:?}");
+        let doce = r.labels.iter().find(|l| l.text == "Rio Doce do Norte").expect("placed");
+        assert!(doce.x > 220.0, "on the straight half: {}", doce.x);
+        // A class's own word list goes first.
+        m.layer_mut(id).unwrap().labels.default.abbreviations = [("Ribeirão".to_owned(), "Rb.".to_owned())].into();
+        let r = render(&mut m, &view).unwrap();
+        assert!(r.labels.iter().any(|l| l.text == "Rb. das Pedras"));
+    }
+
+    /// With a repeat, a fitted label's text is chosen where the repeats go: a name that fits only
+    /// on the line's straight arms, away from its middle, is abbreviated to fit there (#2265).
+    #[test]
+    fn a_fitted_label_with_a_repeat_is_abbreviated_where_it_repeats() {
+        let degrees = |points: f64| points / (111_320.0 / 1500.0);
+        let (arm, rise) = (degrees(200.0), degrees(40.0));
+        // Two level arms 200 points long, joined by a rise of 40 points: its middle on the rise.
+        let steps = vec![Coord::new(-arm, 0.0), Coord::new(0.0, 0.0), Coord::new(0.0, rise), Coord::new(arm, rise)];
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rivers", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Line(vec![steps])), vec![Value::Text("Ribeirão".into())]);
+        let id = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, rise / 2.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 600.0, height: 400.0, pixels_per_point: 1.0, camera, sky: false };
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.field = "name".into();
+        l.labels.default.size = 12.0;
+        l.labels.default.placement = rustgis_map::LabelPlacement::Curved;
+        l.labels.default.abbreviations = [("Ribeirão".to_owned(), "R.".to_owned())].into();
+        l.labels.default.fit = rustgis_map::symbology::LabelFit::Auto;
+        let texts = |m: &mut Map| render(m, &view).unwrap().labels.into_iter().map(|l| l.text).collect::<Vec<_>>();
+        assert_eq!(texts(&mut m), ["Ribeirão"], "without a repeat, on an arm");
+        m.layer_mut(id).unwrap().labels.default.repeat = Some(10_000.0);
+        assert_eq!(texts(&mut m), ["R."], "repeated from its middle, on the rise");
     }
 
     #[test]

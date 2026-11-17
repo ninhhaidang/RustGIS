@@ -309,6 +309,8 @@ fn class(
         show_all: false,
         callout: None,
         square_to: None,
+        fit: Default::default(),
+        abbreviations: Default::default(),
         moved: Vec::new(),
         by,
     })
