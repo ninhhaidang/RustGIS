@@ -233,6 +233,8 @@ pub(super) fn long_commands(boundaries: bool) {
         ("split", json!({"input": "Rivers", "split": "Countries"})),
         ("simplify", json!({"input": "Countries", "tolerance": 1})),
         ("countPoints", json!({"polygons": "Countries", "points": "Cities"})),
+        // Case fields alone: no statistic, so only the group loop looks at Cancel.
+        ("summaryStatistics", json!({"input": "Cities", "case": "featurecla"})),
         ("convexHull", json!({"input": "Countries", "group": "None", "output": "Hulls_each"})),
         ("convexHull", json!({"input": "Countries", "group": "All", "output": "Hulls_all"})),
         ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857", "pixelSize": if boundaries { 2000 } else { 1000000 }})),

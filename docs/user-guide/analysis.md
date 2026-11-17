@@ -896,8 +896,10 @@ fields (one field, or several as a list such as `["county", "year"]`). Rows are 
 values; records with no value form a group of their own, first. Statistics follow record order
 (`FIRST`, `LAST`, `CONCATENATE`) and use only the selected records when the table has a
 selection. Each row has the case fields, then `FREQUENCY` (the group's records), then a field
-`<STAT>_<field>` for each statistic asked for. Name the statistics in `statistics`, a list of up
-to 256 (field, statistic) pairs in the order the fields should appear:
+`<STAT>_<field>` for each statistic asked for. With case fields, no statistics and no
+Statistics Field, each row holds only the case fields and `FREQUENCY`: a count of records by
+group. Name the statistics in `statistics`, a list of up to 256 (field, statistic) pairs in the
+order the fields should appear:
 
 ```text
 gp.run={"tool":"summaryStatistics","params":{"input":"parcels","case":["county","year"],"statistics":[{"field":"income","statistic":"MEAN"},{"field":"income","statistic":"MEDIAN"},{"field":"zoning","statistic":"MODE"}]}}
@@ -952,15 +954,14 @@ dataset's field definitions and exclude its sentinel first: set a **Definition Q
 `STATIC_BFE IS NOT NULL AND STATIC_BFE <> -9999` before running Summary Statistics.
 
 **Count records by month.** To count permits by issue month, start with `issue_date` as a Date/Date-time field or ISO text
-(`YYYY-MM-DD`, optionally followed by a time). Convert other date spellings with
-**Convert Field** first ([date formats](#the-attribute-table); it reads months and days as two
-digits, so `06/23/2021` converts but `6/23/2021` doesn't).
+(`YYYY-MM-DD`, optionally followed by a time). Convert other date spellings, such as
+`6/23/2021 5:00:00 AM`, with **Convert Field** first ([date formats](#the-attribute-table)).
 
 1. Clear any selection and definition query to include all records. Add a **Text** field named
    `issue_month`, turn editing on, and use **Calculate Field** with `substr(issue_date, 1, 7)`.
    A date such as `2026-03-05` becomes `2026-03`, keeping different years separate.
-2. Run **Summary Statistics** on the permits, with **Case Fields** = `issue_month` and a
-   **COUNT** statistic on `issue_date` (use **Add statistic**).
+2. Run **Summary Statistics** on the permits, with **Case Fields** = `issue_month`, no
+   statistics and **Statistics Field** left empty.
 3. Read `FREQUENCY` as the number of permits per month. A null date and an empty-text date form
    separate groups with null and empty-text keys; if both forms occur, there are two groups. The
    output contains months present in the data; it does not fill in missing months with zero.
