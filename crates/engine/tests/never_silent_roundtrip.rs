@@ -23,12 +23,12 @@ const GEOMETRY_ONLY: [&str; 4] = ["fgb", "shp", "kml", "gpx"];
 
 /// Changes a format makes without a notice, as (format, the start of a change from [`changes`],
 /// why). Each is what the format can hold or how its reader works, not a loss of a value's
-/// number or text, except trimming, blanks read as null and (KML, GPX) a field of nulls left out,
-/// which are kept here until they are said (#1907).
+/// number or text, except trimming (Shapefile, KML, GPX), blanks read as null and (KML, GPX) a
+/// field of nulls left out, which are kept here until they are said (#1907). CSV keeps the spaces
+/// around a value (#2059).
 const LIMITS: &[(&str, &str, &str)] = &[
-    // CSV holds text: reading trims each cell, types each column from its values (`text_type`)
-    // and reads an empty cell as null.
-    ("csv", "text trimmed", "reading trims the spaces around a cell"),
+    // CSV holds text: reading types each column from its values (`text_type`) and reads an empty
+    // cell as null.
     ("csv", "blank text became null", "an empty cell is read as null"),
     ("csv", "field type changed", "a column's type comes from its values"),
     ("csv", "field of nulls type changed", "a column's type comes from its values"),
@@ -48,7 +48,7 @@ const LIMITS: &[(&str, &str, &str)] = &[
     ("geojson", "not read back: nothing", "a layer without geometry or values reads as nothing"),
     // dBase pads text with spaces and has no null text; reading makes a whole-number column an
     // integer one.
-    ("shp", "text trimmed", "dBase pads text with spaces, and reading trims them"),
+    ("shp", "text trimmed", "dBase pads text with spaces after it, and reading drops them, so spaces at its end go"),
     ("shp", "blank text became null", "dBase has no null text: blank text reads as null"),
     ("shp", "field of nulls type changed", "a number column's type comes from its values"),
     ("shp", "field type changed Double → Integer", "a column of whole numbers reads as integers"),

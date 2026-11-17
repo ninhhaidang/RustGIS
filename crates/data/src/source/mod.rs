@@ -249,11 +249,19 @@ pub struct Batch {
     /// Date-times of date fields that had digits past the microsecond, rounded to it, counted for
     /// each field by its position. Said by [`rounded_dates_note`].
     pub rounded_dates: Vec<usize>,
+    /// Text values `<Null>` read as null, counted for each field by its position. Said by
+    /// [`null_text_note`].
+    pub null_text: Vec<usize>,
 }
 
 /// Counts one more value of the field at `k` that wasn't a date, or one date-time rounded to the
 /// microsecond ([`Batch::unread_dates`], [`Batch::rounded_dates`]).
 pub(crate) fn unread_date(counts: &mut Vec<usize>, k: usize) {
+    unread_dates_by(counts, k, 1);
+}
+
+/// Counts one more text value `<Null>` read as null in the field at `k` ([`Batch::null_text`]).
+pub(crate) fn null_text_at(counts: &mut Vec<usize>, k: usize) {
     unread_dates_by(counts, k, 1);
 }
 
@@ -298,6 +306,18 @@ pub fn unread_dates_note(fields: &[crate::Field], counts: &[usize]) -> Option<St
         return None;
     }
     let what = if total == 1 { "1 value isn't a date and was".to_string() } else { format!("{total} values aren't dates and were") };
+    Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
+}
+
+/// What a read says of text values `<Null>` it read as null ([`crate::Value::is_null_marker`],
+/// [`Batch::null_text`]), naming the first five fields. `None` when there were none. It names the
+/// marker as `Null`, without its brackets: notices are redacted, which takes `<Null>` for a tag.
+pub fn null_text_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let what = if total == 1 { "1 value written as Null was".to_string() } else { format!("{total} values written as Null were") };
     Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
 }
 
@@ -625,7 +645,8 @@ pub fn materialize(src: &dyn FeatureSource) -> Result<(Dataset, ReadReport)> {
 /// [`materialize`], with `budget` bytes for a source read a chunk at a time.
 fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, ReadReport)> {
     let info = src.info();
-    let (features, skipped, unread_dates, rounded_dates) = if src.visits_chunks() { read_chunks(src, budget)? } else { read_at_once(src)? };
+    let batch = if src.visits_chunks() { read_chunks(src, budget)? } else { read_at_once(src)? };
+    let Batch { features, skipped, unread_dates, rounded_dates, null_text, .. } = batch;
     let mut ds = Dataset::new(info.name.clone(), info.geometry_type, info.fields.clone());
     ds.crs = info.coordinate_system();
     // A streamed Shapefile skips unconvertible shapes rather than retaining empty geometry.
@@ -643,7 +664,8 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         rounded_dates: rounded.clone(),
         extrusion: None,
     };
-    report.messages.extend(unread_dates.into_iter().chain(rounded).map(|n| format!("{}: {n}", info.name)));
+    let null_text = null_text_note(&info.fields, &null_text);
+    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).map(|n| format!("{}: {n}", info.name)));
     if ds.geometry_type == GeometryType::None
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {
@@ -652,9 +674,9 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
     Ok((ds, report))
 }
 
-/// Every feature of a source in one read, the rows it skipped and the dates it couldn't read
+/// Every feature of a source in one read, with the rows it skipped and the values it counted
 /// ([`Batch::unread_dates`]), refusing a source over [`MAX_LIMIT`] and an incomplete read.
-fn read_at_once(src: &dyn FeatureSource) -> Result<(Vec<Feature>, usize, Vec<usize>, Vec<usize>)> {
+fn read_at_once(src: &dyn FeatureSource) -> Result<Batch> {
     let info = src.info();
     let too_many = |n| DataError::Format(format!("{}: the layer has {n} features, more than the {MAX_LIMIT} read at once", info.name));
     // Refuse before reading or allocating a sample when the source already knows its size.
@@ -677,12 +699,12 @@ fn read_at_once(src: &dyn FeatureSource) -> Result<(Vec<Feature>, usize, Vec<usi
     if info.count.is_none() && batch.features.len() >= MAX_LIMIT {
         return Err(DataError::Format(format!("{}: the layer has more features than the {MAX_LIMIT} read at once", info.name)));
     }
-    Ok((batch.features, batch.skipped, batch.unread_dates, batch.rounded_dates))
+    Ok(batch)
 }
 
-/// Every feature of a source that can be read a chunk at a time, the rows it skipped and the dates
-/// it couldn't read, refusing the source once its features would hold more than `budget` bytes.
-fn read_chunks(src: &dyn FeatureSource, budget: u64) -> Result<(Vec<Feature>, usize, Vec<usize>, Vec<usize>)> {
+/// Every feature of a source that can be read a chunk at a time, with the rows it skipped and the
+/// values it counted, refusing the source once its features would hold more than `budget` bytes.
+fn read_chunks(src: &dyn FeatureSource, budget: u64) -> Result<Batch> {
     let info = src.info();
     let row_bytes = std::mem::size_of::<Feature>() as u64;
     let too_large = || {
@@ -717,7 +739,7 @@ fn read_chunks(src: &dyn FeatureSource, budget: u64) -> Result<(Vec<Feature>, us
         features.extend(chunk);
         Ok(())
     })?;
-    Ok((features, batch.skipped, batch.unread_dates, batch.rounded_dates))
+    Ok(Batch { features, ..batch })
 }
 
 /// The geometry type of a source that doesn't declare one, from its first feature.

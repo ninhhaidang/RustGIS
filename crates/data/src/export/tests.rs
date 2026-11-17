@@ -93,6 +93,7 @@ impl FeatureSource for Runs {
             skipped: 0,
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
+            null_text: Vec::new(),
         })
     }
     fn visits_chunks(&self) -> bool {
@@ -205,6 +206,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     csv: if ext == "csv" { crate::io::CsvLosses::of(&whole.features, whole.geometry_type) } else { Default::default() },
                     unread_dates: Vec::new(),
                     rounded_dates: Vec::new(),
+                    null_text: Vec::new(),
                     utc_dates,
                     fine_dates: if ext == "gpkg" { crate::io::fine_dates(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     written_values: if ext == "fgb" { crate::io::written_values(whole.features.iter(), &whole.fields) } else { Vec::new() },

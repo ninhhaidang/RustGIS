@@ -210,6 +210,25 @@ impl Value {
         }
     }
 
+    /// Whether a file's text is `<Null>` (any case, spaces around it allowed), which files exported
+    /// from other programs hold for a missing value.
+    pub fn is_null_marker(text: &str) -> bool {
+        text.trim().eq_ignore_ascii_case("<null>")
+    }
+
+    /// A value read from a file's text, as [`parse_source`](Value::parse_source) but for a text
+    /// field, which keeps the text as the file has it: spaces around it are kept, and all-space
+    /// text is text. Empty text and [`<Null>`](Value::is_null_marker) are null, in any field; a
+    /// reader counts the `<Null>`s it reads ([`crate::source::null_text_note`]). Text typed into the
+    /// table goes through [`parse`](Value::parse), which trims.
+    pub fn parse_file(text: &str, ty: FieldType) -> Value {
+        match ty {
+            _ if text.is_empty() || Self::is_null_marker(text) => Value::Null,
+            FieldType::Text => Value::Text(text.to_string()),
+            _ => Self::parse_source(text, ty),
+        }
+    }
+
     /// Parses user text into a value of `ty` (empty → Null). Text a number field can't hold,
     /// including a non-finite Double (`NaN`, `inf`), is Null. Dates are ISO 8601: `YYYY-MM-DD`
     /// for a date; that, a time and an optional zone for a date-time. Text that isn't one is Null.
@@ -563,6 +582,20 @@ mod tests {
         assert_eq!(json, r#"[{"Date":"2026-03-05"},{"DateTime":"2026-03-05T14:30:00+02:00"}]"#);
         assert_eq!(serde_json::from_str::<Vec<Value>>(&json).ok(), Some(vals));
         assert!(serde_json::from_str::<Value>(r#"{"Date":"2026-02-30"}"#).is_err());
+    }
+
+    /// File text keeps its spaces in a text field (#2059); empty and `<Null>` are null in any
+    /// field, numbers read past spaces, and text typed into the table is still trimmed.
+    #[test]
+    fn file_text_is_kept_as_it_is_and_typed_text_is_trimmed() {
+        for (text, kept) in
+            [(" 2535", Value::Text(" 2535".into())), ("   ", Value::Text("   ".into())), ("", Value::Null), (" <null> ", Value::Null)]
+        {
+            assert_eq!(Value::parse_file(text, FieldType::Text), kept, "{text:?}");
+        }
+        assert_eq!(Value::parse_file(" 2535 ", FieldType::Integer), Value::Int(2535));
+        assert_eq!(Value::parse_file("<Null>", FieldType::Double), Value::Null);
+        assert_eq!(Value::parse(" 2535", FieldType::Text), Value::Text("2535".into()), "typed text is trimmed");
     }
 
     /// Interactive Double text rejects non-finite numbers, while source parsing preserves them

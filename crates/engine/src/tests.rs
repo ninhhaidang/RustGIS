@@ -1266,6 +1266,68 @@ fn a_streamed_shapefile_says_dates_it_could_not_read_once() {
     assert!(err.contains("Load All Features"), "{err}");
 }
 
+/// A Shapefile read in place says, once, the text values `<Null>` its view reads took for empty,
+/// and its streamed exports (Export, Data Interop) say them too; a clean one says nothing (#2059).
+#[test]
+fn a_streamed_shapefile_says_null_markers_once_and_in_its_exports() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-streamed-nulls-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    for (name, second, said) in [("zoning", "<Null>", true), ("clean", "R-1", false)] {
+        let mut ds = Dataset::new(name, GeometryType::Point, vec![Field::new("ZONING", FieldType::Text)]);
+        for (i, z) in ["C-2", second].into_iter().enumerate() {
+            ds.push(Some(Geometry::Point(rustgis_geom::Coord::new(i as f64, 1.0))), vec![V::Text(z.into())]);
+        }
+        let shp = dir.0.join(format!("{name}.shp"));
+        rustgis_data::io::write_path(&ds, &shp).unwrap();
+        let mut s = Session::new(Project::default());
+        let added = s.run("layer.addData", &json!({"path": shp.display().to_string(), "stream": true})).unwrap();
+        let id = added["layer"].as_u64().unwrap() as u32;
+        assert!(s.map().layer(id).unwrap().is_streamed(), "{name} is read in place");
+        let nulls = |s: &Session, mark| -> Vec<String> {
+            s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("written as Null")).collect()
+        };
+        let mark = s.notice_mark();
+        for _ in 0..2 {
+            s.map_mut().sync_sources(&rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0), 1000.0, true);
+            s.notice_landed_rasters();
+        }
+        let expected: &[&str] = if said {
+            &[
+                "zoning: some text values written as Null in it show as empty (Load All Features counts them all); so far, 1 value written as Null was read as empty, in 'ZONING'",
+            ]
+        } else {
+            &[]
+        };
+        assert_eq!(nulls(&s, mark), expected, "{name}: view reads");
+        // An export a chunk at a time, and a Data Interop conversion of the source, say it.
+        s.map_mut().layer_mut(id).unwrap().dataset.features.clear();
+        for (command, params) in [
+            ("share.exportLayer", json!({"layer": id, "path": dir.0.join(format!("{name}.csv"))})),
+            ("data.convert", json!({"layer": id, "format": "geojson", "path": dir.0.join(format!("{name}.geojson"))})),
+        ] {
+            let mark = s.notice_mark();
+            s.run(command, &params).unwrap();
+            let notes = nulls(&s, mark);
+            assert_eq!(notes.len(), usize::from(said), "{name} {command}: {:?}", s.notices_since(mark));
+            if said {
+                assert!(
+                    notes[0].ends_with("zoning: 1 value written as Null was read as empty, in 'ZONING', so they're empty in the export"),
+                    "{}",
+                    notes[0]
+                );
+            }
+        }
+    }
+}
+
 /// Load All Features of a GeoPackage read in place says the date-times it read rounded to the
 /// microsecond; a clean one says nothing of them.
 #[test]

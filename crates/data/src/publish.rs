@@ -1235,15 +1235,36 @@ mod tests {
     fn what_a_read_loses_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("parcels.shp");
+        let mut ds = parcels();
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[0].attrs[0] = Value::Text("Smiths".into());
+        ds.features = rows.into();
+        crate::io::write_path(&ds, &path).unwrap();
+        // The first owner `<Null>`, as another program may have written a missing value: it reads
+        // as empty, and would be written back blank.
+        let mut dbf = std::fs::read(path.with_extension("dbf")).unwrap();
+        let at = dbf.windows(6).position(|w| w == b"Smiths").unwrap();
+        dbf.splice(at..at + 6, *b"<Null>");
+        std::fs::write(path.with_extension("dbf"), &dbf).unwrap();
+        let (ds, sync) = read(&path);
+        let e = shapefile(&ds, &path, &sync).err().unwrap().to_string();
+        assert!(e.contains("table wouldn't be the same") && e.contains("'<Null>'"), "{e}");
+    }
+
+    /// Text with a space before it reads as the file has it, so it is written back unchanged (#2059).
+    #[test]
+    fn a_leading_space_is_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parcels.shp");
         crate::io::write_path(&parcels(), &path).unwrap();
-        // The first owner with a space before it, as another program may have written it.
         let mut dbf = std::fs::read(path.with_extension("dbf")).unwrap();
         let at = dbf.windows(5).position(|w| w == b"Smith").unwrap();
         dbf.splice(at..at + 5, *b" Smit");
         std::fs::write(path.with_extension("dbf"), &dbf).unwrap();
         let (ds, sync) = read(&path);
-        let e = shapefile(&ds, &path, &sync).err().unwrap().to_string();
-        assert!(e.contains("table wouldn't be the same") && e.contains("' Smit'"), "{e}");
+        shapefile(&ds, &path, &sync).unwrap();
+        let (back, _) = read(&path);
+        assert!(back.features.iter().any(|f| f.attrs.contains(&Value::Text(" Smit".into()))), "{:?}", back.features);
     }
 
     /// A float (`F`) column reads every digit its text holds, not the seven of an `f32`, and is

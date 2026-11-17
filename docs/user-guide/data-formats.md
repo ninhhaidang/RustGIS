@@ -44,6 +44,17 @@ export names its feature.
 | Esri File Geodatabase | `.gdb` folder (desktop) | In Add Data pick a `.gdbtable` file inside it; or double-click the `.gdb` in the Browser, or drop the folder | The native reader loads up to 512 feature classes and tables, up to 2 GiB per table. Feature classes become layers and non-spatial tables standalone tables; dates are text. Coordinates use the EPSG/Esri code, else WKT; the WKT comes first when it gives another datum transformation than an EPSG code's, or another body's system. An Esri-only code still comes first, as ArcGIS keeps transformations apart from the system, with a notice when the WKT gives another one; a grid shift the WKT gives isn't applied, with a notice. `"layer"` picks one; `info.fileLayers` lists them. Multipatches become footprints with `z_min`, `z_max` and `height`; large or wall-only ones may use a convex hull. Curves become straight segments between their ends. Unreadable tables (compressed storage, raster fields or unsupported row indexes) are tried through GDAL when installed; otherwise they are named in a notice. |
 | Standalone tables | CSV, or any layer without geometry | Add Data | Listed under the map in Layers; join or relate them to layers. |
 
+Text is read as the file has it: spaces around a value are kept, as GeoPackage, GeoParquet and
+FlatGeobuf keep them, in delimited text, spreadsheets, dBASE tables and Shapefiles, MapInfo and
+GML. Text of spaces only stays text, except in dBASE, which pads a value with spaces after it and
+drops only those, so its text of spaces only is empty. In GML, line breaks and indentation around a value are layout and are dropped. An empty cell is empty, as delimited text
+can't tell empty text from a missing value. In these formats, which store every value as text,
+`<Null>` (any case) is the missing value other programs write: it is read as empty, doesn't make a
+column of numbers text, and a notice counts those values and names their fields. A GeoPackage,
+GeoParquet or FlatGeobuf text column holding `<Null>` keeps it as text. Number, date and yes/no
+fields read past the spaces (`' 2535'` in a number column is 2535). To clean the spaces, use
+`trim()` in Calculate Field; text typed into the attribute table is trimmed.
+
 Shapefile text uses the encoding in its `.cpg` sidecar first, then the language-driver code in
 the `.dbf` header. Include the `.cpg` when picking or dropping loose files in the web app.
 UTF-8 (including `65001`), DOS code pages such as CP437 and CP850 (numeric, `CP` or `IBM`

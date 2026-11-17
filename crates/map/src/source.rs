@@ -106,6 +106,11 @@ pub struct SourceLayer {
     unread_dates_said: bool,
     #[serde(skip)]
     rounded_dates_said: bool,
+    /// Text values `<Null>` a view read read as null ([`Batch::null_text`]), likewise.
+    #[serde(skip)]
+    null_text: Option<Vec<usize>>,
+    #[serde(skip)]
+    null_text_said: bool,
     #[serde(skip)]
     window: Option<Window>,
     /// Whole-source thinning decisions shared by render snapshots, independent of view rows.
@@ -744,6 +749,23 @@ impl SourceLayer {
             unread.and_then(|c| rustgis_data::source::unread_dates_note(&fields, &c)),
             rounded.and_then(|c| rustgis_data::source::rounded_dates_note(&fields, &c)),
         )
+    }
+
+    /// Keeps what view reads found of text values `<Null>` read as null, until
+    /// [`SourceLayer::take_null_text`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
+    pub fn saw_null_text(&mut self, counts: &[usize]) {
+        if !self.null_text_said && counts.iter().any(|n| *n > 0) {
+            rustgis_data::source::add_unread_dates(self.null_text.get_or_insert_with(Vec::new), counts);
+        }
+    }
+
+    /// What view reads found of text values `<Null>` read as null
+    /// ([`rustgis_data::source::null_text_note`]), once for the source.
+    pub fn take_null_text(&mut self) -> Option<String> {
+        let fields = self.info().map(|i| i.fields.clone())?;
+        let counts = self.null_text.take()?;
+        self.null_text_said = true;
+        rustgis_data::source::null_text_note(&fields, &counts)
     }
 
     /// Whether another installed window needs its retained display expressions checked.
@@ -1475,6 +1497,8 @@ impl SourceLayer {
         self.rounded_dates = None;
         self.unread_dates_said = false;
         self.rounded_dates_said = false;
+        self.null_text = None;
+        self.null_text_said = false;
         self.reset();
         self.open()
     }
@@ -1795,6 +1819,8 @@ impl SourceLayer {
             rounded_dates: _,
             unread_dates_said: _,
             rounded_dates_said: _,
+            null_text: _,
+            null_text_said: _,
             gdal,
             duckdb,
             postgis,

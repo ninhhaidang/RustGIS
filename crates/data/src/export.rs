@@ -50,6 +50,9 @@ pub struct Exported {
     /// Per field of the layer, date-times of the source rounded to the microsecond as it was read
     /// ([`crate::source::Batch::rounded_dates`], said by [`crate::source::rounded_dates_note`]).
     pub rounded_dates: Vec<usize>,
+    /// Per field of the layer, text values `<Null>` the source read as null
+    /// ([`crate::source::Batch::null_text`], said by [`crate::source::null_text_note`]).
+    pub null_text: Vec<usize>,
     /// Per field of the layer, date-times a GeoPackage holds in UTC rather than at their own
     /// offset ([`crate::io::offset_dates`]; empty for the other formats).
     pub utc_dates: Vec<usize>,
@@ -145,6 +148,7 @@ fn write_chunks_as(
     let mut csv = crate::io::CsvLosses::default();
     let mut unread_dates = Vec::new();
     let mut rounded_dates = Vec::new();
+    let mut null_text = Vec::new();
     let mut utc_dates = Vec::new();
     let mut fine_dates = Vec::new();
     let mut written_values = Vec::new();
@@ -189,6 +193,7 @@ fn write_chunks_as(
         skipped = batch.skipped;
         unread_dates = batch.unread_dates;
         rounded_dates = batch.rounded_dates;
+        null_text = batch.null_text;
         Ok(())
     };
     let mut table = None;
@@ -240,6 +245,7 @@ fn write_chunks_as(
             csv,
             unread_dates,
             rounded_dates,
+            null_text,
             utc_dates,
             fine_dates,
             written_values,

@@ -408,7 +408,15 @@ impl FeatureSource for GpkgMemSource {
         if let Some(e) = failed {
             return Err(e);
         }
-        Ok(Batch { matched: sample.seen(), complete: sample.complete(), features: sample.items, skipped, unread_dates, rounded_dates })
+        Ok(Batch {
+            matched: sample.seen(),
+            complete: sample.complete(),
+            features: sample.items,
+            skipped,
+            unread_dates,
+            rounded_dates,
+            null_text: Vec::new(),
+        })
     }
 
     /// The upload is held in memory already, so every table can be visited.

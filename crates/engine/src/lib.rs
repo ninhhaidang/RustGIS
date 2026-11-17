@@ -2260,6 +2260,12 @@ impl Session {
                         layer.name
                     ));
                 }
+                if let Some(note) = layer.source.as_mut().and_then(|source| source.take_null_text()) {
+                    dates.push(format!(
+                        "{}: some text values written as Null in it show as empty (Load All Features counts them all); so far, {note}",
+                        layer.name
+                    ));
+                }
                 if layer.source.as_mut().is_some_and(|source| source.take_display_window()) {
                     landed.push(&*layer);
                 }

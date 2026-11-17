@@ -210,7 +210,7 @@ impl FeatureSource for ShpSource {
         let mut buf = Vec::new();
         let mut row = vec![0u8; self.table.row_len];
         let mut features = Vec::new();
-        let (mut skipped, mut unread_dates) = (0, Vec::new());
+        let (mut skipped, mut unread_dates, mut null_text) = (0, Vec::new(), Vec::new());
         // An extent the file's system couldn't bound (#1925) has no boxes for the index to sample
         // by: every record is visited, tested, and the matches sampled as they come.
         let late = req.extent.is_some() && bounds.is_none();
@@ -269,7 +269,7 @@ impl FeatureSource for ShpSource {
                 if late && !sample.wants() {
                     return Ok(());
                 }
-                self.table.values(&row, &encoding, &mut unread_dates)
+                self.table.values(&row, &encoding, &mut unread_dates, &mut null_text)
             } else {
                 if late && !sample.wants() {
                     return Ok(());
@@ -291,7 +291,7 @@ impl FeatureSource for ShpSource {
         } else {
             self.index.visit(bounds, limit, &mut each)?
         };
-        Ok(Batch { features, matched, complete, skipped, unread_dates, rounded_dates: Vec::new() })
+        Ok(Batch { features, matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text })
     }
     fn streams_chunks(&self) -> bool {
         true
@@ -311,7 +311,7 @@ impl FeatureSource for ShpSource {
         let mut dbf = Cursor::open(&self.dbf)?;
         let mut buf = Vec::new();
         let mut row = vec![0u8; self.table.row_len];
-        let (mut skipped, mut unread_dates) = (0, Vec::new());
+        let (mut skipped, mut unread_dates, mut null_text) = (0, Vec::new(), Vec::new());
         // The same directory, ordering, extent rules and read-only scan fallback as sampled
         // reads, with no interaction row cap. The index visits records without materializing
         // their directory or the complete feature collection in memory.
@@ -363,14 +363,14 @@ impl FeatureSource for ShpSource {
                 if row.first() == Some(&b'*') {
                     return Ok(());
                 }
-                self.table.values(&row, &encoding, &mut unread_dates)
+                self.table.values(&row, &encoding, &mut unread_dates, &mut null_text)
             } else {
                 vec![Value::Null; self.table.columns.len()]
             };
             chunks.push(Feature { id: u64::from(i) + 1, geometry, attrs })
         })?;
         chunks.flush()?;
-        Ok(Batch { features: Vec::new(), matched, complete, skipped, unread_dates, rounded_dates: Vec::new() })
+        Ok(Batch { features: Vec::new(), matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text })
     }
 }
 
@@ -553,12 +553,23 @@ fn read_table(path: &Path) -> Result<Table> {
 
 impl Table {
     /// A row's values (after its deletion flag), counting in `unread_dates` the dates that
-    /// aren't ones ([`Batch::unread_dates`]).
-    fn values(&self, row: &[u8], encoding: &dyn shapefile::dbase::Encoding, unread_dates: &mut Vec<usize>) -> Vec<Value> {
+    /// aren't ones ([`Batch::unread_dates`]) and in `null_text` the text `<Null>` read as null
+    /// ([`Batch::null_text`]).
+    fn values(
+        &self,
+        row: &[u8],
+        encoding: &dyn shapefile::dbase::Encoding,
+        unread_dates: &mut Vec<usize>,
+        null_text: &mut Vec<usize>,
+    ) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.columns.len());
         for (k, c) in self.columns.iter().enumerate() {
             let b = row.get(1 + c.offset..1 + c.offset + c.len).unwrap_or(&[]);
-            out.push(if c.ty == b'D' {
+            out.push(if c.ty == b'D' && std::str::from_utf8(padded(b)).is_ok_and(Value::is_null_marker) {
+                // `<Null>` is a missing value's marker, counted as one, not as a date that isn't.
+                super::null_text_at(null_text, k);
+                Value::Null
+            } else if c.ty == b'D' {
                 crate::dbf::date(b)
                     .unwrap_or_else(|()| {
                         super::unread_date(unread_dates, k);
@@ -566,7 +577,13 @@ impl Table {
                     })
                     .map_or(Value::Null, Value::Date)
             } else {
-                value(c, b, encoding)
+                let v = value(c, b, encoding);
+                if c.ty == b'C' && matches!(&v, Value::Text(t) if Value::is_null_marker(t)) {
+                    super::null_text_at(null_text, k);
+                    Value::Null
+                } else {
+                    v
+                }
             });
         }
         out
@@ -587,6 +604,13 @@ fn read_names(path: &Path, n: usize, encoding: &dyn shapefile::dbase::Encoding) 
         out.push(encoding.decode(name).unwrap_or_else(|_| String::from_utf8_lossy(name)).trim().to_string());
     }
     Ok(out)
+}
+
+/// A text field's bytes up to the first NUL, without the padding after them: spaces before the
+/// text are the text's, as a Shapefile read whole keeps them.
+fn padded(b: &[u8]) -> &[u8] {
+    let b = b.get(..b.iter().position(|c| *c == 0).unwrap_or(b.len())).unwrap_or(&[]);
+    b.get(..b.iter().rposition(|c| *c != b' ').map_or(0, |e| e + 1)).unwrap_or(&[])
 }
 
 /// A field's bytes up to the first NUL, without the spaces around them.
@@ -610,8 +634,12 @@ fn value(c: &Column, b: &[u8], encoding: &dyn shapefile::dbase::Encoding) -> Val
     };
     match c.ty {
         b'C' => {
-            let t = text();
-            if t.is_empty() { Value::Null } else { Value::Text(t) }
+            let t = padded(b);
+            if t.is_empty() {
+                Value::Null
+            } else {
+                Value::Text(encoding.decode(t).unwrap_or_else(|_| String::from_utf8_lossy(t)).into_owned())
+            }
         }
         // A whole-number column's values as integers, exactly (its at most 18 digits fit an i64);
         // one written with a point or exponent (`12.0`, `1e3`) too, and one that isn't whole is

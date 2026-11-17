@@ -325,7 +325,7 @@ impl FeatureSource for GeoJsonSource {
         } else {
             (matched as u64, step == 1)
         };
-        Ok(Batch { features, matched, complete, skipped, unread_dates: Vec::new(), rounded_dates: Vec::new() })
+        Ok(Batch { features, matched, complete, skipped, unread_dates: Vec::new(), rounded_dates: Vec::new(), null_text: Vec::new() })
     }
 }
 

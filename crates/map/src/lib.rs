@@ -643,6 +643,7 @@ impl Layer {
         match src.poll(block) {
             source::Polled::Done(_, batch) => {
                 src.saw_unread_dates(&batch.unread_dates, &batch.rounded_dates);
+                src.saw_null_text(&batch.null_text);
                 self.install(batch.features)
             }
             source::Polled::Failed(_) => self.install(Vec::new()),
@@ -654,6 +655,7 @@ impl Layer {
             match src.poll(block) {
                 source::Polled::Done(_, batch) => {
                     src.saw_unread_dates(&batch.unread_dates, &batch.rounded_dates);
+                    src.saw_null_text(&batch.null_text);
                     self.install(batch.features)
                 }
                 source::Polled::Failed(_) => self.install(Vec::new()),
