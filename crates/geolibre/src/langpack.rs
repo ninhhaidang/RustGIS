@@ -732,7 +732,7 @@ mod tests {
         // record an error for a pack already gone.
         let check = LIFECYCLE.lock().unwrap();
         let removal = std::thread::spawn(|| remove("fr"));
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(200)); // test-wait: proves remove() stays blocked while a check holds LIFECYCLE; no signal marks a blocked call
         assert!(!removal.is_finished(), "remove ran during a check");
         drop(check);
         removal.join().unwrap().unwrap();

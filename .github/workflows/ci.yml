@@ -193,6 +193,11 @@ jobs:
       # to the schema alone is checked against them too.
       - name: Validate the fixture projects against the schema
         run: pipx run check-jsonschema==0.39.0 --schemafile schema/project.schema.json --default-filetype json schema/fixtures/*.rgis
+      # Timer waits and ignored tests carry their reasons. xtask's own test checks this too, but
+      # `test` runs only the packages a pull request changes, so a new wait elsewhere got past it
+      # and failed main (#2289). This runs on the whole workspace every time.
+      - name: Test hygiene
+        run: cargo run --locked -q -p xtask -- test-hygiene
 
   # The packages whose tests this run needs, for `test` (.github/scripts/test-selection.sh). Only
   # tests are narrowed: lint, the wasm build, licences and the schema check run whole every time.
