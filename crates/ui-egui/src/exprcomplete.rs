@@ -127,80 +127,6 @@ fn shown(item: &Item) -> String {
     }
 }
 
-/// Catalog menus use the completion rows and help, but keep ordinary menu clicks and dismissal.
-/// Returns what to append, preserving the clause buttons' insertion behavior.
-pub(crate) fn menus(ui: &mut Ui) -> Option<String> {
-    let mut word = None;
-    ui.menu_button(tl!("Functions ▾"), |ui| {
-        word = catalog_menu(ui, || query::functions().map(Item::Function));
-    });
-    ui.menu_button(tl!("Variables ▾"), |ui| {
-        word = catalog_menu(ui, || VARS.iter().enumerate().filter_map(|(i, v)| v.names.first().map(|&name| Item::Variable(i, name))));
-    });
-    word
-}
-
-fn catalog_menu<I: Iterator<Item = Item>>(ui: &mut Ui, items: impl Fn() -> I) -> Option<String> {
-    let id = ui.scope_id().with("catalog_selection");
-    let (mut selected, mut pointer_leads) = ui.ctx().data_mut(|d| d.get_temp::<(usize, bool)>(id)).unwrap_or((0, true));
-    ui.input(|input| {
-        for event in &input.events {
-            match event {
-                egui::Event::PointerMoved(_) if input.pointer.delta() != egui::Vec2::ZERO => pointer_leads = true,
-                egui::Event::Key { pressed: true, .. } => pointer_leads = false,
-                _ => {}
-            }
-        }
-    });
-    let screen = ui.ctx().content_rect();
-    let (layout, width) = crate::completion::help_layout(screen.width());
-    let mut word = None;
-    // The list's own scroll bounds its rows; this one also keeps stacked help reachable.
-    egui::ScrollArea::vertical().max_height((screen.height() - crate::completion::FRAME).max(0.0)).show(ui, |ui| {
-        ui.with_layout(layout, |ui| {
-            let (mut hovered, mut focused) = (None, None);
-            ui.vertical(|ui| {
-                ui.set_min_width(crate::completion::MIN_WIDTH);
-                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                    for (i, item) in items().enumerate() {
-                        let r = crate::completion::item_row(ui, &shown(&item), i == selected, None);
-                        if ui.ctx().has_accesskit_node(r.id) {
-                            ui.ctx().accesskit_node_builder(r.id, |node| match &item {
-                                Item::Function(f) => node.set_description(format!("{}\n{}", f.signature, tl!(f.description))),
-                                Item::Variable(i, _) => {
-                                    if let Some(v) = VARS.get(*i) {
-                                        node.set_description(tl!(v.description));
-                                    }
-                                }
-                                _ => {}
-                            });
-                        }
-                        if r.hovered() {
-                            hovered = Some(i);
-                        }
-                        if r.has_focus() {
-                            focused = Some(i);
-                        }
-                        if r.clicked() {
-                            word = Some(match item {
-                                Item::Function(f) if f.max != 0 => format!("{}(", f.name),
-                                _ => shown(&item),
-                            });
-                            ui.close();
-                        }
-                    }
-                });
-            });
-            selected = if pointer_leads { hovered.or(focused) } else { focused.or(hovered) }.unwrap_or(selected);
-            if let Some(item) = items().nth(selected) {
-                draw_help(ui, &item, None, width);
-            }
-        });
-    });
-    ui.ctx().data_mut(|d| d.insert_temp(id, (selected, pointer_leads)));
-    word
-}
-
 /// The box's state between frames.
 #[derive(Clone, Default)]
 struct State {
@@ -512,6 +438,61 @@ fn draw_help(ui: &mut Ui, item: &Item, ds: Option<&Dataset>, width: f32) {
     });
 }
 
+/// What a menu beside an expression lists: the language's functions, or its variables.
+#[derive(Clone, Copy)]
+pub(crate) enum Menu {
+    Functions,
+    Variables,
+}
+
+/// The entries of `menu`, each as the list shows it: the language's own catalogs, as the parser
+/// reads them (one added to the language is listed with no change). Worked out once.
+fn menu_items(menu: Menu) -> &'static [(String, Item)] {
+    static FUNCTIONS: std::sync::OnceLock<Vec<(String, Item)>> = std::sync::OnceLock::new();
+    static VARIABLES: std::sync::OnceLock<Vec<(String, Item)>> = std::sync::OnceLock::new();
+    let (cell, items): (_, fn() -> Vec<Item>) = match menu {
+        Menu::Functions => (&FUNCTIONS, || query::functions().map(Item::Function).collect()),
+        Menu::Variables => {
+            (&VARIABLES, || VARS.iter().enumerate().filter_map(|(i, v)| Some(Item::Variable(i, v.names.first().copied()?))).collect())
+        }
+    };
+    cell.get_or_init(|| items().into_iter().map(|i| (shown(&i), i)).collect())
+}
+
+/// A button `label` that opens the list of `menu`, its entries shown as the suggestion list shows
+/// them (`round()`, `$area`) and with its help, in the list every box's suggestions show in
+/// (`completion::menu`). Returns what to add for the one accepted: a function open (`round(`),
+/// unless it takes no arguments (`pi()`); a variable as it is.
+pub(crate) fn menu(ui: &mut Ui, label: impl Into<egui::WidgetText>, menu: Menu) -> Option<String> {
+    let catalog = menu_items(menu);
+    let find = |item: &str| catalog.iter().find(|(s, _)| s == item).map(|(_, i)| i);
+    let help = |ui: &mut Ui, item: &str, width: f32| {
+        if let Some(of) = find(item) {
+            ui.add_space(GAP);
+            draw_help(ui, of, None, width);
+        }
+    };
+    let describe = |i: usize| match &catalog.get(i)?.1 {
+        Item::Function(f) => Some(format!("{}\n{}", f.signature, tl!(f.description))),
+        Item::Variable(i, _) => VARS.get(*i).map(|v| tl!(v.description).to_string()),
+        _ => None,
+    };
+    let items = || catalog.iter().map(|(s, _)| s.clone()).collect();
+    let (_, accepted) = crate::completion::menu(ui, label, items, |_| None, describe, help);
+    find(&accepted?).map(|item| match item {
+        Item::Function(f) if f.max > 0 => format!("{}(", f.name),
+        item => shown(item),
+    })
+}
+
+/// The Functions and Variables menus beside a clause's buttons (`menu`). Returns what to add for
+/// the entry accepted in either.
+pub(crate) fn menus(ui: &mut Ui) -> Option<String> {
+    let functions = menu(ui, tl!("Functions ▾"), Menu::Functions);
+    let variables = menu(ui, tl!("Variables ▾"), Menu::Variables);
+    functions.or(variables)
+}
+
 /// Puts `item` in place of the offer's word in `text`, the rest of the word after the cursor
 /// too: a field as the expression names it (in the quote it was begun with; a `!` name holding a
 /// `!` in double quotes, as `!` has no escape), a function with its brackets, the cursor inside
@@ -605,6 +586,22 @@ mod tests {
         )
     }
 
+    /// A harness with an expression box over `data`, its id `id`, holding `text`.
+    fn boxed(id: Id, data: Option<Dataset>, text: &str) -> egui_kittest::Harness<'static, String> {
+        egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, data.as_ref(), |e| e).labelled_by(label.id);
+            },
+            text.to_string(),
+        )
+    }
+
+    /// The primary button `pressed`, or let go, at `at`.
+    fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
     /// What is offered at char `at` of `text`.
     fn offer_at(text: &str, at: usize, ds: &Dataset, asked: bool) -> Option<Offer> {
         offer_from(&query::complete_at(text, at, ds)?, text, ds, asked)
@@ -619,6 +616,36 @@ mod tests {
         egui_kittest::Harness::builder().with_size(size).allow_missing_glyphs().build_ui(|ui| {
             let _ = menus(ui);
         })
+    }
+
+    /// A function is added open, ready for its arguments, unless it takes none: then it's added
+    /// whole, `pi()`.
+    #[test]
+    fn a_function_without_arguments_is_added_whole() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        for (f, end) in [(query::functions().find(|f| f.max == 0).unwrap(), "()"), (query::functions().find(|f| f.max > 0).unwrap(), "(")] {
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(720.0, 600.0)).allow_missing_glyphs().build_ui_state(
+                |ui, got: &mut Option<String>| {
+                    if let Some(item) = menus(ui) {
+                        *got = Some(item);
+                    }
+                },
+                None,
+            );
+            h.run();
+            h.get_by_role_and_label(Role::Button, "Functions ▾").click();
+            h.run();
+            // Highlighted from the keyboard: the row may lie past the ten in view.
+            let at = menu_items(Menu::Functions).iter().position(|(s, _)| *s == format!("{}()", f.name)).unwrap();
+            for _ in 0..at {
+                h.key_press(Key::ArrowDown);
+                h.run();
+            }
+            h.key_press(Key::Enter);
+            h.run();
+            assert_eq!(h.state().as_deref(), Some(format!("{}{end}", f.name).as_str()), "{}", f.name);
+        }
     }
 
     #[test]
@@ -643,27 +670,31 @@ mod tests {
         assert_eq!(h.get_by_role_and_label(Role::Button, v.names[0]).accesskit_node().description(), Some(tl!(v.description).to_string()));
     }
 
+    /// The help is the highlighted entry's, the one under the pointer's while the pointer moves,
+    /// and the highlighted one's again once a key moves the highlight.
     #[test]
-    fn catalog_help_follows_hover_after_focus_and_then_keyboard_navigation() {
+    fn catalog_help_follows_hover_and_then_keyboard_navigation() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
         let mut h = catalog_harness(egui::vec2(720.0, 600.0));
         h.run();
         h.get_by_role_and_label(Role::Button, "Functions ▾").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, "round()").focus();
-        h.run();
-        let round = query::functions().find(|f| f.name == "round").unwrap();
+        let fs: Vec<_> = query::functions().take(2).collect();
         let abs = query::functions().find(|f| f.name == "abs").unwrap();
-        assert!(h.query_by_label(round.signature).is_some());
-        h.hover_at(h.get_by_role_and_label(Role::Button, "abs()").rect().center());
+        assert!(h.query_by_label(fs[0].signature).is_some(), "the first one is highlighted");
+        // Twice: a first move has no motion to follow.
+        let at = h.get_by_role_and_label(Role::Button, "abs()").rect().center();
+        h.hover_at(at - egui::vec2(0.0, 2.0));
         h.run();
-        assert!(h.query_by_label(abs.signature).is_some(), "hover wins over the later focused row");
-        assert!(h.query_by_label(round.signature).is_none());
+        h.hover_at(at);
+        h.run();
+        assert!(h.query_by_label(abs.signature).is_some(), "the one under the pointer");
+        assert!(h.query_by_label(fs[0].signature).is_none());
         h.key_press(Key::ArrowDown);
         h.run();
-        let floor = query::functions().find(|f| f.name == "floor").unwrap();
-        assert!(h.query_by_label(floor.signature).is_some(), "keyboard navigation wins over the stationary pointer");
+        assert!(h.query_by_label(fs[1].signature).is_some(), "the keyboard's highlight wins over the stationary pointer");
+        assert!(h.query_by_label(abs.signature).is_none());
     }
 
     #[test]
@@ -765,15 +796,8 @@ mod tests {
     fn accepting_leaves_the_list_closed_until_asked() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            String::new(),
-        );
+        let mut h = boxed(id, Some(ds()), "");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.run();
@@ -840,15 +864,8 @@ mod tests {
     fn a_call_shows_its_signature_until_escape() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            String::new(),
-        );
+        let mut h = boxed(id, Some(ds()), "");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.run();
@@ -876,15 +893,8 @@ mod tests {
     fn a_closed_signature_shows_again_in_another_call_only() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            "round(1) + abs(2)".to_string(),
-        );
+        let mut h = boxed(id, Some(ds()), "round(1) + abs(2)");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         let at = |h: &mut egui_kittest::Harness<'_, String>, i: usize| {
@@ -992,14 +1002,12 @@ mod tests {
     fn click(h: &mut egui_kittest::Harness<'_, String>, item: &str) {
         use egui_kittest::kittest::Queryable;
         let at = h.get_by_role_and_label(egui::accesskit::Role::Button, item).rect().center();
-        let button =
-            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
         h.event(egui::Event::PointerMoved(at));
         h.step();
-        h.event(button(true));
+        h.event(button(at, true));
         h.step();
         h.step();
-        h.event(button(false));
+        h.event(button(at, false));
         h.run();
     }
 
@@ -1008,15 +1016,8 @@ mod tests {
     /// brackets.
     #[test]
     fn a_click_accepts_and_the_box_keeps_the_focus() {
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            String::new(),
-        );
+        let mut h = boxed(id, Some(ds()), "");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.run();
@@ -1035,26 +1036,17 @@ mod tests {
     fn a_click_in_one_frame_accepts_too() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            String::new(),
-        );
+        let mut h = boxed(id, Some(ds()), "");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.run();
         h.event(egui::Event::Text("ro".into()));
         h.run();
         let at = h.get_by_role_and_label(Role::Button, "round()").rect().center();
-        let button =
-            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
         h.event(egui::Event::PointerMoved(at));
         h.run();
-        h.input_mut().events.extend([button(true), button(false)]);
+        h.input_mut().events.extend([button(at, true), button(at, false)]);
         h.run();
         assert!(h.ctx.memory(|m| m.has_focus(id)), "the box keeps the focus");
         h.event(egui::Event::Text("1".into()));
@@ -1068,17 +1060,10 @@ mod tests {
     fn accepting_what_does_not_fit_leaves_the_list_open() {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let data = ds();
         let id = Id::unique("expr");
         // `ro` typed ends it at the longest: `round()` doesn't fit.
         let start = format!("{} + r", "x".repeat(query::MAX_LEN - 5));
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            start.clone(),
-        );
+        let mut h = boxed(id, Some(ds()), &start);
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
@@ -1170,15 +1155,8 @@ mod tests {
     /// a function taken from the list has its brackets closed too.
     #[test]
     fn brackets_close_themselves_in_the_box() {
-        let data = ds();
         let id = Id::unique("expr");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
-            },
-            String::new(),
-        );
+        let mut h = boxed(id, Some(ds()), "");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.run();
@@ -1196,13 +1174,7 @@ mod tests {
         h.event(egui::Event::Text("1".into()));
         h.run();
         assert_eq!(h.state(), "abs(pop + round(1))", "the function's brackets closed, the cursor inside");
-        let mut h = egui_kittest::Harness::new_ui_state(
-            move |ui, text: &mut String| {
-                let label = ui.label("Expression");
-                let _ = expr_edit(ui, id, text, None, |e| e).labelled_by(label.id);
-            },
-            "x".to_string(),
-        );
+        let mut h = boxed(id, None, "x");
         h.run();
         h.ctx.memory_mut(|m| m.request_focus(id));
         let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();

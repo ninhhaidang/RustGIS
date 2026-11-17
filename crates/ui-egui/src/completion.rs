@@ -13,7 +13,9 @@ use egui::widgets::text_edit::{TextEditOutput, TextEditState};
 use egui::{Id, Key, Modifiers, Ui};
 
 /// The list's narrowest width.
-pub(crate) const MIN_WIDTH: f32 = 220.0;
+const MIN_WIDTH: f32 = 220.0;
+/// The most rows a list shows at once: it scrolls beyond, its help staying beside it.
+const MAX_ROWS: usize = 10;
 /// The help's widest line, so a long signature or parameter wraps rather than widen the list
 /// without end.
 pub(crate) const HELP_WIDTH: f32 = 360.0;
@@ -36,12 +38,18 @@ pub(crate) trait Offered: Clone + PartialEq {
 /// next to it stays in view whole, with room around it); kept on screen sideways. Its corner,
 /// and the height its content may take (it scrolls beyond: a short window, a long help).
 pub(crate) fn place(cursor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32) -> (egui::Pos2, f32) {
-    let cursor = cursor.expand2(egui::vec2(0.0, cursor.height() * 1.5));
-    let (below, above) = (screen.bottom() - cursor.bottom(), cursor.top() - screen.top());
+    around(cursor.expand2(egui::vec2(0.0, cursor.height() * 1.5)), size, screen, min)
+}
+
+/// Where a popup of `size` goes by `anchor`: under it if it fits, else above if it fits, else on
+/// the side with more room; kept on screen sideways. Its corner, and the height its content may
+/// take.
+fn around(anchor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32) -> (egui::Pos2, f32) {
+    let (below, above) = (screen.bottom() - anchor.bottom(), anchor.top() - screen.top());
     let under = size.y <= below || (size.y > above && below >= above);
     let room = (if under { below } else { above } - FRAME).max(min);
-    let y = if under { cursor.bottom() } else { cursor.top() - size.y.min(above) };
-    let x = cursor.left().min(screen.right() - size.x).max(screen.left());
+    let y = if under { anchor.bottom() } else { anchor.top() - size.y.min(above) };
+    let x = anchor.left().min(screen.right() - size.x).max(screen.left());
     (egui::pos2(x, y), room)
 }
 
@@ -65,8 +73,10 @@ pub(crate) fn popup(ui: &Ui, id: Id, corner: egui::Pos2, room: f32, content: imp
     (rect, rect.size() + egui::vec2(0.0, area.inner))
 }
 
-/// Shared list/help arrangement for cursor popups and catalog menus.
-pub(crate) fn help_layout(width: f32) -> (egui::Layout, f32) {
+/// How a list and its help sit in a screen `width` wide: the help beside the list in the room the
+/// screen leaves, or under it when that's too narrow to read (a narrow window), so neither is cut
+/// off at the screen's edge; and the help's width.
+fn help_layout(width: f32) -> (egui::Layout, f32) {
     let beside = (width - MIN_WIDTH - GAP - FRAME).min(HELP_WIDTH);
     if beside >= HELP_MIN_WIDTH {
         (egui::Layout::left_to_right(egui::Align::Min), beside)
@@ -75,8 +85,8 @@ pub(crate) fn help_layout(width: f32) -> (egui::Layout, f32) {
     }
 }
 
-/// One suggestion's row, shared with the expression catalog menus.
-pub(crate) fn item_row(ui: &mut Ui, item: &str, selected: bool, icon: Option<&str>) -> egui::Response {
+/// One row of a list: `item`, highlighted when `selected`, after its `icon`.
+fn item_row(ui: &mut Ui, item: &str, selected: bool, icon: Option<&str>) -> egui::Response {
     let label = |ui: &mut Ui| ui.selectable_label(selected, egui::RichText::new(item).monospace());
     if let Some(icon) = icon {
         let t = crate::theme::Tokens::get(ui.ctx());
@@ -325,7 +335,8 @@ impl<O: Offered> List<O> {
         // The button pressed there, once up, took the focus from the box (a click outside it, a
         // single-line box's list being under it), the list having taken the press: what was
         // clicked was the box's list, so the focus goes back to it, and the list shows again
-        // next frame if there's still something to offer (an item that didn't fit).
+        // next frame if there's still something to offer there (more after the item accepted,
+        // or the item that didn't fit).
         if on_list && ui.input(|i| i.pointer.any_pressed()) {
             self.pressed = true;
         } else if self.pressed && ui.input(|i| !i.pointer.any_down()) {
@@ -373,44 +384,27 @@ impl<O: Offered> List<O> {
         // Just under the cursor, or above it when the list would run off the bottom; kept on screen
         // sideways. Its size is last frame's (a long item, another font), estimated only on the
         // first frame it shows.
-        let row = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y + 4.0;
-        let size = self.drawn.map_or(egui::vec2(MIN_WIDTH + 16.0, row * offer.items().len() as f32 + 12.0), |(_, s)| s);
+        let row = row_height(ui);
+        let size = self.drawn.map_or(egui::vec2(MIN_WIDTH + 16.0, row * offer.items().len().min(MAX_ROWS) as f32 + 12.0), |(_, s)| s);
         let screen = ui.ctx().content_rect();
         let (corner, room) = place(cursor, size, screen, row * 3.0);
-        // The help beside the list in the room the screen leaves, or under it when that's too narrow
-        // to read (a narrow window), so neither is cut off at the screen's edge.
-        let (layout, help_width) = help_layout(screen.width());
         let mut clicked = None;
         let scrolled_to = &mut self.scrolled_to;
+        let items = offer.items();
         let (area, size) = popup(ui, id, corner, room, |ui| {
-            ui.with_layout(layout, |ui| {
-                // The help follows the item under the pointer, else the highlighted one.
-                let mut hovered = None;
-                ui.vertical(|ui| {
-                    ui.set_min_width(MIN_WIDTH);
-                    for (i, item) in offer.items().iter().enumerate() {
-                        let r = item_row(ui, item, i == selected, icon(&offer, item));
-                        // Taken as the button goes down, as in a code editor: the press already
-                        // takes the focus from the box, and a click (down, then up a frame or more
-                        // later) could find the list gone by then. A click still counts
-                        // (assistive technology).
-                        if r.clicked() || (r.hovered() && ui.input(|i| i.pointer.primary_pressed())) {
-                            clicked = Some((offer.clone(), item.clone()));
-                        }
-                        if r.hovered() {
-                            hovered = Some(i);
-                        }
-                        if i == selected && *scrolled_to != Some(selected) {
-                            r.scroll_to_me(None);
-                            *scrolled_to = Some(selected);
-                        }
-                    }
-                });
-                let shown = hovered.filter(|_| pointer_leads).unwrap_or(selected);
-                if let Some(item) = offer.items().get(shown) {
-                    help(ui, &offer, item, help_width);
-                }
-            });
+            let picked = rows(
+                ui,
+                items,
+                selected,
+                pointer_leads,
+                scrolled_to,
+                |item| icon(&offer, item),
+                |_| None,
+                |ui, item, width| {
+                    help(ui, &offer, item, width);
+                },
+            );
+            clicked = picked.and_then(|i| items.get(i)).map(|item| (offer.clone(), item.clone()));
         });
         if clicked.is_some() {
             self.open = None;
@@ -421,6 +415,214 @@ impl<O: Offered> List<O> {
         }
         clicked
     }
+}
+
+/// The height a list's row takes, the space after it included.
+fn row_height(ui: &Ui) -> f32 {
+    let s = ui.spacing();
+    (ui.text_style_height(&egui::TextStyle::Monospace) + 2.0 * s.button_padding.y).max(s.interact_size.y) + s.item_spacing.y
+}
+
+/// What a list shows in its popup, whether a box's suggestions (`List`) or a button's (`menu`),
+/// so every list looks the same: `items`, the `selected` one highlighted, each after its `icon`,
+/// and beside them, in the room the screen leaves (under them when that's too narrow to read: a
+/// narrow window), the `help` on the item under the pointer when `pointer_leads`, else on the
+/// highlighted one. Scrolls to the highlighted one when it changes (`scrolled_to`). Returns the
+/// item pressed.
+fn rows(
+    ui: &mut Ui,
+    items: &[String],
+    selected: usize,
+    pointer_leads: bool,
+    scrolled_to: &mut Option<usize>,
+    icon: impl Fn(&str) -> Option<&'static str>,
+    describe: impl Fn(usize) -> Option<String>,
+    help: impl FnOnce(&mut Ui, &str, f32),
+) -> Option<usize> {
+    let (layout, help_width) = help_layout(ui.ctx().content_rect().width());
+    let mut clicked = None;
+    ui.with_layout(layout, |ui| {
+        let mut hovered = None;
+        // At most `MAX_ROWS` rows show: the list scrolls beyond (a long one mustn't fill the screen).
+        let height = row_height(ui) * MAX_ROWS as f32 - ui.spacing().item_spacing.y;
+        // In a column of its own: the scroll area's content takes the layout it's in (beside the
+        // help, a row).
+        ui.vertical(|ui| {
+            egui::ScrollArea::vertical().id_salt("rows").max_height(height).auto_shrink([true, true]).show(ui, |ui| {
+                ui.set_min_width(MIN_WIDTH);
+                for (i, item) in items.iter().enumerate() {
+                    let r = item_row(ui, item, i == selected, icon(item));
+                    // What the help says, for a screen reader (worked out only when one is there).
+                    if ui.ctx().has_accesskit_node(r.id)
+                        && let Some(d) = describe(i)
+                    {
+                        ui.ctx().accesskit_node_builder(r.id, |node| node.set_description(d));
+                    }
+                    // Taken as the button goes down, as in a code editor: the press already takes the
+                    // focus from the box, and a click (down, then up a frame or more later) could find
+                    // the list gone by then. A click still counts (assistive technology).
+                    if r.clicked() || (r.hovered() && ui.input(|i| i.pointer.primary_pressed())) {
+                        clicked = Some(i);
+                    }
+                    if r.hovered() {
+                        hovered = Some(i);
+                    }
+                    if i == selected && *scrolled_to != Some(selected) {
+                        r.scroll_to_me(None);
+                        *scrolled_to = Some(selected);
+                    }
+                }
+            });
+        });
+        // The help follows the item under the pointer, else the highlighted one.
+        let shown = hovered.filter(|_| pointer_leads).unwrap_or(selected);
+        if let Some(item) = items.get(shown) {
+            help(ui, item, help_width);
+        }
+    });
+    clicked
+}
+
+/// Where the pass a button's list was last shown open in is kept.
+fn open_id() -> Id {
+    Id::unique("completion_menu_open")
+}
+
+/// Whether a button's list (`menu`) is open: its keys (Escape, Enter, the arrows) are its own
+/// then, as a dialog's are, so the app's shortcuts leave them (Escape switching to Pan).
+pub(crate) fn menu_is_open(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<u64>(open_id())).is_some_and(|open| open + 1 >= pass)
+}
+
+/// A button's list between frames.
+#[derive(Clone, Default)]
+struct MenuState {
+    open: bool,
+    selected: usize,
+    pointer_leads: bool,
+    scrolled_to: Option<usize>,
+    /// Where it was drawn last, and its whole size (`popup`).
+    drawn: Option<(egui::Rect, egui::Vec2)>,
+    /// The pass the button was last shown in.
+    pass: u64,
+}
+
+/// A button `label` that opens the list of `items` (worked out only while it's open) under it
+/// (above it, with no room under it), looking and behaving as a box's suggestion list does
+/// (`rows`): the first item highlighted, ↑/↓ move the highlight, Enter accepts it, a click accepts
+/// the item clicked, Escape or a press elsewhere closes the list; each item after its `icon`, with
+/// the `help` on the highlighted one, or the one under the pointer, beside it, and what it says
+/// (`describe`) given to a screen reader with each. The same from the keyboard: Tab to the button,
+/// Enter (or Space) opens it, and Tab on to another widget closes it. Returns the button, and the
+/// item accepted.
+pub(crate) fn menu(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    items: impl FnOnce() -> Vec<String>,
+    icon: impl Fn(&str) -> Option<&'static str>,
+    describe: impl Fn(usize) -> Option<String>,
+    help: impl FnOnce(&mut Ui, &str, f32),
+) -> (egui::Response, Option<String>) {
+    let button = ui.button(label);
+    let id = button.id.with("menu");
+    let pass = ui.ctx().cumulative_pass_nr();
+    let mut s: MenuState = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    // Not shown last pass (its dialog closed, its pane hidden): closed, not open again on return.
+    if s.pass + 1 < pass {
+        s.open = false;
+    }
+    // Enter on the button (focused from the keyboard) while the list is open is the list's: it
+    // accepts the highlighted item rather than close the list.
+    let toggled = button.clicked() && !(s.open && ui.input(|i| i.key_pressed(Key::Enter)));
+    if toggled {
+        s = MenuState { open: !s.open, ..MenuState::default() };
+        // The key that pressed the button (focused from the keyboard) is the list's: a dialog's
+        // Enter mustn't also take it and run the dialog with the clause half written.
+        ui.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Enter);
+            i.consume_key(Modifiers::NONE, Key::Space);
+        });
+    }
+    s.pass = pass;
+    let items = if s.open { items() } else { Vec::new() };
+    let n = items.len();
+    // While it's open the arrows and Escape are the list's, not egui's: they'd move the focus off
+    // the button (to another button, which Enter would then press) or drop it.
+    let filter = egui::EventFilter { tab: false, horizontal_arrows: s.open, vertical_arrows: s.open, escape: s.open };
+    ui.memory_mut(|m| m.set_focus_lock_filter(button.id, filter));
+    let mut accepted = None;
+    // The focus going to another widget (Tab), or gone to one already: the list closes, as a box's
+    // does, before it takes any key that widget's. Not on a press, whose widget may be an item of
+    // the list being clicked; nor while nothing has the focus (a click doesn't give it to the
+    // button); nor while it's on a row of the list itself (a screen reader focuses a row before
+    // it activates it).
+    let in_list = |f: Id| ui.ctx().read_response(f).is_some_and(|r| r.layer_id == egui::LayerId::new(egui::Order::Foreground, id));
+    let leaving = ui.input(|i| i.key_pressed(Key::Tab)) || ui.memory(|m| m.focused()).is_some_and(|f| f != button.id && !in_list(f));
+    if s.open && !toggled && leaving && !ui.input(|i| i.pointer.any_pressed()) {
+        s.open = false;
+    }
+    // A row focused (by a screen reader) takes Enter itself, as its own click: that row, not the
+    // highlighted one.
+    let on_row = ui.memory(|m| m.focused()).is_some_and(|f| f != button.id && in_list(f));
+    // Not the keys that opened it (Enter would accept the first item at once).
+    if s.open && n > 0 && !toggled {
+        let (up, down, enter, escape) = ui.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                !on_row && i.consume_key(Modifiers::NONE, Key::Enter),
+                i.consume_key(Modifiers::NONE, Key::Escape),
+            )
+        });
+        let selected = s.selected.min(n - 1);
+        if up || down {
+            s.selected = if up { (selected + n - 1) % n } else { (selected + 1) % n };
+            s.pointer_leads = false;
+        }
+        // A press neither on the button nor on the list closes it, as a menu's does.
+        let drawn = s.drawn.map(|(r, _)| r);
+        let elsewhere = ui.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer.interact_pos().is_some_and(|p| !button.rect.contains(p) && !drawn.is_some_and(|r| r.contains(p)))
+        });
+        if escape || elsewhere {
+            s.open = false;
+        } else if enter {
+            accepted = Some(selected);
+        }
+    }
+    if s.open && n > 0 && accepted.is_none() {
+        if ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
+            s.pointer_leads = true;
+        }
+        let row = row_height(ui);
+        let size = s.drawn.map_or(egui::vec2(MIN_WIDTH + 16.0, row * n.min(MAX_ROWS) as f32 + 12.0), |(_, size)| size);
+        let (corner, room) = around(button.rect, size, ui.ctx().content_rect(), row * 3.0);
+        let (selected, pointer_leads) = (s.selected.min(n - 1), s.pointer_leads);
+        let scrolled_to = &mut s.scrolled_to;
+        let mut clicked = None;
+        let drawn =
+            popup(ui, id, corner, room, |ui| clicked = rows(ui, &items, selected, pointer_leads, scrolled_to, icon, describe, help));
+        s.drawn = Some(drawn);
+        accepted = clicked;
+        // The focused row has taken its Enter: a dialog's Enter mustn't also take it.
+        if on_row {
+            ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+        }
+        // Still open: the app's shortcuts leave the keys to it next pass (not after a click on an
+        // item, which closed it).
+        if accepted.is_none() {
+            ui.data_mut(|d| d.insert_temp(open_id(), pass));
+        }
+    }
+    if accepted.is_some() || !s.open {
+        s.open = false;
+        s.drawn = None;
+        s.scrolled_to = None;
+    }
+    ui.data_mut(|d| d.insert_temp(id, s));
+    (button, accepted.and_then(|i| items.get(i).cloned()))
 }
 
 /// The byte char `at` of `text` starts at (its end for `at` at the end); None past it.
@@ -533,6 +735,92 @@ mod tests {
         fn end(&self) -> usize {
             0
         }
+    }
+
+    /// A list shows at most `MAX_ROWS` rows and scrolls beyond: a button's list of 30 items is ten
+    /// rows high, and the highlight moved past them scrolls into view. (A row scrolled out keeps
+    /// no place of its own to look at: its rect is clipped to the list's.)
+    #[test]
+    fn a_list_shows_at_most_ten_rows() {
+        use egui_kittest::kittest::Queryable;
+        let items: Vec<String> = (0..30).map(|i| format!("item{i:02}")).collect();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 900.0)).build_ui_state(
+            move |ui, id: &mut Option<egui::Id>| {
+                let (button, _) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {});
+                *id = Some(button.id.with("menu"));
+            },
+            None,
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        let id = h.state().unwrap();
+        let drawn = |h: &egui_kittest::Harness<'_, Option<egui::Id>>| {
+            h.ctx.data(|d| d.get_temp::<super::MenuState>(id)).and_then(|s| s.drawn).map(|(r, _)| r).unwrap()
+        };
+        let top = |h: &egui_kittest::Harness<'_, Option<egui::Id>>, item: &str| h.get_by_label(item).rect().top();
+        let row = top(&h, "item01") - top(&h, "item00");
+        assert!(row > 10.0, "one row under another: {row}");
+        let height = drawn(&h).height();
+        assert!(height > row * 9.0 && height < row * 10.0 + super::FRAME * 2.0, "ten rows: {height} for rows of {row}");
+        for _ in 0..15 {
+            h.key_press(egui::Key::ArrowDown);
+            h.run();
+        }
+        let list = drawn(&h);
+        assert!(list.contains(egui::pos2(list.center().x, top(&h, "item15") + row / 2.0)), "scrolled to the highlight");
+        let scrolled = h.ctx.data(|d| d.get_temp::<super::MenuState>(id)).and_then(|s| s.scrolled_to);
+        assert_eq!(scrolled, Some(15), "scrolled to the highlight once");
+    }
+
+    /// A screen reader focuses a row and then, in a later frame, activates it: the list stays open
+    /// on the focus (still on a widget of its own) and takes the row activated.
+    #[test]
+    fn a_row_focused_by_a_screen_reader_can_be_activated() {
+        use egui_kittest::kittest::Queryable;
+        let items: Vec<String> = (0..3).map(|i| format!("item{i:02}")).collect();
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, got: &mut Option<String>| {
+                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {}) {
+                    *got = Some(item);
+                }
+            },
+            None,
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        h.get_by_label("item02").focus();
+        h.run();
+        assert!(h.query_by_label("item02").is_some_and(|n| n.is_focused()), "the row has the focus");
+        h.get_by_label("item02").click();
+        h.run();
+        assert_eq!(h.state().as_deref(), Some("item02"), "the focused row was taken");
+        assert!(h.query_by_label("item00").is_none(), "and the list closed");
+    }
+
+    /// Enter on a row a screen reader focused takes that row, not the highlighted one.
+    #[test]
+    fn enter_on_a_focused_row_takes_that_row() {
+        use egui_kittest::kittest::Queryable;
+        let items: Vec<String> = (0..3).map(|i| format!("item{i:02}")).collect();
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, got: &mut Option<String>| {
+                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {}) {
+                    *got = Some(item);
+                }
+            },
+            None,
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        h.get_by_label("item02").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().as_deref(), Some("item02"), "the focused row, not the highlighted item00");
+        assert!(h.query_by_label("item00").is_none(), "and the list closed");
     }
 
     /// A list holding no items takes no arrow, Enter nor Tab (there's no highlight to move or

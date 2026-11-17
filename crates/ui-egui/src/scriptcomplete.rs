@@ -20,8 +20,6 @@ use rustgis_engine::cmd::workflows::refused_in_script;
 
 use crate::completion::{Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
 
-/// The most suggestions the list shows.
-const MAX_ITEMS: usize = 10;
 /// The fewest characters typed before ids are offered (one would offer most of them).
 const MIN_TYPED: usize = 2;
 
@@ -143,11 +141,11 @@ pub fn hint_at(script: &str, at: usize) -> Option<Hint> {
 }
 
 /// The ids in `ids` (the commands a script can run, `script_ids`) that complete `word`, typed
-/// from char `start` to `end`, case aside; the id typed whole isn't offered again.
+/// from char `start` to `end`, case aside; the id typed whole isn't offered again. All of them,
+/// sorted: the list shows ten at a time and scrolls (`completion`).
 fn complete(start: usize, end: usize, word: &str, ids: &[String]) -> Option<Offer> {
     let mut items: Vec<String> = ids.iter().filter(|id| starts_with_ci(id, word) && !id.eq_ignore_ascii_case(word)).cloned().collect();
     items.sort();
-    items.truncate(MAX_ITEMS);
     (!items.is_empty()).then_some(Offer { start, end, items, of: None })
 }
 
@@ -695,7 +693,7 @@ fn sub_desc(desc: &str, key: &str) -> Option<String> {
 
 /// The ids of `ids` that complete `word`, typed from char `start` to `end`, case aside, each
 /// once: the tools, commands, layers, tables, fields or choices a value takes (`of`), offered
-/// from its quote, so not cut to `MAX_ITEMS` (the list scrolls). Commands sorted, as a line's
+/// from its quote, all of them (the list scrolls). Commands sorted, as a line's
 /// first word offers them; the rest in their order: tools with the built-in ones first (an
 /// external one with the same id isn't the one Run finds), layers top first (then tables), fields
 /// as the layer's table has them, choices as the tool lists them.
@@ -1374,10 +1372,12 @@ mod tests {
         assert_eq!(start, "labels.pl");
     }
 
+    /// Every command that completes a line's first word is offered, not the first ten: the list
+    /// shows ten at a time and scrolls to the rest.
     #[test]
-    fn the_list_is_capped() {
+    fn every_matching_command_is_offered() {
         let many: Vec<String> = (0..30).map(|i| format!("map.cmd{i:02}")).collect();
-        assert_eq!(items(offer("map.cm", 6, &many)).len(), super::MAX_ITEMS);
+        assert_eq!(items(offer("map.cm", 6, &many)), many);
     }
 
     /// The pane with an empty script, its box focused.
@@ -2791,7 +2791,7 @@ mod tests {
         let o = offer(r#"task.addStep {"command": "script."#).map(|o| o.items).unwrap_or_default();
         assert!(o.iter().any(|id| id == "script.run"), "what task.addStep takes, not what a script runs: {o:?}");
         let all = offer(r#"task.addStep {"command": ""#).map(|o| o.items).unwrap_or_default();
-        assert!(all.len() > super::MAX_ITEMS && all.is_sorted(), "every command, sorted as a line's first word offers them");
+        assert!(all.len() > 10 && all.is_sorted(), "every command, sorted as a line's first word offers them");
         assert!(offer(r#"task.addStep {"title": "labels.st"#).is_none(), "another key's value");
         let keys = |s: &str| offer(s).map(|o| o.items).unwrap_or_default();
         assert_eq!(keys(r#"task.addStep {"command": "labels.style", "params": {"si"#), ["size"]);
