@@ -201,9 +201,18 @@ fn child<'a, 'i>(n: &Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
     n.children().find(|c| c.is_element() && local(c) == name)
 }
 
+/// The text and CDATA children joined, keeping description whitespace as data.
+fn raw_text_of(n: &Node) -> String {
+    n.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect()
+}
+
 /// The text of an element (its text and CDATA children joined), trimmed.
 fn text_of(n: &Node) -> String {
-    n.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect::<String>().trim().to_string()
+    raw_text_of(n).trim().to_string()
+}
+
+fn data_text(n: &Node, key: &str) -> String {
+    if key == "description" { raw_text_of(n) } else { text_of(n) }
 }
 
 fn child_text(n: &Node, name: &str) -> Option<String> {
@@ -436,8 +445,10 @@ impl Reader {
         if let Some(ext) = child(pm, "ExtendedData") {
             for d in ext.descendants().filter(|d| d.is_element()) {
                 let pair = match local(&d) {
-                    "Data" => d.attribute("name").map(|k| (k.to_string(), child_text(&d, "value").unwrap_or_default())),
-                    "SimpleData" => d.attribute("name").map(|k| (k.to_string(), text_of(&d))),
+                    "Data" => {
+                        d.attribute("name").map(|k| (k.to_string(), child(&d, "value").map(|v| data_text(&v, k)).unwrap_or_default()))
+                    }
+                    "SimpleData" => d.attribute("name").map(|k| (k.to_string(), data_text(&d, k))),
                     _ => None,
                 };
                 if let Some((k, v)) = pair.filter(|(k, _)| !k.trim().is_empty()) {
@@ -463,7 +474,7 @@ impl Reader {
         let style = self.style_for(pm);
         let folder = folders.iter().filter(|f| !f.is_empty()).cloned().collect::<Vec<_>>().join(" / ");
         let name = child_text(pm, "name");
-        let description = child_text(pm, "description");
+        let description = child(pm, "description").map(|n| raw_text_of(&n));
         // A placemark mixing kinds (a MultiGeometry of a point and a line) gives one feature per
         // kind, each in its layer.
         let mut any = false;
@@ -529,7 +540,7 @@ impl Reader {
                 };
                 r.data.iter().find(|(dk, _)| dk == k).is_none_or(|(_, v)| v == fixed.unwrap_or_default())
             };
-            if self.rows.iter().all(repeats) {
+            if (i != 1 || k == "description") && self.rows.iter().all(repeats) {
                 continue;
             }
             let column = crate::io::free_column_name(&taken, k);
@@ -749,6 +760,141 @@ mod tests {
         let style = polys.dataset.value(0, polys.dataset.field_index("style").unwrap()).to_string();
         assert_eq!(style, "#inline-1");
         assert_eq!(polys.styles[0].1.fill, Some([0, 170, 0, 255]));
+    }
+
+    #[test]
+    fn exported_text_descriptions_keep_their_column_on_repeated_kml_and_kmz_round_trips() {
+        let descriptions = [
+            Some("<b>Café & \"river\"</b>\nSecond line"),
+            Some("]]> <plain> & text"),
+            Some("a\rb"),
+            Some("a\r\nb"),
+            Some("a\u{7f}b\u{85}c\u{9f}"),
+            Some(" padded \n"),
+            Some("\t  \r\n "),
+            Some(""),
+            None,
+        ];
+        for ext in ["kml", "kmz"] {
+            let mut ds = Dataset::new(
+                "places",
+                GeometryType::Point,
+                vec![Field::new("name", FieldType::Text), Field::new("description", FieldType::Text)],
+            );
+            for (row, description) in descriptions.iter().enumerate() {
+                ds.push(
+                    Some(Geometry::Point(Coord::new(row as f64, 2.0))),
+                    vec![Value::Text(format!("Place {row}")), description.map(|v| Value::Text(v.into())).unwrap_or_default()],
+                );
+            }
+            for _ in 0..3 {
+                let xml = crate::interop::to_kml(&ds, Some(0)).unwrap();
+                let doc = roxmltree::Document::parse(&xml).unwrap();
+                let placemarks: Vec<_> =
+                    doc.descendants().filter(|n| n.has_tag_name(("http://www.opengis.net/kml/2.2", "Placemark"))).collect();
+                for (pm, expected) in placemarks.iter().zip(descriptions) {
+                    assert_eq!(child(pm, "description").map(|n| raw_text_of(&n)).as_deref(), expected);
+                }
+                let (bytes, skipped) = crate::io::write_bytes(&ds, ext).unwrap();
+                assert_eq!(skipped, 0);
+                let layers = read(&format!("places.{ext}"), &bytes).unwrap();
+                assert_eq!(layers.len(), 1);
+                let layer = &layers[0];
+                assert!(layer.report.messages.is_empty(), "{ext}: {:?}", layer.report.messages);
+                let back = &layer.dataset;
+                assert!(back.field_index("description_1").is_none());
+                let fi = back.field_index("description").unwrap();
+                for (row, expected) in descriptions.iter().enumerate() {
+                    let expected = expected.map(|v| Value::Text(v.into())).unwrap_or_default();
+                    assert_eq!(back.value(row, fi), &expected, "{ext}, row {row}");
+                }
+                ds = back.clone();
+            }
+        }
+    }
+
+    #[test]
+    fn unrepresentable_description_characters_are_refused_with_their_count_and_location() {
+        for bad in ['\0', '\u{b}', '\u{1b}', '\u{1f}', '\u{fffe}', '\u{ffff}'] {
+            let mut ds = Dataset::new("places", GeometryType::Point, vec![Field::new("description", FieldType::Text)]);
+            ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Text(format!("a{bad}b{bad}c"))]);
+            let error = crate::interop::to_kml(&ds, None).unwrap_err().to_string();
+            assert!(error.contains("places") && error.contains(&format!("feature id {}", ds.features[0].id)), "{error}");
+            assert!(error.contains("description: 2 character(s)") && error.contains(&format!("U+{:04X}", bad as u32)), "{error}");
+            for ext in ["kml", "kmz"] {
+                assert_eq!(crate::io::write_bytes(&ds, ext).unwrap_err().to_string(), error);
+            }
+        }
+    }
+
+    #[test]
+    fn description_copies_keep_whitespace_in_data_and_simple_data() {
+        for copy in [
+            "<Data name=\"description\"><value> padded &#13;\n</value></Data>",
+            "<SchemaData><SimpleData name=\"description\"> padded &#13;\n</SimpleData></SchemaData>",
+        ] {
+            let xml = format!(
+                "<kml><Placemark><description> padded &#13;\n</description><ExtendedData>{copy}</ExtendedData><Point><coordinates>1,2</coordinates></Point></Placemark></kml>"
+            );
+            let layers = read("spaces.kml", xml.as_bytes()).unwrap();
+            let layer = &layers[0];
+            assert!(layer.report.messages.is_empty(), "{:?}", layer.report.messages);
+            let ds = &layer.dataset;
+            assert_eq!(ds.value(0, ds.field_index("description").unwrap()), &Value::Text(" padded \r\n".into()));
+            assert!(ds.field_index("description_1").is_none());
+        }
+    }
+
+    #[test]
+    fn exported_case_variant_descriptions_stay_distinct_from_the_canonical_column() {
+        for variant in ["Description", "DESCRIPTION"] {
+            for other in ["Keep case", "Another value"] {
+                for ext in ["kml", "kmz"] {
+                    let mut ds = Dataset::new(
+                        "places",
+                        GeometryType::Point,
+                        vec![
+                            Field::new("name", FieldType::Text),
+                            Field::new("description", FieldType::Text),
+                            Field::new(variant, FieldType::Text),
+                        ],
+                    );
+                    ds.push(
+                        Some(Geometry::Point(Coord::new(1.0, 2.0))),
+                        vec![Value::Text("Place".into()), Value::Text("Keep case".into()), Value::Text(other.into())],
+                    );
+                    let (bytes, _) = crate::io::write_bytes(&ds, ext).unwrap();
+                    let layers = read(&format!("places.{ext}"), &bytes).unwrap();
+                    let layer = &layers[0];
+                    let back = &layer.dataset;
+                    assert_eq!(back.value(0, back.field_index("description").unwrap()), &Value::Text("Keep case".into()));
+                    assert_eq!(back.value(0, back.field_index(&format!("{variant}_1")).unwrap()), &Value::Text(other.into()));
+                    assert_eq!(layer.report.messages.len(), 1, "{:?}", layer.report.messages);
+                    assert!(layer.report.messages[0].contains(&format!("'{variant}' → '{variant}_1'")), "{:?}", layer.report.messages);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exported_other_reserved_columns_still_report_their_collisions() {
+        for (name, ty, value) in [
+            ("description", FieldType::Double, Value::Float(2.5)),
+            ("Description", FieldType::Text, Value::Text("Keep case".into())),
+            ("folder", FieldType::Text, Value::Text("My folder".into())),
+            ("style", FieldType::Text, Value::Text("My style".into())),
+        ] {
+            let mut ds = Dataset::new("places", GeometryType::Point, vec![Field::new(name, ty)]);
+            ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![value.clone()]);
+            let xml = crate::interop::to_kml(&ds, None).unwrap();
+            assert!(!xml.contains("<description>"), "{xml}");
+            let layers = read("places.kml", xml.as_bytes()).unwrap();
+            let layer = &layers[0];
+            let fi = layer.dataset.field_index(&format!("{name}_1")).unwrap();
+            assert_eq!(layer.dataset.value(0, fi), &value);
+            assert_eq!(layer.report.messages.len(), 1, "{:?}", layer.report.messages);
+            assert!(layer.report.messages[0].contains("renamed"), "{:?}", layer.report.messages);
+        }
     }
 
     #[test]

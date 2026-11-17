@@ -8,13 +8,30 @@ use crate::{Dataset, Geometry};
 
 /// Text for XML: special characters escaped, control characters (invalid in XML 1.0) dropped.
 fn xml(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
-        .collect::<String>()
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    let clean: String = s.chars().filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).collect();
+    escaped_xml(&clean)
+}
+
+fn escaped_xml(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\r', "&#13;")
+}
+
+/// XML 1.0 Char production: https://www.w3.org/TR/xml/#charsets.
+/// A description is kept exactly or refused, never cleaned without reporting its loss.
+fn description_xml(text: &str, layer: &str, feature: u64) -> crate::Result<String> {
+    let mut invalid = text.chars().filter(|c| {
+        !matches!(*c,
+            '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}'
+        )
+    });
+    if let Some(first) = invalid.next() {
+        let count = invalid.count().saturating_add(1);
+        return Err(crate::DataError::Format(format!(
+            "KML: {layer}, feature id {feature}, description: {count} character(s) cannot be represented in XML 1.0 (first U+{:04X})",
+            first as u32
+        )));
+    }
+    Ok(escaped_xml(text))
 }
 
 fn coords(pts: &[Coord]) -> String {
@@ -62,19 +79,34 @@ pub fn to_kml(ds: &Dataset, name_field: Option<usize>) -> crate::Result<String> 
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><name>{}</name>\n",
         xml(&ds.name)
     );
+    // KML's description is text. Other types and differently-cased columns stay in
+    // ExtendedData, where the reader preserves their values and reports name collisions.
+    let description = ds.fields.iter().position(|f| f.name == "description" && f.ty == crate::FieldType::Text);
     for (r, f) in ds.features.iter().enumerate() {
         crate::progress::step(1)?;
         let Some(g) = &f.geometry else { continue };
         let name = name_field.map(|fi| ds.value(r, fi).to_file_text()).unwrap_or_else(|| f.id.to_string());
+        let description = match description.map(|fi| ds.value(r, fi)) {
+            Some(crate::Value::Text(text)) => format!("<description>{}</description>", description_xml(text, &ds.name, f.id)?),
+            _ => String::new(),
+        };
         let data: String = ds
             .fields
             .iter()
             .zip(&f.attrs)
             .filter(|(_, v)| !v.is_null())
-            .map(|(fd, v)| format!("<Data name=\"{}\"><value>{}</value></Data>", xml(&fd.name), xml(&v.to_file_text())))
-            .collect();
+            .map(|(fd, v)| {
+                let value = match v {
+                    crate::Value::Text(text) if fd.name == "description" && fd.ty == crate::FieldType::Text => {
+                        description_xml(text, &ds.name, f.id)?
+                    }
+                    _ => xml(&v.to_file_text()),
+                };
+                Ok(format!("<Data name=\"{}\"><value>{value}</value></Data>", xml(&fd.name)))
+            })
+            .collect::<crate::Result<String>>()?;
         out.push_str(&format!(
-            "<Placemark><name>{}</name><ExtendedData>{data}</ExtendedData>{}</Placemark>\n",
+            "<Placemark><name>{}</name>{description}<ExtendedData>{data}</ExtendedData>{}</Placemark>\n",
             xml(&name),
             kml_geometry(g)
         ));
