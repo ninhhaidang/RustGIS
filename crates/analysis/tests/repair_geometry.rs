@@ -1,8 +1,9 @@
 //! Repair Geometry through the public tool dispatch: each repair with its exact result and code,
 //! several in one feature, valid features copied as they are, both ring windings, lines and
 //! points, rows that can't be repaired, the work bound, selections, attributes and CRS, the
-//! repairs field's name, how far the overlay moves coordinates, and input read by the real
-//! GeoJSON and Shapefile readers. Every repaired geometry passes Check Geometry.
+//! repairs field's name, how far the overlay moves coordinates, input read by the real GeoJSON and
+//! Shapefile readers, today's result where another rule for what is inside would differ, and the
+//! PostGIS manual's ST_MakeValid examples. Every repaired geometry passes Check Geometry.
 use rustgis_analysis::{Inputs, Output, ToolResult};
 use rustgis_data::{Coord, Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
 use serde_json::json;
@@ -160,10 +161,14 @@ fn rebuilt() -> Vec<(&'static str, Geometry, f64)> {
     ]
 }
 
+/// A repaired geometry and its repairs, as [`one`] gives them.
+fn fixed(g: Geometry, code: &str) -> (Option<Geometry>, String) {
+    (Some(g), code.to_string())
+}
+
 #[test]
 fn each_repair_on_its_own() {
     use GeometryType::{Point, Polygon, Polyline};
-    let fixed = |g: Geometry, code: &str| (Some(g), code.to_string());
     let gone = |code: &str| (None, code.to_string());
     let cases: Vec<(GeometryType, Option<Geometry>, (Option<Geometry>, String))> = vec![
         // The fixes that move no coordinate.
@@ -916,5 +921,171 @@ fn a_shapefile_round_trip_gives_the_same_repairs() {
         // outside its shell may change what the checks find, never what the rebuild makes.
         assert_eq!(b.features[i].geometry.as_ref().map(norm), a.features[i].geometry.as_ref().map(norm), "{name}");
         assert_eq!(b.features[i].geometry, a.features[i].geometry, "{name}");
+    }
+}
+
+/// Today's result on the shapes where another rule for what is inside (even-odd, say) would give
+/// a different polygon, so a change to how Repair Geometry decides is seen here first: overlaps
+/// merge, a ring that runs back over itself counts once, what of a hole lies outside its shell is
+/// dropped while what lies inside stays a hole, and a ring listed as a part of its own is filled
+/// even when it lies inside another. Each in both windings, GeoJSON's and Shapefile's.
+#[test]
+fn what_is_inside_where_rules_differ() {
+    let twice: Ring = &[(0., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)];
+    let small: Ring = &[(20., 0.), (22., 0.), (22., 2.), (20., 2.), (20., 0.)];
+    let cases: Vec<(&str, Geometry, (Option<Geometry>, String))> = vec![
+        (
+            "plus sign",
+            multi(&[&[&[(0., 4.), (10., 4.), (10., 6.), (0., 6.), (0., 4.)]], &[&[(4., 0.), (6., 0.), (6., 10.), (4., 10.), (4., 0.)]]]),
+            fixed(
+                poly(&[&[
+                    (0., 4.),
+                    (4., 4.),
+                    (4., 0.),
+                    (6., 0.),
+                    (6., 4.),
+                    (10., 4.),
+                    (10., 6.),
+                    (6., 6.),
+                    (6., 10.),
+                    (4., 10.),
+                    (4., 6.),
+                    (0., 6.),
+                ]]),
+                "parts_overlap",
+            ),
+        ),
+        (
+            "hole crossing its shell",
+            poly(&[SQUARE, &[(8., 4.), (8., 6.), (12., 6.), (12., 4.), (8., 4.)]]),
+            fixed(poly(&[&[(0., 0.), (10., 0.), (10., 4.), (8., 4.), (8., 6.), (10., 6.), (10., 10.), (0., 10.)]]), "hole_outside_shell"),
+        ),
+        // A ring listed as a part of its own, as a reader that took a hole for a shell gives it:
+        // wound clockwise, against SQUARE, so a rule that reads winding would take it for a hole.
+        (
+            "clockwise part inside another (a hole listed as a part)",
+            multi(&[&[SQUARE], &[&[(2., 2.), (2., 4.), (4., 4.), (4., 2.), (2., 2.)]]]),
+            fixed(poly(&[SQUARE]), "parts_overlap"),
+        ),
+        // The same shape wound as SQUARE is: a shell inside a shell.
+        (
+            "counter-clockwise part inside another",
+            multi(&[&[SQUARE], &[&[(2., 2.), (8., 2.), (8., 8.), (2., 8.), (2., 2.)]]]),
+            fixed(poly(&[SQUARE]), "parts_overlap"),
+        ),
+        ("the same part twice", multi(&[&[SQUARE], &[SQUARE]]), fixed(poly(&[SQUARE]), "parts_overlap")),
+        (
+            "the same part twice, from another vertex",
+            multi(&[&[SQUARE], &[&[(10., 0.), (10., 10.), (0., 10.), (0., 0.), (10., 0.)]]]),
+            fixed(poly(&[SQUARE]), "parts_overlap"),
+        ),
+        ("a ring traced twice", poly(&[twice]), fixed(poly(&[SQUARE]), "self_intersection")),
+        ("a ring traced twice beside a part", multi(&[&[twice], &[small]]), fixed(multi(&[&[SQUARE], &[small]]), "self_intersection")),
+        (
+            "spike out",
+            poly(&[&[(0., 0.), (10., 0.), (10., 10.), (15., 15.), (10., 10.), (0., 10.), (0., 0.)]]),
+            fixed(poly(&[SQUARE]), "self_intersection"),
+        ),
+        (
+            "spike in",
+            poly(&[&[(0., 0.), (10., 0.), (10., 10.), (5., 5.), (10., 10.), (0., 10.), (0., 0.)]]),
+            fixed(poly(&[SQUARE]), "self_intersection"),
+        ),
+    ];
+    for (name, g, (want, code)) in cases {
+        // The rebuilt rings wind as OGC says whichever way the input's do, and when one ring is
+        // wound against the rest.
+        for (winding, g) in windings(&g) {
+            let (got, repairs) = one(GeometryType::Polygon, Some(g));
+            assert_eq!(repairs, code, "{name}, {winding}");
+            assert_eq!(got.as_ref().map(norm), want.as_ref().map(norm), "{name}, {winding}");
+        }
+    }
+    // Valid as they are, so copied exactly in every winding: OGC sets no winding, and an island in
+    // another part's hole touches nothing.
+    for (name, g) in [
+        ("hole wound as its shell", poly(&[SQUARE, &[(2., 2.), (4., 2.), (4., 4.), (2., 4.), (2., 2.)]])),
+        (
+            "island in another part's hole",
+            multi(&[
+                &[SQUARE, &[(2., 2.), (2., 8.), (8., 8.), (8., 2.), (2., 2.)]],
+                &[&[(4., 4.), (6., 4.), (6., 6.), (4., 6.), (4., 4.)]],
+            ]),
+        ),
+    ] {
+        for (winding, g) in windings(&g) {
+            assert_eq!(one(GeometryType::Polygon, Some(g.clone())), (Some(g), String::new()), "{name}, {winding}");
+        }
+    }
+}
+
+/// `g` as written, with every ring reversed, and with each ring on its own reversed.
+fn windings(g: &Geometry) -> Vec<(String, Geometry)> {
+    let mut all = vec![("as written".to_string(), g.clone()), ("reversed".to_string(), reversed(g))];
+    if let Geometry::Polygon(parts) = g {
+        for (p, rings) in parts.iter().enumerate() {
+            for r in 0..rings.len() {
+                let mut mixed = parts.clone();
+                mixed[p][r].reverse();
+                all.push((format!("ring {r} of part {p} reversed"), Geometry::Polygon(mixed)));
+            }
+        }
+    }
+    all
+}
+
+/// The two examples of overlapping parts in the PostGIS manual's ST_MakeValid page
+/// (https://postgis.net/docs/ST_MakeValid.html), whose "structure" method gives one polygon for
+/// each, as merging the parts does here. The manual gives no areas: the expected ones are this
+/// tool's own (geo's overlay), pinned so that a change shows, and checked against what any union
+/// of the parts must cover: at least the largest part, less than all of them added up.
+#[test]
+fn the_postgis_manual_examples_merge_into_one_polygon() {
+    let ring = |s: &str| -> Vec<(f64, f64)> {
+        s.split(',')
+            .map(|p| match p.split_whitespace().map(str::parse::<f64>).collect::<Vec<_>>()[..] {
+                [Ok(x), Ok(y)] => (x, y),
+                _ => panic!("not an x y pair: {p:?}"),
+            })
+            .collect()
+    };
+    let examples = [
+        (
+            vec![
+                ring(
+                    "186 194,187 194,188 195,189 195,190 195,191 195,192 195,193 194,194 194,194 193,195 192,195 191,195 190,195 189,195 188,194 187,194 186,14 6,13 6,12 5,11 5,10 5,9 5,8 5,7 6,6 6,6 7,5 8,5 9,5 10,5 11,5 12,6 13,6 14,186 194",
+                ),
+                ring(
+                    "150 90,149 80,146 71,142 62,135 55,128 48,119 44,110 41,100 40,90 41,81 44,72 48,65 55,58 62,54 71,51 80,50 90,51 100,54 109,58 118,65 125,72 132,81 136,90 139,100 140,110 139,119 136,128 132,135 125,142 118,146 109,149 100,150 90",
+                ),
+            ],
+            9651.077,
+        ),
+        (
+            vec![
+                ring("91 50,79 22,51 10,23 22,11 50,23 78,51 90,79 78,91 50"),
+                ring("91 100,79 72,51 60,23 72,11 100,23 128,51 140,79 128,91 100"),
+                ring("91 150,79 122,51 110,23 122,11 150,23 178,51 190,79 178,91 150"),
+                ring("141 50,129 22,101 10,73 22,61 50,73 78,101 90,129 78,141 50"),
+                ring("141 100,129 72,101 60,73 72,61 100,73 128,101 140,129 128,141 100"),
+                ring("141 150,129 122,101 110,73 122,61 150,73 178,101 190,129 178,141 150"),
+            ],
+            19872.857,
+        ),
+    ];
+    for (rings, want) in examples {
+        // Each ring a part of its own, as the manual's MULTIPOLYGONs have them.
+        let owned: Vec<Vec<Ring>> = rings.iter().map(|r| vec![r.as_slice()]).collect();
+        let parts: Vec<&[Ring]> = owned.iter().map(Vec::as_slice).collect();
+        let input = multi(&parts);
+        let (got, repairs) = one(GeometryType::Polygon, Some(input.clone()));
+        let got = got.expect("a geometry");
+        assert!(matches!(&got, Geometry::Polygon(p) if p.len() == 1), "{repairs}: {got:?}");
+        assert!(repairs.contains("parts_overlap"), "{repairs}");
+        let (largest, sum) = parts.iter().map(|p| area(&poly(p))).fold((0f64, 0f64), |(m, s), a| (m.max(a), s + a));
+        let got = area(&got);
+        assert!(largest <= got && got < sum, "area {got} not within [{largest}, {sum})");
+        // Relative, so that an overlay rounding a vertex a little differently still passes.
+        assert!((got - want).abs() <= want * 1e-6, "area {got} not {want}");
     }
 }
