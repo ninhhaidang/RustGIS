@@ -730,6 +730,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
                 dates.extend(rustgis_data::io::fgb_empty_dates_note(&layer.fields, &e.written_values, path));
             }
             dates.extend(e.date_messages.iter().map(|n| format!("{path}: {n}")));
+            dates.extend(e.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", layer.name)));
             (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, e.csv, dates)
         }
         None => {

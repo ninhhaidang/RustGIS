@@ -1562,7 +1562,7 @@ pub fn gives_up_when_stalled(url: &str, ceiling: crate::address::Reach) -> bool 
     split_download_limit(url).1.is_none() || ceiling == crate::address::Reach::Public
 }
 
-fn download_address(url: &str, max: usize) -> String {
+pub(crate) fn download_address(url: &str, max: usize) -> String {
     if max >= MAX_DOWNLOAD { format!("{DOWNLOAD}{url}") } else { format!("{LIMITED_DOWNLOAD}{max}:{url}") }
 }
 

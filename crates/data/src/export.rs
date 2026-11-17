@@ -64,6 +64,9 @@ pub struct Exported {
     pub written_values: Vec<usize>,
     /// GeoParquet timestamp representation changes counted during export.
     pub date_messages: Vec<String>,
+    /// What reading the source lost or assumed besides the counts above
+    /// ([`crate::source::Batch::notes`]), said as they are.
+    pub read_notes: Vec<String>,
 }
 
 /// Writes every feature of `src` to `path` in the format of its extension, in `crs` (see
@@ -149,6 +152,7 @@ fn write_chunks_as(
     let mut unread_dates = Vec::new();
     let mut rounded_dates = Vec::new();
     let mut null_text = Vec::new();
+    let mut read_notes = Vec::new();
     let mut utc_dates = Vec::new();
     let mut fine_dates = Vec::new();
     let mut written_values = Vec::new();
@@ -194,6 +198,7 @@ fn write_chunks_as(
         unread_dates = batch.unread_dates;
         rounded_dates = batch.rounded_dates;
         null_text = batch.null_text;
+        read_notes = batch.notes;
         Ok(())
     };
     let mut table = None;
@@ -250,6 +255,7 @@ fn write_chunks_as(
             fine_dates,
             written_values,
             date_messages,
+            read_notes,
         },
         table,
     ))

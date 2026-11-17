@@ -93,6 +93,7 @@ impl FeatureSource for LidarSource {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
+            notes: Vec::new(),
         })
     }
 }

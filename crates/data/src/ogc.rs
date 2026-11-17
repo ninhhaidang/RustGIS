@@ -682,7 +682,7 @@ fn origin(url: &str) -> &str {
 }
 
 /// The value of a query parameter, by its whole name (any case).
-fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
     let url = crate::login_address::inner(url);
     let q = url.split('#').next()?.split_once('?')?.1;
     q.split('&').find_map(|kv| {
@@ -3157,7 +3157,7 @@ fn drawing_unread(why: &str) -> String {
 }
 
 /// Whether an address is an ArcGIS layer's query (`…/FeatureServer/0/query`, `…/MapServer/3/query`).
-fn is_arcgis_query(url: &str) -> bool {
+pub(crate) fn is_arcgis_query(url: &str) -> bool {
     let b = base(url).trim_end_matches('/').to_ascii_lowercase();
     b.ends_with("/query") && (b.contains("/featureserver/") || b.contains("/mapserver/"))
 }
@@ -3165,16 +3165,16 @@ fn is_arcgis_query(url: &str) -> bool {
 /// How an ArcGIS layer is read past its record limit: pages of `size` features, in the order of
 /// its object ids (`order`) so that no feature is skipped or read twice.
 #[derive(Debug, PartialEq)]
-struct ArcgisPaging {
-    size: Option<usize>,
-    order: Option<String>,
+pub(crate) struct ArcgisPaging {
+    pub(crate) size: Option<usize>,
+    pub(crate) order: Option<String>,
 }
 
 /// How a layer's description (`…/FeatureServer/0?f=json`) lets it be read in pages: `None` unless it
 /// says it supports them (`advancedQueryCapabilities.supportsPagination`, from ArcGIS Server 10.3).
 /// Its `maxRecordCount` is the page size when it is a count RustGIS would ask for; its object id
 /// field, the order, when it is a plain field name (it goes into the address).
-fn arcgis_paging(layer: &serde_json::Value) -> Option<ArcgisPaging> {
+pub(crate) fn arcgis_paging(layer: &serde_json::Value) -> Option<ArcgisPaging> {
     if layer.pointer("/advancedQueryCapabilities/supportsPagination").and_then(|p| p.as_bool()) != Some(true) {
         return None;
     }
@@ -3203,7 +3203,7 @@ fn arcgis_paging(layer: &serde_json::Value) -> Option<ArcgisPaging> {
 
 /// Whether a layer's description lists protocol buffers among the formats its queries answer in
 /// (`supportedQueryFormats`, such as `"JSON, geoJSON, PBF"`).
-fn supports_pbf(layer: &serde_json::Value) -> bool {
+pub(crate) fn supports_pbf(layer: &serde_json::Value) -> bool {
     layer.get("supportedQueryFormats").and_then(|f| f.as_str()).is_some_and(|f| f.split(',').any(|f| f.trim().eq_ignore_ascii_case("pbf")))
 }
 
@@ -3214,7 +3214,7 @@ fn with_format(query: &str, format: &str) -> String {
 }
 
 /// Replaces one query value in any case, preserving opaque settings, login bindings and fragments.
-fn with_query_value(query: &str, key: &str, value: &str) -> String {
+pub(crate) fn with_query_value(query: &str, key: &str, value: &str) -> String {
     if let Ok(Some(bound)) = crate::login_address::parse(query) {
         return crate::login_address::inherit(query, &with_query_value(bound.url, key, value));
     }
@@ -3244,7 +3244,7 @@ fn arcgis_page_error(bytes: &[u8]) -> Option<String> {
 
 /// What an ArcGIS answer already read (`v`) says when it is the service's error (`{"error": …}`),
 /// whatever its size, as [`arcgis_page_error`] says it.
-fn arcgis_error_text(v: &serde_json::Value) -> Option<String> {
+pub(crate) fn arcgis_error_text(v: &serde_json::Value) -> Option<String> {
     let error = v.get("error")?.as_object()?;
     let code = error.get("code").and_then(serde_json::Value::as_u64).unwrap_or(0);
     let message = error.get("message").and_then(serde_json::Value::as_str).unwrap_or("query refused");
@@ -3280,7 +3280,7 @@ fn smaller_page_may_help(error: &str) -> bool {
 
 /// The description of the layer an ArcGIS query reads (`…/FeatureServer/0?f=json`), with the
 /// query's token.
-fn arcgis_layer_url(query: &str) -> String {
+pub(crate) fn arcgis_layer_url(query: &str) -> String {
     if let Ok(Some(bound)) = crate::login_address::parse(query) {
         return crate::login_address::inherit(query, &arcgis_layer_url(bound.url));
     }

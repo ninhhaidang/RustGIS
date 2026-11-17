@@ -291,7 +291,7 @@ impl FeatureSource for ShpSource {
         } else {
             self.index.visit(bounds, limit, &mut each)?
         };
-        Ok(Batch { features, matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text })
+        Ok(Batch { features, matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text, notes: Vec::new() })
     }
     fn streams_chunks(&self) -> bool {
         true
@@ -370,7 +370,16 @@ impl FeatureSource for ShpSource {
             chunks.push(Feature { id: u64::from(i) + 1, geometry, attrs })
         })?;
         chunks.flush()?;
-        Ok(Batch { features: Vec::new(), matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text })
+        Ok(Batch {
+            features: Vec::new(),
+            matched,
+            complete,
+            skipped,
+            unread_dates,
+            rounded_dates: Vec::new(),
+            null_text,
+            notes: Vec::new(),
+        })
     }
 }
 

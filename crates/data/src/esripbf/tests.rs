@@ -3,7 +3,7 @@ use crate::raster::Crs;
 
 // Encoding, as `FeatureCollection.proto` lays answers out: shared with the engine's tests.
 #[path = "../../../../tests/support/esripbf.rs"]
-mod encode;
+pub(crate) mod encode;
 pub(crate) use encode::{page, page_with_z};
 // Named, so they come before the reader's own functions of the same names (`field`, `feature`).
 use encode::{

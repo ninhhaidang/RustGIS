@@ -416,6 +416,7 @@ impl FeatureSource for GpkgMemSource {
             unread_dates,
             rounded_dates,
             null_text: Vec::new(),
+            notes: Vec::new(),
         })
     }
 

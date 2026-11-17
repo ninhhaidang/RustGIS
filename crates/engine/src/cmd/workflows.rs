@@ -1946,6 +1946,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 rustgis_data::source::null_text_note(&ds.fields, &result.null_text)
                     .map(|n| format!("{path}: {}: {n}, so they're empty in the export", ds.name)),
             );
+            notes.extend(result.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", ds.name)));
             (notes, result.null_numbers)
         } else {
             let (whole, unreadable) = if layer.is_streamed() {

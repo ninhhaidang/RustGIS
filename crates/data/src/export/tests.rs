@@ -94,6 +94,7 @@ impl FeatureSource for Runs {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
+            notes: Vec::new(),
         })
     }
     fn visits_chunks(&self) -> bool {
@@ -211,6 +212,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     fine_dates: if ext == "gpkg" { crate::io::fine_dates(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     written_values: if ext == "fgb" { crate::io::written_values(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     date_messages: Vec::new(),
+                    read_notes: Vec::new(),
                 };
                 assert_eq!(streamed, expected, "{what}");
                 let (a, b) = (read_back(&a), read_back(&b));

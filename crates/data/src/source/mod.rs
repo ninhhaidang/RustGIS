@@ -7,6 +7,7 @@
 //!
 //! Sources are hostile input: malformed rows are skipped and counted, never a panic.
 
+pub mod arcgis;
 pub mod credentials;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duckdb;
@@ -252,6 +253,9 @@ pub struct Batch {
     /// Text values `<Null>` read as null, counted for each field by its position. Said by
     /// [`null_text_note`].
     pub null_text: Vec<usize>,
+    /// What else the read lost or assumed, one note per kind with its count (values that don't fit
+    /// their field, rings without area): said as they are.
+    pub notes: Vec<String>,
 }
 
 /// Counts one more value of the field at `k` that wasn't a date, or one date-time rounded to the
@@ -646,7 +650,7 @@ pub fn materialize(src: &dyn FeatureSource) -> Result<(Dataset, ReadReport)> {
 fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, ReadReport)> {
     let info = src.info();
     let batch = if src.visits_chunks() { read_chunks(src, budget)? } else { read_at_once(src)? };
-    let Batch { features, skipped, unread_dates, rounded_dates, null_text, .. } = batch;
+    let Batch { features, skipped, unread_dates, rounded_dates, null_text, notes, .. } = batch;
     let mut ds = Dataset::new(info.name.clone(), info.geometry_type, info.fields.clone());
     ds.crs = info.coordinate_system();
     // A streamed Shapefile skips unconvertible shapes rather than retaining empty geometry.
@@ -665,7 +669,7 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         extrusion: None,
     };
     let null_text = null_text_note(&info.fields, &null_text);
-    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).map(|n| format!("{}: {n}", info.name)));
+    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).chain(notes).map(|n| format!("{}: {n}", info.name)));
     if ds.geometry_type == GeometryType::None
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {
