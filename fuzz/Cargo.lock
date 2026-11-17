@@ -3053,7 +3053,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3062,8 +3062,7 @@ dependencies = [
 [[package]]
 name = "terrio-crs"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a75b204c693afa267f00b04e9bf7a4158a6132cd0d0213bfe0e1317aa59d6b33"
+source = "git+https://github.com/opengeos/terrio?rev=759c01645768ee4f531c6866fb2554330eff3f52#759c01645768ee4f531c6866fb2554330eff3f52"
 dependencies = [
  "geographiclib-rs",
  "libc",

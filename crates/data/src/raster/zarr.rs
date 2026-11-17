@@ -2910,6 +2910,23 @@ pub fn read_dir_in(store: &Store, dir: &std::path::Path, selection: &str, crs: O
 mod tests {
     use super::*;
 
+    /// A slice the GeoTIFF writer refuses (here one that isn't north-up) is refused before it
+    /// becomes a layer, with the writer's reason; one it writes is kept.
+    #[test]
+    fn a_slice_the_geotiff_writer_refuses_is_not_kept() {
+        use crate::raster::{ColorHint, GeoTransform};
+        let slice = |pixel_height: f64| {
+            let gt = GeoTransform { origin_x: 0.0, origin_y: 3.0, pixel_width: 1.0, pixel_height };
+            Raster::new("s", 3, 1, vec![vec![1.0, 2.0, 3.0]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap()
+        };
+        let e = write_project_slice(&slice(1.0)).unwrap_err().to_string();
+        assert!(
+            e.contains("the slice can't be kept in a project as a GeoTIFF") && e.contains("north-up") && e.contains("no layer was added"),
+            "{e}"
+        );
+        assert!(write_project_slice(&slice(-1.0)).is_ok());
+    }
+
     /// A CF date's parts, a year before 1 CE included (its sign isn't a separator).
     #[test]
     fn dates_before_1_ce() {
@@ -3300,7 +3317,6 @@ mod tests {
         use crate::raster::wkt::tests::{BOUND_BY_A_GRID, NAD27_UTM17};
         let said = "the file's NTv2 transformation to WGS 84 (conus) isn't applied, so positions may be off by as much as that shift";
         // The system alone says its datum has no shift, as from a `.prj`; WGS 84's says nothing.
-        let datum = "the datum North American Datum 1927 has no conversion to WGS 84 in the file, so positions may be off by up to a few hundred metres";
         let utm17 = crate::raster::wkt::to_wkt(Crs::Epsg(32617)).unwrap();
         let coords = |dim: &str, n: usize| serde_json::json!({"zarr_format": 3, "node_type": "array", "shape": [n], "data_type": "float64", "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [n]}}, "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}], "fill_value": 0, "dimension_names": [dim]});
         let bytes = |v: &[f64]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
@@ -3312,7 +3328,8 @@ mod tests {
         for (attrs, crs, lost) in [
             (serde_json::json!({"crs_wkt": BOUND_BY_A_GRID}), Crs::parse(NAD27_UTM17).unwrap(), vec![said]),
             (serde_json::json!({"spatial_ref": BOUND_BY_A_GRID}), Crs::parse(NAD27_UTM17).unwrap(), vec![said]),
-            (serde_json::json!({"crs_wkt": NAD27_UTM17}), Crs::parse(NAD27_UTM17).unwrap(), vec![datum]),
+            // NAD 27 alone is transformed as PROJ 9.8.1 transforms it: nothing to say.
+            (serde_json::json!({"crs_wkt": NAD27_UTM17}), Crs::parse(NAD27_UTM17).unwrap(), vec![]),
             (serde_json::json!({"crs_wkt": utm17}), Crs::Epsg(32617), vec![]),
             (serde_json::json!({"epsg_code": 32617}), Crs::Epsg(32617), vec![]),
         ] {
@@ -3329,10 +3346,18 @@ mod tests {
             let store = parse_store(&[("zarr.json".into(), root.to_string().into_bytes())]).unwrap();
             let p = plan(&store, &Selection { variable: "elev".into(), index: vec![], window: None }).unwrap();
             let r = assemble(&store, &p, &chunks, "elev", None).unwrap();
-            assert_eq!(r.crs, crs, "{attrs}");
+            // The system, or one that places points as it does (a WKT read keeps its own text).
+            let alike = |a: Crs| {
+                let at = rustgis_geom::Coord::new(-79.0, 43.0);
+                let (p, q) = (a.transformer().unwrap().from_lonlat(at).unwrap(), crs.transformer().unwrap().from_lonlat(at).unwrap());
+                a == crs || (matches!(a, Crs::Custom(_)) && (p.x - q.x).hypot(p.y - q.y) < 1e-9)
+            };
+            assert!(alike(r.crs), "{attrs}: {:?}", r.crs);
             assert_eq!(r.lost, lost, "{attrs}");
             // The point series reads the same system, and the same note.
-            assert_eq!(grid_crs(&store, "elev"), Some((crs, lost.first().map(|n| n.to_string()))), "{attrs}");
+            let (series, note) = grid_crs(&store, "elev").unwrap();
+            assert!(alike(series), "{attrs}: {series:?}");
+            assert_eq!(note, lost.first().map(|n| n.to_string()), "{attrs}");
         }
     }
 

@@ -53,6 +53,12 @@
                 },
                 "proj4": {
                   "type": "string"
+                },
+                "wkt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -1075,7 +1081,8 @@
           "classified-point-size",
           "picture-markers",
           "layout-element-ink",
-          "field-generation"
+          "field-generation",
+          "crs-wkt"
         ],
         "type": "string"
       },
@@ -1154,7 +1161,8 @@
     "classified-point-size",
     "picture-markers",
     "layout-element-ink",
-    "field-generation"
+    "field-generation",
+    "crs-wkt"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

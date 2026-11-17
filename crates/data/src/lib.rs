@@ -513,9 +513,30 @@ pub fn export_notes<'a>(
     }
     // Another body's layers. Written in an Earth system, their longitude/latitude become the
     // Earth's. Written in another body's system, its WKT gives the datum only by the ellipsoid's
-    // axes (`raster::wkt::to_wkt`).
+    // axes (`raster::wkt::to_wkt`), unless the system was read from a WKT that WKT 1 can hold,
+    // which is written as it was read, names and all (`raster::wkt::writes_its_own_wkt`).
     let other_bodies: Vec<&Dataset> = layers.iter().map(|(ds, _)| *ds).filter(|ds| ds.crs.is_some_and(raster::Crs::is_planetary)).collect();
-    let (in_planetary_system, as_earth) = if crs.is_planetary() { (other_bodies, Vec::new()) } else { (Vec::new(), other_bodies) };
+    let named = raster::wkt::writes_its_own_wkt(crs);
+    let (in_planetary_system, as_earth) = match (crs.is_planetary(), named) {
+        // The file names its body: only a layer on another body says its longitude/latitude are
+        // written as the file's.
+        (true, true) => {
+            // From its PROJ string, else (a system PROJ writes none for) its WKT.
+            let axis = |c: raster::Crs| {
+                c.custom_def().and_then(|d| {
+                    raster::planetary::proj4_axes(&d.proj4).map(|(a, _)| a).or_else(|| d.wkt.as_deref().and_then(raster::wkt::semi_major))
+                })
+            };
+            // Another body: its semi-major axis more than 1% from the target's.
+            let other = |ds: &&Dataset| match (ds.crs.and_then(axis), axis(crs)) {
+                (Some(a), Some(b)) => ((a - b) / b).abs() > 0.01,
+                _ => ds.crs != Some(crs),
+            };
+            (Vec::new(), other_bodies.into_iter().filter(other).collect())
+        }
+        (true, false) => (other_bodies, Vec::new()),
+        (false, _) => (Vec::new(), other_bodies),
+    };
     let written = if crs == raster::Crs::LonLat { "WGS 84 (EPSG:4326)".to_string() } else { crs.label() };
     match as_earth.as_slice() {
         [] => {}

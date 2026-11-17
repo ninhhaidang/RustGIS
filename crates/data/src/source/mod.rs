@@ -164,7 +164,7 @@ pub struct SourceInfo {
     pub extent: Extent,
     /// Number of features, when known without reading them.
     pub count: Option<u64>,
-    /// The source's coordinate system, as `EPSG:…`.
+    /// The source's coordinate system, as `EPSG:…`, or as its definition ([`Crs::definition_text`]).
     pub crs: String,
     /// Whether extent queries use a spatial index rather than a scan.
     pub indexed: bool,
@@ -859,11 +859,10 @@ impl Reproject {
         self.crs.label()
     }
 
-    /// The system as [`SourceInfo::crs`] gives it: a custom one (another body's, declared by a
-    /// definition) by its PROJ definition, which [`SourceInfo::coordinate_system`] reads back as
-    /// that very system, as the Shapefile source does; else its name.
+    /// The system as [`SourceInfo::crs`] gives it ([`Crs::definition_text`]), which
+    /// [`SourceInfo::coordinate_system`] reads back as that very system, as the Shapefile source does.
     pub(crate) fn info_crs(&self) -> String {
-        self.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| self.label())
+        self.crs.definition_text()
     }
 
     /// The geometry in longitude/latitude; `None` when a coordinate can't be converted.

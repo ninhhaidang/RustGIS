@@ -98,7 +98,7 @@ fn a_mars_shapefile_is_read_as_its_longitude_latitude_with_one_planetary_notice(
         let (read, _) = source::materialize(src.as_ref()).unwrap();
         assert_eq!(points(&read), LONLAT.map(|(x, y)| Coord::new(x, y)).to_vec(), "{name}");
         // Its system goes with the layer, for an export to say.
-        assert_eq!(read.crs, Some(crs), "{name}");
+        assert_eq!(read.crs, Some(crs), "{name}: {:?} {:?}", read.crs.and_then(|c| c.custom_def()), crs.custom_def());
     }
 }
 
@@ -117,23 +117,39 @@ fn a_mars_projection_is_unprojected_on_its_sphere_with_the_notice() {
 }
 
 #[test]
-fn longitudes_counted_west_and_unread_mars_projections_are_refused() {
+fn longitudes_counted_west_are_refused_and_mars_bonne_is_read() {
     let dir = tempfile::tempdir().unwrap();
     // West positive: Olympus Mons is 133.8°W, which read as east would be mirrored to 133.8°E.
     let west = shapefile(dir.path(), "west", [(133.8, 18.65), (282.55, 18.44)], MARS_WEST);
-    let bonne = shapefile(dir.path(), "bonne", [(1_000_000.0, 2_000_000.0), (-500_000.0, 10.0)], MARS_BONNE);
-    for (path, why) in [(&west, "west"), (&bonne, "Bonne")] {
-        let e = io::read_path(path).unwrap_err().to_string();
-        assert!(e.contains(ANOTHER_BODY) && e.contains(why) && e.contains("wrong place"), "{e}");
-        let e = source::open_path(path, None).err().unwrap().to_string();
-        assert!(e.contains(ANOTHER_BODY) && e.contains(why), "{e}");
+    let e = io::read_path(&west).unwrap_err().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("west") && e.contains("wrong place"), "{e}");
+    let e = source::open_path(&west, None).err().unwrap().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("west"), "{e}");
+    // Bonne is read, on Mars's sphere with the notice and on the Earth without, as PROJ 9.8.1
+    // places them (pyproj 3.8.0: `Transformer.from_crs(CRS(wkt), CRS(wkt).geodetic_crs,
+    // always_xy=True)`, and to EPSG:4326 for the Earth's).
+    for (prj, native, lonlat, notes) in [
+        (
+            MARS_BONNE,
+            [(1_000_000.0, 2_000_000.0), (-500_000.0, 10.0)],
+            [(35.852_868_798_433_31, 61.603_380_832_464_29), (-9.717_097_158_198_78, 29.642_314_213_395_63)],
+            1,
+        ),
+        (
+            EARTH_BONNE,
+            [(1.0, 2.0), (3.0, 4.0)],
+            [(1.036_416_968_597_605_3e-5, 30.000_018_042_001_66), (3.109_251_468_222_241e-5, 30.000_036_084_000_428)],
+            0,
+        ),
+    ] {
+        let path = shapefile(dir.path(), "bonne", native, prj);
+        let (ds, report) = io::read_path(&path).unwrap();
+        for (got, (lon, lat)) in points(&ds).into_iter().zip(lonlat) {
+            assert!((got.x - lon).abs() < 1e-9 && (got.y - lat).abs() < 1e-9, "{got:?}");
+        }
+        assert_eq!(planetary_notes(&report.messages).len(), notes, "{:?}", report.messages);
+        assert!(!report.messages.iter().any(|m| m.contains("read as longitude/latitude")), "{:?}", report.messages);
     }
-    // The same projection on the Earth is read as before, with its notice.
-    let earth = shapefile(dir.path(), "earth_bonne", [(1.0, 2.0), (3.0, 4.0)], EARTH_BONNE);
-    let (ds, report) = io::read_path(&earth).unwrap();
-    assert_eq!(ds.features.len(), 2);
-    assert!(report.messages.iter().any(|m| m.contains("Bonne") && m.contains("read as longitude/latitude")), "{:?}", report.messages);
-    assert!(planetary_notes(&report.messages).is_empty());
 }
 
 /// Mars planetographic as Esri WKT, named as [`MARS_ESRI`] is: an Esri `.prj` has no axes, so
@@ -357,9 +373,9 @@ fn earth_prj_files_say_nothing_of_other_bodies() {
         assert!(planetary_notes(&report.messages).is_empty(), "{code}: {:?}", report.messages);
         assert!(!ds.crs.is_some_and(Crs::is_planetary), "{code}");
     }
-    // NAD 27 still gets its own note.
+    // NAD 27 is transformed as PROJ 9.8.1 transforms it (by its Esri name): no datum note either.
     let path = shapefile(dir.path(), "nad27", [(-100.0, 40.0), (-101.0, 41.0)], NAD27_ESRI);
-    assert_eq!(datum_notes(&io::read_path(&path).unwrap().1.messages).len(), 1);
+    assert_eq!(datum_notes(&io::read_path(&path).unwrap().1.messages).len(), 0);
 }
 
 fn geojson(crs: &str, coords: [(f64, f64); 2]) -> String {
@@ -470,15 +486,23 @@ fn geopackage_iau_systems_are_read_said_or_refused() {
         assert!(ds.crs.is_some_and(|c| c.is_planetary() && !c.is_geographic()), "{name}");
         assert_eq!(planetary_notes(&mem(&path).unwrap().info().notes).len(), 1, "{name}");
     }
-    // Refused, as they would be in the wrong place: a projection its definition gives that
-    // RustGIS doesn't read, and one only its IAU code says.
+    // Bonne by its definition is read, with or without an IAU code, as PROJ 9.8.1 places it
+    // (pyproj 3.8.0: `Transformer.from_crs(CRS(wkt), CRS(wkt).geodetic_crs, always_xy=True)`).
     let bonne = [(1_000_000.0, 2_000_000.0), (-500_000.0, 10.0)];
-    for (name, native, srs, why) in [
-        ("bonne", bonne, ("NONE", 1, MARS_BONNE), "Bonne"),
-        ("bonne_iau", bonne, ("IAU_2015", 49900, MARS_BONNE), "Bonne"),
-        ("eqc_code", metres, ("IAU_2015", 49910, "undefined"), "metres"),
-    ] {
-        let path = geopackage(dir.path(), name, native, srs);
+    let bonne_lonlat = [(35.852_868_798_433_31, 61.603_380_832_464_29), (-9.717_097_158_198_78, 29.642_314_213_395_63)];
+    for (name, srs) in [("bonne", ("NONE", 1, MARS_BONNE)), ("bonne_iau", ("IAU_2015", 49900, MARS_BONNE))] {
+        let path = geopackage(dir.path(), name, bonne, srs);
+        let (ds, report) = io::read_path(&path).unwrap();
+        for (got, (lon, lat)) in points(&ds).into_iter().zip(bonne_lonlat) {
+            assert!((got.x - lon).abs() < 1e-9 && (got.y - lat).abs() < 1e-9, "{name}: {got:?}");
+        }
+        assert_eq!(planetary_notes(&report.messages).len(), 1, "{name}: {:?}", report.messages);
+        assert_eq!(planetary_notes(&mem(&path).unwrap().info().notes).len(), 1, "{name}");
+    }
+    // Refused, as it would be in the wrong place: a projection only its IAU code says.
+    {
+        let (name, why) = ("eqc_code", "metres");
+        let path = geopackage(dir.path(), name, metres, ("IAU_2015", 49910, "undefined"));
         let e = io::read_path(&path).unwrap_err().to_string();
         assert!(e.contains(ANOTHER_BODY) && e.contains(why) && e.contains("srs_id 990001"), "{name}: {e}");
         let e = mem(&path).err().unwrap().to_string();
@@ -905,13 +929,13 @@ fn a_mars_projection_in_a_geotiff_is_said_or_refused() {
     // On the Earth, such a citation changes nothing.
     let earth = cited_on(6_378_137.0, 3073, "Ographic test grid|").unwrap();
     assert!(!earth.crs.is_planetary() && earth.lost.is_empty(), "{:?}", earth.lost);
-    // A transformation RustGIS doesn't read (26, the New Zealand Map Grid's): refused on Mars, even
-    // where the numbers look like degrees, as they are metres.
+    // A transformation RustGIS doesn't read (2, Alaska's modified transverse Mercator): refused on
+    // Mars, even where the numbers look like degrees, as they are metres.
     let mut unread = eqc.clone();
     let at = unread.chunks(4).position(|k| k[0] == 3075).unwrap() * 4 + 3;
-    unread[at] = 26;
+    unread[at] = 2;
     let e = raster::read_bytes("unread.tif", &geotiff(-180.0, &unread, &[3_396_190.0], "")).unwrap_err().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("transformation 26"), "{e}");
+    assert!(e.contains(ANOTHER_BODY) && e.contains("transformation 2)"), "{e}");
     // On the Earth it is read as longitude/latitude where the numbers fit, as before.
     let earth = raster::read_bytes("earth.tif", &geotiff(-180.0, &unread, &[6_378_137.0], "")).unwrap();
     assert_eq!(earth.crs, Crs::LonLat);
@@ -929,16 +953,14 @@ fn an_ascii_grid_with_a_mars_prj_is_said_or_refused() {
     let mars = raster::read_path(&dir.path().join("mars.asc")).unwrap();
     assert!(mars.crs.is_planetary());
     assert_eq!(planetary_notes(&mars.lost).len(), 1, "{:?}", mars.lost);
-    let e = raster::read_path(&dir.path().join("bonne.asc")).unwrap_err().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("Bonne"), "{e}");
+    // Bonne on Mars is read, as PROJ 9.8.1 reads it, with the same notice.
+    let bonne = raster::read_path(&dir.path().join("bonne.asc")).unwrap();
+    assert!(bonne.crs.is_planetary());
+    assert_eq!(planetary_notes(&bonne.lost).len(), 1, "{:?}", bonne.lost);
+    // NAD 27 is transformed by its Esri name, as PROJ 9.8.1 does: nothing to say.
     let earth = raster::read_path(&dir.path().join("earth.asc")).unwrap();
     assert!(planetary_notes(&earth.lost).is_empty(), "{:?}", earth.lost);
-    assert_eq!(
-        earth.lost.iter().filter(|l| l.contains(".prj") && l.contains("has no conversion to WGS 84")).count(),
-        1,
-        "{:?}",
-        earth.lost
-    );
+    assert!(!earth.lost.iter().any(|l| l.contains("has no conversion to WGS 84")), "{:?}", earth.lost);
 }
 
 /// Another body's `.prj` next to an ASCII grid, which says its body its own way, still says a grid
@@ -1012,7 +1034,9 @@ fn an_ascii_grid_whose_earth_prj_is_not_read_says_so() {
 fn exports_say_what_they_write_instead_of_another_body_s_system() {
     let mars = raster::wkt::crs_from_wkt(MARS_ESRI).unwrap();
     let eqc = raster::wkt::crs_from_wkt(MARS_EQC).unwrap();
-    let nad27 = raster::wkt::crs_from_wkt(NAD27_ESRI).unwrap();
+    // An Earth datum no one knows a shift of (NAD 27 itself is transformed by its name, as PROJ
+    // 9.8.1 does).
+    let nad27 = raster::wkt::crs_from_wkt(&NAD27_ESRI.replace("D_North_American_1927", "D_Local_Survey")).unwrap();
     let mut layer = craters(LONLAT);
     layer.crs = Some(mars);
     let mut moon = craters(LONLAT);
@@ -1035,13 +1059,27 @@ fn exports_say_what_they_write_instead_of_another_body_s_system() {
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes.iter().any(|n| n.contains("2 layers (craters, moon) are on other bodies")), "{notes:?}");
     assert!(notes.iter().any(|n| n.contains("parcels") && n.contains("few hundred metres")), "{notes:?}");
-    // In its own system (a Shapefile by default): the .prj loses the body's name.
+    // In its own system (a Shapefile by default): the .prj is the WKT it was read from, the body's
+    // name and all, and nothing is said.
     assert_eq!(io::default_export_crs(&layer, "shp"), mars);
     let notes = rustgis_data::export_notes([(&layer, extent(&layer))], "out.shp", mars);
+    assert!(notes.is_empty(), "{notes:?}");
+    let prj = raster::wkt::to_wkt(mars).unwrap();
+    assert!(prj.contains("Mars") && prj.contains("3396190"), "{prj}");
+    // A Mars layer in another Mars system says nothing; a Moon layer beside it says that its
+    // longitude/latitude are written as Mars's.
+    let mut on_mars = craters(LONLAT);
+    on_mars.crs = Some(eqc);
+    assert!(rustgis_data::export_notes([(&on_mars, extent(&on_mars))], "out.shp", mars).is_empty());
+    let notes = rustgis_data::export_notes([&layer, &moon].map(|ds| (ds, extent(ds))), "out.shp", mars);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("moon is on another body") && notes[0].contains(&format!("written as {}", mars.label())), "{notes:?}");
+    // A Mars system known only by a PROJ definition has no name to write: said.
+    let by_def = Crs::parse("+proj=longlat +R=3396190 +no_defs").unwrap();
+    assert!(by_def.is_planetary());
+    let notes = rustgis_data::export_notes([(&layer, extent(&layer))], "out.shp", by_def);
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert!(notes[0].contains("only by the ellipsoid's axes"), "{notes:?}");
-    let prj = raster::wkt::to_wkt(mars).unwrap();
-    assert!(!prj.contains("Mars") && prj.contains("3396190"), "{prj}");
     // An Earth layer says nothing of bodies.
     let notes = rustgis_data::export_notes([(&earth, extent(&earth))], "out.geojson", Crs::LonLat);
     assert!(!notes.iter().any(|n| n.contains("bod")), "{notes:?}");
@@ -1090,11 +1128,14 @@ fn an_epsg_code_that_is_not_converted_leaves_another_body_s_definition_to_say() 
         assert!(ds.crs.is_some_and(Crs::is_planetary), "{name}");
         assert_eq!(planetary_notes(&mem(&path).unwrap().info().notes).len(), 1, "{name}");
     }
-    let path = geopackage(dir.path(), "epsg_bonne", metres, ("EPSG", i64::from(UNKNOWN), MARS_BONNE));
+    // A method no one knows, on Mars.
+    let unread = MARS_BONNE.replace(r#"PROJECTION["Bonne"]"#, r#"PROJECTION["Unheard_Of"]"#);
+    assert_ne!(unread, MARS_BONNE);
+    let path = geopackage(dir.path(), "epsg_unread", metres, ("EPSG", i64::from(UNKNOWN), &unread));
     let e = io::read_path(&path).unwrap_err().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("Bonne"), "{e}");
+    assert!(e.contains(ANOTHER_BODY) && e.contains("Unheard_Of"), "{e}");
     let e = mem(&path).err().unwrap().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("Bonne"), "{e}");
+    assert!(e.contains(ANOTHER_BODY) && e.contains("Unheard_Of"), "{e}");
     // An Earth definition under the same code says nothing of bodies.
     let path = geopackage(dir.path(), "epsg_earth", LONLAT, ("EPSG", i64::from(UNKNOWN), NAD27_ESRI));
     let (ds, report) = io::read_path(&path).unwrap();
@@ -1111,9 +1152,9 @@ fn an_epsg_code_that_is_not_converted_leaves_another_body_s_definition_to_say() 
     let (ds, report) = io::read_path(&path).unwrap();
     assert_eq!(planetary_notes(&report.messages).len(), 1, "{:?}", report.messages);
     assert!(ds.crs.is_some_and(Crs::is_planetary));
-    flatgeobuf(&path, metres, Some("EPSG"), UNKNOWN, Some(MARS_BONNE));
+    flatgeobuf(&path, metres, Some("EPSG"), UNKNOWN, Some(&unread));
     let e = io::read_path(&path).unwrap_err().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("Bonne"), "{e}");
+    assert!(e.contains(ANOTHER_BODY) && e.contains("Unheard_Of"), "{e}");
     flatgeobuf(&path, LONLAT, Some("EPSG"), UNKNOWN, Some(MARS_WKT2));
     let (ds, report) = io::read_path(&path).unwrap();
     assert_eq!(planetary_notes(&report.messages).len(), 1, "{:?}", report.messages);
@@ -1144,8 +1185,18 @@ fn geotiff_axes_in_a_unit_that_is_not_sized_are_not_taken_for_metres() {
     sized[3] += 1;
     sized.extend([2053, 34736, 1, 1]);
     let r = raster::read_bytes("sized.tif", &geotiff(-1_000_000.0, &sized, &[6_792_380.0, 0.5], "")).unwrap();
-    assert!(r.crs.is_planetary() && r.crs.custom_def().unwrap().proj4.contains("+a=3396190 "), "{}", r.crs.custom_def().unwrap().proj4);
+    let def = r.crs.custom_def().unwrap().proj4.clone();
+    assert!(r.crs.is_planetary() && (def.contains("+a=3396190 ") || def.contains("+R=3396190 ")), "{def}");
     // Axes that are the Earth's in metres whatever unit is declared: read as before.
     let r = raster::read_bytes("earth.tif", &geotiff(-1_000_000.0, &keys, &[6_378_137.0], "")).unwrap();
     assert!(!r.crs.is_planetary() && r.lost.is_empty(), "{:?}", r.lost);
+    // Kilometres (9036) with both axes in one value: each converted once, a sphere of 3396.19 km.
+    let mut shared = keys.clone();
+    shared[3] += 1;
+    shared[19] = 9036;
+    let at = shared.chunks(4).position(|e| e[0] == 2057).unwrap() * 4 + 4;
+    shared.splice(at..at, [2058, 34736, 1, 0]);
+    let r = raster::read_bytes("shared.tif", &geotiff(-1_000_000.0, &shared, &[3_396.19], "")).unwrap();
+    let def = r.crs.custom_def().unwrap().proj4.clone();
+    assert!(r.crs.is_planetary() && (def.contains("+a=3396190 ") || def.contains("+R=3396190 ")), "{def}");
 }

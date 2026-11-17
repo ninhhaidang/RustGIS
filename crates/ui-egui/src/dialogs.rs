@@ -202,10 +202,7 @@ impl Dialogs {
             "defineProjection" => {
                 self.projection_layer = active.map(|l| l.id);
                 self.projection_map = Some((s.opened, s.project.active_map, s.map().name.clone()));
-                self.text = active
-                    .and_then(|l| l.dataset.crs)
-                    .map(|c| c.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| c.label()))
-                    .unwrap_or_else(|| "EPSG:4326".into());
+                self.text = active.and_then(|l| l.dataset.crs).map(|c| c.definition_text()).unwrap_or_else(|| "EPSG:4326".into());
             }
             "coordinateSystem" => {
                 self.text = s.map().projection.code();

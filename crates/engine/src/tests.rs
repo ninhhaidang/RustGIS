@@ -15036,8 +15036,15 @@ fn plugin_host_features_refuses_what_it_can_not_place_with_crs_errors() {
     plugin("eng-crs-no", &[]);
     let ask = |s: &mut Session, layer: &str, crs: &str| forward(s, "eng-crs-no", "host.features", json!({"layer": layer, "crs": crs}));
     let custom = |proj4: &str| {
-        Crs::custom(CustomCrs { proj4: proj4.into(), label: "Mine".into(), geokeys: Vec::new(), doubles: Vec::new(), ascii: String::new() })
-            .unwrap()
+        Crs::custom(CustomCrs {
+            proj4: proj4.into(),
+            label: "Mine".into(),
+            geokeys: Vec::new(),
+            doubles: Vec::new(),
+            ascii: String::new(),
+            wkt: None,
+        })
+        .unwrap()
     };
     let point = |lon: f64, lat: f64| {
         let t = format!(
@@ -24336,7 +24343,9 @@ fn exporting_a_table_says_its_dropped_z_values() {
 /// Sample layers say neither.
 #[test]
 fn exports_say_what_import_said_about_positions() {
-    const NAD27: &str = r#"PROJCS["NAD_1927_UTM_Zone_16N",GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-87.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+    // NAD 27's ellipsoid under a datum name no one knows a shift of: NAD 27 itself is transformed
+    // by its name, as PROJ 9.8.1 does, with nothing to say.
+    const NAD27: &str = r#"PROJCS["NAD_1927_UTM_Zone_16N",GEOGCS["GCS_Local",DATUM["D_Local_Survey",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-87.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
     let dir = std::env::temp_dir().join(format!("rustgis-engine-positions-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     isolate_plugins();
@@ -24965,7 +24974,8 @@ fn projection_review_ascii_grid_keeps_its_datum_notice() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("nad27.asc");
     std::fs::write(&path, "ncols 1\nnrows 1\nxllcorner -80\nyllcorner 40\ncellsize 1\n7\n").unwrap();
-    std::fs::write(path.with_extension("prj"), r#"GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#).unwrap();
+    // A datum no one knows a shift of (NAD 27 itself is transformed by its name, as PROJ 9.8.1 does).
+    std::fs::write(path.with_extension("prj"), r#"GEOGCS["GCS_Local",DATUM["D_Local_Survey",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#).unwrap();
     let mut session = Session::new(Project::default());
     session.run("layer.addData", &json!({"path":path})).unwrap();
     assert_eq!(session.notices.iter().filter(|notice| notice.text.contains("has no conversion to WGS 84")).count(), 1);
@@ -28938,12 +28948,12 @@ fn a_zarr_slice_says_a_typed_grid_only_when_it_uses_it() {
     }
 }
 
-/// A store by web address is kept in the project as a GeoTIFF, whose keys can't say every geographic
-/// system a store gives: one they can't (another body's, here) is refused saying so, where one they
-/// can (WGS 84) is added (#2008).
+/// A store by web address is kept in the project as a GeoTIFF, whose keys say the store's geographic
+/// system: another body's (in an ESRI PE citation) as WGS 84 is (#2008). A system the keys couldn't
+/// say is refused saying so (`zarr::write_project_slice`, tested in `zarr`).
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn a_web_zarr_whose_system_a_geotiff_cant_say_is_refused_saying_so() {
+fn a_web_zarr_keeps_its_geographic_system_through_its_geotiff() {
     let f64s = |v: [f64; 2]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
     let coords = |dim: &str| {
         json!({"zarr_format": 3, "node_type": "array", "shape": [2], "data_type": "float64",
@@ -28951,7 +28961,7 @@ fn a_web_zarr_whose_system_a_geotiff_cant_say_is_refused_saying_so() {
             "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}], "fill_value": 0, "dimension_names": [dim]})
     };
     let mars = r#"GEOGCS["Mars 2000",DATUM["D_Mars_2000",SPHEROID["Mars_2000_IAU_IAG",3396190,169.89444722361179]],PRIMEM["Reference_Meridian",0],UNIT["Degree",0.0174532925199433]]"#;
-    for (name, crs_wkt, kept) in [("mars", mars, false), ("wgs84", "EPSG:4326", true)] {
+    for (name, crs_wkt, planetary) in [("mars", mars, true), ("wgs84", "EPSG:4326", false)] {
         let elev = json!({"zarr_format": 3, "node_type": "array", "shape": [2, 2], "data_type": "int16",
             "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
             "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
@@ -28967,16 +28977,18 @@ fn a_web_zarr_whose_system_a_geotiff_cant_say_is_refused_saying_so() {
         ]);
         let mut s = Session::new(Project::default());
         let result = s.run("layer.addZarr", &json!({"url": format!("{base}/{name}.zarr"), "variable": "elev"}));
-        if kept {
-            assert!(result.is_ok(), "{name}: {result:?}");
-        } else {
-            let e = result.unwrap_err();
-            assert!(
-                e.contains("can't be kept in a project") && e.contains("GeoTIFF keys") && e.contains("no layer was added"),
-                "{name}: {e}"
-            );
-            assert!(s.map().layers.is_empty(), "{name}: no layer is added");
+        let id = result.unwrap_or_else(|e| panic!("{name}: {e}"))["layer"].as_u64().unwrap() as u32;
+        let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
+        assert!(raster.crs.is_geographic() && raster.crs.is_planetary() == planetary, "{name}: {:?}", raster.crs);
+        assert_eq!(raster.crs == rustgis_data::raster::Crs::LonLat, !planetary, "{name}");
+        // Mars's own ellipsoid, in degrees, not a sphere or another body's.
+        if planetary {
+            let def = raster.crs.custom_def().unwrap().proj4.clone();
+            assert!(def.starts_with("+proj=longlat ") && def.contains("+a=3396190 ") && def.contains("+rf=169.8944472236"), "{def}");
+            let at = raster.crs.transformer().unwrap().to_lonlat(rustgis_geom::Coord::new(-79.05, 43.05)).unwrap();
+            assert!((at.x + 79.05).abs() < 1e-12 && (at.y - 43.05).abs() < 1e-12, "{at:?}");
         }
+        assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0], "{name}");
     }
 }
 
@@ -48072,18 +48084,47 @@ fn export_map_to_geotiff_keeps_the_maps_projection() {
     // Bern's centre in LV95 metres (about 2 600 000, 1 200 000) is near the middle of the image.
     let (cx, cy) = (r.transform.origin_x + 100.0 * r.transform.pixel_width, r.transform.origin_y + 100.0 * r.transform.pixel_height);
     assert!((cx - 2_600_000.0).abs() < 5_000.0 && (cy - 1_200_000.0).abs() < 5_000.0, "{cx} {cy}");
+    // A code on another datum (US National Atlas Equal Area on NAD27, EPSG:9311): the view's
+    // coordinates are where the reopened GeoTIFF's system puts each place, the map drawing with
+    // the same datum transformation as data in the code.
+    s.run("map.projection", &json!({"type": "EPSG:9311"})).unwrap();
+    s.run("map.goToXY", &json!({"lon": -100.0, "lat": 40.0, "scale": 2_000_000})).unwrap();
+    let laea = dir.join("laea.tif");
+    s.run("share.exportMap", &json!({"path": laea.display().to_string(), "width": 200, "height": 200})).unwrap();
+    let r = read(&laea);
+    assert_eq!(r.crs, Crs::Epsg(9311));
+    let projector = rustgis_map::projection::Projector::new("EPSG:9311").unwrap();
+    for place in [rustgis_geom::Coord::new(-100.0, 40.0), rustgis_geom::Coord::new(-100.3, 40.2)] {
+        let view = projector.forward(place).unwrap();
+        let file = r.crs.transformer().unwrap().from_lonlat(place).unwrap();
+        assert!((view.x - file.x).hypot(view.y - file.y) < 1e-3, "{view:?} {file:?}");
+        // At the pixel the export put it.
+        let (col, row) =
+            ((file.x - r.transform.origin_x) / r.transform.pixel_width, (file.y - r.transform.origin_y) / r.transform.pixel_height);
+        let (vcol, vrow) =
+            ((view.x - r.transform.origin_x) / r.transform.pixel_width, (view.y - r.transform.origin_y) / r.transform.pixel_height);
+        assert!(
+            (col - vcol).abs() < 1e-6 && (row - vrow).abs() < 1e-6 && (0.0..200.0).contains(&col) && (0.0..200.0).contains(&row),
+            "{col} {row}"
+        );
+    }
     // A local view (azimuthal equidistant about Bern) by its definition.
     s.run("map.projection", &json!({"type": "local:7.45,46.95"})).unwrap();
     let local = dir.join("local.tif");
     s.run("share.exportMap", &json!({"path": local.display().to_string(), "width": 200, "height": 200})).unwrap();
     let r = read(&local);
     assert!(r.crs.custom_def().is_some_and(|d| d.proj4.contains("+proj=aeqd")), "{:?}", r.crs);
-    // One the GeoTIFF keys can't say is refused before anything is drawn, saying what to do.
+    // One the GeoTIFF projection keys can't say (Mollweide) goes in an ESRI PE citation, as GDAL
+    // 3.12.1 writes it, and reads back as that projection.
     s.run("map.projection", &json!({"type": "mollweide"})).unwrap();
     let moll = dir.join("moll.tif");
-    let e = s.run("share.exportMap", &json!({"path": moll.display().to_string()})).unwrap_err();
-    assert!(e.contains("can't be described in a GeoTIFF") && e.contains("export a PNG"), "{e}");
-    assert!(!moll.exists());
+    s.run("share.exportMap", &json!({"path": moll.display().to_string(), "width": 200, "height": 100})).unwrap();
+    let r = read(&moll);
+    assert!(r.crs.custom_def().is_some_and(|d| d.proj4.starts_with("+proj=moll")), "{:?}", r.crs.custom_def());
+    let bern = rustgis_geom::Coord::new(7.45, 46.95);
+    let view = rustgis_map::projection::Projector::new("mollweide").unwrap().forward(bern).unwrap();
+    let back = r.crs.transformer().unwrap().from_lonlat(bern).unwrap();
+    assert!((view.x - back.x).hypot(view.y - back.y) < 1e-3, "{view:?} {back:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

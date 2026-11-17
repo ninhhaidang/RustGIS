@@ -151,14 +151,19 @@ fn a_zarr_store_keeps_its_geographic_system_and_says_what_it_left_out() {
         assert_eq!(count(&said, "no conversion to WGS 84"), 0, "{tag}: {said:?}");
         let mut s = Session::new(Project::default());
         let result = s.run("layer.addZarr", &json!({"path": dir, "variable": "elev", "cells": [0, 0, 2, 2]}));
-        if tag == "wgs84" {
-            let id = result.unwrap()["layer"].as_u64().unwrap() as u32;
-            let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
-            assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0]);
-        } else {
-            let error = result.unwrap_err();
-            assert!(error.contains("can't be kept in a project") && error.contains("no layer was added"), "{tag}: {error}");
-            assert!(s.map().layers.is_empty(), "{tag}");
+        // A window is kept in the project as a GeoTIFF, whose keys say each system: the layer
+        // keeps it (ED50 with its shift, Mars, WGS 84).
+        let id = result.unwrap_or_else(|e| panic!("{tag}: {e}"))["layer"].as_u64().unwrap() as u32;
+        let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
+        assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0], "{tag}");
+        assert!(raster.crs.is_geographic() && raster.crs.is_planetary() == (tag == "mars"), "{tag}: {:?}", raster.crs);
+        assert_eq!(raster.crs == Crs::LonLat, tag == "wgs84", "{tag}");
+        if tag == "ed50" {
+            let at = rustgis_geom::Coord::new(-79.0, 43.0);
+            let (a, b) = (crs.transformer().unwrap().to_lonlat(at).unwrap(), raster.crs.transformer().unwrap().to_lonlat(at).unwrap());
+            assert!((a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9, "{a:?} {b:?}");
+            // The file's TOWGS84 is applied on both sides, not lost from both.
+            assert!((a.x - at.x).hypot(a.y - at.y) > 1e-4, "{a:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

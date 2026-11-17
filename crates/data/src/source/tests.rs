@@ -170,7 +170,7 @@ fn a_geopackage_rows_code_gives_way_to_its_definitions_shift() {
     // In England, in British National Grid metres.
     let xy = Coord::new(450_000.0, 250_000.0);
     let by_code = Crs::Epsg(27700).transformer().unwrap().to_lonlat(xy).unwrap();
-    let bng = to_wkt(Crs::Epsg(27700)).unwrap();
+    let bng = crate::raster::wkt::tests::bng_wkt1();
     assert!(bng.contains(BNG_SHIFT), "{bng}");
     let unshifted = bng.replace(&format!(",{BNG_SHIFT}"), "");
     assert_ne!(unshifted, bng);
@@ -246,7 +246,7 @@ fn a_geopackage_rows_unread_wkt2_is_said_beside_its_code() {
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
         (read, notes)
     };
-    let other = to_wkt(Crs::Epsg(27700)).unwrap().replace(BNG_SHIFT, "TOWGS84[375,-111,431,0,0,0,0]");
+    let other = crate::raster::wkt::tests::bng_wkt1().replace(BNG_SHIFT, "TOWGS84[375,-111,431,0,0,0,0]");
     assert!(other.contains("TOWGS84[375,"), "{other}");
     let (r, notes) = read(row(Some(27700), &other, "PROJCRS["));
     assert_eq!(Ok(r.crs), read_wkt(&other).map(|r| r.0));
@@ -261,7 +261,7 @@ fn a_geopackage_rows_unread_wkt2_is_said_beside_its_code() {
     assert_eq!(read(row(None, &other, "PROJCRS[")).1, notes);
     // And when the code is used: the WKT1 gives the code's own shift, or none, or there is none.
     let by_code = notes[0].replace("so its WKT1 definition is used", "so EPSG:27700 is used");
-    let bng = to_wkt(Crs::Epsg(27700)).unwrap();
+    let bng = crate::raster::wkt::tests::bng_wkt1();
     for wkt1 in [Some(bng.clone()), Some(bng.replace(&format!(",{BNG_SHIFT}"), "")), None] {
         let (r, used) = read(GpkgSrs { definition: wkt1, ..row(Some(27700), "", "PROJCRS[") });
         assert_eq!(r.crs, Crs::Epsg(27700));
@@ -1225,7 +1225,8 @@ fn a_gpkg_system_without_an_epsg_code_is_read_from_its_definition() {
         assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
         assert!(notes.is_empty(), "{notes:?}");
     }
-    // MAGNA-SIRGAS on an ellipsoid other than its own isn't taken for it: the datum note stays.
+    // MAGNA-SIRGAS on an ellipsoid other than its own keeps that ellipsoid, and PROJ 9.8.1's
+    // MAGNA-SIRGAS to WGS 84 (1), a null transformation on it: nothing to say.
     write_custom_srs_gpkg(
         &p,
         "CUSTOM",
@@ -1233,7 +1234,7 @@ fn a_gpkg_system_without_an_epsg_code_is_read_from_its_definition() {
         &ORIGEN_NACIONAL.replace(r#"SPHEROID["GRS 1980",6378137.0,298.257222101]"#, r#"SPHEROID["International 1924",6378388.0,297.0]"#),
     );
     for (_, notes) in custom_srs_reads(&p) {
-        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("few hundred metres")), "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
     }
     // EPSG code 0 is no code: said, not read as longitude/latitude in silence.
     write_custom_srs_gpkg(&p, "EPSG", 0, "undefined");
@@ -1387,7 +1388,7 @@ fn a_flatgeobuf_headers_system_is_read_as_a_geopackage_rows_is() {
     // point some 4 m away, where a `.prj` of it does.
     let xy = Coord::new(450_000.0, 250_000.0);
     let by_code = Crs::Epsg(27700).transformer().unwrap().to_lonlat(xy).unwrap();
-    let bng = to_wkt(Crs::Epsg(27700)).unwrap();
+    let bng = crate::raster::wkt::tests::bng_wkt1();
     let other = bng.replace(BNG_SHIFT, "TOWGS84[375,-111,431,0,0,0,0]");
     assert_ne!(other, bng);
     assert!(metres_apart(prj(&other, xy), by_code) > 1.0);
@@ -1544,7 +1545,7 @@ fn a_geopackage_definitions_shift_places_points_as_a_prj_does() {
             .unwrap();
         p
     };
-    let bng = to_wkt(Crs::Epsg(27700)).unwrap();
+    let bng = crate::raster::wkt::tests::bng_wkt1();
     let other = bng.replace(BNG_SHIFT, "TOWGS84[375,-111,431,0,0,0,0]");
     assert_ne!(other, bng);
     let xy = Coord::new(450_000.0, 250_000.0);
@@ -3024,7 +3025,8 @@ fn exports_are_written_in_the_system_the_layer_was_read_in() {
     assert_eq!(crate::io::default_export_crs(&ds, "GPKG"), utm);
     assert_eq!(crate::io::default_export_crs(&ds, "geojson"), Crs::LonLat);
     assert_eq!(crate::io::default_export_note(&ds, "a.gpkg"), None);
-    let wkt = crate::raster::wkt::to_wkt(utm).unwrap().replace(",AUTHORITY[\"EPSG\",\"25832\"]", "").replace("EPSG:25832", "My grid");
+    let wkt =
+        crate::raster::wkt::to_wkt(utm).unwrap().replace(",AUTHORITY[\"EPSG\",\"25832\"]", "").replace("ETRS89 / UTM zone 32N", "My grid");
     let custom = crate::raster::wkt::crs_from_wkt(&wkt).unwrap();
     assert_eq!(custom.epsg(), 0);
     ds.crs = Some(custom);
@@ -3034,7 +3036,13 @@ fn exports_are_written_in_the_system_the_layer_was_read_in() {
         crate::io::write_path_in(&ds, &p, custom).unwrap();
         if ext != "shp" {
             let (back, _) = materialize(open_path(&p, None).unwrap().as_ref()).unwrap();
-            assert_eq!(back.crs, Some(custom), "{ext}");
+            // The same system: its WKT is written as terrio-crs writes it, so it is read back
+            // as a system of its own that places points alike.
+            let back = back.crs.unwrap();
+            assert_eq!(back.custom_def().map(|d| d.proj4.clone()), custom.custom_def().map(|d| d.proj4.clone()), "{ext}");
+            let at = Coord::new(9.5, 51.5);
+            let (a, b) = (back.transformer().unwrap().from_lonlat(at).unwrap(), custom.transformer().unwrap().from_lonlat(at).unwrap());
+            assert!((a.x - b.x).hypot(a.y - b.y) < 1e-9, "{ext}: {a:?} {b:?}");
         }
         assert_eq!(crate::io::default_export_note(&ds, &p.display().to_string()), None, "{ext}");
     }

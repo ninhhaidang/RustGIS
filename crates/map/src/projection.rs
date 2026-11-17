@@ -12,7 +12,10 @@ use rustgis_data::vn2000_towgs84;
 /// A named projection: (id, label, PROJ definition).
 pub const PRESETS: &[(&str, &str, &str)] = &[
     ("equirectangular", "Equirectangular (Plate Carrée)", "+proj=eqc +lat_ts=0 +lon_0=0 +datum=WGS84 +units=m +no_defs"),
-    ("miller", "Miller Cylindrical", "+proj=mill +lon_0=0 +R_A +datum=WGS84 +units=m +no_defs"),
+    // ESRI:54003 as PROJ 9.8.1 transforms it (on WGS 84's authalic sphere, `ellps=WGS84`): with
+    // `+datum=WGS84` beside `+R_A`, a PROJ string goes to the sphere through geocentric
+    // coordinates, 27 km north at 50°N, and its inverse doesn't come back.
+    ("miller", "Miller Cylindrical", "+proj=mill +lon_0=0 +R_A +ellps=WGS84 +units=m +no_defs"),
     ("mollweide", "Mollweide (equal-area world)", "+proj=moll +lon_0=0 +datum=WGS84 +units=m +no_defs"),
     ("cylindricalEqualArea", "Lambert Cylindrical Equal Area", "+proj=cea +lon_0=0 +lat_ts=0 +datum=WGS84 +units=m +no_defs"),
     ("robinson", "Robinson", "+proj=robin +lon_0=0 +datum=WGS84 +units=m +no_defs"),
@@ -563,13 +566,23 @@ impl Projector {
         // where the map puts it.
         // Noted as used, so a background export of a map drawn in it says its missing grid.
         rustgis_data::raster::crs::note_used(&def, || label.to_string());
-        let t = rustgis_data::raster::crs::transformer_of(&def).map_err(|e| refusal(code, proj, &e))?;
-        let params = t.params().cloned();
-        // Whether an EPSG code needs a datum grid RustGIS doesn't have, asked in its area of use
+        // An EPSG code by the same transformer as data in it (terrio-crs's catalog, with the datum
+        // transformation PROJ 9.8.1 picks), so a layer in the map's own system lands where its
+        // coordinates say; it also asks whether the code needs a datum grid RustGIS doesn't have
         // (the session says so, `Session::say_grid_notes`).
-        if let Some(epsg) = label.strip_prefix("EPSG:").and_then(|n| n.parse::<u16>().ok()) {
-            rustgis_data::raster::crs::probe_grid(&def, || rustgis_data::raster::crs::area_centre(epsg));
+        let epsg = label
+            .strip_prefix("EPSG:")
+            .and_then(|n| n.parse::<u16>().ok())
+            .filter(|c| rustgis_data::raster::crs::epsg_proj4(*c) == Some(def.as_str()));
+        let t = match epsg {
+            // Without the code its error already starts with.
+            Some(c) => rustgis_data::raster::Crs::Epsg(c)
+                .transformer()
+                .map_err(|e| e.strip_prefix(&format!("{label}: ")).unwrap_or(&e).to_string()),
+            None => rustgis_data::raster::crs::transformer_of(&def),
         }
+        .map_err(|e| refusal(code, proj, &e))?;
+        let params = t.params().cloned();
         let to_meter = params.as_ref().map_or(1.0, |p| p.to_meter);
         // The prime and central meridians the projection is computed with, so the area of use,
         // the edge and the projection all agree.
@@ -852,6 +865,21 @@ impl Flat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A map in an EPSG system puts a place where data in that system has it, by the datum
+    /// transformation PROJ 9.8.1 picks there: ED50 / UTM 30N (EPSG:23030) at Madrid, 7 m from its
+    /// bundled shift (pyproj 3.8.0, network off, `Transformer.from_crs("EPSG:4326", "EPSG:23030",
+    /// always_xy=True).transform(-3.7, 40.4)`), so a map exported as a GeoTIFF in it reopens in
+    /// place.
+    #[test]
+    fn an_epsg_map_places_a_point_as_data_in_its_system_does() {
+        let at = Coord::new(-3.7, 40.4);
+        let m = Projector::new("EPSG:23030").unwrap().forward(at).unwrap();
+        assert!((m.x - 440_707.182_401_440_2).abs() < 1e-3 && (m.y - 4_472_597.434_580_409).abs() < 1e-3, "{m:?}");
+        let data = rustgis_data::raster::Crs::Epsg(23030).transformer().unwrap();
+        let c = data.to_lonlat(m).unwrap();
+        assert!((c.x - at.x).abs() < 1e-7 && (c.y - at.y).abs() < 1e-7, "{c:?}");
+    }
 
     #[test]
     fn selection_paths_reject_clamps_seams_and_unprojectable_points() {

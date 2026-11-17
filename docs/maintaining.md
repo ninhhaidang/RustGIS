@@ -138,6 +138,14 @@ ink requires `layout-element-ink`, and one whose `text` gives an element a backg
 `layout-element-background`, since an older reader would read that layout without them. Layout
 files are not covered, as for backgrounds (#2277).
 
+A coordinate system read from WKT is saved with its PROJ definition, which older readers read,
+and its WKT beside it (`wkt`), which this release reads first. Projects, map files and layer
+files require `crs-wkt` when a saved system's definition doesn't place points as its WKT does
+(within a centimetre, at its centre and a few degrees around it): angles in grads, a datum
+transformation the definition can't hold, or no definition. An older reader refuses those
+instead of misplacing the layer. Others need nothing: an older reader opens them by the
+definition and, saving them again, drops only the WKT.
+
 ## New dependencies
 
 A proposal for a dependency answers:

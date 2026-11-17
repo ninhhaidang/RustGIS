@@ -173,10 +173,11 @@ GeoParquet and FlatGeobuf carry their coordinate system in the file. Rasters kee
 coordinate system and are reprojected as they draw. The map uses Web Mercator by default, but
 **View › Projection** can change it; see [Maps](maps.md).
 
-ESRI `.prj` files without an EPSG code use their projection parameters and, for ED50,
-Monte Mario (from Greenwich or from Rome), OSGB36, DHDN, Amersfoort, GGRS87, CH1903/CH1903+
-and S-JTSK, the same built-in Helmert datum transformation as the EPSG definition. In a `.prj`
-or other WKT:
+Coordinate systems are read and transformed as PROJ 9.8.1 does, through terrio-crs. ESRI `.prj`
+files without an EPSG code use their projection parameters, and their datum is recognized by
+the name Esri gives it (ED50, OSGB36, DHDN, `D_Philippine_Reference_System_1992`,
+`D_Pulkovo_1942`, `D_Tokyo` and others): it takes the transformation PROJ uses for that datum
+and place. In a `.prj` or other WKT:
 
 - A transformation in the file (a `TOWGS84`, or a WKT2 `BOUNDCRS`'s) takes precedence, also over
   the built-in one of an EPSG code in the WKT, as in PROJ and GDAL. It also takes precedence over

@@ -70,6 +70,18 @@ impl Project {
         if !required.contains(&"layout-element-ink") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.ink().is_some())) {
             required.push("layout-element-ink");
         }
+        // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
+        // points as its WKT does (angles in grads, a datum transformation the definition can't
+        // hold).
+        struct Payload<'a>(&'a Project);
+        impl Serialize for Payload<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Project::serialize(self.0, serializer)
+            }
+        }
+        if rustgis_data::raster::crs::saves_wkt(&Payload(self)) {
+            required.push("crs-wkt");
+        }
         required
     }
 
@@ -271,12 +283,20 @@ struct Item<'a, T> {
 
 /// A map file has its own header, independent of the project it came from.
 pub(crate) fn map_file_bytes(map: &Map) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(&Item { format: FORMAT, requires: map_capabilities([map]), value: map }).map_err(|e| e.to_string())
+    let mut requires = map_capabilities([map]);
+    if rustgis_data::raster::crs::saves_wkt(map) {
+        requires.push("crs-wkt");
+    }
+    serde_json::to_vec(&Item { format: FORMAT, requires, value: map }).map_err(|e| e.to_string())
 }
 
 /// A layer file keeps the same renderer capabilities as the layer saved inside a project.
 pub(crate) fn layer_file_bytes(layer: &Layer) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(&Item { format: FORMAT, requires: layer_capabilities(layer), value: layer }).map_err(|e| e.to_string())
+    let mut requires = layer_capabilities(layer);
+    if rustgis_data::raster::crs::saves_wkt(layer) {
+        requires.push("crs-wkt");
+    }
+    serde_json::to_vec(&Item { format: FORMAT, requires, value: layer }).map_err(|e| e.to_string())
 }
 
 /// Only executable export options require the capability, not fields in unrelated data.
@@ -301,6 +321,28 @@ fn script_uses_table_export_order(script: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    /// A coordinate system saved with its WKT requires `crs-wkt` only when its PROJ definition,
+    /// which an older release reads, doesn't place points as the WKT does: one in grads (NTF
+    /// (Paris), EPSG:4807 as GDAL writes it) does; the fixture's, whose definition does, doesn't,
+    /// so an older release still opens it.
+    #[test]
+    fn a_system_only_its_wkt_places_requires_crs_wkt() {
+        let mut p = Project::from_json(include_str!("../../../schema/fixtures/crs_with_wkt.rgis")).unwrap();
+        assert!(!p.required_capabilities().contains(&"crs-wkt"));
+        let grads = r#"GEOGCS["NTF (Paris)",DATUM["Nouvelle_Triangulation_Francaise_Paris",SPHEROID["Clarke 1880 (IGN)",6378249.2,293.466021293627,AUTHORITY["EPSG","7011"]],AUTHORITY["EPSG","6807"]],PRIMEM["Paris",2.33722917,AUTHORITY["EPSG","8903"]],UNIT["grad",0.0157079632679489,AUTHORITY["EPSG","9105"]]]"#;
+        p.tables[0].crs = Some(rustgis_data::raster::wkt::crs_from_wkt(grads).unwrap());
+        let saved = serde_json::to_value(&p).unwrap();
+        assert_eq!(saved["requires"], json!(["crs-wkt"]));
+        // Saved again, the same: finding out serializes the payload, not the project with its
+        // header, so it doesn't ask again.
+        assert_eq!(serde_json::to_value(&p).unwrap(), saved);
+        // Read back, the same.
+        let again = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(&again).unwrap()["requires"], json!(["crs-wkt"]));
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/crs_wkt_required.rgis")).unwrap();
+        assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["crs-wkt"]));
+    }
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()

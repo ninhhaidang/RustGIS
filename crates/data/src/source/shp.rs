@@ -173,7 +173,7 @@ impl ShpSource {
             count: Some(index.count),
             // A system the .prj defines, as one given, by its PROJ definition, so the layer keeps it
             // (`SourceInfo::coordinate_system`) as a whole read does.
-            crs: reproject.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| reproject.label()),
+            crs: reproject.crs.definition_text(),
             indexed: index.indexed(),
             notes,
             zm_dropped: false,

@@ -92,7 +92,7 @@ fn coordsys(w: &[String]) -> std::result::Result<Option<Crs>, String> {
     };
     let proj4 = format!("{proj} {datum_proj} {unit} +no_defs");
     let label = format!("MapInfo projection {ty}");
-    Crs::custom(CustomCrs { proj4, label, geokeys: Vec::new(), doubles: Vec::new(), ascii: String::new() }).map(Some)
+    Crs::custom(CustomCrs { proj4, label, geokeys: Vec::new(), doubles: Vec::new(), ascii: String::new(), wkt: None }).map(Some)
 }
 
 /// Even-odd point in ring.

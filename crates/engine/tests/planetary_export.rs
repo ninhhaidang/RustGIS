@@ -63,13 +63,14 @@ fn a_mars_layer_is_said_when_added_and_when_exported() {
             let (back, _) = io::read_path(&out).unwrap();
             assert_eq!(back.features.len(), 2, "{ext}");
         }
-        // In its own system, a Shapefile and a GeoPackage: their WKT names no body.
+        // In its own system, a Shapefile and a GeoPackage: their WKT is the one it was read from,
+        // which names the body, and nothing is said.
         for ext in ["shp", "gpkg"] {
             let out = d.join(format!("out-{stream}.{ext}"));
             let _ = std::fs::remove_file(&out);
             let mark = s.notice_mark();
             s.run("share.exportLayer", &json!({"layer": id, "path": out})).unwrap();
-            assert_eq!(said(&s, mark, "only by the ellipsoid's axes").len(), 1, "{ext}: {:?}", s.notices_since(mark));
+            assert!(said(&s, mark, "only by the ellipsoid's axes").is_empty(), "{ext}: {:?}", s.notices_since(mark));
             assert!(said(&s, mark, "on another body than the Earth").is_empty(), "{ext}");
             let (back, _) = io::read_path(&out).unwrap();
             assert_eq!(back.features.len(), 2, "{ext}");

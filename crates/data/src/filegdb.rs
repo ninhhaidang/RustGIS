@@ -303,6 +303,7 @@ pub(crate) fn crs_of_code(code: u32) -> Option<Crs> {
             geokeys: Vec::new(),
             doubles: Vec::new(),
             ascii: String::new(),
+            wkt: None,
         })
         .ok()
     })

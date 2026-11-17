@@ -1,0 +1,121 @@
+{
+  "format": 1,
+  "name": "Coordinate systems saved with their WKT",
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {
+        "center": {
+          "x": 0.0,
+          "y": 2000000.0
+        },
+        "res": 30000.0,
+        "bearing": 0.0,
+        "pitch": 0.0
+      },
+      "bookmarks": [],
+      "graticule": true,
+      "projection": "WebMercator",
+      "popup_mode": "Topmost",
+      "label_display": {
+        "paused": false,
+        "locked": false,
+        "show_unplaced": false
+      },
+      "editing": {
+        "relationships": [],
+        "snapping": {
+          "enabled": false,
+          "tolerance_px": 10.0,
+          "vertex": true,
+          "edge": true,
+          "end": true
+        },
+        "topology": [],
+        "settings": {
+          "enabled": true,
+          "show_vertices": true,
+          "elevation": "None",
+          "ground_to_grid": null
+        }
+      },
+      "swipe": null,
+      "view": {
+        "effects": {
+          "stars": true,
+          "sun_time": null,
+          "weather": "None",
+          "vignette": false,
+          "edges": false,
+          "tilt_shift": false,
+          "grain": false,
+          "brightness": 0.0,
+          "contrast": 0.0,
+          "saturation": 0.0,
+          "sepia": 0.0
+        },
+        "wireframe": false,
+        "clip_distance": null,
+        "terrain": null
+      },
+      "animation": [],
+      "next_layer_id": 1
+    }
+  ],
+  "active_map": 0,
+  "tables": [
+    {
+      "id": 1,
+      "name": "Saved with its WKT",
+      "geometry_type": "None",
+      "fields": [],
+      "features": [],
+      "source": null,
+      "crs": {
+        "Proj": {
+          "proj4": "+proj=tmerc +lat_0=0 +lon_0=19 +k=1 +ellps=WGS84 +units=m +no_defs +axis=wsu +x_0=-1000 +y_0=-2000",
+          "label": "Lo19 offset",
+          "wkt": "PROJCS[\"Lo19 offset\",GEOGCS[\"Hartebeesthoek94\",DATUM[\"Hartebeesthoek94\",SPHEROID[\"WGS 84\",6378137,298.257223563],AUTHORITY[\"EPSG\",\"6148\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",1000],PARAMETER[\"false_northing\",2000],UNIT[\"metre\",1]]"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Saved by an older release",
+      "geometry_type": "None",
+      "fields": [],
+      "features": [],
+      "source": null,
+      "crs": {
+        "Proj": {
+          "proj4": "+proj=utm +zone=17 +ellps=clrk66 +units=m +no_defs",
+          "label": "NAD27 UTM 17N"
+        }
+      }
+    }
+  ],
+  "next_table_id": 3,
+  "gp_history": [],
+  "layouts": [],
+  "folders": [],
+  "styles": [],
+  "ramps": [],
+  "tasks": [],
+  "gp_env": {
+    "extent": null,
+    "cell_size": null
+  },
+  "models": [],
+  "workspaces": [],
+  "link_views": false,
+  "jobs": [],
+  "offline_areas": [],
+  "reports": [],
+  "presentations": [],
+  "notebooks": [],
+  "dl_models": [],
+  "shared": [],
+  "data_stores": []
+}

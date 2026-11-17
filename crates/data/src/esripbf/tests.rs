@@ -450,7 +450,7 @@ fn a_wkt_that_isnt_utf8_is_said() {
 /// WKT does, not as the code alone would. A WKT read in place of a code says that it isn't UTF-8.
 #[test]
 fn a_wkts_own_shift_wins_over_its_wkid() {
-    let bng = crate::raster::wkt::to_wkt(Crs::Epsg(27700)).unwrap();
+    let bng = crate::raster::wkt::tests::bng_wkt1();
     let other = bng.replace("TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]", "TOWGS84[375,-111,431,0,0,0,0]");
     assert_ne!(other, bng);
     let xy = c(450_000.0, 250_000.0);

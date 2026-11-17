@@ -86,6 +86,7 @@ pub const CAPABILITIES: &[&str] = &[
     "picture-markers",
     "layout-element-ink",
     "field-generation",
+    "crs-wkt",
 ];
 /// Independent marker sizes alongside classified point colours (`Layer::size_by`).
 pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";

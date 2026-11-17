@@ -332,17 +332,30 @@ fn an_unsupported_method_still_says_so() {
     let vdg = format!(
         r#"PROJCS["World_Van_der_Grinten_I",{WGS84_GEOGCS},PROJECTION["Van_der_Grinten_I"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],UNIT["Meter",1.0]]"#
     );
-    let (_, messages) = read_prj(&vdg, 12.0, 34.0);
+    // Van der Grinten I is read now, as PROJ 9.8.1 places it (pyproj 3.8.0:
+    // `Transformer.from_crs(CRS(wkt), "EPSG:4326", always_xy=True).transform(1283133.918, 3929290.315)`
+    // gives 12°E 34°N).
+    let (at, messages) = read_prj(&vdg, 1_283_133.917_686_169_3, 3_929_290.315_303_352);
+    clean(&messages);
+    let at = at.unwrap();
+    assert!((at.x - 12.0).abs() < 1e-8 && (at.y - 34.0).abs() < 1e-8, "{at:?}");
+    // A method no one knows is said, and the data read as longitude/latitude.
+    let (_, messages) = read_prj(&vdg.replace("Van_der_Grinten_I", "Unheard_Of"), 12.0, 34.0);
     assert!(
-        messages.iter().any(|m| m.contains("Van_der_Grinten_I projection isn't supported") && m.contains("read as longitude/latitude")),
+        messages.iter().any(|m| m.contains("Unheard_Of projection isn't supported") && m.contains("read as longitude/latitude")),
         "{messages:?}"
     );
     let (_, messages) = read_prj(&vdg.replace("Van_der_Grinten_I", "Robinson"), 12.0, 34.0);
     clean(&messages);
-    // A GeoTIFF in Van der Grinten (coordinate transformation 25) in metres is refused, by name.
+    // A GeoTIFF in Van der Grinten (coordinate transformation 25) is read, as GDAL reads its keys;
+    // one in a transformation terrio-crs doesn't read (2, Alaska's modified transverse Mercator)
+    // in metres is refused, by its code.
     let bytes = tiff(25, &[(3088, 0.0)], None, (1_000_000.0, 2_000_000.0));
-    let e = rustgis_data::raster::read_bytes("v.tif", &bytes).map(|r| r.crs);
-    assert!(e.as_ref().is_err_and(|e| e.to_string().contains("coordinate transformation 25) isn't supported")), "{e:?}");
+    let crs = rustgis_data::raster::read_bytes("v.tif", &bytes).unwrap().crs;
+    assert!(crs.custom_def().is_some_and(|d| d.proj4.starts_with("+proj=vandg")), "{:?}", crs.custom_def());
+    let bytes = tiff(2, &[(3088, 0.0)], None, (1_000_000.0, 2_000_000.0));
+    let e = rustgis_data::raster::read_bytes("a.tif", &bytes).map(|r| r.crs);
+    assert!(e.as_ref().is_err_and(|e| e.to_string().contains("coordinate transformation 2) isn't supported")), "{e:?}");
     // Mercator (Spherical), EPSG's method 1026, on an ellipsoid isn't computed as on a sphere.
     let spherical = format!(
         r#"PROJCS["x",{WGS84_GEOGCS},PROJECTION["Mercator_Spherical"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],UNIT["Meter",1.0]]"#

@@ -555,7 +555,14 @@ fn map_crs(m: &rustgis_map::Map) -> Result<Crs, String> {
                 return Ok(crs);
             }
             let shown = label.clone();
-            let def = rustgis_data::raster::crs::CustomCrs { proj4, label, geokeys: Vec::new(), doubles: Vec::new(), ascii: String::new() };
+            let def = rustgis_data::raster::crs::CustomCrs {
+                proj4,
+                label,
+                geokeys: Vec::new(),
+                doubles: Vec::new(),
+                ascii: String::new(),
+                wkt: None,
+            };
             let crs = Crs::custom(def)?;
             if !rustgis_data::raster::geotiff::describes(crs) {
                 return Err(format!(

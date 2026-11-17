@@ -442,10 +442,10 @@ mod tests {
     use super::*;
     use rustgis_engine::{Project, Session};
 
-    /// The dialog refuses a slice whose geographic system cannot survive its GeoTIFF handoff;
-    /// supported non-WGS84 geographic systems retain their datum through `ran`.
+    /// A slice keeps its geographic system through its GeoTIFF handoff: another body's (an ESRI PE
+    /// citation in the keys), and the Earth's other datums, retain their datum through `ran`.
     #[test]
-    fn a_geographic_slice_keeps_its_system_or_is_refused_before_handoff() {
+    fn a_geographic_slice_keeps_its_system_through_handoff() {
         let coords = |dim: &str| {
             json!({
                 "zarr_format": 3, "node_type": "array", "shape": [2], "data_type": "float64",
@@ -482,16 +482,14 @@ mod tests {
             ]);
             st.phase = Phase::Read(Box::new((plan, sel, "geographic".into())));
             poll(&mut app, &egui::Context::default());
-            if let Some(expected) = expected {
-                assert_eq!(app.ui.zarr.error, None, "{def}");
-                let layer = app.session.map().layers.first().unwrap();
-                let raster = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
-                assert_eq!(raster.crs, expected, "{def}");
-                assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0], "{def}");
-            } else {
-                let error = app.ui.zarr.error.as_deref().unwrap();
-                assert!(error.contains("can't be kept in a project") && error.contains("no layer was added"), "{error}");
-                assert!(app.session.map().layers.is_empty());
+            assert_eq!(app.ui.zarr.error, None, "{def}");
+            let layer = app.session.map().layers.first().unwrap();
+            let raster = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
+            assert_eq!(raster.bands[0].data, [1.0, 2.0, 3.0, 4.0], "{def}");
+            match expected {
+                Some(expected) => assert_eq!(raster.crs, expected, "{def}"),
+                // Mars by its sphere: kept as another body's longitude/latitude.
+                None => assert!(raster.crs.is_planetary() && raster.crs.is_geographic(), "{def}: {:?}", raster.crs),
             }
         }
     }
