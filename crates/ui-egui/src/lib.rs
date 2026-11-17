@@ -6471,12 +6471,13 @@ impl RustGisApp {
         fieldmenu::play(self, &ctx);
         chrome::shortcuts(self, &ctx);
         panes::follow_layer_filter(self);
-        // A Zarr summary, a trend, a workflow, an export or a read running on its thread lands
+        // A Zarr summary or point series, a trend, a workflow, an export or a read running on its thread lands
         // whatever is in view, the File menu's backstage too, so a project saved there holds it
         // (all are looked at: `|`, not `||`), and the frames go on while one runs so it's taken
         // when it ends.
         #[cfg(not(target_arch = "wasm32"))]
         if workspacepanes::land_summary(self)
+            | workspacepanes::land_series(self)
             | analysispane::land_trend(self)
             | analysispane::land_job(self)
             | exportjob::land(self)

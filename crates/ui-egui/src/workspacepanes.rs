@@ -35,6 +35,9 @@ pub struct WorkspaceState {
     /// The Time Series pane's Zarr layer, and the series read at points (`zarr.series`), newest last.
     pub series_layer: String,
     pub series: Vec<Value>,
+    /// A point's series being read on its thread (opengeos/RustGIS#2282).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub series_reading: Option<SeriesReading>,
     /// The Time Series pane's summary over time (#556): the statistic, its threshold, the period
     /// and months as typed, and the run under way.
     pub reduce_stat: String,
@@ -491,6 +494,117 @@ pub struct Reducing {
     pub result: std::sync::Arc<std::sync::Mutex<Option<Result<(Vec<u8>, Vec<String>), String>>>>,
 }
 
+/// A point's series read on a thread of its own (opengeos/RustGIS#2282): the steps read and
+/// Cancel, and the series with what reading it said once it ends.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SeriesReading {
+    /// The project it was asked in ([`rustgis_engine::Session::opened`]): a series that ends after
+    /// another opened is dropped.
+    pub opened: u64,
+    pub control: std::sync::Arc<rustgis_engine::analysis::control::Control>,
+    pub result: std::sync::Arc<std::sync::Mutex<Option<SeriesResult>>>,
+}
+
+/// A series read on its thread, as `zarr.series` answers it, and what reading it said (a read
+/// that fails said it too).
+#[cfg(not(target_arch = "wasm32"))]
+pub type SeriesResult = (Result<Value, String>, Vec<String>);
+
+/// Starts reading the series at `at` under the Time Series pane's layer on a thread of its own: a
+/// wrong request is said at once, and the read lands through [`land_series`].
+#[cfg(not(target_arch = "wasm32"))]
+fn start_series(app: &mut RustGisApp, at: rustgis_engine::geom::Coord) {
+    let p = json!({"layer": app.ws.series_layer, "lon": at.x, "lat": at.y});
+    let job = match rustgis_engine::cmd::zarr::series_start(&app.session, &p) {
+        Ok(job) => job,
+        Err(e) => {
+            app.ws.message = Some((e, true));
+            return;
+        }
+    };
+    let control = rustgis_engine::analysis::control::Control::stoppable();
+    let r = SeriesReading { opened: app.session.opened, control: control.clone(), result: Default::default() };
+    let result = r.result.clone();
+    // A panic on the thread (a hostile store) lands as an error, so the read always ends.
+    let diagnostics = app.session.diagnostics.capture();
+    let spawned = std::thread::Builder::new().name("zarr-series".into()).spawn(move || {
+        let _diagnostics = diagnostics.enter();
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&control)))
+            .unwrap_or_else(|_| (Err(tl!("The time series failed unexpectedly").to_string()), Vec::new()));
+        if let Ok(mut g) = result.lock() {
+            *g = Some(out);
+        }
+    });
+    match spawned {
+        Ok(_) => {
+            app.ws.message = None;
+            app.ws.series_reading = Some(r);
+        }
+        Err(e) => {
+            app.ws.message = Some((crate::i18n::fmt("The time series couldn't start: {error}", &[("error", &e.to_string())]), true));
+        }
+    }
+}
+
+/// A series that has been read, added to the chart (or its error kept for the pane): called every
+/// frame, whatever pane is in view. A cancelled read adds nothing, not even a series it finished
+/// as it was cancelled, and says so; one still reading when another project opens is cancelled
+/// there and then, so it neither fetches for a project that's gone nor holds the new one's pane.
+/// `true` while one is still reading.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn land_series(app: &mut RustGisApp) -> bool {
+    let Some(r) = &app.ws.series_reading else { return false };
+    if r.opened != app.session.opened {
+        r.control.cancel();
+        app.ws.series_reading = None;
+        app.ws.message = Some((tl!("The time series was stopped: another project was opened").to_string(), false));
+        return false;
+    }
+    let Some((res, notes)) = r.result.lock().ok().and_then(|mut g| g.take()) else { return true };
+    let cancelled = r.control.is_cancelled();
+    app.ws.series_reading = None;
+    // What reading it said, though it then failed; not for a read that was cancelled.
+    if !cancelled {
+        for n in notes {
+            app.session.warn(n);
+        }
+    }
+    match res {
+        _ if cancelled => {
+            app.ws.message = Some((tl!("The time series was cancelled: nothing was added to the chart").to_string(), false));
+        }
+        Ok(series) => {
+            app.ws.series.push(series);
+            let excess = app.ws.series.len().saturating_sub(MAX_SERIES);
+            app.ws.series.drain(..excess);
+        }
+        Err(e) => app.ws.message = Some((e, true)),
+    }
+    false
+}
+
+/// The series being read, in the chart's place: the steps read of those asked, and Cancel. `true`
+/// while one is.
+#[cfg(not(target_arch = "wasm32"))]
+fn series_progress(app: &mut RustGisApp, ui: &mut Ui) -> bool {
+    if !land_series(app) {
+        return false;
+    }
+    let Some(r) = &app.ws.series_reading else { return false };
+    ui.horizontal(|ui| {
+        let bar = match r.control.progress() {
+            Some((done, total)) => egui::ProgressBar::new(done as f32 / total.max(1) as f32)
+                .text(crate::i18n::fmt("{done} of {total} steps read", &[("done", &done.to_string()), ("total", &total.to_string())])),
+            None => egui::ProgressBar::new(0.0).text(tl!("Reading the time series…")),
+        };
+        ui.add(bar.desired_width(200.0));
+        if ui.button(tl!("Cancel")).clicked() {
+            r.control.cancel();
+        }
+    });
+    true
+}
+
 /// The area between a profile's line and its base, as one quad (two triangles) per segment: a
 /// filled path is drawn as a fan from its first point, which only fills a convex shape, and the
 /// area under a profile rarely is.
@@ -677,6 +791,9 @@ pub fn time_series(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         .map(|l| l.name.clone())
         .collect();
     if layers.is_empty() {
+        // A read started before its layer was removed can still be cancelled.
+        #[cfg(not(target_arch = "wasm32"))]
+        series_progress(app, ui);
         ui.label(egui::RichText::new(tl!("Add a Zarr variable first (Home › Add › Add Data › Zarr…).")).weak());
         return;
     }
@@ -692,9 +809,14 @@ pub fn time_series(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         })
         .response
         .on_hover_text(tl!("Layer"));
+    #[cfg(not(target_arch = "wasm32"))]
+    let reading = app.ws.series_reading.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let reading = false;
     ui.horizontal_wrapped(|ui| {
         let active = app.workflow.pick.as_ref().is_some_and(|p| p.purpose == "ts_point");
-        if ui.selectable_label(active, tl!("Pick a Point")).clicked() {
+        // One series read at a time: the next point is picked once it ends (or is cancelled).
+        if ui.add_enabled(!reading, egui::Button::selectable(active, tl!("Pick a Point"))).clicked() {
             app.workflow.pick =
                 if active { None } else { Some(crate::analysispane::Pick { purpose: "ts_point", needed: 1, points: Vec::new() }) };
         }
@@ -717,15 +839,27 @@ pub fn time_series(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let picked = app.workflow.pick.as_ref().filter(|p| p.purpose == "ts_point").and_then(|p| p.points.first().copied());
     if let Some(c) = picked {
         app.workflow.pick = None;
-        let layer = app.ws.series_layer.clone();
-        if let Some(v) = run(app, "zarr.series", json!({"layer": layer, "lon": c.x, "lat": c.y})) {
-            app.ws.series.push(v);
-            let excess = app.ws.series.len().saturating_sub(MAX_SERIES);
-            app.ws.series.drain(..excess);
+        // Read on a thread of its own in the desktop app, so a long series doesn't hold the window.
+        #[cfg(not(target_arch = "wasm32"))]
+        start_series(app, c);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let layer = app.ws.series_layer.clone();
+            if let Some(v) = run(app, "zarr.series", json!({"layer": layer, "lon": c.x, "lat": c.y})) {
+                app.ws.series.push(v);
+                let excess = app.ws.series.len().saturating_sub(MAX_SERIES);
+                app.ws.series.drain(..excess);
+            }
         }
     }
+    // The series being read, in the chart's place until it lands.
+    #[cfg(not(target_arch = "wasm32"))]
+    let reading = series_progress(app, ui);
     #[cfg(not(target_arch = "wasm32"))]
     summarise(app, ui);
+    if reading && app.ws.series.is_empty() {
+        return;
+    }
     if app.ws.series.is_empty() {
         ui.label(egui::RichText::new(tl!("Pick a point on the map to see the variable's values through time there.")).weak().small());
         return;
@@ -1135,6 +1269,8 @@ mod tests {
             app,
         );
         h.run_steps(3);
+        // Read on its thread (#2282): it lands within a few frames.
+        wait_for_series(&mut h);
         assert_eq!(h.state().ws.series_layer, "air");
         assert_eq!(h.state().ws.series.len(), 1);
         assert_eq!(h.state().ws.series[0]["values"], json!([8.0, 108.0, 208.0]));
@@ -1171,5 +1307,175 @@ mod tests {
         let summary = h.state().session.map().layer_by_name("t mean 2001-01-01–2001-03-01").and_then(|l| l.raster.as_ref());
         assert_eq!(summary.and_then(|r| r.subdataset.clone()), None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A web store of `t` (three steps on a 3 × 4 grid, step k's values 100·k + i) served from
+    /// this machine, whose chunk requests wait while the gate is shut: a slow store. Gives its
+    /// address, the gate and how many chunk requests came.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn gated_store()
+    -> (String, std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let arr = |shape: &str, dtype: &str, chunks: &str| json!({"shape": serde_json::from_str::<Value>(shape).unwrap(), "chunks": serde_json::from_str::<Value>(chunks).unwrap(), "dtype": dtype, "compressor": null, "fill_value": null, "filters": null, "order": "C", "zarr_format": 2});
+        let meta = json!({"metadata": {
+            ".zgroup": {"zarr_format": 2},
+            "t/.zarray": arr("[3,3,4]", "<f4", "[1,3,4]"),
+            "t/.zattrs": {"_ARRAY_DIMENSIONS": ["time","lat","lon"], "units": "K"},
+            "lat/.zarray": arr("[3]", "<f4", "[3]"),
+            "lat/.zattrs": {"_ARRAY_DIMENSIONS": ["lat"], "units": "degrees_north"},
+            "lon/.zarray": arr("[4]", "<f4", "[4]"),
+            "lon/.zattrs": {"_ARRAY_DIMENSIONS": ["lon"], "units": "degrees_east"},
+            "time/.zarray": arr("[3]", "<i4", "[3]"),
+            "time/.zattrs": {"_ARRAY_DIMENSIONS": ["time"], "units": "days since 2001-01-01"},
+        }, "zarr_consolidated_format": 1});
+        let f32s = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let mut files: Vec<(String, Vec<u8>)> = vec![
+            ("/air.zarr/.zmetadata".into(), meta.to_string().into_bytes()),
+            ("/air.zarr/.zgroup".into(), br#"{"zarr_format":2}"#.to_vec()),
+            ("/air.zarr/lat/0".into(), f32s(&[10.0, 20.0, 30.0])),
+            ("/air.zarr/lon/0".into(), f32s(&[1.0, 2.0, 3.0, 4.0])),
+            ("/air.zarr/time/0".into(), [0i32, 31, 59].iter().flat_map(|x| x.to_le_bytes()).collect()),
+        ];
+        for k in 0..3 {
+            let v: Vec<f32> = (0..12).map(|i| (k * 100 + i) as f32).collect();
+            files.push((format!("/air.zarr/t/{k}.0.0"), f32s(&v)));
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(true), std::sync::Condvar::new()));
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (files, g, n) = (std::sync::Arc::new(files), gate.clone(), asked.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let (files, gate, asked) = (files.clone(), g.clone(), n.clone());
+                std::thread::spawn(move || {
+                    let (mut head, mut buf) = (Vec::new(), [0u8; 4096]);
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 << 10 {
+                        match s.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&head).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    if path.strip_prefix("/air.zarr/t/").is_some_and(|k| !k.starts_with('.')) {
+                        asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let (open, cv) = &*gate;
+                        let mut o = open.lock().unwrap();
+                        while !*o {
+                            o = cv.wait(o).unwrap();
+                        }
+                    }
+                    match files.iter().find(|(p, _)| *p == path) {
+                        Some((_, body)) => {
+                            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                            let _ = s.write_all(body);
+                        }
+                        None => {
+                            let _ = write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
+                    }
+                });
+            }
+        });
+        (base, gate, asked)
+    }
+
+    /// Runs frames until the pane's series read ends (or a minute passes).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_for_series(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while h.state().ws.series_reading.is_some() && std::time::Instant::now() < deadline {
+            h.run_steps(1);
+            std::thread::yield_now();
+        }
+        // The frame it landed in drew the pane before it: more show the chart and its buttons.
+        h.run_steps(2);
+    }
+
+    /// The Time Series pane reads a point's series off the frame (opengeos/RustGIS#2282): while a
+    /// slow store holds its chunks the frames go on, with the progress and Cancel in the chart's
+    /// place; Cancel adds nothing and says so; and a series read to its end is what `zarr.series`
+    /// gives a script.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_time_series_pane_reads_off_the_frame_and_cancels() {
+        use egui_kittest::kittest::Queryable;
+        let (base, gate, asked) = gated_store();
+        let set_gate = |open: bool| {
+            let (o, cv) = &*gate;
+            *o.lock().unwrap() = open;
+            cv.notify_all();
+        };
+        let mut app = RustGisApp::with_sample();
+        // The layer's first step is read with the gate open; the series' other steps wait for it.
+        app.run("layer.addZarr", json!({"url": format!("{base}/air.zarr"), "variable": "t", "time": true, "name": "air"})).unwrap();
+        set_gate(false);
+        let asked_before = asked.load(std::sync::atomic::Ordering::Relaxed);
+        let pick = |app: &mut RustGisApp| {
+            app.workflow.pick = Some(crate::analysispane::Pick {
+                purpose: "ts_point",
+                needed: 1,
+                points: vec![rustgis_engine::geom::Coord::new(1.0, 30.0)],
+            });
+        };
+        pick(&mut app);
+        let mut h = egui_kittest::Harness::builder().allow_missing_glyphs().with_size(egui::vec2(420.0, 600.0)).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let t = crate::theme::Tokens::get(ui.ctx());
+                time_series(app, ui, &t);
+            },
+            app,
+        );
+        // Frames go on while the store holds the series' chunks (asked after the layer's own read).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while asked.load(std::sync::atomic::Ordering::Relaxed) <= asked_before && std::time::Instant::now() < deadline {
+            h.run_steps(1);
+            std::thread::yield_now();
+        }
+        assert!(asked.load(std::sync::atomic::Ordering::Relaxed) > asked_before, "the series asked the store for its chunks");
+        h.run_steps(5);
+        assert!(h.state().ws.series_reading.is_some(), "the series is still being read");
+        assert!(h.state().ws.series.is_empty());
+        h.get_by_label("Cancel").click();
+        h.run_steps(1);
+        set_gate(true);
+        wait_for_series(&mut h);
+        assert!(h.state().ws.series_reading.is_none(), "the cancelled read ends");
+        assert!(h.state().ws.series.is_empty(), "a cancelled series adds nothing");
+        let said = h.state().ws.message.clone();
+        assert!(said.as_ref().is_some_and(|(m, err)| m.contains("cancelled") && !err), "{said:?}");
+        // Read to its end: the script's answer.
+        pick(h.state_mut());
+        h.run_steps(1);
+        wait_for_series(&mut h);
+        assert_eq!(h.state().ws.series.len(), 1);
+        // The script's answer, from the command as it waits for the read.
+        let script = h.state_mut().session.run("zarr.series", &json!({"layer": "air", "lon": 1.0, "lat": 30.0})).unwrap();
+        assert_eq!(script["values"], json!([8.0, 108.0, 208.0]));
+        assert_eq!(h.state().ws.series[0]["values"], script["values"]);
+        assert_eq!(h.state().ws.series[0]["dates"], script["dates"]);
+        // Another project opened while a read waits on the store: the read is cancelled at once,
+        // its pane free again, though the store still holds its chunks.
+        h.state_mut().ws.series.clear();
+        set_gate(false);
+        let asked_before = asked.load(std::sync::atomic::Ordering::Relaxed);
+        pick(h.state_mut());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while asked.load(std::sync::atomic::Ordering::Relaxed) <= asked_before && std::time::Instant::now() < deadline {
+            h.run_steps(1);
+            std::thread::yield_now();
+        }
+        let control = h.state().ws.series_reading.as_ref().map(|r| r.control.clone()).expect("the second read runs");
+        h.state_mut().session.opened += 1;
+        h.run_steps(1);
+        assert!(control.is_cancelled(), "opening another project cancels the read");
+        assert!(h.state().ws.series_reading.is_none(), "the new project's pane isn't held");
+        let said = h.state().ws.message.clone();
+        assert!(said.as_ref().is_some_and(|(m, err)| m.contains("another project") && !err), "{said:?}");
+        set_gate(true);
+        h.run_steps(2);
+        assert!(h.state().ws.series.is_empty(), "nothing from the old project lands");
     }
 }

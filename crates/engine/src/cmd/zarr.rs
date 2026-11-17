@@ -1403,6 +1403,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
 /// The store a series reads, and what of it: from a Zarr layer (one that follows the time slider,
 /// or a slice: its store, variable and steps), or from the parameters.
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
 struct SeriesSource {
     root: String,
     sel: zarr::Selection,
@@ -1454,12 +1455,25 @@ fn series_source(s: &Session, p: &Value) -> Result<SeriesSource, String> {
 /// store's fetched.
 #[cfg(not(target_arch = "wasm32"))]
 fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, String> {
+    store_files_by(root, keys, &mut |_| Ok(()))
+}
+
+/// The files of a store read in batches of up to [`SERIES_BATCH`] files, as [`store_files`] reads
+/// them; `before` is called with each batch's size before it is read, and its error (a Cancel)
+/// stops the read there: requests already sent finish, none more is made.
+#[cfg(not(target_arch = "wasm32"))]
+fn store_files_by(
+    root: &str,
+    keys: &[String],
+    before: &mut dyn FnMut(usize) -> Result<(), String>,
+) -> Result<HashMap<String, Vec<u8>>, String> {
     if is_web(root) {
         // In batches, within the same total a folder's read takes: a store chunked a map a step
         // (one chunk per step) can't fill the memory.
         let mut out = HashMap::new();
         let mut total = 0u64;
-        for batch in keys.chunks(64) {
+        for batch in keys.chunks(SERIES_BATCH) {
+            before(batch.len())?;
             let (got, forbidden) = fetch(root, batch)?;
             // A file refused (HTTP 403) isn't one never written: said, not read as missing.
             if forbidden > 0 {
@@ -1477,7 +1491,10 @@ fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, 
     }
     let mut out = HashMap::new();
     let mut total = 0u64;
-    for k in keys {
+    for (i, k) in keys.iter().enumerate() {
+        if i % SERIES_BATCH == 0 {
+            before((keys.len() - i).min(SERIES_BATCH))?;
+        }
         let path = Path::new(root).join(k);
         // A file that isn't there is a chunk never written (Zarr's fill value); one that is but
         // can't be taken is said, so a value isn't silently missing.
@@ -1497,22 +1514,46 @@ fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, 
 
 /// Bytes of a store's files ([`zarr::Part`]s), each kept by its id, as [`store_files`] reads
 /// whole files: a web store's fetched by range, a folder's read in place.
+/// In batches of up to [`SERIES_BATCH`] parts, `before` called with each batch's size before it
+/// is read, as [`store_files_by`] reads whole files.
 #[cfg(not(target_arch = "wasm32"))]
-fn store_parts(root: &str, parts: &[zarr::Part]) -> Result<HashMap<String, Vec<u8>>, String> {
-    if is_web(root) {
-        let (got, forbidden) = fetch_parts(root, parts)?;
-        if forbidden > 0 {
-            return Err(crate::sources::message_with_address(root, &format!("access denied (HTTP 403) to {forbidden} of its files")));
-        }
-        return Ok(got);
-    }
+fn store_parts(
+    root: &str,
+    parts: &[zarr::Part],
+    before: &mut dyn FnMut(usize) -> Result<(), String>,
+) -> Result<HashMap<String, Vec<u8>>, String> {
     let mut out = HashMap::new();
-    zarr::read_parts(Path::new(root), parts, &mut out, &mut 0).map_err(|e| format!("{root}: {e}"))?;
+    let mut total = 0u64;
+    for batch in parts.chunks(SERIES_BATCH) {
+        before(batch.len())?;
+        if is_web(root) {
+            let (got, forbidden) = fetch_parts(root, batch)?;
+            if forbidden > 0 {
+                return Err(crate::sources::message_with_address(root, &format!("access denied (HTTP 403) to {forbidden} of its files")));
+            }
+            // Within one total over all batches, as a folder's parts and `store_files_by` are.
+            for (k, b) in got {
+                total = total.saturating_add(b.len() as u64);
+                if total > zarr::MAX_READ {
+                    return Err(crate::sources::message_with_address(root, "the series is too large to read: take a shorter period"));
+                }
+                out.insert(k, b);
+            }
+        } else {
+            zarr::read_parts(Path::new(root), batch, &mut out, &mut total).map_err(|e| format!("{root}: {e}"))?;
+        }
+    }
     Ok(out)
 }
 
+/// The files or parts a series reads in one go: a batch of requests in flight together, between
+/// two looks at Cancel (opengeos/RustGIS#2282).
+#[cfg(not(target_arch = "wasm32"))]
+const SERIES_BATCH: usize = 64;
+
 /// `zarr.series`: a variable's values along its time dimension at the cell holding a point,
-/// reading only the chunks that hold that cell.
+/// reading only the chunks that hold that cell. A script or the assistant waits for it here; the
+/// desktop app reads it on a thread of its own with [`series_start`] (opengeos/RustGIS#2282).
 fn series(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
@@ -1521,12 +1562,75 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let num = |k: &str| super::f(p, k).ok_or_else(|| format!("{k} is required (degrees)"));
-        let (lon, lat) = (num("lon")?, num("lat")?);
-        if !lon.is_finite() || !(-90.0..=90.0).contains(&lat) {
-            return Err("lon is a longitude and lat a latitude from -90 to 90 (degrees)".into());
+        // What reading it said is said though the read then fails, as it was before #2282.
+        let mut notes = Vec::new();
+        let series = series_start(s, p)?.read(&mut notes);
+        for n in notes {
+            s.warn(n);
         }
-        let mut src = series_source(s, p)?;
+        series
+    }
+}
+
+/// A point's series, prepared on the session (the point and period checked, the store and its
+/// variable chosen) and read anywhere with [`SeriesRun::run`]: the desktop app reads it on a
+/// thread of its own, with the steps read and Cancel, so a long series doesn't hold the window
+/// (opengeos/RustGIS#2282).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct SeriesRun {
+    lon: f64,
+    lat: f64,
+    src: SeriesSource,
+    start: Option<f64>,
+    end: Option<f64>,
+}
+
+/// The steps a series has read, for its progress: the reads made of those it plans (the chunks,
+/// or each shard's index and then its chunk), as steps of the series. It looks at Cancel before
+/// each batch of reads.
+#[cfg(not(target_arch = "wasm32"))]
+struct SeriesTally {
+    steps: usize,
+    reads: usize,
+    /// The reads of the batches done, and of the one in flight.
+    done: usize,
+    flight: usize,
+    /// The steps counted so far.
+    shown: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SeriesTally {
+    /// Counts the batch before as read, then stops the series if it was cancelled; `n` is the size
+    /// of the batch about to be read.
+    fn before(&mut self, n: usize) -> Result<(), String> {
+        self.done += std::mem::replace(&mut self.flight, n);
+        let steps = self.steps * self.done.min(self.reads) / self.reads.max(1);
+        rustgis_data::progress::step(steps.saturating_sub(self.shown)).map_err(|_| "cancelled".to_string())?;
+        self.shown = self.shown.max(steps);
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SeriesRun {
+    /// Reads the series under `control`: its count is the steps read of those asked, and Cancel
+    /// stops it before its next batch of reads, with no series. Gives the series as `zarr.series`
+    /// answers it, and what reading it said, which a read that fails said too.
+    pub fn run(&self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> (Result<Value, String>, Vec<String>) {
+        let mut notes = Vec::new();
+        let series = rustgis_analysis::run_under("Time Series at a Point", control, || self.read(&mut notes));
+        (series, notes)
+    }
+
+    /// Reads the series on this thread, looking at the run's Cancel (if any) between batches;
+    /// what reading it says goes in `notes` as it is found, so an error after it doesn't lose it.
+    fn read(&self, notes: &mut Vec<String>) -> Result<Value, String> {
+        let (lon, lat) = (self.lon, self.lat);
+        let mut src = self.src.clone();
+        let check = &mut |_: usize| rustgis_data::progress::check().map_err(|_| "cancelled".to_string());
+        check(0)?;
         let store = if is_web(&src.root) {
             cached_store(&src.root, &src.sel.variable)?
         } else {
@@ -1536,23 +1640,14 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         let var = src.sel.variable.clone();
         let mut keys = zarr::coordinate_keys(&store, &var);
         keys.extend(zarr::map_coordinate_keys(&store, &var));
-        let coords = store_files(&src.root, &keys)?;
+        let coords = store_files_by(&src.root, &keys, check)?;
         let (dim, dates) = zarr::time_axis(&store, &var, &coords)
             .ok_or_else(|| format!("{var} has no time dimension (a coordinate with CF units, such as \"days since 2001-01-01\", or of whole years, such as 2017)"))?;
         // A period is found along the axis in order, as following the slider takes it.
         if !dates.iter().all(|d| d.is_finite()) || !dates.windows(2).all(|w| w[0] < w[1]) {
             return Err(format!("{var}'s time axis isn't in increasing order without repeats, so its series can't be read by date"));
         }
-        // The period: the one asked for, else the layer's, else the whole axis.
-        let date = |k: &str| -> Result<Option<f64>, String> {
-            match p.get(k).filter(|v| !v.is_null()) {
-                None => Ok(None),
-                Some(v) => rustgis_data::time::parse_input(v)
-                    .map(Some)
-                    .ok_or_else(|| format!("{k} is a date (2015-06-01, a year, or milliseconds since 1970)")),
-            }
-        };
-        let (start, end) = (date("start")?, date("end")?);
+        let (start, end) = (self.start, self.end);
         let (from, count) = if start.is_some() || end.is_some() {
             let inside = |d: &f64| start.is_none_or(|a| *d >= a) && end.is_none_or(|z| *d <= z);
             let first = dates.iter().position(inside).ok_or("no step of the variable falls between start and end")?;
@@ -1575,7 +1670,7 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
             // A typed system is only a fallback. Invalid text wasn't used on degree axes either.
             let typed = if given.is_none() { src.crs.as_deref().and_then(|text| Crs::parse(text).ok()) } else { None };
             if let Some(note) = zarr::lonlat_assumption(given.as_ref().map(|(c, _)| *c), typed) {
-                s.warn(format!("{var}: {note}"));
+                notes.push(format!("{var}: {note}"));
             }
         }
         let crs = if lonlat {
@@ -1584,10 +1679,15 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
             *c
         } else {
             let text = src.crs.as_deref().ok_or("the store doesn't say its coordinate system; give \"crs\" (such as EPSG:3035)")?;
-            super::parse_crs(s, text)?
+            // Read as `parse_crs` reads it, its note said with the series'.
+            let crs = Crs::parse(text)?;
+            if let Some(note) = raster::wkt::typed_crs_note(text, crs) {
+                notes.push(format!("crs: {note}"));
+            }
+            crs
         };
         if let Some((_, Some(note))) = given {
-            s.warn(format!("{var}: {note}"));
+            notes.push(format!("{var}: {note}"));
         }
         let m = crs
             .transformer()?
@@ -1597,24 +1697,56 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
         let (row, col) =
             zarr::locate(&store, &var, &coords, x, y).map_err(|e| e.to_string())?.ok_or("the point is outside the variable's grid")?;
         let plan = zarr::plan_series(&store, &src.sel, &dim, from as u64, count as u64, row, col).map_err(|e| e.to_string())?;
-        let mut chunks = store_files(&src.root, &plan.keys)?;
+        // The steps read: the chunks, or each shard's index then its chunk.
+        rustgis_data::progress::begin(count);
+        let mut tally = SeriesTally { steps: count, reads: plan.keys.len() + 2 * plan.parts.len(), done: 0, flight: 0, shown: 0 };
+        let mut before = |n: usize| tally.before(n);
+        let mut chunks = store_files_by(&src.root, &plan.keys, &mut before)?;
         // A sharded variable: the shards' indexes, then the chunk holding the cell in each.
         if !plan.parts.is_empty() {
-            chunks.extend(store_parts(&src.root, &plan.parts)?);
+            chunks.extend(store_parts(&src.root, &plan.parts, &mut before)?);
             let inner = zarr::series_inner_parts(&store, &plan, &chunks)
                 .map_err(|e| crate::sources::message_with_address(&src.root, &e.to_string()))?;
-            chunks.extend(store_parts(&src.root, &inner)?);
+            chunks.extend(store_parts(&src.root, &inner, &mut before)?);
         }
+        // The last batch counted as read once it is, before decoding; cancelled during it, nothing
+        // is decoded, so no part of a series is given.
+        before(0)?;
         let values = zarr::assemble_series(&store, &plan, &chunks).map_err(|e| e.to_string())?;
         let picked = &dates[from..from + count];
         let labels: Vec<String> = picked.iter().map(|d| rustgis_data::time::format(*d, "YYYY-MM-DD HH:mm")).collect();
         let values: Vec<Value> = values.iter().map(|v| if v.is_finite() { serde_json::json!(v) } else { Value::Null }).collect();
         let units = store.array(&var).and_then(|a| a.attrs.get("units")).and_then(Value::as_str).map(str::to_string);
-        Ok(serde_json::json!({
+        let series = serde_json::json!({
             "variable": var, "units": units, "dimension": dim, "lon": lon, "lat": lat, "row": row, "col": col,
             "dates": picked, "labels": labels, "values": values,
-        }))
+        });
+        Ok(series)
     }
+}
+
+/// Prepares `zarr.series` with `p` on the session, to read on another thread with
+/// [`SeriesRun::run`]: the parameters are checked and the store chosen here, so a wrong request
+/// is said at once, before anything is read.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn series_start(s: &Session, p: &Value) -> Result<SeriesRun, String> {
+    let num = |k: &str| super::f(p, k).ok_or_else(|| format!("{k} is required (degrees)"));
+    let (lon, lat) = (num("lon")?, num("lat")?);
+    if !lon.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        return Err("lon is a longitude and lat a latitude from -90 to 90 (degrees)".into());
+    }
+    let src = series_source(s, p)?;
+    // The period: the one asked for, else the layer's, else the whole axis.
+    let date = |k: &str| -> Result<Option<f64>, String> {
+        match p.get(k).filter(|v| !v.is_null()) {
+            None => Ok(None),
+            Some(v) => rustgis_data::time::parse_input(v)
+                .map(Some)
+                .ok_or_else(|| format!("{k} is a date (2015-06-01, a year, or milliseconds since 1970)")),
+        }
+    };
+    let (start, end) = (date("start")?, date("end")?);
+    Ok(SeriesRun { lon, lat, src, start, end })
 }
 
 // --- A summary over time (opengeos/RustGIS#556) ----------------------------------------------------

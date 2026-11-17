@@ -170,6 +170,39 @@ pub(super) fn long_commands(boundaries: bool) {
         assert!(contents(&shapes.project) == before, "edit.previewShapeConversion changed the project after Cancel");
     }
     exercise(&s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
+    // A Zarr point series is read on a thread of its own by the Time Series pane (#2282). It isn't
+    // one of the queues above (it has no read-ahead), so it is run here: a local store, swept at
+    // each of its checks in the boundary mode. It changes nothing in the project.
+    {
+        // A store per mode: both run in one test process, and each removes its store when done.
+        let (store, path) = zarr_store_over_time(if boundaries { "cancel-series-boundaries" } else { "cancel-series-first" });
+        let p = json!({"path": path, "variable": "t", "lon": 1.0, "lat": 30.0});
+        let run = crate::cmd::zarr::series_start(&s, &p).unwrap();
+        let before = contents(&s.project);
+        if boundaries {
+            let count = Control::cancelled_at_look(u64::MAX);
+            let expected = run.run(&count).0.unwrap();
+            assert!(count.looked() > 0 && count.looked() < 256, "zarr.series: {} checks", count.looked());
+            for n in 1..=count.looked() + 1 {
+                let control = Control::cancelled_at_look(n);
+                let (result, _) = run.run(&control);
+                if n <= count.looked() {
+                    assert!(result.as_ref().is_err_and(|e| e.contains("cancelled")), "zarr.series, check {n}: {result:?}");
+                    // A retry at once gives the whole series.
+                    assert_eq!(run.run(&Control::new()).0.unwrap(), expected, "zarr.series, check {n}: retry");
+                } else {
+                    assert_eq!(result.unwrap(), expected, "zarr.series, check {n}: past its last check");
+                }
+            }
+        } else {
+            let control = Control::cancelled_once_started();
+            let (result, _) = run.run(&control);
+            assert!(result.as_ref().is_err_and(|e| e.contains("cancelled")), "zarr.series ran on after Cancel: {result:?}");
+            assert!(control.looked() > 0, "zarr.series never looks at Cancel");
+        }
+        assert!(contents(&s.project) == before, "zarr.series changed the project");
+        let _ = std::fs::remove_dir_all(store);
+    }
     // Automatic size bounds scan the numeric field on that queue too.
     s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
     exercise(&s, "layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
