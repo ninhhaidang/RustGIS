@@ -104,6 +104,7 @@ type CommandCheck = fn(&str, &Value) -> bool;
 const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("slope-percent", command_uses_percent_slope),
     ("tabulate-intersection-unit", command_uses_tabulate_unit),
+    ("tabulate-intersection-empty-zones", command_uses_tabulate_empty_zones),
     ("layout-element-background", command_uses_element_background),
     ("picture-markers", command_uses_picture_marker),
     ("layout-element-ink", command_uses_element_ink),
@@ -173,21 +174,35 @@ fn command_uses_percent_slope(id: &str, params: &serde_json::Value) -> bool {
     }
 }
 
-/// Inspect known command envelopes; unrelated data containing an areaUnit is not executable.
-/// Blank unit choices use the km² default and need no capability.
+/// Blank and km² unit choices need no capability.
 fn command_uses_tabulate_unit(id: &str, params: &Value) -> bool {
-    let non_default = |p: &Value| {
+    tabulate_uses(id, params, |p| {
         p.get("areaUnit").and_then(Value::as_str).map(str::trim).is_some_and(|u| !u.is_empty() && !u.eq_ignore_ascii_case("km2"))
-    };
+    })
+}
+
+/// Only a run that requests zero rows needs the capability. Tool booleans also accept text.
+fn command_uses_tabulate_empty_zones(id: &str, params: &Value) -> bool {
+    tabulate_uses(id, params, |p| match p.get("includeEmptyZones") {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::String(on)) => on.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    })
+}
+
+/// Tests Tabulate Intersection parameters in executable commands, including nested envelopes.
+fn tabulate_uses(id: &str, params: &Value, uses: fn(&Value) -> bool) -> bool {
     if crate::cmd::gp::tool_id(id) == Some("tabulateIntersection") {
-        return non_default(params);
+        return uses(params);
     }
     let tabulate = params.get("tool").and_then(Value::as_str).and_then(crate::cmd::gp::tool_id) == Some("tabulateIntersection");
     match id {
-        "gp.run" if tabulate => crate::parameters::params_envelope(params.get("params")).is_ok_and(|p| non_default(&p)),
-        // Batch ignores non-object shared params; binding areaUnit itself is refused by older tools.
-        "gp.batch" if tabulate => params.get("params").filter(|p| p.is_object()).is_some_and(non_default),
-        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_tabulate_unit)),
+        "gp.run" if tabulate => crate::parameters::params_envelope(params.get("params")).is_ok_and(|p| uses(&p)),
+        // Batch ignores non-object shared params; older tools refuse unknown binding parameters.
+        "gp.batch" if tabulate => params.get("params").filter(|p| p.is_object()).is_some_and(uses),
+        "script.run" => {
+            params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, |id, params| tabulate_uses(id, params, uses)))
+        }
         _ => false,
     }
 }
@@ -204,7 +219,7 @@ fn command_uses_picture_marker(id: &str, params: &Value) -> bool {
 
 /// Use the executor's line grammar; comments/invalid lines are not executable commands, and
 /// script_line refuses nested scripts, so this check cannot recurse through script.run.
-fn script_uses(script: &str, uses: CommandCheck) -> bool {
+fn script_uses(script: &str, uses: impl Fn(&str, &Value) -> bool) -> bool {
     script
         .lines()
         .take(crate::cmd::workflows::MAX_SCRIPT_LINES)
@@ -358,20 +373,33 @@ mod tests {
         assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["picture-markers"]));
     }
 
-    /// All replayable project containers require the unit only when it differs from km².
+    /// All replayable project containers require non-default options only when requested.
     /// Selection of executable notebook cells follows the notebook runner's language boundary.
     #[test]
-    fn tabulate_unit_capability_follows_saved_executables() {
+    fn tabulate_capabilities_follow_saved_executables() {
+        let empty_zones = Project::from_json(include_str!("../../../schema/fixtures/tabulate_intersection_empty_zones.rgis")).unwrap();
+        assert_eq!(empty_zones.models[0].steps[0].params["includeEmptyZones"], true);
+        assert_eq!(serde_json::to_value(&empty_zones).unwrap()["requires"], json!(["tabulate-intersection-empty-zones"]));
+
         let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/tabulate_intersection_unit.rgis")).unwrap();
         assert_eq!(fixture.models[0].steps[0].params["areaUnit"], "ac");
         assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["tabulate-intersection-unit"]));
         fixture.models.clear();
         let base = serde_json::to_value(&fixture).unwrap();
-        for unit in [None, Some(""), Some(" \t\n "), Some("km2"), Some(" KM2 "), Some("ac")] {
-            let mut params = json!({"zones":"Zones", "classes":"Classes"});
-            if let Some(unit) = unit {
-                params["areaUnit"] = json!(unit);
-            }
+        for (option, expected) in [
+            (json!({}), vec![]),
+            (json!({"areaUnit":""}), vec![]),
+            (json!({"areaUnit":" \t\n "}), vec![]),
+            (json!({"areaUnit":"km2"}), vec![]),
+            (json!({"areaUnit":" KM2 "}), vec![]),
+            (json!({"areaUnit":"ac"}), vec!["tabulate-intersection-unit"]),
+            (json!({"includeEmptyZones":false}), vec![]),
+            (json!({"includeEmptyZones":" TRUE "}), vec!["tabulate-intersection-empty-zones"]),
+            (json!({"areaUnit":"ac", "includeEmptyZones":true}), vec!["tabulate-intersection-unit", "tabulate-intersection-empty-zones"]),
+        ] {
+            let mut params = option;
+            params["zones"] = json!("Zones");
+            params["classes"] = json!("Classes");
             let run = json!({"tool":"tabulateIntersection", "params": params});
             let script = format!("# Tabulate\ngp.run= {run}");
             for (field, value) in [
@@ -409,12 +437,12 @@ mod tests {
                 document[field] = value;
                 let project = Project::from_json(&document.to_string()).unwrap();
                 let saved = serde_json::to_value(&project).unwrap();
-                if unit == Some("ac") {
-                    assert_eq!(saved["requires"], json!(["tabulate-intersection-unit"]), "{field}");
-                    assert_eq!(saved["format"], 2);
-                } else {
-                    assert!(saved.get("requires").is_none(), "{field} {unit:?}");
+                if expected.is_empty() {
+                    assert!(saved.get("requires").is_none(), "{field} {params}");
                     assert_eq!(saved["format"], FORMAT);
+                } else {
+                    assert_eq!(saved["requires"], json!(expected), "{field} {params}");
+                    assert_eq!(saved["format"], 2);
                 }
                 assert_eq!(Project::from_json(&saved.to_string()).unwrap().required_capabilities(), project.required_capabilities());
             }

@@ -1084,6 +1084,11 @@ metres), `km2` (square kilometres, the default), `ha` (hectares), `ac` (acres), 
 and `mi2` (square miles). It changes the area values and field name, for example `area_ac` for
 acres; percentages and sum shares stay the same. Existing calls keep `area_km2` and its values.
 
+Turn on **Include Empty Zones** (`includeEmptyZones: true`) to keep one row for each polygon
+zone with no class overlap, including when the class layer is empty. The class fields are blank,
+and the area, percentage and sum fields are zero. Zones with overlaps keep their usual rows.
+The option is off by default, so the tool omits zones with no overlap and reports how many it omitted.
+
 The area is measured on the ellipsoid, as Calculate Geometry Attributes measures it. The
 percentages and shares compare areas measured on a sphere with each edge as the map draws it (a
 straight line on the map), the lines the tool cuts along, so the shares of a feature that zones
@@ -1106,15 +1111,14 @@ being split there (the map, and with it the percentages and shares, takes them t
 while area_km2 takes their ground shape), how many have an edge beyond 85.05° running east or west
 (their percentages and shares follow the analysis plane, which takes such an edge straight in
 longitude and latitude, not clamped as the Web Mercator map draws it, so they and area_km2 can
-differ widely, as above), how many zones overlap no class feature and so have no rows, how many
-class features have no value in a sum field (they add nothing to its shares) and,
-with sum fields, how many class features lie partly or wholly outside the zones. Only selected
-features are used when a layer has a selection, and the table is named `<zones>_Tabulate` unless
-`output` names it.
+differ widely, as above), how many class features have no value in a sum field (they add nothing
+to its shares) and, with sum fields, how many class features lie partly or wholly outside the
+zones. Only selected features are used when a layer has a selection. The table is named
+`<zones>_Tabulate` unless `output` names it.
 
 ```text
 gp.run={"tool":"tabulateIntersection","params":{"zones":"districts","zoneFields":"district","classes":"blocks","sumFields":["population"]}}
-gp.run={"tool":"tabulateIntersection","params":{"zones":"counties","zoneFields":"county","classes":"landcover","classFields":"class"}}
+gp.run={"tool":"tabulateIntersection","params":{"zones":"counties","zoneFields":"county","classes":"landcover","classFields":"class","includeEmptyZones":true}}
 gp.run={"tool":"tabulateIntersection","params":{"zones":"parcels","classes":"floodplain","areaUnit":"ac"}}
 ```
 

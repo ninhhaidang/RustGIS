@@ -150,6 +150,51 @@ fn clean_input_gives_no_notices() {
     assert_eq!(got.iter().map(|(_, n)| (n[1], n[2])).collect::<Vec<_>>(), [(50.0, 60.0), (50.0, 50.0)]);
 }
 
+/// The middle zone only touches a class. Its zero row belongs between the measured rows.
+#[test]
+fn include_empty_zones_keeps_unmatched_zones_in_order() {
+    let mut c =
+        Dataset::new("classes", GeometryType::Polygon, vec![Field::new("kind", FieldType::Text), Field::new("pop", FieldType::Integer)]);
+    for x in [0.0, 10.0] {
+        c.push_next(rect(x, x + 1.0), vec![Value::Text("forest".into()), Value::Int(100)]);
+    }
+    let l = layers(zones(), c);
+    let mut params = json!({"zones":"zones", "zoneFields":"zone", "classes":"classes", "classFields":"kind", "sumFields":"pop"});
+    let default = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(default.messages, ["Tabulate Intersection: 2 rows", "1 zone overlaps no class feature, so it has no rows"]);
+    params["includeEmptyZones"] = json!(false);
+    let off = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(off.messages, default.messages);
+    let default = table(default);
+    let off = table(off);
+    assert_eq!(rows(&off), rows(&default));
+
+    params["includeEmptyZones"] = json!(true);
+    let on = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(on.messages, ["Tabulate Intersection: 3 rows"]);
+    let on = table(on);
+    assert_eq!(on.features[0].attrs, off.features[0].attrs);
+    assert_eq!(on.features[1].attrs, [Value::Text("B".into()), Value::Null, Value::Float(0.0), Value::Float(0.0), Value::Float(0.0)]);
+    assert_eq!(on.features[2].attrs, off.features[1].attrs);
+}
+
+#[test]
+fn include_empty_zones_works_with_an_empty_class_layer() {
+    let l = layers(zones(), Dataset::new("classes", GeometryType::Polygon, vec![]));
+    let mut params = json!({"zones":"zones", "classes":"classes", "areaUnit":"m2", "includeEmptyZones":false});
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(result.messages, ["Tabulate Intersection: 0 rows", "3 zones overlap no class feature, so they have no rows"]);
+    assert!(table(result).features.is_empty());
+
+    params["includeEmptyZones"] = json!(true);
+    let result = rustgis_analysis::run("tabulateIntersection", &l, &params).unwrap();
+    assert_eq!(result.messages, ["Tabulate Intersection: 3 rows"]);
+    let out = table(result);
+    assert_eq!(out.fields[1].name, "area_m2");
+    let attrs: Vec<_> = out.features.into_iter().map(|feature| feature.attrs).collect();
+    assert_eq!(attrs, [0, 1, 2].map(|row| vec![Value::Int(row), Value::Float(0.0), Value::Float(0.0)]));
+}
+
 /// Every shared area unit converts the same ground area; percentages, totals and default output
 /// retain their existing values, including where an area field name collides with a zone field.
 #[test]

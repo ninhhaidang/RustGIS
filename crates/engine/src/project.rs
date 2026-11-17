@@ -81,6 +81,7 @@ pub const CAPABILITIES: &[&str] = &[
     "shaded-relief-light",
     "table-export-order",
     "tabulate-intersection-unit",
+    "tabulate-intersection-empty-zones",
     "layout-element-background",
     SIZE_BY_CAPABILITY,
     "picture-markers",

@@ -273,6 +273,7 @@ pub(super) fn long_commands(boundaries: bool) {
         ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857", "pixelSize": if boundaries { 2000 } else { 1000000 }})),
         ("kriging", json!({"input": "Cities", "field": "pop_max", "pixelSize": if boundaries { 0.01 } else { 1.0 }})),
         ("tabulateArea", json!({"raster": dem, "zones": "Countries"})),
+        ("tabulateIntersection", json!({"zones": "Countries", "classes": "Squares", "includeEmptyZones": true})),
     ];
     for (tool, params) in &tools {
         exercise(&s, tool, params, Kind::Tool, &dir.0, boundaries);
