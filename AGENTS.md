@@ -105,6 +105,10 @@ Work that splits into independent parts runs on several threads where practical:
   the catalogs in `crates/data/src/query.rs` (`Func::spec`, `VARS`, `Kw`), which the parser
   reads, and in `docs/user-guide/expressions.md`; the `query` tests fail when the guide misses
   a signature, unit, variable or keyword, or names a function that doesn't exist.
+- **A parameter that takes an expression says so**: a command's key gives its type as `sql` or
+  `expression` in its params (`"where": sql`, `"size"?: expression|null`), and a tool's
+  parameter is `ParamKind::Expression`, so it can be told from plain text. Another language (a
+  database's, a service's) is described in quoted prose instead.
 
 ## Reach every surface
 A change that works where you tried it is often missing elsewhere. Before calling it done, say in

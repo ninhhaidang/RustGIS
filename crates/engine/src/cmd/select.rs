@@ -19,7 +19,7 @@ pub fn commands() -> Vec<C> {
     let mut commands = vec![
         C::new("select.byAttributes", "Select By Attributes", "Home › Selection", by_attributes).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_layers)
-            .params(r#"{"layer"?, "where": "SQL clause", "mode"?: "new"|"add"|"remove"|"subset"}"#),
+            .params(r#"{"layer"?, "where": sql, "mode"?: "new"|"add"|"remove"|"subset"}"#),
         C::new("select.byRect", "Select (rectangle)", "Home › Selection", by_rect).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"minLon", "minLat", "maxLon", "maxLat", "mode"?: "new"|"add"|"remove"}"#),
         C::new("select.byPolygon", "Select by Polygon", "Home › Selection", by_polygon).roles(&[]).effects(crate::policy::Effects::NONE)

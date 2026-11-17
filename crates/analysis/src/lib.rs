@@ -86,6 +86,9 @@ pub enum ParamKind {
     },
     Number,
     Text,
+    /// An expression in the language of queries (`pop_est > 1000000`), read against the
+    /// associated input: text, marked apart from plain text for whoever completes it.
+    Expression,
     /// One of a fixed list of choices.
     Choice(&'static [&'static str]),
     /// A raster layer.

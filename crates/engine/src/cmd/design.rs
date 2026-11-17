@@ -356,7 +356,7 @@ pub fn commands() -> Vec<C> {
             r#"{"layer"?, "field": integer field, "subtypes": [{"code": n, "name": string, "defaults"?: {field: value}}], "symbolize"?: bool, "clear"?: bool}"#,
         ),
         C::new("data.attributeRule", "Attribute Rules", "Data › Data Design", attribute_rule).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
-            r#"{"layer"?, "name": string, "kind": "calculation"|"constraint", "field"?: field set by a calculation, "expression": calculator expression or SQL where clause, "remove"?: bool}"#,
+            r#"{"layer"?, "name": string, "kind": "calculation"|"constraint", "field"?: field set by a calculation, "expression": expression (a calculation's value, or a constraint's condition), "remove"?: bool}"#,
         ),
         C::new("data.contingentValues", "Contingent Values", "Data › Data Design", contingent).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "fields": [field, …], "combos": [[value, …], …], "remove"?: bool}"#,

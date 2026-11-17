@@ -199,6 +199,19 @@ pub fn param_keys(desc: &str) -> Option<Vec<&str>> {
     Some(keys)
 }
 
+/// The keys of a parameter description whose value is an expression in the language of queries:
+/// those whose type is written `sql` or `expression` (`"where": sql`, `"size"?: expression|null`).
+/// A quoted type (`"where": "an SQL condition…"`) is prose for another language (a database's,
+/// a service's) and isn't one.
+pub fn expression_keys(desc: &str) -> Vec<&str> {
+    let is_expression = |p: &Param| {
+        let Some((_, ty)) = p.text.split_once(':') else { return false };
+        let word = ty.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+        matches!(word, "sql" | "expression")
+    };
+    param_list(desc).unwrap_or_default().into_iter().filter(|p| is_expression(p)).map(|p| p.key).collect()
+}
+
 /// One entry of a parameter description: its key, whether it may be left out, and its text as
 /// written (`"size"?: number`), for help that lists the parameters one per line.
 #[derive(Clone, Debug, PartialEq)]

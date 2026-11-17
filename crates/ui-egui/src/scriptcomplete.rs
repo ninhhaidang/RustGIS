@@ -818,6 +818,7 @@ fn param_line(p: &rustgis_engine::analysis::ParamSpec) -> String {
         K::FieldStatistics { .. } => tl_raw!("field and statistic pairs"),
         K::Number => tl_raw!("number"),
         K::Text => tl_raw!("text"),
+        K::Expression => tl_raw!("expression"),
         K::Bool => tl_raw!("bool"),
         K::Path => tl_raw!("file path"),
         K::SaveFile { .. } if cfg!(target_arch = "wasm32") => tl_raw!("File name"),

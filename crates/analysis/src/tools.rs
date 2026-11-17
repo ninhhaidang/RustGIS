@@ -525,7 +525,7 @@ pub static TOOLS: &[ToolSpec] = &[
         summary: "Selects features with a SQL where clause, e.g. pop_est > 1000000.",
         params: &[
             P { name: "input", label: "Input Rows", kind: K::Layer, required: true, default: "", help: "" },
-            P { name: "where", label: "Where Clause", kind: K::Text, required: true, default: "", help: "" },
+            P { name: "where", label: "Where Clause", kind: K::Expression, required: true, default: "", help: "" },
         ],
         run: select_by_attributes,
     },
@@ -695,7 +695,7 @@ pub static TOOLS: &[ToolSpec] = &[
         summary: "Copies the (selected) features of a layer to a new layer.",
         params: &[
             P { name: "input", label: "Input Features", kind: K::Layer, required: true, default: "", help: "" },
-            P { name: "where", label: "Expression", kind: K::Text, required: false, default: "", help: "" },
+            P { name: "where", label: "Expression", kind: K::Expression, required: false, default: "", help: "" },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: export_features,
@@ -10116,6 +10116,23 @@ mod tests {
         }
     }
 
+    /// A tool's where clause is an expression, for the Script to complete as one; no other
+    /// parameter is.
+    #[test]
+    fn where_clauses_are_expressions() {
+        let mut expressions: Vec<String> = TOOLS
+            .iter()
+            .flat_map(|t| t.params.iter().filter(|p| p.kind == K::Expression).map(move |p| format!("{} {}", t.id, p.name)))
+            .collect();
+        expressions.sort_unstable();
+        assert_eq!(expressions, ["exportFeatures where", "selectByAttributes where"]);
+        for t in TOOLS {
+            for p in t.params.iter().filter(|p| p.name == "where") {
+                assert_eq!(p.kind, K::Expression, "{}", t.id);
+            }
+        }
+    }
+
     /// `touches_files` in rustgis-engine lets tasks, models and notebooks from files set a built-in
     /// tool's `output` when it names a new layer. Layer outputs remain plain text; the explicit
     /// `vectorToPmtiles` file output is handled separately by the engine.
@@ -10210,7 +10227,7 @@ mod tests {
                     Err(_) => match param.kind {
                         K::Number => serde_json::json!(1),
                         K::Bool => serde_json::json!(false),
-                        K::Text => serde_json::json!("a"),
+                        K::Text | K::Expression => serde_json::json!("a"),
                         K::Choice(c) => serde_json::json!(c.first().copied().unwrap_or_default()),
                         K::Field | K::NumericField | K::CoordinateField => serde_json::json!("v"),
                         K::PolygonLayer => serde_json::json!("polys"),

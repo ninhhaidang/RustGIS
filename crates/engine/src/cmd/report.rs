@@ -35,10 +35,10 @@ fn need_report(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("report.new", "New Report", "Publish › Report", new_report).inputs(new_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"layer"?: name (default: the selected layer), "name"?, "title"?, "fields"?: [names] (default: all), "where"?: SQL, "selectedOnly"?: bool, "groups"?: [fields], "sort"?: field, "descending"?: bool, "page"?: "letter"|"a4"|…, "orientation"?: "portrait"|"landscape"}"#,
+            r#"{"layer"?: name (default: the selected layer), "name"?, "title"?, "fields"?: [names] (default: all), "where"?: sql, "selectedOnly"?: bool, "groups"?: [fields], "sort"?: field, "descending"?: bool, "page"?: "letter"|"a4"|…, "orientation"?: "portrait"|"landscape"}"#,
         ),
         C::new("report.update", "Report Properties", "Report", update).inputs(update_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_report).params(
-            r#"{"report"?: name|index, "name"?, "title"?, "layer"?, "where"?, "selectedOnly"?, "sort"?: field|null, "descending"?, "page"?, "orientation"?, "width"?, "height"?: mm}"#,
+            r#"{"report"?: name|index, "name"?, "title"?, "layer"?, "where"?: sql, "selectedOnly"?, "sort"?: field|null, "descending"?, "page"?, "orientation"?, "width"?, "height"?: mm}"#,
         ),
         C::new("report.activate", "Open Report", "Browser", |s, p| {
             let i = index(s, p)?;
