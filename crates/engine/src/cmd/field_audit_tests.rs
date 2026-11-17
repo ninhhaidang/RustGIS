@@ -44,15 +44,21 @@ fn phone(temp: &Temp, bytes: &[u8], name: &str) -> Session {
     s
 }
 
-/// Sends the phone's map back and brings it back at home, returning the result and notices.
-fn bring_back(temp: &Temp, field: &mut Session, home: &mut Session, name: &str) -> (Value, Vec<String>) {
+/// Sends the phone's map back and tries to bring it back at home: the result and the notices.
+fn try_bring_back(temp: &Temp, field: &mut Session, home: &mut Session, name: &str) -> (Result<Value, String>, Vec<String>) {
     let (_, back) = package(field, &Value::Null).unwrap();
     let path = temp.0.join(format!("{name}-back.rgisfield"));
     std::fs::write(&path, &back).unwrap();
     let mark = home.notice_mark();
-    let done = home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap();
+    let done = home.run("offline.bringBack", &json!({"path": path.display().to_string()}));
     let said = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     (done, said)
+}
+
+/// [`try_bring_back`] for a return that is accepted.
+fn bring_back(temp: &Temp, field: &mut Session, home: &mut Session, name: &str) -> (Value, Vec<String>) {
+    let (done, said) = try_bring_back(temp, field, home, name);
+    (done.unwrap(), said)
 }
 
 fn layer(s: &Session, name: &str) -> u32 {
@@ -87,123 +93,115 @@ fn with_label(s: &Session, id: u32, field: &str, label: &str) -> usize {
 
 const AREA: [f64; 4] = [-20.0, -40.0, 60.0, 40.0];
 
-/// One package, copied to two phones (emailed to a crew, AirDropped to a second device).
-/// Phone A fixes a city's name; phone B never touches it. B is brought back after A.
+/// One package, copied to two phones (emailed to a crew, AirDropped to a second device). Each fixes
+/// a city and captures a point. A is brought back first. B's copy is of a state the area has left:
+/// bringing it back would undo A's fix and delete A's point (B's copy lacks it), so it is refused
+/// and nothing of B's comes home. A new package from the area's offline map is how B's work goes
+/// on: its edits are redone on it and come back, beside A's.
 #[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
-fn audit_second_phone_with_same_package_reverts_first_phones_edit() {
-    let temp = Temp::new("two-phones-edit");
+fn a_second_phone_with_the_same_package_is_refused_and_the_first_phones_work_stays() {
+    let temp = Temp::new("two-phones");
     let mut home = home(&temp);
+    let source = home.map().name.clone();
     let (_, out) = package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
     let mut a = phone(&temp, &out, "a");
     let mut b = phone(&temp, &out, "b");
     let cities = layer(&a, "Cities");
     let name = text_field(&a, cities);
     let fixed = a.map().layer(cities).unwrap().dataset.features[0].id;
+    let other = a.map().layer(cities).unwrap().dataset.features[1].id;
     a.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": name, "value": "Fixed by A"})).unwrap();
-    // B edits a different city.
-    b.run("edit.setValue", &json!({"layer": cities, "row": 1, "field": name, "value": "Fixed by B"})).unwrap();
-    bring_back(&temp, &mut a, &mut home, "a");
-    let hc = layer(&home, "Cities");
-    assert_eq!(value_of(&home, hc, fixed, &name).as_deref(), Some("Fixed by A"));
-    let (done, said) = bring_back(&temp, &mut b, &mut home, "b");
-    eprintln!("B: {done}\nnotices: {said:#?}");
-    assert_eq!(
-        value_of(&home, hc, fixed, &name).as_deref(),
-        Some("Fixed by A"),
-        "A's edit was reverted by B's untouched copy; notices: {said:?}"
-    );
-}
-
-/// The same two phones each capture a new point. A is brought back, then B.
-#[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
-fn audit_second_phone_with_same_package_loses_first_phones_new_features() {
-    let temp = Temp::new("two-phones-add");
-    let mut home = home(&temp);
-    let (_, out) = package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
-    let mut a = phone(&temp, &out, "a");
-    let mut b = phone(&temp, &out, "b");
-    let cities = layer(&a, "Cities");
-    let name = text_field(&a, cities);
-    let ida = add_point(&mut a, cities, &name, "Well from A", [10.0, 5.0]);
-    let idb = add_point(&mut b, cities, &name, "Well from B", [11.0, 6.0]);
-    eprintln!("phone ids: A {ida}, B {idb}");
-    bring_back(&temp, &mut a, &mut home, "a");
-    let hc = layer(&home, "Cities");
-    let (done, said) = bring_back(&temp, &mut b, &mut home, "b");
-    eprintln!("B: {done}\nnotices: {said:#?}");
-    let a_kept = with_label(&home, hc, &name, "Well from A");
-    let b_kept = with_label(&home, hc, &name, "Well from B");
-    assert_eq!((a_kept, b_kept), (1, 1), "both crews' new wells should be at home; notices: {said:?}");
-}
-
-/// Phone B captures nothing new at all; it only brings back after A did.
-#[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
-fn audit_idle_second_phone_deletes_first_phones_new_features() {
-    let temp = Temp::new("two-phones-idle");
-    let mut home = home(&temp);
-    let (_, out) = package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
-    let mut a = phone(&temp, &out, "a");
-    let mut b = phone(&temp, &out, "b");
-    let cities = layer(&a, "Cities");
-    let name = text_field(&a, cities);
     add_point(&mut a, cities, &name, "Well from A", [10.0, 5.0]);
-    let row1 = 1;
-    b.run("edit.setValue", &json!({"layer": cities, "row": row1, "field": name, "value": "Touched by B"})).unwrap();
+    b.run("edit.setValue", &json!({"layer": cities, "row": 1, "field": name, "value": "Fixed by B"})).unwrap();
+    add_point(&mut b, cities, &name, "Well from B", [11.0, 6.0]);
     bring_back(&temp, &mut a, &mut home, "a");
     let hc = layer(&home, "Cities");
-    let (done, said) = bring_back(&temp, &mut b, &mut home, "b");
-    eprintln!("B: {done}\nnotices: {said:#?}");
-    assert_eq!(with_label(&home, hc, &name, "Well from A"), 1, "A's new well was deleted by B; notices: {said:?}");
+    let at_home = count(&home, hc);
+
+    let (refused, said) = try_bring_back(&temp, &mut b, &mut home, "b");
+    let error = refused.unwrap_err();
+    assert!(error.contains("out of date") && error.contains("Crew"), "{error}");
+    assert!(said.iter().all(|t| !t.contains("Brought the field's edits back")), "{said:?}");
+    assert_eq!(value_of(&home, hc, fixed, &name).as_deref(), Some("Fixed by A"));
+    assert_ne!(value_of(&home, hc, other, &name).as_deref(), Some("Fixed by B"));
+    assert_eq!((with_label(&home, hc, &name, "Well from A"), with_label(&home, hc, &name, "Well from B")), (1, 0));
+    assert_eq!(count(&home, hc), at_home);
+
+    // B's work, redone on a package of the area as it is now, comes back beside A's.
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    let (_, again) = package(&mut home, &Value::Null).unwrap();
+    home.run("map.activate", &json!({"name": source})).unwrap();
+    let mut b2 = phone(&temp, &again, "b2");
+    b2.run("edit.setValue", &json!({"layer": cities, "row": 1, "field": name, "value": "Fixed by B"})).unwrap();
+    add_point(&mut b2, cities, &name, "Well from B", [11.0, 6.0]);
+    bring_back(&temp, &mut b2, &mut home, "b2");
+    assert_eq!(value_of(&home, hc, fixed, &name).as_deref(), Some("Fixed by A"));
+    assert_eq!(value_of(&home, hc, other, &name).as_deref(), Some("Fixed by B"));
+    assert_eq!((with_label(&home, hc, &name, "Well from A"), with_label(&home, hc, &name, "Well from B")), (1, 1));
 }
 
-/// One phone, two trips: the crew brings back at lunch, keeps working on the same phone, brings
-/// back again at the end of the day. In the morning they captured a point past the packaged extent.
+/// One phone, two trips with the same package: the crew brings back at lunch, keeps working, and
+/// sends the same map again in the evening. The second return would add the first's new points a
+/// second time (those it captured past the packaged extent come back as new every time, and an id
+/// taken at home is given a new one), so it is refused; every feature of the first return is at
+/// home once.
 #[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
-fn audit_incremental_return_duplicates_features_captured_outside_the_extent() {
-    let temp = Temp::new("outside");
+fn a_second_return_of_one_package_is_refused_and_leaves_nothing_twice() {
+    let temp = Temp::new("repeat");
     let mut home = home(&temp);
     let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
     let mut a = phone(&temp, &out, "a");
     let cities = layer(&a, "Cities");
     let name = text_field(&a, cities);
-    // Walked a little past the edge of the area.
+    // One past the edge of the area, one inside.
     add_point(&mut a, cities, &name, "Past the edge", [65.0, 5.0]);
-    let (first, _) = bring_back(&temp, &mut a, &mut home, "lunch");
-    eprintln!("lunch: {first}");
-    // Afternoon: one more point, well inside.
-    add_point(&mut a, cities, &name, "Afternoon", [10.0, 5.0]);
-    let (second, said) = bring_back(&temp, &mut a, &mut home, "evening");
-    eprintln!("evening: {second}\nnotices: {said:#?}");
+    add_point(&mut a, cities, &name, "Inside", [10.0, 5.0]);
+    bring_back(&temp, &mut a, &mut home, "lunch");
+    add_point(&mut a, cities, &name, "Afternoon", [11.0, 5.0]);
+    let (second, said) = try_bring_back(&temp, &mut a, &mut home, "evening");
+    assert!(second.unwrap_err().contains("out of date"), "{said:?}");
     let hc = layer(&home, "Cities");
-    assert_eq!(with_label(&home, hc, &name, "Past the edge"), 1, "captured once, at home twice; notices: {said:?}");
+    let at = |label: &str| with_label(&home, hc, &name, label);
+    assert_eq!((at("Past the edge"), at("Inside"), at("Afternoon")), (1, 1, 0));
 }
 
-/// The same, for an existing feature the crew moved out of the extent (a mislocated asset corrected).
+/// Desktop Sync of the area's offline map, between packaging and the return, moves the area on as
+/// a Bring Back does: the phone's copy lacks what the office put in the map before it, so its return
+/// would undo that.
 #[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
-fn audit_incremental_return_duplicates_features_moved_outside_the_extent() {
-    let temp = Temp::new("moved-out");
+fn a_package_made_before_a_sync_of_its_area_is_refused() {
+    let temp = Temp::new("synced");
     let mut home = home(&temp);
     let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
     let mut a = phone(&temp, &out, "a");
     let cities = layer(&a, "Cities");
     let name = text_field(&a, cities);
-    let moved = a.map().layer(cities).unwrap().dataset.features[0].id;
-    a.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": name, "value": "Relocated"})).unwrap();
-    a.map_mut().layer_mut(cities).unwrap().dataset.features[0].geometry =
-        Some(rustgis_data::Geometry::Point(rustgis_geom::Coord { x: 70.0, y: 5.0 }));
-    a.map_mut().layer_mut(cities).unwrap().touch_geometry();
-    bring_back(&temp, &mut a, &mut home, "lunch");
-    add_point(&mut a, cities, &name, "Afternoon", [10.0, 5.0]);
-    let (second, said) = bring_back(&temp, &mut a, &mut home, "evening");
-    eprintln!("evening: {second}\nnotices: {said:#?}");
-    let hc = layer(&home, "Cities");
-    let _ = moved;
-    assert_eq!(with_label(&home, hc, &name, "Relocated"), 1, "moved once, at home twice; notices: {said:?}");
+    add_point(&mut a, cities, &name, "Captured", [10.0, 5.0]);
+    home.run("offline.sync", &json!({"name": "Day"})).unwrap();
+    let (back, _) = try_bring_back(&temp, &mut a, &mut home, "a");
+    assert!(back.unwrap_err().contains("out of date"));
+}
+
+/// A package made before packages carried a return check has none to compare: it is brought back as
+/// it was, and the notice says it can't be told from a copy of one already returned.
+#[test]
+fn a_package_without_a_return_check_comes_back_with_a_notice() {
+    let temp = Temp::new("no-check");
+    let mut home = home(&temp);
+    let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
+    let mut a = phone(&temp, &out, "a");
+    a.project.field_origin.as_mut().unwrap().generation.clear();
+    let cities = layer(&a, "Cities");
+    let name = text_field(&a, cities);
+    add_point(&mut a, cities, &name, "Captured", [10.0, 5.0]);
+    let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
+    assert_eq!(done["added"].as_u64(), Some(1), "{done}");
+    assert!(said.iter().any(|t| t.contains("return check") && t.contains("Day")), "{said:?}");
+    // A package with one comes back without it.
+    let (_, out) = package(&mut home, &json!({"name": "Clean", "extent": AREA})).unwrap();
+    let mut b = phone(&temp, &out, "b");
+    let (_, said) = bring_back(&temp, &mut b, &mut home, "b");
+    assert!(said.iter().all(|t| !t.contains("return check")), "{said:?}");
 }
 
 /// Two crews, each with their own package of overlapping areas (the documented way), edit the
@@ -419,8 +417,11 @@ fn a_field_project_saved_with_a_table_link_opens_without_it() {
     let gpkg = roads_gpkg(&temp.0);
     let mut s = Session::new(crate::project::Project::default());
     s.run("gpkg.addLayer", &json!({"path": gpkg, "table": "roads", "name": "R"})).unwrap();
-    s.project.field_origin =
-        Some(crate::project::FieldOrigin { project: crate::project::field_id().unwrap(), area: crate::project::field_id().unwrap() });
+    s.project.field_origin = Some(crate::project::FieldOrigin {
+        project: crate::project::field_id().unwrap(),
+        area: crate::project::field_id().unwrap(),
+        generation: String::new(),
+    });
     let path = temp.0.join("field.rgis");
     s.project.save(&path).unwrap();
     let mut opened = Session::new(crate::project::Project::default());

@@ -157,9 +157,13 @@ A field package (`.rgisfield`) carries a map to the phone and its edits back.
    in a folder beside the project. A feature also changed on the computer takes the field's
    version, and the summary names it; **Undo** brings the computer's versions back.
 
-Give one package to one phone at a time, and make a new package after each Bring Back: a second
-phone's edits to the same package, brought back after the first's, would undo the first's where
-they differ. A package for an area the project doesn't have is refused.
+Give one package to one phone, and make a new package after each Bring Back or Sync of its area:
+from the area's offline map, **Package for the Field** again. A package comes back once, and only
+while its area is as it was when the package was made. A second phone's copy of the same package, or
+the same phone's second return, would undo or repeat what the first brought home, so Bring Back
+refuses it and changes nothing; redo that phone's edits on a new package. A package made before
+packages carried this check comes back as before, with a notice. A package for an area the project
+doesn't have is refused.
 
 ### Origin identities and older field copies
 
@@ -172,6 +176,8 @@ newly created area and identities too.
 Saving a project with these identities declares the `field-origin` capability, even when the
 offline area has never been sent as a field package. Earlier RustGIS releases that do not
 support this capability refuse the saved project rather than discard its return association.
+A project whose area has been packaged also declares `field-generation`, for the return check
+described above, so a release without it can't save the project and then accept any copy.
 
 A field copy made before these identities were introduced still opens, and Send Field Package
 preserves its edits and photos as an unverified legacy return. Ordinary Bring Back refuses to

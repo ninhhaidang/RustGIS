@@ -689,6 +689,10 @@ pub(crate) fn note_unbound(s: &mut Session, n: usize, copy: &str) {
 /// Most offline areas a project keeps (each holds a copy of its features).
 const MAX_AREAS: usize = 20;
 
+/// Makes an offline area of the active map: a snapshot of its feature layers' features in `extent`
+/// (the view's, unless one is given), which a later sync or a field package's return is compared
+/// against. It gets its identities and its home project's here; its return check waits until a
+/// field package is first made of it.
 pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     crate::project::ensure_map_imports_complete(s.map())?;
     let e = match p.get("extent").and_then(Value::as_array) {
@@ -730,7 +734,16 @@ pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     let features: usize = data.layers.iter().map(|l| l.dataset.features.len()).sum();
     let t = now();
     s.project.origin_id = origin_id;
-    s.project.offline_areas.push(OfflineArea { id, name: name.clone(), map: s.map().name.clone(), extent: e, created: t, synced: t, data });
+    s.project.offline_areas.push(OfflineArea {
+        id,
+        name: name.clone(),
+        map: s.map().name.clone(),
+        extent: e,
+        created: t,
+        synced: t,
+        generation: String::new(),
+        data,
+    });
     note_unbound(s, bound, &format!("the offline area '{name}'"));
     Ok(json!({"name": name, "features": features}))
 }
@@ -775,6 +788,10 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
         .position(|m| m.name.eq_ignore_ascii_case(&area.map))
         .ok_or_else(|| format!("the source map '{}' is gone", area.map))?;
     crate::project::ensure_map_imports_complete(s.project.maps.get(si).ok_or("the source map is gone")?)?;
+    // The area's packages are of the state it has now; after this sync it is another: a package
+    // made before it (one a phone still holds) would no longer be of the area as it is. An area no
+    // package was made of has none to tell apart.
+    let next_generation = if area.generation.is_empty() { None } else { Some(crate::project::field_id()?) };
     let (mut updated, mut added, mut deleted, mut skipped) = (0, 0, 0, 0);
     // Added offline, given a fresh id: theirs was taken.
     let mut renumbered = 0usize;
@@ -866,6 +883,9 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
     if let Some(a) = s.project.offline_areas.get_mut(ai) {
         a.data = fresh;
         a.synced = now();
+        if let Some(id) = next_generation {
+            a.generation = id;
+        }
     }
     // Never silent: say which features lost an edit, so they can be checked (Undo puts the
     // source's versions back).

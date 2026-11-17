@@ -6911,6 +6911,7 @@ fn opening_projects_reports_moved_label_and_callout_adjustments() {
         extent: rustgis_geom::Extent::new(-1.0, -1.0, 1.0, 1.0),
         created: 0.0,
         synced: 0.0,
+        generation: String::new(),
         data: project.maps[0].clone(),
     });
     let clean = serde_json::to_string(&project).unwrap();
@@ -48207,6 +48208,7 @@ fn opening_a_diagram_that_wont_show_says_why() {
         extent: rustgis_geom::Extent::new(-10.0, -10.0, 10.0, 10.0),
         created: 0.0,
         synced: 0.0,
+        generation: String::new(),
         data: snapshot,
     });
     let mut reread = Session::new(Project::from_json(&serde_json::to_string(&offline.project).unwrap()).unwrap());

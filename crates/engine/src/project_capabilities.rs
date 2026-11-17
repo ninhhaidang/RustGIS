@@ -33,6 +33,12 @@ impl Project {
         if !self.origin_id.is_empty() || self.field_origin.is_some() || self.offline_areas.iter().any(|area| !area.id.is_empty()) {
             required.push("field-origin");
         }
+        // A return check an older reader would drop on saving, and then accept any copy.
+        if self.field_origin.as_ref().is_some_and(|origin| !origin.generation.is_empty())
+            || self.offline_areas.iter().any(|area| !area.generation.is_empty())
+        {
+            required.push("field-generation");
+        }
         // Saved symbology keeps its images too.
         if !required.contains(&"picture-markers") && self.styles.iter().any(|s| s.renderer.has_picture_markers()) {
             required.push("picture-markers");
@@ -563,6 +569,40 @@ mod tests {
         assert_eq!(serde_json::to_value(&clean).unwrap()["requires"], json!(["field-origin"]));
     }
 
+    /// A return check (a package's or an area's generation) is kept on saving and requires its own
+    /// capability; an invalid one is refused, and an area never packaged has none and requires nothing.
+    #[test]
+    fn field_generation_is_preserved_and_required_and_must_be_an_identity() {
+        let project = Project::from_json(include_str!("../../../schema/fixtures/field_generation.rgis")).unwrap();
+        let saved = serde_json::to_value(&project).unwrap();
+        assert_eq!(saved["requires"], json!(["field-origin", "field-generation"]));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(reopened.field_origin, project.field_origin);
+        assert_eq!(reopened.field_origin.as_ref().map(|o| o.generation.as_str()), Some("8899aabbccddeeff0011223344556677"));
+        let mut invalid = saved.clone();
+        invalid["field_origin"]["generation"] = json!("not-an-id");
+        assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
+        // The same for an area's own, once it holds a snapshot of a map.
+        let mut with_area = Project::from_json(include_str!("../../../schema/fixtures/field_origin.rgis")).unwrap();
+        with_area.offline_areas.push(super::super::OfflineArea {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            name: "Field".into(),
+            map: "Map".into(),
+            extent: rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0),
+            created: 0.0,
+            synced: 0.0,
+            generation: String::new(),
+            data: with_area.map().clone(),
+        });
+        assert_eq!(serde_json::to_value(&with_area).unwrap()["requires"], json!(["field-origin"]));
+        with_area.offline_areas[0].generation = "8899aabbccddeeff0011223344556677".into();
+        let saved = serde_json::to_value(&with_area).unwrap();
+        assert_eq!(saved["requires"], json!(["field-origin", "field-generation"]));
+        let mut invalid = saved;
+        invalid["offline_areas"][0]["generation"] = json!("nope");
+        assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
+    }
+
     #[test]
     fn normalized_legend_capability_follows_maps_and_offline_snapshots() {
         let mut p = Project::from_json(include_str!("../../../schema/fixtures/normalized_legend.rgis")).unwrap();
@@ -579,6 +619,7 @@ mod tests {
             extent: rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0),
             created: 0.0,
             synced: 0.0,
+            generation: String::new(),
             data: p.map().clone(),
         });
         p.maps[0].tiles.clear();
@@ -604,6 +645,7 @@ mod tests {
             extent: rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0),
             created: 0.0,
             synced: 0.0,
+            generation: String::new(),
             data: p.map().clone(),
         });
         p.maps[0].view.terrain = None;

@@ -84,6 +84,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-element-background",
     "picture-markers",
     "layout-element-ink",
+    "field-generation",
 ];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
@@ -590,6 +591,11 @@ pub struct Job {
 pub struct FieldOrigin {
     pub project: String,
     pub area: String,
+    /// The area's [`OfflineArea::generation`] when the package was made. Bring Back accepts the
+    /// package only while the area still has it. Empty for a package made before packages carried
+    /// one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub generation: String,
 }
 
 pub(crate) fn field_id() -> Result<String, String> {
@@ -616,6 +622,12 @@ pub struct OfflineArea {
     pub created: f64,
     #[serde(default)]
     pub synced: f64,
+    /// Which state of the area its field packages were made from: given when a package is first
+    /// made of the area, and replaced at every sync or Bring Back. A package comes back only while
+    /// the area still has the one it was made with, so a second copy of a package, or a second
+    /// return, can't undo or repeat what the first brought home. Empty until a package is made.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub generation: String,
     /// The snapshot: the map's feature layers holding the features meeting the extent.
     #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub data: Map,
@@ -1683,8 +1695,15 @@ impl Project {
         })?;
         let mut area_ids = std::collections::HashSet::new();
         if (!p.origin_id.is_empty() && !valid_field_id(&p.origin_id))
-            || p.field_origin.as_ref().is_some_and(|origin| !valid_field_id(&origin.project) || !valid_field_id(&origin.area))
-            || p.offline_areas.iter().any(|area| !area.id.is_empty() && (!valid_field_id(&area.id) || !area_ids.insert(area.id.as_str())))
+            || p.field_origin.as_ref().is_some_and(|origin| {
+                !valid_field_id(&origin.project)
+                    || !valid_field_id(&origin.area)
+                    || (!origin.generation.is_empty() && !valid_field_id(&origin.generation))
+            })
+            || p.offline_areas.iter().any(|area| {
+                (!area.id.is_empty() && (!valid_field_id(&area.id) || !area_ids.insert(area.id.as_str())))
+                    || (!area.generation.is_empty() && !valid_field_id(&area.generation))
+            })
         {
             return Err("not a RustGIS project: an offline field identity is invalid or duplicated".into());
         }
@@ -2376,7 +2395,7 @@ impl Durable for Project {
             p.child(Owner::Map(i), v);
         }
         for (i, v) in offline_areas.iter().enumerate() {
-            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, data } = v;
+            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, generation: _, data } = v;
             p.child(Owner::Area(i), data);
         }
         for (i, v) in tables.iter().enumerate() {

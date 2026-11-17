@@ -77,6 +77,12 @@ fn legacy_user(s: &Session) -> Result<(), String> {
     }
 }
 
+/// Builds the field package of the active map: its name and bytes. Going out, from the project the
+/// edits will come back to, it is of an offline area (made here when the map isn't one's) and
+/// carries the area's identities and return check, assigned here the first time and recorded as
+/// one undoable change. Coming back, from a field project, it is that project's own map with the
+/// photos its features name, keeping the origin it was made with. What it leaves behind is added to
+/// `notes`, said once the package has been delivered.
 fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<(String, Vec<u8>), String> {
     macro_rules! note {
         ($text:expr, $error:expr $(,)?) => {
@@ -132,7 +138,16 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             let features =
                 |m: &rustgis_map::Map| m.layers.iter().filter(|l| !l.is_raster()).map(|l| l.dataset.features.len()).sum::<usize>();
             let had = features(s.map());
-            let made = field_edit(s, "Create field offline area", |s| super::workspace::offline_download(s, p))?;
+            // The new area's first package is of the state it starts in: made with it, as one undo step.
+            let made = field_edit(s, "Create field offline area", |s| {
+                let made = super::workspace::offline_download(s, p)?;
+                let generation = crate::project::field_id()?;
+                let name = made.get("name").and_then(Value::as_str);
+                if let Some(area) = name.and_then(|n| s.project.offline_areas.iter_mut().find(|a| a.name == n)) {
+                    area.generation = generation;
+                }
+                Ok(made)
+            })?;
             let name = made.get("name").and_then(Value::as_str).ok_or("the offline area wasn't made")?.to_string();
             let data =
                 s.project.offline_areas.iter().find(|a| a.name == name).map(|a| a.data.clone()).ok_or("the offline area wasn't made")?;
@@ -260,26 +275,38 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
         let ai = s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(&area)).ok_or("the offline area was not found")?;
         let new_home = s.project.origin_id.is_empty().then(crate::project::field_id).transpose()?;
         let new_area = s.project.offline_areas.get(ai).is_some_and(|a| a.id.is_empty()).then(crate::project::field_id).transpose()?;
+        // The first package of an area gives it the state a return is checked against; later ones
+        // are made of the same state until a sync or Bring Back replaces it.
+        let new_generation =
+            s.project.offline_areas.get(ai).is_some_and(|a| a.generation.is_empty()).then(crate::project::field_id).transpose()?;
         let assigned_identity = new_home.is_some() || new_area.is_some();
-        if assigned_identity {
+        let gave_generation = new_generation.is_some();
+        if assigned_identity || gave_generation {
             field_edit(s, "Assign field origin identities", |s| {
                 if let Some(id) = new_home {
                     s.project.origin_id = id;
                 }
-                if let Some(id) = new_area
-                    && let Some(area) = s.project.offline_areas.get_mut(ai)
-                {
-                    area.id = id;
+                if let Some(area) = s.project.offline_areas.get_mut(ai) {
+                    if let Some(id) = new_area {
+                        area.id = id;
+                    }
+                    if let Some(id) = new_generation {
+                        area.generation = id;
+                    }
                 }
                 Ok(Value::Null)
             })?;
         }
         if assigned_identity {
             note!("Assigned this legacy offline area an origin identity: save the home project before sending the field package", false);
+        } else if gave_generation {
+            note!("Gave this offline area a return check: save the home project before sending the field package", false);
         }
+        let home_area = s.project.offline_areas.get(ai).ok_or("the offline area was not found")?;
         Some(crate::project::FieldOrigin {
             project: s.project.origin_id.clone(),
-            area: s.project.offline_areas.get(ai).ok_or("the offline area was not found")?.id.clone(),
+            area: home_area.id.clone(),
+            generation: home_area.generation.clone(),
         })
     };
     if origin
@@ -610,6 +637,24 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
             .ok_or("this project has no offline area with the field package's identity: open the project as saved after packaging")?
     };
     let area = s.project.offline_areas.get(ai).ok_or("no such area")?.name.clone();
+    // The package must be of the area's state as it is: a copy of a package already brought back (a
+    // second phone's, or the same phone's second return), or one made before a sync, would undo or
+    // repeat what came home since. Nothing has been changed yet.
+    if let Some(origin) = project.field_origin.as_ref().filter(|_| legacy_area.is_none()) {
+        let held = s.project.offline_areas.get(ai).map(|a| a.generation.as_str()).unwrap_or_default();
+        if origin.generation.is_empty() {
+            s.notify(
+                format!(
+                    "This field package was made before packages carried a return check, so it can't be told from a copy of one already brought back to '{area}': if another phone or an earlier return used it, its edits are undone or repeated. Make a new package for each phone and each return"
+                ),
+                false,
+            );
+        } else if origin.generation != held {
+            return Err(format!(
+                "this field package is out of date: offline area '{area}' has been brought back or synced since it was made, so bringing it back too would undo or repeat what came home. Nothing was changed. Make a new package from the area's offline map for this phone (one package per phone, a new one after each Bring Back), then redo this phone's edits"
+            ));
+        }
+    }
     if project.maps.len() != 1 {
         return Err("a field package must hold exactly its original field map".into());
     }
@@ -1152,6 +1197,13 @@ mod tests {
         assert_eq!(entries[0].0, "Back.rgis");
     }
 
+    /// What a new package of `home`'s only area does for a phone's copy: its return check is the area's
+    /// as it is now, as a package made after the last Bring Back has.
+    fn given_a_new_package(home: &Session, field: &mut Session) {
+        let held = home.project.offline_areas[0].generation.clone();
+        field.project.field_origin.as_mut().unwrap().generation = held;
+    }
+
     /// Layer `name`'s id in the active map.
     fn layer(s: &Session, name: &str) -> u32 {
         s.map().layers.iter().find(|l| l.name == name).map(|l| l.id).unwrap()
@@ -1221,13 +1273,10 @@ mod tests {
         let said: Vec<String> = home.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         assert!(said.iter().any(|t| t.contains("changed in the map") && t.contains("Cities")), "{said:?}");
         assert!(said.iter().any(|t| t.contains("Brought the field's edits back") && t.contains("1 photo(s)")), "{said:?}");
-        // The same package brought back again: no feature twice.
-        let again = home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap();
-        assert_eq!(home.map().layer(home_cities).unwrap().dataset.features.len(), before, "{again}");
-        // The feature added in the field kept its id when it was free, and is found again as itself;
-        // one that took a new id was said the first time, and is replaced.
-        let renumbered = said.iter().any(|t| t.contains("took a new id"));
-        assert_eq!(again["added"].as_u64(), Some(u64::from(renumbered)), "{again}");
+        // The same package brought back again is refused: no feature twice.
+        let again = home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap_err();
+        assert!(again.contains("out of date"), "{again}");
+        assert_eq!(home.map().layer(home_cities).unwrap().dataset.features.len(), before);
         // A package for another home is refused before looking up an area by name.
         let mut other = sample();
         let e = other.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap_err();
@@ -1261,14 +1310,16 @@ mod tests {
         let photos: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).filter(|n| n.starts_with("photos/") && *n != INDEX).collect();
         assert_eq!(photos, ["photos/_pending.jpg"]);
         let first = back(&mut field);
-        // A second package's photo of that name, other bytes: kept beside the first, renamed.
-        std::fs::write(&picture, b"second").unwrap();
-        let second = back(&mut field);
         // Brought back where the photo isn't (as from a phone): copied in beside the project.
         std::fs::remove_file(&picture).unwrap();
         let path = temp.path().join("back.rgisfield");
         std::fs::write(&path, &first).unwrap();
         home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap();
+        // A second package's photo of that name, other bytes: kept beside the first, renamed.
+        std::fs::write(&picture, b"second").unwrap();
+        given_a_new_package(&home, &mut field);
+        let second = back(&mut field);
+        std::fs::remove_file(&picture).unwrap();
         std::fs::write(&path, &second).unwrap();
         let mark = home.notice_mark();
         home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap();
@@ -1379,6 +1430,8 @@ mod tests {
         let mark = home.notice_mark();
         home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap();
         assert!(home.notices_since(mark).iter().all(|n| !n.text.contains("plain file names")));
+        given_a_new_package(&home, &mut field);
+        let (_, back) = package(&mut field, &Value::Null).unwrap();
         let mut entries = rustgis_data::zip::read(&back).unwrap();
         for odd in ["photos/.hidden.jpg", "photos/NUL.jpg", "photos/a*b.jpg"] {
             entries.push((odd.into(), b"x".to_vec()));
@@ -1425,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn a_feature_added_in_the_field_keeps_its_free_id_and_is_found_again() {
+    fn a_feature_added_in_the_field_keeps_its_free_id_and_a_second_return_adds_nothing() {
         let temp = Temp::new("free-id");
         let mut home = sample();
         home.path = Some(temp.path().join("home.rgis"));
@@ -1447,9 +1500,10 @@ mod tests {
         assert!(home.notices_since(mark).iter().all(|n| !n.text.contains("took a new id")));
         let home_cities = layer(&home, "Cities");
         assert!(home.map().layer(home_cities).unwrap().dataset.features.iter().any(|f| f.id == id));
-        // Again: found as the same feature, nothing added or deleted.
-        let again = home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap();
-        assert_eq!((again["added"].as_u64(), again["deleted"].as_u64()), (Some(0), Some(0)), "{again}");
+        // Again: refused, so the feature isn't there twice.
+        let again = home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap_err();
+        assert!(again.contains("out of date"), "{again}");
+        assert_eq!(home.map().layer(home_cities).unwrap().dataset.features.iter().filter(|f| f.id == id).count(), 1);
     }
 
     #[test]

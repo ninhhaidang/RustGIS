@@ -168,6 +168,10 @@
         "area": {
           "type": "string"
         },
+        "generation": {
+          "description": "The area's [`OfflineArea::generation`] when the package was made. Bring Back accepts the\npackage only while the area still has it. Empty for a package made before packages carried\none.",
+          "type": "string"
+        },
         "project": {
           "type": "string"
         }
@@ -618,6 +622,10 @@
         "extent": {
           "$ref": "#/$defs/Extent"
         },
+        "generation": {
+          "description": "Which state of the area its field packages were made from: given when a package is first\nmade of the area, and replaced at every sync or Bring Back. A package comes back only while\nthe area still has the one it was made with, so a second copy of a package, or a second\nreturn, can't undo or repeat what the first brought home. Empty until a package is made.",
+          "type": "string"
+        },
         "id": {
           "description": "Persistent identity, independent of the editable display name.",
           "type": "string"
@@ -1065,7 +1073,8 @@
           "tabulate-intersection-unit",
           "layout-element-background",
           "picture-markers",
-          "layout-element-ink"
+          "layout-element-ink",
+          "field-generation"
         ],
         "type": "string"
       },
@@ -1142,7 +1151,8 @@
     "tabulate-intersection-unit",
     "layout-element-background",
     "picture-markers",
-    "layout-element-ink"
+    "layout-element-ink",
+    "field-generation"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2
