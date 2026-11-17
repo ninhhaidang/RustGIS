@@ -1192,6 +1192,9 @@ pub struct RustGisApp {
     /// bar (the touch interface, `rustgis-ui-touch`). `None` is the desktop interface. Dialogs
     /// and the Project menu's page are drawn either way.
     pub chrome: Option<Chrome>,
+    /// The touch interface a phone's shell offers (`rustgis-ui-touch`), kept while the desktop
+    /// interface is in its place so `ui.touchInterface` can bring it back. `None` elsewhere.
+    pub touch: Option<Chrome>,
     /// Whether the user wants the device's position shown: a shell that can report one (a
     /// phone's) starts and stops its positioning by this, and fills in [`RustGisApp::position`].
     pub locate: bool,
@@ -1493,6 +1496,7 @@ impl RustGisApp {
             reads: readjob::Reads::default(),
             reads_off_frame: false,
             chrome: None,
+            touch: None,
             locate: false,
             position: None,
             fixes: std::collections::VecDeque::new(),
@@ -3734,6 +3738,12 @@ impl RustGisApp {
             }
             "ui.commandSearch" => self.ui.command_search = Some(String::new()),
             "ui.about" => self.ui.about = true,
+            // Back from the desktop interface to the phone's, which the shell left in `touch`.
+            "ui.touchInterface" => match (self.chrome, self.touch) {
+                (Some(_), _) => {}
+                (None, Some(touch)) => self.chrome = Some(touch),
+                (None, None) => return Err(tl!("There is no touch interface to go back to: it is on phones.").into()),
+            },
             "ui.checkUpdate" => self.update.check(),
             // The MCP relay for `rustgis-cli mcp --attach`: starts a loopback listener off until
             // asked. Running the command again reports its address; the app owns its lifetime.
@@ -8896,5 +8906,33 @@ mod look_tests {
         app.open_picked("picked.rgis", text.as_bytes()).expect("a picked peer project opens via open_peer_text");
         assert_eq!(app.session.project.name, "PickedFromEmbedder");
         assert_eq!(app.ui.web_file, None, "a picked project also goes through open_peer_text");
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::RustGisApp;
+    use serde_json::Value;
+
+    /// A stand-in for a phone's touch interface.
+    fn touch(_: &mut RustGisApp, _: &mut egui::Ui) {}
+
+    /// After Use the Desktop Interface (the chrome cleared), `ui.touchInterface` brings back the
+    /// one the shell kept; a computer, which has none, is told so.
+    #[test]
+    fn the_desktop_interface_goes_back_to_the_touch_one() {
+        let mut app = RustGisApp::with_sample();
+        // A computer has no touch interface to go back to.
+        assert!(app.run("ui.touchInterface", Value::Null).is_err());
+        assert!(app.chrome.is_none());
+        // A phone: its shell sets both, and the More sheet's row clears the chrome.
+        app.touch = Some(touch);
+        app.chrome = app.touch;
+        app.chrome = None;
+        app.run("ui.touchInterface", Value::Null).unwrap();
+        assert!(app.chrome.is_some_and(|c| std::ptr::fn_addr_eq(c, touch as super::Chrome)));
+        // Already on it: nothing changes.
+        app.run("ui.touchInterface", Value::Null).unwrap();
+        assert!(app.chrome.is_some());
     }
 }

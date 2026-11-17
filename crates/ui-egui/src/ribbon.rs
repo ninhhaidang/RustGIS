@@ -1874,6 +1874,23 @@ fn graticule_menu(ui: &mut Ui, app: &mut RustGisApp) {
 }
 
 fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
+    // On a phone that left its touch interface for this one: the way back, first so a
+    // phone's narrow ribbon shows it.
+    if app.touch.is_some() {
+        group(ui, "Interface", |ui| {
+            big(
+                ui,
+                app,
+                "pane",
+                "Touch\nInterface",
+                "Go back to the phone's interface: the map with large buttons under it.",
+                "ui.touchInterface",
+                Value::Null,
+                false,
+                false,
+            );
+        });
+    }
     group(ui, "Display", |ui| {
         let g = app.session.map().graticule;
         big_split_form_menu(

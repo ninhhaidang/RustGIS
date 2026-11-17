@@ -2,7 +2,8 @@
 //! and sheets that rise over it, in place of the desktop's ribbon and panes.
 //!
 //! It is drawn around the egui front end's own map view and runs the same commands: a shell
-//! turns it on with `app.chrome = Some(rustgis_ui_touch::chrome)`. Dialogs, notices and the
+//! turns it on with `app.chrome = Some(rustgis_ui_touch::chrome)`, and keeps it in `app.touch` so
+//! the desktop interface's View › Touch Interface can bring it back. Dialogs, notices and the
 //! Project page stay the front end's.
 //!
 //! What is here: the map, the bar (Layers, Add Data, Capture, More), the Layers sheet (show,
@@ -1467,7 +1468,7 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             copies_row(app, ui, t, &ctx);
         }
         // The whole of RustGIS is still there, for a tablet or a job the touch interface has no
-        // button for yet. The Project page's Start brings this interface back at the next start.
+        // button for yet. View › Touch Interface (`ui.touchInterface`) brings this one back.
         if row(ui, t, "pane", tl!("Use the Desktop Interface")) {
             set_sheet(ui.ctx(), Sheet::None);
             // A track being recorded is added before the bar that stops it goes away; one that
@@ -1477,7 +1478,7 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 // Nothing to keep positions coming for out of sight now, and no interface that
                 // would say so.
                 app.keep_locating = false;
-                app.session.notify(tl!("The desktop interface is on until RustGIS is started again."), false);
+                app.session.notify(tl!("The desktop interface is on. View › Touch Interface brings this one back."), false);
             }
         }
     });

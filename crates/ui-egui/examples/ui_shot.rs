@@ -33,6 +33,8 @@
 //! renamed over it) and `{"remove": path}` deletes a file, as another program would.
 //! `"recovery": "/abs/dir"` on the first line gives the run that recovery folder, as the desktop
 //! app has one (Settings › Autosave; a copy left there is offered by the recovery dialog).
+//! `"touch": true` on the first line gives the run a stand-in for a phone's touch interface (the
+//! map alone), kept as a phone's shell keeps it: the View tab then has Touch Interface.
 //! `"memorySecrets": true` on the first line supplies an isolated in-memory credential store for
 //! Remember/Forget screenshots. It never opens the OS keychain or writes credentials to disk.
 //!
@@ -55,6 +57,11 @@ struct RibbonSplitShowcase {
     long_labels: bool,
     fonts_installed: bool,
     applied_look: Option<(String, bool, u64)>,
+}
+
+/// Stands in for a phone's touch interface (`"touch": true`): the map alone.
+fn touch_stand_in(app: &mut RustGisApp, ui: &mut egui::Ui) {
+    app.map_view(ui);
 }
 
 fn split_tool_menu(ui: &mut egui::Ui, app: &mut RustGisApp) {
@@ -160,6 +167,9 @@ fn main() {
     let mut app = RustGisApp::with_sample();
     // As the desktop app does: Add Data, Load All, models and scripts run on a thread of their own.
     app.reads_off_frame = lines.first().and_then(|l| l.get("readsOffFrame")).and_then(Value::as_bool).unwrap_or(false);
+    if lines.first().and_then(|l| l.get("touch")).and_then(Value::as_bool) == Some(true) {
+        app.touch = Some(touch_stand_in);
+    }
     // As the desktop app does: linked files changed on disk are reported (#1477).
     app.watch_files = lines.first().and_then(|l| l.get("watchFiles")).and_then(Value::as_bool).unwrap_or(false);
     if let Some(dir) = lines.first().and_then(|l| l.get("recovery")).and_then(Value::as_str) {

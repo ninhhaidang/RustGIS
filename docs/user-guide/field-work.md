@@ -24,7 +24,8 @@ A phone opens in the touch interface: the map, with a bar of four large buttons 
 | **More** | Full Extent, the project, Undo and Redo, the position, tracks and the rest |
 
 Each button opens a sheet that rises over the map. **Use the Desktop Interface**, in the More
-sheet, brings back the ribbon and panes until the app is started again.
+sheet, brings back the ribbon and panes; **Touch Interface**, on the View tab (or Use the Touch
+Interface in Command Search), returns to the phone's interface.
 
 ## Opening data
 

@@ -659,8 +659,10 @@ pub fn run<P: Phone + 'static>(
             None
         }
     };
-    // A phone gets the touch interface; its More sheet has the desktop one.
+    // A phone gets the touch interface; its More sheet has the desktop one, whose View tab has
+    // this one again.
     app.chrome = Some(rustgis_ui_touch::chrome);
+    app.touch = app.chrome;
     app.session.mark_saved();
     eframe::run_native(
         "RustGIS",
