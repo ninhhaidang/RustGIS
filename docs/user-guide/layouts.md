@@ -118,6 +118,15 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     latitude), the layout has no north arrow: the graticule gives north there, and one arrow can't
     point north across the whole frame. A warning says so; `"northArrow": "always"` draws one, and
     `"none"` leaves it out at any span.
+  - **On the globe**: with the map on the Globe projection and no `extent`, the sheet shows the
+    globe whole. The globe nearly fills the frame, centred where the view looks, and the
+    surrounds go in the room around it. It has no scale bar, since a globe's scale holds only at
+    its centre. A sheet has no locator by default either, since it would only show the same globe
+    again, smaller; `"locator": "globe"` or `"inset"` still adds one. Warnings say both. Near a
+    pole the frame can't draw the globe that small at the view's latitude, so the globe is
+    centred as near it as fits, and a warning says where. With an `extent`, a sheet on the globe
+    is laid out as on a flat map. In any frame on the globe, the light space around the globe is
+    room for the surrounds, as the blank page is.
   - **Legend box**: over the map, the legend's box is left clear where the map shows nothing under
     it but its light plain paper or water: no layer, label, context layer, basemap shape or graticule
     line, no web tiles, and no veil. Dark basemaps keep a white backing so the dark legend text
@@ -199,7 +208,9 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   running along the edge. From a command:
   `layout.addElement={"kind":"grid","step":0.5,"style":"ticks","format":"dms","edges":["top","bottom","left","right"],"labelOrientation":"vertical"}`
   (given again, it changes only the options it names), or `layout.update` with
-  `"grid": {…}` (`false` removes the grid).
+  `"grid": {…}` (`false` removes the grid). On a map on the globe the lines are drawn on the
+  globe, and stop at its horizon. A frame that shows the whole globe has nothing beyond its rim,
+  and so no labels along its edges.
 - **Measured grids**: a grid's **Type** is a **Graticule** (latitudes and longitudes, as above)
   or a **Measured grid**, as ArcGIS Pro has them: eastings and northings in a projected coordinate
   system, for maps read with UTM or national grid coordinates (a hiking map at 1:25,000 with a

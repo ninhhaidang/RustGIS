@@ -33,7 +33,7 @@ pub fn commands() -> Vec<C> {
             r#"{"name"?: string, "page"?: "letter"|"legal"|"tabloid"|"a5"|"a4"|"a3"|"a2"|"a1"|"a0", "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "template"?: "map" (frame, title, legend, north arrow, scale bar; the default)|"blank"}"#,
         ),
         C::new("layout.publication", "New Publication Layout", "Publish › Layout", publication).inputs(publication_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"profile"?: "a4" (the default) | "letter"|"legal"|"tabloid"|"a5"|"a3"|"a2"|"a1"|"a0" (a sheet turned to portrait or landscape, whichever the area's map comes out larger on: its extent east to west against north to south, on the map's projection) | a size with its orientation: "a4-portrait"|"a4-landscape"|"letter-portrait"|"tabloid-landscape"|… for each of those sizes (a sheet: frame, title, subtitle, the map, a boxed footer, all scaled to the sheet)|"figure-1col" (90 mm)|"figure-1.5col" (140 mm)|"figure-2col" (190 mm)|"thesis-full" (160 × 225 mm)|"thesis-half" (160 × 110 mm) (a figure: the map edge to edge, its title and sources left to the caption), "extent"?: [west, south, east, north] in degrees that must fit (default: the map view), "name"?: string, "title"?: text, "subtitle"?: text, "sources"?: text | [texts], "reference"?: text | [texts] (default: the projection, datum and graticule), "note"?: text, "author"?: text (default: "Made with RustGIS · {date}"; "" or [] for none), "headings"?: [the sources' heading, the reference's heading, an editorial column's heading], "locator"?: "globe" (a globe with the area outlined; the default on sheets) | "inset" (the surrounding region, the area outlined) | "none" (the default on figures), "decimal"?: "." (the default) | "," (graticule, scale bar and colorbar numbers and {scale} with a decimal comma: 0,05 and 1:6.300.000), "colorbar"?: "auto" (the default: the top visible raster with a colour scale, not drawn by classes, gets one, under the legend in its box; a raster drawn by classes has them in the legend's rows instead) | "none" (no colorbar, and the legend's box has no room for one), "veil"?: true (the default: when no shape of the legend fits, a map that runs on past the extent, with a long legend, has what is outside the extent veiled and its surrounds grouped there, at up to half the scale on a sheet) | false (never veiled, and drawn at its scale; the map may still move aside), "contextInLegend"?: false (the default: layers the placement takes as context around the data, polygons only outlined or, beside a layer drawn by classes or a raster, in one colour and running on past the frame, are left out of the legend, which a warning names) | true (the legend lists them), "northArrow"?: "auto" (the default: none when the extent spans 20° or more on its longer side, where the graticule gives north, which a warning says) | "always" | "none", "legendBox"?: "auto" (the default: over the map, the legend has no box where the map shows nothing under it but its light plain paper or water, with no layer, context, basemap shape or graticule line there and no veil; the answer's "legendBox" says whether it has one) | "always", "style"?: "classic" (the default: the title over the map, the footer under it) | "banner" (the title and subtitle in a band of the accent colour across the top) | "panel" (the map at the left, a panel at the right with the title, locator, legend, sources and reference) | "editorial" (the title large in serif, a column at the right with the note, the locator and the legend) | "modular" (cards on a light page: the map, the locator and the legend each in one, the sources and reference in tinted ones) | "poster" (the page in the accent colour, the title in light text, the map in a light card, the footer in darker blocks) (a sheet's arrangement; figures leave it to the caption), "accent"?: a colour as #RRGGBB (the style's colour: its band, panel tint, headings and rules, a poster's page), "arrangement"?: "best" (the default: the favourite, each arrangement by name and each saved with layout.arrangement laid out, the one moving the least area off its corners kept, then the one leaving the least over the data, the favourite on a tie) | "favourite" (layout.arrangement's) | an arrangement by name (built in or saved) or corner by corner, as layout.arrangement takes (the corners the locator, north arrow, legend and scale bar are at home in; one covering what the map draws there still moves), "coverage"?: "*.png" (writes the coverage grid the placement searched, as it settled on it, three pixels a cell: what the map draws dark, the free cells white, both tinted blue in the strips the graticule's labels keep, the surrounds placed over the map outlined in red; the answer gives its path)} → a new layout of the active map at a round scale, its texts wrapped to their boxes; {projection}, {datum} and {grid} in the texts are filled from the map"#,
+            r#"{"profile"?: "a4" (the default) | "letter"|"legal"|"tabloid"|"a5"|"a3"|"a2"|"a1"|"a0" (a sheet turned to portrait or landscape, whichever the area's map comes out larger on: its extent east to west against north to south, on the map's projection) | a size with its orientation: "a4-portrait"|"a4-landscape"|"letter-portrait"|"tabloid-landscape"|… for each of those sizes (a sheet: frame, title, subtitle, the map, a boxed footer, all scaled to the sheet)|"figure-1col" (90 mm)|"figure-1.5col" (140 mm)|"figure-2col" (190 mm)|"thesis-full" (160 × 225 mm)|"thesis-half" (160 × 110 mm) (a figure: the map edge to edge, its title and sources left to the caption), "extent"?: [west, south, east, north] in degrees that must fit (default: the map view), "name"?: string, "title"?: text, "subtitle"?: text, "sources"?: text | [texts], "reference"?: text | [texts] (default: the projection, datum and graticule), "note"?: text, "author"?: text (default: "Made with RustGIS · {date}"; "" or [] for none), "headings"?: [the sources' heading, the reference's heading, an editorial column's heading], "locator"?: "globe" (a globe with the area outlined; the default on sheets, but for a map on the globe with no extent, the globe seen whole, which has none and no scale bar either, the globe filling its frame) | "inset" (the surrounding region, the area outlined) | "none" (the default on figures), "decimal"?: "." (the default) | "," (graticule, scale bar and colorbar numbers and {scale} with a decimal comma: 0,05 and 1:6.300.000), "colorbar"?: "auto" (the default: the top visible raster with a colour scale, not drawn by classes, gets one, under the legend in its box; a raster drawn by classes has them in the legend's rows instead) | "none" (no colorbar, and the legend's box has no room for one), "veil"?: true (the default: when no shape of the legend fits, a map that runs on past the extent, with a long legend, has what is outside the extent veiled and its surrounds grouped there, at up to half the scale on a sheet) | false (never veiled, and drawn at its scale; the map may still move aside), "contextInLegend"?: false (the default: layers the placement takes as context around the data, polygons only outlined or, beside a layer drawn by classes or a raster, in one colour and running on past the frame, are left out of the legend, which a warning names) | true (the legend lists them), "northArrow"?: "auto" (the default: none when the extent spans 20° or more on its longer side, where the graticule gives north, which a warning says) | "always" | "none", "legendBox"?: "auto" (the default: over the map, the legend has no box where the map shows nothing under it but its light plain paper or water, with no layer, context, basemap shape or graticule line there and no veil; the answer's "legendBox" says whether it has one) | "always", "style"?: "classic" (the default: the title over the map, the footer under it) | "banner" (the title and subtitle in a band of the accent colour across the top) | "panel" (the map at the left, a panel at the right with the title, locator, legend, sources and reference) | "editorial" (the title large in serif, a column at the right with the note, the locator and the legend) | "modular" (cards on a light page: the map, the locator and the legend each in one, the sources and reference in tinted ones) | "poster" (the page in the accent colour, the title in light text, the map in a light card, the footer in darker blocks) (a sheet's arrangement; figures leave it to the caption), "accent"?: a colour as #RRGGBB (the style's colour: its band, panel tint, headings and rules, a poster's page), "arrangement"?: "best" (the default: the favourite, each arrangement by name and each saved with layout.arrangement laid out, the one moving the least area off its corners kept, then the one leaving the least over the data, the favourite on a tie) | "favourite" (layout.arrangement's) | an arrangement by name (built in or saved) or corner by corner, as layout.arrangement takes (the corners the locator, north arrow, legend and scale bar are at home in; one covering what the map draws there still moves), "coverage"?: "*.png" (writes the coverage grid the placement searched, as it settled on it, three pixels a cell: what the map draws dark, the free cells white, both tinted blue in the strips the graticule's labels keep, the surrounds placed over the map outlined in red; the answer gives its path)} → a new layout of the active map at a round scale, its texts wrapped to their boxes; {projection}, {datum} and {grid} in the texts are filled from the map"#,
         ),
         C::new("layout.arrangement", "Favourite Arrangement", "Publish › Layout", arrangement).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"favourite"?: "classic" (the locator top left, the north arrow top right, the legend bottom left, the scale bar bottom right) | "mirrored" | "legendRight" | "legendTop" | {"locator", "northArrow", "legend", "scaleBar": "top-left"|"top-right"|"bottom-left"|"bottom-right", each a corner of its own} | a saved arrangement's name, "save"?: a name (1 to 40 characters, not a built-in one nor "best", "favourite", "custom" or "veil"; one saved under it already, case aside, is replaced) to save "arrangement" under (at most 20 saved), "arrangement"?: what "save" saves: an arrangement by name, or a corner for each surround as "favourite" takes them (refused without "save"), "remove"?: a saved arrangement's name (a favourite named after it keeps its corners, unless "favourite" gives another)} → the favourite arrangement of publication layouts and those saved by name (kept with the app's preferences), the favourite's corners, the arrangements by name and the saved ones' corners; a removal, then a save, then the favourite; with none of them given, they are only shown"#,
@@ -1183,10 +1183,11 @@ fn landscape_suits(aspect: f64, short: f64, long: f64, style: Style) -> bool {
 fn publication(s: &mut Session, p: &Value) -> CmdResult {
     let (auto, profile) = publication_profile(p)?;
     let (sheet, page_w, page_h) = (profile.sheet, profile.width, profile.height);
+    let whole_globe = shows_whole_globe(s.map(), p);
     let extent = match p.get("extent").filter(|v| !v.is_null()) {
         // The view; on a globe the whole Earth, as geoprocessing takes it (the globe camera's flat
         // extent means nothing there).
-        None if s.map().projection.is_globe() => Extent::new(-180.0, -90.0, 180.0, 90.0),
+        None if whole_globe => Extent::new(-180.0, -90.0, 180.0, 90.0),
         None => {
             let e = super::workspace::view_extent(s);
             Extent::new(e.min_x.max(-180.0), e.min_y.max(-90.0), e.max_x.min(180.0), e.max_y.min(90.0))
@@ -1217,7 +1218,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     };
     let headings = texts_of(p, "headings")?.unwrap_or_default();
     let comma = decimal_mark(p)?.unwrap_or(false);
-    let locator = publication_locator(p, sheet)?;
+    let locator = publication_locator(p, sheet, whole_globe)?;
     let colorbar = publication_colorbar(p)?;
     let may_veil = publication_veil(p)?;
     let context_in_legend = publication_flag(p, "contextInLegend")?.unwrap_or(false);
@@ -1297,6 +1298,11 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     let soft = Rgba::rgb(0x5E, 0x55, 0x47);
     let clear = Rgba::new(0, 0, 0, 0);
     let mut warnings: Vec<String> = Vec::new();
+    // A sheet's default locator would show the globe again, smaller; one asked for still comes,
+    // and "none" asked for is no news.
+    if sheet && whole_globe && p.get("locator").is_none_or(Value::is_null) {
+        warnings.push("no locator: the map shows the whole globe; \"locator\": \"globe\" or \"inset\" adds one".into());
+    }
     // Texts and boxes around the map, placed while its frame is worked out.
     let mut around: Vec<(String, (f64, f64, f64, f64), ElementKind)> = Vec::new();
     // What a style draws under the map and its surrounds: a page's colour, a card or a panel.
@@ -1838,8 +1844,25 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     if fw - strip_w < fw / 2.0 || fh - strip_h < fh / 2.0 {
         warnings.push("the frame is too small to keep its graticule's labels off the map's edges: they may cover them".into());
     }
-    let (center, scale) = fit_scale(s.map(), &extent, (fw - strip_w).max(fw / 2.0), (fh - strip_h).max(fh / 2.0))
-        .ok_or("the extent can't be drawn on the map's projection")?;
+    let (inner_w, inner_h) = ((fw - strip_w).max(fw / 2.0), (fh - strip_h).max(fh / 2.0));
+    let (center, scale) = if whole_globe {
+        // The globe seen whole fills the frame, centred where the view looks (#2337): fitting the
+        // whole Earth's flat footprint instead drew it a fraction of the frame, around 0°, 0°.
+        // Its size at a scale is the same at any latitude, so it is worked out on the equator,
+        // where the probe stays within the camera's resolutions.
+        let view = s.map().center_lonlat();
+        let scale = round_scale(globe_scale(s.map(), Coord::new(view.x, 0.0), inner_w.min(inner_h) * WHOLE_GLOBE_FILL));
+        let center = drawable_globe_center(s.map(), view, scale);
+        if center != view {
+            warnings.push(format!(
+                "the globe is centred at {:.1}° rather than the view's {:.1}° of latitude: nearer the pole, the frame can't draw it small enough to fit",
+                center.y, view.y
+            ));
+        }
+        (center, scale)
+    } else {
+        fit_scale(s.map(), &extent, inner_w, inner_h).ok_or("the extent can't be drawn on the map's projection")?
+    };
     let scale = round_scale(scale);
     let grid = Grid { step, edges, ..Grid::default() };
     let name = unique_name(s, ps(p, "name").unwrap_or("Publication"));
@@ -2118,7 +2141,13 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         surrounds.push((Surround::Legend, (content_w + 2.0 * pad).min(fw * 0.45), (content_h + 2.0 * pad).min(fh * 0.6)));
     }
     // Its width is set once the frame's centre and scale are settled, below; nothing reads it before.
-    surrounds.push((Surround::Scale, 0.0, sh + nh));
+    // A globe seen whole has none: its scale holds at its centre only, falling to nothing at its
+    // rim, so a bar would read true nowhere else (#2337).
+    if whole_globe {
+        warnings.push("no scale bar: the map shows the whole globe, whose scale holds at its centre only".into());
+    } else {
+        surrounds.push((Surround::Scale, 0.0, sh + nh));
+    }
     // A corner's rectangle for a surround `w` × `h`.
     let at = |corner: usize, w: f64, h: f64| {
         let x = if corner.is_multiple_of(2) { fx + left } else { fx + fw - right - w };
@@ -5700,11 +5729,41 @@ fn publication_veil(p: &Value) -> Result<bool, String> {
     }
 }
 
-/// Parses the publication's locator choice with the sheet-specific default.
-fn publication_locator(p: &Value, sheet: bool) -> Result<Locator, String> {
+/// Whether a publication of `map` shows the whole globe: the map is on the globe and no extent is
+/// given, so the sheet's map is the globe seen whole (#2337).
+fn shows_whole_globe(map: &rustgis_map::Map, p: &Value) -> bool {
+    map.projection.is_globe() && p.get("extent").is_none_or(Value::is_null)
+}
+
+/// How much of the frame, inside its graticule's label strips, a globe seen whole spans: a little
+/// less than all of it, for the atmosphere's glow at its rim.
+const WHOLE_GLOBE_FILL: f64 = 0.94;
+
+/// Where a frame of `map` at 1:`scale` centres the globe seen whole: at `view`, or as near it on
+/// its meridian as the frame's camera can draw the globe that small. Towards a pole the camera's
+/// resolution for a scale grows as one over the cosine of the latitude, and past its coarsest
+/// ([`rustgis_map::camera::MAX_RES`]) the globe would be drawn larger than the frame (#2337).
+fn drawable_globe_center(map: &Map, view: Coord, scale: f64) -> Coord {
+    let fits =
+        |lat: f64| rustgis_map::layout::frame_camera(map, Coord::new(view.x, lat), scale, 0.0, 0.0).res < rustgis_map::camera::MAX_RES;
+    if fits(view.y) {
+        return view;
+    }
+    // The latitude in between that the camera still draws at the scale, found by halving.
+    let (mut fit, mut over) = (0.0f64, view.y.abs());
+    for _ in 0..40 {
+        let mid = (fit + over) / 2.0;
+        if fits(mid.copysign(view.y)) { fit = mid } else { over = mid }
+    }
+    Coord::new(view.x, fit.copysign(view.y))
+}
+
+/// Parses the publication's locator choice with its default: a globe on a sheet, none on a figure
+/// or where the map is itself the globe seen whole (it would only show it again, smaller).
+fn publication_locator(p: &Value, sheet: bool, whole_globe: bool) -> Result<Locator, String> {
     Ok(match p.get("locator").filter(|v| !v.is_null()) {
         None => {
-            if sheet {
+            if sheet && !whole_globe {
                 Locator::Globe
             } else {
                 Locator::None
@@ -5723,7 +5782,7 @@ fn publication_locator(p: &Value, sheet: bool) -> Result<Locator, String> {
 fn publication_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
     let s = input;
     let (_, profile) = publication_profile(p)?;
-    let locator = publication_locator(p, profile.sheet)?;
+    let locator = publication_locator(p, profile.sheet, shows_whole_globe(s.map(), p))?;
     let map = s.map();
     let mut inputs = super::Inputs::layers(map.layers.iter().filter(|l| map.shows(l)).map(|l| (map, l)));
     inputs.maps.push(map.instance_id());

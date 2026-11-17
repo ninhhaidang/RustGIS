@@ -44,7 +44,7 @@ pub(crate) fn lines(map: &Map, view: &View) -> Option<Vec<Vec<Coord>>> {
 
 /// The place at a point of the view (in points), in longitude/latitude: through the globe when the
 /// map is one, else through the map's flat projection.
-fn at(map: &Map, view: &View, globe: Option<&Globe>, sx: f64, sy: f64) -> Option<Coord> {
+pub(crate) fn at(map: &Map, view: &View, globe: Option<&Globe>, sx: f64, sy: f64) -> Option<Coord> {
     let c = match globe {
         Some(g) => g.inverse(sx, sy),
         None => map.to_lonlat(view.camera.to_map(sx, sy, view.width, view.height)),

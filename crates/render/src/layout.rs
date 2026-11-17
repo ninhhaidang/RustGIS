@@ -1367,14 +1367,30 @@ pub(crate) fn nice_step(span: f64, smallest: f64) -> f64 {
 fn draw_grid(pm: &mut Canvas, map: &Map, view: &View, g: &Grid, comma: bool) -> Vec<(Edge, [f32; 4])> {
     let ppp = view.pixels_per_point as f32;
     let (w, h) = (view.width, view.height);
+    // On a globe, through the globe as the frame draws it (#2337): through the flat camera the
+    // lines would be laid out as a flat world around it.
+    let globe = map.projection.is_globe().then(|| rustgis_map::globe::Globe::new(&view.camera, w, h));
+    let lonlat_at = |sx: f64, sy: f64| crate::mapgrid::at(map, view, globe.as_ref(), sx, sy);
     // The frame's edges in longitude/latitude: its corners and points along each side.
     let mut edge_points = Vec::new();
     for i in 0..=8 {
         let t = f64::from(i) / 8.0;
         edge_points.extend([(w * t, 0.0), (w * t, h), (0.0, h * t), (w, h * t)]);
     }
-    let lonlats: Vec<Coord> = edge_points.iter().filter_map(|&(sx, sy)| map.to_lonlat(view.camera.to_map(sx, sy, w, h))).collect();
-    let mut ext = Extent::EMPTY;
+    let mut lonlats: Vec<Coord> = edge_points.iter().filter_map(|&(sx, sy)| lonlat_at(sx, sy)).collect();
+    // A frame with an edge past the globe's rim sees the globe's limb: its graticule is the whole
+    // Earth's, the lines behind the globe left out where they are drawn. A measured grid takes its
+    // bounds from the part of the globe inside the frame too, the edges missing it.
+    let rim = globe.is_some() && lonlats.len() < edge_points.len();
+    if rim {
+        for i in 0..=16 {
+            for j in 0..=16 {
+                lonlats.extend(lonlat_at(w * f64::from(i) / 16.0, h * f64::from(j) / 16.0));
+            }
+        }
+    }
+    let world = Extent::new(-180.0, -90.0, 180.0, 90.0);
+    let mut ext = if rim { world } else { Extent::EMPTY };
     for c in &lonlats {
         ext.expand(*c);
     }
@@ -1390,16 +1406,16 @@ fn draw_grid(pm: &mut Canvas, map: &Map, view: &View, g: &Grid, comma: bool) -> 
         GridKind::Graticule => {
             // Over the extent of the frame's corners and midpoints, as it always was (its step and
             // lines unchanged for the layouts made before measured grids).
-            let mut corners = Extent::EMPTY;
+            let mut corners = if rim { world } else { Extent::EMPTY };
             for (sx, sy) in [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h), (w / 2.0, 0.0), (w / 2.0, h), (0.0, h / 2.0), (w, h / 2.0)] {
-                if let Some(c) = map.to_lonlat(view.camera.to_map(sx, sy, w, h)) {
+                if let Some(c) = lonlat_at(sx, sy) {
                     corners.expand(c);
                 }
             }
             graticule_lines(g, corners, comma, &mut lines);
         }
         GridKind::Measured => {
-            let center = map.to_lonlat(view.camera.to_map(w / 2.0, h / 2.0, w, h)).unwrap_or_else(|| ext.center());
+            let center = lonlat_at(w / 2.0, h / 2.0).unwrap_or_else(|| ext.center());
             let Some(crs) = measured_crs(g, map, center) else { return Vec::new() };
             let Ok(tr) = crs.transformer() else { return Vec::new() };
             measured_lines(g, &tr, &lonlats, comma, &mut lines);
@@ -1408,16 +1424,18 @@ fn draw_grid(pm: &mut Canvas, map: &Map, view: &View, g: &Grid, comma: bool) -> 
                 && let Some((zone, _)) = rustgis_map::layout::utm_zone_of(&crs.epsg().to_string())
             {
                 let size = |s: &str| (text::measure(s, MGRS_LABEL_PT, true), MGRS_LABEL_PT * 1.33 * 1.2);
-                squares = mgrs_squares(map, view, zone, &tr, size);
+                squares = mgrs_squares(map, view, globe.as_ref(), zone, &tr, size);
             }
         }
     }
-    // A tilted frame's lines break where they pass behind the eye.
+    // A tilted frame's lines break where they pass behind the eye, a globe's behind its horizon.
     let to_px = |c: Coord| {
-        map.to_map(c)
-            .and_then(|m| view.camera.try_to_screen(m, w, h))
-            .map(|(x, y)| (x as f32 * ppp, y as f32 * ppp))
-            .filter(|(x, y)| x.is_finite() && y.is_finite())
+        match &globe {
+            Some(on) => on.forward(c),
+            None => map.to_map(c).and_then(|m| view.camera.try_to_screen(m, w, h)),
+        }
+        .map(|(x, y)| (x as f32 * ppp, y as f32 * ppp))
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
     };
     let (pw, ph) = (pm.width() as f32, pm.height() as f32);
     let paint_line = paint(g.color, 1.0);
@@ -1506,23 +1524,26 @@ const MGRS_LABEL_PT: f32 = 10.0;
 const MGRS_SAMPLES: u32 = 32;
 
 /// Where a measured grid in UTM zone `zone` (`tr` its transformer) names its MGRS 100 km squares on
-/// a frame showing `map` in `view`: each square of the zone, and of each latitude band, that shows,
-/// by its grid zone designation and letters (`32T MT`), at the middle of what shows of it, in the
-/// frame's points. Only where all of the label, `size(text)` points across and down, stays in its
-/// square and well inside the frame, clear of the edge labels. Squares the zone's eastings reach
-/// past its edges (a frame across two zones) are named in the other zone, so not here.
+/// a frame showing `map` in `view` (through `globe` on a globe, as its lines): each square of the
+/// zone, and of each latitude band, that shows, by its grid zone designation and letters
+/// (`32T MT`), at the middle of what shows of it, in the frame's points. Only where all of the
+/// label, `size(text)` points across and down, stays in its square and well inside the frame,
+/// clear of the edge labels. Squares the zone's eastings reach past its edges (a frame across two
+/// zones) are named in the other zone, so not here.
 fn mgrs_squares(
     map: &Map,
     view: &View,
+    globe: Option<&rustgis_map::globe::Globe>,
     zone: u8,
     tr: &rustgis_data::raster::Transformer,
     size: impl Fn(&str) -> (f32, f32),
 ) -> Vec<(String, f32, f32)> {
     use rustgis_geom::utm;
     let (w, h) = (view.width, view.height);
-    // The square, and band, a place on the frame is in: none outside the zone.
+    // The square, and band, a place on the frame is in: none outside the zone. On a globe, the
+    // place the globe draws there, as the grid's lines (#2337).
     let square = |sx: f64, sy: f64| -> Option<(i64, i64, char)> {
-        let c = map.to_lonlat(view.camera.to_map(sx, sy, w, h))?;
+        let c = crate::mapgrid::at(map, view, globe, sx, sy)?;
         // (A copy of the world past ±180° is the same place.)
         let c = Coord::new((c.x + 180.0).rem_euclid(360.0) - 180.0, c.y);
         if utm::utm_zone(c)? != zone {
@@ -2731,6 +2752,8 @@ pub fn frame_coverage_judged_on(
             self.map.label_lock_line_anchors = std::mem::take(&mut self.anchors);
         }
     }
+    // The space a globe is drawn on here: the blank basemap's, light.
+    let space = map.projection.is_globe().then(|| crate::globe_space(false)).map(|c| (c.r(), c.g(), c.b()));
     let outlines = context_layers(map, center, scale, judged);
     for l in map.layers.iter_mut().filter(|l| outlines.contains(&l.id)) {
         l.visible = false;
@@ -2749,7 +2772,11 @@ pub fn frame_coverage_judged_on(
     let (gw, gh) = (pm.width(), pm.height());
     // Anything not the blank basemap's paper, pure opaque white (the graticule set aside too): a
     // pale or translucent fill counts (only a fill of that very white, invisible on it, doesn't).
-    let drawn = pm.pixels().iter().map(|p| p.alpha() > 0 && (p.red(), p.green(), p.blue(), p.alpha()) != (255, 255, 255, 255)).collect();
+    // On a globe, the space around it is paper too: counted, it took every cell and the surrounds
+    // landed on the globe (#2337). The atmosphere's glow at the rim is not, which keeps them off
+    // the globe's edge.
+    let paper = |r: u8, g: u8, b: u8| (r, g, b) == (255, 255, 255) || space == Some((r, g, b));
+    let drawn = pm.pixels().iter().map(|p| p.alpha() > 0 && !(p.alpha() == 255 && paper(p.red(), p.green(), p.blue()))).collect();
     Some((gw, gh, drawn))
 }
 
@@ -5595,12 +5622,12 @@ Elaboração: RustGIS",
         };
         let at = |v: &View, x: f32, y: f32| map.to_lonlat(v.camera.to_map(f64::from(x), f64::from(y), v.width, v.height)).unwrap();
         let near = view(Coord::new(8.73, 47.5), 25_000.0, 80.0);
-        let one = mgrs_squares(&map, &near, 32, &tr, size);
+        let one = mgrs_squares(&map, &near, None, 32, &tr, size);
         assert_eq!(one.len(), 1, "{one:?}");
         assert_eq!(one[0].0, "32T MT");
         assert!((f64::from(one[0].1) - near.width / 2.0).abs() < 2.0 && (f64::from(one[0].2) - near.height / 2.0).abs() < 2.0);
         let wide = view(Coord::new(8.73, 47.5), 2_000_000.0, 80.0);
-        let many = mgrs_squares(&map, &wide, 32, &tr, size);
+        let many = mgrs_squares(&map, &wide, None, 32, &tr, size);
         assert!(many.len() >= 2, "{many:?}");
         for (text, x, y) in &many {
             let named = rustgis_geom::to_mgrs(at(&wide, *x, *y), 0).unwrap().to_string();
@@ -5608,12 +5635,12 @@ Elaboração: RustGIS",
         }
         // Across the edge with zone 33 at 12° E: only zone 32's squares, west of it.
         let edge = view(Coord::new(11.0, 47.5), 2_000_000.0, 80.0);
-        let west = mgrs_squares(&map, &edge, 32, &tr, size);
+        let west = mgrs_squares(&map, &edge, None, 32, &tr, size);
         assert!(!west.is_empty() && west.iter().all(|(t, x, y)| t.starts_with("32") && at(&edge, *x, *y).x < 12.0), "{west:?}");
-        assert!(mgrs_squares(&map, &view(Coord::new(8.73, 47.5), 25_000.0, 15.0), 32, &tr, size).is_empty());
+        assert!(mgrs_squares(&map, &view(Coord::new(8.73, 47.5), 25_000.0, 15.0), None, 32, &tr, size).is_empty());
         // Across the Equator, a northern zone's grid names the southern squares too, as MGRS does.
         let equator = view(Coord::new(9.0, 0.0), 2_000_000.0, 80.0);
-        let both = mgrs_squares(&map, &equator, 32, &tr, size);
+        let both = mgrs_squares(&map, &equator, None, 32, &tr, size);
         for band in ["32N ", "32M "] {
             assert!(both.iter().any(|(t, ..)| t.starts_with(band)), "{band}: {both:?}");
         }
@@ -5640,6 +5667,130 @@ Elaboração: RustGIS",
         let named = Grid { crs: Some("EPSG:32733".into()), ..g.clone() };
         assert_eq!(measured_crs(&named, &map, c).map(|c| c.epsg()), Some(32733));
         assert_eq!(measured_crs(&Grid { crs: Some("EPSG:2056".into()), ..g }, &map, c), None);
+    }
+
+    #[test]
+    fn mgrs_labels_on_the_globe_name_the_squares_it_draws() {
+        // #2337: on a globe, a label names the square the globe draws under it, not the one the
+        // flat map would show at that place in the frame.
+        let mut map = Map::new("m");
+        map.set_projection(rustgis_map::Projection::Globe);
+        let tr = rustgis_data::raster::Crs::from_epsg(32632).unwrap().transformer().unwrap();
+        // Small labels at 1:20,000,000, where the globe's curve parts it from the flat map: the
+        // two agree at the middle of the frame and drift apart away from it.
+        let size = |_: &str| (6.0_f32, 4.0_f32);
+        let view = View {
+            width: 120.0 * PT_PER_MM,
+            height: 120.0 * PT_PER_MM,
+            pixels_per_point: 1.0,
+            camera: frame_camera(&map, Coord::new(9.0, 47.5), 20_000_000.0, 0.0, 0.0),
+            sky: false,
+        };
+        let globe = rustgis_map::globe::Globe::new(&view.camera, view.width, view.height);
+        // The square the globe draws at a label's place, if any.
+        let under =
+            |x: f32, y: f32| globe.inverse(f64::from(x), f64::from(y)).and_then(|c| rustgis_geom::to_mgrs(c, 0)).map(|m| m.to_string());
+        let squares = mgrs_squares(&map, &view, Some(&globe), 32, &tr, size);
+        assert!(squares.len() >= 2, "{squares:?}");
+        for (text, x, y) in &squares {
+            assert_eq!(under(*x, *y).as_ref(), Some(text));
+        }
+        // Through the flat camera, as before, some labels sit on another square of the globe.
+        let flat = mgrs_squares(&map, &view, None, 32, &tr, size);
+        assert!(flat.iter().any(|(text, x, y)| under(*x, *y).as_ref() != Some(text)), "{flat:?}");
+    }
+
+    #[test]
+    fn the_space_around_a_globe_is_free_in_its_coverage() {
+        // #2337: the light space a globe is drawn on leaves room for a layout's surrounds, as the
+        // blank basemap's white paper does (its ocean too, as open sea on a flat map); the
+        // atmosphere's glow at the globe's rim doesn't. Before, every cell was taken.
+        let mut map = Map::new("m");
+        map.set_projection(rustgis_map::Projection::Globe);
+        // A globe about 64 mm across in a frame 100 mm square.
+        let (gw, gh, cells) = frame_coverage(&mut map, Coord::new(0.0, 0.0), 2e8, 100.0, 100.0, 50).unwrap();
+        let cell = |x: u32, y: u32| cells[(y * gw + x) as usize];
+        assert!(cells.iter().any(|c| *c), "the glow at the rim is drawn");
+        for (x, y) in [(1, 1), (gw - 2, 1), (1, gh - 2), (gw - 2, gh - 2)] {
+            assert!(!cell(x, y), "the space at the corner ({x}, {y}) is free");
+        }
+    }
+
+    #[test]
+    fn a_measured_grid_on_the_globe_seen_whole_is_drawn() {
+        // #2337: with the whole globe inside the frame, no edge of it lands on the globe; the
+        // measured grid takes its bounds from the globe in the frame instead of drawing nothing.
+        use rustgis_map::layout::{Grid, GridKind};
+        let mut m = Map::new("m");
+        m.set_projection(rustgis_map::Projection::Globe);
+        let mut maps = vec![m];
+        let mut l = Layout::new("Layout", 100.0, 100.0);
+        let grid = Grid {
+            kind: GridKind::Measured,
+            crs: Some("EPSG:32632".into()),
+            step: 0.0,
+            color: Rgba::rgb(0xFF, 0, 0),
+            labels: false,
+            width: 1.0,
+            ..Grid::default()
+        };
+        l.add(
+            "Map",
+            (10.0, 10.0, 80.0, 80.0),
+            ElementKind::MapFrame {
+                map: "m".into(),
+                center: Coord::new(9.0, 45.0),
+                scale: 2e8,
+                shape: FrameShape::Rectangle,
+                grid: Some(grid),
+                extent_of: None,
+                extent_color: rustgis_map::layout::INDICATOR_COLOR,
+                extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                bearing: 0.0,
+                pitch: 0.0,
+            },
+        );
+        let pm = render(&l, &mut maps, 96.0, &PageInfo::default()).unwrap();
+        assert!(count(&pm, (30.0, 30.0, 70.0, 70.0), red) > 20, "the measured grid's lines on the globe");
+        assert_eq!(count(&pm, (11.0, 11.0, 20.0, 20.0), red), 0, "none past the rim");
+    }
+
+    #[test]
+    fn a_grid_on_the_globe_is_drawn_on_it() {
+        // #2337: a frame of a map on the globe draws its graticule through the globe, not as a
+        // flat world around it: none of it beyond the globe's rim, in the frame's corners.
+        use rustgis_map::layout::Grid;
+        let mut m = Map::new("m");
+        m.set_projection(rustgis_map::Projection::Globe);
+        let mut maps = vec![m];
+        let mut l = Layout::new("Layout", 100.0, 100.0);
+        let grid = Grid { step: 30.0, color: Rgba::rgb(0xFF, 0, 0), labels: true, width: 1.0, ..Grid::default() };
+        l.add(
+            "Map",
+            (10.0, 10.0, 80.0, 80.0),
+            ElementKind::MapFrame {
+                map: "m".into(),
+                center: Coord::new(0.0, 0.0),
+                // A globe about 64 mm across, in the middle of the 80 mm frame.
+                scale: 2e8,
+                shape: FrameShape::Rectangle,
+                grid: Some(grid),
+                extent_of: None,
+                extent_color: rustgis_map::layout::INDICATOR_COLOR,
+                extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                bearing: 0.0,
+                pitch: 0.0,
+            },
+        );
+        let pm = render(&l, &mut maps, 96.0, &PageInfo::default()).unwrap();
+        assert!(count(&pm, (40.0, 40.0, 60.0, 60.0), red) > 50, "lines on the globe");
+        // Neither lines nor labels (dark) past the rim: in the corners and along the edges.
+        let ink = |p: tiny_skia::PremultipliedColorU8| red(p) || (p.alpha() > 0 && p.red() < 120 && p.green() < 120 && p.blue() < 120);
+        let corners = [(11.0, 11.0, 20.0, 20.0), (80.0, 11.0, 89.0, 20.0), (11.0, 80.0, 20.0, 89.0), (80.0, 80.0, 89.0, 89.0)];
+        let edges = [(25.0, 11.0, 75.0, 15.0), (25.0, 85.0, 75.0, 89.0), (11.0, 25.0, 15.0, 75.0), (85.0, 25.0, 89.0, 75.0)];
+        for r in corners.into_iter().chain(edges) {
+            assert_eq!(count(&pm, r, ink), 0, "nothing past the rim at {r:?}");
+        }
     }
 
     #[test]
