@@ -81,7 +81,8 @@ pub struct Resolved {
     /// The style's sprites as (id, address without `.json`/`.png`), those RustGIS can
     /// fetch.
     pub sprites: Vec<(String, String)>,
-    /// Credits from the layer and its sources, without duplicates.
+    /// Credits from the layer and its sources, without duplicates: a layer of one source that
+    /// names its own has that alone.
     pub attribution: Vec<String>,
     /// What of the style was left out and why, said with every drawing of it as its error.
     pub left_out: Vec<String>,
@@ -293,6 +294,10 @@ fn resolve_anew(spec: &Spec, key: String, epoch: u64) -> Resolve {
         Ok(None) => return Resolve::Pending,
         Err(e) => return Resolve::Failed(e),
     };
+    // A layer of one source that names its credit is credited with that alone, as an archive is
+    // (`archive_style`): its TileJSON may word the same credit otherwise (#2244). A style's sources
+    // keep theirs, as one credit can't stand for several.
+    let own_only = matches!(spec.kind, Kind::Raster | Kind::Vector) && !plain_text(&spec.attribution).is_empty();
     let mut attribution: Vec<String> = Vec::new();
     let mut credit = |a: &str| {
         let a = plain_text(a);
@@ -301,7 +306,7 @@ fn resolve_anew(spec: &Spec, key: String, epoch: u64) -> Resolve {
         }
     };
     credit(&spec.attribution);
-    for (_, src) in &style.sources {
+    for (_, src) in style.sources.iter().filter(|_| !own_only) {
         if let Source::Vector { attribution, .. } | Source::Raster { attribution, .. } | Source::RasterDem { attribution, .. } = src {
             credit(attribution);
         }
@@ -880,6 +885,41 @@ mod tests {
             }
             _ => panic!("no vector source"),
         }
+    }
+
+    /// A tile layer of one source that names its credit is credited with that alone, not again
+    /// in its TileJSON's wording (#2244); one that names none takes its TileJSON's. A style's
+    /// sources keep their credits beside the layer's.
+    #[test]
+    fn a_layer_of_one_source_is_credited_once() {
+        let _turn = cache::turn();
+        let tilejson = "https://credits.example/tiles.json";
+        let style = "https://credits.example/style.json";
+        cache::set_fetcher(move |url, done| {
+            done(Ok(if url == tilejson {
+                json!({"tiles": ["https://credits.example/{z}/{x}/{y}.pbf"], "attribution": "<a href=\"b\">B</a> Data"})
+            } else if url == style {
+                json!({"version": 8, "sources": {"v": {"type": "vector", "url": tilejson}}, "layers": []})
+            } else {
+                json!({})
+            }
+            .to_string()
+            .into_bytes()));
+        });
+        let credits = |kind: Kind, url: &str, own: &str| {
+            let mut s = spec(kind, url);
+            s.attribution = own.into();
+            for _ in 0..3 {
+                if let Resolve::Ready(r) = resolve(&s) {
+                    return r.attribution.clone();
+                }
+                cache::wait(std::time::Duration::from_secs(2));
+            }
+            panic!("{url} must resolve");
+        };
+        assert_eq!(credits(Kind::Vector, tilejson, "A"), ["A"]);
+        assert_eq!(credits(Kind::Vector, tilejson, ""), ["B Data"]);
+        assert_eq!(credits(Kind::Style, style, "A"), ["A", "B Data"]);
     }
 
     #[test]

@@ -486,7 +486,9 @@ A blend mode (Multiply, Screen, Overlay, Darken, Lighten, Difference) combines a
 what is drawn beneath it (tile layers, the basemap, and map layers when it's placed over them): stack imagery over a hillshade and set it to Multiply to
 let the terrain show through. Overlays stay over the basemaps; choosing a built-in basemap
 removes the web basemaps but keeps the overlays. Tile layers are saved with the project, and
-their credits are shown in the corner of the map and drawn on exports.
+their credits are shown in the corner of the map and drawn on exports. A layer's own credit
+(`attribution`) stands in place of its tiles' (a TileJSON's or an archive's), which show when it
+names none; a MapLibre style keeps its sources' credits beside it.
 
 Use Explore to click features in vector PMTiles, MBTiles or MVT layers added as data and see
 their source-layer names and attributes in a pop-up. This works with **Topmost Layer** or
