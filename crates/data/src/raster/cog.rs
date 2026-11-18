@@ -748,6 +748,9 @@ pub struct Example {
     /// Without `classes`: band `b`'s wavelength, 400 + 100 b nanometres, in GDAL's metadata
     /// (its only item there).
     pub wavelengths: bool,
+    /// Overviews half the size before them rounded down (500 of 1001), as terrio 0.8 writes
+    /// them; GDAL rounds up (501).
+    pub rounded_down: bool,
 }
 
 impl Default for Example {
@@ -770,6 +773,7 @@ impl Default for Example {
             sparse: false,
             no_overviews: false,
             wavelengths: false,
+            rounded_down: false,
         }
     }
 }
@@ -783,7 +787,8 @@ pub fn example_with(e: &Example) -> Vec<u8> {
     let per_chunk = nb / planes;
     let mut sizes = vec![size];
     while !e.no_overviews && *sizes.last().unwrap_or(&tile) > tile {
-        sizes.push(sizes.last().unwrap_or(&tile).div_ceil(2));
+        let last = *sizes.last().unwrap_or(&tile);
+        sizes.push(if e.rounded_down { last / 2 } else { last.div_ceil(2) });
     }
     let value = |x: u32, y: u32, b: u32| -> u8 {
         if e.int8 {

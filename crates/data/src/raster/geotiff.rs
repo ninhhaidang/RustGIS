@@ -1430,9 +1430,14 @@ pub(super) fn read_limited_with_nodata(
         }
         let (dw, dh) = (full_w.div_ceil(k), full_h.div_ceil(k));
         let decimated = (k <= 1 << 20).then_some(u64::from(dw) * u64::from(dh));
+        // As detailed as every k-th pixel is an overview of the full size over k, rounded either
+        // way: GDAL rounds up, some writers down (terrio's 10439 × 9842 for 83517 × 78739 over
+        // 8, #1965), and one a pixel short must not make the whole full image be read instead.
+        let as_detailed = |pixels: u64| pixels >= u64::from((full_w / k).max(1)) * u64::from((full_h / k).max(1));
         match best {
-            // An overview at least as detailed as the full image read sparsely: only it is read.
-            Some((index, ow, oh)) if decimated.is_none_or(|d| u64::from(ow) * u64::from(oh) >= d) => {
+            // An overview as detailed, to the rounding of its size, as the full image read
+            // sparsely: only it is read.
+            Some((index, ow, oh)) if decimated.is_none() || as_detailed(u64::from(ow) * u64::from(oh)) => {
                 dec.seek_to_image(index).map_err(err)?;
                 image = index;
                 (w, h) = (ow, oh);
@@ -2920,6 +2925,29 @@ mod tests {
         let Partial::Done(back) = read_sparse_limited(&kept, "back", 1 << 20).unwrap() else { panic!("parts missing") };
         assert_eq!((back.width, back.height), (r.width, r.height));
         assert_eq!(back.value(0, 517, 300), r.value(0, 517, 300));
+    }
+
+    /// #1965: an overview a pixel short of every k-th pixel of the full image, as a writer that
+    /// rounds its overviews' sizes down makes it (terrio's 10439 × 9842 for 83517 × 78739 over 8),
+    /// is read rather than the whole full image, whose every k-th pixel is only a pixel larger. A
+    /// 10 GB mosaic took minutes to open so.
+    #[test]
+    fn an_overview_rounded_down_is_read_rather_than_the_full_image() {
+        use super::super::cog::{Example, example_with};
+        // 1001 pixels a side in 256-pixel tiles, overviews of 500 and 250. At most 260,000
+        // samples: every second pixel is 501 × 501, the 500 overview a pixel short each way.
+        let file = example_with(&Example { size: 1001, tile: 256, rounded_down: true, ..Example::default() });
+        let max = 260_000;
+        let whole = read_limited(reader(std::io::Cursor::new(&file)).unwrap(), "rounded", max, None).unwrap();
+        assert_eq!((whole.width, whole.height, whole.overview), (500, 500, Some((1001, 1001))));
+        // Only the overview's tiles are read, none of the full image's (most of the file).
+        let (r, parts) = read_in_parts(&file, 64 << 10, max);
+        assert_eq!((r.width, r.height), (500, 500));
+        assert!(parts.held() < file.len() as u64 / 3, "{} of {}", parts.held(), file.len());
+        // One rounded up, as GDAL writes it, is read as before.
+        let up = example_with(&Example { size: 1001, tile: 256, ..Example::default() });
+        let r = read_limited(reader(std::io::Cursor::new(&up)).unwrap(), "up", max, None).unwrap();
+        assert_eq!((r.width, r.height), (501, 501));
     }
 
     #[test]
