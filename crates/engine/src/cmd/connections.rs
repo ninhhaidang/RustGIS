@@ -1217,8 +1217,19 @@ fn answered(s: &mut Session, c: &Connection, text: &str) -> CmdResult {
 
 fn test(s: &mut Session, p: &Value) -> CmdResult {
     let c = tested(s, p)?;
+    let service = web::is_service(&c);
+    // XYZ addresses name individual tiles, not a document the service test can read.
+    if service {
+        let address = c.address.split('#').next().unwrap_or_default();
+        if (address.contains("{z}") || address.contains("{zoom}"))
+            && address.contains("{x}")
+            && (address.contains("{y}") || address.contains("{-y}"))
+        {
+            return Err(crate::connections::XYZ_TEST.into());
+        }
+    }
     // An unsaved web service reads anonymously, whatever saved connection shares its origin.
-    let anonymous = web::is_service(&c) && c.id.is_empty();
+    let anonymous = service && c.id.is_empty();
     web::anonymously(s, anonymous, |s| test_connection(s, p, c)).unwrap_or_else(|_| Err("connection.test failed unexpectedly".into()))
 }
 

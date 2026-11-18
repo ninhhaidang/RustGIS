@@ -139,6 +139,9 @@ pub(crate) fn translated(e: &str) -> String {
         web::UNSAVED => tl!("Save the connection first: a login belongs to a saved connection."),
         web::NO_ORIGIN => tl!("The connection's address has no http:// or https:// origin a login can go to."),
         web::SAVE_BEFORE_TEST => tl!("Save changes before testing this connection."),
+        rustgis_engine::connections::XYZ_TEST => {
+            tl!("This is an XYZ tile URL template, not a service endpoint. Use Add Tile Layer to add it to the map.")
+        }
         web::NOT_THIS_SESSION => tl!("This request's login does not belong to this session."),
         web::CHOOSE_CONNECTION => tl!("Several saved connections match this address. Choose a connection explicitly."),
         web::NO_SUCH_CONNECTION => tl!("No saved web-service connection with this id."),

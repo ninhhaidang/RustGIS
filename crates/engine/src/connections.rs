@@ -58,6 +58,7 @@ pub const SERVICE_AUTH: &[&str] = &["none", "basic", "header", "query", "arcgis"
 pub const WEB: &str = "web";
 pub const S3_CREDENTIALS: &[&str] = &["keys", "profile", "environment", "none"];
 pub const DESKTOP_ONLY: &str = "database connections are used by the desktop app";
+pub const XYZ_TEST: &str = "This is an XYZ tile URL template, not a service endpoint. Use Add Tile Layer to add it to the map.";
 
 /// Whether a serialized flag is off (so it is left out).
 fn is_false(value: &bool) -> bool {

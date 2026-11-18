@@ -1034,6 +1034,10 @@ databases). For non-database kinds, pass that response text as `answer` with the
 to parse it without a network request. Database kinds ignore `answer` and test through their
 driver. An anonymous S3 test needs at least one named bucket.
 
+**Test** does not send service requests to XYZ URL templates with tile coordinates
+(`{z}/{x}/{y}`, also `{zoom}` or `{-y}`). To add one to the map, use
+**Home › Add › Basemap › Add Tile Layer…** (`map.addTiles`) instead.
+
 `connection.browse` lists what a connection offers, a level at a time: database roots list the
 schemas returned by their provider; opening a schema lists its spatial tables. Services list their
 layers, catalogues their records with the services and files they link to, STAC APIs their

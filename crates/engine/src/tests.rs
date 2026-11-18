@@ -31871,6 +31871,29 @@ fn connections_s3_rename_cannot_inherit_a_destination_session() {
 }
 
 #[test]
+fn connection_test_rejects_xyz_templates() {
+    let mut s = Session::new(Project::default());
+    for (kind, address) in [
+        ("service", "http://mt0.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}"),
+        ("wmts", "https://tiles.example/{z}/{x}/{y}.png"),
+        ("wcs", "https://tiles.example/{z}/{x}/{y}.png"),
+        ("ogcapi", "https://tiles.example/tile.png?z={z}&x={x}&y={y}"),
+        ("service", "https://tiles.example/{zoom}/{x}/{-y}.png"),
+    ] {
+        let error = s.run("connection.test", &json!({"kind":kind,"address":address,"probe":true})).unwrap_err();
+        assert!(error.contains("XYZ tile URL template") && error.contains("Add Tile Layer"), "{kind}: {error}");
+    }
+
+    let saved =
+        s.run("connection.new", &json!({"kind":"service","name":"Tiles","address":"https://tiles.example/{z}/{x}/{y}.png"})).unwrap();
+    let error = s.run("connection.test", &json!({"id":saved["id"],"answer":"{}"})).unwrap_err();
+    assert!(error.contains("Add Tile Layer"), "{error}");
+
+    let ordinary = json!({"kind":"ogcapi","address":"https://tiles.example/collections#{z}/{x}/{y}","probe":true});
+    assert_eq!(s.run("connection.test", &ordinary).unwrap()["fetch"], "https://tiles.example/collections?f=json");
+}
+
+#[test]
 fn connection_test_probes_and_answers() {
     #[cfg(not(target_arch = "wasm32"))]
     if isolate_process_test("tests::connection_test_probes_and_answers") {
