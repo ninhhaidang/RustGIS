@@ -289,6 +289,9 @@ class Layer:
     ) -> Any:
         """Writes the layer's features to a file (``share.exportLayer``).
 
+        The layer's definition query applies to the whole source. When it excludes features,
+        the export reports how many in the session's notices.
+
         Args:
             path: The file; its extension picks the format: ``.geojson``, ``.csv``, ``.fgb``,
                 ``.gpkg``, ``.parquet``, ``.shp``, ``.zip``, ``.kml``, ``.kmz`` or ``.gpx``.

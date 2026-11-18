@@ -213,6 +213,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                 let expected = Exported {
                     written: whole.features.len() - left_out,
                     left_out,
+                    query: Default::default(),
                     skipped: 0,
                     null_numbers: 0,
                     unfit,
@@ -240,6 +241,24 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
             }
         }
     }
+}
+
+/// Row positions span chunks, even when an entire chunk is filtered out.
+#[test]
+fn streamed_export_counts_query_omissions_across_chunks() {
+    let d = folder("query");
+    let ds = squares();
+    let src = Runs::new(&ds, 3);
+    let layer = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
+    let query = query::parse_fields("@row_number BETWEEN 5 AND 7", &layer).unwrap();
+    let path = d.join("export.geojson");
+    let (exported, _) = write_chunks_to(&src, &layer, &path, Crs::LonLat, &GpkgTable::default(), CHUNK_BYTES, Some(&query)).unwrap();
+    assert_eq!((exported.written, exported.query.filtered, exported.left_out), (3, ds.features.len() - 3, 0));
+    let written = read_back(&path);
+    let count_field = written.field_index("count").unwrap();
+    let counts = (0..written.features.len()).map(|row| written.value(row, count_field).clone()).collect::<Vec<_>>();
+    assert_eq!(counts, [Value::Int(4), Value::Int(5), Value::Int(6)]);
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 /// Every chunk contributes to the loss count; a finite export remains quiet.
@@ -434,7 +453,7 @@ fn a_streamed_export_into_an_existing_geopackage_starts_again_inside_its_transac
     let layer = Dataset::new("both", GeometryType::Point, fields);
     let add = GpkgTable { mode: crate::io::GpkgMode::AddTable, name: None };
     let src = Runs::new(&both, 4);
-    let (e, table) = write_chunks_to(&src, &layer, &county, Crs::LonLat, &add, 1).unwrap();
+    let (e, table) = write_chunks_to(&src, &layer, &county, Crs::LonLat, &add, 1, None).unwrap();
     assert_eq!(src.passes.load(std::sync::atomic::Ordering::Relaxed), 3, "written three times");
     assert_eq!((e.written, table), (20, Some(GpkgWritten { table: "both".into(), replaced: false, dependents: vec![] })));
     let whole = d.join("whole.gpkg");
@@ -454,7 +473,7 @@ fn a_streamed_export_into_an_existing_geopackage_starts_again_inside_its_transac
     layer2.name = "again".into();
     let mut failing = Runs::new(&both, 4);
     (failing.fail_after, failing.fail_pass) = (Some(2), Some(1));
-    assert!(write_chunks_to(&failing, &layer2, &county, Crs::LonLat, &add, 1).is_err());
+    assert!(write_chunks_to(&failing, &layer2, &county, Crs::LonLat, &add, 1, None).is_err());
     assert_eq!(std::fs::read(&county).unwrap(), before);
 }
 
@@ -621,7 +640,7 @@ fn a_mixed_layer_added_to_a_geopackage_keeps_every_kind() {
         let path = d.join(format!("county-{i}.gpkg"));
         crate::io::write_path(&other, &path).unwrap();
         if streamed {
-            let (e, _) = write_chunks_to(&Runs::new(&mixed, 4), &layer, &path, Crs::LonLat, &add, 1).unwrap();
+            let (e, _) = write_chunks_to(&Runs::new(&mixed, 4), &layer, &path, Crs::LonLat, &add, 1, None).unwrap();
             assert_eq!((e.left_out, e.written), (0, 301));
         } else {
             assert_eq!(crate::io::write_path_to(&mixed, &path, Crs::LonLat, &add).unwrap().0, 0);

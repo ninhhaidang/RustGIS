@@ -4931,17 +4931,20 @@ impl RustGisApp {
                 let ext = p.get("format").and_then(Value::as_str).unwrap_or("geojson").to_ascii_lowercase();
                 rustgis_engine::cmd::share::gpkg_table(p, &ext)?;
                 // A streamed layer exports its whole source, not the features read for the view.
-                let (whole, lost) = if l.is_streamed() {
-                    let (ds, lost) = l.load_all_counted()?;
-                    (Some(ds), lost)
+                use std::borrow::Cow;
+                let (mut ds, lost) = if l.is_streamed() {
+                    let (dataset, lost) = l.load_all_counted()?;
+                    (Cow::Owned(dataset), lost)
                 } else {
-                    (None, Default::default())
+                    (Cow::Borrowed(&l.dataset), Default::default())
                 };
+                let query_report =
+                    rustgis_engine::data::export::filter_dataset(&mut ds, l.definition_query.as_deref()).map_err(|e| e.to_string())?;
+                let layer_name = l.name.clone();
                 // In the layer's own coordinate system, as share.exportLayer writes a file.
-                let ds = whole.as_ref().unwrap_or(&l.dataset);
                 use rustgis_engine::data::io;
-                let crs = io::default_export_crs(ds, &ext);
-                let written = io::write_bytes_in(ds, &ext, crs).map_err(|e| e.to_string());
+                let crs = io::default_export_crs(&ds, &ext);
+                let written = io::write_bytes_in(&ds, &ext, crs).map_err(|e| e.to_string());
                 let (bytes, left_out) = match written {
                     Ok(w) => w,
                     Err(e) => {
@@ -4953,24 +4956,25 @@ impl RustGisApp {
                 let name = format!("{}.{ext}", l.name);
                 // The features written, read whole, give their own extent (not a raster's, or the
                 // one a streamed layer's source declares).
-                let mut notes = rustgis_engine::data::export_notes([(ds, ds.extent())], &name, crs);
-                rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, ds, &lost);
+                let mut notes = rustgis_engine::data::export_notes([(ds.as_ref(), ds.extent())], &name, crs);
+                rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, &ds, &lost);
                 let mut dbf_notes = Vec::new();
                 if ext == "zip" {
                     dbf_notes.extend(io::shapefile_names_note(&ds.fields, &name));
-                    dbf_notes.extend(io::shapefile_values_notes(ds, &name));
-                    dbf_notes.extend(io::shapefile_geometry_notes(ds, &name, crs));
+                    dbf_notes.extend(io::shapefile_values_notes(&ds, &name));
+                    dbf_notes.extend(io::shapefile_geometry_notes(&ds, &name, crs));
                 }
                 if matches!(ext.as_str(), "parquet" | "geoparquet") {
-                    dbf_notes.extend(rustgis_engine::data::source::parquet::values_note(ds, &name));
+                    dbf_notes.extend(rustgis_engine::data::source::parquet::values_note(&ds, &name));
                 }
                 dbf_notes.extend(io::dates_as_text_note(&ds.fields, &name));
-                dbf_notes.extend(rustgis_engine::cmd::share::gpkg_dates_note(ds, &ext, &name));
+                dbf_notes.extend(rustgis_engine::cmd::share::gpkg_dates_note(&ds, &ext, &name));
                 if lost.rows > 0 {
                     dbf_notes.push(format!("{name}: {} rows couldn't be read and were left out", lost.rows));
                 }
                 dbf_notes.extend(rustgis_engine::cmd::share::read_notes(&name, &l.name, &lost));
-                dbf_notes.extend(io::export_losses_notes(ds, &ext, io::name_field(ds), &name).map_err(|e| e.to_string())?);
+                dbf_notes.extend(io::export_losses_notes(&ds, &ext, io::name_field(&ds), &name).map_err(|e| e.to_string())?);
+                drop(ds);
                 if let Some(note) = io::left_out_note(&name, &ext, left_out) {
                     self.session.notify(note, false);
                 }
@@ -4978,6 +4982,7 @@ impl RustGisApp {
                     self.session.notify(format!("{name}: no .prj written, as {} has no WKT form", crs.label()), false);
                 }
                 if self.download(&name, bytes) {
+                    rustgis_engine::cmd::share::notify_export_query(&mut self.session, &name, &layer_name, &query_report);
                     for note in notes.into_iter().chain(dbf_notes).chain(construction_notes) {
                         self.session.notify(note, false);
                     }
@@ -8442,6 +8447,37 @@ mod download_service_tests {
         assert!(!app.download("archive.pmtiles", vec![1, 2, 3]));
         assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("browser rejected download")));
         assert!(!app.session.notices.iter().any(|n| n.text.contains("Downloaded")));
+    }
+
+    /// The web download encodes the filtered rows and reports the count once the bytes are accepted.
+    #[test]
+    fn feature_download_respects_the_definition_query() {
+        let file = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let downloaded = file.clone();
+        let mut app = RustGisApp::with_sample().with_services(Services {
+            download: Some(Box::new(move |_, bytes| {
+                *downloaded.lock().unwrap() = bytes;
+                Ok(())
+            })),
+            ..Default::default()
+        });
+        let layer = app.session.map().layer_by_name("Cities").unwrap();
+        let (id, total) = (layer.id, layer.dataset.features.len());
+        for (query, count) in [("@row_number = 1", 1), ("", total)] {
+            app.run("layer.definitionQuery", json!({"layer": id, "where": query})).unwrap();
+            let mark = app.session.notice_mark();
+            app.run("ui.exportLayer", json!({"layer": id, "format": "geojson"})).unwrap();
+            let data: serde_json::Value = serde_json::from_slice(&file.lock().unwrap()).unwrap();
+            assert_eq!(data["features"].as_array().unwrap().len(), count);
+            let notes: Vec<_> = app.session.notices_since(mark).iter().filter(|n| n.text.contains("definition query")).collect();
+            assert_eq!(notes.len(), usize::from(!query.is_empty()));
+            if let Some(note) = notes.first() {
+                assert_eq!(
+                    note.text,
+                    format!("Cities.geojson: the definition query on Cities left out {} of the source features", total - 1)
+                );
+            }
+        }
     }
 
     /// The web app's Shapefile download says which field names it changed, once the browser takes

@@ -1596,6 +1596,14 @@ pub fn matches(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> bool {
     Eval::new(ds, row, env).cond(e) == Some(true)
 }
 
+/// Tests a row in a chunk whose first row has `offset` preceding rows in the source.
+pub(crate) fn eval_in_chunk(e: &Expr, ds: &Dataset, row: usize, offset: usize) -> bool {
+    let env = Env::default();
+    let mut eval = Eval::new(ds, row, &env);
+    eval.row_offset = offset;
+    eval.cond(e) == Some(true)
+}
+
 /// The expression's value for one row.
 pub fn value(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> Value {
     Eval::new(ds, row, env).value(e).into_owned()
@@ -1739,6 +1747,7 @@ fn channel(v: f64) -> u8 {
 struct Eval<'a> {
     ds: &'a Dataset,
     row: usize,
+    row_offset: usize,
     env: &'a Env,
     /// The steps left for the expression's `LIKE`s on this row ([`MAX_ROW_LIKE_STEPS`] in all).
     like_steps: Cell<usize>,
@@ -1748,7 +1757,7 @@ struct Eval<'a> {
 
 impl<'a> Eval<'a> {
     fn new(ds: &'a Dataset, row: usize, env: &'a Env) -> Self {
-        Eval { ds, row, env, like_steps: Cell::new(MAX_ROW_LIKE_STEPS), fault: Cell::new(None) }
+        Eval { ds, row, row_offset: 0, env, like_steps: Cell::new(MAX_ROW_LIKE_STEPS), fault: Cell::new(None) }
     }
 
     /// Null, for the error `fault`, kept when it is the row's first.
@@ -1916,7 +1925,11 @@ impl<'a> Eval<'a> {
                 }
                 Var::PageName => self.env.page.as_ref().map(|p| Value::Text(p.name.clone())).unwrap_or(Value::Null),
                 Var::PageNumber => self.env.page.as_ref().and_then(|p| i64::try_from(p.number).ok()).map(Value::Int).unwrap_or(Value::Null),
-                Var::RowNumber => i64::try_from(self.row).ok().and_then(|r| r.checked_add(1)).map(Value::Int).unwrap_or(Value::Null),
+                Var::RowNumber => i64::try_from(self.row.saturating_add(self.row_offset))
+                    .ok()
+                    .and_then(|r| r.checked_add(1))
+                    .map(Value::Int)
+                    .unwrap_or(Value::Null),
                 Var::Id => self.ds.features.get(self.row).and_then(|f| i64::try_from(f.id).ok()).map(Value::Int).unwrap_or(Value::Null),
                 Var::Measure(m, size) => self
                     .ds
