@@ -106,10 +106,16 @@ fn a_read_waits_for_the_grids_its_system_needs() {
     assert!(said.iter().any(|(text, error)| *error && text.contains("couldn't be downloaded")), "{said:?}");
     let _ = crs::waiting_for_grids(|| Crs::Epsg(4267).transformer()).unwrap();
     assert_eq!(ASKED.load(Ordering::SeqCst), asked);
+    // Turned on while it is on: nothing starts over, the failure stays.
+    grids::set_enabled(true);
+    let _ = crs::waiting_for_grids(|| Crs::Epsg(4267).transformer()).unwrap();
+    assert_eq!(ASKED.load(Ordering::SeqCst), asked);
 
     // An answer that isn't a grid file (an error page) isn't kept: it is said, and the grid stays
     // missing. Turning the setting on again tries this run's failures again.
     MODE.store(PAGE, Ordering::SeqCst);
+    // Turned off and on again: this run's failures are tried again.
+    grids::set_enabled(false);
     grids::set_enabled(true);
     let _ = crs::waiting_for_grids(|| Crs::Epsg(4267).transformer()).unwrap();
     let page = grids::take_news();
@@ -123,6 +129,8 @@ fn a_read_waits_for_the_grids_its_system_needs() {
     // A read that is cancelled stops waiting at once; the download goes on, and the session says
     // what it did once it ends.
     MODE.store(SLOW, Ordering::SeqCst);
+    // Turned off and on again: this run's failures are tried again.
+    grids::set_enabled(false);
     grids::set_enabled(true);
     let control = rustgis_analysis::control::Control::stoppable();
     let stop = control.clone();
@@ -176,6 +184,8 @@ fn a_read_waits_for_the_grids_its_system_needs() {
     }
 
     // And the other way: a system whose grids are all there, the setting on, says nothing of them.
+    // Turned off and on again: this run's failures are tried again.
+    grids::set_enabled(false);
     grids::set_enabled(true);
     let mut s = Session::new(Project::default());
     s.offers_grid_downloads = true;
@@ -188,6 +198,8 @@ fn a_read_waits_for_the_grids_its_system_needs() {
 
     // A download is said once, however often the session asks while it is under way.
     MODE.store(SLOW, Ordering::SeqCst);
+    // Turned off and on again: this run's failures are tried again.
+    grids::set_enabled(false);
     grids::set_enabled(true);
     let mut s = Session::new(Project::default());
     let mut ds = rustgis_data::Dataset::new("nad27", rustgis_data::GeometryType::Point, Vec::new());

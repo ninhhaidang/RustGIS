@@ -1300,9 +1300,17 @@ impl Live {
         if self.generation.load(Ordering::Acquire) != generation && self.key.is_some() {
             let again = self.key.as_deref().and_then(rebuilt);
             let mut kept = self.again.write().unwrap_or_else(|e| e.into_inner());
-            if let Some(t) = again {
-                *kept = Some(t);
-                self.rebuilt.store(true, Ordering::Release);
+            match again {
+                Some(t) => {
+                    *kept = Some(t);
+                    self.rebuilt.store(true, Ordering::Release);
+                }
+                // Said once: it goes on with the transformation it had, without the grid.
+                None => {
+                    if let Some(key) = &self.key {
+                        note_rebuild_failure(key);
+                    }
+                }
             }
             self.generation.store(generation, Ordering::Release);
         }
@@ -1458,6 +1466,93 @@ fn record_warning(message: String) {
 
 /// A transformer RustGIS didn't keep ([`MAX_BUILT`]) needed a missing grid: [`record_warning`].
 static UNNAMED_NEEDS_GRID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The systems (by the key they are kept under) whose transformer couldn't be built again when
+/// grids arrived, each once for the run, in order: they go on with the transformation they had
+/// ([`Live::now`]), and every session reads them from its own place ([`rebuild_failures_since`]).
+/// The first [`REBUILD_KEPT`] by name, the rest counted.
+struct RebuildFailures {
+    named: Vec<String>,
+    said: std::collections::BTreeSet<String>,
+    /// Those past the named, counted once each (by a fingerprint of their key, the first
+    /// [`REBUILD_COUNTED`]; past those, each failure of a system not among them).
+    more: usize,
+    counted: std::collections::BTreeSet<u64>,
+}
+
+const REBUILD_COUNTED: usize = 1 << 16;
+
+const REBUILD_KEPT: usize = 256;
+
+impl RebuildFailures {
+    fn add(&mut self, key: &str) {
+        if self.said.contains(key) {
+            return;
+        }
+        if self.named.len() < REBUILD_KEPT {
+            self.said.insert(key.to_string());
+            self.named.push(key.to_string());
+        } else {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut h);
+            // Once each by fingerprint; past those kept, a new one still counts each time.
+            let h = h.finish();
+            if !self.counted.contains(&h) {
+                if self.counted.len() < REBUILD_COUNTED {
+                    self.counted.insert(h);
+                }
+                self.more += 1;
+            }
+        }
+    }
+}
+
+static REBUILD_FAILED: std::sync::Mutex<RebuildFailures> = std::sync::Mutex::new(RebuildFailures {
+    named: Vec::new(),
+    said: std::collections::BTreeSet::new(),
+    more: 0,
+    counted: std::collections::BTreeSet::new(),
+});
+
+/// Records that the system kept under `key` ("EPSG 4267", "WKT …") couldn't be built again with
+/// grids that arrived: for the sessions to say ([`rebuild_failures_since`]). Public for tests of
+/// the sessions' notice; [`Live::now`] calls it.
+#[doc(hidden)]
+pub fn note_rebuild_failure(key: &str) {
+    REBUILD_FAILED.lock().unwrap_or_else(|e| e.into_inner()).add(key);
+}
+
+/// Where a session has read the rebuild failures to ([`rebuild_failures_since`]): now's, for
+/// a session starting now.
+pub fn rebuild_failures_told() -> (usize, usize) {
+    let f = REBUILD_FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    (f.named.len(), f.more)
+}
+
+/// How many coordinate systems couldn't be built again with grids that arrived since `seen`
+/// (from [`rebuild_failures_told`]), and the first of them as said ("EPSG:4267", or a
+/// definition's start), and moves `seen` on: for the session to say they go on without them.
+pub fn rebuild_failures_since(seen: &mut (usize, usize)) -> (usize, Vec<String>) {
+    let f = REBUILD_FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    let keys = f.named.get(seen.0..).unwrap_or_default();
+    let shown = keys
+        .iter()
+        .take(3)
+        .map(|k| match k.strip_prefix("EPSG ") {
+            Some(code) => format!("EPSG:{code}"),
+            None => {
+                // On one line: a WKT read from a file may hold line breaks.
+                let k = k.strip_prefix("WKT ").unwrap_or(k).split_whitespace().collect::<Vec<_>>().join(" ");
+                let cut: String = k.chars().take(40).collect();
+                if k.chars().count() > 40 { format!("{cut}…") } else { cut }
+            }
+        })
+        .collect();
+    let count = keys.len() + f.more.saturating_sub(seen.1);
+    *seen = (f.named.len(), f.more);
+    (count, shown)
+}
 
 /// Whether a coordinate system RustGIS can't name, one of more than [`MAX_BUILT`] used this run,
 /// needed a missing datum grid since this was last asked: for the session to say so.
@@ -1879,6 +1974,52 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A kept transformer that can't be built again when grids arrive goes on as it was, said
+    /// once however many grids arrive; one that is built again isn't said.
+    #[test]
+    fn a_transformer_that_cant_be_built_again_goes_on_and_is_said() {
+        let Some(Transformer { kind: Kind::Terrio(live), .. }) = epsg_transformer(4267) else { panic!("EPSG:4267") };
+        // Kept under a key that no longer builds, and from another grid generation than now's.
+        // (Generations no test reaches, so another test's grids arriving meanwhile can't match them.)
+        let stale = Live::new(Some("WKT not a definition".into()), u64::MAX, live.peek());
+        let mut seen = rebuild_failures_told();
+        let mut other = seen;
+        assert!(matches!(stale.now(), Now::First(_)), "goes on with the transformation it had");
+        let (failed, shown) = rebuild_failures_since(&mut seen);
+        assert!(failed >= 1 && shown.iter().any(|s| s == "not a definition"), "{failed} {shown:?}");
+        // Said once: not again in this generation, nor when more grids arrive.
+        let _ = stale.now();
+        stale.generation.store(u64::MAX - 1, std::sync::atomic::Ordering::SeqCst);
+        let _ = stale.now();
+        assert!(!rebuild_failures_since(&mut seen).1.iter().any(|s| s == "not a definition"));
+        // Another session hears it too, once.
+        assert!(rebuild_failures_since(&mut other).1.iter().any(|s| s == "not a definition"));
+        assert!(!rebuild_failures_since(&mut other).1.iter().any(|s| s == "not a definition"));
+        // Past those kept by name, counted.
+        let mut f = RebuildFailures { named: Vec::new(), said: Default::default(), more: 0, counted: Default::default() };
+        for i in 0..REBUILD_KEPT + 3 {
+            f.add(&format!("EPSG {i}"));
+        }
+        // Each once, past the named too.
+        f.add("EPSG 0");
+        f.add(&format!("EPSG {}", REBUILD_KEPT + 1));
+        assert_eq!((f.named.len(), f.more), (REBUILD_KEPT, 3));
+        // Past the fingerprints kept, one already counted still isn't counted again.
+        for i in 0..REBUILD_COUNTED {
+            f.add(&format!("WKT {i}"));
+        }
+        let more = f.more;
+        f.add("WKT 0");
+        f.add(&format!("EPSG {}", REBUILD_KEPT + 1));
+        assert_eq!(f.more, more);
+        f.add("WKT new");
+        assert_eq!(f.more, more + 1, "a new one past them counts");
+        // One that is built again: nothing said.
+        let fine = Live::new(Some("EPSG 4267".into()), u64::MAX, live.peek());
+        assert!(matches!(fine.now(), Now::Again(_)));
+        assert!(!rebuild_failures_since(&mut seen).1.iter().any(|s| s == "EPSG:4267"));
+    }
 
     /// Only PROJ's own grid server, a grid file itself and an open licence: a definition read
     /// from a file names any grid PROJ knows, some of them elsewhere (rdtrans2008.gsb, on
