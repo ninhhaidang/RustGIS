@@ -165,8 +165,10 @@ pub(crate) fn draw(pm: &mut Pixmap, n: &Native, t: &TileLayer, view: &View, flat
     let (Some(a), Some(b)) = (to_native(cam.to_map(w / 2.0, h / 2.0, w, h)), to_native(cam.to_map(w / 2.0 + 1.0, h / 2.0, w, h))) else {
         return (false, None);
     };
-    // The system's units per pixel of the map's pixmap.
-    let per_px = (b.x - a.x).hypot(b.y - a.y) / k;
+    // The system's units per pixel its tiles are fetched for: the map's pixmap's on a HiDPI
+    // display when sharp tiles are on, up to twice a logical pixel's detail; else a logical
+    // pixel's (#2390).
+    let per_px = (b.x - a.x).hypot(b.y - a.y) / f64::from(rustgis_tiles::template::detail(k as f32));
     if !(lo.0 < hi.0 && lo.1 < hi.1 && per_px.is_finite() && per_px > 0.0) {
         return (false, None);
     }

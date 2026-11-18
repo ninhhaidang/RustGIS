@@ -766,6 +766,9 @@ pub struct UiState {
     /// Whether datum grids a coordinate system needs are downloaded from PROJ's grid server
     /// (#2032 A4): off unless turned on, as it reaches a server.
     pub download_grids: bool,
+    /// Whether raster tiles and single pictures are fetched for a HiDPI display's own pixels
+    /// (#2390): on unless turned off.
+    pub sharp_tiles: bool,
     /// Key combinations the native menu bar keeps for itself (macOS: Quit, Close Window, Hide…):
     /// a shortcut on one would never reach the app, so the shortcut editor refuses them.
     pub reserved_shortcuts: Vec<egui::KeyboardShortcut>,
@@ -1041,6 +1044,7 @@ impl Default for UiState {
             start_with: StartWith::Sample,
             ask_layers: true,
             download_grids: false,
+            sharp_tiles: true,
             reserved_shortcuts: Vec::new(),
             choosing: Vec::new(),
             last_project: None,
@@ -1650,6 +1654,8 @@ impl RustGisApp {
         self.ui.ask_layers = self.services.load_pref.as_ref().and_then(|load| load("ask_file_layers")).is_none_or(|v| v != "off");
         self.ui.download_grids = self.services.load_pref.as_ref().and_then(|load| load("download_datum_grids")).is_some_and(|v| v == "on");
         rustgis_engine::grids::set_enabled(self.ui.download_grids);
+        self.ui.sharp_tiles = self.services.load_pref.as_ref().and_then(|load| load("sharp_tiles")).is_none_or(|v| v != "off");
+        rustgis_engine::render::rustgis_tiles::template::set_sharp(self.ui.sharp_tiles);
         // A stored projection this version can't use means Web Mercator.
         if let Some(code) = self.services.load_pref.as_ref().and_then(|load| load("start_projection"))
             && let Ok(p) = rustgis_engine::map::Projection::from_code(&code)
@@ -3621,6 +3627,22 @@ impl RustGisApp {
                     save("download_datum_grids", if self.ui.download_grids { "on" } else { "off" });
                 }
                 return Ok(json!({"on": self.ui.download_grids}));
+            }
+            // Whether raster tiles are sharp on a HiDPI display (#2390).
+            "ui.sharpTiles" => {
+                // Without `on` it toggles; a value that isn't true or false is refused.
+                self.ui.sharp_tiles = match p.get("on") {
+                    None | Some(Value::Null) => !self.ui.sharp_tiles,
+                    Some(v) => v.as_bool().ok_or("on must be true or false")?,
+                };
+                rustgis_engine::render::rustgis_tiles::template::set_sharp(self.ui.sharp_tiles);
+                if let Some(save) = &self.services.save_pref {
+                    save("sharp_tiles", if self.ui.sharp_tiles { "on" } else { "off" });
+                }
+                // The map and an open layout page are drawn again with tiles at the new detail.
+                self.map.invalidate();
+                self.layout.redraw();
+                return Ok(json!({"on": self.ui.sharp_tiles}));
             }
             "ui.recover" => return autosave::recover(self, p),
             "ui.startup" => {
@@ -9219,6 +9241,31 @@ mod datum_grid_setting_tests {
     use super::RustGisApp;
     use rustgis_engine::{Project, Session};
     use serde_json::json;
+
+    /// Sharp tiles on HiDPI displays (#2390) are on by default, kept as a choice, read at start
+    /// and turned off by it; a value that isn't true or false is refused.
+    #[test]
+    fn sharp_tiles_are_a_kept_choice_on_by_default() {
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = saved.clone();
+        let services = crate::Services {
+            load_pref: Some(Box::new(|k| (k == "sharp_tiles").then(|| "off".to_string()))),
+            save_pref: Some(Box::new(move |k, v| log.lock().unwrap().push((k.to_string(), v.to_string())))),
+            ..crate::Services::default()
+        };
+        let mut app = RustGisApp::new(Session::new(Project::default())).with_services(services);
+        // The setting itself is shared by the tests running beside this one: only the choice is
+        // looked at, and it is left on.
+        assert!(!app.ui.sharp_tiles, "read at start");
+        assert_eq!(app.run("ui.sharpTiles", json!({"on": true})).unwrap(), json!({"on": true}));
+        assert_eq!(saved.lock().unwrap().last().cloned(), Some(("sharp_tiles".to_string(), "on".to_string())));
+        for junk in [json!({"on": "false"}), json!({"on": 0})] {
+            assert!(app.run("ui.sharpTiles", junk).is_err());
+            assert!(app.ui.sharp_tiles);
+        }
+        // Without a choice kept: on.
+        assert!(RustGisApp::new(Session::new(Project::default())).ui.sharp_tiles);
+    }
 
     /// Downloading datum grids is off unless turned on (it reaches a server), and the choice is
     /// kept as a preference. Turned on only by `rustgis-engine`'s own test, which reaches no

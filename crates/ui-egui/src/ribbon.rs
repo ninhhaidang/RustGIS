@@ -3717,7 +3717,8 @@ fn plugin_tab(app: &mut RustGisApp, ui: &mut Ui, plugin: &str) {
     }
 }
 
-/// The Settings tab: theme, scale, customization, language, start-up and autosave.
+/// The Settings tab: theme, scale, customization, language, start-up, datum grids, map tiles,
+/// performance and autosave.
 fn settings_tab(app: &mut RustGisApp, ui: &mut Ui) {
     group(ui, "Theme", |ui| {
         theme_menu(app, ui);
@@ -3767,6 +3768,15 @@ fn settings_tab(app: &mut RustGisApp, ui: &mut Ui) {
         let resp = ui.checkbox(&mut on, tl!("Download Datum Grids")).on_hover_text(tip);
         if resp.clicked() {
             let _ = app.run("ui.datumGrids", json!({"on": on}));
+        }
+    });
+    group(ui, "Map Tiles", |ui| {
+        let mut on = app.ui.sharp_tiles;
+        let tip = tl!(
+            "On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text."
+        );
+        if ui.checkbox(&mut on, tl!("Sharp Tiles on HiDPI Displays")).on_hover_text(tip).clicked() {
+            let _ = app.run("ui.sharpTiles", json!({"on": on}));
         }
     });
     // The browser has no threads to set.

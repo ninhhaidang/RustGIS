@@ -125,6 +125,38 @@ pub fn covering(e: &Extent, z: u8) -> Vec<Placed> {
     out
 }
 
+/// The most a raster tile's or a single picture's detail follows a HiDPI display: twice its
+/// logical pixels. A 3x phone or a 300-DPI print would ask for nine times or more the tiles, and
+/// the text drawn into them would come out unreadably small.
+pub const MAX_DETAIL: f32 = 2.0;
+
+static SHARP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turns sharp raster tiles on HiDPI displays on or off (Settings › Map Tiles; on by default):
+/// raster tiles and single pictures are fetched for the display's own pixels, up to
+/// [`MAX_DETAIL`], rather than for its logical ones. Their text and lines come out sharp and
+/// smaller, as in a HiDPI view of the service's own map.
+pub fn set_sharp(on: bool) {
+    SHARP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether sharp raster tiles are on ([`set_sharp`]).
+pub fn sharp() -> bool {
+    SHARP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The device pixels a raster tile's or a single picture's pixel is fetched for at `ppp` device
+/// pixels a logical one: `ppp` up to [`MAX_DETAIL`] when sharp tiles are on, else 1 (a pixel a
+/// logical pixel, stretched over `ppp` device pixels).
+pub fn detail(ppp: f32) -> f32 {
+    detail_with(ppp, sharp())
+}
+
+/// [`detail`] with the setting given.
+pub fn detail_with(ppp: f32, sharp: bool) -> f32 {
+    if sharp && ppp.is_finite() { ppp.clamp(1.0, MAX_DETAIL) } else { 1.0 }
+}
+
 /// The zoom level whose `tile_size`-pixel tiles best match `m_per_px` metres per pixel, rounded
 /// to the sharper level a little before halfway. Never below 0 or above `max`.
 pub fn zoom_for(m_per_px: f64, tile_size: u32, max: u8) -> u8 {
@@ -461,6 +493,13 @@ mod tests {
         assert_eq!(zoom_for(156_543.03 / 1024.0, 512, 22), 9);
         assert_eq!(zoom_for(0.001, 256, 19), 19);
         assert_eq!(zoom_for(f64::NAN, 256, 19), 0);
+        // On a 2x display a sharp view takes the next zoom; a 3x one no further (#2390).
+        let logical = 156_543.03 / 1024.0;
+        assert_eq!(zoom_for(logical / f64::from(detail_with(2.0, true)), 256, 22), 11);
+        assert_eq!(zoom_for(logical / f64::from(detail_with(3.0, true)), 256, 22), 11);
+        assert_eq!(zoom_for(logical / f64::from(detail_with(2.0, false)), 256, 22), 10);
+        assert_eq!(detail_with(0.5, true), 1.0, "never coarser than a logical pixel");
+        assert_eq!(detail_with(f32::NAN, true), 1.0);
         assert!((style_zoom(78_271.517) - 0.0).abs() < 1e-3);
         let e = TileId { z: 1, x: 1, y: 0 }.extent();
         assert!((e.min_x - 0.0).abs() < 1e-6 && (e.max_y - HALF_WORLD).abs() < 1e-6);

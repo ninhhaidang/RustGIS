@@ -6,7 +6,9 @@
 //! The picture reaches past the view, its middle on a grid and its detail rounded down to a
 //! quarter of a power of two, so a small pan or zoom asks for nothing new; one on its way is
 //! stood in for by the layer's last picture. Its size is in the map's logical pixels, as tiles
-//! are asked for, so the service's symbols keep their size on a high-density screen.
+//! are asked for; on a high-density screen with sharp tiles on, in the screen's own pixels up to
+//! twice those, and a WMS picture then says the resolution it is for, so the services that read it
+//! keep their symbols' size (#2390).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -123,10 +125,10 @@ fn export_in(base: &str, epsg: u16) -> Option<String> {
 }
 
 /// The picture to ask for: its area (west, south, east, north in the system) and size in
-/// pixels, for a view showing `area` at `res` units a logical pixel, `max_side` pixels a side at
-/// most. `None` for a view with no size.
+/// pixels, for a view showing `area` at `res` units a pixel of the picture (a logical pixel's, or
+/// finer on a HiDPI display), `max_side` pixels a side at most. `None` for a view with no size.
 fn picture(area: [f64; 4], res: f64, max_side: u32) -> Option<([f64; 4], u32, u32)> {
-    // The view's box in logical pixels: the same as the map zooms (a window's size).
+    // The view's box in the picture's pixels: the same as the map zooms (a window's size).
     let (bw, bh) = ((area[2] - area[0]) / res, (area[3] - area[1]) / res);
     if !(bw.is_finite() && bh.is_finite() && bw > 0.0 && bh > 0.0 && res.is_finite() && res > 0.0) {
         return None;
@@ -149,16 +151,90 @@ fn picture(area: [f64; 4], res: f64, max_side: u32) -> Option<([f64; 4], u32, u3
     out.iter().all(|v| v.is_finite()).then_some((out, w as u32, h as u32))
 }
 
+/// The resolution of the OGC standard pixel (0.28 mm), which GeoServer draws at.
+const OGC_DPI: f64 = 25.4 / 0.28;
+
+/// A WMS GetMap address for a picture of `detail` pixels a logical one (as the picture came
+/// out, past any size limit), with the resolution it is for in the parameters servers read:
+/// `DPI` (QGIS Server, from 96) and `FORMAT_OPTIONS=dpi:` (GeoServer, from the OGC standard
+/// pixel's 90.7; added to the options the address has), so their symbols and text keep their size
+/// in the larger picture. Any other address, a picture at a logical pixel's detail or less, or
+/// one that names a resolution already, is left as it is.
+fn with_dpi(url: String, detail: f64) -> String {
+    if !(detail > 1.0 && detail.is_finite()) {
+        return url;
+    }
+    let (address, fragment) = url.split_once('#').map_or((url.as_str(), None), |(a, f)| (a, Some(f)));
+    let Some((path, query)) = address.split_once('?') else { return url };
+    let parts: Vec<(&str, Option<&str>)> =
+        query.split('&').map(|part| part.split_once('=').map_or((part, None), |(k, v)| (k, Some(v)))).collect();
+    // Keys compared decoded (`FORMAT%5FOPTIONS`), and written back as they came.
+    let key = |k: &str, want: &str| rustgis_data::address::percent_decode(k).eq_ignore_ascii_case(want);
+    let get_map = parts
+        .iter()
+        .any(|(k, v)| key(k, "REQUEST") && v.is_some_and(|v| rustgis_data::address::percent_decode(v).eq_ignore_ascii_case("GetMap")));
+    // A resolution of its own: `DPI`, `MAP_RESOLUTION`, or a `dpi` among its format options.
+    // Looked at decoded (`%64pi%3A300` is `dpi:300`); the address is kept as it is.
+    let options_dpi = |v: &str| {
+        rustgis_data::address::percent_decode(v)
+            .split([';', ','])
+            .any(|o| o.split_once(':').is_some_and(|(n, _)| n.trim().eq_ignore_ascii_case("dpi")))
+    };
+    let own =
+        parts.iter().any(|(k, v)| key(k, "DPI") || key(k, "MAP_RESOLUTION") || (key(k, "FORMAT_OPTIONS") && v.is_some_and(options_dpi)));
+    if !get_map || own {
+        return url;
+    }
+    let dpi = (96.0 * detail).round();
+    let ogc = (OGC_DPI * detail).round();
+    let mut options = false;
+    let mut query: Vec<String> = parts
+        .iter()
+        .map(|(k, v)| match v {
+            Some(v) if key(k, "FORMAT_OPTIONS") && !options => {
+                options = true;
+                if v.is_empty() { format!("{k}=dpi:{ogc}") } else { format!("{k}={v};dpi:{ogc}") }
+            }
+            Some(v) => format!("{k}={v}"),
+            // A bare key: the options are the resolution alone.
+            None if key(k, "FORMAT_OPTIONS") && !options => {
+                options = true;
+                format!("{k}=dpi:{ogc}")
+            }
+            None => (*k).to_string(),
+        })
+        // An empty part (a trailing `&`) left out, so none is added before the resolution.
+        .filter(|part| !part.is_empty())
+        .collect();
+    query.push(format!("DPI={dpi}"));
+    if !options {
+        query.push(format!("FORMAT_OPTIONS=dpi:{ogc}"));
+    }
+    let mut out = format!("{path}?{}", query.join("&"));
+    if let Some(f) = fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
+}
+
 /// How long a layer whose large picture failed is asked for smaller ones before a large one is
 /// tried again (the failure may have been passing: a timeout, a busy server).
 const SMALL_FOR: web_time::Duration = web_time::Duration::from_secs(300);
 
+/// How long a layer whose picture saying its resolution failed is asked for pictures without one.
+const PLAIN_FOR: web_time::Duration = SMALL_FOR;
+
 /// What is kept between frames, by the layer's address: its last picture drawn (the address,
-/// area and units a pixel), and when a large picture of it last failed.
+/// area and units a pixel), when a large picture of it last failed, when a picture saying its
+/// resolution was last refused, and when (and how large) a HiDPI picture of it last refused by
+/// the server gave way to a standard one.
 #[derive(Default)]
 struct Kept {
     last: HashMap<String, (String, [f64; 4], f64)>,
     small: HashMap<String, web_time::Instant>,
+    plain: HashMap<String, web_time::Instant>,
+    standard: HashMap<String, (web_time::Instant, (u32, u32))>,
 }
 
 fn kept() -> std::sync::MutexGuard<'static, Kept> {
@@ -223,10 +299,13 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
     if rustgis_tiles::template::zoom_for(merc, t.tile_size, rustgis_map::tiles::MAX_ZOOM) < t.min_zoom {
         return nothing;
     }
-    // Closer in than its finest zoom, its picture there is stretched (as its finest tiles are).
-    let finer = (zoom_res(t.max_zoom, t.tile_size) / merc).max(1.0);
     let cam = view.camera;
     let (w, h, k) = (view.width, view.height, view.pixels_per_point.max(0.01));
+    // A pixel of the picture for each of the display's own on a HiDPI one, when sharp tiles are
+    // on, so the picture isn't stretched (#2390).
+    let detail = f64::from(rustgis_tiles::template::detail(k as f32));
+    // Closer in than its finest zoom, its picture there is stretched (as its finest tiles are).
+    let finer = (zoom_res(t.max_zoom, t.tile_size) * detail / merc).max(1.0);
     let to_system = |m: Coord| -> Option<Coord> {
         match &req.transformer {
             None => Some(m),
@@ -257,7 +336,10 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
     let (Some(a), Some(b)) = (to_system(cam.to_map(w / 2.0, h / 2.0, w, h)), to_system(cam.to_map(w / 2.0 + 1.0, h / 2.0, w, h))) else {
         return nothing;
     };
-    let res = (b.x - a.x).hypot(b.y - a.y) * finer;
+    // The system's units a logical pixel, and a pixel of the picture asked for: coarser where it
+    // is stretched past its finest zoom.
+    let logical = (b.x - a.x).hypot(b.y - a.y);
+    let res = logical * finer / detail;
     if !(lo.0 < hi.0 && lo.1 < hi.1) {
         return nothing;
     }
@@ -287,10 +369,51 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
             crate::native_tiles::paint_blended(pm, img, at, at, opacity, blend, &place);
         }
     };
-    // Asked again smaller when the service refuses a large picture.
-    for _ in 0..2 {
-        let small = kept().small.get(&key).is_some_and(|at| at.elapsed() < SMALL_FOR);
-        let Some((at, pw, ph)) = picture(area, res, if small { SMALL_SIDE } else { MAX_SIDE }) else { return nothing };
+    // The units a pixel of a picture at a logical pixel's detail, as on a standard screen.
+    let logical_res = logical * (zoom_res(t.max_zoom, t.tile_size) / merc).max(1.0);
+    // What is tried when a picture fails, in turn, each once a frame:
+    // 1. the same picture without its resolution (a service may refuse a parameter it doesn't
+    //    know); kept for a while only when that one draws and the server refused the first
+    //    (a 4xx other than 408 or 429: not a server error, a timeout or a lost connection);
+    // 2. one at most 2048 pixels a side, with its resolution again (some services draw no
+    //    larger), kept for a while unless the larger one's answer was empty;
+    // 3. the picture at a logical pixel's detail, as on a standard screen (a service may draw
+    //    no picture as large as a HiDPI one); kept for a while, for HiDPI pictures as large,
+    //    when the server refused the HiDPI one and the standard one draws.
+    // Past those, its tiles are drawn (and say what fails).
+    let (mut without, mut smaller) = (false, false);
+    // Kept to a standard screen's pictures while its HiDPI ones are as large as one the server
+    // refused: a smaller view's may draw.
+    let was_standard = {
+        // The HiDPI picture's size as it would be asked: kept to the world, as below.
+        let size = |max| {
+            let (at, w, h) = picture(area, res, max)?;
+            match world_of(req.system.epsg) {
+                Some(world) => in_world(at, w, h, world).flatten().map(|(_, w, h)| (w, h)),
+                None => Some((w, h)),
+            }
+        };
+        let held = kept();
+        let max = if held.small.get(&key).is_some_and(|at| at.elapsed() < SMALL_FOR) { SMALL_SIDE } else { MAX_SIDE };
+        held.standard
+            .get(&key)
+            .is_some_and(|(at, (rw, rh))| at.elapsed() < SMALL_FOR && size(max).is_some_and(|(w, h)| w >= *rw && h >= *rh))
+    };
+    let mut standard = was_standard;
+    // The size of the HiDPI picture the server refused (without its resolution), which keeps the
+    // layer to a standard screen's pictures for a while once one draws; `None` for a passing
+    // failure (a 5xx, a timeout), which keeps nothing.
+    let mut refused_side: Option<(u32, u32)> = None;
+    // The address (without its resolution) of the picture the server refused with it.
+    let mut refused: Option<String> = None;
+    for _ in 0..6 {
+        // At most 2048 pixels: kept for a while after a refusal, or this frame after an empty
+        // answer (which keeps nothing).
+        let small = smaller || kept().small.get(&key).is_some_and(|at| at.elapsed() < SMALL_FOR);
+        let sharp = detail > 1.0 && !standard;
+        let plain = !sharp || without || kept().plain.get(&key).is_some_and(|at| at.elapsed() < PLAIN_FOR);
+        let ask = if sharp { res } else { logical_res };
+        let Some((at, pw, ph)) = picture(area, ask, if small { SMALL_SIDE } else { MAX_SIDE }) else { return nothing };
         let (at, pw, ph) = match world_of(req.system.epsg) {
             Some(world) => match in_world(at, pw, ph, world)? {
                 Some(p) => p,
@@ -298,6 +421,7 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
             },
             None => (at, pw, ph),
         };
+        // The picture's own units a pixel: coarser than asked past the most a service draws.
         let r = (at[2] - at[0]) / f64::from(pw.max(1));
         // The layer's last picture holding the whole view at this detail, with room to move, is
         // drawn instead: a view turned (its box wider or narrower at each angle) or made smaller
@@ -315,10 +439,22 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
             && let Payload::Image(img) = &*payload
         {
             paint(pm, img, *last_at);
+            if let Some(side) = refused_side.filter(|_| standard && !was_standard) {
+                remember_standard(&key, side);
+            }
             return nothing;
         }
-        let url = Warp::map_address(&req.base, &req.system, at, pw, ph);
-        match cache::get(&url, Want::Image) {
+        let address = Warp::map_address(&req.base, &req.system, at, pw, ph);
+        let url = if plain { address.clone() } else { with_dpi(address.clone(), logical / r) };
+        // An empty answer to a HiDPI picture is taken as a failure, so the steps below are
+        // tried (a service may draw nothing that large), but not as a refusal: nothing is kept
+        // for it. To a standard screen's picture it is "nothing here", drawn as such. (An
+        // answer that doesn't decode, such as a WMS exception, fails in the cache already.)
+        let state = match cache::get(&url, Want::Image) {
+            State::Ready(payload) if sharp && !matches!(&*payload, Payload::Image(_)) => State::Failed(EMPTY.into()),
+            state => state,
+        };
+        match state {
             State::Ready(payload) => {
                 if let Payload::Image(img) = &*payload {
                     paint(pm, img, at);
@@ -326,33 +462,89 @@ pub(crate) fn draw(pm: &mut Pixmap, req: &Request, t: &TileLayer, view: &View, f
                     if k.last.len() >= MAX_KEPT {
                         k.last.clear();
                     }
-                    k.last.insert(key, (url, at, r));
+                    // The same picture drew without its resolution where it was refused with
+                    // it: the layer is asked without it for a while.
+                    if refused.as_deref() == Some(address.as_str()) {
+                        if k.plain.len() >= MAX_KEPT {
+                            k.plain.clear();
+                        }
+                        k.plain.insert(key.clone(), web_time::Instant::now());
+                    }
+                    k.last.insert(key.clone(), (url, at, r));
+                    drop(k);
+                    // A standard screen's picture drew where the server refused the HiDPI one this
+                    // frame: so for a while, then the HiDPI one is tried again.
+                    if let Some(side) = refused_side.filter(|_| standard && !was_standard) {
+                        remember_standard(&key, side);
+                    }
                 }
                 return nothing;
             }
             State::Pending => {
-                // The layer's last picture, where it still is in the cache, stands in.
-                if let Some((u, at, _)) = last
-                    && let Some(payload) = cache::peek(&u)
+                // The layer's last picture, where it still is in the cache, stands in; failing
+                // that, the same picture without its resolution, where it came from a try
+                // before (the failure with it may have been forgotten since).
+                let plain_here = (url != address).then(|| (address.clone(), at));
+                let stand_in = last.map(|(u, at, _)| (u, at)).into_iter().chain(plain_here).find_map(|(u, at)| match cache::peek(&u) {
+                    Some(payload) if matches!(&*payload, Payload::Image(_)) => Some((payload, at)),
+                    _ => None,
+                });
+                if let Some((payload, at)) = stand_in
                     && let Payload::Image(img) = &*payload
                 {
                     paint(pm, img, at);
                 }
                 return Some((true, None));
             }
-            // Asked again at most 2048 pixels a side for a while: some services draw no larger.
-            State::Failed(_) if !small && pw.max(ph) > SMALL_SIDE => {
-                let mut k = kept();
-                if k.small.len() >= MAX_KEPT {
-                    k.small.clear();
+            State::Failed(e) if url != address => {
+                without = true;
+                if refusal(&e) {
+                    refused = Some(address.clone());
                 }
-                k.small.insert(key.clone(), web_time::Instant::now());
             }
-            // A picture the service doesn't draw: its tiles may draw (and say what fails).
+            State::Failed(e) if !small && pw.max(ph) > SMALL_SIDE => {
+                if e == EMPTY {
+                    smaller = true;
+                } else {
+                    let mut k = kept();
+                    if k.small.len() >= MAX_KEPT {
+                        k.small.clear();
+                    }
+                    k.small.insert(key.clone(), web_time::Instant::now());
+                }
+                // The smaller picture is asked with its resolution again: the size failed.
+                (without, refused) = (false, None);
+            }
+            State::Failed(e) if sharp => {
+                standard = true;
+                refused_side = refusal(&e).then_some((pw, ph));
+            }
             State::Failed(_) => return None,
         }
     }
     None
+}
+
+/// Keeps the layer `key` to a standard screen's pictures for a while, while its HiDPI ones are
+/// at least `side` (width, height): the server refused one that large and the standard one drew.
+fn remember_standard(key: &str, side: (u32, u32)) {
+    let mut k = kept();
+    if k.standard.len() >= MAX_KEPT {
+        k.standard.clear();
+    }
+    k.standard.insert(key.to_string(), (web_time::Instant::now(), side));
+}
+
+/// What an empty answer to a HiDPI picture fails with (a failure, not a refusal).
+const EMPTY: &str = "an empty answer";
+
+/// Whether a fetch's failure is the server refusing what it was asked: a 4xx other than a
+/// timeout (408) or too many requests (429), or a document that isn't a picture (a WMS
+/// exception). A server error, a timeout, a lost connection or an empty answer says nothing of
+/// what was asked.
+fn refusal(error: &str) -> bool {
+    error.starts_with(cache::NOT_A_PICTURE)
+        || matches!(cache::http_status(error), Some(status) if (400..=499).contains(&status) && status != 408 && status != 429)
 }
 
 /// Cells a side a picture in another system is warped in: each placed by its own corners, so
@@ -582,6 +774,57 @@ mod tests {
         assert_eq!((at, w, rows), ([0.0, h - 50.0, 100.0, h], 100, 50));
         // Wholly past it: nothing.
         assert_eq!(in_world([0.0, h + 10.0, 100.0, h + 20.0], 100, 10, world), Some(None));
+    }
+
+    /// A WMS picture of more pixels than the view's logical ones says the resolution it is for,
+    /// in the parameters servers read (#2390); any other is asked as it was.
+    #[test]
+    fn a_hidpi_wms_picture_says_its_resolution() {
+        let wms = "https://m.example.org/wms?SERVICE=WMS&REQUEST=GetMap&LAYERS=a&WIDTH=800&HEIGHT=600";
+        // QGIS Server's from 96, GeoServer's from the OGC standard pixel (90.7).
+        assert_eq!(with_dpi(wms.into(), 2.0), format!("{wms}&DPI=192&FORMAT_OPTIONS=dpi:181"));
+        assert_eq!(with_dpi(wms.into(), 1.5), format!("{wms}&DPI=144&FORMAT_OPTIONS=dpi:136"));
+        // At a logical pixel's detail, or stretched past its finest zoom: as it was.
+        for detail in [1.0, 0.4, f64::NAN, f64::INFINITY] {
+            assert_eq!(with_dpi(wms.into(), detail), wms, "{detail}");
+        }
+        // A trailing `&`: no empty part before the resolution.
+        assert_eq!(with_dpi(format!("{wms}&"), 2.0), format!("{wms}&DPI=192&FORMAT_OPTIONS=dpi:181"));
+        // An encoded request name.
+        let encoded = "https://m.example.org/wms?SERVICE=WMS&REQUEST=%47etMap&LAYERS=a";
+        assert_eq!(with_dpi(encoded.into(), 2.0), format!("{encoded}&DPI=192&FORMAT_OPTIONS=dpi:181"));
+        // Lower case keys, and a fragment kept last.
+        let lower = "https://m.example.org/wms?service=wms&request=getmap&layers=a#rustgis-x";
+        assert_eq!(
+            with_dpi(lower.into(), 2.0),
+            "https://m.example.org/wms?service=wms&request=getmap&layers=a&DPI=192&FORMAT_OPTIONS=dpi:181#rustgis-x"
+        );
+        // Format options of its own keep theirs, with the resolution added, its key as it came.
+        assert_eq!(
+            with_dpi(format!("{wms}&FORMAT%5FOPTIONS=antialias:none"), 2.0),
+            format!("{wms}&FORMAT%5FOPTIONS=antialias:none;dpi:181&DPI=192")
+        );
+        // Format options of its own keep theirs, with the resolution added.
+        assert_eq!(
+            with_dpi(format!("{wms}&FORMAT_OPTIONS=antialias:none"), 2.0),
+            format!("{wms}&FORMAT_OPTIONS=antialias:none;dpi:181&DPI=192")
+        );
+        // A bare options key takes the resolution, not a second key.
+        assert_eq!(with_dpi(format!("{wms}&FORMAT_OPTIONS"), 2.0), format!("{wms}&FORMAT_OPTIONS=dpi:181&DPI=192"));
+        // A resolution of its own, a request that isn't GetMap, or no query: as it was.
+        for own in [
+            format!("{wms}&dpi=300"),
+            format!("{wms}&format_options=antialias:full;DPI:300"),
+            format!("{wms}&FORMAT_OPTIONS=dpi%3A300"),
+            format!("{wms}&FORMAT_OPTIONS=%64pi%3A300"),
+            format!("{wms}&%44PI=300"),
+            format!("{wms}&map_resolution=72"),
+            "https://m.example.org/wms?SERVICE=WMS&REQUEST=GetCapabilities".into(),
+            "https://s.example.org/x/MapServer/export?bbox=1,2,3,4&size=800,600&f=image".into(),
+            "https://m.example.org/tile.png".into(),
+        ] {
+            assert_eq!(with_dpi(own.clone(), 2.0), own);
+        }
     }
 
     #[test]

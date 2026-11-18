@@ -608,6 +608,17 @@ fn tiles_for(src: &Source, view: &Extent, frame: &Frame, zoom: f32, pending: &mu
     tiles_in(src, view, None, frame, zoom, pending, error).items
 }
 
+/// The zoom of a raster source's `tile_size`-pixel tiles drawn at `frame` over `view`: by the
+/// display's own pixels on a HiDPI one when sharp tiles are on (#2390), up to twice a logical
+/// pixel's detail; back towards a logical pixel's zoom where the view's tiles there would pass the
+/// most a source draws (a 5K or 6K display), rather than leave the view's corners out.
+fn raster_zoom(frame: &Frame, view: &Extent, tile_size: u32, min_zoom: u8, max_zoom: u8) -> u8 {
+    let logical = template::zoom_for(frame.m_per_px * f64::from(frame.ppp), tile_size, max_zoom);
+    let sharp = template::zoom_for(frame.m_per_px * f64::from(frame.ppp / template::detail(frame.ppp)), tile_size, max_zoom);
+    // Never below the source's own coarsest zoom, which would draw nothing.
+    if sharp > logical { template::fitting_zoom(view, sharp, logical.max(min_zoom)) } else { sharp }
+}
+
 /// The tiles of a source in view and out to `reach` (those in the cache only), with stand-ins
 /// for those not here yet. Expanded destinations retain the supplying document's reach;
 /// refused tiles are counted in `error` and network history without requesting or reusing bytes. Valid
@@ -624,8 +635,7 @@ pub(crate) fn tiles_in(
     let (tiles, from, min_z, max_z, want, z) = match src {
         Source::Raster { tiles, from, tile_size, min_zoom, max_zoom, .. }
         | Source::RasterDem { tiles, from, tile_size, min_zoom, max_zoom, .. } => {
-            let z = template::zoom_for(frame.m_per_px * f64::from(frame.ppp), *tile_size, *max_zoom);
-            (tiles, from, *min_zoom, *max_zoom, Want::Image, z)
+            (tiles, from, *min_zoom, *max_zoom, Want::Image, raster_zoom(frame, view, *tile_size, *min_zoom, *max_zoom))
         }
         Source::Vector { tiles, from, min_zoom, max_zoom, .. } => {
             (tiles, from, *min_zoom, *max_zoom, Want::Vector, (zoom.floor() as u8).min(*max_zoom))
@@ -1318,6 +1328,27 @@ fn area(r: &[(f32, f32)]) -> f32 {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// On a HiDPI display a raster source takes the next zoom's tiles while the view's fit the most
+    /// a source draws, and goes back towards a logical pixel's zoom where they don't (#2390).
+    #[test]
+    fn sharp_raster_tiles_keep_to_the_tile_budget() {
+        use super::{Frame, raster_zoom, template};
+        // A zoom-10 logical pixel (152.9 m), at 2 device pixels a point.
+        let logical = 2.0 * template::HALF_WORLD / (256.0 * 1024.0);
+        let zoom_of = |w: f64, h: f64, ppp: f32, min: u8| {
+            let frame = Frame { left: 0.0, top: h * logical, m_per_px: logical / f64::from(ppp), ppp };
+            raster_zoom(&frame, &rustgis_geom::Extent::new(0.0, 0.0, w * logical, h * logical), 256, min, 22)
+        };
+        // A 1500 × 900 point view: 6 × 4 tiles of zoom 10, 12 × 7 of zoom 11.
+        assert_eq!(zoom_of(1500.0, 900.0, 1.0, 0), 10);
+        assert_eq!(zoom_of(1500.0, 900.0, 2.0, 0), 11);
+        // A 6000 × 3400 point one: 47 × 27 of zoom 11 pass 400; zoom 10's fit.
+        assert_eq!(zoom_of(6000.0, 3400.0, 2.0, 0), 10);
+        // A source drawn from zoom 11 keeps it, its tiles nearest the view's centre, rather than
+        // falling back to a zoom it has none of.
+        assert_eq!(zoom_of(6000.0, 3400.0, 2.0, 11), 11);
+    }
+
     #[test]
     fn refusal_counts_are_not_substring_duplicates() {
         let mut error = Some("12 tiles left out: refused".to_string());

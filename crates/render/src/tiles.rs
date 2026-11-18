@@ -869,6 +869,8 @@ pub(crate) mod tests {
 
     /// What `one.test` was asked for (a test of its own: tests run at once).
     static ASKED_ONE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    /// `one.test/down/` fails every request while this is set: a service down for a while.
+    static ONE_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     /// Held by the tests reading `ASKED_ONE`, one at a time.
     static ONE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -931,9 +933,47 @@ pub(crate) mod tests {
                 done(Ok(color(20, 200, 20)));
             } else if url.starts_with("https://one.test/") {
                 ASKED_ONE.lock().unwrap().push(url.clone());
-                // Under `tiles-only/`, a service drawing no picture larger than a tile.
-                if url.starts_with("https://one.test/tiles-only/") && !url.contains("&WIDTH=256&HEIGHT=256") {
-                    done(Err("400 Bad Request".into()));
+                // Under `tiles-only/`, a service drawing no picture larger than a tile; under
+                // `no-dpi/`, one refusing a resolution it doesn't know.
+                if (url.starts_with("https://one.test/tiles-only/") && !url.contains("&WIDTH=256&HEIGHT=256"))
+                    || (url.starts_with("https://one.test/no-dpi/") && url.contains("DPI="))
+                    || (url.starts_with("https://one.test/down/") && ONE_DOWN.load(std::sync::atomic::Ordering::Relaxed))
+                    || (url.starts_with("https://one.test/max1024/")
+                        && url.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok()).is_some_and(|w| w > 1024))
+                    || (url.starts_with("https://one.test/max2048/")
+                        && url.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok()).is_some_and(|w| w > 2048))
+                {
+                    done(Err("http status: 400".into()));
+                } else if url.starts_with("https://one.test/busy-big/")
+                    && url.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok()).is_some_and(|w| w > 1024)
+                {
+                    // A passing failure of every picture over 1024 pixels.
+                    done(Err("http status: 503".into()));
+                } else if url.starts_with("https://one.test/xml-dpi/") && url.contains("DPI=") {
+                    // A WMS exception, sent as a document, for a parameter it doesn't know.
+                    done(Ok(
+                        b"<?xml version=\"1.0\"?><ServiceExceptionReport><ServiceException>DPI</ServiceException></ServiceExceptionReport>"
+                            .to_vec(),
+                    ));
+                } else if url.starts_with("https://one.test/empty-big/")
+                    && url.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok()).is_some_and(|w| w > 1024)
+                {
+                    // An empty answer for every picture over 1024 pixels.
+                    done(Ok(Vec::new()));
+                } else if url.starts_with("https://one.test/empty2048/")
+                    && url.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok()).is_some_and(|w| w > 2048)
+                {
+                    // An empty answer for every picture over 2048 pixels.
+                    done(Ok(Vec::new()));
+                } else if url.starts_with("https://one.test/empty-all/") {
+                    // Nothing here: an empty answer to every request.
+                    done(Ok(Vec::new()));
+                } else if url.starts_with("https://one.test/empty-dpi/") && url.contains("DPI=") {
+                    // An empty answer to the picture with its resolution.
+                    done(Ok(Vec::new()));
+                } else if url.starts_with("https://one.test/busy-dpi/") && url.contains("DPI=") {
+                    // A passing failure of the picture with its resolution.
+                    done(Err("http status: 503".into()));
                 } else {
                     done(Ok(color(20, 200, 20)));
                 }
@@ -1002,12 +1042,13 @@ pub(crate) mod tests {
             let mut m = Map::new("Map");
             m.graticule = false;
             m.tiles.push(TileLayer::new(name, TileKind::Raster, url));
-            let at = |m: &mut Map, res: f64| {
-                let center = m.to_map(bern).unwrap();
+            let at_ppp = |m: &mut Map, res: f64, ppp: f64, dx: f64| {
+                let c = m.to_map(bern).unwrap();
+                let center = Coord::new(c.x + dx, c.y);
                 let view = View {
                     width: 200.0,
                     height: 100.0,
-                    pixels_per_point: 1.0,
+                    pixels_per_point: ppp,
                     camera: Camera { center, res, bearing: 0.0, pitch: 0.0 },
                     sky: false,
                 };
@@ -1017,6 +1058,7 @@ pub(crate) mod tests {
                 let p = pm.pixel(100, 50).unwrap();
                 ([p.red(), p.green(), p.blue(), p.alpha()], std::mem::take(&mut *ASKED.lock().unwrap()))
             };
+            let at = |m: &mut Map, res: f64| at_ppp(m, res, 1.0, 0.0);
             // On Web Mercator: in LV95, warped.
             let (p, asked) = at(&mut m, 8.0);
             assert_eq!(p, [20, 200, 20, 255], "{name} on Web Mercator");
@@ -1042,6 +1084,14 @@ pub(crate) mod tests {
             } else {
                 // The 5 m matrix's.
                 assert!(!asked.is_empty() && asked.iter().all(|u| u.starts_with("https://wmts.test/lv95/m2/")), "{asked:?}");
+                // At 10 m a point on a 2x display, the 5 m matrix's too (#2390); on a 3x one no
+                // finer (the 2.5 m matrix), as sharp tiles go to twice a point's detail at most.
+                // Each somewhere new, so its tiles are asked for.
+                for (ppp, dx) in [(2.0, 20_000.0), (3.0, 40_000.0)] {
+                    let (p, asked) = at_ppp(&mut m, 10.0, ppp, dx);
+                    assert_eq!(p, [20, 200, 20, 255]);
+                    assert!(!asked.is_empty() && asked.iter().all(|u| u.starts_with("https://wmts.test/lv95/m2/")), "{ppp}: {asked:?}");
+                }
             }
         }
     }
@@ -1072,6 +1122,17 @@ pub(crate) mod tests {
             ([px(5, 5), px(200, 100), px(394, 194)], std::mem::take(&mut *ASKED_ONE.lock().unwrap()))
         };
         let green = [20, 200, 20, 255];
+        // The resolution a picture says it is for (#2390): 96 a logical pixel's worth of its own
+        // pixels, which are up to a quarter of a level finer than asked for.
+        // An address with the resolution it says taken out again.
+        let without_dpi = |u: &str| -> String {
+            u.split('&').filter(|p| !p.starts_with("DPI=") && !p.starts_with("FORMAT_OPTIONS=dpi:")).collect::<Vec<_>>().join("&")
+        };
+        let dpi = |u: &str| -> Option<f64> {
+            let d: f64 = u.split("&DPI=").nth(1)?.split('&').next()?.parse().ok()?;
+            let ogc: f64 = u.split("FORMAT_OPTIONS=dpi:").nth(1)?.split('&').next()?.parse().ok()?;
+            ((d * 25.4 / 0.28 / 96.0 - ogc).abs() <= 1.0).then_some(d)
+        };
         // In Web Mercator.
         let mut m = Map::new("Map");
         m.graticule = false;
@@ -1079,21 +1140,343 @@ pub(crate) mod tests {
         m.tiles.push(TileLayer::new("WMS", TileKind::Raster, url));
         let (_, tiled) = at(&mut m, 30.0, 0.0);
         assert!(tiled.len() > 1 && tiled.iter().all(|u| u.contains("&WIDTH=256&HEIGHT=256&")), "{tiled:?}");
+        // Tiles for the display's own pixels (#2390): 30 m a point is 15 a pixel at 2 a point,
+        // zoom 13 (4.9 km tiles) rather than 12.
+        let bbox_width = |u: &str| -> Option<f64> {
+            let b: Vec<f64> = u.split("BBOX=").nth(1)?.split('&').next()?.split(',').filter_map(|v| v.parse().ok()).collect();
+            Some(b.get(2)? - b.first()?)
+        };
+        let z13 = 2.0 * rustgis_tiles::template::HALF_WORLD / 8192.0;
+        assert!(tiled.iter().all(|u| bbox_width(u).is_some_and(|w| (w - z13).abs() < 1.0)), "{tiled:?}");
         m.tiles[0].single_image = true;
         let (p, asked) = at(&mut m, 30.0, 0.0);
         assert_eq!(p, [green; 3], "the whole view drawn");
-        // One picture, past the view (200 × 100 logical pixels: 512 × 256 with the margin).
+        // One picture, past the view, for the display's own pixels (200 × 100 logical pixels at
+        // 2 a point: 768 × 512 with the margin), at their resolution (#2390).
         assert_eq!(asked.len(), 1, "{asked:?}");
-        assert!(asked[0].contains("&CRS=EPSG:3857&BBOX=") && asked[0].contains("&WIDTH=512&HEIGHT=256&"), "{}", asked[0]);
+        assert!(asked[0].contains("&CRS=EPSG:3857&BBOX=") && asked[0].contains("&WIDTH=768&HEIGHT=512&"), "{}", asked[0]);
+        assert!(dpi(&asked[0]).is_some_and(|d| (192.0..229.0).contains(&d)), "{}", asked[0]);
         // A small pan: the same picture, from the cache.
         let (p, asked) = at(&mut m, 30.0, 300.0);
         assert_eq!((p, asked.len()), ([green; 3], 0));
+        // A view whose picture would pass the most a service draws (1500 points at 2 a point:
+        // 5632 pixels with the margin) is asked coarser, and says the resolution it came out at,
+        // not the screen's.
+        {
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 1500.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let said: Vec<f64> = asked.iter().filter_map(|u| dpi(u)).collect();
+            assert!(said.len() == 1 && (135.0..162.0).contains(&said[0]), "{asked:?}");
+        }
+        // At one pixel a point the picture is asked for as before: its logical size, and no
+        // resolution, though its pixel is rounded a little finer than asked.
+        {
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 200.0,
+                height: 100.0,
+                pixels_per_point: 1.0,
+                camera: Camera { center, res: 31.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.len() == 1 && asked[0].contains("&WIDTH=512&HEIGHT=256&") && !asked[0].contains("DPI"), "{asked:?}");
+        }
+        // A service refusing a picture too large: asked again smaller, and not taken to refuse
+        // the resolution (the size was refused).
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/max2048/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 1500.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let width = |u: &String| u.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok());
+            // With its resolution, without, then at most 2048 pixels a side.
+            assert_eq!(asked.len(), 3, "{asked:?}");
+            assert!(dpi(&asked[0]).is_some() && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+            assert!(width(&asked[2]).is_some_and(|w| (1..=2048).contains(&w)), "{asked:?}");
+            // Its resolution wasn't what was refused: a view whose picture fits still says it.
+            let narrow = View { width: 200.0, ..view };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &narrow).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.len() == 1 && dpi(&asked[0]).is_some(), "{asked:?}");
+        }
+        // A view whose HiDPI picture is over 2048 pixels but whose standard one isn't (700 points
+        // at 2 a point): asked at most 2048 pixels a side, still sharper than a standard screen's
+        // and saying its resolution, not at a standard screen's detail.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            // An address of its own: the layer before is kept to 2048 pixels for a while.
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/max2048/b/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 700.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let width = |u: &String| u.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok());
+            assert!(asked.len() == 3 && width(&asked[0]) > Some(2048), "{asked:?}");
+            assert!(width(&asked[2]).is_some_and(|w| w > 1280 && w <= 2048) && dpi(&asked[2]).is_some(), "{asked:?}");
+        }
+        // A service down for a while fails the picture with its resolution and without: once it
+        // is back, the next picture says its resolution again (it wasn't what was refused).
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/down/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            ONE_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+            let (_, asked) = at(&mut m, 30.0, 0.0);
+            ONE_DOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+            // Its picture with the resolution and without, then its tiles.
+            assert!(asked.len() > 2 && dpi(&asked[0]).is_some() && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+            let (p, asked) = at(&mut m, 30.0, 50_000.0);
+            assert!(p == [green; 3] && asked.len() == 1 && dpi(&asked[0]).is_some(), "{asked:?}");
+        }
+        // A service drawing no picture over 1024 pixels a side: the sharp picture fails with its
+        // resolution and without, and the picture at a standard screen's detail draws, as on main.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/max1024/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 400.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            let png = crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+            let p = pm.pixel(400, 100).map(|p| [p.red(), p.green(), p.blue(), p.alpha()]).unwrap();
+            assert!(p == green && asked.len() == 3, "{p:?} {asked:?}");
+            assert!(dpi(&asked[0]).is_some() && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+            assert!(asked[2].contains("&WIDTH=768&") && !asked[2].contains("DPI="), "{asked:?}");
+            // And for a while: a panned view asks for the standard screen's picture at once.
+            let view = View { camera: Camera { center: Coord::new(center.x + 50_000.0, center.y), ..view.camera }, ..view };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.len() == 1 && asked[0].contains("&WIDTH=768&"), "{asked:?}");
+            // A narrower view's HiDPI picture (768 pixels) is smaller than the one refused: asked
+            // sharp again, with its resolution, and drawn.
+            let view = View { width: 200.0, camera: Camera { center: Coord::new(center.x + 100_000.0, center.y), ..view.camera }, ..view };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.len() == 1 && asked[0].contains("&WIDTH=768&") && dpi(&asked[0]).is_some(), "{asked:?}");
+            // A tall view's HiDPI picture (512 × 1536), narrower than the refused one (1536 × 512)
+            // though as long: asked sharp again.
+            let view = View {
+                width: 100.0,
+                height: 400.0,
+                camera: Camera { center: Coord::new(center.x + 150_000.0, center.y), ..view.camera },
+                ..view
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.len() == 1 && asked[0].contains("&WIDTH=512&HEIGHT=1536&") && dpi(&asked[0]).is_some(), "{asked:?}");
+        }
+        // A passing failure (a 503) of the HiDPI picture with its resolution and without: the
+        // standard screen's picture draws for that frame, but nothing is kept, so the next view's
+        // HiDPI picture is asked again.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/busy-big/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 400.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            let png = crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+            let p = pm.pixel(400, 100).map(|p| [p.red(), p.green(), p.blue(), p.alpha()]).unwrap();
+            assert!(p == green && asked.len() == 3, "{p:?} {asked:?}");
+            assert!(asked[1] == without_dpi(&asked[0]) && asked[2].contains("&WIDTH=768&"), "{asked:?}");
+            let view = View { camera: Camera { center: Coord::new(center.x + 50_000.0, center.y), ..view.camera }, ..view };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.first().is_some_and(|u| dpi(u).is_some() && u.contains("&WIDTH=1536&")), "{asked:?}");
+        }
+        // A WMS exception sent as a document for the resolution: a refusal, so the picture without
+        // it draws and the layer is asked without it for a while.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/xml-dpi/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let (p, asked) = at(&mut m, 30.0, 0.0);
+            assert!(p == [green; 3] && asked.len() == 2 && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+            let (p, asked) = at(&mut m, 30.0, 50_000.0);
+            assert!(p == [green; 3] && asked.len() == 1 && !asked[0].contains("DPI="), "{asked:?}");
+        }
+        // Empty answers to the HiDPI picture with its resolution and without: the standard
+        // screen's picture draws.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/empty-big/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 400.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            let png = crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+            let p = pm.pixel(400, 100).map(|p| [p.red(), p.green(), p.blue(), p.alpha()]).unwrap();
+            assert!(p == green && asked.len() == 3 && asked[2].contains("&WIDTH=768&"), "{p:?} {asked:?}");
+        }
+        // Empty answers over 2048 pixels: the picture of at most 2048 pixels is asked this frame
+        // and draws, and nothing is kept (the next view asks its full size first again).
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/empty2048/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 1500.0,
+                height: 100.0,
+                pixels_per_point: 2.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            let width = |u: &String| u.split("&WIDTH=").nth(1).and_then(|w| w.split('&').next()?.parse::<u32>().ok());
+            ASKED_ONE.lock().unwrap().clear();
+            let png = crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+            let p = pm.pixel(1500, 100).map(|p| [p.red(), p.green(), p.blue(), p.alpha()]).unwrap();
+            assert!(p == green && asked.len() == 3, "{p:?} {asked:?}");
+            assert!(width(&asked[2]).is_some_and(|w| (1..=2048).contains(&w)), "{asked:?}");
+            let view = View { camera: Camera { center: Coord::new(center.x + 200_000.0, center.y), ..view.camera }, ..view };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert!(asked.first().and_then(width).is_some_and(|w| w > 2048), "{asked:?}");
+        }
+        // An empty answer to a standard screen's picture is "nothing here", as before: one
+        // request, no tiles asked.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/empty-all/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let center = m.to_map(bern).unwrap();
+            let view = View {
+                width: 200.0,
+                height: 100.0,
+                pixels_per_point: 1.0,
+                camera: Camera { center, res: 30.0, bearing: 0.0, pitch: 0.0 },
+                sky: false,
+            };
+            ASKED_ONE.lock().unwrap().clear();
+            crate::render_png(&mut m, &view).unwrap();
+            let asked = std::mem::take(&mut *ASKED_ONE.lock().unwrap());
+            assert_eq!(asked.len(), 1, "{asked:?}");
+        }
+        // An empty answer to the picture with its resolution: asked again without it, and drawn.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/empty-dpi/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let (p, asked) = at(&mut m, 30.0, 0.0);
+            assert!(p == [green; 3] && asked.len() == 2 && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+        }
+        // A passing failure (a 503) of the picture with its resolution, the one without drawing:
+        // the resolution wasn't refused, so the next picture says it again.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/busy-dpi/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let (p, asked) = at(&mut m, 30.0, 0.0);
+            assert!(p == [green; 3] && asked.len() == 2 && asked[1] == without_dpi(&asked[0]), "{asked:?}");
+            let (_, asked) = at(&mut m, 30.0, 50_000.0);
+            assert!(asked.first().is_some_and(|u| dpi(u).is_some()), "{asked:?}");
+        }
+        // A service refusing the resolution: asked again without it, and drawn so.
+        {
+            let mut m = Map::new("Map");
+            m.graticule = false;
+            let mut t = TileLayer::new("WMS", TileKind::Raster, url.replace("one.test/merc/", "one.test/no-dpi/"));
+            t.single_image = true;
+            m.tiles.push(t);
+            let (p, asked) = at(&mut m, 30.0, 0.0);
+            assert_eq!(p, [green; 3], "{asked:?}");
+            assert!(asked.len() == 2 && asked[0].contains("DPI=") && !asked[1].contains("DPI="), "{asked:?}");
+            assert!(asked[1].contains("&WIDTH=768&HEIGHT=512&"), "at the same size: {asked:?}");
+            // And so for a while after: not asked with it again.
+            let (p, asked) = at(&mut m, 30.0, 5000.0);
+            assert!(p == [green; 3] && asked.iter().all(|u| !u.contains("DPI=")), "{asked:?}");
+        }
         // Closer in than its finest zoom (10: 153 m a pixel), its picture there stretched, as its
         // finest tiles are: fewer pixels for the same view.
         m.tiles[0].max_zoom = 10;
         let (p, asked) = at(&mut m, 30.0, 0.0);
         assert_eq!((p, asked.len()), ([green; 3], 1));
         assert!(asked[0].contains("&WIDTH=256&HEIGHT=256&"), "{}", asked[0]);
+        assert!(!asked[0].contains("DPI"), "a stretched picture is asked at its own resolution: {}", asked[0]);
         // Zoomed out past its coarsest zoom: nothing asked, nothing drawn.
         m.tiles[0].max_zoom = 19;
         m.tiles[0].min_zoom = 15;
@@ -1115,7 +1498,7 @@ pub(crate) mod tests {
         }
         assert_eq!(p, [green; 3], "drawn in tiles");
         assert!(took < std::time::Duration::from_secs(10), "waited {took:?} for another's fetch");
-        assert!(asked.iter().any(|u| u.contains("&WIDTH=512&HEIGHT=256&")), "its picture asked first: {asked:?}");
+        assert!(asked.iter().any(|u| u.contains("&WIDTH=768&HEIGHT=512&")), "its picture asked first: {asked:?}");
         // In a system of its own, on a map in it.
         let lv95 = System { epsg: 2056, name: "EPSG:2056".into(), lat_first: false };
         let wms = Warp { epsg: 2056, grid: Grid::Map { lat_first: false }, area: Some([5.9, 45.8, 10.5, 47.8]), systems: vec![lv95] }.address(
@@ -1130,7 +1513,8 @@ pub(crate) mod tests {
         let (p, asked) = at(&mut m, 5.0, 0.0);
         assert_eq!(p, [green; 3]);
         assert_eq!(asked.len(), 1, "{asked:?}");
-        assert!(asked[0].contains("&CRS=EPSG:2056&BBOX=2") && asked[0].ends_with("&WIDTH=512&HEIGHT=256"), "{}", asked[0]);
+        assert!(asked[0].contains("&CRS=EPSG:2056&BBOX=2") && asked[0].contains("&WIDTH=768&HEIGHT=512&DPI="), "{}", asked[0]);
+        assert!(dpi(&asked[0]).is_some_and(|d| (192.0..229.0).contains(&d)), "{}", asked[0]);
     }
 
     /// Turning the map round asks a single picture layer for a picture or two, not one every few

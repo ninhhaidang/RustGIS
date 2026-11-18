@@ -1485,6 +1485,7 @@ fn decode_with(
             b,
             Box::new(move |r| {
                 settle(match r {
+                    // The browser read it as a picture: a failure here isn't a document.
                     Ok(raw) => decode_image(&raw).map(Payload::Image),
                     Err(b) => decode(&b, want),
                 })
@@ -2363,6 +2364,9 @@ fn payload_bytes(p: &Payload) -> usize {
     }
 }
 
+/// What an image fetch whose answer is in no picture format fails with first (then why).
+pub const NOT_A_PICTURE: &str = "not a picture";
+
 /// Decodes fetched bytes.
 pub fn decode(bytes: &[u8], want: Want) -> Result<Payload, String> {
     if bytes.is_empty() {
@@ -2372,7 +2376,11 @@ pub fn decode(bytes: &[u8], want: Want) -> Result<Payload, String> {
         return Err(format!("{} bytes is too large for a tile", bytes.len()));
     }
     match want {
-        Want::Image => decode_image(bytes).map(Payload::Image),
+        // An answer in no picture format (a WMS exception document) is said as such, so it is
+        // told from a failed fetch and from a picture that couldn't be read (one too large).
+        Want::Image => decode_image(bytes)
+            .map(Payload::Image)
+            .map_err(|e| if bytes.starts_with(RAW) || image::guess_format(bytes).is_ok() { e } else { format!("{NOT_A_PICTURE}: {e}") }),
         Want::Vector => mvt::decode(bytes).map(Payload::Vector),
         Want::Json => serde_json::from_slice(bytes).map(Payload::Json).map_err(|e| format!("not JSON: {e}")),
     }
@@ -4714,7 +4722,9 @@ mod tests {
         assert_eq!((back.width(), back.height()), (2, 2));
         assert!(matches!(decode(b"{\"a\": 1}", Want::Json), Ok(Payload::Json(_))));
         assert!(matches!(decode(b"", Want::Image), Ok(Payload::Empty)));
-        assert!(decode(b"not a picture", Want::Image).is_err());
+        assert!(decode(b"not a picture", Want::Image).is_err_and(|e| e.starts_with(NOT_A_PICTURE)));
+        // A picture that can't be read (here, cut short) is no document: said as it is.
+        assert!(decode(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", Want::Image).is_err_and(|e| !e.starts_with(NOT_A_PICTURE)));
         assert!(decode(b"{", Want::Json).is_err());
     }
 
