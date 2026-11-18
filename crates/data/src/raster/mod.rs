@@ -10,6 +10,7 @@ pub mod ascii;
 pub mod cog;
 pub mod cogwrite;
 pub mod crs;
+mod decoded;
 pub(crate) mod epsg_axes;
 mod epsg_gap;
 mod esri;

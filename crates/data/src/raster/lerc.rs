@@ -181,14 +181,8 @@ fn unwrap_layer(encoded: Vec<u8>, extra: u32) -> Result<Vec<u8>> {
         1 => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&encoded, MAX_CHUNK_BYTES)
             .map_err(|e| err(format!("its Deflate layer: {e:?}"))),
         2 => {
-            let mut dec =
-                ruzstd::decoding::StreamingDecoder::new(encoded.as_slice()).map_err(|e| err(format!("its Zstandard layer: {e}")))?;
-            let mut out = Vec::new();
-            (&mut dec).take(MAX_CHUNK_BYTES as u64 + 1).read_to_end(&mut out).map_err(|e| err(format!("its Zstandard layer: {e}")))?;
-            if out.len() > MAX_CHUNK_BYTES {
-                return Err(err("a chunk is too large"));
-            }
-            Ok(out)
+            let dec = ruzstd::decoding::StreamingDecoder::new(encoded.as_slice()).map_err(|e| err(format!("its Zstandard layer: {e}")))?;
+            super::decoded::read(dec, MAX_CHUNK_BYTES, "GeoTIFF: LERC: its Zstandard layer")
         }
         n => Err(err(format!("extra compression {n} isn't supported"))),
     }
@@ -633,4 +627,13 @@ mod tests {
         assert_eq!(r.value(0, 16, 0), Some(4.0), "the next tile reads");
         assert_eq!(r.value(0, 0, 16), Some(-24.0));
     }
+}
+
+/// The shared bounded reader must retain a valid Zstandard wrapper's decoded payload.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn a_zstandard_wrapper_keeps_its_decoded_bytes() {
+    let raw = b"test LERC payload";
+    let encoded = zstd::encode_all(raw.as_slice(), 1).unwrap();
+    assert_eq!(unwrap_layer(encoded, 2).unwrap(), raw);
 }
