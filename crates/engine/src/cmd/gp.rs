@@ -1267,26 +1267,6 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
         }
     }
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
-    for (name, dataset) in &full {
-        let Some(layer) = snap.map.layer_by_name(name).filter(|l| !l.selection.is_empty()) else { continue };
-        let missing = || format!("{}: a selected feature is no longer in the source", layer.name);
-        let mut by_id = layer
-            .selection
-            .iter()
-            .map(|row| layer.dataset.features.get(*row).map(|f| (f.id, None)).ok_or_else(missing))
-            .collect::<Result<std::collections::HashMap<u64, Option<usize>>, _>>()?;
-        for (row, feature) in dataset.features.iter().enumerate() {
-            if let Some(selected_row) = by_id.get_mut(&feature.id) {
-                *selected_row = Some(row);
-            }
-        }
-        let selected = layer
-            .selection
-            .iter()
-            .map(|row| layer.dataset.features.get(*row).and_then(|f| by_id.get(&f.id)).copied().flatten().ok_or_else(missing))
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.insert(name.clone(), selected);
-    }
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
     Ok(MapInputs { snap, rows, loaded: full, messages, flat: std::cell::OnceCell::new(), view: std::cell::OnceCell::new() })
 }
@@ -1324,6 +1304,7 @@ fn narrow_to_queries(
         }
     }
     let mut seen = std::collections::HashSet::new();
+    let mut query_errors = Vec::new();
     for name in named {
         let Some(layer) = map.layer_by_name(name) else { continue };
         let key = layer.name.to_ascii_lowercase();
@@ -1331,19 +1312,22 @@ fn narrow_to_queries(
             continue;
         }
         let dataset = full.get(&key).unwrap_or(&layer.dataset);
-        let Some(keep) = layer.query_rows(dataset) else { continue };
-        let kept = |row: &usize| keep.get(*row).is_none_or(|k| *k);
-        let current = rows.get(&key).cloned().or_else(|| (!layer.selection.is_empty()).then(|| layer.selection.clone()));
-        let narrowed: Vec<usize> = match &current {
-            Some(rs) => rs.iter().copied().filter(kept).collect(),
-            None => (0..keep.len()).filter(kept).collect(),
-        };
-        if narrowed.is_empty() && !keep.is_empty() {
-            return Err(format!("{}: its definition query hides every feature the tool would read", layer.name));
+        let resolved = layer.resolve_rows(dataset, rustgis_map::rows::Policy::SelectionAndQuery, rows.get(&key).map(Vec::as_slice))?;
+        if let Some(error) = resolved.query_error {
+            query_errors.push(format!("{}: {error}", layer.name));
         }
-        if narrowed.len() < current.as_ref().map_or(keep.len(), Vec::len) {
+        if let rustgis_map::rows::Rows::Subset(narrowed) = resolved.rows {
+            if narrowed.is_empty() && !dataset.features.is_empty() {
+                return Err(format!("{}: its definition query hides every feature the tool would read", layer.name));
+            }
             rows.insert(key, narrowed);
         }
+    }
+    if !query_errors.is_empty() {
+        let count = query_errors.len();
+        let (layers, queries) = if count == 1 { ("layer", "that query") } else { ("layers", "those queries") };
+        messages
+            .push(format!("{count} {layers} with an unreadable definition query; reading without {queries}: {}", query_errors.join("; ")));
     }
     let name = spec.map_or("", |t| t.name);
     let mut told = std::collections::HashSet::new();

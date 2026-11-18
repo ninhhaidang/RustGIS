@@ -26,6 +26,7 @@ pub mod projection;
 pub mod qgis;
 pub mod raster;
 pub mod report;
+pub mod rows;
 pub mod shadow;
 pub mod slots;
 pub mod source;
@@ -1397,9 +1398,8 @@ impl Layer {
 
     /// Applies the definition query in the supplied drawing context.
     pub fn query_rows_with(&self, dataset: &Dataset, env: &rustgis_data::query::Env) -> Option<Vec<bool>> {
-        let query = self.definition_query.as_deref().filter(|q| !q.trim().is_empty())?;
-        let expr = rustgis_data::query::parse_fields(query, dataset).ok()?;
-        Some((0..dataset.features.len()).map(|r| rustgis_data::query::matches(&expr, dataset, r, env)).collect())
+        let query = rustgis_data::rows::Query::compile(self.definition_query.as_deref(), dataset).ok()?;
+        query.is_filtered().then(|| (0..dataset.features.len()).map(|row| query.matches(dataset, row, env)).collect())
     }
 
     /// Extent in longitude/latitude.

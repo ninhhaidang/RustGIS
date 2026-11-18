@@ -43,6 +43,7 @@ pub mod provenance;
 pub mod publish;
 pub mod query;
 pub mod raster;
+pub mod rows;
 pub mod s3_address;
 pub mod secrets;
 pub mod sheets;

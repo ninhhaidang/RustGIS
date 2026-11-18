@@ -797,8 +797,14 @@ fn tools_read_the_features_a_definition_query_keeps() {
         // The command refuses a query that doesn't read; a saved project can hold one.
         s.map_mut().layer_mut(id).unwrap().definition_query = Some(text.to_string());
         let out = format!("All {i}");
+        let mark = s.notice_mark();
         s.run("gp.run", &buffer(&out)).unwrap();
         assert_eq!(rows(&s, &out), cities, "{text:?}");
+        let query_notices: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("definition query")).collect();
+        assert_eq!(query_notices.len(), usize::from(!text.is_empty()), "{query_notices:?}");
+        if !text.is_empty() {
+            assert!(query_notices[0].text.contains("no_such_field"), "{query_notices:?}");
+        }
     }
 
     // An overlay layer: Clip by the countries the query keeps is Clip by those countries selected.
@@ -53683,4 +53689,91 @@ fn a_city_models_volumes_come_in_extruded() {
     let mut s = Session::new(Project::default());
     s.run("layer.addDataText", &json!({"fileName": "b.geojson", "text": geojson})).unwrap();
     assert!(s.map().layers.iter().all(|l| l.extrusion.is_none()), "only a reader that knows the type extrudes");
+}
+
+/// Both Clip inputs use the shared policy, including full streamed reads outside the resident
+/// window. Buffer retains the query matches; empty matches never mean all.
+#[test]
+fn row_resolver_buffer_and_both_clip_inputs() {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
+    for streamed in [false, true] {
+        let fields = vec![Field::new("n", FieldType::Integer)];
+        let mut points = Dataset::new("policy points", GeometryType::Point, fields.clone());
+        let mut masks = Dataset::new("policy masks", GeometryType::Polygon, fields);
+        for n in 1..=3 {
+            let x = f64::from(n) * 10.0;
+            points.push(Some(Geometry::Point(Coord::new(x, 0.0))), vec![Attr::Int(i64::from(n))]);
+            let ring = vec![
+                Coord::new(x - 1.0, -1.0),
+                Coord::new(x + 1.0, -1.0),
+                Coord::new(x + 1.0, 1.0),
+                Coord::new(x - 1.0, 1.0),
+                Coord::new(x - 1.0, -1.0),
+            ];
+            masks.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Attr::Int(i64::from(n))]);
+        }
+        let mut s = Session::new(Project::default());
+        for ds in [points, masks] {
+            if streamed {
+                let filename = format!("{}.fgb", ds.name);
+                let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&ds).unwrap());
+                let handle = rustgis_data::source::open_shared(&filename, bytes.clone(), None).unwrap();
+                let src = rustgis_map::source::SourceLayer::from_bytes(&filename, bytes, None, handle);
+                let mut layer = rustgis_map::Layer::new_streamed(s.map().layers.len() as u32 + 1, src);
+                // Keep only n=1 resident. The query matches are outside this window.
+                layer.dataset = layer.load_all().unwrap();
+                layer.dataset.features.retain(|f| f.attrs[0] == Attr::Int(1));
+                layer.dataset.windowed = true;
+                layer.name = ds.name;
+                s.map_mut().layers.push(layer);
+            } else {
+                s.map_mut().add_dataset(ds);
+            }
+        }
+        for (name, text) in [("policy points", "n >= 2"), ("policy masks", "n = 2")] {
+            s.run("layer.definitionQuery", &json!({"layer": name, "where": text})).unwrap();
+        }
+        let run = |s: &mut Session, tool, params| {
+            let r = s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap();
+            let ds = &s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().dataset;
+            let n = ds.field_index("n").unwrap();
+            ds.features.iter().map(|f| f.attrs[n].clone()).collect::<Vec<_>>()
+        };
+        let buffered = run(&mut s, "buffer", json!({"input": "policy points", "distance": 1}));
+        assert_eq!(buffered.len(), 2);
+        assert!(buffered.contains(&Attr::Int(2)) && buffered.contains(&Attr::Int(3)));
+        let clipped = run(&mut s, "clip", json!({"input": "policy points", "clip": "policy masks"}));
+        assert_eq!(clipped, vec![Attr::Int(2)]);
+        // A different input query makes the Clip intersection empty, without widening either input.
+        s.run("layer.definitionQuery", &json!({"layer": "policy points", "where": "n = 3"})).unwrap();
+        assert!(run(&mut s, "clip", json!({"input": "policy points", "clip": "policy masks"})).is_empty());
+        // Empty resolved inputs must be refused before the legacy empty-list-means-all seam.
+        for (tool, empty_layer, params) in [
+            ("buffer", "policy points", json!({"input": "policy points", "distance": 1})),
+            ("clip", "policy points", json!({"input": "policy points", "clip": "policy masks"})),
+            ("clip", "policy masks", json!({"input": "policy points", "clip": "policy masks"})),
+        ] {
+            for name in ["policy points", "policy masks"] {
+                s.run("layer.definitionQuery", &json!({"layer": name, "where": "n >= 2"})).unwrap();
+            }
+            s.run("layer.definitionQuery", &json!({"layer": empty_layer, "where": "n > 3"})).unwrap();
+            let error = s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap_err();
+            assert!(error.contains(&format!("{empty_layer}: its definition query hides every feature the tool would read")), "{error}");
+        }
+        // A single run reports this failure kind once, even when both inputs need fallback.
+        for layer in &mut s.map_mut().layers {
+            if layer.name == "policy points" {
+                layer.definition_query = Some("missing_point = 1".into());
+            } else if layer.name == "policy masks" {
+                layer.definition_query = Some("missing_mask = 1".into());
+            }
+        }
+        let mark = s.notice_mark();
+        assert_eq!(run(&mut s, "clip", json!({"input": "policy points", "clip": "policy masks"})).len(), 3);
+        let notices: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("definition query")).collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        for detail in ["2", "policy points", "policy masks", "missing_point", "missing_mask"] {
+            assert!(notices[0].text.contains(detail), "{notices:?}");
+        }
+    }
 }
