@@ -22,7 +22,7 @@ too_many_arguments = "allow"
 type_complexity = "allow"
 
 [dependencies]
-rustgis-engine = { workspace = true, features = ["geolibre"] }
+rustgis-engine = { workspace = true, features = ["geolibre", "pdf"] }
 rustgis-ui-egui = { workspace = true }
 # The ChatGPT sign-in, given the keychain at start-up.
 rustgis-assistant = { workspace = true }

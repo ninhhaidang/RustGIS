@@ -144,7 +144,7 @@ The [user guide](https://rustgis.app/user-guide/) covers each area in detail,
 - **Package managers**: `winget install OpenGeos.RustGIS`,
   `brew install --cask rustgis` (macOS and Linux), `yay -S rustgis-bin` (AUR), or
   `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` (Fedora).
-- **From source**: `cargo run --release -p rustgis` (Rust 1.90 or later).
+- **From source**: `cargo run --release -p rustgis` (Rust 1.92 or later).
 
 ## Quick start
 

@@ -30,12 +30,16 @@ schemars = { workspace = true, optional = true }
 
 [features]
 geolibre = ["dep:rustgis-geolibre"]
+# PDF pages read as rasters (`rustgis-data`'s `pdf`, #2336).
+pdf = ["rustgis-data/pdf"]
 # Existing in-tree Wasm fixtures for adapter tests; no guest or production interface change.
 testing = ["rustgis-plugins/testing"]
 # The JSON Schema of the project file (`cargo xtask schema`).
 schema = ["dep:schemars", "rustgis-data/schema", "rustgis-geom/schema"]
 
 [dev-dependencies]
+# Reading back the PDFs layouts export (#2336).
+rustgis-data = { workspace = true, features = ["pdf"] }
 miniz_oxide = { workspace = true }
 # Writing sample GeoPackages.
 rusqlite = { workspace = true }

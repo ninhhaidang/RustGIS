@@ -23,10 +23,11 @@ ecolor, eframe, egui, egui-wgpu, egui-winit, egui_extras, either, emath, encodin
 enum-map-derive, epaint, equivalent, errno, euclid, event-listener, event-listener-strategy,
 fastrand, fdeflate, fearless_simd, filetime, find-msvc-tools, fixedbitset, flagset, flatbuffers,
 flate2, form_urlencoded, futures-lite, futures-timer, geo, geo-traits, geo-types, geozero,
-gethostname, gif, gl_generator, glow, guillotiere, half, hash32, hashbrown, hashlink, heapless,
-heck, hkdf, hmac, httparse, hybrid-array, i_overlay, idna, idna_adapter, image, image-webp,
-indexmap, inout, io-enum, itertools, itoa, jobserver, js-sys, keyboard-types, khronos-egl,
-khronos_api, kurbo, laz, lazy_static, leb128fmt, lerc-core, lerc-reader, libc,
+gethostname, gif, gl_generator, glow, guillotiere, half, hash32, hashbrown, hashlink, hayro,
+hayro-ccitt, hayro-cmap, hayro-font, hayro-interpret, hayro-jbig2, hayro-jpeg2000, hayro-postscript,
+hayro-syntax, heapless, heck, hkdf, hmac, httparse, hybrid-array, i_overlay, idna, idna_adapter,
+image, image-webp, indexmap, inout, io-enum, itertools, itoa, jobserver, js-sys, keyboard-types,
+khronos-egl, khronos_api, kurbo, laz, lazy_static, leb128fmt, lerc-core, lerc-reader, libc,
 linebender_resource_handle, linux-raw-sys, litrs, lock_api, log, lyon, lyon_algorithms, lyon_geom,
 lyon_path, lyon_tessellation, md-5, md5, miniz_oxide, muda, multiversion_no_op, mysql, mysql_common,
 naga, naga-types, named_pipe, nohash-hasher, ntapi, num, num-bigint, num-complex, num-conv,
@@ -4119,7 +4120,7 @@ limitations under the License.
 
 ====================================================================================================
 Apache License 2.0
-Used by: moxcms, pxfm
+Used by: moxcms, pic-scale, pxfm
 ====================================================================================================
 
                                  Apache License
@@ -7946,7 +7947,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ====================================================================================================
 BSD 3-Clause "New" or "Revised" License
-Used by: alloc-no-stdlib, brotli-decompressor
+Used by: alloc-no-stdlib, brotli, brotli-decompressor
 ====================================================================================================
 
 Copyright (c) 2016 Dropbox, Inc.
@@ -9217,6 +9218,31 @@ LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE A
 EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: brotli
+====================================================================================================
+
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 ====================================================================================================
 MIT License

@@ -158,6 +158,8 @@ impl Session {
         self.landed_reads.retain(|(k, _)| *k != id);
         #[cfg(not(target_arch = "wasm32"))]
         self.landed_windows.retain(|(k, _)| *k != id);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.landed_pages.retain(|(k, _)| *k != id);
         let url = crate::sources::address_in_message(p.get("url").and_then(Value::as_str).unwrap_or("download"));
         if added {
             Ok(Some(format!("{url}: it was added already for its plugin command, so it wasn't added again")))
@@ -414,6 +416,8 @@ impl Session {
             self.landed_reads.retain(|(n, _)| *n != id);
             #[cfg(not(target_arch = "wasm32"))]
             self.landed_windows.retain(|(n, _)| *n != id);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.landed_pages.retain(|(n, _)| *n != id);
             return Err(e);
         }
         Ok(())

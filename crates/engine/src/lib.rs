@@ -685,6 +685,8 @@ struct PutAside {
     landed_reads: Vec<(u64, LandedRead)>,
     #[cfg(not(target_arch = "wasm32"))]
     landed_windows: Vec<(u64, cmd::layer::CogWindow)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    landed_pages: Vec<(u64, rustgis_data::raster::Raster)>,
     plugin_retries: Vec<cmd::plugins::fetch::Retry>,
     url_waits: cmd::plugins::fetch::UrlWaits,
     /// A style of the project still loading, which mustn't move the next one's view.
@@ -950,6 +952,10 @@ pub struct Session {
     /// `layer.addDownload` too.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) landed_windows: Vec<(u64, cmd::layer::CogWindow)>,
+    /// PDF pages the app drew off the frame from a download whose bytes landed with them, waiting
+    /// for `layer.addDownload` too (#2336).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) landed_pages: Vec<(u64, rustgis_data::raster::Raster)>,
     /// Downloads a command asked for where nothing may wait (the browser): the parameters of
     /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
     pub(crate) url_requests: Vec<UrlRequest>,
@@ -1339,6 +1345,8 @@ impl Session {
             landed_reads: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             landed_windows: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_pages: Vec::new(),
             url_requests: Vec::new(),
             window_view: None,
             file_outputs: Vec::new(),
@@ -1448,6 +1456,19 @@ impl Session {
         let landed = self.landed(id);
         if landed {
             self.landed_windows.push((id, window));
+        }
+        landed
+    }
+
+    /// Hands over a PDF download's bytes with its page drawn off the frame
+    /// ([`cmd::raster::read_download_page`]), for `layer.addDownload {"id"}` as
+    /// [`Session::download_landed`] does.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn download_landed_page(&mut self, id: u64, bytes: Vec<u8>, page: rustgis_data::raster::Raster) -> bool {
+        let landed = self.landed(id);
+        if landed {
+            self.downloaded.push((id, bytes));
+            self.landed_pages.push((id, page));
         }
         landed
     }
@@ -2137,6 +2158,8 @@ impl Session {
             landed_reads: take(&mut self.landed_reads),
             #[cfg(not(target_arch = "wasm32"))]
             landed_windows: take(&mut self.landed_windows),
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_pages: take(&mut self.landed_pages),
             url_requests: take(&mut self.url_requests),
             policy_work: self.take_policy_work(),
             plugin_retries: take(&mut self.plugin_retries),
@@ -2193,6 +2216,8 @@ impl Session {
             landed_reads,
             #[cfg(not(target_arch = "wasm32"))]
             landed_windows,
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_pages,
             url_requests,
             policy_work,
             plugin_retries,
@@ -2225,6 +2250,7 @@ impl Session {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.landed_windows = landed_windows;
+            self.landed_pages = landed_pages;
         }
         (self.trend_results, self.raster_results, self.raster_runs) = (trend_results, raster_results, raster_runs);
         #[cfg(feature = "geolibre")]

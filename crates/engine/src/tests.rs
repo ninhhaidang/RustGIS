@@ -45179,6 +45179,119 @@ fn a_map_series_pdf_georeferences_each_page_with_its_view() {
     assert_eq!(distinct.len(), gpts.len(), "no page has another's corners");
 }
 
+/// A PDF RustGIS wrote is added back as a raster (#2336): a GeoPDF where its map frame's corners
+/// put it, a map series page by page with the others named and the page kept when the project
+/// opens again, and a PDF without coordinates as a scan to georeference. `"as": "scan"` sets a
+/// GeoPDF's coordinates aside. (The tests read with `rustgis-data`'s `pdf` feature.)
+#[test]
+fn a_pdf_is_added_back_as_a_raster() {
+    let mut s = world();
+    s.run("map.projection", &json!({"type": "EPSG:3857"})).unwrap();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
+    let pages = s.run("layout.series", &json!({"layer": "Lakes", "nameField": "name"})).unwrap()["pages"].as_u64().unwrap();
+    assert!(pages > 2, "{pages}");
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-pdf-read-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let (series, single, plain) = (dir.0.join("series.pdf"), dir.0.join("single.pdf"), dir.0.join("plain.pdf"));
+    s.run("layout.export", &json!({"path": series, "dpi": 36})).unwrap();
+    s.run("layout.export", &json!({"path": single, "dpi": 36, "allPages": false})).unwrap();
+    s.run("layout.export", &json!({"path": plain, "dpi": 36, "allPages": false, "georeference": false})).unwrap();
+    let frame = s.project.layouts[0].elements.iter().find(|e| e.kind.code() == "mapFrame").unwrap().clone();
+    let added = |s: &mut Session, p: Value| {
+        let mark = s.notice_mark();
+        let r = s.run("layer.addData", &p).unwrap();
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+        let data = l.raster.as_ref().unwrap().data.as_ref().unwrap();
+        (l.name.clone(), data.georeferenced, data.crs.epsg(), data.extent(), said)
+    };
+    // Each page lies where its frame's corners (its /GPTS, latitude then longitude) put it: the
+    // raster takes them in, and spans the page as the frame spans its part of it.
+    let pdf = String::from_utf8_lossy(&std::fs::read(&series).unwrap()).into_owned();
+    let gpts: Vec<&str> = pdf.split("/GPTS [").skip(1).filter_map(|r| r.split(']').next()).collect();
+    let on_its_corners = |s: &Session, page: usize, e: rustgis_geom::Extent| {
+        let n: Vec<f64> = gpts[page].split_whitespace().map(|v| v.parse().unwrap()).collect();
+        let corners: Vec<rustgis_geom::Coord> =
+            n.chunks(2).map(|c| s.map().to_map(rustgis_geom::Coord::new(c[1], c[0])).unwrap()).collect();
+        let map = |c: rustgis_geom::Coord| s.map().to_map(c).unwrap();
+        let (lo, hi) = (map(rustgis_geom::Coord::new(e.min_x, e.min_y)), map(rustgis_geom::Coord::new(e.max_x, e.max_y)));
+        let (west, east) = (corners.iter().map(|c| c.x).fold(f64::MAX, f64::min), corners.iter().map(|c| c.x).fold(f64::MIN, f64::max));
+        let slack = (east - west) * 0.01;
+        for c in &corners {
+            assert!(c.x > lo.x - slack && c.x < hi.x + slack && c.y > lo.y - slack && c.y < hi.y + slack, "page {}: {c:?}", page + 1);
+        }
+        let ratio = (hi.x - lo.x) / (east - west) / (297.0 / frame.w);
+        assert!((ratio - 1.0).abs() < 0.02, "page {}: {ratio}", page + 1);
+    };
+    {
+        let (name, placed, epsg, first, said) = added(&mut s, json!({"path": series}));
+        assert_eq!((name.as_str(), placed, epsg), ("series page 1", true, 3857));
+        assert!(said.iter().any(|t| t.contains(&format!("it has {} more pages (2, 3", pages - 1))), "{said:?}");
+        on_its_corners(&s, 0, first);
+        let (name, placed, _, second, _) = added(&mut s, json!({"path": series, "layer": "2"}));
+        assert_eq!((name.as_str(), placed), ("series page 2", true));
+        on_its_corners(&s, 1, second);
+        // One page: named as the file, nothing said of other pages or other frames.
+        let (name, placed, _, _, said) = added(&mut s, json!({"path": single}));
+        assert_eq!((name.as_str(), placed), ("single", true));
+        assert!(!said.iter().any(|t| t.contains("more pages") || t.contains("map frames")), "{said:?}");
+        // Without coordinates, or asked for as one: a scan to georeference.
+        let (_, placed, ..) = added(&mut s, json!({"path": plain}));
+        assert!(!placed);
+        let (_, placed, ..) = added(&mut s, json!({"path": single, "as": "scan"}));
+        assert!(!placed);
+        assert!(s.run("layer.addData", &json!({"path": series, "layer": "999"})).unwrap_err().contains(&format!("from 1 to {pages}")));
+        // A page given as a number is the same page; anything else is refused, not page 1.
+        let (_, _, _, numbered, _) = added(&mut s, json!({"path": series, "layer": 2, "name": "numbered"}));
+        assert_eq!(numbered, second);
+        assert!(s.run("layer.addData", &json!({"path": series, "layer": [2]})).unwrap_err().contains("isn't a page number"));
+        // A download's page, drawn off the frame by the app, is added as drawn.
+        let bytes = std::fs::read(&series).unwrap();
+        let url = "https://example.org/maps/atlas.pdf";
+        let asked = json!({"url": url, "layer": "2"});
+        let (name, page, place) = crate::cmd::raster::download_page(url, &asked, &bytes).unwrap();
+        assert_eq!((name.as_str(), page.as_deref(), place), ("atlas.pdf", Some("2"), true));
+        assert!(crate::cmd::raster::download_page("https://example.org/a.tif", &asked, &bytes).is_none());
+        // An address without a file name: a PDF by its contents.
+        let (sniffed, ..) = crate::cmd::raster::download_page("https://example.org/download?id=42", &asked, &bytes).unwrap();
+        assert!(rustgis_data::raster::is_pdf_name(&sniffed), "{sniffed}");
+        let drawn = crate::cmd::raster::read_download_page(&name, &bytes, page.as_deref(), place).unwrap();
+        let id = s.download_started();
+        assert!(s.download_landed_page(id, bytes, drawn));
+        let r = s.run("layer.addDownload", &json!({"id": id, "url": url, "layer": "2"})).unwrap();
+        let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!((l.name.as_str(), l.raster.as_ref().unwrap().data.as_ref().unwrap().extent()), ("atlas page 2", second));
+        // Uploaded (or downloaded) contents read alike.
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&single).unwrap());
+        let r = s.run("layer.addDataBytes", &json!({"fileName": "upload.pdf", "data": data})).unwrap();
+        let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+        assert!(l.raster.as_ref().unwrap().data.as_ref().unwrap().georeferenced, "{}", l.name);
+        let data = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&series).unwrap());
+        let r = s.run("layer.addDataBytes", &json!({"fileName": "pages.pdf", "data": data, "layer": 2})).unwrap();
+        let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!((l.name.as_str(), l.raster.as_ref().unwrap().data.as_ref().unwrap().extent()), ("pages page 2", second));
+        // Saved and opened again, page 2 is still page 2.
+        let rgis = dir.0.join("pages.rgis");
+        s.run("project.saveAs", &json!({"path": rgis.display().to_string()})).unwrap();
+        let mut t = Session::new(Project::default());
+        t.run("project.open", &json!({"path": rgis.display().to_string()})).unwrap();
+        // The file's page 2, and the uploaded copy's.
+        for name in ["series page 2", "pages page 2"] {
+            let page2 = t.map().layers.iter().find(|l| l.name == name).unwrap();
+            let data = page2.raster.as_ref().unwrap().data.as_ref().unwrap();
+            assert_eq!(data.extent(), second, "{name}");
+        }
+    }
+}
+
 /// A frame drawn over another (an inset on the main map) is cut out of the other's viewport, so
 /// that a reader shows the main map's coordinates around the inset and not in it: none there when
 /// the inset is left out of georeferencing (tilted), the inset's own when it isn't (#1191). No two

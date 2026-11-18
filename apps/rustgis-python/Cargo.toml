@@ -17,7 +17,7 @@ test = false
 doctest = false
 
 [dependencies]
-rustgis-engine = { workspace = true, features = ["geolibre"] }
+rustgis-engine = { workspace = true, features = ["geolibre", "pdf"] }
 rustgis-keychain = { workspace = true }
 serde_json = { workspace = true }
 pyo3 = { version = "0.30", features = ["abi3-py312", "generate-import-lib"] }

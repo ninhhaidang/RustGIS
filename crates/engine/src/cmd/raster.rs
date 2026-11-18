@@ -34,7 +34,7 @@ pub(crate) fn need_raster(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("layer.addDataBytes", "Add Data (from file contents)", "Home › Add", add_bytes).roles(&[]).effects(crate::policy::Effects::NONE)
-            .params(r#"{"fileName": "name.tif|.tiff|.asc|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k|.dxf (JPEG 2000: desktop, through GDAL)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData)}"#),
+            .params(r#"{"fileName": "name.tif|.tiff|.asc|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k|.dxf|.pdf (JPEG 2000: desktop, through GDAL; PDF: desktop, command line and Python)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name, or a PDF's page number (the first when left out or blank)", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData)}"#),
         C::new("raster.symbology", "Symbology", "Style › Rendering", symbology).when(need_raster).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer"?, "type": "stretch"|"rgb"|"classify"|"unique"|"colormap"|"shadedRelief", "band"?: 1.., "ramp"?, "invert"?: bool, "classes"?: 1..32, "method"?, "azimuth"?, "altitude"?, "zFactor"?, "shadow"?: 0..1 (shadedRelief: how dark the shadows the terrain casts are; left out, kept; 0 casts none), "sky"?: 0..1 (shadedRelief: how much the share of the sky each cell sees dims its ambient light; left out, kept; 0 leaves it whole), "fill"?: 0..1 (shadedRelief: a fill light from the side opposite the sun that lightens the slopes turned toward it; left out, kept; 0 has none), "ambient"?: 0..1|null (shadedRelief: the share of the colour a slope turned fully from the sun keeps; left out, kept; null, the default: 0.25, or 0.5 balanced), "balanced"?: bool (shadedRelief: flat ground keeps the ramp's colour and slopes facing the sun brighten, up to 1.3; left out, kept; false, the default, lights as before), "rock"?: {"from"?: 0..90, "to"?: 0..90, "color"?: #RRGGBB} | false (shadedRelief: steep slopes tinted toward a rock colour before the light, from the ground's own slope in degrees, without the Z factor: the ramp below from, the colour above to, blended between; left out, kept; an object's missing keys keep the current rock's, or 25, 40 and #B2ACA4; false or null removes it), "grey"?: bool (shadedRelief without its colour ramp)}"#,
         ),
@@ -451,16 +451,16 @@ fn scan_box(s: &Session, w: u32, h: u32) -> [f64; 4] {
     [c.x - across / 2.0, c.y - up / 2.0, c.x + across / 2.0, c.y + up / 2.0]
 }
 
-/// Whether `"as": "scan"` was given for a TIFF, PNG or JPEG named `name`.
+/// Whether `"as": "scan"` was given for a TIFF, PNG, JPEG or PDF named `name`.
 pub(crate) fn wants_scan(p: &Value, name: &str) -> Result<bool, String> {
     if !as_scan(p)? {
         return Ok(false);
     }
     let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if matches!(ext.as_str(), "tif" | "tiff" | "png" | "jpg" | "jpeg") {
+    if matches!(ext.as_str(), "tif" | "tiff" | "png" | "jpg" | "jpeg" | "pdf") {
         Ok(true)
     } else {
-        Err(format!("{name}: \"as\": \"scan\" opens a TIFF, PNG or JPEG"))
+        Err(format!("{name}: \"as\": \"scan\" opens a TIFF, PNG, JPEG or PDF"))
     }
 }
 
@@ -562,10 +562,10 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
 }
 
 /// Opens a raster file by path.
-pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> CmdResult {
-    let mut r = match super::reads::take(s, &read_key(path, scan)) {
+pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, page: Option<&str>, scan: bool) -> CmdResult {
+    let mut r = match super::reads::take(s, &read_key(path, page, scan)) {
         Some(r) => r,
-        None => read_raster_as(path, scan),
+        None => read_raster_as(path, page, scan),
     }?;
     if scan {
         r = r.into_scan().map_err(|e| format!("{path}: {e}"))?;
@@ -575,19 +575,69 @@ pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> 
     // gives plain paths on Windows rather than `\\?\` ones).
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
     // A scan is laid over the view as it is added, and that placement makes it reopen as one.
-    add_raster(s, &name, RasterLayer::from_path(r, full))
+    let mut rl = RasterLayer::from_path(r, full);
+    // A PDF's page, kept so the project opens the same page again.
+    rl.subdataset = page.map(str::to_string);
+    add_raster(s, &name, rl)
 }
 
-/// The raster at `path`, read whole; for a `scan`, as the file holds it, without the world file
-/// beside it (#2075).
-pub(crate) fn read_raster_as(path: &str, scan: bool) -> Result<Raster, String> {
-    let read = if scan { raster::read_path_unplaced(Path::new(path), None, None) } else { raster::read_path(Path::new(path)) };
+/// The page `"layer"` asks for when `path` is a PDF's: its number, given as text or as a whole
+/// number (a JSON number); `None` when not given, or for a raster that has no pages. Any other
+/// value is refused rather than read as the first page.
+pub(crate) fn pdf_page(path: &str, p: &Value) -> Result<Option<String>, String> {
+    if !raster::is_pdf_name(path) {
+        return Ok(None);
+    }
+    match p.get("layer") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(t)) => Ok(Some(t.trim().to_string()).filter(|t| !t.is_empty())),
+        Some(other) => match other.as_u64() {
+            Some(n) => Ok(Some(n.to_string())),
+            None => Err(format!("\"layer\": {other} isn't a page number")),
+        },
+    }
+}
+
+/// Whether a whole file downloaded from `url` is a PDF page to draw off the frame before it is
+/// added (`layer.addDownload` with `p`): its file name, page and whether it is placed by its
+/// coordinates (not `"as": "scan"`). `None` for anything else, or a page that can't be read here,
+/// which `layer.addDownload` reads (or refuses) as it adds it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn download_page(url: &str, p: &Value, bytes: &[u8]) -> Option<(String, Option<String>, bool)> {
+    let plain = ["service", "coverage", "geolibreProject", "geolibreLayer"]
+        .iter()
+        .all(|k| p.get(k).is_none_or(|v| v.is_null() || v.as_bool() == Some(false)));
+    if !raster::PDF_PAGES || !plain {
+        return None;
+    }
+    let name = super::layer::url_file_name(url, bytes).ok().filter(|n| raster::is_pdf_name(n))?;
+    let page = pdf_page(&name, p).ok()?;
+    let scan = wants_scan(p, &name).ok()?;
+    Some((name, page, !scan))
+}
+
+/// Draws a downloaded PDF's page off the frame ([`download_page`]), for
+/// [`crate::Session::download_landed_page`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_download_page(name: &str, bytes: &[u8], page: Option<&str>, place: bool) -> Result<Raster, String> {
+    raster::read_bytes_page(name, bytes, page, place).map_err(|e| format!("{name}: {e}"))
+}
+
+/// The raster at `path` (a PDF's `page`), read whole; for a `scan`, as the file holds it, without
+/// the world file beside it (#2075).
+pub(crate) fn read_raster_as(path: &str, page: Option<&str>, scan: bool) -> Result<Raster, String> {
+    let p = Path::new(path);
+    let read = if scan { raster::read_path_unplaced(p, page, None) } else { raster::read_path_with(p, page, None) };
     read.map_err(|e| format!("{path}: {e}"))
 }
 
-/// The key [`add_path`]'s read of `path` is taken by (see [`super::reads`]): a scan's read, without
-/// the world file, isn't another's.
-pub(crate) fn read_key(path: &str, scan: bool) -> String {
+/// The key [`add_path`]'s read of `path` (a PDF's `page`) is taken by (see [`super::reads`]): a
+/// scan's read, without the world file, isn't another's, nor is another page's.
+pub(crate) fn read_key(path: &str, page: Option<&str>, scan: bool) -> String {
+    let path = match page {
+        Some(page) => format!("{path}#page={page}"),
+        None => path.to_string(),
+    };
     if scan { format!("raster-scan:{path}") } else { format!("raster:{path}") }
 }
 
@@ -673,8 +723,25 @@ fn add_bytes(s: &mut Session, p: &Value) -> CmdResult {
     add_named_bytes(s, p, name, bytes, b(p, "zoom"))
 }
 
-/// Adds a file's contents (an upload, a download) as its name's extension says.
+/// Adds a file's contents (an upload, a download) as its name's extension says. A PDF's page is
+/// drawn here, on the caller's thread, unless it was drawn already ([`add_named_bytes_read`]): the
+/// desktop app's downloads land with theirs drawn off the frame ([`download_page`]) and its file
+/// drops are read by path on the read queue, so a caller here is the command line, Python or a
+/// script, with no window to hold.
 pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: Vec<u8>, zoom: Option<bool>) -> CmdResult {
+    add_named_bytes_read(s, p, name, bytes, zoom, None)
+}
+
+/// [`add_named_bytes`], with a PDF's page drawn already off the frame (a download's,
+/// [`read_download_page`]) instead of here.
+pub(crate) fn add_named_bytes_read(
+    s: &mut Session,
+    p: &Value,
+    name: String,
+    bytes: Vec<u8>,
+    zoom: Option<bool>,
+    drawn: Option<Raster>,
+) -> CmdResult {
     // A geotagged photo (an upload, a drop): a point in the photo layer, so several uploads
     // gather in one.
     let scan = wants_scan(p, &name)?;
@@ -690,12 +757,19 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
         return Err(JPEG2000_WEB_LIMITATION.into());
     }
     if raster::is_raster_name(&name) {
-        let mut r = raster::read_bytes(&name, &bytes).map_err(|e| format!("{name}: {e}"))?;
+        // A PDF's page, kept so the project reads the same page from its copy again.
+        let page = pdf_page(&name, p)?;
+        let mut r = match drawn {
+            Some(r) => r,
+            None => raster::read_bytes_page(&name, &bytes, page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
+        };
         if scan {
             r = r.into_scan().map_err(|e| format!("{name}: {e}"))?;
         }
         let title = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| r.name.clone());
-        return add_raster_after(s, &title, RasterLayer::from_bytes(r, name, bytes), zoom);
+        let mut rl = RasterLayer::from_bytes(r, name, bytes);
+        rl.subdataset = page;
+        return add_raster_after(s, &title, rl, zoom);
     }
     // An MBTiles archive: held in memory and drawn as a tile layer.
     if rustgis_data::mbtiles::is_mbtiles_name(&name) {

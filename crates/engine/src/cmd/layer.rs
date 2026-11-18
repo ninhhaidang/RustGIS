@@ -21,7 +21,7 @@ pub const MAX_LAYER_NAME: usize = 200;
 pub fn commands() -> Vec<C> {
     vec![
         C::new("layer.addData", "Add Data", "Home › Add", add_data).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
-            .params(r#"{"path": string, "name"?: string, "layer"?: "GeoPackage, GDAL, DuckDB or DXF layer", "paperSpace"?: "bool: a DXF's layout entities too", "blocks"?: "bool: a DXF's block (图块) contents, true by default", "stream"?: bool, "as"?: "scan" (a TIFF, PNG or JPEG, even a photo or a GeoTIFF, as a picture with no coordinates), "crs"?: "EPSG:… (or WKT) for Shapefile coordinates (overrides .prj), a CSV, a DXF (which never says), a CityJSON or CityGML model (it replaces the system a model file names; in a zip, it is used for a model naming none RustGIS knows), or a GDAL or DuckDB file that doesn't say (GDAL takes an authority code such as EPSG:2263 or the exact names WGS84, WGS72, NAD27, NAD83, not WKT or a file)", "x"?: "CSV x/longitude column", "y"?: "CSV y/latitude column", "wkt"?: "CSV WKT geometry column", "delimiter"?: ","|";"|"\\t"|"|"}"#),
+            .params(r#"{"path": string, "name"?: string, "layer"?: "GeoPackage, GDAL, DuckDB or DXF layer, or a PDF's page number (the first when left out or blank)", "paperSpace"?: "bool: a DXF's layout entities too", "blocks"?: "bool: a DXF's block (图块) contents, true by default", "stream"?: bool, "as"?: "scan" (a TIFF, PNG, JPEG or PDF page, even a photo, a GeoTIFF or a GeoPDF, as a picture with no coordinates), "crs"?: "EPSG:… (or WKT) for Shapefile coordinates (overrides .prj), a CSV, a DXF (which never says), a CityJSON or CityGML model (it replaces the system a model file names; in a zip, it is used for a model naming none RustGIS knows), or a GDAL or DuckDB file that doesn't say (GDAL takes an authority code such as EPSG:2263 or the exact names WGS84, WGS72, NAD27, NAD83, not WKT or a file)", "x"?: "CSV x/longitude column", "y"?: "CSV y/latitude column", "wkt"?: "CSV WKT geometry column", "delimiter"?: ","|";"|"\\t"|"|"}"#),
         C::new("layer.addPhotos", "Add Photos", "Home › Add", add_photos).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
             r#"{"paths"?: [JPEG photo files], "folder"?: "a folder of photos (every JPEG in it)", "name"?: "the layer (default Photos; photos join it when it exists)"}"#,
         ),
@@ -1956,7 +1956,9 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         return add_photos(s, &json!({"paths": [path], "name": name}));
     }
     if rustgis_data::raster::is_raster_name(path) {
-        return super::raster::add_path(s, path, ps(p, "name").map(str::trim).filter(|n| !n.is_empty()), scan);
+        let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty());
+        let page = super::raster::pdf_page(path, p)?;
+        return super::raster::add_path(s, path, name, page.as_deref(), scan);
     }
     // A Zarr store's folder: its first variable, or the one "layer" names.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2356,8 +2358,10 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
         return None;
     }
     if rustgis_data::raster::is_raster_name(&path) {
-        let key = super::raster::read_key(&path, scan);
-        return Some(ahead(NAME, key, move || super::raster::read_raster_as(&path, scan)));
+        // A page that isn't one is refused when the command runs.
+        let page = super::raster::pdf_page(&path, p).ok()?;
+        let key = super::raster::read_key(&path, page.as_deref(), scan);
+        return Some(ahead(NAME, key, move || super::raster::read_raster_as(&path, page.as_deref(), scan)));
     }
     if rustgis_data::raster::zarr::is_store(Path::new(&path)) {
         return None;
@@ -5831,7 +5835,12 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
         url_file_name(&url, &bytes).map_err(|e| crate::sources::message_with_address(&url, &e))?
     };
     let left_out = parts_left_out(&url, &bytes, p);
-    let r = super::raster::add_named_bytes(s, p, name, bytes, b(p, "zoom"))?;
+    // A PDF's page the app drew off the frame as it landed (#2336).
+    #[cfg(not(target_arch = "wasm32"))]
+    let drawn = s.landed_pages.iter().position(|(d, _)| *d == id).map(|i| s.landed_pages.remove(i).1);
+    #[cfg(target_arch = "wasm32")]
+    let drawn = None;
+    let r = super::raster::add_named_bytes_read(s, p, name, bytes, b(p, "zoom"), drawn)?;
     if let Some(n) = left_out {
         s.notify(n, false);
     }

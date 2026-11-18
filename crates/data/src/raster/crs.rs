@@ -1195,6 +1195,18 @@ mod datum_tests {
 /// takes `def`'s own geographic system puts the point (a GeoPDF's corners, #1191). The same
 /// point where `def`'s datum has no shift from WGS 84.
 pub fn lonlat_on_datum_of(def: &str, c: Coord) -> Option<Coord> {
+    transformer_of(&geographic_of(def)).ok()?.from_lonlat(c)
+}
+
+/// The WGS 84 longitude/latitude of `c`, a longitude/latitude on the datum of the PROJ definition
+/// `def`: [`lonlat_on_datum_of`] the other way, for a GeoPDF's corners read back (#2336).
+pub fn lonlat_from_datum_of(def: &str, c: Coord) -> Option<Coord> {
+    transformer_of(&geographic_of(def)).ok()?.to_lonlat(c)
+}
+
+/// The longitude/latitude system on the datum of the PROJ definition `def`: its datum, ellipsoid,
+/// shift and prime meridian, without its projection.
+fn geographic_of(def: &str) -> String {
     const DATUM: [&str; 9] = ["datum", "ellps", "towgs84", "a", "b", "rf", "f", "R", "pm"];
     let mut geographic = String::from("+proj=longlat");
     for t in def.split_whitespace() {
@@ -1205,7 +1217,7 @@ pub fn lonlat_on_datum_of(def: &str, c: Coord) -> Option<Coord> {
         }
     }
     geographic.push_str(" +no_defs");
-    transformer_of(&geographic).ok()?.from_lonlat(c)
+    geographic
 }
 
 /// How far (degrees of latitude, or of longitude scaled to the ground) a place taken into a

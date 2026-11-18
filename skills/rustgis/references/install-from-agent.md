@@ -232,7 +232,7 @@ warning; do not disable security controls to make installation unattended.
 
 Use source only when a matching release is unsuitable or the required MCP Relay
 is not present in the installed app/CLI. Use a checkout that includes the
-[documented open-app support](https://rustgis.app/mcp/), with stable Rust 1.90 or
+[documented open-app support](https://rustgis.app/mcp/), with stable Rust 1.92 or
 later. In a user-chosen source directory:
 
 ```sh

@@ -112,7 +112,7 @@ managers shortly after it is published (winget after Microsoft's review).
 
 ## From source
 
-RustGIS builds from source with a recent stable Rust toolchain (1.90 or later), a C compiler (for
+RustGIS builds from source with a recent stable Rust toolchain (1.92 or later), a C compiler (for
 the C code some dependencies bundle; see [Architecture](architecture.md#pure-rust)) and `curl`
 (to download the sample data).
 
