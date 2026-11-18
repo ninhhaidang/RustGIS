@@ -179,7 +179,7 @@ fn a_project_reads_into_layers_in_tree_order_with_their_styles() {
     let towns = &p.layers[0];
     assert_eq!(
         towns.source,
-        Source::Xyz { url: "https://tile.example.org/{z}/{x}/{y}.png".into(), zmin: None, zmax: Some(19), vector: false }
+        Source::Xyz { url: "https://tile.example.org/{z}/{x}/{y}.png".into(), zmin: None, zmax: Some(19), vector: false, style: None }
     );
     let Some(Renderer::Unique { field, classes, other, .. }) = &towns.style.renderer else { panic!() };
     assert_eq!((field.as_str(), classes.len()), ("rank", 2));
@@ -1085,7 +1085,7 @@ fn every_corpus_file_reads() {
         read_style(&text, "layer", &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     }
     let projects = files("generated/qgs", &["qgs", "qgz"]);
-    assert_eq!(projects.len(), 24, "project corpus changed: {projects:?}");
+    assert_eq!(projects.len(), 31, "project corpus changed: {projects:?}");
     for path in &projects {
         let bytes = std::fs::read(path).unwrap();
         let text = if path.extension().is_some_and(|e| e == "qgz") {
@@ -2785,6 +2785,150 @@ fn the_corpus_bookmarks_relations_and_time_settings_read_as_qgis_wrote_them() {
         ("polygons", "its fixed time range"),
     ] {
         assert!(said(layer, part), "{layer}: {part}: {:#?}", report.notes);
+    }
+}
+
+/// Each provider's project in the corpus reads into the source RustGIS opens it from, as QGIS 4.2.3
+/// wrote it (the files needn't be there).
+#[test]
+fn the_corpus_sources_read_as_qgis_wrote_them() {
+    use rustgis_data::GeometryType;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qgis/generated/qgs");
+    let read = |name: &str| {
+        let text = std::fs::read_to_string(root.join(format!("provider-{name}.qgs"))).unwrap();
+        let mut report = Report::default();
+        let p = read_project(&text, "/p/qgs", &mut report).unwrap();
+        (p.layers.into_iter().map(|l| (l.source, l.definition_query)).collect::<Vec<_>>(), report)
+    };
+    let one = |name: &str| read(name).0.into_iter().next().unwrap().0;
+    let file = |path: &str, layer: Option<&str>, subset: Option<&str>| Source::File {
+        path: path.into(),
+        layer: layer.map(Into::into),
+        subset: subset.map(Into::into),
+        ignored: Vec::new(),
+    };
+    assert_eq!(
+        one("vectortile"),
+        Source::Xyz {
+            url: "https://example.invalid/tiles/{z}/{x}/{y}.pbf".into(),
+            zmin: Some(0),
+            zmax: Some(14),
+            vector: true,
+            style: None
+        }
+    );
+    let Source::Xyz { style, .. } = one("vectortile-style") else { panic!() };
+    assert_eq!(style.as_deref(), Some("https://example.invalid/style.json"));
+    assert_eq!(
+        one("mbtilesvectortiles"),
+        Source::Archive { path: "/p/qgs/../data/tiles.mbtiles".into(), kind: "mbtiles", vector: true, zoom: (None, None) }
+    );
+    assert_eq!(
+        one("pmtiles"),
+        Source::Archive { path: "/p/qgs/../data/tiles.pmtiles".into(), kind: "pmtiles", vector: true, zoom: (None, None) }
+    );
+    assert_eq!(
+        one("mbtiles-raster"),
+        Source::Archive { path: "/p/qgs/../data/raster.mbtiles".into(), kind: "mbtiles", vector: false, zoom: (None, None) }
+    );
+    assert_eq!(one("gpx"), file("/p/qgs/../data/waypoints.gpx", Some("waypoints"), None));
+    assert_eq!(one("gpx-track"), file("/p/qgs/../data/waypoints.gpx", Some("tracks"), None));
+    let Source::Memory { geometry, fields, crs, .. } = one("memory") else { panic!() };
+    assert_eq!(crs.as_deref(), Some("EPSG:2056"));
+    assert_eq!((geometry, fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()), (GeometryType::Point, vec!["name", "n"]));
+    let Source::SqlServer { table, connection, .. } = one("mssql") else { panic!() };
+    assert_eq!((table.as_str(), connection.as_str()), ("dbo.towns", "dbname=gis host=db.invalid user=me"));
+    // Virtual layers on one layer read as it with their filter; another is left for a note.
+    let gpkg = "/p/qgs/../data/sample.gpkg";
+    let (layers, _) = read("virtual");
+    let filtered = (file(gpkg, Some("points"), Some("value > 20")), Some(r#""value" > 20"#.to_string()));
+    assert_eq!(layers, std::slice::from_ref(&filtered));
+    let (layers, _) = read("virtual-ref");
+    let sources: Vec<_> = layers.iter().map(|(s, q)| (s.clone(), q.clone())).collect();
+    // (The virtual layer on top, as QGIS added it last.)
+    assert_eq!(sources, [filtered, (file(gpkg, Some("points"), None), None)]);
+    let Source::Virtual { query, from: None, filter: None } = one("virtual-grouped") else { panic!() };
+    assert_eq!(query, "SELECT kind, count(*) AS n FROM pts GROUP BY kind");
+}
+
+/// A virtual layer on another layer of the project reads as that layer's file, with both
+/// filters; one on a layer that isn't there, or isn't a file, is left as it is.
+#[test]
+fn a_virtual_layer_on_another_layer_takes_its_filter_too() {
+    let layer = |id: &str, provider: &str, source: &str| {
+        format!(
+            r#"<maplayer type="vector"><id>{id}</id><datasource>{source}</datasource><layername>{id}</layername><provider>{provider}</provider></maplayer>"#
+        )
+    };
+    let qgs = format!(
+        "<qgis><projectlayers>{}{}{}{}</projectlayers></qgis>",
+        layer("v", "virtual", "?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20value%20%3E%202"),
+        layer("base", "ogr", "./a.gpkg|layername=a|subset=kind = 'x'"),
+        layer("lost", "virtual", "?layer_ref=nosuch:b&amp;query=SELECT%20*%20FROM%20b"),
+        layer("web", "virtual", "?layer_ref=tiles:t&amp;query=SELECT%20*%20FROM%20t"),
+    );
+    let mut report = Report::default();
+    let p = read_project(&qgs, "/d", &mut report).unwrap();
+    let v = p.layers.iter().find(|l| l.id == "v").unwrap();
+    assert_eq!(
+        v.source,
+        Source::File {
+            path: "/d/a.gpkg".into(),
+            layer: Some("a".into()),
+            subset: Some("(kind = 'x') AND (value > 2)".into()),
+            ignored: Vec::new()
+        }
+    );
+    assert_eq!(v.definition_query.as_deref(), Some(r#"( "kind" = 'x' ) AND ( "value" > 2 )"#));
+    // A virtual layer on a virtual layer further down is read too.
+    let qgs = format!(
+        "<qgis><projectlayers>{}{}{}</projectlayers></qgis>",
+        layer("top", "virtual", "?layer_ref=v:x&amp;query=SELECT%20*%20FROM%20x%20WHERE%20n%20%3C%209"),
+        layer("v", "virtual", "?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20value%20%3E%202"),
+        layer("base", "ogr", "./a.gpkg|layername=a"),
+    );
+    let mut report = Report::default();
+    let p2 = read_project(&qgs, "/d", &mut report).unwrap();
+    let Source::File { subset, .. } = &p2.layers.iter().find(|l| l.id == "top").unwrap().source else { panic!() };
+    assert_eq!(subset.as_deref(), Some("(value > 2) AND (n < 9)"));
+    // A filter past any RustGIS reads isn't kept, noted.
+    let long = format!("value > {}", "9".repeat(rustgis_data::query::MAX_LEN));
+    let qgs = format!(
+        "<qgis><projectlayers>{}{}</projectlayers></qgis>",
+        layer(
+            "v",
+            "virtual",
+            &format!("?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20{}", long.replace(' ', "%20").replace('>', "%3E"))
+        ),
+        layer("base", "ogr", "./a.gpkg|layername=a"),
+    );
+    let mut report = Report::default();
+    let p3 = read_project(&qgs, "/d", &mut report).unwrap();
+    let v3 = p3.layers.iter().find(|l| l.id == "v").unwrap();
+    assert!(matches!(&v3.source, Source::File { subset: None, .. }) && v3.definition_query.is_none(), "{:?}", v3.source);
+    assert!(report.notes.iter().any(|n| n.layer == "v" && n.text.contains("too long to read")), "{:?}", report.notes);
+    // A base layer's filter past any RustGIS reads is left behind, not copied: the virtual
+    // layer's own filter is kept, and each layer that selects from it says so.
+    let base_long = format!("./a.gpkg|layername=a|subset=value &gt; {}", "9".repeat(rustgis_data::query::MAX_LEN));
+    let qgs = format!(
+        "<qgis><projectlayers>{}{}{}</projectlayers></qgis>",
+        layer("v1", "virtual", "?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20value%20%3E%202"),
+        layer("v2", "virtual", "?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20value%20%3E%202"),
+        layer("base", "ogr", &base_long),
+    );
+    let mut report = Report::default();
+    let p4 = read_project(&qgs, "/d", &mut report).unwrap();
+    for id in ["v1", "v2"] {
+        let v = p4.layers.iter().find(|l| l.id == id).unwrap();
+        assert_eq!(v.definition_query.as_deref(), Some(r#""value" > 2"#), "{id}");
+        assert!(
+            report.notes.iter().any(|n| n.layer == id && n.text.contains("the filter of the layer its virtual layer selects from")),
+            "{id}"
+        );
+    }
+    for id in ["lost", "web"] {
+        let l = p.layers.iter().find(|l| l.id == id).unwrap();
+        assert!(matches!(l.source, Source::Virtual { .. }), "{id}: {:?}", l.source);
     }
 }
 

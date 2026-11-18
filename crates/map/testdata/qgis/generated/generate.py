@@ -602,7 +602,28 @@ PROVIDERS = [
     ("postgres", lambda: QgsVectorLayer("dbname='gis' host=db.invalid port=5432 user='me' password='secret' sslmode=disable key='id' srid=2056 type=Point table=\"public\".\"towns\" (geom)", "postgis", "postgres")),
     ("mssql", lambda: QgsVectorLayer("dbname='gis' host=db.invalid user='me' password='secret' srid=2056 type=Point table=\"dbo\".\"towns\" (geom)", "mssql", "mssql")),
     ("gpx", lambda: QgsVectorLayer(f"{gpx()}?type=waypoint", "gpx", "gpx")),
+    # Vector tiles from an MBTiles file, a PMTiles archive and with a MapLibre style; raster tiles
+    # from an MBTiles file (the files needn't be there: QGIS writes the layers as configured).
+    ("mbtilesvectortiles", lambda: vector_tiles(f"type=mbtiles&url={os.path.join(OUT, 'data', 'tiles.mbtiles')}", "mbtiles")),
+    ("pmtiles", lambda: vector_tiles(f"type=xyz&url=file://{os.path.join(OUT, 'data', 'tiles.pmtiles')}", "pmtiles")),
+    ("vectortile-style", lambda: vector_tiles("styleUrl=https://example.invalid/style.json&type=xyz&url=https://example.invalid/tiles/%7Bz%7D/%7Bx%7D/%7By%7D.pbf&zmax=14&zmin=0", "styled")),
+    ("mbtiles-raster", lambda: QgsRasterLayer(f"type=mbtiles&url={os.path.join(OUT, 'data', 'raster.mbtiles')}", "mbtiles raster", "wms")),
+    ("gpx-track", lambda: QgsVectorLayer(f"{gpx()}?type=track", "gpx track", "gpx")),
+    # A virtual layer on another of the project's layers, and one RustGIS doesn't read as a layer.
+    ("virtual-ref", lambda: virtual_ref()),
+    ("virtual-grouped", lambda: QgsVectorLayer(f"?layer=ogr:{GPKG}|layername=points:pts&query=SELECT kind, count(*) AS n FROM pts GROUP BY kind", "virtual grouped", "virtual")),
 ]
+
+
+def vector_tiles(uri, name):
+    from qgis.core import QgsVectorTileLayer
+    return QgsVectorTileLayer(uri, name)
+
+
+def virtual_ref():
+    base = QgsVectorLayer(f"{GPKG}|layername=points", "points", "ogr")
+    QgsProject.instance().addMapLayer(base)
+    return [base, QgsVectorLayer(f"?layer_ref={base.id()}:pts&query=SELECT * FROM pts WHERE value > 20", "virtual ref", "virtual")]
 
 
 def memory_layer():
@@ -646,11 +667,12 @@ def providers():
     for name, make in PROVIDERS:
         def one(name=name, make=make):
             p = new_project()
-            lyr = make()
-            p.addMapLayer(lyr)
+            made = make()
+            for lyr in made if isinstance(made, list) else [made]:
+                p.addMapLayer(lyr)
+                if not lyr.isValid():
+                    log(f"        (provider {name}: layer {lyr.name()} written, not valid here)")
             save_project(p, f"provider-{name}")
-            if not lyr.isValid():
-                log(f"        (provider {name}: layer written, not valid here)")
         attempt(f"provider {name}", one)
 
 

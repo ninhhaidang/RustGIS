@@ -239,8 +239,20 @@ A QGIS project (`.qgs`, or a `.qgz` archive) opens as a new map of the current p
 on the desktop, or **Project › New › QGIS Project…** (`project.importQgis={"path": "…/towns.qgs"}`).
 The QGIS Project picker filters for `.qgs` and `.qgz` files on both desktop and web.
 Its layers come in the layer tree's order, each from its file (GeoPackage, Shapefile, GeoJSON,
-GeoTIFF and the other formats RustGIS reads), a CSV of
-points, XYZ tiles or a WMS layer, unchecked layers and groups hidden. The layer tree's groups come in
+GeoTIFF and the other formats RustGIS reads, a SpatiaLite table, a GPX file's waypoints, routes
+or tracks), a CSV of points or WKT geometry, XYZ tiles (raster or vector, from their address),
+an MBTiles file on this computer (raster or vector), a PMTiles archive (raster or vector, a file
+or a web address) or a WMS layer, unchecked layers and groups hidden. A memory
+layer comes in empty with its fields, as QGIS opens it (QGIS doesn't save its features). A
+virtual layer that selects every column of one file's layer (`SELECT * FROM t`, with or without
+a `WHERE` clause, its fields named with or without the table, or no query) comes in as that
+layer, the clause its filter; another query, or one on a layer that isn't a file's (a memory,
+CSV, database or web layer), is noted. Vector tiles are drawn in RustGIS's colours, noted: QGIS's own vector tile style (and a
+MapLibre style it was made from) isn't read. A PostGIS or SQL Server table isn't connected to on
+import. On the desktop, the notes name a saved connection to its database to log in to and add
+the table from: one already saved, else one made from the project's (without its password, at
+most 16 an import). Undo leaves it saved. A connection by service name, or with values an
+address would have to escape, is noted without one. The layer tree's groups come in
 as [layer groups](index.md), nested as in QGIS (to eight levels and 2,000 groups; the layers of
 groups past that go in the group holding them), open or closed, each layer in its group with its
 own box; a group drawn as one (a QGIS group layer) takes its visibility range and its
@@ -366,7 +378,7 @@ before, the rest (functions, arithmetic, `CASE`, `@map_scale`) as they are, for 
 lacks, a field the layer hasn't) is noted and left out, as is one measuring with `$area`,
 `$perimeter` or `$length`, which QGIS gives in the project's units. What RustGIS doesn't draw as QGIS does is drawn as
 near as it can, or left out, and said: the import's notes list, layer by layer, what was
-approximated (gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
+approximated (vector tile styles, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
 dashed polygon outlines solid, label halos with sharp corners drawn round and blended ones drawn
 over the map, label backgrounds of other shapes drawn as rectangles, label distances from lines
 and polygons, a distance around points moved straight up, labels wrapped at a shortest line
@@ -376,8 +388,8 @@ a group layer's opacity applied to each of its layers and its blending mode draw
 relation on several pairs of fields related by the first, features shown over time from a start date
 alone, events lasting a fixed time shown at their date, a layer accumulating its features over time, features at the very end of a time step) and what was skipped (arrow lines, group layers' draw effects, other data-defined
 settings, draw effects, label callouts, contours and other raster
-renderers RustGIS has no match for, PostGIS, WFS
-and other sources RustGIS doesn't read, histogram, stacked bar and text diagrams, joins, virtual fields, a layer's other styles,
+renderers RustGIS has no match for, PostGIS and SQL Server tables, WFS and other sources
+RustGIS doesn't read, virtual layers with other queries, histogram, stacked bar and text diagrams, joins, virtual fields, a layer's other styles,
 time from an expression, a fixed range or redrawn as the time changes, a raster's or a service's time, and the project's print layouts, QGIS 3's older annotation balloons, map themes,
 bookmark groups and bookmarks the map's projection doesn't reach, polymorphic relations and its time span and steps). A database
 password in a project never reaches the notes.

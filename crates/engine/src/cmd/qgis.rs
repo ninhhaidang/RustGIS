@@ -59,6 +59,15 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
     crate::project::read_file(std::path::Path::new(path), MAX_FILE)
 }
 
+/// Imports a QGIS project as a new map. On the thread that runs it, as opening a project is: it
+/// adds layers to the session one after another, each through the command that adds its kind
+/// (a tile archive through that command's add itself, `tiles::add_with_metadata_wait`, with no
+/// wait for its metadata, as Add Data adds one), and no part of it runs on its own yet. Its work is bounded by the project: at most
+/// [`qgis::MAX_LAYERS`] layers, each read once by the command that adds it (a file's layers, and
+/// a virtual layer on one, each read their file), archives added without waiting for their
+/// metadata, annotation pictures within [`MAX_PICTURE_BYTES`]. A local archive's file is looked
+/// for on this thread (`is_file`), which a slow network share can hold up. Running the whole
+/// import off the window, with progress and Cancel, is for the import as a whole.
 fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     let text = qgis_text(p)?;
     // The folder relative paths start from: `dir` (a blank one is none, so they don't start
@@ -98,8 +107,12 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     // Bottom first, so each is added on top of the ones below it; the main annotation layer
     // over them all, as QGIS draws it.
     let mut added = Vec::new();
+    // The project layer each of `added` came from (none for the main annotations).
+    let mut added_from: Vec<Option<usize>> = Vec::new();
     let crs = project.crs.as_deref();
     let mut pictures = Pictures::default();
+    // Saved connections made for the project's database layers.
+    let mut connections = 0usize;
     // The coordinates the map draws in, where QGIS fits a picture whose aspect is locked (on its
     // canvas): the map's projection as set above (Web Mercator where none was taken).
     let canvas_def = match &s.map().projection {
@@ -120,15 +133,37 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
             add_annotations(s, layer, crs, canvas.as_ref(), dir.is_some(), &mut pictures, &mut report)
                 .map(|(name, d)| Some((name, Some(d))))
         } else {
-            add_layer(s, layer, dir.is_some(), &mut report).map(|name| name.map(|name| (name, None)))
+            add_layer(s, layer, dir.is_some(), &mut connections, &mut report).map(|name| name.map(|name| (name, None)))
         };
         match result {
             Ok(Some((name, d))) => {
                 drawn.push((layer.name.clone(), layer.visible, d));
                 added.push(name);
+                added_from.push(index);
                 if let Some(index) = index {
                     let ids = s.map().layers.iter().map(|l| l.id).filter(|id| !before.contains(id)).collect();
-                    came_in.push(CameIn { index, ids, tile: s.map().tiles.len() > tiles });
+                    // A web tile layer on the same tiles as one added before takes its place (the
+                    // map keeps one tile layer of the same tiles): that one isn't on the map, nor
+                    // among those added, said under its name.
+                    let key = tile_key(&layer.source);
+                    if let Some(k) = &key {
+                        for c in came_in.iter_mut().filter(|c| c.key.as_ref() == Some(k)) {
+                            c.tile = false;
+                            c.key = None;
+                            let Some(gone) = project.layers.get(c.index) else { continue };
+                            // By the project layer it came from: names can repeat.
+                            if let Some(at) = added_from.iter().position(|i| *i == Some(c.index)) {
+                                added.remove(at);
+                                added_from.remove(at);
+                            }
+                            report.skipped(
+                                &gone.name,
+                                format!("the layer: the same tiles as {}, which takes its place (RustGIS keeps one tile layer of the same tiles)", layer.name),
+                            );
+                        }
+                    }
+                    let tile = key.is_some() || s.map().tiles.len() > tiles;
+                    came_in.push(CameIn { index, ids, tile, key });
                 }
             }
             Ok(None) => {}
@@ -165,6 +200,21 @@ struct CameIn {
     ids: Vec<u32>,
     /// A web tile layer was added for it.
     tile: bool,
+    /// The tiles it was added as (see [`tile_key`]), while its tile layer is on the map.
+    key: Option<(String, &'static str)>,
+}
+
+/// The tiles a web tile layer is added as: its address and kind, as the map tells tile layers of
+/// the same tiles apart. (`map.addTiles` replaces an overlay of the same address and kind with the
+/// same look or name, `tiles.rs`'s `add_with_metadata_wait`; imported ones are overlays with no
+/// look of their own, so two on the same tiles always merge. A change there changes this.)
+fn tile_key(source: &Source) -> Option<(String, &'static str)> {
+    match source {
+        // Trimmed, as the map keeps the address.
+        Source::Xyz { url, vector, .. } => Some((url.trim().to_string(), if *vector { "vector" } else { "raster" })),
+        Source::Archive { path, kind, .. } => Some((path.clone(), kind)),
+        _ => None,
+    }
 }
 
 /// Makes the project's layer tree groups as layer groups, nested as in QGIS, and puts each layer
@@ -264,9 +314,15 @@ fn note_texts_under_layers_above(drawn: &[(String, bool, Option<Drawn>)], report
 /// when its source is one RustGIS doesn't read (noted). Without the project's folder (`has_dir`:
 /// a project given as text or data with no `dir`), a relative path has nothing to start from and
 /// is noted rather than looked for in the working directory.
-fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report: &mut Report) -> Result<Option<String>, String> {
+fn add_layer(
+    s: &mut Session,
+    layer: &qgis::ProjectLayer,
+    has_dir: bool,
+    connections: &mut usize,
+    report: &mut Report,
+) -> Result<Option<String>, String> {
     let name = layer.name.as_str();
-    if let Source::File { path, .. } | Source::Csv { path, .. } = &layer.source {
+    if let Source::File { path, .. } | Source::Csv { path, .. } | Source::Archive { path, .. } = &layer.source {
         if !has_dir && qgis::is_relative(path) {
             report.skipped(name, format!("the file {path}, relative to the project's folder, which the import wasn't given (pass dir)"));
             return Ok(None);
@@ -300,7 +356,7 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
             }
             s.run_part("layer.addData", &q)?;
         }
-        Source::Xyz { url, zmin, zmax, vector } => {
+        Source::Xyz { url, zmin, zmax, vector, style } => {
             // An overlay, as a WMS layer is, so web layers keep the tree's order between them.
             let mut q = json!({"url": url, "name": name, "kind": if *vector { "vector" } else { "raster" }, "overlay": true});
             if let Some(z) = zmin {
@@ -312,7 +368,115 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
             let before = s.active_layer;
             let added = s.run_part("map.addTiles", &q)?;
             web_settings(s, &added, before, layer, report);
+            if *vector {
+                note_vector_tile_style(name, style.is_some(), report);
+            }
             return Ok(Some(name.to_string()));
+        }
+        Source::Archive { path, kind, vector, zoom: (zmin, zmax) } => {
+            // RustGIS opens an MBTiles file on this computer, and an archive on a network share
+            // by no address.
+            // (A share's path, `\\server\share\…` or `//server/share/…`, is refused before the
+            // file is looked for: looking reaches the server.)
+            let share = path.starts_with("file://") || path.starts_with("\\\\") || path.starts_with("//");
+            if share || (*kind == "mbtiles" && path.contains("://")) {
+                let at = if share { "on a network share" } else { "at a web address" };
+                report.skipped(
+                    name,
+                    format!(
+                        "the tile archive {at}: RustGIS reads MBTiles files on this computer, and PMTiles archives there or on the web"
+                    ),
+                );
+                return Ok(None);
+            }
+            // A file that isn't there is noted, not added to fail as it draws; the browser reads
+            // no file by its path.
+            #[cfg(not(target_arch = "wasm32"))]
+            if !path.contains("://") && !std::path::Path::new(path).is_file() {
+                report.skipped(name, format!("the tile archive {path}: no file there"));
+                return Ok(None);
+            }
+            #[cfg(target_arch = "wasm32")]
+            if !path.contains("://") {
+                report
+                    .skipped(name, format!("the tile archive {path}, a file the browser doesn't read by its path (add it with Add Data)"));
+                return Ok(None);
+            }
+            let before = s.active_layer;
+            // Without waiting for its metadata (it lands as the map draws), as Add Data adds a
+            // local archive: an import of many archives doesn't hold the window a second for each.
+            // (The import runs only in the user's own dispatch, which may read files and the web.)
+            let q = json!({"url": path, "name": name, "kind": kind, "overlay": true});
+            // The zoom levels QGIS limits it to: an archive shows its own levels in RustGIS.
+            if zmin.is_some() || zmax.is_some() {
+                let level = |z: &Option<u8>| z.map_or("…".to_string(), |z| z.to_string());
+                report.approximated(
+                    name,
+                    format!("its zoom levels {}–{}: RustGIS shows a tile archive at the levels it has", level(zmin), level(zmax)),
+                );
+            }
+            // (As run_part would, a refused add leaves the map's tile layers as they were: it may
+            // drop the same archive's layer before it finds the map full.)
+            let tiles = s.map().tiles.clone();
+            let added = match super::tiles::add_with_metadata_wait(s, &q, web_time::Duration::ZERO) {
+                Ok(added) => added,
+                Err(e) => {
+                    s.map_mut().tiles = tiles;
+                    return Err(e);
+                }
+            };
+            web_settings(s, &added, before, layer, report);
+            if *vector {
+                note_vector_tile_style(name, false, report);
+            }
+            return Ok(Some(name.to_string()));
+        }
+        Source::Memory { geometry, crs, fields, as_text: (as_text, texts), cut, unnamed, taken, zm, curved, unknown_geometry } => {
+            // QGIS keeps none of a memory layer's features: it opens empty, with its fields.
+            let mut ds = rustgis_data::Dataset::new(name, *geometry, fields.clone());
+            if let Some(c) = layer.crs.as_deref().or(crs.as_deref()) {
+                match rustgis_data::raster::crs::Crs::parse(c) {
+                    Ok(c) => ds.crs = Some(c),
+                    Err(e) => report.skipped(name, format!("its coordinate system {c}, which RustGIS can't read ({e})")),
+                }
+            }
+            super::layer::add_dataset(s, ds);
+            if *texts > 0 {
+                let more = if *texts > as_text.len() { ", …" } else { "" };
+                report.approximated(name, format!("its fields of kinds RustGIS hasn't, as text ({texts}: {}{more})", as_text.join(", ")));
+            }
+            if let Some(g) = unknown_geometry {
+                report.skipped(name, format!("its geometry ({g}), of a kind RustGIS hasn't: a table without geometry"));
+            }
+            if *unnamed > 0 {
+                report.skipped(name, format!("its fields with no name ({unnamed})"));
+            }
+            if *taken > 0 {
+                report.skipped(name, format!("its fields of a name an earlier field has ({taken})"));
+            }
+            if let Some(kind) = curved {
+                report.approximated(name, format!("its geometry kind ({kind}): curves read as lines and polygons of their points"));
+            }
+            if *zm {
+                report.approximated(name, "its geometry's Z and M values: RustGIS keeps x and y");
+            }
+            if *cut > 0 {
+                report.skipped(name, format!("its fields past the first {} ({cut})", qgis::MAX_MEMORY_FIELDS));
+            }
+        }
+        Source::Virtual { query, from, .. } => {
+            let shown: String = query.chars().take(200).collect();
+            let more = if query.chars().count() > 200 { "…" } else { "" };
+            let why = match from {
+                Some(qgis::VirtualFrom::Missing(why)) => why.clone(),
+                Some(_) => {
+                    "on a layer RustGIS doesn't read as a file's layer (a CSV, memory, database or web layer, or another virtual layer)"
+                        .into()
+                }
+                None => "RustGIS reads one that selects every column of one layer, with or without a WHERE clause, as that layer".into(),
+            };
+            report.skipped(name, format!("the virtual layer `{shown}{more}`: {why}"));
+            return Ok(None);
         }
         Source::Wms { url, layer: wms, .. } => {
             let before = s.active_layer;
@@ -324,8 +488,12 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
             report.skipped(name, format!("the WFS layer {typename} at {url} (add it with Home › Add › Web Data)"));
             return Ok(None);
         }
-        Source::Postgres { connection, table } => {
-            report.skipped(name, format!("the PostGIS table {table} ({connection}): connect to the database to add it"));
+        Source::Postgres { connection, table, dropped } => {
+            database_note(s, name, "PostGIS", table, connection, dropped, connections, report);
+            return Ok(None);
+        }
+        Source::SqlServer { connection, table, dropped } => {
+            database_note(s, name, "SQL Server", table, connection, dropped, connections, report);
             return Ok(None);
         }
         Source::Other { provider } => {
@@ -362,6 +530,132 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
     }
     bind_time(l, name, layer.style.time.as_deref(), report);
     Ok(Some(added_name))
+}
+
+/// Notes that a vector tile layer's own style (QGIS's, made in QGIS or from a MapLibre style,
+/// `styled`) isn't read: RustGIS draws its tiles in its own colours. (The style's address isn't
+/// shown: it may carry a key.)
+fn note_vector_tile_style(name: &str, styled: bool, report: &mut Report) {
+    let from = if styled { ", and the MapLibre style QGIS made it from" } else { "" };
+    report.approximated(name, format!("its vector tile style{from}: drawn in RustGIS's colours, one for each of its tile layers"));
+}
+
+/// The most saved connections one import makes.
+const MAX_IMPORTED_CONNECTIONS: usize = 16;
+
+/// Notes a database table that isn't added (`what`: PostGIS, SQL Server): on the desktop, with
+/// the saved connection to its database to log in to, made from the project's connection text
+/// (its password left out, which the project text never keeps here) when no connection to it is
+/// there yet. No connection is made to the database itself.
+#[expect(clippy::too_many_arguments, reason = "the parts of one note, each from the layer's source")]
+fn database_note(
+    s: &mut Session,
+    name: &str,
+    what: &str,
+    table: &str,
+    connection: &str,
+    dropped: &[String],
+    made: &mut usize,
+    report: &mut Report,
+) {
+    let saved = saved_database_connection(s, what, connection, made);
+    // Why none could be saved, when making one was tried and refused.
+    let (saved, refused) = match saved {
+        Ok(c) => (Some(c), String::new()),
+        Err(Some(e)) => (None, format!(" (no connection could be saved: {e})")),
+        Err(None) => (None, String::new()),
+    };
+    // Where a login would go, so a project can't hide it behind a connection's name.
+    // (A saved connection's text has no quoted values: the first `host=` setting is its host.)
+    let host = connection.split(' ').find_map(|p| p.strip_prefix("host=")).unwrap_or_default();
+    // How it is reached, when the project sets it (`sslmode=disable`): the login goes that way.
+    let tls = connection.split(' ').find_map(|p| p.strip_prefix("sslmode=")).map(|m| format!(", sslmode {m}")).unwrap_or_default();
+    // Its settings the saved connection, or the connection text, leaves out, by name
+    // (`sslrootcert`, `authcfg`, …).
+    let left = |what: &str| {
+        if dropped.is_empty() {
+            String::new()
+        } else {
+            format!("; {what} leaves out these settings of the project's: {}", dropped.join(", "))
+        }
+    };
+    let text = match saved {
+        Some(c) => format!(
+            "the {what} table {table}: log in to the saved connection '{c}' (to {host}{tls}; Data Sources › Connections), then add the table from it{}",
+            left("the saved connection")
+        ),
+        None => {
+            format!("the {what} table {table} ({connection}): connect to the database to add it{refused}{}", left("the connection text"))
+        }
+    };
+    report.skipped(name, text);
+}
+
+/// The name of the saved connection to the database `connection` names (QGIS's `key=value`
+/// text): one already saved, else one made now (at most [`MAX_IMPORTED_CONNECTIONS`] an import).
+/// `Err(None)` in the browser (which reads no databases), for a connection RustGIS can't address
+/// (a `service=` one, a value it would have to escape), or past the import's limit; `Err(Some)`
+/// with why, when making one was refused.
+fn saved_database_connection(s: &mut Session, what: &str, connection: &str, made: &mut usize) -> Result<String, Option<String>> {
+    let room = *made < MAX_IMPORTED_CONNECTIONS;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (s, what, connection, made, room);
+        Err(None)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // A value QGIS quoted (it holds a space or a quote) isn't put into an address.
+        if connection.contains('\'') {
+            return Err(None);
+        }
+        let kv: Vec<(&str, &str)> = connection.split(' ').filter_map(|p| p.split_once('=')).collect();
+        let get = |k: &str| kv.iter().find(|(n, _)| *n == k).map(|(_, v)| *v).filter(|v| !v.is_empty());
+        let host = get("host").ok_or(None)?;
+        // A service's settings (pg_service.conf) aren't in the address: no connection is made.
+        if get("service").is_some() {
+            return Err(None);
+        }
+        // Values an address would have to escape (a backslash, a control character) aren't
+        // guessed at.
+        if kv.iter().any(|(_, v)| v.chars().any(|c| c.is_control())) {
+            return Err(None);
+        }
+        let (kind, address) = if what == "PostGIS" {
+            if kv.iter().any(|(_, v)| v.contains('\\')) {
+                return Err(None);
+            }
+            let parts: Vec<String> =
+                ["host", "port", "dbname", "user", "sslmode"].iter().filter_map(|k| get(k).map(|v| format!("{k}={v}"))).collect();
+            ("postgres", format!("postgres:{}", parts.join(" ")))
+        } else {
+            // QGIS writes a SQL Server's host as host, host,port or host\instance.
+            let (host, instance) = host.split_once('\\').map_or((host, None), |(h, i)| (h, Some(i)));
+            let (host, port) = host.split_once(',').map_or((host, get("port")), |(h, p)| (h, Some(p)));
+            if host.is_empty() {
+                return Err(None);
+            }
+            let (user, db) = (get("user"), get("dbname").unwrap_or_default());
+            // Parts that would need escaping in an address (a DOMAIN\user, say) aren't guessed at.
+            let plain = |p: &str| !p.contains(['@', '/', '?', '#', ':', '%', '\\', '&', '=']);
+            if ![user.unwrap_or_default(), host, port.unwrap_or_default(), db, instance.unwrap_or_default()].into_iter().all(plain) {
+                return Err(None);
+            }
+            let user = user.map(|u| format!("{u}@")).unwrap_or_default();
+            let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+            let instance = instance.map(|i| format!("?instance={i}")).unwrap_or_default();
+            ("sqlserver", format!("mssql://{user}{host}{port}/{db}{instance}"))
+        };
+        if let Some(c) = s.connections.matching_database(kind, &address).first() {
+            return Ok(c.name.clone());
+        }
+        if !room {
+            return Err(Some(format!("an import makes at most {MAX_IMPORTED_CONNECTIONS}")));
+        }
+        let new = s.run_part("connection.new", &json!({"kind": kind, "address": address})).map_err(Some)?;
+        *made += 1;
+        new.get("name").and_then(Value::as_str).map(str::to_string).ok_or(None)
+    }
 }
 
 /// Adds a QGIS annotation layer as a graphics layer: its annotations taken from its coordinate
