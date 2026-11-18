@@ -11,8 +11,8 @@
 //! fails here until the case is moved to [`Expect::Said`], so the list only shrinks. Exports have
 //! their own test, `never_silent_roundtrip.rs`.
 //!
-//! The table includes text, CityJSON, CityGML, KMZ and GeoPackage. More binary formats and
-//! loss kinds remain to add (ROADMAP.md); coverage of one loss is not certification of a reader.
+//! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet and FileGDB.
+//! More formats and loss kinds remain to add (ROADMAP.md); one loss does not certify a reader.
 use rustgis_engine::{Project, Session};
 use serde_json::json;
 
@@ -21,10 +21,12 @@ use serde_json::json;
 enum Expect {
     /// Says the loss: a notice the clean file doesn't give, or a refusal, holding these words.
     Said(&'static str),
+    /// Imports the layer and says the loss in a notice; refusing this valid fixture is a failure.
+    Imported(&'static str),
     /// Loses it without a notice today, still adding a layer: what is lost.
     Silent(&'static str),
 }
-use Expect::{Said, Silent};
+use Expect::{Imported, Said, Silent};
 
 /// A clean file and the same file with a loss in it.
 struct Case {
@@ -363,6 +365,27 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case("CityJSON: varying line heights", "a.city.json", cityjson(0), cityjson(5), Said("Z or M")),
         case("CityGML: varying line heights", "a.gml", citygml(0), citygml(5), Said("Z or M")),
         case("GeoPackage: a height", "a.gpkg", gpkg(fixture_dir, false), gpkg(fixture_dir, true), Said("Z or M")),
+        case(
+            "FlatGeobuf: a height",
+            "a.fgb",
+            include_bytes!("../testdata/reading-losses/xy.fgb"),
+            include_bytes!("../testdata/reading-losses/xyz.fgb"),
+            Imported("Z or M"),
+        ),
+        case(
+            "GeoParquet: a height",
+            "a.parquet",
+            include_bytes!("../testdata/reading-losses/xy.parquet"),
+            include_bytes!("../testdata/reading-losses/xyz.parquet"),
+            Imported("Z or M"),
+        ),
+        case(
+            "FileGDB: a height",
+            "a.gdb",
+            include_bytes!("../testdata/reading-losses/xy.gdb.zip"),
+            include_bytes!("../testdata/reading-losses/xyz.gdb.zip"),
+            Imported("Z or M"),
+        ),
     ]);
     out
 }
@@ -428,8 +451,10 @@ fn gpkg(dir: &std::path::Path, z: bool) -> Vec<u8> {
 type Reading = Result<(Vec<String>, bool), String>;
 
 /// Writes `file` with `content`, and `beside`, into `dir` (emptied first) and reads it. `Err` when
-/// the files can't be written: a failure of the test, never taken for a refusal. Each file of a
+/// the fixture can't be prepared: a failure of the test, never taken for a refusal. Each file of a
 /// case is read from the same `dir`, so notices naming its path are the same for both.
+/// A `.gdb` fixture is stored as a ZIP of its table files, extracted and checked with the native
+/// reader before the command opens it, so an optional GDAL fallback cannot mask a regression.
 fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, String)]) -> std::io::Result<Reading> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
@@ -437,7 +462,28 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Stri
         std::fs::write(dir.join(name), text)?;
     }
     let path = dir.join(file);
-    std::fs::write(&path, content)?;
+    if file.ends_with(".gdb") {
+        // The archive is fixture storage only: RustGIS opens the extracted folder. Its ZIP
+        // importer deliberately refuses FileGDB folders, so do not test that refusal as a loss.
+        std::fs::create_dir_all(&path)?;
+        for (name, bytes) in rustgis_engine::data::zip::read(content).map_err(std::io::Error::other)? {
+            if std::path::Path::new(&name).components().count() != 1
+                || !matches!(std::path::Path::new(&name).components().next(), Some(std::path::Component::Normal(_)))
+            {
+                return Err(std::io::Error::other("a FileGDB fixture member isn't a plain file name"));
+            }
+            std::fs::write(path.join(name), bytes)?;
+        }
+        // GDAL can supply the same loss notice if the native reader fails. Treat a native
+        // failure as fixture preparation failure, never as an acceptable import refusal.
+        let native = rustgis_engine::data::filegdb::read_dir(&path, None)
+            .map_err(|e| std::io::Error::other(format!("native FileGDB fixture: {e}")))?;
+        if native.layers.len() != 1 || !native.unread.is_empty() {
+            return Err(std::io::Error::other(format!("native FileGDB fixture wasn't read completely: {:?}", native.unread)));
+        }
+    } else {
+        std::fs::write(&path, content)?;
+    }
     let mut s = Session::new(Project::default());
     // Layers and standalone tables (what a file without geometry adds).
     let held = |s: &Session| s.map().layers.len() + s.project.tables.len();
@@ -488,10 +534,13 @@ fn a_reading_that_loses_something_says_so() {
         };
         match c.expect {
             // Both ways (AGENTS.md, Never silent): the clean file doesn't say the loss.
-            Said(words) if clean.iter().any(|n| n.contains(words)) => {
+            Said(words) | Imported(words) if clean.iter().any(|n| n.contains(words)) => {
                 failures.push(format!("{name}: the clean file says the loss it doesn't have ({words:?}): {clean:?}"))
             }
-            Said(words) if !new.iter().any(|n| n.contains(words)) => {
+            Imported(_) if !added => {
+                failures.push(format!("{name}: the valid lossy fixture was refused instead of imported: {new:?}"))
+            }
+            Said(words) | Imported(words) if !new.iter().any(|n| n.contains(words)) => {
                 failures.push(format!("{name}: not said: nothing new holds {words:?}; new: {new:?}; the clean file said {clean:?}"))
             }
             Silent(lost) if !new.is_empty() => failures.push(format!(

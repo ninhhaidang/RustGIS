@@ -75,9 +75,9 @@ A result is right, or RustGIS says what it lost or assumed
   each vertex's Z in DXF and unreadable coordinates, holes and parts in KML, GeoRSS, MapInfo and
   DXF. A fix makes its case `Said` _(open)_.
 - Lossy sample files in `never_silent_reading.rs` for the readers it doesn't cover yet:
-  Shapefile, FlatGeobuf, GeoParquet, OSM PBF, spreadsheets and FileGDB. It covers GeoJSON,
-  TopoJSON, CSV, KML, KMZ, GPX, GML, GeoRSS, DXF, LandXML and MapInfo, with height-loss cases for
-  CityJSON, CityGML and GeoPackage; those three still need other loss kinds. Exports are checked
+  Shapefile, OSM PBF and spreadsheets. It covers GeoJSON, TopoJSON, CSV, KML, KMZ, GPX, GML,
+  GeoRSS, DXF, LandXML and MapInfo, with height-loss cases for CityJSON, CityGML, GeoPackage,
+  FlatGeobuf, GeoParquet and FileGDB; those six still need other loss kinds. Exports are checked
   by `never_silent_roundtrip.rs` _(open)_.
 - A `--strict` option for `rustgis-cli run` that exits non-zero when a loss is reported, for
   scheduled jobs. Notices carry a severity but not a kind today (`Notice` in
