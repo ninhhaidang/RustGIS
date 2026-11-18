@@ -3,24 +3,64 @@
 use crate::{Project, Session};
 use rustgis_map::{Marker, Projection, Renderer, Rgba};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::path::Path;
+
+/// Releases with no file of a kind ("project" or "prefs"). Only an entry here excuses a missing
+/// file; the README's note on the skip is for readers, and the test doesn't read it.
+const SKIPS: &[(&str, &str)] = &[];
+
+fn present_or_skipped(fixtures: &Path, version: &str, kind: &str, file: &str) -> bool {
+    let present = fixtures.join(file).exists();
+    assert!(present || SKIPS.contains(&(version, kind)), "{version}: {file} is missing and no skip is recorded");
+    present
+}
 
 #[test]
 fn released_projects_and_preferences_still_open() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/releases");
-    for version in ["v0.2.0", "v0.3.0", "v0.4.0", "v0.5.0", "v0.6.0"] {
-        let prefs = super::read_at(&fixtures.join(format!("{version}.prefs.json"))).unwrap();
-        assert_eq!(prefs.get("ribbon_minimized"), Some(&json!("true")), "{version}");
-        if matches!(version, "v0.2.0" | "v0.3.0") {
-            assert_eq!(prefs.len(), 1, "{version}");
-        } else {
-            assert_eq!(prefs.len(), 2, "{version}");
-            let connections = crate::connections::Connections::from_json(prefs["connections"].as_str().unwrap());
-            assert!(connections.connections.is_empty() && connections.unread().is_empty(), "{version}");
+    let files = std::fs::read_dir(&fixtures)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            let version = name.strip_suffix(".rgis").or_else(|| name.strip_suffix(".prefs.json"))?;
+            version.starts_with('v').then(|| version.to_owned())
+        })
+        .collect::<BTreeSet<_>>();
+    // The README's table lists every release captured. Each row is checked below, so a release whose
+    // files were deleted fails unless both kinds are in SKIPS; a file needs its row.
+    let versions = std::fs::read_to_string(fixtures.join("README.md"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("| v").and_then(|rest| rest.split_once(' ')).map(|(v, _)| format!("v{v}")))
+        .collect::<BTreeSet<_>>();
+    assert!(!versions.is_empty(), "no releases in the table in {}", fixtures.join("README.md").display());
+    let unrecorded = files.difference(&versions).collect::<Vec<_>>();
+    assert!(unrecorded.is_empty(), "release fixtures without a README row: {unrecorded:?}");
+    for version in versions.iter().map(String::as_str) {
+        if present_or_skipped(&fixtures, version, "prefs", &format!("{version}.prefs.json")) {
+            let prefs = super::read_at(&fixtures.join(format!("{version}.prefs.json"))).unwrap();
+            assert_eq!(prefs.get("ribbon_minimized"), Some(&json!("true")), "{version}");
+            if matches!(version, "v0.2.0" | "v0.3.0") {
+                assert_eq!(prefs.len(), 1, "{version}");
+            } else {
+                assert_eq!(prefs.len(), 2, "{version}");
+                let connections = crate::connections::Connections::from_json(prefs["connections"].as_str().unwrap());
+                assert!(connections.connections.is_empty() && connections.unread().is_empty(), "{version}");
+            }
         }
 
+        if !present_or_skipped(&fixtures, version, "project", &format!("{version}.rgis")) {
+            continue;
+        }
+        let path = fixtures.join(format!("{version}.rgis"));
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        // v0.7.0 was the first release to write format 2.
+        let format = if matches!(version, "v0.2.0" | "v0.3.0" | "v0.4.0" | "v0.5.0" | "v0.6.0") { 1 } else { 2 };
+        assert_eq!(written.get("format"), Some(&json!(format)), "{version}");
+
         let mut s = Session::new(Project::default());
-        s.run("project.open", &json!({"path": fixtures.join(format!("{version}.rgis"))})).unwrap();
+        s.run("project.open", &json!({"path": path})).unwrap();
         // These inline datasets need no repair. An unexpected loss notice is a regression too.
         assert_eq!(
             s.notices_since(0).iter().map(|n| (n.text.as_str(), n.error)).collect::<Vec<_>>(),
@@ -36,7 +76,8 @@ fn released_projects_and_preferences_still_open() {
         assert!((center.x - 2.0).abs() < 1e-10 && (center.y - 3.0).abs() < 1e-10, "{version}");
         assert!((map.camera.scale() - 250_000.0).abs() < 1e-6, "{version}");
         // These releases changed where a newly added layer goes; preserve each saved order.
-        let order = if matches!(version, "v0.5.0" | "v0.6.0") { [(2, "Routes"), (1, "Places")] } else { [(1, "Places"), (2, "Routes")] };
+        let order =
+            if matches!(version, "v0.2.0" | "v0.3.0" | "v0.4.0") { [(1, "Places"), (2, "Routes")] } else { [(2, "Routes"), (1, "Places")] };
         assert_eq!(map.layers.iter().map(|l| (l.id, l.name.as_str())).collect::<Vec<_>>(), order, "{version}");
 
         let places = map.layer(1).unwrap();

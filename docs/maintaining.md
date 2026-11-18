@@ -93,9 +93,14 @@ same files. New and changed code follows these rules; not every existing reader 
 Keep historical projects and preferences in the
 [release fixtures](../crates/engine/testdata/releases/README.md). These are the original bytes
 written by the release named in each filename: never regenerate, reformat or resave them.
-Each release adds a small project and preferences file written by that release and extends
-`released_projects_and_preferences_still_open`. Record a skip in the fixtures' README when a
-release has no such file format. Current-writer examples do not replace these historical files.
+The [Release fixtures workflow](../.github/workflows/release-fixtures.yml) captures a small project
+and preferences file from each published release once its Linux archive is available, then opens
+a pull request. Actions must be allowed to create pull requests in the repository settings. If
+that setting is disabled, open a pull request from the `release-fixtures/<tag>` branch or use the
+workflow's artifact to submit the fixtures. Approve the CI runs on the generated pull request.
+The `released_projects_and_preferences_still_open` test discovers
+the files by version and checks that the current reader still opens them correctly. Record a skip
+in the fixtures' README and in the test's `SKIPS` when a release has no such file format.
 
 New project saves and map/layer exports write format 2. Their `requires` header names only
 features present in the saved payload: `terrain-block`, `terrain-water`,

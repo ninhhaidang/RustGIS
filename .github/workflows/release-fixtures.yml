@@ -1,0 +1,162 @@
+name: Release fixtures
+
+on:
+  release:
+    types: [published]
+  # Release attaches Linux packages and SHA256SUMS after the published event.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published release tag (e.g. v0.7.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    if: >-
+      github.repository == 'opengeos/RustGIS' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.event == 'release' &&
+        github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ inputs.version || github.event.release.tag_name || github.event.workflow_run.head_branch }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    outputs:
+      version: ${{ steps.capture.outputs.version }}
+      base: ${{ steps.capture.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.DEFAULT_BRANCH }}
+          persist-credentials: false
+
+      - name: Check whether the release needs fixtures
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected a published tag in the form vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          fixtures=crates/engine/testdata/releases
+          if [[ -f "$fixtures/$VERSION.rgis" && -f "$fixtures/$VERSION.prefs.json" ]]; then
+            echo "Fixtures for $VERSION already exist."
+            exit 0
+          fi
+
+          release=$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)
+          archive="RustGIS-${VERSION#v}-linux-x86_64.tar.gz"
+          if ! jq -e --arg archive "$archive" \
+            '.isDraft == false and ([.assets[] | select(.state == "uploaded").name] | contains([$archive, "SHA256SUMS"]))' \
+            <<<"$release" >/dev/null; then
+            if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+              echo "::notice::Waiting for the Release workflow to attach the assets; this workflow runs again when it succeeds. If Release fails, run this workflow by hand for $VERSION once the assets are attached."
+              exit 0
+            fi
+            echo "::error::Published Linux archive or SHA256SUMS is missing for $VERSION"
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install headless desktop dependencies
+        if: steps.release.outputs.ready == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth xdotool libegl1 libgl1-mesa-dri libxkbcommon-x11-0 mesa-vulkan-drivers
+
+      - name: Capture the released writer's bytes
+        id: capture
+        if: steps.release.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          xvfb-run -a python3 .github/scripts/release-fixtures.py "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.capture.outputs.version != ''
+        with:
+          name: release-fixtures-${{ steps.capture.outputs.version }}
+          path: |
+            crates/engine/testdata/releases/${{ steps.capture.outputs.version }}.rgis
+            crates/engine/testdata/releases/${{ steps.capture.outputs.version }}.prefs.json
+            crates/engine/testdata/releases/README.md
+          if-no-files-found: error
+
+  pull-request:
+    needs: capture
+    if: needs.capture.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: release-fixture-pr-${{ needs.capture.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.capture.outputs.version }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.capture.outputs.base }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-fixtures-${{ needs.capture.outputs.version }}
+          path: crates/engine/testdata/releases
+
+      - name: Open a snapshot pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="release-fixtures/$VERSION"
+          title="test(engine): add $VERSION release fixtures"
+          if [[ -n "$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json number --jq '.[].number')" ]]; then
+            echo "A pull request already exists for $VERSION."
+            exit 0
+          fi
+          fixtures=crates/engine/testdata/releases
+          paths=("$fixtures/$VERSION.rgis" "$fixtures/$VERSION.prefs.json" "$fixtures/README.md")
+          git add -- "${paths[@]}"
+          gh auth setup-git
+          remote=$(git ls-remote --heads origin "refs/heads/$branch")
+          if [[ -z "$remote" ]]; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "$title"
+            git push origin "HEAD:refs/heads/$branch"
+          else
+            # Reuse a branch from a previous attempt to open the same PR.
+            git fetch --no-tags origin "refs/heads/$branch"
+            if ! git diff --cached --quiet FETCH_HEAD -- "${paths[@]}"; then
+              echo "::error::Existing $branch differs from the new capture. The new files are attached to this run."
+              exit 1
+            fi
+          fi
+
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$branch" \
+            --title "$title" --body-file - <<'BODY'
+          ## Summary
+
+          Add the saved project and desktop preferences written by the published Linux x86-64 release. The fixture README records the verified archive checksum.
+
+          ## Testing
+
+          Approve workflows to run from the merge box to start the required CI checks. If GitHub shows no approval banner or checks, close and reopen this PR.
+
+          ## UI evidence
+
+          No visible UI change.
+          BODY
