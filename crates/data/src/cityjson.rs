@@ -280,7 +280,7 @@ pub(crate) fn read_member(file_name: &str, bytes: &[u8], given: Option<Crs>) -> 
 /// before `given`.
 fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool) -> Result<Vec<(Dataset, ReadReport)>> {
     if bytes.len() as u64 > crate::io::MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
+        return Err(DataError::Format(crate::io::file_size_error(file_name, crate::io::MAX_BYTES)));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| DataError::Format(format!("{file_name} is not UTF-8 text")))?;
     let leaf = std::path::Path::new(file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");

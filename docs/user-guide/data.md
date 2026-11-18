@@ -104,16 +104,20 @@ ones from, with the coordinate system (such as `EPSG:2263`) and the separator (c
 the columns again); `info.fileColumns` lists them for scripts. Add Data finds them itself
 (columns named like longitude/latitude, including GTFS `stop_lon`/`stop_lat`, easting/northing or
 geometry, and EWKT's `SRID=`). With no projected coordinate system or explicit column choices,
-a specific longitude/latitude pair is preferred over generic X/Y when it gives in-range,
-non-0,0 positions on at least as many rows as the first pair gives finite positions.
-That pair is used for the whole file.
+RustGIS compares complete longitude/latitude and X/Y pairs regardless of column order.
+X/Y includes planar aliases such as easting/northing. RustGIS counts in-range, non-0,0 positions
+for each pair, preferring longitude/latitude when the counts are equal and nonzero.
+That pair is used for the whole file. Automatic detection keeps X/Y and longitude/latitude
+separate. If it finds candidate names for both axes but no matching pair or WKT column,
+the file opens as a table with a notice naming the candidates so you can choose x and y.
 The published aliases `Longitude Decimal Degrees`/`Latitude Decimal Degrees` and
-`Longitutde`/`Lattitude` are recognised too. The dialog checks the first 1,000 rows of delimited
-text, or every row of a spreadsheet, to pick defaults. It recomputes unchanged defaults when you
+`Longitutde`, `Longtitude` and `Lattitude` are recognised too. The dialog checks the first 1,000 rows
+of delimited text, or every row of a spreadsheet, to pick defaults. It recomputes unchanged defaults when you
 leave the coordinate-system box or press Enter; columns you picked stay picked. With a projected
 coordinate system, defaults prefer X/Y or easting/northing columns when the file also has
 longitude/latitude columns.
-Add Data checks all rows. Coordinates still outside degree ranges are counted in a
+If you leave the suggested columns untouched, Add Data checks all rows before choosing the pair.
+Coordinates still outside degree ranges are counted in a
 notice. Points placed at exactly 0,0 are also counted in a notice: these often mean missing
 coordinates, but the points are kept. A CSV without coordinate columns, or a layer without geometry, opens as a
 standalone table, listed under the map in Layers; right-click it to open or remove it. Tables

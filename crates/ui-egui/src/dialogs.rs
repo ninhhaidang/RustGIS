@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::RustGisApp;
 use crate::theme::{Tokens, semibold};
+use crate::{RustGisApp, i18n};
 
 #[derive(Default)]
 pub struct Dialogs {
@@ -717,7 +717,8 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
             }
         }
         if let Some(e) = &app.dialogs.error {
-            ui.label(egui::RichText::new(e).color(t.red));
+            let translated = i18n::file_size_error(e, i18n::fmt);
+            ui.label(egui::RichText::new(translated.as_deref().unwrap_or(e)).color(t.red));
         }
         if let Some(i) = &app.dialogs.info {
             ui.label(egui::RichText::new(i).color(t.green));
@@ -859,6 +860,7 @@ pub fn open_csv(app: &mut RustGisApp, name: &str, source: CsvSource) -> Result<V
     app.run("ui.dialog", json!({"name": "addCsv"}))?;
     let file = CsvFile { name: name.to_string(), source };
     app.dialogs.mode = "auto";
+    app.dialogs.csv_picked = false;
     let found = csv_columns(&file, "auto", &app.dialogs.text);
     show_columns(&mut app.dialogs, found);
     app.dialogs.csv = Some(file);
@@ -1023,7 +1025,12 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     let sheet = rustgis_engine::data::sheets::is_sheet_name(&name);
     let shown = std::path::Path::new(&name).file_name().and_then(|n| n.to_str()).unwrap_or(&name).to_string();
     ui.label(egui::RichText::new(shown).strong());
-    ui.label(egui::RichText::new(tl!("Columns named like longitude/latitude, easting/northing or geometry are picked for you.")).weak());
+    ui.label(
+        egui::RichText::new(tl!(
+            "Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself."
+        ))
+        .weak(),
+    );
     let mut reread = false;
     let mut crs_committed = false;
     egui::Grid::new("csv").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
@@ -1037,20 +1044,24 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                 _ => &mut d.c,
             };
             let before = v.clone();
-            let selected = if v.is_empty() { tl!("None").to_string() } else { v.clone() };
-            egui::ComboBox::from_id_salt(("csv_column", i))
-                .selected_text(selected)
-                .width(240.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(v, String::new(), tl!("None"));
-                    for c in &columns {
-                        ui.selectable_value(v, c.clone(), c.as_str());
-                    }
-                })
-                .response
-                .labelled_by(input_label.id);
+            let selected = if !d.csv_picked {
+                tl!("Automatic").to_string()
+            } else if v.is_empty() {
+                tl!("None").to_string()
+            } else {
+                v.clone()
+            };
+            let menu = egui::ComboBox::from_id_salt(("csv_column", i)).selected_text(selected).width(240.0).show_ui(ui, |ui| {
+                let mut picked = ui.selectable_value(v, String::new(), tl!("None")).clicked();
+                for c in &columns {
+                    picked |= ui.selectable_value(v, c.clone(), c.as_str()).clicked();
+                }
+                picked
+            });
+            menu.response.labelled_by(input_label.id);
+            // Selecting the suggested name also pins it as an explicit choice.
+            d.csv_picked |= menu.inner.unwrap_or(false);
             // x/y columns or a WKT column, not both.
-            d.csv_picked |= *v != before;
             if *v != before && !v.is_empty() {
                 if i == 2 {
                     (d.a, d.b) = (String::new(), String::new());
@@ -1091,7 +1102,7 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     });
     // Only untouched defaults follow a committed CRS edit (Enter also ends a single-line edit).
     // Parsing a PROJ string registers it, so never parse while the user is still typing.
-    // Another separator keeps the previous picks when its columns still exist.
+    // Another separator keeps explicit picks when their columns still exist.
     let crs = app.dialogs.text.trim();
     if (reread || (crs_committed && !app.dialogs.csv_picked))
         && let Some(file) = &app.dialogs.csv
@@ -1099,16 +1110,21 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         let found = csv_columns(file, app.dialogs.mode, crs);
         let picked = [app.dialogs.a.clone(), app.dialogs.b.clone(), app.dialogs.c.clone()];
         show_columns(&mut app.dialogs, found);
-        if reread {
+        if reread && app.dialogs.csv_picked {
             keep_picked(&mut app.dialogs, picked);
         }
     }
     buttons(app, ui, "Add", |app| {
         let mut p = json!({});
-        for (key, v) in [("x", &app.dialogs.a), ("y", &app.dialogs.b), ("wkt", &app.dialogs.c), ("crs", &app.dialogs.text)] {
-            if !v.trim().is_empty() {
-                p[key] = json!(v.trim());
+        if app.dialogs.csv_picked {
+            for (key, v) in [("x", &app.dialogs.a), ("y", &app.dialogs.b), ("wkt", &app.dialogs.c)] {
+                if !v.trim().is_empty() {
+                    p[key] = json!(v.trim());
+                }
             }
+        }
+        if !app.dialogs.text.trim().is_empty() {
+            p["crs"] = json!(app.dialogs.text.trim());
         }
         if app.dialogs.mode != "auto" && !sheet {
             p["delimiter"] = json!(app.dialogs.mode);
@@ -3144,6 +3160,37 @@ mod tests {
             // Enter also confirms Add through the dialog's usual OK/Cancel row.
             assert_eq!(h.state().dialogs.open, if pick == Some("None") { Some("addCsv") } else { None });
             assert!(h.state().dialogs.error.is_none());
+        }
+    }
+
+    /// The dialog previews the first thousand rows and only submits explicit column picks.
+    #[test]
+    fn delimited_suggestions_use_whole_file_inference_until_picked() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut csv = String::from("Longitude,Latitude,X,Y\n");
+        csv.push_str(&"-93,44,20,40\n".repeat(1_000));
+        csv.push_str(",,21,41\n");
+        for explicit in [false, true] {
+            let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+            open_csv(&mut app, "points.csv", CsvSource::Bytes(csv.as_bytes().to_vec())).unwrap();
+            let mut h = app_harness(app);
+            h.run_steps(3);
+            assert_eq!((&*h.state().dialogs.a, &*h.state().dialogs.b), ("Longitude", "Latitude"));
+            assert_eq!(h.get_by_role_and_label(Role::ComboBox, "X column").value().as_deref(), Some("Automatic"));
+            if explicit {
+                h.get_by_role_and_label(Role::ComboBox, "X column").click();
+                h.run_steps(2);
+                h.get_by_role_and_label(Role::Button, "Longitude").click();
+                h.run_steps(2);
+                assert_eq!(h.get_by_role_and_label(Role::ComboBox, "X column").value().as_deref(), Some("Longitude"));
+            }
+            h.get_by_label("Add").click();
+            h.run_steps(3);
+            assert!(h.state().dialogs.error.is_none(), "{:?}", h.state().dialogs.error);
+            let features = &h.state().session.map().layers.last().unwrap().dataset.features;
+            assert_eq!(features.len(), 1_001);
+            assert_eq!(features.last().unwrap().geometry.is_some(), !explicit);
         }
     }
 

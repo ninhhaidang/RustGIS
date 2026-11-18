@@ -145,10 +145,10 @@ struct Original {
     cpg: Option<(PathBuf, Vec<u8>)>,
 }
 
-/// Reads the file at `p`, `None` when it isn't there; refuses one past what a reader takes.
-fn read_part(p: &Path) -> Result<Option<Vec<u8>>> {
+/// Reads an original file at `p`, `None` when absent. The caller supplies format-specific size advice.
+fn read_part(p: &Path, size_error: fn(&str, u64) -> String) -> Result<Option<Vec<u8>>> {
     match std::fs::metadata(p) {
-        Ok(m) if m.len() > crate::io::MAX_BYTES => Err(DataError::Format(format!("{} is too large to read", p.display()))),
+        Ok(m) if m.len() > crate::io::MAX_BYTES => Err(DataError::Format(size_error(&p.to_string_lossy(), crate::io::MAX_BYTES))),
         Ok(_) => Ok(Some(std::fs::read(p)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
@@ -159,16 +159,17 @@ impl Original {
     /// Reads the parts of the Shapefile at `path`: its `.shp` and `.dbf` must be there; its
     /// `.shx`, `.prj` and `.cpg` (in whichever case it is spelled) may be.
     fn read(path: &Path) -> Result<Original> {
+        let read = |part: &Path| read_part(part, crate::io::shapefile_size_error);
         let missing = |ext: &str| refused(path, format!("its .{ext} isn't there"));
-        let shp = read_part(path)?.ok_or_else(|| missing("shp"))?;
+        let shp = read(path)?.ok_or_else(|| missing("shp"))?;
         let dbf_path = crate::io::dbf_sidecar(path);
-        let dbf = read_part(&dbf_path)?.ok_or_else(|| missing("dbf"))?;
-        let shx = read_part(&path.with_extension("shx"))?;
-        let prj = read_part(&path.with_extension("prj"))?;
+        let dbf = read(&dbf_path)?.ok_or_else(|| missing("dbf"))?;
+        let shx = read(&path.with_extension("shx"))?;
+        let prj = read(&path.with_extension("prj"))?;
         let mut cpg = None;
         for ext in crate::dbf::CPG_SPELLINGS {
             let p = path.with_extension(ext);
-            if let Some(bytes) = read_part(&p)? {
+            if let Some(bytes) = read(&p)? {
                 cpg = Some((p, bytes));
                 break;
             }
@@ -910,6 +911,23 @@ mod tests {
         shapefile(&ds, &path, &sync).unwrap();
         // A second publisher that loaded the old baseline now sees the committed change.
         assert!(shapefile(&ds, &path, &sync).err().unwrap().to_string().contains("changed since the layer was read"));
+    }
+
+    /// The publisher's original-file read stops before loading an oversized attribute sidecar.
+    #[test]
+    fn oversized_shapefile_dbf_read_for_publish_gives_dataset_advice() {
+        use crate::io::{FileSizeAdvice, MAX_BYTES, file_size_error_args};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parcels.shp");
+        let dbf = path.with_extension("dbf");
+        written(&parcels(), &path);
+        std::fs::OpenOptions::new().write(true).open(&dbf).unwrap().set_len(MAX_BYTES + 1).unwrap();
+
+        let error = Original::read(&path).err().unwrap().to_string();
+        let limit = (MAX_BYTES >> 20).to_string();
+        assert_eq!(file_size_error_args(&error), Some((dbf.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Shapefile)));
+        assert_eq!(std::fs::metadata(&dbf).unwrap().len(), MAX_BYTES + 1);
     }
 
     /// A duplicated descriptor must not keep a finished publisher's lock alive.

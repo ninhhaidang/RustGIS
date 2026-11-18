@@ -27,7 +27,7 @@ pub fn geojson(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published> 
     if ds.crs.is_some_and(|c| c != crate::raster::Crs::LonLat) {
         return Err(refused(path, "publishing GeoJSON requires a layer read in longitude/latitude"));
     }
-    let bytes = super::read_part(path)?.ok_or_else(|| refused(path, "the source file is missing"))?;
+    let bytes = super::read_part(path, crate::io::file_size_error)?.ok_or_else(|| refused(path, "the source file is missing"))?;
     let text = std::str::from_utf8(&bytes).map_err(|e| refused(path, format!("its text isn't UTF-8: {e}")))?;
     // Parse with serde's depth limit before the raw duplicate-key traversal below.
     let original: Json = serde_json::from_str(text).map_err(|e| refused(path, e))?;
@@ -383,6 +383,21 @@ mod tests {
         let ds = crate::io::read_path(&path).unwrap().0;
         let sync = Synced { files: FileSync::read(&path).unwrap(), rows: crate::sync::rows_digest(&ds).unwrap() };
         (dir, path, ds, sync)
+    }
+
+    /// GeoJSON publishing refuses an oversized original with vector recovery advice.
+    #[test]
+    fn oversized_geojson_publish_gives_vector_advice() {
+        use crate::io::{FileSizeAdvice, MAX_BYTES, file_size_error_args};
+
+        let (_dir, path, ds, mut sync) = loaded(SOURCE);
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(MAX_BYTES + 1).unwrap();
+        sync.files = FileSync::read(&path).unwrap();
+
+        let error = geojson(&ds, &path, &sync).err().unwrap().to_string();
+        let limit = (MAX_BYTES >> 20).to_string();
+        assert_eq!(file_size_error_args(&error), Some((path.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Vector)));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), MAX_BYTES + 1);
     }
 
     /// Mutates an attribute through the shared feature container's copy-on-write API.

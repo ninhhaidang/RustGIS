@@ -2009,6 +2009,7 @@ fn delimited_text_dialog_lists_the_picked_files_columns() {
     {
         let d = &mut h.state_mut().dialogs;
         (d.a, d.b, d.text) = ("east".into(), "north".into(), "EPSG:2263".into());
+        d.csv_picked = true;
     }
     h.step();
     h.step();

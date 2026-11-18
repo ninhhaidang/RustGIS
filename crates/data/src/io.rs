@@ -10,6 +10,55 @@ use crate::{Coord, DataError, Dataset, Field, FieldType, Geometry, GeometryType,
 /// Largest file read into memory (256 MiB). Parsing JSON can take several times the file size.
 pub const MAX_BYTES: u64 = 256 << 20;
 
+const FILE_SIZE_LIMIT_START: &str = " is too large to open (limit ";
+const VECTOR_SIZE_LIMIT_END: &str =
+    " MiB). Split it into smaller files, or convert vector data to FlatGeobuf or GeoPackage and open it on the desktop.";
+const SHAPEFILE_SIZE_LIMIT_END: &str =
+    " MiB). Split the whole Shapefile, or convert it to FlatGeobuf or GeoPackage and open it on the desktop.";
+const SPLIT_SIZE_LIMIT_END: &str = " MiB). Split the data into smaller files and import each one separately.";
+
+/// The whole-file refusal, using the reader's limit and recovery advice for the file type.
+pub fn file_size_error(name: &str, limit: u64) -> String {
+    let ext = Path::new(name).extension();
+    if ext.is_some_and(|ext| ext.eq_ignore_ascii_case("shp") || ext.eq_ignore_ascii_case("shx")) {
+        return shapefile_size_error(name, limit);
+    }
+    let dbf = ext.is_some_and(|ext| ext.eq_ignore_ascii_case("dbf"));
+    let table = is_delimited_name(name) || crate::sheets::is_sheet_name(name) || dbf;
+    let raster = crate::raster::is_raster_name(name) || crate::raster::is_jpeg2000_name(name) || crate::mbtiles::is_mbtiles_name(name);
+    let end = if table || raster || crate::source::is_source_name(name) { SPLIT_SIZE_LIMIT_END } else { VECTOR_SIZE_LIMIT_END };
+    format!("{name}{FILE_SIZE_LIMIT_START}{}{end}", limit >> 20)
+}
+
+/// Names the refused part and gives recovery advice for the whole Shapefile.
+pub(crate) fn shapefile_size_error(name: &str, limit: u64) -> String {
+    format!("{name}{FILE_SIZE_LIMIT_START}{}{SHAPEFILE_SIZE_LIMIT_END}", limit >> 20)
+}
+
+/// Recovery instructions for a refused whole-file read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileSizeAdvice {
+    Split,
+    Vector,
+    Shapefile,
+}
+
+/// Recovers a whole-file refusal's file name, size limit and recovery instructions.
+pub fn file_size_error_args(error: &str) -> Option<(&str, &str, FileSizeAdvice)> {
+    for (end, advice) in [
+        (SPLIT_SIZE_LIMIT_END, FileSizeAdvice::Split),
+        (VECTOR_SIZE_LIMIT_END, FileSizeAdvice::Vector),
+        (SHAPEFILE_SIZE_LIMIT_END, FileSizeAdvice::Shapefile),
+    ] {
+        if let Some(body) = error.strip_suffix(end) {
+            let (name, limit) = body.rsplit_once(FILE_SIZE_LIMIT_START)?;
+            limit.parse::<u64>().ok()?;
+            return Some((name, limit, advice));
+        }
+    }
+    None
+}
+
 /// File types the readers understand, for open dialogs.
 pub const READ_EXTENSIONS: &[&str] = &[
     "geojson",
@@ -110,7 +159,7 @@ fn read_city_member(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<V
 /// track points. Other files give their one layer.
 pub fn read_layers(file_name: &str, bytes: &[u8]) -> Result<Vec<LayerRead>> {
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
+        return Err(DataError::Format(file_size_error(file_name, MAX_BYTES)));
     }
     let ext = Path::new(file_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let plain =
@@ -252,7 +301,7 @@ pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<(Dataset, ReadReport)
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
+        return Err(DataError::Format(file_size_error(file_name, MAX_BYTES)));
     }
     let text = || std::str::from_utf8(bytes).map_err(|_| DataError::Format(format!("{file_name} is not UTF-8 text")));
     let mut out = match ext.as_str() {
@@ -294,7 +343,7 @@ pub fn read_owned(file_name: &str, bytes: Vec<u8>) -> Result<(Dataset, ReadRepor
         return read_bytes(file_name, &bytes);
     }
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
+        return Err(DataError::Format(file_size_error(file_name, MAX_BYTES)));
     }
     let mut out = if crate::lidar::is_lidar_name(file_name) {
         let name = Path::new(file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
@@ -342,14 +391,7 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
             report.messages.extend(notes);
             (ds, report)
         }
-        "shp" => {
-            check_size(path)?;
-            let dbf = path.with_extension("dbf");
-            if dbf.exists() {
-                check_size(&dbf)?;
-            }
-            read_shapefile(path, &name)?
-        }
+        "shp" => read_shapefile_in(path, &name, None)?,
         "zip" | "kml" | "kmz" | "gpx" | "gml" | "dxf" | "pbf" | "topojson" => {
             check_size(path)?;
             read_bytes(&path.display().to_string(), &crate::provenance::read(path)?)?
@@ -384,10 +426,16 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
     Ok(out)
 }
 
+/// Refuses an oversized file before any attempt to read it into memory.
 fn check_size(path: &Path) -> Result<()> {
+    check_size_with(path, file_size_error)
+}
+
+/// Refuses an oversized file with advice supplied by its reader.
+fn check_size_with(path: &Path, message: impl FnOnce(&str, u64) -> String) -> Result<()> {
     let len = std::fs::metadata(path)?.len();
     if len > MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({len} bytes)")));
+        return Err(DataError::Format(message(&path.to_string_lossy(), MAX_BYTES)));
     }
     Ok(())
 }
@@ -1584,10 +1632,10 @@ impl<W: std::io::Write> GeoJsonWriter<W> {
 
 /// Longitude and latitude columns, recognised in any order; CSV export names its coordinate
 /// columns with the first of each that no field has.
-const LON_NAMES: &[&str] = &["longitude", "lon", "lng", "long", "x", "lon_dd", "longitude_dd", "stop_lon"];
-const LAT_NAMES: &[&str] = &["latitude", "lat", "y", "lat_dd", "latitude_dd", "stop_lat"];
+const LON_NAMES: &[&str] = &["longitude", "lon", "lng", "long", "lon_dd", "longitude_dd", "stop_lon"];
+const LAT_NAMES: &[&str] = &["latitude", "lat", "lat_dd", "latitude_dd", "stop_lat"];
 /// Further spellings seen in published files, recognised on reading but never written.
-const LON_ALIASES: &[&str] = &["longitude decimal degrees", "longitutde"];
+const LON_ALIASES: &[&str] = &["longitude decimal degrees", "longitutde", "longtitude"];
 const LAT_ALIASES: &[&str] = &["latitude decimal degrees", "lattitude"];
 
 /// Projected coordinate columns, recognised as well as longitude/latitude ones.
@@ -1651,53 +1699,69 @@ pub fn sniff_delimiter(text: &str) -> u8 {
     seps.get(pick).copied().unwrap_or(b',')
 }
 
-/// The x/y columns found by name, as a pair from one family: longitude/latitude, else
-/// easting/northing.
-fn found_xy(headers: &[String]) -> Option<(usize, usize)> {
-    let find = |names: &[&str], aliases: &[&str]| {
-        headers.iter().position(|h| {
-            let name = h.trim().to_ascii_lowercase();
-            names.contains(&name.as_str()) || aliases.contains(&name.as_str())
-        })
-    };
-    find(LON_NAMES, LON_ALIASES).zip(find(LAT_NAMES, LAT_ALIASES)).or_else(|| find(X_NAMES, &[]).zip(find(Y_NAMES, &[])))
+/// Finds a complete X/Y pair, falling back to planar aliases.
+fn found_non_geographic_xy(headers: &[String]) -> Option<(usize, usize)> {
+    let find = |name: &str| headers.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
+    let alias = |names: &[&str]| headers.iter().position(|h| names.iter().any(|name| h.trim().eq_ignore_ascii_case(name)));
+    find("x").zip(find("y")).or_else(|| alias(X_NAMES).zip(alias(Y_NAMES))).or_else(|| found_planar_xy(headers))
 }
 
 /// A projected system prefers explicitly planar names over longitude/latitude, regardless of
 /// header order. With no planar pair, retain the ordinary named-pair fallback.
 fn found_projected_xy(headers: &[String]) -> Option<(usize, usize)> {
+    found_planar_xy(headers).or_else(|| found_geographic_xy(headers))
+}
+
+/// Finds both axes among planar aliases and generic X/Y names.
+fn found_planar_xy(headers: &[String]) -> Option<(usize, usize)> {
     let find = |names: &[&str], generic: &str| {
         headers.iter().position(|h| {
             let name = h.trim().to_ascii_lowercase();
             name == generic || names.contains(&name.as_str())
         })
     };
-    find(X_NAMES, "x").zip(find(Y_NAMES, "y")).or_else(|| found_xy(headers))
+    find(X_NAMES, "x").zip(find(Y_NAMES, "y"))
 }
 
-/// A specific geographic pair, excluding generic X/Y aliases.
+/// A complete longitude/latitude pair, including published aliases.
 fn found_geographic_xy(headers: &[String]) -> Option<(usize, usize)> {
-    let find = |names: &[&str], aliases: &[&str], generic: &str| {
-        headers.iter().position(|h| {
-            let name = h.trim().to_ascii_lowercase();
-            name != generic && (names.contains(&name.as_str()) || aliases.contains(&name.as_str()))
-        })
-    };
-    find(LON_NAMES, LON_ALIASES, "x").zip(find(LAT_NAMES, LAT_ALIASES, "y"))
+    let find = |names: &[&str]| headers.iter().position(|h| names.iter().any(|name| h.trim().eq_ignore_ascii_case(name)));
+    find(LON_NAMES).or_else(|| find(LON_ALIASES)).zip(find(LAT_NAMES).or_else(|| find(LAT_ALIASES)))
 }
 
-/// Prefers a specific longitude/latitude pair when it has at least as many usable, nonzero
-/// degree positions as the first
-/// pair has finite positions. The choice covers the whole file;
-/// explicit columns and projected systems bypass this inference.
-fn found_xy_in_rows(headers: &[String], rows: &[Vec<String>]) -> Result<Option<(usize, usize)>> {
-    let Some(xy) = found_xy(headers) else { return Ok(None) };
-    let Some(geographic) = found_geographic_xy(headers) else { return Ok(Some(xy)) };
-    if xy == geographic {
-        return Ok(Some(xy));
+/// Names candidate columns when both axes are present without a matching pair.
+fn unmatched_coordinates_note(headers: &[String]) -> Option<String> {
+    let mut candidates = Vec::new();
+    let mut has_x = false;
+    let mut has_y = false;
+    for header in headers.iter().map(|h| h.trim()) {
+        let name = header.to_ascii_lowercase();
+        let x = name == "x" || [LON_NAMES, LON_ALIASES, X_NAMES].iter().any(|names| names.contains(&name.as_str()));
+        let y = name == "y" || [LAT_NAMES, LAT_ALIASES, Y_NAMES].iter().any(|names| names.contains(&name.as_str()));
+        if x || y {
+            candidates.push(header);
+            has_x |= x;
+            has_y |= y;
+        }
     }
-    let degrees = |p: Coord| p.x.abs() <= 180.0 && p.y.abs() <= 90.0;
-    let (mut positions, mut usable) = (0usize, 0usize);
+    (has_x && has_y).then(|| {
+        format!("Opened as a table. No matching coordinate pair among {}. Choose x and y to import points.", candidates.join(", "))
+    })
+}
+
+/// Whether a position can be counted as evidence for inferring geographic coordinate columns.
+fn usable_degree_point(p: Coord) -> bool {
+    p.x.abs() <= 180.0 && p.y.abs() <= 90.0 && (p.x != 0.0 || p.y != 0.0)
+}
+
+/// Compares complete pairs by usable degree positions regardless of header order, preferring
+/// longitude/latitude on a tie. With no usable positions, retains finite X/Y for the import notices.
+/// Explicit columns and projected systems bypass this inference.
+fn found_xy_in_rows(headers: &[String], rows: &[Vec<String>]) -> Result<Option<(usize, usize)>> {
+    let Some(xy) = found_non_geographic_xy(headers) else { return Ok(found_geographic_xy(headers)) };
+    let Some(geographic) = found_geographic_xy(headers) else { return Ok(Some(xy)) };
+    let (mut xy_usable, mut geographic_usable) = (0usize, 0usize);
+    let mut xy_finite = false;
     for row in rows {
         crate::progress::check()?;
         let point = |(x, y): (usize, usize)| {
@@ -1706,11 +1770,13 @@ fn found_xy_in_rows(headers: &[String], rows: &[Vec<String>]) -> Result<Option<(
             let p = Coord::new(x, y);
             p.is_finite().then_some(p)
         };
-        let first = point(xy);
-        positions += usize::from(first.is_some());
-        usable += usize::from(point(geographic).is_some_and(|p| degrees(p) && (p.x != 0.0 || p.y != 0.0)));
+        let xy_point = point(xy);
+        xy_finite |= xy_point.is_some();
+        xy_usable += usize::from(xy_point.is_some_and(usable_degree_point));
+        geographic_usable += usize::from(point(geographic).is_some_and(usable_degree_point));
     }
-    Ok(Some(if usable >= positions { geographic } else { xy }))
+    let prefer_geographic = geographic_usable >= xy_usable && (geographic_usable > 0 || !xy_finite);
+    Ok(Some(if prefer_geographic { geographic } else { xy }))
 }
 
 /// A WKT column found: one named like geometry whose first value reads as WKT.
@@ -1973,7 +2039,7 @@ pub fn read_delimited_bytes(file_name: &str, bytes: &[u8], opts: &CsvOptions) ->
 /// Reads an archive member without resetting the retained-table allowance.
 fn read_delimited_bytes_budget(file_name: &str, bytes: &[u8], opts: &CsvOptions, budget: &mut usize) -> Result<(Dataset, ReadReport)> {
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(DataError::Format(format!("{file_name}: file exceeds the {MAX_BYTES}-byte limit")));
+        return Err(DataError::Format(file_size_error(file_name, MAX_BYTES)));
     }
     if is_gzip_text_name(file_name) {
         return read_gzip_text_budget(bytes, file_name, opts, budget);
@@ -2065,6 +2131,12 @@ pub(crate) fn read_rows(
         })
         .collect();
     let mut report = ReadReport { skipped: malformed, ..ReadReport::default() };
+    if xy.is_none()
+        && wkt.is_none()
+        && let Some(note) = unmatched_coordinates_note(headers)
+    {
+        report.messages.push(note);
+    }
     if malformed > 0 {
         report.messages.push(format!("{malformed} rows were malformed and skipped"));
     }
@@ -2375,12 +2447,7 @@ fn csv_cell(v: &Value) -> String {
 fn csv_coordinate_names(fields: &[Field]) -> [String; 2] {
     let taken = |name: &str| fields.iter().any(|f| f.name.trim().eq_ignore_ascii_case(name));
     let pick = |base: &str, known: &[&str]| {
-        let name = known
-            .iter()
-            .filter(|n| !matches!(**n, "x" | "y"))
-            .map(|n| n.to_string())
-            .chain((1..).map(|i| format!("{base}_{i}")))
-            .find(|n| !taken(n));
+        let name = known.iter().map(|n| n.to_string()).chain((1..).map(|i| format!("{base}_{i}"))).find(|n| !taken(n));
         name.unwrap_or_default()
     };
     [pick("longitude", LON_NAMES), pick("latitude", LAT_NAMES)]
@@ -2407,8 +2474,7 @@ impl<W: std::io::Write> CsvWriter<W> {
         let point = geometry_type == GeometryType::Point;
         let mut head = Vec::new();
         if point {
-            // The coordinate columns come first, so reading takes them rather than a field
-            // named `lat` or `x`.
+            // The coordinate columns come first, before any attributes using recognised names.
             head.extend(csv_coordinate_names(fields));
         }
         head.extend(fields.iter().map(|f| f.name.clone()));
@@ -2460,23 +2526,18 @@ pub(crate) fn dbf_sidecar(path: &Path) -> std::path::PathBuf {
         .unwrap_or_else(|| path.with_extension("dbf"))
 }
 
-/// Reads a loose Shapefile using its sidecar CRS, retaining the default reader's behavior.
-fn read_shapefile(path: &Path, name: &str) -> Result<(Dataset, ReadReport)> {
-    read_shapefile_in(path, name, None)
-}
-
 /// Reads a Shapefile with an optional source CRS replacing its `.prj`, before any geometry is
 /// converted. This changes only interpretation; the files on disk are never modified.
 pub fn read_shapefile_in(path: &Path, name: &str, crs: Option<Crs>) -> Result<(Dataset, ReadReport)> {
-    check_size(path)?;
+    check_size_with(path, shapefile_size_error)?;
     let dbf = dbf_sidecar(path);
     if !dbf.is_file() {
         return Err(DataError::Format(format!("Shapefile: {} is missing", dbf.display())));
     }
-    check_size(&dbf)?;
+    check_size_with(&dbf, shapefile_size_error)?;
     let shx = path.with_extension("shx");
     if shx.is_file() {
-        check_size(&shx)?;
+        check_size_with(&shx, shapefile_size_error)?;
     }
     let mut notes = Vec::new();
     let parts = ShapefileParts {
@@ -2696,7 +2757,7 @@ pub fn read_zip_in(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Ve
 /// Delimited members share one allowance, including gzip members whose text is nested in ZIP.
 fn read_zip_budget(file_name: &str, bytes: &[u8], crs: Option<Crs>, budget: &mut usize) -> Result<Vec<(Dataset, ReadReport)>> {
     if bytes.len() as u64 > MAX_BYTES {
-        return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
+        return Err(DataError::Format(file_size_error(file_name, MAX_BYTES)));
     }
     if let Some(c) = crs {
         c.transformer().map_err(DataError::Format)?;
@@ -3732,17 +3793,25 @@ pub struct CsvLosses {
     /// Written with coordinate columns, as a point layer: a streamed export knows this from its
     /// chunks when the layer declares no type ([`CsvLosses::coordinates_note`]).
     pub points: bool,
+    /// Coordinate rows that can let a competing attribute pair win on reimport.
+    unusable_points: usize,
 }
 
 impl CsvLosses {
     /// The losses of `features` in a layer of type `gt`; a streamed export adds up its chunks'.
     pub fn of(features: &[crate::Feature], gt: GeometryType) -> Self {
         let mut out = Self { points: gt == GeometryType::Point, ..Self::default() };
-        for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
+        for feature in features {
+            let geometry = feature.geometry.as_ref();
+            let point = if out.points { geometry.and_then(Geometry::label_point) } else { None };
+            if out.points && !point.is_some_and(usable_degree_point) {
+                out.unusable_points += 1;
+            }
+            let Some(g) = geometry else { continue };
             match (gt, g) {
                 (GeometryType::Point, Geometry::Point(_)) => {}
                 // No point to write: its coordinate cells are left empty.
-                (GeometryType::Point, g) if g.label_point().is_none() => out.unwritten += 1,
+                (GeometryType::Point, _) if point.is_none() => out.unwritten += 1,
                 (GeometryType::Point, Geometry::MultiPoint(v)) if v.len() <= 1 => {}
                 (GeometryType::Point, _) => out.as_one_point += 1,
                 // A layer of lines or polygons, or one that declares no type: no coordinates.
@@ -3769,24 +3838,43 @@ impl CsvLosses {
         notes
     }
 
-    /// What a CSV export with these losses says when reading the file back wouldn't take its
-    /// coordinate columns: its `fields` have every name reading takes for a longitude or a
-    /// latitude, and reading takes those fields instead. `None` otherwise.
+    /// Warns when adding the CSV back may use attributes for geometry. This can happen when the
+    /// coordinate names are all taken or when unusable coordinate rows let a competing pair win.
     pub fn coordinates_note(self, fields: &[Field], target: &str) -> Option<String> {
         if !self.points {
             return None;
         }
         let header: Vec<String> = csv_coordinate_names(fields).into_iter().chain(fields.iter().map(|f| f.name.clone())).collect();
-        let found = found_geographic_xy(&header).or_else(|| found_xy(&header));
-        if found == Some((0, 1)) {
-            return None;
-        }
+        let alternative = found_non_geographic_xy(&header);
+        let geographic = found_geographic_xy(&header);
+        let found = geographic.or(alternative);
         let name = |i: usize| dbf_notice_name(header.get(i).map_or("", String::as_str));
-        let read = match found {
-            Some((x, y)) => format!("reads columns '{}' and '{}' as the coordinates, which moves the points", name(x), name(y)),
-            None => "reads no coordinates".to_string(),
-        };
         let target: String = target.chars().map(dbf_notice_char).collect();
+        if found == Some((0, 1)) {
+            return alternative.filter(|_| self.unusable_points > 0).map(|(x, y)| {
+                format!(
+                    "{target}: {} of the exported coordinate rows lack a usable longitude/latitude position; adding the file back may read columns '{}' and '{}' as coordinates. To use the exported geometry, pick '{}' and '{}'",
+                    self.unusable_points,
+                    name(x),
+                    name(y),
+                    name(0),
+                    name(1)
+                )
+            });
+        }
+        let read = match (geographic, alternative) {
+            (Some((lon, lat)), Some((x, y))) => format!(
+                "may read '{}' and '{}' or '{}' and '{}' as the coordinates, which can move the points",
+                name(lon),
+                name(lat),
+                name(x),
+                name(y)
+            ),
+            _ => match found {
+                Some((x, y)) => format!("reads columns '{}' and '{}' as the coordinates, which moves the points", name(x), name(y)),
+                None => "reads no coordinates".to_string(),
+            },
+        };
         Some(format!(
             "{target}: the fields have every name read as a longitude or latitude, so the coordinates are in columns '{}' and '{}'; adding the file back {read} unless those columns are picked",
             name(0),
@@ -3801,6 +3889,7 @@ impl std::ops::AddAssign for CsvLosses {
         self.as_one_point += other.as_one_point;
         self.unwritten += other.unwritten;
         self.points |= other.points;
+        self.unusable_points += other.unusable_points;
     }
 }
 
@@ -5407,6 +5496,43 @@ mod tests {
         assert_eq!(read_csv("stop_lon,stop_name\n-89.9,Main\n", "stops").unwrap().0.geometry_type, GeometryType::None);
     }
 
+    /// An incomplete pair opens as a table, while a complete published pair places the point.
+    #[test]
+    fn csv_automatic_coordinates_require_a_complete_pair() {
+        for text in ["X,Latitude\n570000,44.95\n", "Longitude,Y\n-93.10,160000\n"] {
+            let (dataset, report) = read_csv(text, "incomplete").unwrap();
+            assert_eq!(dataset.geometry_type, GeometryType::None);
+            assert_eq!(dataset.features.len(), 1);
+            let (header, _) = text.split_once('\n').unwrap();
+            let (x, y) = header.split_once(',').unwrap();
+            assert_eq!(report.messages.len(), 1);
+            assert!(report.messages[0].contains(&format!("{x}, {y}")));
+            assert!(report.messages[0].contains("Choose x and y"));
+            let columns = csv_columns(text, None, None).unwrap();
+            assert_eq!((columns.x, columns.y), (None, None));
+        }
+
+        for text in
+            ["id,PROPX,PROPY,Latitude,Longtitude\n1,570000,160000,44.95,-93.10\n", "X,Latitude,Longtitude,Y\n570000,44.95,-93.10,160000\n"]
+        {
+            let (dataset, report) = read_csv(text, "permits").unwrap();
+            assert_eq!(dataset.features[0].geometry, Some(Geometry::Point(Coord::new(-93.10, 44.95))));
+            assert!(report.messages.is_empty(), "{:?}", report.messages);
+            let columns = csv_columns(text, None, None).unwrap();
+            assert_eq!((columns.x.as_deref(), columns.y.as_deref()), (Some("Longtitude"), Some("Latitude")));
+        }
+    }
+
+    /// A plain table with only one candidate axis opens without a coordinate notice.
+    #[test]
+    fn csv_lone_coordinate_like_headers_do_not_warn() {
+        for text in ["id,name\n1,Main\n", "id,Y\n1,2\n", "id,Lat\n1,2\n", "id,X,Longitude\n1,2,3\n"] {
+            let (dataset, report) = read_csv(text, "table").unwrap();
+            assert_eq!(dataset.geometry_type, GeometryType::None);
+            assert!(report.messages.is_empty(), "{text}: {:?}", report.messages);
+        }
+    }
+
     /// A projected system must never treat an earlier geographic pair as easting/northing when
     /// planar coordinate columns are also present. Explicit choices retain their authority.
     #[test]
@@ -5454,15 +5580,15 @@ mod tests {
         }
     }
 
-    /// A geographic alternative must cover at least as many rows as the first pair can place.
+    /// Both pairs compete by their coverage of usable degree positions.
     #[test]
     fn csv_coordinate_coverage() {
         for (rows, geographic) in [
-            ("1000,2000,3,4\n1001,2001,,\n", false),
-            ("1000,2000,3,4\n1001,2001,0,0\n", false),
-            ("1000,2000,3,4\n1001,2001,181,20\n", false),
-            ("1000,2000,3,4\n1001,2001,5,6\n", true),
-            ("1000,2000,3,4\n,,5,6\n", true),
+            ("10,20,3,4\n11,21,,\n", false),
+            ("10,20,3,4\n11,21,0,0\n", false),
+            ("10,20,3,4\n11,21,181,20\n", false),
+            ("10,20,3,4\n11,21,5,6\n", true),
+            ("10,20,3,4\n,,5,6\n", true),
         ] {
             let text = format!("X,Y,Longitude,Latitude\n{rows}");
             let c = csv_columns(&text, None, None).unwrap();
@@ -5473,9 +5599,51 @@ mod tests {
             assert_eq!(report.skipped, 0);
             assert_eq!(
                 ds.features[0].geometry,
-                Some(Geometry::Point(if geographic { Coord::new(3.0, 4.0) } else { Coord::new(1000.0, 2000.0) }))
+                Some(Geometry::Point(if geographic { Coord::new(3.0, 4.0) } else { Coord::new(10.0, 20.0) }))
             );
         }
+    }
+
+    /// A sparse geographic pair gives way to complete X/Y columns in either header order.
+    #[test]
+    fn csv_coordinate_coverage_is_independent_of_header_order() {
+        for text in ["Longitude,Latitude,X,Y\n3,4,10,20\n,6,11,21\n", "X,Y,Longitude,Latitude\n10,20,3,4\n11,21,,6\n"] {
+            let columns = csv_columns(text, None, None).unwrap();
+            assert_eq!((columns.x.as_deref(), columns.y.as_deref()), (Some("X"), Some("Y")), "{text}");
+            let (dataset, report) = read_csv(text, "coverage").unwrap();
+            let points: Vec<_> = dataset.features.into_iter().map(|feature| feature.geometry).collect();
+            assert_eq!(points, [Some(Geometry::Point(Coord::new(10.0, 20.0))), Some(Geometry::Point(Coord::new(11.0, 21.0)))], "{text}");
+            assert_eq!(report.skipped, 0);
+            assert!(report.messages.is_empty(), "{:?}", report.messages);
+        }
+    }
+
+    /// A complete named pair beats an unrelated lone X or an earlier misspelled heading.
+    #[test]
+    fn csv_complete_pairs_prefer_recognized_headers() {
+        for (text, x, y, point) in [
+            ("X,Northing,Easting\nsite-a,44,20\n", "Easting", "Northing", Coord::new(20.0, 44.0)),
+            ("Longtitude,Longitude,Latitude\nbad,-93.1,44.95\n", "Longitude", "Latitude", Coord::new(-93.1, 44.95)),
+        ] {
+            let columns = csv_columns(text, None, None).unwrap();
+            assert_eq!((columns.x.as_deref(), columns.y.as_deref()), (Some(x), Some(y)));
+            let (ds, report) = read_csv(text, "points").unwrap();
+            assert_eq!(ds.features[0].geometry, Some(Geometry::Point(point)));
+            assert!(report.messages.is_empty());
+        }
+    }
+
+    /// Finite projected values cannot replace usable longitude/latitude without a projected CRS.
+    #[test]
+    fn csv_coordinate_coverage_ignores_out_of_range_planar_values() {
+        let text = "Longitude,Latitude,Easting,Northing\n-93.10,44.95,570000,160000\n,,570010,160010\n";
+        for crs in [None, Some(Crs::LonLat)] {
+            let columns = csv_columns(text, None, crs).unwrap();
+            assert_eq!((columns.x.as_deref(), columns.y.as_deref()), (Some("Longitude"), Some("Latitude")));
+        }
+        let (dataset, _) = read_csv(text, "coverage").unwrap();
+        assert_eq!(dataset.features[0].geometry, Some(Geometry::Point(Coord::new(-93.1, 44.95))));
+        assert_eq!(dataset.features[1].geometry, None);
     }
 
     /// Count suspect degree positions, retaining them; one zero axis or a nearby point is clean.
@@ -5527,14 +5695,17 @@ mod tests {
         ds.push(Some(square), vec![]);
         ds.push(None, vec![]);
         let losses = CsvLosses::of(&ds.features, ds.geometry_type);
-        assert_eq!(losses, CsvLosses { as_one_point: 0, unwritten: 1, points: false });
+        assert_eq!(losses, CsvLosses { unwritten: 1, ..CsvLosses::default() });
         assert!(losses.notes("t.csv")[0].contains("the geometry of 1 feature wasn't written"));
         assert!(!to_csv(&ds).unwrap().contains("longitude"));
         let points = [crate::Feature { id: 0, geometry: Some(Geometry::Point(Coord::new(1.0, 2.0))), attrs: vec![] }];
         assert_eq!(CsvLosses::of(&points, GeometryType::Point), CsvLosses { points: true, ..CsvLosses::default() });
         // A multipoint without a point in a point layer gets empty coordinate cells.
         let empty = [crate::Feature { id: 1, geometry: Some(Geometry::MultiPoint(vec![])), attrs: vec![] }];
-        assert_eq!(CsvLosses::of(&empty, GeometryType::Point), CsvLosses { as_one_point: 0, unwritten: 1, points: true });
+        assert_eq!(
+            CsvLosses::of(&empty, GeometryType::Point),
+            CsvLosses { as_one_point: 0, unwritten: 1, points: true, unusable_points: 1 }
+        );
     }
 
     /// GPX leaves out a feature without geometry and a multipoint without a point (no waypoint
@@ -5616,6 +5787,32 @@ mod tests {
         // A name left, or a layer that isn't of points: nothing to say.
         assert!(export_losses_notes(&layer(&LON_NAMES[1..]), "csv", None, "t.csv").is_empty());
         assert_eq!(CsvLosses::of(&[], GeometryType::Polyline).coordinates_note(&every.fields, "t.csv"), None);
+        let names: Vec<_> = LON_NAMES.iter().copied().chain(["X", "Y"]).collect();
+        let notes = export_losses_notes(&layer(&names), "csv", None, "t.csv");
+        assert!(notes[0].contains("may read 'longitude' and 'latitude' or 'X' and 'Y'"), "{notes:?}");
+    }
+
+    /// Missing geometry can let exported X/Y attributes win on reimport. Report the ambiguity
+    /// before the file is reopened and show which columns restore the exported geometry.
+    #[test]
+    fn csv_export_warns_when_attributes_can_supply_geometry() {
+        let fields = vec![Field::new("X", FieldType::Integer), Field::new("Y", FieldType::Integer)];
+        let geometry = Some(Geometry::Point(Coord::new(20.0, 10.0)));
+        let mut ds = Dataset::new("t", GeometryType::Point, fields);
+        ds.push(geometry.clone(), vec![Value::Int(40), Value::Int(50)]);
+        assert!(export_losses_notes(&ds, "csv", None, "t.csv").is_empty());
+        ds.push(None, vec![Value::Int(41), Value::Int(51)]);
+        let notes = export_losses_notes(&ds, "csv", None, "t.csv");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("1 of the exported coordinate rows"), "{notes:?}");
+        assert!(notes[0].contains("may read columns 'X' and 'Y'"), "{notes:?}");
+        let text = to_csv(&ds).unwrap();
+        let (reopened, _) = read_csv(&text, "t").unwrap();
+        assert_eq!(reopened.features[0].geometry, Some(Geometry::Point(Coord::new(40.0, 50.0))));
+        let opts = CsvOptions { x: Some("longitude".into()), y: Some("latitude".into()), ..Default::default() };
+        let (reopened, _) = read_csv_with(&text, "t", &opts).unwrap();
+        assert_eq!(reopened.features[0].geometry, geometry);
+        assert_eq!(reopened.features[1].geometry, None);
     }
 
     #[test]
@@ -6339,6 +6536,40 @@ mod tests {
         let clean = read_zip_budget("tables.zip", &zip, None, &mut (cost * 2)).unwrap();
         assert_eq!(clean.len(), 2);
         assert!(clean.iter().all(|(_, report)| report.messages.is_empty()));
+    }
+
+    /// An oversized Shapefile part names the failing file and advises keeping the parts together.
+    #[test]
+    fn oversized_shapefile_part_reports_whole_dataset_advice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roads.shp");
+        std::fs::File::create(&path).unwrap();
+        std::fs::File::create(path.with_extension("dbf")).unwrap();
+        let limit = (MAX_BYTES >> 20).to_string();
+        for ext in ["shp", "dbf", "shx"] {
+            let sidecar = path.with_extension(ext);
+            let file = std::fs::File::create(&sidecar).unwrap();
+            file.set_len(MAX_BYTES + 1).unwrap();
+            for result in [read_path(&path), read_shapefile_in(&path, "roads", Some(Crs::LonLat))] {
+                let error = result.unwrap_err().to_string();
+                assert_eq!(file_size_error_args(&error), Some((sidecar.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Shapefile)));
+                assert!(error.contains("Split the whole Shapefile"), "{error}");
+            }
+            file.set_len(0).unwrap();
+        }
+    }
+
+    #[test]
+    fn oversized_standalone_dbf_reports_limit_and_table_advice() {
+        // A sparse file exercises the production cap without allocating or reading its contents.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("communities.DBF");
+        std::fs::File::create(&path).unwrap().set_len(MAX_BYTES + 1).unwrap();
+
+        let error = read_path(&path).unwrap_err().to_string();
+        let limit = (MAX_BYTES >> 20).to_string();
+        assert_eq!(file_size_error_args(&error), Some((path.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Split)));
+        assert!(error.contains("Split the data into smaller files"), "{error}");
     }
 
     /// Standalone tables share Shapefile typing and loss notices; .cpg wins over the header,
