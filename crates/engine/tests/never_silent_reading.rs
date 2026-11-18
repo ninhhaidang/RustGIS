@@ -11,8 +11,9 @@
 //! fails here until the case is moved to [`Expect::Said`], so the list only shrinks. Exports have
 //! their own test, `never_silent_roundtrip.rs`.
 //!
-//! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet and FileGDB.
-//! More formats and loss kinds remain to add (ROADMAP.md); one loss does not certify a reader.
+//! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB
+//! and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss does not
+//! certify a reader.
 use rustgis_engine::{Project, Session};
 use serde_json::json;
 
@@ -252,6 +253,35 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             ),
             gpx(r#"<trk><trkseg><trkpt lat="1" lon="1"/><trkpt lat="2" lon="2"/></trkseg><trkseg><trkpt lat="3" lon="3"/></trkseg></trk>"#),
             Silent("the segment is left out of the track's line"),
+        ),
+        // OSM PBF: keep the outer polygon while one inner member is lost.
+        case(
+            "OSM PBF: a missing inner member way",
+            "a.osm.pbf",
+            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../testdata/reading-losses/hole-missing-member.osm.pbf"),
+            Silent("the hole whose member way the file does not hold is left out"),
+        ),
+        case(
+            "OSM PBF: a missing inner node",
+            "a.osm.pbf",
+            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../testdata/reading-losses/hole-missing-node.osm.pbf"),
+            Silent("the hole whose member way refers to a missing node is left out"),
+        ),
+        case(
+            "OSM PBF: an unclosed inner ring",
+            "a.osm.pbf",
+            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../testdata/reading-losses/hole-unclosed.osm.pbf"),
+            Silent("the inner member way that does not close is left out"),
+        ),
+        case(
+            "OSM PBF: an inner ring outside its outer",
+            "a.osm.pbf",
+            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../testdata/reading-losses/hole-outside.osm.pbf"),
+            Silent("the inner ring outside every outer ring is left out"),
         ),
         // GML.
         case(
