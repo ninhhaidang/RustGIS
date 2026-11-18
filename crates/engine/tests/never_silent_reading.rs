@@ -11,8 +11,8 @@
 //! fails here until the case is moved to [`Expect::Said`], so the list only shrinks. Exports have
 //! their own test, `never_silent_roundtrip.rs`.
 //!
-//! Text formats only so far, without CityJSON and CityGML; those and the binary ones (Shapefile,
-//! GeoPackage, FlatGeobuf, GeoParquet, OSM PBF, KMZ, spreadsheets) are still to add (ROADMAP.md).
+//! The table includes text, CityJSON, CityGML, KMZ and GeoPackage. More binary formats and
+//! loss kinds remain to add (ROADMAP.md); coverage of one loss is not certification of a reader.
 use rustgis_engine::{Project, Session};
 use serde_json::json;
 
@@ -32,15 +32,15 @@ struct Case {
     name: &'static str,
     /// The file name, whose extension picks the reader.
     file: &'static str,
-    clean: String,
-    lossy: String,
+    clean: Vec<u8>,
+    lossy: Vec<u8>,
     /// Files beside it, the same in both (a MapInfo `.mid`).
     beside: Vec<(&'static str, String)>,
     expect: Expect,
 }
 
-fn case(name: &'static str, file: &'static str, clean: impl Into<String>, lossy: impl Into<String>, expect: Expect) -> Case {
-    Case { name, file, clean: clean.into(), lossy: lossy.into(), beside: Vec::new(), expect }
+fn case(name: &'static str, file: &'static str, clean: impl AsRef<[u8]>, lossy: impl AsRef<[u8]>, expect: Expect) -> Case {
+    Case { name, file, clean: clean.as_ref().to_vec(), lossy: lossy.as_ref().to_vec(), beside: Vec::new(), expect }
 }
 
 /// A GeoJSON feature collection of these geometries.
@@ -94,7 +94,7 @@ fn landxml(content: &str) -> String {
     format!(r#"<?xml version="1.0"?><LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2">{content}</LandXML>"#)
 }
 
-fn cases() -> Vec<Case> {
+fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     let point = r#"{"type":"Point","coordinates":[1,2]}"#;
     let topo_line = |arcs: &str| format!(r#"{{"type":"Topology","objects":{{"o":{{"type":"LineString","arcs":[0]}}}},"arcs":[{arcs}]}}"#);
     // Quantized and delta-encoded.
@@ -344,7 +344,83 @@ fn cases() -> Vec<Case> {
         "1\n",
         Silent("the ring is left out of the polygon"),
     );
+    // The archive path must report the same losses as the loose KML reader. Derive both
+    // fixtures from each KML row so a new loss cannot be tested in only one container.
+    let kmz = out
+        .iter()
+        .filter(|c| c.file == "a.kml")
+        .map(|c| Case {
+            name: c.name,
+            file: "a.kmz",
+            clean: rustgis_engine::data::zip::write(&[("doc.kml".into(), c.clean.clone())]).unwrap(),
+            lossy: rustgis_engine::data::zip::write(&[("doc.kml".into(), c.lossy.clone())]).unwrap(),
+            beside: Vec::new(),
+            expect: c.expect,
+        })
+        .collect::<Vec<_>>();
+    out.extend(kmz);
+    out.extend([
+        case("CityJSON: varying line heights", "a.city.json", cityjson(0), cityjson(5), Said("Z or M")),
+        case("CityGML: varying line heights", "a.gml", citygml(0), citygml(5), Said("Z or M")),
+        case("GeoPackage: a height", "a.gpkg", gpkg(fixture_dir, false), gpkg(fixture_dir, true), Said("Z or M")),
+    ]);
     out
+}
+
+/// A line's uniform height is retained in city-model attributes; a varying one is lost.
+fn cityjson(z: i32) -> String {
+    json!({
+        "type": "CityJSON", "version": "2.0",
+        "transform": {"scale": [1, 1, 1], "translate": [0, 0, 0]},
+        "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/4326"},
+        "vertices": [[1, 2, 0], [3, 4, z]],
+        "CityObjects": {"road": {"type": "Road", "geometry": [{"type": "MultiLineString", "lod": "0", "boundaries": [[0, 1]]}]}}
+    })
+    .to_string()
+}
+
+/// CityGML's line path shares the height policy with CityJSON but has its own parser.
+fn citygml(z: i32) -> String {
+    format!(
+        r#"<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0"
+        xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns:gml="http://www.opengis.net/gml">
+        <gml:boundedBy><gml:Envelope srsName="EPSG:4326" srsDimension="3">
+        <gml:lowerCorner>1 2 0</gml:lowerCorner><gml:upperCorner>3 4 5</gml:upperCorner>
+        </gml:Envelope></gml:boundedBy><core:cityObjectMember><bldg:Building gml:id="line">
+        <bldg:lod1MultiCurve><gml:MultiCurve><gml:curveMember><gml:LineString>
+        <gml:posList>1 2 0 3 4 {z}</gml:posList></gml:LineString></gml:curveMember></gml:MultiCurve>
+        </bldg:lod1MultiCurve></bldg:Building></core:cityObjectMember></core:CityModel>"#
+    )
+}
+
+/// An independently encoded ISO WKB point in a minimal GeoPackage. Do not use the 2D
+/// RustGIS exporter: it cannot produce the height whose loss this pair exercises.
+fn gpkg(dir: &std::path::Path, z: bool) -> Vec<u8> {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(if z { "xyz.gpkg" } else { "xy.gpkg" });
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch(
+        "PRAGMA application_id = 1196444487;
+         CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id INTEGER, definition TEXT, description TEXT);
+         INSERT INTO gpkg_spatial_ref_sys VALUES ('WGS 84', 4326, 'EPSG', 4326, '', '');
+         CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, identifier TEXT, description TEXT, last_change TEXT, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER);
+         INSERT INTO gpkg_contents (table_name, data_type, srs_id) VALUES ('points', 'features', 4326);
+         CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
+         CREATE TABLE points (fid INTEGER PRIMARY KEY, geom BLOB);"
+    ).unwrap();
+    c.execute("INSERT INTO gpkg_geometry_columns VALUES ('points', 'geom', 'POINT', 4326, ?1, 0)", [i32::from(z)]).unwrap();
+    let mut blob = b"GP\x00\x01".to_vec();
+    blob.extend(4326i32.to_le_bytes());
+    blob.push(1); // Little-endian WKB, Point or PointZ.
+    blob.extend(if z { 1001u32 } else { 1u32 }.to_le_bytes());
+    blob.extend(1.0f64.to_le_bytes());
+    blob.extend(2.0f64.to_le_bytes());
+    if z {
+        blob.extend(3.0f64.to_le_bytes());
+    }
+    c.execute("INSERT INTO points VALUES (1, ?1)", [&blob]).unwrap();
+    c.close().unwrap();
+    std::fs::read(path).unwrap()
 }
 
 /// What `layer.addData` did with a file: the notices it gave and whether it added a layer or table,
@@ -354,7 +430,7 @@ type Reading = Result<(Vec<String>, bool), String>;
 /// Writes `file` with `content`, and `beside`, into `dir` (emptied first) and reads it. `Err` when
 /// the files can't be written: a failure of the test, never taken for a refusal. Each file of a
 /// case is read from the same `dir`, so notices naming its path are the same for both.
-fn read(dir: &std::path::Path, file: &str, content: &str, beside: &[(&str, String)]) -> std::io::Result<Reading> {
+fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, String)]) -> std::io::Result<Reading> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
     for (name, text) in beside {
@@ -379,18 +455,19 @@ fn a_reading_that_loses_something_says_so() {
     let root = std::env::temp_dir().join(format!("rustgis-never-silent-reading-{}", std::process::id()));
     let dir = root.join("case");
     let mut failures = Vec::new();
-    for c in cases() {
+    for c in cases(&root.join("fixtures")) {
+        let name = format!("{} [{}]", c.name, c.file);
         let clean = match read(&dir, c.file, &c.clean, &c.beside) {
             Err(e) => {
-                failures.push(format!("{}: the clean file couldn't be written: {e}", c.name));
+                failures.push(format!("{name}: the clean file couldn't be written: {e}"));
                 continue;
             }
             Ok(Err(e)) => {
-                failures.push(format!("{}: the clean file was refused: {e}", c.name));
+                failures.push(format!("{name}: the clean file was refused: {e}"));
                 continue;
             }
             Ok(Ok((said, false))) => {
-                failures.push(format!("{}: the clean file added no layer; said: {said:?}", c.name));
+                failures.push(format!("{name}: the clean file added no layer; said: {said:?}"));
                 continue;
             }
             Ok(Ok((said, true))) => said,
@@ -398,12 +475,12 @@ fn a_reading_that_loses_something_says_so() {
         // What the lossy file says that the clean one doesn't, and whether it added a layer.
         let (new, added): (Vec<String>, bool) = match read(&dir, c.file, &c.lossy, &c.beside) {
             Err(e) => {
-                failures.push(format!("{}: the lossy file couldn't be written: {e}", c.name));
+                failures.push(format!("{name}: the lossy file couldn't be written: {e}"));
                 continue;
             }
             // A refusal says why, but a crash caught by `Session::run` is a bug.
             Ok(Err(e)) if e.contains("failed unexpectedly") || e.contains("stopped unexpectedly") => {
-                failures.push(format!("{}: reading crashed: {e}", c.name));
+                failures.push(format!("{name}: reading crashed: {e}"));
                 continue;
             }
             Ok(Err(e)) => (vec![e], false),
@@ -412,17 +489,16 @@ fn a_reading_that_loses_something_says_so() {
         match c.expect {
             // Both ways (AGENTS.md, Never silent): the clean file doesn't say the loss.
             Said(words) if clean.iter().any(|n| n.contains(words)) => {
-                failures.push(format!("{}: the clean file says the loss it doesn't have ({words:?}): {clean:?}", c.name))
+                failures.push(format!("{name}: the clean file says the loss it doesn't have ({words:?}): {clean:?}"))
             }
             Said(words) if !new.iter().any(|n| n.contains(words)) => {
-                failures.push(format!("{}: not said: nothing new holds {words:?}; new: {new:?}; the clean file said {clean:?}", c.name))
+                failures.push(format!("{name}: not said: nothing new holds {words:?}; new: {new:?}; the clean file said {clean:?}"))
             }
             Silent(lost) if !new.is_empty() => failures.push(format!(
-                "{}: a new notice ({new:?}): if it says that {lost}, make the case Said; if not, change the lossy file so it gives only that loss",
-                c.name
+                "{name}: a new notice ({new:?}): if it says that {lost}, make the case Said; if not, change the lossy file so it gives only that loss"
             )),
             Silent(lost) if !added => {
-                failures.push(format!("{}: the lossy file added no layer and said nothing, more than this case's loss ({lost})", c.name))
+                failures.push(format!("{name}: the lossy file added no layer and said nothing, more than this case's loss ({lost})"))
             }
             _ => {}
         }
