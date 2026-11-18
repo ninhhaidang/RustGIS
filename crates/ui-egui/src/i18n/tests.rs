@@ -98,6 +98,16 @@ fn greek_registration_and_fallback() {
 }
 
 #[test]
+fn simplified_chinese_menu_and_settings_labels() {
+    let zh = Lang::from_code("zh").unwrap();
+    // The AppKit menu uses logical text; the ribbon looks up the complete formatted message.
+    assert_eq!(tr_raw(zh, "Settings…"), "设置…");
+    assert_eq!(tr_raw(zh, "Close Window"), "关闭窗口");
+    assert_eq!(fill_placeholders(tr(zh, "{name} (download)"), &[("name", "阿根廷")]), "阿根廷（需下载）");
+    assert_eq!(fill_placeholders(tr(zh, "Automatic ({kind})"), &[("kind", zh.name())]), "自动（简体中文）");
+}
+
+#[test]
 fn traditional_chinese_registration_and_fallback() {
     let tw = Lang::from_code("zh-tw").unwrap_or(Lang::EN);
     assert_eq!(Lang::from_code("zh-TW"), Some(tw));

@@ -89,6 +89,18 @@ pub fn ui_fonts() -> &'static UiFonts {
     })
 }
 
+/// Offset in ems that puts an installed CJK face on the interface face's baseline when their
+/// line boxes are centred. Hiragino Sans GB, for example, has half an em of extra line gap.
+pub fn cjk_ui_baseline_offset(bytes: &[u8], index: u32) -> f32 {
+    fn baseline(bytes: &[u8], index: u32) -> Option<f32> {
+        let face = ttf_parser::Face::parse(bytes, index).ok()?;
+        let ascent = f32::from(face.ascender());
+        let height = ascent - f32::from(face.descender()) + f32::from(face.line_gap());
+        Some((ascent - height / 2.0) / f32::from(face.units_per_em()))
+    }
+    baseline(&ui_fonts().regular, 0).zip(baseline(bytes, index)).map_or(0.0, |(ui, cjk)| ui - cjk)
+}
+
 /// Installed serif families: (regular, bold, italic, bold italic) files, in order of preference.
 /// Full paths, as the sans candidates are; a variable Noto Serif is looked for after these (see
 /// [`variable_noto_serif`]), then [`SERIF_LAST`].

@@ -5480,7 +5480,11 @@ fn worldview_menu(app: &mut RustGisApp, ui: &mut Ui) {
 fn language_menu(app: &mut RustGisApp, ui: &mut Ui) {
     let current = app.chosen_lang();
     let auto = app.ui.language == crate::i18n::AUTO;
-    let label = if auto { format!("{} ({})", tl!("Automatic"), shown_name(ui, current)) } else { shown_name(ui, current).to_string() };
+    let label = if auto {
+        crate::i18n::fmt("Automatic ({kind})", &[("kind", shown_name(ui, current))])
+    } else {
+        shown_name(ui, current).to_string()
+    };
     big_menu(ui, app, "globe_lang", &label, "Choose the interface language.", move |ui, app| {
         if ui.selectable_label(auto, tl!("Automatic (system language)")).clicked() {
             let _ = app.run("ui.language", json!({"code": crate::i18n::AUTO}));

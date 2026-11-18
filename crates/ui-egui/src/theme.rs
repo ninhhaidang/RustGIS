@@ -1017,6 +1017,17 @@ pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
 }
 
+/// A face from an installed collection. egui centres fallback line boxes, which can lift the
+/// Han glyphs above neighbouring SF digits on macOS. Move only the ink, preserving row height.
+pub(crate) fn installed_face(bytes: &'static [u8], index: u32, is_cjk: bool) -> FontData {
+    let mut face = FontData::from_static(bytes);
+    face.index = index;
+    if cfg!(target_os = "macos") && is_cjk {
+        face.tweak.y_offset_factor = rustgis_engine::render::fonts::cjk_ui_baseline_offset(bytes, index);
+    }
+    face
+}
+
 /// Installs the interface fonts: an installed system sans-serif when available, then `extra`
 /// faces (name, bytes, collection index) as fallbacks for scripts it lacks, such as CJK.
 pub fn install_fonts(
@@ -1136,6 +1147,31 @@ mod tests {
 
     fn light() -> Theme {
         Theme::builtin().into_iter().find(|t| !t.dark).expect("a light theme ships")
+    }
+
+    /// The Settings ribbon puts a Latin digit between Han glyphs ("每 5 分钟"). Compare the
+    /// centres of their painted bounds, since the fallback adjustment moves ink, not the row.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_han_and_digits_sit_on_the_same_line() {
+        use rustgis_engine::render::fonts::{CjkRegion, ScriptFont, cjk_font};
+        let region = CjkRegion::SimplifiedChinese;
+        let Some((bytes, index)) = cjk_font(region) else { return };
+        let ctx = egui::Context::default();
+        let script = Some(ScriptFont::Cjk(region));
+        let face = Arc::new(installed_face(bytes, *index, true));
+        install_fonts(&ctx, &[("chinese".into(), face, script)], script);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            for font in [regular(24.0), semibold(24.0)] {
+                let text = ui.painter().layout_no_wrap("每5".into(), font, Color32::BLACK);
+                let glyphs = &text.rows[0].glyphs;
+                assert_eq!(glyphs.len(), 2);
+                let centre = |g: &egui::epaint::text::Glyph| g.pos.y + g.uv_rect.offset.y + g.uv_rect.size.y / 2.0;
+                let difference = (centre(&glyphs[0]) - centre(&glyphs[1])).abs();
+                assert!(difference <= 2.0, "Han and digit centres differ by {difference} pt");
+            }
+        });
+        output.textures_delta.clear();
     }
 
     #[test]

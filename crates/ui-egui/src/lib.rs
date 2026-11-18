@@ -1812,8 +1812,7 @@ impl RustGisApp {
         }
         let found = [CjkRegion::SimplifiedChinese, CjkRegion::Japanese, CjkRegion::Korean].into_iter().find_map(cjk_font);
         if let Some((bytes, index)) = found {
-            let mut face = egui::FontData::from_static(bytes);
-            face.index = *index;
+            let face = theme::installed_face(bytes, *index, true);
             self.extra_fonts.push(("cjk-fallback".into(), std::sync::Arc::new(face), None));
         }
     }
@@ -1826,8 +1825,7 @@ impl RustGisApp {
             return;
         }
         if let Some((bytes, index)) = rustgis_engine::render::fonts::symbol_font() {
-            let mut face = egui::FontData::from_static(bytes);
-            face.index = *index;
+            let face = theme::installed_face(bytes, *index, false);
             self.extra_fonts.push(("symbol-fallback".into(), std::sync::Arc::new(face), None));
         }
     }
@@ -1868,8 +1866,7 @@ impl RustGisApp {
         }
         self.fonts_requested.push(name.clone());
         if let Some((bytes, index)) = script_font(region) {
-            let mut face = egui::FontData::from_static(bytes);
-            face.index = *index;
+            let face = theme::installed_face(bytes, *index, matches!(region, rustgis_engine::render::fonts::ScriptFont::Cjk(_)));
             self.extra_fonts.push((name, std::sync::Arc::new(face), Some(region)));
             self.fonts_dirty = true;
         } else if let (Some(fetch), Some(url)) = (&self.services.fetch_font, script_font_url(region)) {
