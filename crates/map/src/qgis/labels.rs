@@ -311,6 +311,7 @@ fn class(
         square_to: None,
         fit: Default::default(),
         abbreviations: Default::default(),
+        stretch: None,
         moved: Vec::new(),
         by,
     })

@@ -2531,8 +2531,9 @@ pub struct LabelClass {
     #[serde(default, deserialize_with = "de_square_to", skip_serializing_if = "Option::is_none")]
     pub square_to: Option<SquareTo>,
     /// Along a line placed curved, how the label fits the room its line gives (#2265): off places
-    /// it as before; [`LabelFit::Auto`] abbreviates a name that doesn't fit and sets one that takes
-    /// more than a third of the line on its straightest stretch.
+    /// it as before; [`LabelFit::Auto`] abbreviates a name that doesn't fit, sets one that takes
+    /// more than a third of the line on its straightest stretch, and spreads one over
+    /// [`stretch`](LabelClass::stretch) of a line with room to spare.
     #[serde(default, deserialize_with = "de_fit", skip_serializing_if = "LabelFit::is_off")]
     pub fit: LabelFit,
     /// The words a fitted label abbreviates when it doesn't fit, each to its abbreviation (#2265):
@@ -2541,6 +2542,11 @@ pub struct LabelClass {
     /// [`MAX_ABBREVIATION_CHARS`] characters.
     #[serde(default, deserialize_with = "de_abbreviations", skip_serializing_if = "BTreeMap::is_empty")]
     pub abbreviations: BTreeMap<String, String>,
+    /// How much of its line's room a fitted label's letters are spread over when the line has
+    /// room to spare (#2265), a share within [`LABEL_STRETCH`]; none is
+    /// [`DEFAULT_LABEL_STRETCH`].
+    #[serde(default, deserialize_with = "de_stretch", skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<f32>,
     /// Labels moved by hand (the Move Label tool, as QGIS's): each feature's, by its id, drawn
     /// where it was put, a callout's line back to the feature when the class has callouts. At
     /// most [`MAX_MOVED_LABELS`], kept in order of id (so a label's is found without a scan).
@@ -3000,8 +3006,8 @@ pub enum LabelFit {
     /// Placed as its placement says, whatever room there is.
     #[default]
     Off,
-    /// Abbreviated when it doesn't fit, and set on the line's straightest stretch when it takes
-    /// more than a third of it.
+    /// Abbreviated when it doesn't fit, set on the line's straightest stretch when it takes more
+    /// than a third of it, and spread when the line has room to spare.
     Auto,
 }
 
@@ -3022,6 +3028,17 @@ pub const MAX_ABBREVIATION_CHARS: usize = 64;
 pub fn is_abbreviation(word: &str, short: &str) -> bool {
     let fine = |s: &str| !s.trim().is_empty() && s.chars().nth(MAX_ABBREVIATION_CHARS).is_none();
     fine(word) && fine(short) && !word.chars().any(char::is_whitespace)
+}
+
+/// The shares of a line's room a fitted label may be spread over ([`LabelClass::stretch`]).
+pub const LABEL_STRETCH: std::ops::RangeInclusive<f32> = 0.1..=1.0;
+
+/// The share of a line's room a fitted label is spread over when its class gives none.
+pub const DEFAULT_LABEL_STRETCH: f32 = 0.6;
+
+/// A project file's `stretch`, brought into [`LABEL_STRETCH`]; one that isn't a number is none.
+fn de_stretch<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    Ok(lenient::<D, f64>(d)?.filter(|s| s.is_finite()).map(|s| (s as f32).clamp(*LABEL_STRETCH.start(), *LABEL_STRETCH.end())))
 }
 
 /// A project file's `fit`: one that doesn't read is off.
@@ -3223,6 +3240,7 @@ impl LabelClass {
             square_to: None,
             fit: LabelFit::Off,
             abbreviations: BTreeMap::new(),
+            stretch: None,
             moved: Vec::new(),
             by: Default::default(),
         }

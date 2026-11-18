@@ -5314,23 +5314,18 @@ fn render_frame(
                                 };
                                 let (mut chars, mut advances) = measure(&text);
                                 // Fitted to its line (#2265): abbreviated when the full name can't
-                                // follow it anywhere it is tried, and set on its straightest
-                                // stretches when it takes more than a third of it. The places it
-                                // can follow, best first; none: placed as without `fit`.
+                                // follow it anywhere it is tried, set on its straightest stretches
+                                // when it takes more than a third of it, and spread (the middle
+                                // first) when the line has room to spare. The places it can
+                                // follow, best first; none: placed as without `fit`. A spread
+                                // name follows a smoother course (#2259), so it may go where the
+                                // close-set one couldn't.
                                 let mut fitted: Option<Vec<f32>> = None;
+                                // Its letter spacing, and the close-set one (its own) when spread.
+                                let close_gap = spacing * 1.33;
+                                let (mut gap, mut spread) = (close_gap, false);
                                 if class.fit == rustgis_map::symbology::LabelFit::Auto {
-                                    let gap = spacing * 1.33;
-                                    let follows = |advances: &[f32]| -> Vec<f32> {
-                                        let len = line_labels::curved_len(advances, gap);
-                                        // Where it will be placed: a repeat's places as they are.
-                                        let tried = match (locked_at, repeat) {
-                                            (Some(at), _) => vec![at],
-                                            (None, Some(_)) => {
-                                                line_labels::repeats(line.length(), repeat).into_iter().map(|(_, d)| d).collect()
-                                            }
-                                            (None, None) if 3.0 * len > line.length() => line.straightest(len, 8),
-                                            (None, None) => line_labels::positions(line.length(), len, overrun),
-                                        };
+                                    let follows = |advances: &[f32], gap: f32, tried: Vec<f32>| -> Vec<f32> {
                                         tried
                                             .into_iter()
                                             .filter(|d| {
@@ -5340,14 +5335,45 @@ fn render_frame(
                                             })
                                             .collect()
                                     };
-                                    let mut at = follows(&advances);
+                                    let close = |advances: &[f32]| -> Vec<f32> {
+                                        let len = line_labels::curved_len(advances, close_gap);
+                                        // Where it will be placed: a repeat's places as they are.
+                                        let tried = match (locked_at, repeat) {
+                                            (Some(at), _) => vec![at],
+                                            (None, Some(_)) => {
+                                                line_labels::repeats(line.length(), repeat).into_iter().map(|(_, d)| d).collect()
+                                            }
+                                            (None, None) if 3.0 * len > line.length() => line.straightest(len, 8),
+                                            (None, None) => line_labels::positions(line.length(), len, overrun),
+                                        };
+                                        follows(advances, close_gap, tried)
+                                    };
+                                    let mut at = close(&advances);
                                     if at.is_empty()
                                         && let Some(short) = line_labels::abbreviated(&text, &class.abbreviations)
                                     {
                                         let (c, a) = measure(&short);
-                                        at = follows(&a);
+                                        at = close(&a);
                                         if !at.is_empty() {
                                             (text, chars, advances) = (short, c, a);
+                                        }
+                                    }
+                                    // Spread over `stretch` of the line, the middle first; where it
+                                    // can't follow the line, close-set. With a repeat that names the
+                                    // line more than once, only on a line more than two spread names
+                                    // long, so close-set repeats still go beside it; on a shorter one
+                                    // the repeats stay close-set, as without spreading.
+                                    let stretch = class.stretch.unwrap_or(rustgis_map::symbology::DEFAULT_LABEL_STRETCH);
+                                    let repeated = line_labels::repeats(line.length(), repeat).len() > 1;
+                                    if let Some(wide) = line_labels::spread_gap(&advances, close_gap, line.length(), stretch)
+                                        && let len = line_labels::curved_len(&advances, wide)
+                                        && !(repeated && line.length() <= 2.0 * len)
+                                    {
+                                        let tried =
+                                            locked_at.map_or_else(|| line_labels::positions(line.length(), len, overrun), |at| vec![at]);
+                                        let wide_at = follows(&advances, wide, tried);
+                                        if !wide_at.is_empty() {
+                                            (at, gap, spread) = (wide_at, wide, true);
                                         }
                                     }
                                     // (A locked label keeps its own place; only its text is fitted.)
@@ -5355,7 +5381,7 @@ fn render_frame(
                                 }
                                 let first = locked_at.or_else(|| fitted.as_ref().and_then(|f| f.first().copied()));
                                 if try_others {
-                                    let width = line_labels::curved_len(&advances, spacing * 1.33);
+                                    let width = line_labels::curved_len(&advances, gap);
                                     let positions = fitted.clone().unwrap_or_else(|| positions(width));
                                     // A saved slot the curve cannot take has no truthful preview either (as for a
                                     // straight line): never draw one at the anchor or the middle.
@@ -5381,7 +5407,7 @@ fn render_frame(
                                             line: line.clone(),
                                             chars,
                                             advances,
-                                            gap: spacing * 1.33,
+                                            gap,
                                             size,
                                             overrun,
                                             off,
@@ -5390,14 +5416,26 @@ fn render_frame(
                                         locked,
                                     ));
                                 } else {
-                                    // Fitted without a repeat: on the best place it follows.
-                                    let along = match (&fitted, repeat) {
-                                        (Some(at), None) => at.first().map(|d| (0, *d)).into_iter().collect(),
-                                        _ => line_labels::repeats(line.length(), repeat),
+                                    // Fitted without a repeat: on the best place it follows. Spread
+                                    // with a repeat (a line more than two spread labels long): there,
+                                    // and close-set at the repeats clear of it.
+                                    let along: Vec<(usize, f32, f32)> = match (&fitted, repeat) {
+                                        (Some(at), None) => at.first().map(|d| (0, *d, gap)).into_iter().collect(),
+                                        (Some(at), Some(_)) if spread => {
+                                            let first = at.first().copied().unwrap_or(line.length() / 2.0);
+                                            let (wide, close) =
+                                                (line_labels::curved_len(&advances, gap), line_labels::curved_len(&advances, close_gap));
+                                            let clear = (wide + close) / 2.0 + size;
+                                            let others = line_labels::repeats_clear_of(line.length(), repeat, first, clear)
+                                                .into_iter()
+                                                .map(|(i, d)| (i, d, close_gap));
+                                            std::iter::once((0, first, gap)).chain(others).collect()
+                                        }
+                                        _ => line_labels::repeats(line.length(), repeat).into_iter().map(|(i, d)| (i, d, gap)).collect(),
                                     };
-                                    for (i, at) in along {
+                                    for (i, at, gap) in along {
                                         let Some(((cx, cy), turns)) = line
-                                            .curved(&advances, spacing * 1.33, size, overrun, Some(at))
+                                            .curved(&advances, gap, size, overrun, Some(at))
                                             .and_then(|c| line_labels::curved_off(c, off))
                                         else {
                                             continue;
@@ -12593,6 +12631,70 @@ mod tests {
         assert_eq!(texts(&mut m), ["Ribeirão"], "without a repeat, on an arm");
         m.layer_mut(id).unwrap().labels.default.repeat = Some(10_000.0);
         assert_eq!(texts(&mut m), ["R."], "repeated from its middle, on the rise");
+    }
+
+    /// Fitted to a line with room to spare (#2265): a name is spread over `stretch` of it (0.6 by
+    /// default), its letters at most three widths apart; on a much longer line with a repeat, spread at its middle and close-set at the
+    /// repeats clear of it; off, close-set.
+    #[test]
+    fn a_fitted_name_is_spread_along_a_long_line_and_repeated_close_set() {
+        let face = text::Face { bold: false, italic: false, serif: false, family: None };
+        let advances = |t: &str| t.graphemes(true).map(|c| text::measure_in(c, 12.0, face)).collect::<Vec<f32>>();
+        // How far a label's first character's centre is from its last's.
+        let span = |l: &PlacedLabel| l.glyphs.last().map_or(0.0, |g| g.dx) - l.glyphs.first().map_or(0.0, |g| g.dx);
+        let ends = |t: &str| advances(t).first().unwrap() / 2.0 + advances(t).last().unwrap() / 2.0;
+        let degrees = |points: f32| f64::from(points) / (111_320.0 / 1500.0);
+        let name = "Ribeirão Santo Antônio";
+        let room = 6.5 * line_labels::curved_len(&advances(name), 0.0);
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rivers", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        let level = |y: f64, len: f32| Geometry::Line(vec![vec![Coord::new(-degrees(len) / 2.0, y), Coord::new(degrees(len) / 2.0, y)]]);
+        d.push(Some(level(0.5, room)), vec![Value::Text(name.into())]);
+        d.push(Some(level(-0.5, 1200.0)), vec![Value::Text("Rio Doce".into())]);
+        let id = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: f64::from(room.max(1200.0) + 100.0), height: 300.0, pixels_per_point: 1.0, camera, sky: false };
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.field = "name".into();
+        l.labels.default.size = 12.0;
+        l.labels.default.placement = rustgis_map::LabelPlacement::Curved;
+        let r = render(&mut m, &view).unwrap();
+        let close = r.labels.iter().find(|l| l.text == name).expect("placed");
+        assert!((span(close) - (line_labels::curved_len(&advances(name), 0.0) - ends(name))).abs() < 1.0, "off: close-set");
+        m.layer_mut(id).unwrap().labels.default.fit = rustgis_map::symbology::LabelFit::Auto;
+        let r = render(&mut m, &view).unwrap();
+        let spread = r.labels.iter().find(|l| l.text == name).expect("placed");
+        // 60 % of the line, or as far as letters three widths apart reach.
+        let a = advances(name);
+        let widest = line_labels::curved_len(&a, 3.0 * a.iter().sum::<f32>() / a.len() as f32);
+        assert!((span(spread) - ((0.6 * room).min(widest) - ends(name))).abs() < 2.0, "{} of {room}", span(spread));
+        m.layer_mut(id).unwrap().labels.default.stretch = Some(0.3);
+        let r = render(&mut m, &view).unwrap();
+        let spread = r.labels.iter().find(|l| l.text == name).expect("placed");
+        assert!((span(spread) - (0.3 * room - ends(name))).abs() < 2.0, "{} of {room}", span(spread));
+        // 300 points between repeats: one spread at the middle, two close-set either side.
+        m.layer_mut(id).unwrap().labels.default.repeat = Some(300.0);
+        let r = render(&mut m, &view).unwrap();
+        let doce: Vec<&PlacedLabel> = r.labels.iter().filter(|l| l.text == "Rio Doce").collect();
+        let close = line_labels::curved_len(&advances("Rio Doce"), 0.0) - ends("Rio Doce");
+        assert_eq!(doce.len(), 3);
+        let (wide, narrow): (Vec<&PlacedLabel>, Vec<&PlacedLabel>) = doce.into_iter().partition(|l| span(l) > 2.0 * close);
+        assert_eq!(wide.len(), 1);
+        let mid = view.width as f32 / 2.0;
+        assert!((wide[0].x - mid).abs() < 1.0, "spread at the middle: {}", wide[0].x);
+        assert!(narrow.iter().all(|l| (span(l) - close).abs() < 1.0 && (l.x - mid).abs() > 390.0));
+        // At 0.6 the name's line is too short for two spread names: it keeps its repeats,
+        // close-set as without `fit`.
+        m.layer_mut(id).unwrap().labels.default.stretch = None;
+        let r = render(&mut m, &view).unwrap();
+        let fitted: Vec<&PlacedLabel> = r.labels.iter().filter(|l| l.text == name).collect();
+        let full = line_labels::curved_len(&advances(name), 0.0) - ends(name);
+        assert!(fitted.len() > 1 && fitted.iter().all(|l| (span(l) - full).abs() < 1.0), "{} labels", fitted.len());
+        m.layer_mut(id).unwrap().labels.default.fit = rustgis_map::symbology::LabelFit::Off;
+        let r = render(&mut m, &view).unwrap();
+        assert_eq!(r.labels.iter().filter(|l| l.text == name).count(), fitted.len());
     }
 
     #[test]
