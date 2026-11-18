@@ -4049,6 +4049,21 @@ impl Drop for TiltGlint {
     }
 }
 
+/// Leaves out of `rows` the features of `dataset` entirely beyond `d` metres of `centre` (the
+/// map's view distance, lon/lat): one reaching into it (its box's nearest point within the
+/// distance) is kept, one with no geometry isn't.
+pub(crate) fn within_view_distance(rows: &mut [bool], dataset: &rustgis_data::Dataset, centre: Coord, d: f64) {
+    for (r, keep) in rows.iter_mut().enumerate() {
+        if *keep {
+            let e = dataset.features.get(r).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()).filter(|e| !e.is_empty());
+            *keep = e.is_some_and(|e| {
+                let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
+                rustgis_geom::haversine_m(centre, near) <= d
+            });
+        }
+    }
+}
+
 /// The terrain's water a frame's Shaded Relief layers draw flat at its level with the even light
 /// of flat ground (#1915), and whether shore tiles it was read from are still on their way (see
 /// [`frame_water`]). `None` without water or with no Shaded Relief layer drawn at `scale`.
@@ -4659,16 +4674,7 @@ fn render_frame(
             // View clipping: features entirely beyond the distance from the view's centre are left
             // out; one reaching into it (its box's nearest point within the distance) still draws.
             if let Some((centre, d)) = clip {
-                for (r, keep) in rows.iter_mut().enumerate() {
-                    if *keep {
-                        let e =
-                            layer.dataset.features.get(r).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()).filter(|e| !e.is_empty());
-                        *keep = e.is_some_and(|e| {
-                            let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
-                            rustgis_geom::haversine_m(centre, near) <= d
-                        });
-                    }
-                }
+                within_view_distance(&mut rows, &layer.dataset, centre, d);
             }
             // Exact positions are needed by labels, selection and effects. Plain flat layers can
             // project only their retained display vertices, leaving interaction geometry lazy.

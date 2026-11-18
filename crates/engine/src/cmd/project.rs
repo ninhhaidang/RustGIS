@@ -418,6 +418,37 @@ fn reset(s: &mut Session, p: Project) {
             false,
         ),
     }
+    // Water on a layer read a view at a time (#2305), which `map.terrain` refuses, would come
+    // from the rows the view holds (the map draws none from it): dropped and said, as the project
+    // opens.
+    let mut streamed_water: Vec<(String, String)> = Vec::new();
+    for m in s.project.maps.iter_mut() {
+        let Some(name) = m.view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.layer.clone()) else { continue };
+        if m.layer_by_name(&name).is_some_and(|l| l.is_streamed()) {
+            if let Some(t) = m.view.terrain.as_mut() {
+                t.water = None;
+            }
+            streamed_water.push((m.name.clone(), name));
+        }
+    }
+    match streamed_water.as_slice() {
+        [] => {}
+        [(map, layer)] => s.notify(
+            format!("{map}: the terrain's water layer '{layer}' is read a view at a time, so the water was dropped; load all its features and set the water again"),
+            false,
+        ),
+        _ => {
+            let maps: Vec<String> = streamed_water.iter().map(|(map, layer)| format!("{map} ('{layer}')")).collect();
+            s.notify(
+                format!(
+                    "{} maps have a terrain water layer read a view at a time, so their water was dropped: {}; load all their features and set the water again",
+                    streamed_water.len(),
+                    maps.join(", ")
+                ),
+                false,
+            );
+        }
+    }
     // A terrain saved on a DEM name two layers share draws the first of them: said, as the
     // project opens (its layers keep their names).
     let shared: Vec<(String, String)> = s

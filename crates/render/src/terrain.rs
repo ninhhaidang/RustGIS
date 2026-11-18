@@ -140,7 +140,7 @@ impl Ground {
     /// there.
     pub fn of(map: &Map, camera: &Camera) -> Option<Ground> {
         let mut ground = Ground::heights_of(map, camera)?;
-        ground.attach_water(map);
+        ground.attach_water(map, camera);
         Some(ground)
     }
 
@@ -148,8 +148,8 @@ impl Ground {
     /// on their way, taken again from its cache, leaves these heights pending too: inside its
     /// lakes no tile is read, and a frame or an export waiting for tiles must still wait for the
     /// levels to be read again.
-    fn attach_water(&mut self, map: &Map) {
-        self.water = water::of(map, self);
+    fn attach_water(&mut self, map: &Map, camera: &Camera) {
+        self.water = water::of(map, camera, self);
         if self.water.as_ref().is_some_and(|w| w.waits_for_tiles())
             && let Heights::Tiles { pending, .. } = &self.heights
         {
@@ -161,7 +161,7 @@ impl Ground {
     /// cell of the heights a view of `camera` reads (#1915; see [`Ground::water_coarse`]), from
     /// their shapes alone: nothing is read, no elevation tile asked for. 0 without water.
     pub fn water_coarse_unread(map: &Map, camera: &Camera) -> usize {
-        Ground::heights_of(map, camera).map_or(0, |g| water::coarse_shores(map, &g))
+        Ground::heights_of(map, camera).map_or(0, |g| water::coarse_shores(map, camera, &g))
     }
 
     /// [`Ground::of`] without its water.
