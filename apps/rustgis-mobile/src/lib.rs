@@ -55,6 +55,7 @@ fn mark(purpose: &str) -> String {
     }
     match purpose {
         "shortcuts" => rustgis_ui_egui::SHORTCUT_PICK,
+        "script" => rustgis_ui_egui::SCRIPT_PICK,
         "text" => rustgis_ui_egui::DELIMITED_PICK,
         "shapefile" => rustgis_ui_egui::SHAPEFILE_PICK,
         p if p.starts_with(rustgis_ui_egui::TOOL_FILE_PURPOSE) => rustgis_ui_egui::TOOL_FILE_PICK,
@@ -240,6 +241,7 @@ mod tests {
     fn a_dxf_request_keeps_its_id_in_its_mark() {
         assert_eq!(super::mark("dxf:7"), format!("{}7:", rustgis_ui_egui::DXF_PICK));
         assert_eq!(super::mark("shapefile"), rustgis_ui_egui::SHAPEFILE_PICK);
+        assert_eq!(super::mark("script"), rustgis_ui_egui::SCRIPT_PICK);
         assert_eq!(super::mark("data"), "");
     }
 

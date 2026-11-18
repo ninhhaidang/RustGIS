@@ -128,6 +128,8 @@ struct App<P: Phone> {
 enum Problem {
     /// The shortcut file `name` is over `SHORTCUT_FILE_MAX_BYTES`.
     ShortcutTooLarge { name: String },
+    /// The script file `name`, picked for the Script pane's Load…, is over `SCRIPT_FILE_MAX_BYTES`.
+    ScriptTooLarge { name: String },
     /// The file `name` is over the size read into memory (`rustgis_data::io::MAX_BYTES`), by
     /// itself or `together` with the files picked with it and already read.
     TooLarge { name: String, together: bool },
@@ -213,6 +215,7 @@ impl<P: Phone> App<P> {
                     let limit = rustgis_ui_egui::SHORTCUT_FILE_MAX_BYTES.to_string();
                     i18n::fmt("{name} wasn't opened: a shortcut file is at most {limit} bytes.", &[("name", &name), ("limit", &limit)])
                 }
+                Problem::ScriptTooLarge { name } => i18n::fmt("{file} is larger than 1 MB", &[("file", &name)]),
                 Problem::TooLarge { name, together } => {
                     let limit = (rustgis_engine::data::io::MAX_BYTES >> 20).to_string();
                     let template = if together {
@@ -352,6 +355,9 @@ fn read_batch(purpose: &str, files: Vec<(String, PathBuf)>, inbox: &Inbox, probl
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if shortcut && size > rustgis_ui_egui::SHORTCUT_FILE_MAX_BYTES as u64 {
             say(Problem::ShortcutTooLarge { name });
+        } else if mark == rustgis_ui_egui::SCRIPT_PICK && size > rustgis_ui_egui::SCRIPT_FILE_MAX_BYTES as u64 {
+            // Refused before it is read, as the pane would refuse it after.
+            say(Problem::ScriptTooLarge { name });
         } else if held.saturating_add(size) > rustgis_engine::data::io::MAX_BYTES {
             // Refused before it is read: no more than the cap is held in memory at once, in
             // one file or in the files picked together.
@@ -763,5 +769,25 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(reading.load(Ordering::Relaxed), 0);
         assert_eq!(*inbox.lock().unwrap(), vec![(crate::mark("dxf:7"), Vec::<u8>::new())]);
+    }
+
+    /// A script picked for Load… over the pane's limit is refused before it is read, naming it; one
+    /// within it reaches the inbox marked for the pane.
+    #[test]
+    fn a_script_over_the_limit_is_refused_before_it_is_read() {
+        let dir = std::env::temp_dir().join(format!("rustgis-mobile-script-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (big, small) = (dir.join("big.txt"), dir.join("small.txt"));
+        std::fs::write(&big, vec![b'#'; rustgis_ui_egui::SCRIPT_FILE_MAX_BYTES + 1]).unwrap();
+        std::fs::write(&small, "map.zoomFull").unwrap();
+        let (inbox, problems) = (Inbox::default(), Problems::default());
+        let files = vec![("big.txt".to_string(), big), ("small.txt".to_string(), small)];
+        read_batch("script", files, &inbox, &problems, &mut 0);
+        let said = problems.lock().unwrap();
+        assert!(matches!(said.as_slice(), [Problem::ScriptTooLarge { name }] if name == "big.txt"));
+        let names: Vec<String> = inbox.lock().unwrap().iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, [format!("{}small.txt", rustgis_ui_egui::SCRIPT_PICK)]);
+        // The copies are gone, read or not, and their folder with them (`remove_copy`).
+        assert!(!dir.exists());
     }
 }

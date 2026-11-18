@@ -1579,7 +1579,11 @@ read, **Copy** for one and **Copy All** for the run, and why it stopped, if it d
 empties the pane: the script, its results, the count (the next run is Run #1 again) and the
 Details window. It asks nothing: the box keeps the focus, so Ctrl+Z (⌘+Z) brings the script back;
 after a click elsewhere, Ctrl+Z undoes in the project instead, so click into the box first. It is
-off with nothing to clear, and while a run is under way. Opening a
+off with nothing to clear, and while a run is under way. **Load…**, off then too, reads a script
+from a file (a `.txt` file in the browser; any file on the desktop and phone) in place of the pane's, emptying its
+results as Clear does, and Ctrl+Z (⌘+Z) brings the old script back; in the browser it uses the
+browser's file picker. A file that isn't UTF-8 text, or is over 1 MB, is refused with a notice
+naming it, and the script stays. Opening a
 project (New, Open, the sample, a template, or the same one again), from the app, a script, the
 assistant or an agent, starts the pane blank: the script, its results, the count and the Details
 window go with the old project. A script that opens a project itself stays, with its results, as

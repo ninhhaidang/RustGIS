@@ -494,6 +494,11 @@ async fn read_together(files: Vec<web_sys::File>, mark: &str, inbox: &Inbox, not
                 .push((rustgis_ui_egui::tl!("Shortcut file exceeds the size limit.").into(), true));
             continue;
         }
+        if mark == rustgis_ui_egui::SCRIPT_PICK && file.size() > rustgis_ui_egui::SCRIPT_FILE_MAX_BYTES as f64 {
+            let text = rustgis_ui_egui::i18n::fmt("{file} is larger than 1 MB", &[("file", &name)]);
+            notes.lock().unwrap_or_else(|e| e.into_inner()).push((text, true));
+            continue;
+        }
         if let Some(bytes) = crate::parts::read_file(file, notes.clone()).await {
             read.push((name, bytes));
         } else if mark.starts_with(rustgis_ui_egui::DXF_PICK) {
@@ -1250,6 +1255,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             } else {
                 match (purpose, tool_exts) {
                     ("shortcuts", _) => rustgis_ui_egui::SHORTCUT_PICK,
+                    ("script", _) => rustgis_ui_egui::SCRIPT_PICK,
                     ("text", _) => rustgis_ui_egui::DELIMITED_PICK,
                     ("shapefile", _) => rustgis_ui_egui::SHAPEFILE_PICK,
                     (_, Some(_)) => rustgis_ui_egui::TOOL_FILE_PICK,
@@ -1262,6 +1268,8 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
                 if exts.is_empty() { rfd::AsyncFileDialog::new() } else { rfd::AsyncFileDialog::new().add_filter(exts.join(", "), &exts) }
             } else if purpose == "shortcuts" {
                 rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Keyboard shortcuts"), &["json", "rgisshortcuts"])
+            } else if purpose == "script" {
+                rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Script"), &["txt"])
             } else if purpose == "shapefile" {
                 rfd::AsyncFileDialog::new().add_filter("Shapefile", &["shp", "dbf", "shx", "prj", "cpg", "zip"])
             } else if purpose == "project" {

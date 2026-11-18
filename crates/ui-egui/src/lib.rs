@@ -195,6 +195,14 @@ pub const TOOL_FILE_PURPOSE: &str = "toolfile:";
 /// Marks a returned shortcut picker file; cancellation leaves no pending routing state.
 pub const SHORTCUT_PICK: &str = "\u{1}shortcuts:";
 
+/// Starts the name of a script file the shell's `"script"` picker put in the inbox, for the
+/// Script pane's Load….
+pub const SCRIPT_PICK: &str = "\u{1}script:";
+
+/// The largest script file the Script pane's Load… reads, as the assistant's command file; the
+/// browser's shell refuses a larger one before reading it.
+pub const SCRIPT_FILE_MAX_BYTES: usize = 1024 * 1024;
+
 /// Maximum portable shortcut document size: saved overrides plus room for version metadata.
 pub const SHORTCUT_FILE_MAX_BYTES: usize = keymap::MAX_PREF_BYTES + 100;
 
@@ -2033,11 +2041,16 @@ impl RustGisApp {
     /// Opens a file from the inbox: one the `"text"` picker marked ([`DELIMITED_PICK`]) opens Add
     /// Delimited Text for it, or is read with a script's options; one the tool file picker marked
     /// ([`TOOL_FILE_PICK`]) goes to the Tools pane. Source-CRS picks carry [`SHAPEFILE_PICK`];
-    /// shortcut picks carry [`SHORTCUT_PICK`] and open the validated merge preview; DXF picks
+    /// shortcut picks carry [`SHORTCUT_PICK`] and open the validated merge preview; script picks
+    /// carry [`SCRIPT_PICK`] and open in the Script pane; DXF picks
     /// carry [`DXF_PICK`] and open Import DXF.
     pub fn open_picked(&mut self, name: &str, bytes: &[u8]) -> Result<Value, String> {
         if name.starts_with(SHORTCUT_PICK) {
             return shortcutfile::picked(self, bytes);
+        }
+        if let Some(name) = name.strip_prefix(SCRIPT_PICK) {
+            // An answer with no name is a cancelled picker.
+            return if name.is_empty() { Ok(Value::Null) } else { analysispane::script_picked(self, name, bytes) };
         }
         if let Some(name) = name.strip_prefix(TOOL_FILE_PICK) {
             panes::received_file(self, name, bytes);
@@ -6549,6 +6562,15 @@ impl RustGisApp {
         };
         for (name, bytes) in arrived {
             let _ = self.open_picked(&name, &bytes);
+        }
+        // A script file for the Script pane's Load…, opened with the context its undo needs; said,
+        // not dropped, if something in the inbox started a run meanwhile.
+        if let Some(script) = self.workflow.script_picked.take() {
+            if analysispane::script_running(self) {
+                self.session.notify(tl!("Wait for the run to finish").to_string(), true);
+            } else {
+                analysispane::open_script(self, ctx, script);
+            }
         }
         // Files dropped on the desktop window arrive as paths. (The web shell reads browser drops
         // asynchronously and passes them through the inbox instead.)

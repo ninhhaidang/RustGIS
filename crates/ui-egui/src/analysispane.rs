@@ -41,6 +41,10 @@ pub struct Workflow {
     pub script_last: Option<ScriptRun>,
     /// The last run's Details window is open.
     pub script_details: bool,
+    /// A script file picked with Load… in the browser or on a phone ([`script_picked`]), for
+    /// [`RustGisApp::logic`] to open in the pane once the inbox is read ([`open_script`]): what
+    /// keeps its undo needs the frame's context, which `open_picked` hasn't.
+    pub(crate) script_picked: Option<String>,
     /// When each Script pane run under way or waiting started (seconds since 1970, and the
     /// instant), and the project it was asked in ([`rustgis_engine::Session::opened`]), in the
     /// order asked, for [`script_ran`] to tell as each lands.
@@ -1851,6 +1855,51 @@ pub(crate) fn open_script(app: &mut RustGisApp, ctx: &egui::Context, script: Str
     ctx.memory_mut(|m| m.request_focus(box_id));
 }
 
+/// Load…: a script file read into the Script pane in place of its script ([`open_script`]). In
+/// the browser and on a phone the shell's picker answers later, through [`script_picked`].
+fn load_script(app: &mut RustGisApp, ctx: &egui::Context) {
+    if let Some(open) = &app.services.open_async {
+        open("script");
+        return;
+    }
+    let Some(path) = crate::dialogs::pick_open(&["txt"], tl!("Script")) else { return };
+    // One byte past the limit is enough to refuse it, whatever the file's size.
+    let read = std::fs::File::open(&path).and_then(|file| {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(crate::SCRIPT_FILE_MAX_BYTES as u64 + 1).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let name = std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+    let unread = |e: std::io::Error| crate::i18n::fmt("{path}: {error}", &[("path", &path), ("error", &e.to_string())]);
+    match read.map_err(unread).and_then(|bytes| script_text(app, &name, &bytes)) {
+        Ok(script) => open_script(app, ctx, script),
+        Err(e) => app.session.notify(e, true),
+    }
+}
+
+/// A script file the shell's picker read for Load…, kept for [`RustGisApp::logic`] to open once
+/// the inbox is read. A file [`script_text`] refuses is said, and the pane's script stays.
+pub(crate) fn script_picked(app: &mut RustGisApp, name: &str, bytes: &[u8]) -> Result<Value, String> {
+    let script = script_text(app, name, bytes).inspect_err(|e| app.session.notify(e.clone(), true))?;
+    app.workflow.script_picked = Some(script);
+    Ok(Value::Null)
+}
+
+/// Script file `name`'s text for the Script pane, without the byte-order mark some editors
+/// start a UTF-8 file with (it would make the first line's command unknown): refused when it is
+/// over [`crate::SCRIPT_FILE_MAX_BYTES`] or isn't UTF-8 text, or while a run is under way (its
+/// results would land in the replaced script).
+fn script_text(app: &RustGisApp, name: &str, bytes: &[u8]) -> Result<String, String> {
+    if script_running(app) {
+        return Err(tl!("Wait for the run to finish").to_string());
+    }
+    if bytes.len() > crate::SCRIPT_FILE_MAX_BYTES {
+        return Err(crate::i18n::fmt("{file} is larger than 1 MB", &[("file", name)]));
+    }
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| crate::i18n::fmt("{file} isn't UTF-8 text", &[("file", name)]))
+}
+
 /// The Script pane emptied: its script, results and count, so the next run is `Run #1`, and the
 /// Details window with the run it showed. Clear does it, and another project opening.
 fn clear_script(app: &mut RustGisApp) {
@@ -2027,11 +2076,20 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
         if ui.button(tl!("Commands…")).on_hover_text(tl!("Search every command and its parameters")).clicked() {
             let _ = app.run("ui.commandSearch", Value::Null);
         }
-        // Not while a run is under way: its results would land in the emptied pane.
-        let w = &app.workflow;
-        let running = !w.script_started.is_empty();
-        let anything = !w.script.is_empty() || !w.script_out.is_empty() || w.script_last.is_some();
+        // Not while a run is under way: its results would land in the replaced or emptied pane.
+        let running = script_running(app);
         let undo = if mac { "⌘+Z" } else { "Ctrl+Z" };
+        let mut load = ui
+            .add_enabled(!running, egui::Button::new(tl!("Load…")))
+            .on_hover_text(crate::i18n::fmt("Read a script from a file in place of this one ({keys} brings it back)", &[("keys", undo)]));
+        if running {
+            load = load.on_disabled_hover_text(tl!("Wait for the run to finish"));
+        }
+        if load.clicked() {
+            load_script(app, ui.ctx());
+        }
+        let w = &app.workflow;
+        let anything = !w.script.is_empty() || !w.script_out.is_empty() || w.script_last.is_some();
         let mut clear = ui
             .add_enabled(anything && !running, egui::Button::new(tl!("Clear")))
             .on_hover_text(crate::i18n::fmt("Empty the script and its results ({keys} brings the script back)", &[("keys", undo)]));
@@ -2496,6 +2554,114 @@ mod tests {
         h.state_mut().workflow.script_started.push_back((0, web_time::Instant::now(), 0));
         h.run();
         assert!(!on(&h));
+    }
+
+    /// Load… reads a script file in place of the pane's script, emptying its results as Clear
+    /// does, and Ctrl+Z brings the old script back; a cancelled picker and a file that isn't UTF-8
+    /// text leave it (the latter said), and it is off while a run is under way.
+    #[test]
+    fn load_reads_a_script_file_in_place_of_the_panes() {
+        let dir = std::env::temp_dir().join(format!("rustgis-script-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("zoom.txt"), dir.join("latin1.txt"));
+        std::fs::write(&good, "map.zoomFull\n").unwrap();
+        std::fs::write(&bad, b"map.new {\"name\": \"Espa\xf1a\"}").unwrap();
+        let mut app = RustGisApp::with_sample();
+        app.workflow.script = "kept".into();
+        script_ran(&mut app, crate::Landed::Ran(Ok(json!({"ran": [{"line": 1, "command": "map.zoomFull", "result": null}]}))));
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                script_pane(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        let load = |h: &mut egui_kittest::Harness<'_, RustGisApp>, path: Option<&std::path::Path>| {
+            crate::dialogs::PICKED.with(|c| *c.borrow_mut() = path.map(|p| p.display().to_string()));
+            h.get_by_label("Load…").click();
+            h.run();
+        };
+        load(&mut h, None);
+        assert_eq!(h.state().workflow.script, "kept", "a cancelled picker changes nothing");
+        assert!(h.state().workflow.script_last.is_some());
+        load(&mut h, Some(&bad));
+        assert_eq!(h.state().workflow.script, "kept", "a file that isn't UTF-8 leaves the script");
+        assert!(h.state().workflow.script_last.is_some());
+        assert!(h.state().session.notices.iter().any(|n| n.text == "latin1.txt isn't UTF-8 text"), "{:?}", h.state().session.notices);
+        let said = h.state().session.notices.len();
+        load(&mut h, Some(&good));
+        let w = &h.state().workflow;
+        assert_eq!(w.script, "map.zoomFull\n");
+        assert!(w.script_out.is_empty() && w.script_last.is_none(), "the results go, as with Clear");
+        assert_eq!(h.state().session.notices.len(), said, "a clean file says nothing");
+        assert!(h.get_by_role(egui::accesskit::Role::MultilineTextInput).is_focused(), "the box has the focus");
+        // The box's own undo brings the old script back, with nothing clicked first.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+        assert_eq!(h.state().workflow.script, "kept", "Ctrl+Z brings it back");
+        assert!(h.state().workflow.script_last.is_none(), "the results stay gone");
+        // A run under way: off, as its results would land in the replaced script.
+        h.state_mut().workflow.script_started.push_back((0, web_time::Instant::now(), 0));
+        h.run();
+        assert!(egui_kittest::kittest::NodeT::accesskit_node(&h.get_by_label("Load…")).is_disabled());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// In the browser and on a phone, Load… asks the shell's `"script"` picker; its file opens in
+    /// the pane on the next frame, a cancelled one (an empty answer) changes nothing, and one
+    /// landing while a run is under way is refused and said.
+    #[test]
+    fn a_script_from_the_shells_picker_opens_in_the_pane() {
+        use std::sync::{Arc, Mutex};
+        let mut app = RustGisApp::with_sample();
+        app.workflow.script = "kept".into();
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let ask = asked.clone();
+        app.services.open_async = Some(Box::new(move |purpose| ask.lock().unwrap().push(purpose.to_string())));
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                app.logic(ui.ctx());
+                script_pane(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        h.get_by_label("Load…").click();
+        h.run();
+        assert_eq!(*asked.lock().unwrap(), ["script"]);
+        h.state_mut().open_picked(crate::SCRIPT_PICK, &[]).unwrap();
+        h.run();
+        assert_eq!(h.state().workflow.script, "kept", "a cancelled picker changes nothing");
+        assert!(h.state_mut().open_picked(&format!("{}bad.txt", crate::SCRIPT_PICK), b"\xff").is_err());
+        let big = vec![b'#'; crate::SCRIPT_FILE_MAX_BYTES + 1];
+        assert!(h.state_mut().open_picked(&format!("{}big.txt", crate::SCRIPT_PICK), &big).is_err());
+        assert!(h.state().session.notices.iter().any(|n| n.text == "big.txt is larger than 1 MB"));
+        h.run();
+        assert_eq!(h.state().workflow.script, "kept");
+        // A byte-order mark (Notepad's UTF-8) isn't kept: the first line's command stays known.
+        let said = h.state().session.notices.len();
+        h.state_mut().open_picked(&format!("{}zoom.txt", crate::SCRIPT_PICK), b"\xEF\xBB\xBFmap.zoomFull").unwrap();
+        h.run();
+        assert_eq!(h.state().workflow.script, "map.zoomFull");
+        assert_eq!(h.state().session.notices.len(), said, "a clean file says nothing");
+        assert_eq!(h.state().ui.right, Some(crate::RightPane::Script));
+        h.state_mut().workflow.script_started.push_back((0, web_time::Instant::now(), 0));
+        assert!(h.state_mut().open_picked(&format!("{}other.txt", crate::SCRIPT_PICK), b"map.new").is_err());
+        h.run();
+        assert_eq!(h.state().workflow.script, "map.zoomFull", "not while a run is under way");
+        assert!(h.state().session.notices.iter().any(|n| n.text == "Wait for the run to finish"), "{:?}", h.state().session.notices);
     }
 
     /// Details… opens the last run in a window of its own, each line folded: a result the pane cuts
