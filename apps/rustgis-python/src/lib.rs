@@ -276,6 +276,8 @@ fn load_plugins(py: Python<'_>) -> Vec<String> {
 
 #[pymodule]
 fn _rustgis(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Datum grids: RustGIS's own folder, then those PROJ uses on this computer (#2032 A4).
+    rustgis_engine::data::raster::crs::use_grid_folders();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("RustGISError", m.py().get_type::<RustGISError>())?;
     m.add_class::<Engine>()?;

@@ -110,6 +110,14 @@ impl ReadAhead {
         Ok(self)
     }
 
+    /// [`Self::run`], called on the read's own thread (which the front end starts; never the
+    /// window's): a file whose coordinate system needs a datum grid RustGIS doesn't have first
+    /// waits for it, when its user downloads them ([`crate::grids`]), so its features land where
+    /// the grid puts them.
+    pub fn run_waiting_for_grids(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Read, String> {
+        rustgis_data::raster::crs::waiting_for_grids(|| self.run(control))
+    }
+
     /// Reads, blocking until it's done; `control` stops it and counts its progress (see
     /// [`rustgis_analysis::control`]). A read that fails gives its failure to the command, which
     /// says it as it would have; only a cancelled run (or a bug in a reader) is an error here.

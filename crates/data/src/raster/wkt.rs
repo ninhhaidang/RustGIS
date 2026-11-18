@@ -506,7 +506,9 @@ fn read_root(root: &Node, code: Option<u32>, text: &str) -> Result<(Crs, Option<
 /// 0.1°) and is read back as the code; and a shift on WGS 84 itself, which a WGS 84 or Web
 /// Mercator code's file may give, is none for PROJ 9.8.1 anywhere.
 pub(crate) fn places_as(text: &str, crs: Crs) -> bool {
-    let (Ok(file), Ok(code)) = (super::crs::transformer_of_wkt(text), crs.transformer()) else { return false };
+    let (Ok(file), Ok(code)) = (super::crs::transformer_of_wkt(text), super::crs::not_waiting_for_grids(|| crs.transformer())) else {
+        return false;
+    };
     let centre = match crs {
         Crs::Epsg(c) => super::crs::area_centre(c),
         _ => None,

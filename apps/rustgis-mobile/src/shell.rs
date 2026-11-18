@@ -621,6 +621,11 @@ pub fn pushed(dir: Option<PathBuf>, app: &mut RustGisApp) -> Vec<PathBuf> {
 /// thread don't hold it, and `folders` (whether the system gave the app a folder of its own) is
 /// said when it is false.
 pub fn front_end(folders: bool) -> RustGisApp {
+    // Datum grids: the app's own folder, where downloaded ones are kept (#2032 A4); a phone has no
+    // PROJ install to share.
+    if folders {
+        rustgis_engine::data::raster::crs::use_grid_folders();
+    }
     let mut app = RustGisApp::with_sample();
     if !folders {
         app.session.warn(tl!("This device gives RustGIS no folder of its own: settings, the tile cache and recovery copies are off."));

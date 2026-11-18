@@ -35,6 +35,8 @@
 //! app has one (Settings › Autosave; a copy left there is offered by the recovery dialog).
 //! `"touch": true` on the first line gives the run a stand-in for a phone's touch interface (the
 //! map alone), kept as a phone's shell keeps it: the View tab then has Touch Interface.
+//! `"gridFolders": true` on the first line reads and keeps datum grids in RustGIS's grid folder, as
+//! the desktop app does (Settings › Datum Grids; set `RUSTGIS_APP_DATA_DIR` for a run's own).
 //! `"memorySecrets": true` on the first line supplies an isolated in-memory credential store for
 //! Remember/Forget screenshots. It never opens the OS keychain or writes credentials to disk.
 //!
@@ -164,6 +166,11 @@ fn main() {
     let dt = lines.iter().find_map(|l| l.get("dt").and_then(|v| v.as_f64())).unwrap_or(0.25) as f32;
     let ribbon_split = lines.first().and_then(|l| l.get("ribbonSplit")).and_then(Value::as_bool).unwrap_or(false);
     let mut split_showcase = RibbonSplitShowcase::default();
+    // `"gridFolders": true`: datum grids read from and downloaded into RustGIS's grid folder, as the
+    // desktop app does (`RUSTGIS_APP_DATA_DIR` keeps a run's own).
+    if lines.first().and_then(|l| l.get("gridFolders")).and_then(Value::as_bool).unwrap_or(false) {
+        rustgis_ui_egui::rustgis_engine::data::raster::crs::use_grid_folders();
+    }
     let mut app = RustGisApp::with_sample();
     // As the desktop app does: Add Data, Load All, models and scripts run on a thread of their own.
     app.reads_off_frame = lines.first().and_then(|l| l.get("readsOffFrame")).and_then(Value::as_bool).unwrap_or(false);

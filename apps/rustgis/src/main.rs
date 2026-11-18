@@ -595,6 +595,8 @@ fn main() -> eframe::Result {
         println!("rustgis {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // Datum grids: RustGIS's own folder, then those PROJ uses on this computer (#2032 A4).
+    rustgis_engine::data::raster::crs::use_grid_folders();
     // What an earlier session left, before this one can write a new log.
     let crashed = crash::take_previous(prefs::dir());
     // Whether it closed cleanly: if not, the Start With project isn't opened (it may be what

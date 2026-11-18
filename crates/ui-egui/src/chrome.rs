@@ -892,6 +892,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.themeLoad", "Load a Theme from File…", "Settings › Theme"),
     ("ui.themeReload", "Reload Themes", "Settings › Theme"),
     ("ui.scale", "Reset Interface Scale", "Settings › Theme"),
+    ("ui.datumGrids", "Toggle Downloading Datum Grids", "Settings › Datum Grids"),
     ("ui.map.gpu", "Toggle GPU Rendering", "View"),
     ("ui.importShapefile", "Import Shapefile with Projection…", "Home › Add"),
     ("ui.measurementUnits", "Toggle Imperial Measurements", "Home › Inspect › Measure"),

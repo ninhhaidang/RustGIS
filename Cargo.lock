@@ -5983,7 +5983,7 @@ dependencies = [
 [[package]]
 name = "terrio-crs"
 version = "0.2.4"
-source = "git+https://github.com/opengeos/terrio?rev=759c01645768ee4f531c6866fb2554330eff3f52#759c01645768ee4f531c6866fb2554330eff3f52"
+source = "git+https://github.com/opengeos/terrio?rev=d005ab5367be6d21fcc7aa3366206fb26d5a542a#d005ab5367be6d21fcc7aa3366206fb26d5a542a"
 dependencies = [
  "geographiclib-rs",
  "libc",

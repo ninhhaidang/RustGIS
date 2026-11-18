@@ -706,6 +706,8 @@ fn main() -> ExitCode {
 
 /// The command line: loads the plugins, then runs the subcommand the arguments name.
 fn cli() -> ExitCode {
+    // Datum grids: RustGIS's own folder, then those PROJ uses on this computer (#2032 A4).
+    rustgis_engine::data::raster::crs::use_grid_folders();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().map(|s| s.as_str()) else { return usage() };
     if !args.iter().any(|a| a == "--no-plugins") {

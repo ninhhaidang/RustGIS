@@ -506,6 +506,7 @@ impl Crs {
             // bundled PROJ definition.
             Crs::Epsg(c) => match epsg_proj4(c) {
                 Some(def) => {
+                    wait_for_grids(self);
                     note_used(def, || format!("EPSG:{c}"));
                     let t = match epsg_transformer(c) {
                         Some(t) => t,
@@ -518,6 +519,7 @@ impl Crs {
             },
             _ => {
                 let def = self.custom_def().ok_or("an unknown custom coordinate system")?;
+                wait_for_grids(self);
                 note_used(&def.grid_key(), || def.label.clone());
                 def.transformer().map_err(|e| format!("{}: {e}", def.label))
             }
@@ -607,10 +609,8 @@ pub fn transformer_of_wkt(wkt: &str) -> Result<Transformer, String> {
         return t.clone();
     }
     let flushing = FLUSHING.try_with(|l| l.replace(Some(key.clone()))).ok().flatten();
-    let t = build_wkt(wkt);
-    let mut map = built().lock().unwrap_or_else(|e| e.into_inner());
-    let t = if map.len() < MAX_BUILT || map.contains_key(&key) { map.entry(key).or_insert(t).clone() } else { t };
-    drop(map);
+    let generation = grid_generation();
+    let t = keep_built(key, build_wkt(wkt), generation);
     let _ = FLUSHING.try_with(|l| l.replace(flushing));
     t
 }
@@ -629,6 +629,7 @@ fn epsg_transformer(code: u16) -> Option<Transformer> {
         return t.clone().ok();
     }
     let flushing = FLUSHING.try_with(|l| l.replace(Some(key.clone()))).ok().flatten();
+    let generation = grid_generation();
     // A code the catalog gives another's definition goes by its bundled one ([`catalog_has_own`]).
     let t = if catalog_has_own(code) {
         if let Some(def) = epsg_proj4(code) {
@@ -641,9 +642,7 @@ fn epsg_transformer(code: u16) -> Option<Transformer> {
     } else {
         Err(format!("EPSG:{code} is given another code's definition"))
     };
-    let mut map = built().lock().unwrap_or_else(|e| e.into_inner());
-    let t = if map.len() < MAX_BUILT || map.contains_key(&key) { map.entry(key).or_insert(t).clone() } else { t };
-    drop(map);
+    let t = keep_built(key, t, generation);
     let _ = FLUSHING.try_with(|l| l.replace(flushing));
     t.ok()
 }
@@ -712,6 +711,258 @@ fn built() -> &'static std::sync::Mutex<Built> {
 /// custom table is. One past it is built each time it is asked for.
 const MAX_BUILT: usize = 4 * MAX_CUSTOM;
 
+/// Transformer `t`, built for `key` while the grids were those of `generation`
+/// ([`grid_generation`]), kept in [`built`] and shared: the first one built is kept, as another
+/// thread may have built it meanwhile. One built before a grid arrived isn't kept, as it was
+/// made without it.
+fn keep_built(key: String, t: Result<Transformer, String>, generation: u64) -> Result<Transformer, String> {
+    let mut map = built().lock().unwrap_or_else(|e| e.into_inner());
+    let t = t.map(|t| t.keyed(&key, generation));
+    if grid_generation() != generation {
+        return t;
+    }
+    if map.len() < MAX_BUILT || map.contains_key(&key) { map.entry(key).or_insert(t).clone() } else { t }
+}
+
+/// How many times datum grids have become available this run ([`grids_changed`]). A transformer
+/// keeps the operation it chose when it was built, as PROJ's does, so whatever keeps one (a
+/// map's projection, a tile warp) builds it again when this changes.
+pub fn grid_generation() -> u64 {
+    GRID_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static GRID_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The folders RustGIS reads datum grids from, in order ([`set_grid_folders`]): none until the app
+/// sets them, so a library caller or a test lands a place where it does on every computer.
+fn grid_folders() -> &'static std::sync::RwLock<Vec<std::path::PathBuf>> {
+    static FOLDERS: std::sync::RwLock<Vec<std::path::PathBuf>> = std::sync::RwLock::new(Vec::new());
+    &FOLDERS
+}
+
+/// The folder RustGIS keeps the datum grids it downloads in: the first of its grid folders
+/// ([`use_grid_folders`]). `None` before the app sets them, and in the browser, which registers
+/// the grids it fetches ([`register_grid`]).
+pub fn grid_dir() -> Option<std::path::PathBuf> {
+    if !KEEPS_FIRST.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    grid_folders().read().unwrap_or_else(|e| e.into_inner()).first().cloned()
+}
+
+/// Whether the first grid folder is RustGIS's own, where downloads are kept: not when there is no
+/// app data folder, so a download never lands in PROJ's.
+static KEEPS_FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Reads datum grids from RustGIS's own folder (`datum-grids` in its app data), where it keeps the
+/// ones it downloads, then from those PROJ and terrio-crs use on this computer (`TERRIO_GRID_DIR`,
+/// `PROJ_DATA`, `PROJ_LIB`, PROJ's user folder, terrio's download cache), so grids installed for
+/// PROJ count. Called by the desktop app, the command line and Python as they start; nothing in
+/// the browser, which has no folders.
+pub fn use_grid_folders() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let own = crate::dirs::app_data_dir().map(|d| d.join("datum-grids"));
+        let mut dirs: Vec<std::path::PathBuf> = own.iter().cloned().collect();
+        for d in terrio_crs::default_grid_search_paths() {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        set_folders(dirs, own.is_some());
+    }
+}
+
+/// Reads datum grids from `dirs`, in order, the first being where downloaded ones are kept
+/// ([`grid_dir`]), and builds transformers again with them. A grid named by a path in a definition
+/// (`+nadgrids=/data/a.gsb`) stays refused, so a file read can't make RustGIS read others.
+pub fn set_grid_folders(dirs: Vec<std::path::PathBuf>) {
+    set_folders(dirs, true);
+}
+
+/// [`set_grid_folders`], the first of `dirs` being where downloads are kept only if `keeps_first`.
+fn set_folders(dirs: Vec<std::path::PathBuf>, keeps_first: bool) {
+    KEEPS_FIRST.store(keeps_first, std::sync::atomic::Ordering::SeqCst);
+    // The first setting up done (on whatever thread started it), so it can't put the folders
+    // read before these after them.
+    grids_set_up();
+    *grid_folders().write().unwrap_or_else(|e| e.into_inner()) = dirs.clone();
+    terrio_crs::set_network_enabled(Some(false));
+    terrio_crs::set_grid_search_paths(Some(dirs));
+    grids_changed();
+}
+
+/// Points terrio-crs at the grid folders (none unless the app set some), once a run, with its own
+/// network off: RustGIS fetches grids itself.
+fn grids_set_up() {
+    static SET_UP: std::sync::Once = std::sync::Once::new();
+    SET_UP.call_once(|| {
+        let dirs = grid_folders().read().unwrap_or_else(|e| e.into_inner()).clone();
+        terrio_crs::set_grid_search_paths(Some(dirs));
+        terrio_crs::set_network_enabled(Some(false));
+    });
+}
+
+/// Says that datum grids have become available (a file put in [`grid_dir`], a grid registered):
+/// transformers are built again, with them, and the notes that a grid was missing are asked again.
+pub fn grids_changed() {
+    grids_set_up();
+    // terrio-crs first, so whatever is built from here on finds the grids; then the generation and
+    // the transformers kept, together, so none built before is kept after ([`keep_built`]) and none
+    // kept after was built before (one [`Live::now`] builds again finds only those).
+    terrio_crs::reset_grid_cache();
+    {
+        let mut built = built().lock().unwrap_or_else(|e| e.into_inner());
+        GRID_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        built.clear();
+    }
+    epsg_built().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    needs_grid().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    probed().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// A datum grid a system needs that RustGIS doesn't have and can download: its name on PROJ's
+/// grid server (`us_noaa_conus.tif`, the name it is kept and registered under) and its address.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MissingGrid {
+    pub name: String,
+    pub url: String,
+}
+
+/// The datum grids `crs`'s most accurate transformation needs where its data usually are (the
+/// middle of its area of use, [`area_of_use`]) that RustGIS doesn't have and can download (PROJ's
+/// grid server gives the file itself), as terrio-crs lists them (PROJ's
+/// `proj_coordoperation_get_grid_used`). Once those have arrived, ask again: the next operation's
+/// grids come up where the first one doesn't reach. None for a system without a datum
+/// transformation, or without an area of use to ask at.
+pub fn missing_grids(crs: Crs) -> Vec<MissingGrid> {
+    let Some(at) = area_of_use(crs) else { return Vec::new() };
+    crs.transformer().map(|t| t.missing_grids_at(at)).unwrap_or_default()
+}
+
+/// Whether RustGIS downloads `grid`: one it doesn't have and needs (not optional), the file itself
+/// on PROJ's grid server (the only server it contacts for them) under an open licence. A
+/// definition read from a file can name any grid PROJ knows: this keeps what it can make RustGIS
+/// fetch to PROJ's own, freely licensed grids. Only its GeoTIFF grids: the server's other files
+/// (deformation models, point lists) aren't grids RustGIS downloads.
+fn downloadable(grid: &terrio_crs::GridUse) -> bool {
+    !grid.available
+        && grid.name.ends_with(".tif")
+        && !grid.optional
+        && grid.direct_download
+        && grid.open_license
+        && grid.url.as_deref().is_some_and(|u| u.strip_prefix("https://cdn.proj.org/").is_some_and(|n| n == grid.name))
+}
+
+/// What waits for the datum grids a system needs ([`set_grid_waiter`]): the system, and the read
+/// it waits for (a number of this thread's own), so a read's systems share one wait.
+type GridWaiter = fn(Crs, u64);
+
+fn grid_waiter() -> &'static std::sync::RwLock<Option<GridWaiter>> {
+    static WAITER: std::sync::RwLock<Option<GridWaiter>> = std::sync::RwLock::new(None);
+    &WAITER
+}
+
+thread_local! {
+    /// This thread may wait for datum grids before it transforms ([`waiting_for_grids`]).
+    static MAY_WAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The systems this read has already waited for: each is asked about once.
+    static WAITED: std::cell::RefCell<Vec<Crs>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The read on this thread ([`waiting_for_grids`]), counted.
+    static READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Puts [`MAY_WAIT`] back as it was when dropped, a panic included.
+struct MayWait(bool);
+
+impl MayWait {
+    fn set(to: bool) -> MayWait {
+        MayWait(MAY_WAIT.try_with(|m| m.replace(to)).unwrap_or(false))
+    }
+}
+
+impl Drop for MayWait {
+    fn drop(&mut self) {
+        let _ = MAY_WAIT.try_with(|m| m.set(self.0));
+    }
+}
+
+/// Installs what gets the datum grids a system needs before a file in it is read on a thread that
+/// may wait ([`waiting_for_grids`]): the app's download, when its user turned it on. `None` takes
+/// it away.
+pub fn set_grid_waiter(waiter: Option<GridWaiter>) {
+    *grid_waiter().write().unwrap_or_else(|e| e.into_inner()) = waiter;
+}
+
+/// Runs `f`, a read on a thread of its own (never the window's), so that a system it transforms
+/// first gets the datum grids it needs ([`set_grid_waiter`]): its features then land where those
+/// grids put them, not where the next transformation does.
+pub fn waiting_for_grids<R>(f: impl FnOnce() -> R) -> R {
+    let outer = !MAY_WAIT.try_with(std::cell::Cell::get).unwrap_or(false);
+    if outer {
+        let _ = WAITED.try_with(|w| w.borrow_mut().clear());
+        let _ = READ.try_with(|r| r.set(r.get().wrapping_add(1)));
+    }
+    let _may = MayWait::set(true);
+    f()
+}
+
+/// Runs `f` without waiting for datum grids, on a thread that otherwise may: for a transformer
+/// asked for only to compare with, whose grids the read may not use.
+pub(crate) fn not_waiting_for_grids<R>(f: impl FnOnce() -> R) -> R {
+    let _may = MayWait::set(false);
+    f()
+}
+
+/// Waits for the grids `crs` needs, on a thread that may ([`waiting_for_grids`]), once a read.
+fn wait_for_grids(crs: Crs) {
+    if !MAY_WAIT.try_with(std::cell::Cell::get).unwrap_or(false) {
+        return;
+    }
+    let first = WAITED
+        .try_with(|w| {
+            let mut w = w.borrow_mut();
+            let first = !w.contains(&crs);
+            if first {
+                w.push(crs);
+            }
+            first
+        })
+        .unwrap_or(false);
+    if !first {
+        return;
+    }
+    let Some(waiter) = *grid_waiter().read().unwrap_or_else(|e| e.into_inner()) else { return };
+    // The waiter asks for transformers itself: not again from inside it.
+    let _may = MayWait::set(false);
+    waiter(crs, READ.try_with(std::cell::Cell::get).unwrap_or(0));
+}
+
+/// The middle of the area of use of `crs`: an EPSG code's own, else that of the geographic system
+/// a custom one is on (`None` when that has no EPSG code).
+pub fn area_of_use(crs: Crs) -> Option<Coord> {
+    match crs {
+        Crs::Epsg(c) => area_centre(c),
+        Crs::Custom(_) => {
+            let d = crs.custom_def()?;
+            let sr = match &d.wkt {
+                Some(w) => terrio_crs::SpatialRef::from_wkt(w),
+                None => terrio_crs::SpatialRef::from_proj4(&format!("{} +type=crs", d.proj4)).ok()?,
+            };
+            sr.geographic_code().and_then(|c| u16::try_from(c).ok()).and_then(area_centre)
+        }
+        Crs::LonLat | Crs::WebMercator => None,
+    }
+}
+
+/// Makes a datum grid available from its bytes, under its name (`us_noaa_conus.tif`): how the
+/// browser, without files, uses one it fetched.
+pub fn register_grid(name: &str, bytes: Vec<u8>) {
+    grids_set_up();
+    terrio_crs::register_grid(name, bytes);
+    grids_changed();
+}
+
 /// A transformer between the system a PROJ definition describes and WGS 84 longitude/latitude,
 /// computed by terrio-crs. Winkel Tripel's standard parallel (`+lat_1`) must be a latitude short
 /// of a pole, where the projection has no width. Natural Earth, Winkel Tripel and Eckert IV have no scale factor:
@@ -723,6 +974,7 @@ pub fn transformer_of(def: &str) -> Result<Transformer, String> {
     // What a transformer built here says as it is dropped (one that fails its checks, or one
     // another thread built first) is this definition's ([`record_warning`]).
     let flushing = FLUSHING.try_with(|l| l.replace(Some(def.to_string()))).ok().flatten();
+    let generation = grid_generation();
     let degrees = in_degrees(def);
     let param = |key: &str| degrees.split_whitespace().find_map(|t| t.strip_prefix(key));
     let world = param("+proj=").is_some_and(|m| WORLD_METHODS.contains(&m));
@@ -738,10 +990,7 @@ pub fn transformer_of(def: &str) -> Result<Transformer, String> {
     } else {
         misread_parameter(def).and_then(|()| build(&degrees))
     };
-    let mut map = built().lock().unwrap_or_else(|e| e.into_inner());
-    // The first one built is kept and shared: another thread may have built it meanwhile.
-    let t = if map.len() < MAX_BUILT || map.contains_key(def) { map.entry(def.to_string()).or_insert(t).clone() } else { t };
-    drop(map);
+    let t = keep_built(def.to_string(), t, generation);
     let _ = FLUSHING.try_with(|l| l.replace(flushing));
     t
 }
@@ -983,7 +1232,96 @@ enum Kind {
     LonLat,
     Merc,
     /// Computed by terrio-crs, in both directions.
-    Terrio(std::sync::Arc<Terrio>),
+    Terrio(std::sync::Arc<Live>),
+}
+
+/// A system terrio-crs computes, built again with the datum grids that have arrived since
+/// ([`grid_generation`]): a transformer keeps the operation it chose when it was built, and what
+/// keeps one (a streamed layer, a tile warp, a map's projection) needn't know.
+struct Live {
+    /// What it was built for, as [`built`] keeps it (a PROJ definition, `WKT …`, `EPSG n`), to
+    /// build it again; `None` for one that can't be.
+    key: Option<String>,
+    /// As first built: its conversion (axes, unit, parameters), which no grid changes.
+    first: std::sync::Arc<Terrio>,
+    /// The generation of grids it is built for.
+    generation: std::sync::atomic::AtomicU64,
+    /// Built again, once grids have arrived since it was first: `None` while it is as first built,
+    /// which then needs no lock.
+    again: std::sync::RwLock<Option<std::sync::Arc<Terrio>>>,
+    /// Whether [`Live::again`] holds one.
+    rebuilt: std::sync::atomic::AtomicBool,
+}
+
+/// [`Live::now`]'s answer: the system as first built, or as built again.
+enum Now<'a> {
+    First(&'a Terrio),
+    Again(std::sync::Arc<Terrio>),
+}
+
+impl std::ops::Deref for Now<'_> {
+    type Target = Terrio;
+    fn deref(&self) -> &Terrio {
+        match self {
+            Now::First(t) => t,
+            Now::Again(t) => t,
+        }
+    }
+}
+
+impl Live {
+    fn new(key: Option<String>, generation: u64, t: std::sync::Arc<Terrio>) -> Live {
+        Live {
+            key,
+            first: t,
+            generation: std::sync::atomic::AtomicU64::new(generation),
+            again: std::sync::RwLock::new(None),
+            rebuilt: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// As built for the grids there are now: built again when grids have arrived since. One that
+    /// can't be built again goes on as it was. Without grids arriving, two atomic loads.
+    fn now(&self) -> Now<'_> {
+        use std::sync::atomic::Ordering;
+        let generation = grid_generation();
+        if self.generation.load(Ordering::Acquire) != generation && self.key.is_some() {
+            let again = self.key.as_deref().and_then(rebuilt);
+            let mut kept = self.again.write().unwrap_or_else(|e| e.into_inner());
+            if let Some(t) = again {
+                *kept = Some(t);
+                self.rebuilt.store(true, Ordering::Release);
+            }
+            self.generation.store(generation, Ordering::Release);
+        }
+        if !self.rebuilt.load(Ordering::Acquire) {
+            return Now::First(&self.first);
+        }
+        match &*self.again.read().unwrap_or_else(|e| e.into_inner()) {
+            Some(t) => Now::Again(std::sync::Arc::clone(t)),
+            None => Now::First(&self.first),
+        }
+    }
+
+    /// As it is, without building it again.
+    fn peek(&self) -> std::sync::Arc<Terrio> {
+        self.again.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| std::sync::Arc::clone(&self.first))
+    }
+}
+
+/// The system [`built`] keeps under `key`, built for the grids there are now.
+fn rebuilt(key: &str) -> Option<std::sync::Arc<Terrio>> {
+    let t = if let Some(wkt) = key.strip_prefix("WKT ") {
+        transformer_of_wkt(wkt).ok()
+    } else if let Some(code) = key.strip_prefix("EPSG ").and_then(|c| c.parse::<u16>().ok()) {
+        epsg_transformer(code)
+    } else {
+        transformer_of(key).ok()
+    }?;
+    match &t.kind {
+        Kind::Terrio(live) => Some(live.peek()),
+        _ => None,
+    }
 }
 
 /// A system terrio-crs computes: the transformers to and from longitude/latitude, built once.
@@ -1074,7 +1412,7 @@ impl Terrio {
 
 /// What a transformation had to do that changes where places land: a datum transformation that
 /// needs a grid RustGIS doesn't have, so the next one was used (NAD27's to WGS 84 then places
-/// features about 10 m off). The flags terrio-crs keeps for a transformer are turned into notes
+/// features up to about 10 m off). The flags terrio-crs keeps for a transformer are turned into notes
 /// by [`grid_note`].
 fn record_warning(message: String) {
     // terrio-crs's other notes: a datum shift the system doesn't give, which reading it says
@@ -1163,7 +1501,7 @@ pub fn definition_and_label(crs: Crs) -> Option<(String, String)> {
 /// ([`needs_a_missing_grid`]), `names` naming them (the app lists a few and counts the rest):
 /// one notice for all of them, with their count.
 pub fn grid_notes_text(count: usize, names: &str) -> String {
-    const TAIL: &str = "the most accurate datum transformation needs a grid RustGIS doesn't have yet, so the next one was used; places may be metres off (NAD27, for one, is about 10 m off without its grid)";
+    const TAIL: &str = "the most accurate datum transformation needs a grid RustGIS doesn't have yet, so the next one was used; places may be metres off (NAD27, for one, up to about 10 m off without its grid)";
     match count {
         1 => format!("{names}: {TAIL}"),
         _ => format!("{count} coordinate systems ({names}): {TAIL}"),
@@ -1201,6 +1539,12 @@ fn area_centre_uncached(code: u16) -> Option<Coord> {
     Some(Coord::new(lon, (s + n) / 2.0))
 }
 
+/// The definitions [`probe_grid`] has asked about, since grids last changed.
+fn probed() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static PROBED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    PROBED.get_or_init(Default::default)
+}
+
 /// Whether a definition's most accurate datum transformation needs a grid RustGIS doesn't have,
 /// asked once per definition at a place where it is used (`at`: the middle of an EPSG code's area
 /// of use): terrio-crs notes a missing grid by the first place a transformer takes, which may be
@@ -1208,17 +1552,16 @@ fn area_centre_uncached(code: u16) -> Option<Coord> {
 /// without a code, which has no area of use to ask at, has only that first place. The first use
 /// of a code reads terrio-crs's catalog of areas ([`area_centre`]: about 50 ms, once a run).
 pub fn probe_grid(def: &str, at: impl FnOnce() -> Option<Coord>) {
-    static PROBED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
     {
-        let probed = PROBED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let probed = probed().lock().unwrap_or_else(|e| e.into_inner());
         // Without a limit: only EPSG codes' definitions are probed, a table's worth at most.
         if probed.contains(def) {
             return;
         }
     }
     let Some(at) = at().filter(|c| c.is_finite()) else { return };
-    PROBED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(def.to_string());
-    no_grids();
+    probed().lock().unwrap_or_else(|e| e.into_inner()).insert(def.to_string());
+    grids_set_up();
     let strict = terrio_crs::TransformOptions { only_best: true, ..Default::default() };
     let Ok(sr) = terrio_crs::SpatialRef::from_proj4(&in_degrees(def)) else { return };
     let Ok(wgs84) = terrio_crs::SpatialRef::from_epsg(4326) else { return };
@@ -1271,7 +1614,8 @@ pub fn needs_a_missing_grid(def: &str) -> bool {
     let codes: Vec<String> = epsg_codes_of(def).into_iter().map(|c| format!("EPSG {c}")).collect();
     let map = built().lock().unwrap_or_else(|e| e.into_inner());
     for key in std::iter::once(def).chain(codes.iter().map(String::as_str)) {
-        if let Some(Ok(Transformer { kind: Kind::Terrio(t) })) = map.get(key) {
+        if let Some(Ok(Transformer { kind: Kind::Terrio(live) })) = map.get(key) {
+            let t = live.peek();
             let _ = FLUSHING.try_with(|l| *l.borrow_mut() = Some(key.to_string()));
             t.to_lonlat.flush_warnings();
             t.from_lonlat.flush_warnings();
@@ -1302,7 +1646,7 @@ impl std::fmt::Debug for Transformer {
         match &self.kind {
             Kind::LonLat => write!(f, "Transformer(lonlat)"),
             Kind::Merc => write!(f, "Transformer(mercator)"),
-            Kind::Terrio(t) => write!(f, "Transformer({})", t.params.as_ref().map_or("?", |p| p.method.as_str())),
+            Kind::Terrio(live) => write!(f, "Transformer({})", live.first.params.as_ref().map_or("?", |p| p.method.as_str())),
         }
     }
 }
@@ -1311,24 +1655,12 @@ impl std::fmt::Debug for Transformer {
 /// central one (#1701), by PROJ's name.
 const WORLD_METHODS: [&str; 3] = ["natearth", "wintri", "eck4"];
 
-/// No datum grids yet (opengeos/RustGIS#2032, A4): none read from the computer's PROJ folders,
-/// from paths a definition names (a project file's), or downloaded, so a place lands where it does
-/// on every computer and in the browser. A transformation that needs one takes the next PROJ
-/// lists, and says so ([`grid_note`]). Set before terrio-crs builds any transformer.
-fn no_grids() {
-    static NO_GRIDS: std::sync::Once = std::sync::Once::new();
-    NO_GRIDS.call_once(|| {
-        terrio_crs::set_grid_search_paths(Some(Vec::new()));
-        terrio_crs::set_network_enabled(Some(false));
-    });
-}
-
 impl Transformer {
     /// The transformer between `sr` and WGS 84 longitude/latitude; `geographic` when its
     /// coordinates are degrees. A system on another body than the Earth goes to and from its own
     /// longitude/latitude instead, which is read as it is, on the Earth ([`Crs::is_planetary`]).
     fn of(sr: &terrio_crs::SpatialRef, geographic: bool, (lat_first, west): (bool, bool)) -> Result<Transformer, String> {
-        no_grids();
+        grids_set_up();
         let wgs84 = terrio_crs::SpatialRef::from_epsg(4326).map_err(|e| e.to_string())?;
         let pair = |to: &terrio_crs::SpatialRef| -> Result<_, String> {
             let forward = terrio_crs::Transformer::new(sr, to).map_err(|e| e.to_string())?.with_warning_handler(record_warning);
@@ -1375,7 +1707,26 @@ impl Transformer {
             wraps,
             eck4,
         };
-        Ok(Transformer { kind: Kind::Terrio(std::sync::Arc::new(t)) })
+        Ok(Transformer { kind: Kind::Terrio(std::sync::Arc::new(Live::new(None, grid_generation(), std::sync::Arc::new(t)))) })
+    }
+
+    /// This transformer, built again under `key` ([`built`]'s) when datum grids arrive after
+    /// `generation`, the one it was built for.
+    fn keyed(self, key: &str, generation: u64) -> Transformer {
+        match self.kind {
+            Kind::Terrio(live) if live.key.is_none() => {
+                Transformer { kind: Kind::Terrio(std::sync::Arc::new(Live::new(Some(key.to_string()), generation, live.peek()))) }
+            }
+            kind => Transformer { kind },
+        }
+    }
+
+    /// The grids its most accurate transformation needs at `at` (longitude/latitude) that RustGIS
+    /// doesn't have and can download ([`missing_grids`]).
+    pub fn missing_grids_at(&self, at: Coord) -> Vec<MissingGrid> {
+        let Kind::Terrio(live) = &self.kind else { return Vec::new() };
+        let Ok(uses) = live.now().from_lonlat.best_operation_grids_at(at.x, at.y, 0.0) else { return Vec::new() };
+        uses.into_iter().filter(downloadable).filter_map(|g| Some(MissingGrid { url: g.url?, name: g.name })).collect()
     }
 
     /// Native coordinates to longitude/latitude.
@@ -1383,7 +1734,8 @@ impl Transformer {
         let out = match &self.kind {
             Kind::LonLat => c,
             Kind::Merc => merc_to_lonlat(c),
-            Kind::Terrio(t) => {
+            Kind::Terrio(live) => {
+                let t = live.now();
                 // A latitude past a pole is no place (terrio-crs would fold it back to one): past
                 // 90°, in the system's unit (100 grads).
                 let lat = if t.lat_first { c.x } else { c.y };
@@ -1410,9 +1762,10 @@ impl Transformer {
     /// datum shift. Only whole turns change; other consumers keep `to_lonlat`'s usual branch.
     pub(super) fn to_lonlat_for_extent(&self, c: Coord) -> Option<Coord> {
         let mut out = self.to_lonlat(c)?;
-        if let Kind::Terrio(t) = &self.kind
-            && t.geographic
+        if let Kind::Terrio(live) = &self.kind
+            && live.first.geographic
         {
+            let t = &live.first;
             let lon = t.lon_sign * t.unit * if t.lat_first { c.y } else { c.x };
             let greenwich = lon + t.params.as_ref().map_or(0.0, |p| p.prime_meridian);
             out.x += 360.0 * ((greenwich - out.x) / 360.0).round();
@@ -1429,9 +1782,10 @@ impl Transformer {
     /// (#1925). A place that comes back keeps the projection's coordinates.
     pub fn from_lonlat(&self, c: Coord) -> Option<Coord> {
         let out = self.from_lonlat_unchecked(c)?;
-        if let Kind::Terrio(t) = &self.kind
-            && !t.geographic
+        if let Kind::Terrio(live) = &self.kind
+            && !live.first.geographic
         {
+            let t = live.now();
             let back = match &t.own {
                 // On the projection's own datum: the place there, and where its coordinates go back.
                 Some((onto, unproject, project)) => {
@@ -1454,11 +1808,11 @@ impl Transformer {
         let out = match &self.kind {
             Kind::LonLat => c,
             Kind::Merc => lonlat_to_merc(c),
-            Kind::Terrio(t) => {
+            Kind::Terrio(live) => {
                 if !c.is_finite() || c.y.abs() > 90.0 + 1e-9 {
                     return None;
                 }
-                let (x, y) = t.from_lonlat.transform(c.x, c.y).ok()?;
+                let (x, y) = live.now().from_lonlat.transform(c.x, c.y).ok()?;
                 Coord::new(x, y)
             }
         };
@@ -1470,7 +1824,7 @@ impl Transformer {
         match &self.kind {
             Kind::LonLat => true,
             Kind::Merc => false,
-            Kind::Terrio(t) => t.geographic,
+            Kind::Terrio(live) => live.first.geographic,
         }
     }
 
@@ -1478,7 +1832,7 @@ impl Transformer {
     /// other than PROJ's ballpark, which knows no shift for the datum there.
     pub fn shift_at(&self, at: Coord) -> bool {
         match &self.kind {
-            Kind::Terrio(t) => t.from_lonlat.operation_at(at.x, at.y, 0.0).ok().flatten().is_some_and(|o| !o.ballpark),
+            Kind::Terrio(live) => live.now().from_lonlat.operation_at(at.x, at.y, 0.0).ok().flatten().is_some_and(|o| !o.ballpark),
             _ => false,
         }
     }
@@ -1487,7 +1841,7 @@ impl Transformer {
     /// terrio-crs computes that has some.
     pub fn params(&self) -> Option<&terrio_crs::ProjParams> {
         match &self.kind {
-            Kind::Terrio(t) => t.params.as_ref(),
+            Kind::Terrio(live) => live.first.params.as_ref(),
             _ => None,
         }
     }
@@ -1513,6 +1867,44 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only PROJ's own grid server, a grid file itself and an open licence: a definition read
+    /// from a file names any grid PROJ knows, some of them elsewhere (rdtrans2008.gsb, on
+    /// salsa.debian.org, without an open licence), and none of those is fetched.
+    #[test]
+    fn only_open_grids_on_projs_server_are_downloaded() {
+        let grid = |name: &str, url: Option<&str>, direct: bool, open: bool, available: bool, optional: bool| terrio_crs::GridUse {
+            name: name.into(),
+            url: url.map(str::to_string),
+            direct_download: direct,
+            open_license: open,
+            available,
+            optional,
+        };
+        let cdn = Some("https://cdn.proj.org/us_noaa_conus.tif");
+        assert!(downloadable(&grid("us_noaa_conus.tif", cdn, true, true, false, false)));
+        for g in [
+            grid("us_noaa_conus.tif", cdn, true, true, true, false),
+            grid("us_noaa_conus.tif", cdn, true, true, false, true),
+            grid("us_noaa_conus.tif", cdn, false, true, false, false),
+            grid("us_noaa_conus.tif", cdn, true, false, false, false),
+            grid("us_noaa_conus.tif", None, true, true, false, false),
+            grid(
+                "rdtrans2008.gsb",
+                Some("https://salsa.debian.org/debian-gis-team/proj-rdnap/raw/upstream/2008/rdtrans2008.gsb"),
+                true,
+                true,
+                false,
+                false,
+            ),
+            grid("../a.tif", Some("https://cdn.proj.org/us_noaa_conus.tif"), true, true, false, false),
+            // On the server, but not a GeoTIFF grid.
+            grid("nz_linz_nzgd2000-20180701.json", Some("https://cdn.proj.org/nz_linz_nzgd2000-20180701.json"), true, true, false, false),
+            grid("a.tif", Some("http://cdn.proj.org/a.tif"), true, true, false, false),
+        ] {
+            assert!(!downloadable(&g), "{g:?}");
+        }
+    }
 
     /// A system read from WKT is saved with its WKT beside a PROJ string, so a newer release reads
     /// the WKT and an older one, which ignores the field, the PROJ string; a project saved without

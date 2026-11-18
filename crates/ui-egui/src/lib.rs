@@ -759,6 +759,9 @@ pub struct UiState {
     pub start_with: StartWith,
     /// Whether a file holding several layers asks which to add (#934), or adds them all.
     pub ask_layers: bool,
+    /// Whether datum grids a coordinate system needs are downloaded from PROJ's grid server
+    /// (#2032 A4): off unless turned on, as it reaches a server.
+    pub download_grids: bool,
     /// Key combinations the native menu bar keeps for itself (macOS: Quit, Close Window, Hide…):
     /// a shortcut on one would never reach the app, so the shortcut editor refuses them.
     pub reserved_shortcuts: Vec<egui::KeyboardShortcut>,
@@ -1023,6 +1026,7 @@ impl Default for UiState {
             worldview_fetch: None,
             start_with: StartWith::Sample,
             ask_layers: true,
+            download_grids: false,
             reserved_shortcuts: Vec::new(),
             choosing: Vec::new(),
             last_project: None,
@@ -1465,6 +1469,9 @@ impl RustGisApp {
         let mut s = session;
         // A time slider move doesn't wait for a Zarr step to be read (#1291 step 3).
         s.zarr_off_frame = cfg!(not(target_arch = "wasm32"));
+        // This front end has the Download Datum Grids setting, so a note about a missing grid can
+        // point to it.
+        s.offers_grid_downloads = true;
         if s.active_layer.is_none() {
             s.active_layer = s.map().layers.first().map(|l| l.id);
         }
@@ -1623,6 +1630,8 @@ impl RustGisApp {
         }
         self.ui.last_project = self.services.load_pref.as_ref().and_then(|load| load("last_project")).filter(|p| !p.trim().is_empty());
         self.ui.ask_layers = self.services.load_pref.as_ref().and_then(|load| load("ask_file_layers")).is_none_or(|v| v != "off");
+        self.ui.download_grids = self.services.load_pref.as_ref().and_then(|load| load("download_datum_grids")).is_some_and(|v| v == "on");
+        rustgis_engine::grids::set_enabled(self.ui.download_grids);
         // A stored projection this version can't use means Web Mercator.
         if let Some(code) = self.services.load_pref.as_ref().and_then(|load| load("start_projection"))
             && let Ok(p) = rustgis_engine::map::Projection::from_code(&code)
@@ -3571,6 +3580,24 @@ impl RustGisApp {
                     save("ask_file_layers", if self.ui.ask_layers { "on" } else { "off" });
                 }
                 return Ok(json!({"on": self.ui.ask_layers}));
+            }
+            // Whether datum grids are downloaded from PROJ's grid server (#2032 A4).
+            "ui.datumGrids" => {
+                // Without `on` it toggles; a value that isn't true or false is refused.
+                self.ui.download_grids = match p.get("on") {
+                    None | Some(Value::Null) => !self.ui.download_grids,
+                    Some(v) => v.as_bool().ok_or("on must be true or false")?,
+                };
+                rustgis_engine::grids::set_enabled(self.ui.download_grids);
+                // Turned on: the grids the systems in use already lack are got now, not only those
+                // a note says later.
+                if self.ui.download_grids {
+                    self.session.want_grids_in_use();
+                }
+                if let Some(save) = &self.services.save_pref {
+                    save("download_datum_grids", if self.ui.download_grids { "on" } else { "off" });
+                }
+                return Ok(json!({"on": self.ui.download_grids}));
             }
             "ui.recover" => return autosave::recover(self, p),
             "ui.startup" => {
@@ -8956,5 +8983,33 @@ mod touch_tests {
         // Already on it: nothing changes.
         app.run("ui.touchInterface", Value::Null).unwrap();
         assert!(app.chrome.is_some());
+    }
+}
+
+#[cfg(test)]
+mod datum_grid_setting_tests {
+    use super::RustGisApp;
+    use rustgis_engine::{Project, Session};
+    use serde_json::json;
+
+    /// Downloading datum grids is off unless turned on (it reaches a server), and the choice is
+    /// kept as a preference. Turned on only by `rustgis-engine`'s own test, which reaches no
+    /// network: here, where other tests run beside it, it stays off.
+    #[test]
+    fn downloading_datum_grids_is_a_kept_choice_off_by_default() {
+        let mut app = RustGisApp::new(Session::new(Project::default()));
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = saved.clone();
+        app.services.save_pref = Some(Box::new(move |k, v| log.lock().unwrap().push((k.to_string(), v.to_string()))));
+        assert!(!app.ui.download_grids);
+        assert!(!rustgis_engine::grids::enabled());
+        assert_eq!(app.run("ui.datumGrids", json!({"on": false})).unwrap(), json!({"on": false}));
+        assert_eq!(saved.lock().unwrap().last().cloned(), Some(("download_datum_grids".to_string(), "off".to_string())));
+        // A value that isn't true or false is refused and changes nothing.
+        for junk in [json!({"on": "true"}), json!({"on": 1}), json!({"on": [true]})] {
+            assert!(app.run("ui.datumGrids", junk).is_err());
+            assert!(!app.ui.download_grids && !rustgis_engine::grids::enabled());
+        }
+        assert_eq!(saved.lock().unwrap().len(), 1);
     }
 }

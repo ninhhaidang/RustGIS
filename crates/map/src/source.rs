@@ -136,6 +136,10 @@ pub struct SourceLayer {
     /// explicit source reset discards them. Display-only resets preserve them in `sync_sources`.
     #[serde(skip)]
     pub(crate) saved_selection: Vec<u64>,
+    /// The datum grids this window was read with ([`rustgis_data::raster::crs::grid_generation`]):
+    /// a window read before a grid arrived is read again, as after a change of projection.
+    #[serde(skip)]
+    pub(crate) grids: Option<u64>,
     #[serde(skip)]
     pub(crate) window_fields: Option<usize>,
     /// The layer's definition query, applied while a view is read rather than to the rows read.
@@ -1800,6 +1804,7 @@ impl SourceLayer {
             estimated_row_bytes: _,
             full_read: _,
             saved_selection: _,
+            grids: _,
             window_fields: _,
             query: _,
             opening: _,

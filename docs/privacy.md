@@ -130,6 +130,11 @@ still identify private data, so review copied diagnostics before sharing them.
   once on the desktop (they are kept in the cache folder) and once a session in the web app.
   Until you choose one, a system whose time zone or language is mainland China's downloads
   China's view the same way.
+- **Settings › Datum Grids › Download Datum Grids** (off unless you turn it on) downloads the
+  datum grids a coordinate system you use needs from PROJ's grid server (`cdn.proj.org`): the
+  request names the grid (such as `us_noaa_conus.tif`), which tells the server roughly which
+  region's data you work with. On the desktop a grid is kept in RustGIS's app data folder
+  (`datum-grids`) and not downloaded again; the web app downloads it once a session.
 - Web data, remote rasters, cloud storage, database connections and online catalogs contact
   their configured servers. Searches may send keywords, coordinates, an area of interest,
   dates or filters; authenticated connections also send the credentials or tokens required by

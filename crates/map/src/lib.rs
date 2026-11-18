@@ -2736,7 +2736,12 @@ impl Map {
                 pending |= raster.poll_reload();
             }
             if let Some(src) = &mut layer.source {
-                let changed = src.projection.as_ref().is_some_and(|p| p != &self.projection);
+                // Its features are held in longitude/latitude: a datum grid that arrived since
+                // they were read places them otherwise.
+                let grids = rustgis_data::raster::crs::grid_generation();
+                let new_grids = src.grids.is_some_and(|g| g != grids);
+                src.grids = Some(grids);
+                let changed = src.projection.as_ref().is_some_and(|p| p != &self.projection) || new_grids;
                 let mode_changed = src.full_read != block;
                 let budget_changed = src.byte_budget != bytes;
                 src.projection = Some(self.projection.clone());
