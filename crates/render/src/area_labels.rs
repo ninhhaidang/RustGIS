@@ -22,20 +22,56 @@ use crate::line_labels::{self, Line};
 pub(super) const MAX_SIDE: usize = 160;
 
 /// About the most outline vertices projected: more are dropped evenly, as finer detail than a cell
-/// is lost on the grid anyway. A ring keeps at least three points and its shape, so many small
-/// rings (a multipolygon's islands, holes) can keep more than this.
+/// is lost on the grid anyway. Small rings kept whole may add half as many again, and a longer ring
+/// keeps at least three points and its shape, so a polygon of many rings can keep a few more.
 const MAX_VERTICES: usize = 20_000;
 
-/// Every `every`th point of `ring` (at `xy`), but at least three of it, so a small hole or island
-/// next to a long outline keeps its place, and fewer dropped while that would lose half its area,
-/// so a ring dense along one side is not left a line with no inside (#2295).
-fn thin<T: Copy>(ring: &[T], every: usize, xy: impl Fn(&T) -> (f64, f64)) -> Vec<T> {
+/// A ring with fewer points than this is not thinned, while such rings add up to at most half of
+/// [`MAX_VERTICES`]: a small hole or island keeps every corner.
+const KEEP_WHOLE: usize = 64;
+
+/// How a polygon's rings are thinned before they are projected: one point in `every` kept, and
+/// rings of fewer than `whole_below` points kept whole.
+#[derive(Clone, Copy)]
+struct Thinning {
+    every: usize,
+    whole_below: usize,
+}
+
+impl Thinning {
+    /// For rings of `lens` points: one point in as many as keeps about [`MAX_VERTICES`] of them all,
+    /// and the small rings whole unless there are so many of them (thousands of small islands) that
+    /// they would take more than half of that.
+    fn new(lens: impl Iterator<Item = usize>) -> Self {
+        let (mut all, mut small) = (0, 0);
+        for n in lens {
+            all += n;
+            if n < KEEP_WHOLE {
+                small += n;
+            }
+        }
+        Thinning { every: all.div_ceil(MAX_VERTICES).max(1), whole_below: if small <= MAX_VERTICES / 2 { KEEP_WHOLE } else { 0 } }
+    }
+}
+
+/// Every `every`th point of `ring` (at `xy`), but all of a small ring (see [`Thinning`]) and at least
+/// three of a longer one, so a small hole or island next to a long outline keeps its place and its
+/// corners, and fewer dropped while that would lose half its area, so a ring dense along one side is
+/// not left a line with no inside (#2295).
+fn thin<T: Copy>(ring: &[T], how: Thinning, xy: impl Fn(&T) -> (f64, f64)) -> Vec<T> {
+    let Thinning { every, whole_below } = how;
+    // The area within every `step`th point (the shoelace sum, back to the first point).
     let area = |step: usize| {
-        let points: Vec<(f64, f64)> = ring.iter().step_by(step).map(&xy).collect();
-        let twice: f64 = points.iter().zip(points.iter().cycle().skip(1)).map(|(a, b)| a.0 * b.1 - b.0 * a.1).sum();
-        twice.abs() / 2.0
+        let mut points = ring.iter().step_by(step).map(&xy);
+        let Some(first) = points.next() else { return 0.0 };
+        let (mut prev, mut twice) = (first, 0.0);
+        for p in points.chain(std::iter::once(first)) {
+            twice += prev.0 * p.1 - p.0 * prev.1;
+            prev = p;
+        }
+        f64::abs(twice) / 2.0
     };
-    let mut step = every.min(ring.len() / 3).max(1);
+    let mut step = if ring.len() < whole_below { 1 } else { every.min(ring.len() / 3).max(1) };
     if step > 1 {
         let whole = area(1);
         while step > 1 && area(step) < whole / 2.0 {
@@ -43,11 +79,6 @@ fn thin<T: Copy>(ring: &[T], every: usize, xy: impl Fn(&T) -> (f64, f64)) -> Vec
         }
     }
     ring.iter().step_by(step).copied().collect()
-}
-
-/// How many points of `n` outline points [`thin`] keeps one of.
-fn every(n: usize) -> usize {
-    n.div_ceil(MAX_VERTICES).max(1)
 }
 
 /// How far the centre line is trimmed at each end, as a share of its distance to the outline there.
@@ -131,11 +162,11 @@ fn farthest(cost: &[f32], from: usize) -> usize {
 /// runs into the polygon's tips and where the polygon is narrower than `half_width` either side of
 /// it. `None` for a polygon with no inside in view, or a centre line of fewer than two points.
 pub(super) fn centre_line(rings: &[Vec<(f32, f32)>], w: f32, h: f32, half_width: f32) -> Option<Vec<(f32, f32)>> {
-    let every = every(rings.iter().map(Vec::len).sum());
+    let how = Thinning::new(rings.iter().map(Vec::len));
     let rings: Vec<Vec<(f32, f32)>> = rings
         .iter()
         .map(|r| {
-            thin(r, every, |p| (f64::from(p.0), f64::from(p.1)))
+            thin(r, how, |p| (f64::from(p.0), f64::from(p.1)))
                 .into_iter()
                 .filter(|p| p.0.is_finite() && p.1.is_finite())
                 .collect::<Vec<_>>()
@@ -242,8 +273,11 @@ pub(super) fn centre_line(rings: &[Vec<(f32, f32)>], w: f32, h: f32, half_width:
     let end = cells.len().checked_sub(keep(&cells) + 1)?;
     cells.reverse();
     // Of what is left, the longest stretch where the polygon is wide enough all along: a narrow
-    // neck between two wide parts (a dumbbell) is never under the text (#2295).
-    let cells = cells.get(start..=end)?.split(|i| deep(i) * cell < half_width).max_by_key(|run| run.len()).filter(|run| run.len() >= 2)?;
+    // neck between two wide parts (a dumbbell) is never under the text (#2295). A cell at depth `d`
+    // is `d` cells from the middle of the nearest outside cell, and the outline runs somewhere
+    // between the two: only `d - 1` cells of it are sure to be inside.
+    let wide = |i: &usize| (deep(i) - 1.0) * cell >= half_width;
+    let cells = cells.get(start..=end)?.split(|i| !wide(i)).max_by_key(|run| run.len()).filter(|run| run.len() >= 2)?;
     // Cell centres, softened over two cells either side so the grid's steps don't turn the text.
     let pts: Vec<(f32, f32)> = cells.iter().map(|i| (ox + ((i % nx) as f32 + 0.5) * cell, oy + ((i / nx) as f32 + 0.5) * cell)).collect();
     let soft: Vec<(f32, f32)> = (0..pts.len())
@@ -297,11 +331,11 @@ fn curved(
     };
     let near: Vec<&Vec<Coord>> = polys.iter().filter(|poly| poly.first().is_some_and(near)).flatten().collect();
     // Thinned before they are projected.
-    let every = every(near.iter().map(|r| r.len()).sum());
+    let how = Thinning::new(near.iter().map(|r| r.len()));
     let rings: Vec<Vec<(f32, f32)>> = near
         .into_iter()
         .map(|ring| {
-            thin(ring, every, |c| (c.x, c.y))
+            thin(ring, how, |c| (c.x, c.y))
                 .into_iter()
                 .map(|c| ctx.screen(c).map(|(x, y)| (x as f32, y as f32)))
                 .collect::<Option<Vec<_>>>()
@@ -429,15 +463,21 @@ mod tests {
     /// would leave it a line with no inside, and the line through it.
     #[test]
     fn a_hole_dense_along_one_side_keeps_its_shape() {
-        // 100 000 points round a 600 × 100 rectangle (one point in five read), and a hole across
-        // its upper half with eleven points along its top side.
+        // 100 000 points round a 600 × 100 rectangle (one point in six read), and a hole across
+        // its upper half, too long to be kept whole, with 61 points along its top side (its bottom
+        // bent up to y = 40 in the middle, so one point in three keeps clearly over half its area).
         let n = 25_000;
         let mut outer: Vec<(f32, f32)> = (0..n).map(|i| (i as f32 * 600.0 / n as f32, 0.0)).collect();
         outer.extend((0..n).map(|i| (600.0, i as f32 * 100.0 / n as f32)));
         outer.extend((0..n).map(|i| (600.0 - i as f32 * 600.0 / n as f32, 100.0)));
         outer.extend((0..n).map(|i| (0.0, 100.0 - i as f32 * 100.0 / n as f32)));
-        let mut hole: Vec<(f32, f32)> = (0..=10).map(|i| (50.0 + i as f32 * 50.0, 10.0)).collect();
-        hole.extend([(550.0, 50.0), (300.0, 50.0), (50.0, 50.0), (50.0, 10.0)]);
+        let mut hole: Vec<(f32, f32)> = (0..=60).map(|i| (50.0 + i as f32 * 500.0 / 60.0, 10.0)).collect();
+        hole.extend([(550.0, 50.0), (300.0, 40.0), (50.0, 50.0), (50.0, 10.0)]);
+        assert!(hole.len() >= KEEP_WHOLE);
+        // Thinned, but not to its top side alone.
+        let how = Thinning::new([outer.len(), hole.len()].into_iter());
+        let kept = thin(&hole, how, |p| (f64::from(p.0), f64::from(p.1)));
+        assert!(kept.len() < hole.len() && kept.iter().any(|p| p.1 == 50.0), "{kept:?}");
         let line = centre_line(&[outer, hole], 1000.0, 1000.0, 4.0).expect("below the hole");
         assert!(line.iter().filter(|p| (100.0..500.0).contains(&p.0)).all(|p| p.1 > 55.0), "{line:?}");
     }
@@ -464,6 +504,49 @@ mod tests {
         // With text thin enough for the neck, the line runs from end to end.
         let through = centre_line(&[dumbbell], 1000.0, 1000.0, 2.0).expect("end to end");
         assert!(through.iter().any(|p| p.0 < 250.0) && through.iter().any(|p| p.0 > 350.0), "{through:?}");
+    }
+
+    /// A small hole is kept whole when its outer ring is thinned: one point in five of it would be
+    /// a triangle of half its area, without its lower corners.
+    #[test]
+    fn a_small_hole_keeps_its_corners() {
+        // 100 000 points round a 600 × 100 rectangle, and a 15-point hole across its upper half,
+        // with a point at each corner.
+        let n = 25_000;
+        let mut outer: Vec<(f32, f32)> = (0..n).map(|i| (i as f32 * 600.0 / n as f32, 0.0)).collect();
+        outer.extend((0..n).map(|i| (600.0, i as f32 * 100.0 / n as f32)));
+        outer.extend((0..n).map(|i| (600.0 - i as f32 * 600.0 / n as f32, 100.0)));
+        outer.extend((0..n).map(|i| (0.0, 100.0 - i as f32 * 100.0 / n as f32)));
+        let mut hole: Vec<(f32, f32)> = (0..=5).map(|i| (50.0 + i as f32 * 100.0, 10.0)).collect();
+        hole.extend((0..9).map(|i| (550.0 - i as f32 * 62.5, 50.0)));
+        assert_eq!(hole.len(), 15);
+        let how = Thinning::new([outer.len(), hole.len()].into_iter());
+        let kept = thin(&hole, how, |p| (f64::from(p.0), f64::from(p.1)));
+        assert!(kept.contains(&(50.0, 50.0)) && kept.contains(&(550.0, 50.0)), "{kept:?}");
+        let line = centre_line(&[outer, hole], 1000.0, 1000.0, 4.0).expect("below the hole");
+        assert!(line.iter().filter(|p| (100.0..500.0).contains(&p.0)).all(|p| p.1 > 55.0), "{line:?}");
+    }
+
+    /// A few small islands are kept whole; ten thousand of them are thinned, as a long ring is.
+    #[test]
+    fn many_small_islands_are_thinned() {
+        let island: Vec<(f32, f32)> = (0..60).map(|i| i as f32 / 60.0 * std::f32::consts::TAU).map(|t| (t.cos(), t.sin())).collect();
+        let xy = |p: &(f32, f32)| (f64::from(p.0), f64::from(p.1));
+        assert_eq!(thin(&island, Thinning::new(std::iter::repeat_n(60, 100)), xy).len(), 60);
+        let kept = thin(&island, Thinning::new(std::iter::repeat_n(60, 10_000)), xy).len();
+        assert!((3..60).contains(&kept), "{kept}");
+    }
+
+    /// A rectangle 10 points tall is too narrow for text 12 points tall, though its middle row of
+    /// cells is two cells (7.5 points) deep on the grid: the outline may be nearly a cell nearer.
+    #[test]
+    fn a_band_just_too_narrow_gives_no_line() {
+        let thin_band = vec![(0.0, 0.0), (600.0, 0.0), (600.0, 10.0), (0.0, 10.0)];
+        let line = centre_line(std::slice::from_ref(&thin_band), 1000.0, 1000.0, 6.0);
+        assert!(line.is_none(), "{line:?}");
+        // Text thin enough for it gets a line down its middle.
+        let line = centre_line(&[thin_band], 1000.0, 1000.0, 3.0).expect("down its middle");
+        assert!(line.iter().all(|p| (p.1 - 5.0).abs() < 2.0), "{line:?}");
     }
 
     #[test]
