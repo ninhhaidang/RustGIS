@@ -11,6 +11,7 @@ use rustgis_map::design::{
     AttributeRule, ContingentSet, Domain, DomainKind, Elevation, FeatureTemplate, Relationship, RuleKind, Subtype, Subtypes, TopologyRule,
 };
 use serde_json::{Value as Json, json};
+use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use super::{b, f, need_feature_layer, ps};
@@ -23,9 +24,15 @@ mod snap_vertex;
 
 /// One edited feature: its state before (none for an insert) and its row after (none for a
 /// delete).
-pub(crate) struct Change {
-    pub before: Option<Feature>,
+pub(crate) struct Change<B = Feature> {
+    pub before: Option<B>,
     pub row: Option<usize>,
+}
+
+impl<B: Borrow<Feature>> Change<B> {
+    fn before(&self) -> Option<&Feature> {
+        self.before.as_ref().map(Borrow::borrow)
+    }
 }
 
 /// Edits since the last save, per layer: (added, modified, deleted).
@@ -128,7 +135,7 @@ pub(crate) fn apply(s: &mut Session, id: u32, changes: Vec<Change>) -> Result<()
 /// [`apply`], with `new_defaults` false for added rows that carry another feature's attributes
 /// (the pieces of a cut): they keep them, with no subtype defaults or elevation filled in.
 /// Calculation rules and checks still run on every row.
-pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_defaults: bool) -> Result<(), String> {
+pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: Vec<Change<B>>, new_defaults: bool) -> Result<(), String> {
     if changes.is_empty() {
         return Ok(());
     }
@@ -141,7 +148,7 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
     // keeps its construction only while its geometry still equals it (see `box_spec`). Undo
     // keeps its own cache snapshot.
     for change in &changes {
-        let feature = match (&change.before, change.row) {
+        let feature = match (change.before(), change.row) {
             (Some(before), None) => Some(before.id),
             (None, Some(row)) => s.map().layer(id).and_then(|l| l.dataset.features.get(row)).map(|f| f.id),
             _ => None,
@@ -222,7 +229,7 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
     if (display_area || rule_area)
         && let Some(message) = rustgis_data::ambiguous_area_message(changes.iter().filter_map(|change| {
             let feature = l.dataset.features.get(change.row?)?;
-            (rule_area || change.before.as_ref().is_none_or(|before| before.geometry != feature.geometry))
+            (rule_area || change.before().is_none_or(|before| before.geometry != feature.geometry))
                 .then_some(feature.geometry.as_ref())
                 .flatten()
         }))
@@ -264,14 +271,18 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
             rustgis_data::query::parse(&rule.expression, &metadata).ok().map(|e| (rule.name.clone(), rule.expression.clone(), e))
         })
         .collect();
-    let changed_fields = |r: usize| -> Option<Vec<bool>> {
-        let before = changes.iter().find(|c| c.row == Some(r))?.before.as_ref()?;
-        let now = l.dataset.features.get(r)?;
-        Some((0..l.dataset.fields.len()).map(|i| before.attrs.get(i) != now.attrs.get(i)).collect())
-    };
+    let mut original = HashMap::new();
+    if !l.design.domains.is_empty() || !l.design.contingent.is_empty() {
+        // A row edited more than once still validates against its state before the first edit.
+        for c in &changes {
+            if let Some(r) = c.row {
+                original.entry(r).or_insert_with(|| c.before());
+            }
+        }
+    }
     for r in &rows {
-        let changed = changed_fields(*r);
-        let touched = |fi: usize| changed.as_ref().is_none_or(|c| c.get(fi).copied().unwrap_or(true));
+        let before = original.get(r).copied().flatten().zip(l.dataset.features.get(*r));
+        let touched = |fi: usize| before.is_none_or(|(old, now)| old.attrs.get(fi) != now.attrs.get(fi));
         for d in &l.design.domains {
             if let Some(fi) = l.dataset.field_index(&d.field).filter(|fi| touched(*fi)) {
                 let v = l.dataset.value(*r, fi);
@@ -308,15 +319,15 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
     let mut entries = Vec::new();
     for c in &changes {
         let after = c.row.and_then(|r| l.dataset.features.get(r));
-        match (&c.before, after) {
+        match (c.before(), after) {
             (None, Some(_)) => counts.added += 1,
             (Some(_), None) => counts.deleted += 1,
             _ => counts.modified += 1,
         }
         // Features are copied into the archive only when the layer keeps one.
         if archiving {
-            let fid = c.before.as_ref().or(after).map(|f| f.id).unwrap_or(0);
-            entries.push(rustgis_map::design::ArchiveEntry { time: t, id: fid, before: c.before.clone(), after: after.cloned() });
+            let fid = c.before().or(after).map(|f| f.id).unwrap_or(0);
+            entries.push(rustgis_map::design::ArchiveEntry { time: t, id: fid, before: c.before().cloned(), after: after.cloned() });
         }
     }
     if let Some(archive) = &mut l.design.archive {

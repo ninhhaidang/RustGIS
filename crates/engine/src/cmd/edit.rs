@@ -3,6 +3,7 @@
 
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value};
 use serde_json::{Value as Json, json};
+use std::borrow::Cow;
 
 use super::{need_layer_or_table, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
@@ -642,15 +643,18 @@ fn add_field(s: &mut Session, p: &Json) -> CmdResult {
     if ds.field_index(name).is_some() {
         return Err(format!("a field named '{name}' already exists"));
     }
-    if matches!(t, Target::Table(_)) {
-        ds.fields.push(Field::new(name, ty));
+    let table = matches!(t, Target::Table(_));
+    ds.fields.push(Field::new(name, ty));
+    if table {
         rustgis_data::progress::begin(ds.features.len());
-        for row in &mut ds.features {
+    }
+    for row in &mut ds.features {
+        if table {
             rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
-            row.attrs.push(Value::Null);
         }
-    } else {
-        ds.ensure_field(name, ty);
+        // Adding one column to shared rows should not double every row's attribute capacity.
+        row.attrs.reserve_exact(1);
+        row.attrs.push(Value::Null);
     }
     Ok(Json::Null)
 }
@@ -1362,17 +1366,23 @@ fn calculate_field(s: &mut Session, p: &Json) -> CmdResult {
     let rows: Vec<usize> = if l.selection.is_empty() { (0..l.dataset.features.len()).collect() } else { l.selection.clone() };
     let n = rows.len();
     let (out, cuts, unread) = evaluate(&calc, &l.dataset, rows, ty)?;
-    let mut changes = Vec::new();
+    let mut changes = Vec::with_capacity(out.len());
+    let original = l.dataset.features.clone();
+    let archiving = l.design.archive.is_some();
     for (r, v) in out {
-        if let Some(f) = l.dataset.features.get_mut(r) {
-            let before = f.clone();
+        if let Some(old) = original.get(r)
+            && let Some(f) = l.dataset.features.get_mut(r)
+        {
+            // An archive records each edit's immediate preimage, including repeated rows.
+            // Other checks can read the original rows already held by the transaction.
+            let before = if archiving { Cow::Owned(f.clone()) } else { Cow::Borrowed(old) };
             if let Some(c) = f.attrs.get_mut(fi) {
                 *c = v;
             }
             changes.push(super::design::Change { before: Some(before), row: Some(r) });
         }
     }
-    super::design::apply(s, id, changes)?;
+    super::design::apply_with(s, id, changes, false)?;
     let field = s.map().layer(id).and_then(|l| l.dataset.fields.get(fi)).map(|f| f.name.clone()).unwrap_or_default();
     calculation_notices(s, &field, ty, cuts, unread);
     Ok(json!({"rows": n}))

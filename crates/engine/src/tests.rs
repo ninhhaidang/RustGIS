@@ -45199,6 +45199,53 @@ fn layer_invert_ramp_refuses_a_graphics_layer() {
     assert!(err.contains("graphics layer"), "{err}");
 }
 
+#[test]
+fn calculate_field_bulk_edit_keeps_validation_archive_and_undo() {
+    use rustgis_data::Value as V;
+    let mut s = Session::new(Project::default());
+    let points = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"n": 1, "legacy": 0}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        {"type": "Feature", "properties": {"n": 2, "legacy": 0}, "geometry": {"type": "Point", "coordinates": [1, 0]}},
+        {"type": "Feature", "properties": {"n": 3, "legacy": 0}, "geometry": {"type": "Point", "coordinates": [2, 0]}}
+    ]});
+    s.run("layer.addDataText", &json!({"fileName": "calc.geojson", "text": points.to_string()})).unwrap();
+    s.run("edit.addField", &json!({"layer": "calc", "name": "extra", "type": "long"})).unwrap();
+    let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+    assert!(ds.features.iter().all(|row| row.attrs.capacity() < 4));
+    s.run("data.domain", &json!({"layer": "calc", "field": "legacy", "min": 1, "max": 5, "force": true})).unwrap();
+    s.run("data.domain", &json!({"layer": "calc", "field": "n", "min": 0, "max": 4})).unwrap();
+    s.run("data.archive", &json!({"layer": "calc"})).unwrap();
+    s.run("select.rows", &json!({"layer": "calc", "rows": [2, 0]})).unwrap();
+    let params = |expr| json!({"layer": "calc", "field": "n", "expression": expr});
+    let values = |s: &Session| {
+        let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+        let n = ds.field_index("n").unwrap();
+        [0, 1, 2].map(|r| ds.value(r, n).clone())
+    };
+    let before = values(&s);
+    assert!(s.run("edit.calculateField", &params("n + 2")).unwrap_err().contains("domain"));
+    assert_eq!(values(&s), before);
+    assert!(s.map().layer_by_name("calc").unwrap().design.archive.as_ref().unwrap().is_empty());
+    assert_eq!(s.run("edit.calculateField", &params("n + 1")).unwrap()["rows"], 2);
+    assert_eq!(values(&s), [V::Int(2), V::Int(2), V::Int(4)]);
+    let layer = s.map().layer_by_name("calc").unwrap();
+    let archive = layer.design.archive.as_ref().unwrap();
+    let n = layer.dataset.field_index("n").unwrap();
+    assert_eq!(archive.len(), 2);
+    assert_eq!(
+        archive
+            .iter()
+            .map(|entry| (entry.before.as_ref().unwrap().attrs[n].clone(), entry.after.as_ref().unwrap().attrs[n].clone()))
+            .collect::<Vec<_>>(),
+        [(V::Int(1), V::Int(2)), (V::Int(3), V::Int(4))]
+    );
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(values(&s), before);
+    assert!(s.map().layer_by_name("calc").unwrap().design.archive.as_ref().unwrap().is_empty());
+    s.run("edit.redo", &Value::Null).unwrap();
+    assert_eq!(values(&s), [V::Int(2), V::Int(2), V::Int(4)]);
+}
+
 /// Calculate Field keeps a decimal result as it is in a decimal field, rather than rounding it to
 /// the six places its text shows, and says what a whole-number field cuts: a fraction, or a number
 /// past the 64-bit range (null). Results the field holds give no notice.

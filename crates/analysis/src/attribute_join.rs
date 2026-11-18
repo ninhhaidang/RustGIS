@@ -337,12 +337,11 @@ pub fn join_field(target: &Dataset, source: &Dataset, opts: &JoinFieldOptions<'_
                 target.fields.len()
             ));
         }
-        let mut new_attrs = t_feat.attrs.clone();
+        // Allocate the output row once. Growing a clone by a few columns can double its capacity.
+        let mut new_attrs = Vec::with_capacity(out.fields.len());
+        new_attrs.extend_from_slice(&t_feat.attrs);
         // Rows can hold fewer values than the schema has fields: pad so joined values line up.
-        if new_attrs.len() < target.fields.len() {
-            new_attrs.resize(target.fields.len(), Value::Null);
-        }
-        new_attrs.reserve(transfer_indices.len());
+        new_attrs.resize(target.fields.len(), Value::Null);
 
         let t_val = t_feat.attrs.get(target_key_idx).unwrap_or(&Value::Null);
         let t_key = JoinKey::from_value_compared(t_val, comparison);
@@ -444,6 +443,9 @@ mod tests {
         assert_eq!(out.fields[2].name, "score");
         assert_eq!(out.features[0].attrs[2], Value::Float(95.5));
         assert_eq!(out.features[1].attrs[2], Value::Float(88.0));
+        // A join adding a few columns must not leave a second copy of the target's column
+        // capacity in every output row.
+        assert!(out.features.iter().all(|row| row.attrs.capacity() < 2 * target.fields.len()));
     }
 
     #[test]
