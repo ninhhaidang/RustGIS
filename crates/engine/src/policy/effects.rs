@@ -116,6 +116,7 @@ pub(super) fn command(s: &crate::cmd::InputContext<'_>, spec: &CommandSpec, para
             | "share.exportMap"
             | "animation.export"
             | "map.exportOrbit"
+            | "map.exportBlock"
             | "project.thumbnail"
             | "map.thumbnail"
     ) && let Some(select) = spec.inputs

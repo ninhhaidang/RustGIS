@@ -2839,6 +2839,11 @@ impl RustGisApp {
                 let mark = self.session.notice_mark();
                 return exportjob::start(self, "source.publish", params).inspect_err(|e| self.command_failed(id, e, mark));
             }
+            // A block's model waits for elevation tiles and draws its texture (#2319).
+            if id == "map.exportBlock" {
+                let mark = self.session.notice_mark();
+                return exportjob::start(self, "map.exportBlock", params).inspect_err(|e| self.command_failed(id, e, mark));
+            }
             // Ordering and writing a standalone table grows with its rows, like Export Features.
             if id == "share.exportTable" {
                 let mark = self.session.notice_mark();

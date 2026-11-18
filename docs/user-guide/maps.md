@@ -186,6 +186,27 @@ answers:
 rustgis-cli run --cmd 'project.open={"path":"massif.rgis"}' --cmd 'map.setPitch={"pitch":60}' --cmd 'map.exportOrbit={"path":"massif.gif","frames":72,"width":800,"height":500}'
 ```
 
+**Export Block** (`map.exportBlock`, on desktop) writes a map's block diagram as a 3D model, for
+Blender, a web viewer or a 3D printer's slicer: `{"path": "block.glb"}` gives binary glTF, one
+file; a path ending in `.gltf` gives the same model as glTF's JSON with everything embedded. The
+model has three meshes: **Ground**, the ground inside the block's box on the grid the settled view
+lays it on, with the map drawn top down over the box as its texture (its layers, symbology and
+labels, without the scale bar or the credits, at `"texture"` pixels on the box's longer side,
+default 4096, 256 to 8192); **Walls**, the box's four sides from the ground's edge down to the
+base, in the walls' colour; and **Base**, flat at the block's base. The texture holds no light:
+the 3D viewer lights the model, so a hillshade layer shown on the map is the one light baked in.
+Units are metres east (x), up (y) and south (z) of the box's south-west corner, scaled as at the
+box's centre, with heights above sea level times the exaggeration; the file's `extras` give the
+corner's longitude and latitude. The view's sky, fog and shadows aren't in the model, and walls
+coloured by a polygon layer come in their plain colour for now (said). In the desktop app it
+runs in the background, with the export and **Cancel** in the status bar (elevation tiles are
+waited for, up to a minute); from a script or the command line it runs to its end before it
+answers:
+
+```bash
+rustgis-cli run --cmd 'project.open={"path":"massif.rgis"}' --cmd 'map.exportBlock={"path":"massif.glb","texture":4096}'
+```
+
 MapLibre map links carry a view in their address, as
 `#zoom/latitude/longitude/bearing/pitch` (`https://…/#15.5/40.7484/-73.9857/30/60`). **Go To Map
 Link** (`map.goToLink {"url": …}`) takes such a link, or the part after its `#`, to that place,

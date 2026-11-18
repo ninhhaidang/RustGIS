@@ -58,6 +58,7 @@ pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("share.exportRaster", "Export Raster", super::raster::export_work),
     ("share.exportMap", "Export Map", super::share::map_work),
     ("map.exportOrbit", "Export Orbit", super::view::orbit_work),
+    ("map.exportBlock", "Export Block", super::block_model::export_work),
     ("layout.export", "Export Layout", super::layout::export_work),
     ("report.export", "Export Report", super::report::export_work),
     ("source.publish", "Publish to Source", super::publish::publish_work),

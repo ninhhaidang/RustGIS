@@ -1,6 +1,7 @@
 //! Every command, grouped by ribbon tab.
 
 pub mod arcgis;
+pub(crate) mod block_model;
 pub mod catalogs;
 pub mod clipboard;
 pub mod connections;

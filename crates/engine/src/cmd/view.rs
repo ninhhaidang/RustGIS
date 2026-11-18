@@ -54,6 +54,9 @@ pub fn commands() -> Vec<C> {
         C::new("map.exportOrbit", "Export Orbit", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportOrbit")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"path": "*.gif" | "*.zip" (PNG frames), "frames"?: 1 to 2000 (default 60), "turn"?: degrees the bearing turns by over the frames (default 360, once round; negative turns the other way), "width"?, "height"?: points, 64 to 4096 (default 640 × 400), "dpi"?: 48 to 600 (default 96), "speed"?: milliseconds a GIF frame shows for (default 50; a GIF keeps it to the hundredth of a second)}"#),
+        C::new("map.exportBlock", "Export Block", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportBlock")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
+            .view()
+            .params(r#"{"path": "*.glb" | "*.gltf" (a 3D model of the map's block diagram: the ground with the map as its texture, the walls and the base), "texture"?: pixels on the block's longer side, 256 to 8192 (default 4096)}"#),
         C::new("map.displayType", "Display Type", "View › Options", |s, p| {
             let fast = match ps(p, "mode").ok_or("mode is required")? {
                 "quality" => false,
