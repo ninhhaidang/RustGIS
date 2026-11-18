@@ -1700,7 +1700,7 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
                 action = Some(("map.setTiles", json!({"index": i, "opacity": o / 100.0})));
             }
         });
-        ui.menu_button(crate::i18n::fmt("Blend: {mode}", &[("mode", tl_raw!(tile.blend.label()))]), |ui| {
+        crate::widgets::submenu(ui, &crate::i18n::fmt("Blend: {mode}", &[("mode", tl_raw!(tile.blend.label()))]), |ui| {
             for b in rustgis_engine::map::effects::Blend::ALL {
                 if ui.radio(tile.blend == b, tl!(b.label())).clicked() {
                     action = Some(("map.setTiles", json!({"index": i, "blend": b.code()})));
@@ -1708,7 +1708,6 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
                 }
             }
         })
-        .response
         .on_hover_text(tl!("How the layer's colours combine with the tile layers and basemap beneath."));
         // A layer its service draws on request: one picture of the view, or tiles (#1162).
         if tile.on_request() {
@@ -1719,7 +1718,7 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
             } else {
                 tl!("Tiles").to_string()
             };
-            ui.menu_button(crate::i18n::fmt("Draw as: {how}", &[("how", &shown)]), |ui| {
+            crate::widgets::submenu(ui, &crate::i18n::fmt("Draw as: {how}", &[("how", &shown)]), |ui| {
                 if ui.radio(tile.single_image, tl!("Single image")).on_hover_text(tl!("One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.")).clicked() {
                     action = Some(("map.setTiles", json!({"index": i, "singleImage": true})));
                     ui.close();
@@ -1737,7 +1736,6 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
                     ui.close();
                 }
             })
-            .response
             .on_hover_text(tl!("Whether the service is asked for one picture of the view or for tiles."));
         }
         ui.separator();
@@ -2209,7 +2207,7 @@ fn extrusion_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32]) {
     };
     let by = |f: &str| crate::i18n::fmt("By {field}", &[("field", f)]);
     let no_field = tl!("These layers share no numeric field.");
-    ui.menu_button(tl!("Extrusion"), |ui| {
+    crate::widgets::submenu(ui, tl!("Extrusion"), |ui| {
         head(ui);
         if ui.button(tl!("None")).clicked() {
             run(app, ui, "layer.extrusion", json!({"type": "none"}));
@@ -2228,7 +2226,7 @@ fn extrusion_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32]) {
             .on_disabled_hover_text(tl!("Extrude them all first: the base is what their walls stand on."));
         return;
     }
-    ui.menu_button(tl!("Extrusion Base"), |ui| {
+    crate::widgets::submenu(ui, tl!("Extrusion Base"), |ui| {
         head(ui);
         if ui.button(tl!("Ground")).clicked() {
             run(app, ui, "layer.extrusionBase", json!({"field": null, "base": 0}));
@@ -2295,7 +2293,7 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
             .and_then(|id| m.group_of(*id))
             .map(|g| g.id)
             .filter(|g| picked.iter().all(|id| m.group_of(*id).map(|x| x.id) == Some(*g)));
-        ui.menu_button(tl!("Group"), |ui| {
+        crate::widgets::submenu(ui, tl!("Group"), |ui| {
             if ui.button(tl!("New Group")).clicked() {
                 new_group(app, json!({"layers": picked, "parent": shared}));
                 ui.close();
@@ -2490,7 +2488,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         let m = app.session.map();
         let groups: Vec<(u32, String)> = m.groups.iter().map(|g| (g.id, group_path(m, g.id))).collect();
         let current = m.group_of(l.id).map(|g| g.id);
-        ui.menu_button(tl!("Group"), |ui| {
+        crate::widgets::submenu(ui, tl!("Group"), |ui| {
             // In the layer's group, if it has one (#836).
             if ui.button(tl!("New Group")).clicked() {
                 new_group(app, json!({"layers": [l.id], "parent": current}));
