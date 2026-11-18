@@ -2,7 +2,10 @@ name: Nightly
 
 # The slow checks pull requests don't wait for: every platform's tests and the release build of
 # the apps, once a night on main. A night with no new commits since the last successful run is
-# skipped. A failure opens an issue (or comments on the open one); the next success closes it.
+# skipped for the build. Generated overlays run every night with a fresh seed: each new minimized
+# disagreement opens its own issue, and an overlay run that fails without one is reported like a
+# build failure. A build failure opens an issue (or comments on the open one); the next success
+# closes it.
 #
 #   gh workflow run nightly.yml -R opengeos/RustGIS --ref main
 
@@ -126,6 +129,117 @@ jobs:
           PROPERTY_CASES=100000 cargo test --locked -p rustgis-geom --test geodesic_identities
           cargo test --locked -p rustgis-data --test extent_query_properties
           PROPERTY_CASES=20000 cargo test --locked -p rustgis-data --test date_properties
+
+  # Use a fresh seed even when the commit is the same as last night.
+  overlay:
+    name: Generated polygon overlays
+    if: github.repository == 'opengeos/RustGIS' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      findings: ${{ steps.findings.outputs.artifact-id }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Compare overlays and minimize disagreements
+        id: compare
+        env:
+          PROPERTY_CASES: "256"
+        run: |
+          set -euo pipefail
+          cargo test --locked -p rustgis-analysis --test reference --no-run --message-format=json > "$RUNNER_TEMP/reference-build.jsonl"
+          runner="$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "reference" and .executable != null) | .executable' "$RUNNER_TEMP/reference-build.jsonl")"
+          PROPERTY_SEED="$(python3 -c 'import secrets; print(secrets.randbits(64))')"
+          export PROPERTY_SEED
+          time uv run crates/analysis/tests/reference/generate.py --overlay "$runner" --findings "$RUNNER_TEMP/overlay-findings"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        id: findings
+        if: failure() && steps.compare.outcome == 'failure'
+        with:
+          name: overlay-findings
+          path: ${{ runner.temp }}/overlay-findings
+          if-no-files-found: ignore
+
+  overlay-report:
+    name: Report generated overlays
+    needs: overlay
+    # Only the reporting job has issue write access. Manual runs keep findings as artifacts.
+    # A job that ran out of time ends cancelled, but the run isn't: that is a failure too.
+    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.overlay.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: needs.overlay.outputs.findings != ''
+        with:
+          name: overlay-findings
+          path: findings
+      - name: Open issues for new minimized disagreements
+        if: needs.overlay.outputs.findings != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Trust only markers in this workflow's own issues, as "<state> <marker>" lines.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" \
+            | jq -r '.[] | select(.pull_request | not) | select(.user.login == "github-actions[bot]")
+                | .state as $s | (.body // "") | split("\n")[] | select(startswith("<!-- overlay-finding:")) | "\($s) \(.)"' > reported
+          for file in findings/*.json; do
+            tool="$(jq -er '.case.tools[0]' "$file")"
+            kind="$(jq -er '.kind' "$file")"
+            fingerprint="$(jq -er '.fingerprint' "$file")"
+            marker="<!-- overlay-finding:$fingerprint -->"
+            # A reduced input is reported once. The grouped Clip seam class is reported again
+            # once its issue is closed, so a fix that doesn't hold shows up.
+            if grep -Fxq -- "open $marker" reported; then continue; fi
+            if [ "$fingerprint" != clip-mask-seam ] && grep -Fxq -- "closed $marker" reported; then continue; fi
+            {
+              echo "The [nightly run]($RUN) on $GITHUB_SHA found a generated $tool disagreement."
+              echo
+              jq -r '"Seed `PROPERTY_SEED=\(.seed)`, case index `\(.index)`. \(.detail)"' "$file"
+              echo
+              echo 'Save the minimized case below as JSON and pass it to the overlay replay command in crates/analysis/tests/reference/README.md.'
+              echo
+              echo '```json'
+              cat "$file"
+              echo '```'
+              echo "$marker"
+            } > issue.md
+            gh issue create -R "$GITHUB_REPOSITORY" --title "Generated overlay disagrees with GEOS ($tool, $kind)" --body-file issue.md
+            echo "open $marker" >> reported
+          done
+      - name: Report a check that failed without findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.overlay.result }}
+          FINDINGS: ${{ needs.overlay.outputs.findings }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Nightly generated overlay check failed"
+          open="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            | jq -sr --arg t "$title" '[.[][] | select(.pull_request | not) | select(.user.login == "github-actions[bot]") | select(.title == $t)][0].number // ""')"
+          if [ "$RESULT" = success ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" -R "$GITHUB_REPOSITORY" --comment "Fixed: the nightly overlay check on $GITHUB_SHA passed ($RUN)."
+            fi
+          elif [ -z "$FINDINGS" ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "Still failing on $GITHUB_SHA: $RUN"
+            else
+              gh issue create -R "$GITHUB_REPOSITORY" --title "$title" \
+                --body "The generated overlay check on $GITHUB_SHA failed without a minimized finding, so the comparison itself broke: $RUN. This issue closes itself when the check passes."
+            fi
+          fi
 
   report:
     name: Report

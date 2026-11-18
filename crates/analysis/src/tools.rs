@@ -2479,9 +2479,12 @@ fn overlay_on(inp: &dyn Inputs, p: &Json, op: Overlay, threads: Option<usize>) -
                 let rest = if inputs.is_empty() {
                     from_multipolygon(&z.poly)
                 } else {
-                    let polys: Vec<MultiPolygon<f64>> =
-                        inputs.iter().filter_map(|r| ds.features.get(*r)?.geometry.as_ref()).filter_map(to_multipolygon).collect();
-                    from_multipolygon(&z.poly.difference(&union_all(polys.iter().flat_map(|m| m.0.iter()))))
+                    let polygons =
+                        inputs.iter().filter_map(|r| ds.features.get(*r)?.geometry.as_ref()).filter_map(to_multipolygon).flat_map(|m| m.0);
+                    // A redundant union rounds a lone polygon's vertices. That can open a
+                    // passage where it touches the zone boundary, joining separate pieces.
+                    let cover = mask_of(MultiPolygon::new(polygons.collect()));
+                    from_multipolygon(&z.poly.difference(&cover))
                 };
                 Ok::<_, String>(rest)
             },

@@ -347,3 +347,78 @@ fn tools_agree_with_the_reference() {
     let n = cases["cases"].as_array().map_or(0, Vec::len);
     assert!(report.is_empty(), "{} of {n} cases differ from the reference:\n{}", report.len(), report.join("\n"));
 }
+
+/// The generated oracle uses the exact projected inputs the tool sees. Return each polygon's
+/// rings in that plane for Shapely, including the actual output after RustGIS's round trip.
+fn overlay_coordinates(g: &Geometry) -> Json {
+    let Some(polygons) = to_multipolygon(g) else { return serde_json::json!("non-polygon") };
+    let rings: Vec<_> = polygons
+        .0
+        .iter()
+        .map(|p| {
+            std::iter::once(p.exterior())
+                .chain(p.interiors())
+                .map(|ring| ring.0.iter().map(|c| [c.x, c.y]).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    serde_json::json!(rings)
+}
+
+/// A batch from generate.py. Test-harness output and tool diagnostics stay off the reply file.
+#[test]
+#[ignore = "driven by generate.py --overlay with a batch and reply path"]
+fn generated_overlay_batch() {
+    let batch: Json = serde_json::from_reader(std::io::stdin().lock()).expect("overlay batch");
+    let mut replies = Vec::new();
+    for case in batch.as_array().expect("list of overlay cases") {
+        let layers = Layers(
+            ["a", "b"]
+                .into_iter()
+                .map(|name| {
+                    let features: Vec<_> = case[name]
+                        .as_array()
+                        .expect("input features")
+                        .iter()
+                        .enumerate()
+                        .map(|(i, g)| serde_json::json!({"type": "Feature", "geometry": g, "properties": {"id": i.to_string()}}))
+                        .collect();
+                    let collection = serde_json::json!({"type": "FeatureCollection", "features": features});
+                    let ds = rustgis_data::io::read_geojson(&collection.to_string(), name).expect("generated polygon layer").0;
+                    (name.to_string(), ds)
+                })
+                .collect(),
+        );
+        let projected = |name: &str| {
+            layers.0[name].features.iter().map(|f| overlay_coordinates(f.geometry.as_ref().expect("generated polygon"))).collect::<Vec<_>>()
+        };
+        let mut reply = serde_json::json!({"a": projected("a"), "b": projected("b")});
+        for tool in case["tools"].as_array().expect("overlay tools").iter().map(|t| t.as_str().expect("tool id")) {
+            let mask = match tool {
+                "clip" | "erase" => tool,
+                _ => "overlay",
+            };
+            let params = serde_json::json!({"input": "a", (mask): "b"});
+            reply[tool] = match rustgis_analysis::run(tool, &layers, &params) {
+                Ok(result) => {
+                    let ds = layer_of(result.output).expect("overlay layer");
+                    let keys = if mask == "overlay" { vec!["id".into(), "id_2".into()] } else { vec!["id".into()] };
+                    let rows: Vec<_> = ds
+                        .features
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            let key = key_text(&ds, i, Some(&keys));
+                            serde_json::json!([key, f.geometry.as_ref().map(overlay_coordinates)])
+                        })
+                        .collect();
+                    serde_json::json!(rows)
+                }
+                Err(e) => serde_json::json!(e),
+            };
+        }
+        replies.push(reply);
+    }
+    let path = std::env::var_os("RUSTGIS_OVERLAY_REPLY").expect("reply path from generate.py");
+    serde_json::to_writer(std::fs::File::create(path).expect("create overlay reply"), &replies).expect("write overlay reply");
+}

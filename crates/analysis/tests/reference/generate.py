@@ -557,6 +557,10 @@ def check():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--overlay"]:
+        import overlay as generated_overlay
+
+        sys.exit(generated_overlay.run(sys.argv[2:]))
     if sys.argv[1:] not in ([], ["--check"]):
-        sys.exit(f"usage: uv run generate.py [--check] (not {' '.join(sys.argv[1:])})")
+        sys.exit(f"usage: uv run generate.py [--check | --overlay RUNNER --findings DIR] (not {' '.join(sys.argv[1:])})")
     sys.exit(check() if sys.argv[1:] == ["--check"] else main())
