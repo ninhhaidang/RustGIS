@@ -35,6 +35,11 @@ fn fill_json(f: &FillLayer) -> Value {
                 o["char"] = json!(g.ch.to_string());
                 o["font"] = json!(g.font.as_str());
             }
+            // An image, sent again with every change so the fill keeps it.
+            if let Marker::Picture(p) = marker {
+                o["marker"] = json!("image");
+                o["image"] = json!(p.base64());
+            }
             o
         }
         FillPattern::Gradient { shape, color2, stops, discrete, from, to, spread, angle, in_view } => {
@@ -78,7 +83,19 @@ fn spread_name(s: Spread) -> &'static str {
 }
 
 /// Runs `layer.fillLayers` with `fills` for the class picked (`None`: the layer's).
-fn set_fills(app: &mut RustGisApp, class: Option<&ClassRef>, fills: &[FillLayer]) {
+pub(crate) fn set_fills(app: &mut RustGisApp, class: Option<&ClassRef>, fills: &[FillLayer]) {
+    let mut replaced = 0;
+    let fills: Vec<FillLayer> = fills
+        .iter()
+        .map(|f| match f.pattern {
+            FillPattern::Dots { marker, size, outline, outline_width, spacing, displacement, offset } => {
+                let (marker, lost) = crate::panes::drawn_marker(marker);
+                replaced += usize::from(lost);
+                FillLayer { pattern: FillPattern::Dots { marker, size, outline, outline_width, spacing, displacement, offset }, ..*f }
+            }
+            _ => *f,
+        })
+        .collect();
     let mut p = json!({"fills": fills.iter().map(fill_json).collect::<Vec<_>>()});
     match class {
         Some(ClassRef::Value(v)) => p["value"] = json!(v),
@@ -86,7 +103,9 @@ fn set_fills(app: &mut RustGisApp, class: Option<&ClassRef>, fills: &[FillLayer]
         Some(ClassRef::Other) => p["other"] = json!(true),
         None => {}
     }
-    let _ = app.run("layer.fillLayers", p);
+    if app.run("layer.fillLayers", p).is_ok() {
+        crate::panes::notify_image_replaced(app, replaced);
+    }
 }
 
 /// A fill's kind, as the Draw list names it.

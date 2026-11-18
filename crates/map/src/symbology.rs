@@ -125,16 +125,21 @@ pub struct Picture(&'static str);
 /// Where [`Picture::is_dropped`] points: an image a file gave that wasn't kept.
 static DROPPED: &str = "(dropped)";
 
+/// The pictures kept this run, and the bytes of base64 they take.
+fn kept_pictures() -> std::sync::MutexGuard<'static, (std::collections::HashSet<&'static str>, usize)> {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static KEPT: OnceLock<Mutex<(HashSet<&'static str>, usize)>> = OnceLock::new();
+    KEPT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl Picture {
     pub fn new(base64: &str) -> Picture {
-        use std::collections::HashSet;
-        use std::sync::{Mutex, OnceLock};
-        static KEPT: OnceLock<Mutex<(HashSet<&'static str>, usize)>> = OnceLock::new();
         let base64 = base64.trim();
         if base64.is_empty() || base64.len() > MAX_PICTURE_BYTES {
             return Picture::default();
         }
-        let mut kept = KEPT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let mut kept = kept_pictures();
         let (pictures, bytes) = &mut *kept;
         if let Some(p) = pictures.get(base64) {
             return Picture(p);
@@ -146,6 +151,12 @@ impl Picture {
         pictures.insert(p);
         *bytes += p.len();
         Picture(p)
+    }
+
+    /// The picture already kept for `base64`, keeping nothing new: a command given an image again
+    /// (a slider dragged in the editor sends it every frame) finds it without decoding it again.
+    pub fn kept(base64: &str) -> Option<Picture> {
+        kept_pictures().0.get(base64.trim()).copied().map(Picture)
     }
 
     /// [`Picture::new`] for an image a file gives: one that isn't kept is [`Picture::is_dropped`],
@@ -3607,6 +3618,16 @@ mod tests {
         assert!(std::ptr::eq(FontName::new("Some Family").as_str(), FontName::new("Some Family ").as_str()));
     }
 
+    /// `Picture::kept` finds an image kept before, and keeps none it doesn't know.
+    #[test]
+    fn kept_finds_a_kept_picture_and_keeps_nothing_new() {
+        let unseen = "a picture never kept, for this test alone";
+        assert_eq!(Picture::kept(unseen), None);
+        assert_eq!(Picture::kept(unseen), None, "the lookup kept nothing");
+        let p = Picture::new("kept, for this test alone");
+        assert_eq!(Picture::kept(" kept, for this test alone "), Some(p), "trimmed, as new trims");
+    }
+
     /// A picture marker is written with its image, and read back as the same kept image; one a
     /// crafted file makes too long, or not text, is no image (drawn as a circle), and the rest
     /// still reads.
@@ -3672,6 +3693,11 @@ mod tests {
         // Its dots show in a feature of no fill, as the point's image does.
         assert!(dots(m).draws(none) && !dots(Marker::Circle).draws(none));
         assert!(!dots(Marker::Picture(Picture::default())).draws(none));
+        let mut sizeless = dots(m);
+        if let crate::fills::FillPattern::Dots { size, .. } = &mut sizeless.pattern {
+            *size = 0.0;
+        }
+        assert!(!sizeless.draws(none), "an image of no size");
         assert!(!crate::fills::fills_have_pictures(&[dots(Marker::Circle), crate::fills::FillLayer::default()], |_| true));
     }
 

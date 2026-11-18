@@ -207,11 +207,16 @@ fn tabulate_uses(id: &str, params: &Value, uses: fn(&Value) -> bool) -> bool {
     }
 }
 
-/// `layer.marker` given an image: an older reader would leave its `image` out and keep the marker
-/// it had.
+/// `layer.marker`, a line stroke's markers or a dot fill given an image: an older reader would
+/// leave its `image` out and keep the marker it had, or refuse `"image"` as a mark.
 fn command_uses_picture_marker(id: &str, params: &Value) -> bool {
+    let any = |list: &str, image: fn(&Value) -> Option<&Value>| {
+        params.get(list).and_then(Value::as_array).is_some_and(|l| l.iter().any(|v| image(v).is_some_and(Value::is_string)))
+    };
     match id {
         "layer.marker" => params.get("image").is_some_and(Value::is_string),
+        "layer.lineStrokes" => any("strokes", |st| st.get("markers")?.get("image")),
+        "layer.fillLayers" => any("fills", |f| f.get("image")),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_picture_marker)),
         _ => false,
     }

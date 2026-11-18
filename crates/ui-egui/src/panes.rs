@@ -5612,10 +5612,15 @@ fn stroke_json(st: &LineStroke) -> Value {
     })
 }
 
-/// A stroke's markers as `layer.lineStrokes` takes them.
+/// A stroke's markers as `layer.lineStrokes` takes them: an image with its base64, sent again
+/// with every change so the stroke keeps it.
 fn markers_json(m: &LineMarkers) -> Value {
     let glyph = match m.mark {
         LineMark::Marker(Marker::Char(g)) => Some(g),
+        _ => None,
+    };
+    let image = match m.mark {
+        LineMark::Marker(Marker::Picture(p)) => Some(p.base64()),
         _ => None,
     };
     json!({
@@ -5625,6 +5630,7 @@ fn markers_json(m: &LineMarkers) -> Value {
         },
         "char": glyph.map(|g| g.ch.to_string()),
         "font": glyph.map(|g| g.font.as_str()),
+        "image": image,
         "size": m.size,
         "at": m.at.codes(),
         "interval": m.interval,
@@ -5680,6 +5686,21 @@ fn marker_places() -> [(&'static str, Placements); 7] {
 
 /// Sets the layer's stacked strokes, or `class`'s own.
 fn set_strokes(app: &mut RustGisApp, class: Option<&ClassRef>, strokes: &[LineStroke]) {
+    let mut replaced = 0;
+    let strokes: Vec<LineStroke> = strokes
+        .iter()
+        .map(|st| {
+            let markers = st.markers.map(|m| match m.mark {
+                LineMark::Marker(shape) => {
+                    let (shape, lost) = drawn_marker(shape);
+                    replaced += usize::from(lost);
+                    LineMarkers { mark: LineMark::Marker(shape), ..m }
+                }
+                LineMark::Hash => m,
+            });
+            LineStroke { markers, ..*st }
+        })
+        .collect();
     let mut p = json!({"strokes": strokes.iter().map(stroke_json).collect::<Vec<_>>()});
     match class {
         Some(ClassRef::Value(v)) => p["value"] = json!(v),
@@ -5687,7 +5708,33 @@ fn set_strokes(app: &mut RustGisApp, class: Option<&ClassRef>, strokes: &[LineSt
         Some(ClassRef::Other) => p["other"] = json!(true),
         None => {}
     }
-    let _ = app.run("layer.lineStrokes", p);
+    if app.run("layer.lineStrokes", p).is_ok() {
+        notify_image_replaced(app, replaced);
+    }
+}
+
+/// A marker as an editor sends it back: an image that can't be drawn (one a file gave that wasn't
+/// kept, or that doesn't decode) becomes the circle it is drawn as, which the command takes where
+/// it refuses the image. Whether it was replaced.
+pub(crate) fn drawn_marker(m: Marker) -> (Marker, bool) {
+    match m {
+        Marker::Picture(p) if !rustgis_engine::render::picture_marker_draws(p) => (Marker::Circle, true),
+        m => (m, false),
+    }
+}
+
+/// Says how many images an editor couldn't draw and replaced with circles ([`drawn_marker`]) on
+/// the active layer, which the editors set; nothing when there were none.
+pub(crate) fn notify_image_replaced(app: &mut RustGisApp, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let layer = app.session.active_layer.and_then(|id| app.session.map().layer(id)).map(|l| l.name.clone()).unwrap_or_default();
+    let text = crate::i18n::fmt(
+        "Image markers that can't be drawn were replaced by the circles they showed as: {count} on \"{layer}\"",
+        &[("count", &count.to_string()), ("layer", &layer)],
+    );
+    app.session.notify(text, false);
 }
 
 /// The classes a line layer's strokes can be set for, with their legend labels and symbols.
@@ -6236,12 +6283,7 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
                 } else {
                     (tl!("Add Stroke"), tl!("Stack another stroke on top"))
                 };
-                // A point's first mark is its symbol's marker and later ones copy the top one; no mark
-                // can be an image yet (a file's is kept, but not edited).
-                let image = (points && strokes.is_empty() && matches!(base.marker, Marker::Picture(_)))
-                    || rustgis_engine::map::symbology::strokes_have_pictures(&strokes, |_| true);
-                let add = ui.add_enabled(strokes.len() < MAX_STROKES && !image, egui::Button::new(label).small());
-                let add = if image { add.on_disabled_hover_text(tl!("An image marker takes no marks yet")) } else { add };
+                let add = ui.add_enabled(strokes.len() < MAX_STROKES, egui::Button::new(label).small());
                 if add.on_hover_text(tip).clicked() {
                     let mut next = strokes.clone();
                     // The first stroke stands for the symbol's own; later ones copy the top one. A
@@ -7534,6 +7576,71 @@ pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stroke and fill editors send an image back with every change, so it is kept; one that
+    /// can't be drawn (a file's, not kept or not an image) becomes the circle it showed as, which
+    /// is said, rather than every change being refused (#2266).
+    #[test]
+    fn the_editors_keep_an_image_and_replace_one_that_cannot_be_drawn() {
+        use base64::Engine;
+        use rustgis_engine::map::Picture;
+        use rustgis_engine::map::fills::{FillLayer, FillPattern};
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(6, 3, image::Rgba([10, 120, 230, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let image = Marker::Picture(Picture::new(&base64::engine::general_purpose::STANDARD.encode(&png)));
+        let broken = Marker::Picture(Picture::new("bm90IGFuIGltYWdl"));
+        let dropped = Marker::Picture(Picture::read(&"A".repeat(rustgis_engine::map::symbology::MAX_PICTURE_BYTES + 4)));
+        assert!(matches!(dropped, Marker::Picture(p) if p.is_dropped()));
+        let mut app = RustGisApp::with_sample();
+        // The notices of replaced images since `mark`, one per change, with how many and where.
+        let said = |app: &RustGisApp, mark| -> Vec<String> {
+            app.session
+                .notices_since(mark)
+                .iter()
+                .filter(|n| n.text.contains("replaced by the circles") && !n.error)
+                .map(|n| n.text.clone())
+                .collect()
+        };
+        let marks = |shape| LineMarkers { mark: LineMark::Marker(shape), size: 9.0, ..LineMarkers::default() };
+        let stroke = |shape| LineStroke { markers: Some(marks(shape)), ..LineStroke::default() };
+        for layer in ["Rivers", "Cities"] {
+            app.session.active_layer = app.session.map().layer_by_name(layer).map(|l| l.id);
+            let strokes = |app: &RustGisApp| app.session.map().layer_by_name(layer).unwrap().line_strokes.clone();
+            let mark = app.session.notice_mark();
+            set_strokes(&mut app, None, &[stroke(image)]);
+            assert_eq!(strokes(&app), [stroke(image)], "{layer}: kept");
+            assert!(said(&app, mark).is_empty());
+            let mark = app.session.notice_mark();
+            set_strokes(&mut app, None, &[stroke(broken), stroke(dropped), stroke(image)]);
+            assert_eq!(strokes(&app), [stroke(Marker::Circle), stroke(Marker::Circle), stroke(image)], "{layer}");
+            assert_eq!(
+                said(&app, mark),
+                [format!("Image markers that can't be drawn were replaced by the circles they showed as: 2 on \"{layer}\"")]
+            );
+        }
+        app.session.active_layer = app.session.map().layer_by_name("Countries").map(|l| l.id);
+        let dots = |marker| FillLayer {
+            color: None,
+            pattern: FillPattern::Dots {
+                marker,
+                size: 5.0,
+                outline: None,
+                outline_width: 0.0,
+                spacing: [9.0, 9.0],
+                displacement: [0.0, 0.0],
+                offset: [0.0, 0.0],
+            },
+        };
+        let fills = |app: &RustGisApp| app.session.map().layer_by_name("Countries").unwrap().fill_layers.clone();
+        crate::fill_editor::set_fills(&mut app, None, &[dots(image)]);
+        assert_eq!(fills(&app), [dots(image)]);
+        let mark = app.session.notice_mark();
+        crate::fill_editor::set_fills(&mut app, None, &[dots(broken), dots(image)]);
+        assert_eq!(fills(&app), [dots(Marker::Circle), dots(image)]);
+        assert_eq!(said(&app, mark), ["Image markers that can't be drawn were replaced by the circles they showed as: 1 on \"Countries\""]);
+    }
 
     /// Find Tools finds a tool by what it shows in the interface's language as well as by its
     /// English name and id, without minding case or accents (#2224).

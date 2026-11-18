@@ -1135,13 +1135,13 @@ impl Ctx<'_> {
 
     /// A line drawn as its stacked strokes (`Layer::strokes`), bottom first, each
     /// shifted sideways by its offset.
-    fn stacked_line(&self, pm: &mut Canvas, parts: &[Vec<Coord>], s: &Symbol, strokes: &[LineStroke]) {
+    fn stacked_line(&self, pm: &mut Canvas, parts: &[Vec<Coord>], s: &Symbol, strokes: &[LineStroke], halo: bool) {
         let (mut pb, mut starts) = (PathBuilder::new(), DashStarts::default());
         for part in parts {
             self.ring_path_at(&mut pb, part, false, &mut starts);
         }
         let Some(path) = pb.finish() else { return };
-        self.stacked_path(pm, &path, s, strokes, &starts, parts);
+        self.stacked_path(pm, &path, s, strokes, &starts, parts, halo);
     }
 
     /// A stroke's dash pattern in pixels for `path`, or `None` to draw it solid: a pattern under a
@@ -1158,7 +1158,8 @@ impl Ctx<'_> {
     /// longer or shorter than the line.
     ///
     /// `parts` is the line `path` was made from: markers along it are placed along the line as a
-    /// whole ([`line_markers`]).
+    /// whole ([`line_markers`]). `halo`: the strokes are a selected line's halo, drawn under it.
+    #[expect(clippy::too_many_arguments, reason = "a line's path, what it was made from and how it is drawn")]
     fn stacked_path(
         &self,
         pm: &mut Canvas,
@@ -1167,6 +1168,7 @@ impl Ctx<'_> {
         strokes: &[LineStroke],
         starts: &DashStarts,
         parts: &[Vec<Coord>],
+        halo: bool,
     ) {
         // Shifted once per offset: a casing and its core usually share one.
         let mut shifted: Vec<(f32, Option<tiny_skia::Path>)> = Vec::new();
@@ -1176,7 +1178,7 @@ impl Ctx<'_> {
             let (c, w) = st.resolve(s);
             if let Some(m) = &st.markers {
                 let runs = runs.get_or_insert_with(|| self.marker_runs(parts));
-                line_markers::draw(pm, runs, m, c, if w.is_nan() { 0.0 } else { w }, st.offset, self.ppp);
+                line_markers::draw(pm, runs, m, c, if w.is_nan() { 0.0 } else { w }, st.offset, self.ppp, halo);
                 continue;
             }
             if w.is_nan() || w <= 0.0 || c.a() == 0 {
@@ -1515,7 +1517,10 @@ impl Ctx<'_> {
                             && st
                                 .markers
                                 .is_some_and(|m| !matches!(m.mark, rustgis_map::LineMark::Hash) && m.outline.is_some_and(|o| o.a() > 0));
-                        (w > 0.0 || st.markers.is_some_and(|m| !matches!(m.mark, rustgis_map::LineMark::Hash))) && (c.a() > 0 || outlined)
+                        // An image shows whatever its colour.
+                        let image = st.markers.is_some_and(|m| line_markers::drawn_picture(&m).is_some());
+                        let shown = w > 0.0 || st.markers.is_some_and(|m| !matches!(m.mark, rustgis_map::LineMark::Hash));
+                        image || (shown && (c.a() > 0 || outlined))
                     })
                     .map(|st| LineStroke {
                         // A hollow marker's halo is its outline alone, so it stays hollow.
@@ -1526,8 +1531,8 @@ impl Ctx<'_> {
                         ..*st
                     })
                     .collect();
-                self.stacked_line(pm, parts, s, &halo);
-                self.stacked_line(pm, parts, s, strokes);
+                self.stacked_line(pm, parts, s, &halo, true);
+                self.stacked_line(pm, parts, s, strokes, false);
             }
             Geometry::Point(c) if !point_marks::plain(strokes, turn) => self.marks(pm, *c, s, strokes, turn, Some(SELECTION)),
             Geometry::MultiPoint(v) if !point_marks::plain(strokes, turn) => {
@@ -11366,6 +11371,43 @@ mod tests {
         assert_eq!(p, vec![(0.0, 1.0), (5.0, 1.0)]);
     }
 
+    /// A dot fill whose marker is an image draws it in a feature of no fill, as a point's image
+    /// shows whatever its colour; a circle there has no colour to show.
+    #[test]
+    fn an_image_dot_fill_draws_in_a_feature_of_no_fill() {
+        use rustgis_map::fills::{FillLayer, FillPattern};
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("fields", GeometryType::Polygon, vec![]);
+        let ring = vec![Coord::new(-0.6, -0.5), Coord::new(0.6, -0.5), Coord::new(0.6, 0.5), Coord::new(-0.6, 0.5), Coord::new(-0.6, -0.5)];
+        d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        let id = m.add_dataset(d);
+        let none = Rgba::new(0, 0, 0, 0);
+        m.layer_mut(id).unwrap().renderer =
+            rustgis_map::Renderer::Single(Symbol { fill: none, stroke: none, stroke_width: 0.0, size: 1.0, marker: Marker::Circle });
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let dots = |marker| FillLayer {
+            color: None,
+            pattern: FillPattern::Dots {
+                marker,
+                size: 12.0,
+                outline: None,
+                outline_width: 0.0,
+                spacing: [20.0, 20.0],
+                displacement: [0.0, 0.0],
+                offset: [0.0, 0.0],
+            },
+        };
+        let inked = |m: &mut Map, marker| {
+            m.layer_mut(id).unwrap().fill_layers = vec![dots(marker)];
+            let r = render(m, &view).unwrap();
+            r.pixmap.pixels().iter().filter(|p| (p.red() > 200 || p.blue() > 200) && p.green() < 60).count()
+        };
+        assert!(inked(&mut m, Marker::Picture(rustgis_map::Picture::new(&picture_png()))) > 50, "the image's red and blue");
+        assert_eq!(inked(&mut m, Marker::Circle), 0, "a circle in no colour");
+    }
+
     #[test]
     fn stacked_fills_hatch_and_dot_polygons_anchored_to_the_map() {
         use rustgis_map::fills::{FillLayer, FillPattern};
@@ -12078,6 +12120,36 @@ mod tests {
         assert!((0..200).any(|x| r.pixmap.pixel(x, 100).unwrap().red() > 0), "marks show");
     }
 
+    /// Images along a line draw whatever the stroke's colour, as a point's image does; a circle
+    /// of no colour shows nothing. Selected, each image is framed in the selection colour.
+    #[test]
+    fn image_markers_draw_along_a_line() {
+        use rustgis_map::{LineMark, LineMarkers, LineStroke, Picture};
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rail", GeometryType::Polyline, vec![]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, 0.0), Coord::new(1.0, 0.0)]])), vec![]);
+        let id = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let marks = |mark| LineMarkers { mark: LineMark::Marker(mark), size: 20.0, interval: 40.0, ..LineMarkers::default() };
+        let none = Rgba::new(0, 0, 0, 0);
+        let drawn = |m: &mut Map, mark| {
+            m.layer_mut(id).unwrap().line_strokes =
+                vec![LineStroke { color: Some(none), width: Some(1.0), markers: Some(marks(mark)), ..Default::default() }];
+            render(m, &view).unwrap()
+        };
+        let image = |r: &Rendered| r.pixmap.pixels().iter().filter(|p| (p.red() > 200 || p.blue() > 200) && p.green() < 60).count();
+        let picture = Marker::Picture(Picture::new(&picture_png()));
+        assert!(image(&drawn(&mut m, picture)) > 200, "the image's red and blue at each mark");
+        assert_eq!(image(&drawn(&mut m, Marker::Circle)), 0, "a circle in no colour");
+        // Selected: framed in the selection colour, the image still on top.
+        m.layer_mut(id).unwrap().selection = vec![0];
+        let r = drawn(&mut m, picture);
+        let cyan = r.pixmap.pixels().iter().filter(|p| p.red() < 60 && p.green() > 200 && p.blue() > 200).count();
+        assert!(cyan > 20 && image(&r) > 200, "{cyan} framed");
+    }
+
     #[test]
     fn markers_on_the_globe_follow_the_line_up_to_the_horizon() {
         use rustgis_map::{LineMarkers, LineStroke};
@@ -12223,7 +12295,7 @@ mod tests {
             };
             let s = Symbol::default_for(GeometryType::Polyline, 0);
             let mut drawn = Pixmap::new(100, 20).unwrap();
-            crate::canvas::with_canvas(&mut drawn, |c| ctx.stacked_path(c, &cut, &s, &[stroke], &starts, &[]));
+            crate::canvas::with_canvas(&mut drawn, |c| ctx.stacked_path(c, &cut, &s, &[stroke], &starts, &[], false));
             let mut whole = Pixmap::new(100, 20).unwrap();
             let mut pb = PathBuilder::new();
             let (x0, y) = view.to_screen(line[0]);

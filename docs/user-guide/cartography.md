@@ -110,8 +110,8 @@ symbol's: a white disc under a sign, say, so it reads on any background. Each ma
 colour, outline, shape, size and angle, and is shifted right (**Offset right**) and down
 (**Offset down**); its offset turns with its angle, as QGIS turns it. **With the field** turns a
 mark by the rotation field too, or keeps it still. A layer with classes can have marks for one
-class of its own, as line strokes can. By command, `layer.markerRotation` and the point layer's
-strokes of markers:
+class of its own, as line strokes can. A mark can be an image too, by command, as along a line
+(below). By command, `layer.markerRotation` and the point layer's strokes of markers:
 
 ```text
 layer.markerRotation={"layer":"Signs","field":"angle","counterclockwise":true}
@@ -335,13 +335,18 @@ Markers take a **Shape** (a character of a font too, as for points) and a **Size
 its start), at its vertices or its inner ones, at either end or both, or in its middle. **With the
 line** turns each mark with the line's direction; the **Angle** turns it further, clockwise. Marks
 take the stroke's colour, its width as a hash mark's line (or a marker's outline, by command), and
-its offset to either side. Stack them with line strokes: a casing, a core and ticks across it. By
-command, `"markers"` on a stroke:
+its offset to either side. Stack them with line strokes: a casing, a core and ticks across it. A
+marker can also be an image, by command (`"image"`, a PNG or JPEG as base64, at most 2 MiB): as
+wide as its **Size** and as tall as its proportions make it, turned with the line, the stroke's
+colour and outline left out; selected, each is framed. An image a file gave that can't be drawn
+(too large to keep, or one that doesn't decode) shows as a circle; changing the strokes in the
+pane makes it the circle, and says so. By command, `"markers"` on a stroke:
 
 ```text
 layer.lineStrokes={"layer":"Railways","strokes":[{"color":"#333333","width":1.5},{"color":"#333333","width":1,"markers":{"mark":"hash","size":6,"interval":10}}]}
 layer.lineStrokes={"layer":"Rivers","strokes":[{"width":1},{"markers":{"mark":"triangle","size":7,"at":"middle"}}]}
 layer.lineStrokes={"layer":"Trails","strokes":[{"markers":{"mark":"character","char":"»","font":"DejaVu Sans","size":8,"interval":16}}]}
+layer.lineStrokes={"layer":"Pipelines","strokes":[{"width":1},{"markers":{"image":"iVBORw0KGgo…","size":12,"at":"middle"}}]}
 ```
 
 `"at"` takes `"interval"`, `"vertices"`, `"innerVertices"`, `"first"`, `"last"`, `"middle"` and
@@ -359,7 +364,8 @@ arrows move one up or down and the cross removes it; the top fill is listed firs
 **Solid**, **Hatch lines** (parallel lines at an **Angle**, anticlockwise from east, **Spacing**
 apart, of a **Line width**, shifted across by an **Offset**), **Markers** (a **Marker** shape
 of a **Size** on a grid **Spacing across** and **Spacing down** apart, **Rows shifted** to
-stagger them), **Gradient** or **Shapeburst**. A gradient shades each feature from its colour to
+stagger them; by command the marker can be an image, `"image"`, as along a line), **Gradient** or
+**Shapeburst**. A gradient shades each feature from its colour to
 a **Second color**: by default top to bottom, of a **Type** that runs **Linear** (straight
 across), **Radial** (in rings from its first point) or **Conical** (round its first point),
 turned by an **Angle** (anticlockwise), and past its points a **Spread** of **Pad** (its end

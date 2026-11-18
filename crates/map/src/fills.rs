@@ -380,7 +380,7 @@ impl FillLayer {
     }
 
     /// Whether it draws anything in a feature of fill `feature`: a colour that shows, and for a
-    /// pattern, lines or markers of some size.
+    /// pattern, lines or markers of some size; an image's dots show whatever the colour.
     pub fn draws(&self, feature: Rgba) -> bool {
         let shown = self.color.unwrap_or(feature).a() > 0;
         match self.pattern {
