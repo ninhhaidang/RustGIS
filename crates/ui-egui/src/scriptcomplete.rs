@@ -347,12 +347,36 @@ fn nested_at(script: &str, at: usize, h: &Hint) -> Option<String> {
     scan(script.get(byte_at(script, h.brace)?..byte_at(script, at)?)?).nested.map(|n| n.key)
 }
 
-/// The top-level `key` of a line's object (`line`, from its `{`), as a plain string: the tool a
-/// `gp.run` line runs, or the command a `task.addStep` line adds, before or after its
-/// `"params"`; the last one given, as Run reads it. None without one, or when it isn't a plain
-/// string.
+/// The top-level `key` of a line's object (`line`, from its `{`), as a string, its escapes read
+/// (`"Big \"cities\""` as `Big "cities"`): the tool a `gp.run` line runs, the command a
+/// `task.addStep` line adds, before or after its `"params"`, or a layer's or table's name; the
+/// last one given, as Run reads it. None without one, or when it isn't a string or its escapes
+/// aren't JSON's.
 pub fn value_of(line: &str, key: &str) -> Option<String> {
-    scan(line).values.into_iter().rev().find(|(k, _, listed)| k == key && !listed).map(|(_, v, _)| v).filter(|v| !v.contains('\\'))
+    let (_, raw, _) = scan(line).values.into_iter().rev().find(|(k, _, listed)| k == key && !listed)?;
+    text_of(&raw)
+}
+
+/// What a string's text (`raw`, between its quotes, as written) holds, its escapes read; None
+/// for one that isn't JSON's.
+fn text_of(raw: &str) -> Option<String> {
+    unescape(&raw.chars().collect::<Vec<_>>()).map(|(text, _)| text)
+}
+
+/// The rows a tool's input (`input`, as `scan` reads it) names: a layer or a table by its name,
+/// escapes read, or a standalone table by its id; with the fields' `Of`.
+fn input_data(session: &rustgis_engine::Session, input: serde_json::Value) -> Option<(&rustgis_engine::data::Dataset, Of)> {
+    match input {
+        serde_json::Value::String(raw) => {
+            let name = text_of(&raw)?;
+            Some((crate::panes::input_dataset(session, &name)?, Of::ToolFields(name)))
+        }
+        serde_json::Value::Number(id) => {
+            let id = u32::try_from(id.as_u64()?).ok()?;
+            Some((&session.project.table(id)?.dataset, Of::TableFields(id)))
+        }
+        _ => None,
+    }
 }
 
 /// Line `h`'s object, from its `{` to the line's end.
@@ -423,8 +447,8 @@ fn named_in(script: &str, h: &Hint) -> Option<(Named, String)> {
 }
 
 /// The layer a line's object (`line`, from its `{`) acts on, as Run finds it: by its `"layer"`
-/// (a name, or an id written as text), the active layer without one. None for a layer that
-/// isn't there, or one given otherwise (a number, an escaped name): not the active layer then.
+/// (a name, escapes read, or an id written as text), the active layer without one. None for a
+/// layer that isn't there, or one given otherwise (a number): not the active layer then.
 fn line_layer<'a>(session: &'a rustgis_engine::Session, line: &str) -> Option<&'a rustgis_engine::map::Layer> {
     let given = rustgis_engine::param_keys(line).is_some_and(|keys| keys.contains(&"layer"));
     let p = match value_of(line, "layer") {
@@ -520,23 +544,24 @@ pub struct InExpression {
 
 /// What an expression box offers (#1240) for the expression being typed at char `at` of
 /// `script`: the cursor in the string of a command's key that takes one (its type `sql` or
-/// `expression`, `rustgis_engine::expression_keys`), or of a `gp.run` line's tool's parameter
-/// that does (`ParamKind::Expression`), anywhere in it. Over the fields of the line's layer or
-/// table (`line_data`), or of the tool's input; without one, the language's own words.
+/// `expression`, `rustgis_engine::expression_keys`), of a `gp.run` line's tool's parameter that
+/// does (`ParamKind::Expression`), or of a `task.addStep` line's command's key that does, in its
+/// `"params"`; anywhere in it. Over the fields of the line's (or the step's) layer or table
+/// (`line_data`), or of the tool's input; without one, the language's own words.
 fn expression_at(script: &str, at: usize, session: &rustgis_engine::Session) -> Option<Offer> {
     let h = hint_at(script, at)?;
     let line = line_of(script, &h)?;
     let before = scan(script.get(byte_at(script, h.brace)?..byte_at(script, at)?)?);
     let (start, data) = match before.value {
         Some((start, key, false)) => {
-            if !rustgis_engine::expression_keys(&params_of(session, &h.id)?).contains(&key.as_str()) {
+            if !takes_expression(session, &h.id, &key)? {
                 return None;
             }
             (h.brace + start, line_data(session, &h.id, line))
         }
         Some(_) => return None,
-        // In a `gp.run` line's `"params"`.
-        None => tool_expression_at(script, at, &h, before.nested.filter(|n| n.key == "params")?.brace, session)?,
+        // In a `gp.run` or `task.addStep` line's `"params"`.
+        None => params_expression_at(script, at, &h, before.nested.filter(|n| n.key == "params")?.brace, session)?,
     };
     let chars: Vec<char> = script.chars().collect();
     let (text, places) = unescape(chars.get(start..)?)?;
@@ -552,41 +577,50 @@ fn expression_at(script: &str, at: usize, session: &rustgis_engine::Session) -> 
     Some(Offer { start: from, end: at, items, of: Some(of) })
 }
 
-/// Where the expression being typed at char `at` of `script` starts (a char index), in a `gp.run`
-/// line's (`h`) `"params"` whose `{` is char `brace` of its object: the string of a parameter of
-/// kind `Expression` of the tool it runs; with the rows of the tool's input, given before or after
-/// it (by its name, escapes read, or a table's id), as for its fields. Without that input, or a
-/// tool with no layer parameter, none: the language's own words are offered.
-fn tool_expression_at<'a>(
+/// Where the expression being typed at char `at` of `script` starts (a char index), in the
+/// `"params"` of line `h` (`gp.run`, `task.addStep`) whose `{` is char `brace` of its object: the
+/// string of a parameter of kind `Expression` of the tool it runs, over the rows of the tool's
+/// input given before or after it, as for its fields; or of a key of the command the step adds
+/// that takes one, over the step's layer or table, read from its `"params"` as from a line. With
+/// no rows to read (no input, a tool with no layer parameter), none: the language's own words.
+fn params_expression_at<'a>(
     script: &str,
     at: usize,
     h: &Hint,
     brace: usize,
     session: &'a rustgis_engine::Session,
 ) -> Option<(usize, Option<(&'a rustgis_engine::data::Dataset, Of)>)> {
-    let (Named::Tool, name) = named_in(script, h)? else {
+    let line = script.get(byte_at(script, h.brace + brace)?..)?.split('\n').next()?;
+    let (before, after) = line.split_at(byte_at(line, at.checked_sub(h.brace + brace)?)?);
+    let (start, key, false) = scan(before).value? else {
         return None;
     };
-    let tool = rustgis_engine::analysis::tool(&name)?;
-    let params = script.get(byte_at(script, h.brace + brace)?..)?.split('\n').next()?;
-    let (start, key, false) = scan(params.get(..byte_at(params, at.checked_sub(h.brace + brace)?)?)?).value? else {
-        return None;
+    // The `"params"` object alone, up to its `}`: an object after it on the line (a later key's)
+    // isn't read as giving the layer.
+    let params = format!("{before}{}", object_rest(after, false));
+    let params = params.as_str();
+    let data = match named_in(script, h)? {
+        (Named::Tool, name) => {
+            let tool = rustgis_engine::analysis::tool(&name)?;
+            tool.params.iter().find(|p| p.name == key && p.kind == rustgis_engine::analysis::ParamKind::Expression)?;
+            let source = crate::panes::layer_for_param(tool, &key).map(|p| p.name);
+            let input = source.and_then(|source| scan(params).inputs.into_iter().rev().find(|(k, _)| k == source));
+            input.and_then(|(_, input)| input_data(session, input))
+        }
+        (Named::Command, name) => {
+            if !takes_expression(session, &name, &key)? {
+                return None;
+            }
+            line_data(session, &name, params)
+        }
     };
-    tool.params.iter().find(|p| p.name == key && p.kind == rustgis_engine::analysis::ParamKind::Expression)?;
-    let source = crate::panes::layer_for_param(tool, &key).map(|p| p.name);
-    let input = source.and_then(|source| scan(params).inputs.into_iter().rev().find(|(k, _)| k == source));
-    let data = input.and_then(|(_, input)| match input {
-        serde_json::Value::String(raw) => {
-            let (name, _) = unescape(&raw.chars().collect::<Vec<_>>())?;
-            Some((crate::panes::input_dataset(session, &name)?, Of::ToolFields(name)))
-        }
-        serde_json::Value::Number(id) => {
-            let id = u32::try_from(id.as_u64()?).ok()?;
-            Some((&session.project.table(id)?.dataset, Of::TableFields(id)))
-        }
-        _ => None,
-    });
     Some((h.brace + brace + start, data))
+}
+
+/// Whether command `id`'s `key` takes an expression (`rustgis_engine::expression_keys`); None for
+/// a command that isn't there.
+fn takes_expression(session: &rustgis_engine::Session, id: &str, key: &str) -> Option<bool> {
+    Some(rustgis_engine::expression_keys(&params_of(session, id)?).contains(&key))
 }
 
 /// `script` with `item` of the expression's list accepted (`exprcomplete::written`), and where the
@@ -702,7 +736,10 @@ fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::S
                 let names = d
                     .fields
                     .iter()
-                    .filter(|f| (!numeric || f.ty.is_numeric()) && !given.iter().any(|(k, v, _)| k == key && *v == f.name))
+                    .filter(|f| {
+                        (!numeric || f.ty.is_numeric())
+                            && !given.iter().any(|(k, v, _)| k == key && text_of(v).as_deref() == Some(f.name.as_str()))
+                    })
                     .map(|f| f.name.as_str());
                 value_ids(start, at, &word, names, of)
             }
@@ -786,16 +823,7 @@ fn tool_value(script: &str, at: usize, session: &rustgis_engine::Session) -> Opt
             let source = crate::fieldlists::input(p.kind).or_else(|| crate::panes::layer_for_param(tool, p.name).map(|p| p.name))?;
             let whole = format!("{text}{after}");
             let input = scan(&whole).inputs.into_iter().rev().find(|(key, _)| key == source)?.1;
-            let (d, of) = match input {
-                serde_json::Value::String(name) if !name.contains('\\') => {
-                    (crate::panes::input_dataset(session, &name)?, Of::ToolFields(name))
-                }
-                serde_json::Value::Number(id) => {
-                    let id = u32::try_from(id.as_u64()?).ok()?;
-                    (&session.project.table(id)?.dataset, Of::TableFields(id))
-                }
-                _ => return None,
-            };
+            let (d, of) = input_data(session, input)?;
             let without_word = format!("{}{after}", script.get(byte_at(script, brace)?..byte_at(script, start)?)?);
             // Scan retains raw JSON string contents; decode before comparing with dataset names.
             let given: std::collections::HashSet<String> = scan(&without_word)
@@ -2423,7 +2451,8 @@ mod tests {
     }
 
     /// The tool a line runs (its top-level `"tool"`), wherever it's given, the last one as Run
-    /// reads it; not a nested one, a value named "tool", or an escaped name.
+    /// reads it, its escapes read; not a nested one, a value named "tool", or one whose escapes
+    /// aren't JSON's.
     #[test]
     fn value_of_reads_the_lines_tool() {
         let tool_of = |line: &str| super::value_of(line, "tool");
@@ -2433,7 +2462,8 @@ mod tests {
         assert_eq!(tool_of(r#"{"params": {"tool": "buffer"}}"#), None, "nested");
         assert_eq!(tool_of(r#"{"x": "tool", "y": "buffer"}"#), None, "a value");
         assert_eq!(tool_of(r#"{"tool": 5}"#), None, "not a string");
-        assert_eq!(tool_of(r#"{"tool": "a\"b"}"#), None, "escaped");
+        assert_eq!(tool_of(r#"{"tool": "a\"b"}"#).as_deref(), Some("a\"b"), "escapes read");
+        assert_eq!(tool_of(r#"{"tool": "a\qb"}"#), None, "not JSON's");
         assert_eq!(tool_of(r#"{"tool": "buf"#), None, "being typed");
         assert_eq!(tool_of(r#"{"tool""#), None);
         assert_eq!(tool_of(""), None);
@@ -2495,6 +2525,21 @@ mod tests {
         assert!(has(end(r#"gp.run {"tool": "selectByAttributes", "params": {"input": "Countries", "where": "pop_"#), "pop_est"));
         let s = r#"gp.run {"tool": "selectByAttributes", "params": {"where": "pop_"#;
         assert!(has(at(&format!(r#"{s}", "input": "Cities"}}}}"#), s.chars().count()), "pop_max"), "input after");
+        // A step's command's expression, over the step's layer, given before or after it, the
+        // command too; the active layer's without one.
+        let step = r#"task.addStep {"title": "t", "command": "select.byAttributes", "params": {"#;
+        assert!(has(end(&format!(r#"{step}"layer": "Countries", "where": "pop_"#)), "pop_est"), "a step's expression");
+        let s = r#"task.addStep {"title": "t", "params": {"where": "pop_"#;
+        let line = format!(r#"{s}", "layer": "Cities"}}, "command": "select.byAttributes"}}"#);
+        assert!(has(at(&line, s.chars().count()), "pop_max"), "layer and command after");
+        assert!(has(end(&format!(r#"{step}"where": "{typed}"#)), field), "a step's active layer");
+        // A later object on the line isn't read as the `"params"`' layer or input.
+        let s = r#"task.addStep {"command": "select.byAttributes", "params": {"layer": "Countries", "where": "pop_"#;
+        assert!(has(at(&format!(r#"{s}"}}, "x": {{"layer": "Cities"}}}}"#), s.chars().count()), "pop_est"), "a step's params alone");
+        let s = r#"gp.run {"tool": "selectByAttributes", "params": {"input": "Countries", "where": "pop_"#;
+        assert!(has(at(&format!(r#"{s}"}}, "x": {{"input": "Cities"}}}}"#), s.chars().count()), "pop_est"), "a tool's params alone");
+        let plain = r#"task.addStep {"command": "layer.rename", "params": {"layer": "Countries", "name": "pop_"#;
+        assert!(items(end(plain)).is_empty(), "a step's plain text");
         // Not here.
         assert!(items(end(r#"layer.rename {"layer": "Countries", "name": "pop_"#)).is_empty(), "another key");
         assert!(items(end(r#"select.byAttributes {"layer": "Countries", "where": "name = 'pop_"#)).is_empty(), "quoted text");
@@ -2504,16 +2549,27 @@ mod tests {
         assert!(items(end(r#"gp.run {"tool": "buffer", "params": {"input": "Countries", "output": "pop_"#)).is_empty(), "a tool's text");
     }
 
-    /// A `gp.run` tool's input named with escapes (`"Big \"cities\""`) is read as its name, so its
-    /// expression is offered that layer's fields.
+    /// A layer named with escapes (`"Big \"cities\""`) is read as its name wherever the Script
+    /// reads one: a command's `"layer"`, for its fields and its expressions, and a `gp.run` tool's
+    /// input, for its fields and its expressions alike.
     #[test]
-    fn a_tools_input_named_with_escapes_gives_its_fields() {
+    fn escaped_names_give_their_fields() {
         let mut app = crate::RustGisApp::with_sample();
         app.run("layer.rename", serde_json::json!({"layer": "Cities", "name": "Big \"cities\""})).unwrap();
-        let s = r#"gp.run {"tool": "selectByAttributes", "params": {"input": "Big \"cities\"", "where": "pop_"#;
-        let o = super::offer_at(s, s.chars().count(), &[], &app.session).unwrap();
-        assert!(matches!(&o.of, Some(super::Of::Expression(e)) if e.data == Some(super::Of::ToolFields("Big \"cities\"".into()))));
+        let id = app.session.map().layer_by_name("Big \"cities\"").unwrap().id;
+        let end = |s: &str| super::offer_at(s, s.chars().count(), &[], &app.session).unwrap();
+        let o = end(r#"select.byAttributes {"layer": "Big \"cities\"", "where": "pop_"#);
+        assert!(matches!(&o.of, Some(super::Of::Expression(e)) if e.data == Some(super::Of::Fields(id))), "a command's expression");
         assert!(o.items.iter().any(|i| i == "pop_max"));
+        let o = end(r#"task.addStep {"command": "select.byAttributes", "params": {"layer": "Big \"cities\"", "where": "pop_"#);
+        assert!(matches!(&o.of, Some(super::Of::Expression(e)) if e.data == Some(super::Of::Fields(id))), "a step's expression");
+        let o = end(r#"labels.field {"layer": "Big \"cities\"", "field": "pop"#);
+        assert_eq!((o.items, o.of), (vec!["pop_max".to_string()], Some(super::Of::Fields(id))), "a command's field");
+        let o = end(r#"gp.run {"tool": "selectByAttributes", "params": {"input": "Big \"cities\"", "where": "pop_"#);
+        assert!(matches!(&o.of, Some(super::Of::Expression(e)) if e.data == Some(super::Of::ToolFields("Big \"cities\"".into()))));
+        assert!(o.items.iter().any(|i| i == "pop_max"), "a tool's expression");
+        let o = end(r#"gp.run {"tool": "summaryStatistics", "params": {"input": "Big \"cities\"", "field": "pop"#);
+        assert_eq!((o.items, o.of), (vec!["pop_max".to_string()], Some(super::Of::ToolFields("Big \"cities\"".into()))), "a tool's field");
     }
 
     /// An expression's item goes in as the expression box puts it, escaped as the string's text:
@@ -2663,7 +2719,7 @@ mod tests {
         assert_eq!(o.items, fields, "the layer after the field");
         assert!(offer(&app, r#"labels.field {"layer": "Nowhere", "field": ""#).is_none(), "a layer that isn't there");
         assert!(offer(&app, r#"labels.field {"layer": 99, "field": ""#).is_none(), "a layer given as a number");
-        assert!(offer(&app, r#"labels.field {"layer": "a\"b", "field": ""#).is_none(), "an escaped name");
+        assert!(offer(&app, r#"labels.field {"layer": "a\"b", "field": ""#).is_none(), "an escaped name that isn't there");
         app.session.active_layer = Some(id);
         assert_eq!(offer(&app, r#"labels.field {"field": ""#).unwrap().items, fields, "the active layer");
         app.session.active_layer = None;
@@ -2722,6 +2778,11 @@ mod tests {
         assert_eq!(super::item_icon(&app.session, Some(&super::Of::TableFields(table)), "street"), Some("field"));
         assert!(offer(&app, r#"layer.geocode {"table": "Nowhere", "address": ""#).is_none(), "a table that isn't there");
         assert!(offer(&app, r#"layer.geocode {"table": 7, "address": ""#).is_none(), "a table given as a number: not the layer's");
+        // A name given in the array with escapes is the field it names: not offered again.
+        let fields = vec![Field::new("a\"b", FieldType::Text), Field::new("c", FieldType::Text)];
+        app.session.project.add_table(Dataset::new("Quoted", GeometryType::None, fields));
+        let o = offer(&app, r#"layer.geocode {"table": "Quoted", "address": ["a\"b", ""#).unwrap();
+        assert_eq!(o.items, ["c"], "an escaped name given");
     }
 
     /// A parameter's type says whether it takes fields, only numeric ones, in a list; a note in

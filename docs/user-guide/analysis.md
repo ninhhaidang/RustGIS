@@ -1625,10 +1625,15 @@ as the line's JSON needs it (`"Big \"lakes\""`).
 In the string of a key that takes an expression (its type is `sql` or `expression` in the
 command's help: `"where"` in `select.byAttributes`, `"expression"` in `edit.calculateField`,
 `labels.by`'s keys…; in a `gp.run` line, a tool's expression, such as `selectByAttributes`'s
-`"where"`), the list is the one [Calculate Field](expressions.md#calculate-field) shows, anywhere
-in the string: the fields of the line's layer or table (in `gp.run`, of the tool's input, before
-or after it), the functions, the variables and the keywords that fit, with the same help beside.
-Where the line names no layer it can find, it offers the language's words without fields.
+`"where"`; in a `task.addStep` line's `"params"`, the step's command's), the list is the one
+[Calculate Field](expressions.md#calculate-field) shows, anywhere in the string: the fields of
+the line's layer or table, the active layer without one (in `gp.run`, of the tool's input,
+before or after it; in `task.addStep`, of the layer or table its `"params"` give, the active
+layer without one), the functions, the variables and the keywords that fit, with the same help
+beside. Where the line names a layer it can't find, or a tool has no input, it offers the
+language's words without fields. A
+layer's name with escapes (`"Big \"lakes\""`) is read as the name it writes, for these lists and
+the field lists alike.
 Accepting one writes it as the string needs it, the rest of the string left as written: a field
 begun with an escaped quote is closed with one (`"where": "\"Pop Est\""`), and a function comes
 with its brackets, the cursor inside. A key inside another key's objects, such as a display
