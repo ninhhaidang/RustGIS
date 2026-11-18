@@ -11,8 +11,8 @@
 //! fails here until the case is moved to [`Expect::Said`], so the list only shrinks. Exports have
 //! their own test, `never_silent_roundtrip.rs`.
 //!
-//! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB
-//! and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss does not
+//! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB,
+//! Shapefile and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss does not
 //! certify a reader.
 use rustgis_engine::{Project, Session};
 use serde_json::json;
@@ -37,13 +37,13 @@ struct Case {
     file: &'static str,
     clean: Vec<u8>,
     lossy: Vec<u8>,
-    /// Files beside it, the same in both (a MapInfo `.mid`).
-    beside: Vec<(&'static str, String)>,
+    /// Files beside the clean and lossy inputs (binary indexes can differ).
+    beside: [Vec<(&'static str, Vec<u8>)>; 2],
     expect: Expect,
 }
 
 fn case(name: &'static str, file: &'static str, clean: impl AsRef<[u8]>, lossy: impl AsRef<[u8]>, expect: Expect) -> Case {
-    Case { name, file, clean: clean.as_ref().to_vec(), lossy: lossy.as_ref().to_vec(), beside: Vec::new(), expect }
+    Case { name, file, clean: clean.as_ref().to_vec(), lossy: lossy.as_ref().to_vec(), beside: [Vec::new(), Vec::new()], expect }
 }
 
 /// A GeoJSON feature collection of these geometries.
@@ -97,6 +97,7 @@ fn landxml(content: &str) -> String {
     format!(r#"<?xml version="1.0"?><LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2">{content}</LandXML>"#)
 }
 
+/// Builds paired inputs, keeping sidecars specific to each input when their binary layout differs.
 fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     let point = r#"{"type":"Point","coordinates":[1,2]}"#;
     let topo_line = |arcs: &str| format!(r#"{{"type":"Topology","objects":{{"o":{{"type":"LineString","arcs":[0]}}}},"arcs":[{arcs}]}}"#);
@@ -357,7 +358,9 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     // MapInfo: the .mid beside each .mif holds one row per object.
     let mut mapinfo = |name, clean: &str, lossy: &str, mid: &str, expect| {
         let mut c = case(name, "a.mif", mif(clean), mif(lossy), expect);
-        c.beside.push(("a.mid", mid.to_string()));
+        for beside in &mut c.beside {
+            beside.push(("a.mid", mid.as_bytes().to_vec()));
+        }
         out.push(c);
     };
     mapinfo("MapInfo: an unreadable object", "Point 0 0\nPoint 1 1\n", "Point 0 0\nPoint 1 x\n", "1\n2\n", Said("couldn't be read"));
@@ -386,7 +389,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             file: "a.kmz",
             clean: rustgis_engine::data::zip::write(&[("doc.kml".into(), c.clean.clone())]).unwrap(),
             lossy: rustgis_engine::data::zip::write(&[("doc.kml".into(), c.lossy.clone())]).unwrap(),
-            beside: Vec::new(),
+            beside: [Vec::new(), Vec::new()],
             expect: c.expect,
         })
         .collect::<Vec<_>>();
@@ -417,6 +420,48 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             Imported("Z or M"),
         ),
     ]);
+    // Independently encoded shapes: scalar Z, scalar M, and arrays with/without optional M.
+    for (name, clean, lossy, clean_index, lossy_index) in [
+        (
+            "Shapefile: a point height",
+            include_bytes!("../testdata/reading-losses/shp-point-xy.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-point-z.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-point-xy.shx"),
+            include_bytes!("../testdata/reading-losses/shp-point-z.shx"),
+        ),
+        (
+            "Shapefile: a point measure",
+            include_bytes!("../testdata/reading-losses/shp-point-xy.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-point-m.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-point-xy.shx"),
+            include_bytes!("../testdata/reading-losses/shp-point-m.shx"),
+        ),
+        (
+            "Shapefile: line heights without measures",
+            include_bytes!("../testdata/reading-losses/shp-line-xy.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-line-z.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-line-xy.shx"),
+            include_bytes!("../testdata/reading-losses/shp-line-z.shx"),
+        ),
+        (
+            "Shapefile: line heights and measures",
+            include_bytes!("../testdata/reading-losses/shp-line-xy.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-line-zm.shp").as_slice(),
+            include_bytes!("../testdata/reading-losses/shp-line-xy.shx"),
+            include_bytes!("../testdata/reading-losses/shp-line-zm.shx"),
+        ),
+    ] {
+        let mut c = case(name, "a.shp", clean, lossy, Imported("Z or M"));
+        for (beside, index) in c.beside.iter_mut().zip([clean_index, lossy_index]) {
+            beside.extend([
+                ("a.shx", index.to_vec()),
+                ("a.dbf", include_bytes!("../testdata/reading-losses/shp-row.dbf").to_vec()),
+                ("a.cpg", b"UTF-8\n".to_vec()),
+                ("a.prj", br#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#.to_vec()),
+            ]);
+        }
+        out.push(c);
+    }
     out
 }
 
@@ -476,6 +521,22 @@ fn gpkg(dir: &std::path::Path, z: bool) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
 
+/// Both Shapefile inputs must retain the one attribute row and every XY vertex, through
+/// the native reader and the command. A notice over an empty or partial import isn't enough.
+fn check_shapefile_xy(ds: &rustgis_engine::data::Dataset, shape_type: Option<u8>) -> std::io::Result<()> {
+    use rustgis_engine::data::{Geometry, Value};
+    use rustgis_engine::geom::Coord;
+    let expected = match shape_type {
+        Some(1 | 11 | 21) => Geometry::Point(Coord::new(1.0, 2.0)),
+        Some(3 | 13) => Geometry::Line(vec![vec![Coord::new(1.0, 2.0), Coord::new(3.0, 4.0)]]),
+        _ => return Err(std::io::Error::other("Shapefile fixture has the wrong geometry type")),
+    };
+    if ds.features.len() != 1 || ds.features[0].geometry.as_ref() != Some(&expected) || ds.features[0].attrs != vec![Value::Int(1)] {
+        return Err(std::io::Error::other("Shapefile fixture didn't retain its XY geometry and ID"));
+    }
+    Ok(())
+}
+
 /// What `layer.addData` did with a file: the notices it gave and whether it added a layer or table,
 /// or why it refused the file.
 type Reading = Result<(Vec<String>, bool), String>;
@@ -485,11 +546,11 @@ type Reading = Result<(Vec<String>, bool), String>;
 /// case is read from the same `dir`, so notices naming its path are the same for both.
 /// A `.gdb` fixture is stored as a ZIP of its table files, extracted and checked with the native
 /// reader before the command opens it, so an optional GDAL fallback cannot mask a regression.
-fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, String)]) -> std::io::Result<Reading> {
+fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<u8>)]) -> std::io::Result<Reading> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
-    for (name, text) in beside {
-        std::fs::write(dir.join(name), text)?;
+    for (name, bytes) in beside {
+        std::fs::write(dir.join(name), bytes)?;
     }
     let path = dir.join(file);
     if file.ends_with(".gdb") {
@@ -514,6 +575,18 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Stri
     } else {
         std::fs::write(&path, content)?;
     }
+    if file.ends_with(".shp") {
+        let (native, report) =
+            rustgis_engine::data::io::read_path(&path).map_err(|e| std::io::Error::other(format!("native Shapefile fixture: {e}")))?;
+        check_shapefile_xy(&native, content.get(32).copied())?;
+        let zm = matches!(content.get(32), Some(11 | 13 | 21));
+        if native.zm_dropped != zm || report.messages.iter().any(|m| m.contains("Z or M")) != zm {
+            return Err(std::io::Error::other(format!("native Shapefile fixture has the wrong loss report: {report:?}")));
+        }
+        if report.skipped != 0 {
+            return Err(std::io::Error::other("native Shapefile fixture skipped a record"));
+        }
+    }
     let mut s = Session::new(Project::default());
     // Layers and standalone tables (what a file without geometry adds).
     let held = |s: &Session| s.map().layers.len() + s.project.tables.len();
@@ -521,6 +594,12 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Stri
     let mark = s.notice_mark();
     if let Err(e) = s.run("layer.addData", &json!({"path": path})) {
         return Ok(Err(e));
+    }
+    if file.ends_with(".shp") {
+        if s.map().layers.len() != 1 {
+            return Err(std::io::Error::other("Shapefile fixture didn't add exactly one layer"));
+        }
+        check_shapefile_xy(&s.map().layers[0].dataset, content.get(32).copied())?;
     }
     let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     Ok(Ok((said, held(&s) > before)))
@@ -533,7 +612,7 @@ fn a_reading_that_loses_something_says_so() {
     let mut failures = Vec::new();
     for c in cases(&root.join("fixtures")) {
         let name = format!("{} [{}]", c.name, c.file);
-        let clean = match read(&dir, c.file, &c.clean, &c.beside) {
+        let clean = match read(&dir, c.file, &c.clean, &c.beside[0]) {
             Err(e) => {
                 failures.push(format!("{name}: the clean file couldn't be written: {e}"));
                 continue;
@@ -549,7 +628,7 @@ fn a_reading_that_loses_something_says_so() {
             Ok(Ok((said, true))) => said,
         };
         // What the lossy file says that the clean one doesn't, and whether it added a layer.
-        let (new, added): (Vec<String>, bool) = match read(&dir, c.file, &c.lossy, &c.beside) {
+        let (new, added): (Vec<String>, bool) = match read(&dir, c.file, &c.lossy, &c.beside[1]) {
             Err(e) => {
                 failures.push(format!("{name}: the lossy file couldn't be written: {e}"));
                 continue;

@@ -1,6 +1,6 @@
 # Paired reader-loss fixtures
 
-Each format holds one point and no user attributes: `xy` has `(1, 2)` and `xyz` has
+The `xy.*` and `xyz.*` pairs hold one point and no user attributes: `xy` has `(1, 2)` and `xyz` has
 `(1, 2, 3)`, in WGS 84 longitude/latitude. The reading corpus opens each pair from the
 same path and checks that only the XYZ file reports dropping Z or M. These test the
 shared engine command, not just a reader's internal report.
@@ -37,3 +37,5 @@ statistics. The value is little-endian ISO WKB: byte order `1`, type `1` (Point)
 metadata declares version `1.0.0`, primary column `geometry`, encoding `WKB` and
 geometry type `Point` or `Point Z`. CRS is omitted, meaning the format's default
 OGC:CRS84. This is not a fixture for an unknown CRS or for CRS fallback behavior.
+
+The independently encoded [Shapefile pairs](SHAPEFILE.md) cover point and line Z/M loss.
