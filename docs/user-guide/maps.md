@@ -684,8 +684,10 @@ System** dialog, which also takes a projected EPSG code (such as `3035`, `32633`
 33N or `2056` for Switzerland) or an ESRI code, the one `.prj` files and ArcGIS name (such as
 `ESRI:102033` for South America Albers Equal Area Conic, or `ESRI:54030` for World Robinson). A
 code whose projection method RustGIS can't compute is refused with the reason, rather than drawn
-in another projection. Projections and datum transformations are computed by
-[terrio-crs](https://github.com/opengeos/terrio), as PROJ 9.8 computes them. On the desktop, the
+in another projection. The codes are those of the EPSG registry v13.102 and PROJ 9.9.0's ESRI
+codes, so a system added to EPSG recently (such as `11476`, SIRGAS-Chile 2025 / UTM zone 19S) is
+there too. Projections and datum transformations are computed by
+[terrio-crs](https://github.com/opengeos/terrio), as PROJ 9.9.0 computes them. On the desktop, the
 command line, Python and the phone apps, datum shift grids are read from RustGIS's own grid folder
 (`datum-grids` in its app data), then from those PROJ and terrio use on the computer
 (`TERRIO_GRID_DIR`, `PROJ_DATA`, `PROJ_LIB`, PROJ's user folder, terrio's download cache), so grids

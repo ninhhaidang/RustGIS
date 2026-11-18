@@ -30,22 +30,17 @@ of use.
 | LERC GeoTIFF test files (`crates/data/tests/data/lerc/*.tif`), read only by the LERC tests | Written for the RustGIS project by `make_lerc.py` there with [GDAL](https://gdal.org) 3.9.3 through [rasterio](https://rasterio.readthedocs.io) 1.4.3, run only to write them; the values are made up | Apache-2.0 |
 | Analysis reference corpus (`crates/analysis/tests/reference/`: layers and expected results) | Written for the RustGIS project from `generate.py` there: the layers are made up; the expected results were computed by [GEOS](https://libgeos.org) 3.13.1 through [Shapely](https://shapely.readthedocs.io) 2.1.2, and distances, buffers, areas and lengths by GeographicLib in [PROJ](https://proj.org) 9.5.1 through [pyproj](https://pyproj4.github.io/pyproj/) 3.7.2, run only to write them (GEOS is LGPL-2.1, Shapely BSD-3-Clause, PROJ and pyproj MIT; none is included in or linked into RustGIS) | Apache-2.0 |
 
-Raster coordinate systems are looked up by EPSG code in the PROJ definitions of the
-[crs-definitions](https://crates.io/crates/crs-definitions) crate (CC0-1.0), compiled into the
-app. Those definitions come from PostGIS's `spatial_ref_sys`, itself derived from the EPSG Geodetic
-Parameter Dataset (© IOGP). The codes it lacks (EPSG 9020–20003,
-`crates/data/src/raster/epsg_gap.rs`) are derived from the
-[EPSG Geodetic Parameter Dataset](https://epsg.org) v12.029 (owned by IOGP, under its
-[terms of use](https://epsg.org/terms-of-use.html)): converted to PROJ definitions by PROJ 9.8,
-some of them approximately, so they are not the dataset itself. The Equi7 grids' codes
-(EPSG 27701–27707, in the same file) are derived from the dataset's v13.106, written as PROJ
-definitions of its Azimuthal Equidistant method.
-The axis order of those systems (`crates/data/src/raster/epsg_axes.rs`: which are written north
-or latitude first) is from the EPSG Geodetic Parameter Dataset v11.022 (© IOGP, under its terms
-of use), read from the PROJ 9.5.1 database through pyproj 3.7.2.
-The map's ESRI codes (`crates/data/src/raster/esri.rs`) are Esri's projected coordinate systems
-from Esri's [projection-engine-db-doc](https://github.com/Esri/projection-engine-db-doc)
-(Apache-2.0), as imported into the [PROJ](https://proj.org) 9.7.1 database (MIT) and written as
+Coordinate systems are looked up by EPSG and ESRI code in the catalog of
+[terrio-crs](https://github.com/opengeos/terrio) (see below), written as PROJ definitions as GDAL
+3.13.3 writes them. Two EPSG codes it doesn't compute (EPSG:3752 and 22700, in
+`crates/data/src/raster/crs.rs`) keep the definitions RustGIS read them by before, from PostGIS's
+`spatial_ref_sys`, itself derived from the
+[EPSG Geodetic Parameter Dataset](https://epsg.org) (owned by IOGP, under its
+[terms of use](https://epsg.org/terms-of-use.html)): PROJ definitions that approximate it, not the
+dataset itself. Two ESRI codes it lacks (ESRI:10820 and 65162, in the same file) are
+Esri's projected coordinate systems from Esri's
+[projection-engine-db-doc](https://github.com/Esri/projection-engine-db-doc)
+(Apache-2.0), as imported into the [PROJ](https://proj.org) database (MIT) and written as
 PROJ definitions by PROJ 9.7.1.
 Coordinates are transformed by [terrio-crs](https://github.com/opengeos/terrio) (MIT), which
 carries its own tables derived from the EPSG Geodetic Parameter Dataset (© IOGP, under its terms

@@ -24,7 +24,6 @@ encoding_rs = { workspace = true }
 # (on the CI runners), so the browser decodes it too.
 tiff = { workspace = true, features = ["zstd"] }
 weezl.workspace = true
-crs-definitions = { workspace = true }
 terrio-crs = { workspace = true }
 miniz_oxide = { workspace = true }
 roxmltree = { workspace = true }

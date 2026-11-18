@@ -98,12 +98,13 @@ const INCLUDED: &[Included] = &[
         notices: &["maplibre-style-spec-LICENSE.txt"],
     },
     Included {
-        what: "ESRI coordinate system codes: Esri's projected coordinate systems from projection-engine-db-doc \
-               (https://github.com/Esri/projection-engine-db-doc), as imported into the PROJ 9.7.1 database and \
-               written as PROJ definitions by PROJ 9.7.1 (https://proj.org). The notices below are PROJ's \
-               licence and the licensing section of the project's README, at commit aa34139.",
+        what: "ESRI coordinate system codes terrio-crs's catalog lacks (ESRI:10820 and 65162, in crs.rs): \
+               Esri's projected coordinate systems from projection-engine-db-doc \
+               (https://github.com/Esri/projection-engine-db-doc), as imported into the PROJ database and \
+               written as PROJ definitions by PROJ 9.7.1 (https://proj.org). The notices below are \
+               PROJ's licence and the licensing section of the project's README, at commit aa34139.",
         krate: "rustgis-data",
-        paths: &["crates/data/src/raster/esri.rs"],
+        paths: &["crates/data/src/raster/crs.rs"],
         notices: &["PROJ-COPYING.txt", "projection-engine-db-doc-README-licensing.txt"],
     },
     Included {
@@ -116,15 +117,15 @@ const INCLUDED: &[Included] = &[
         notices: &["terrio-LICENSE.txt"],
     },
     Included {
-        what: "Coordinate systems by EPSG code: the definitions of the crs-definitions crate and of epsg_gap.rs, \
-               and the axis orders of epsg_axes.rs, are derived from the EPSG Geodetic Parameter Dataset, which \
+        what: "Coordinate systems by EPSG code terrio-crs's catalog doesn't compute (EPSG:3752 and 22700, in \
+               crs.rs): their definitions are derived from the EPSG Geodetic Parameter Dataset, which \
                is owned by IOGP (the International Association of Oil & Gas Producers) and published under its \
                terms of use, https://epsg.org/terms-of-use.html. The definitions were converted to PROJ strings \
-               by PROJ (crs-definitions' through PostGIS) and the axis orders read through PROJ: they are not \
-               the EPSG Dataset itself, and some definitions only approximate it. The EPSG Dataset is provided \
+               through PostGIS's spatial_ref_sys: they are not \
+               the EPSG Dataset itself, and they only approximate it. The EPSG Dataset is provided \
                \"as is\", without warranty of any kind.",
         krate: "rustgis-data",
-        paths: &["crates/data/src/raster/epsg_gap.rs", "crates/data/src/raster/epsg_axes.rs"],
+        paths: &["crates/data/src/raster/crs.rs"],
         notices: &[],
     },
 ];

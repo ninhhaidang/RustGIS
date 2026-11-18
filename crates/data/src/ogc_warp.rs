@@ -500,7 +500,7 @@ fn escape(id: &str) -> String {
 
 /// Whether a layer's box from a capabilities document (a WMS `BoundingBox`: `minx`, `miny`,
 /// `maxx`, `maxy` as written) is written north first, for a system whose EPSG axis order RustGIS
-/// doesn't know (see [`crate::raster::epsg_axes`]): the way that overlaps more of `area` (the
+/// doesn't know (see [`crate::raster::crs::epsg_north_first`]): the way that overlaps more of `area` (the
 /// layer's area worked out in the system: west, south, east, north), so a parent's or a world's
 /// box over a small layer is read right too; overlapping as much either way (a box holding the
 /// area both ways), the way whose middle is nearer the area's; else as the system's axes usually
@@ -534,7 +534,7 @@ pub fn corner_coverage(pair: (f64, f64), span: (f64, f64), area: Option<[f64; 4]
 }
 
 /// Whether a WMTS tile matrix's `TopLeftCorner` is written north first, by its geometry, for a
-/// system whose EPSG axis order RustGIS doesn't know (see [`crate::raster::epsg_axes`]): the
+/// system whose EPSG axis order RustGIS doesn't know (see [`crate::raster::crs::epsg_north_first`]): the
 /// order whose matrix covers more of the layer (see [`corner_coverage`]). `None` without an area,
 /// or covering as much either way. (Only a guess: a layer's box reaching a little past the
 /// corner tips it.)

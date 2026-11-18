@@ -2632,7 +2632,12 @@ impl Session {
                 }
             }
         }
-        used.extend(codes.into_iter().filter_map(|code| rustgis_map::projection::lookup(code).ok()));
+        // A map's projection under the key its transformer is kept by (an ESRI code's catalog
+        // WKT, else its PROJ definition), as `systems_in_use` keys it too.
+        used.extend(codes.into_iter().filter_map(|code| {
+            let (def, label) = rustgis_map::projection::lookup(code).ok()?;
+            Some((rustgis_map::projection::transformer_key(&def, &label), label))
+        }));
         used.extend(systems.into_iter().filter_map(definition_and_label));
         // By definition: two typed systems share a label ("Custom PROJ").
         let mut found: Vec<(String, String)> = Vec::new();
@@ -2747,9 +2752,10 @@ impl Session {
         };
         for map in &self.project.maps {
             if let rustgis_map::Projection::Custom(code) = &map.projection
-                && let (Ok((def, _)), Ok(crs)) = (rustgis_map::projection::lookup(code), rustgis_data::raster::Crs::parse(code))
+                && let (Ok((def, label)), Ok(crs)) = (rustgis_map::projection::lookup(code), rustgis_data::raster::Crs::parse(code))
             {
-                add(def, crs);
+                // Under the key its grid note is found by (`say_grid_notes`).
+                add(rustgis_map::projection::transformer_key(&def, &label), crs);
             }
             for layer in &map.layers {
                 let raster = layer.raster.as_ref().and_then(|r| r.data.as_ref()).map(|r| r.crs);

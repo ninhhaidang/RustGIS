@@ -5230,9 +5230,10 @@ fn esri_projection_codes() {
     assert!(crate::cmd::share::map_png(&mut s, Some(400.0), Some(300.0), None).unwrap().len() > 1000);
     let json = serde_json::to_string(&s.project).unwrap();
     assert_eq!(Project::from_json(&json).unwrap().map().projection.code(), "ESRI:102033");
-    // A code the table leaves out is refused, and the map keeps its projection.
-    let e = s.run("map.projection", &json!({"type": "ESRI:54003"})).unwrap_err();
-    assert!(e.contains("ESRI:54003"), "{e}");
+    // A code that isn't an ESRI projected system RustGIS draws (a Hammer–Aitoff PROJ can't write
+    // as a PROJ string) is refused, and the map keeps its projection.
+    let e = s.run("map.projection", &json!({"type": "ESRI:54044"})).unwrap_err();
+    assert!(e.contains("ESRI:54044"), "{e}");
     assert_eq!(s.map().projection.code(), "ESRI:102033");
     // ESRI's Web Mercator is the default map.
     assert_eq!(s.run("map.projection", &json!({"type": "ESRI:102100"})).unwrap()["projection"], "mercator");

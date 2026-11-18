@@ -2021,7 +2021,7 @@ fn wgs84_like(datum: Option<&Node>) -> Option<&'static str> {
         "WGS_1984" | "WGS84" | "WORLD_GEODETIC_SYSTEM_1984" => Some("+datum=WGS84"),
         // New Italian aliases require the published ellipsoid. GRS80 and the WGS84
         // ellipsoid in older IGM95 definitions differ by less than a millimetre.
-        // MILITAIRE is the legacy spelling in crs-definitions 0.6's EPSG:3064/4670 WKT.
+        // MILITAIRE is the legacy spelling in older EPSG:3064/4670 WKT (PostGIS's table).
         "RETE_DINAMICA_NAZIONALE_2008" | "RDN2008" | "IGM_1995" | "IGM95"
         | "ISTITUTO_GEOGRAFICO_MILITARE_1995" | "ISTITUTO_GEOGRAFICO_MILITAIRE_1995" => datum
             .filter(|d| ellipsoid_matches(d, "+proj=longlat +ellps=GRS80"))
@@ -2432,9 +2432,15 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
                 // A code WKT 1 can't hold (Lambert Conic Conformal (2SP Michigan), with its
                 // ellipsoid scaling): GDAL writes no `.prj`, and RustGIS's own text would be
                 // another system, 74 km off for EPSG:6200. Only text that is read back as the code
-                // is written.
-                let wkt = def_wkt(epsg_proj4(c)?, &format!("EPSG:{c}"), Some(c))?;
-                return (crs_from_wkt(&wkt) == Ok(crs)).then_some(wkt);
+                // and places points as it does (by its parameters, not its authority alone) is
+                // written: a geographic 3D system's (TWD97, EPSG:3823) as its 2D one.
+                let def = epsg_proj4(c)?;
+                let wkt = def_wkt(def, &format!("EPSG:{c}"), Some(c))?;
+                if crs_from_wkt(&wkt) != Ok(crs) {
+                    return None;
+                }
+                let unnamed = def_wkt(def, &format!("EPSG:{c}"), None)?;
+                return super::crs::places_as_wkt(def, &unnamed).then_some(wkt);
             }
             // RustGIS's own text, where it is read back as the code. Else, for a compound code
             // whose own text carries an older shift (EPSG:7410's PSD93, 0.35 m off PROJ 9.8.1),
@@ -2589,6 +2595,11 @@ fn def_wkt(def: &str, name: &str, code: Option<u16>) -> Option<String> {
         return Some(geogcs(&authority(code)));
     }
 
+    // Hyperbolic Cassini-Soldner (EPSG:3139, Vanua Levu Grid) has no WKT 1 name: GDAL writes it
+    // as WKT 2 only, and as `Cassini_Soldner` it would be read as the ordinary one.
+    if terrio_crs::proj_boolean_parameters(def).is_ok_and(|p| p.iter().any(|(k, on)| k == "hyperbolic" && *on)) {
+        return None;
+    }
     // The projection and its parameters, in degrees and metres.
     let lat0 = get("lat_0").unwrap_or(0.0);
     let lon0 = get("lon_0").unwrap_or(0.0);
@@ -4699,10 +4710,11 @@ pub(crate) mod tests {
         let geocentric = r#"GEODCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[Cartesian,3],AXIS["(X)",geocentricX],AXIS["(Y)",geocentricY],AXIS["(Z)",geocentricZ],LENGTHUNIT["metre",1],ID["EPSG",4978]]"#;
         let ll = at(&bound_crs(BESSEL_WKT2, geocentric, &BESSEL_SHIFT));
         assert!(metres_apart(ll, to_wgs84) < 0.001, "{ll:?}");
-        // So is one whose EPSG code is bundled on GRS 1980 with no shift, as matching a file's
-        // shift to its code takes it: NAD83(2011), whose datum isn't known by its name.
+        // So is one whose EPSG code is bundled on GRS 1980 with a zero shift (as GDAL 3.13.3
+        // writes it), as matching a file's shift to its code takes it: NAD83(2011), whose datum
+        // isn't known by its name.
         let nad83_2011 = r#"GEOGCRS["NAD83(2011)",DATUM["NAD83 (National Spatial Reference System 2011)",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",6318]]"#;
-        assert_eq!(epsg_proj4(6318), Some("+proj=longlat +ellps=GRS80 +no_defs"));
+        assert_eq!(epsg_proj4(6318), Some("+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs"));
         let ll = at(&bound_crs(BESSEL_WKT2, nad83_2011, &BESSEL_SHIFT));
         assert!(metres_apart(ll, to_wgs84) < 0.001, "{ll:?}");
         // A three-parameter shift to WGS 84, as PROJ 9.8.1 writes it: seven parameters.
@@ -5341,25 +5353,66 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn hyperbolic_cassini_gets_no_wkt1() {
+        // The switch on, bare or written out, has no WKT 1 name; off, it is the ordinary Cassini.
+        for on in ["+hyperbolic", "+hyperbolic=true", "+hyperbolic=1"] {
+            assert_eq!(proj4_to_wkt(&format!("+proj=cass +lat_0=10 +lon_0=170 +ellps=WGS84 {on} +units=m"), "x"), None, "{on}");
+        }
+        for off in ["", "+hyperbolic=false"] {
+            let wkt = proj4_to_wkt(&format!("+proj=cass +lat_0=10 +lon_0=170 +ellps=WGS84 {off} +units=m"), "x");
+            assert!(wkt.is_some_and(|w| w.contains("Cassini_Soldner")), "{off}");
+        }
+    }
+
+    #[test]
     fn every_system_east_and_north_gets_a_prj() {
         // Each EPSG code terrio-crs reads is written, and read back by its code, except a
         // geocentric system, a grid shift, axes other than east and north (Krovak pointing south
-        // and west, EPSG:5513 and 2065, checked below), NAD27 Michigan (6200-6202, 6966), which
-        // WKT 1 can't hold, and Laborde (EPSG:8441), which WKT isn't read or written in yet. NAD27's are written too (as GDAL does, without a shift).
+        // and west, EPSG:5513 and 2065, checked below), NAD27 Michigan (6200-6202, 6966) and
+        // Modified Krovak (5224, 5225), Colombia Urban (6244–6275), hyperbolic Cassini (3139) and
+        // the others checked below, which WKT 1 can't hold, and Laborde (EPSG:8441), which WKT
+        // isn't read or written in yet. NAD27's are written too (as GDAL does, without a shift).
         let mut written = 0;
         for code in 1..=u16::MAX {
             let Some(def) = epsg_proj4(code) else { continue };
             if earth_params(def).is_none()
-                || ["+proj=geocent", "+nadgrids", "+axis=", "+proj=labrd"].iter().any(|k| def.contains(k))
-                || matches!(code, 5513 | 2065 | 6200 | 6201 | 6202 | 6966)
+                || ["+proj=geocent", "+nadgrids", "+axis=", "+proj=labrd", "+proj=mod_krovak", "+proj=col_urban", "+hyperbolic"]
+                    .iter()
+                    .any(|k| def.contains(k))
+                || matches!(
+                    code,
+                    5513 | 2065
+                        | 6200
+                        | 6201
+                        | 6202
+                        | 6966
+                        | 6989
+                        | 9013
+                        | 10635
+                        | 10735
+                        | 32600
+                        | 32700
+                        | 3993
+                        | 9549
+                        | 10258
+                        | 10262
+                        | 10266
+                )
             {
                 continue;
             }
             let crs = Crs::from_epsg(u32::from(code)).unwrap();
             let wkt = to_wkt(crs).unwrap_or_else(|| panic!("EPSG:{code}: {def}"));
-            // EPSG:7410 is written as GDAL writes it, a `COMPD_CS`, read as its horizontal part.
-            let back = if code == 7410 { Crs::from_epsg(4134).unwrap() } else { crs };
-            assert_eq!(crs_from_wkt(&wkt), Ok(back), "{wkt}");
+            // A compound code RustGIS's own text doesn't place as its transformer does (EPSG:7410,
+            // 7400, 7954) is written as GDAL writes it, a `COMPD_CS`, read as its horizontal part.
+            match crs_from_wkt(&wkt) {
+                Ok(back) if back == crs => {}
+                Ok(back) if wkt.starts_with("COMPD_CS[") => {
+                    let horizontal = format!(r#"AUTHORITY["EPSG","{}"]],VERT_CS["#, back.epsg());
+                    assert!(wkt.contains(&horizontal), "EPSG:{code}: {back:?}: {wkt}");
+                }
+                back => panic!("EPSG:{code}: {back:?}: {wkt}"),
+            }
             // Beside its code, as the GeoPackage writer puts it, the code is used.
             assert_eq!(read_wkt_over_code(&wkt, u32::from(code)), None, "{wkt}");
             written += 1;
@@ -5374,8 +5427,15 @@ pub(crate) mod tests {
             assert!(wkt.starts_with(r#"PROJCS["S-JTSK"#), "{wkt}");
             assert_eq!(crs_from_wkt(&wkt), Ok(crs), "{wkt}");
         }
-        // NAD27 Michigan (Lambert Conic Conformal (2SP Michigan)): no WKT 1, as GDAL writes none.
-        for code in [6200, 6201, 6202, 6966] {
+        // NAD27 Michigan (Lambert Conic Conformal (2SP Michigan)), Modified Krovak (EPSG:5224,
+        // 5225), Colombia Urban (6247), hyperbolic Cassini (3139), the Guam projection (3993),
+        // Lambert Conic Conformal (1SP variant B) (9549, 10258, 10262, 10266: as the plain 1SP,
+        // 89–111 km off), geographic 3D systems whose 2D text isn't placed as the code because of
+        // their shift to WGS 84 (6989, 9013, 10635, 10735; TWD97, EPSG:3823, is written as its 2D
+        // system) and the UTM grid systems (32600, 32700): no WKT 1. GDAL 3.13.3 writes none either.
+        for code in
+            [6200, 6201, 6202, 6966, 5224, 5225, 6247, 3139, 3993, 9549, 10258, 10262, 10266, 6989, 9013, 10635, 10735, 32600, 32700]
+        {
             assert_eq!(to_wkt(Crs::from_epsg(code).unwrap()), None, "EPSG:{code}");
         }
     }

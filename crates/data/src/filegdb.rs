@@ -295,18 +295,7 @@ pub(crate) fn esri_wkt_over_code(code: Option<u32>, wkt: Option<&str>) -> Option
 
 /// A coordinate system by its EPSG or Esri code.
 pub(crate) fn crs_of_code(code: u32) -> Option<Crs> {
-    Crs::from_epsg(code).or_else(|| {
-        let proj4 = crate::raster::crs::esri_proj4(code)?;
-        Crs::custom(crate::raster::crs::CustomCrs {
-            proj4: proj4.to_string(),
-            label: format!("ESRI:{code}"),
-            geokeys: Vec::new(),
-            doubles: Vec::new(),
-            ascii: String::new(),
-            wkt: None,
-        })
-        .ok()
-    })
+    Crs::from_epsg(code).or_else(|| crate::raster::crs::esri_crs(code))
 }
 
 /// One table as a dataset: `None` for a table with no rows and no fields worth showing. `wkid` is

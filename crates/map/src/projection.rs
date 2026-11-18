@@ -370,7 +370,7 @@ pub fn lookup(code: &str) -> Result<(String, String), String> {
     }
     // `3035`, `EPSG:3035` or `epsg 3035`: an optional prefix, then only digits.
     let lower = code.to_ascii_lowercase();
-    // `ESRI:102033`: one of Esri's projected coordinate systems, from a table checked against PROJ.
+    // `ESRI:102033`: one of Esri's projected coordinate systems (PROJ 9.9.0's ESRI authority).
     // Only `esri`, then a colon, a space or the number: any other name goes on to the end.
     if let Some(rest) = lower.strip_prefix("esri").filter(|r| r.starts_with([':', ' ']) || r.starts_with(|c: char| c.is_ascii_digit())) {
         let digits = rest.trim_start_matches([':', ' ']);
@@ -399,7 +399,28 @@ pub fn lookup(code: &str) -> Result<(String, String), String> {
     if def.contains("+proj=geocent") {
         return Err(format!("EPSG:{n} isn't a map projection"));
     }
+    // The UTM grid systems (EPSG:32600, 32700): each point in its own zone, numbered in the
+    // easting, so no one map can be drawn in them. Data in them is read.
+    if def.contains("+proj=tmerczoned") {
+        return Err(format!("EPSG:{n} is a grid of zones, not a map projection: pick one zone's system"));
+    }
     Ok((def.to_string(), format!("EPSG:{n}")))
+}
+
+/// The key a map projection's transformer is kept under, for its grid notes: an ESRI code's
+/// catalog WKT (`WKT {text}`, as [`Projector::new`] builds it from that WKT), else its PROJ
+/// definition `def` (from [`lookup`], whose `label` names the code).
+pub fn transformer_key(def: &str, label: &str) -> String {
+    esri_wkt_of(def, label).map_or_else(|| def.to_string(), |wkt| format!("WKT {wkt}"))
+}
+
+/// The catalog WKT of an ESRI code whose definition is `def`.
+fn esri_wkt_of(def: &str, label: &str) -> Option<&'static str> {
+    label
+        .strip_prefix("ESRI:")
+        .and_then(|n| n.parse::<u32>().ok())
+        .filter(|n| rustgis_data::raster::crs::esri_proj4(*n) == Some(def))
+        .and_then(rustgis_data::raster::crs::esri_wkt)
 }
 
 /// Where a projection is meant to be used. Points outside are not drawn: far from it most
@@ -435,9 +456,12 @@ impl Domain {
                 let lon0 = if proj == "utm" { param("zone").map(|z| z * 6.0 - 183.0 + pm).unwrap_or(lon0) } else { lon0 };
                 Domain::Band { lon0, half: 30.0 }
             }
-            "stere" | "sterea" | "somerc" | "krovak" | "cass" | "poly" | "omerc" | "labrd" => {
+            "stere" | "sterea" | "somerc" | "krovak" | "mod_krovak" | "col_urban" | "cass" | "poly" | "omerc" | "labrd" => {
                 Domain::Cap { center: Coord::new(lon0, lat0), radius: 60.0 }
             }
+            // The hemisphere seen from above its centre; a perspective from a height sees less of it, which
+            // its transformer refuses.
+            "ortho" | "nsper" | "tpers" => Domain::Cap { center: Coord::new(lon0, lat0), radius: 90.0 },
             "laea" | "aeqd" => Domain::Cap { center: Coord::new(lon0, lat0), radius: 120.0 },
             "aea" | "lcc" => {
                 let (a, b) = (param("lat_1").unwrap_or(lat0), param("lat_2").unwrap_or(lat0));
@@ -564,22 +588,28 @@ impl Projector {
         let proj = def.split_whitespace().find_map(|t| t.strip_prefix("+proj=")).unwrap_or("");
         // Computed as rustgis-data computes the same definition, so data in the system lands
         // where the map puts it.
-        // Noted as used, so a background export of a map drawn in it says its missing grid.
-        rustgis_data::raster::crs::note_used(&def, || label.to_string());
         // An EPSG code by the same transformer as data in it (terrio-crs's catalog, with the datum
-        // transformation PROJ 9.8.1 picks), so a layer in the map's own system lands where its
+        // transformation PROJ 9.9.0 picks), so a layer in the map's own system lands where its
         // coordinates say; it also asks whether the code needs a datum grid RustGIS doesn't have
         // (the session says so, `Session::say_grid_notes`).
         let epsg = label
             .strip_prefix("EPSG:")
             .and_then(|n| n.parse::<u16>().ok())
             .filter(|c| rustgis_data::raster::crs::epsg_proj4(*c) == Some(def.as_str()));
-        let t = match epsg {
+        // An ESRI code likewise, by the WKT terrio-crs's catalog gives it, as a layer in it is
+        // (`esri_crs`). Built from the WKT directly, so a map takes no place in the table of
+        // file-defined systems; a WKT that can't be built is refused, not drawn by the PROJ text.
+        let esri = esri_wkt_of(&def, &label);
+        // Noted as used, so a background export of a map drawn in it says its missing grid: under
+        // the key its transformer is kept by ([`transformer_key`]).
+        rustgis_data::raster::crs::note_used(&transformer_key(&def, &label), || label.to_string());
+        let t = match (epsg, esri) {
             // Without the code its error already starts with.
-            Some(c) => rustgis_data::raster::Crs::Epsg(c)
+            (Some(c), _) => rustgis_data::raster::Crs::Epsg(c)
                 .transformer()
                 .map_err(|e| e.strip_prefix(&format!("{label}: ")).unwrap_or(&e).to_string()),
-            None => rustgis_data::raster::crs::transformer_of(&def),
+            (None, Some(wkt)) => rustgis_data::raster::crs::transformer_of_wkt(wkt),
+            (None, None) => rustgis_data::raster::crs::transformer_of(&def),
         }
         .map_err(|e| refusal(code, proj, &e))?;
         let params = t.params().cloned();
@@ -1068,8 +1098,19 @@ mod tests {
         }
     }
 
-    /// ESRI codes (opengeos/RustGIS#213), against pyproj 3.7.2 (PROJ 9.7.1) given the table's
-    /// definitions.
+    /// ESRI codes (opengeos/RustGIS#213), against PROJ 9.9.0 (network off,
+    /// `Transformer.from_crs("EPSG:4326", "ESRI:<code>", always_xy=True)`).
+    #[test]
+    fn grid_notes_are_keyed_as_the_transformer_is() {
+        // An ESRI map by its catalog WKT, as `Projector::new` builds it; an EPSG one by its
+        // definition, as data in it is.
+        let (def, label) = lookup("ESRI:102144").unwrap();
+        let wkt = rustgis_data::raster::crs::esri_wkt(102144).unwrap();
+        assert_eq!(transformer_key(&def, &label), format!("WKT {wkt}"));
+        let (def, label) = lookup("EPSG:2056").unwrap();
+        assert_eq!(transformer_key(&def, &label), def);
+    }
+
     #[test]
     fn esri_codes() {
         let check = |code: &str, (lon, lat): (f64, f64), (x, y): (f64, f64), tolerance: f64| {
@@ -1080,9 +1121,10 @@ mod tests {
             let within = round_trip(&format!("{p:?}"));
             assert!((back.x - lon).abs() < within && (back.y - lat).abs() < within, "{code}: {back:?}");
         };
-        // South America Albers Equal Area Conic, with its datum shift (South American 1969: the
-        // first Helmert PROJ lists, 7 m from the regional one PROJ picks for this point).
-        check("ESRI:102033", (-60.0, -15.0), (46.993, 1_977_375.429), 0.01);
+        // South America Albers Equal Area Conic, with the datum transformation PROJ 9.9.0 picks for
+        // this point (South American 1969's regional one; the table RustGIS bundled before wrote
+        // the first Helmert PROJ lists, 7 m off), as data in the system lands.
+        check("ESRI:102033", (-60.0, -15.0), (54.229, 1_977_374.700), 0.01);
         // World Robinson, and Sphere Robinson on its own 6371 km sphere (+R).
         check("ESRI:54030", (20.0, 30.0), (1_813_955.515, 3_208_557.612), 1.0);
         check("esri:53030", (20.0, 30.0), (1_811_925.737, 3_204_967.304), 1.0);
@@ -1100,16 +1142,17 @@ mod tests {
         for web in ["ESRI:102100", "esri:102113", "ESRI 102100", "esri:0102100", "EPSG:3857", "3857", "epsg 3857", "EPSG:900913"] {
             assert_eq!(crate::Projection::from_code(web), Ok(crate::Projection::WebMercator), "{web}");
         }
-        // Not in the table (World Miller was kilometres off in proj4rs, so left out), not a
-        // number, too big.
-        for bad in ["ESRI:54003", "ESRI:", "ESRI:abc", "ESRI:-1", "ESRI:99999999999", "ESRI:1e5"] {
+        // Not an ESRI projected system (a Hammer–Aitoff PROJ can't write as a string), not a
+        // number, too big. World Miller, left out of the table RustGIS bundled before, is drawn.
+        assert!(Projector::new("ESRI:54003").is_ok());
+        for bad in ["ESRI:54044", "ESRI:", "ESRI:abc", "ESRI:-1", "ESRI:99999999999", "ESRI:1e5"] {
             let e = lookup(bad).unwrap_err();
             assert!(e.contains("unknown coordinate system") && e.contains("ESRI:"), "{bad}: {e}");
         }
         // The message names the code as typed, or as the number it read.
         assert_eq!(lookup("ESRI:abc").unwrap_err(), "unknown coordinate system 'ESRI:abc'");
         assert_eq!(lookup("esri:0").unwrap_err(), "unknown coordinate system ESRI:0");
-        assert_eq!(lookup("esri:00054003").unwrap_err(), "unknown coordinate system ESRI:54003");
+        assert_eq!(lookup("esri:00054044").unwrap_err(), "unknown coordinate system ESRI:54044");
         // Any other name starting with "esri" isn't read as a code.
         assert_eq!(lookup("esrifoo").unwrap_err(), "unknown projection 'esrifoo'");
         // Every code in the table draws, azimuthal equidistant ones too.
@@ -1146,6 +1189,10 @@ mod tests {
         assert!(Projector::new("epsg:32633").is_ok());
         assert!(Projector::new("3857").is_ok());
         assert!(Projector::new("EPSG:4326").is_err(), "degrees are not a map projection");
+        // The UTM grid systems (PROJ 9.9.0's `tmerczoned`) number the zone in the easting.
+        for code in ["EPSG:32600", "EPSG:32700"] {
+            assert!(Projector::new(code).is_err_and(|e| e.contains("grid of zones")), "{code}");
+        }
         assert!(Projector::new("EPSG:1").is_err());
         assert!(Projector::new("bogus").is_err());
         assert!(Projector::new("12x").is_err());
@@ -1159,8 +1206,8 @@ mod tests {
         // Equal Earth by its EPSG code goes to the built-in engine too.
         let ee = Projector::new("EPSG:8857").unwrap();
         assert!(format!("{ee:?}").contains("eqearth"));
-        // Codes crs-definitions lacks (EPSG 9020–20003) come from the data crate's own table
-        // (opengeos/RustGIS#198): MAGNA-SIRGAS 2018 / Origen-Nacional, SIRGAS-Chile 2016 / UTM 19S.
+        // Codes PostGIS's table lacked (EPSG 9020–20003, opengeos/RustGIS#198), from terrio-crs's
+        // catalog: MAGNA-SIRGAS 2018 / Origen-Nacional, SIRGAS-Chile 2016 / UTM 19S.
         let (bogota, santiago) = (Coord::new(-74.08, 4.65), Coord::new(-70.65, -33.45));
         for (ok, proj, city) in [("EPSG:9377", "tmerc", bogota), ("epsg:9155", "utm", santiago)] {
             let (def, label) = lookup(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
@@ -1309,8 +1356,8 @@ mod tests {
             assert!(p.find_edge(p.lon0 + 180.0).is_some(), "{n}: the edge search fell back");
             checked += 1;
         }
-        // 31 in crs-definitions 0.6 (Mercator, equirectangular, cylindrical equal-area, Equal Earth),
-        // 6 of them Mercator from Jakarta (+pm).
+        // 31 when the codes came from RustGIS's own tables (Mercator, equirectangular, cylindrical
+        // equal-area, Equal Earth), 6 of them Mercator from Jakarta (+pm).
         assert!(checked >= 31, "only {checked} world projections checked");
     }
 

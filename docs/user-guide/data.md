@@ -187,8 +187,14 @@ GeoParquet and FlatGeobuf carry their coordinate system in the file. Rasters kee
 coordinate system and are reprojected as they draw. The map uses Web Mercator by default, but
 **View › Projection** can change it; see [Maps](maps.md).
 
-Coordinate systems are read and transformed as PROJ 9.8.1 does, through terrio-crs. ESRI `.prj`
-files without an EPSG code use their projection parameters, and their datum is recognized by
+Coordinate systems are read and transformed as PROJ 9.9.0 does, through terrio-crs. A few EPSG
+and ESRI codes PROJ 9.9.0 dropped or can't compute (EPSG:3752 and 22700, ESRI:10820 and 65162)
+keep the definitions RustGIS read them by before, so they don't follow PROJ exactly. A project
+saved by an earlier release keeps the definition it saved for a layer in an ESRI code, so that
+layer is placed as it was then (ESRI:102144 246 m from PROJ 9.9.0, for one); the same code read
+from a file now is placed as PROJ places it.
+
+ESRI `.prj` files without an EPSG code use their projection parameters, and their datum is recognized by
 the name Esri gives it (ED50, OSGB36, DHDN, `D_Philippine_Reference_System_1992`,
 `D_Pulkovo_1942`, `D_Tokyo` and others): it takes the transformation PROJ uses for that datum
 and place. In a `.prj` or other WKT:

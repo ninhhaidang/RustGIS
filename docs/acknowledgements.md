@@ -56,7 +56,7 @@ RustGIS is written in Rust, built on these crates, among others:
 | [egui and eframe](https://github.com/emilk/egui), [wgpu](https://wgpu.rs) | The interface, natively and in the browser, and the GPU map |
 | [tiny-skia](https://github.com/linebender/tiny-skia), [lyon](https://github.com/nical/lyon), [ab_glyph](https://crates.io/crates/ab_glyph), [image](https://github.com/image-rs/image), [epaint_default_fonts](https://crates.io/crates/epaint_default_fonts) | CPU drawing, tessellation, text, images and fallback interface fonts |
 | [geo](https://github.com/georust/geo), [geozero](https://github.com/georust/geozero), [shapefile](https://crates.io/crates/shapefile), [a5](https://crates.io/crates/a5) | Geometry, formats and the A5 grid |
-| [terrio-crs](https://github.com/opengeos/terrio), [crs-definitions](https://crates.io/crates/crs-definitions) | Coordinate systems |
+| [terrio-crs](https://github.com/opengeos/terrio) | Coordinate systems |
 | [tiff](https://github.com/image-rs/image-tiff), [laz](https://crates.io/crates/laz) | GeoTIFF and LAZ |
 | [Apache Parquet and Arrow](https://github.com/apache/arrow-rs), [flatgeobuf](https://crates.io/crates/flatgeobuf), [rusqlite](https://github.com/rusqlite/rusqlite) ([SQLite](https://sqlite.org)), [calamine](https://crates.io/crates/calamine), [csv](https://crates.io/crates/csv), [roxmltree](https://crates.io/crates/roxmltree) | GeoParquet (Arrow writes test fixtures), FlatGeobuf, GeoPackage, spreadsheets, CSV and XML |
 | [postgres](https://crates.io/crates/postgres), [mysql](https://crates.io/crates/mysql), [tiberius](https://crates.io/crates/tiberius), [rustls](https://github.com/rustls/rustls) | PostgreSQL/PostGIS, MySQL/MariaDB, SQL Server and TLS |

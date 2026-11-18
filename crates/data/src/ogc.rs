@@ -1255,7 +1255,7 @@ fn wms_candidates(crs: &[String]) -> Vec<Candidate> {
 /// candidates (see [`wms_candidates`]), and the one a Web Mercator map takes its pictures in: Web
 /// Mercator itself (`mercator`), else the first. `None` for a layer offered in Web Mercator
 /// alone (its address stays as it was) or in nothing usable. In WMS 1.3.0 a bounding box follows
-/// the system's axes as EPSG defines them ([`crate::raster::epsg_axes`]); for a system whose
+/// the system's axes as EPSG defines them ([`crate::raster::crs::epsg_north_first`]); for a system whose
 /// order RustGIS doesn't know, as the layer's own `BoundingBox` in it is written (else latitude
 /// first in a geographic system other than CRS:84).
 fn wms_native<'a, 'i>(
@@ -1325,11 +1325,11 @@ fn wms_native<'a, 'i>(
 type LayerBoxes<'a, 'i> = std::collections::HashMap<roxmltree::NodeId, std::collections::HashMap<u32, Node<'a, 'i>>>;
 
 /// Whether `system` is written north (or latitude) first as EPSG defines its axes, when
-/// RustGIS's table knows it ([`crate::raster::epsg_axes`]).
+/// it is known ([`crate::raster::crs::epsg_north_first`]).
 fn epsg_north_first(system: crate::raster::Crs) -> Option<bool> {
     match system {
         crate::raster::Crs::Custom(_) => None,
-        s => crate::raster::epsg_axes::north_first(s.epsg()),
+        s => crate::raster::crs::epsg_north_first(s.epsg()),
     }
 }
 
