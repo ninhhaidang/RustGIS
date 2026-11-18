@@ -23,8 +23,8 @@ const GEOMETRY_ONLY: [&str; 4] = ["fgb", "shp", "kml", "gpx"];
 
 /// Changes a format makes without a notice, as (format, the start of a change from [`changes`],
 /// why). Each is what the format can hold or how its reader works, not a loss of a value's
-/// number or text, except trimming (Shapefile, KML, GPX), blanks read as null and (KML, GPX) a
-/// field of nulls left out, which are kept here until they are said (#1907). CSV keeps the spaces
+/// number or text, except trimming (Shapefile, KML, GPX) and blanks read as null, which are kept
+/// here until they are said (#1907). CSV keeps the spaces
 /// around a value (#2059).
 const LIMITS: &[(&str, &str, &str)] = &[
     // CSV holds text: reading types each column from its values (`text_type`) and reads an empty
@@ -55,14 +55,12 @@ const LIMITS: &[(&str, &str, &str)] = &[
 ];
 
 /// KML and GPX hold text, read with types from the values as for CSV (`type_text_columns`); the
-/// name field is written as the feature's name and read back as `name`, and a field that is
-/// null everywhere isn't in the file.
+/// name field is written as the feature's name and read back as `name`.
 const TEXT_FORMAT_LIMITS: &[&str] = &[
     "text trimmed",
     "blank text became null",
     "field type changed",
     "field of nulls type changed",
-    "field of nulls missing",
     "field renamed",
     "boolean became text",
     "date became text",

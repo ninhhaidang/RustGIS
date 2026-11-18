@@ -2424,17 +2424,25 @@ fn unguard(cell: &str) -> std::borrow::Cow<'_, str> {
 
 const FORMULA_START: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 
-/// A cell's text; text that a spreadsheet would run as a formula is prefixed with `'`.
-/// Valid numbers whose digits fit in Double precision without loss, without leading zeros,
-/// and with at most 15 significant digits (to avoid truncation in spreadsheets) are exported bare.
+/// Text needs an apostrophe if it starts like a spreadsheet formula. The numeric exception
+/// keeps finite numbers that fit Double precision and have at most 15 significant digits.
+/// A leading-zero code stays guarded unless its mantissa has digits after a decimal point.
+fn csv_needs_guard(text: &str) -> bool {
+    if !text.starts_with(FORMULA_START) {
+        return false;
+    }
+    let mantissa = text.split(['e', 'E']).next().unwrap_or_default();
+    let fraction = mantissa.split_once('.').is_some_and(|(_, frac)| !frac.is_empty());
+    !((!has_leading_zero(text) || fraction)
+        && text.parse::<f64>().is_ok_and(|f| f.is_finite())
+        && !is_long_number(text)
+        && double_holds(text))
+}
+
+/// A cell's file text, with an apostrophe when the spreadsheet guard applies.
 fn csv_cell(v: &Value) -> String {
     match v {
-        Value::Text(t)
-            if t.starts_with(FORMULA_START)
-                && !(t.parse::<f64>().is_ok_and(|f| f.is_finite()) && double_holds(t) && !has_leading_zero(t) && !is_long_number(t)) =>
-        {
-            format!("'{t}")
-        }
+        Value::Text(t) if csv_needs_guard(t) => format!("'{t}"),
         other => other.to_file_text(),
     }
 }
@@ -3780,9 +3788,8 @@ pub fn left_out_note(name: &str, ext: &str, left_out: usize) -> Option<String> {
     })
 }
 
-/// What CSV can't hold of a layer's geometry: it has a point a row (a point layer's longitude
-/// and latitude, see [`CsvWriter`]), and no geometry for a line or polygon layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Changes made by a CSV export to geometry and to text guarded for spreadsheets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CsvLosses {
     /// Features of a point layer with more than one point (a multipoint), or another shape,
     /// written as one point.
@@ -3793,15 +3800,21 @@ pub struct CsvLosses {
     /// Written with coordinate columns, as a point layer: a streamed export knows this from its
     /// chunks when the layer declares no type ([`CsvLosses::coordinates_note`]).
     pub points: bool,
+    /// Values prefixed with an apostrophe, counted by field.
+    pub guarded: Vec<usize>,
     /// Coordinate rows that can let a competing attribute pair win on reimport.
     unusable_points: usize,
 }
 
 impl CsvLosses {
     /// The losses of `features` in a layer of type `gt`; a streamed export adds up its chunks'.
-    pub fn of(features: &[crate::Feature], gt: GeometryType) -> Self {
-        let mut out = Self { points: gt == GeometryType::Point, ..Self::default() };
+    pub fn of(features: &[crate::Feature], gt: GeometryType, fields: &[Field]) -> Result<Self> {
+        let mut out = Self { points: gt == GeometryType::Point, guarded: vec![0; fields.len()], ..Self::default() };
         for feature in features {
+            crate::progress::check()?;
+            for (count, value) in out.guarded.iter_mut().zip(&feature.attrs) {
+                *count += usize::from(matches!(value, Value::Text(text) if csv_needs_guard(text)));
+            }
             let geometry = feature.geometry.as_ref();
             let point = if out.points { geometry.and_then(Geometry::label_point) } else { None };
             if out.points && !point.is_some_and(usable_degree_point) {
@@ -3818,12 +3831,12 @@ impl CsvLosses {
                 _ => out.unwritten += 1,
             }
         }
-        out
+        Ok(out)
     }
 
     /// One notice for each loss of a layer written to `target`; none without loss. Geometry
     /// not written is counted by feature, whatever its kind: a layer of one type can hold others.
-    pub fn notes(self, target: &str) -> Vec<String> {
+    pub fn notes(&self, fields: &[Field], target: &str) -> Vec<String> {
         let mut notes = Vec::new();
         if self.as_one_point > 0 {
             let what = if self.as_one_point == 1 { "1 feature has".to_string() } else { format!("{} features have", self.as_one_point) };
@@ -3835,12 +3848,25 @@ impl CsvLosses {
             let what = if self.unwritten == 1 { "1 feature".to_string() } else { format!("{} features", self.unwritten) };
             notes.push(format!("{target}: CSV holds a point a row, so the geometry of {what} wasn't written, only the attributes"));
         }
+        let total: usize = self.guarded.iter().sum();
+        if total > 0 {
+            let target: String = target.chars().map(dbf_notice_char).collect();
+            let values = if total == 1 { "value" } else { "values" };
+            let affected = fields
+                .iter()
+                .zip(&self.guarded)
+                .filter(|(_, n)| **n > 0)
+                .map(|(f, n)| format!("'{}' ({n})", dbf_notice_name(&f.name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            notes.push(format!("{target}: CSV prefixed {total} text {values} with an apostrophe for spreadsheet protection in {affected}"));
+        }
         notes
     }
 
     /// Warns when adding the CSV back may use attributes for geometry. This can happen when the
     /// coordinate names are all taken or when unusable coordinate rows let a competing pair win.
-    pub fn coordinates_note(self, fields: &[Field], target: &str) -> Option<String> {
+    pub fn coordinates_note(&self, fields: &[Field], target: &str) -> Option<String> {
         if !self.points {
             return None;
         }
@@ -3884,29 +3910,63 @@ impl CsvLosses {
 }
 
 impl std::ops::AddAssign for CsvLosses {
-    /// Adds a chunk's losses.
+    /// Adds a chunk's losses for the same layer and fields.
     fn add_assign(&mut self, other: Self) {
         self.as_one_point += other.as_one_point;
         self.unwritten += other.unwritten;
         self.points |= other.points;
+        if self.guarded.is_empty() {
+            self.guarded = other.guarded;
+        } else {
+            for (total, count) in self.guarded.iter_mut().zip(other.guarded) {
+                *total += count;
+            }
+        }
         self.unusable_points += other.unusable_points;
     }
 }
 
-/// What a CSV or GPX file (extension `ext`) of the whole dataset `ds` can't hold, written to
-/// `target`: [`CsvLosses`]' notices, or [`gpx_notes`] with each feature named from `name_field`;
-/// none for another format. A streamed export counts CSV's a chunk at a time instead.
-pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str) -> Vec<String> {
-    match ext {
+/// What a CSV, KML, KMZ or GPX file of the whole dataset changes when written to `target`.
+/// A streamed export counts CSV's changes a chunk at a time instead.
+pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str) -> Result<Vec<String>> {
+    Ok(match ext {
         "csv" => {
-            let losses = CsvLosses::of(&ds.features, ds.geometry_type);
-            let mut notes = losses.notes(target);
+            let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?;
+            let mut notes = losses.notes(&ds.fields, target);
             notes.extend(losses.coordinates_note(&ds.fields, target));
             notes
         }
+        "kml" | "kmz" => kml_empty_fields_note(ds, target)?.into_iter().collect(),
         "gpx" => gpx_notes(ds, name_field, target),
         _ => Vec::new(),
+    })
+}
+
+/// KML writes ExtendedData only for non-null values of placemarks it writes. Report every
+/// field absent from that output, even when an unwritten feature has a value for it.
+fn kml_empty_fields_note(ds: &Dataset, target: &str) -> Result<Option<String>> {
+    let mut written = vec![false; ds.fields.len()];
+    for f in &ds.features {
+        crate::progress::check()?;
+        if f.geometry.is_some() {
+            for (written, value) in written.iter_mut().zip(&f.attrs) {
+                *written |= !value.is_null();
+            }
+        }
     }
+    let empty: Vec<_> = ds
+        .fields
+        .iter()
+        .zip(written)
+        .filter(|(_, written)| !written)
+        .map(|(field, _)| format!("'{}'", dbf_notice_name(&field.name)))
+        .collect();
+    let target: String = target.chars().map(dbf_notice_char).collect();
+    Ok((!empty.is_empty()).then(|| {
+        let count = empty.len();
+        let fields = if count == 1 { "field" } else { "fields" };
+        format!("{target}: KML omitted {count} {fields} with no values in the placemarks written ({})", empty.join(", "))
+    }))
 }
 
 /// Features a GPX file of `ds` leaves out: those without geometry, and multipoints without a
@@ -3925,11 +3985,14 @@ pub fn gpx_left_out(ds: &Dataset) -> usize {
 /// multipoints (a waypoint per point). One notice per kind; none for a layer GPX holds whole.
 pub fn gpx_notes(ds: &Dataset, name_field: Option<usize>, target: &str) -> Vec<String> {
     let drawn = || ds.features.iter().filter(|f| f.geometry.is_some());
-    let fields: Vec<&str> = (ds.fields.iter().enumerate())
+    // Every other field, null everywhere or not: it isn't in the file, so it doesn't come back.
+    // Fields with values come first, so the names shown before "and N more" are the ones that lost data.
+    let mut fields: Vec<(bool, &str)> = (ds.fields.iter().enumerate())
         .filter(|(k, _)| Some(*k) != name_field)
-        .filter(|(k, _)| drawn().any(|f| f.attrs.get(*k).is_some_and(|v| !v.is_null())))
-        .map(|(_, f)| f.name.as_str())
+        .map(|(k, f)| (drawn().all(|g| g.attrs.get(k).is_none_or(Value::is_null)), f.name.as_str()))
         .collect();
+    fields.sort_by_key(|(empty, _)| *empty);
+    let fields: Vec<&str> = fields.into_iter().map(|(_, name)| name).collect();
     let (mut polygons, mut holes, mut multipoints) = (0, 0, 0);
     for g in drawn().filter_map(|f| f.geometry.as_ref()) {
         match g {
@@ -5694,17 +5757,17 @@ mod tests {
         let mut ds = Dataset::new("t", GeometryType::None, vec![]);
         ds.push(Some(square), vec![]);
         ds.push(None, vec![]);
-        let losses = CsvLosses::of(&ds.features, ds.geometry_type);
+        let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields).unwrap();
         assert_eq!(losses, CsvLosses { unwritten: 1, ..CsvLosses::default() });
-        assert!(losses.notes("t.csv")[0].contains("the geometry of 1 feature wasn't written"));
+        assert!(losses.notes(&ds.fields, "t.csv")[0].contains("the geometry of 1 feature wasn't written"));
         assert!(!to_csv(&ds).unwrap().contains("longitude"));
         let points = [crate::Feature { id: 0, geometry: Some(Geometry::Point(Coord::new(1.0, 2.0))), attrs: vec![] }];
-        assert_eq!(CsvLosses::of(&points, GeometryType::Point), CsvLosses { points: true, ..CsvLosses::default() });
+        assert_eq!(CsvLosses::of(&points, GeometryType::Point, &[]).unwrap(), CsvLosses { points: true, ..CsvLosses::default() });
         // A multipoint without a point in a point layer gets empty coordinate cells.
         let empty = [crate::Feature { id: 1, geometry: Some(Geometry::MultiPoint(vec![])), attrs: vec![] }];
         assert_eq!(
-            CsvLosses::of(&empty, GeometryType::Point),
-            CsvLosses { as_one_point: 0, unwritten: 1, points: true, unusable_points: 1 }
+            CsvLosses::of(&empty, GeometryType::Point, &[]).unwrap(),
+            CsvLosses { unwritten: 1, points: true, unusable_points: 1, ..CsvLosses::default() }
         );
     }
 
@@ -5718,6 +5781,41 @@ mod tests {
         ds.push(None, vec![]);
         assert_eq!(gpx_left_out(&ds), 2);
         assert_eq!(write_bytes(&ds, "gpx").unwrap().1, 2);
+    }
+
+    /// GPX names fields with values before fields of nulls, so a field that lost data isn't
+    /// hidden behind "and N more".
+    #[test]
+    fn gpx_names_fields_with_values_first() {
+        let mut fields: Vec<_> = (1..=5).map(|i| Field::new(format!("empty{i}"), FieldType::Text)).collect();
+        fields.push(Field::new("population", FieldType::Integer));
+        let mut ds = Dataset::new("t", GeometryType::Point, fields);
+        let mut attrs = vec![Value::Null; 5];
+        attrs.push(Value::Int(7));
+        ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), attrs);
+        let notes = gpx_notes(&ds, None, "t.gpx");
+        assert!(notes[0].contains("written: 'population', 'empty1'") && notes[0].ends_with("and 1 more"), "{notes:?}");
+    }
+
+    #[test]
+    fn kml_and_kmz_name_fields_missing_from_exported_placemarks() {
+        let mut ds =
+            Dataset::new("parcels", GeometryType::Point, vec![Field::new("a", FieldType::Integer), Field::new("empty", FieldType::Text)]);
+        ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Int(1), Value::Null]);
+        ds.push(None, vec![Value::Int(2), Value::Text("no placemark".into())]);
+        for ext in ["kml", "kmz"] {
+            let target = format!("parcels.{ext}");
+            let (bytes, _) = write_bytes(&ds, ext).unwrap();
+            let back = &crate::kml::read(&target, &bytes).unwrap()[0].dataset;
+            assert!(back.field_index("a").is_some());
+            assert!(back.field_index("empty").is_none());
+            assert_eq!(
+                export_losses_notes(&ds, ext, None, &target).unwrap(),
+                [format!("{target}: KML omitted 1 field with no values in the placemarks written ('empty')")]
+            );
+        }
+        ds.push(Some(Geometry::Point(Coord::new(3.0, 4.0))), vec![Value::Int(3), Value::Text("present".into())]);
+        assert!(export_losses_notes(&ds, "kml", None, "parcels.kml").unwrap().is_empty());
     }
 
     /// A point layer's fields named like coordinates keep their values when its CSV is read back:
@@ -5759,7 +5857,7 @@ mod tests {
         assert!(text.starts_with("lon_dd,lat_dd,"), "{text}");
         let (back, _) = read_csv(&text, "back").unwrap();
         assert_eq!(back.features[0].geometry, ds.features[0].geometry);
-        assert!(export_losses_notes(&ds, "csv", None, "t.csv").is_empty());
+        assert!(export_losses_notes(&ds, "csv", None, "t.csv").unwrap().is_empty());
     }
 
     /// A point layer with a field of every longitude name has its longitudes in a column reading
@@ -5775,7 +5873,7 @@ mod tests {
         let every = layer(LON_NAMES);
         let out = to_csv(&every).unwrap();
         assert!(out.starts_with("longitude_1,latitude,"), "{out}");
-        let notes = export_losses_notes(&every, "csv", None, "t.csv");
+        let notes = export_losses_notes(&every, "csv", None, "t.csv").unwrap();
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert_eq!(
             notes[0],
@@ -5785,10 +5883,10 @@ mod tests {
         let (back, _) = read_csv(&out, "t").unwrap();
         assert_eq!(back.features[0].geometry, Some(Geometry::Point(Coord::new(1.0, 10.0))));
         // A name left, or a layer that isn't of points: nothing to say.
-        assert!(export_losses_notes(&layer(&LON_NAMES[1..]), "csv", None, "t.csv").is_empty());
-        assert_eq!(CsvLosses::of(&[], GeometryType::Polyline).coordinates_note(&every.fields, "t.csv"), None);
+        assert!(export_losses_notes(&layer(&LON_NAMES[1..]), "csv", None, "t.csv").unwrap().is_empty());
+        assert_eq!(CsvLosses::of(&[], GeometryType::Polyline, &[]).unwrap().coordinates_note(&every.fields, "t.csv"), None);
         let names: Vec<_> = LON_NAMES.iter().copied().chain(["X", "Y"]).collect();
-        let notes = export_losses_notes(&layer(&names), "csv", None, "t.csv");
+        let notes = export_losses_notes(&layer(&names), "csv", None, "t.csv").unwrap();
         assert!(notes[0].contains("may read 'longitude' and 'latitude' or 'X' and 'Y'"), "{notes:?}");
     }
 
@@ -5800,9 +5898,9 @@ mod tests {
         let geometry = Some(Geometry::Point(Coord::new(20.0, 10.0)));
         let mut ds = Dataset::new("t", GeometryType::Point, fields);
         ds.push(geometry.clone(), vec![Value::Int(40), Value::Int(50)]);
-        assert!(export_losses_notes(&ds, "csv", None, "t.csv").is_empty());
+        assert!(export_losses_notes(&ds, "csv", None, "t.csv").unwrap().is_empty());
         ds.push(None, vec![Value::Int(41), Value::Int(51)]);
-        let notes = export_losses_notes(&ds, "csv", None, "t.csv");
+        let notes = export_losses_notes(&ds, "csv", None, "t.csv").unwrap();
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains("1 of the exported coordinate rows"), "{notes:?}");
         assert!(notes[0].contains("may read columns 'X' and 'Y'"), "{notes:?}");
@@ -5974,6 +6072,21 @@ mod tests {
         assert!(out.contains(",'-12345678901234567890\n"), "{out}");
         assert!(out.contains("'=SUM(A1)"), "{out}");
         assert!(out.contains("'+cmd"), "{out}");
+    }
+
+    #[test]
+    fn csv_keeps_padded_decimals_and_reports_only_guarded_values() {
+        let mut ds =
+            Dataset::new("tiger", GeometryType::None, ["INTPTLAT", "INTPTLON"].map(|name| Field::new(name, FieldType::Text)).to_vec());
+        ds.push(None, vec![Value::Text("+44.9500000".into()), Value::Text("-093.1445780".into())]);
+        assert_eq!(to_csv(&ds).unwrap(), "INTPTLAT,INTPTLON\n+44.9500000,-093.1445780\n");
+        assert!(export_losses_notes(&ds, "csv", None, "tiger.csv").unwrap().is_empty());
+        ds.push(None, vec![Value::Text("-007".into()), Value::Text("=SUM(A1)".into())]);
+        assert!(to_csv(&ds).unwrap().ends_with("'-007,'=SUM(A1)\n"));
+        assert_eq!(
+            export_losses_notes(&ds, "csv", None, "tiger.csv").unwrap(),
+            ["tiger.csv: CSV prefixed 2 text values with an apostrophe for spreadsheet protection in 'INTPTLAT' (1), 'INTPTLON' (1)"]
+        );
     }
 
     #[test]

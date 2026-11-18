@@ -705,7 +705,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
         return Err(format!("{path}: {e}"));
     }
     let parquet = matches!(ext.as_str(), "parquet" | "geoparquet");
-    let (written, left_out, skipped, table, unfit, null_numbers, moved, csv, dates) = match &chunks {
+    let (written, left_out, skipped, table, unfit, null_numbers, moved, format_notes, dates) = match &chunks {
         Some((src, layer)) => {
             let (e, table) =
                 rustgis_data::export::write_source_to(src.as_ref(), layer, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
@@ -731,16 +731,19 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             }
             dates.extend(e.date_messages.iter().map(|n| format!("{path}: {n}")));
             dates.extend(e.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", layer.name)));
-            (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, e.csv, dates)
+            let mut format_notes = e.csv.notes(&ds.fields, path);
+            format_notes.extend(e.csv.coordinates_note(&ds.fields, path));
+            (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, format_notes, dates)
         }
         None => {
+            let format_notes =
+                rustgis_data::io::export_losses_notes(ds, &ext, rustgis_data::io::name_field(ds), path).map_err(|e| e.to_string())?;
             let (left_out, table) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
             let unfit = if parquet { rustgis_data::source::parquet::values_note(ds, path) } else { None };
             let null_numbers = rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, &ext);
-            let csv = if ext == "csv" { rustgis_data::io::CsvLosses::of(&ds.features, ds.geometry_type) } else { Default::default() };
             let mut dates = read_notes(path, &ds.name, &unreadable);
             dates.extend(gpkg_dates_note(ds, &ext, path));
-            (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit, null_numbers, None, csv, dates)
+            (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit, null_numbers, None, format_notes, dates)
         }
     };
     // The features written give their own extent. A streamed layer written a chunk at a time has
@@ -770,14 +773,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     // geometry it can draw, of the layer's kind).
     let mut said = Vec::new();
     said.extend(rustgis_data::io::left_out_note(path, &ext, left_out));
-    // CSV holds a point a row, GPX a name for each feature and no areas.
-    if ext == "csv" {
-        said.extend(csv.notes(path));
-        said.extend(csv.coordinates_note(&ds.fields, path));
-    }
-    if ext == "gpx" {
-        said.extend(rustgis_data::io::gpx_notes(ds, rustgis_data::io::name_field(ds), path));
-    }
+    said.extend(format_notes);
     if skipped > 0 {
         said.push(format!("{path}: {skipped} rows couldn't be read and were left out"));
     }

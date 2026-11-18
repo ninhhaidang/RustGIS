@@ -1929,7 +1929,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             .map_err(|e| e.to_string())?;
             let mut notes = rustgis_data::export_notes([(&ds, layer.extent())], &path, rustgis_data::raster::Crs::LonLat);
             if format == "csv" {
-                notes.extend(result.csv.notes(&path));
+                notes.extend(result.csv.notes(&ds.fields, &path));
             }
             if result.skipped > 0 {
                 notes.push(format!("{path}: {} rows couldn't be read and were left out", result.skipped));
@@ -2014,8 +2014,7 @@ fn converted(ds: &Dataset, p: &Value) -> Result<(String, Vec<String>), String> {
     // Every format here is longitude/latitude.
     let target = ps(p, "path").unwrap_or(&ds.name);
     let mut notes = rustgis_data::export_notes([(ds, ds.extent())], target, rustgis_data::raster::Crs::LonLat);
-    // CSV holds a point a row, GPX a name for each feature and no areas.
-    notes.extend(rustgis_data::io::export_losses_notes(ds, format, name_field, target));
+    notes.extend(rustgis_data::io::export_losses_notes(ds, format, name_field, target).map_err(|e| e.to_string())?);
     // KML and GPX hold features with geometry only.
     if let ext @ ("kml" | "gpx") = format {
         let without =

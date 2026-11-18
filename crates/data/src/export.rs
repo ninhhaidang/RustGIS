@@ -41,7 +41,7 @@ pub struct Exported {
     /// Vertices beyond 85.05° north or south, written at 85.05° by an export in Web Mercator,
     /// where it ends (0 in another system). See [`crate::web_mercator_moved_note`].
     pub beyond_web_mercator: usize,
-    /// Geometry a CSV can't hold, counted over all chunks (none for the other formats).
+    /// Geometry and text changed by CSV export, counted over all chunks.
     pub csv: crate::io::CsvLosses,
     /// Per field of the layer, values of the source's date fields that weren't dates, so are
     /// written as null ([`crate::source::Batch::unread_dates`], said by
@@ -183,7 +183,7 @@ fn write_chunks_as(
             total = total.saturating_add(chunk.len());
             null_numbers = null_numbers.saturating_add(numbers_written_as_null(&chunk, &layer.fields, ext));
             if ext == "csv" {
-                csv += crate::io::CsvLosses::of(&chunk, geometry_type);
+                csv += crate::io::CsvLosses::of(&chunk, geometry_type, &layer.fields)?;
             }
             if ext == "gpkg" {
                 crate::source::add_unread_dates(&mut utc_dates, &crate::io::offset_dates(chunk.iter(), &layer.fields));

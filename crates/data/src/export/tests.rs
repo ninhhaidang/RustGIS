@@ -133,6 +133,20 @@ fn an_explicit_export_format_ignores_case_and_the_filename() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+#[test]
+fn a_streamed_csv_counts_guarded_values_across_chunks() {
+    let d = folder("csv-guarded");
+    let mut ds = Dataset::new("places", GeometryType::None, vec![Field::new("value", FieldType::Text)]);
+    for value in ["-007", "-093.1445780", "=SUM(A1)"] {
+        ds.push_next(None, vec![Value::Text(value.into())]);
+    }
+    let path = d.join("places.csv");
+    let exported = write_chunks_in(&Runs::new(&ds, 1), &ds, &path, Crs::LonLat, 1).unwrap();
+    assert_eq!(exported.csv.guarded, [2]);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "value\n'-007\n-093.1445780\n'=SUM(A1)\n");
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// An export in Web Mercator written a chunk at a time counts the vertices beyond 85.05° it
 /// writes at 85.05°, as it writes them: from a source that declares no extent, whose features
 /// beyond aren't in its first chunk. In longitude/latitude, or within 85.05°, it counts none.
@@ -204,7 +218,11 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     unfit,
                     beyond_web_mercator: 0,
                     // Counted over the chunks as the whole layer counts it.
-                    csv: if ext == "csv" { crate::io::CsvLosses::of(&whole.features, whole.geometry_type) } else { Default::default() },
+                    csv: if ext == "csv" {
+                        crate::io::CsvLosses::of(&whole.features, whole.geometry_type, &whole.fields).unwrap()
+                    } else {
+                        Default::default()
+                    },
                     unread_dates: Vec::new(),
                     rounded_dates: Vec::new(),
                     null_text: Vec::new(),
