@@ -1083,7 +1083,8 @@
           "picture-markers",
           "layout-element-ink",
           "field-generation",
-          "crs-wkt"
+          "crs-wkt",
+          "zarr-window"
         ],
         "type": "string"
       },
@@ -1164,7 +1165,8 @@
     "picture-markers",
     "layout-element-ink",
     "field-generation",
-    "crs-wkt"
+    "crs-wkt",
+    "zarr-window"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

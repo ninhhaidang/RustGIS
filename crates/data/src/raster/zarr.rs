@@ -2281,7 +2281,10 @@ fn grid_axes(store: &Store, a: &Array, chunks: &HashMap<String, Vec<u8>>) -> Res
     let (Some((y0, dy)), Some((x0, dx))) = (axis(&ys), axis(&xs)) else {
         return Err(bad(format!("{}: its coordinates aren't evenly spaced", a.path)));
     };
-    Ok(((y0, dy, ys.len() as u64), (x0, dx, xs.len() as u64), geographic(xc)))
+    // Longitude by the coordinate's name or units, or by the geographic system the store gives
+    // (`assemble` wraps such a grid by it too, whatever its axes are called).
+    let geo = geographic(xc) || crs_of(store, a).is_some_and(|(c, _)| c.is_geographic());
+    Ok(((y0, dy, ys.len() as u64), (x0, dx, xs.len() as u64), geo))
 }
 
 /// The chunk keys of `variable`'s map coordinates, for [`window_of`]: each is read whole (its
@@ -3437,6 +3440,43 @@ mod tests {
             if let Some(notice) = notice {
                 assert!(raster.lost[0].contains(notice), "{def}: {:?}", raster.lost);
             }
+        }
+    }
+
+    /// A grid whose axes are named `x`/`y` but whose store gives a geographic system is wrapped by
+    /// `assemble` (0–360 read as -180–180), so a box or a point is placed with the same ±360° turns;
+    /// a projected one isn't turned.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_geographic_system_turns_boxes_and_points_on_named_x_y_axes() {
+        let f64s = |v: Vec<f64>| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        for (code, geo) in [(4326, true), (3857, false)] {
+            let mut files = window_store(false);
+            let mut root: Value = serde_json::from_slice(&files[0].1).unwrap();
+            root["consolidated_metadata"]["metadata"]["v"]["attributes"] = serde_json::json!({"epsg_code": code});
+            files[0].1 = root.to_string().into_bytes();
+            // Columns centred on 185°…295°: east of 180, as a 0–360 grid stores them.
+            files[2].1 = zstd::encode_all(&f64s((0..12).map(|i| 185.0 + 10.0 * i as f64).collect())[..], 3).unwrap();
+            let store = parse_store(&files).unwrap();
+            let coords: HashMap<String, Vec<u8>> =
+                files.iter().filter(|(k, _)| window_keys(&store, "v").unwrap().contains(k)).cloned().collect();
+            let found = locate(&store, "v", &coords, -165.0, 50.0).unwrap();
+            let placed = window_of(&store, "v", &coords, [-170.0, 30.0, -150.0, 60.0]);
+            if !geo {
+                assert_eq!(found, None, "EPSG:{code}");
+                assert!(placed.is_err(), "EPSG:{code}");
+                continue;
+            }
+            assert_eq!(found, Some((3, 1)), "EPSG:{code}");
+            let window = Window { x0: 1, y0: 2, x1: 3, y1: 5 };
+            assert_eq!(placed.unwrap(), (window, false, false), "EPSG:{code}");
+            // The same box written 0–360 is the same window.
+            assert_eq!(window_of(&store, "v", &coords, [190.0, 30.0, 210.0, 60.0]).unwrap().0, window);
+            let selection = Selection { variable: "v".into(), index: vec![("time".into(), 1)], window: Some(window) };
+            let plan = plan(&store, &selection).unwrap();
+            let raster = assemble(&store, &plan, &read_plan(&files, &plan), "v", None).unwrap();
+            assert_eq!(raster.crs, Crs::LonLat);
+            assert!((raster.transform.origin_x - -170.0).abs() < 1e-9, "{}", raster.transform.origin_x);
         }
     }
 

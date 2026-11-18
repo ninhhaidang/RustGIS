@@ -1151,6 +1151,11 @@ pub struct ZarrTime {
     /// The coordinate system given for a store that doesn't say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crs: Option<String>,
+    /// The window of the map's cells each step reads, `[x0, y0, x1, y1]` as `layer.addZarr`'s
+    /// `cells` (the ends not included); `None` for the whole map. A project with one requires
+    /// `zarr-window`: an older reader would read the whole map at each step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<[u64; 4]>,
     /// The step whose slice the layer holds (an index into `dates`); `None` when none is.
     #[serde(skip)]
     pub shown: Option<usize>,
@@ -1175,6 +1180,7 @@ impl Default for ZarrTime {
             offset: 0,
             dates: Vec::new(),
             crs: None,
+            window: None,
             shown: None,
             read_generation: next_read_generation(),
         }
@@ -1235,10 +1241,12 @@ impl ZarrTime {
         }
     }
 
-    /// The selection of step `i` as `zarr::Selection::parse` reads it: `t2m[time=12,level=3]`.
+    /// The selection of step `i` as `zarr::Selection::parse` reads it: `t2m[time=12,level=3]`,
+    /// with `cells=x0:y0:x1:y1` after them for a window.
     pub fn selection(&self, i: usize) -> String {
         let mut parts = vec![format!("{}={}", self.dim, self.offset.saturating_add(i as u64))];
         parts.extend(self.index.iter().filter(|(d, _)| *d != self.dim).map(|(d, v)| format!("{d}={v}")));
+        parts.extend(self.window.map(|[x0, y0, x1, y1]| format!("cells={x0}:{y0}:{x1}:{y1}")));
         format!("{}[{}]", self.variable, parts.join(","))
     }
 
@@ -1252,6 +1260,8 @@ impl ZarrTime {
             self.dates.clear();
         }
         self.index.truncate(32);
+        // A window is kept as it is: one a read can't take (a project edited by hand) is refused
+        // at each step, never widened to the whole map.
         for t in [&mut self.store, &mut self.variable, &mut self.dim] {
             *t = t.chars().take(4096).collect();
         }
@@ -2366,8 +2376,18 @@ impl RasterLayer {
         if let Some(p) = path {
             out.push((crate::LayerRole::Raster, p.as_str(), true, embedded.is_none() && crate::paths::is_local(p)));
         }
-        if let Some(ZarrTime { store, variable: _, index: _, dim: _, offset: _, dates: _, crs: _, shown: _, read_generation: _ }) =
-            time_zarr
+        if let Some(ZarrTime {
+            store,
+            variable: _,
+            index: _,
+            dim: _,
+            offset: _,
+            dates: _,
+            crs: _,
+            window: _,
+            shown: _,
+            read_generation: _,
+        }) = time_zarr
         {
             out.push((crate::LayerRole::ZarrStore, store.as_str(), true, crate::paths::is_local(store)));
         }
@@ -2680,6 +2700,7 @@ mod tests {
                 offset: 3,
                 dates,
                 crs: None,
+                window: None,
                 shown: Some(1),
                 read_generation: 0,
             };
@@ -2691,6 +2712,27 @@ mod tests {
         for bad in [vec![2.0, 1.0], vec![1.0, 1.0, 2.0], vec![1.0, f64::NAN]] {
             assert!(zt(bad.clone()).dates.is_empty(), "{bad:?}");
         }
+    }
+
+    /// A following layer's window is part of each step's selection, as `zarr::Selection::parse`
+    /// reads it; repair keeps one a read refuses (a project edited by hand), never dropping it to
+    /// the whole map.
+    #[test]
+    fn a_zarr_window_is_in_each_steps_selection() {
+        let mut z = ZarrTime {
+            variable: "t".into(),
+            index: vec![("level".into(), 2)],
+            dim: "time".into(),
+            offset: 3,
+            dates: vec![1.0, 2.0],
+            window: Some([4, 1, 9, 3]),
+            ..Default::default()
+        };
+        z.repair();
+        assert_eq!(z.selection(1), "t[time=4,level=2,cells=4:1:9:3]");
+        z.window = Some([4, 1, 5, 3]);
+        z.repair();
+        assert_eq!((z.window, z.selection(0)), (Some([4, 1, 5, 3]), "t[time=3,level=2,cells=4:1:5:3]".to_string()));
     }
 
     fn dem() -> Raster {

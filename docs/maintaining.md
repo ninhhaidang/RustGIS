@@ -137,6 +137,11 @@ refuses them instead of opening the layout and saving it again, or running the c
 without the background. Layout files (`.rgislayout`) carry no format header yet and are not
 covered (#2277).
 
+Projects, map files and layer files with a window of a Zarr variable that follows the time slider
+(`layer.addZarr` with `"time": true` and `"cells"` or `"bbox"`) require `zarr-window`, so an older
+reader refuses them instead of reading the whole map at each step. A saved `layer.addZarr` command
+with both needs nothing: an older RustGIS refuses it when it runs.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands

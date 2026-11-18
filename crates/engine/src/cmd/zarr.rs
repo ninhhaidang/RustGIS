@@ -28,7 +28,7 @@ pub fn commands() -> Vec<C> {
             r#"{"layer"? (a Zarr layer: its store, variable and steps; default the active layer) | "path": folder | "url": "https://…", "variable"?, "index"?, "stat": "mean"|"min"|"max"|"sum"|"std" (the population standard deviation, n)|"count"|"countAbove", "above"?: number (countAbove's threshold), "start"?, "end"?: dates (default: the layer's period, else the whole axis), "months"?: [1–12] (a season across years: [12, 1, 2]), "minValid"?: 0–1 (a cell with a smaller share of values is left empty; default 0), "name"?: text, "crs"?} → a raster layer of the statistic (desktop)"#,
         ),
         C::new("layer.addZarr", "Add Zarr Variable", "Home › Add › Add Data", add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).params(
-            r#"{"path": folder | "url": "https://…", "variable"?: "its path in the store (default: the first)", "index"?: {"time": 3, "level": 0} (other dimensions' steps, default 0), "cells"?: [first column, first row, end column, end row] (a window of the map's cells as stored, the ends not included, at least 2 × 2: only the chunks it touches are read, and in shards only their chunks it needs, by range) | "bbox"?: [west, south, east, north] (a window by the grid's coordinates: degrees for a longitude/latitude grid; its coordinates are read to place it), "crs"?: "EPSG:… for a store that doesn't say", "name"?: text, "time"?: bool (follow the time slider: the layer shows the step the slider is at, and turns the slider on over the variable's dates when it is off; desktop), "start"?, "end"?: dates (with time: the period to take, for an axis longer than the slider's 20,000 steps), "ran"?: (internal: a slice the app has read), "summary"?: bool (internal: with ran, a summary over time rather than a slice)}"#,
+            r#"{"path": folder | "url": "https://…", "variable"?: "its path in the store (default: the first)", "index"?: {"time": 3, "level": 0} (other dimensions' steps, default 0), "cells"?: [first column, first row, end column, end row] (a window of the map's cells as stored, the ends not included, at least 2 × 2: only the chunks it touches are read, and in shards only their chunks it needs, by range) | "bbox"?: [west, south, east, north] (a window by the grid's coordinates: degrees for a longitude/latitude grid; its coordinates are read to place it), "crs"?: "EPSG:… for a store that doesn't say", "name"?: text, "time"?: bool (follow the time slider: the layer shows the step the slider is at, and turns the slider on over the variable's dates when it is off; with cells or bbox, each step reads only that window; desktop), "start"?, "end"?: dates (with time: the period to take, for an axis longer than the slider's 20,000 steps), "ran"?: (internal: a slice the app has read), "summary"?: bool (internal: with ran, a summary over time rather than a slice)}"#,
         ),
     ]
 }
@@ -463,10 +463,7 @@ fn place_window(root: &str, store: &zarr::Store, sel: &mut zarr::Selection, aske
 pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     let asked = asked_window(p)?;
     if b(p, "time") == Some(true) {
-        if asked.is_some() {
-            return Err("a window (cells or bbox) isn't read with time yet: leave time out to read it".into());
-        }
-        return add_following(s, p);
+        return add_following(s, p, asked);
     }
     let src = source(p)?;
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut, reason = "windowed reads are desktop only"))]
@@ -616,7 +613,13 @@ fn cached_store(url: &str, variable: &str) -> Result<std::sync::Arc<zarr::Store>
     Ok(st)
 }
 
-/// The key a slice is kept by: its store, selection and coordinate system.
+/// The window of cells a following layer's steps read.
+#[cfg(not(target_arch = "wasm32"))]
+fn zt_window(zt: &ZarrTime) -> Option<zarr::Window> {
+    zt.window.map(|[x0, y0, x1, y1]| zarr::Window { x0, y0, x1, y1 })
+}
+
+/// The key a slice is kept by: its store, selection (with its window) and coordinate system.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn slice_key(zt: &ZarrTime, i: usize) -> String {
     // A folder store rewritten on disk (a model run adding steps) is read again: its metadata's
@@ -803,7 +806,8 @@ pub(crate) fn read_slice(zt: &ZarrTime, i: usize) -> Result<Option<raster::Raste
     let (read, st) = if is_web(&zt.store) {
         let st = cached_store(&zt.store, &zt.variable)?;
         let plan = zarr::plan(&st, &zarr::Selection::parse(&sel)).map_err(|e| e.to_string())?;
-        let (chunks, forbidden) = fetch(&zt.store, &plan.keys)?;
+        // A window's coordinates and, in shards, only its chunks, by range.
+        let (chunks, forbidden) = fetch_plan(&zt.store, &st, &plan)?;
         // A chunk refused (HTTP 403) isn't one never written: it's said, not read as fill.
         if forbidden > 0 {
             return Err(crate::sources::message_with_address(
@@ -1239,10 +1243,10 @@ fn follow(s: &mut Session, wait: bool) {
 /// `layer.addZarr` with `"time": true`: the variable's time axis read from its coordinate, a layer
 /// that shows the step the slider is at, and the slider turned on over the axis when it is off.
 /// The stretch is fixed at the first slice's, so a colour means one value at every step.
-fn add_following(s: &mut Session, p: &Value) -> CmdResult {
+fn add_following(s: &mut Session, p: &Value, asked: Option<Asked>) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (s, p);
+        let _ = (s, p, asked);
         Err("in the web app, a Zarr variable can't follow the time slider yet".into())
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -1286,6 +1290,8 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
             }
         };
         pick_variable(&store, &mut sel)?;
+        // A window: every step reads only its cells (and in shards only their chunks it needs).
+        let window_notes = place_window(&root, &store, &mut sel, asked)?;
         let chunks =
             if chunks.is_empty() && is_web(&root) { fetch(&root, &zarr::coordinate_keys(&store, &sel.variable))?.0 } else { chunks };
         let (dim, dates) = zarr::time_axis(&store, &sel.variable, &chunks).ok_or_else(|| {
@@ -1294,6 +1300,12 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
                 sel.variable
             )
         })?;
+        // A window is checked against the grid as a still window is (within it, 2 × 2 cells at
+        // least), before the slider is touched: the same for every step, so step 0 stands for all.
+        if sel.window.is_some() {
+            let first = zarr::Selection { index: sel.index.iter().filter(|(d, _)| *d != dim).cloned().collect(), ..sel.clone() };
+            zarr::plan(&store, &first).map_err(|e| crate::sources::message_with_address(&root, &e.to_string()))?;
+        }
         // Each date is a step: an axis out of order or with a date twice (stores joined end to end)
         // can't be followed step by step.
         if !dates.iter().all(|d| d.is_finite()) || !dates.windows(2).all(|w| w[0] < w[1]) {
@@ -1339,6 +1351,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
             offset: first as u64,
             dates: picked,
             crs,
+            window: sel.window.map(|w| [w.x0, w.y0, w.x1, w.y1]),
             shown: None,
             read_generation: rustgis_map::raster::next_read_generation(),
         };
@@ -1390,9 +1403,12 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
         });
         layer.time_zarr = Some(zt);
         let mut out = super::raster::add_raster(s, &name, layer)?;
-        if let Some(w) = part {
+        let said: Vec<String> = window_notes.into_iter().chain(part).collect();
+        for w in &said {
             s.warn(w.clone());
-            out["warning"] = serde_json::json!(w);
+        }
+        if !said.is_empty() {
+            out["warning"] = serde_json::json!(said.join("; "));
         }
         Ok(out)
     }
@@ -1423,7 +1439,7 @@ fn series_source(s: &Session, p: &Value) -> Result<SeriesSource, String> {
         if let Some(zt) = &rl.time_zarr {
             return Ok(SeriesSource {
                 root: zt.store.clone(),
-                sel: zarr::Selection { variable: zt.variable.clone(), index: zt.index.clone(), window: None },
+                sel: zarr::Selection { variable: zt.variable.clone(), index: zt.index.clone(), window: zt_window(zt) },
                 period: Some((zt.offset, zt.dates.len())),
                 crs: zt.crs.clone(),
                 read_generation: zt.read_generation,
@@ -1954,6 +1970,7 @@ pub fn zarr_cube(s: &Session, p: &Value) -> Result<ZarrCube, String> {
         offset: 0,
         dates,
         crs: src.crs.clone(),
+        window: None,
         shown: None,
         read_generation: src.read_generation,
     };

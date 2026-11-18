@@ -1698,9 +1698,12 @@ coordinates, read whole, so it takes grids of up to 4,000,000 cells a side; a lo
 size. A box reaching past the grid is read within it, and says so; one over a longitude grid's
 edge (0°/360°, or ±180°) is refused: give a box on each side (one round the whole globe is the
 whole grid); `raster.zarrInfo` with
-`"bbox"` gives the cells a box covers (`window.cells`). A window is at least 2 × 2 cells (a box within one cell is widened to two, and says so), and
-doesn't follow the time slider yet. A window is kept in the project as a GeoTIFF, as a web
-store's slice is, also from a folder.
+`"bbox"` gives the cells a box covers (`window.cells`). A window is at least 2 × 2 cells (a box within one cell is widened to two, and says so). A window
+is kept in the project as a GeoTIFF, as a web store's slice is, also from a folder; with
+`"time": true` it follows the time slider instead, each step reading only the window, and the
+project keeps the window's cells with the store. A grid whose axes aren't named or measured as
+longitude, but whose store gives a geographic system, takes a box or a point written either way
+round the globe too, as it is drawn.
 
 **Follow the time slider** (desktop; `layer.addZarr` with `"time": true`) adds the variable as one
 layer whose step is the time slider's. The slider turns on over the variable's dates when it is
