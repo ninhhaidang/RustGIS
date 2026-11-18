@@ -346,6 +346,8 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | --- | --- | --- |
 | Buffer | `buffer` | Analysis › Proximity |
 | Near | `near` | Analysis › Proximity |
+| Service Area | `serviceArea` | Analysis › Network |
+| OD Cost Matrix | `odCostMatrix` | Analysis › Network |
 | Clip | `clip` | Analysis › Extract |
 | Split | `split` | Analysis › Extract |
 | Erase | `erase` | Analysis › Overlay |
@@ -1156,6 +1158,36 @@ with latitude or the map's projection.
 - Both write `a5` (the cell's 64-bit id in hex, as other A5 tools read it: DuckDB, PostgreSQL,
   Python's `pya5`, R), `resolution` and `area_km2`. A cell across the antimeridian, or round a pole, is
   split at ±180° into two parts of one polygon, each within −180° to 180°.
+
+### Network tools
+
+**Service Area** (`serviceArea`) and **OD Cost Matrix** (`odCostMatrix`) search a line layer as a
+network, as the Network Analysis workflow's route does: lines join where their vertices meet, each
+line's length is measured on the WGS 84 ellipsoid, and a **Cost Field** multiplies it (a line with
+no number there costs its length, and one costing 0 or less is closed; each is counted in a
+notice). Every line can be travelled both ways. The network's selection is honoured, and the graph
+is reused while the lines don't change, shared with routes.
+
+Points are moved onto the nearest line, at most **Snap Distance** metres (1,000 by default). A
+feature farther away, with no point, or with several (a multipoint) is left out and counted in a
+notice. A point in the middle of a line is reached from there, both ways along it.
+
+Service Area takes **Breaks**, costs in **Units** such as `1, 2, 5`, and makes the lines reachable
+within the largest. Each line is cut where it passes a break and where another facility becomes
+nearer, so each part keeps the line's attributes and adds `facility_fid` (the nearest facility),
+`from_break` and `to_break`. With several facilities, each part belongs to the nearest one only.
+
+OD Cost Matrix makes a table with a row for each origin and destination the network connects:
+`origin_fid`, `destination_fid`, `rank` (1 for the cheapest from that origin), `cost` and
+`length` in **Units** (they differ only with a cost field). **Cutoff** leaves out destinations
+costing more, and **Destinations to Find** keeps only the cheapest few from each origin. Pairs the
+network doesn't connect have no row, and a notice counts them. The origins are searched on several
+threads on the desktop; a matrix may hold up to 10 million rows.
+
+```text
+gp.run={"tool":"serviceArea","params":{"network":"streets","facilities":"fire_stations","breaks":"1, 2, 3","units":"Miles"}}
+gp.run={"tool":"odCostMatrix","params":{"network":"streets","origins":"homes","destinations":"clinics","count":1}}
+```
 
 ### Geometry conversions
 

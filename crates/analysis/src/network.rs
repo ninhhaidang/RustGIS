@@ -205,6 +205,81 @@ fn shortest_route_with(
     route_on(&graph, ds, from, to, snap_m)
 }
 
+/// The closest point on any of `segs` to `p`: (segment, fraction along it, the point, metres
+/// away). With `within`, only segments whose box comes within about that many metres of `p` are
+/// measured; one farther can't be within it, so a nearer one is never missed.
+fn nearest_segment(segs: &[Segment], nodes: &[Coord], p: Coord, within: Option<f64>) -> Result<Option<(usize, f64, Coord, f64)>, String> {
+    crate::control::check()?;
+    let window = within.and_then(|m| snap_window(p, m));
+    let k = p.y.to_radians().cos().max(0.01);
+    let mut stopped = false;
+    let mut pace = crate::control::Pace::default();
+    let nearest = segs
+        .iter()
+        .enumerate()
+        .take_while(|_| {
+            stopped = pace.stop(4096);
+            !stopped
+        })
+        .filter_map(|(i, (a, b, _, _))| {
+            let (a, b) = (*nodes.get(*a)?, *nodes.get(*b)?);
+            // A segment runs the short way, as it is measured: an end stored across ±180° from the
+            // other is moved by a whole turn beside it. Unchanged within 180° of each other.
+            let gap = b.x - a.x;
+            let b = if gap.abs() > 180.0 { Coord::new(a.x + (gap + 180.0).rem_euclid(360.0) - 180.0, b.y) } else { b };
+            // The whole turns between the point and the segment's middle: none within 180° of it,
+            // so only a segment near the antimeridian (or stored past ±180°) sees the point moved
+            // to its side, for the window test as for the projection.
+            let turn = 360.0 * ((0.5 * (a.x + b.x) - p.x) / 360.0).round();
+            if let Some([x0, x1, y0, y1]) = window
+                && (a.x.max(b.x) - turn < x0 || a.x.min(b.x) - turn > x1 || a.y.max(b.y) < y0 || a.y.min(b.y) > y1)
+            {
+                return None;
+            }
+            let px = p.x + turn;
+            let (dx, dy) = ((b.x - a.x) * k, b.y - a.y);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 { (((px - a.x) * k * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let x = a.x + t * (b.x - a.x);
+            // Written within −180° to 180°, as a line's vertices are; unchanged when it is.
+            let x = if (-180.0..=180.0).contains(&x) { x } else { (x + 180.0).rem_euclid(360.0) - 180.0 };
+            let q = Coord::new(x, a.y + t * (b.y - a.y));
+            Some((i, t, q, haversine_m(q, p)))
+        })
+        .fold(None, |best: Option<(usize, f64, Coord, f64)>, (i, t, q, sphere)| {
+            // The minimum WGS 84 radius gives a lower bound, so a farther spherical
+            // candidate cannot be discarded merely because the two metrics rank it differently.
+            let lower = if (-90.0..=90.0).contains(&p.y) && (-90.0..=90.0).contains(&q.y) {
+                sphere * WGS84_MIN_RADIUS_M / EARTH_RADIUS_M
+            } else {
+                0.0 // The inverse solver clamps latitudes; the spherical bound would not apply.
+            };
+            if best.as_ref().is_some_and(|b| lower > b.3) {
+                return best;
+            }
+            let distance = wgs84_distance_m(q, p);
+            if distance.is_finite() && best.as_ref().is_none_or(|b| distance < b.3) { Some((i, t, q, distance)) } else { best }
+        });
+    if stopped {
+        return Err(crate::control::Cancelled.into());
+    }
+    Ok(nearest)
+}
+
+/// The longitudes and latitudes `[west, east, south, north]` holding every place within `m`
+/// metres of `p`, with room to spare: a degree of latitude is at least 110.5 km long, and a degree
+/// of longitude at least that times the cosine of the latitude. None near a pole or ±180°, where a
+/// box doesn't hold them; then every segment is measured.
+fn snap_window(p: Coord, m: f64) -> Option<[f64; 4]> {
+    let dlat = m / 110_000.0 * 1.5;
+    let top = p.y.abs() + dlat;
+    if !dlat.is_finite() || top.is_nan() || top >= 80.0 {
+        return None;
+    }
+    let dlon = dlat / top.to_radians().cos();
+    (p.x - dlon > -180.0 && p.x + dlon < 180.0).then_some([p.x - dlon, p.x + dlon, p.y - dlat, p.y + dlat])
+}
+
 /// Runs the original search on a private copy, so endpoint attachments never leak across calls.
 /// Cloning the node and adjacency vectors is one step without a Cancel check inside it.
 fn route_on(graph: &Network, ds: &Dataset, from: Coord, to: Coord, snap_m: f64) -> Result<Route, String> {
@@ -214,46 +289,7 @@ fn route_on(graph: &Network, ds: &Dataset, from: Coord, to: Coord, snap_m: f64) 
     let segs = &graph.segs;
     let skipped_segments = graph.skipped_segments;
     let route_error = |reason, skipped| route_error(ds, reason, skipped);
-    // The closest point on any segment: (segment, fraction along it, the point, metres away).
-    let nearest = |p: Coord, nodes: &[Coord]| -> Result<Option<(usize, f64, Coord, f64)>, String> {
-        crate::control::check()?;
-        let k = p.y.to_radians().cos().max(0.01);
-        let mut stopped = false;
-        let mut pace = crate::control::Pace::default();
-        let nearest = segs
-            .iter()
-            .enumerate()
-            .take_while(|_| {
-                stopped = pace.stop(4096);
-                !stopped
-            })
-            .filter_map(|(i, (a, b, _, _))| {
-                let (a, b) = (*nodes.get(*a)?, *nodes.get(*b)?);
-                let (dx, dy) = ((b.x - a.x) * k, b.y - a.y);
-                let len2 = dx * dx + dy * dy;
-                let t = if len2 > 0.0 { (((p.x - a.x) * k * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-                let q = Coord::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
-                Some((i, t, q, haversine_m(q, p)))
-            })
-            .fold(None, |best: Option<(usize, f64, Coord, f64)>, (i, t, q, sphere)| {
-                // The minimum WGS 84 radius gives a lower bound, so a farther spherical
-                // candidate cannot be discarded merely because the two metrics rank it differently.
-                let lower = if (-90.0..=90.0).contains(&p.y) && (-90.0..=90.0).contains(&q.y) {
-                    sphere * WGS84_MIN_RADIUS_M / EARTH_RADIUS_M
-                } else {
-                    0.0 // The inverse solver clamps latitudes; the spherical bound would not apply.
-                };
-                if best.as_ref().is_some_and(|b| lower > b.3) {
-                    return best;
-                }
-                let distance = wgs84_distance_m(q, p);
-                if distance.is_finite() && best.as_ref().is_none_or(|b| distance < b.3) { Some((i, t, q, distance)) } else { best }
-            });
-        if stopped {
-            return Err(crate::control::Cancelled.into());
-        }
-        Ok(nearest)
-    };
+    let nearest = |p: Coord, nodes: &[Coord]| nearest_segment(segs, nodes, p, None);
     // Each end becomes a node on its segment, joined to the segment's two ends.
     let attach = |p: Coord, nodes: &mut Vec<Coord>, adj: &mut Vec<Vec<Edge>>| -> Result<(usize, usize, f64), String> {
         let (si, t, q, d) = nearest(p, nodes)?.ok_or_else(|| route_error("the layer has no lines".into(), skipped_segments))?;
@@ -359,6 +395,258 @@ fn route_on(graph: &Network, ds: &Dataset, from: Coord, to: Coord, snap_m: f64) 
     used.dedup();
     crate::control::finish();
     Ok(Route { path, length_m: length, cost, rows: used, skipped_segments })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Searches from several places at once, for service areas and cost matrices (#2344)
+
+/// A line network for searches from many places: the route's graph, shared through the same
+/// cache, so a route, a service area and a cost matrix over unchanged lines build it once.
+pub(crate) struct Graph(Arc<Network>);
+
+/// A point moved onto the network: onto segment `seg`, at `at`, `to_a` and `to_b` metres along
+/// the segment from its two ends.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Placed {
+    pub(crate) seg: usize,
+    pub(crate) at: Coord,
+    pub(crate) to_a: f64,
+    to_b: f64,
+}
+
+/// One segment of the network: its two ends (nodes), their places, the weight its length is
+/// multiplied by, and the row of the line it belongs to.
+pub(crate) struct SegmentInfo {
+    pub(crate) a: usize,
+    pub(crate) b: usize,
+    pub(crate) from: Coord,
+    pub(crate) to: Coord,
+    pub(crate) weight: f64,
+    pub(crate) row: usize,
+}
+
+impl Graph {
+    /// The network over `rows` of `ds` (in that order), each line's length multiplied by its
+    /// `cost_field` value as for [`shortest_route`]. Reused while the lines don't change.
+    pub(crate) fn of(ds: &Dataset, rows: &[usize], cost_field: Option<usize>) -> Result<Self, String> {
+        network_for(&NETWORK, ds, rows, cost_field).map(Self)
+    }
+
+    pub(crate) fn nodes(&self) -> usize {
+        self.0.nodes.len()
+    }
+
+    pub(crate) fn segments(&self) -> usize {
+        self.0.segs.len()
+    }
+
+    /// Segments left out of the network for invalid coordinates.
+    pub(crate) fn skipped_segments(&self) -> usize {
+        self.0.skipped_segments
+    }
+
+    /// Segment `i`, in the order the lines and their vertices were read; None past the last.
+    pub(crate) fn segment(&self, i: usize) -> Option<SegmentInfo> {
+        let &(a, b, weight, row) = self.0.segs.get(i)?;
+        Some(SegmentInfo { a, b, from: *self.0.nodes.get(a)?, to: *self.0.nodes.get(b)?, weight, row })
+    }
+
+    /// `p` moved onto the nearest segment, or None when none is within `snap_m` metres (or there
+    /// are no segments). Measured as a route's ends are.
+    pub(crate) fn place(&self, p: Coord, snap_m: f64) -> Result<Option<Placed>, String> {
+        if !p.is_finite() || p.y.abs() > 90.0 {
+            return Ok(None);
+        }
+        let Some((seg, _, at, moved_m)) = nearest_segment(&self.0.segs, &self.0.nodes, p, Some(snap_m))? else { return Ok(None) };
+        if moved_m > snap_m {
+            return Ok(None);
+        }
+        let Some(s) = self.segment(seg) else { return Ok(None) };
+        Ok(Some(Placed { seg, at, to_a: wgs84_distance_m(at, s.from), to_b: wgs84_distance_m(at, s.to) }))
+    }
+
+    /// Where a search from `p` starts: both ends of its segment, at the cost and length of the
+    /// way along it, labelled `source`. None for a place not on this graph, so it reaches nothing.
+    pub(crate) fn starts(&self, p: &Placed, source: usize) -> Vec<Start> {
+        let Some(&(a, b, w, _)) = self.0.segs.get(p.seg) else { return Vec::new() };
+        vec![Start { node: a, cost: p.to_a * w, length: p.to_a, source }, Start { node: b, cost: p.to_b * w, length: p.to_b, source }]
+    }
+
+    /// The cheapest way to `to` found by `search`, as (cost, length): through either end of its
+    /// segment, or straight along it from `from` when both lie on the same segment. Infinite when
+    /// the search didn't reach it.
+    pub(crate) fn reach(&self, search: &Search, from: &Placed, to: &Placed) -> (f64, f64) {
+        let Some(&(a, b, w, _)) = self.0.segs.get(to.seg) else { return (f64::INFINITY, f64::INFINITY) };
+        let mut best = (f64::INFINITY, f64::INFINITY);
+        for (node, along) in [(a, to.to_a), (b, to.to_b)] {
+            let cost = search.cost(node) + along * w;
+            if cost < best.0 {
+                best = (cost, search.length(node) + along);
+            }
+        }
+        if from.seg == to.seg {
+            let along = wgs84_distance_m(from.at, to.at);
+            if along * w <= best.0 {
+                best = (along * w, along);
+            }
+        }
+        best
+    }
+}
+
+/// Where a search starts: a node, the cost and length of reaching it from the start's own place,
+/// and the start's label (a facility's or an origin's number).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Start {
+    pub(crate) node: usize,
+    pub(crate) cost: f64,
+    pub(crate) length: f64,
+    pub(crate) source: usize,
+}
+
+/// A search's working state, made once per thread and reused: each search resets only the nodes
+/// the last one reached, so many short searches over a large network don't each clear it all.
+pub(crate) struct Search {
+    cost: Vec<f64>,
+    length: Vec<f64>,
+    source: Vec<usize>,
+    settled: Vec<bool>,
+    touched: Vec<usize>,
+    heap: BinaryHeap<State>,
+}
+
+impl Search {
+    /// The most bytes a search over `graph` holds, for sharing memory between threads: its arrays
+    /// by node, and its queue, which may take an entry for each way along each segment and for
+    /// each start, kept between searches at up to twice that as it grows.
+    pub(crate) fn bytes(graph: &Graph) -> usize {
+        let per_node = graph.nodes().saturating_mul(3 * size_of::<f64>() + 1 + 2 * size_of::<usize>());
+        let queue = graph.segments().saturating_mul(2).saturating_add(2).saturating_mul(2 * size_of::<State>());
+        per_node.saturating_add(queue)
+    }
+
+    pub(crate) fn new(graph: &Graph) -> Self {
+        let n = graph.nodes();
+        Self {
+            cost: vec![f64::INFINITY; n],
+            length: vec![f64::INFINITY; n],
+            source: vec![usize::MAX; n],
+            settled: vec![false; n],
+            touched: Vec::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    /// The least cost of reaching `node` in the last search: exact for every node it settled. When
+    /// `settled` ended the search early, the others keep tentative costs; otherwise they are above
+    /// `limit` (or infinite).
+    pub(crate) fn cost(&self, node: usize) -> f64 {
+        self.cost.get(node).copied().unwrap_or(f64::INFINITY)
+    }
+
+    /// The length of the way to `node` that [`Search::cost`] costs.
+    pub(crate) fn length(&self, node: usize) -> f64 {
+        self.length.get(node).copied().unwrap_or(f64::INFINITY)
+    }
+
+    /// The nodes the last search gave a cost: every node it settled, and some beyond `limit`.
+    pub(crate) fn reached(&self) -> impl Iterator<Item = usize> + '_ {
+        self.touched.iter().copied()
+    }
+
+    /// The start `node` is reached from most cheaply: of equally cheap ones, the first to reach it,
+    /// which depends on the network, and for starts at one node on the order they were given.
+    pub(crate) fn source(&self, node: usize) -> Option<usize> {
+        self.source.get(node).copied().filter(|s| *s != usize::MAX)
+    }
+
+    /// Settles nodes in order of their cost from the nearest of `starts`, every node costing up to
+    /// `limit`, and calls `settled` with each; the search ends early when it returns true. With
+    /// `progress`, counts the nodes settled for the run's progress (a search on its own, not one
+    /// of many made on several threads, which count theirs).
+    pub(crate) fn run(
+        &mut self,
+        graph: &Graph,
+        starts: &[Start],
+        limit: f64,
+        progress: bool,
+        mut settled: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        for &n in &self.touched {
+            if let Some(c) = self.cost.get_mut(n) {
+                *c = f64::INFINITY;
+            }
+            if let Some(l) = self.length.get_mut(n) {
+                *l = f64::INFINITY;
+            }
+            if let Some(s) = self.source.get_mut(n) {
+                *s = usize::MAX;
+            }
+            if let Some(s) = self.settled.get_mut(n) {
+                *s = false;
+            }
+        }
+        self.touched.clear();
+        self.heap.clear();
+        crate::control::check()?;
+        for s in starts {
+            self.improve(s.node, s.cost, s.length, s.source);
+        }
+        let adj = &graph.0.adj;
+        if progress {
+            crate::control::begin(adj.len());
+        }
+        let mut visited = 0;
+        let mut pace = crate::control::Pace::default();
+        while let Some(State(d, u)) = self.heap.pop() {
+            if pace.stop(1) {
+                return Err(crate::control::Cancelled.into());
+            }
+            if d > self.cost(u) || self.settled.get(u).copied().unwrap_or(true) {
+                continue;
+            }
+            if d > limit {
+                break;
+            }
+            if let Some(s) = self.settled.get_mut(u) {
+                *s = true;
+            }
+            visited += 1;
+            if progress {
+                crate::control::reached(visited);
+            }
+            if settled(u) {
+                break;
+            }
+            let (length, source) = (self.length(u), self.source.get(u).copied().unwrap_or(usize::MAX));
+            for &(v, c, len, _) in adj.get(u).map(Vec::as_slice).unwrap_or(&[]) {
+                self.improve(v, d + c, length + len, source);
+            }
+        }
+        if progress {
+            crate::control::finish();
+        }
+        Ok(())
+    }
+
+    /// Records a cheaper way to `node`, if this is one.
+    fn improve(&mut self, node: usize, cost: f64, length: f64, source: usize) {
+        let Some(old) = self.cost.get_mut(node) else { return };
+        if cost.is_nan() || cost >= *old {
+            return;
+        }
+        if old.is_infinite() {
+            self.touched.push(node);
+        }
+        *old = cost;
+        if let Some(l) = self.length.get_mut(node) {
+            *l = length;
+        }
+        if let Some(s) = self.source.get_mut(node) {
+            *s = source;
+        }
+        self.heap.push(State(cost, node));
+    }
 }
 
 /// Most random points made in one call, and point-in-polygon tries spent making them.
@@ -1066,6 +1354,33 @@ mod tests {
         near.push(Some(Geometry::Point(c(0.0, 85.0))), vec![]);
         let (found, bounded) = within_counted(&near, &[0], c(0.01, 85.0), 10_000.0);
         assert!(found.len() == 1 && bounded == 0, "{found:?} {bounded}");
+    }
+
+    /// A segment across ±180° runs the short way: a point on it is placed there, and a point on
+    /// the far side of the world isn't placed on it at all.
+    #[test]
+    fn a_segment_across_the_antimeridian_is_measured_the_short_way() {
+        let mut ds = Dataset::new("roads", GeometryType::Polyline, vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![Coord::new(179.99, 0.0), Coord::new(-179.99, 0.0)]])), vec![]);
+        let graph = Graph(Arc::new(Network::build(&ds, &[0], None).unwrap()));
+        assert!(graph.place(Coord::new(0.0, 0.0), 1000.0).unwrap().is_none(), "nowhere near it");
+        let on = graph.place(Coord::new(179.995, 0.0), 10.0).unwrap();
+        assert!(on.is_some_and(|p| (p.at.x - 179.995).abs() < 1e-9), "{on:?}");
+        let across = graph.place(Coord::new(-179.995, 0.0001), 50.0).unwrap();
+        assert!(across.is_some_and(|p| (p.at.x + 179.995).abs() < 1e-9), "{across:?}");
+        let middle = graph.place(Coord::new(180.0, 0.0), 1000.0).unwrap();
+        assert!(middle.is_some_and(|p| p.at.x.abs() > 179.999 && p.at.y.abs() < 1e-9), "{middle:?}");
+    }
+
+    /// A point is placed on a segment stored past ±180° (at 370°, the same meridian as 10°), as a
+    /// route's end is, not passed over by the snap window.
+    #[test]
+    fn a_segment_stored_past_180_degrees_is_found_by_the_window() {
+        let mut ds = Dataset::new("roads", GeometryType::Polyline, vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![Coord::new(370.0, 0.0), Coord::new(370.01, 0.0)]])), vec![]);
+        let graph = Graph(Arc::new(Network::build(&ds, &[0], None).unwrap()));
+        let placed = graph.place(Coord::new(10.005, 0.0001), 100.0).unwrap();
+        assert!(placed.is_some_and(|p| p.seg == 0), "{placed:?}");
     }
 
     /// Repeated pairs reuse topology without retaining endpoint edits; every graph input

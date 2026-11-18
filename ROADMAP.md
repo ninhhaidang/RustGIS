@@ -239,11 +239,13 @@ And alongside it:
 Before adding a tool, check whether the GeoLibre suite already has it (`gp.tools`); a built-in
 version must justify itself: no runner download, the selection honoured, geodesic distances and
 attributes kept.
-- Network analysis: service areas, isochrones (also from a point on the map, through its
-  right-click menu) and an origin–destination matrix over a line layer, in a guided workflow over
-  the GeoLibre suite's network tools, once their results are checked against known answers
-  (today: shortest path over a line layer, and online Directions). Follow the
-  [ribbon guidelines](docs/contributing.md#ribbon-guidelines) for where it goes.
+- Network analysis over a line layer (#2344). Built in today: shortest path, Service Area (lines)
+  and OD Cost Matrix, and online Directions. Still to come: one-way travel and travel time,
+  closest facility, service-area polygons and isochrones (also from a point on the map, through its
+  right-click menu), barriers and turns; location-allocation and vehicle routing as a guided
+  workflow over the GeoLibre suite's network tools, once their results are checked against known
+  answers. Follow the [ribbon guidelines](docs/contributing.md#ribbon-guidelines) for where it
+  goes.
 - Hot-spot statistics (Getis-Ord Gi\*), and emerging hot spots on the time slider.
 - Kriging with a fitted variogram and leave-one-out cross-validation (the variogram is a default
   estimated from the points and extent today, not fitted; `kriging.rs`).

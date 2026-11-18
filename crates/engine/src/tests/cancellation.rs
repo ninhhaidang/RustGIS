@@ -250,8 +250,8 @@ pub(super) fn long_commands(boundaries: bool) {
     std::fs::remove_file(replacement).unwrap();
 
     // The tools whose work grows past a second or two on real data: buffers, overlays, joins,
-    // hulls, densities and interpolation. Run in the background as the Analysis pane runs them; a
-    // new long tool is added here (AGENTS.md › Never hold the window).
+    // hulls, densities, interpolation and network searches. Run in the background as the
+    // Analysis pane runs them; a new long tool is added here (AGENTS.md › Never hold the window).
     let tools = [
         ("buffer", json!({"input": "Cities", "distance": 100})),
         ("dissolve", json!({"input": "Countries"})),
@@ -274,6 +274,8 @@ pub(super) fn long_commands(boundaries: bool) {
         ("kriging", json!({"input": "Cities", "field": "pop_max", "pixelSize": if boundaries { 0.01 } else { 1.0 }})),
         ("tabulateArea", json!({"raster": dem, "zones": "Countries"})),
         ("tabulateIntersection", json!({"zones": "Countries", "classes": "Squares", "includeEmptyZones": true})),
+        ("serviceArea", json!({"network": "Rivers", "facilities": "Cities", "breaks": "50", "snapDistance": 100000})),
+        ("odCostMatrix", json!({"network": "Rivers", "origins": "Cities", "destinations": "Cities", "count": 1, "snapDistance": 100000})),
     ];
     for (tool, params) in &tools {
         exercise(&s, tool, params, Kind::Tool, &dir.0, boundaries);
