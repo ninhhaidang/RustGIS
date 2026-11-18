@@ -10782,7 +10782,109 @@ fn a_publication_of_the_whole_globe_fills_its_frame() {
     let l = s.project.layouts.last().unwrap();
     assert!(r["locator"].is_string() && l.elements.iter().any(|e| e.name == "Scale Bar"));
     let warnings = r["warnings"].to_string();
-    assert!(!warnings.contains("the whole globe"), "{warnings}");
+    // Neither whole-globe notice (no scale bar, no locator).
+    assert!(!warnings.contains("the map shows the whole globe"), "{warnings}");
+}
+
+/// A globe locator moved off a polar area keeps the area on the disc (#2348): at the sizes where
+/// the nearest centre the camera draws would leave it behind the rim (a locator just large enough
+/// for the globe on the equator), it keeps the area in the middle, clipped, instead.
+#[test]
+fn a_globe_locator_never_hides_its_area_behind_the_rim() {
+    use rustgis_geom::Coord;
+    use rustgis_map::layout::{PT_PER_MM, frame_camera};
+    let mut m = rustgis_map::Map::new("Locator");
+    m.set_projection(rustgis_map::Projection::Globe);
+    let (area, side) = (Coord::new(20.0, 89.0), 40.0);
+    let (mut moved, mut hidden) = (0, 0);
+    // Steps of 0.2 %: the sizes that would hide it span about 1 % of the scale.
+    for i in 0..4000 {
+        let scale = 1e8 * 1.002f64.powi(i);
+        let (at, whole) = crate::cmd::layout::globe_locator_center(&m, area, scale, side);
+        let equator = frame_camera(&m, Coord::new(area.x, 0.0), scale, 0.0, 0.0).res < rustgis_map::camera::MAX_RES;
+        if whole {
+            let g = rustgis_map::globe::Globe::new(&frame_camera(&m, at, scale, 0.0, 0.0), side * PT_PER_MM, side * PT_PER_MM);
+            assert!(g.forward(area).is_some(), "1:{scale:.0}: the area behind the rim from {at:?}");
+            moved += usize::from(at != area);
+        } else {
+            assert_eq!(at, area, "1:{scale:.0}: a clipped locator keeps the area in the middle");
+            hidden += usize::from(equator);
+        }
+    }
+    assert!(moved > 0 && hidden > 0, "{moved} moved, {hidden} kept on the area though the equator fits");
+}
+
+/// A globe locator a little over the smallest globe the camera draws holds it whole at that limit,
+/// on the equator, and says nothing is clipped; one under it is clipped (#2348).
+#[test]
+fn a_globe_locator_at_the_camera_limit_is_whole_when_its_disc_fits() {
+    use rustgis_geom::Coord;
+    use rustgis_map::layout::{PT_PER_MM, frame_camera};
+    let mut m = rustgis_map::Map::new("Locator");
+    m.set_projection(rustgis_map::Projection::Globe);
+    // A scale past the camera's coarsest everywhere: the smallest globe it draws, on the equator.
+    let (area, scale) = (Coord::new(20.0, 30.0), 1e11);
+    let equator = Coord::new(area.x, 0.0);
+    let smallest = |side: f64| {
+        let cam = frame_camera(&m, equator, scale, 0.0, 0.0);
+        assert!(cam.res >= rustgis_map::camera::MAX_RES);
+        2.0 * rustgis_map::globe::Globe::new(&cam, side * PT_PER_MM, side * PT_PER_MM).disc_radius() / PT_PER_MM
+    };
+    let over = smallest(19.0) + 0.5;
+    assert_eq!(crate::cmd::layout::globe_locator_center(&m, area, scale, over), (equator, true), "a {over:.1} mm locator");
+    let under = smallest(19.0) - 0.5;
+    assert_eq!(crate::cmd::layout::globe_locator_center(&m, area, scale, under), (area, false), "a {under:.1} mm locator");
+}
+
+/// A publication's globe locator near a pole shows the globe whole in its circle (#2337): sized on
+/// the equator and centred as near the area as the camera draws it, not at the area's latitude,
+/// where the camera stops at its coarsest resolution and the disc came out larger than the circle.
+/// On a flat map with an Arctic extent, and on the globe seen whole with a locator asked for.
+#[test]
+fn a_globe_locator_near_a_pole_fits_its_circle() {
+    use rustgis_map::layout::{ElementKind, PT_PER_MM, frame_camera};
+    let mut s = world();
+    let fits = |s: &Session, case: &str| {
+        let l = s.project.layouts.last().unwrap();
+        let locator = l.elements.iter().find(|e| e.name == "Locator").unwrap_or_else(|| panic!("{case}: no locator"));
+        let ElementKind::MapFrame { map, center, scale, .. } = &locator.kind else { panic!() };
+        let m = s.project.maps.iter().find(|m| &m.name == map).unwrap();
+        let cam = frame_camera(m, *center, *scale, 0.0, 0.0);
+        assert!(cam.res < rustgis_map::camera::MAX_RES, "{case}: the camera at its coarsest, 1:{scale} at {center:?}");
+        let across = 2.0 * rustgis_map::globe::Globe::new(&cam, locator.w * PT_PER_MM, locator.h * PT_PER_MM).disc_radius() / PT_PER_MM;
+        assert!(across <= locator.w.min(locator.h), "{case}: a disc {across:.0} mm across in a {:.0} mm circle", locator.w);
+    };
+    let said = |r: &Value, start: &str| r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).any(|w| w.starts_with(start));
+    // The locator centred where the map frame is.
+    let centred_with_the_map = |s: &Session, case: &str| {
+        let l = s.project.layouts.last().unwrap();
+        let centre = |n: &str| match l.elements.iter().find(|e| e.name == n).map(|e| &e.kind) {
+            Some(ElementKind::MapFrame { center, .. }) => *center,
+            _ => panic!("{case}: no {n}"),
+        };
+        assert_eq!(centre("Locator"), centre("Map Frame"), "{case}");
+    };
+    const MOVED: &str = "the globe locator is centred at";
+    const CLIPPED: &str = "the globe locator is too small";
+    let r = s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": [10.0, 76.0, 30.0, 81.0]})).unwrap();
+    fits(&s, "Svalbard on a flat map");
+    assert!(said(&r, MOVED) && !said(&r, CLIPPED), "Svalbard: {}", r["warnings"]);
+    // A figure's locator, too small for the globe even on the equator: clipped wherever it is, it
+    // keeps the area in the middle and says so.
+    let r =
+        s.run("layout.publication", &json!({"profile": "figure-1col", "extent": [10.0, 83.0, 30.0, 84.0], "locator": "globe"})).unwrap();
+    assert!(said(&r, CLIPPED) && !said(&r, MOVED), "a figure's locator: {}", r["warnings"]);
+    centred_with_the_map(&s, "a figure's locator");
+    s.run("map.projection", &json!({"type": "globe"})).unwrap();
+    s.run("map.goToXY", &json!({"lon": 20.0, "lat": 84.0})).unwrap();
+    let r = s.run("layout.publication", &json!({"profile": "a4-portrait", "locator": "globe"})).unwrap();
+    fits(&s, "the whole globe at 84° N");
+    assert!(said(&r, MOVED) && !said(&r, CLIPPED), "the whole globe: {}", r["warnings"]);
+    // Away from the poles the locator stays centred on the area, as before, and says nothing.
+    let r = s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": [-46.8, -11.6, -38.5, -2.2]})).unwrap();
+    fits(&s, "north-east Brazil");
+    assert!(!said(&r, MOVED) && !said(&r, CLIPPED), "north-east Brazil: {}", r["warnings"]);
+    centred_with_the_map(&s, "north-east Brazil");
 }
 
 /// Arrangements of a publication layout's surrounds (#1379): by name, corner by corner, the
@@ -52465,7 +52567,8 @@ fn a_globe_locator_says_what_simplifying_did() {
             .unwrap()
             .iter()
             .filter_map(|w| w.as_str())
-            .filter(|w| w.starts_with("the globe locator"))
+            // What simplifying did, not where the locator is centred (#2348).
+            .filter(|w| w.starts_with("the globe locator, simplifying"))
             .map(String::from)
             .collect::<Vec<_>>()
     };

@@ -1944,7 +1944,21 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             m.graticule = src.graticule;
             m.body = src.body.clone();
             m.set_projection(rustgis_map::Projection::Globe);
-            let globe = globe_scale(&m, center, side * 0.92);
+            // Sized on the equator and centred as near the area as the camera draws a globe that
+            // small, as the whole globe's frame is (#2337): at the area's own latitude near a pole
+            // the camera stops at its coarsest resolution, and the disc came out larger than its
+            // circle, clipped. Further from the pole, the area is still on the disc and outlined.
+            let globe = globe_scale(&m, Coord::new(center.x, 0.0), side * 0.92);
+            let (at, whole) = globe_locator_center(&m, center, globe, side);
+            if at != center {
+                warnings.push(format!(
+                    "the globe locator is centred at {:.1}° rather than the map frame's {:.1}° of latitude: nearer the pole, it can't draw the globe small enough to fit",
+                    at.y, center.y
+                ));
+            }
+            if !whole {
+                warnings.push("the globe locator is too small to show the whole globe: its circle clips it".into());
+            }
             // Each polygon simplified to a tenth of a millimetre on the disc (its scale in metres),
             // so the project keeps a sketch of the layers for it, not a second full copy of them.
             let tolerance_m = globe * 1e-4;
@@ -2031,9 +2045,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 None => s.project.maps.push(m),
             }
-            Some((name, globe, FrameShape::Circle))
+            Some((name, globe, FrameShape::Circle, at))
         }
-        Locator::Inset => Some((s.map().name.clone(), round_scale(scale * fw / side * 4.0), FrameShape::Rectangle)),
+        Locator::Inset => Some((s.map().name.clone(), round_scale(scale * fw / side * 4.0), FrameShape::Rectangle, center)),
     };
     // The legend lists what the frame draws: its map synced to the frame's view first, as an
     // export does, so a streamed layer has its features there. (This changes the session's map,
@@ -2704,7 +2718,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     let card = style == Style::Modular && column.is_some();
     let (card_r, card_pad) = (3.0 * k, 2.5 * k);
     let surround_box = |fill: Rgba| if style.cards() { pub_card(fill, clear, 0.0, 2.0 * k) } else { pub_box(fill, clear, 0.0) };
-    if let (Some((map, locator_scale, shape)), Some(r)) = (&locator_map, locator_rect) {
+    if let (Some((map, locator_scale, shape, locator_center)), Some(r)) = (&locator_map, locator_rect) {
         if let (true, Some(c)) = (card, column) {
             l.add(
                 "Locator Card",
@@ -2717,7 +2731,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             r,
             ElementKind::MapFrame {
                 map: map.clone(),
-                center,
+                center: *locator_center,
                 scale: *locator_scale,
                 shape: shape.clone(),
                 grid: None,
@@ -5740,6 +5754,20 @@ fn drawable_globe_center(map: &Map, view: Coord, scale: f64) -> Coord {
         if fits(mid.copysign(view.y)) { fit = mid } else { over = mid }
     }
     Coord::new(view.x, fit.copysign(view.y))
+}
+
+/// Where a globe locator `side_mm` across at 1:`scale` centres the globe, and whether it shows it
+/// whole: as near `area` as the camera draws a globe that small ([`drawable_globe_center`], the
+/// equator when it draws it that small nowhere), the disc within the circle and the area on it.
+/// A locator too small for the globe even on the equator (under about 20 mm), or one whose nearest
+/// centre leaves the area behind the globe's rim, keeps the area in the middle, its circle
+/// clipping the globe (#2348). Whether it is whole is measured on the disc drawn, not on the
+/// camera's limit: a circle a little over the smallest globe holds it at that limit.
+pub(crate) fn globe_locator_center(map: &Map, area: Coord, scale: f64, side_mm: f64) -> (Coord, bool) {
+    let side = side_mm * rustgis_map::layout::PT_PER_MM;
+    let at = drawable_globe_center(map, area, scale);
+    let g = rustgis_map::globe::Globe::new(&rustgis_map::layout::frame_camera(map, at, scale, 0.0, 0.0), side, side);
+    if 2.0 * g.disc_radius() <= side && g.forward(area).is_some() { (at, true) } else { (area, false) }
 }
 
 /// Parses the publication's locator choice with its default: a globe on a sheet, none on a figure
