@@ -1,5 +1,6 @@
 //! #1056: the Notebook opens beside the map on half the room, and a right pane can be dragged
-//! wider than 640 points while the map keeps its minimum width.
+//! wider than 640 points while the map keeps its minimum width. #2416: the right panes other than
+//! the Notebook and Web Data share one width.
 
 use egui::vec2;
 use egui_kittest::Harness;
@@ -80,4 +81,22 @@ fn a_right_pane_drags_past_640_and_leaves_the_map_room() {
     drag_edge(&mut h, 600.0);
     let (pane, _) = rects(&h);
     assert!(pane.width() > 700.0, "the History pane stopped at {} wide", pane.width());
+}
+
+/// #2416: Messages had a width of its own, so switching between it and Script moved the pane's
+/// edge. It shares the width of the other right panes, as dragged.
+#[test]
+fn messages_and_script_share_the_right_pane_width() {
+    let mut h = window("ui.pane.script");
+    drag_edge(&mut h, 250.0);
+    let script = rects(&h).0.width();
+    assert!(script > 500.0, "the Script pane stopped at {script} wide");
+    for cmd in ["ui.pane.diagnosticLog", "ui.pane.script"] {
+        h.state_mut().run(cmd, Value::Null).expect("show the pane");
+        for _ in 0..6 {
+            h.step();
+        }
+        let width = rects(&h).0.width();
+        assert!((width - script).abs() < 0.5, "{cmd} showed the pane {width} wide, Script was {script}");
+    }
 }

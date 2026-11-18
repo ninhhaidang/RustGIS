@@ -82,11 +82,11 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
         let room = ui.available_width();
         let max = (room - MIN_MAP_WIDTH).max(RIGHT_PANE_MAX.min(room)).max(260.0);
         // The Web Data pane's searches and lists want room, and the Notebook opens on half of
-        // it (at least 320 where the room allows), beside the map: each keeps its own width.
+        // it (at least 320 where the room allows), beside the map: each keeps its own width. Every
+        // other pane shares one, so switching tabs among them never moves the pane's edge (#2416).
         let (id, width) = match right {
             RightPane::WebData => ("right_pane_web", 440.0),
             RightPane::Notebook => ("right_pane_notebook", (room / 2.0).max(320.0).min(max)),
-            RightPane::DiagnosticLog => ("right_pane_diagnostic_log", 480.0),
             _ => ("right_pane", 320.0),
         };
         let pane = egui::Panel::right(id).resizable(true).default_size(width).size_range(260.0..=max).frame(frame).show(ui, |ui| {
