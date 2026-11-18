@@ -5,12 +5,13 @@
 
 use std::io::Cursor;
 
-use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Reader, Sheets, open_workbook_auto_from_rs};
+use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Reader, Sheets, Xls, open_workbook_auto_from_rs, open_workbook_from_rs};
 
 use crate::io::{Columns, CsvOptions, columns_of, read_rows};
 use crate::{DataError, Dataset, Field, FieldType, ReadReport, Result};
 
 mod biff;
+mod ods;
 
 /// Spreadsheet file types.
 pub const EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xlsb", "xls", "ods"];
@@ -27,10 +28,10 @@ pub fn is_sheet_name(name: &str) -> bool {
 
 /// The sheets of a workbook, in order.
 pub fn sheet_names(bytes: &[u8]) -> Result<Vec<String>> {
-    check_expansion(bytes)?;
+    let zip_checked = check_expansion(bytes)?;
     check_compound(bytes)?;
     guarded(|| {
-        let wb = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))?;
+        let wb = open_checked(bytes, zip_checked)?;
         Ok(wb.sheet_names())
     })
 }
@@ -86,14 +87,24 @@ struct Grid {
 }
 
 fn grid(bytes: &[u8], sheet: Option<&str>) -> Result<Grid> {
-    check_expansion(bytes)?;
+    let zip_checked = check_expansion(bytes)?;
     check_compound(bytes)?;
-    guarded(|| grid_unguarded(bytes, sheet))
+    guarded(|| grid_unguarded(open_checked(bytes, zip_checked)?, sheet))
+}
+
+fn open_checked(bytes: &[u8], zip_checked: bool) -> Result<Sheets<Cursor<&[u8]>>> {
+    let reader = Cursor::new(bytes);
+    if zip_checked {
+        open_workbook_auto_from_rs(reader).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))
+    } else {
+        // Embedded ZIP signatures may occur in XLS data. If ZIP preflight did not pass,
+        // never let format detection retry the same bytes as a ZIP-based workbook.
+        open_workbook_from_rs::<Xls<_>, _>(reader).map(Sheets::Xls).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))
+    }
 }
 
 /// Reads a bounded workbook grid, retaining date types from cells rather than guessing ISO text.
-fn grid_unguarded(bytes: &[u8], sheet: Option<&str>) -> Result<Grid> {
-    let mut wb = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))?;
+fn grid_unguarded(mut wb: Sheets<Cursor<&[u8]>>, sheet: Option<&str>) -> Result<Grid> {
     let names = wb.sheet_names();
     let pick = match sheet.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => names
@@ -193,16 +204,33 @@ fn grid_unguarded(bytes: &[u8], sheet: Option<&str>) -> Result<Grid> {
     Ok(Grid { names, pick, headers, rows, dates, rounded_dates, phantom_dates })
 }
 
-/// A zipped workbook (`.xlsx`, `.ods`) that would inflate past [`crate::zip::MAX_TOTAL`] is
-/// refused before it is read: the archive's own reader inflates each part within that budget,
-/// checking its size and checksum against what the archive says (calamine trusts the headers).
-fn check_expansion(bytes: &[u8]) -> Result<()> {
-    if !bytes.starts_with(b"PK\x03\x04") {
-        return Ok(());
+/// Check every ZIP member before calamine opens it, without suffix or case filters. ODS
+/// eagerly materializes every sheet in its constructor, even for a names-only read. Cancel is
+/// looked at between members; inflating one member isn't interrupted. `false` permits only XLS.
+fn check_expansion(bytes: &[u8]) -> Result<bool> {
+    use crate::zip::Failure;
+    if !bytes.windows(4).any(|b| b == b"PK\x03\x04") {
+        return Ok(false);
     }
-    crate::zip::read_matching_within(bytes, |n| n.ends_with(".xml") || n.ends_with(".bin"), crate::zip::MAX_TOTAL)
-        .map(|_| ())
-        .map_err(|e| DataError::Format(format!("spreadsheet: {e}")))
+    let entries = match crate::zip::read_all_within(bytes, crate::zip::MAX_TOTAL) {
+        Ok(entries) => entries,
+        Err(Failure::Cancelled) => return Err(DataError::Cancelled),
+        // An .xls can hold these signatures in its data (an embedded workbook, a stray run of
+        // bytes): check_compound judges it. A member of an archive that does read is refused
+        // whatever precedes it.
+        Err(Failure::Layout(_)) if bytes.starts_with(COMPOUND) => return Ok(false),
+        Err(Failure::Layout(m) | Failure::Member(m)) => return Err(DataError::Format(format!("spreadsheet: {m}"))),
+    };
+    let is_ods = entries
+        .iter()
+        .any(|(name, data)| name.eq_ignore_ascii_case("mimetype") && data.starts_with(b"application/vnd.oasis.opendocument.spreadsheet"));
+    for (name, data) in entries {
+        crate::progress::check()?;
+        if is_ods && name.eq_ignore_ascii_case("content.xml") {
+            ods::check(&data, MAX_CELLS, crate::zip::MAX_TOTAL)?;
+        }
+    }
+    Ok(true)
 }
 
 /// The signature of a compound file (`.xls`).
@@ -405,8 +433,8 @@ fn damaged<T>(what: &str) -> Result<T> {
 /// Refuses a sheet whose cells span more than [`MAX_CELLS`] before calamine lays it out as a dense
 /// grid (one cell at `XFD1048576` would ask for 17 billion): an `.xlsx` or `.xlsb` sheet's cells
 /// are read one at a time for their extent first. Every `.xls` sheet's BIFF records and cell
-/// spans are checked by [`check_compound`] before the workbook is opened; an `.ods` one is
-/// checked after reading.
+/// spans are checked by [`check_compound`] before the workbook is opened; ODS repetition and
+/// extents are checked by [`check_expansion`] before its eagerly loaded sheets are allocated.
 fn check_size(wb: &mut Sheets<Cursor<&[u8]>>, sheet: &str) -> Result<()> {
     let mut b: Option<(u32, u32, u32, u32)> = None;
     let mut grow = |(r, c): (u32, u32)| -> Result<()> {
@@ -783,6 +811,162 @@ mod tests {
         let far = xlsx(&[("Far", &[&[r#"<c r="A1"><v>1</v></c>"#], &[r#"<c r="XFD1048576"><v>2</v></c>"#]])]);
         let e = read(&far, "t", None, &CsvOptions::default()).unwrap_err().to_string();
         assert!(e.contains("too large") && e.contains("XFD"), "{e}");
+    }
+    /// Minimal ODS content in a real container, for all three public entry points.
+    fn ods(tables: &str) -> Vec<u8> {
+        crate::zip::write(&[
+            ("mimetype".into(), b"application/vnd.oasis.opendocument.spreadsheet".to_vec()),
+            ("META-INF/manifest.xml".into(), br#"<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>"#.to_vec()),
+            ("content.xml".into(), format!(
+                r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet>{tables}</office:spreadsheet></office:body></office:document-content>"#
+            ).into_bytes()),
+        ]).unwrap()
+    }
+
+    fn prefixed(mut book: Vec<u8>, adjust_offsets: bool) -> Vec<u8> {
+        let prefix = b"harmless workbook preamble\n";
+        if adjust_offsets {
+            let eocd = book.len() - 22;
+            let mut p = u32::from_le_bytes(book[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+            book[eocd + 16..eocd + 20].copy_from_slice(&((p + prefix.len()) as u32).to_le_bytes());
+            while p < eocd {
+                let local = u32::from_le_bytes(book[p + 42..p + 46].try_into().unwrap()) as usize;
+                book[p + 42..p + 46].copy_from_slice(&((local + prefix.len()) as u32).to_le_bytes());
+                let size = |at| u16::from_le_bytes([book[at], book[at + 1]]) as usize;
+                p += 46 + size(p + 28) + size(p + 30) + size(p + 32);
+            }
+        }
+        [prefix.as_slice(), &book].concat()
+    }
+
+    #[test]
+    fn zip_directory_trailer_does_not_shift_member_offsets() {
+        let book = xlsx(&[("S", &[&["name"], &["city"]])]);
+        for mut book in [book.clone(), prefixed(book.clone(), false), prefixed(book, true)] {
+            let end = book.len() - 22;
+            // APPNOTE central-directory digital signature, outside the recorded CD size.
+            book.splice(end..end, *b"PK\x05\x05\x03\x00sig");
+            assert_eq!(sheet_names(&book).unwrap(), ["S"]);
+            assert_eq!(columns(&book, None, None).unwrap().names, ["name"]);
+            let (ds, report) = read(&book, "book", None, &CsvOptions::default()).unwrap();
+            assert_eq!(ds.value(0, 0), &Value::Text("city".into()));
+            assert!(report.messages.is_empty());
+        }
+    }
+
+    fn refused_before_calamine(book: &[u8], expected: &str) {
+        // If the cheap preflight regresses, never run a hostile allocation.
+        let error = check_expansion(book).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(sheet_names(book).unwrap_err().to_string(), error);
+        assert_eq!(columns(book, None, None).unwrap_err().to_string(), error);
+        assert_eq!(read(book, "bad", None, &CsvOptions::default()).unwrap_err().to_string(), error);
+    }
+
+    #[test]
+    fn every_zip_member_is_checked_with_or_without_a_preamble() {
+        for member in ["extra.XML", "extra.BiN", "extra.ReLs", "extra.data", "directory/"] {
+            let mut entries = crate::zip::read(&xlsx(&[("S", &[&["name"], &["city"]])])).unwrap();
+            entries.push((member.into(), vec![1, 2, 3]));
+            let mut book = crate::zip::write(&entries).unwrap();
+            let eocd = book.len() - 22;
+            let mut p = u32::from_le_bytes(book[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+            for _ in 1..entries.len() {
+                let size = |at| u16::from_le_bytes([book[at], book[at + 1]]) as usize;
+                p += 46 + size(p + 28) + size(p + 30) + size(p + 32);
+            }
+            book[p + 24..p + 28].copy_from_slice(&((crate::zip::MAX_TOTAL + 1) as u32).to_le_bytes());
+            refused_before_calamine(&book, "too large");
+            for adjust in [false, true] {
+                refused_before_calamine(&prefixed(book.clone(), adjust), "too large");
+            }
+            // A binary preamble isn't allowed to select the unguarded format fallback.
+            refused_before_calamine(&[COMPOUND, &book].concat(), "too large");
+        }
+        let book = crate::zip::write(&[("one.XML".into(), vec![0; 6]), ("two.rels".into(), vec![0; 6])]).unwrap();
+        let refused = crate::zip::read_all_within(&book, 11);
+        assert!(matches!(refused, Err(crate::zip::Failure::Member(m)) if m.contains("too large")));
+        assert_eq!(crate::zip::read_all_within(&book, 12).ok().map(|entries| entries.len()), Some(2));
+    }
+
+    #[test]
+    fn ods_repetitions_are_bounded_before_the_eager_constructor() {
+        for body in [
+            format!(r#"<table:table-row table:number-rows-repeated="{}"><table:table-cell office:value="1"/></table:table-row>"#, usize::MAX),
+            format!(r#"<table:table-row><table:table-cell table:number-columns-repeated="{}" office:value="1"/></table:table-row>"#, usize::MAX),
+            r#"<table:table-row table:number-rows-repeated="1048576"><table:table-cell table:number-columns-repeated="16384" office:value="1"/></table:table-row>"#.into(),
+            r#"<table:table-row><table:table-cell office:value="1"/></table:table-row><table:table-row table:number-rows-repeated="1048574"/><table:table-row><table:table-cell table:number-columns-repeated="16384" office:value="2"/></table:table-row>"#.into(),
+            r#"<table:table-row table:number-rows-repeated="1048576"><table:table-cell table:number-columns-repeated="16384" table:formula="of:=1"/></table:table-row>"#.into(),
+            r#"<table:table-row table:number-rows-repeated="1048576"/><table:table-row/>"#.into(),
+            format!(r#"<table:table-row><table:table-cell office:value-type="string"><text:p><text:s text:c="{}"/></text:p></table:table-cell></table:table-row>"#, crate::zip::MAX_TOTAL + 1),
+        ] {
+            let book = ods(&format!(r#"<table:table table:name="S">{body}</table:table>"#));
+            refused_before_calamine(&book, "too large");
+            let mut entries = crate::zip::read(&book).unwrap();
+            entries.iter_mut().find(|(name, _)| name == "mimetype").unwrap().1.extend(b"\n");
+            refused_before_calamine(&crate::zip::write(&entries).unwrap(), "too large");
+        }
+        // All sheets load eagerly, including those not selected by read/columns.
+        let rows = MAX_CELLS / 16_384 / 2 + 1;
+        let table = |name| {
+            format!(
+                r#"<table:table table:name="{name}"><table:table-row table:number-rows-repeated="{rows}"><table:table-cell table:number-columns-repeated="16384" office:value="1"/></table:table-row></table:table>"#
+            )
+        };
+        refused_before_calamine(&ods(&(table("first") + &table("second"))), "too large");
+        // Bound cloned strings without allocating their expansion.
+        let xml = br#"<table:table><table:table-row table:number-rows-repeated="2"><table:table-cell table:number-columns-repeated="2" office:string-value="hello"/></table:table-row></table:table>"#;
+        assert!(ods::check(xml, 4, 19).unwrap_err().to_string().contains("too large"));
+        assert!(ods::check(xml, 4, 20).is_ok());
+        // Trailing repeated blank cells are not stored once per encoded row.
+        let row = r#"<table:table-row><table:table-cell office:value="1"/><table:table-cell table:number-columns-repeated="16383"/></table:table-row>"#;
+        assert!(ods::check(format!("<table:table>{row}{row}</table:table>").as_bytes(), 2, 20).is_ok());
+    }
+
+    #[test]
+    fn ods_error_cell_text_counts_against_the_expansion_limit() {
+        let xml = r#"<table:table table:name="S"><table:table-row><table:table-cell office:string-value="message"/></table:table-row><table:table-row><table:table-cell office:string-value="" calcext:value-type="error"><text:p>bad<text:s text:c="2"/>value</text:p></table:table-cell></table:table-row></table:table>"#;
+        assert!(ods::check(xml.as_bytes(), 2, 12).unwrap_err().to_string().contains("too large"));
+        let (ds, report) = read(&ods(xml), "book", None, &CsvOptions::default()).unwrap();
+        assert_eq!(ds.value(0, 0), &Value::Text("bad  value".into()));
+        assert!(report.messages.is_empty());
+    }
+
+    #[test]
+    fn ordinary_repeats_preambles_and_mixed_case_members_keep_values_and_notices() {
+        for null in [false, true] {
+            let note = if null { "&lt;Null&gt;" } else { " kept " };
+            let ods = ods(&format!(
+                r#"<table:table table:name="S"><table:table-column table:number-columns-repeated="16384"/><table:table-row><table:table-cell office:string-value="code"/><table:table-cell office:string-value="note"/></table:table-row><table:table-row table:number-rows-repeated="2"><table:table-cell office:string-value=" x "/><table:table-cell office:string-value="{note}"/><table:table-cell table:number-columns-repeated="16382"/></table:table-row><table:table-row table:number-rows-repeated="1048573"><table:table-cell table:number-columns-repeated="16384"/></table:table-row></table:table>"#
+            ));
+            let code_cell = r#"<c t="inlineStr"><is><t xml:space="preserve"> x </t></is></c>"#;
+            let note_cell = format!(r#"<c t="inlineStr"><is><t xml:space="preserve">{note}</t></is></c>"#);
+            let xlsx = xlsx(&[("S", &[&["code", "note"], &[code_cell, &note_cell], &[code_cell, &note_cell]])]);
+            for book in [ods, xlsx] {
+                let mut entries = crate::zip::read(&book).unwrap();
+                if let Some((name, _)) = entries.iter_mut().find(|(name, _)| name == "xl/worksheets/sheet1.xml") {
+                    *name = "xl/worksheets/sheet1.XmL".into();
+                }
+                entries.push(("Extra.ReLs".into(), b"harmless metadata".to_vec()));
+                let book = crate::zip::write(&entries).unwrap();
+                for book in [book.clone(), prefixed(book.clone(), false), prefixed(book, true)] {
+                    assert_eq!(sheet_names(&book).unwrap(), ["S"]);
+                    assert_eq!(columns(&book, None, None).unwrap().names, ["code", "note"]);
+                    let (ds, report) = read(&book, "book", None, &CsvOptions::default()).unwrap();
+                    assert_eq!(ds.features.len(), 2);
+                    assert_eq!(ds.value(0, 0), &Value::Text(" x ".into()));
+                    assert_eq!(ds.value(1, 1), &if null { Value::Null } else { Value::Text(" kept ".into()) });
+                    assert_eq!(
+                        report.messages.iter().filter(|m| m.contains("2 values written as Null")).count(),
+                        usize::from(null),
+                        "{report:?}"
+                    );
+                    if !null {
+                        assert!(report.messages.is_empty(), "{report:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// A compound-file (`.xls`) header with the given fields, followed by `body`.
@@ -1185,6 +1369,72 @@ mod tests {
         // A table cut at a whole word is still safe for calamine's word conversion.
         assert_eq!(words(&END.to_le_bytes()).unwrap(), [END]);
         assert!(words(&[]).unwrap().is_empty());
+    }
+
+    /// An `.xls` whose data holds ZIP signatures (an embedded workbook, a stray run of bytes) is
+    /// not taken for a ZIP archive that failed to read; its own checks judge it.
+    #[test]
+    fn an_xls_holding_zip_signatures_is_not_refused_as_a_zip() {
+        const END: u32 = 0xFFFF_FFFE;
+        let mut book = small_book(&[0xFFFF_FFFD, END, END, END], 0, 64, &[END]);
+        book.extend(b"PK\x03\x04 an embedded part, then an end record: PK\x05\x06");
+        // Not the ZIP64 sentinel: this run only fails as "not a zip archive".
+        book.extend([b'x'; 40]);
+        assert!(check_compound(&book).is_ok());
+        assert!(check_expansion(&book).is_ok());
+        for e in [sheet_names(&book).err(), columns(&book, None, None).err()].into_iter().flatten() {
+            assert!(!e.to_string().contains("zip archive"), "{e}");
+        }
+    }
+
+    #[test]
+    fn unchecked_zip_does_not_open_through_the_xls_fallback() {
+        let workbook = xlsx(&[("S", &[&["name"], &["city"]])]);
+        let mut end = crate::zip::write(&[]).unwrap();
+        // A second directory declaration whose offset leaves no room for a central header.
+        end[8..12].copy_from_slice(&[1, 0, 1, 0]);
+        end[16..20].copy_from_slice(&((workbook.len() - 1) as u32).to_le_bytes());
+        let ambiguous = [workbook.as_slice(), &end].concat();
+        assert!(matches!(sheet_names(&ambiguous), Err(DataError::Format(m)) if m.contains("ambiguous")));
+        let compound = [COMPOUND, &ambiguous].concat();
+        assert!(matches!(sheet_names(&compound), Err(DataError::Format(_))));
+        assert!(matches!(columns(&compound, None, None), Err(DataError::Format(_))));
+        assert!(matches!(read(&compound, "book", None, &CsvOptions::default()), Err(DataError::Format(_))));
+    }
+
+    /// ZIP64 and entry-count refusals aren't deferred to the compound checks: a ZIP64 workbook
+    /// behind a compound-file header is one other readers open.
+    #[test]
+    fn a_zip64_workbook_behind_a_compound_header_is_still_refused() {
+        let book = xlsx(&[("S", &[&["name"], &["city"]])]);
+        let eocd = book.len() - 22;
+        let central = u32::from_le_bytes(book[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+        let mut member = book.clone();
+        member[central + 24..central + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut end = book.clone();
+        end[eocd + 16..eocd + 20].copy_from_slice(&u32::MAX.to_le_bytes());
+        for zip64 in [member, end] {
+            for book in [zip64.clone(), [COMPOUND, &zip64].concat()] {
+                let e = check_expansion(&book).unwrap_err().to_string();
+                assert!(e.contains("ZIP64"), "{e}");
+                assert_eq!(sheet_names(&book).unwrap_err().to_string(), e);
+            }
+        }
+    }
+
+    /// Cancel is looked at between members, and is Cancel, not a damaged file.
+    #[test]
+    fn a_cancelled_run_stops_between_zip_members() {
+        use std::sync::{Arc, atomic::Ordering};
+        let book = xlsx(&[("S", &[&["name"], &["city"]])]);
+        assert!(check_expansion(&book).is_ok());
+        let probe = Arc::new(crate::progress::tests::Counted::default());
+        probe.cancel.store(true, Ordering::Relaxed);
+        let _installed = crate::progress::install(Some(probe));
+        assert!(matches!(check_expansion(&book), Err(DataError::Cancelled)));
+        assert!(matches!(sheet_names(&book), Err(DataError::Cancelled)));
+        assert!(matches!(columns(&book, None, None), Err(DataError::Cancelled)));
+        assert!(matches!(read(&book, "book", None, &CsvOptions::default()), Err(DataError::Cancelled)));
     }
 
     #[test]

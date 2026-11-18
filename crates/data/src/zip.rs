@@ -139,14 +139,102 @@ pub fn read_matching(bytes: &[u8], want: impl Fn(&str) -> bool) -> Result<Vec<(S
 
 /// [`read_matching`] within `budget` inflated bytes in all (at most [`MAX_TOTAL`]).
 pub fn read_matching_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    read_within(bytes, |name| !name.ends_with('/') && want(name), budget, false).map_err(Failure::message)
+}
+
+/// Why a read failed.
+pub(crate) enum Failure {
+    /// The archive's layout can't be followed: not a zip, or damaged. A file of another kind may
+    /// merely hold these bytes.
+    Layout(String),
+    /// Refused whatever precedes the archive: ZIP64 or too many entries (which other readers
+    /// open), or a member that is encrypted, too large or damaged.
+    Member(String),
+    /// The run was asked to stop between members.
+    Cancelled,
+}
+
+impl Failure {
+    fn message(self) -> String {
+        match self {
+            Failure::Layout(m) | Failure::Member(m) => m,
+            Failure::Cancelled => "cancelled".into(),
+        }
+    }
+}
+
+/// Require a single plausible end record before handing the bytes to a different ZIP reader.
+/// That reader can fall back to earlier records even after locating a central directory.
+fn spreadsheet_end(bytes: &[u8]) -> Result<Option<usize>, Failure> {
+    let mut selected = None;
+    // Cover the ZIP comment window and zip 9.5.1's in-memory record size allowance.
+    let start = bytes.len().saturating_sub((1 << 16) + 64);
+    for at in (start..bytes.len().saturating_sub(21)).rev() {
+        if u32_at(bytes, at) != Some(0x0605_4B50) {
+            continue;
+        }
+        let comment = u16_at(bytes, at + 20).unwrap_or_default();
+        if comment > bytes.len() - at - 22 {
+            continue;
+        }
+        let count = u16_at(bytes, at + 10).unwrap_or_default();
+        let size = u32_at(bytes, at + 12).unwrap_or_default();
+        let offset = u32_at(bytes, at + 16).unwrap_or_default();
+        if size == u32::MAX as usize
+            || offset == u32::MAX as usize
+            || (count == u16::MAX as usize && at.checked_sub(20).and_then(|p| u32_at(bytes, p)) == Some(0x0706_4B50))
+        {
+            return Err(Failure::Member("the archive uses ZIP64, which can't be read yet".into()));
+        }
+        if u32_at(bytes, at + 4) != Some(0) || u16_at(bytes, at + 8) != Some(count) || offset > at || (count != 0 && offset == at) {
+            continue;
+        }
+        if selected.replace(at).is_some() {
+            return Err(Failure::Layout("the ZIP archive has ambiguous end records".into()));
+        }
+    }
+    Ok(selected)
+}
+
+/// Info-ZIP Unicode Path (APPNOTE 4.6.9). zip 9.5.1 ignores the version byte and
+/// applies the last UTF-8 name whose checksum matches the original filename.
+fn effective_name<'a>(raw: &'a [u8], mut extra: &'a [u8]) -> Option<&'a [u8]> {
+    let mut name = raw;
+    let mut raw_crc = None;
+    while !extra.is_empty() {
+        let kind = u16_at(extra, 0)?;
+        let end = 4 + u16_at(extra, 2)?;
+        let field = extra.get(4..end)?;
+        if kind == 0x7075 {
+            let checksum = u32_at(field, 1)?;
+            let candidate = field.get(5..)?;
+            if checksum == *raw_crc.get_or_insert_with(|| crc32(raw) as usize) && std::str::from_utf8(candidate).is_ok() {
+                name = candidate;
+            }
+        }
+        extra = extra.get(end..)?;
+    }
+    Some(name)
+}
+
+/// Every member, including directory payloads (spreadsheet relationships may name any member),
+/// within `budget` inflated bytes in all. Cancel is looked at between members; inflating one
+/// member, up to [`MAX_ENTRY`], isn't interrupted.
+pub(crate) fn read_all_within(bytes: &[u8], budget: usize) -> Result<Vec<(String, Vec<u8>)>, Failure> {
+    read_within(bytes, |_| true, budget, true)
+}
+
+fn read_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: usize, spreadsheet: bool) -> Result<Vec<(String, Vec<u8>)>, Failure> {
     let mut budget = budget.min(MAX_TOTAL);
-    let bad = || "not a zip archive (or a damaged one)".to_string();
-    // The end-of-central-directory record is in the last 64 KiB + 22 bytes.
-    let start = bytes.len().saturating_sub(65_557);
-    let eocd = (start..bytes.len().saturating_sub(21))
-        .rev()
-        .find(|&i| bytes.get(i..i.saturating_add(4)) == Some(&[0x50, 0x4B, 0x05, 0x06]))
-        .ok_or_else(bad)?;
+    let bad = || Failure::Layout("not a zip archive (or a damaged one)".to_string());
+    let eocd = if spreadsheet {
+        spreadsheet_end(bytes)?
+    } else {
+        // The ZIP end record is in the last 64 KiB + 22 bytes.
+        let start = bytes.len().saturating_sub(65_557);
+        (start..bytes.len().saturating_sub(21)).rev().find(|&i| u32_at(bytes, i) == Some(0x0605_4B50))
+    }
+    .ok_or_else(bad)?;
     // ZIP64 puts its 20-byte locator immediately before the ordinary end record.
     // Its count may be a sentinel even when all individual entries fit plain ZIP.
     let zip64_locator = zip64_end(bytes, eocd).is_some();
@@ -154,15 +242,34 @@ pub fn read_matching_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: u
         || u32_at(bytes, add(&[eocd, 12]).ok_or_else(bad)?) == Some(0xFFFF_FFFF)
         || u32_at(bytes, add(&[eocd, 16]).ok_or_else(bad)?) == Some(0xFFFF_FFFF)
     {
-        return Err("the archive uses ZIP64, which can't be read yet".into());
+        return Err(Failure::Member("the archive uses ZIP64, which can't be read yet".into()));
     }
     let count = u16_at(bytes, add(&[eocd, 10]).ok_or_else(bad)?).ok_or_else(bad)?;
     if count > MAX_ENTRIES {
-        return Err(format!("the archive holds {count} entries; at most {MAX_ENTRIES} can be read"));
+        return Err(Failure::Member(format!("the archive holds {count} entries; at most {MAX_ENTRIES} can be read")));
     }
     let mut p = u32_at(bytes, add(&[eocd, 16]).ok_or_else(bad)?).ok_or_else(bad)?;
+    // Like calamine's ZIP reader, allow a preamble whose bytes weren't included in the
+    // recorded offsets, as well as archives whose offsets already include those bytes.
+    let central_size = u32_at(bytes, add(&[eocd, 12]).ok_or_else(bad)?).ok_or_else(bad)?;
+    let central_end = if spreadsheet { eocd.saturating_sub(3) } else { eocd };
+    let abutting = eocd.checked_sub(central_size).filter(|start| *start >= p && (!spreadsheet || *start < central_end));
+    let central = if count == 0 {
+        p
+    } else if let Some(start) = abutting.filter(|start| u32_at(bytes, *start) == Some(0x0201_4B50)) {
+        start
+    } else {
+        // A digital-signature trailer may separate the directory from EOCD. Match
+        // calamine's ZIP lookup: otherwise take the first central header from p.
+        (p..central_end).find(|start| u32_at(bytes, *start) == Some(0x0201_4B50)).ok_or_else(bad)?
+    };
+    let offset = central.checked_sub(p).ok_or_else(bad)?;
+    p = central;
     let mut out = Vec::new();
     for _ in 0..count {
+        if spreadsheet && crate::progress::check().is_err() {
+            return Err(Failure::Cancelled);
+        }
         if u32_at(bytes, p) != Some(0x0201_4B50) {
             return Err(bad());
         }
@@ -175,38 +282,48 @@ pub fn read_matching_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: u
         let (nl, xl, cl) =
             (u16_at(bytes, at(28)?).ok_or_else(bad)?, u16_at(bytes, at(30)?).ok_or_else(bad)?, u16_at(bytes, at(32)?).ok_or_else(bad)?);
         let local = u32_at(bytes, at(42)?).ok_or_else(bad)?;
-        let name = String::from_utf8_lossy(bytes.get(at(46)?..add(&[p, 46, nl]).ok_or_else(bad)?).ok_or_else(bad)?).to_string();
+        let name_end = add(&[p, 46, nl]).ok_or_else(bad)?;
+        let raw = bytes.get(at(46)?..name_end).ok_or_else(bad)?;
+        let name = if spreadsheet {
+            let extra = bytes.get(name_end..add(&[name_end, xl]).ok_or_else(bad)?).ok_or_else(bad)?;
+            effective_name(raw, extra).ok_or_else(bad)?
+        } else {
+            raw
+        };
+        let name = String::from_utf8_lossy(name).into_owned();
         p = add(&[p, 46, nl, xl, cl]).ok_or_else(bad)?;
-        if name.ends_with('/') || !want(&name) {
+        if !want(&name) {
             continue;
         }
         // Say what's wrong first: an encrypted entry or a ZIP64 one isn't damaged data.
         if flags & 1 != 0 {
-            return Err(format!("{name} is encrypted; its contents can't be read"));
+            return Err(Failure::Member(format!("{name} is encrypted; its contents can't be read")));
         }
         if csize == 0xFFFF_FFFF || usize_ == 0xFFFF_FFFF || local == 0xFFFF_FFFF {
-            return Err("the archive uses ZIP64, which can't be read yet".into());
+            return Err(Failure::Member("the archive uses ZIP64, which can't be read yet".into()));
         }
+        let local = local.checked_add(offset).ok_or_else(bad)?;
         let lnl = u16_at(bytes, add(&[local, 26]).ok_or_else(bad)?).ok_or_else(bad)?;
         let lxl = u16_at(bytes, add(&[local, 28]).ok_or_else(bad)?).ok_or_else(bad)?;
         let data_at = add(&[local, 30, lnl, lxl]).ok_or_else(bad)?;
         let body = bytes.get(data_at..add(&[data_at, csize]).ok_or_else(bad)?).ok_or_else(bad)?;
         if usize_ > MAX_ENTRY || usize_ > budget {
-            return Err(format!("{name} is too large"));
+            return Err(Failure::Member(format!("{name} is too large")));
         }
         // Inflate no more than the entry says it holds (and the archive's budget allows).
         let data = match method {
-            0 if csize != usize_ => return Err(format!("{name} is damaged (wrong size)")),
+            0 if csize != usize_ => return Err(Failure::Member(format!("{name} is damaged (wrong size)"))),
             0 => body.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(body, usize_).map_err(|_| format!("{name} is damaged"))?,
-            m => return Err(format!("{name} uses an unsupported compression ({m})")),
+            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(body, usize_)
+                .map_err(|_| Failure::Member(format!("{name} is damaged")))?,
+            m => return Err(Failure::Member(format!("{name} uses an unsupported compression ({m})"))),
         };
         if data.len() != usize_ {
-            return Err(format!("{name} is damaged (wrong size)"));
+            return Err(Failure::Member(format!("{name} is damaged (wrong size)")));
         }
         budget -= data.len();
         if crc32(&data) as usize != crc {
-            return Err(format!("{name} is damaged (checksum mismatch)"));
+            return Err(Failure::Member(format!("{name} is damaged (checksum mismatch)")));
         }
         out.push((name, data));
     }
@@ -216,6 +333,44 @@ pub fn read_matching_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spreadsheet_members_use_unicode_path_names() {
+        let raw = "legacy.txt";
+        let name = "café.txt";
+        let mut archive = write(&[(raw.into(), b"hello".to_vec())]).unwrap();
+        let end = archive.len() - 22;
+        let central = u32_at(&archive, end + 16).unwrap();
+        let mut extra = 0x7075u16.to_le_bytes().to_vec();
+        extra.extend(((5 + name.len()) as u16).to_le_bytes());
+        extra.push(1);
+        extra.extend(crc32(raw.as_bytes()).to_le_bytes());
+        extra.extend(name.as_bytes());
+        archive[central + 30..central + 32].copy_from_slice(&(extra.len() as u16).to_le_bytes());
+        let size = (end - central + extra.len()) as u32;
+        archive[end + 12..end + 16].copy_from_slice(&size.to_le_bytes());
+        archive.splice(end..end, extra);
+        assert!(matches!(read_all_within(&archive, 5), Ok(entries) if entries == [(name.into(), b"hello".to_vec())]));
+        assert_eq!(read(&archive).unwrap()[0].0, raw);
+    }
+
+    #[test]
+    fn spreadsheet_end_records_are_checked_before_accepting_an_empty_zip() {
+        let empty = write(&[]).unwrap();
+        assert!(matches!(read_all_within(&empty, 0), Ok(entries) if entries.is_empty()));
+        let archive = write(&[("a.txt".into(), b"hello".to_vec())]).unwrap();
+        assert!(matches!(
+            read_all_within(&[archive.as_slice(), &empty].concat(), 5),
+            Err(Failure::Layout(m)) if m.contains("ambiguous")
+        ));
+        for bad_field in [8, 20] {
+            let mut invalid = empty.clone();
+            invalid[bad_field] = 1;
+            let archive = [archive.as_slice(), &invalid].concat();
+            assert!(matches!(read_all_within(&archive, 5), Ok(entries) if entries[0].1 == b"hello"));
+            assert!(matches!(read_all_within(&archive, 4), Err(Failure::Member(m)) if m.contains("too large")));
+        }
+    }
 
     #[test]
     fn round_trip() {
