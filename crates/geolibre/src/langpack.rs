@@ -265,7 +265,8 @@ fn english_to_pack(pack: &Pack, tools: &[ToolSpec]) -> HashMap<String, String> {
         let Some(text) = pack.tools.get(spec.id.trim_start_matches(crate::PREFIX)) else { continue };
         put(spec.name, text.name.as_deref());
         put(spec.summary, text.description.as_deref());
-        for p in spec.params {
+        // RustGIS's own output name field isn't the manifest's `output` file the pack describes.
+        for p in spec.params.iter().filter(|p| !crate::is_output_name(p)) {
             let Some((label, help)) = text.params.get(p.name) else { continue };
             put(p.label, label.as_deref());
             put(p.help, help.as_deref());
@@ -594,7 +595,10 @@ mod tests {
                 "toolMeta": {"whitebox": {"contours_from_raster": {
                     "name": "Curvas de nível a partir de raster",
                     "description": "Cria polilinhas de curvas de nível.",
-                    "params": {"interval": {"label": "Intervalo", "description": "Equidistância."}}
+                    "params": {
+                        "interval": {"label": "Intervalo", "description": "Equidistância."},
+                        "output": {"label": "Saída", "description": "Arquivo vetorial de saída."}
+                    }
                 }}},
                 "whitebox": {
                     "categories": {"vector": "Vetor", "remoteSensingSar": "Sensoriamento remoto - SAR"},
@@ -606,14 +610,24 @@ mod tests {
         .to_string()
     }
 
-    static PARAMS: [ParamSpec; 1] = [ParamSpec {
-        name: "interval",
-        label: "Interval",
-        kind: ParamKind::Number,
-        required: false,
-        default: "",
-        help: "Contour interval value.",
-    }];
+    static PARAMS: [ParamSpec; 2] = [
+        ParamSpec {
+            name: "interval",
+            label: "Interval",
+            kind: ParamKind::Number,
+            required: false,
+            default: "",
+            help: "Contour interval value.",
+        },
+        ParamSpec {
+            name: crate::OUTPUT,
+            label: crate::OUTPUT_LABEL,
+            kind: ParamKind::Text,
+            required: false,
+            default: "",
+            help: crate::OUTPUT_HELP,
+        },
+    ];
 
     fn no_run(_: &dyn rustgis_analysis::Inputs, _: &Value) -> Result<rustgis_analysis::ToolResult, String> {
         Err("not run".into())
@@ -659,6 +673,8 @@ mod tests {
         assert_eq!(map.get("Remote Sensing").map(String::as_str), Some("Sensoriamento remoto"));
         assert!(!map.contains_key("SAR"), "the same as the English, or missing: left out");
         assert!(!map.contains_key("SAR Info"), "a tool the pack doesn't name stays in English");
+        // RustGIS's output name field isn't the output file the pack describes (#2224).
+        assert!(!map.contains_key(crate::OUTPUT_LABEL) && !map.contains_key(crate::OUTPUT_HELP), "{map:?}");
     }
 
     #[test]

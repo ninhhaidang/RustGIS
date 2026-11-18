@@ -135,6 +135,22 @@ struct Meta {
     schema: &'static [ParamSpec],
     category: String,
     params: Vec<MetaParam>,
+    /// The form has the [`OUTPUT`] field naming the layers the outputs come back as.
+    names_outputs: bool,
+}
+
+/// The parameter that names a tool's new layers, under the key the built-in tools use (#2224).
+pub const OUTPUT: &str = "output";
+/// The [`OUTPUT`] field's label, as on the built-in tools.
+const OUTPUT_LABEL: &str = "Output Name";
+/// The [`OUTPUT`] field's help: the same text on every tool, so it can be translated.
+const OUTPUT_HELP: &str = "Name of the new layer. Empty: the tool's name. With several outputs, each adds its own name to it. A name already in use gets a number.";
+/// The longest layer name [`OUTPUT`] keeps (the engine's longest name).
+const MAX_OUTPUT_NAME: usize = 200;
+
+/// `p` is the [`OUTPUT`] field RustGIS adds, not one of the manifest's parameters.
+pub fn is_output_name(p: &ParamSpec) -> bool {
+    p.name == OUTPUT && p.label == OUTPUT_LABEL && p.kind == ParamKind::Text
 }
 
 static META: Mutex<Option<HashMap<String, Meta>>> = Mutex::new(None);
@@ -252,7 +268,8 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
         let optional = !p.get("required").and_then(Value::as_bool).unwrap_or(false);
         let default = defaults.and_then(|d| d.get(pname)).filter(|v| optional && !v.is_null()).cloned();
         meta.push(MetaParam { name: pname.to_string(), role, data, default });
-        // Outputs are written to a scratch folder and come back as layers: no form field.
+        // Outputs are written to a scratch folder and come back as layers: no field of their own
+        // (the one [`OUTPUT`] field below names the layers).
         if role == Role::Output {
             continue;
         }
@@ -306,6 +323,19 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
             help: leak(help),
         });
     }
+    // One optional field names the new layers. A tool with an option or input of its own called
+    // `output` keeps it, and its outputs keep the tool's name.
+    let names_outputs = meta.iter().any(|p| p.role == Role::Output) && !params.iter().any(|p| p.name == OUTPUT);
+    if names_outputs {
+        params.push(ParamSpec {
+            name: OUTPUT,
+            label: OUTPUT_LABEL,
+            kind: ParamKind::Text,
+            required: false,
+            default: "",
+            help: OUTPUT_HELP,
+        });
+    }
     let spec = ToolSpec {
         id: leak(format!("{PREFIX}{id}")),
         name: leak(name),
@@ -315,7 +345,7 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
         run: rustgis_analysis::external_placeholder,
     };
     let schema = spec.params;
-    Some((spec, Meta { schema, category, params: meta }))
+    Some((spec, Meta { schema, category, params: meta, names_outputs }))
 }
 
 /// `g` with every point converted by `f`, or `None` when a point can't be (rather than
@@ -626,6 +656,9 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
     };
 
     let n_outputs = meta.params.iter().filter(|p| p.role == Role::Output).count();
+    let given = if meta.names_outputs { output_name(spec, params, &mut job.notes)? } else { None };
+    let base = given.as_deref().unwrap_or(spec.name);
+    let (mut renamed, mut shortened) = (Vec::new(), false);
     for p in &meta.params {
         match p.role {
             Role::Input => {
@@ -638,9 +671,21 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
             Role::Output => {
                 let file = format!("{}.{}", safe(&p.name), output_ext(p, meta));
                 job.args.push((p.name.clone(), Arg::Files(vec![FileRef::Work(file.clone())])));
-                let name =
-                    if n_outputs > 1 { format!("{} {}", spec.name, label_of(&p.name).to_lowercase()) } else { spec.name.to_string() };
-                job.outputs.push((file, name));
+                // Each output's own name after the one given, kept whole within the limit.
+                let suffix = if n_outputs > 1 { format!(" {}", label_of(&p.name).to_lowercase()) } else { String::new() };
+                let room = MAX_OUTPUT_NAME.saturating_sub(suffix.chars().count());
+                shortened |= given.is_some() && base.chars().count() > room;
+                let name: String = base.chars().take(room).chain(suffix.chars()).collect();
+                // A name a layer, a table or an earlier output of this run has gets a number, so two
+                // runs don't give two layers of one name. Said when it was the name given.
+                let taken = |n: &str| {
+                    inputs.dataset(n).is_some() || inputs.raster(n).is_some() || job.outputs.iter().any(|(_, o)| o.eq_ignore_ascii_case(n))
+                };
+                let free = numbered(base, &suffix, taken);
+                if given.is_some() && free != name {
+                    renamed.push(format!("'{name}' is now '{free}'"));
+                }
+                job.outputs.push((file, free));
             }
             Role::Option => {
                 let Some(v) = value_of(&p.name).map(|v| option_value(v, p.data)) else { continue };
@@ -655,7 +700,49 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
             }
         }
     }
+    // One notice per kind, with a count.
+    if !renamed.is_empty() {
+        job.notes.push(format!("{}: {} output name(s) in use already, so numbered: {}", spec.name, renamed.len(), renamed.join(", ")));
+    }
+    if shortened {
+        job.notes.push(format!("{}: the output name is cut to fit each output's own name within {MAX_OUTPUT_NAME} characters", spec.name));
+    }
     Ok(job)
+}
+
+/// The layer name given in [`OUTPUT`], trimmed, or `None` for the tool's own name. Cut to
+/// [`MAX_OUTPUT_NAME`] characters, which is said.
+fn output_name(spec: &ToolSpec, params: &Value, notes: &mut Vec<String>) -> Result<Option<String>, String> {
+    let name = match params.get(OUTPUT) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s.trim(),
+        Some(_) => return Err(format!("{}: '{OUTPUT}' is the new layer's name and must be text", spec.name)),
+    };
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let n = name.chars().count();
+    if n > MAX_OUTPUT_NAME {
+        notes.push(format!("{}: the output name is cut from {n} to {MAX_OUTPUT_NAME} characters", spec.name));
+    }
+    Ok(Some(name.chars().take(MAX_OUTPUT_NAME).collect()))
+}
+
+/// `base` with `suffix` (one output's own name) after it, or, while `taken` claims that, the
+/// first with ` 2`, ` 3`… after the suffix that it doesn't. Each fits [`MAX_OUTPUT_NAME`]
+/// characters by cutting `base`, never the suffix or the number.
+fn numbered(base: &str, suffix: &str, taken: impl Fn(&str) -> bool) -> String {
+    let fit = |tail: &str| -> String {
+        let room = MAX_OUTPUT_NAME.saturating_sub(tail.chars().count());
+        base.chars().take(room).chain(tail.chars()).collect()
+    };
+    let mut name = fit(suffix);
+    let mut k = 1u64;
+    while taken(&name) {
+        k += 1;
+        name = fit(&format!("{suffix} {k}"));
+    }
+    name
 }
 
 /// Coordinates that can't be longitude/latitude (a tool kept the working coordinate system).

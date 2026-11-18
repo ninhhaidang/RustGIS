@@ -1438,6 +1438,11 @@ list syntax, and check the tool's own help for what a weight field left blank me
   become standalone tables; text reports appear in the tool's messages.
 - LiDAR and other inputs RustGIS doesn't open as layers take a file path, read like Add Data
   reads one. Outputs are written to a fresh scratch folder and loaded from there.
+- **Output Name** names the new layer, as on the built-in tools; left empty, the layer takes the
+  tool's name (in English). A tool with several outputs adds each output's name to it
+  (`Flow streams`, `Flow basins`). A name a layer or table already has gets a number
+  (`Contours 2`), and a name you typed that gets one is said in the messages. From the command
+  line it is the same `output` key: `"params":{"input":"dem","output":"Slope 30 m"}`.
 - Each run is a separate `geolibre` process, so a tool that fails can't take RustGIS down.
 - From the command line: `gp.run={"tool":"geolibre:slope","params":{"input":"dem"}}`;
   `gp.tools` lists every tool's parameters, `gp.geolibre` shows the runner in use and
