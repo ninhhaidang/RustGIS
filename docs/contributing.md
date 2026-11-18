@@ -314,6 +314,15 @@ it locally, download the files listed there into one folder, check them with `sh
 the checksums beside them, and run
 `RUSTGIS_WORKFLOW_DATA=<folder> cargo test -p rustgis-engine --test workflows -- --ignored`.
 
+### Performance regressions
+
+When changing a large-data path, add a work budget to an ordinary test. Count what the operation
+does, such as bytes fetched, tiles requested, features decoded or passes over a raster. Use a
+small fixture, check the result as well as the count, and explain the budget beside the assertion.
+Count at the read or processing boundary so repeated work counts too. For example, the
+[GeoTIFF window test](../crates/tiles/src/cog/raster.rs) counts response bytes for a view that
+crosses one source tile boundary. Use timed benchmarks to measure processing speed.
+
 ### Property tests
 
 A property test checks a rule over generated inputs instead of a few written ones: an export

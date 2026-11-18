@@ -643,6 +643,47 @@ mod tests {
         assert_eq!(file_name("https://api.maxar.com/analytics/v1/raster/ortho/geotiff?function=f"), "geotiff");
         assert_eq!(file_name("https://x.org/"), "x.org");
     }
+
+    /// A small view straddles two full-resolution tiles of a much larger file. Count bytes at
+    /// the fetcher so repeated transfers count even if the cache keeps just one copy.
+    #[test]
+    fn a_cog_window_fetches_only_the_header_and_visible_tiles() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let _turn = crate::cache::turn();
+        let url = "https://cog-window-budget.invalid/scene.tif";
+        // Signed samples repeat every 100 pixels, so adjacent 256-pixel tiles differ.
+        let file = example_with(&Example { size: 1024, tile: 256, int8: true, ..Example::default() });
+        let total = file.len();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let count = sent.clone();
+        crate::cache::set_fetcher(move |address, done| {
+            let (base, range) = crate::cache::split_range(&address);
+            assert_eq!(base, url);
+            let part = match range {
+                Some((a, b)) => &file[a as usize..((b + 1) as usize).min(file.len())],
+                None => file.as_slice(),
+            };
+            count.fetch_add(part.len(), Ordering::Relaxed);
+            done(Ok(part.to_vec()));
+        });
+
+        let view = || window(url, 0, (255, 257), (32, 34), &[0], ColorHint::Gray).unwrap();
+        // The first draw starts the header read. The fixture answers each fetch immediately.
+        let _ = view();
+        let result = view();
+        super::super::forget_file(url);
+
+        assert!(!result.pending && !result.failed);
+        let raster = result.raster.expect("a raster window");
+        assert_eq!((raster.width, raster.height), (2, 2));
+        assert_eq!(&raster.bands[0].data[..], &[37.0, 38.0, 38.0, 39.0]);
+        // A 64 KiB initial header read plus two uncompressed 256 × 256 byte tiles.
+        let budget = 192 * 1024;
+        let fetched = sent.load(Ordering::Relaxed);
+        assert!(fetched <= budget, "fetched {fetched} of {total} bytes for a 2 × 2 view (budget {budget})");
+    }
+
     #[test]
     fn a_window_reloads_ready_tiles_rejected_by_a_template_restriction() {
         use std::sync::atomic::{AtomicUsize, Ordering};
