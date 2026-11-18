@@ -145,17 +145,18 @@ pub(crate) type Runs = [Vec<Run>; 4];
 /// under no polygon), in [`SIDES`]' order.
 type Units = [Vec<(f64, f64, Option<usize>)>; 4];
 
-/// The rows, layer, definition query and box a [`Units`] was read for.
+/// The rows, layer, query, query context and box a [`Units`] was read for.
 struct Key {
     rows: Weak<Vec<Feature>>,
     layer: String,
     query: Option<String>,
+    page: Option<Arc<rustgis_data::query::SeriesPage>>,
     sides: [f64; 4],
 }
 
 impl Key {
     fn same(&self, o: &Key) -> bool {
-        self.rows.ptr_eq(&o.rows) && self.layer == o.layer && self.query == o.query && self.sides == o.sides
+        self.rows.ptr_eq(&o.rows) && self.layer == o.layer && self.query == o.query && self.page == o.page && self.sides == o.sides
     }
 }
 
@@ -179,7 +180,7 @@ const KEPT: usize = 4;
 /// longitude and latitude, then the rings reaching the box only, put in Web Mercator) and
 /// tests each piece's middle against the parts whose box holds it. The colours are read each
 /// frame, a few pieces a side.
-pub(crate) fn runs(map: &Map, b: &Block, scale: f64) -> Runs {
+pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::Env) -> Runs {
     let whole = |i: usize| {
         let (lo, hi) = if SIDES[i] & (SOUTH | NORTH) != 0 { (b.x0, b.x1) } else { (b.y0, b.y1) };
         vec![Run { lo, hi, color: b.walls, patterns: Vec::new() }]
@@ -196,11 +197,12 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64) -> Runs {
         rows: layer.dataset.features.allocation_key(),
         layer: layer.name.clone(),
         query: layer.definition_query.clone(),
+        page: env.page.as_ref().filter(|_| layer.definition_query.as_deref().is_some_and(rustgis_data::query::reads_series_page)).cloned(),
         sides: [b.x0, b.y0, b.x1, b.y1],
     };
     let kept = LAST.lock().ok().and_then(|last| last.iter().find(|(k, _)| k.same(&key)).map(|(_, u)| u.clone()));
     let units = kept.unwrap_or_else(|| {
-        let u = Arc::new(units(layer, b));
+        let u = Arc::new(units(layer, b, env));
         if let Ok(mut last) = LAST.lock() {
             last.retain(|(k, _)| k.rows.strong_count() > 0 && !k.same(&key));
             if last.len() >= KEPT {
@@ -210,7 +212,7 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64) -> Runs {
         }
         u
     });
-    let styler = layer.styler(None);
+    let styler = layer.styler_with(env.clone());
     let grow = layer.size_factor(scale);
     let look = |row: Option<usize>| match row {
         None => (b.walls, Vec::new()),
@@ -275,8 +277,8 @@ fn grown(pattern: FillPattern, k: f32) -> FillPattern {
 
 /// Each side of block `b`'s box cut where `layer`'s polygons cross it, with the row of the
 /// topmost polygon over each piece, found at its middle: the contacts go straight down.
-fn units(layer: &rustgis_map::Layer, b: &Block) -> Units {
-    let keep = layer.query_rows(&layer.dataset);
+fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) -> Units {
+    let keep = layer.query_rows_with(&layer.dataset, env);
     // The box in longitude and latitude (Web Mercator keeps north-up boxes north-up), so a part
     // off it is left before its rings are put in Web Mercator.
     let (lo, hi) = (merc_to_lonlat(Coord::new(b.x0, b.y0)), merc_to_lonlat(Coord::new(b.x1, b.y1)));
@@ -820,7 +822,7 @@ mod tests {
     fn walls_take_the_unit_under_the_boxs_edge_with_contacts_straight_down() {
         let (mut m, b) = walls_by_units();
         let cuts = |m: &Map| {
-            let u = units(m.layer_by_name("geo").unwrap(), &b);
+            let u = units(m.layer_by_name("geo").unwrap(), &b, &Default::default());
             u.map(|side| side.iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect::<Vec<_>>())
         };
         let [south, east, north, west] = cuts(&m);
@@ -841,7 +843,7 @@ mod tests {
         assert_eq!(west, vec![(-1000.0, 1000.0, Some(0))]);
         // In one symbol, the polygons merge into one colour; off them, the walls' colour.
         let fill = unit_paint(m.layer_by_name("geo").unwrap().symbol(0).fill, &[], b.walls).0;
-        let r = runs(&m, &b, 10_000.0);
+        let r = runs(&m, &b, 10_000.0, &Default::default());
         assert_eq!(r[0].iter().map(|r| r.color).collect::<Vec<_>>(), vec![fill, b.walls]);
         assert_eq!(r[2].len(), 3, "{:?}", r[2]);
         // A definition query leaves its rows out: without A, the west wall is the walls' colour.
@@ -852,24 +854,24 @@ mod tests {
         let mut copy = m.layers[0].clone();
         copy.id = 99;
         m.layers.push(copy);
-        assert!(runs(&m, &b, 10_000.0).iter().all(|side| side.len() == 1 && side[0].color == b.walls));
+        assert!(runs(&m, &b, 10_000.0, &Default::default()).iter().all(|side| side.len() == 1 && side[0].color == b.walls));
         m.layers.pop();
-        assert_eq!(runs(&m, &b, 10_000.0)[0].len(), 2);
+        assert_eq!(runs(&m, &b, 10_000.0, &Default::default())[0].len(), 2);
         // A hatch over the layer's fill is in every run under a polygon; with a reference scale
         // twice the map's, at twice its size, as on the ground.
         let hatch = FillPattern::Hatch { angle: 0.0, spacing: 4.0, width: 1.0, offset: 0.5 };
         m.layers[0].fill_layers = vec![FillLayer { color: None, pattern: FillPattern::Solid }, FillLayer { color: None, pattern: hatch }];
         let ink = m.layer_by_name("geo").unwrap().symbol(0).fill;
-        assert_eq!(runs(&m, &b, 10_000.0)[0][0].patterns, vec![(hatch, ink)]);
-        assert!(runs(&m, &b, 10_000.0)[0][1].patterns.is_empty(), "off every polygon, none");
+        assert_eq!(runs(&m, &b, 10_000.0, &Default::default())[0][0].patterns, vec![(hatch, ink)]);
+        assert!(runs(&m, &b, 10_000.0, &Default::default())[0][1].patterns.is_empty(), "off every polygon, none");
         m.layers[0].reference_scale = Some(20_000.0);
         let big = FillPattern::Hatch { angle: 0.0, spacing: 8.0, width: 2.0, offset: 1.0 };
-        assert_eq!(runs(&m, &b, 10_000.0)[0][0].patterns, vec![(big, ink)]);
+        assert_eq!(runs(&m, &b, 10_000.0, &Default::default())[0][0].patterns, vec![(big, ink)]);
         m.layers[0].reference_scale = None;
         m.layers[0].fill_layers.clear();
         // No such layer: the walls' colour all along.
         m.view.terrain.as_mut().unwrap().block.as_mut().unwrap().walls_layer = Some("none".into());
-        assert!(runs(&m, &b, 10_000.0).iter().all(|side| side.len() == 1 && side[0].color == b.walls));
+        assert!(runs(&m, &b, 10_000.0, &Default::default()).iter().all(|side| side.len() == 1 && side[0].color == b.walls));
     }
 
     #[test]

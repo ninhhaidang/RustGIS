@@ -45,6 +45,7 @@ fn retain_evenly<T>(items: &mut Vec<T>, kept: usize) {
 pub(crate) struct Query {
     pub text: String,
     pub fields: Vec<Field>,
+    pub env: rustgis_data::query::Env,
 }
 
 /// The bytes of features held at once while a filtered read walks the source.
@@ -66,7 +67,8 @@ pub(super) fn read_mode(
         if full { Ok(whole(source.read(req)?, projection)) } else { read_with_fields(source, req, bytes, projection, estimate, fields) }
     };
     // A query that doesn't parse draws every feature, so the view is read as without one.
-    let Some((scratch, expr)) = query.and_then(|q| parsed_query(source, q)) else { return read(source) };
+    let Some(query) = query else { return read(source) };
+    let Some((scratch, expr)) = parsed_query(source, query) else { return read(source) };
     // A view read whole is filtered exactly by the layer. A sampled one would leave matches out
     // (#1456): the source is walked instead, keeping up to the view's limit of the matches.
     // Half the budget holds them; their projection and display levels take the rest.
@@ -78,7 +80,7 @@ pub(super) fn read_mode(
         return Ok(first);
     }
     drop(first);
-    let (batch, areas) = read_filtered(source, req, if full { usize::MAX } else { bytes / 2 }, scratch, &expr, full)?;
+    let (batch, areas) = read_filtered(source, req, if full { usize::MAX } else { bytes / 2 }, scratch, &expr, full, &query.env)?;
     let (batch, mut cache) = if full { whole(batch, projection) } else { fit(batch, bytes, projection, fields)? };
     cache.filtered = true;
     if rustgis_data::query::uses_area(&expr) {
@@ -138,6 +140,7 @@ fn read_filtered(
     mut scratch: Dataset,
     expr: &Expr,
     strict: bool,
+    env: &rustgis_data::query::Env,
 ) -> Result<(Batch, super::AmbiguousAreas)> {
     let limit = req.limit.max(1);
     let (mut kept, mut kept_bytes, mut step, mut seen) = (Vec::new(), 0usize, 1u64, 0u64);
@@ -158,7 +161,7 @@ fn read_filtered(
         if measures_area && !strict {
             areas.include(super::AmbiguousAreas::from_features(&scratch.features));
         }
-        let keep: Vec<bool> = (0..scratch.features.len()).map(|r| rustgis_data::query::eval(expr, &scratch, r)).collect();
+        let keep: Vec<bool> = (0..scratch.features.len()).map(|r| rustgis_data::query::matches(expr, &scratch, r, env)).collect();
         for (feature, _) in std::mem::take(&mut scratch.features).into_iter().zip(keep).filter(|(_, k)| *k) {
             seen += 1;
             if !(seen - 1).is_multiple_of(step) {
@@ -379,17 +382,18 @@ mod tests {
         ds.push(Some(Geometry::Polygon(vec![vec![bad]])), vec![]);
         let (bytes, _) = rustgis_data::io::write_bytes(&ds, "fgb").unwrap();
         let source = rustgis_data::source::open_bytes("polar.fgb", bytes, None).unwrap();
-        let query = Query { text: "$area > 0".into(), fields: vec![] };
+        let query = Query { text: "$area > 0".into(), fields: vec![], env: Default::default() };
         let req = Request::all();
         let error =
             read_mode(source.as_ref(), &req, usize::MAX, &crate::Projection::WebMercator, 0, true, None, Some(&query)).err().unwrap();
         assert!(error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
         let scratch = Dataset::new("Polar", GeometryType::Polygon, vec![]);
         let expr = rustgis_data::query::parse(&query.text, &scratch).unwrap();
-        let error = read_filtered(source.as_ref(), &Request { extent: None, limit: 1 }, usize::MAX, scratch, &expr, true).unwrap_err();
+        let error =
+            read_filtered(source.as_ref(), &Request { extent: None, limit: 1 }, usize::MAX, scratch, &expr, true, &query.env).unwrap_err();
         assert!(error.to_string().contains("Polar") && error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
         // Text mentioning $area is ordinary text, not a request to measure the geometry.
-        let text = Query { text: "'$area' = '$area'".into(), fields: vec![] };
+        let text = Query { text: "'$area' = '$area'".into(), fields: vec![], env: Default::default() };
         let (batch, _) = read_mode(source.as_ref(), &req, usize::MAX, &crate::Projection::WebMercator, 0, true, None, Some(&text)).unwrap();
         assert_eq!(batch.features.len(), 2);
         struct Opaque(Box<dyn FeatureSource>);

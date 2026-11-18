@@ -68,17 +68,16 @@ impl LabelExprs {
     /// None where nothing parses against the dataset (an expression naming a field since removed
     /// labels as if it weren't set). `map_scale`: the scale (1:N) the map is drawn at, if any.
     pub fn new(by: &LabelBy, ds: &Dataset, map_scale: Option<f64>) -> Option<LabelExprs> {
+        Self::with_env(by, ds, Env::default().at_scale(map_scale))
+    }
+
+    /// Compiles label properties for the drawing scale and page.
+    pub fn with_env(by: &LabelBy, ds: &Dataset, env: Env) -> Option<Self> {
         if by.is_empty() {
             return None;
         }
         let one = |t: &Option<String>| t.as_deref().and_then(|t| query::parse_fields(t, ds).ok());
-        let e = LabelExprs {
-            text: one(&by.text),
-            size: one(&by.size),
-            color: one(&by.color),
-            angle: one(&by.angle),
-            env: Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) },
-        };
+        let e = LabelExprs { text: one(&by.text), size: one(&by.size), color: one(&by.color), angle: one(&by.angle), env };
         (e.text.is_some() || e.size.is_some() || e.color.is_some() || e.angle.is_some()).then_some(e)
     }
 

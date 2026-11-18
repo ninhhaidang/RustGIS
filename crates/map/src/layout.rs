@@ -1369,6 +1369,15 @@ pub struct MapSeries {
     pub page: usize,
 }
 
+/// A series row's name, or its one-based row number when the field is missing, null or blank.
+pub fn series_page_name(layer: &Layer, fi: Option<usize>, row: usize) -> String {
+    fi.map(|i| layer.dataset.value(row, i))
+        .filter(|v| !v.is_null())
+        .map(ToString::to_string)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| (row + 1).to_string())
+}
+
 fn margin() -> f64 {
     0.1
 }
@@ -1413,6 +1422,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Resolves a series' index layer from its frame and the optional page-name column.
+    pub fn series_index<'a>(&self, maps: &'a [Map]) -> Option<(&'a Layer, Option<usize>)> {
+        let series = self.series.as_ref()?;
+        let ElementKind::MapFrame { map, .. } = &self.element(series.frame)?.kind else { return None };
+        let layer = maps.iter().find(|m| m.name.eq_ignore_ascii_case(map))?.layer_by_name(&series.layer)?;
+        Some((layer, layer.dataset.field_index(&series.name_field)))
+    }
+
     pub fn new(name: impl Into<String>, width: f64, height: f64) -> Self {
         Layout {
             name: name.into(),

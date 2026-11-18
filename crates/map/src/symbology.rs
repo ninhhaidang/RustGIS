@@ -1059,11 +1059,13 @@ impl Renderer {
     /// Its class expression ([`Renderer::expression`]) compiled against `ds` for drawing at the
     /// map scale 1:`map_scale` (none: no map, as in an export of the features).
     pub fn classer(&self, ds: &Dataset, map_scale: Option<f64>) -> Classer {
+        self.classer_with(ds, rustgis_data::query::Env::default().at_scale(map_scale))
+    }
+
+    /// Compiles class expressions for the scale and page being drawn.
+    pub fn classer_with(&self, ds: &Dataset, env: rustgis_data::query::Env) -> Classer {
         let Some(text) = self.expression() else { return Classer::default() };
-        Classer {
-            expr: rustgis_data::query::parse_fields(text, ds).ok(),
-            env: rustgis_data::query::Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) },
-        }
+        Classer { expr: rustgis_data::query::parse_fields(text, ds).ok(), env }
     }
 
     /// The first symbol (the single symbol, or a representative).
@@ -1611,6 +1613,11 @@ impl Renderer {
     /// Values by an expression reading `@map_scale` class by. One whose expression would take
     /// more than [`MAX_LEGEND_STEPS`] to class every kept feature lists all its classes.
     pub fn legend_at(&self, ds: &Dataset, rows: &[bool], map_scale: Option<f64>) -> Vec<LegendEntry> {
+        self.legend_with(ds, rows, rustgis_data::query::Env::default().at_scale(map_scale))
+    }
+
+    /// Classes present among the kept rows at the drawing scale and page.
+    pub fn legend_with(&self, ds: &Dataset, rows: &[bool], env: rustgis_data::query::Env) -> Vec<LegendEntry> {
         let Renderer::Unique {
             field,
             classes,
@@ -1647,7 +1654,7 @@ impl Renderer {
         }
         let fi = ds.field_index(field);
         // By expression: each feature classed as it is drawn.
-        let classer = expression.as_ref().map(|_| self.classer(ds, map_scale));
+        let classer = expression.as_ref().map(|_| self.classer_with(ds, env));
         let mut used = vec![false; classes.len()];
         let mut other_used = false;
         // Distinct classes still unseen: once every class and "other" are in, the rest can't add any.
@@ -3267,7 +3274,11 @@ impl<'a> LabelMatcher<'a> {
     /// `map_scale`: the scale (1:N) the labels are drawn at, which a clause may read
     /// (`@map_scale`); none: no map.
     pub fn new(labels: &'a Labeling, ds: &Dataset, map_scale: Option<f64>) -> Self {
-        let env = rustgis_data::query::Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) };
+        Self::with_env(labels, ds, rustgis_data::query::Env::default().at_scale(map_scale))
+    }
+
+    /// Compiles the label class filters with the drawing scale and page available.
+    pub fn with_env(labels: &'a Labeling, ds: &Dataset, env: rustgis_data::query::Env) -> Self {
         LabelMatcher { classes: labels.in_order().map(|c| (c, c.query(ds))).collect(), env }
     }
 

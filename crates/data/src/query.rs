@@ -123,6 +123,12 @@ pub enum Arith {
 pub enum Var {
     /// `@map_scale`, `$scale`: the scale denominator of the map being drawn (null elsewhere).
     MapScale,
+    /// The index feature's id on a map series page.
+    PageFeatureId,
+    /// The displayed map series page name.
+    PageName,
+    /// The one-based map series page number.
+    PageNumber,
     /// `@row_number`: the row's position, from 1.
     RowNumber,
     /// `$id`: the feature's id.
@@ -184,9 +190,27 @@ impl Fault {
 }
 
 /// Values an expression reads from where it runs.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Env {
     pub map_scale: Option<f64>,
+    /// Shared by all expressions and source reads for a layout page.
+    pub page: Option<std::sync::Arc<SeriesPage>>,
+}
+
+/// The index feature and displayed name and number of a map series page.
+#[derive(Debug, PartialEq)]
+pub struct SeriesPage {
+    pub feature_id: u64,
+    pub name: String,
+    /// One-based, as shown in the layout.
+    pub number: usize,
+}
+
+impl Env {
+    /// Use the same page at the drawing scale of the frame, band or labels.
+    pub fn at_scale(&self, map_scale: Option<f64>) -> Self {
+        Self { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0), page: self.page.clone() }
+    }
 }
 
 /// Declares an enum and its `ALL`, every variant in the order declared, from one list, so a
@@ -461,6 +485,17 @@ pub const VARS: &[VarSpec] = &[
         var: Var::MapScale,
         description: "The scale denominator of the map being drawn; null in queries and Calculate Field",
     },
+    VarSpec {
+        names: &["@page_feature_id"],
+        var: Var::PageFeatureId,
+        description: "The map series index feature's id (integer), null outside a series page",
+    },
+    VarSpec { names: &["@page_name"], var: Var::PageName, description: "The map series page's name (text), null outside a series page" },
+    VarSpec {
+        names: &["@page_number"],
+        var: Var::PageNumber,
+        description: "The map series page's number (integer, from 1), null outside a series page",
+    },
     VarSpec { names: &["@row_number"], var: Var::RowNumber, description: "The feature's position in the layer, from 1" },
     VarSpec { names: &["$id"], var: Var::Id, description: "The feature's id" },
     VarSpec { names: &["$area"], var: Var::Measure(Measure::Area, 1.0), description: "A polygon's area in square metres (holes subtract)" },
@@ -569,6 +604,21 @@ const MAX_TERMS: usize = 256;
 const MAX_ARGS: usize = 32;
 /// Longest text an expression makes (bytes); longer results are cut.
 pub const MAX_TEXT: usize = 64 * 1024;
+
+/// Whether a source query can depend on the series page. Quoted text and field names
+/// cannot make the source window depend on a page.
+pub fn reads_series_page(text: &str) -> bool {
+    text.contains('@')
+        && lex(text).is_ok_and(|tokens| {
+            tokens.iter().any(|t| {
+                let Tok::Var(name) = t else { return false };
+                VARS.iter().any(|s| {
+                    matches!(s.var, Var::PageFeatureId | Var::PageName | Var::PageNumber)
+                        && s.names.iter().any(|n| n.eq_ignore_ascii_case(name))
+                })
+            })
+        })
+}
 
 fn lex(s: &str) -> Result<Vec<Tok>, String> {
     lex_spans(s, false).map(|l| l.toks)
@@ -1084,7 +1134,7 @@ impl Parser<'_> {
         match e {
             Expr::Lit(v) => !matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_)),
             Expr::Field(i) => self.ds.fields.get(*i).is_some_and(|f| matches!(f.ty, crate::FieldType::Text) || f.ty.is_temporal()),
-            Expr::Concat(_) => true,
+            Expr::Concat(_) | Expr::Var(Var::PageName) => true,
             Expr::Call(Func::If, args) => args.iter().skip(1).all(|a| self.text_or_date(a)),
             Expr::Call(Func::Coalesce, args) => args.iter().all(|a| self.text_or_date(a)),
             Expr::Call(Func::NullIf, args) => args.first().is_some_and(|a| self.text_or_date(a)),
@@ -1413,7 +1463,15 @@ fn eq(a: &Value, b: &Value) -> bool {
     if let Some((x, y)) = a.temporal_keys(b) {
         return x == y;
     }
+    // Whole numbers compare exactly: through f64, neighbours above 2^53 would be equal.
+    if let (Value::Int(x), Value::Int(y)) = (a, b) {
+        return x == y;
+    }
     match (a.as_f64(), b.as_f64()) {
+        // A whole number against another number: equal exactly when the order says so.
+        (Some(_), Some(_)) if matches!(a, Value::Int(_)) || matches!(b, Value::Int(_)) => {
+            a.partial_cmp(b) == Some(std::cmp::Ordering::Equal)
+        }
         (Some(x), Some(y)) if !matches!(a, Value::Text(_)) || !matches!(b, Value::Text(_)) => x == y,
         _ => a.to_string().eq_ignore_ascii_case(&b.to_string()),
     }
@@ -1791,7 +1849,10 @@ impl<'a> Eval<'a> {
                 (!v.is_null()).then(|| values.iter().any(|x| !x.is_null() && eq(v, x)) != *negate)
             }
             Expr::Cmp { field, op, lit } => compare(ds.value(row, *field), *op, lit),
-            Expr::Compare(op, l, r) => compare(&self.value(l), *op, &self.value(r)),
+            Expr::Compare(op, l, r) => {
+                let (a, b) = (self.value(l), self.value(r));
+                compare(&a, *op, &b)
+            }
             Expr::IsNullExpr { e, negate } => Some(self.value(e).is_null() != *negate),
             Expr::LikeExpr { e, pattern, negate } => {
                 // Out of steps for this row: unknown, without building the text or the pattern.
@@ -1850,6 +1911,11 @@ impl<'a> Eval<'a> {
             Expr::Field(i) => Cow::Borrowed(self.ds.value(self.row, *i)),
             Expr::Var(v) => Cow::Owned(match v {
                 Var::MapScale => self.env.map_scale.map(real).unwrap_or(Value::Null),
+                Var::PageFeatureId => {
+                    self.env.page.as_ref().and_then(|p| i64::try_from(p.feature_id).ok()).map(Value::Int).unwrap_or(Value::Null)
+                }
+                Var::PageName => self.env.page.as_ref().map(|p| Value::Text(p.name.clone())).unwrap_or(Value::Null),
+                Var::PageNumber => self.env.page.as_ref().and_then(|p| i64::try_from(p.number).ok()).map(Value::Int).unwrap_or(Value::Null),
                 Var::RowNumber => i64::try_from(self.row).ok().and_then(|r| r.checked_add(1)).map(Value::Int).unwrap_or(Value::Null),
                 Var::Id => self.ds.features.get(self.row).and_then(|f| i64::try_from(f.id).ok()).map(Value::Int).unwrap_or(Value::Null),
                 Var::Measure(m, size) => self

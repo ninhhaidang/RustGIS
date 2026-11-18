@@ -79,6 +79,7 @@ fn elements(
     source_error: &mut Option<String>,
 ) -> Option<String> {
     let ppp = page_geometry(layout, dpi).2 / PT_PER_MM;
+    let env = crate::layout::series_env(layout, maps);
     let mut s = String::new();
     // The elements drawn as pictures (past the budget): their places, filled in at the end at
     // the resolution they share.
@@ -185,7 +186,8 @@ fn elements(
                 // bounds; past the budget (its own, or the page's with the elements before it), a
                 // picture of it at the pictures' resolution.
                 let mut frames = Vec::new();
-                if let Some((drawing, [ix, iy, ..], k)) = record_element(layout, e.id, maps, dpi, info, &mut frames, source_error)? {
+                if let Some((drawing, [ix, iy, ..], k)) = record_element(layout, e.id, maps, dpi, (info, &env), &mut frames, source_error)?
+                {
                     let total = written.saturating_add(drawing.cost());
                     if !drawing.overflowed() && total <= crate::vector::max_cost() {
                         written = total;
@@ -210,7 +212,7 @@ fn elements(
     let picture_dpi = picture_dpi(layout, dpi, |e| as_pictures.contains(&e.id));
     for id in as_pictures {
         let mut image_tag = String::new();
-        if let Some((image, [ix, iy, iw, ih])) = render_element(layout, id, maps, picture_dpi, info, source_error)? {
+        if let Some((image, [ix, iy, iw, ih])) = render_element(layout, id, maps, picture_dpi, (info, &env), source_error)? {
             let png = image.encode_png().ok()?;
             let _ = writeln!(
                 image_tag,
@@ -519,13 +521,14 @@ mod tests {
         assert!(key.contains(r#"aria-label="Map legend""#) && key.contains("<use xlink:href=\"#glyph"));
         assert!(svg.contains("<defs>") && svg.find("<defs>") < svg.find("<g id=\"element-"));
         // A surround drawn as a picture (past the budget) keeps its page context and transparency.
-        let (pm, _) = render_element(&layout, legend, &mut maps, 72.0, &info, &mut None).unwrap().unwrap();
+        let (pm, _) = render_element(&layout, legend, &mut maps, 72.0, (&info, &Default::default()), &mut None).unwrap().unwrap();
         assert!(pm.pixels().iter().any(|p| p.alpha() == 0), "no opaque page behind the legend");
         assert!(pm.pixels().iter().any(|p| p.alpha() > 0), "the title still uses the frame context");
         let (mut base, mut maps, _) = page();
         let mut expected = crate::layout::render(&base, &mut maps, 72.0, &info).unwrap();
         assert!(pm.width() < expected.width() / 2 && pm.height() < expected.height() / 2, "only the surround's bounds are allocated");
-        let (image, [x, y, ..]) = render_element(&layout, legend, &mut maps, 72.0, &info, &mut None).unwrap().unwrap();
+        let (image, [x, y, ..]) =
+            render_element(&layout, legend, &mut maps, 72.0, (&info, &Default::default()), &mut None).unwrap().unwrap();
         let k = PT_PER_MM * 72.0 / 96.0;
         expected.draw_pixmap(
             (x * k).round() as i32,
@@ -560,7 +563,7 @@ mod tests {
         let (mut layout, mut maps, _) = page();
         let id = layout.add("Picture", (-5.3, 70.2, 20.7, 20.0), ElementKind::Picture { image: String::new() });
         let info = PageInfo::default();
-        let (pm, bounds) = render_element(&layout, id, &mut maps, 36.0, &info, &mut None).unwrap().unwrap();
+        let (pm, bounds) = render_element(&layout, id, &mut maps, 36.0, (&info, &Default::default()), &mut None).unwrap().unwrap();
         let [x, y, w, h] = bounds;
         let k = PT_PER_MM * 36.0 / 96.0;
         assert_eq!(x, 0.0);
@@ -571,7 +574,7 @@ mod tests {
         // Placed at its pixel bounds, as its picture would be.
         assert!(svg.contains(&format!(r#"<g transform="translate({} {}) scale("#, num(x), num(y))), "{svg}");
         layout.element_mut(id).unwrap().x = 110.0;
-        assert!(render_element(&layout, id, &mut maps, 36.0, &info, &mut None).unwrap().is_none());
+        assert!(render_element(&layout, id, &mut maps, 36.0, (&info, &Default::default()), &mut None).unwrap().is_none());
         assert!(layout_svg(&layout, &mut maps, 36.0, &info).is_ok(), "an off-page image is harmless");
     }
 

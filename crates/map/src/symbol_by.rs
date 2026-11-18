@@ -311,14 +311,13 @@ pub struct Styler<'a> {
 }
 
 impl<'a> Styler<'a> {
-    pub(crate) fn new(layer: &'a Layer, map_scale: Option<f64>) -> Styler<'a> {
+    pub(crate) fn new(layer: &'a Layer, env: Env) -> Styler<'a> {
         let by = if layer.graphics || layer.symbol_by.is_empty() {
             None
         } else {
-            let env = Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) };
-            Compiled::new(&layer.symbol_by, &layer.dataset, env, layer.geometry_type() == rustgis_data::GeometryType::Point)
+            Compiled::new(&layer.symbol_by, &layer.dataset, env.clone(), layer.geometry_type() == rustgis_data::GeometryType::Point)
         };
-        let classer = (!layer.graphics && layer.renderer.expression().is_some()).then(|| layer.renderer.classer(&layer.dataset, map_scale));
+        let classer = (!layer.graphics && layer.renderer.expression().is_some()).then(|| layer.renderer.classer_with(&layer.dataset, env));
         let sized =
             layer.size_by.as_ref().filter(|_| SizeBy::applies_to(layer)).and_then(|s| Some((layer.dataset.field_index(&s.field)?, s)));
         Styler { layer, by, classer, sized }

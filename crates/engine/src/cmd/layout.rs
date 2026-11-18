@@ -4957,37 +4957,21 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
 /// The pages of a layout's map series: (count, page name of each row).
 pub fn series_pages(s: &Session, li: usize) -> Option<Vec<String>> {
     let (layer, fi) = series_layer(s, li)?;
-    Some((0..layer.dataset.features.len()).map(|r| page_name(layer, fi, r)).collect())
+    Some((0..layer.dataset.features.len()).map(|r| rustgis_map::layout::series_page_name(layer, fi, r)).collect())
 }
 
 /// A map series' page count and the name of `page`, without naming every page.
 pub fn series_info(s: &Session, li: usize, page: usize) -> Option<(usize, String)> {
     let (layer, fi) = series_layer(s, li)?;
     let n = layer.dataset.features.len();
-    Some((n, if page < n { page_name(layer, fi, page) } else { String::new() }))
+    Some((n, if page < n { rustgis_map::layout::series_page_name(layer, fi, page) } else { String::new() }))
 }
 
 /// A map series' index layer and its name field.
 fn series_layer(input: &impl super::InputSource, li: usize) -> Option<(&rustgis_map::Layer, Option<usize>)> {
     let context = input.input_context();
     let s = &context;
-    let l = s.project.layouts.get(li)?;
-    let sr = l.series.as_ref()?;
-    let map = match l.element(sr.frame).map(|e| &e.kind) {
-        Some(ElementKind::MapFrame { map, .. }) => map,
-        _ => return None,
-    };
-    let layer = s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(map))?.layer_by_name(&sr.layer)?;
-    Some((layer, layer.dataset.field_index(&sr.name_field)))
-}
-
-/// A series row's name, or its one-based row number when the field is missing, null or blank.
-fn page_name(layer: &rustgis_map::Layer, fi: Option<usize>, row: usize) -> String {
-    fi.map(|i| layer.dataset.value(row, i))
-        .filter(|v| !v.is_null())
-        .map(ToString::to_string)
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| (row + 1).to_string())
+    s.project.layouts.get(li)?.series_index(&s.project.maps)
 }
 
 fn series_page(s: &mut Session, p: &Value) -> CmdResult {

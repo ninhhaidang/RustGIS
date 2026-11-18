@@ -63,7 +63,7 @@ fn hostile_input() {
 
 fn v(text: &str) -> Value {
     let d = ds();
-    value(&parse(text, &d).unwrap_or_else(|e| panic!("{text}: {e}")), &d, 0, &Env { map_scale: Some(25_000.0) })
+    value(&parse(text, &d).unwrap_or_else(|e| panic!("{text}: {e}")), &d, 0, &Env { map_scale: Some(25_000.0), ..Env::default() })
 }
 
 fn t(s: &str) -> Value {
@@ -381,7 +381,7 @@ fn junk_never_panics() {
         let s: String = (0..n).map(|_| g.pick(&bits)).collect::<Vec<_>>().join(if g.next().is_multiple_of(2) { " " } else { "" });
         if let Ok(e) = parse(&s, &d) {
             for r in [0, 1, 7, 999] {
-                let _ = value(&e, &d, r, &Env { map_scale: Some(f64::NAN) });
+                let _ = value(&e, &d, r, &Env { map_scale: Some(f64::NAN), ..Env::default() });
                 let _ = eval(&e, &d, r);
             }
         }
@@ -624,6 +624,8 @@ fn where_clauses_compare_dates() {
         assert!(parse(e, &n).is_ok(), "{e}");
     }
     assert!(parse("issued > ts", &d).is_ok(), "two dates compare");
+    assert!(parse("issued = @page_name", &d).is_ok(), "the name of a page can be date text");
+    assert!(parse("issued = @page_number", &d).is_err(), "the page number is numeric");
     // A date without dashes is text no date reads as: an error asking for YYYY-MM-DD. A shorter
     // partial date still compares as text.
     for e in [
@@ -674,7 +676,8 @@ fn catalog_layers() -> Vec<Dataset> {
 
 /// The value `text` gives on the first layer of `layers` it parses on.
 fn catalog_value(text: &str, layers: &[Dataset]) -> Option<Value> {
-    let env = Env { map_scale: Some(25_000.0) };
+    let env =
+        Env { map_scale: Some(25_000.0), page: Some(std::sync::Arc::new(SeriesPage { feature_id: 42, name: "North".into(), number: 1 })) };
     layers.iter().find_map(|d| parse(text, d).ok().map(|e| value(&e, d, 0, &env)))
 }
 
@@ -772,6 +775,40 @@ fn the_user_guide_lists_what_the_catalogs_hold() {
     for k in Kw::ALL {
         assert!(grammar.contains(&format!("\"{}\"", k.word())), "the grammar should use \"{}\"", k.word());
     }
+}
+
+#[test]
+fn page_variables_are_typed_and_null_without_a_series() {
+    let mut ds = ds();
+    let id = 1_u64 << 53;
+    ds.features[0].id = id;
+    ds.features[1].id = id + 1;
+    let env = Env { page: Some(std::sync::Arc::new(SeriesPage { feature_id: id, name: "North".into(), number: 2 })), ..Env::default() };
+    for (text, expected) in [
+        ("@PAGE_FEATURE_ID", Value::Int(i64::try_from(id).unwrap())),
+        ("@page_name", Value::Text("North".into())),
+        ("@page_number", Value::Int(2)),
+    ] {
+        let e = parse(text, &ds).unwrap();
+        assert_eq!(value(&e, &ds, 0, &env), expected);
+        assert_eq!(value(&e, &ds, 0, &Env::default()), Value::Null);
+        assert!(reads_series_page(text));
+    }
+    let same = parse("$id = @page_feature_id", &ds).unwrap();
+    assert!(matches(&same, &ds, 0, &env));
+    assert!(!matches(&same, &ds, 1, &env), "adjacent large feature IDs have different pages");
+    let different = parse("@page_feature_id <> $id", &ds).unwrap();
+    assert!(!matches(&different, &ds, 0, &env));
+    assert!(matches(&different, &ds, 1, &env));
+    let listed = parse("$id IN (@page_feature_id)", &ds).unwrap();
+    assert!(matches(&listed, &ds, 0, &env));
+    assert!(!matches(&listed, &ds, 1, &env), "IN keeps adjacent large IDs apart too");
+    let after = parse("$id > @page_feature_id", &ds).unwrap();
+    assert_eq!((matches(&after, &ds, 0, &env), matches(&after, &ds, 1, &env)), (false, true), "ordering is exact too");
+    let written = parse("$id = '9007199254740993'", &ds).unwrap();
+    assert_eq!((eval(&written, &ds, 0), eval(&written, &ds, 1)), (false, true), "an id written as text is that id");
+    assert!(!eval(&same, &ds, 0));
+    assert!(!reads_series_page("'@page_feature_id' = !@page_number!"));
 }
 
 /// Each error that gives null says which it was; a null read from a field, written, or left by
