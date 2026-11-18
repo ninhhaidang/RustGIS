@@ -19,7 +19,8 @@
 //! list matches nothing, so `2 NOT IN (1, NULL)` is true where SQL makes it unknown. A `LIKE`
 //! too costly to match ([`MAX_LIKE_STEPS`]) is unknown, as is any that would take an expression's
 //! `LIKE`s past what they may take for one row together ([`MAX_ROW_LIKE_STEPS`]). Arithmetic on a
-//! null, a division by zero or an overflow gives null; `+` joins text that isn't a number.
+//! null, a division by zero or an overflow gives null ([`value_or_fault`] says which error it
+//! was); `+` joins text that isn't a number.
 //!
 //! The vocabulary lives in catalogs the parser reads, with a signature and description for
 //! each entry: [`functions`], [`VARS`] and [`Kw`]. Whatever helps write expressions reads them too,
@@ -129,6 +130,57 @@ pub enum Var {
     /// `$area`, `$perimeter`, `$length`, `area(unit)`, `perimeter(unit)`, `line_length(unit)`:
     /// the feature's geometry measured on the WGS 84 ellipsoid, divided by the unit's size.
     Measure(Measure, f64),
+}
+
+/// Why an expression's value is null although nothing it read was: the errors that give null
+/// rather than stop the expression ([`value_or_fault`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Fault {
+    /// `x / 0`, `x % 0`, `0 ^ -1`.
+    DivisionByZero,
+    /// `sqrt` of a number below zero.
+    NegativeRoot,
+    /// `ln` or `log10` of zero or a number below zero.
+    Logarithm,
+    /// A result past the largest number a value holds (`exp(1000)`, `10 ^ 400`).
+    Overflow,
+    /// A result that isn't a number (`(-8) ^ 0.5`), or a stored one that isn't (NaN, infinity).
+    NotANumber,
+    /// Text that isn't a number where one is needed: `-`, `*`, `/`, `%` or `^`, or a number
+    /// argument (`sqrt(name)`, `to_real('abc')`).
+    Text,
+    /// A date where a number is needed: arithmetic, or a number argument.
+    Date,
+    /// `clamp(low, x, high)` with `low` above `high`.
+    ClampBounds,
+}
+
+impl Fault {
+    /// What happened, to follow "because of" in a notice.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Fault::DivisionByZero => "a division by zero",
+            Fault::NegativeRoot => "the square root of a negative number",
+            Fault::Logarithm => "the logarithm of zero or a negative number",
+            Fault::Overflow => "a result too large to represent",
+            Fault::NotANumber => "a value that isn't a finite number",
+            Fault::Text => "text that isn't a number",
+            Fault::Date => "a date used as a number",
+            Fault::ClampBounds => "a clamp whose low bound is above its high bound",
+        }
+    }
+
+    /// The fault of using `v` as a number, when it isn't missing and doesn't read as one. Empty
+    /// or `<null>` text is missing, as a write reads it ([`Value::asks_null`]), not an error.
+    pub fn of_non_number(v: &Value) -> Option<Fault> {
+        match v {
+            _ if v.asks_null() => None,
+            _ if v.as_f64().is_some() => None,
+            Value::Text(_) => Some(Fault::Text),
+            Value::Date(_) | Value::DateTime(_) => Some(Fault::Date),
+            _ => Some(Fault::NotANumber),
+        }
+    }
 }
 
 /// Values an expression reads from where it runs.
@@ -1491,6 +1543,17 @@ pub fn value(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> Value {
     Eval::new(ds, row, env).value(e).into_owned()
 }
 
+/// [`value`], with the error that made it null: `None` for any other value, and for a null the
+/// expression wrote, read from a field or took from an unmet condition. An error inside an `if`
+/// or `CASE` condition only picks the branch, so it isn't the result's. Where several errors
+/// reach the result, the first one met is given.
+pub fn value_or_fault(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> (Value, Option<Fault>) {
+    let eval = Eval::new(ds, row, env);
+    let v = eval.value(e).into_owned();
+    let fault = if v.is_null() { eval.fault.get() } else { None };
+    (v, fault)
+}
+
 /// Whether a value counts as true: a non-zero number, non-empty text; null is unknown.
 fn truth(v: &Value) -> Option<bool> {
     match v {
@@ -1526,36 +1589,69 @@ fn whole(f: f64) -> Value {
     if f.is_finite() && f.abs() < 9e15 { Value::Int(f as i64) } else { real(f) }
 }
 
-/// `a op b`: null with a null or a date, exact on whole numbers where it can be, `+` joining text.
-fn arith(op: Arith, a: &Value, b: &Value) -> Value {
+/// Whether `v` is empty or `<null>` text, which a number read takes as missing
+/// ([`Value::asks_null`]); a null is told apart by whether it carries an error.
+fn blank_text(v: &Value) -> bool {
+    matches!(v, Value::Text(_)) && v.asks_null()
+}
+
+/// A float result, or why it is null: too large, or not a number.
+fn checked(f: f64) -> Result<Value, Fault> {
+    if f.is_finite() {
+        Ok(Value::Float(f))
+    } else if f.is_nan() {
+        Err(Fault::NotANumber)
+    } else {
+        Err(Fault::Overflow)
+    }
+}
+
+/// `a op b`: null with a null, exact on whole numbers where it can be, `+` joining text. An
+/// error (a date, text that isn't a number, a division by zero, an overflow) gives null too,
+/// and says which it was.
+fn arith(op: Arith, a: &Value, b: &Value) -> Result<Value, Fault> {
+    if a.is_null() || b.is_null() {
+        return Ok(Value::Null);
+    }
     // Arithmetic on dates, which the parser refuses on a date field, is null from anything else
     // that gives a date (`coalesce(issued, closed) + 1`).
-    if a.is_null() || b.is_null() || a.temporal_key().is_some() || b.temporal_key().is_some() {
-        return Value::Null;
+    if a.temporal_key().is_some() || b.temporal_key().is_some() {
+        return Err(Fault::Date);
     }
     let (Some(x), Some(y)) = (a.as_f64(), b.as_f64()) else {
-        return if op == Arith::Add { text(format!("{a}{b}")) } else { Value::Null };
+        // `+` joins text, but a stored NaN or infinity isn't text to join (`inf + 1` isn't `inf1`).
+        if op == Arith::Add {
+            if a.is_non_finite() || b.is_non_finite() {
+                return Err(Fault::NotANumber);
+            }
+            return Ok(text(format!("{a}{b}")));
+        }
+        // Neither is at fault when the one that isn't a number is missing (empty text).
+        return Fault::of_non_number(a).or(Fault::of_non_number(b)).map_or(Ok(Value::Null), Err);
     };
     if let (Value::Int(i), Value::Int(j)) = (a, b) {
         let exact = match op {
             Arith::Add => i.checked_add(*j),
             Arith::Sub => i.checked_sub(*j),
             Arith::Mul => i.checked_mul(*j),
-            Arith::Mod => return i.checked_rem(*j).map(Value::Int).unwrap_or(Value::Null),
+            Arith::Mod if *j == 0 => return Err(Fault::DivisionByZero),
+            // Exact with a divisor that isn't 0: `i64::MIN % -1` is 0.
+            Arith::Mod => return Ok(Value::Int(i.wrapping_rem(*j))),
             _ => None,
         };
         if let Some(v) = exact {
-            return Value::Int(v);
+            return Ok(Value::Int(v));
         }
     }
     match op {
-        Arith::Add => real(x + y),
-        Arith::Sub => real(x - y),
-        Arith::Mul => real(x * y),
-        Arith::Div if y != 0.0 => real(x / y),
-        Arith::Mod if y != 0.0 => real(x % y),
-        Arith::Pow => real(x.powf(y)),
-        _ => Value::Null,
+        Arith::Add => checked(x + y),
+        Arith::Sub => checked(x - y),
+        Arith::Mul => checked(x * y),
+        Arith::Div | Arith::Mod if y == 0.0 => Err(Fault::DivisionByZero),
+        Arith::Div => checked(x / y),
+        Arith::Mod => checked(x % y),
+        Arith::Pow if x == 0.0 && y < 0.0 => Err(Fault::DivisionByZero),
+        Arith::Pow => checked(x.powf(y)),
     }
 }
 
@@ -1588,16 +1684,74 @@ struct Eval<'a> {
     env: &'a Env,
     /// The steps left for the expression's `LIKE`s on this row ([`MAX_ROW_LIKE_STEPS`] in all).
     like_steps: Cell<usize>,
+    /// The first error that gave null on this row ([`value_or_fault`]).
+    fault: Cell<Option<Fault>>,
 }
 
 impl<'a> Eval<'a> {
     fn new(ds: &'a Dataset, row: usize, env: &'a Env) -> Self {
-        Eval { ds, row, env, like_steps: Cell::new(MAX_ROW_LIKE_STEPS) }
+        Eval { ds, row, env, like_steps: Cell::new(MAX_ROW_LIKE_STEPS), fault: Cell::new(None) }
+    }
+
+    /// Null, for the error `fault`, kept when it is the row's first.
+    fn fail(&self, fault: Fault) -> Value {
+        if self.fault.get().is_none() {
+            self.fault.set(Some(fault));
+        }
+        Value::Null
+    }
+
+    /// A result that may have failed ([`checked`], [`arith`]): its value, or null and the fault kept.
+    fn or_fail(&self, v: Result<Value, Fault>) -> Value {
+        v.unwrap_or_else(|f| self.fail(f))
+    }
+
+    /// An operator's operand `e`: its value, and whether it is missing (null without an error of
+    /// its own). Its error, if any, joins the errors met so far.
+    fn operand(&self, e: &'a Expr) -> (Cow<'a, Value>, bool) {
+        let before = self.fault.take();
+        let v = self.value(e);
+        let own = self.fault.get();
+        self.fault.set(before.or(own));
+        let missing = v.is_null() && own.is_none();
+        (v, missing)
+    }
+
+    /// `v` as a number argument: text or a date that isn't one is an error, a null just null.
+    fn num(&self, v: &Value) -> Option<f64> {
+        if let Some(fault) = Fault::of_non_number(v) {
+            self.fail(fault);
+        }
+        v.as_f64()
+    }
+
+    /// `f`, whose errors only decide something (a branch, an arm, what `nullif` compares with)
+    /// and so aren't kept as the result's.
+    fn deciding<T>(&self, f: impl FnOnce() -> T) -> T {
+        let kept = self.fault.get();
+        let out = f();
+        self.fault.set(kept);
+        out
+    }
+
+    /// Whether the condition `e` holds, for choosing a branch ([`deciding`](Self::deciding)).
+    fn branch(&self, e: &'a Expr) -> Option<bool> {
+        self.deciding(|| self.cond(e))
     }
 
     /// SQL's three-valued logic: `None` is "unknown", what a comparison with a null gives. `NOT`
-    /// leaves it unknown, so `NOT (pop > 100)` doesn't match a row whose `pop` is null.
+    /// leaves it unknown, so `NOT (pop > 100)` doesn't match a row whose `pop` is null. An error
+    /// inside `e` stays the row's only while `e` is unknown, as [`value`](Self::value) keeps one.
     fn cond(&self, e: &'a Expr) -> Option<bool> {
+        let outer = self.fault.take();
+        let hit = self.cond_of(e);
+        let inner = self.fault.get();
+        self.fault.set(if hit.is_none() { outer.or(inner) } else { outer });
+        hit
+    }
+
+    /// [`cond`](Self::cond), before keeping or dropping the errors met inside it.
+    fn cond_of(&self, e: &'a Expr) -> Option<bool> {
         let (ds, row) = (self.ds, self.row);
         match e {
             Expr::And(terms) => {
@@ -1679,7 +1833,18 @@ impl<'a> Eval<'a> {
     }
 
     /// `e`'s value on this row: null where it can't be worked out (a missing field, an error).
+    /// An error inside `e` stays the row's only while `e` is null: `coalesce(a / 0, 0) / b`, with
+    /// `b` null, is null because of `b`, not the division `coalesce` replaced.
     fn value(&self, e: &'a Expr) -> Cow<'a, Value> {
+        let outer = self.fault.take();
+        let v = self.value_of(e);
+        let inner = self.fault.get();
+        self.fault.set(if v.is_null() { outer.or(inner) } else { outer });
+        v
+    }
+
+    /// [`value`](Self::value), before keeping or dropping the errors met inside it.
+    fn value_of(&self, e: &'a Expr) -> Cow<'a, Value> {
         match e {
             Expr::Lit(v) => Cow::Borrowed(v),
             Expr::Field(i) => Cow::Borrowed(self.ds.value(self.row, *i)),
@@ -1698,32 +1863,48 @@ impl<'a> Eval<'a> {
                     .map(|v| real(v / size))
                     .unwrap_or(Value::Null),
             }),
+            // An operand that is missing (null without an error) makes the result null whatever
+            // else failed, so an error is the result's only when no operand is missing:
+            // `1 / 0 + pop`, with `pop` null, is null because of `pop`.
+            // Empty or `<null>` text is missing to every operator but `+`, which joins it.
             Expr::Chain(first, rest) => {
-                let mut acc = self.value(first).into_owned();
+                let (first, mut missing) = self.operand(first);
+                let mut acc = first.into_owned();
                 for (op, t) in rest {
-                    acc = arith(*op, &acc, &self.value(t));
+                    let (v, m) = self.operand(t);
+                    // The result so far counts too: `'' + '' - x` takes `-` on empty text.
+                    missing |= m || (*op != Arith::Add && (blank_text(&acc) || blank_text(&v)));
+                    acc = self.or_fail(arith(*op, &acc, &v));
+                }
+                if missing {
+                    self.fault.set(None);
                 }
                 Cow::Owned(acc)
             }
             Expr::Concat(terms) => {
                 let mut s = String::new();
+                let mut null = false;
                 for t in terms {
-                    let v = self.value(t);
-                    if v.is_null() {
+                    let (v, missing) = self.operand(t);
+                    if missing {
+                        self.fault.set(None);
                         return Cow::Owned(Value::Null);
                     }
-                    if s.len() <= MAX_TEXT {
+                    // Null from an error: the rest are read only to see whether one is missing.
+                    null |= v.is_null();
+                    if !null && s.len() <= MAX_TEXT {
                         s.push_str(&v.to_string());
                     }
                 }
-                Cow::Owned(text(s))
+                Cow::Owned(if null { Value::Null } else { text(s) })
             }
             Expr::Case { subject, arms, otherwise } => {
-                let subject = subject.as_ref().map(|s| self.value(s));
+                // The subject only picks the arm.
+                let subject = subject.as_ref().map(|s| self.deciding(|| self.value(s)));
                 for (when, then) in arms {
                     let hit = match &subject {
-                        Some(s) => compare(s, Op::Eq, &self.value(when)),
-                        None => self.cond(when),
+                        Some(s) => self.deciding(|| compare(s, Op::Eq, &self.value(when))),
+                        None => self.branch(when),
                     };
                     if hit == Some(true) {
                         return self.value(then);
@@ -1740,23 +1921,59 @@ impl<'a> Eval<'a> {
     }
 
     /// The value of the function `f` over `args` on this row.
+    /// As for an operator, a missing argument (null without an error of its own) is why a null
+    /// result is null, whatever else failed: `clamp(pop, 1 / 0, 5)`, with `pop` null. Not for
+    /// the functions that skip nulls (`coalesce`, `min`, `max`): there each null argument is a
+    /// cause, and fixing the error alone gives a value (`coalesce(1 / 0, pop)`).
     fn call(&self, f: Func, args: &'a [Expr]) -> Cow<'a, Value> {
-        let arg = |i: usize| args.get(i).map(|a| self.value(a)).unwrap_or(Cow::Owned(Value::Null));
-        let n = |i: usize| arg(i).as_f64();
+        let missing = Cell::new(false);
+        let v = self.call_with(f, args, &missing);
+        if missing.get() && v.is_null() && !matches!(f, Func::Coalesce | Func::Min | Func::Max) {
+            self.fault.set(None);
+        }
+        v
+    }
+
+    /// [`call`](Self::call), noting in `missing` an argument read that was missing.
+    fn call_with(&self, f: Func, args: &'a [Expr], missing: &Cell<bool>) -> Cow<'a, Value> {
+        let read = |a: &'a Expr| {
+            let (v, m) = self.operand(a);
+            if m {
+                missing.set(true);
+            }
+            v
+        };
+        let arg = |i: usize| args.get(i).map(read).unwrap_or(Cow::Owned(Value::Null));
+        // A number argument; empty or `<null>` text there is missing, as a null is.
+        let number = |v: &Value| {
+            if blank_text(v) {
+                missing.set(true);
+            }
+            self.num(v)
+        };
+        let n = |i: usize| number(&arg(i));
         let txt = |i: usize| {
             let v = arg(i);
             (!v.is_null()).then(|| v.to_string())
         };
-        let num1 = |g: fn(f64) -> f64| Cow::Owned(n(0).map(|x| real(g(x))).unwrap_or(Value::Null));
+        let num1 = |g: fn(f64) -> f64| Cow::Owned(n(0).map(|x| self.or_fail(checked(g(x)))).unwrap_or(Value::Null));
+        // A function of positive numbers only (`sqrt`, `ln`): `fault` below its domain.
+        let num_from = |g: fn(f64) -> f64, zero_ok: bool, fault: Fault| {
+            Cow::Owned(match n(0) {
+                Some(x) if x < 0.0 || (x == 0.0 && !zero_ok) => self.fail(fault),
+                Some(x) => self.or_fail(checked(g(x))),
+                None => Value::Null,
+            })
+        };
         let text1 = |g: fn(&str) -> String| Cow::Owned(txt(0).map(|s| text(g(&s))).unwrap_or(Value::Null));
         Cow::Owned(match f {
             Func::If => {
-                let pick = if args.first().and_then(|c| self.cond(c)) == Some(true) { 1 } else { 2 };
+                let pick = if args.first().and_then(|c| self.branch(c)) == Some(true) { 1 } else { 2 };
                 return arg(pick);
             }
             Func::Coalesce => {
                 for a in args {
-                    let v = self.value(a);
+                    let v = read(a);
                     if !v.is_null() {
                         return v;
                     }
@@ -1764,7 +1981,9 @@ impl<'a> Eval<'a> {
                 Value::Null
             }
             Func::NullIf => {
-                let (a, b) = (arg(0), arg(1));
+                // `b` is only compared with.
+                let b = || args.get(1).map(|b| self.value(b)).unwrap_or(Cow::Owned(Value::Null));
+                let (a, b) = (arg(0), self.deciding(b));
                 if compare(&a, Op::Eq, &b) == Some(true) {
                     Value::Null
                 } else {
@@ -1772,14 +1991,18 @@ impl<'a> Eval<'a> {
                 }
             }
             Func::Abs => match &*arg(0) {
-                Value::Int(i) => i.checked_abs().map(Value::Int).unwrap_or(Value::Null),
-                v => v.as_f64().map(|x| real(x.abs())).unwrap_or(Value::Null),
+                Value::Int(i) => i.checked_abs().map(Value::Int).unwrap_or_else(|| self.fail(Fault::Overflow)),
+                v => number(v).map(|x| real(x.abs())).unwrap_or(Value::Null),
             },
             Func::Round => {
+                let x = arg(0).into_owned();
+                if blank_text(&x) {
+                    missing.set(true);
+                }
                 let places = if args.len() > 1 { n(1).map(|p| p.clamp(-15.0, 15.0) as i32) } else { Some(0) };
-                match (arg(0).into_owned(), places) {
+                match (x, places) {
                     (Value::Int(i), Some(p)) if p >= 0 => Value::Int(i),
-                    (v, Some(p)) => match v.as_f64() {
+                    (v, Some(p)) => match number(&v) {
                         Some(x) => {
                             let m = 10f64.powi(p);
                             // So large it has no places to round: as it is.
@@ -1793,15 +2016,15 @@ impl<'a> Eval<'a> {
             }
             Func::Floor => n(0).map(|x| whole(x.floor())).unwrap_or(Value::Null),
             Func::Ceil => n(0).map(|x| whole(x.ceil())).unwrap_or(Value::Null),
-            Func::Sqrt => return num1(f64::sqrt),
+            Func::Sqrt => return num_from(f64::sqrt, true, Fault::NegativeRoot),
             Func::Exp => return num1(f64::exp),
-            Func::Ln => return num1(f64::ln),
-            Func::Log10 => return num1(f64::log10),
+            Func::Ln => return num_from(f64::ln, false, Fault::Logarithm),
+            Func::Log10 => return num_from(f64::log10, false, Fault::Logarithm),
             Func::Pi => Value::Float(std::f64::consts::PI),
             Func::Min | Func::Max => {
                 let mut best: Option<(f64, Cow<'a, Value>)> = None;
                 for a in args {
-                    let v = self.value(a);
+                    let v = read(a);
                     let Some(x) = v.as_f64() else { continue };
                     let better = match &best {
                         None => true,
@@ -1816,7 +2039,7 @@ impl<'a> Eval<'a> {
             Func::Clamp => {
                 // Each argument once: evaluated again, nested clamps would cost 2^depth.
                 let (lo, x, hi) = (arg(0), arg(1), arg(2));
-                match (lo.as_f64(), x.as_f64(), hi.as_f64()) {
+                match (number(&lo), number(&x), number(&hi)) {
                     (Some(l), Some(v), Some(h)) if l <= h => {
                         return if v < l {
                             lo
@@ -1826,6 +2049,7 @@ impl<'a> Eval<'a> {
                             x
                         };
                     }
+                    (Some(_), Some(_), Some(_)) => self.fail(Fault::ClampBounds),
                     _ => Value::Null,
                 }
             }
@@ -1834,7 +2058,11 @@ impl<'a> Eval<'a> {
                 match (n(0), n(1), n(2), n(3), n(4), exponent) {
                     (Some(x), Some(d0), Some(d1), Some(r0), Some(r1), Some(e)) => {
                         let t = if d1 == d0 { if x <= d0 { 0.0 } else { 1.0 } } else { ((x - d0) / (d1 - d0)).clamp(0.0, 1.0) };
-                        real(r0 + (r1 - r0) * t.powf(e))
+                        // As `0 ^ -1`: a negative exponent at the domain's start divides by zero.
+                        if t == 0.0 && e < 0.0 {
+                            return Cow::Owned(self.fail(Fault::DivisionByZero));
+                        }
+                        self.or_fail(checked(r0 + (r1 - r0) * t.powf(e)))
                     }
                     _ => Value::Null,
                 }
@@ -1842,7 +2070,7 @@ impl<'a> Eval<'a> {
             Func::ToString => txt(0).map(text).unwrap_or(Value::Null),
             Func::ToInt => match &*arg(0) {
                 Value::Int(i) => Value::Int(*i),
-                v => v.as_f64().map(|x| whole(x.trunc())).unwrap_or(Value::Null),
+                v => number(v).map(|x| whole(x.trunc())).unwrap_or(Value::Null),
             },
             Func::ToReal => n(0).map(Value::Float).unwrap_or(Value::Null),
             Func::Length => txt(0).map(|s| Value::Int(s.chars().count() as i64)).unwrap_or(Value::Null),

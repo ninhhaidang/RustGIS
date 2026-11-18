@@ -773,3 +773,92 @@ fn the_user_guide_lists_what_the_catalogs_hold() {
         assert!(grammar.contains(&format!("\"{}\"", k.word())), "the grammar should use \"{}\"", k.word());
     }
 }
+
+/// Each error that gives null says which it was; a null read from a field, written, or left by
+/// a guarded branch, and an error whose null a later step replaced, say nothing.
+#[test]
+fn errors_say_why_they_are_null() {
+    let d = ds();
+    let why = |text: &str, row: usize| {
+        let e = parse(text, &d).unwrap_or_else(|e| panic!("{text}: {e}"));
+        value_or_fault(&e, &d, row, &Env::default())
+    };
+    for (text, fault) in [
+        ("pop / 0", Fault::DivisionByZero),
+        ("pop % 0", Fault::DivisionByZero),
+        ("1.5 % 0", Fault::DivisionByZero),
+        ("0 ^ -1", Fault::DivisionByZero),
+        ("sqrt(0 - pop)", Fault::NegativeRoot),
+        ("ln(0)", Fault::Logarithm),
+        ("log10(0 - 1)", Fault::Logarithm),
+        ("exp(1000)", Fault::Overflow),
+        ("10 ^ 400", Fault::Overflow),
+        ("(0 - 8) ^ 0.5", Fault::NotANumber),
+        ("name * 2", Fault::Text),
+        ("sqrt(name)", Fault::Text),
+        ("to_real(name)", Fault::Text),
+        ("clamp(10, pop, 0)", Fault::ClampBounds),
+        ("scale_exp(0, 0, 10, 1, 2, -1)", Fault::DivisionByZero),
+        ("round(pop / 0) + 1", Fault::DivisionByZero),
+        // An error's null in either position of an operator still reports.
+        ("(1 / 0) * 2", Fault::DivisionByZero),
+        ("2 * (1 / 0)", Fault::DivisionByZero),
+        ("1 / 0 * 2", Fault::DivisionByZero),
+        ("sqrt(1 / 0)", Fault::DivisionByZero),
+        ("round(1 / 0, 0)", Fault::DivisionByZero),
+        ("nullif(pop / 0, 1)", Fault::DivisionByZero),
+        ("'(' || (pop / 0) || ')'", Fault::DivisionByZero),
+    ] {
+        assert_eq!(why(text, 0), (Value::Null, Some(fault)), "{text}");
+    }
+    // A function that skips nulls has each null argument as a cause: fixing the error alone gives
+    // a value, so the error is said even beside a missing argument.
+    for text in ["coalesce(1 / 0, pop)", "max(1 / 0, pop)", "min(pop, sqrt(-1))"] {
+        assert!(why(text, 3).1.is_some(), "{text}");
+    }
+    // Null in, null out, without an error; what an expression asks for or guards against.
+    for (text, row) in [
+        ("pop / 2", 3),
+        ("null", 0),
+        ("if(pop > 0, 1)", 3),
+        ("if(pop / 0 > 1, 1, null)", 0),
+        ("CASE WHEN pop / 0 > 1 THEN 1 END", 0),
+        ("CASE pop WHEN 1 / 0 THEN 1 END", 0),
+        ("nullif(pop, pop)", 0),
+        // The division's null was replaced; the result is null because `pop` is.
+        ("coalesce(1 / 0, 0) / pop", 3),
+        // An error that only decided a condition, a CASE's arm or what nullif compares with.
+        ("if((1 / 0 IS NULL) AND NULL, 1)", 0),
+        ("CASE 1 / 0 WHEN 1 THEN 2 ELSE NULL END", 0),
+        ("nullif(NULL, 1 / 0)", 0),
+        // A missing operand makes an operator's result null whatever else failed.
+        ("1 / 0 + pop", 3),
+        ("pop * (1 / 0)", 3),
+        ("(1 / 0) || pop", 3),
+        ("clamp(pop, 1 / 0, 5)", 3),
+        // Empty or `<null>` text is missing, not text that isn't a number.
+        ("'' * 2", 0),
+        ("'' * (1 / 0)", 0),
+        ("(1 / 0) - '<null>'", 0),
+        ("sqrt('<null>')", 0),
+        ("clamp('', 1 / 0, 5)", 0),
+        ("'' + '' - (1 / 0)", 0),
+        ("round('', 1 / 0)", 0),
+    ] {
+        assert_eq!(why(text, row), (Value::Null, None), "{text}");
+    }
+    assert_eq!(why("coalesce(pop / 0, 7)", 0), (Value::Int(7), None));
+    // The arm a CASE takes keeps its own error.
+    assert_eq!(why("CASE 1 / 0 WHEN 1 THEN 2 ELSE sqrt(-1) END", 0), (Value::Null, Some(Fault::NegativeRoot)));
+    assert_eq!(why("(1 / 0 IS NULL) AND NULL", 0), (Value::Null, None));
+    assert_eq!(arith(Arith::Mod, &Value::Int(i64::MIN), &Value::Int(-1)), Ok(Value::Int(0)));
+    // A stored infinity or NaN isn't joined as text: `+` on it is null, and says why.
+    let mut odd = Dataset::new("odd", GeometryType::None, vec![Field::new("x", FieldType::Double)]);
+    odd.push(None, vec![Value::Float(f64::INFINITY)]);
+    odd.push(None, vec![Value::Float(f64::NAN)]);
+    for (text, row) in [("x + 1", 0), ("x + 1", 1), ("'pop ' + x", 0)] {
+        let e = parse(text, &odd).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(value_or_fault(&e, &odd, row, &Env::default()), (Value::Null, Some(Fault::NotANumber)), "{text}, row {row}");
+    }
+    assert_eq!(why("sqrt(0)", 0), (Value::Float(0.0), None));
+}

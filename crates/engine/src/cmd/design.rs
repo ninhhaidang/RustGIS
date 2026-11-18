@@ -214,8 +214,9 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     let rows: Vec<usize> = changes.iter().filter_map(|c| c.row).collect();
     // What each calculation rule's whole-number field cut: the rule and the field's name. Each
     // rule's cuts are said, even when a later rule writes the same field: it may read them.
-    // With them, per rule, how many results its field couldn't hold (written as null), and its type.
-    let mut cuts: Vec<(String, String, super::edit::Cuts, usize, FieldType)> = Vec::new();
+    // With them, per rule, the results its field couldn't hold and those an error made null
+    // (`WriteLosses`), and its type.
+    let mut cuts: Vec<(String, String, super::edit::WriteLosses, FieldType)> = Vec::new();
     // Parsing against the fields separates a measurement failure from a stale rule. The latter
     // may still be skipped below, but an ambiguous area must never disable a valid rule.
     let metadata = rustgis_data::Dataset::new(l.dataset.name.clone(), l.dataset.geometry_type, l.dataset.fields.clone());
@@ -243,22 +244,17 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         // A rule that no longer reads (its field was removed, or a hand-edited file) is skipped
         // rather than blocking every edit.
         let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &metadata) else { continue };
-        let mut cut = super::edit::Cuts::default();
-        let mut unread = 0usize;
+        // Counted as Calculate Field counts them.
+        // A change set may repeat a row: its losses are counted once.
+        let mut losses = super::edit::WriteLosses::once_per_row();
         for r in &rows {
-            let result = calc.eval(&l.dataset, *r);
-            let asked_null = result.asks_null();
-            let (v, c) = super::edit::coerce_cut(result, ty);
-            // A result the field can't hold (a date in a number field) is null: counted, as
-            // Calculate Field counts it.
-            unread += usize::from(!asked_null && v.is_null() && c == super::edit::Cut::None);
-            cut.add(c);
+            let v = losses.write(*r, calc.eval_or_fault(&l.dataset, *r), ty);
             if let Some(cell) = l.dataset.features.get_mut(*r).and_then(|f| f.attrs.get_mut(fi)) {
                 *cell = v;
             }
         }
         let name = l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default();
-        cuts.push((rule.name.clone(), name, cut, unread, ty));
+        cuts.push((rule.name.clone(), name, losses, ty));
     }
     // Validation. Domains and contingent values are checked on the fields an edit changed (all
     // of a new feature's), so a value set before the domain doesn't block unrelated edits.
@@ -343,13 +339,10 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     e.modified += counts.modified;
     e.deleted += counts.deleted;
     // Said once the edit is kept: a rejected one changed nothing.
-    for (rule, field, cut, unread, ty) in cuts {
-        for notice in cut.notices(&format!("Attribute rule {rule}"), &field) {
-            s.notify(notice, false);
-        }
-        if unread > 0 {
-            let rows = if unread == 1 { "1 row".to_string() } else { format!("{unread} rows") };
-            s.notify(format!("Attribute rule {rule}: '{field}' is null in {rows}, whose result isn't a {} value", ty.label()), false);
+    for (rule, field, losses, ty) in cuts {
+        let by = crate::notice_text::NoticeText::format("Attribute rule {rule}", [("rule", rule.into())]);
+        for notice in losses.notices(by, &field, ty) {
+            s.notify_text(notice, false);
         }
     }
     Ok(())

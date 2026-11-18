@@ -1098,6 +1098,17 @@ fn date_fields_work_from_adding_to_saving() {
         assert_eq!(notices.contains(&null), said, "{expression}: {notices:?}");
         s.run("data.attributeRule", &json!({"layer": "Cities", "name": "Year", "remove": true})).unwrap();
     }
+    // A rule whose expression fails writes null, and says why.
+    let rule = json!({"layer": "Cities", "name": "Year", "kind": "calculation", "field": "yr", "expression": "1 / 0"});
+    s.run("data.attributeRule", &rule).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "founded", "value": "2026-03-05"})).unwrap();
+    let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(
+        notices.contains(&"Attribute rule Year: 'yr' is null in 1 row because of a division by zero (row 1)".to_string()),
+        "{notices:?}"
+    );
+    s.run("data.attributeRule", &json!({"layer": "Cities", "name": "Year", "remove": true})).unwrap();
     s.run("edit.deleteField", &json!({"layer": "Cities", "field": "yr"})).unwrap();
     // Saved and opened, the values are still dates.
     // Removed however the test ends, and its own each run (the process id alone can repeat).
