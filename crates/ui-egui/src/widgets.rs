@@ -463,6 +463,8 @@ fn big_split_menu_with(
     (primary, arrow)
 }
 
+pub(crate) const SMALL_ICON_BUTTON_WIDTH: f32 = 26.0;
+
 /// A small button: 18 px icon with an optional label.
 pub fn small(ui: &mut Ui, app: &mut RustGisApp, icon: &str, label: &str, desc: &str, id: &str, params: Value, checked: bool) -> Response {
     let on = enabled(app, id);
@@ -502,7 +504,7 @@ fn small_button(
     let (label, desc) = (tl!(label), tl!(desc));
     let t = Tokens::get(ui.ctx());
     let tw = if label.is_empty() { 0.0 } else { text_w(ui, label, regular(11.5)) + 8.0 };
-    let (r, resp) = ui.allocate_exact_size(vec2(26.0 + tw, 22.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(SMALL_ICON_BUTTON_WIDTH + tw, 22.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, on, if label.is_empty() { desc } else { label }));
     bg(ui, r, &resp, checked, &t);
     let ic = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(18.0, 18.0));
@@ -625,6 +627,14 @@ pub fn menu_row(ui: &mut Ui, icon: &str, label: &str, shortcut: &str, on: bool) 
     let resp = row_button(ui, on, button, 4.0);
     menu_icon(ui, &resp, icon);
     resp
+}
+
+/// A menu row with an icon and a highlight when it represents the current choice.
+pub(crate) fn selectable_menu_row(ui: &mut Ui, icon: &str, label: &str, selected: bool) -> Response {
+    let button = egui::Button::selectable(selected, menu_text(ui, icon, label)).min_size(vec2(ui.available_width(), 0.0));
+    let response = ui.add(button);
+    menu_icon(ui, &response, icon);
+    response
 }
 
 /// A menu row with an icon that opens a submenu of `add`'s rows, at least [`SUBMENU_MIN_W`]
