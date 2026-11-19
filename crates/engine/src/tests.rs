@@ -756,6 +756,65 @@ fn geoprocessing_adds_layers_and_history() {
     assert_eq!(s.project.gp_history.len(), 2, "a failed run restores the project");
 }
 
+/// Simulation intersects selected polygons with the query for both count modes; an empty
+/// intersection stays empty, and an unreadable saved query keeps the selection with a notice.
+#[test]
+fn simulation_respects_selected_polygons_and_the_definition_query() {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
+
+    for field_count in [false, true] {
+        for (query, selection, expected) in [
+            ("number = 2", vec![0, 1], vec![1]),
+            ("number = 2", vec![], vec![1]),
+            ("number = 2", vec![0], vec![]),
+            ("", vec![0, 1], vec![0, 1]),
+            ("missing = 1", vec![0, 1], vec![0, 1]),
+        ] {
+            let mut s = Session::new(Project::default());
+            let mut ds = Dataset::new(
+                "Polygons {error}",
+                GeometryType::Polygon,
+                vec![Field::new("number", FieldType::Integer), Field::new("count", FieldType::Integer)],
+            );
+            for row in 0..3 {
+                let x = 10.0 * row as f64;
+                let ring =
+                    vec![Coord::new(x, 0.0), Coord::new(x + 1.0, 0.0), Coord::new(x + 1.0, 1.0), Coord::new(x, 1.0), Coord::new(x, 0.0)];
+                ds.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Cell::Int(row + 1), Cell::Int(2)]);
+            }
+            let id = s.map_mut().add_dataset(ds);
+            let layer = s.map_mut().layer_mut(id).unwrap();
+            layer.selection = selection;
+            // Saved projects can retain a query whose field no longer exists.
+            layer.definition_query = Some(query.into());
+            let mut params = json!({"layer": id, "count": 2, "seed": 3});
+            if field_count {
+                params["field"] = json!("count");
+                params["rate"] = json!(1);
+            }
+            let mark = s.notice_mark();
+            let result = s.run("analysis.simulate", &params).unwrap();
+            assert_eq!(result["points"], expected.len() * 2, "query={query:?}, field_count={field_count}");
+            let output = s.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+            let origins: Vec<_> = (0..output.dataset.features.len()).map(|row| output.dataset.value(row, 0).clone()).collect();
+            let expected_origins: Vec<_> = expected.iter().flat_map(|row| [Cell::Int(*row), Cell::Int(*row)]).collect();
+            assert_eq!(origins, expected_origins);
+            let notices = s.notices_since(mark);
+            assert_eq!(notices.len(), usize::from(query == "missing = 1"), "{notices:?}");
+            if query == "missing = 1" {
+                assert!(notices[0].text.contains("Polygons {error}") && notices[0].text.contains("missing"), "{notices:?}");
+                let translated = notices[0].translated(|key, args| {
+                    assert_eq!(key, "1 layer with an unreadable definition query; reading without that query: {layer}: {error}");
+                    assert_eq!(args.iter().find(|(key, _)| *key == "layer").map(|(_, value)| *value), Some("Polygons {error}"));
+                    assert!(args.iter().any(|(key, value)| *key == "error" && value.contains("missing")));
+                    key.to_string()
+                });
+                assert!(translated.is_some(), "the query fallback must retain a translatable template");
+            }
+        }
+    }
+}
+
 /// A tool reads what its layers show (#1995): the features a definition query keeps, with a
 /// selection cut to them, for the input and for an overlay layer. The Select tools leave out the
 /// features it hides, a layer it hides entirely is refused, and a tool that reads a layer whole

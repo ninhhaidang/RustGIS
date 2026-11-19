@@ -1751,6 +1751,8 @@ fn neighborhood(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"radiusKm": radius / 1000.0, "layers": out}))
 }
 
+/// Generate points in resident polygons kept by the selection and definition query. An
+/// unreadable saved query leaves those polygons unfiltered and is reported once.
 fn simulate(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
@@ -1758,11 +1760,16 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
         return Err("points are simulated inside polygons".into());
     }
     let name = out_name(p, format!("{}_simulated", l.name))?;
-    // The selected polygons, or every visible one.
-    let rows: Vec<usize> = if l.selection.is_empty() {
-        l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect()
-    } else {
-        l.selection.clone()
+    let resolved = l.resolve_rows(&l.dataset, rustgis_map::rows::Policy::SelectionAndQuery, None)?;
+    let query_notice = resolved.query_error.map(|error| {
+        crate::notice_text::NoticeText::format(
+            "1 layer with an unreadable definition query; reading without that query: {layer}: {error}",
+            [("layer", l.name.clone().into()), ("error", error.into())],
+        )
+    });
+    let rows: Vec<usize> = match resolved.rows {
+        rustgis_map::rows::Rows::All => (0..l.dataset.features.len()).collect(),
+        rustgis_map::rows::Rows::Subset(rows) => rows,
     };
     let seed = f(p, "seed").map_or(42, |v| v.max(0.0) as u64);
     let pts: Vec<(usize, Coord)> = match ps(p, "field") {
@@ -1793,6 +1800,9 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
         ds.push(Some(Geometry::Point(*c)), vec![Attr::Int(*r as i64)]);
     }
     let n = ds.features.len();
+    if let Some(notice) = query_notice {
+        s.notify_text(notice, false);
+    }
     let nid = super::layer::add_dataset(s, ds);
     Ok(json!({"layer": nid, "points": n}))
 }
