@@ -10,6 +10,7 @@ pub mod ascii;
 pub mod cog;
 pub mod cogwrite;
 pub mod crs;
+pub mod crs_search;
 mod decoded;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;

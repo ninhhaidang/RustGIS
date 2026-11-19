@@ -150,6 +150,13 @@ pub fn unusable_epsg(code: u32) -> String {
     format!("the coordinate system EPSG:{code} isn't supported")
 }
 
+/// Whether a bare number (`102033`) is read as ESRI's code: it isn't one RustGIS reads as EPSG's
+/// (`2056`, and Web Mercator's `102100`), and ESRI has it. [`Crs::parse`], the coordinate system
+/// boxes and their lists all read a bare number by this.
+pub fn bare_number_is_esri(code: u32) -> bool {
+    Crs::from_epsg(code).is_none() && esri_proj4(code).is_some()
+}
+
 /// The PROJ definition of one of Esri's projected coordinate systems (`ESRI:102033`, South
 /// America Albers), as GDAL 3.13.3 writes it from terrio-crs's catalog of them (PROJ 9.9.0's ESRI
 /// authority), else of one the catalog lacks that RustGIS read before ([`UNCOMPUTED_ESRI`]).
@@ -500,8 +507,9 @@ impl Crs {
         }
     }
 
-    /// A coordinate system given as text: `EPSG:2263`, `2263`, an OGC URN or URL ending in the
-    /// code, WKT, a PROJ string (`+proj=…`, naming no grid or definition files), or an explicit
+    /// A coordinate system given as text: `EPSG:2263`, `2263` (a number EPSG lacks and ESRI has,
+    /// such as `102033`, is ESRI's: [`bare_number_is_esri`]), `ESRI:102033`, an OGC URN or URL
+    /// ending in the code, WKT, a PROJ string (`+proj=…`, naming no grid or definition files), or an explicit
     /// VN-2000 system: `VN-2000 / UTM zone 48N` (EPSG:3405), `… 49N` (EPSG:3406) or
     /// `VN-2000 / TM-3` (EPSG:5897, central meridian 105°). A bare `VN-2000` is ambiguous.
     pub fn parse(text: &str) -> Result<Crs, String> {
@@ -538,9 +546,22 @@ impl Crs {
             return vn2000_epsg(t).and_then(|c| Crs::from_epsg(c.into())).ok_or_else(|| format!("unknown coordinate system '{t}'"));
         }
         let code = t.rsplit([':', '/']).next().unwrap_or(t).trim();
+        // `ESRI:102033`, as the coordinate system boxes offer it and a `.prj` names it.
+        if let Some(rest) = up.strip_prefix("ESRI")
+            && let Some(n) = rest.trim_start().strip_prefix(':').map(str::trim)
+        {
+            let c = Some(n)
+                .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or_else(|| format!("'{t}': an ESRI code is a number, such as ESRI:102033"))?;
+            return esri_crs(c).ok_or_else(|| format!("unknown coordinate system ESRI:{c}"));
+        }
         let known = t.chars().all(|c| c.is_ascii_digit()) || up.contains("EPSG");
         match code.parse::<u32>() {
-            Ok(c) if known => Crs::from_epsg(c).ok_or_else(|| format!("unknown coordinate system EPSG:{c}")),
+            // A bare number EPSG lacks and ESRI lists (`102033`) is ESRI's, as the boxes find it.
+            Ok(c) if known => Crs::from_epsg(c)
+                .or_else(|| (t.bytes().all(|b| b.is_ascii_digit()) && bare_number_is_esri(c)).then(|| esri_crs(c)).flatten())
+                .ok_or_else(|| format!("unknown coordinate system EPSG:{c}")),
             _ => Err(format!("'{t}': give a coordinate system as EPSG:<code>, WKT, or +proj string")),
         }
     }
@@ -2198,6 +2219,24 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An ESRI code reads as the system the picker offers for it (`ESRI:102033`, as a `.prj` and
+    /// the coordinate system boxes name it); one the catalog lacks is refused with its name.
+    #[test]
+    fn an_esri_code_is_read() {
+        for text in ["ESRI:102033", "esri:102033", " ESRI : 102033 "] {
+            assert_eq!(Crs::parse(text).map(|c| c.label()), Ok("ESRI:102033".to_string()), "{text}");
+        }
+        assert!(Crs::parse("ESRI:1").is_err_and(|e| e.contains("ESRI:1")));
+        assert!(Crs::parse("ESRI:x").is_err() && Crs::parse("ESRI:+102033").is_err());
+        // A bare number: EPSG's, else ESRI's.
+        assert_eq!(Crs::parse("102033").map(|c| c.label()), Ok("ESRI:102033".to_string()));
+        assert_eq!(Crs::parse("2056").map(|c| c.epsg()), Ok(2056));
+        assert!(Crs::parse("EPSG:102033").is_err(), "an EPSG code stays EPSG's");
+        // Web Mercator's old number is read as before.
+        assert_eq!(Crs::parse("102100"), Ok(Crs::WebMercator));
+        assert_eq!(Crs::parse("0102033").map(|c| c.label()), Ok("ESRI:102033".to_string()));
+    }
 
     /// A kept transformer that can't be built again when grids arrive goes on as it was, said
     /// once however many grids arrive; one that is built again isn't said.

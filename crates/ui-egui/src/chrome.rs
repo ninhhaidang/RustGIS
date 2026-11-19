@@ -818,7 +818,10 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
     if crate::saveprompt::waiting(app) || ctx.memory(|m| m.top_modal_layer()).is_some() || app.ui.shortcut_editor.capturing() {
         return;
     }
-    if app.ui.history_jump.is_some() && app.dialogs.open.is_none() && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+    if app.ui.history_jump.is_some()
+        && app.dialogs.open.is_none()
+        && !crate::crspicker::list_is_open(ctx)
+        && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
     {
         app.ui.history_jump = None;
     }
@@ -829,6 +832,7 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
     let pass = ctx.cumulative_pass_nr();
     let typing = ctx.egui_wants_keyboard_input()
         || crate::completion::menu_is_open(ctx)
+        || crate::crspicker::list_is_open(ctx)
         || crate::searchbox::had_focus(&app.ui.search, pass)
         || crate::table::had_focus(&app.table, pass);
     // A text field focused, not any widget (a button reached with Tab): it has an undo of its own.

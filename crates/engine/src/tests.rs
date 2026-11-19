@@ -13859,15 +13859,25 @@ fn the_graticule_takes_a_type_and_a_measured_grids_system() {
     // From a file: a system the command would refuse is left out as the project opens, and said;
     // one it takes stays.
     let mut v: Value = serde_json::from_str(&text).unwrap();
-    for (crs, kept) in
-        [("EPSG:4326", false), ("EPSG:4978", false), ("not a system", false), ("x".repeat(5000).as_str(), false), ("EPSG:2056", true)]
-    {
+    for (crs, kept) in [
+        ("EPSG:4326", false),
+        ("EPSG:4978", false),
+        ("not a system", false),
+        ("x".repeat(5000).as_str(), false),
+        ("EPSG:2056", true),
+        // An ESRI code is a system now (the coordinate system boxes offer them).
+        ("ESRI:102033", true),
+    ] {
         v["maps"][0]["graticule_crs"] = json!(crs);
         let mut back = crate::Project::from_json(&v.to_string()).unwrap();
         assert_eq!(back.map().graticule_crs.as_deref(), kept.then_some(crs), "{}", &crs[..crs.len().min(20)]);
         let said = format!("{:?}", back.take_read_notices(&[crate::project::ReadPart::Maps]));
         assert_eq!(said.contains("the measured graticule's coordinate system"), !kept, "{said}");
     }
+    // The fixture: a measured graticule in an ESRI system opens with it, and nothing said.
+    let mut fixture = crate::Project::from_json(include_str!("../../../schema/fixtures/graticule_esri.rgis")).unwrap();
+    assert_eq!((fixture.map().graticule_type, fixture.map().graticule_crs.as_deref()), (GraticuleType::Measured, Some("ESRI:102033")));
+    assert!(fixture.take_read_notices(&[crate::project::ReadPart::Maps]).is_empty());
     // Several maps with one each: one notice, with how many and which.
     let mut many = v.clone();
     many["maps"][0]["graticule_crs"] = json!("EPSG:4326");

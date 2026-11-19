@@ -1868,18 +1868,31 @@ fn graticule_menu(ui: &mut Ui, app: &mut RustGisApp) {
     }
     ui.separator();
     let name = ui.label(tl!("Measured grid's coordinate system"));
-    ui.horizontal(|ui| {
-        let edit = ui.add(egui::TextEdit::singleline(&mut app.ui.graticule_crs_input).hint_text("2056").desired_width(90.0)).on_hover_text(
-            tl!("An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre"),
+    ui.vertical(|ui| {
+        let recent = app.ui.recent_crs.clone();
+        let t = crate::theme::Tokens::get(ui.ctx());
+        let (edit, taken) = crate::crspicker::crs_box(
+            ui,
+            "graticule",
+            &mut app.ui.graticule_crs_input,
+            &recent,
+            crate::crspicker::Offer::Projected,
+            150.0,
+            tl!("name or code"),
+            &t,
         );
+        let edit = edit.on_hover_text(tl!(
+            "A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre"
+        ));
         // Named by the label above it, for a screen reader (the hint is only a placeholder).
         let edit = edit.labelled_by(name.id);
         let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if ui.button(tl!("Use System")).clicked() || enter {
+        if ui.button(tl!("Use System")).clicked() || enter || taken {
             let typed = app.ui.graticule_crs_input.trim();
             let crs = if typed.is_empty() { String::new() } else { crate::dialogs::typed_crs(typed) };
             match app.run("map.graticule", json!({"type": "measured", "crs": crs})) {
                 Ok(_) => {
+                    app.remember_crs_if_listed(&crs);
                     app.ui.graticule_crs_input.clear();
                     ui.close();
                 }
@@ -4033,21 +4046,38 @@ fn start_projection_menu(app: &mut RustGisApp, ui: &mut Ui) {
     big_form_menu(ui, app, "basemap", &label, "The projection the map opens in.", move |ui, app| {
         let mut items: Vec<(String, String)> = vec![("mercator".into(), "Web Mercator".into()), ("globe".into(), "Globe".into())];
         items.extend(rustgis_engine::map::projection::PRESETS.iter().map(|(id, label, _)| (id.to_string(), label.to_string())));
-        for (id, label) in items {
-            if ui.add(egui::Button::selectable(is_projection(&current, &id), tl!(label.as_str()))).clicked() {
-                let _ = app.run("ui.startup", json!({"projection": id}));
-                ui.close();
+        // While a search is typed its list offers the matching ones of these, and the menu stays
+        // within the window.
+        if app.ui.start_projection_input.trim().is_empty() || !crate::crspicker::list_is_shown(ui.ctx()) {
+            for (id, label) in items {
+                if ui.add(egui::Button::selectable(is_projection(&current, &id), tl!(label.as_str()))).clicked() {
+                    let _ = app.run("ui.startup", json!({"projection": id}));
+                    ui.close();
+                }
             }
+            ui.separator();
         }
-        ui.separator();
-        ui.label(tl!("EPSG or ESRI code"));
-        ui.horizontal(|ui| {
-            let edit = ui.add(egui::TextEdit::singleline(&mut app.ui.start_projection_input).hint_text("3010").desired_width(90.0));
+        let name = ui.label(tl!("Search by name or code"));
+        ui.vertical(|ui| {
+            let recent = app.ui.recent_crs.clone();
+            let t = crate::theme::Tokens::get(ui.ctx());
+            let (edit, taken) = crate::crspicker::crs_box(
+                ui,
+                "startProjection",
+                &mut app.ui.start_projection_input,
+                &recent,
+                crate::crspicker::Offer::Map,
+                150.0,
+                tl!("3010, lv95"),
+                &t,
+            );
+            let edit = edit.labelled_by(name.id);
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button(tl!("Use")).clicked() || enter {
+            if ui.button(tl!("Use")).clicked() || enter || taken {
                 let code = crate::dialogs::typed_crs(&app.ui.start_projection_input);
                 match app.run("ui.startup", json!({"projection": code})) {
                     Ok(_) => {
+                        app.remember_crs_if_listed(&code);
                         app.ui.start_projection_input.clear();
                         ui.close();
                     }
@@ -5574,6 +5604,18 @@ mod tests {
             "{:?}",
             h.state().session.notices.last()
         );
+        // Found by name in the open menu: a click on the row uses it and remembers it.
+        // (The menu is still open: a refused system leaves it so.)
+        h.state_mut().ui.graticule_crs_input.clear();
+        let field = || egui::accesskit::Role::TextInput;
+        h.get_by_role_and_label(field(), "Measured grid's coordinate system").click();
+        h.run();
+        h.get_by_role_and_label(field(), "Measured grid's coordinate system").type_text("utm 33n");
+        h.run();
+        h.get_by_label_contains("WGS 84 / UTM zone 33N").click();
+        h.run();
+        assert_eq!(h.state().session.map().graticule_crs.as_deref(), Some("EPSG:32633"));
+        assert_eq!(h.state().ui.recent_crs.first().map(String::as_str), Some("EPSG:32633"));
     }
 
     /// The language list names every language in English while the interface is English, with the

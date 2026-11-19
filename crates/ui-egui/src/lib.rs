@@ -29,6 +29,7 @@ mod connectionui;
 mod connectui;
 mod coordreadout;
 mod copernicusui;
+mod crspicker;
 mod cswui;
 mod cubesui;
 mod diagnosticlog;
@@ -793,6 +794,9 @@ pub struct UiState {
     pub start_projection_input: String,
     /// The coordinate system typed in View › Graticule's menu for the measured grid.
     pub graticule_crs_input: String,
+    /// The coordinate systems last chosen in a coordinate system box, the latest first
+    /// (`crspicker::RECENT_PREF`).
+    pub recent_crs: Vec<String>,
     /// Start-up preference: the extent the map opens on, `[minLon, minLat, maxLon, maxLat]`;
     /// `None` for the full extent.
     pub start_extent: Option<[f64; 4]>,
@@ -1060,6 +1064,7 @@ impl Default for UiState {
             start_projection: String::new(),
             start_projection_input: String::new(),
             graticule_crs_input: String::new(),
+            recent_crs: Vec::new(),
             start_extent: None,
             start_view: None,
             ribbon_minimized: false,
@@ -1673,6 +1678,13 @@ impl RustGisApp {
             self.ui.start_projection = p.code();
         }
         self.ui.start_extent = self.services.load_pref.as_ref().and_then(|load| load("start_extent")).and_then(|v| parse_extent(&v));
+        self.ui.recent_crs = self
+            .services
+            .load_pref
+            .as_ref()
+            .and_then(|load| load(crspicker::RECENT_PREF))
+            .map(|v| crspicker::from_pref(&v))
+            .unwrap_or_default();
         // How new single-band rasters are drawn (Save as Default in the raster Symbology pane).
         if let Some(d) = self.services.load_pref.as_ref().and_then(|load| load(RASTER_DEFAULTS_PREF))
             && let Ok(d) = serde_json::from_str::<rustgis_engine::map::RasterDefaults>(&d)
@@ -2067,6 +2079,11 @@ impl RustGisApp {
                 self.session.notify(error.clone(), true);
                 return Err(error);
             };
+            // Remembered once a file is picked, as on the desktop, not when the picker opened.
+            if let Some(crs) = options.get("crs").and_then(Value::as_str) {
+                let crs = crs.to_string();
+                self.remember_crs_if_listed(&crs);
+            }
             return self.open_bytes_with(name, bytes, Some(options));
         }
         if let Some(picked) = name.strip_prefix(DXF_PICK) {
@@ -2444,6 +2461,30 @@ impl RustGisApp {
                 ),
                 false,
             );
+        }
+    }
+
+    /// Notes `code` as the latest coordinate system used, for the coordinate system boxes, and
+    /// keeps the list.
+    fn remember_crs(&mut self, code: &str) {
+        if crspicker::remember(&mut self.ui.recent_crs, code) {
+            self.save_pref(crspicker::RECENT_PREF, &self.ui.recent_crs.join("\n"));
+        }
+    }
+
+    /// Forgets the recently used coordinate systems.
+    pub(crate) fn clear_recent_crs(&mut self) {
+        self.ui.recent_crs.clear();
+        self.save_pref(crspicker::RECENT_PREF, "");
+    }
+
+    /// [`Self::remember_crs`] for a code the catalog lists (`EPSG:2056`), not a preset or a
+    /// PROJ string, which the coordinate system boxes offer otherwise or can't name.
+    pub(crate) fn remember_crs_if_listed(&mut self, code: &str) {
+        // As the catalog spells it, so `epsg: 2056` and `EPSG:2056` are one system.
+        if let Some(found) = rustgis_engine::data::raster::crs_search::lookup(code) {
+            let code = found.code.clone();
+            self.remember_crs(&code);
         }
     }
 
@@ -4181,6 +4222,8 @@ impl RustGisApp {
                     }
                     open("shapefile");
                 } else if let Some(path) = dialogs::pick_open(&["shp", "zip"], tl!("Shapefile")) {
+                    let text = text.to_string();
+                    self.remember_crs_if_listed(&text);
                     // Read on a thread of its own, as Add Data's other files are.
                     #[cfg(not(target_arch = "wasm32"))]
                     return readjob::run(self, "layer.addData", json!({"path": path, "crs": text}));

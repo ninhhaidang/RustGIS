@@ -757,7 +757,8 @@ ignored. So is an IAU code beside an Earth WKT (a GeoPackage or a FlatGeobuf), w
 
 When a Shapefile's `.prj` is missing or incorrect, right-click its layer and choose
 **Define Projection…** (also in Command Search). Enter the **source** coordinate system, such
-as `EPSG:2263` or a WKT/PROJ definition, then Apply. This reinterprets the native coordinate
+as `EPSG:2263`, `ESRI:102033` or a WKT/PROJ definition, or search it by name (see
+[Finding a coordinate system](maps.md#finding-a-coordinate-system)), then Apply. This reinterprets the native coordinate
 numbers: it changes the layer's position, preserves attributes and selection, and can be undone
 in one step. Use **Zoom To Layer** to see its corrected position. It does not modify the original
 file. Saving the project keeps the definition. Shapefile, GeoPackage and FlatGeobuf exports use

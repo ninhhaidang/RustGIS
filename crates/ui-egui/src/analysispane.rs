@@ -973,12 +973,31 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     .small(),
             );
             ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut app.workflow.env_crs).hint_text("EPSG:32616").desired_width(110.0));
+                let name = ui.label(tl!("Projected system"));
+                let recent = app.ui.recent_crs.clone();
+                // A row taken fills the box; Set Coordinate System applies it, since another
+                // system starts without the cell size set for this one.
+                let (edit, _) = crate::crspicker::crs_box(
+                    ui,
+                    "environment",
+                    &mut app.workflow.env_crs,
+                    &recent,
+                    crate::crspicker::Offer::Projected,
+                    130.0,
+                    "EPSG:32616",
+                    t,
+                );
+                // Named by the label beside it, for a screen reader.
+                edit.labelled_by(name.id);
                 // An empty box sets nothing; clearing the system is its own button, so a click never
                 // clears it and its cell size by accident. Cleared, a run takes the layer's system.
                 let typed = app.workflow.env_crs.trim().to_string();
                 if ui.add_enabled(!typed.is_empty(), egui::Button::new(tl!("Set Coordinate System"))).clicked() {
-                    run(app, "gp.env", json!({"crs": typed}));
+                    let crs = crate::dialogs::typed_crs(&typed);
+                    run(app, "gp.env", json!({"crs": crs}));
+                    if app.workflow.error.is_none() {
+                        app.remember_crs_if_listed(&crs);
+                    }
                 }
                 if ui.add_enabled(env.projected.is_some(), egui::Button::new(tl!("Clear Coordinate System"))).clicked() {
                     run(app, "gp.env", json!({"crs": null}));
