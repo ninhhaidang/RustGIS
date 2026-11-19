@@ -9603,6 +9603,7 @@ mod tests {
         let m = export.join().unwrap();
         assert!(waited, "the export waited for the far band's cast shadows");
         let rl = m.layer(id).and_then(|l| l.raster.as_ref()).unwrap();
+        assert!(rl.cast_shadow_jobs() > 0, "completed light work remains observable");
         assert!(matches!(rl.cast_shadows(false, (0, 0), || {}), rustgis_map::raster::CastShadows::Ready(_)), "and drew them");
     }
 
@@ -9641,10 +9642,7 @@ mod tests {
             }
             render_complete(&mut m, &view).unwrap();
             let rl = m.layer(id).and_then(|l| l.raster.as_ref()).unwrap();
-            assert!(
-                matches!(rl.cast_shadows(false, (0, 0), || {}), rustgis_map::raster::CastShadows::Pending),
-                "grouped {grouped}: nothing was worked out for it"
-            );
+            assert_eq!(rl.cast_shadow_jobs(), 0, "grouped {grouped}: no light work was started");
         }
     }
 

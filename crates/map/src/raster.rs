@@ -746,6 +746,13 @@ impl RasterLayer {
         jobs.iter().map(|j| j.work.waiting.load(std::sync::atomic::Ordering::SeqCst)).sum()
     }
 
+    /// How many light jobs it and its copies keep, including finished ones: for tests of whether
+    /// drawing started work, without starting any work through the inspection itself.
+    #[doc(hidden)]
+    pub fn cast_shadow_jobs(&self) -> usize {
+        self.cast.0.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     /// The light its cast shadows leave on each cell (see [`crate::shadow::light`]), when it is
     /// drawn as Shaded Relief with shadows. Worked out once per pixels, band, sun, Z factor and
     /// mask and kept: each owner's latest, and a few of suns left, for going back.
