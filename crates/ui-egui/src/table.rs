@@ -4,6 +4,7 @@
 mod dates;
 
 use std::collections::HashMap;
+use std::sync::Weak;
 
 use egui::{Sense, Stroke, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
@@ -27,12 +28,61 @@ pub struct TableState {
     /// The pass the cell editor last had the focus in (see [`had_focus`]).
     focus_pass: Option<u64>,
     filter: String,
+    /// The sorted or filtered row indices for the table on screen.
+    row_order: Option<RowOrder>,
     /// Which columns are hidden and in what order, per table (view only, kept for the session).
     views: HashMap<ViewKey, ColumnView>,
     /// The project the views are for ([`rustgis_engine::Session::opened`]).
     opened: u64,
     /// The answer of Statistics… for a column, shown in a window until it is closed.
     stats: Option<ColumnStats>,
+}
+
+struct RowOrder {
+    /// A weak key sees edits and replacements without keeping the old features alive.
+    source: Weak<Vec<Feature>>,
+    sort: Option<(usize, bool)>,
+    filter: String,
+    /// Selection participates only in the selected-only view.
+    selection: Option<Vec<usize>>,
+    indices: Vec<usize>,
+}
+
+impl RowOrder {
+    /// Reuses the row indices until their inputs change. An unsorted, unfiltered view uses the
+    /// selection slice directly, or returns None to display the dataset's rows in place.
+    fn displayed<'a>(
+        cache: &'a mut Option<Self>,
+        ds: &Dataset,
+        sort: Option<(usize, bool)>,
+        filter: &str,
+        selection: Option<&'a [usize]>,
+    ) -> Option<&'a [usize]> {
+        let filter = filter.trim().to_lowercase();
+        if sort.is_none() && filter.is_empty() {
+            *cache = None;
+            return selection;
+        }
+        let source = ds.features.allocation_key();
+        if cache.as_ref().is_none_or(|order| {
+            !order.source.ptr_eq(&source) || order.sort != sort || order.filter != filter || order.selection.as_deref() != selection
+        }) {
+            let mut indices = selection.map_or_else(|| (0..ds.features.len()).collect::<Vec<_>>(), <[usize]>::to_vec);
+            if !filter.is_empty() {
+                indices.retain(|r| {
+                    ds.features.get(*r).is_some_and(|ft| ft.attrs.iter().any(|v| v.to_string().to_lowercase().contains(&filter)))
+                });
+            }
+            if let Some((c, asc)) = sort {
+                indices.sort_by(|a, b| {
+                    let o = ds.value(*a, c).partial_cmp(ds.value(*b, c)).unwrap_or(std::cmp::Ordering::Equal);
+                    if asc { o } else { o.reverse() }
+                });
+            }
+            *cache = Some(Self { source, sort, filter, selection: selection.map(<[usize]>::to_vec), indices });
+        }
+        cache.as_ref().map(|order| order.indices.as_slice())
+    }
 }
 
 /// What `table.statistics` answered for a column of a layer, kept to show.
@@ -133,6 +183,7 @@ pub(crate) fn prune_views(app: &mut RustGisApp) {
         app.table.editing = None;
         app.table.sort = None;
         app.table.sort_schema = None;
+        app.table.row_order = None;
         app.table.opened = app.session.opened;
     }
     let project = &app.session.project;
@@ -315,6 +366,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     }
     if layer_id.is_none() && app.session.table_standalone.is_none() {
         app.table.stats = None;
+        app.table.row_order = None;
         return;
     }
     if app.table.stats.as_ref().is_some_and(|s| !s.of(app, layer_id)) {
@@ -432,19 +484,14 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                     }
                 });
             }
-            // Rows to show.
-            let mut rows: Vec<usize> =
-                if app.table.selected_only && is_layer { selection.clone() } else { (0..ds.features.len()).collect() };
-            let f = app.table.filter.trim().to_lowercase();
-            if !f.is_empty() {
-                rows.retain(|r| ds.features.get(*r).is_some_and(|ft| ft.attrs.iter().any(|v| v.to_string().to_lowercase().contains(&f))));
-            }
-            if let Some((c, asc)) = app.table.sort {
-                rows.sort_by(|a, b| {
-                    let o = ds.value(*a, c).partial_cmp(ds.value(*b, c)).unwrap_or(std::cmp::Ordering::Equal);
-                    if asc { o } else { o.reverse() }
-                });
-            }
+            let rows = RowOrder::displayed(
+                &mut app.table.row_order,
+                &ds,
+                app.table.sort,
+                &app.table.filter,
+                (app.table.selected_only && is_layer).then_some(selection.as_slice()),
+            );
+            let row_count = rows.map_or(ds.features.len(), <[usize]>::len);
             let mut clicked: Option<(usize, bool)> = None;
             let mut commits: Vec<(u64, usize, String, String)> = Vec::new();
             // Whether the cell being typed in was laid out (its row scrolled into view).
@@ -561,8 +608,14 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                         }
                     })
                     .body(|body| {
-                        body.rows(22.0, rows.len(), |mut row| {
-                            let Some(&r) = rows.get(row.index()) else { return };
+                        body.rows(22.0, row_count, |mut row| {
+                            let r = match rows {
+                                Some(rows) => {
+                                    let Some(&index) = rows.get(row.index()) else { return };
+                                    index
+                                }
+                                None => row.index(),
+                            };
                             let sel = selection.contains(&r);
                             row.set_selected(sel);
                             let oid = ds.features.get(r).map(|f| f.id).unwrap_or(0);
@@ -927,6 +980,54 @@ fn fits(text: &str, ty: rustgis_engine::data::FieldType) -> bool {
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    /// The docked table keeps its row order across frames, then refreshes when a view option
+    /// changes or an edit reaches the dataset through the session.
+    #[test]
+    fn table_reuses_row_order_until_inputs_change() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let mut ds = Dataset::new("Parcels", rustgis_engine::data::GeometryType::Point, fields(&["Name"]));
+        for name in ["Bravo parcel", "Alpha parcel", "Other lot"] {
+            ds.push(None, vec![V::Text(name.into())]);
+        }
+        let id = app.session.map_mut().add_dataset(ds);
+        app.session.table_layer = Some(id);
+        app.session.run("edit.enable", &json!({"on": true})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1000.0)).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                app.logic(&ui.ctx().clone());
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(2);
+        h.get_by_label("Name").click();
+        h.run_steps(4);
+        let indices: fn(&RustGisApp) -> &[usize] = |app| app.table.row_order.as_ref().unwrap().indices.as_slice();
+        assert_eq!(indices(h.state()), [1, 0, 2]);
+        let before = indices(h.state()).as_ptr();
+        h.run_steps(3);
+        assert_eq!(indices(h.state()).as_ptr(), before, "unchanged frames reuse the sorted indices");
+
+        h.state_mut().table.filter = " PARCEL ".into();
+        h.run_steps(2);
+        assert_eq!(indices(h.state()), [1, 0]);
+        assert!(h.query_by_label("Other lot").is_none());
+
+        h.get_by_label("Selected only").click();
+        h.state_mut().session.run("select.rows", &json!({"layer": id, "rows": [0, 1], "mode": "new"})).unwrap();
+        h.run_steps(3);
+        assert_eq!(indices(h.state()), [1, 0]);
+        h.state_mut().session.run("select.rows", &json!({"layer": id, "rows": [1, 2], "mode": "new"})).unwrap();
+        h.run_steps(2);
+        assert_eq!(indices(h.state()), [1]);
+        assert!(h.query_by_label("Bravo parcel").is_none());
+
+        h.state_mut().session.run("edit.setValue", &json!({"layer": id, "row": 2, "field": "Name", "value": "Aardvark parcel"})).unwrap();
+        h.run_steps(2);
+        assert_eq!(indices(h.state()), [2, 1]);
+        assert!(h.query_by_label("Aardvark parcel").is_some());
+    }
 
     /// A value typed into a cell is kept on Enter, and Escape leaves the cell as it was (not the
     /// tool: the shortcuts run first, egui has dropped the focus on Escape by then). The editor
