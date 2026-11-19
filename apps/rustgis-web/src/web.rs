@@ -694,19 +694,20 @@ async fn fetch_reached(
                 // A connection's own ArcGIS token (already in the login's address) outranks the portal
                 // sign-in: with one applied, the sign-in's token is neither renewed nor added.
                 let target = logins::inherit(bound, url);
-                let mut login = if prepared.signed { None } else { logins::apply(&target).map_err(str::to_string)? };
+                let bare = prepared.bare();
+                let mut login = if bare { None } else { logins::apply(&target).map_err(str::to_string)? };
                 let explicit = login.as_ref().is_some_and(|applied| applied.arcgis);
                 // An ArcGIS sign-in's token, for the portal and the servers it covers, renewed first when it
                 // is about to expire. It goes as the request's `token` parameter, not a header: ArcGIS's
                 // query endpoints answer the header's CORS preflight with an error.
-                if !prepared.signed && !explicit {
+                if !bare && !explicit {
                     crate::arcgis::renew_if_due(url, still.clone()).await;
                     cache::check_still(&still)?;
                     // The renewal suspended this request: its login is looked at once more.
                     login = logins::apply(&target).map_err(str::to_string)?;
                 }
                 let login_url = login.as_ref().map_or(url, |applied| applied.url.as_str());
-                let arcgis = if prepared.signed || explicit {
+                let arcgis = if bare || explicit {
                     None
                 } else {
                     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_auth::with_token(login_url)
@@ -752,7 +753,8 @@ async fn fetch_reached(
                 // destination. Refuse it instead of letting the browser follow it unchecked.
                 init.set_redirect(if authenticated { web_sys::RequestRedirect::Error } else { web_sys::RequestRedirect::Manual });
                 // A credential-bearing address goes nowhere else: no referrer from it, no cookies with it.
-                if arcgis.is_some() || login.is_some() {
+                // An anonymous request sends no cookies either.
+                if arcgis.is_some() || login.is_some() || prepared.anonymous {
                     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
                     init.set_credentials(web_sys::RequestCredentials::Omit);
                 }
@@ -893,7 +895,7 @@ async fn post_json(
                 }
                 let destination = check_destination(&prepared.url, ceiling)?;
                 let target = logins::inherit(url, &destination);
-                let login = logins::apply(&target).map_err(str::to_string)?;
+                let login = if prepared.anonymous { None } else { logins::apply(&target).map_err(str::to_string)? };
                 let request = match &login {
                     Some(applied) => check_destination(&applied.url, ceiling)?,
                     None => destination,
@@ -916,7 +918,8 @@ async fn post_json(
                 }
                 init.set_headers(&headers);
                 init.set_body(&wasm_bindgen::JsValue::from_str(body));
-                if login.is_some() {
+                // No referrer from a credential-bearing address; an anonymous request sends no cookies.
+                if login.is_some() || prepared.anonymous {
                     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
                     init.set_credentials(web_sys::RequestCredentials::Omit);
                 }
@@ -987,7 +990,7 @@ async fn head(
                 }
                 let destination = check_destination(&prepared.url, ceiling)?;
                 let target = logins::inherit(bound, &destination);
-                let login = logins::apply(&target).map_err(str::to_string)?;
+                let login = if prepared.anonymous { None } else { logins::apply(&target).map_err(str::to_string)? };
                 let request = match &login {
                     Some(applied) => check_destination(&applied.url, ceiling)?,
                     None => destination.clone(),
@@ -1011,7 +1014,8 @@ async fn head(
                     }
                     init.set_headers(&headers);
                 }
-                if login.is_some() {
+                // No referrer from a credential-bearing address; an anonymous request sends no cookies.
+                if login.is_some() || prepared.anonymous {
                     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
                     init.set_credentials(web_sys::RequestCredentials::Omit);
                 }

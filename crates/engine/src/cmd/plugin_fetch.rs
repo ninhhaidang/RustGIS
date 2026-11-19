@@ -3,9 +3,11 @@
 //!
 //! The address must be `http(s)://` and on the internet: never this computer, the local network
 //! or a forbidden address (see `rustgis_tiles::address`), and no redirect may lead there. It is
-//! read anonymously (never signed with an S3 connection's credentials), at most
-//! [`MAX_BYTES`], and must be UTF-8. Answers are kept for a while ([`TTL`]) in a small cache,
-//! so a plugin walking the same chain of documents again doesn't fetch them again.
+//! read anonymously, with no credential at any hop: never signed with an S3 connection's
+//! credentials, and without a login or a sign-in's token (Earthdata, Copernicus Data Space,
+//! ArcGIS; [`s3::Prepared::anonymous`]). At most [`MAX_BYTES`], and it must be UTF-8. Answers
+//! are kept for a while ([`TTL`]) in a small cache, so a plugin walking the same chain of
+//! documents again doesn't fetch them again.
 //!
 //! Natively the request waits for the answer, at most [`TIMEOUT`] each and [`CALL_BUDGET`] for
 //! all of one plugin call's fetches. In the browser nothing may wait: the fetch starts, the

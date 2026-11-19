@@ -603,6 +603,19 @@ pub struct Prepared {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub signed: bool,
+    /// Read anonymously ([`ANONYMOUS`]): it carries no credential of any kind, at any hop. Not
+    /// signed for S3, and the transports add no login and no sign-in's token (Earthdata,
+    /// Copernicus Data Space, ArcGIS), wherever it leads.
+    pub anonymous: bool,
+}
+
+impl Prepared {
+    /// Whether it carries nothing but what preparation gave it: a signed S3 request carries its
+    /// signature alone, an anonymous one (a plugin's `host.fetch`) no credential at all. Either
+    /// gets no login and no sign-in's token (Earthdata, Copernicus Data Space, ArcGIS), at any hop.
+    pub fn bare(&self) -> bool {
+        self.signed || self.anonymous
+    }
 }
 
 /// An exact in-memory S3 selection, never a display or persistence representation.
@@ -685,17 +698,19 @@ fn choice(url: &str) -> Result<Choice, String> {
 /// An address read through a saved connection is signed by that connection alone
 /// ([`bound_target`]), and never read without it. Other addresses pass unchanged.
 pub fn prepare(url: &str) -> Result<Prepared, String> {
+    // An anonymous address is never signed (`choice`), and carries nothing else either.
+    let anonymous = split_anonymous(url).1;
     let Choice { url, signer } = choice(url)?;
     let Some((c, region)) = signer else {
-        return Ok(Prepared { url, headers: Vec::new(), signed: false });
+        return Ok(Prepared { url, headers: Vec::new(), signed: false, anonymous });
     };
     let Some(cr) = c.credentials.as_ref() else {
-        return Ok(Prepared { url, headers: Vec::new(), signed: false });
+        return Ok(Prepared { url, headers: Vec::new(), signed: false, anonymous });
     };
     // Sent in the form it is signed in: the path's parts encoded as S3 encodes them.
     let url = canonical_url(&url)?;
     let headers = sign_get(&url, &region, cr, &amz_date(now_secs()))?;
-    Ok(Prepared { url, headers, signed: true })
+    Ok(Prepared { url, headers, signed: true, anonymous: false })
 }
 
 /// A web address with its path in S3's canonical form: each part decoded, then encoded.

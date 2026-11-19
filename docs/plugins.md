@@ -699,10 +699,12 @@ that needs it left out.
   or cloud metadata addresses, and no redirect may lead there or from `https` to `http`. Names
   are checked as written and again where they resolve, on every redirect too, so a name that
   resolves to this computer or the local network is refused on the desktop and the command line
-  (in the web app, the browser decides what it may reach). Requests carry no credentials (an
-  S3 connection's included) and no headers of the plugin's. On the desktop and the command line
-  they never go through a proxy (`HTTPS_PROXY` and the like are ignored), since a proxy would
-  reach addresses RustGIS can't check.
+  (in the web app, the browser decides what it may reach). Requests carry no credentials, on
+  every redirect too: no S3 connection's signature, no service login, and no Earthdata, Copernicus
+  Data Space or ArcGIS sign-in's token. In the web app they send no cookies. They carry no headers
+  of the plugin's. On the desktop and the command line they never go through a proxy
+  (`HTTPS_PROXY` and the like are ignored), since a proxy would reach addresses RustGIS can't
+  check.
 - At most 2 MB, in UTF-8 (a byte-order mark is dropped). An answer that isn't a success (404,
   500…) is an error ending in `HTTP <status>`.
 - Answers are kept for 10 minutes (up to 256 documents and 16 MB in all) while RustGIS runs,
