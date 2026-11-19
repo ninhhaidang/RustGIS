@@ -23,8 +23,14 @@ impl Query {
     }
 
     /// Match an existing row using the expression language's normal null and variable rules.
-    /// A chunked consumer must supply source-wide row numbering through its traversal adapter.
+    /// For source-wide row numbering in chunks, use [`Self::matches_in_chunk`].
     pub fn matches(&self, dataset: &Dataset, row: usize, env: &query::Env) -> bool {
         self.expr.as_ref().is_none_or(|expr| query::matches(expr, dataset, row, env))
+    }
+
+    /// Match a chunk row with the default expression environment. `offset` counts source rows
+    /// preceding this chunk, including rows earlier chunks excluded; callers own that count.
+    pub fn matches_in_chunk(&self, dataset: &Dataset, row: usize, offset: usize) -> bool {
+        self.expr.as_ref().is_none_or(|expr| query::eval_in_chunk(expr, dataset, row, offset))
     }
 }

@@ -7,8 +7,8 @@
 use std::{borrow::Cow, path::Path};
 
 use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, PROJECTED_FORMATS, check_projected, project_each, write_atomic_with};
-use crate::query::{self, Expr};
 use crate::raster::Crs;
+use crate::rows::Query;
 use crate::source::FeatureSource;
 use crate::{DataError, Dataset, Feature, Field, GeometryType, Result, Value};
 
@@ -81,10 +81,9 @@ pub struct QueryReport {
 
 /// Reads a stored query against the export schema. Blank queries are absent; unreadable queries
 /// leave all rows visible, as when drawing the layer, and carry the reason for the export notice.
-fn export_query(text: Option<&str>, ds: &Dataset) -> (Option<Expr>, QueryReport) {
-    let Some(text) = text.filter(|text| !text.trim().is_empty()) else { return (None, QueryReport::default()) };
-    match query::parse_fields(text, ds) {
-        Ok(expr) => (Some(expr), QueryReport::default()),
+fn export_query(text: Option<&str>, ds: &Dataset) -> (Option<Query>, QueryReport) {
+    match Query::compile(text, ds) {
+        Ok(query) => (query.is_filtered().then_some(query), QueryReport::default()),
         Err(error) => (None, QueryReport { filtered: 0, parse_error: Some(error) }),
     }
 }
@@ -138,7 +137,7 @@ fn write_chunks_to(
     crs: Crs,
     gpkg: &GpkgTable,
     bytes: usize,
-    query: Option<&Expr>,
+    query: Option<&Query>,
 ) -> Result<(Exported, Option<GpkgWritten>)> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     write_chunks_as(src, layer, path, crs, gpkg, &ext, (bytes, query))
@@ -168,7 +167,7 @@ pub fn write_source_as_filtered(
 
 /// Filters export rows in source order, preserving their positions for `@row_number`. A whole
 /// read or an in-memory layer counts its own progress; a chunk's source already counts the read.
-fn retain_matches(ds: &mut Cow<'_, Dataset>, expr: &Expr, offset: usize, count_progress: bool) -> Result<usize> {
+fn retain_matches(ds: &mut Cow<'_, Dataset>, query: &Query, offset: usize, count_progress: bool) -> Result<usize> {
     let len = ds.features.len();
     if count_progress {
         crate::progress::begin(len);
@@ -178,7 +177,7 @@ fn retain_matches(ds: &mut Cow<'_, Dataset>, expr: &Expr, offset: usize, count_p
     let mut filtered = 0;
     for row in 0..len {
         crate::progress::step(usize::from(count_progress))?;
-        let matches = query::eval_in_chunk(expr, ds, row, offset);
+        let matches = query.matches_in_chunk(ds, row, offset);
         keep.push(matches);
         filtered += usize::from(!matches);
     }
@@ -220,7 +219,7 @@ fn write_chunks_as(
     crs: Crs,
     gpkg: &GpkgTable,
     ext: &str,
-    (bytes, query): (usize, Option<&Expr>),
+    (bytes, query): (usize, Option<&Query>),
 ) -> Result<(Exported, Option<GpkgWritten>)> {
     if !streams(ext) {
         return Err(DataError::Unsupported(format!(".{ext} written a chunk at a time")));

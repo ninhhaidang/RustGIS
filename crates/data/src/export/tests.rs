@@ -250,7 +250,7 @@ fn streamed_export_counts_query_omissions_across_chunks() {
     let ds = squares();
     let src = Runs::new(&ds, 3);
     let layer = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
-    let query = query::parse_fields("@row_number BETWEEN 5 AND 7", &layer).unwrap();
+    let query = Query::compile(Some("@row_number BETWEEN 5 AND 7"), &layer).unwrap();
     let path = d.join("export.geojson");
     let (exported, _) = write_chunks_to(&src, &layer, &path, Crs::LonLat, &GpkgTable::default(), CHUNK_BYTES, Some(&query)).unwrap();
     assert_eq!((exported.written, exported.query.filtered, exported.left_out), (3, ds.features.len() - 3, 0));
