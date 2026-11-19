@@ -695,10 +695,10 @@ fn expression_written(script: &str, e: &InExpression, item: &str) -> Option<(Str
 /// the line's command for a key being typed in its `{…}`, and in its second-level objects the
 /// keys their entries describe; in a `gp.run` line the tool ids for its `"tool"` and the tool's
 /// keys and values (`tool_value`) in its `"params"`, in a `task.addStep` line the command ids for
-/// its `"command"` and that command's keys in its `"params"`; in the string of a key that takes
-/// an expression, what an expression box offers there (`expression_at`). When `asked`
-/// (Ctrl+Space), a line's first word and an expression's word are offered with nothing typed
-/// yet; keys and values are anyway.
+/// its `"command"` and that command's keys and values (`step_value`) in its `"params"`; in the
+/// string of a key that takes an expression, what an expression box offers there
+/// (`expression_at`). When `asked` (Ctrl+Space), a line's first word and an expression's word are
+/// offered with nothing typed yet; keys and values are anyway.
 fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::Session, asked: bool) -> Option<Offer> {
     if let Some((start, word)) = word_at(script, at, asked) {
         return complete(start, at, &word, ids);
@@ -707,13 +707,7 @@ fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::S
         return Some(offer);
     }
     if let Some(ValueAt { hint, start, word, key, listed }) = value_at(script, at) {
-        // In an array only a key's whose type is a list of fields (#846): another's, a layer's
-        // or a tool's, is turned down by Run.
-        let field = field_type(session, &hint.id, &key);
-        if listed && !field.is_some_and(|(_, list)| list) {
-            return None;
-        }
-        if let Some((_, what)) = named(&hint.id).filter(|(names, _)| key == *names) {
+        if let Some((_, what)) = named(&hint.id).filter(|(names, _)| !listed && key == *names) {
             return match what {
                 Named::Tool => value_ids(start, at, &word, rustgis_engine::analysis::tools().map(|t| t.id), Of::ToolIds),
                 // Those `task.addStep` takes, by its own rule (not a script's: it adds the step, it
@@ -725,68 +719,14 @@ fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::S
                 }
             };
         }
-        // Only where the command takes that key: a value for one Run turns down is no help.
-        if !takes(session, &hint.id, &key) {
-            return None;
-        }
-        return match key.as_str() {
-            "layer" => {
-                // Those Run finds by their name (`Map::layer_by_name`): of two named alike, case
-                // aside, the first.
-                let map = session.map();
-                let names = map.layers.iter().filter(|l| map.layer_by_name(&l.name).is_some_and(|f| f.id == l.id)).map(|l| l.name.as_str());
-                value_ids(start, at, &word, names, Of::Layers)
-            }
-            "map" => {
-                let mut seen = std::collections::HashSet::new();
-                let names = session.project.maps.iter().map(|m| m.name.as_str()).filter(|n| seen.insert(n.to_ascii_lowercase()));
-                value_ids(start, at, &word, names, Of::Maps)
-            }
-            "layout" => {
-                let mut seen = std::collections::HashSet::new();
-                let names = session.project.layouts.iter().map(|l| l.name.as_str()).filter(|n| seen.insert(n.to_ascii_lowercase()));
-                value_ids(start, at, &word, names, Of::Layouts)
-            }
-            "table" => {
-                // Exact duplicates are removed by value_ids; distinct case variants each
-                // resolve to their own table, since find_table prefers an exact name.
-                let names = session.project.tables.iter().map(|t| t.name.as_str());
-                value_ids(start, at, &word, names, Of::Tables)
-            }
-            "class" => {
-                let l = line_layer(session, line_of(script, &hint)?)?;
-                let without_default = matches!(hint.id.as_str(), "labels.class.remove" | "labels.class.move");
-                let mut seen = std::collections::HashSet::new();
-                let names = l
-                    .labels
-                    .in_order()
-                    .filter(|c| !without_default || !c.name.eq_ignore_ascii_case(&l.labels.default.name))
-                    .map(|c| c.name.as_str())
-                    .filter(|n| seen.insert(n.to_ascii_lowercase()));
-                value_ids(start, at, &word, names, Of::Classes(l.id))
-            }
-            // A `"field"`, and the keys whose type is a field or fields (#846) in a command that
-            // takes a `"layer"`: another's are those of the layers it names otherwise
-            // (`data.relate`'s `"origin"`), or of a report's.
-            key if key == "field" || (field.is_some() && takes(session, &hint.id, "layer")) => {
-                let numeric = field.is_some_and(|(numeric, _)| numeric);
-                let (d, of) = line_data(session, &hint.id, line_of(script, &hint)?)?;
-                // Not those its array already gives, before or after it: twice is the same work
-                // twice. The line's object without the word being typed, as `complete_keys` reads it.
-                let after = object_rest(script.get(byte_at(script, at)?..)?.split('\n').next()?, false);
-                let given = scan(&format!("{}{after}", script.get(byte_at(script, hint.brace)?..byte_at(script, start)?)?)).values;
-                let names = d
-                    .fields
-                    .iter()
-                    .filter(|f| {
-                        (!numeric || f.ty.is_numeric())
-                            && !given.iter().any(|(k, v, _)| k == key && text_of(v).as_deref() == Some(f.name.as_str()))
-                    })
-                    .map(|f| f.name.as_str());
-                value_ids(start, at, &word, names, of)
-            }
-            _ => None,
-        };
+        // The line's object without the word being typed, as `complete_keys` reads it.
+        let after = object_rest(script.get(byte_at(script, at)?..)?.split('\n').next()?, false);
+        let without = format!("{}{after}", script.get(byte_at(script, hint.brace)?..byte_at(script, start)?)?);
+        let value = TypedValue { start, end: at, word: &word, key: &key, listed };
+        return command_value(session, &hint.id, line_of(script, &hint)?, &without, value);
+    }
+    if let Some(offer) = step_value(script, at, session) {
+        return Some(offer);
     }
     if let Some(offer) = tool_value(script, at, session) {
         return Some(offer);
@@ -811,6 +751,112 @@ fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::S
     }
     let entries = entries(&sub_desc(&params_of(session, &h.id)?, &nested.key)?).into_iter().map(|(keys, _)| keys).collect();
     offer_keys(Of::SubKeys { id: h.id, key: nested.key }, entries, &object, start, at, &word)
+}
+
+/// A value being typed in a command's object (`value_at`, `step_value`): where its word starts
+/// and ends (char indexes of the script), the word, its key, and whether it's in that key's array.
+struct TypedValue<'a> {
+    start: usize,
+    end: usize,
+    word: &'a str,
+    key: &'a str,
+    listed: bool,
+}
+
+/// What command `id` takes for the value being typed (`v`) in its object (`object`, from its `{`;
+/// `without`, the same without the word being typed): the layers for a `"layer"`, the maps, the
+/// layouts, the tables, the layer's label classes, or the fields of the object's layer or table
+/// (`line_data`), as for a line of that command or a step that adds it (#1240).
+fn command_value(session: &rustgis_engine::Session, id: &str, object: &str, without: &str, v: TypedValue) -> Option<Offer> {
+    let TypedValue { start, end, word, key, listed } = v;
+    // In an array only a key's whose type is a list of fields (#846): another's, a layer's
+    // or a tool's, is turned down by Run.
+    let field = field_type(session, id, key);
+    if listed && !field.is_some_and(|(_, list)| list) {
+        return None;
+    }
+    // Only where the command takes that key: a value for one Run turns down is no help.
+    if !takes(session, id, key) {
+        return None;
+    }
+    match key {
+        "layer" => {
+            // Those Run finds by their name (`Map::layer_by_name`): of two named alike, case
+            // aside, the first.
+            let map = session.map();
+            let names = map.layers.iter().filter(|l| map.layer_by_name(&l.name).is_some_and(|f| f.id == l.id)).map(|l| l.name.as_str());
+            value_ids(start, end, word, names, Of::Layers)
+        }
+        "map" => {
+            let mut seen = std::collections::HashSet::new();
+            let names = session.project.maps.iter().map(|m| m.name.as_str()).filter(|n| seen.insert(n.to_ascii_lowercase()));
+            value_ids(start, end, word, names, Of::Maps)
+        }
+        "layout" => {
+            let mut seen = std::collections::HashSet::new();
+            let names = session.project.layouts.iter().map(|l| l.name.as_str()).filter(|n| seen.insert(n.to_ascii_lowercase()));
+            value_ids(start, end, word, names, Of::Layouts)
+        }
+        "table" => {
+            // Exact duplicates are removed by value_ids; distinct case variants each
+            // resolve to their own table, since find_table prefers an exact name.
+            let names = session.project.tables.iter().map(|t| t.name.as_str());
+            value_ids(start, end, word, names, Of::Tables)
+        }
+        "class" => {
+            let l = line_layer(session, object)?;
+            let without_default = matches!(id, "labels.class.remove" | "labels.class.move");
+            let mut seen = std::collections::HashSet::new();
+            let names = l
+                .labels
+                .in_order()
+                .filter(|c| !without_default || !c.name.eq_ignore_ascii_case(&l.labels.default.name))
+                .map(|c| c.name.as_str())
+                .filter(|n| seen.insert(n.to_ascii_lowercase()));
+            value_ids(start, end, word, names, Of::Classes(l.id))
+        }
+        // A `"field"`, and the keys whose type is a field or fields (#846) in a command that
+        // takes a `"layer"`: another's are those of the layers it names otherwise
+        // (`data.relate`'s `"origin"`), or of a report's.
+        key if key == "field" || (field.is_some() && takes(session, id, "layer")) => {
+            let numeric = field.is_some_and(|(numeric, _)| numeric);
+            let (d, of) = line_data(session, id, object)?;
+            // Not those its array already gives, before or after it: twice is the same work twice.
+            let given = scan(without).values;
+            let names = d
+                .fields
+                .iter()
+                .filter(|f| {
+                    (!numeric || f.ty.is_numeric())
+                        && !given.iter().any(|(k, v, _)| k == key && text_of(v).as_deref() == Some(f.name.as_str()))
+                })
+                .map(|f| f.name.as_str());
+            value_ids(start, end, word, names, of)
+        }
+        _ => None,
+    }
+}
+
+/// What a `task.addStep` line's command takes for the value being typed in its `"params"`
+/// (#1240), as in a line of that command (`command_value`): over the `"params"` object alone, up
+/// to its `}`, as `params_expression_at` reads it, so the layer or table is the step's, not the
+/// line's.
+fn step_value(script: &str, at: usize, session: &rustgis_engine::Session) -> Option<Offer> {
+    let (h, Scan { nested, .. }, _) = scan_at(script, at)?;
+    let brace = h.brace + nested.filter(|n| n.key == "params")?.brace;
+    let (Named::Command, name) = named_in(script, &h)? else {
+        return None;
+    };
+    let line = script.get(byte_at(script, brace)?..)?.split('\n').next()?;
+    let (before, after) = line.split_at(byte_at(line, at.checked_sub(brace)?)?);
+    let (start, key, listed) = scan(before).value?;
+    let word = word_from(before, start)?;
+    // To the `}` of `"params"`, past the array the word is in: a later key (`"layer"`) still counts.
+    let rest = object_rest(after, listed);
+    let params = format!("{before}{rest}");
+    let without = format!("{}{rest}", before.chars().take(start).collect::<String>());
+    let value = TypedValue { start: brace + start, end: at, word: &word, key: &key, listed };
+    command_value(session, &name, &params, &without, value)
 }
 
 /// What a `gp.run` line's tool takes for the value being typed in its `"params"` (#788), by the
@@ -3436,6 +3482,82 @@ mod tests {
         h.key_press(egui::Key::Enter);
         h.run();
         assert_eq!(h.state().workflow.script, r#"task.addStep {"command": "labels.style", "params": {"size": "#);
+    }
+
+    /// In a `task.addStep` line's `"params"`, the values its command takes are offered as in a
+    /// line of that command (#1240): its layers, project names, label classes and fields, over the
+    /// step's layer or table, given in its `"params"` or the active one; the command before or
+    /// after them. Nothing without a command, for an unknown one, or for a key it doesn't take.
+    #[test]
+    fn a_steps_values_are_offered_as_its_commands() {
+        use super::Of;
+        let mut app = crate::RustGisApp::with_sample();
+        named_objects(&mut app);
+        let offer = |app: &crate::RustGisApp, s: &str| unasked(s, s.chars().count(), &[], &app.session);
+        let o = offer(&app, r#"task.addStep {"command": "labels.field", "params": {"layer": "ci"#).unwrap();
+        assert_eq!((o.items, o.of), (vec!["Cities".to_string()], Some(Of::Layers)));
+        let s = r#"task.addStep {"params": {"layer": "ci"#;
+        let after = unasked(&format!(r#"{s}"}}, "command": "labels.field"}}"#), s.chars().count(), &[], &app.session);
+        assert_eq!(after.map(|o| o.items), Some(vec!["Cities".to_string()]), "the command after params");
+        assert!(offer(&app, r#"task.addStep {"params": {"layer": ""#).is_none(), "no command");
+        assert!(offer(&app, r#"task.addStep {"command": "nope", "params": {"layer": ""#).is_none(), "an unknown command");
+        let s = r#"task.addStep {"command": "map.goToXY", "params": {"layer": ""#;
+        assert!(offer(&app, s).is_none(), "a key the command doesn't take");
+        for (text, name, of) in [
+            (r#"task.addStep {"command": "bookmark.add", "params": {"map": "at"#, "Atlas", Of::Maps),
+            (r#"task.addStep {"command": "layout.page", "params": {"layout": "sh"#, "Sheet", Of::Layouts),
+            (r#"task.addStep {"command": "table.remove", "params": {"table": "st"#, "Stats", Of::Tables),
+        ] {
+            let o = offer(&app, text).unwrap();
+            assert_eq!((o.items, o.of), (vec![name.to_string()], Some(of)));
+        }
+        // Fields and classes: of the layer the step's `"params"` give, else the active one (Cities).
+        let cities = app.session.map().layer_by_name("Cities").unwrap();
+        let (id, fields): (u32, Vec<String>) = (cities.id, cities.dataset.fields.iter().map(|f| f.name.clone()).collect());
+        let numeric: Vec<String> = cities.dataset.fields.iter().filter(|f| f.ty.is_numeric()).map(|f| f.name.clone()).collect();
+        let o = offer(&app, r#"task.addStep {"command": "labels.field", "params": {"field": ""#).unwrap();
+        assert_eq!((o.items, o.of), (fields, Some(Of::Fields(id))), "the active layer");
+        let countries = app.session.map().layer_by_name("Countries").unwrap().id;
+        let o = offer(&app, r#"task.addStep {"command": "labels.field", "params": {"layer": "Countries", "field": ""#).unwrap();
+        assert_eq!(o.of, Some(Of::Fields(countries)), "the step's layer");
+        let s = r#"task.addStep {"command": "labels.field", "params": {"field": ""#;
+        let o = unasked(&format!(r#"{s}", "layer": "Countries"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
+        assert_eq!(o.of, Some(Of::Fields(countries)), "the step's layer after the field");
+        let s = r#"task.addStep {"layer": "Countries", "command": "labels.field", "params": {"field": ""#;
+        assert_eq!(offer(&app, s).unwrap().of, Some(Of::Fields(id)), "not the line's: a step's layer is in its params");
+        let s = r#"task.addStep {"command": "labels.field", "params": {"field": ""#;
+        let o = unasked(&format!(r#"{s}"}}, "x": {{"layer": "Countries"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
+        assert_eq!(o.of, Some(Of::Fields(id)), "nor a later object's");
+        assert!(offer(&app, r#"task.addStep {"command": "labels.field", "params": {"layer": "Nowhere", "field": ""#).is_none());
+        let s = format!(r#"task.addStep {{"command": "data.explore", "params": {{"fields": ["{}", ""#, numeric[0]);
+        assert_eq!(offer(&app, &s).unwrap().items, numeric[1..], "[numeric fields], not one given before");
+        let s = r#"task.addStep {"command": "data.explore", "params": {"fields": [""#;
+        let o = unasked(&format!(r#"{s}"], "layer": "Countries"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
+        assert_eq!(o.of, Some(Of::Fields(countries)), "the step's layer after the array");
+        assert!(offer(&app, r#"task.addStep {"command": "labels.style", "params": {"layer": [""#).is_none(), "a layer in an array");
+        let table = app.session.project.add_table(rustgis_engine::data::Dataset::new(
+            "Addresses",
+            rustgis_engine::data::GeometryType::None,
+            vec![rustgis_engine::data::Field::new("street", rustgis_engine::data::FieldType::Text)],
+        ));
+        let o = offer(&app, r#"task.addStep {"command": "layer.geocode", "params": {"table": "addresses", "address": [""#).unwrap();
+        assert_eq!((o.items, o.of), (vec!["street".to_string()], Some(Of::TableFields(table))), "the step's table");
+        let o = offer(&app, r#"task.addStep {"command": "labels.style", "params": {"class": "la"#).unwrap();
+        assert_eq!((o.items, o.of), (vec!["Large".to_string()], Some(Of::Classes(id))));
+        let s = r#"task.addStep {"command": "labels.style", "params": {"layer": "Countries", "class": "la"#;
+        assert!(offer(&app, s).is_none(), "the step's layer's classes");
+        let o = offer(&app, r#"task.addStep {"command": "labels.class.remove", "params": {"class": ""#).unwrap();
+        assert_eq!(o.items, ["Large"], "without Default, which it can't remove");
+    }
+
+    /// In the pane: a layer accepted in a step's `"params"` is closed, as in a line.
+    #[test]
+    fn a_steps_layer_is_accepted() {
+        let mut h = pane();
+        type_in(&mut h, r#"task.addStep {"command": "labels.field", "params": {"layer": "Citi"#);
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().workflow.script, r#"task.addStep {"command": "labels.field", "params": {"layer": "Cities""#);
     }
 
     /// What follows a key's cursor, up to the end of its object: past the key's closing quote,

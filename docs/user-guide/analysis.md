@@ -1646,6 +1646,9 @@ form does: the layers of its kind (polygon, point, raster, vector; any layer, th
 the fields of the tool's input that it takes (numeric, holding coordinates), or its choices
 (`"units": "` offers `Kilometers`, `Meters`, …). Accepting one writes its name
 as the line's JSON needs it (`"Big \"lakes\""`).
+In a `task.addStep` line's `"params"`, a value offers what the step's command takes, as in a line
+of that command: its layers, maps, layouts, tables, label classes and fields, over the layer or
+table its `"params"` give (a `"layer"` outside them doesn't count), the active layer without one.
 In the string of a key that takes an expression (its type is `sql` or `expression` in the
 command's help: `"where"` in `select.byAttributes`, `"expression"` in `edit.calculateField`,
 `labels.by`'s keys…; in a `gp.run` line, a tool's expression, such as `selectByAttributes`'s
