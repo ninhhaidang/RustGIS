@@ -897,10 +897,11 @@ fn shape_path(shape: &FrameShape, r: Rect) -> Option<tiny_skia::Path> {
     }
 }
 
-/// The lon/lat outline of what a frame shows, `None` where an edge of a frame on the globe is off
-/// the disc: the outline breaks there rather than cutting across the globe.
+/// The lon/lat outline of what a frame shows, `None` where an edge has no place on the Earth (off
+/// the disc of a frame on the globe, or outside a custom projection's domain): the outline breaks
+/// there rather than cutting across the map it is drawn on, and reaches the place where the edge
+/// leaves it (#2369).
 fn frame_outline_lonlat(map: &Map, cam: &rustgis_map::Camera, w: f64, h: f64) -> Vec<Option<Coord>> {
-    let mut ring = Vec::new();
     let n = 16;
     let edge = |t: f64, side: usize| match side {
         0 => (t * w, 0.0),
@@ -911,34 +912,53 @@ fn frame_outline_lonlat(map: &Map, cam: &rustgis_map::Camera, w: f64, h: f64) ->
     // A frame on the globe is read through the globe as it draws it (#2348), with a gap where an
     // edge runs off the disc: one that shows the globe whole has no edge on it, and no outline.
     let globe = map.projection.is_globe().then(|| rustgis_map::globe::Globe::new(cam, w, h));
-    // Its longitudes kept continuous, a turn added or taken where they cross ±180°, so on a flat
-    // frame the outline doesn't jump across the map there.
-    let mut last: Option<f64> = None;
-    let near = |c: Coord, last: Option<f64>| match last {
-        Some(p) => Coord::new(c.x + 360.0 * ((p - c.x) / 360.0).round(), c.y),
-        None => c,
+    let at = |(sx, sy): (f64, f64)| match &globe {
+        Some(g) => g.inverse(sx, sy),
+        None => map.to_lonlat(cam.to_map(sx, sy, w, h)),
     };
-    for side in 0..4 {
-        for i in 0..n {
-            let (sx, sy) = edge(i as f64 / n as f64, side);
-            match &globe {
-                Some(g) => {
-                    let c = g.inverse(sx, sy).map(|c| near(c, last));
-                    if let Some(c) = c {
-                        last = Some(c.x);
-                    }
-                    ring.push(c);
-                }
-                None => {
-                    if let Some(c) = map.to_lonlat(cam.to_map(sx, sy, w, h)) {
-                        ring.push(Some(c));
-                    }
+    // A frame on the globe's longitudes kept continuous, a turn added or taken where they cross
+    // ±180°, so on a flat frame the outline doesn't jump across the map there. A flat frame's are
+    // drawn where they are.
+    let mut last: Option<f64> = None;
+    let mut ring = Vec::with_capacity(4 * n + 8);
+    let mut push = |c: Option<Coord>| {
+        let c = match (globe.is_some(), c, last) {
+            (true, Some(c), Some(p)) => Some(Coord::new(c.x + 360.0 * ((p - c.x) / 360.0).round(), c.y)),
+            _ => c,
+        };
+        if let Some(c) = c {
+            last = Some(c.x);
+        }
+        ring.push(c);
+    };
+    let mut first = None;
+    let mut prev: Option<((f64, f64), Option<Coord>)> = None;
+    // Every side's samples, and the first again to close the ring.
+    for i in 0..=4 * n {
+        let p = edge((i % n) as f64 / n as f64, (i / n) % 4);
+        let c = match first {
+            Some(f) if i == 4 * n => f,
+            _ => at(p),
+        };
+        first.get_or_insert(c);
+        // Between a sample with a place and one without, the place where the edge leaves the
+        // Earth, found by bisecting (24 halvings take a sixteenth of the edge to well under a
+        // millionth of it): without it the outline stops up to a sample short of it.
+        if let Some((q, b)) = prev
+            && b.is_some() != c.is_some()
+        {
+            let (mut inside, mut outside, mut found) = if b.is_some() { (q, p, b) } else { (p, q, c) };
+            for _ in 0..24 {
+                let mid = ((inside.0 + outside.0) / 2.0, (inside.1 + outside.1) / 2.0);
+                match at(mid) {
+                    Some(m) => (inside, found) = (mid, Some(m)),
+                    None => outside = mid,
                 }
             }
+            push(found);
         }
-    }
-    if let Some(f) = ring.first().copied() {
-        ring.push(f.map(|c| near(c, last)));
+        push(c);
+        prev = Some((p, c));
     }
     ring
 }
@@ -1195,6 +1215,46 @@ fn frame_viewport(
     Ok((viewports, exact))
 }
 
+/// A ring (longitude, latitude), broken at each `None`, placed on a flat map for drawing: where its
+/// points go on the map's world, whose middle (its camera's centre) is at `mid`. `from_globe`: the
+/// ring is a frame on the globe's, its longitudes run on across ±180° rather than kept in a world.
+///
+/// A frame on the globe's ring the whole ring a turn east or west if that brings the middle of its
+/// longitudes nearer the map's middle, as they run on from its first point (#2348), which can be on
+/// the other side of ±180° from it: one shift for all keeps it in one piece on a map that doesn't
+/// wrap. A flat frame's ring is placed where it is. Then a ring that a map can't show in one piece
+/// is cut at the map's edge as the map cuts features (#209), each piece brought into the map's
+/// world and running to the edge (#2369): any ring on a world projection, which wraps at its edge
+/// (on Robinson centred on 150°E at -30°, with its datum's margin), and on Web Mercator, which
+/// doesn't, a globe frame's around a pole, which runs a whole turn, at ±180°.
+fn ring_on_flat(map: &Map, mid: Option<Coord>, ring: &[Option<Coord>], from_globe: bool) -> Vec<Option<Coord>> {
+    use rustgis_data::Geometry;
+    let (west, east) = ring.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(w, e), c| (w.min(c.x), e.max(c.x)));
+    let around_pole = from_globe && east - west >= 360.0 - 1e-6;
+    let shift = match (from_globe && !around_pole && west <= east, mid) {
+        (true, Some(mid)) => 360.0 * ((mid.x - (west + east) / 2.0) / 360.0).round(),
+        _ => 0.0,
+    };
+    let shifted = ring.iter().map(|c| c.map(|c| Coord::new(c.x + shift, c.y)));
+    let flat = map.flat();
+    let edge = match &flat {
+        rustgis_map::projection::Flat::Custom(p) => p.edge().copied(),
+        rustgis_map::projection::Flat::Mercator => None,
+    };
+    if edge.is_none() && !around_pole {
+        return shifted.collect();
+    }
+    let shifted: Vec<Option<Coord>> = shifted.collect();
+    let runs = shifted.split(Option::is_none).map(|r| r.iter().flatten().copied().collect()).collect();
+    let (lon0, margin) = edge.map_or((0.0, None), |e| (e.lon - 180.0, Some(e)));
+    let margin = |lat: f64| margin.map_or(0.0, |e| e.stray_at(lat));
+    // A line cut is a line: the `else` is never taken.
+    let Geometry::Line(pieces) = rustgis_map::antimeridian::cut_with_margin(&Geometry::Line(runs), lon0, &margin) else {
+        return shifted;
+    };
+    pieces.into_iter().flat_map(|p| p.into_iter().map(Some).chain([None])).collect()
+}
+
 /// Strokes the ring `ring` (longitude, latitude) on a frame's map `width` points wide: another
 /// frame's extent, as an extent indicator shows it, broken at each `None`. `from_globe`: the ring
 /// is a frame on the globe's, its longitudes run on across ±180° rather than kept in a world.
@@ -1203,15 +1263,13 @@ fn outline_lonlat(pm: &mut Canvas, map: &Map, view: &View, ring: &[Option<Coord>
     // On a globe, through the globe as the frame draws it, breaking behind its horizon (#2348):
     // through the flat camera the outline lands off the area once it is away from the centre.
     let globe = map.projection.is_globe().then(|| rustgis_map::globe::Globe::new(&view.camera, view.width, view.height));
-    // A frame on the globe's ring on a flat map, which doesn't wrap: the whole ring a turn east or
-    // west if that brings the middle of its longitudes nearer the frame's centre, as they run on
-    // from its first point (#2348), which can be on the other side of ±180° from it. One shift for
-    // all keeps it in one piece. A flat frame's ring is drawn where it is. Not handled: a globe
-    // frame around a pole, whose ring spans a whole turn, so a stretch of it stays off the world.
-    let (west, east) = ring.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(w, e), c| (w.min(c.x), e.max(c.x)));
-    let shift = match (from_globe && globe.is_none() && west <= east, map.to_lonlat(view.camera.center)) {
-        (true, Some(mid)) => 360.0 * ((mid.x - (west + east) / 2.0) / 360.0).round(),
-        _ => 0.0,
+    let placed;
+    let ring = match globe {
+        Some(_) => ring,
+        None => {
+            placed = ring_on_flat(map, map.to_lonlat(view.camera.center), ring, from_globe);
+            &placed[..]
+        }
     };
     let mut pb = PathBuilder::new();
     let mut first = true;
@@ -1222,11 +1280,9 @@ fn outline_lonlat(pm: &mut Canvas, map: &Map, view: &View, ring: &[Option<Coord>
         };
         let at = match &globe {
             Some(g) => g.forward(*c),
-            None => match map.to_map(Coord::new(c.x + shift, c.y)) {
-                // A tilted frame's outline breaks where it passes behind the eye.
-                Some(m) => view.camera.try_to_screen(m, view.width, view.height),
-                None => continue,
-            },
+            // A tilted frame's outline breaks where it passes behind the eye, and any frame's where
+            // its projection can't show the place (#2369).
+            None => map.to_map(*c).and_then(|m| view.camera.try_to_screen(m, view.width, view.height)),
         };
         let Some((x, y)) = at else {
             first = true;
@@ -5512,7 +5568,8 @@ Elaboração: RustGIS",
     }
 
     /// A frame on the globe whose sides run off the disc is outlined by its top and bottom edges
-    /// only, broken where they leave the disc, not joined by a line across the globe (#2348).
+    /// only, broken where they leave the disc, not joined by a line across the globe (#2348), and
+    /// running up to the disc's rim (#2369).
     #[test]
     fn a_frame_partly_off_the_globe_is_outlined_without_a_chord() {
         use rustgis_map::layout::{INDICATOR_COLOR, INDICATOR_WIDTH, frame_camera};
@@ -5561,6 +5618,23 @@ Elaboração: RustGIS",
         let row = (5.0 * k + cy).round() as u32;
         let crossed: Vec<u32> = (row - 2..=row + 2).flat_map(|y| (x0..x1).filter(move |&x| red(x, y))).collect();
         assert!(crossed.is_empty(), "the outline crosses the middle of the globe at {crossed:?}");
+        // The top and bottom edges are outlined up to the rim, where they leave the disc, not up
+        // to the last of their samples on it (#2369).
+        let s = rustgis_map::globe::Globe::new(&frame_camera(&globe, center, source_scale, 0.0, 0.0), sw * k, sh * k);
+        let (r, (sx0, sy0)) = (s.disc_radius(), s.forward(center).unwrap());
+        let half = (r * r - sy0 * sy0).sqrt() - 1e-3;
+        for (sx, sy) in [(sx0 - half, 0.0), (sx0 + half, 0.0), (sx0 - half, sh * k), (sx0 + half, sh * k)] {
+            let on_rim = s.inverse(sx, sy).expect("a point just inside the rim is on the globe");
+            let (x, y) = g.forward(on_rim).expect("the rim seen on the locator");
+            let (x, y) = (5.0 * k + x, 5.0 * k + y);
+            let gap = (x0..x1)
+                .flat_map(|py| (x0..x1).map(move |px| (px, py)))
+                .filter(|&(px, py)| red(px, py))
+                .map(|(px, py)| (f64::from(px) - x).hypot(f64::from(py) - y))
+                .fold(f64::INFINITY, f64::min)
+                / k;
+            assert!(gap < 0.3, "the outline ends {gap:.2} mm short of the rim at ({sx:.0}, {sy:.0}) on the frame");
+        }
     }
 
     /// A frame on the globe across the antimeridian, outlined on a flat frame, stays one small box
@@ -5607,6 +5681,136 @@ Elaboração: RustGIS",
                 red.iter().filter(|&&(x, y)| (f64::from(x) - middle).abs() > 6.0 * k || (f64::from(y) - middle).abs() > 6.0 * k).count();
             assert_eq!(far, 0, "{source_at}° on {locator_at}°: {far} of {} red pixels more than 6 mm from the middle", red.len());
         }
+    }
+
+    /// A frame of the map `map`, named "s", at `source` (centre, scale, width and height in mm)
+    /// outlined on a locator 90 × 80 mm of the map `locator`, named "m", at `view` (centre and
+    /// scale), on a page 200 × 120 mm: the outline's red pixels, in millimetres from the locator's
+    /// centre (x east, y south).
+    fn outline_on(map: Map, source: (Coord, f64, f64, f64), locator: Map, view: (Coord, f64)) -> Vec<(f64, f64)> {
+        use rustgis_map::layout::{INDICATOR_COLOR, INDICATOR_WIDTH};
+        let frame = |map: &str, center, scale, extent_of| ElementKind::MapFrame {
+            map: map.into(),
+            center,
+            scale,
+            shape: FrameShape::Rectangle,
+            grid: None,
+            extent_of,
+            extent_color: INDICATOR_COLOR,
+            extent_width: INDICATOR_WIDTH,
+            bearing: 0.0,
+            pitch: 0.0,
+        };
+        let (at, scale, w, h) = source;
+        let mut l = Layout::new("Layout", 200.0, 120.0);
+        let main = l.add("Main", (5.0, 5.0, w, h), frame("s", at, scale, None));
+        l.add("Locator", (100.0, 5.0, 90.0, 80.0), frame("m", view.0, view.1, Some(main)));
+        let pm = render(&l, &mut [map, locator], 96.0, &PageInfo::default()).unwrap();
+        let k = PT_PER_MM;
+        let (x0, x1, y0, y1) = ((100.0 * k) as u32, (190.0 * k) as u32, (5.0 * k) as u32, (85.0 * k) as u32);
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let (r, g, b) = rgb(&pm, x, y);
+                r > 180 && g < 90 && b < 90
+            })
+            .map(|(x, y)| (f64::from(x) / k - 145.0, f64::from(y) / k - 45.0))
+            .collect()
+    }
+
+    /// [`outline_on`] a flat world map at 1:600M centred on (0°, 0°).
+    fn outline_on_flat_world(map: Map, source: (Coord, f64, f64, f64)) -> Vec<(f64, f64)> {
+        outline_on(map, source, Map::new("m"), (Coord::new(0.0, 0.0), 6e8))
+    }
+
+    /// A flat frame wider than what its locator's projection can show (UTM zone 31, 30° either
+    /// side of 3°E) is outlined there in pieces, broken where its edges leave what the locator
+    /// shows, not joined by a line across the locator (#2369).
+    #[test]
+    fn a_frame_wider_than_its_locators_projection_is_outlined_without_a_chord() {
+        let mut utm = Map::new("m");
+        utm.set_projection(rustgis_map::Projection::Custom("EPSG:32631".into()));
+        // 80 × 20 mm at 1:175M on the equator, centred on 3°E: about 60°W to 66°E and 16°S to 16°N,
+        // its sides outside the zone, its top and bottom edges crossing it.
+        let red = outline_on(Map::new("s"), (Coord::new(3.0, 0.0), 1.75e8, 80.0, 20.0), utm, (Coord::new(3.0, 0.0), 1.5e8));
+        assert!(!red.is_empty(), "no outline of the frame");
+        // The equator's row is crossed only by a line joining the top edge to the bottom one.
+        let across: Vec<_> = red.iter().filter(|p| p.1.abs() < 1.0).collect();
+        assert!(across.is_empty(), "the outline crosses the equator at {across:?}");
+    }
+
+    /// A flat frame on a custom projection whose edges run off its world (Mollweide, zoomed out
+    /// past its ellipse) is outlined by its top and bottom edges, broken where they leave the
+    /// world and reaching it there, not joined by lines across the map (#2369).
+    #[test]
+    fn a_flat_frame_off_its_projections_world_is_outlined_without_a_chord() {
+        let mut moll = Map::new("s");
+        moll.set_projection(rustgis_map::Projection::from_code("mollweide").unwrap());
+        // 80 × 20 mm at 1:600M: Mollweide's world is 60 × 30 mm, so the frame's sides are off it
+        // and its top and bottom edges leave it about 22 mm either side of the centre.
+        let red = outline_on_flat_world(moll, (Coord::new(0.0, 0.0), 6e8, 80.0, 20.0));
+        assert!(!red.is_empty(), "no outline of the frame");
+        // The equator's row is crossed only by a line joining the top edge to the bottom one.
+        let across: Vec<_> = red.iter().filter(|p| p.1.abs() < 1.0).collect();
+        assert!(across.is_empty(), "the outline crosses the equator at {across:?}");
+        // The edges run to the world's sides, ±180° (33.4 mm from the centre at 1:600M), and no
+        // further: without bisecting, they stopped at the last sample on the world, at about 160°.
+        let reach = red.iter().fold(0.0_f64, |m, p| m.max(p.0.abs()));
+        assert!((reach - 33.4).abs() < 0.6, "the outline reaches {reach:.1} mm from the centre, not ±180°");
+        for side in [-1.0, 1.0] {
+            assert!(red.iter().any(|p| (p.0 * side - 33.4).abs() < 0.6), "no outline at the world's {side} side");
+        }
+    }
+
+    /// A frame on the globe around the North Pole, outlined on a flat world map, is split at ±180°
+    /// and drawn across the whole world, not as one piece a stretch of which is off the world, past
+    /// ±180° (#2369).
+    #[test]
+    fn a_globe_frame_around_a_pole_is_outlined_across_a_flat_world() {
+        let mut globe = Map::new("s");
+        globe.set_projection(rustgis_map::Projection::Globe);
+        // 40 mm at 1:40M, about 1600 km across, centred 5° (550 km) from the pole: the pole inside
+        // it. (A frame's centre is kept in Web Mercator, up to 85.05°.)
+        let (at, scale) = (Coord::new(30.0, 85.0), 4e7);
+        let cam = rustgis_map::layout::frame_camera(&globe, at, scale, 0.0, 0.0);
+        let side = 40.0 * PT_PER_MM;
+        let (px, py) = rustgis_map::globe::Globe::new(&cam, side, side).forward(Coord::new(0.0, 90.0)).expect("the pole on the disc");
+        assert!((0.0..side).contains(&px) && (0.0..side).contains(&py), "the pole at ({px:.0}, {py:.0}), off the frame");
+        let red = outline_on_flat_world(globe, (at, scale, 40.0, 40.0));
+        assert!(!red.is_empty(), "no outline of the frame");
+        // On both of the world's sides, ±180° (33.4 mm from the centre), and not past them.
+        for dir in [-1.0, 1.0] {
+            assert!(red.iter().any(|p| (p.0 * dir - 33.4).abs() < 1.0), "no outline at the world's {dir} side");
+        }
+        let past: Vec<_> = red.iter().filter(|p| p.0.abs() > 34.2).collect();
+        assert!(past.is_empty(), "{} red pixels past ±180°, as far as {:?}", past.len(), past.iter().map(|p| p.0).fold(0.0_f64, f64::max));
+    }
+
+    /// A ring placed on Robinson centred on 150°E, whose edge is at -30°, is cut there, each piece
+    /// on its side of the map, not joined across it (#2369): a flat frame's ring across the edge,
+    /// and a globe frame's around a pole, a whole turn of longitude.
+    #[test]
+    fn a_ring_is_cut_at_its_maps_own_edge() {
+        let mut robinson = Map::new("m");
+        robinson.set_projection(rustgis_map::Projection::Custom("robinson +lon_0=150".into()));
+        let mid = Some(Coord::new(150.0, 0.0));
+        let flat = [(-40.0, 10.0), (-20.0, 10.0), (-20.0, 20.0), (-40.0, 20.0), (-40.0, 10.0)].map(|(x, y)| Some(Coord::new(x, y)));
+        // From 20°E all the way round, 85°N, as a pole's ring runs, its longitudes continuous.
+        let pole: Vec<Option<Coord>> = (0..=36).map(|i| Some(Coord::new(20.0 + 10.0 * f64::from(i), 85.0))).collect();
+        for (name, ring, from_globe) in [("flat", &flat[..], false), ("pole", &pole[..], true)] {
+            let placed = ring_on_flat(&robinson, mid, ring, from_globe);
+            let points: Vec<Coord> = placed.iter().flatten().copied().collect();
+            assert!(!points.is_empty(), "{name}: nothing placed");
+            // Every point in the map's world, -30° to 330°, so it projects onto its own side.
+            let out: Vec<_> = points.iter().filter(|c| !(-30.0..=330.0).contains(&c.x)).collect();
+            assert!(out.is_empty(), "{name}: points outside the map's world: {out:?}");
+            // On both sides of the edge, the pieces broken apart.
+            assert!(points.iter().any(|c| c.x < -29.0) && points.iter().any(|c| c.x > 329.0), "{name}: not on both sides: {points:?}");
+            let jumps: Vec<_> = placed.windows(2).filter_map(|w| Some((w[0]?, w[1]?))).filter(|(a, b)| (a.x - b.x).abs() > 180.0).collect();
+            assert!(jumps.is_empty(), "{name}: joined across the edge: {jumps:?}");
+        }
+        // On Web Mercator, which doesn't wrap, a flat frame's ring is placed where it is.
+        assert_eq!(ring_on_flat(&Map::new("m"), Some(Coord::new(0.0, 0.0)), &flat, false), flat.to_vec());
     }
 
     /// A flat frame wider than the world, outlined on another flat frame, is drawn where it is

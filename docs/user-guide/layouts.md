@@ -202,7 +202,12 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   the outline's **Color** and **Line width** (red and 2 pt to begin with), so it can sit quietly on a
   muted page, and **Remove Extent Indicator** takes it away. Scripts set the same with `color`
   and `width` on `layout.addElement` (`kind` `extentIndicator`), or `layout.update` with
-  `"extentIndicator": {"color": "#555555", "width": 1}` (`false` removes it).
+  `"extentIndicator": {"color": "#555555", "width": 1}` (`false` removes it). The outline breaks
+  where the other frame's edge leaves the Earth (off a globe's disc, or past the edge of its
+  projection's world) and runs up to it there, and where the overview's own projection can't show
+  the place. An outline across the overview map's edge (on a world projection, the meridian
+  opposite its central one) is cut there, each piece on its side of the map, and so is a frame on
+  the globe around a pole outlined on Web Mercator, at ±180°.
 - **Grids**: the **Grid** section of a frame's properties turns the grid on and sets its
   **Interval** in degrees (**Auto** picks one from the frame's extent), its **Style** (full lines
   across the frame, ticks along its neatline only, or both, with the **Tick length**), its colour
