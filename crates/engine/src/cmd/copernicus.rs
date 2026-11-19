@@ -70,7 +70,8 @@ fn login(_s: &mut Session, p: &Value) -> CmdResult {
     Ok(status_warning(warning))
 }
 
-/// Not in the browser yet: the web app's requests don't carry the token.
+/// Not in the browser: a command can't wait for the browser's fetch. The web app signs in with
+/// `Services::copernicus_sign_in`, which its panel doesn't offer yet.
 #[cfg(target_arch = "wasm32")]
 fn login(_s: &mut Session, _p: &Value) -> CmdResult {
     Err("signing in to Copernicus Data Space is for the desktop app and the command line".into())

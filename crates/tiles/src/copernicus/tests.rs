@@ -153,6 +153,34 @@ fn a_refused_sign_in_says_why_without_the_password_and_keeps_the_one_before() {
     logout();
 }
 
+/// The web app sends the sign-in itself and lands its answer: kept as a sign-in made here is,
+/// renewed at CDSE's token endpoint, and a refusal or a server error leaves the one before.
+#[test]
+fn a_sign_in_answer_sent_from_the_browser_is_kept_like_one_made_here() {
+    let _turn = crate::cache::turn();
+    logout();
+    let info = login_answer(&format!(" {USER} "), 200, grant("web-access", "web-refresh", 30, 3600).as_bytes()).unwrap();
+    assert_eq!(info.username, USER);
+    assert_eq!(authorization(DATA).as_deref(), Some("Bearer web-access"));
+    let due = renewal_due().unwrap();
+    assert_eq!(due.endpoint, TOKEN_URL);
+    assert!(due.body.contains("refresh_token=web-refresh"), "{}", due.body);
+    let e = login_answer(USER, 401, br#"{"error":"invalid_grant","error_description":"Invalid user credentials"}"#).unwrap_err();
+    assert_eq!(e, "Copernicus Data Space refused the sign-in: Invalid user credentials");
+    let e = login_answer(USER, 502, b"<html>bad gateway</html>").unwrap_err();
+    assert!(e.contains("HTTP 502") && !e.contains("<html>"), "{e}");
+    let e = login_answer(USER, 200, b"<html>a proxy's page</html>").unwrap_err();
+    assert!(e.contains("not a token") && !e.contains("<html>"), "{e}");
+    assert_eq!(authorization(DATA).as_deref(), Some("Bearer web-access"), "a failed sign-in leaves the one before");
+    assert!(!is_remembered(), "a sign-in from the browser is never remembered");
+    logout();
+    assert_eq!(authorization(DATA), None);
+    // Until the web app can sign in, its refusal sends the user where they can.
+    let web = refused_message_in(DATA, true);
+    assert!(web.contains("f.tif: Copernicus Data Space asks for a sign-in") && web.contains("the web app can't sign in yet"), "{web}");
+    assert!(refused_message(DATA).ends_with("sign in with a free account (copernicus.login)"), "{}", refused_message(DATA));
+}
+
 #[test]
 fn the_access_token_is_renewed_before_it_expires() {
     let _turn = crate::cache::turn();

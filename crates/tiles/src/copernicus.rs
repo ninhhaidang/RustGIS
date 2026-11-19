@@ -21,8 +21,9 @@
 //! on CDSE's data hosts ([`DATA_HOSTS`]), never to the sign-in host. The native fetcher asks for
 //! it at every hop, so a redirect that leaves those hosts goes without it, as Earthdata's does.
 //!
-//! The requests and answers are built and read here (sans I/O); sending them is desktop and
-//! command line only (`native`).
+//! The requests and answers are built and read here (sans I/O); the desktop and the command line
+//! send them here (`native`), the web app with the browser's fetch ([`login_answer`],
+//! [`renewal_due`] and [`renewal_done`]).
 
 use std::sync::{Arc, Mutex};
 
@@ -426,8 +427,23 @@ fn wrong_credentials(status: u16, body: &[u8]) -> bool {
     matches!((status, grant_error(body).as_deref()), (400 | 401, Some("invalid_grant")))
 }
 
+/// Lands the answer to a sign-in sent elsewhere (the web app's fetch): [`login_body`] POSTed to
+/// [`TOKEN_URL`], whose status and answer are given here. Keeps the sign-in as `login` does,
+/// replacing the one kept; a refused one leaves it. Never remembers it: the browser has no
+/// credential store.
+pub fn login_answer(username: &str, status: u16, body: &[u8]) -> Result<Info, String> {
+    answered(TOKEN_URL, username, status, body)
+}
+
+/// A sign-in's answer from `endpoint`: a server error says nothing of the credentials.
+fn answered(endpoint: &str, username: &str, status: u16, body: &[u8]) -> Result<Info, String> {
+    if status >= 500 {
+        return Err(format!("Copernicus Data Space's sign-in answered HTTP {status}: try again later"));
+    }
+    keep(endpoint, username, status, body)
+}
+
 /// Keeps a sign-in made at `endpoint` from its token answer; what the status tells of it.
-#[cfg(not(target_arch = "wasm32"))]
 fn keep(endpoint: &str, username: &str, status: u16, body: &[u8]) -> Result<Info, String> {
     let now = now_secs();
     let g = parse_grant(status, body, now)?;
@@ -550,6 +566,14 @@ pub fn renewal_done(r: &Renewal, answer: Result<(u16, &[u8]), String>) {
 
 /// The message for a request a data host turned away (HTTP 401).
 pub fn refused_message(url: &str) -> String {
+    refused_message_in(url, cfg!(target_arch = "wasm32"))
+}
+
+/// [`refused_message`], for the web app (`web`) or not: the web app can't sign in yet (its panel
+/// doesn't offer it), so its message sends the user where they can.
+fn refused_message_in(url: &str, web: bool) -> String {
+    let how =
+        if web { "in the desktop app or the command line (copernicus.login): the web app can't sign in yet" } else { "(copernicus.login)" };
     // An OData address names its file in its last node: `…/Nodes(f.tif)/$value`.
     let last = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches("/$value").rsplit('/').next().unwrap_or("");
     let file = last.strip_prefix("Nodes(").and_then(|n| n.strip_suffix(')')).unwrap_or(last);
@@ -557,15 +581,15 @@ pub fn refused_message(url: &str) -> String {
         // Kept, but its token expired and the sign-in host didn't renew it (it holds off a while).
         if info.expires_at <= now_secs() {
             format!(
-                "{file}: the Copernicus Data Space sign-in's token expired and couldn't be renewed yet: try again in a minute, or sign in again (copernicus.login)"
+                "{file}: the Copernicus Data Space sign-in's token expired and couldn't be renewed yet: try again in a minute, or sign in again {how}"
             )
         } else {
-            format!("{file}: Copernicus Data Space didn't accept the sign-in's token: sign in again (copernicus.login)")
+            format!("{file}: Copernicus Data Space didn't accept the sign-in's token: sign in again {how}")
         }
     } else if expired() {
-        format!("{file}: the Copernicus Data Space sign-in expired: sign in again (copernicus.login)")
+        format!("{file}: the Copernicus Data Space sign-in expired: sign in again {how}")
     } else {
-        format!("{file}: Copernicus Data Space asks for a sign-in for this file: sign in with a free account (copernicus.login)")
+        format!("{file}: Copernicus Data Space asks for a sign-in for this file: sign in with a free account {how}")
     }
 }
 
@@ -644,10 +668,7 @@ mod native {
     fn sign_in(endpoint: &str, username: &str, password: &str, totp: Option<&str>) -> Result<super::Info, (bool, String)> {
         let body = super::login_body(username, password, totp).map_err(|e| (true, e))?;
         let (status, answer) = post_form(endpoint, &body, &None).map_err(|e| (false, e))?;
-        if status >= 500 {
-            return Err((false, format!("Copernicus Data Space's sign-in answered HTTP {status}: try again later")));
-        }
-        super::keep(endpoint, username, status, &answer).map_err(|e| (super::wrong_credentials(status, &answer), e))
+        super::answered(endpoint, username, status, &answer).map_err(|e| (super::wrong_credentials(status, &answer), e))
     }
 
     /// The token endpoint: [`TOKEN_URL`](super::TOKEN_URL), or a test's fake one.

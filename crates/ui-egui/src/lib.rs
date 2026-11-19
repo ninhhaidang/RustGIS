@@ -429,6 +429,10 @@ pub struct Services {
     /// Online and RustGIS's own app) in a pop-up window, putting who signed in, or why not, in the
     /// slot (the browser; the desktop runs `arcgis.signIn`).
     pub arcgis_sign_in: Option<Box<dyn Fn(String, String, Slot<Result<String, String>>)>>,
+    /// Signs in to Copernicus Data Space with a username, a password and a one-time code (blank
+    /// for an account without two-factor authentication), putting who signed in, or why not, in
+    /// the slot (the browser, which sends the request itself; the desktop runs `copernicus.login`).
+    pub copernicus_sign_in: Option<Box<dyn Fn(String, String, String, Slot<Result<String, String>>)>>,
 }
 
 /// A new private folder for one print job: unique, created fresh (never an existing path) and,

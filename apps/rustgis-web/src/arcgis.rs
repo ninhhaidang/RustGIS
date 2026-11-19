@@ -48,7 +48,7 @@ fn redirect() -> Result<String, String> {
 }
 
 /// Waits `ms`; an error when no timer can be set (the caller gives up rather than spin).
-async fn sleep(ms: i32) -> Result<(), String> {
+pub(crate) async fn sleep(ms: i32) -> Result<(), String> {
     let window = web_sys::window().ok_or("no window")?;
     let mut timed = Ok(());
     let promise = js_sys::Promise::new(&mut |resolve, _| {
@@ -66,6 +66,18 @@ async fn request(url: &str, form: Option<&str>) -> Result<Vec<u8>, String> {
 
 /// A renewal caused by a claimed download checks its owned predicate on first poll and send.
 async fn request_claimed(url: &str, form: Option<&str>, still: Option<cache::Still>) -> Result<Vec<u8>, String> {
+    let (status, body) = form_request(url, form, still, "the portal").await?;
+    // A server error says nothing of the request: it counts as the portal not being reached.
+    if status >= 500 {
+        return Err(format!("the portal answered HTTP {status}"));
+    }
+    Ok(body)
+}
+
+/// A request to a sign-in server (`who`, for the messages): a form POSTed, or a GET; its status
+/// and answer. Never redirected, never with the page's cookies; the error never quotes the form.
+/// Also Copernicus Data Space's (see `copernicus.rs`).
+pub(crate) async fn form_request(url: &str, form: Option<&str>, still: Option<cache::Still>, who: &str) -> Result<(u16, Vec<u8>), String> {
     cache::check_still(&still)?;
     let window = web_sys::window().ok_or("no window")?;
     let init = web_sys::RequestInit::new();
@@ -90,27 +102,25 @@ async fn request_claimed(url: &str, form: Option<&str>, still: Option<cache::Sti
     let read = async {
         let promise =
             crate::request::prepare_and_send(&still, || async { Ok(()) }, |()| window.fetch_with_str_and_init(url, &init)).await?;
-        let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(promise)
-            .await
-            .map_err(|_| "couldn't reach the portal".to_string())?
-            .dyn_into()
-            .map_err(err)?;
-        // A server error says nothing of the request: it counts as the portal not being reached.
-        if resp.status() >= 500 {
-            return Err(format!("the portal answered HTTP {}", resp.status()));
+        let resp: web_sys::Response =
+            wasm_bindgen_futures::JsFuture::from(promise).await.map_err(|_| format!("couldn't reach {who}"))?.dyn_into().map_err(err)?;
+        let status = resp.status();
+        // A server error says nothing of the request: its answer isn't read, so a large or unreadable
+        // one still reports the status.
+        if status >= 500 {
+            return Ok((status, Vec::new()));
         }
         let length = resp.headers().get("content-length").ok().flatten().and_then(|l| l.parse::<usize>().ok());
         if length.is_some_and(|n| n > MAX_ANSWER) {
-            return Err("the portal's answer is too large".into());
+            return Err(format!("{who}'s answer is too large"));
         }
-        let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().map_err(err)?)
-            .await
-            .map_err(|_| "couldn't reach the portal".to_string())?;
+        let buf =
+            wasm_bindgen_futures::JsFuture::from(resp.array_buffer().map_err(err)?).await.map_err(|_| format!("couldn't reach {who}"))?;
         let bytes = js_sys::Uint8Array::new(&buf);
         if bytes.length() as usize > MAX_ANSWER {
-            return Err("the portal's answer is too large".into());
+            return Err(format!("{who}'s answer is too large"));
         }
-        Ok(bytes.to_vec())
+        Ok((status, bytes.to_vec()))
     };
     let result = read.await;
     if let Some(t) = timer {

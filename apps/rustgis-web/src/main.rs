@@ -16,6 +16,8 @@
 // Pure logic, tested natively; only the browser build uses it.
 #[cfg(target_arch = "wasm32")]
 mod arcgis;
+#[cfg(target_arch = "wasm32")]
+mod copernicus;
 #[cfg_attr(not(target_arch = "wasm32"), expect(dead_code, reason = "native builds only test it"))]
 mod embed;
 #[cfg(target_arch = "wasm32")]
