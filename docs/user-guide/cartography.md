@@ -91,7 +91,7 @@ draws a circle, so the point still shows. By command:
 layer.marker={"layer":"Peaks","char":"▲","font":"DejaVu Sans","size":12}
 ```
 
-A marker can also be an **image**: a PNG or JPEG, given by command as base64 (at most 2 MiB).
+A marker can also be an **image**: a PNG or JPEG, given by command as base64 (at most 2 MiB of base64 text, an image of about 1.5 MiB). Other formats, such as GIF, aren't taken.
 Its size is its width, and it is as tall as its proportions make it, as QGIS draws a raster image
 marker; the symbol's fill and outline don't show. It turns with **Rotation**, is ringed when
 selected, and is kept in the project file. A project that has one opens only in a RustGIS that
@@ -336,7 +336,7 @@ its start), at its vertices or its inner ones, at either end or both, or in its 
 line** turns each mark with the line's direction; the **Angle** turns it further, clockwise. Marks
 take the stroke's colour, its width as a hash mark's line (or a marker's outline, by command), and
 its offset to either side. Stack them with line strokes: a casing, a core and ticks across it. A
-marker can also be an image, by command (`"image"`, a PNG or JPEG as base64, at most 2 MiB): as
+marker can also be an image, by command (`"image"`, a PNG or JPEG as base64 of at most 2 MiB): as
 wide as its **Size** and as tall as its proportions make it, turned with the line, the stroke's
 colour and outline left out; selected, each is framed. An image a file gave that can't be drawn
 (too large to keep, or one that doesn't decode) shows as a circle; changing the strokes in the

@@ -144,7 +144,7 @@ fn with_marker<R>(p: Picture, f: impl FnOnce(&Pixmap, f32) -> R) -> Option<R> {
     MARKERS_DECODED.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.images.contains_key(&p) {
-            let img = decode_sized(p.base64(), MARKER_SIDE);
+            let img = png_or_jpeg(p.base64()).then(|| decode_sized(p.base64(), MARKER_SIDE)).flatten();
             let size = img.as_ref().map_or(0, |(i, _)| i.data().len());
             // Evict the oldest (not all of them) to stay within the count and memory budget.
             while cache.images.len() >= MARKERS || (cache.bytes + size > MARKERS_BYTES && !cache.images.is_empty()) {
@@ -181,5 +181,57 @@ pub(crate) fn draw_marker(pm: &mut Canvas, p: Picture, width: f32, t: Transform,
 
 /// Whether base64 `b64` is a PNG or JPEG image that decodes (a picture marker's, before it's set).
 pub fn readable(b64: &str) -> bool {
-    decode_within(b64, MARKER_SIDE).is_some()
+    png_or_jpeg(b64) && decode_within(b64, MARKER_SIDE).is_some()
+}
+
+/// Whether base64 `b64` starts as a PNG or a JPEG does. Picture markers take only those, on every
+/// platform: the desktop's decoder also reads GIF (the engine's `gif` feature, for raster files),
+/// the web's doesn't, so a GIF marker would draw on one and not the other. Graphics' pictures
+/// ([`decode`]) keep what the decoder reads.
+fn png_or_jpeg(b64: &str) -> bool {
+    // 16 characters of base64 are 12 bytes, more than either signature.
+    let b64 = b64.trim().as_bytes();
+    let head = b64.get(..16).unwrap_or(b64);
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(head) else { return false };
+    matches!(image::guess_format(&bytes), Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Picture markers take PNG and JPEG alone, read from the first bytes: not a GIF (which the
+    /// desktop's decoder reads and the web's doesn't), nor what isn't base64 or an image.
+    #[test]
+    fn a_marker_is_a_png_or_a_jpeg() {
+        let encoded = |format: image::ImageFormat| {
+            let mut bytes = Vec::new();
+            image::RgbImage::from_pixel(4, 2, image::Rgb([10, 20, 30])).write_to(&mut std::io::Cursor::new(&mut bytes), format).unwrap();
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        };
+        let (png, jpeg) = (encoded(image::ImageFormat::Png), encoded(image::ImageFormat::Jpeg));
+        assert!(png_or_jpeg(&png) && png_or_jpeg(&format!(" {jpeg}\n")));
+        assert!(readable(&png) && readable(&jpeg));
+        // A 1x1 GIF; a multi-byte character where the signature is read; text; base64 of text.
+        let gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+        for not in [gif, "iVBORw0KGgoAAAAé", "", "%%%", "bm90IGFuIGltYWdl"] {
+            assert!(!png_or_jpeg(not) && !readable(not), "{not}");
+        }
+    }
+
+    /// Graphics' pictures don't check the signature: they keep what the decoder reads.
+    #[test]
+    fn graphics_pictures_still_decode_what_the_decoder_reads() {
+        let mut bytes = Vec::new();
+        image::RgbImage::from_pixel(4, 2, image::Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let png = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        assert_eq!(decode(&png).map(|p| (p.width(), p.height())), Some((4, 2)));
+        // A GIF, where the decoder reads one (the desktop's, with the engine's `gif` feature):
+        // drawn as a graphic, though not taken as a marker.
+        let gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+        assert_eq!(decode(gif).is_some(), image::ImageFormat::Gif.reading_enabled());
+        assert!(!readable(gif));
+    }
 }

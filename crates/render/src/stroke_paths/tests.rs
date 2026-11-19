@@ -70,11 +70,11 @@ fn cached_pixels_equal_sequential_strokes_including_overlap_and_alpha() {
                     if i % 11 == 0 {
                         styled.stroke_width = 5.0;
                     }
-                    crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes, false));
+                    crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes, Pass::Ink));
                     crate::canvas::with_canvas(&mut actual, |c| batch.draw(&ctx, c, &parts, &styled, &strokes));
                     // Repeated features verify unchanged overlap compositing order.
                     if i % 13 == 0 {
-                        crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes, false));
+                        crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes, Pass::Ink));
                         crate::canvas::with_canvas(&mut actual, |c| batch.draw(&ctx, c, &parts, &styled, &strokes));
                     }
                 }

@@ -207,15 +207,22 @@ fn places(run: &Run, m: &LineMarkers, ppp: f64, near: Window, room: usize) -> Ve
     out
 }
 
+/// Which of a line's two drawings its strokes are: a selected line's halo, under it, or the line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pass {
+    Halo,
+    Ink,
+}
+
 /// Draws a stroke's marks (`m`) along each of `runs`: in `color`, `width` their outline's or a hash
 /// mark's line's, `offset` points to the right of the line. `ppp` is pixels per point.
 ///
 /// An image marker is drawn as a point's is, whatever the colour, its outline left out; one that
-/// doesn't decode is drawn as a circle. With `halo` (a selected line's halo, drawn under its
-/// strokes), an image draws only a frame in its outline's colour, the image itself coming with the
-/// strokes.
+/// doesn't decode is drawn as a circle. In the [`Pass::Halo`] (a selected line's halo, drawn under
+/// its strokes), an image draws only a frame in its outline's colour, the image itself coming with
+/// the strokes.
 #[expect(clippy::too_many_arguments, reason = "the marks, the stroke they come with and the pass they are drawn in")]
-pub(crate) fn draw(pm: &mut Canvas, runs: &[Run], m: &LineMarkers, color: Rgba, width: f32, offset: f32, ppp: f32, halo: bool) {
+pub(crate) fn draw(pm: &mut Canvas, runs: &[Run], m: &LineMarkers, color: Rgba, width: f32, offset: f32, ppp: f32, pass: Pass) {
     let picture = drawn_picture(m);
     let outline = m.outline.filter(|c| c.a() > 0 && width > 0.0);
     let hash = matches!(m.mark, LineMark::Hash);
@@ -253,7 +260,16 @@ pub(crate) fn draw(pm: &mut Canvas, runs: &[Run], m: &LineMarkers, color: Rgba, 
             let turn = if m.rotate { dy.atan2(dx).to_degrees() as f32 } else { 0.0 } + m.angle;
             let t = Transform::from_rotate(turn).post_translate(x as f32, y as f32);
             if let Some(p) = picture
-                && crate::picture_marker(pm, p, size.max(ppp), t, 1.0, if halo { m.outline } else { None }, !halo, ppp)
+                && crate::picture_marker(
+                    pm,
+                    p,
+                    size.max(ppp),
+                    t,
+                    1.0,
+                    if pass == Pass::Halo { m.outline } else { None },
+                    pass == Pass::Ink,
+                    ppp,
+                )
             {
                 continue;
             }
