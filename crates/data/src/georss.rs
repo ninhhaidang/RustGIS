@@ -197,7 +197,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         } else {
             format!("{lost_holes} holes in polygons were unreadable and left out")
         };
-        report.messages.push(what);
+        report.losses.push(crate::loss::LossMessage { code: crate::loss::LossCode::DroppedRing, text: what });
     }
     // What the file as a whole said goes with its first layer only.
     let out: Vec<(Dataset, ReadReport)> = layers
@@ -293,14 +293,14 @@ mod tests {
         assert_eq!(lossy[0].0.features.len(), 1);
         assert!(lossy[0].0.features[0].geometry.is_some());
         assert!(
-            lossy[0].1.messages.iter().any(|m| m.contains("1 hole in a polygon was unreadable and left out")),
+            lossy[0].1.losses.iter().any(|m| m.code == crate::loss::LossCode::DroppedRing && m.text.contains("1 hole in a polygon was unreadable and left out")),
             "{:?}",
             lossy[0].1.messages
         );
 
         let clean = read("clean.rss", feed("45.2 -110.2 45.8 -110.2 45.8 -110.8 45.2 -110.2").as_bytes()).unwrap();
         assert_eq!(clean[0].0.features.len(), 1);
-        assert!(!clean[0].1.messages.iter().any(|m| m.contains("hole")), "{:?}", clean[0].1.messages);
+        assert!(clean[0].1.losses.is_empty());
 
         let multi = r#"<?xml version="1.0"?>
 <rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml">
@@ -313,7 +313,7 @@ mod tests {
 </channel></rss>"#;
         let lossy_multi = read("multi.rss", multi.as_bytes()).unwrap();
         assert!(
-            lossy_multi[0].1.messages.iter().any(|m| m.contains("2 holes in polygons were unreadable and left out")),
+            lossy_multi[0].1.losses.iter().any(|m| m.text.contains("2 holes in polygons were unreadable and left out")),
             "{:?}",
             lossy_multi[0].1.messages
         );
@@ -329,7 +329,7 @@ mod tests {
 </channel></rss>"#;
         let mixed_lossy = read("mixed.rss", mixed.as_bytes()).unwrap();
         assert!(
-            mixed_lossy[0].1.messages.iter().any(|m| m.contains("1 hole in a polygon was unreadable and left out")),
+            mixed_lossy[0].1.losses.iter().any(|m| m.text.contains("1 hole in a polygon was unreadable and left out")),
             "{:?}",
             mixed_lossy[0].1.messages
         );

@@ -156,7 +156,7 @@ fn run_with_room(
 
     let mut messages = notices(&tally, &problem_field);
     messages.extend(notes);
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// The memory an output row copying `attrs` (`width` of them, of `out_width` values in the

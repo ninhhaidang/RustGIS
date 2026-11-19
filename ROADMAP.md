@@ -82,9 +82,9 @@ A result is right, or RustGIS says what it lost or assumed
   FlatGeobuf, GeoParquet and FileGDB, Z/M-loss cases for Shapefile, and ring-loss cases for
   OSM PBF, WKT height/member losses for XLSX and ODS, and error-cell losses for XLSX; other loss kinds remain.
   Exports are checked by `never_silent_roundtrip.rs` _(open)_.
-- A `--strict` option for `rustgis-cli run` that exits non-zero when a loss is reported, for
-  scheduled jobs. Notices carry a severity but not a kind today (`Notice` in
-  `crates/engine/src/lib.rs`): start with an issue on which notices count as a loss.
+- Classify existing loss notices so scheduled jobs can detect them by code. Then add
+  `rustgis-cli run --strict`, which exits non-zero on a disallowed loss, and expose the codes
+  to Python and MCP ([#2371](https://github.com/opengeos/RustGIS/issues/2371)).
 - Grid datum shifts (NTv2 and GeoTIFF grids) for NAD27, NAD83(HARN), GDA94↔GDA2020 and OSGB36
   without the GDAL program (a layer read without its shift says so today). _Coordinate first_
   (needs an issue).

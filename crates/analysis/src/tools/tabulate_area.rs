@@ -114,7 +114,7 @@ pub(super) fn run_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Resu
     if empty > 0 {
         messages.push(format!("{empty} zone(s) contained no valid raster cell centres; their class values are zero"));
     }
-    Ok(ToolResult { output: Output::Table(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
 }
 
 /// All finite valid band values, sorted numerically. The wide table has Pivot Table's column

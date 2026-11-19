@@ -45,7 +45,11 @@ fn provider() -> Vec<ToolSpec> {
 
 /// Reports which captured schema and defaults actually reached the runner.
 fn runner(spec: &ToolSpec, _: &dyn Inputs, params: &Value) -> Result<ToolResult, String> {
-    Ok(ToolResult { output: Output::Layers(Vec::new()), messages: vec![format!("{}:{}", spec.summary, params["value"])] })
+    Ok(ToolResult {
+        losses: Vec::new(),
+        output: Output::Layers(Vec::new()),
+        messages: vec![format!("{}:{}", spec.summary, params["value"])],
+    })
 }
 
 #[test]

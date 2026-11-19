@@ -2,6 +2,7 @@
 
 use rustgis_analysis::{Inputs, Output, OutputLayer, RasterInput};
 use rustgis_data::Dataset;
+use rustgis_data::loss::{LossCode, LossMessage};
 use serde_json::{Value, json};
 
 use super::{need_layers, ps};
@@ -710,6 +711,7 @@ impl ToolRun {
                 let mut result = pin.run(&inputs, &params, control, &|| continuation.check());
                 if let Ok(r) = &mut result {
                     r.messages.extend(inputs.messages.iter().cloned());
+                    r.losses.extend(inputs.losses.iter().cloned());
                 }
                 ToolDone { inputs: Vec::new(), result, full_ids: full_ids(&inputs.loaded) }
             })
@@ -1216,6 +1218,7 @@ struct MapInputs<'a> {
     loaded: std::collections::HashMap<String, Dataset>,
     /// Import warnings from local file inputs, kept in the tool result and history.
     messages: Vec<String>,
+    losses: Vec<LossMessage>,
     /// The flat map's projection (its name, the projection and its unit in metres), built the
     /// first time a tool asks for it (Tissot's indicatrix does), once for the run; `None` on the
     /// globe.
@@ -1253,8 +1256,9 @@ fn map_inputs<'a>(s: &'a Session, spec: Option<&rustgis_analysis::ToolSpec>, par
 /// thread.
 fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) -> Result<MapInputs<'a>, String> {
     let (full, mut messages) = streamed_inputs(&snap.map, spec, params)?;
+    let losses = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
-    let mut full = full;
+    let (mut full, mut losses) = (full, losses);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(spec) = spec.filter(|t| rustgis_analysis::TOOLS.iter().any(|builtin| std::ptr::eq(builtin, *t))) {
         for parameter in spec.params.iter().filter(|p| p.kind == rustgis_analysis::ParamKind::VectorLayers) {
@@ -1262,6 +1266,9 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
                 if vector_file_input(spec, &snap.map, name) && !full.contains_key(name) {
                     let (dataset, report) = rustgis_data::io::read_path(std::path::Path::new(name)).map_err(|e| format!("{name}: {e}"))?;
                     messages.extend(report.messages.into_iter().map(|message| format!("{name}: {message}")));
+                    losses.extend(
+                        report.losses.into_iter().map(|loss| LossMessage { code: loss.code, text: format!("{name}: {}", loss.text) }),
+                    );
                     full.insert(name.to_string(), dataset);
                 }
             }
@@ -1272,7 +1279,7 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
     lonlat_inputs(&snap.map, spec, params, &mut full)?;
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
-    Ok(MapInputs { snap, rows, loaded: full, messages, flat: std::cell::OnceCell::new(), view: std::cell::OnceCell::new() })
+    Ok(MapInputs { snap, rows, loaded: full, messages, losses, flat: std::cell::OnceCell::new(), view: std::cell::OnceCell::new() })
 }
 
 /// Narrows the rows a tool reads of each layer to the features its definition query keeps, as the
@@ -1933,9 +1940,9 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
     let mut collisions = 0;
     let mut first_collision = None;
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut, reason = "batch inputs are read from files on the desktop only"))]
-    let mut reader_warnings: Vec<(String, String)> = Vec::new();
+    let mut reader_warnings: Vec<(String, String, Option<LossCode>)> = Vec::new();
     let mut items_reporting_messages = 0;
-    let mut distinct_tool_messages: Vec<(String, usize)> = Vec::new();
+    let mut distinct_tool_messages: Vec<(String, Option<LossCode>, usize)> = Vec::new();
     let mut cancelled_after = None;
     let mut next_suffix: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     #[cfg(not(target_arch = "wasm32"))]
@@ -1969,9 +1976,11 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                 }
                 match read_batch_file(s, path) {
                     Ok((dataset, report)) => {
-                        for msg in report.messages {
+                        let messages = report.messages.into_iter().map(|text| (text, None));
+                        let losses = report.losses.into_iter().map(|loss| (loss.text, Some(loss.code)));
+                        for (msg, code) in messages.chain(losses) {
                             item_reader_warnings.push(format!("{target}: {msg}"));
-                            reader_warnings.push((target.clone(), msg));
+                            reader_warnings.push((target.clone(), msg, code));
                         }
                         Some(super::layer::add_dataset(s, dataset))
                     }
@@ -2106,12 +2115,12 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
             Ok((res, messages)) => {
                 succeeded.push(target.clone());
                 if !messages.is_empty() {
-                    items_reporting_messages += 1;
-                    for msg in &messages {
-                        if let Some(entry) = distinct_tool_messages.iter_mut().find(|(m, _)| m == msg) {
-                            entry.1 += 1;
+                    items_reporting_messages += usize::from(messages.iter().any(|(_, code)| code.is_none()));
+                    for (text, code) in &messages {
+                        if let Some(entry) = distinct_tool_messages.iter_mut().find(|(m, c, _)| m == text && c == code) {
+                            entry.2 += 1;
                         } else {
-                            distinct_tool_messages.push((msg.clone(), 1));
+                            distinct_tool_messages.push((text.clone(), *code, 1));
                         }
                     }
                 }
@@ -2217,7 +2226,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                     }
                 } else {
                     succeeded.pop();
-                    let err = messages.last().cloned().unwrap_or_else(|| "tool produced no output".into());
+                    let err = messages.last().map(|(text, _)| text.clone()).unwrap_or_else(|| "tool produced no output".into());
                     if let Some(last) = s.project.gp_history.last_mut() {
                         let matches_item = last.id == tool_id
                             && (last.params.get(batch_param).and_then(Value::as_str) == Some(target)
@@ -2238,7 +2247,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                     failed.push(json!({"input": target, "error": err.clone()}));
                     let mut err_obj = json!({"input": target, "error": err});
                     if messages.len() > 1 {
-                        err_obj["messages"] = json!(messages);
+                        err_obj["messages"] = json!(messages.iter().map(|(text, _)| text).collect::<Vec<_>>());
                     }
                     errors.push(err_obj);
                     #[cfg(not(target_arch = "wasm32"))]
@@ -2339,18 +2348,17 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
     // Every distinct message is named (a loss reported by the fourth kind must not be hidden),
     // up to a bound a hostile run can't flood; all of them are in the result's `messages`.
     const NAMED: usize = 50;
+    let mut losses = BatchLosses::default();
+    for (text, code, count) in &distinct_tool_messages {
+        if let Some(code) = code {
+            losses.add(*code, text, *count);
+        }
+    }
     if items_reporting_messages > 0 {
-        let sample = distinct_tool_messages
-            .iter()
-            .take(NAMED)
-            .map(|(m, c)| if *c > 1 { format!("{m} (×{c})") } else { m.clone() })
-            .collect::<Vec<_>>()
-            .join("; ");
-        let more = if distinct_tool_messages.len() > NAMED {
-            format!(" and {} more, in the result", distinct_tool_messages.len() - NAMED)
-        } else {
-            String::new()
-        };
+        let plain = || distinct_tool_messages.iter().filter(|(_, code, _)| code.is_none());
+        let sample = plain().take(NAMED).map(|(text, _, count)| batch_message(text, *count)).collect::<Vec<_>>().join("; ");
+        let total = plain().count();
+        let more = if total > NAMED { format!(" and {} more, in the result", total - NAMED) } else { String::new() };
         s.notify(format!("gp.batch: {items_reporting_messages} item(s) reported messages ({sample}{more})"), false);
     }
 
@@ -2371,23 +2379,29 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
 
     #[cfg(not(target_arch = "wasm32"))]
     if !reader_warnings.is_empty() {
-        let mut aggregated: Vec<(&str, Vec<&str>)> = Vec::new();
-        for (target, msg) in &reader_warnings {
-            if let Some((_, inputs)) = aggregated.iter_mut().find(|(m, _)| *m == msg.as_str()) {
+        let mut aggregated: Vec<(&str, Option<LossCode>, Vec<&str>)> = Vec::new();
+        for (target, msg, code) in &reader_warnings {
+            if let Some((_, _, inputs)) = aggregated.iter_mut().find(|(m, c, _)| *m == msg.as_str() && c == code) {
                 if !inputs.contains(&target.as_str()) {
                     inputs.push(target.as_str());
                 }
             } else {
-                aggregated.push((msg.as_str(), vec![target.as_str()]));
+                aggregated.push((msg.as_str(), *code, vec![target.as_str()]));
             }
         }
-        for (msg, inputs) in aggregated {
+        for (msg, code, inputs) in aggregated {
             let count = inputs.len();
             let inputs_list = inputs.join(", ");
             let label = if count == 1 { "input" } else { "inputs" };
-            s.notify(format!("gp.batch: {count} {label} ({inputs_list}): {msg}"), false);
+            let text = format!("gp.batch: {count} {label} ({inputs_list}): {msg}");
+            if let Some(code) = code {
+                losses.add(code, &text, count);
+            } else {
+                s.notify(text, false);
+            }
         }
     }
+    losses.say(s);
 
     if !failed.is_empty() {
         let sample = failed.iter().take(3).filter_map(|v| v.get("input").and_then(Value::as_str)).collect::<Vec<_>>().join(", ");
@@ -2413,7 +2427,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
     };
     s.notify(summary_msg, num_err > 0 || is_cancelled);
 
-    let warnings: Vec<Value> = reader_warnings.iter().map(|(input, msg)| json!({"input": input, "warning": msg})).collect();
+    let warnings: Vec<Value> = reader_warnings.iter().map(|(input, msg, _)| json!({"input": input, "warning": msg})).collect();
 
     let mut ret = json!({
         "tool": tool_id,
@@ -2424,7 +2438,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
         "outputs": output_names,
         "errors": errors,
         "warnings": warnings,
-        "messages": distinct_tool_messages.iter().map(|(m, c)| json!({"message": m, "items": c})).collect::<Vec<_>>(),
+        "messages": distinct_tool_messages.iter().map(|(m, _, c)| json!({"message": m, "items": c})).collect::<Vec<_>>(),
     });
     if is_cancelled {
         ret["cancelled"] = json!(true);
@@ -2548,7 +2562,7 @@ pub(crate) fn execute(
     op: crate::policy::Authorized<crate::policy::ToolOp>,
     control: &std::sync::Arc<rustgis_analysis::control::Control>,
     opts: &RunOpts,
-) -> Result<(Value, Vec<String>), String> {
+) -> Result<(Value, ToolMessages), String> {
     let crate::policy::ToolOp { pin, params } = op.op();
     pin.current()?;
     let spec = pin.spec();
@@ -2596,6 +2610,7 @@ pub(crate) fn execute(
             };
             if let Ok(result) = &mut res {
                 result.messages.extend(inputs.messages.iter().cloned());
+                result.losses.extend(inputs.losses.iter().cloned());
             }
             let ids = full_ids(&inputs.loaded);
             #[cfg(not(target_arch = "wasm32"))]
@@ -2628,6 +2643,47 @@ pub(crate) fn execute(
     apply_with(s, run_of(t0), kept(), res, millis, opts)
 }
 
+/// Counts classified reports across a batch and keeps a bounded sample for each code.
+#[derive(Default)]
+struct BatchLosses(std::collections::BTreeMap<&'static str, BatchLoss>);
+
+struct BatchLoss {
+    code: LossCode,
+    reports: usize,
+    examples: Vec<String>,
+    omitted: usize,
+}
+
+impl BatchLosses {
+    /// Counts every report, even when its text is beyond the sample.
+    fn add(&mut self, code: LossCode, text: &str, count: usize) {
+        let entry = self.0.entry(code.spec().id).or_insert_with(|| BatchLoss { code, reports: 0, examples: Vec::new(), omitted: 0 });
+        entry.reports = entry.reports.saturating_add(count);
+        if entry.examples.len() < 3 {
+            entry.examples.push(batch_message(text, count));
+        } else {
+            entry.omitted += 1;
+        }
+    }
+
+    /// Publishes one warning per code. Full messages are in the batch result.
+    fn say(self, s: &mut Session) {
+        for loss in self.0.into_values() {
+            let sample = loss.examples.join("; ");
+            let more = if loss.omitted == 0 { String::new() } else { format!(" and {} more, in the result", loss.omitted) };
+            s.notify_loss(loss.code, format!("gp.batch: {} loss report(s) ({sample}{more})", loss.reports).into());
+        }
+    }
+}
+
+/// The text of a distinct batch notice, with its repetition count when it appeared more than once.
+fn batch_message(text: &str, count: usize) -> String {
+    if count > 1 { format!("{text} (×{count})") } else { text.to_string() }
+}
+
+/// Text and optional loss code from a tool that has run.
+pub(crate) type ToolMessages = Vec<(String, Option<LossCode>)>;
+
 /// How [`execute`] applies a run: by default as `gp.run` does. A batch item keeps the
 /// parameters and command it is replayed with, leaves its messages to the batch's one notice
 /// per kind, and adds a table beside one of the same name instead of replacing it.
@@ -2648,7 +2704,7 @@ pub(crate) fn run_tool_quiet(
     record_params: Option<&Value>,
     command: Option<(String, Value)>,
     control: &std::sync::Arc<rustgis_analysis::control::Control>,
-) -> Result<(Value, Vec<String>), String> {
+) -> Result<(Value, ToolMessages), String> {
     let op = s.authorize_tool(tool, params)?;
     let opts = RunOpts { record: record_params.cloned(), command, quiet: true, keep_tables: true };
     s.invoke_tool_with(op, control, &opts)
@@ -2671,10 +2727,11 @@ pub(crate) struct PendingFile {
     pub(crate) file_name: String,
     pub(crate) bytes: Option<Vec<u8>>,
     record: GpRecord,
+    losses: Vec<LossMessage>,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpRecord) -> CmdResult {
+fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpRecord, losses: Vec<LossMessage>) -> CmdResult {
     let file_name =
         record.params.get("output").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).unwrap_or(&file_name).to_string();
     if file_name.is_empty() || file_name.contains(['/', '\\']) {
@@ -2687,7 +2744,14 @@ fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpReco
     }
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
-    s.file_outputs.push(PendingFile { id, file_name: file_name.clone(), bytes: Some(bytes), record, continuation: s.continuation()? });
+    s.file_outputs.push(PendingFile {
+        id,
+        file_name: file_name.clone(),
+        bytes: Some(bytes),
+        record,
+        losses,
+        continuation: s.continuation()?,
+    });
     s.request_only = true;
     Ok(json!({"pending": true, "download": id, "file": file_name}))
 }
@@ -2715,6 +2779,14 @@ fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
         } else {
             s.notify(message.clone(), true);
         }
+    }
+    for loss in file.losses {
+        if file.record.ok {
+            publish_tool_loss(s, loss.code, &loss.text, true);
+        } else {
+            s.notify(loss.text.clone(), true);
+        }
+        file.record.messages.push(loss.text);
     }
     let out = json!({"file": file.file_name, "delivered": file.record.ok, "messages": file.record.messages});
     s.push_gp_record(file.record);
@@ -2839,7 +2911,7 @@ fn apply_with(
     res: Result<rustgis_analysis::ToolResult, String>,
     millis: u64,
     opts: &RunOpts,
-) -> Result<(Value, Vec<String>), String> {
+) -> Result<(Value, ToolMessages), String> {
     let continuation = s.continuation()?;
     s.check_continuation(&continuation)?;
     let Ran { name, id, command, started } = ran;
@@ -2868,12 +2940,13 @@ fn apply_with(
         Output::File { file_name, bytes } => {
             #[cfg(test)]
             if s.queue_gp_files {
-                let msgs = result.messages.clone();
+                let msgs = result.messages.iter().cloned().map(|m| (m, None)).collect();
                 return queue_file(
                     s,
                     file_name,
                     bytes,
                     GpRecord { tool: name, id, params, command, at, ok: false, messages: result.messages, millis, outputs: Vec::new() },
+                    result.losses,
                 )
                 .map(|v| (v, msgs));
             }
@@ -2882,6 +2955,7 @@ fn apply_with(
                 let path = params.get("output").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).unwrap_or(&file_name);
                 if let Err(error) = write_file_output(s, std::path::Path::new(path), &bytes) {
                     let error = format!("{path}: {error}");
+                    result.messages.extend(result.losses.into_iter().map(|loss| loss.text));
                     result.messages.push(error.clone());
                     s.push_gp_record(GpRecord {
                         tool: name,
@@ -2900,12 +2974,13 @@ fn apply_with(
             }
             #[cfg(target_arch = "wasm32")]
             {
-                let msgs = result.messages.clone();
+                let msgs = result.messages.iter().cloned().map(|m| (m, None)).collect();
                 return queue_file(
                     s,
                     file_name,
                     bytes,
                     GpRecord { tool: name, id, params, command, at, ok: false, messages: result.messages, millis, outputs: Vec::new() },
+                    result.losses,
                 )
                 .map(|v| (v, msgs));
             }
@@ -2974,16 +3049,25 @@ fn apply_with(
             ret
         }
     };
-    let messages = result.messages.clone();
+    let messages: ToolMessages = result
+        .messages
+        .iter()
+        .cloned()
+        .map(|m| (m, None))
+        .chain(result.losses.iter().map(|loss| (loss.text.clone(), Some(loss.code))))
+        .collect();
     if !opts.quiet {
-        for m in &messages {
-            if wrote_file {
-                s.notify_written(m.clone(), false);
+        for (message, code) in &messages {
+            if let Some(code) = code {
+                publish_tool_loss(s, *code, message, wrote_file);
+            } else if wrote_file {
+                s.notify_written(message.clone(), false);
             } else {
-                s.notify(m.clone(), false);
+                s.notify(message.clone(), false);
             }
         }
     }
+    result.messages.extend(result.losses.into_iter().map(|loss| loss.text));
     let ids: Vec<u32> = match (out.get("layer"), out.get("layers")) {
         (Some(id), _) => id.as_u64().into_iter().filter_map(|v| u32::try_from(v).ok()).collect(),
         (None, Some(Value::Array(v))) => v.iter().filter_map(Value::as_u64).filter_map(|v| u32::try_from(v).ok()).collect(),
@@ -2995,6 +3079,15 @@ fn apply_with(
         s.project.gp_history.remove(0);
     }
     Ok((out, messages))
+}
+
+/// Publishes a typed loss, retaining it through rollback when a file has already been delivered.
+fn publish_tool_loss(s: &mut Session, code: LossCode, text: &str, written: bool) {
+    let mark = s.notice_mark();
+    s.notify_loss(code, text.to_string().into());
+    if written {
+        s.retain_written_notices(mark);
+    }
 }
 
 #[cfg(test)]
@@ -3053,7 +3146,7 @@ mod file_tests {
             s.registry.commands.push(C::new("test.queueFile", "File export", "Test", |s, p| {
                 let record = serde_json::from_value(p["record"].clone()).unwrap();
                 let bytes = serde_json::from_value(p["bytes"].clone()).unwrap();
-                super::queue_file(s, p["name"].as_str().unwrap().into(), bytes, record)
+                super::queue_file(s, p["name"].as_str().unwrap().into(), bytes, record, Vec::new())
             }));
         }
         s.run("test.queueFile", &json!({"name":name,"bytes":bytes,"record":record}))
@@ -3827,6 +3920,7 @@ mod file_tests {
                 Ran { name: "File export".into(), id: "vectorToPmtiles".into(), command: None, started: 1000 },
                 p.clone(),
                 Ok(rustgis_analysis::ToolResult {
+                    losses: Vec::new(),
                     output: Output::File { file_name: "cities.pmtiles".into(), bytes: b"archive".to_vec() },
                     messages: vec!["Exported data".into()],
                 }),
@@ -4548,6 +4642,7 @@ mod batch_tests {
                     vec![rustgis_data::Field::new("col", rustgis_data::FieldType::Integer)],
                 );
                 Ok(rustgis_analysis::ToolResult {
+                    losses: Vec::new(),
                     output: rustgis_analysis::Output::Layers(vec![rustgis_analysis::OutputLayer::Table(table)]),
                     messages: Vec::new(),
                 })
@@ -4903,6 +4998,7 @@ mod batch_tests {
         _params: &serde_json::Value,
     ) -> Result<rustgis_analysis::ToolResult, String> {
         Ok(rustgis_analysis::ToolResult {
+            losses: Vec::new(),
             output: rustgis_analysis::Output::Layers(Vec::new()),
             messages: vec!["custom message from empty tool".to_string()],
         })
@@ -4956,6 +5052,7 @@ mod batch_tests {
         _params: &serde_json::Value,
     ) -> Result<rustgis_analysis::ToolResult, String> {
         Ok(rustgis_analysis::ToolResult {
+            losses: Vec::new(),
             output: rustgis_analysis::Output::Layers(Vec::new()),
             messages: vec!["Processed 10 features".to_string(), "0 features matched criteria".to_string()],
         })

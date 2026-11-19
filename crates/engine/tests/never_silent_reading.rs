@@ -14,6 +14,7 @@
 //! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB,
 //! Shapefile, XLSX, ODS and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss
 //! does not certify a reader.
+use rustgis_engine::data::loss::LossCode;
 use rustgis_engine::{Project, Session};
 use serde_json::json;
 
@@ -24,6 +25,8 @@ enum Expect {
     Said(&'static str),
     /// Imports the layer and says the loss in a notice; refusing this valid fixture is a failure.
     Imported(&'static str),
+    /// Imports successfully and identifies the loss with a code.
+    Classified(LossCode),
     /// Loses it without a notice today, still adding a layer: what is lost.
     Silent(&'static str),
 }
@@ -307,7 +310,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.rss",
             georss(&[&georss_polygon("1 1 1 2 2 2 1 1")]),
             georss(&[&georss_polygon("1 x")]),
-            Said("hole in a polygon was unreadable"),
+            Expect::Classified(LossCode::DroppedRing),
         ),
         case(
             "GeoRSS: a point with more than one pair",
@@ -595,7 +598,8 @@ fn check_workbook(ds: &rustgis_engine::data::Dataset) -> std::io::Result<()> {
 
 /// What `layer.addData` did with a file: the notices it gave and whether it added a layer or table,
 /// or why it refused the file.
-type Reading = Result<(Vec<String>, bool), String>;
+type SaidNotices = Vec<(String, Option<LossCode>)>;
+type Reading = Result<(SaidNotices, bool), String>;
 
 /// Writes `file` with `content`, and `beside`, into `dir` (emptied first) and reads it. `Err` when
 /// the fixture can't be prepared: a failure of the test, never taken for a refusal. Each file of a
@@ -682,7 +686,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             return Err(std::io::Error::other("clean spreadsheet fixture gave a notice"));
         }
     }
-    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    let said = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
     Ok(Ok((said, held(&s) > before)))
 }
 
@@ -709,7 +713,7 @@ fn a_reading_that_loses_something_says_so() {
             Ok(Ok((said, true))) => said,
         };
         // What the lossy file says that the clean one doesn't, and whether it added a layer.
-        let (new, added): (Vec<String>, bool) = match read(&dir, c.file, &c.lossy, &c.beside[1]) {
+        let (new, added): (SaidNotices, bool) = match read(&dir, c.file, &c.lossy, &c.beside[1]) {
             Err(e) => {
                 failures.push(format!("{name}: the lossy file couldn't be written: {e}"));
                 continue;
@@ -719,18 +723,27 @@ fn a_reading_that_loses_something_says_so() {
                 failures.push(format!("{name}: reading crashed: {e}"));
                 continue;
             }
-            Ok(Err(e)) => (vec![e], false),
+            Ok(Err(e)) => (vec![(e, None)], false),
             Ok(Ok((said, added))) => (said.into_iter().filter(|n| !clean.contains(n)).collect(), added),
         };
+        if let Expect::Classified(code) = c.expect {
+            if !added
+                || new.iter().filter(|(_, loss)| *loss == Some(code)).count() != 1
+                || clean.iter().any(|(_, loss)| *loss == Some(code))
+            {
+                failures.push(format!("{name}: expected one {code:?} only for the lossy import; clean: {clean:?}, new: {new:?}"));
+            }
+            continue;
+        }
         match c.expect {
             // Both ways (AGENTS.md, Never silent): the clean file doesn't say the loss.
-            Said(words) | Imported(words) if clean.iter().any(|n| n.contains(words)) => {
+            Said(words) | Imported(words) if clean.iter().any(|(text, _)| text.contains(words)) => {
                 failures.push(format!("{name}: the clean file says the loss it doesn't have ({words:?}): {clean:?}"))
             }
             Imported(_) if !added => {
                 failures.push(format!("{name}: the valid lossy fixture was refused instead of imported: {new:?}"))
             }
-            Said(words) | Imported(words) if !new.iter().any(|n| n.contains(words)) => {
+            Said(words) | Imported(words) if !new.iter().any(|(text, _)| text.contains(words)) => {
                 failures.push(format!("{name}: not said: nothing new holds {words:?}; new: {new:?}; the clean file said {clean:?}"))
             }
             Silent(lost) if !new.is_empty() => failures.push(format!(

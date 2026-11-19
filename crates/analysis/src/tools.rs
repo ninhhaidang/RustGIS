@@ -1437,7 +1437,7 @@ fn vector_to_pmtiles(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let file_name = if output.is_empty() { format!("{default_name}.pmtiles") } else { output.to_string() };
     let selected = inp.selection(s(p, "input"));
     let (bytes, messages) = inp.vector_to_pmtiles(ds, selected, min_zoom, max_zoom, source_layer)?;
-    Ok(ToolResult { output: Output::File { file_name, bytes }, messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::File { file_name, bytes }, messages })
 }
 
 fn raster_to_pmtiles(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -1447,7 +1447,7 @@ fn raster_to_pmtiles(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let default_name = name.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("output");
     let file_name = if output.is_empty() { format!("{default_name}.pmtiles") } else { output.to_string() };
     let bytes = inp.raster_to_pmtiles(name, min_zoom, max_zoom)?;
-    Ok(ToolResult { output: Output::File { file_name, bytes }, messages: vec![] })
+    Ok(ToolResult { losses: Vec::new(), output: Output::File { file_name, bytes }, messages: vec![] })
 }
 
 /// The name of a tool's new layer, from its `output` parameter.
@@ -1475,7 +1475,7 @@ fn to_metres(d: f64, units: &str) -> Result<f64, String> {
 }
 
 fn result(ds: Dataset, msg: String) -> Result<ToolResult, String> {
-    Ok(ToolResult { output: Output::Layer(ds), messages: vec![msg] })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(ds), messages: vec![msg] })
 }
 
 /// A geometry's polygons, or none when it has no polygon to give: an empty polygon, or a point
@@ -2647,7 +2647,7 @@ fn update_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolR
             messages.push(format!("Update: '{}' holds dates, so {} kept only {their} day", f.name, features(days)));
         }
     }
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// The most split areas (split polygons, or values of the split field) Split takes: more is an
@@ -2948,7 +2948,11 @@ fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRe
         let areas = if empty == 1 { "split area" } else { "split areas" };
         msg = format!("{msg} ({empty} {areas} held no features)");
     }
-    Ok(ToolResult { output: Output::Layers(layers), messages: std::iter::once(msg).chain(left_out.notes("Split", &sp.name)).collect() })
+    Ok(ToolResult {
+        losses: Vec::new(),
+        output: Output::Layers(layers),
+        messages: std::iter::once(msg).chain(left_out.notes("Split", &sp.name)).collect(),
+    })
 }
 
 /// Dissolve: one feature for each value of the dissolve field (one for all without it), the union
@@ -3037,7 +3041,7 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         ));
     }
     messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// The farthest (meters, either way) Minimum Bounding Geometry takes a point from the analysis
@@ -4065,7 +4069,7 @@ fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     if placed < total {
         messages.push(format!("{} of {total} rows have no usable coordinates; they are in the table without a point", total - placed));
     }
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// The distances a Douglas–Peucker run of `n` vertices may measure, `n` times this: far more than
@@ -4484,7 +4488,7 @@ fn simplify_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<Too
     if without > 0 {
         messages.push(format!("Simplify: {without} feature(s) left out: they have no geometry to simplify"));
     }
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// A Select by Location selector: its shape and extent in the analysis plane, and the poles it
@@ -4632,7 +4636,7 @@ fn select_by_location_with_work_limit(inp: &dyn Inputs, p: &Json, limit: usize, 
             "{coarse} selecting features' buffers have outline edges left with fewer points along them than they need (the points a ring may add ran out, as on a ring of thousands of long edges, or a very long edge was halved as many times as it may be): features near their edges there may be selected or not by more than a buffer otherwise keeps to (0.012% of the distance, 0.05% along a line or outline buffered in stretches, or 1 cm)"
         ));
     }
-    Ok(ToolResult { output: Output::Selection { layer: ds.name.clone(), rows: hits }, messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Selection { layer: ds.name.clone(), rows: hits }, messages })
 }
 
 fn select_by_attributes(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -4640,6 +4644,7 @@ fn select_by_attributes(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String
     let hits = rustgis_data::query::select(s(p, "where"), ds)?;
     let n = hits.len();
     Ok(ToolResult {
+        losses: Vec::new(),
         output: Output::Selection { layer: ds.name.clone(), rows: hits },
         messages: vec![format!("Selected {n} features in {}", ds.name)],
     })
@@ -4697,6 +4702,7 @@ fn idw_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
     let msg = format!("IDW Interpolation: {} × {} cells from {} points", r.width, r.height, pts.len());
     Ok(ToolResult {
+        losses: Vec::new(),
         output: Output::Layers(vec![OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes }]),
         messages: std::iter::once(msg).chain(beyond_note).chain(crs_note).collect(),
     })
@@ -4838,6 +4844,7 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     let var_name = format!("{name}_variance");
     let msg = format!("Ordinary Kriging ({}): {} × {} cells from {} points", model.as_str(), r.width, r.height, pts.len());
     Ok(ToolResult {
+        losses: Vec::new(),
         output: Output::Layers(vec![
             OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes: pred_bytes },
             OutputLayer::Raster { file_name: format!("{var_name}.tif"), name: var_name, bytes: var_bytes },
@@ -5213,6 +5220,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
         format!("Kernel Density: {} × {} cells from {} points (bandwidth: {:.2})", r.width, r.height, pts.len(), bandwidth)
     };
     Ok(ToolResult {
+        losses: Vec::new(),
         output: Output::Layers(vec![OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes }]),
         messages: std::iter::once(msg)
             .chain(beyond_note)
@@ -5371,7 +5379,7 @@ fn count_points_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
     }
     let mut messages = vec![format!("Summarize Within: {total} points counted")];
     messages.extend(rounded_notice(&rounded, out.fields.get(first..).unwrap_or_default()));
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// A lon/lat line or ring as a `geo` line string, in degrees.
@@ -5686,6 +5694,7 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
         }
     }
     Ok(ToolResult {
+        losses: Vec::new(),
         output: Output::Update { layer: ds.name.clone(), dataset: out },
         messages: vec![format!("Calculated geometry attributes for {}", ds.name)],
     })
@@ -5752,7 +5761,7 @@ fn summary_statistics(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let n = out.features.len();
     let mut messages = vec![format!("Summary Statistics: {n} rows")];
     messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
-    Ok(ToolResult { output: Output::Table(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
 }
 
 /// The output fields of a statistics list over `ds`: `<STAT>_<field>` for each request, typed by
@@ -6091,7 +6100,7 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let n = out.features.len();
     let mut messages = vec![format!("Pivot Table: {n} rows, {} pivot fields", columns.len())];
     messages.extend(rounded_notice(&rounded, out.fields.get(first_pivot_field..).unwrap_or_default()));
-    Ok(ToolResult { output: Output::Table(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
 }
 
 /// Whether a pivot value is missing: null, or a number that isn't one.
@@ -6590,7 +6599,7 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         1 => messages.push("1 class feature lies partly or wholly outside the zones: its value outside isn't shared out".into()),
         n => messages.push(format!("{n} class features lie partly or wholly outside the zones: their values outside aren't shared out")),
     }
-    Ok(ToolResult { output: Output::Table(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
 }
 
 fn export_features(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -7555,7 +7564,7 @@ fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
         ));
     }
     messages.extend(rounded_notice(&rounded, &merged_fields));
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7845,7 +7854,7 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
             messages.push(format!("... and {} more feature failure(s)", failure_details.len() - 5));
         }
     }
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// Returns a borrowed dataset when rows match the full dataset in identity order, or a new dataset containing
@@ -8042,7 +8051,7 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 
     let output = if out.geometry_type == rustgis_data::GeometryType::None { Output::Table(out) } else { Output::Layer(out) };
 
-    Ok(ToolResult { output, messages })
+    Ok(ToolResult { losses: Vec::new(), output, messages })
 }
 
 /// Keeps polygon boundaries in stored coordinates, including interior rings.

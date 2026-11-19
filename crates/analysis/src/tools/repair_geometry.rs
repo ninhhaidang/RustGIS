@@ -197,7 +197,17 @@ fn run_with_room(
 
     let mut messages = notices(&tally, &field);
     messages.extend(notes);
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    let losses = (tally.extra > 0)
+        .then(|| rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedExtraAttributes,
+            text: format!(
+                "{TOOL}: {} had more attribute values than the layer has fields; the extra values aren't in the output",
+                features(tally.extra)
+            ),
+        })
+        .into_iter()
+        .collect();
+    Ok(ToolResult { output: Output::Layer(out), messages, losses })
 }
 
 /// The run's notices: the result in one line, then one notice per kind of feature not repaired,
@@ -287,12 +297,6 @@ fn notices(t: &Tally, field: &str) -> Vec<String> {
             features(t.overlaid),
             was(t.overlaid),
             rounded_up(t.moved)
-        ));
-    }
-    if t.extra > 0 {
-        messages.push(format!(
-            "{TOOL}: {} had more attribute values than the layer has fields; the extra values aren't in the output",
-            features(t.extra)
         ));
     }
     messages

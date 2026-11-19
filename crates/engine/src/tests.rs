@@ -17160,7 +17160,11 @@ fn plugin_tools_run_off_the_session() {
     // ...and an update, which would discard them, is refused.
     let update = |s: &Session| {
         let dataset = s.map().layer_by_name("Cities").unwrap().dataset.clone();
-        Ok(rustgis_analysis::ToolResult { output: rustgis_analysis::Output::Update { layer: "Cities".into(), dataset }, messages: vec![] })
+        Ok(rustgis_analysis::ToolResult {
+            losses: Vec::new(),
+            output: rustgis_analysis::Output::Update { layer: "Cities".into(), dataset },
+            messages: vec![],
+        })
     };
     let run = plugin_start(&mut s, "plugin:eng-bg/x", &json!({"input": "Cities"})).unwrap();
     let r = update(&s);
@@ -21587,6 +21591,52 @@ fn wms_layers_draw_as_one_picture_or_tiles_of_a_size() {
     assert!(t.url.contains("&size=512,512&") && t.tile_size == 512 && !t.single_image, "{}", t.url);
 }
 
+/// A tool's classified loss reaches the session in ordinary and batch runs. Its history
+/// still holds the notice as text, and a feature with matching attributes needs no warning.
+#[test]
+fn tool_result_reports_classified_attribute_loss() {
+    use rustgis_data::{Dataset, Feature, Geometry, GeometryType, Value as FieldValue, diagnostics::Severity, loss::LossCode};
+    for batch in [false, true] {
+        for extra in [false, true] {
+            let mut s = Session::new(Project::default());
+            let mut ds = Dataset::new("Sites", GeometryType::Point, Vec::new());
+            ds.features = vec![Feature {
+                id: 1,
+                geometry: Some(Geometry::Point(rustgis_geom::Coord::new(1.0, 2.0))),
+                attrs: if extra { vec![FieldValue::Int(7)] } else { Vec::new() },
+            }]
+            .into();
+            if batch {
+                let mut second = ds.clone();
+                second.name = "More sites".into();
+                second.features.push(Feature {
+                    id: 2,
+                    geometry: Some(Geometry::Point(rustgis_geom::Coord::new(2.0, 3.0))),
+                    attrs: if extra { vec![FieldValue::Int(8)] } else { Vec::new() },
+                });
+                s.map_mut().add_dataset(second);
+            }
+            s.map_mut().add_dataset(ds);
+            let mark = s.notice_mark();
+            if batch {
+                let result =
+                    s.run("gp.batch", &json!({"tool": "repairGeometry", "inputs": ["Sites", "More sites"], "params": {}})).unwrap();
+                assert_eq!(result["succeeded"], 2);
+            } else {
+                s.run("gp.run", &json!({"tool": "repairGeometry", "params": {"input": "Sites"}})).unwrap();
+            }
+            let notices: Vec<_> = s.notices_since(mark).iter().filter(|n| n.loss() == Some(LossCode::DroppedExtraAttributes)).collect();
+            assert_eq!(notices.len(), usize::from(extra), "batch {batch}");
+            if batch && extra {
+                let text = &notices[0].text;
+                assert!(text.contains("2 loss report(s)") && text.contains("1 feature had") && text.contains("2 features had"), "{text}");
+            }
+            assert!(notices.iter().all(|n| n.severity == Severity::Warning && n.text.contains("extra values")));
+            assert_eq!(s.project.gp_history.iter().any(|r| r.messages.iter().any(|m| m.contains("extra values"))), extra);
+        }
+    }
+}
+
 /// #1592: a legend picture the layer cannot keep (an address too long, as a same-origin link can
 /// become once its spaces are encoded for the login) is counted in a notice, not dropped silently.
 #[test]
@@ -21604,7 +21654,9 @@ fn service_legends_left_out_are_reported() {
             .unwrap();
         let notices = s.notices_since(mark);
         let reported = notices.iter().any(|n| {
-            n.loss() == Some(rustgis_data::loss::LossCode::DroppedLegend) && n.severity == rustgis_data::diagnostics::Severity::Warning
+            n.loss() == Some(rustgis_data::loss::LossCode::DroppedLegend)
+                && n.severity == rustgis_data::diagnostics::Severity::Warning
+                && n.text.contains("1 legend picture(s) the service listed were left out")
         });
         assert_eq!(reported, left_out, "{notices:?}");
         assert_eq!(s.map().tiles.first().map(|t| t.legends.len()), Some(usize::from(!left_out)));

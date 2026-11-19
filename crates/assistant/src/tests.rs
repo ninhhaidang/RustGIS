@@ -384,7 +384,7 @@ fn undeclared_external_tools_refuse_by_id_and_display_name() {
     }
     /// A deterministic tool result makes unauthorized execution observable without I/O.
     fn run(_: &ToolSpec, _: &dyn Inputs, _: &Value) -> Result<ToolResult, String> {
-        Ok(ToolResult { output: Output::Selection { layer: "Cities".into(), rows: vec![0, 2] }, messages: vec![] })
+        Ok(ToolResult { output: Output::Selection { layer: "Cities".into(), rows: vec![0, 2] }, messages: vec![], losses: vec![] })
     }
     analysis::register_external("assistant-containment", specs, run);
     // Explicit native discovery publishes metadata; untrusted callers cannot discover it.

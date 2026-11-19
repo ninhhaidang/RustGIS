@@ -26,6 +26,8 @@ impl LossKind {
 #[non_exhaustive]
 pub enum LossCode {
     DroppedLegend,
+    DroppedRing,
+    DroppedExtraAttributes,
     DroppedTime,
     DroppedValue,
     DroppedCalculationResult,
@@ -44,6 +46,10 @@ impl LossCode {
     pub const fn spec(self) -> LossSpec {
         use LossKind::{Changed, Dropped};
         let (id, kind, action) = match self {
+            Self::DroppedRing => ("dropped.ring", Dropped, "Correct the unreadable polygon ring in the source."),
+            Self::DroppedExtraAttributes => {
+                ("dropped.extra-attributes", Dropped, "Add fields for the extra attribute values or remove those values from the input.")
+            }
             Self::DroppedLegend => ("dropped.legend", Dropped, "Use a service with short HTTP or HTTPS addresses for its legend pictures."),
             Self::DroppedTime => ("dropped.time", Dropped, "Write to a date-time field to keep the time of day."),
             Self::DroppedValue => ("dropped.value", Dropped, "Correct the value or use a destination field that can hold it."),
@@ -54,4 +60,11 @@ impl LossCode {
         };
         LossSpec { id, kind, action }
     }
+}
+
+/// A message produced at the point a reader or tool detects a loss.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LossMessage {
+    pub code: LossCode,
+    pub text: String,
 }

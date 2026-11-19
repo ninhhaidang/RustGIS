@@ -845,7 +845,7 @@ impl Session {
         op: Authorized<ToolOp>,
         control: &Arc<rustgis_analysis::control::Control>,
         opts: &crate::cmd::gp::RunOpts,
-    ) -> Result<(Value, Vec<String>), String> {
+    ) -> Result<(Value, crate::cmd::gp::ToolMessages), String> {
         let node = op.node.clone();
         let number = node.number;
         let result = self.with_node(node, |s| crate::cmd::gp::execute(s, op, control, opts));

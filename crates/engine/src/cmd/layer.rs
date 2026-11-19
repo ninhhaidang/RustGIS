@@ -2645,6 +2645,7 @@ fn add_picked(
         for (source, said) in file_wide {
             if let Some(kept) = reads.iter_mut().find(|r| r.dataset.source == source) {
                 kept.report.messages.extend(said.messages);
+                kept.report.losses.extend(said.losses);
                 kept.report.skipped += said.skipped;
             }
         }
@@ -6087,6 +6088,9 @@ pub(crate) fn add_read(
     }
     for m in report.messages {
         s.notify(m, false);
+    }
+    for loss in report.losses {
+        s.notify_loss(loss.code, loss.text.into());
     }
     if ds.geometry_type == GeometryType::None {
         let name = ds.name.clone();

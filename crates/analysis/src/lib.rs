@@ -164,7 +164,11 @@ pub struct RasterInput<'a> {
 #[derive(Clone, Debug)]
 pub struct ToolResult {
     pub output: Output,
+    /// Ordinary messages. Classified losses appear in `losses` only.
     pub messages: Vec<String>,
+    /// Losses identified by the producer. Consumers that display plain text read both
+    /// `messages` and the text of these losses.
+    pub losses: Vec<rustgis_data::loss::LossMessage>,
 }
 
 /// Access to the map's layers by name.

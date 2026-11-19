@@ -44,7 +44,7 @@ fn read_geometries(path: &str) -> Result<(Vec<Geometry>, Vec<String>), String> {
     if ds.features.len() > area::MAX_FEATURES {
         return Err(format!("{path} has more than {} features: simplify it or use a bounding box", area::MAX_FEATURES));
     }
-    let mut messages: Vec<String> = report.messages.into_iter().map(|m| format!("{path}: {m}")).collect();
+    let mut messages: Vec<String> = report.into_messages().map(|m| format!("{path}: {m}")).collect();
     let geometries: Vec<Geometry> = ds.features.iter().filter_map(|f| f.geometry.clone()).collect();
     if geometries.len() < ds.features.len() {
         messages.push(format!(

@@ -202,7 +202,7 @@ pub fn run(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     if unmeasured > 0 {
         msg.push_str(&format!("; {unmeasured} at the projection's edge or beyond it have none"));
     }
-    Ok(ToolResult { output: Output::Layer(out), messages: vec![msg] })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages: vec![msg] })
 }
 
 #[cfg(test)]

@@ -753,8 +753,12 @@ fn attributes_crs_ids_and_names_are_kept() {
     assert_eq!(ds.features[1].attrs, [Value::Text("bad".into()), Value::Float(2.5), Value::Null, Value::Text("self_intersection".into())]);
     assert_eq!(ds.features[2].attrs, [Value::Text("none".into()), Value::Null, Value::Int(3), Value::Text("null_geometry".into())]);
     assert_eq!(
-        r.messages.last().map(String::as_str),
-        Some("Repair Geometry: 1 feature had more attribute values than the layer has fields; the extra values aren't in the output")
+        r.losses,
+        [rustgis_data::loss::LossMessage {
+            code: rustgis_data::loss::LossCode::DroppedExtraAttributes,
+            text: "Repair Geometry: 1 feature had more attribute values than the layer has fields; the extra values aren't in the output"
+                .into(),
+        }]
     );
     assert_eq!(dataset(&named(Some(" Fixed parcels "))).name, "Fixed parcels");
 }

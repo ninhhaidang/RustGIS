@@ -317,7 +317,7 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
         facilities.len()
     )];
     messages.append(&mut net.notes);
-    Ok(ToolResult { output: Output::Layer(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages })
 }
 
 /// OD Cost Matrix: the cost and length of the cheapest way from each origin to each destination,
@@ -461,7 +461,7 @@ pub(super) fn od_cost_matrix_on(inp: &dyn Inputs, p: &Json, threads: Option<usiz
         });
     }
     messages.append(&mut net.notes);
-    Ok(ToolResult { output: Output::Table(out), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Table(out), messages })
 }
 
 #[cfg(test)]

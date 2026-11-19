@@ -322,7 +322,7 @@ pub fn grid(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     if skipped > 0 {
         msg.push_str(&format!("; {}", left_out(skipped, "polygon part", "outline")));
     }
-    Ok(ToolResult { output: Output::Layer(out), messages: vec![msg] })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages: vec![msg] })
 }
 
 /// The Aggregate Points to A5 tool: a layer's points counted by the cell holding them (and a
@@ -404,7 +404,7 @@ pub fn aggregate(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     if outside > 0 {
         msg.push_str(&format!("; {}", left_out(outside, "point", "position")));
     }
-    Ok(ToolResult { output: Output::Layer(out), messages: vec![msg] })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layer(out), messages: vec![msg] })
 }
 
 #[cfg(test)]

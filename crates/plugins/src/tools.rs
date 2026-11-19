@@ -419,7 +419,7 @@ fn output(reply: &Value, tool: &str) -> Result<ToolResult, String> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_u64).filter_map(|r| usize::try_from(r).ok()).collect())
             .unwrap_or_default();
-        return Ok(ToolResult { output: Output::Selection { layer, rows }, messages });
+        return Ok(ToolResult { losses: Vec::new(), output: Output::Selection { layer, rows }, messages });
     }
     let mut outs = Vec::new();
     for v in reply.get("layers").and_then(Value::as_array).into_iter().flatten().take(64) {
@@ -428,5 +428,5 @@ fn output(reply: &Value, tool: &str) -> Result<ToolResult, String> {
     for v in reply.get("tables").and_then(Value::as_array).into_iter().flatten().take(64) {
         outs.push(OutputLayer::Table(dataset(v, tool)?));
     }
-    Ok(ToolResult { output: Output::Layers(outs), messages })
+    Ok(ToolResult { losses: Vec::new(), output: Output::Layers(outs), messages })
 }
