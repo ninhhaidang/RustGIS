@@ -329,7 +329,7 @@ fn scoped_table_writes_need_prepared_worker_results() {
     s.run("layer.addDataText", &json!({"fileName": "records.csv", "text": format!("n\n{}", "1\n".repeat(20_000))})).unwrap();
     s.run("edit.enable", &json!({"on": true})).unwrap();
     let scope = Scope::assistant(195509, Arc::new(Live));
-    let p = json!({"table": "records", "field": "n", "expression": "n + 1"});
+    let p = json!({"table": "records", "field": "n", "expression": "n + 1.5"});
     let before = serde_json::to_value(&s.project.tables).unwrap();
     let depth = s.undo_depth();
     let error = s.run_scoped(scope.clone(), &Call::command("edit.calculateField", p.clone())).unwrap_err();
@@ -339,7 +339,11 @@ fn scoped_table_writes_need_prepared_worker_results() {
     let ahead = s.with_scope(scope, |s| read_ahead(s, "edit.calculateField", &p)).unwrap().unwrap();
     assert!(ahead.reads());
     let read = ahead.run(&rustgis_analysis::control::Control::stoppable()).unwrap();
+    let mark = s.notice_mark();
     read_land(&mut s, read).unwrap();
+    let [notice] = s.notices_since(mark) else { panic!("expected one prepared loss notice") };
+    assert_eq!(notice.loss(), Some(rustgis_data::loss::LossCode::ChangedTruncated));
+    assert_eq!(notice.severity, rustgis_data::diagnostics::Severity::Warning);
     assert_eq!(s.project.tables[0].dataset.value(0, 0), &rustgis_data::Value::Int(2));
     assert_eq!(s.undo_depth(), depth + 1);
     s.run("edit.undo", &Value::Null).unwrap();
@@ -21599,7 +21603,9 @@ fn service_legends_left_out_are_reported() {
         s.run("service.add", &json!({"url": "https://maps.example.com/wms", "layer": "roads", "text": WMS.replace("LEGEND", legend)}))
             .unwrap();
         let notices = s.notices_since(mark);
-        let reported = notices.iter().any(|n| n.text.contains("1 legend picture(s) the service listed were left out"));
+        let reported = notices.iter().any(|n| {
+            n.loss() == Some(rustgis_data::loss::LossCode::DroppedLegend) && n.severity == rustgis_data::diagnostics::Severity::Warning
+        });
         assert_eq!(reported, left_out, "{notices:?}");
         assert_eq!(s.map().tiles.first().map(|t| t.legends.len()), Some(usize::from(!left_out)));
     }

@@ -588,9 +588,15 @@ pub struct Notice {
     pub(crate) severity: rustgis_data::diagnostics::Severity,
     /// Describes a committed external write, which restoring a project cannot undo.
     written: bool,
+    loss: Option<rustgis_data::loss::LossCode>,
 }
 
 impl Notice {
+    /// The cause when this notice describes a classified data loss.
+    pub fn loss(&self) -> Option<rustgis_data::loss::LossCode> {
+        self.loss
+    }
+
     /// Deferred interface text, or `None` for an ordinary notice whose text is already final.
     /// The formatter returns logical-order text; the front end shapes the complete result once.
     /// Arguments are redacted before retention, and the result has the ordinary notice limits.
@@ -601,6 +607,7 @@ impl Notice {
 
 /// One counted, already-redacted loss, independent of the changes a command can roll back.
 struct LossNotice {
+    code: Option<rustgis_data::loss::LossCode>,
     template: &'static str,
     count: u32,
     text: rustgis_data::diagnostics::Redacted,
@@ -3032,14 +3039,24 @@ impl Session {
 
     /// Publishes English diagnostics and retains redacted templates for translated interfaces.
     pub(crate) fn notify_text(&mut self, text: notice_text::NoticeText, error: bool) {
+        use rustgis_data::diagnostics::Severity;
+        self.publish_text(text, if error { Severity::Error } else { Severity::Info }, None);
+    }
+
+    /// Reports loss from an in-memory result, with text for translated interfaces.
+    pub(crate) fn notify_loss(&mut self, code: rustgis_data::loss::LossCode, text: notice_text::NoticeText) {
+        self.publish_text(text, rustgis_data::diagnostics::Severity::Warning, Some(code));
+    }
+
+    /// Redacts deferred translations as well as the English notice before retaining them.
+    fn publish_text(
+        &mut self,
+        text: notice_text::NoticeText,
+        severity: rustgis_data::diagnostics::Severity,
+        loss: Option<rustgis_data::loss::LossCode>,
+    ) {
         let text = text.redacted();
-        let mark = self.notices_given;
-        self.notify(text.english(), error);
-        if self.notices_given != mark
-            && let Some(notice) = self.notices.last_mut()
-        {
-            notice.localized = Some(text);
-        }
+        self.publish_notice(Self::redacted(&text.english()), severity, self.diagnostic_source, Some(text), false, loss);
     }
 
     /// Runs `f`, then says the true/false parameters it could not read: text taken as false,
@@ -3087,59 +3104,74 @@ impl Session {
         self.notice_redacted(text, if error { Severity::Error } else { Severity::Info });
     }
 
-    /// A counted loss that remains true after rollback, unlike a completion such as "Deleted
-    /// 3 features". Only static engine templates with `{n}` and a count enter this channel.
-    /// Counts saturate and repeated templates aggregate once per outer command. Text is redacted
-    /// before retention; at most 32 kinds are held, with excess counts reported as one overflow.
-    /// Outside a guard it is published immediately. A native panic caught by `guarded` follows
-    /// the same outermost drain as an error; nothing is saved in project or undo state.
-    pub(crate) fn notify_loss(&mut self, template: &'static str, count: u32) {
-        use rustgis_data::diagnostics::{Redacted, Severity};
+    /// Counts a notice that remains true after rollback. Only static templates with `{n}` enter
+    /// this channel. Counts saturate and repeated templates with the same code aggregate once
+    /// per outer command. Unclassified advisories, such as withheld logins, have no code.
+    pub(crate) fn notify_counted(&mut self, code: Option<rustgis_data::loss::LossCode>, template: &'static str, count: u32) {
         if count == 0 {
             return;
         }
+        let text = |n: u32| Self::redacted(&template.replace("{n}", &n.to_string()));
         if self.depth == 0 {
-            self.notice_redacted(Redacted::new(&template.replace("{n}", &count.to_string())), Severity::Info);
-        } else if let Some(loss) = self.loss_notices.iter_mut().find(|loss| loss.template == template) {
+            self.publish_counted(text(count), code, self.diagnostic_source);
+        } else if let Some(loss) = self.loss_notices.iter_mut().find(|loss| loss.code == code && loss.template == template) {
             loss.count = loss.count.saturating_add(count);
-            loss.text = Redacted::new(&template.replace("{n}", &loss.count.to_string()));
+            loss.text = text(loss.count);
         } else if self.loss_notices.len() < MAX_LOSS_NOTICE_KINDS {
-            self.loss_notices.push(LossNotice {
-                template,
-                count,
-                text: Redacted::new(&template.replace("{n}", &count.to_string())),
-                source: self.diagnostic_source,
-            });
+            self.loss_notices.push(LossNotice { code, template, count, text: text(count), source: self.diagnostic_source });
         } else {
             self.loss_notice_overflow = self.loss_notice_overflow.saturating_add(count);
         }
     }
 
-    /// Publishes and empties runtime losses only after outermost success/error/panic cleanup.
-    /// Stored attribution keeps nested command losses assigned to their original command.
+    /// Publishes and empties runtime notices after outermost cleanup, retaining the originating command.
     fn flush_loss_notices(&mut self) {
-        use rustgis_data::diagnostics::Severity;
         for loss in std::mem::take(&mut self.loss_notices) {
-            self.notice_redacted_from(loss.text, Severity::Info, loss.source);
+            self.publish_counted(loss.text, loss.code, loss.source);
         }
         let overflow = std::mem::take(&mut self.loss_notice_overflow);
         if overflow > 0 {
-            self.notice(format!("{overflow} further loss(es) could not be described"), Severity::Info);
+            // The overflow count may combine several causes and unclassified advisories.
+            self.warn(format!("{overflow} further counted notice occurrence(s) could not be described"));
         }
     }
 
-    /// Uses current attribution for ordinary notices; delayed losses retain their own source.
-    fn notice_redacted(&mut self, text: rustgis_data::diagnostics::Redacted, severity: rustgis_data::diagnostics::Severity) {
-        self.notice_redacted_from(text, severity, self.diagnostic_source);
+    fn publish_counted(
+        &mut self,
+        text: rustgis_data::diagnostics::Redacted,
+        code: Option<rustgis_data::loss::LossCode>,
+        source: Option<&'static str>,
+    ) {
+        use rustgis_data::diagnostics::Severity;
+        let severity = if code.is_some() { Severity::Warning } else { Severity::Info };
+        self.publish_notice(text, severity, source, None, false, code);
     }
 
-    /// The one publication path for the ordinary notice queue and diagnostics; called once per
-    /// loss at drain, so neither sink sees a duplicate from queuing and publication.
-    fn notice_redacted_from(
+    fn notice_redacted(&mut self, text: rustgis_data::diagnostics::Redacted, severity: rustgis_data::diagnostics::Severity) {
+        self.publish_notice(text, severity, self.diagnostic_source, None, false, None);
+    }
+
+    /// Lands a worker's notice under the admitted command, preserving the notice's metadata.
+    pub(crate) fn relay_notice(&mut self, notice: Notice) {
+        self.publish_notice(
+            Self::redacted(&notice.text),
+            notice.severity,
+            self.diagnostic_source,
+            notice.localized,
+            notice.written,
+            notice.loss,
+        );
+    }
+
+    /// The one publication path for the notice queue and the diagnostic history.
+    fn publish_notice(
         &mut self,
         text: rustgis_data::diagnostics::Redacted,
         severity: rustgis_data::diagnostics::Severity,
         source: Option<&'static str>,
+        localized: Option<notice_text::NoticeText>,
+        written: bool,
+        loss: Option<rustgis_data::loss::LossCode>,
     ) {
         if severity == rustgis_data::diagnostics::Severity::Error && self.rerun_said.iter().any(|said| said == text.as_str()) {
             return;
@@ -3148,9 +3180,10 @@ impl Session {
         self.notices.push(Notice {
             text: text.into_string(),
             error: severity == rustgis_data::diagnostics::Severity::Error,
-            localized: None,
+            localized,
             severity,
-            written: false,
+            written,
+            loss,
         });
         self.notices_given += 1;
         if self.notices.len() > 200 {

@@ -141,8 +141,9 @@ const MAX_SERVICE_DOCUMENTS: usize = 32;
 /// well as its document count. The 32-document count is shared by all discovery kinds;
 /// this byte budget applies only to the linked dataset documents.
 pub(crate) const MAX_DATASET_BYTES: usize = if cfg!(test) { 64 << 10 } else { 64 << 20 };
-/// A notice for legend pictures a service listed that its layer cannot keep (an address too long).
-const LEGENDS_LEFT_OUT_NOTICE: &str = "{n} legend picture(s) the service listed were left out: their addresses are too long";
+/// A notice for legend pictures the layer cannot keep because of their addresses.
+const LEGENDS_LEFT_OUT_NOTICE: &str =
+    "{n} legend picture(s) the service listed were left out: their addresses are too long or do not use HTTP or HTTPS";
 
 /// Most bytes of document addresses a listing repeats: each listed layer's `source_url` is its
 /// document's address, which nothing bounds (a landing page links to any collections address).
@@ -968,10 +969,10 @@ pub(crate) fn adding_ahead(s: &mut Session, p: &Value) -> Result<Option<super::r
 fn prepared_discovery(s: &mut Session, command: &str) -> Option<Result<Discovery, String>> {
     super::reads::take::<DiscoveryRead>(s, command).map(|(result, notices, losses)| {
         for loss in losses {
-            s.notify_loss(loss.template, loss.count);
+            s.notify_counted(loss.code, loss.template, loss.count);
         }
         for notice in notices {
-            s.notify(notice.text, notice.error);
+            s.relay_notice(notice);
         }
         result
     })
@@ -1096,7 +1097,7 @@ fn layer_source(layer: &mut Value, source: CapabilitySource) {
 
 /// Counts destinations, not pairs; clean discovery emits no credential-forwarding notice.
 fn notify_withheld(s: &mut Session, count: u32) {
-    s.notify_loss(rustgis_data::ogc::QUERY_WITHHELD_NOTICE, count);
+    s.notify_counted(None, rustgis_data::ogc::QUERY_WITHHELD_NOTICE, count);
 }
 
 /// Adds one of a service's layers: map layers as tiles (an overlay), a style as a style, features
@@ -1296,11 +1297,14 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                     }
                 }
             }
-            // (Those the layer wouldn't keep, an address too long, are left out, not refused,
-            // and counted in a notice.)
+            // Count pictures left out because their addresses fail the layer's checks.
             let legends = rustgis_map::tiles::checked_legends(layer.legends.iter().cloned());
             let offered = layer.legends.len().min(rustgis_data::ogc::MAX_LEGENDS);
-            s.notify_loss(LEGENDS_LEFT_OUT_NOTICE, u32::try_from(offered.saturating_sub(legends.len())).unwrap_or(u32::MAX));
+            s.notify_counted(
+                Some(rustgis_data::loss::LossCode::DroppedLegend),
+                LEGENDS_LEFT_OUT_NOTICE,
+                u32::try_from(offered.saturating_sub(legends.len())).unwrap_or(u32::MAX),
+            );
             if !legends.is_empty() {
                 add["legend"] = json!(legends);
             }

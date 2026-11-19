@@ -1,6 +1,7 @@
 //! Edit tab: create and delete features, edit attributes and fields, of a layer or of a
 //! standalone table (`"table"`).
 
+use rustgis_data::loss::LossCode;
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value};
 use serde_json::{Value as Json, json};
 use std::borrow::Cow;
@@ -396,22 +397,30 @@ impl Cuts {
     /// The notices for what writing the whole-number or date field `field` cut, each starting with `by`
     /// (the command or rule that wrote it). Empty when nothing was cut.
     pub(crate) fn notices(&self, by: &str, field: &str) -> Vec<String> {
+        self.classified(by, field).into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// Pairs each coercion message with its cause at the point the loss is counted.
+    fn classified(&self, by: &str, field: &str) -> Vec<(LossCode, String)> {
         let results = |n: usize| if n == 1 { "1 result".to_string() } else { format!("{n} results") };
         let mut out = Vec::new();
         if self.fractions > 0 {
             let their = if self.fractions == 1 { "its" } else { "their" };
-            out.push(format!("{by}: '{field}' holds whole numbers, so {} lost {their} fraction", results(self.fractions)));
+            out.push((
+                LossCode::ChangedTruncated,
+                format!("{by}: '{field}' holds whole numbers, so {} lost {their} fraction", results(self.fractions)),
+            ));
         }
         if self.past > 0 {
-            out.push(format!("{by}: '{field}' is null for {} past the 64-bit integer range", results(self.past)));
+            out.push((LossCode::DroppedValue, format!("{by}: '{field}' is null for {} past the 64-bit integer range", results(self.past))));
         }
         if self.not_numbers > 0 {
             let are = if self.not_numbers == 1 { "isn't a number" } else { "aren't numbers" };
-            out.push(format!("{by}: '{field}' is null for {} that {are}", results(self.not_numbers)));
+            out.push((LossCode::DroppedValue, format!("{by}: '{field}' is null for {} that {are}", results(self.not_numbers))));
         }
         if self.times > 0 {
             let their = if self.times == 1 { "its" } else { "their" };
-            out.push(format!("{by}: '{field}' holds dates, so {} kept only {their} day", results(self.times)));
+            out.push((LossCode::DroppedTime, format!("{by}: '{field}' holds dates, so {} kept only {their} day", results(self.times))));
         }
         out
     }
@@ -487,12 +496,15 @@ impl WriteLosses {
     /// The notices for what writing `field`, of type `ty`, lost, each starting with `by` (the
     /// command or rule that wrote it). Rows are numbered from 1, as `@row_number` numbers them.
     /// The error notices are templates a translated interface shows in its language.
-    pub(crate) fn notices(&self, by: NoticeText, field: &str, ty: FieldType) -> Vec<NoticeText> {
+    pub(crate) fn notices(&self, by: NoticeText, field: &str, ty: FieldType) -> Vec<(LossCode, NoticeText)> {
         let rows = |n: usize| if n == 1 { "1 row".to_string() } else { format!("{n} rows") };
         let english = by.english();
-        let mut out: Vec<NoticeText> = self.cuts.notices(&english, field).into_iter().map(NoticeText::from).collect();
+        let mut out: Vec<_> = self.cuts.classified(&english, field).into_iter().map(|(code, text)| (code, text.into())).collect();
         if self.unread > 0 {
-            out.push(format!("{english}: '{field}' is null in {}, whose result isn't a {} value", rows(self.unread), ty.label()).into());
+            out.push((
+                LossCode::DroppedValue,
+                format!("{english}: '{field}' is null in {}, whose result isn't a {} value", rows(self.unread), ty.label()).into(),
+            ));
         }
         for (fault, n, listed) in &self.errors {
             let numbers: Vec<String> = listed.iter().map(|r| r.saturating_add(1).to_string()).collect();
@@ -501,15 +513,18 @@ impl WriteLosses {
                 (_, false) => "{by}: '{field}' is null in {count} rows because of {cause} (rows {rows})",
                 (_, true) => "{by}: '{field}' is null in {count} rows because of {cause} (rows {rows}…)",
             };
-            out.push(NoticeText::format(
-                key,
-                [
-                    ("by", by.clone()),
-                    ("field", field.to_string().into()),
-                    ("count", n.to_string().into()),
-                    ("cause", NoticeText::term(fault.describe())),
-                    ("rows", numbers.join(", ").into()),
-                ],
+            out.push((
+                LossCode::DroppedCalculationResult,
+                NoticeText::format(
+                    key,
+                    [
+                        ("by", by.clone()),
+                        ("field", field.to_string().into()),
+                        ("count", n.to_string().into()),
+                        ("cause", NoticeText::term(fault.describe())),
+                        ("rows", numbers.join(", ").into()),
+                    ],
+                ),
             ));
         }
         out
@@ -1416,10 +1431,7 @@ fn land_table_edit(s: &mut Session, p: &Json, command: &str) -> Option<CmdResult
         let (output, answer, notices) = ahead.result?;
         (table.dataset.fields, table.dataset.features) = (output.fields, output.features);
         for notice in notices {
-            match notice.localized {
-                Some(text) => s.notify_text(text, notice.error),
-                None => s.notify(notice.text, notice.error),
-            }
+            s.relay_notice(notice);
         }
         Ok(answer)
     })())
@@ -1510,8 +1522,8 @@ fn evaluate(calc: &Calculation, ds: &Dataset, rows: Vec<usize>, ty: FieldType) -
 /// Says what Calculate Field's results lost in `field` ([`evaluate`]), even when a calculation
 /// rule writes the field afterwards: the rule may read the cut value, and says what it cuts itself.
 fn calculation_notices(s: &mut Session, field: &str, ty: FieldType, losses: &WriteLosses) {
-    for notice in losses.notices(NoticeText::term("Calculate Field"), field, ty) {
-        s.notify_text(notice, false);
+    for (code, notice) in losses.notices(NoticeText::term("Calculate Field"), field, ty) {
+        s.notify_loss(code, notice);
     }
 }
 
@@ -1715,8 +1727,11 @@ mod tests {
                 p["expression"] = json!(expression);
                 let mark = s.notice_mark();
                 s.run("edit.calculateField", &p).unwrap();
-                let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-                assert_eq!(notices, said, "{expression}, table {table}");
+                let notices = s.notices_since(mark);
+                assert_eq!(notices.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), said, "{expression}, table {table}");
+                assert!(notices.iter().all(|n| n.loss() == Some(LossCode::DroppedCalculationResult)
+                    && n.severity == rustgis_data::diagnostics::Severity::Warning
+                    && !n.error));
             }
         }
         // The earlier calculator doesn't join a stored infinity as text either.
@@ -1733,7 +1748,8 @@ mod tests {
         for row in [4, 4] {
             losses.write(row, (Value::Null, Some(rustgis_data::query::Fault::DivisionByZero)), FieldType::Double);
         }
-        let said: Vec<String> = losses.notices(NoticeText::term("Rule"), "n", FieldType::Double).iter().map(NoticeText::english).collect();
+        let said: Vec<String> =
+            losses.notices(NoticeText::term("Rule"), "n", FieldType::Double).iter().map(|(_, text)| text.english()).collect();
         assert_eq!(said, ["Rule: 'n' is null in 1 row because of a division by zero (row 5)"]);
         let calc = Calc::parse("'pop ' + Pop Est", &ds).unwrap();
         assert_eq!(calc.eval_or_fault(&ds, 0), (Value::Null, Some(rustgis_data::query::Fault::NotANumber)));
