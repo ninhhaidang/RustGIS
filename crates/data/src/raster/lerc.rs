@@ -224,7 +224,8 @@ struct Shape {
 /// Decodes a chunk's blob: one blob holding every sample of a pixel, or one blob per sample (or a
 /// few) after another, each of type `expected`. The chunk's size is bounded, and each header is
 /// checked against the chunk, before any samples are decoded. With `alpha_last`, a single blob one
-/// sample short holds every sample but an alpha, which its mask gives.
+/// sample short holds every sample but an alpha, which its mask gives. Interleaved output
+/// reservation is fallible, within the same chunk bound; the codec owns its decoding allocations.
 fn decode_blob(blob: &[u8], shape: Shape, expected: lerc_core::DataType) -> Result<Blobs> {
     let Shape { width, height, strip, samples, alpha_last } = shape;
     let pixels = width.checked_mul(height).ok_or_else(|| err("a chunk is too large"))?;
@@ -275,7 +276,7 @@ fn decode_blob(blob: &[u8], shape: Shape, expected: lerc_core::DataType) -> Resu
     // GDAL's alpha in the mask: one blob, one sample short.
     if alpha_last && parts.len() == 1 && depth + 1 == samples {
         let (n, v, mask) = parts.into_iter().next().ok_or_else(|| err("a chunk holds no blob"))?;
-        let mut values = Vec::with_capacity(pixels * samples);
+        let mut values = super::grid(pixels, samples)?;
         for i in 0..pixels {
             values.extend((0..n).map(|k| v.get(i * n + k).copied().unwrap_or(0.0)));
             let opaque = mask.as_ref().is_none_or(|m| m.get(i).is_some_and(|b| *b != 0));
@@ -298,7 +299,7 @@ fn decode_blob(blob: &[u8], shape: Shape, expected: lerc_core::DataType) -> Resu
         let (_, values, _) = parts.into_iter().next().ok_or_else(|| err("a chunk holds no blob"))?;
         return Ok(Blobs { values, valid });
     }
-    let mut values = Vec::with_capacity(pixels * samples);
+    let mut values = super::grid(pixels, samples)?;
     for i in 0..pixels {
         for (n, v, m) in &parts {
             values.extend((0..*n).map(|k| v.get(i * n + k).copied().unwrap_or(f64::NAN)));
@@ -311,17 +312,18 @@ fn decode_blob(blob: &[u8], shape: Shape, expected: lerc_core::DataType) -> Resu
     Ok(Blobs { values, valid })
 }
 
-/// No samples yet, of the type `format` and `bps` name, with room for `n`.
+/// No samples yet, of the type `format` and `bps` name, with fallibly reserved room for `n`.
+/// The caller has already bounded the chunk, including sparse chunks, at eight bytes a sample.
 fn empty(format: u16, bps: u16, n: usize) -> Result<DecodingResult> {
     Ok(match (format, bps) {
-        (3, 32) => DecodingResult::F32(Vec::with_capacity(n)),
-        (3, 64) => DecodingResult::F64(Vec::with_capacity(n)),
-        (2, 8) => DecodingResult::I8(Vec::with_capacity(n)),
-        (2, 16) => DecodingResult::I16(Vec::with_capacity(n)),
-        (2, 32) => DecodingResult::I32(Vec::with_capacity(n)),
-        (1 | 4, 8) => DecodingResult::U8(Vec::with_capacity(n)),
-        (1 | 4, 16) => DecodingResult::U16(Vec::with_capacity(n)),
-        (1 | 4, 32) => DecodingResult::U32(Vec::with_capacity(n)),
+        (3, 32) => DecodingResult::F32(super::grid(n, 1)?),
+        (3, 64) => DecodingResult::F64(super::grid(n, 1)?),
+        (2, 8) => DecodingResult::I8(super::grid(n, 1)?),
+        (2, 16) => DecodingResult::I16(super::grid(n, 1)?),
+        (2, 32) => DecodingResult::I32(super::grid(n, 1)?),
+        (1 | 4, 8) => DecodingResult::U8(super::grid(n, 1)?),
+        (1 | 4, 16) => DecodingResult::U16(super::grid(n, 1)?),
+        (1 | 4, 32) => DecodingResult::U32(super::grid(n, 1)?),
         (f, b) => return Err(err(format!("{b}-bit samples of format {f} aren't supported"))),
     })
 }
