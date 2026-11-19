@@ -12,7 +12,7 @@
 //! their own test, `never_silent_roundtrip.rs`.
 //!
 //! The table includes text, CityJSON, CityGML, KMZ, GeoPackage, FlatGeobuf, GeoParquet, FileGDB,
-//! Shapefile, XLSX and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss
+//! Shapefile, XLSX, ODS and OSM PBF. More formats and loss kinds remain to add (ROADMAP.md); one loss
 //! does not certify a reader.
 use rustgis_engine::{Project, Session};
 use serde_json::json;
@@ -379,6 +379,23 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         ),
     ]);
 
+    out.extend([
+        case(
+            "ODS: a height in WKT",
+            "a.ods",
+            include_bytes!("../testdata/reading-losses/book-clean.ods"),
+            include_bytes!("../testdata/reading-losses/book-z.ods"),
+            Imported("Z or M"),
+        ),
+        case(
+            "ODS: a WKT geometry collection's later members",
+            "a.ods",
+            include_bytes!("../testdata/reading-losses/book-clean.ods"),
+            include_bytes!("../testdata/reading-losses/book-collection.ods"),
+            Silent("only the collection's first member is kept"),
+        ),
+    ]);
+
     // MapInfo: the .mid beside each .mif holds one row per object.
     let mut mapinfo = |name, clean: &str, lossy: &str, mid: &str, expect| {
         let mut c = case(name, "a.mif", mif(clean), mif(lossy), expect);
@@ -571,7 +588,7 @@ fn check_workbook(ds: &rustgis_engine::data::Dataset) -> std::io::Result<()> {
         || ds.features[0].geometry != Some(Geometry::Point(Coord::new(1.0, 2.0)))
         || ds.features[0].attrs != vec![Value::Int(7), Value::Null]
     {
-        return Err(std::io::Error::other("XLSX fixture didn't retain exactly its point, ID and null note"));
+        return Err(std::io::Error::other("spreadsheet fixture didn't retain exactly its point, ID and null note"));
     }
     Ok(())
 }
@@ -626,12 +643,17 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             return Err(std::io::Error::other("native Shapefile fixture skipped a record"));
         }
     }
-    if file.ends_with(".xlsx") {
+    if file.ends_with(".xlsx") || file.ends_with(".ods") {
         let (native, report) = rustgis_engine::data::sheets::read(content, "a", None, &Default::default())
-            .map_err(|e| std::io::Error::other(format!("native XLSX fixture: {e}")))?;
+            .map_err(|e| std::io::Error::other(format!("native spreadsheet fixture: {e}")))?;
         check_workbook(&native)?;
-        if report.skipped != 0 {
-            return Err(std::io::Error::other("native XLSX fixture skipped a row"));
+        let height = content == include_bytes!("../testdata/reading-losses/book-z.xlsx")
+            || content == include_bytes!("../testdata/reading-losses/book-z.ods");
+        if report.skipped != 0
+            || native.zm_dropped != height
+            || if height { report.messages.len() != 1 || !report.messages[0].contains("Z or M") } else { !report.messages.is_empty() }
+        {
+            return Err(std::io::Error::other(format!("native spreadsheet fixture has the wrong loss report: {report:?}")));
         }
     }
     let mut s = Session::new(Project::default());
@@ -648,13 +670,16 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         }
         check_shapefile_xy(&s.map().layers[0].dataset, content.get(32).copied())?;
     }
-    if file.ends_with(".xlsx") {
+    if file.ends_with(".xlsx") || file.ends_with(".ods") {
         if s.map().layers.len() != 1 || !s.project.tables.is_empty() {
-            return Err(std::io::Error::other("XLSX fixture didn't add exactly one layer"));
+            return Err(std::io::Error::other("spreadsheet fixture didn't add exactly one layer"));
         }
         check_workbook(&s.map().layers[0].dataset)?;
-        if content == include_bytes!("../testdata/reading-losses/book-clean.xlsx") && !s.notices_since(mark).is_empty() {
-            return Err(std::io::Error::other("clean XLSX fixture gave a notice"));
+        if (content == include_bytes!("../testdata/reading-losses/book-clean.xlsx")
+            || content == include_bytes!("../testdata/reading-losses/book-clean.ods"))
+            && !s.notices_since(mark).is_empty()
+        {
+            return Err(std::io::Error::other("clean spreadsheet fixture gave a notice"));
         }
     }
     let said = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();

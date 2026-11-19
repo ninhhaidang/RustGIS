@@ -65,3 +65,28 @@ at (1, 2), integer `id=7` and text `note=Null`, through both `sheets::read` and
 `layer.addData`. Thus refusal, losing the whole geometry, retaining the second member or
 dropping an attribute cannot pass. The error cell is valid spreadsheet content, not a
 malformed archive; formulas, date conversion and ODS nesting are outside these fixtures.
+
+## ODS
+
+Three independently encoded OpenDocument 1.2 spreadsheets, written offline for RustGIS with
+Python 3.13's standard-library `zipfile` and literal XML. No spreadsheet application,
+RustGIS exporter, third-party code or data was used. Each ZIP has an uncompressed first
+`mimetype` entry, `META-INF/manifest.xml` declaring the document and `content.xml`, and
+Deflate-compressed `content.xml`. Timestamps are fixed at 1980-01-01; there are no
+preambles, offset adjustments, nested cells or annotations.
+
+All have one `Places` sheet with string headers `wkt`, `id`, `note`, one data row,
+numeric `id=7` and an empty note cell. The WKT is ordinary string content:
+
+| File | WKT | Current loss classification |
+| --- | --- | --- |
+| `book-clean.ods` | `POINT(1 2)` | None; no native or command notice |
+| `book-z.ods` | `POINT Z(1 2 3)` | Imports with a Z/M-loss notice |
+| `book-collection.ods` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | Silent: only the first member remains |
+
+The clean workbook serves both pairs. The same retained-data assertions as XLSX require
+exactly one point at (1, 2), integer `id=7` and text `note=Null` through the native
+reader and `layer.addData`; native reports must also have zero skipped rows and the
+expected height-loss flag and notice. Valid lossy files must import. WKT uses the
+existing reader convention without testing or changing CRS assumptions. This slice does
+not certify ODS completeness or cover malformed archives, formulas, dates or error cells.

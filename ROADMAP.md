@@ -73,14 +73,14 @@ A result is right, or RustGIS says what it lost or assumed
   nodes or ways the file doesn't hold, and inner rings outside every outer one; and the text
   readers' losses listed as `Silent` in `crates/engine/tests/never_silent_reading.rs`, among them
   each vertex's Z in DXF and unreadable coordinates, holes and parts in KML, GeoRSS, MapInfo and
-  DXF, plus geometry-collection members and error-valued attribute cells in XLSX. A fix makes
+  DXF, plus geometry-collection members in XLSX/ODS and error-valued attribute cells in XLSX. A fix makes
   its case `Said` _(open)_.
 - Lossy sample files in `never_silent_reading.rs` for the readers it doesn't cover yet:
-  remaining spreadsheet formats (ODS, XLS, XLSB and XLSM). It covers GeoJSON, TopoJSON, CSV,
+  remaining spreadsheet formats (XLS, XLSB and XLSM). It covers GeoJSON, TopoJSON, CSV,
   KML, KMZ, GPX, GML, GeoRSS,
   DXF, LandXML and MapInfo, with height-loss cases for CityJSON, CityGML, GeoPackage,
   FlatGeobuf, GeoParquet and FileGDB, Z/M-loss cases for Shapefile, and ring-loss cases for
-  OSM PBF, and WKT height/member and error-cell losses for XLSX; other loss kinds remain.
+  OSM PBF, WKT height/member losses for XLSX and ODS, and error-cell losses for XLSX; other loss kinds remain.
   Exports are checked by `never_silent_roundtrip.rs` _(open)_.
 - A `--strict` option for `rustgis-cli run` that exits non-zero when a loss is reported, for
   scheduled jobs. Notices carry a severity but not a kind today (`Notice` in
