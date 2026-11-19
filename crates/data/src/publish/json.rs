@@ -388,16 +388,16 @@ mod tests {
     /// GeoJSON publishing refuses an oversized original with vector recovery advice.
     #[test]
     fn oversized_geojson_publish_gives_vector_advice() {
-        use crate::io::{FileSizeAdvice, MAX_BYTES, file_size_error_args};
+        use crate::io::{FileSizeAdvice, file_size_error_args, max_bytes};
 
         let (_dir, path, ds, mut sync) = loaded(SOURCE);
-        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(MAX_BYTES + 1).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(max_bytes() + 1).unwrap();
         sync.files = FileSync::read(&path).unwrap();
 
         let error = geojson(&ds, &path, &sync).err().unwrap().to_string();
-        let limit = (MAX_BYTES >> 20).to_string();
+        let limit = (max_bytes() >> 20).to_string();
         assert_eq!(file_size_error_args(&error), Some((path.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Vector)));
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), MAX_BYTES + 1);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), max_bytes() + 1);
     }
 
     /// Mutates an attribute through the shared feature container's copy-on-write API.

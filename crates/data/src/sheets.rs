@@ -344,8 +344,12 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
         if let Some((_, start, len)) = streams.iter().find(|(name, ..)| name.eq_ignore_ascii_case(want)) {
             let ids = if *len < 4096 { mini.read(*start, *len)? } else { main.read(*start, *len)? };
             if want == "Workbook" || (want == "Book" && !has_workbook) {
-                if *len as u64 > crate::io::MAX_BYTES {
-                    return Err(DataError::Format("spreadsheet: the XLS Workbook stream is too large".into()));
+                // Fixed, whatever the memory: spreadsheets keep their own limits.
+                if *len as u64 > crate::io::BYTES_FLOOR {
+                    return Err(DataError::Format(format!(
+                        "spreadsheet: the XLS Workbook stream is too large ({len} bytes; at most {} MiB)",
+                        crate::io::BYTES_FLOOR >> 20
+                    )));
                 }
                 // Read only the chosen stream. In the mini stream a 64-byte sector is a slice
                 // of the root's sector chain, which may itself be fragmented.

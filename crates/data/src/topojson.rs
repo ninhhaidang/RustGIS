@@ -305,7 +305,9 @@ fn read_transform(t: &Json) -> Option<([f64; 2], [f64; 2])> {
     Some(([s.first()?.as_f64()?, s.get(1)?.as_f64()?], [tr.first()?.as_f64()?, tr.get(1)?.as_f64()?]))
 }
 
-/// Reads a TopoJSON topology into a layer per object.
+/// Reads a TopoJSON topology into a layer per object. Cancel is looked at between arcs and
+/// objects; parsing the whole document first, and an object's features once rebuilt, are steps
+/// without a look.
 pub fn read(file_name: &str, text: &str) -> Result<Vec<(Dataset, ReadReport)>> {
     read_with(file_name, text, MAX_COORDS)
 }
@@ -331,6 +333,8 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
     let mut total = 0usize;
     let (mut arcs, mut arcs_lost) = (Vec::new(), Vec::new());
     for a in v.get("arcs").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default() {
+        // Read ahead, off the UI thread: a large file can be cancelled between arcs and objects.
+        crate::progress::check()?;
         // An arc that isn't an array of positions can't be read either.
         let Some(positions) = a.as_array() else {
             arcs.push(None);
@@ -373,6 +377,7 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
     let objects = v.get("objects").and_then(Json::as_object).ok_or_else(|| DataError::Format(format!("{file_name}: no objects")))?;
     let mut out = Vec::new();
     for (name, obj) in objects.iter().take(MAX_OBJECTS) {
+        crate::progress::check()?;
         // A collection without a list of geometries holds nothing that can be read.
         let mut no_list = false;
         let members: Vec<&Json> = match obj.get("type").and_then(Json::as_str) {
@@ -839,5 +844,14 @@ mod tests {
         let Some(Geometry::Line(l)) = &ds.features[0].geometry else { panic!("{:?}", rep.messages) };
         assert_eq!(l[0].len(), 3);
         assert!(rep.messages.is_empty(), "{:?}", rep.messages);
+    }
+
+    /// Read ahead, off the UI thread, the read stops when it is cancelled.
+    #[test]
+    fn a_cancelled_read_stops() {
+        let probe = std::sync::Arc::new(crate::progress::tests::Counted::default());
+        probe.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _g = crate::progress::install(Some(probe));
+        assert!(matches!(read("a.topojson", TOPO), Err(DataError::Cancelled)));
     }
 }

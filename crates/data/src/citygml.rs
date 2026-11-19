@@ -215,8 +215,9 @@ pub(crate) fn read_member(file_name: &str, bytes: &[u8], given: Option<Crs>) -> 
 /// Reads a CityGML document; with `keep_named`, the system it names, when RustGIS knows it, goes
 /// before `given`.
 fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool) -> Result<Vec<(Dataset, ReadReport)>> {
-    if bytes.len() as u64 > crate::io::MAX_BYTES {
-        return Err(DataError::Format(crate::io::file_size_error(file_name, crate::io::MAX_BYTES)));
+    let max = crate::io::max_bytes();
+    if bytes.len() as u64 > max {
+        return Err(DataError::Format(crate::io::file_size_error(file_name, max)));
     }
     // A file cut inside a character is read up to it, as one cut inside a tag is.
     let text = match std::str::from_utf8(bytes) {

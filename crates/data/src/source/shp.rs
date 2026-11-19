@@ -75,7 +75,7 @@ const BUFFER: usize = 1 << 20;
 
 /// The largest record read: one past it is skipped rather than given a buffer that size, since a
 /// record's length is only checked against the file's, which can be gigabytes (#1055).
-const MAX_RECORD: u64 = crate::io::MAX_BYTES;
+const MAX_RECORD: u64 = crate::io::BYTES_FLOOR;
 
 impl ShpSource {
     /// Opens `path` (the `.shp`) with the `.dbf` and optional `.prj` and `.cpg` beside it.

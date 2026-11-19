@@ -375,6 +375,8 @@ fn blocks(bytes: &[u8]) -> Result<Osm> {
     let mut i = 0usize;
     let mut saw_header = false;
     while i < bytes.len() {
+        // Read ahead, off the UI thread: a large extract can be cancelled between blocks.
+        crate::progress::check()?;
         let len =
             bytes.get(i..i + 4).and_then(|s| s.try_into().ok()).map(u32::from_be_bytes).ok_or_else(|| bad("a block length"))? as usize;
         if len > 64 * 1024 {
@@ -500,7 +502,9 @@ fn inside(p: Coord, ring: &[Coord]) -> bool {
     c
 }
 
-/// Reads an OSM PBF file into its points, lines and multipolygons layers.
+/// Reads an OSM PBF file into its points, lines and multipolygons layers. Cancel is looked at
+/// between blocks and between the ways and relations built from them; decoding one block is one
+/// step without a look.
 pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>> {
     let stem = std::path::Path::new(file_name).file_name().and_then(|s| s.to_str()).unwrap_or("osm");
     let stem = stem.trim_end_matches(".pbf").trim_end_matches(".osm").to_string();
@@ -549,6 +553,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     };
     let mut way_refs: HashMap<i64, usize> = HashMap::new();
     for (k, (id, refs, t, places)) in osm.ways.iter().enumerate() {
+        crate::progress::check()?;
         way_refs.insert(*id, k);
         if t.is_empty() || only_relations(id, t) {
             continue;
@@ -573,6 +578,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     }
     // Multipolygon and boundary relations: outer and inner member ways joined into rings.
     for (id, members, t) in &osm.relations {
+        crate::progress::check()?;
         let mut outer_ways = Vec::new();
         let mut inner_ways = Vec::new();
         // Places the member ways store themselves (LocationsOnWays), by node id.
@@ -866,5 +872,14 @@ pub(crate) mod tests {
         let _ = read("x.osm.pbf", &flipped);
         assert!(read("x.osm.pbf", b"").is_err());
         assert!(read("x.osm.pbf", b"\0\0\0\x05hello").is_err());
+    }
+
+    /// Read ahead, off the UI thread, the read stops when it is cancelled.
+    #[test]
+    fn a_cancelled_read_stops() {
+        let probe = std::sync::Arc::new(crate::progress::tests::Counted::default());
+        probe.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _g = crate::progress::install(Some(probe));
+        assert!(matches!(read("a.osm.pbf", &sample()), Err(DataError::Cancelled)));
     }
 }

@@ -83,8 +83,8 @@ dialog open for another try.
 Published pipe-delimited `.dat` files open as tables when their header and rows reveal a
 separator; otherwise give `"delimiter":"|"` to `layer.addData`, or rename a text file to `.txt`.
 Gzip-compressed UTF-8 `.csv.gz`, `.tsv.gz`, `.txt.gz` and `.dat.gz` open directly, including by
-URL or upload. Decompression streams records, checks the gzip checksum and stops at 256 MiB of
-expanded text. Table rows are still kept in memory for type inference; CSV imports also refuse
+URL or upload. Decompression streams records, checks the gzip checksum and stops at the size read into memory
+(256 MiB in the web app; on the desktop it follows the computer's memory) of expanded text. Table rows are still kept in memory for type inference; CSV imports also refuse
 a retained-table estimate above a quarter of physical memory, between 256 MiB (the browser
 budget) and 4 GiB. This estimate includes cell objects and the dataset built alongside the rows. Delimited members
 in one ZIP share this allowance, including gzip-compressed members.

@@ -130,7 +130,7 @@ enum Problem {
     ShortcutTooLarge { name: String },
     /// The script file `name`, picked for the Script pane's Load…, is over `SCRIPT_FILE_MAX_BYTES`.
     ScriptTooLarge { name: String },
-    /// The file `name` is over the size read into memory (`rustgis_data::io::MAX_BYTES`), by
+    /// The file `name` is over the size a pick reads into memory ([`PICK_MAX_BYTES`]), by
     /// itself or `together` with the files picked with it and already read.
     TooLarge { name: String, together: bool },
     /// The copy of the file `name` couldn't be read.
@@ -217,7 +217,7 @@ impl<P: Phone> App<P> {
                 }
                 Problem::ScriptTooLarge { name } => i18n::fmt("{file} is larger than 1 MB", &[("file", &name)]),
                 Problem::TooLarge { name, together } => {
-                    let limit = (rustgis_engine::data::io::MAX_BYTES >> 20).to_string();
+                    let limit = (PICK_MAX_BYTES >> 20).to_string();
                     let template = if together {
                         "{name} wasn't opened: with the files picked with it, it is over {limit} MiB."
                     } else {
@@ -343,12 +343,19 @@ fn retire_unread(inbox: &Inbox, marks: Vec<String>) {
     inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(marks.into_iter().map(|mark| (mark, Vec::new())));
 }
 
+/// The most a pick reads into memory, in one file or the files picked together: fixed at the
+/// size every computer reads ([`rustgis_engine::data::io::BYTES_FLOOR`]), whatever the phone's
+/// memory. A phone reports all its memory, but an app may use much less of it before the system
+/// stops it, so the desktop's share of the memory isn't a phone's (#2408).
+const PICK_MAX_BYTES: u64 = rustgis_engine::data::io::BYTES_FLOOR;
+
 /// Reads one folder's files of a pick (name, copy) into `inbox`, marked for the dialog that
 /// asked, and removes the copies: their bytes are all that was wanted of them. `held` counts the
 /// bytes the pick has read so far, across its folders.
 fn read_batch(purpose: &str, files: Vec<(String, PathBuf)>, inbox: &Inbox, problems: &Problems, held: &mut u64) {
     let mark = crate::mark(purpose);
     let say = |problem| problems.lock().unwrap_or_else(|e| e.into_inner()).push(problem);
+    let max = PICK_MAX_BYTES;
     let mut read = Vec::new();
     for (name, path) in files {
         let shortcut = mark == rustgis_ui_egui::SHORTCUT_PICK || (mark.is_empty() && name.to_ascii_lowercase().ends_with(".rgisshortcuts"));
@@ -358,10 +365,10 @@ fn read_batch(purpose: &str, files: Vec<(String, PathBuf)>, inbox: &Inbox, probl
         } else if mark == rustgis_ui_egui::SCRIPT_PICK && size > rustgis_ui_egui::SCRIPT_FILE_MAX_BYTES as u64 {
             // Refused before it is read, as the pane would refuse it after.
             say(Problem::ScriptTooLarge { name });
-        } else if held.saturating_add(size) > rustgis_engine::data::io::MAX_BYTES {
+        } else if held.saturating_add(size) > max {
             // Refused before it is read: no more than the cap is held in memory at once, in
             // one file or in the files picked together.
-            say(Problem::TooLarge { name, together: size <= rustgis_engine::data::io::MAX_BYTES });
+            say(Problem::TooLarge { name, together: size <= max });
         } else {
             match std::fs::read(&path) {
                 Ok(bytes) => {

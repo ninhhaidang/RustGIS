@@ -3,7 +3,7 @@
 //! Opening reads the file once, a feature at a time, keeping each feature's place in the file and
 //! bounding box (28 bytes a feature) and working out the schema; a read picks the features whose
 //! boxes meet the request and parses just those from the file again. A file up to
-//! [`io::MAX_BYTES`](crate::io::MAX_BYTES) is read into memory for that one pass (the quickest
+//! [`io::BYTES_FLOOR`](crate::io::BYTES_FLOOR) is read into memory for that one pass (the quickest
 //! way); a larger one is read through a buffer, so it's never held whole. Smaller files are loaded
 //! whole by `io::read_path`.
 
@@ -138,7 +138,7 @@ impl GeoJsonSource {
     /// Opens a GeoJSON FeatureCollection. Other GeoJSON documents (a single feature, a bare
     /// geometry) and TopoJSON aren't read in place: they fail here, to be read whole.
     pub fn open_path(path: &Path, name: &str) -> Result<GeoJsonSource> {
-        Self::open_with(path, name, crate::io::MAX_BYTES)
+        Self::open_with(path, name, crate::io::BYTES_FLOOR)
     }
 
     /// [`open_path`](Self::open_path), reading a file of at most `in_memory` bytes into memory to

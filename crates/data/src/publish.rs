@@ -148,7 +148,7 @@ struct Original {
 /// Reads an original file at `p`, `None` when absent. The caller supplies format-specific size advice.
 fn read_part(p: &Path, size_error: fn(&str, u64) -> String) -> Result<Option<Vec<u8>>> {
     match std::fs::metadata(p) {
-        Ok(m) if m.len() > crate::io::MAX_BYTES => Err(DataError::Format(size_error(&p.to_string_lossy(), crate::io::MAX_BYTES))),
+        Ok(m) if m.len() > crate::io::max_bytes() => Err(DataError::Format(size_error(&p.to_string_lossy(), crate::io::max_bytes()))),
         Ok(_) => Ok(Some(std::fs::read(p)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
@@ -916,18 +916,18 @@ mod tests {
     /// The publisher's original-file read stops before loading an oversized attribute sidecar.
     #[test]
     fn oversized_shapefile_dbf_read_for_publish_gives_dataset_advice() {
-        use crate::io::{FileSizeAdvice, MAX_BYTES, file_size_error_args};
+        use crate::io::{FileSizeAdvice, file_size_error_args, max_bytes};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("parcels.shp");
         let dbf = path.with_extension("dbf");
         written(&parcels(), &path);
-        std::fs::OpenOptions::new().write(true).open(&dbf).unwrap().set_len(MAX_BYTES + 1).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&dbf).unwrap().set_len(max_bytes() + 1).unwrap();
 
         let error = Original::read(&path).err().unwrap().to_string();
-        let limit = (MAX_BYTES >> 20).to_string();
+        let limit = (max_bytes() >> 20).to_string();
         assert_eq!(file_size_error_args(&error), Some((dbf.to_str().unwrap(), limit.as_str(), FileSizeAdvice::Shapefile)));
-        assert_eq!(std::fs::metadata(&dbf).unwrap().len(), MAX_BYTES + 1);
+        assert_eq!(std::fs::metadata(&dbf).unwrap().len(), max_bytes() + 1);
     }
 
     /// A duplicated descriptor must not keep a finished publisher's lock alive.

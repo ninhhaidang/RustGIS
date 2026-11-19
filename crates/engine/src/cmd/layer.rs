@@ -2035,11 +2035,13 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         return add_source(s, p, Origin::Path(path), None);
     }
     // A CityJSON model named .json, in the coordinate system given or with a layer picked: as a
-    // .city.json, all its layers (a .city.json is added below, as a file of several layers).
+    // .city.json, all its layers (a .city.json is added below, as a file of several layers). It is
+    // read whole to tell, here on the calling thread, so only up to the size every computer reads
+    // (a larger model is named `.city.json` to be read as one).
     if path.to_ascii_lowercase().ends_with(".json")
         && !rustgis_data::cityjson::is_cityjson_name(path)
         && ["crs", "layer"].iter().any(|k| ps(p, k).is_some_and(|c| !c.trim().is_empty()))
-        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= rustgis_data::io::MAX_BYTES)
+        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= rustgis_data::io::BYTES_FLOOR)
     {
         let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         if rustgis_data::io::is_cityjson(path, &bytes) {
@@ -2062,8 +2064,21 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         let name = Path::new(path).file_stem().and_then(|n| n.to_str()).unwrap_or("layer");
         match rustgis_data::source::geojson::GeoJsonSource::open_path(Path::new(path), name) {
             Ok(src) => return add_source_with(s, p, Origin::Path(path), Some(Box::new(src)), None),
-            // Not a FeatureCollection: read whole below.
-            Err(rustgis_data::DataError::Unsupported(_)) => {}
+            // Not a FeatureCollection: read whole below, on this thread (the UI thread in the
+            // desktop app, as only small GeoJSON files are read ahead), so within the size every
+            // computer reads, as before #2408, not the larger limit: the window isn't held longer.
+            Err(rustgis_data::DataError::Unsupported(_)) => {
+                let floor = rustgis_data::io::BYTES_FLOOR;
+                if let Ok(m) = std::fs::metadata(path)
+                    && m.len() > floor
+                {
+                    return Err(format!(
+                        "{path}: a GeoJSON document that isn't a FeatureCollection is read whole, so at most {} MiB; it is {} MiB (a CityJSON model named .json: rename it .city.json)",
+                        floor >> 20,
+                        m.len().div_ceil(1 << 20)
+                    ));
+                }
+            }
             Err(e) => return Err(format!("{path}: {e}")),
         }
     }
@@ -2164,18 +2179,34 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
         return add_reads(s, p, &full, reads, Vec::new(), None);
     }
     if rustgis_data::io::is_multi_layer_name(path) {
-        // A city model or ZIP read ahead on the desktop: add the prepared layers without
+        // A file read ahead on the desktop ([`read_ahead_whole`]): add the prepared layers without
         // reading the file again on the UI thread.
         if let Some(read) = super::reads::take::<LayersRead>(s, &layers_key(path)) {
             if let Some(crs) = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()) {
                 super::say_crs_note(s, crs);
             }
             let (full, reads) = read?;
-            return add_picked(s, p, &full, reads, !path.to_ascii_lowercase().ends_with(".zip"), Vec::new(), None);
+            // Whole for a city model only (its first layer says what the file does), not for the
+            // other files read ahead too.
+            #[cfg(not(target_arch = "wasm32"))]
+            let whole = is_city_model_path(path);
+            #[cfg(target_arch = "wasm32")]
+            let whole = !path.to_ascii_lowercase().ends_with(".zip");
+            return add_picked(s, p, &full, reads, whole, Vec::new(), None);
         }
         let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-        if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
-            return Err(rustgis_data::io::file_size_error(path, super::raster::MAX_UPLOAD_BYTES as u64));
+        // A file the desktop app doesn't read ahead (a KML or KMZ, with its overlays; a LandXML;
+        // RSS or Atom) is read here, on the UI thread there: within the size every computer reads,
+        // as before #2408, so the window isn't held longer; said first, as it is the limit that
+        // applies. The others ([`read_ahead_whole`]) take the larger limit: the desktop app reads
+        // them ahead (`readjob`, for drops, pickers and Add Data), so this branch reads them for
+        // the command line, Python, MCP and the tests, which hold no window.
+        if let Some(e) = past_read_as_added(path, meta.len()) {
+            return Err(e);
+        }
+        let max = rustgis_data::io::max_bytes();
+        if meta.len() > max {
+            return Err(rustgis_data::io::file_size_error(path, max));
         }
         let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
@@ -2223,6 +2254,30 @@ fn layers_key(path: &str) -> String {
     format!("layers:{path}")
 }
 
+/// The refusal of a file of several layers of `len` bytes that the desktop app reads as it is
+/// added, on the UI thread (not [`read_ahead_whole`]: a KML or KMZ, a LandXML, RSS, Atom or
+/// GeoRSS), past the size every computer reads, as before #2408, so the window isn't held longer.
+/// Said before the larger limit, as it is the one that applies.
+fn past_read_as_added(path: &str, len: u64) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let ahead = read_ahead_whole(path);
+    #[cfg(target_arch = "wasm32")]
+    let ahead = false;
+    let floor = rustgis_data::io::BYTES_FLOOR;
+    (!ahead && len > floor).then(|| rustgis_data::io::file_size_error(path, floor))
+}
+
+/// Whether the desktop app reads a file of several layers whole ahead, off the UI thread
+/// ([`add_data_ahead`], [`read_layers_file`]): a ZIP, a city model, a GML, GPX or TopoJSON file,
+/// an OpenStreetMap extract (`.pbf`; a large one goes to GDAL instead where it is installed, and
+/// isn't read ahead, [`large_osm`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn read_ahead_whole(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".zip", ".gml", ".gpx", ".topojson", ".pbf"].iter().any(|e| lower.ends_with(e))
+        || (rustgis_data::io::is_multi_layer_name(path) && is_city_model_path(path))
+}
+
 /// Whether Add Data reads `path` as a city model's layers: a CityJSON model named `.city.json`, or
 /// a `.gml` or `.xml` file whose root (in its first bytes, read here) is a CityGML city model.
 #[cfg(not(target_arch = "wasm32"))]
@@ -2247,8 +2302,12 @@ fn is_city_model_path(path: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_layers_file(p: &Value, path: &str) -> LayersRead {
     let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-    if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
-        return Err(rustgis_data::io::file_size_error(path, super::raster::MAX_UPLOAD_BYTES as u64));
+    if let Some(e) = past_read_as_added(path, meta.len()) {
+        return Err(e);
+    }
+    let max = rustgis_data::io::max_bytes();
+    if meta.len() > max {
+        return Err(rustgis_data::io::file_size_error(path, max));
     }
     let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
@@ -2275,8 +2334,15 @@ fn read_dxf_file(p: &Value, path: &str) -> LayersRead {
     use std::io::Read;
     let file = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
     let mut bytes = Vec::new();
-    (&file).take(rustgis_data::io::MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
-    if bytes.len() as u64 <= rustgis_data::io::MAX_BYTES {
+    let max = rustgis_data::io::max_bytes();
+    // One that says it is too large is refused before any of it is read.
+    if let Ok(meta) = file.metadata()
+        && meta.len() > max
+    {
+        return Err(rustgis_data::io::file_size_error(path, max));
+    }
+    (&file).take(max + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() as u64 <= max {
         rustgis_data::provenance::buffer(Path::new(path), &file, &bytes);
     }
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
@@ -2291,8 +2357,9 @@ fn dxf_reads(
     bytes: &[u8],
     crs: Option<rustgis_data::raster::Crs>,
 ) -> Result<Vec<rustgis_data::io::LayerRead>, String> {
-    if bytes.len() as u64 > rustgis_data::io::MAX_BYTES {
-        return Err(rustgis_data::io::file_size_error(name, rustgis_data::io::MAX_BYTES));
+    let max = rustgis_data::io::max_bytes();
+    if bytes.len() as u64 > max {
+        return Err(rustgis_data::io::file_size_error(name, max));
     }
     let opts = rustgis_data::dxf::Options {
         crs,
@@ -2325,8 +2392,9 @@ fn read_whole(p: &Value, path: &str) -> WholeRead {
     let delimited = read_delimited(p, path, || {
         let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
         // The limit the text readers keep without options too.
-        if meta.len() > rustgis_data::io::MAX_BYTES {
-            return Err(rustgis_data::io::file_size_error(path, rustgis_data::io::MAX_BYTES));
+        let max = rustgis_data::io::max_bytes();
+        if meta.len() > max {
+            return Err(rustgis_data::io::file_size_error(path, max));
         }
         rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))
     })?;
@@ -2356,13 +2424,16 @@ fn read_shapefile_with(path: &str, name: &str, crs: rustgis_data::raster::Crs) -
 /// `read`, the read of the file at `path`, with the record of what it read: the files hashed
 /// just before ([`rustgis_data::sync::FileSync::around`]) and the digest of the rows read. Its
 /// work grows with the file, so the desktop app makes it off the UI thread ([`add_data_ahead`]).
+/// A large GeoJSON document that isn't a FeatureCollection, without `"stream": false`, is read
+/// whole on the calling thread instead, and so kept within [`rustgis_data::io::BYTES_FLOOR`]
+/// (`add_data`), as are the files of several layers that aren't read ahead.
 /// When the files couldn't be hashed the layer has no record, and a note says it can't be
 /// compared with its file later.
 #[cfg(not(target_arch = "wasm32"))]
 fn read_synced(path: &str, read: impl FnOnce() -> WholeRead) -> WholeRead {
     // A file past what the readers take (a Shapefile's `.dbf` too) is refused by the read: not
     // hashed first.
-    let over = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.len() > rustgis_data::io::MAX_BYTES);
+    let over = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.len() > rustgis_data::io::max_bytes());
     let shp = path.to_ascii_lowercase().ends_with(".shp");
     if over(Path::new(path)) || (shp && over(&Path::new(path).with_extension("dbf"))) {
         return read();
@@ -2439,9 +2510,10 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
         && !(lower.ends_with(".json") && (given("crs") || given("layer")))
         && std::fs::metadata(&path)
             .is_ok_and(|m| m.is_file() && (b(p, "stream") == Some(false) || m.len() <= rustgis_data::source::geojson::IN_PLACE_ABOVE));
-    // A ZIP or city model: its layers, read whole. A model named `.json` (not `.city.json`) is a
-    // file of several layers only with options given, which Add Data reads as it runs.
-    if lower.ends_with(".zip") || (rustgis_data::io::is_multi_layer_name(&path) && is_city_model_path(&path)) {
+    // A ZIP, a city model, a GML or a GPX file: its layers, read whole. A model named `.json` (not
+    // `.city.json`) is a file of several layers only with options given, which Add Data reads as
+    // it runs. A KML or KMZ (with its ground overlays) and a LandXML file are read as they are added.
+    if read_ahead_whole(&path) && !large_osm(&path) {
         let (key, q) = (layers_key(&path), p.clone());
         return Some(ahead(NAME, key, move || read_layers_file(&q, &path)));
     }
@@ -2661,10 +2733,20 @@ fn add_reads(
 /// A KML or KMZ's ground overlays as rasters: pictures inside a KMZ, or files beside a KML on
 /// disk (by a relative path that stays in its folder). Overlays that can't be drawn are said.
 fn ground_overlays(s: &mut Session, file_name: &str, bytes: &[u8], local_file: bool) -> Vec<(String, rustgis_data::raster::Raster)> {
-    let (found, undrawn) = match rustgis_data::kml::ground_overlays(file_name, bytes) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    match rustgis_data::kml::ground_overlays(file_name, bytes) {
+        Ok(overlays) => overlays_drawn(s, file_name, overlays, local_file),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The ground overlays of [`rustgis_data::kml::ground_overlays`] drawn, and those that can't be
+/// said in one notice.
+fn overlays_drawn(
+    s: &mut Session,
+    file_name: &str,
+    (found, undrawn, over_budget): rustgis_data::kml::Overlays,
+    local_file: bool,
+) -> Vec<(String, rustgis_data::raster::Raster)> {
     let mut out = Vec::new();
     let mut notes = Vec::new();
     let dir = local_file.then(|| Path::new(file_name).parent()).flatten().filter(|d| d.is_absolute());
@@ -2711,6 +2793,12 @@ fn ground_overlays(s: &mut Session, file_name: &str, bytes: &[u8], local_file: b
     }
     if undrawn > 0 {
         notes.push(format!("{undrawn} ground overlays without a picture or a box (LatLonBox)"));
+    }
+    if over_budget > 0 {
+        notes.push(format!(
+            "{over_budget} ground overlays left out: their pictures don't fit beside the archive in the {} MiB a KMZ is expanded within",
+            rustgis_data::io::BYTES_FLOOR >> 20
+        ));
     }
     if !notes.is_empty() {
         s.notify(format!("{file_name}: {}", notes.join("; ")), false);
@@ -2841,21 +2929,28 @@ fn file_layers(s: &mut Session, p: &Value) -> CmdResult {
     // A DXF drawing's own layers (the ones it draws on), picked with "layer".
     if rustgis_data::dxf::is_dxf_name(path) {
         let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-        if meta.len() > rustgis_data::io::MAX_BYTES {
-            return Err(rustgis_data::io::file_size_error(path, rustgis_data::io::MAX_BYTES));
+        let max = rustgis_data::io::max_bytes();
+        if meta.len() > max {
+            return Err(rustgis_data::io::file_size_error(path, max));
         }
         let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let layers = rustgis_data::dxf::layers(path, &bytes).map_err(err)?;
         return Ok(json!({"count": layers.len(), "layers": layers}));
     }
-    // A CityJSON model named .json: all its layers, as Add Data adds them by name.
+    // A CityJSON model named .json: all its layers, as Add Data adds them by name. Read whole to
+    // tell, so only up to the size every computer reads, as Add Data does.
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty());
     let model_json = path.to_ascii_lowercase().ends_with(".json")
-        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= rustgis_data::io::MAX_BYTES);
+        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= rustgis_data::io::BYTES_FLOOR);
     if rustgis_data::io::is_multi_layer_name(path) || model_json {
         let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-        if meta.len() > super::raster::MAX_UPLOAD_BYTES as u64 {
-            return Err(rustgis_data::io::file_size_error(path, super::raster::MAX_UPLOAD_BYTES as u64));
+        // Listed within the size Add Data takes it at.
+        if let Some(e) = past_read_as_added(path, meta.len()) {
+            return Err(e);
+        }
+        let max = rustgis_data::io::max_bytes();
+        if meta.len() > max {
+            return Err(rustgis_data::io::file_size_error(path, max));
         }
         let bytes = rustgis_data::provenance::read(path).map_err(|e| format!("{path}: {e}"))?;
         let zip = path.to_ascii_lowercase().ends_with(".zip");
@@ -3163,11 +3258,13 @@ fn lidar_renderer(src: &dyn rustgis_data::source::FeatureSource, seed: u32) -> O
 }
 
 /// The parameters with `"stream": true` for a Shapefile whose `.shp` or `.dbf` is past what the
-/// whole-file reader takes, when they don't say whether to stream; `None` otherwise.
+/// whole-file reader takes on every computer ([`rustgis_data::io::BYTES_FLOOR`]), when they don't
+/// say whether to stream; `None` otherwise. Read in place, it never needs memory for it whole, so a
+/// computer whose reader takes more streams it too.
 #[cfg(not(target_arch = "wasm32"))]
 fn past_cap_shapefile(path: &str, p: &Value) -> Option<Value> {
     let shp = Path::new(path);
-    let past = |f: &Path| std::fs::metadata(f).is_ok_and(|m| m.len() > rustgis_data::io::MAX_BYTES);
+    let past = |f: &Path| std::fs::metadata(f).is_ok_and(|m| m.len() > rustgis_data::io::BYTES_FLOOR);
     if !path.to_ascii_lowercase().ends_with(".shp") || b(p, "stream").is_some() || !(past(shp) || past(&shp.with_extension("dbf"))) {
         return None;
     }
@@ -3176,12 +3273,13 @@ fn past_cap_shapefile(path: &str, p: &Value) -> Option<Value> {
     Some(q)
 }
 
-/// An OpenStreetMap extract past what the native reader takes, opened through GDAL instead when it
-/// is installed (country-size extracts).
+/// An OpenStreetMap extract past what the native reader takes on every computer
+/// ([`rustgis_data::io::BYTES_FLOOR`]), opened through GDAL instead when it is installed
+/// (country-size extracts): GDAL converts it once to a file read in place.
 #[cfg(not(target_arch = "wasm32"))]
 fn large_osm(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".pbf")
-        && std::fs::metadata(path).is_ok_and(|m| m.len() > rustgis_data::io::MAX_BYTES)
+        && std::fs::metadata(path).is_ok_and(|m| m.len() > rustgis_data::io::BYTES_FLOOR)
         && rustgis_data::source::gdal::available()
 }
 
@@ -4007,7 +4105,7 @@ pub fn columns_in_file(path: &str, p: &Value) -> CmdResult {
     }
     // Add Data's limits: a spreadsheet is read whole, delimited text within the text readers' limit.
     let sheet = rustgis_data::sheets::is_sheet_name(path);
-    let limit = if sheet { super::raster::MAX_UPLOAD_BYTES as u64 } else { rustgis_data::io::MAX_BYTES };
+    let limit = if sheet { super::raster::MAX_UPLOAD_BYTES as u64 } else { rustgis_data::io::max_bytes() };
     let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > limit {
         return Err(rustgis_data::io::file_size_error(path, limit));
@@ -6803,14 +6901,31 @@ mod tests {
     use crate::Session;
     use serde_json::json;
 
+    /// Overlays left out for their pictures' size are said, with the budget; none, nothing said.
+    #[test]
+    fn overlays_left_out_for_their_pictures_are_said_and_none_otherwise() {
+        let mut s = Session::new(crate::Project::default());
+        let mark = s.notice_mark();
+        assert!(super::overlays_drawn(&mut s, "a.kmz", (Vec::new(), 0, 0), false).is_empty());
+        assert!(s.notices_since(mark).is_empty(), "nothing left out, nothing said");
+        let mark = s.notice_mark();
+        super::overlays_drawn(&mut s, "a.kmz", (Vec::new(), 0, 2), false);
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(
+            said,
+            ["a.kmz: 2 ground overlays left out: their pictures don't fit beside the archive in the 256 MiB a KMZ is expanded within"]
+        );
+    }
+
     /// Refuses a sparse KML before reading its bytes, with the same advice when listing its layers.
     #[test]
     fn oversized_kml_reports_limit_and_alternatives() {
         let dir = std::env::temp_dir().join(format!("rustgis-kml-limit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("permits.kml");
-        let limit = crate::cmd::raster::MAX_UPLOAD_BYTES as u64;
-        std::fs::File::create(&path).unwrap().set_len(limit + 1).unwrap();
+        // A KML is read as it is added, on the UI thread: within the floor, whatever the memory.
+        let limit = rustgis_data::io::BYTES_FLOOR;
+        std::fs::File::create(&path).unwrap().set_len(crate::cmd::raster::MAX_UPLOAD_BYTES as u64 + 1).unwrap();
         let params = json!({"path": path});
         let path = path.to_str().unwrap();
         let mut session = Session::new(crate::Project::default());

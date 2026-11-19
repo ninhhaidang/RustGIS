@@ -214,8 +214,8 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     if is_json(bytes) {
         return Err(json_service_error(bytes).unwrap_or_else(|| invalid("the answer is JSON, not a protocol buffer")));
     }
-    if bytes.len() as u64 > crate::io::MAX_BYTES {
-        return Err(invalid(format!("the answer is too large ({} bytes)", bytes.len())));
+    if bytes.len() as u64 > crate::io::max_bytes() {
+        return Err(invalid(crate::io::too_large(bytes.len() as u64)));
     }
     let result = feature_result(bytes)?;
 

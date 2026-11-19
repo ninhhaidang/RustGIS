@@ -2603,7 +2603,7 @@ fn geojson_in_place_rejects_partial_collections_with_a_notice() {
     let (whole, report) = crate::io::read_geojson(text, "x").unwrap();
     assert_eq!(whole.features.len(), 1);
     assert_eq!(report.skipped, 1);
-    for in_memory in [crate::io::MAX_BYTES, 0] {
+    for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         assert_eq!(src.info().count, Some(1));
         assert_eq!(src.skipped_at_open(), 1);
@@ -2632,7 +2632,7 @@ fn geojson_in_place_matches_one_read_whole() {
         {"type":"Feature","properties":{},"geometry":{"type":"MultiPoint","coordinates":[[9,9],[8,8]]}}
     ],"type":"FeatureCollection","name":"m"}"#;
     let docs = [("mixed.geojson", mixed.to_string()), ("parcels.json", crate::io::to_geojson(&export_sample()).to_string())];
-    for ((file, text), in_memory) in docs.iter().flat_map(|d| [(d, crate::io::MAX_BYTES), (d, 0)]) {
+    for ((file, text), in_memory) in docs.iter().flat_map(|d| [(d, crate::io::BYTES_FLOOR), (d, 0)]) {
         let p = d.join(file);
         std::fs::write(&p, text).unwrap();
         let (whole, whole_report) = crate::io::read_geojson(text, "x").unwrap();
@@ -2685,7 +2685,7 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
     let p = d.join(file);
     std::fs::write(&p, text).unwrap();
     let (whole, report) = crate::io::read_geojson(text, "x").unwrap();
-    for in_memory in [crate::io::MAX_BYTES, 0] {
+    for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         let (inplace, in_report) = materialize(&src).unwrap();
         assert_eq!(inplace.features, whole.features, "{file}");
@@ -2700,7 +2700,7 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
         assert_eq!(src.info().count, Some(whole.features.len() as u64), "{file}");
         assert_eq!(src.info().coordinate_system(), whole.crs, "{file}");
     }
-    let src = geojson::GeoJsonSource::open_with(&p, "x", crate::io::MAX_BYTES).unwrap();
+    let src = geojson::GeoJsonSource::open_with(&p, "x", crate::io::BYTES_FLOOR).unwrap();
     (whole, report.messages, src.info().crs.clone())
 }
 
@@ -2729,7 +2729,7 @@ fn geojson_legacy_crs_is_honoured_by_both_paths() {
     // Reads in place go by the layer's own coordinates: a window of longitude/latitude finds the
     // features, one elsewhere finds none.
     let p = dir().join("geojson-crs").join("rd.geojson");
-    for in_memory in [crate::io::MAX_BYTES, 0] {
+    for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         let at = |e: Extent| src.read(&Request { extent: Some(e), limit: 100 }).unwrap().features.len();
         assert_eq!(at(Extent::new(5.85, 51.95, 5.86, 51.96)), 1, "the polygon only");
@@ -2918,7 +2918,7 @@ fn geojson_sampling_skips_dropped_features() {
     let p = dir().join("geojson-crs").join("alternating.geojson");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(&p, &text).unwrap();
-    for in_memory in [crate::io::MAX_BYTES, 0] {
+    for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         assert_eq!(src.info().count, Some(3));
         let all = src.read(&Request { extent: None, limit: 100 }).unwrap();
@@ -2951,7 +2951,7 @@ fn damaged_geojson_is_an_error_not_a_panic() {
     let p = d.join("cut.geojson");
     for n in 0..text.len() {
         std::fs::write(&p, &text.as_bytes()[..n]).unwrap();
-        for in_memory in [crate::io::MAX_BYTES, 0] {
+        for in_memory in [crate::io::BYTES_FLOOR, 0] {
             if let Ok(s) = geojson::GeoJsonSource::open_with(&p, "x", in_memory) {
                 let _ = s.read(&Request::all());
             }

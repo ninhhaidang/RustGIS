@@ -308,7 +308,15 @@ fn read_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: usize, spreads
         let data_at = add(&[local, 30, lnl, lxl]).ok_or_else(bad)?;
         let body = bytes.get(data_at..add(&[data_at, csize]).ok_or_else(bad)?).ok_or_else(bad)?;
         if usize_ > MAX_ENTRY || usize_ > budget {
-            return Err(Failure::Member(format!("{name} is too large")));
+            // Its expanded size, and the bound it passed: the archive's budget left (which follows
+            // the computer's memory where the caller's does) or the most one member may hold.
+            let bound = MAX_ENTRY.min(budget);
+            return Err(Failure::Member(format!(
+                "{name} is too large: it expands to {}, past the {} {}",
+                crate::io::size_said(usize_ as u64, true),
+                crate::io::size_said(bound as u64, false),
+                if budget < MAX_ENTRY { "left to expand from this archive" } else { "a member may expand to" }
+            )));
         }
         // Inflate no more than the entry says it holds (and the archive's budget allows).
         let data = match method {
@@ -368,7 +376,11 @@ mod tests {
             invalid[bad_field] = 1;
             let archive = [archive.as_slice(), &invalid].concat();
             assert!(matches!(read_all_within(&archive, 5), Ok(entries) if entries[0].1 == b"hello"));
-            assert!(matches!(read_all_within(&archive, 4), Err(Failure::Member(m)) if m.contains("too large")));
+            // Its expanded size and the budget it passed.
+            assert!(matches!(
+                read_all_within(&archive, 4),
+                Err(Failure::Member(m)) if m.contains("too large: it expands to 5 bytes, past the 4 bytes left to expand")
+            ));
         }
     }
 

@@ -1562,6 +1562,7 @@ below the web app's fixed limits and never above a ceiling.
 | `threadScratchBytes`: working memory a tool's threads take together, beyond one thread's | 256 MiB | a sixteenth of memory, on top of the quarter | 4 GiB |
 | `undoBytes`: estimated feature rows, attributes and geometry kept only in Undo and Redo | 256 MiB | the bytes themselves | 4 GiB |
 | `projectBytes`: the largest project file saved or opened (see [Projects](workspace.md#projects)) | 512 MiB | 5 bytes for each byte of the file (about 800 MiB for every 16 GB) | 4 GiB |
+| `fileBytes`: the largest file read into memory whole (CityGML, CityJSON, zips, DXF, GeoJSON not read in place, and the like; KML, KMZ, LandXML, RSS, Atom and GeoRSS stay at 256 MiB, as does every file on a phone; see [Data formats](data-formats.md)) | 256 MiB | 8 bytes for each byte of the file (about 512 MiB for every 16 GiB) | 4 GiB |
 
 Undo history keeps up to 40 steps. When the estimated memory for saved copies of features
 exceeds `undoBytes`, RustGIS drops the oldest Undo steps first, then the farthest Redo steps.
