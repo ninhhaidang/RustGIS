@@ -20,6 +20,8 @@ csv = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 shapefile = { workspace = true }
 encoding_rs = { workspace = true }
+# Coordinate column names compared in one Unicode form (NFC), whatever form a file saved them in.
+unicode-normalization = "0.1"
 # Zstandard, the usual compression of COGs, is C code that compiles to WebAssembly with clang
 # (on the CI runners), so the browser decodes it too.
 tiff = { workspace = true, features = ["zstd"] }
