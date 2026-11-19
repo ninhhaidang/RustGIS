@@ -250,11 +250,11 @@ fn gather(dataset: &Dataset, mut t: Proposal, raster: Option<&rustgis_map::raste
         return Err("choose image or frame, not both".into());
     }
     let f = frame(raster, p)?;
-    t.shape = fit(
-        dataset.features.get(t.row).and_then(|f| f.geometry.as_ref()).ok_or("missing polygon")?,
-        f,
-        p.get("kind").and_then(Value::as_str).ok_or("kind is required")?,
-    )?;
+    // Fitted in longitude/latitude, from the layer's own coordinates, as its shape's geometry is
+    // given (`replace_geometry` writes it back in them).
+    let polygon = dataset.features.get(t.row).and_then(|f| f.geometry.as_ref()).ok_or("missing polygon")?;
+    let polygon = dataset.geometry_to_lonlat(polygon)?;
+    t.shape = fit(&polygon, f, p.get("kind").and_then(Value::as_str).ok_or("kind is required")?)?;
     Ok(t)
 }
 fn source(s: &Session, p: &Value) -> Result<Option<rustgis_map::raster::RasterLayer>, String> {

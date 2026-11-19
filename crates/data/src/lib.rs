@@ -459,7 +459,7 @@ impl Dataset {
         if to.is_identity() {
             return Ok(g);
         }
-        convert_keeping_missing(&to, &g).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
+        edit_into_own(&to, &g).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
     }
 
     /// How many of its values a saved project holds as null, not as they are: numbers that aren't
@@ -917,6 +917,17 @@ impl Dataset {
     }
 }
 
+/// An edit `g` in longitude/latitude in the target system, as [`convert_keeping_missing`]; `None`
+/// also when it reaches past 85.05° for Web Mercator, which would hold the place at 85.05°, where
+/// it ends, rather than refuse it.
+fn edit_into_own(to: &raster::Reprojection, g: &Geometry) -> Option<Geometry> {
+    let mut clamped = false;
+    if to.target() == raster::Crs::WebMercator {
+        g.for_each_coord(|c| clamped |= c.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT);
+    }
+    if clamped { None } else { convert_keeping_missing(to, g) }
+}
+
 /// `g` converted, its missing coordinates (NaN, infinite) kept as they are; `None` when a place
 /// that is one can't be converted.
 fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry) -> Option<Geometry> {
@@ -950,6 +961,13 @@ mod tests {
         assert!(parts[0][1].x.is_nan() && parts[0][1].y == 47.0, "{:?}", parts[0][1]);
         let lost = Geometry::Line(vec![vec![Coord::new(9.0, 47.0), Coord::new(99.0, 0.0)]]);
         assert!(convert_keeping_missing(&to, &lost).is_none());
+        // Web Mercator would hold 89° at 85.05°: an edit reaching there is refused; one within
+        // 85.05°, or missing a coordinate, is written.
+        let merc = raster::Crs::LonLat.to(raster::Crs::WebMercator).unwrap();
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 89.0))).is_none());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 80.0))).is_some());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, f64::NAN))).is_some());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(f64::NAN, 89.0))).is_some());
     }
 
     #[test]

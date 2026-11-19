@@ -3547,7 +3547,10 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
         let mut verts: Vec<Coord> = Vec::new();
         for l in app.session.map().layers.iter().filter(|l| !l.selection.is_empty() && !l.is_raster() && !l.graphics) {
             for r in &l.selection {
-                if let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) {
+                // In longitude/latitude, from the layer's own coordinates, as they are drawn.
+                if let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref())
+                    && let Ok(g) = l.dataset.geometry_to_lonlat(g)
+                {
                     g.for_each_coord(|c| {
                         if verts.len() < 4000 {
                             verts.push(c);

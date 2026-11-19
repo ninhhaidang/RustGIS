@@ -3,6 +3,8 @@
 //! one, click a vertex and press Delete to remove it. Shared Vertices opts polygon moves into
 //! `edit.moveSharedVertex`; other edits use `edit.vertex`. Each is one command for undo and rules.
 
+use std::borrow::Cow;
+
 use egui::{Color32, Painter, Pos2, Rect, Stroke, vec2};
 use rustgis_engine::data::{Feature, Geometry, VertexId};
 use rustgis_engine::geom::Coord;
@@ -97,8 +99,17 @@ impl DragOwner {
             map_name: map.name.clone(),
             rows: layer.dataset.features.allocation_key(),
             shared: app.map.move_shared_vertices,
-            preview: shared_origin(app, d)
-                .map(|original| SharedPreview { original, edges: shared_edges(layer.dataset.features.iter(), original) }),
+            preview: shared_origin(app, d).and_then(|original| {
+                // Matched in the layer's own coordinates, where shared vertices are equal, and
+                // drawn in longitude/latitude, as the handles are.
+                let to = layer.dataset.lonlat_conversion().ok()?;
+                let lonlat = |c: Coord| if to.is_identity() { Some(c) } else { to.point(c) };
+                let edges = shared_edges(layer.dataset.features.iter(), original);
+                Some(SharedPreview {
+                    original: lonlat(original)?,
+                    edges: edges.into_iter().filter_map(|(a, b)| Some((lonlat(a)?, lonlat(b)?))).collect(),
+                })
+            }),
         })
     }
 
@@ -147,7 +158,7 @@ enum Handle {
 
 /// The features whose vertices the tool edits: the selected features of visible feature layers
 /// held in memory (a layer read in place from its file can't be edited), when editing is on.
-fn targets(app: &RustGisApp) -> Vec<(u32, usize, &Geometry)> {
+fn targets(app: &RustGisApp) -> Vec<(u32, usize, Cow<'_, Geometry>)> {
     let m = app.session.map();
     if !m.editing.settings.enabled {
         return Vec::new();
@@ -158,7 +169,11 @@ fn targets(app: &RustGisApp) -> Vec<(u32, usize, &Geometry)> {
             if out.len() >= MAX_FEATURES {
                 return out;
             }
-            if let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) {
+            // In longitude/latitude, from the layer's own coordinates, as the handles are drawn
+            // and dragged (borrowed as it is while they are longitude/latitude).
+            if let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref())
+                && let Ok(g) = l.dataset.geometry_to_lonlat(g)
+            {
                 out.push((l.id, *r, g));
             }
         }
@@ -194,7 +209,8 @@ fn handle_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<Handle> {
     let ts: Vec<_> =
         targets(app).into_iter().filter(|(_, _, g)| near.is_none_or(|(c, reach)| g.extent().padded(0.0, reach).contains(c))).collect();
     let mut best: Option<(f32, Handle)> = None;
-    for &(layer, row, g) in &ts {
+    for (layer, row, g) in &ts {
+        let (layer, row) = (*layer, *row);
         g.for_each_vertex(|v, c| {
             let Some(s) = lonlat_to_screen(app, rect, c) else { return };
             let d = (s - p).length();
@@ -206,7 +222,8 @@ fn handle_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<Handle> {
     if let Some((_, h)) = best {
         return Some(h);
     }
-    for &(layer, row, g) in &ts {
+    for (layer, row, g) in &ts {
+        let (layer, row) = (*layer, *row);
         g.for_each_edge(|v, a, b| {
             let Some((sa, sb)) = edge_on_screen(app, rect, a, b) else { return };
             let mid = sa + (sb - sa) / 2.0;
@@ -439,7 +456,7 @@ pub fn draw(app: &RustGisApp, p: &Painter, rect: Rect, accent: Color32) {
             let ends = if d.insert {
                 g.edges().into_iter().find(|e| e.0 == d.vertex).map(|e| vec![e.1, e.2]).unwrap_or_default()
             } else {
-                neighbours(g, d.vertex)
+                neighbours(&g, d.vertex)
             };
             if let Some(to) = lonlat_to_screen(app, rect, d.at) {
                 for e in ends.into_iter().filter_map(|c| lonlat_to_screen(app, rect, c)) {
