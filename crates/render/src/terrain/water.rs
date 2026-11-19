@@ -885,6 +885,7 @@ mod tests {
                 depth: Some(300.0),
                 walls: rustgis_map::view::BLOCK_WALLS,
                 walls_layer: None,
+                shape: rustgis_map::view::BlockShape::Box,
             }),
             water: None,
         });

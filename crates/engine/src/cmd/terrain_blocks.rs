@@ -219,7 +219,13 @@ mod tests {
         s.map_mut().view.terrain = Some(Terrain {
             source: TerrainSource::Layer("DEM".into()),
             exaggeration: 1.0,
-            block: Some(TerrainBlock { extent: Some(extent), depth: None, walls: BLOCK_WALLS, walls_layer: None }),
+            block: Some(TerrainBlock {
+                extent: Some(extent),
+                depth: None,
+                walls: BLOCK_WALLS,
+                walls_layer: None,
+                shape: Default::default(),
+            }),
             water: None,
         });
         s.notices.clear();

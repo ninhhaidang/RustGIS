@@ -81,11 +81,15 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         return Err("the map's terrain has no block diagram: set one with map.terrain's \"block\"".into());
     };
     let walls_layer = b.walls_layer.is_some();
+    let round = !b.shape.is_box();
     let exaggeration = t.exaggeration;
     Ok(Box::new(move || {
         let mut notes = Vec::new();
         let written = (|| {
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            if round {
+                as_box(&mut map)?;
+            }
             let (ground, block, model) = read_ground(&map, texture)?;
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
             let terrain::Block { x0, y0, x1, y1, .. } = block;
@@ -132,6 +136,12 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             if walls_layer {
                 notes.push((info, format!("{path}: the walls are their plain colour: walls coloured by a layer aren't in the model yet")));
             }
+            if round {
+                notes.push((
+                    warn,
+                    format!("{path}: the block is round on the map but the box round its circle in the model, based below all its ground: round blocks aren't in the model yet"),
+                ));
+            }
             notes.push((info, format!("{path}: the ground with the map as its texture, the walls and the base; the view's sky, fog, light and shadows are left to the 3D viewer")));
             let triangles: usize = model.meshes.iter().map(|m| m.tris.len() / 3).sum();
             let (nx, ny) = model.grid;
@@ -150,6 +160,20 @@ struct Model {
     grid: (usize, usize),
     missing: usize,
     pending: bool,
+}
+
+/// Turns `map`'s round block into the box round its circle, as the model has it (round blocks
+/// aren't in it yet): its base then goes below the lowest ground of all of that box, which the
+/// model's walls go down from, not of the circle's only.
+fn as_box(map: &mut rustgis_map::Map) -> Result<(), String> {
+    let ground = Ground::of(map, &map.camera)
+        .ok_or("the map's terrain shows on a Web Mercator map with its DEM layer, so the block can't be read")?;
+    let b = ground.block(map).ok_or("the block's box can't be read (over elevation tiles it needs an extent)")?;
+    if let Some(block) = map.view.terrain.as_mut().and_then(|t| t.block.as_mut()) {
+        block.shape = rustgis_map::view::BlockShape::Box;
+        block.extent = Some([b.x0, b.y0, b.x1, b.y1]);
+    }
+    Ok(())
 }
 
 /// The map's ground and block, and the model built from them, elevation tiles waited for (as an

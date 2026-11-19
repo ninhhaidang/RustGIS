@@ -1,7 +1,7 @@
 //! Block diagrams (#1914): a tilted view's ground over terrain cut to a box, and the box's sides
 //! facing the eye drawn as walls from the ground's profile down to a flat base.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rustgis_data::{Feature, Geometry};
 use rustgis_geom::{Coord, Extent, lonlat_to_merc, merc_to_lonlat};
@@ -21,56 +21,152 @@ pub(crate) const EAST: u8 = 2;
 pub(crate) const SOUTH: u8 = 4;
 pub(crate) const NORTH: u8 = 8;
 
-/// The sides of `b` the point `m` lies beyond (Web Mercator): 0 inside.
-pub(crate) fn outcode(b: &Block, m: Coord) -> u8 {
+/// A round block's point off its outline but beyond none of the tangents [`outcode`] tells, so
+/// a triangle of such points may still reach inside and is cut, not left out.
+pub(crate) const ROUND_OFF: u16 = 0x100;
+
+/// The sides of a round block's outline (#2318): a regular polygon in its circle, fine enough
+/// that its walls look round (a side sags under 2e-5 of the radius from the circle).
+pub(crate) const ROUND_SIDES: usize = 512;
+
+/// Each side of a round block's outline: its outward normal and, from the centre, the direction
+/// of its first corner, anticlockwise from east.
+fn round_sides() -> &'static [((f64, f64), (f64, f64))] {
+    static SIDES: OnceLock<Vec<((f64, f64), (f64, f64))>> = OnceLock::new();
+    SIDES.get_or_init(|| {
+        let step = std::f64::consts::TAU / ROUND_SIDES as f64;
+        (0..ROUND_SIDES)
+            .map(|k| {
+                let ((s, c), (vs, vc)) = (((k as f64 + 0.5) * step).sin_cos(), (k as f64 * step).sin_cos());
+                ((c, s), (vc, vs))
+            })
+            .collect()
+    })
+}
+
+/// How far inside side `k`'s line of the round outline about `o` of radius `r` the point `m`
+/// lies (negative beyond it).
+fn round_inside(o: Coord, r: f64, k: usize, m: Coord) -> f64 {
+    let (n, _) = round_sides()[k % ROUND_SIDES];
+    r * (std::f64::consts::PI / ROUND_SIDES as f64).cos() - ((m.x - o.x) * n.0 + (m.y - o.y) * n.1)
+}
+
+/// Corner `k` of the round outline about `o` of radius `r`, where side `k` begins.
+fn round_corner(o: Coord, r: f64, k: usize) -> Coord {
+    let (_, d) = round_sides()[k % ROUND_SIDES];
+    Coord::new(o.x + r * d.0, o.y + r * d.1)
+}
+
+/// The side of the round outline about `o` whose sector holds `m`: the nearest line to it.
+fn round_side_at(o: Coord, m: Coord) -> usize {
+    let a = (m.y - o.y).atan2(m.x - o.x).rem_euclid(std::f64::consts::TAU);
+    ((a / std::f64::consts::TAU * ROUND_SIDES as f64) as usize).min(ROUND_SIDES - 1)
+}
+
+/// The sides of `b` the point `m` lies beyond (Web Mercator): 0 inside. A round block's are the
+/// sides of the box round its circle and its four diagonal tangents (each wholly off the
+/// circle), with [`ROUND_OFF`] for a point off its outline.
+pub(crate) fn outcode(b: &Block, m: Coord) -> u16 {
     let mut c = 0;
     if m.x < b.x0 {
-        c |= WEST;
+        c |= u16::from(WEST);
     }
     if m.x > b.x1 {
-        c |= EAST;
+        c |= u16::from(EAST);
     }
     if m.y < b.y0 {
-        c |= SOUTH;
+        c |= u16::from(SOUTH);
     }
     if m.y > b.y1 {
-        c |= NORTH;
+        c |= u16::from(NORTH);
+    }
+    if let Some((o, r)) = b.circle {
+        let d = std::f64::consts::FRAC_1_SQRT_2;
+        for (i, n) in [(d, d), (-d, d), (-d, -d), (d, -d)].into_iter().enumerate() {
+            if (m.x - o.x) * n.0 + (m.y - o.y) * n.1 > r {
+                c |= 16 << i;
+            }
+        }
+        if round_inside(o, r, round_side_at(o, m), m) < 0.0 {
+            c |= ROUND_OFF;
+        }
     }
     c
 }
 
-/// A corner of a draped triangle clipped to a block's box: its weights of the triangle's three
-/// corners, its place (Web Mercator) and the box's sides it lies on.
-pub(crate) type Clipped = ([f64; 3], Coord, u8);
+/// A corner of a draped triangle clipped to a block's outline: its weights of the triangle's
+/// three corners, its place (Web Mercator) and the sides it lies on: a box's as bits; a round
+/// block's as up to two side numbers, each plus one, in the low and high 16 bits ([`with_side`]).
+pub(crate) type Clipped = ([f64; 3], Coord, u32);
 
-/// The part of the triangle with the corners `m` (Web Mercator) inside the box of `b`, a convex
-/// polygon (empty when none is), Sutherland–Hodgman against each side. Corners are carried as
-/// weights of the triangle's own, so the screen and the picture points follow from the triangle's
-/// as its affine map draws it: the ground cut at the box's edge and the wall's top under it are
-/// then the same points.
+/// A round block's sides `on` with side `k` added (a third is left out: a corner lies on two).
+fn with_side(on: u32, k: usize) -> u32 {
+    let k = k as u32 + 1;
+    match (on & 0xFFFF, on >> 16) {
+        (a, b) if a == k || b == k => on,
+        (0, _) => on | k,
+        (_, 0) => on | (k << 16),
+        _ => on,
+    }
+}
+
+/// The side numbers (plus one, 0 for none) of a round block's sides `on`.
+fn sides_of(on: u32) -> [u32; 2] {
+    [on & 0xFFFF, on >> 16]
+}
+
+/// The sides both `a` and `q` lie on, of a round block's.
+fn shared(a: u32, q: u32) -> u32 {
+    sides_of(a).into_iter().filter(|s| *s != 0 && sides_of(q).contains(s)).fold(0, |on, s| with_side(on, s as usize - 1))
+}
+
+/// `poly` cut to the side of a line where `inside` is at least 0, Sutherland–Hodgman: a corner on
+/// the line takes `mark`, a corner where an edge crosses it the sides `common` its ends share,
+/// marked. Empty when under 3 corners are left.
+fn cut(poly: &[Clipped], inside: impl Fn(Coord) -> f64, mark: impl Fn(u32) -> u32, common: impl Fn(u32, u32) -> u32) -> Vec<Clipped> {
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for (i, &a) in poly.iter().enumerate() {
+        let Some(&q) = poly.get((i + 1) % poly.len()) else { continue };
+        let (da, dq) = (inside(a.1), inside(q.1));
+        if da >= 0.0 {
+            out.push(if da == 0.0 { (a.0, a.1, mark(a.2)) } else { a });
+        }
+        if (da >= 0.0) != (dq >= 0.0) && da != 0.0 && dq != 0.0 {
+            let t = da / (da - dq);
+            let w = [0, 1, 2].map(|k| a.0[k] + (q.0[k] - a.0[k]) * t);
+            let c = Coord::new(a.1.x + (q.1.x - a.1.x) * t, a.1.y + (q.1.y - a.1.y) * t);
+            // On this side, and on any other both ends lie on.
+            out.push((w, c, mark(common(a.2, q.2))));
+        }
+    }
+    if out.len() < 3 { Vec::new() } else { out }
+}
+
+/// The part of the triangle with the corners `m` (Web Mercator) inside the outline of `b`, a
+/// convex polygon (empty when none is), Sutherland–Hodgman against each side. Corners are carried
+/// as weights of the triangle's own, so the screen and the picture points follow from the
+/// triangle's as its affine map draws it: the ground cut at the outline and the wall's top under
+/// it are then the same points. A round block's sides the triangle lies wholly inside are skipped.
 pub(crate) fn clip(m: [Coord; 3], b: &Block) -> Vec<Clipped> {
     let mut poly: Vec<Clipped> = vec![([1.0, 0.0, 0.0], m[0], 0), ([0.0, 1.0, 0.0], m[1], 0), ([0.0, 0.0, 1.0], m[2], 0)];
+    if let Some((o, r)) = b.circle {
+        for k in 0..ROUND_SIDES {
+            if poly.iter().all(|c| round_inside(o, r, k, c.1) > 0.0) {
+                continue;
+            }
+            poly = cut(&poly, |c| round_inside(o, r, k, c), |on| with_side(on, k), shared);
+            if poly.is_empty() {
+                break;
+            }
+        }
+        return poly;
+    }
     let sides: [(u8, fn(&Block, Coord) -> f64); 4] =
         [(WEST, |b, c| c.x - b.x0), (EAST, |b, c| b.x1 - c.x), (SOUTH, |b, c| c.y - b.y0), (NORTH, |b, c| b.y1 - c.y)];
     for (bit, inside) in sides {
-        let mut out = Vec::with_capacity(poly.len() + 1);
-        for (i, &a) in poly.iter().enumerate() {
-            let Some(&q) = poly.get((i + 1) % poly.len()) else { continue };
-            let (da, dq) = (inside(b, a.1), inside(b, q.1));
-            if da >= 0.0 {
-                out.push(if da == 0.0 { (a.0, a.1, a.2 | bit) } else { a });
-            }
-            if (da >= 0.0) != (dq >= 0.0) && da != 0.0 && dq != 0.0 {
-                let t = da / (da - dq);
-                let w = [0, 1, 2].map(|k| a.0[k] + (q.0[k] - a.0[k]) * t);
-                let c = Coord::new(a.1.x + (q.1.x - a.1.x) * t, a.1.y + (q.1.y - a.1.y) * t);
-                // On this side, and on any other both ends lie on.
-                out.push((w, c, (a.2 & q.2) | bit));
-            }
-        }
-        poly = out;
-        if poly.len() < 3 {
-            return Vec::new();
+        poly = cut(&poly, |c| inside(b, c), |on| on | u32::from(bit), |a, q| a & q);
+        if poly.is_empty() {
+            break;
         }
     }
     poly
@@ -79,40 +175,55 @@ pub(crate) fn clip(m: [Coord; 3], b: &Block) -> Vec<Clipped> {
 /// How near a corner must lie to a side of the box to be on it (Web Mercator metres).
 const SIDE_TOL: f64 = 1e-6;
 
-/// Whether a corner of the triangle `m` (Web Mercator) lies on a side of the box of `b`. A triangle
-/// wholly inside the box can still have a stretch of its edge under it: the triangles across that
-/// edge are clipped to nothing, so this one has to give the wall its stretch ([`edges`]).
+/// Whether a corner of the triangle `m` (Web Mercator) lies on a side of the outline of `b`. A
+/// triangle wholly inside it can still have a stretch of its edge under it: the triangles across
+/// that edge are clipped to nothing, so this one has to give the wall its stretch ([`edges`]).
 pub(crate) fn on_side(m: [Coord; 3], b: &Block) -> bool {
     let near = |d: f64| d.abs() <= SIDE_TOL;
+    if let Some((o, r)) = b.circle {
+        return m.iter().any(|c| near(round_inside(o, r, round_side_at(o, *c), *c)));
+    }
     m.iter().any(|c| near(c.x - b.x0) || near(c.x - b.x1) || near(c.y - b.y0) || near(c.y - b.y1))
 }
 
-/// A stretch of the box's edge under a clipped triangle of ground: its side, its ends (Web
-/// Mercator) and the ground's screen points over them (physical px), running round the box
-/// anticlockwise (east along the south side, north along the east…), and how far it lies.
+/// A stretch of the outline under a clipped triangle of ground: its side (a box's bit, a round
+/// block's number), its ends (Web Mercator) and the ground's screen points over them (physical
+/// px), running round the outline anticlockwise (east along the south side, north along the
+/// east…), and how far it lies.
 pub(crate) struct Edge {
-    pub side: u8,
+    pub side: u16,
     pub ends: [Coord; 2],
     pub top: [(f64, f64); 2],
     pub depth: f64,
 }
 
-/// The stretches of the box's edge along the clipped polygon `poly`, whose corners stand on
+/// The stretches of the outline of `b` along the clipped polygon `poly`, whose corners stand on
 /// screen at `screen` (physical px), `depth` away.
-pub(crate) fn edges(poly: &[Clipped], screen: &[(f64, f64)], depth: f64, out: &mut Vec<Edge>) {
+pub(crate) fn edges(b: &Block, poly: &[Clipped], screen: &[(f64, f64)], depth: f64, out: &mut Vec<Edge>) {
     for (i, a) in poly.iter().enumerate() {
         let j = (i + 1) % poly.len();
         let (Some(q), Some(&sa), Some(&sq)) = (poly.get(j), screen.get(i), screen.get(j)) else { continue };
-        let common = a.2 & q.2;
-        if common == 0 {
-            continue;
-        }
-        let side = 1u8 << common.trailing_zeros();
-        let forward = match side {
-            SOUTH => q.1.x > a.1.x,
-            EAST => q.1.y > a.1.y,
-            NORTH => q.1.x < a.1.x,
-            _ => q.1.y < a.1.y,
+        let (side, forward) = if let Some((o, r)) = b.circle {
+            let on = shared(a.2, q.2) & 0xFFFF;
+            if on == 0 {
+                continue;
+            }
+            let k = on as usize - 1;
+            let (p, z) = (round_corner(o, r, k), round_corner(o, r, k + 1));
+            (k as u16, (q.1.x - a.1.x) * (z.x - p.x) + (q.1.y - a.1.y) * (z.y - p.y) > 0.0)
+        } else {
+            let common = a.2 & q.2;
+            if common == 0 {
+                continue;
+            }
+            let side = 1u8 << common.trailing_zeros();
+            let forward = match side {
+                SOUTH => q.1.x > a.1.x,
+                EAST => q.1.y > a.1.y,
+                NORTH => q.1.x < a.1.x,
+                _ => q.1.y < a.1.y,
+            };
+            (u16::from(side), forward)
         };
         let (ends, top) = if forward { ([a.1, q.1], [sa, sq]) } else { ([q.1, a.1], [sq, sa]) };
         out.push(Edge { side, ends, top, depth });
@@ -122,10 +233,73 @@ pub(crate) fn edges(poly: &[Clipped], screen: &[(f64, f64)], depth: f64, out: &m
 /// The box's sides in the order walls are drawn and [`Runs`] keeps them.
 const SIDES: [u8; 4] = [SOUTH, EAST, NORTH, WEST];
 
-/// Where a point lies along a side of the box: its x along the south and north sides, its y
-/// along the east and west.
-fn along(side: u8, m: Coord) -> f64 {
-    if side & (SOUTH | NORTH) != 0 { m.x } else { m.y }
+impl Block {
+    /// How many sides the outline has: a box's 4, a round block's [`ROUND_SIDES`].
+    pub(crate) fn sides(&self) -> usize {
+        if self.circle.is_some() { ROUND_SIDES } else { SIDES.len() }
+    }
+
+    /// Side `i` of the outline in drawing order ([`Runs`]'): its key in [`Edge::side`] and its
+    /// ends, anticlockwise round the outline.
+    pub(crate) fn side(&self, i: usize) -> (u16, Coord, Coord) {
+        if let Some((o, r)) = self.circle {
+            return (i as u16, round_corner(o, r, i), round_corner(o, r, i + 1));
+        }
+        let (x0, y0, x1, y1) = (self.x0, self.y0, self.x1, self.y1);
+        let side = SIDES[i % 4];
+        let (a, z) = match side {
+            SOUTH => ((x0, y0), (x1, y0)),
+            EAST => ((x1, y0), (x1, y1)),
+            NORTH => ((x1, y1), (x0, y1)),
+            _ => ((x0, y1), (x0, y0)),
+        };
+        (u16::from(side), Coord::new(a.0, a.1), Coord::new(z.0, z.1))
+    }
+
+    /// Where a point lies along side `key` of the outline: a box's x along its south and north
+    /// sides, its y along the east and west; along a round block's, the arc from east
+    /// anticlockwise (Web Mercator metres), straight along each side, so its walls' patterns run
+    /// on round it.
+    pub(crate) fn along(&self, key: u16, m: Coord) -> f64 {
+        if let Some((o, r)) = self.circle {
+            let k = usize::from(key);
+            let (p, z) = (round_corner(o, r, k), round_corner(o, r, k + 1));
+            let (dx, dy) = (z.x - p.x, z.y - p.y);
+            let t = ((m.x - p.x) * dx + (m.y - p.y) * dy) / (dx * dx + dy * dy).max(1e-300);
+            return r * std::f64::consts::TAU / ROUND_SIDES as f64 * (k as f64 + t);
+        }
+        if key & u16::from(SOUTH | NORTH) != 0 { m.x } else { m.y }
+    }
+
+    /// The point `t` along side `key` ([`Block::along`]) on its line.
+    pub(crate) fn point(&self, key: u16, t: f64) -> Coord {
+        if let Some((o, r)) = self.circle {
+            let k = usize::from(key);
+            let (p, z) = (round_corner(o, r, k), round_corner(o, r, k + 1));
+            let s = t / (r * std::f64::consts::TAU / ROUND_SIDES as f64) - k as f64;
+            return Coord::new(p.x + (z.x - p.x) * s, p.y + (z.y - p.y) * s);
+        }
+        match key as u8 {
+            SOUTH => Coord::new(t, self.y0),
+            NORTH => Coord::new(t, self.y1),
+            EAST => Coord::new(self.x1, t),
+            _ => Coord::new(self.x0, t),
+        }
+    }
+
+    /// How far beyond side `key`'s line `m` lies, as a box's side's coordinate across it less
+    /// the side's (a round block's: positive outside).
+    fn beyond(&self, key: u16, m: Coord) -> f64 {
+        if let Some((o, r)) = self.circle {
+            return -round_inside(o, r, usize::from(key), m);
+        }
+        match key as u8 {
+            SOUTH => m.y - self.y0,
+            NORTH => m.y - self.y1,
+            EAST => m.x - self.x1,
+            _ => m.x - self.x0,
+        }
+    }
 }
 
 /// A stretch of one side of the box in one colour: from `lo` to `hi` along it ([`along`]), and
@@ -138,25 +312,31 @@ pub(crate) struct Run {
     pub patterns: Vec<(FillPattern, Rgba)>,
 }
 
-/// The colours along each side of a block's box, in [`SIDES`]' order.
-pub(crate) type Runs = [Vec<Run>; 4];
+/// The colours along each side of a block's outline, in [`Block::side`]'s order.
+pub(crate) type Runs = Vec<Vec<Run>>;
 
 /// Each side's stretches under one polygon of the walls layer, with the row giving it (none:
-/// under no polygon), in [`SIDES`]' order.
-type Units = [Vec<(f64, f64, Option<usize>)>; 4];
+/// under no polygon), in [`Block::side`]'s order.
+type Units = Vec<Vec<(f64, f64, Option<usize>)>>;
 
-/// The rows, layer, query, query context and box a [`Units`] was read for.
+/// The rows, layer, query, query context, box and circle a [`Units`] was read for.
 struct Key {
     rows: Weak<Vec<Feature>>,
     layer: String,
     query: Option<String>,
     page: Option<Arc<rustgis_data::query::SeriesPage>>,
     sides: [f64; 4],
+    circle: Option<(Coord, f64)>,
 }
 
 impl Key {
     fn same(&self, o: &Key) -> bool {
-        self.rows.ptr_eq(&o.rows) && self.layer == o.layer && self.query == o.query && self.page == o.page && self.sides == o.sides
+        self.rows.ptr_eq(&o.rows)
+            && self.layer == o.layer
+            && self.query == o.query
+            && self.page == o.page
+            && self.sides == o.sides
+            && self.circle == o.circle
     }
 }
 
@@ -182,8 +362,9 @@ const KEPT: usize = 4;
 /// frame, a few pieces a side.
 pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::Env) -> Runs {
     let whole = |i: usize| {
-        let (lo, hi) = if SIDES[i] & (SOUTH | NORTH) != 0 { (b.x0, b.x1) } else { (b.y0, b.y1) };
-        vec![Run { lo, hi, color: b.walls, patterns: Vec::new() }]
+        let (key, a, z) = b.side(i);
+        let (lo, hi) = (b.along(key, a), b.along(key, z));
+        vec![Run { lo: lo.min(hi), hi: lo.max(hi), color: b.walls, patterns: Vec::new() }]
     };
     let layer = map
         .view
@@ -192,13 +373,14 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
         .and_then(|t| t.block.as_ref())
         .and_then(|t| t.walls_layer.as_deref())
         .and_then(|n| crate::terrain::walls_layer(map, n));
-    let Some(layer) = layer else { return [0, 1, 2, 3].map(whole) };
+    let Some(layer) = layer else { return (0..b.sides()).map(whole).collect() };
     let key = Key {
         rows: layer.dataset.features.allocation_key(),
         layer: layer.name.clone(),
         query: layer.definition_query.clone(),
         page: env.page.as_ref().filter(|_| layer.definition_query.as_deref().is_some_and(rustgis_data::query::reads_series_page)).cloned(),
         sides: [b.x0, b.y0, b.x1, b.y1],
+        circle: b.circle,
     };
     let kept = LAST.lock().ok().and_then(|last| last.iter().find(|(k, _)| k.same(&key)).map(|(_, u)| u.clone()));
     let units = kept.unwrap_or_else(|| {
@@ -225,9 +407,9 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
             (color, patterns)
         }
     };
-    [0, 1, 2, 3].map(|i| {
+    let side_runs = |side: &Vec<(f64, f64, Option<usize>)>| {
         let mut out: Vec<Run> = Vec::new();
-        for &(lo, hi, row) in &units[i] {
+        for &(lo, hi, row) in side {
             let (color, patterns) = look(row);
             match out.last_mut() {
                 Some(last) if last.color == color && last.patterns == patterns => last.hi = hi,
@@ -235,7 +417,8 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
             }
         }
         out
-    })
+    };
+    units.iter().map(side_runs).collect()
 }
 
 /// How a wall looks under a polygon whose symbol fills with `fill`, or with the stacked `fills`
@@ -275,7 +458,7 @@ fn grown(pattern: FillPattern, k: f32) -> FillPattern {
     }
 }
 
-/// Each side of block `b`'s box cut where `layer`'s polygons cross it, with the row of the
+/// Each side of block `b`'s outline cut where `layer`'s polygons cross it, with the row of the
 /// topmost polygon over each piece, found at its middle: the contacts go straight down.
 fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) -> Units {
     let keep = layer.query_rows_with(&layer.dataset, env);
@@ -302,24 +485,22 @@ fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) 
             parts.push((row, rings, e));
         }
     }
-    [0, 1, 2, 3].map(|i| {
-        let side = SIDES[i];
-        // The side as a line: across it at `at`, along it from `lo` to `hi`.
-        let (at, lo, hi) = match side {
-            SOUTH => (b.y0, b.x0, b.x1),
-            NORTH => (b.y1, b.x0, b.x1),
-            EAST => (b.x1, b.y0, b.y1),
-            _ => (b.x0, b.y0, b.y1),
-        };
-        let across = |c: Coord| if side & (SOUTH | NORTH) != 0 { c.y } else { c.x };
-        let point = |t: f64| if side & (SOUTH | NORTH) != 0 { Coord::new(t, at) } else { Coord::new(at, t) };
+    let side_units = |i: usize| {
+        // The side as a line: across it as `beyond` tells, along it from `lo` to `hi`.
+        let (side, p, z) = b.side(i);
+        let (lo, hi) = (b.along(side, p).min(b.along(side, z)), b.along(side, p).max(b.along(side, z)));
+        // Only the parts reaching the side can cross it (a round block has many short sides).
+        let mut reach = Extent::EMPTY;
+        reach.expand(p);
+        reach.expand(z);
+        let near = |e: &Extent| e.max_x >= reach.min_x && e.min_x <= reach.max_x && e.max_y >= reach.min_y && e.min_y <= reach.max_y;
         let mut cuts = vec![lo, hi];
-        for r in parts.iter().flat_map(|(_, rings, _)| rings) {
+        for r in parts.iter().filter(|(_, _, e)| near(e)).flat_map(|(_, rings, _)| rings) {
             for (j, a) in r.iter().enumerate() {
                 let Some(&q) = r.get((j + 1) % r.len()) else { continue };
-                let (da, dq) = (across(*a) - at, across(q) - at);
+                let (da, dq) = (b.beyond(side, *a), b.beyond(side, q));
                 if (da > 0.0) != (dq > 0.0) {
-                    let t = along(side, *a) + da / (da - dq) * (along(side, q) - along(side, *a));
+                    let t = b.along(side, *a) + da / (da - dq) * (b.along(side, q) - b.along(side, *a));
                     if t > lo && t < hi {
                         cuts.push(t);
                     }
@@ -330,7 +511,7 @@ fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) 
         cuts.dedup();
         let mut out: Vec<(f64, f64, Option<usize>)> = Vec::new();
         for w in cuts.windows(2) {
-            let mid = point((w[0] + w[1]) / 2.0);
+            let mid = b.point(side, (w[0] + w[1]) / 2.0);
             let row = parts.iter().rev().find(|(_, rings, e)| e.contains(mid) && inside(rings, mid)).map(|(row, _, _)| *row);
             match out.last_mut() {
                 Some(last) if last.2 == row => last.1 = w[1],
@@ -338,7 +519,8 @@ fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) 
             }
         }
         out
-    })
+    };
+    (0..b.sides()).map(side_units).collect()
 }
 
 /// Whether `p` lies inside a polygon's `rings`, even-odd, so its holes are outside.
@@ -359,6 +541,26 @@ fn inside(rings: &[Vec<Coord>], p: Coord) -> bool {
 /// finer than the wall on screen), the stretch takes the pattern's ink as one colour instead, as a
 /// polygon under a pixel does on the map (`pattern_fill::tint`).
 const MAX_MARKS: f64 = 20_000.0;
+
+/// How much to stretch `pattern` across a wall `around` (logical px) long that closes on itself,
+/// so it holds a whole number of the pattern's periods across and meets itself where it closes:
+/// under 1% on a wall a hundred periods round.
+fn closing(pattern: FillPattern, around: f64) -> f64 {
+    let period = match pattern {
+        // Lines repeat across every spacing / sin(angle); level ones don't change across.
+        FillPattern::Hatch { angle, spacing, .. } => {
+            let s = f64::from(angle).to_radians().sin().abs();
+            if s < 1e-6 { 0.0 } else { f64::from(spacing) / s }
+        }
+        // Odd columns are shifted down, so the grid repeats every two columns.
+        FillPattern::Dots { spacing, displacement, .. } => f64::from(spacing[0]) * if displacement[1] == 0.0 { 1.0 } else { 2.0 },
+        _ => 0.0,
+    };
+    if !(period > 0.0 && period.is_finite() && around > 0.0 && around.is_finite()) {
+        return 1.0;
+    }
+    (around / period).round().max(1.0) * period / around
+}
 
 /// Draws `patterns` (hatch lines, markers on a grid; `tone` gives each colour its light and fog)
 /// on a stretch of wall, cut to `mask`. A pattern is laid out in the wall's own plane, across it
@@ -524,12 +726,13 @@ fn draw_patterns(
 }
 
 /// Draws the walls of block `b` over the ground already draped in `pm`: the sides facing the eye
-/// (the box is convex, so no ground stands in front of them), each stretch of `edges` from the
-/// ground down to the base in the colours `runs` gives along it ([`runs`]) with their patterns
+/// (a box and a circle are convex, so no ground stands in front of them), each stretch of
+/// `edges` from the ground down to the base in the colours `runs` gives along it ([`runs`]) with
+/// their patterns
 /// over them ([`draw_patterns`]), lit by the way its side faces the light as extruded walls are
 /// and darker toward its foot, fogged with distance as the ground is (into `fog` toward the view's
-/// reach `far`), and outlined along the ground, the base, the box's corners and the contacts
-/// between colours.
+/// reach `far`), and outlined along the ground, the base, the box's corners (a round block's
+/// where its walls turn away) and the contacts between colours.
 pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Block, edges: &[Edge], runs: &Runs, fog: Rgba, far: f64) {
     let fog_at = |depth: f64| crate::fog_share(depth, far);
     let k = f64::from(pm.width()) / view.width.max(1e-9);
@@ -537,12 +740,29 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
     let (w, h) = (view.width, view.height);
     let (eu, ev, _) = cam.eye(h);
     let centre = cam.ground_px(Coord::new((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0));
-    let corners = [
-        (SOUTH, (b.x0, b.y0), (b.x1, b.y0)),
-        (EAST, (b.x1, b.y0), (b.x1, b.y1)),
-        (NORTH, (b.x1, b.y1), (b.x0, b.y1)),
-        (WEST, (b.x0, b.y1), (b.x0, b.y0)),
-    ];
+    // Each side's outward normal on the ground (away from the outline's centre), where it faces
+    // the eye.
+    let faces: Vec<Option<(f64, f64)>> = (0..b.sides())
+        .map(|i| {
+            let (_, a, z) = b.side(i);
+            let (ga, gz) = (cam.ground_px(a), cam.ground_px(z));
+            let (du, dv) = (gz.0 - ga.0, gz.1 - ga.1);
+            let len = du.hypot(dv);
+            if len <= 0.0 {
+                return None;
+            }
+            let mid = ((ga.0 + gz.0) / 2.0, (ga.1 + gz.1) / 2.0);
+            let mut n = (dv / len, -du / len);
+            if n.0 * (centre.0 - mid.0) + n.1 * (centre.1 - mid.1) > 0.0 {
+                n = (-n.0, -n.1);
+            }
+            (n.0 * (eu - mid.0) + n.1 * (ev - mid.1) > 0.0).then_some(n)
+        })
+        .collect();
+    let round = b.circle.is_some();
+    // A round block's outlines, stroked once all its sides are filled: a side's fill, a hair
+    // longer each way, would nick its neighbour's.
+    let mut outlines: Vec<(tiny_skia::Path, Rgba)> = Vec::new();
     let foot = |m: Coord| {
         let (u, v) = cam.ground_px(m);
         let up = (b.base / ground.per_unit(m) / cam.res.max(1e-9)).clamp(-1e7, 1e7);
@@ -554,25 +774,21 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
     let res = cam.res.max(1e-9);
     // Where a run's patterns are cut to (one for every run, cleared each time).
     let mut mask: Option<Mask> = None;
-    for (s, (side, a, z)) in corners.into_iter().enumerate() {
-        let (ga, gz) = (cam.ground_px(Coord::new(a.0, a.1)), cam.ground_px(Coord::new(z.0, z.1)));
-        let (du, dv) = (gz.0 - ga.0, gz.1 - ga.1);
-        let len = du.hypot(dv);
-        if len <= 0.0 {
-            continue;
-        }
-        let mid = ((ga.0 + gz.0) / 2.0, (ga.1 + gz.1) / 2.0);
-        // The outward normal: away from the box's centre.
-        let mut n = (dv / len, -du / len);
-        if n.0 * (centre.0 - mid.0) + n.1 * (centre.1 - mid.1) > 0.0 {
-            n = (-n.0, -n.1);
-        }
-        if n.0 * (eu - mid.0) + n.1 * (ev - mid.1) <= 0.0 {
-            continue;
-        }
+    // The part of it the last run filled, cleared before the next: a round block has hundreds of sides.
+    let mut dirty: Option<tiny_skia::Rect> = None;
+    for (s, n) in faces.iter().enumerate() {
+        let Some(n) = *n else { continue };
+        let (side, a, z) = b.side(s);
+        // A box's corners go straight down; a round block's only where its walls turn away.
+        let count_sides = faces.len();
+        let (down_a, down_z) = if round {
+            (faces[(s + count_sides - 1) % count_sides].is_none(), faces[(s + 1) % count_sides].is_none())
+        } else {
+            (true, true)
+        };
         let lit = ((n.0 * LIGHT.0 + n.1 * LIGHT.1) / light_len).max(0.0);
         let (top_shade, foot_shade) = (0.6 + 0.4 * lit, (0.6 + 0.4 * lit) * 0.72);
-        let near = |p: Coord, q: (f64, f64)| (p.x - q.0).abs() + (p.y - q.1).abs() <= 1e-9 * (b.x1 - b.x0 + b.y1 - b.y0);
+        let near = |p: Coord, q: Coord| (p.x - q.x).abs() + (p.y - q.y).abs() <= 1e-9 * (b.x1 - b.x0 + b.y1 - b.y0);
         // Each stretch's ends (Web Mercator), feet and tops (physical px), and the outline along
         // the ground, the base and the box's corners.
         let mut quads: Vec<([Coord; 2], [(f64, f64); 2], [(f64, f64); 2])> = Vec::new();
@@ -592,7 +808,7 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
             }
             // The box's corners, straight down.
             for (i, end) in e.ends.iter().enumerate() {
-                if near(*end, a) || near(*end, z) {
+                if (down_a && near(*end, a)) || (down_z && near(*end, z)) {
                     let (t, f) = if i == 0 { (ta, fa) } else { (tz, fz) };
                     outline.move_to(pt(t).0, pt(t).1);
                     outline.line_to(pt(f).0, pt(f).1);
@@ -607,18 +823,22 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
         // Darker toward the foot: from the stretches' feet on average to their tops, the same
         // across the side's colours so the shading runs on through their contacts.
         let avg = |p: (f64, f64)| Point::from_xy((p.0 / count) as f32, (p.1 / count) as f32);
+        // A round block's sides meet at a slant in different shades: a whole pixel over its
+        // neighbour, so the anti-aliased edges between them leave no light seam.
+        let reach = if round { 1.0 } else { 0.4 };
         let grow = |p: (f64, f64), q: (f64, f64)| {
             let (dx, dy) = (p.0 - q.0, p.1 - q.1);
             let l = dx.hypot(dy).max(1e-6);
-            pt((p.0 + dx / l * 0.4 * k, p.1 + dy / l * 0.4 * k))
+            pt((p.0 + dx / l * reach * k, p.1 + dy / l * reach * k))
         };
         let lerp = |p: (f64, f64), q: (f64, f64), t: f64| (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t);
         // The side's plane for its patterns ([`draw_patterns`]): across in logical px at the
         // centre's scale, left to right seen from outside (the sides run anticlockwise round the
         // box), and up as `Ground::up_px` gives it; from a little under the base to a little over
         // the highest ground along it.
-        let dir = if side & (SOUTH | EAST) != 0 { 1.0 } else { -1.0 };
-        let on_side = |t: f64| if side & (SOUTH | NORTH) != 0 { Coord::new(t, a.1) } else { Coord::new(a.0, t) };
+        // (A round block's sides run on round it, anticlockwise: left to right too.)
+        let dir = if round || side & u16::from(SOUTH | EAST) != 0 { 1.0 } else { -1.0 };
+        let on_side = |t: f64| b.point(side, t);
         let at = |x: f64, up: f64| {
             let (u, v) = cam.ground_px(on_side(x * res * dir));
             cam.project_raised(u, v, up, w, h).map(|(x, y)| (x * k, y * k)).filter(|p| p.0.is_finite() && p.1.is_finite())
@@ -631,8 +851,8 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
         let pad = (up_hi - up_lo).abs() * 0.05 + 1.0;
         let up_range = (up_lo - pad, up_hi + pad);
         // A pattern's point on screen at the side's middle: the mean of its spans across and up.
-        let mid = Coord::new((a.0 + z.0) / 2.0, (a.1 + z.1) / 2.0);
-        let (mid_x, mid_up) = (along(side, mid) / res * dir, (up_range.0 + up_range.1) / 2.0);
+        let mid = Coord::new((a.x + z.x) / 2.0, (a.y + z.y) / 2.0);
+        let (mid_x, mid_up) = (b.along(side, mid) / res * dir, (up_range.0 + up_range.1) / 2.0);
         let span = |p: Option<(f64, f64)>, q: Option<(f64, f64)>| p.zip(q).map(|(p, q)| (q.0 - p.0).hypot(q.1 - p.1));
         let scale = match (span(at(mid_x, mid_up), at(mid_x + 1.0, mid_up)), span(at(mid_x, mid_up), at(mid_x, mid_up + 1.0))) {
             (Some(x), Some(y)) if (x * y).sqrt().is_finite() => (x * y).sqrt(),
@@ -640,14 +860,18 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
         };
         let shade = (top_shade + foot_shade) / 2.0;
         let tone = |c: Rgba| c.shade(shade).lerp(fog.with_alpha(c.a()), f);
+        // A round block's contact at the corner it shares with the side before, when the colours
+        // either side of it differ.
+        let before = runs[(s + faces.len() - 1) % faces.len()].last();
         let runs = &runs[s];
+        let corner = runs.first().filter(|r| round && before.is_some_and(|p| p.color != r.color || p.patterns != r.patterns));
         for run in runs {
             // The side in one path a colour, every stretch (cut to the colour's) a quad a hair
             // longer each way along the edge: filled at once, the overlaps leave no seam, where
             // stretches filled one by one striped the wall with their anti-aliased edges.
             let mut wall = PathBuilder::new();
             for (ends, [fa, fz], [ta, tz]) in &quads {
-                let (ca, cz) = (along(side, ends[0]), along(side, ends[1]));
+                let (ca, cz) = (b.along(side, ends[0]), b.along(side, ends[1]));
                 let span = cz - ca;
                 // The part of the stretch within the run, as shares of the stretch.
                 let (t0, t1) = if span.abs() < 1e-12 {
@@ -688,17 +912,29 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
                 mask = Mask::new(pm.width(), pm.height());
             }
             if let Some(cut) = mask.as_mut() {
-                cut.data_mut().fill(0);
+                if let Some(r) = dirty.take() {
+                    clear_mask(cut, r);
+                }
                 cut.fill_path(&path, FillRule::Winding, true, Transform::identity());
+                dirty = Some(path.bounds());
                 let (x0, x1) = (run.lo / res * dir, run.hi / res * dir);
-                draw_patterns(pm, cut, &run.patterns, ((x0.min(x1), x0.max(x1)), up_range), scale, tone, at);
+                // A round block's wall closes on itself at the east point, where `along` goes
+                // back to 0: each pattern is stretched across so it runs on over that seam.
+                let around = b.circle.map(|(_, r)| r * std::f64::consts::TAU / res);
+                for p in &run.patterns {
+                    let f = around.map_or(1.0, |c| closing(p.0, c));
+                    let span = ((x0.min(x1) * f, x0.max(x1) * f), up_range);
+                    draw_patterns(pm, cut, std::slice::from_ref(p), span, scale, tone, |x, up| at(x / f, up));
+                }
             }
         }
         // The contacts between colours, straight down.
-        for c in runs.windows(2).map(|w| w[0].hi) {
+        for c in runs.windows(2).map(|w| w[0].hi).chain(corner.map(|r| r.lo)) {
             let at = quads.iter().find_map(|(ends, [fa, fz], [ta, tz])| {
-                let (ca, cz) = (along(side, ends[0]), along(side, ends[1]));
-                let inside = (cz - ca).abs() >= 1e-12 && (ca - c) * (cz - c) <= 0.0;
+                let (ca, cz) = (b.along(side, ends[0]), b.along(side, ends[1]));
+                // (A round block's corner contact is where its first stretch begins, near enough.)
+                let start = round && (ca - c).abs() <= 1e-9 * (b.x1 - b.x0);
+                let inside = (cz - ca).abs() >= 1e-12 && ((ca - c) * (cz - c) <= 0.0 || start);
                 inside.then(|| ((c - ca) / (cz - ca), *ta, *tz, *fa, *fz))
             });
             if let Some((t, ta, tz, fa, fz)) = at {
@@ -708,10 +944,34 @@ pub(crate) fn draw_walls(pm: &mut Pixmap, view: &View, ground: &Ground, b: &Bloc
             }
         }
         if let Some(path) = outline.finish() {
-            let edge = b.walls.shade(0.45).lerp(fog, f);
-            let stroke = Stroke { width: (0.7 * k) as f32, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
-            pm.stroke_path(&path, &paint(edge, 1.0), &stroke, Transform::identity(), None);
+            outlines.push((path, b.walls.shade(0.45).lerp(fog, f)));
+            if !round {
+                stroke_outlines(pm, &mut outlines, k);
+            }
         }
+    }
+    stroke_outlines(pm, &mut outlines, k);
+}
+
+/// Clears `mask` over the box `r` (physical px), a pixel round it for the anti-aliased edge.
+fn clear_mask(mask: &mut Mask, r: tiny_skia::Rect) {
+    let (w, h) = (mask.width() as usize, mask.height() as usize);
+    let span = |lo: f32, hi: f32, n: usize| ((lo.floor() - 1.0).max(0.0) as usize, ((hi.ceil() + 1.0).max(0.0) as usize).min(n));
+    let ((x0, x1), (y0, y1)) = (span(r.left(), r.right(), w), span(r.top(), r.bottom(), h));
+    let data = mask.data_mut();
+    for y in y0..y1 {
+        if let Some(row) = data.get_mut(y * w + x0..y * w + x1.max(x0)) {
+            row.fill(0);
+        }
+    }
+}
+
+/// Strokes the walls' `outlines` (each in its colour) at the scale `k` (physical px a logical
+/// one), and empties them.
+fn stroke_outlines(pm: &mut Pixmap, outlines: &mut Vec<(tiny_skia::Path, Rgba)>, k: f64) {
+    let stroke = Stroke { width: (0.7 * k) as f32, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
+    for (path, edge) in outlines.drain(..) {
+        pm.stroke_path(&path, &paint(edge, 1.0), &stroke, Transform::identity(), None);
     }
 }
 
@@ -720,7 +980,55 @@ mod tests {
     use super::*;
 
     fn unit_block() -> Block {
-        Block { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0, base: -100.0, settled: true, walls: Rgba::rgb(200, 184, 154) }
+        Block { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0, base: -100.0, settled: true, walls: Rgba::rgb(200, 184, 154), circle: None }
+    }
+
+    fn round_block() -> Block {
+        Block { circle: Some((Coord::new(0.0, 0.0), 10.0)), x0: -10.0, y0: -10.0, x1: 10.0, y1: 10.0, ..unit_block() }
+    }
+
+    #[test]
+    fn a_round_block_keeps_a_triangle_inside_its_circle_and_drops_one_past_a_tangent() {
+        // #2318: inside the circle, whole; past the north-east tangent (outside the circle's box
+        // on no side), left out by its code; between the circle and its box, cut to nothing.
+        let b = round_block();
+        let inside = [Coord::new(0.0, 0.0), Coord::new(5.0, 0.0), Coord::new(0.0, 5.0)];
+        assert!(inside.iter().all(|m| outcode(&b, *m) == 0));
+        assert_eq!(clip(inside, &b).len(), 3);
+        let beyond = [Coord::new(8.0, 8.0), Coord::new(9.5, 8.0), Coord::new(8.0, 9.5)];
+        assert_ne!(beyond.iter().map(|m| outcode(&b, *m)).fold(!0, |a, c| a & c) & !ROUND_OFF, 0);
+        let gap = [Coord::new(9.9, 2.0), Coord::new(9.95, 2.5), Coord::new(9.9, 3.0)];
+        assert!(gap.iter().all(|m| outcode(&b, *m) & ROUND_OFF != 0));
+        assert!(clip(gap, &b).is_empty());
+    }
+
+    #[test]
+    fn a_triangle_across_a_round_blocks_edge_gives_its_wall_stretches_along_the_circle() {
+        // A triangle over the circle's east point: cut on it, the stretches of wall under it run
+        // northward, end to end, on the circle and along the sides round its first corner.
+        let b = round_block();
+        let poly = clip([Coord::new(8.0, -2.0), Coord::new(12.0, 0.0), Coord::new(8.0, 2.0)], &b);
+        assert!(poly.iter().all(|c| c.1.x.hypot(c.1.y) <= 10.0 + 1e-9), "{poly:?}");
+        let screen: Vec<(f64, f64)> = poly.iter().map(|c| (c.1.x, c.1.y)).collect();
+        let mut out = Vec::new();
+        edges(&b, &poly, &screen, 1.0, &mut out);
+        assert!(out.len() >= 4, "{}", out.len());
+        out.sort_by(|p, q| p.ends[0].y.total_cmp(&q.ends[0].y));
+        let sag = 10.0 * (1.0 - (std::f64::consts::PI / ROUND_SIDES as f64).cos()) + 1e-9;
+        for e in &out {
+            assert!(e.ends[1].y > e.ends[0].y, "northward");
+            assert!(e.ends.iter().all(|m| (m.x.hypot(m.y) - 10.0).abs() <= sag), "on the circle");
+            let k = usize::from(e.side);
+            assert!(!(32..=ROUND_SIDES - 32).contains(&k), "near east: {k}");
+            assert!(e.ends.iter().all(|m| b.beyond(e.side, *m).abs() < 1e-9), "on its side's line");
+        }
+        for w in out.windows(2) {
+            assert!((w[0].ends[1].y - w[1].ends[0].y).abs() < 1e-9, "end to end");
+        }
+        // Along the circle, a side's end is where the next one begins.
+        let (key, _, z) = b.side(3);
+        assert!((b.along(key, z) - b.along(key + 1, z)).abs() < 1e-9);
+        assert!((b.point(key, b.along(key, z)).x - z.x).abs() < 1e-9);
     }
 
     #[test]
@@ -747,10 +1055,10 @@ mod tests {
         }
         let screen: Vec<(f64, f64)> = poly.iter().map(|c| (c.1.x, -c.1.y)).collect();
         let mut out = Vec::new();
-        edges(&poly, &screen, 1.0, &mut out);
+        edges(&b, &poly, &screen, 1.0, &mut out);
         assert_eq!(out.len(), 1);
         let e = &out[0];
-        assert_eq!(e.side, EAST);
+        assert_eq!(e.side, u16::from(EAST));
         // Northward along the east side: (10, 2) to (10, 4).
         assert!((e.ends[0].x - 10.0).abs() < 1e-9 && (e.ends[0].y - 2.0).abs() < 1e-9);
         assert!((e.ends[1].x - 10.0).abs() < 1e-9 && (e.ends[1].y - 4.0).abs() < 1e-9);
@@ -768,9 +1076,9 @@ mod tests {
         let poly = clip(m, &b);
         let screen: Vec<(f64, f64)> = poly.iter().map(|c| (c.1.x, -c.1.y)).collect();
         let mut out = Vec::new();
-        edges(&poly, &screen, 1.0, &mut out);
+        edges(&b, &poly, &screen, 1.0, &mut out);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].side, EAST);
+        assert_eq!(out[0].side, u16::from(EAST));
         assert!((out[0].ends[0].y - 2.0).abs() < 1e-9 && (out[0].ends[1].y - 6.0).abs() < 1e-9);
     }
 
@@ -780,10 +1088,10 @@ mod tests {
         let poly = clip([Coord::new(8.0, 8.0), Coord::new(14.0, 8.0), Coord::new(8.0, 14.0)], &b);
         let screen: Vec<(f64, f64)> = poly.iter().map(|c| (c.1.x, c.1.y)).collect();
         let mut out = Vec::new();
-        edges(&poly, &screen, 1.0, &mut out);
-        let mut sides: Vec<u8> = out.iter().map(|e| e.side).collect();
+        edges(&b, &poly, &screen, 1.0, &mut out);
+        let mut sides: Vec<u16> = out.iter().map(|e| e.side).collect();
         sides.sort_unstable();
-        assert_eq!(sides, vec![EAST, NORTH]);
+        assert_eq!(sides, vec![u16::from(EAST), u16::from(NORTH)]);
         // Both meet at the box's corner (10, 10).
         assert!(out.iter().all(|e| e.ends.iter().any(|c| (c.x - 10.0).abs() < 1e-9 && (c.y - 10.0).abs() < 1e-9)));
     }
@@ -810,11 +1118,20 @@ mod tests {
                 depth: None,
                 walls: rustgis_map::view::BLOCK_WALLS,
                 walls_layer: Some("geo".into()),
+                shape: rustgis_map::view::BlockShape::Box,
             }),
             water: None,
         });
-        let b =
-            Block { x0: -1000.0, y0: -1000.0, x1: 1000.0, y1: 1000.0, base: -100.0, settled: true, walls: rustgis_map::view::BLOCK_WALLS };
+        let b = Block {
+            x0: -1000.0,
+            y0: -1000.0,
+            x1: 1000.0,
+            y1: 1000.0,
+            base: -100.0,
+            settled: true,
+            walls: rustgis_map::view::BLOCK_WALLS,
+            circle: None,
+        };
         (m, b)
     }
 
@@ -823,7 +1140,8 @@ mod tests {
         let (mut m, b) = walls_by_units();
         let cuts = |m: &Map| {
             let u = units(m.layer_by_name("geo").unwrap(), &b, &Default::default());
-            u.map(|side| side.iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect::<Vec<_>>())
+            let u: Vec<Vec<_>> = u.iter().map(|side| side.iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect()).collect();
+            <[Vec<_>; 4]>::try_from(u).unwrap()
         };
         let [south, east, north, west] = cuts(&m);
         assert_eq!(south, vec![(-1000.0, 0.0, Some(0)), (0.0, 1000.0, None)]);
@@ -962,5 +1280,29 @@ mod tests {
         // A pattern that draws nothing (no width) is left off too.
         let bare = FillLayer { color: Some(blue), pattern: FillPattern::Hatch { angle: 0.0, spacing: 4.0, width: 0.0, offset: 0.0 } };
         assert_eq!(unit_paint(red, &[bare], walls), (walls, Vec::new()));
+    }
+
+    #[test]
+    fn a_pattern_round_a_round_blocks_wall_holds_whole_periods_so_it_meets_itself_at_the_east_point() {
+        let hatch = |angle| FillPattern::Hatch { angle, spacing: 6.0, width: 1.0, offset: 0.0 };
+        // At 30° the lines repeat every 12 px across: 1000 px round holds 83 of them, stretched by 0.4%.
+        let f = closing(hatch(30.0), 1000.0);
+        assert!(((1000.0 * f / 12.0) - 83.0).abs() < 1e-9 && (f - 1.0).abs() < 0.01, "{f}");
+        assert!(((1000.0 * closing(hatch(-75.0), 1000.0) / (6.0 / 75f64.to_radians().sin())).fract()).abs() < 1e-9);
+        // Level lines don't change across, and a solid fill has nothing to meet.
+        assert_eq!(closing(hatch(0.0), 1000.0), 1.0);
+        assert_eq!(closing(FillPattern::Solid, 1000.0), 1.0);
+        // Odd columns shifted down: the grid repeats every two columns.
+        let dots = |dy| FillPattern::Dots {
+            marker: Default::default(),
+            size: 1.0,
+            outline: None,
+            outline_width: 0.0,
+            spacing: [7.0, 7.0],
+            displacement: [0.0, dy],
+            offset: [0.0, 0.0],
+        };
+        assert!((1000.0 * closing(dots(0.0), 1000.0) / 7.0 - 143.0).abs() < 1e-9);
+        assert!((1000.0 * closing(dots(3.0), 1000.0) / 14.0 - 71.0).abs() < 1e-9);
     }
 }

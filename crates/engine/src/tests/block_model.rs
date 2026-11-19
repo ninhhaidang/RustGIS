@@ -175,3 +175,38 @@ fn the_texture_leaves_out_the_views_weather_and_camera_effects() {
     assert_eq!(std::fs::read(&plain).unwrap(), std::fs::read(&fogged).unwrap(), "fog, vignette and grain stay out of the model");
     assert_eq!(s.map().view.effects.weather, rustgis_map::view::Weather::Fog, "the map keeps its weather");
 }
+
+#[test]
+fn a_round_block_is_exported_as_its_box_with_a_notice_and_a_box_with_none() {
+    let (mut s, _) = blocked();
+    let round = |s: &crate::Session, mark| s.notices_since(mark).iter().filter(|n| n.text.contains("is round")).count();
+    let mark = s.notice_mark();
+    s.run("map.exportBlock", &json!({"path": out("box.glb"), "texture": 256})).unwrap();
+    assert_eq!(round(&s, mark), 0, "{:?}", s.notices_since(mark));
+    s.run("map.terrain", &json!({"block": {"extent": INSIDE, "shape": "circle"}})).unwrap();
+    let mark = s.notice_mark();
+    s.run("map.exportBlock", &json!({"path": out("round.glb"), "texture": 256})).unwrap();
+    assert_eq!(round(&s, mark), 1, "{:?}", s.notices_since(mark));
+}
+
+#[test]
+fn a_round_blocks_model_is_the_box_round_its_circle_based_below_all_of_its_ground() {
+    let (mut s, _) = blocked();
+    let meshes = |s: &mut crate::Session, block: Value, name: &str| {
+        s.run("map.terrain", &json!({"block": block})).unwrap();
+        s.run("map.exportBlock", &json!({"path": out(name), "texture": 256})).unwrap();
+        let (doc, bin) = read_glb(&std::fs::read(out(name)).unwrap());
+        (0..3).map(|m| mesh(&doc, &bin, m).0).collect::<Vec<_>>()
+    };
+    let round = meshes(&mut s, json!({"extent": INSIDE, "shape": "circle", "depth": 50}), "round_box.glb");
+    // The circle's box: as wide as INSIDE, as tall, centred.
+    let [x0, y0, x1, y1] = INSIDE;
+    let (cy, r) = ((y0 + y1) / 2.0, (x1 - x0) / 2.0);
+    let square = meshes(&mut s, json!({"extent": [x0, cy - r, x1, cy + r], "depth": 50}), "square.glb");
+    // The ground outside the circle is in the model, so its base is the box's, below all of it:
+    // no wall runs up from the ground to a base taken from the circle's ground only.
+    assert_eq!(round, square);
+    let floor = round[2][0][1];
+    let lowest = round[0].iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+    assert!(((lowest - floor) - 100.0).abs() < 0.01 && round[1].iter().all(|p| p[1] >= floor), "{lowest} {floor}");
+}

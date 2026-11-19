@@ -132,6 +132,14 @@ features (not one read a view at a time), with a name of its own; it follows the
 and when it is removed, or a project opens without it, the walls are `color` (said) until a
 polygon layer of that name comes back. A plain `"walls": "#RRGGBB"` takes the layer off.
 
+`"shape": "circle"` cuts a round block: the largest circle inside the box (the DEM's extent or
+`"extent"`), centred in it, or a smaller one with `"radius"` (map units; one larger than the
+box's circle takes the box's). It reads the same at any bearing, which suits a figure that
+turns or an orbit. Only the ground inside the circle is drawn and sets the base, and the wall
+runs round its near half, with everything a box's walls have: colour, a walls layer's units and
+their patterns (which run on round the wall), light and fog. `"shape": "box"` (the default)
+takes it back to the box.
+
 **Water** on the terrain lies flat: `map.terrain` with `{"water": {"layer": "Lakes"}}` names a
 polygon layer of water bodies, and inside each polygon the ground is level, at the lowest height
 of the DEM along its shore, instead of rising and falling with a surface model that is noisy or

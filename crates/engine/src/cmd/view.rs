@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
         C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A)}, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore), "glint"?: 0 to 1, how brightly a tilted view's water shines where it reflects the sun toward the eye (default 0.3; 0: none), "shore"?: 0 to 1, how dark the band along the water's shore is at the outline, fading a few pixels inside it (default 0.35; 0: none)}, or false to take it off (default: as it was), "off"?: true}"##,
+            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A), "shape"?: "box" (default) | "circle" (the largest circle in the box, its walls round it), "radius"?: a circle's radius in map units (default: the largest in the box)}, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore), "glint"?: 0 to 1, how brightly a tilted view's water shines where it reflects the sun toward the eye (default 0.3; 0: none), "shore"?: 0 to 1, how dark the band along the water's shore is at the outline, fading a few pixels inside it (default 0.35; 0: none)}, or false to take it off (default: as it was), "off"?: true}"##,
         ),
         C::new("map.exportOrbit", "Export Orbit", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportOrbit")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
@@ -307,8 +307,8 @@ fn walk(s: &mut Session, p: &Value) -> CmdResult {
 /// the values checked by [`rustgis_map::view::TerrainBlock::check`] (as a saved project's are),
 /// and the walls' layer as the water's is ([`polygon_layer`]).
 fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainBlock, String> {
-    if let Some(k) = b.keys().find(|k| !matches!(k.as_str(), "extent" | "depth" | "walls")) {
-        return Err(format!("block has no '{k}' (extent, depth, walls)"));
+    if let Some(k) = b.keys().find(|k| !matches!(k.as_str(), "extent" | "depth" | "walls" | "shape" | "radius")) {
+        return Err(format!("block has no '{k}' (extent, depth, walls, shape, radius)"));
     }
     let extent = match b.get("extent") {
         None | Some(Value::Null) => None,
@@ -346,7 +346,21 @@ fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rust
         }
         other => (color(other)?, None),
     };
-    let block = rustgis_map::view::TerrainBlock { extent, depth, walls, walls_layer };
+    // The outline inside the box (#2318): the box itself, or the circle in it.
+    let radius = match b.get("radius") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().ok_or("block's radius is metres (map units)")?),
+    };
+    let shape = match b.get("shape") {
+        None | Some(Value::Null) => rustgis_map::view::BlockShape::Box,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("box") => rustgis_map::view::BlockShape::Box,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("circle") => rustgis_map::view::BlockShape::Circle { radius },
+        Some(_) => return Err("block's shape is \"box\" or \"circle\"".into()),
+    };
+    if radius.is_some() && shape.is_box() {
+        return Err("block's radius is a circle's: give \"shape\": \"circle\" too".into());
+    }
+    let block = rustgis_map::view::TerrainBlock { extent, depth, walls, walls_layer, shape };
     block.check()?;
     Ok(block)
 }
@@ -581,7 +595,15 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
             Some(l) => json!({"color": b.walls.hex(), "layer": l}),
             None => json!(b.walls.hex()),
         };
-        json!({"extent": extent, "extent_from": from, "depth": b.depth, "walls": walls})
+        // A circle's radius as drawn: the largest in the box when none is given or a larger one is
+        // (`radius_capped`), when the box is known.
+        let largest = b.extent.or(dem_box.as_ref().and_then(|d| d.1)).map(|[x0, y0, x1, y1]| (x1 - x0).min(y1 - y0) / 2.0);
+        let (shape, radius, capped) = match (b.shape, largest) {
+            (rustgis_map::view::BlockShape::Box, _) => ("box", None, None),
+            (rustgis_map::view::BlockShape::Circle { radius: Some(r) }, Some(l)) => ("circle", Some(r.min(l)), Some(r > l)),
+            (rustgis_map::view::BlockShape::Circle { radius }, l) => ("circle", radius.or(l), Some(false)),
+        };
+        json!({"extent": extent, "extent_from": from, "depth": b.depth, "walls": walls, "shape": shape, "radius": radius, "radius_capped": capped})
     });
     if matches!(t.source, TerrainSource::Layer(_)) && t.block.is_some() && dem_box.is_none() {
         out["block"]["pendingDem"] = json!(true);
