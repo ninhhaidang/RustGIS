@@ -4998,9 +4998,9 @@ impl RustGisApp {
                 };
                 let ext = if ext == "shp" { "zip".to_string() } else { ext };
                 let name = format!("{}.{ext}", l.name);
-                // The features written, read whole, give their own extent (not a raster's, or the
-                // one a streamed layer's source declares).
-                let mut notes = rustgis_engine::data::export_notes([(ds.as_ref(), ds.extent())], &name, crs);
+                // The features written, read whole, give their own extent, in longitude/latitude
+                // (not a raster's, or the one a streamed layer's source declares).
+                let mut notes = rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs);
                 rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, &ds, &lost);
                 let mut dbf_notes = Vec::new();
                 if ext == "zip" {

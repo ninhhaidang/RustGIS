@@ -139,6 +139,11 @@ mod tests {
         ds.crs = Some(Crs::Epsg(2056));
         assert_eq!(ds.coord_crs(), Crs::LonLat);
         assert!(ds.coord_crs().to(Crs::LonLat).unwrap().is_identity());
+        // So its longitude/latitude box is its geometry's.
+        ds.push(Some(Geometry::Point(Coord::new(2_600_000.0, 1_200_000.0))), vec![]);
+        ds.push(Some(Geometry::Point(Coord::new(7.0, 46.0))), vec![]);
+        assert_eq!(ds.lonlat_extent(), ds.extent());
+        assert_eq!(ds.extent_to_lonlat(&Extent::EMPTY), Extent::EMPTY);
     }
 
     /// Each system judges what it is given, as its transformer does: Web Mercator writes a latitude

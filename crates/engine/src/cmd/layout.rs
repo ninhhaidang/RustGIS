@@ -5017,8 +5017,8 @@ fn series_page(s: &mut Session, p: &Value) -> CmdResult {
         .and_then(|m| m.layer_by_name(&sr.layer))
         .ok_or("the index layer is gone")?;
     // A feature without geometry (common in CSV and GeoJSON) leaves the frame where it was.
-    let e = layer.dataset.features.get(page).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()).filter(|e| !e.is_empty());
-    if let Some(e) = e {
+    let e = layer.rows_extent([page]);
+    if !e.is_empty() {
         set_frame(s, li, sr.frame, &e.padded(sr.margin, 0.01))?;
     }
     if let Some(sr) = s.project.layouts.get_mut(li).and_then(|l| l.series.as_mut()) {

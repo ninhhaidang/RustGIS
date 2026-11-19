@@ -1430,8 +1430,8 @@ impl Layer {
         match (&self.raster, &self.source) {
             (Some(r), _) => r.data.as_ref().map(|d| d.extent()).unwrap_or(Extent::EMPTY),
             // A streamed layer's whole extent, not just the part read.
-            (None, Some(s)) => s.info().map(|i| i.extent).filter(|e| !e.is_empty()).unwrap_or_else(|| self.dataset.extent()),
-            (None, None) => self.dataset.extent(),
+            (None, Some(s)) => s.info().map(|i| i.extent).filter(|e| !e.is_empty()).unwrap_or_else(|| self.dataset.lonlat_extent()),
+            (None, None) => self.dataset.lonlat_extent(),
         }
     }
 
@@ -1442,20 +1442,25 @@ impl Layer {
         if !query || self.raster.is_some() || self.source.is_some() {
             return self.extent();
         }
-        self.visible_rows()
-            .iter()
-            .zip(&self.dataset.features)
-            .filter(|(v, _)| **v)
-            .filter_map(|(_, f)| f.geometry.as_ref())
-            .fold(Extent::EMPTY, |e, g| e.union(&g.extent()))
+        let shown = self.visible_rows();
+        self.rows_extent(shown.iter().enumerate().filter_map(|(r, v)| v.then_some(r)))
     }
 
+    /// Extent in longitude/latitude of its selected features.
     pub fn selection_extent(&self) -> Extent {
-        self.selection
-            .iter()
-            .filter_map(|r| self.dataset.features.get(*r))
+        self.rows_extent(self.selection.iter().copied())
+    }
+
+    /// Extent in longitude/latitude of the features in `rows` (rows past the last and features
+    /// without geometry left out): the box around them in the dataset's own coordinates, converted
+    /// ([`Dataset::extent_to_lonlat`]).
+    pub fn rows_extent(&self, rows: impl IntoIterator<Item = usize>) -> Extent {
+        let own = rows
+            .into_iter()
+            .filter_map(|r| self.dataset.features.get(r))
             .filter_map(|f| f.geometry.as_ref())
-            .fold(Extent::EMPTY, |e, g| e.union(&g.extent()))
+            .fold(Extent::EMPTY, |e, g| e.union(&g.extent()));
+        self.dataset.extent_to_lonlat(&own)
     }
 
     pub fn opacity(&self) -> f32 {
@@ -4339,6 +4344,26 @@ mod tests {
         m.layers[0].definition_query = Some("n = 2".into());
         assert_eq!(m.shown_extent(), Extent::new(10.0, 10.0, 10.0, 10.0));
         assert_eq!(m.full_extent(), Extent::new(0.0, 0.0, 10.0, 10.0));
+    }
+
+    /// A layer's extents are in longitude/latitude, converted from its dataset's own coordinates
+    /// (`Dataset::coord_crs`). That is longitude/latitude for every dataset today, whatever system
+    /// it records, so this covers the identity: the boxes are its geometry's. Rows past the last
+    /// are left out.
+    #[test]
+    fn a_layers_extents_are_identity_converted_to_lonlat() {
+        let mut m = Map::new("Map");
+        let mut ds = points();
+        ds.crs = Some(Crs::Epsg(2056));
+        m.add_dataset(ds);
+        let l = &mut m.layers[0];
+        assert_eq!(l.extent(), Extent::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(l.extent(), l.dataset.lonlat_extent());
+        assert_eq!(l.rows_extent([1, 99]), Extent::new(10.0, 10.0, 10.0, 10.0));
+        assert!(l.rows_extent([99]).is_empty());
+        l.selection = vec![0];
+        assert_eq!(l.selection_extent(), Extent::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(m.selection_extent(), Extent::new(0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]

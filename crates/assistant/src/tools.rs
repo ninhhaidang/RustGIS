@@ -820,6 +820,7 @@ fn read_features(s: &Session, a: &Value) -> Result<Value, String> {
         rows = keyed.into_iter().map(|(r, _)| r).collect();
     }
     let limit = limit_arg(a, 20, 200);
+    let lonlat = ds.lonlat_conversion()?;
     let out: Vec<Value> = rows
         .iter()
         .take(limit)
@@ -827,13 +828,11 @@ fn read_features(s: &Session, a: &Value) -> Result<Value, String> {
             let f = ds.features.get(r)?;
             let mut o = serde_json::Map::new();
             o.insert("_row".into(), json!(r));
-            // Where it is (its extent's centre), for zooming or going to it.
-            if let Some(g) = &f.geometry {
-                let c = g.extent().center();
-                if c.x.is_finite() && c.y.is_finite() {
-                    o.insert("_lon".into(), json!((c.x * 1e5).round() / 1e5));
-                    o.insert("_lat".into(), json!((c.y * 1e5).round() / 1e5));
-                }
+            // Where it is (its extent's centre, in longitude/latitude), for zooming or going to it.
+            // Left out where it isn't a place (`point` gives only finite ones).
+            if let Some(c) = f.geometry.as_ref().and_then(|g| lonlat.point(g.extent().center())) {
+                o.insert("_lon".into(), json!((c.x * 1e5).round() / 1e5));
+                o.insert("_lat".into(), json!((c.y * 1e5).round() / 1e5));
             }
             for &fi in &fields {
                 let (Some(field), Some(v)) = (ds.fields.get(fi), f.attrs.get(fi)) else { continue };

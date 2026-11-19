@@ -755,11 +755,11 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit, null_numbers, None, format_notes, dates)
         }
     };
-    // The features written give their own extent. A streamed layer written a chunk at a time has
-    // none at hand: its vertices beyond 85.05° in Web Mercator are counted as they're written
-    // (`e.beyond_web_mercator`), and its source's extent only serves the out-of-place check. A
-    // raster layer's extent is its raster's, which the file doesn't hold.
-    let extent = if chunks.is_some() { l.extent() } else { ds.extent() };
+    // The features written give their own extent, in longitude/latitude. A streamed layer written
+    // a chunk at a time has none at hand: its vertices beyond 85.05° in Web Mercator are counted
+    // as they're written (`e.beyond_web_mercator`), and its source's extent only serves the
+    // out-of-place check. A raster layer's extent is its raster's, which the file doesn't hold.
+    let extent = if chunks.is_some() { l.extent() } else { ds.lonlat_extent() };
     let mut notes = rustgis_data::export_notes([(ds, extent)], path, crs);
     coalesce_read_zm(&mut notes, path, ds, &unreadable);
     if asked.is_none() {

@@ -157,7 +157,7 @@ pub(in crate::cmd) fn table_work(s: &Session, p: &Value) -> Result<Work, String>
         let omitted = ordered(&mut ds, &sort, limit)?;
         let default = ds.name.clone();
         let null_numbers = rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, &ext);
-        let mut notes = rustgis_data::export_notes([(&ds, ds.extent())], &path, rustgis_data::raster::Crs::LonLat);
+        let mut notes = rustgis_data::export_notes([(&ds, ds.lonlat_extent())], &path, rustgis_data::raster::Crs::LonLat);
         if matches!(ext.as_str(), "shp" | "zip") {
             notes.extend(rustgis_data::io::shapefile_names_note(&ds.fields, &path));
             notes.extend(rustgis_data::io::shapefile_values_notes(&ds, &path));

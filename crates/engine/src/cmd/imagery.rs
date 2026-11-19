@@ -758,10 +758,7 @@ fn grid_param(
                     let layer = s.map().layer_by_name(l).filter(|l| l.raster.is_none()).ok_or_else(|| format!("no vector layer '{l}'"))?;
                     let rows: Vec<usize> =
                         if layer.selection.is_empty() { (0..layer.dataset.features.len()).collect() } else { layer.selection.clone() };
-                    let e = rows
-                        .iter()
-                        .filter_map(|row| layer.dataset.features.get(*row).and_then(|f| f.geometry.as_ref()))
-                        .fold(Extent::EMPTY, |e, g| e.union(&g.extent()));
+                    let e = layer.rows_extent(rows);
                     if e.is_empty() {
                         return Err(format!("{l} has no features to take an extent from"));
                     }

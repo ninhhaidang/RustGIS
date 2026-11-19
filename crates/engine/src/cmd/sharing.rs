@@ -854,7 +854,7 @@ fn ogc_zip(title: &str, layers: &[&Dataset], extra: &[(String, Vec<u8>)]) -> Res
             id = format!("{base}_{}", *n + 1);
         }
         taken.insert(id.clone());
-        let e = ds.extent();
+        let e = ds.lonlat_extent();
         let mut col = json!({
             "id": id, "title": ds.name, "itemType": "feature",
             "links": [{"href": format!("collections/{id}/items.json"), "rel": "items", "type": "application/geo+json"}],
@@ -923,6 +923,7 @@ fn locator(l: &Layer, fields: Option<&[String]>) -> Result<Locator, String> {
     if fis.is_empty() {
         return Err("pick the fields to search (the layer has no text fields)".into());
     }
+    let lonlat = ds.lonlat_conversion()?;
     let mut entries = Vec::new();
     for (row, ft) in ds.features.iter().enumerate().take(MAX_FEATURES) {
         let Some(g) = &ft.geometry else { continue };
@@ -934,6 +935,10 @@ fn locator(l: &Layer, fields: Option<&[String]>) -> Result<Locator, String> {
             Geometry::Point(p) => *p,
             _ => e.center(),
         };
+        // In longitude/latitude, the entries' system. The identity keeps the place as it is, as
+        // before; a place another system can't convert is left out (unreachable while every
+        // dataset is in longitude/latitude), as a NaN entry would make the locator unreadable.
+        let Some(c) = (if lonlat.is_identity() { Some(c) } else { lonlat.point(c) }) else { continue };
         for &fi in &fis {
             let t = match ds.value(row, fi) {
                 rustgis_data::Value::Null => continue,

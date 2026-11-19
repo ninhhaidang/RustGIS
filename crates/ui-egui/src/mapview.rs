@@ -4378,13 +4378,8 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
     // Zooms to the feature shown, found by its id, as Zoom To Selection does: the selection and
     // the undo history are left as they are.
     if let (true, Some((id, fid))) = (zoom, shown) {
-        let extent = app
-            .session
-            .map()
-            .layer(id)
-            .and_then(|l| l.dataset.features.iter().find(|f| f.id == fid))
-            .and_then(|f| f.geometry.as_ref())
-            .map(|g| g.extent());
+        let extent =
+            app.session.map().layer(id).and_then(|l| l.dataset.features.iter().position(|f| f.id == fid).map(|row| l.rows_extent([row])));
         if let Some(e) = extent.filter(|e| !e.is_empty()) {
             app.session.zoom_to(&e);
         }

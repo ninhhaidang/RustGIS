@@ -1825,8 +1825,9 @@ pub(crate) fn add_photos_to(s: &mut Session, name: &str, zoom: Option<bool>, fee
     }
     // The reader took no more than there is room for; `take` keeps that so if it ever changes.
     let added = ds.features.len().min(room);
-    let extent =
+    let own =
         ds.features.iter().take(added).filter_map(|f| f.geometry.as_ref()).fold(rustgis_geom::Extent::EMPTY, |e, g| e.union(&g.extent()));
+    let extent = ds.extent_to_lonlat(&own);
     let id = match existing {
         Some(id) => {
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;

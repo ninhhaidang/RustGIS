@@ -337,13 +337,7 @@ pub fn go_to(s: &mut Session, hit: &Hit) -> CmdResult {
             }
             s.active_layer = Some(*layer);
             super::select::set(s, *layer, vec![*row], super::select::Mode::New);
-            let e = s
-                .map()
-                .layer(*layer)
-                .and_then(|l| l.dataset.features.get(*row))
-                .and_then(|f| f.geometry.as_ref())
-                .map(|g| g.extent())
-                .unwrap_or_default();
+            let e = s.map().layer(*layer).map(|l| l.rows_extent([*row])).unwrap_or_default();
             // A feature without a shape (a table row) is still selected.
             if !e.is_empty() {
                 s.zoom_to(&if e.width() == 0.0 && e.height() == 0.0 { around(e.center()) } else { e });

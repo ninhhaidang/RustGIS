@@ -767,8 +767,36 @@ impl Dataset {
         self.features.get(row).and_then(|f| f.attrs.get(field)).unwrap_or(&Value::Null)
     }
 
+    /// The box around its features' geometry, in its own coordinates ([`Dataset::coord_crs`]), as
+    /// a file in that system would hold it. [`Dataset::lonlat_extent`] gives it in
+    /// longitude/latitude, for zooming and for what the map and the notices take.
     pub fn extent(&self) -> Extent {
         self.features.iter().filter_map(|f| f.geometry.as_ref()).fold(Extent::EMPTY, |e, g| e.union(&g.extent()))
+    }
+
+    /// The box around its features' geometry in longitude/latitude: [`Dataset::extent`] through
+    /// [`Dataset::extent_to_lonlat`].
+    pub fn lonlat_extent(&self) -> Extent {
+        self.extent_to_lonlat(&self.extent())
+    }
+
+    /// A box in its own coordinates ([`Dataset::coord_crs`]) in longitude/latitude, as
+    /// [`raster::Reprojection::extent`] converts it. The box itself while they are longitude/latitude,
+    /// as every dataset's are today. Empty when its system can't be converted. Longitude/latitude
+    /// never fails to; before [`Dataset::coord_crs`] returns another system, that case needs a
+    /// notice, as it says.
+    pub fn extent_to_lonlat(&self, e: &Extent) -> Extent {
+        match self.coord_crs().to(raster::Crs::LonLat) {
+            Ok(to) => to.extent(e),
+            Err(_) => Extent::EMPTY,
+        }
+    }
+
+    /// The conversion of its own coordinates ([`Dataset::coord_crs`]) to longitude/latitude, for
+    /// places taken from its geometry one by one: the identity today. Fails as
+    /// [`raster::Crs::to`] does, which longitude/latitude never does.
+    pub fn lonlat_conversion(&self) -> std::result::Result<raster::Reprojection, String> {
+        self.coord_crs().to(raster::Crs::LonLat)
     }
 
     /// Pushes a feature with the next id, padding/truncating attributes to the schema.
