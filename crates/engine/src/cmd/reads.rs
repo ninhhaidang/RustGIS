@@ -28,6 +28,10 @@ pub struct Read {
     pub(crate) source: Option<rustgis_map::source::SourceLayer>,
     pub(crate) ready: Option<Ready>,
     pub(crate) inputs: Vec<rustgis_data::provenance::Fingerprint>,
+    /// History set aside to make room for an edit's copy, and the copy counted as held until it
+    /// lands (#2431).
+    pub(crate) room: Option<crate::RoomMade>,
+    pub(crate) reservation: Option<crate::undo_memory::Reservation>,
 }
 
 /// A reader chosen only after the command and its original input have been admitted.
@@ -59,6 +63,11 @@ pub struct ReadAhead {
     /// A table write retains its admitted project and table identity across queue waits.
     table: Option<(u64, u32, u64)>,
     preview: Option<rustgis_data::Dataset>,
+    /// Set when the edit starts ([`Self::refresh_table_input`]), carried to its landing.
+    room: Option<crate::RoomMade>,
+    reservation: Option<crate::undo_memory::Reservation>,
+    /// The rows a layer edit's worker copies, as they were when it was prepared.
+    rows: Option<std::sync::Weak<Vec<rustgis_data::Feature>>>,
 }
 
 impl ReadAhead {
@@ -83,8 +92,39 @@ impl ReadAhead {
     /// Refreshes a table write's input immediately before its worker starts, so queued writes
     /// see earlier writes' output. The admitted operation, owner and table contents identity stay fixed;
     /// landing still rejects changes made while the worker runs. Other reads keep their input.
-    pub fn refresh_table_input(mut self, s: &Session) -> Result<Self, String> {
+    ///
+    /// An edit's copy is checked against memory here, with the session's history as it is now and
+    /// the copies of edits still running counted (#2431): refused when it can't fit, or with
+    /// older history set aside for it, freed on the worker just before it copies.
+    pub fn refresh_table_input(self, s: &mut Session) -> Result<Self, String> {
         self.owner.check()?;
+        let mut ahead = self.refresh_input(s)?;
+        ahead.make_room(s)?;
+        Ok(ahead)
+    }
+
+    fn make_room(&mut self, s: &mut Session) -> Result<(), String> {
+        let CommandOp::Registered { spec, params } = self.op.op() else { return Ok(()) };
+        s.reclaim_rooms();
+        let table = s.named_table(spec, params);
+        let layer = s.layer_id(params).ok().or(s.active_layer);
+        let pending = s.room_pending();
+        let Some(room) = s.room_for_edit(spec.id, spec.mutates, spec.label, layer, table)? else { return Ok(()) };
+        if pending && room.count > 0 {
+            // One edit's history out at a time, so each goes back in its place.
+            s.put_back(&room, true, true);
+            return Err(format!(
+                "{}: not enough memory to start it while another edit is running; run it again once that one has finished",
+                spec.label
+            ));
+        }
+        self.reservation = Some(s.undo_memory.reserve(room.copy));
+        s.remember_room(&room);
+        self.room = Some(room);
+        Ok(())
+    }
+
+    fn refresh_input(mut self, s: &Session) -> Result<Self, String> {
         let CommandOp::Registered { spec, params } = self.op.op() else { return Err("not a registered read command".into()) };
         if let Some(preview) = &self.preview {
             let dataset = if let Some(table) = s.named_table(spec, params) {
@@ -94,6 +134,12 @@ impl ReadAhead {
             };
             if dataset.fields != preview.fields || !dataset.features.shares(&preview.features) {
                 return Err("the data changed after its date preview: choose the format again".into());
+            }
+        }
+        if let Some(rows) = &self.rows {
+            let now = s.layer_id(params).ok().and_then(|id| s.map().layer(id)).map(|l| l.dataset.features.allocation_key());
+            if !now.is_some_and(|now| now.ptr_eq(rows)) {
+                return Err("the layer changed while the edit was waiting: run the edit again".into());
             }
         }
         let Some((opened, table, instance)) = self.table else { return Ok(self) };
@@ -123,7 +169,7 @@ impl ReadAhead {
     /// says it as it would have; only a cancelled run (or a bug in a reader) is an error here.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Read, String> {
         let inputs = self.capture_inputs.then(rustgis_data::provenance::Capture::start);
-        let ReadAhead { name, op, owner, source, work, .. } = self;
+        let ReadAhead { name, op, owner, source, work, room, reservation, .. } = self;
         owner.check()?;
         let current = owner.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok());
@@ -132,14 +178,29 @@ impl ReadAhead {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::render::rustgis_tiles::cache::with_still(still, || {
                 rustgis_analysis::run_under(name, control, || {
-                    ready = work.map(|ReadWork { key, work, .. }| Ready { key, value: work() });
+                    ready = work.map(|ReadWork { key, work, .. }| {
+                        // History set aside for this edit is freed just before it copies.
+                        let value = match &room {
+                            Some(room) => rustgis_data::before_rows_copy(room.free_on_copy(), work).0,
+                            None => work(),
+                        };
+                        Ready { key, value }
+                    });
                     Ok(())
                 })
             })
         }))
         .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")));
         res?;
-        Ok(Read { op, owner, source, ready, inputs: inputs.as_ref().map_or_else(Vec::new, rustgis_data::provenance::Capture::inputs) })
+        Ok(Read {
+            op,
+            owner,
+            source,
+            ready,
+            inputs: inputs.as_ref().map_or_else(Vec::new, rustgis_data::provenance::Capture::inputs),
+            room,
+            reservation,
+        })
     }
 }
 
@@ -231,7 +292,12 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
     let table = super::edit::table_edit_in_background(spec.id)
         .and_then(|_| s.named_table(spec, params))
         .and_then(|id| s.project.table(id).map(|t| (s.opened, id, t.instance_id())));
-    Ok(ReadAhead { name, op, owner, source, work, table, preview: None, capture_inputs: s.log.on() })
+    // A layer edit's worker copies the rows taken here: they must still be the layer's when it
+    // starts, so the memory checked then is what it copies (#2431).
+    let rows = (work.is_some() && table.is_none() && spec.mutates && crate::edits_features(spec.id))
+        .then(|| s.layer_id(params).ok().and_then(|id| s.map().layer(id)).map(|l| l.dataset.features.allocation_key()))
+        .flatten();
+    Ok(ReadAhead { name, op, owner, source, work, table, preview: None, capture_inputs: s.log.on(), room: None, reservation: None, rows })
 }
 
 /// Consumes a completed read under its initiating owner, with ordinary command history and undo.

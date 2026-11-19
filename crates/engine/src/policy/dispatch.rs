@@ -211,7 +211,10 @@ impl Session {
     }
     /// Lands only the original read invocation; no result can be claimed by another command.
     pub(crate) fn finish_read(&mut self, read: crate::cmd::reads::Read) -> CmdResult {
-        let crate::cmd::reads::Read { op, owner, source, ready, inputs } = read;
+        let crate::cmd::reads::Read { op, owner, source, ready, inputs, room, reservation } = read;
+        // History set aside for the edit's copy goes back if the edit fails or never copied, while
+        // nothing else has changed the history since (#2431).
+        let in_place = room.as_ref().is_some_and(|room| room.stamp == self.history_stamp());
         let (command, params) = match op.op() {
             CommandOp::Registered { spec, params } => (spec.id, params.clone()),
             _ => return Err("not a registered read command".into()),
@@ -233,7 +236,11 @@ impl Session {
                         }
                         s.check_read_command(&op)?;
                         s.read_ahead = ready;
-                        let result = s.invoke(op, Txn::Own);
+                        // An edit without a worker copies here, when it lands.
+                        let result = match room.as_ref().filter(|room| room.count > 0) {
+                            Some(room) => rustgis_data::before_rows_copy(room.free_on_copy(), || s.invoke(op, Txn::Own)).0,
+                            None => s.invoke(op, Txn::Own),
+                        };
                         if result.is_ok()
                             && let Some(source) = crate::sources::added_by(command, &params)
                         {
@@ -245,6 +252,12 @@ impl Session {
             })
         }));
         self.read_ahead = None;
+        if let Some(room) = &room {
+            let failed = !matches!(&result, Ok(Ok(_)));
+            self.put_back(room, failed, in_place);
+            self.forget_room(room);
+        }
+        drop(reservation);
         match result {
             Ok(result) => result,
             Err(panic) => std::panic::resume_unwind(panic),

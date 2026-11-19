@@ -446,7 +446,7 @@ fn start(app: &mut RustGisApp, mut asked: Asked, p: Value) -> Result<Value, Stri
     let Some(ahead) = asked.ahead.take() else {
         return complete_here(app, asked, p, Err(tl!("This read was already started").to_string()));
     };
-    let ahead = match ahead.refresh_table_input(&app.session) {
+    let ahead = match ahead.refresh_table_input(&mut app.session) {
         Ok(ahead) => ahead,
         Err(why) => return complete_here(app, asked, p, Err(why)),
     };
@@ -565,6 +565,8 @@ fn complete_here(app: &mut RustGisApp, asked: Asked, p: Value, done: Result<read
 /// Runs the command a read was for once it's done (or says why it wasn't), then starts the next
 /// waiting: called every frame. `true` while one is under way or waiting.
 pub fn land(app: &mut RustGisApp) -> bool {
+    // History an ended edit set aside comes back now, not at the next command: Undo must see it.
+    app.session.reclaim_rooms();
     if !busy(app) {
         return false;
     }

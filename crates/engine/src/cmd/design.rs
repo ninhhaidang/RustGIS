@@ -1078,9 +1078,12 @@ fn modify(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Re
         let mut changes = Vec::new();
         let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
         for r in l.selection.clone() {
-            let Some(f) = l.dataset.features.get_mut(r) else { continue };
+            // Read first, writing only a row that changes: the first write copies the layer's rows
+            // when Undo shares them, and frees history set aside for that copy (#2431).
+            let Some(f) = l.dataset.features.get(r) else { continue };
             let Some(g) = f.geometry.as_ref().map(|g| change((id, r), g)).transpose()?.flatten() else { continue };
             super::edit::validate(&g)?;
+            let Some(f) = l.dataset.features.get_mut(r) else { continue };
             let before = f.clone();
             f.geometry = Some(g);
             changes.push(Change { before: Some(before), row: Some(r) });
@@ -1150,6 +1153,11 @@ pub(crate) fn replace_geometry(s: &mut Session, id: u32, row: usize, g: Geometry
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     if l.geometry_type() != GeometryType::None && l.geometry_type() != g.kind() {
         return Err(format!("a {} can't replace a {}", g.kind().label(), l.geometry_type().label()));
+    }
+    // The row checked before writing: the first write copies the layer's rows when Undo shares
+    // them, and frees history set aside for that copy (#2431).
+    if l.dataset.features.get(row).is_none() {
+        return Err("no such row".into());
     }
     let f = l.dataset.features.get_mut(row).ok_or("no such row")?;
     let before = f.clone();

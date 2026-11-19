@@ -94,6 +94,14 @@ pub fn undo_history() -> usize {
     scaled(physical(), 256 << 20, usize::try_from(4_u64 << 30).unwrap_or(usize::MAX), 1)
 }
 
+/// The memory RustGIS plans to hold on a computer with `memory` bytes (`None`: not known), what the
+/// session's layers, rasters and Undo history may take together before an edit that copies a
+/// layer is refused (#2431 fix 3): all of it but [`SHARE`], which is left for drawing, the window
+/// and a job running at the same time.
+pub fn usable(memory: Option<u64>) -> Option<u64> {
+    memory.map(|m| m.saturating_sub(m / SHARE))
+}
+
 /// A limit of units costing `bytes` each: as many as [`SHARE`] of `memory` holds, within `floor`
 /// and `ceiling`; `floor` when the memory isn't known.
 pub fn scaled(memory: Option<u64>, floor: usize, ceiling: usize, bytes: u64) -> usize {
@@ -117,6 +125,13 @@ mod tests {
         assert_eq!(scaled(None, 100, 1_000, 8), 100, "unknown memory: the floor");
         assert_eq!(scaled(Some(u64::MAX), 100, usize::MAX, 0) as u64, u64::MAX / SHARE, "no overflow or division by zero");
         assert_eq!(scaled(Some(16 * GIB), 100, 50, 8), 100, "a ceiling below the floor is the floor");
+    }
+
+    #[test]
+    fn usable_memory_leaves_a_share() {
+        assert_eq!(usable(Some(16 * GIB)), Some(12 * GIB));
+        assert_eq!(usable(None), None);
+        assert_eq!(usable(Some(3)), Some(3), "a share below a byte leaves it all");
     }
 
     #[test]

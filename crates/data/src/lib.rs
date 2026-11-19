@@ -205,6 +205,50 @@ pub struct Feature {
     pub attrs: Vec<Value>,
 }
 
+mod rows_copy {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    /// Takes the hook out before calling it, so it runs once and may itself change rows.
+    pub(super) fn fire() {
+        if let Some(hook) = HOOK.try_with(|h| h.borrow_mut().take()).ok().flatten() {
+            hook();
+        }
+    }
+
+    /// Puts back the hook that was set before, also when `f` unwinds.
+    struct Restore(Option<Option<Box<dyn FnOnce()>>>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0.take() {
+                let _ = HOOK.try_with(|h| *h.borrow_mut() = previous);
+            }
+        }
+    }
+
+    pub(super) fn with<R>(hook: Box<dyn FnOnce()>, f: impl FnOnce() -> R) -> (R, bool) {
+        let previous = HOOK.try_with(|h| h.borrow_mut().replace(hook)).unwrap_or(None);
+        let restore = Restore(Some(previous));
+        let result = f();
+        let fired = HOOK.try_with(|h| h.borrow().is_none()).unwrap_or(true);
+        drop(restore);
+        (result, fired)
+    }
+}
+
+/// Runs `f`, calling `hook` once on this thread just before the first change in it copies rows
+/// that another owner shares (an Undo snapshot), and says whether it was called. The session
+/// frees older Undo steps there, only once an edit is about to copy (#2431); an edit that fails
+/// before writing keeps them. Any shared rows `f` copies call it, not only those it set out to
+/// change. A hook set before is put back afterwards.
+pub fn before_rows_copy<R>(hook: Box<dyn FnOnce()>, f: impl FnOnce() -> R) -> (R, bool) {
+    rows_copy::with(hook, f)
+}
+
 /// A dataset's features, shared until changed: cloning them (an undo snapshot, a copy of the
 /// project) copies a pointer, and the first change through one of the copies copies the rows
 /// for it. A large layer is then held once however many undo steps leave it alone.
@@ -231,7 +275,16 @@ impl Features {
 
     /// The rows, taking them out of the share (copying them only when another copy holds them).
     pub fn into_vec(self) -> Vec<Feature> {
+        self.before_copy();
         std::sync::Arc::unwrap_or_clone(self.rows)
+    }
+
+    /// Calls the hook [`before_rows_copy`] set, when a change is about to copy rows another
+    /// owner shares.
+    fn before_copy(&self) {
+        if std::sync::Arc::strong_count(&self.rows) > 1 {
+            rows_copy::fire();
+        }
     }
 
     /// Appends a row with the id one past the largest. `max_id` stays right only because every
@@ -239,6 +292,7 @@ impl Features {
     fn push_with_new_id(&mut self, geometry: Option<Geometry>, attrs: Vec<Value>) {
         let max = self.max_id.unwrap_or_else(|| self.rows.iter().map(|f| f.id).max().unwrap_or(0));
         let id = max.saturating_add(1);
+        self.before_copy();
         std::sync::Arc::make_mut(&mut self.rows).push(Feature { id, geometry, attrs });
         self.max_id = Some(id);
     }
@@ -246,6 +300,7 @@ impl Features {
     /// Appends a row with the id one past the last row's, keeping the largest id if it is known.
     fn push_after_last(&mut self, geometry: Option<Geometry>, attrs: Vec<Value>) {
         let id = self.rows.last().map(|f| f.id.saturating_add(1)).unwrap_or(1);
+        self.before_copy();
         std::sync::Arc::make_mut(&mut self.rows).push(Feature { id, geometry, attrs });
         self.max_id = self.max_id.map(|m| m.max(id));
     }
@@ -262,6 +317,7 @@ impl std::ops::DerefMut for Features {
     fn deref_mut(&mut self) -> &mut Vec<Feature> {
         // The caller may change ids, so the largest is searched for again on the next push.
         self.max_id = None;
+        self.before_copy();
         std::sync::Arc::make_mut(&mut self.rows)
     }
 }
