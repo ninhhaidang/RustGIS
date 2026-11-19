@@ -1672,7 +1672,8 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     }))
 }
 
-/// Creates a route layer and reports invalid source segments omitted from its network.
+/// Routes over the query-visible resident network, independently of selection. Invalid
+/// source segments and unreadable-query fallback are reported after a successful route.
 fn route(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
@@ -1681,7 +1682,17 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
     }
     let name = out_name(p, format!("Route on {}", l.name))?;
     let cost = ps(p, "costField").map(|n| l.dataset.field_index(n).ok_or_else(|| format!("no field named '{n}'"))).transpose()?;
-    let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
+    let resolved = l.resolve_rows(&l.dataset, rustgis_map::rows::Policy::Query, None)?;
+    let query_notice = resolved.query_error.map(|error| {
+        crate::notice_text::NoticeText::format(
+            "1 layer with an unreadable definition query; reading without that query: {layer}: {error}",
+            [("layer", l.name.clone().into()), ("error", error.into())],
+        )
+    });
+    let rows: Vec<usize> = match resolved.rows {
+        rustgis_map::rows::Rows::All => (0..l.dataset.features.len()).collect(),
+        rustgis_map::rows::Rows::Subset(rows) => rows,
+    };
     let r = network::shortest_route(
         &l.dataset,
         &rows,
@@ -1695,6 +1706,9 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
         Dataset::new(name, GeometryType::Polyline, vec![Field::new("length_km", FieldType::Double), Field::new("cost", FieldType::Double)]);
     ds.push(Some(Geometry::Line(vec![r.path.clone()])), vec![Attr::Float(r.length_m / 1000.0), Attr::Float(r.cost)]);
     let nid = super::layer::add_dataset(s, ds);
+    if let Some(notice) = query_notice {
+        s.notify_text(notice, false);
+    }
     if r.skipped_segments > 0 {
         s.notify(
             format!("{source_name}: {} segments with invalid coordinates were omitted from the route network", r.skipped_segments),
