@@ -86,6 +86,7 @@ pub const CAPABILITIES: &[&str] = &[
     SIZE_BY_CAPABILITY,
     "picture-markers",
     "layout-element-ink",
+    "layout-element-wrap",
     "field-generation",
     "crs-wkt",
     "zarr-window",

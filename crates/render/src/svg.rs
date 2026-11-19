@@ -93,7 +93,7 @@ fn elements(
         background(&mut s, e);
         let (x, y, w, h) = (e.x, e.y, e.w, e.h);
         match &e.kind {
-            ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation } => {
+            ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation, wrap } => {
                 let first = layout.first_frame().and_then(|id| layout.element(id)).and_then(|f| match &f.kind {
                     ElementKind::MapFrame { map, center, scale, bearing, pitch, .. } => {
                         let m = maps.iter().find(|m| m.name.eq_ignore_ascii_case(map))?;
@@ -102,6 +102,13 @@ fn elements(
                     _ => None,
                 });
                 let text = expand(t, layout, info, first);
+                // A wrapped text in the lines the page breaks it into (#2346), each its own line.
+                let text = if *wrap {
+                    let style = crate::layout::text_style(*bold, *italic, *font, font_name.as_deref(), *align, *letter_spacing);
+                    crate::layout::wrapped(&text, w, *size, style)
+                } else {
+                    text
+                };
                 // As the page draws it: the size in points, lines 1.25 apart, the first baseline
                 // 0.6 of the size below the top, lines past the frame left out.
                 let em = size.clamp(2.0, 400.0) * 1.33 / PT_PER_MM;
@@ -630,6 +637,33 @@ mod tests {
         assert_eq!(esc("valid\u{fffe}\u{ffff}\t🙂"), "valid\t🙂");
         assert_eq!(paint("fill", rustgis_map::Rgba::new(255, 0, 16, 128)), r##" fill="#ff0010" fill-opacity="0.502""##);
         assert_eq!(stroke(rustgis_map::Rgba::rgb(0, 0, 0), 0.0, None), r#" stroke="none""#);
+    }
+
+    /// A wrapped text (#2346) is written in the lines the page draws it in, one `<tspan>` each,
+    /// placed as the page places them; unwrapped, it is written on its own line breaks.
+    #[test]
+    fn a_wrapped_text_is_written_in_its_drawn_lines() {
+        use rustgis_map::layout::{ElementKind, TextAlign};
+        let note = "Population counts from the 2020 census; boundaries simplified for print";
+        let svg = |wrap: bool| {
+            let mut layout = Layout::new("L", 100.0, 100.0);
+            let mut kind = ElementKind::text(note, 12.0, rustgis_map::Rgba::rgb(0, 0, 0), false);
+            if let ElementKind::Text { wrap: w, .. } = &mut kind {
+                *w = wrap;
+            }
+            layout.add("Note", (10.0, 10.0, 40.0, 60.0), kind);
+            layout_svg(&layout, &mut [], 96.0, &PageInfo::default()).unwrap().0
+        };
+        let plain = svg(false);
+        assert!(!plain.contains("<tspan") && plain.contains(note), "one line: {plain}");
+        let style = crate::layout::TextStyle { face: crate::text::Face::default(), align: TextAlign::Left, spacing: 0.0 };
+        let lines = crate::layout::wrapped(note, 40.0, 12.0, style);
+        let wrapped = svg(true);
+        assert!(lines.lines().count() > 3, "{lines}");
+        assert_eq!(wrapped.matches("<tspan").count(), lines.lines().count(), "{wrapped}");
+        for line in lines.lines() {
+            assert!(wrapped.contains(&format!(">{}</tspan>", esc(line))), "{line}: {wrapped}");
+        }
     }
 
     /// An element's background (#2257) is a `<rect>` of its own under the element, its box grown

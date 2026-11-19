@@ -183,7 +183,8 @@ pub(crate) fn page_geometry(layout: &Layout, dpi: f64) -> (u32, u32, f64) {
 /// Visible text elements (and legend titles) whose ink crosses the page boundary, or whose
 /// lines the text renderer omits at its box's vertical limit or its 200-line limit. Text is not
 /// clipped horizontally to its element: a line wider than its box alone is not a loss. Dynamic
-/// text uses this page and its first frame, and rotated text is checked after its turn.
+/// text uses this page and its first frame, rotated text is checked after its turn, and a
+/// wrapped text by the lines it is broken into.
 pub fn clipped_text(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo) -> Vec<(u32, String)> {
     let (w, h, k) = page_geometry(layout, dpi);
     let ppp = (k / PT_PER_MM) as f32;
@@ -199,16 +200,14 @@ pub fn clipped_text(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo) ->
         .filter_map(|e| {
             let r = Rect::from_xywh((e.x * k) as f32, (e.y * k) as f32, (e.w * k) as f32, (e.h * k) as f32)?;
             let (s, size, face, align, spacing, rotation, title) = match &e.kind {
-                ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation }
+                ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation, wrap }
                     if color.a() > 0 =>
                 {
-                    let face = text::Face {
-                        bold: *bold,
-                        italic: *italic,
-                        serif: *font == rustgis_map::layout::FontFamily::Serif,
-                        family: font_name.as_deref().and_then(crate::families::find_ready),
-                    };
-                    (expand(t, layout, info, first), *size as f32, face, *align, *letter_spacing as f32, *rotation as f32, false)
+                    let style = text_style(*bold, *italic, *font, font_name.as_deref(), *align, *letter_spacing);
+                    let s = expand(t, layout, info, first);
+                    // Its lines as they are drawn: a wrapped text's, broken to its box.
+                    let s = if *wrap { wrapped(&s, e.w, *size, style) } else { s };
+                    (s, *size as f32, style.face, *align, *letter_spacing as f32, *rotation as f32, false)
                 }
                 ElementKind::Legend { title, frame, .. } => {
                     let ElementKind::MapFrame { map, .. } = &layout.element(*frame)?.kind else { return None };
@@ -545,15 +544,11 @@ fn draw_page(
                     None => placeholder(&mut pm, r, "Colorbar", ppp),
                 }
             }
-            ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation } => {
+            ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation, wrap } => {
                 let first = layout.first_frame().and_then(frame);
                 let s = expand(t, layout, info, first.and_then(|f| maps.get(f.1).map(|m| (m, f.2))));
-                // An installed family by name (#762), else its generic one. The app doesn't wait
-                // for the font index while it is being built; a script or the command line builds
-                // it now (`families::find_ready`).
-                let family = font_name.as_deref().and_then(crate::families::find_ready);
-                let face = text::Face { bold: *bold, italic: *italic, serif: *font == rustgis_map::layout::FontFamily::Serif, family };
-                let style = TextStyle { face, align: *align, spacing: *letter_spacing as f32 };
+                let style = text_style(*bold, *italic, *font, font_name.as_deref(), *align, *letter_spacing);
+                let s = if *wrap { wrapped(&s, e.w, *size, style) } else { s };
                 if *rotation == 0.0 {
                     text_block(&mut pm, r, &s, *size as f32, *color, style, ppp);
                 } else if let Some(area) = text_area(r, &s, *size as f32, style, ppp) {
@@ -3223,12 +3218,49 @@ fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
 
 /// How a text element's lines are drawn, beyond their size and colour.
 #[derive(Clone, Copy)]
-struct TextStyle {
+pub(crate) struct TextStyle {
     /// Bold, italic and the family.
-    face: text::Face,
-    align: TextAlign,
+    pub(crate) face: text::Face,
+    pub(crate) align: TextAlign,
     /// Letter spacing in points.
-    spacing: f32,
+    pub(crate) spacing: f32,
+}
+
+/// A text element's style: its face in an installed family by name (#762), else its generic one.
+/// The app doesn't wait for the font index while it is being built; a script or the command line
+/// builds it now (`families::find_ready`). One for the page, its clipping check and the SVG, so
+/// each measures and breaks a text alike.
+pub(crate) fn text_style(
+    bold: bool,
+    italic: bool,
+    font: rustgis_map::layout::FontFamily,
+    font_name: Option<&str>,
+    align: TextAlign,
+    letter_spacing: f64,
+) -> TextStyle {
+    let family = font_name.and_then(crate::families::find_ready);
+    let face = text::Face { bold, italic, serif: font == rustgis_map::layout::FontFamily::Serif, family };
+    TextStyle { face, align, spacing: letter_spacing as f32 }
+}
+
+/// Pixels per millimetre a wrapped text's lines are measured at (300 dpi), whatever the
+/// resolution it is drawn at, so the layout view, each export and the SVG break the same lines.
+const WRAP_PX_PER_MM: f64 = 300.0 / 25.4;
+
+/// A wrapped text (#2346) as the lines it is drawn in, joined by line breaks: each of its own
+/// lines broken at spaces to fit `width` mm at `size` points, a word wider than that broken
+/// across lines ([`crate::report::wrap_lines`]). A line is measured as [`text_block`] places it:
+/// a left-aligned one from the box's edge to its ink's right, an aligned one by its ink.
+pub(crate) fn wrapped(s: &str, width: f64, size: f64, style: TextStyle) -> String {
+    let ppp = (WRAP_PX_PER_MM / PT_PER_MM) as f32;
+    let px = (size as f32).clamp(2.0, 400.0) * 1.33 * ppp;
+    let spacing = style.spacing * 1.33 * ppp;
+    let measure = |t: &str| {
+        let (lo, hi) = text::styled_extent(t, px, style.face, spacing);
+        f64::from(if style.align == TextAlign::Left { hi } else { hi - lo })
+    };
+    // Lines past the 200 a text draws aren't broken: one more tells the cut-off check it goes on.
+    crate::report::wrap_lines(s, width * WRAP_PX_PER_MM, measure, 200).join("\n")
 }
 
 /// The distance between two lines of text at `size` points, in mm, as [`text_block`] sets them.
@@ -5268,6 +5300,85 @@ mod tests {
         let xs = dark.iter().map(|p| p.0);
         let ys = dark.iter().map(|p| p.1);
         (xs.clone().min().unwrap(), ys.clone().min().unwrap(), xs.max().unwrap(), ys.max().unwrap())
+    }
+
+    /// A page with `text` at 12 pt in (10, 10, 40, 60) mm, wrapped to its box or not (#2346),
+    /// aligned `align` and turned `turn` degrees.
+    fn note_page(text: &str, wrap: bool, align: TextAlign, turn: f64) -> Layout {
+        let mut l = Layout::new("L", 100.0, 100.0);
+        let mut kind = ElementKind::text(text, 12.0, Rgba::rgb(0, 0, 0), false);
+        if let ElementKind::Text { wrap: w, align: a, rotation, .. } = &mut kind {
+            (*w, *a, *rotation) = (wrap, align, turn);
+        }
+        l.add("Note", (10.0, 10.0, 40.0, 60.0), kind);
+        l
+    }
+
+    const NOTE: &str = "Population counts from the 2020 census; boundaries simplified for print";
+
+    /// A wrapped text breaks at spaces into lines that stay within its box's width, whichever
+    /// its alignment; unwrapped, the same sentence runs past the box as it always has (#2346).
+    #[test]
+    fn a_wrapped_text_breaks_into_lines_that_fit_its_box() {
+        let mm = 96.0 / 25.4;
+        let (left, right) = (10.0 * mm, 50.0 * mm);
+        let ink = |l: &Layout| ink_bounds(&render(l, &mut [], 96.0, &PageInfo::default()).unwrap());
+        let (_, t, r, b) = ink(&note_page(NOTE, false, TextAlign::Left, 0.0));
+        assert!(f64::from(r) > right + 40.0, "unwrapped, it runs past the box: {r}");
+        let line = b - t;
+        for align in TextAlign::ALL {
+            let (l, t, r, b) = ink(&note_page(NOTE, true, align, 0.0));
+            assert!(f64::from(l) >= left - 2.0 && f64::from(r) <= right + 2.0, "{align:?}: inked {l}..{r} in {left}..{right}");
+            assert!(b - t > 3 * line, "{align:?}: in several lines, {t}..{b}");
+        }
+        // A word wider than the box (an address) is broken across lines, kept within it.
+        let url = "https://example.org/data/population/census-2020/boundaries-simplified.zip";
+        let (l, t, r, b) = ink(&note_page(url, true, TextAlign::Left, 0.0));
+        assert!(f64::from(l) >= left - 2.0 && f64::from(r) <= right + 2.0 && b - t > 2 * line, "{l},{t} to {r},{b}");
+        // Its own line breaks are kept: a blank line between two short ones stays.
+        let (_, t, _, b) = ink(&note_page("Source\n\nIBGE", true, TextAlign::Left, 0.0));
+        let (_, t2, _, b2) = ink(&note_page("Source\nIBGE", true, TextAlign::Left, 0.0));
+        assert!(b - t > b2 - t2 + line / 2, "{t}..{b} against {t2}..{b2}");
+    }
+
+    /// A turned wrapped text wraps to its unturned box's width: turned 90°, its lines run down the
+    /// page within the box's 40 mm about its centre (#2346).
+    #[test]
+    fn a_turned_wrapped_text_wraps_to_its_unturned_width() {
+        let mm = 96.0 / 25.4;
+        let (l, t, r, b) = ink_bounds(&render(&note_page(NOTE, true, TextAlign::Left, 90.0), &mut [], 96.0, &PageInfo::default()).unwrap());
+        // The box's centre is at (30, 40) mm: 40 mm wide, turned, it spans 20 to 60 mm down the page.
+        assert!(f64::from(t) >= 20.0 * mm - 2.0 && f64::from(b) <= 60.0 * mm + 2.0, "{t}..{b}");
+        assert!(r - l > 40, "its lines side by side: {l}..{r}");
+    }
+
+    /// A wrapped text whose lines reach past its box's bottom is reported as cut, as a text with
+    /// too many line breaks is; one whose lines fit isn't (#2346).
+    #[test]
+    fn a_wrapped_text_past_its_box_is_reported_cut() {
+        let info = PageInfo::default();
+        let mut l = note_page(NOTE, true, TextAlign::Left, 0.0);
+        assert!(clipped_text(&l, &[], 96.0, &info).is_empty());
+        let id = l.elements[0].id;
+        l.element_mut(id).unwrap().h = 4.0;
+        assert_eq!(clipped_text(&l, &[], 96.0, &info), vec![(id, "Note".into())]);
+    }
+
+    /// The same lines at every resolution: they are measured at one (#2346), so the layout view,
+    /// an image export and a print break a text alike.
+    #[test]
+    fn a_wrapped_text_breaks_alike_at_every_resolution() {
+        let style = TextStyle { face: text::Face::default(), align: TextAlign::Left, spacing: 0.0 };
+        let lines = wrapped(NOTE, 40.0, 12.0, style);
+        assert!(lines.lines().count() > 3, "{lines}");
+        assert!(lines.lines().all(|l| !l.starts_with(' ') && !l.ends_with(' ')), "{lines:?}");
+        assert_eq!(lines.replace('\n', " "), NOTE, "broken only at its spaces");
+        let tall = |dpi: f64| {
+            let pm = render(&note_page(NOTE, true, TextAlign::Left, 0.0), &mut [], dpi, &PageInfo::default()).unwrap();
+            let (_, t, _, b) = ink_bounds(&pm);
+            f64::from(b - t) / dpi
+        };
+        assert!((tall(96.0) - tall(300.0)).abs() < 0.03, "{} against {} inches", tall(96.0), tall(300.0));
     }
 
     /// A text turned 90° runs down the page from the top of its turned box, -90° up it from the

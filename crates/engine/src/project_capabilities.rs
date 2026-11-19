@@ -70,6 +70,9 @@ impl Project {
         if !required.contains(&"layout-element-ink") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.ink().is_some())) {
             required.push("layout-element-ink");
         }
+        if !required.contains(&"layout-element-wrap") && self.layouts.iter().any(|l| l.elements.iter().any(wraps)) {
+            required.push("layout-element-wrap");
+        }
         // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
         // points as its WKT does (angles in grads, a datum transformation the definition can't
         // hold).
@@ -108,6 +111,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-element-background", command_uses_element_background),
     ("picture-markers", command_uses_picture_marker),
     ("layout-element-ink", command_uses_element_ink),
+    ("layout-element-wrap", command_uses_element_wrap),
 ];
 
 /// A layout command that gives an element a background: an older reader warns that it ignores
@@ -129,6 +133,23 @@ fn command_uses_element_ink(id: &str, params: &Value) -> bool {
     match id {
         "layout.import" => imported_layout_uses(params, "\"color\"", |e| e.kind.ink().is_some()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_ink)),
+        _ => false,
+    }
+}
+
+/// Whether a layout element is a text that wraps to its box (#2346).
+fn wraps(e: &rustgis_map::layout::Element) -> bool {
+    matches!(e.kind, rustgis_map::layout::ElementKind::Text { wrap: true, .. })
+}
+
+/// A layout command that makes a text wrap (#2346): an older reader warns that it ignores
+/// `wrap` and draws the text unwrapped. `"wrap": false` only keeps a text as an older reader's
+/// texts always are.
+fn command_uses_element_wrap(id: &str, params: &Value) -> bool {
+    match id {
+        "layout.addElement" | "layout.update" => params.get("wrap").and_then(crate::cmd::bool_value) == Some(true),
+        "layout.import" => imported_layout_uses(params, "\"wrap\"", wraps),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_wrap)),
         _ => false,
     }
 }
@@ -635,6 +656,51 @@ mod tests {
                 document["tasks"] = value;
                 let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
                 assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), required, "{params}");
+            }
+        }
+    }
+
+    /// A text that wraps to its box is required where it is saved (#2346), so an older reader
+    /// refuses the project instead of drawing it on its own line breaks; so is a saved command
+    /// that makes one wrap, which an older reader would run without it. Unwrapping needs nothing.
+    #[test]
+    fn element_wrap_capability_follows_saved_layouts_and_commands() {
+        use rustgis_map::layout::ElementKind;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_element_wrap.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-element-wrap"]));
+        let wrapped = |p: &Project| p.layouts[0].elements.iter().filter(|e| matches!(e.kind, ElementKind::Text { wrap: true, .. })).count();
+        assert_eq!(wrapped(&Project::from_json(&saved.to_string()).unwrap()), 1);
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let ElementKind::Text { wrap, .. } = &mut e.kind {
+                *wrap = false;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "unwrapped texts need nothing");
+        assert!(!base["layouts"].to_string().contains("wrap"), "nor write it");
+        let layout = &saved["layouts"][0];
+        for (id, params, required) in [
+            ("layout.addElement", json!({"kind": "text", "wrap": true}), true),
+            ("layout.update", json!({"element": 2, "wrap": "on"}), true),
+            ("layout.update", json!({"element": 2, "wrap": false}), false),
+            ("layout.update", json!({"element": 2, "wrap": null}), false),
+            ("layout.update", json!({"element": 2, "text": "wrap"}), false),
+            ("layout.import", json!({"text": layout.to_string()}), true),
+            ("layout.import", json!({"text": base["layouts"][0].to_string()}), false),
+            ("layout.import", json!({"path": "notes.rgislayout"}), false),
+        ] {
+            let script = format!("{id}= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Note", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Note", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-element-wrap"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
             }
         }
     }

@@ -124,6 +124,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
         bold: Some(&mut bold),
         italic: Some(&mut italic),
         align: Some(&mut align),
+        wrap: None,
         letter_spacing: Some(&mut spacing),
         font: None,
         font_name: None,

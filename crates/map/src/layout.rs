@@ -1040,6 +1040,11 @@ pub enum ElementKind {
         /// box stays the unturned one. Left out when 0, so layouts saved before keep their bytes.
         #[serde(default, skip_serializing_if = "is_zero")]
         rotation: f64,
+        /// Broken into lines at spaces to fit the width of its (unturned) box when drawn, after
+        /// its dynamic text is filled in (#2346); off, its lines break only where the text has a
+        /// line break. Left out when off, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        wrap: bool,
     },
     Picture {
         /// Base64 PNG or JPEG.
@@ -1128,6 +1133,7 @@ impl ElementKind {
             font: FontFamily::Sans,
             font_name: None,
             rotation: 0.0,
+            wrap: false,
         }
     }
 

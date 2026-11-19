@@ -80,21 +80,46 @@ pub fn wrap(s: &str, w: f64, pt: f32) -> Vec<String> {
 }
 
 /// [`wrap`] with the width of a piece of text (in mm) measured by `width`: bold text, or text whose
-/// tokens are filled in only when it is drawn.
+/// tokens are filled in only when it is drawn. At most 2000 lines and one more ([`wrap_lines`]).
 pub fn wrap_with(s: &str, w: f64, width: impl Fn(&str) -> f64) -> Vec<String> {
+    wrap_lines(s, w, width, 2000)
+}
+
+/// [`wrap_with`] that stops once it has `max` lines and one more, which tells a caller the text
+/// goes on: its work is bounded by the lines it returns, however long the text, and every word in
+/// them is broken to the width (a layout text draws 200 and says it is cut past them, #2346).
+pub fn wrap_lines(s: &str, w: f64, width: impl Fn(&str) -> f64, max: usize) -> Vec<String> {
     let mut out = Vec::new();
-    for para in s.lines().take(2000) {
+    'text: for para in s.lines() {
         let mut line = String::new();
-        for word in para.split_whitespace().take(5000) {
+        for word in para.split_whitespace() {
+            if out.len() > max {
+                break 'text;
+            }
             // A word wider than the line (a long URL…) is broken across lines: the most of its
-            // characters that fit, found by halving (a few measures a line, not one a character).
-            let mut word = word.to_string();
-            while width(&word) > w && word.chars().count() > 1 {
-                let chars: Vec<char> = word.chars().collect();
-                let (mut fits, mut over) = (1, chars.len());
+            // characters that fit, found by doubling then halving from its start, so a piece
+            // costs a few measures of about its own length, not of the rest of the word (a long
+            // word in a box narrower than a few letters stays cheap, #2346).
+            let mut word = word;
+            while word.chars().nth(1).is_some() && out.len() <= max {
+                let prefix = |k: usize| word.char_indices().nth(k).map_or(word, |(i, _)| &word[..i]);
+                let (mut fits, mut probe) = (1, 2);
+                let mut over = loop {
+                    let p = prefix(probe);
+                    if width(p) > w {
+                        break probe;
+                    }
+                    if p.len() == word.len() {
+                        break 0;
+                    }
+                    (fits, probe) = (probe, probe * 2);
+                };
+                if over == 0 {
+                    break;
+                }
                 while over - fits > 1 {
                     let mid = (fits + over) / 2;
-                    if width(&chars[..mid].iter().collect::<String>()) > w {
+                    if width(prefix(mid)) > w {
                         over = mid;
                     } else {
                         fits = mid;
@@ -103,10 +128,10 @@ pub fn wrap_with(s: &str, w: f64, width: impl Fn(&str) -> f64) -> Vec<String> {
                 if !line.is_empty() {
                     out.push(std::mem::take(&mut line));
                 }
-                out.push(chars[..fits].iter().collect());
-                word = chars[fits..].iter().collect();
+                let piece = prefix(fits);
+                out.push(piece.to_string());
+                word = &word[piece.len()..];
             }
-            let word = word.as_str();
             let next = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
             if !line.is_empty() && width(&next) > w {
                 out.push(std::mem::take(&mut line));
@@ -116,7 +141,11 @@ pub fn wrap_with(s: &str, w: f64, width: impl Fn(&str) -> f64) -> Vec<String> {
             }
         }
         out.push(line);
+        if out.len() > max {
+            break;
+        }
     }
+    out.truncate(max.saturating_add(1));
     out
 }
 
@@ -520,6 +549,45 @@ mod tests {
         assert!(lines.iter().all(|l| width_mm(l, 7.0, false) <= 40.0), "every piece fits");
         assert_eq!(lines.concat(), word, "nothing lost");
         assert!(count.get() < 20 * lines.len(), "{} measures for {} lines", count.get(), lines.len());
+    }
+
+    /// Every word of a long paragraph is broken to the width, however many (#2346); the lines stop
+    /// one past the limit, which tells the caller the text goes on, whatever ends them.
+    #[test]
+    fn a_long_text_wraps_every_word_and_stops_one_line_past_its_limit() {
+        let fit = |t: &str| width_mm(t, 7.0, false);
+        let words = vec!["word"; 6000].join(" ");
+        let lines = wrap_with(&words, 40.0, fit);
+        assert_eq!(lines.join(" "), words, "every word kept");
+        assert!(lines.iter().all(|l| fit(l) <= 40.0), "and broken to fit");
+        let few = wrap_lines(&words, 40.0, fit, 10);
+        assert_eq!(few, lines[..11], "one line past the limit");
+        let many = vec!["line"; 2100].join("\n");
+        assert_eq!(wrap_with(&many, 40.0, fit).len(), 2001, "past it, lines");
+        let long = "x".repeat(5000);
+        assert_eq!(wrap_lines(&long, 0.5, fit, 10).len(), 11, "or pieces of one word");
+    }
+
+    /// A long word costs measures of about its own length, not of the rest of the word for each
+    /// piece, even in a box narrower than one of its letters (#2346: a layout text's box can be).
+    #[test]
+    fn a_long_word_in_a_narrow_box_measures_little() {
+        let word = "x".repeat(5000);
+        for w in [0.5, 4.0, 40.0] {
+            let measured = std::cell::Cell::new(0usize);
+            let lines = wrap_lines(
+                &word,
+                w,
+                |t| {
+                    measured.set(measured.get() + t.chars().count());
+                    width_mm(t, 7.0, false)
+                },
+                usize::MAX,
+            );
+            assert_eq!(lines.concat(), word, "nothing lost at {w} mm");
+            assert!(lines.iter().all(|l| l.chars().count() == 1 || width_mm(l, 7.0, false) <= w), "every piece fits at {w} mm");
+            assert!(measured.get() < 20 * word.len(), "{} letters measured at {w} mm", measured.get());
+        }
     }
 
     #[test]

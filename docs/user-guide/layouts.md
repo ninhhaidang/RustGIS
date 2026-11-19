@@ -385,7 +385,7 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   legend title runs off the page, or a text element has more lines than its height allows.
   The notice counts and names the affected elements with their IDs. A line may extend beyond
   its element's width while remaining on the page; that alone is not clipped. Reduce the size,
-  add line breaks, or resize or move the element to keep all its text.
+  add line breaks, turn on **Wrap to the box**, or resize or move the element to keep all its text.
 - **Text** and **Dynamic Text**: `{date}`, `{time}`, `{scale}`, `{map}`, `{crs}`, `{page}`,
   `{pages}`, `{pageName}` and `{layout}` fill in when the page is drawn; the Format pane's
   **Insert Dynamic Text** menu, under the text, lists each with what it shows. The text, its
@@ -420,6 +420,17 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   before; its selection and handles follow the turned box. Every export draws it turned (PNG, PDF,
   GeoPDF, SVG). Scripts set `"rotation": 90` on `layout.addElement` and `layout.update`; an angle
   outside -180 to 180 is kept as the same turn within it (450 is 90).
+  **Wrap to the box** breaks a text into lines at spaces to fit the width of its box, for a note,
+  a source line or a caption: the lines follow the box when it is resized and the text when it is
+  edited or its size changes, so there are no line breaks to put in by hand. It is off by default,
+  so a text breaks lines only where it has a line break, as before. Dynamic text wraps once filled
+  in, the text's own line breaks are kept, a word wider than the box (a long address) is broken
+  across lines, and a turned text wraps to the width of its unturned box. The layout view and
+  every export (PNG, PDF, SVG) break the same lines. Spaces running together in a wrapped text
+  are drawn as one, and none are kept at a line's start or end. Lines that don't fit the box's
+  height are left out, and the export notice above names the text. Scripts set `"wrap": true` on
+  `layout.addElement` and `layout.update`. A project with a wrapped text needs this release or a
+  later one to open.
   Scripts give the family's name: `"font": "Garamond"`, with `"fallback": "serif"` if wanted;
   `labels.fonts` lists the installed families. The project keeps the name, never a file. A PDF
   sets its text in the letters' own outlines, so it shows the family wherever it is opened, and

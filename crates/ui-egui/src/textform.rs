@@ -23,6 +23,8 @@ pub struct Fields<'a> {
     pub italic: Option<&'a mut bool>,
     /// How the lines line up: within a layout text's box, or in a text graphic's block.
     pub align: Option<&'a mut TextAlign>,
+    /// Broken into lines to fit its box's width (#2346): a layout text's.
+    pub wrap: Option<&'a mut bool>,
     /// Points between letters, from −5 (tighter) to 50.
     pub letter_spacing: Option<&'a mut f64>,
     /// Sans-serif or serif: a layout text's (a text graphic is drawn in the map's sans); with
@@ -51,6 +53,7 @@ pub struct Settled {
     pub bold: bool,
     pub italic: bool,
     pub align: bool,
+    pub wrap: bool,
     /// The letter spacing changed and was let go, as the size.
     pub letter_spacing: bool,
     /// Another family was picked.
@@ -161,6 +164,18 @@ pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&
                 })
                 .response
                 .labelled_by(input_label.id);
+            ui.end_row();
+        }
+        if let Some(w) = f.wrap {
+            let input_label = ui.label(tl!("Wrap to the box"));
+            // Named for assistive technology, as its label sits in the other column.
+            let r = ui
+                .checkbox(w, "")
+                .labelled_by(input_label.id)
+                .on_hover_text(tl!("Break the text into lines at spaces to fit the width of its box"));
+            let on = *w;
+            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, tl!("Wrap to the box")));
+            out.wrap = r.changed();
             ui.end_row();
         }
         if let Some(ls) = f.letter_spacing {
@@ -310,6 +325,9 @@ mod tests {
         letter_spacing: f64,
         /// Whether the style (colour, boldness, italic, alignment, letter spacing) is offered.
         styled: bool,
+        wrap: bool,
+        /// Whether wrapping is offered, as a layout text's form offers it.
+        wraps: bool,
         settled: Vec<&'static str>,
     }
 
@@ -329,6 +347,7 @@ mod tests {
                         bold: f.styled.then_some(&mut f.bold),
                         italic: f.styled.then_some(&mut f.italic),
                         align: f.styled.then_some(&mut f.align),
+                        wrap: f.wraps.then_some(&mut f.wrap),
                         letter_spacing: f.styled.then_some(&mut spacing),
                         font: None,
                         font_name: None,
@@ -343,6 +362,7 @@ mod tests {
                     (s.bold, "bold"),
                     (s.italic, "italic"),
                     (s.align, "align"),
+                    (s.wrap, "wrap"),
                     (s.letter_spacing, "letterSpacing"),
                 ] {
                     if on {
@@ -390,6 +410,25 @@ mod tests {
         h.run();
         assert!(h.state().bold);
         assert_eq!(h.state().settled, ["bold"]);
+    }
+
+    /// "Wrap to the box" shows only where the text can wrap (a layout's, #2346), not on a text
+    /// graphic; ticking it is settled at once.
+    #[test]
+    fn wrap_shows_only_when_lent_and_is_settled() {
+        let mut h = harness(Form { text: "T".into(), size: 12.0, styled: true, ..Form::default() });
+        h.run();
+        assert!(h.query_by_label("Wrap to the box").is_none(), "a text graphic doesn't wrap");
+        let mut h = harness(Form { text: "T".into(), size: 12.0, styled: true, wraps: true, ..Form::default() });
+        h.run();
+        h.get_by_role_and_label(Role::CheckBox, "Wrap to the box").click();
+        h.run();
+        assert!(h.state().wrap);
+        assert_eq!(h.state().settled, ["wrap"]);
+        h.get_by_role_and_label(Role::CheckBox, "Wrap to the box").click();
+        h.run();
+        assert!(!h.state().wrap);
+        assert_eq!(h.state().settled, ["wrap", "wrap"]);
     }
 
     /// Italic, alignment and letter spacing show only where the text has them, under the same
