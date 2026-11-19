@@ -2050,10 +2050,18 @@ impl Session {
                 let over = self.undo.len().saturating_sub(UNDO_LIMIT);
                 self.undo.drain(..over);
             }
-            // Freed: by the copy (none left), or because the history moved on.
-            _ => {
+            // Not taken by a copy, but the history changed while a background edit ran (another
+            // edit, Undo, trimming): the steps can't follow on from it. Rare, and not about making
+            // room, so said each time.
+            Some(_) => {
+                let template = "Undo history set aside for a background edit of {layer} is dropped ({count} Undo or Redo steps), as the Undo history changed while the edit ran.";
+                let args = [("count", count.to_string().into()), ("layer", name.to_string().into())];
+                self.notify_text(notice_text::NoticeText::format(template, args), false);
+            }
+            // Freed by the edit's copy (the hook took them).
+            None => {
                 if self.undo_memory.say_room() {
-                    let template = "Memory is nearly full: older Undo steps are dropped to make room for edits ({count} before editing {layer}). An edit that still doesn't fit is refused.";
+                    let template = "Memory is nearly full: Redo steps, then the oldest Undo steps, are dropped to make room for edits ({count} before editing {layer}). An edit that still doesn't fit is refused.";
                     let args = [("count", count.to_string().into()), ("layer", name.to_string().into())];
                     self.notify_text(notice_text::NoticeText::format(template, args), false);
                 }

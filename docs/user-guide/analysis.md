@@ -1582,15 +1582,17 @@ computer's memory. When it doesn't fit, Redo steps are set aside first (the edit
 anyway), then the oldest Undo steps. They are freed only once the edit starts copying; an edit
 that fails before that, or is cancelled before it starts copying, gives them back, unless the
 project was changed while it ran in the background. One that fails after it started copying has
-used them, as a finished edit would have. A message says when steps are freed, the
-first time in a project. An edit that wouldn't fit even with no Undo
-history is refused before anything changes, and the message gives the size of the copy and what is
-held. An edit the desktop runs in the background is checked when it starts; one that needs Undo
+used them, as a finished edit would have. A message says when steps are freed to make room, the
+first time in a project, and each time steps set aside for a background edit are freed because the
+Undo history changed while it ran. Undo and Redo copy nothing and aren't checked. An edit that
+wouldn't fit even with no Undo history is refused before anything changes, and the message gives
+the size of the copy and what is held. An edit the desktop runs in the background is checked when it starts; one that needs Undo
 steps set aside while another such edit is still running is refused, to run again once that one
 has finished. Edits made by a
-script, model, task or plugin aren't checked, nor is reloading or repairing a layer's data, and the
-web app doesn't check, as it can't read the memory. Sizes are estimated, counting each text and part
-as the block of memory it takes, so they come out above the bytes themselves.
+script, model, task or plugin aren't checked, nor is Paste Special (it makes a layer of its own) or
+reloading or repairing a layer's data. Nothing is checked where RustGIS can't read the computer's
+memory: in the web app, and on a computer that doesn't report it. Sizes are estimated, counting
+each text and part as the block of memory it takes, so they come out above the bytes themselves.
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster

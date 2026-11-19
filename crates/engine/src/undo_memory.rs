@@ -664,7 +664,8 @@ mod tests {
         let mark = session.notice_mark();
         session.run("layer.addDataText", &json!({"fileName": "third.csv", "text": "a\n1\n"})).unwrap();
         let notices = session.notices_since(mark);
-        assert!(notices.iter().any(|n| n.text.contains("(3 before editing calc)")), "{notices:?}");
+        assert!(notices.iter().any(|n| n.text.contains("background edit of calc is dropped (3 Undo or Redo steps)")), "{notices:?}");
+        assert!(!notices.iter().any(|n| n.text.contains("make room")), "{notices:?}");
         assert_eq!(session.undo_depth(), 2, "only the two later steps");
     }
 
@@ -729,6 +730,27 @@ mod tests {
         assert!(err.contains("nothing selected"), "{err}");
         assert_eq!(session.undo_depth(), 2, "Move that changes nothing keeps the history");
         assert!(!session.notices_since(mark).iter().any(|n| n.text.contains("make room")));
+    }
+
+    /// Undo and Redo copy no rows and aren't checked (they are registered as `.view()`, so they
+    /// don't count as edits): they run when even one copy of the active layer doesn't fit, as the
+    /// way back from an edit (#2431).
+    #[test]
+    fn undo_and_redo_run_when_an_edit_would_not_fit() {
+        let mut session = session(4096);
+        session.undo_memory.limit = 1 << 30;
+        session.undo_memory.memory = None;
+        for text in ["b", "c"] {
+            edit(&mut session, &text.repeat(4096));
+        }
+        session.active_layer = Some(session.map().layer_by_name("rows").unwrap().id);
+        session.undo_memory.memory = Some(4);
+        assert!(session.run("edit.setValue", &json!({"layer": "rows", "row": 0, "field": "text", "value": "d"})).is_err());
+        session.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(value(&session), &Value::Text("b".repeat(4096)));
+        session.run("edit.redo", &json!({})).unwrap();
+        assert_eq!(value(&session), &Value::Text("c".repeat(4096)));
+        assert_eq!((session.undo_depth(), session.can_redo()), (2, false));
     }
 
     #[test]
