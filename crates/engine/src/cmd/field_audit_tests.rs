@@ -327,6 +327,113 @@ fn roads(gpkg: &Path) -> i64 {
     rusqlite::Connection::open(gpkg).unwrap().query_row("SELECT count(*) FROM roads", [], |r| r.get(0)).unwrap()
 }
 
+/// A pre-origin field archive retains full-table descriptors on its clipped copies. Opening
+/// the same archive as a field or project package must disable both write-back paths.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn pre_origin_field_package_never_saves_to_its_home_tables() {
+    use rustgis_map::source::{PostgisEdit, PostgisOrigin};
+
+    let temp = Temp::new("pre-origin-extension");
+    let gpkg = roads_gpkg(&temp.0);
+    let mut home = Session::new(Project::new("Home"));
+    home.run("gpkg.addLayer", &json!({"path": gpkg, "table": "roads", "name": "R"})).unwrap();
+    let link = home.map().layers[0].gpkg.clone().unwrap();
+    // Give the fixture both edit descriptors so the test needs only one local table.
+    let postgis = PostgisEdit {
+        origin: PostgisOrigin {
+            database: "postgres:host=127.0.0.1 port=1 dbname=gis".into(),
+            table: "roads".into(),
+            family: None,
+            crs: None,
+        },
+        key: "fid".into(),
+        srid: 4326,
+        writable: true,
+        condition: None,
+        limit: 0,
+        versions: link.versions.clone(),
+    };
+    let (_, out) = package(&mut home, &json!({"name": "Site", "extent": [0.5, 19.0, 3.5, 21.0]})).unwrap();
+
+    // Model the old writer's one-map project, without an origin and with the stale links.
+    let mut legacy = phone(&temp, &out, "fixture").project;
+    legacy.field_origin = None;
+    legacy.maps[0].layers[0].gpkg = Some(link);
+    legacy.maps[0].layers[0].postgis = Some(postgis);
+    let text = serde_json::to_string(&legacy).unwrap();
+    let raw: Value = serde_json::from_str(&text).unwrap();
+    assert!(raw.get("field_origin").is_none() && raw.get("origin_id").is_none());
+    let bytes = rustgis_data::zip::write(&[
+        ("Site.rgis".into(), text.as_bytes().to_vec()),
+        ("README.txt".into(), b"Site: a RustGIS field package.\n".to_vec()),
+    ])
+    .unwrap();
+
+    let stem = temp.0.file_name().unwrap().to_str().unwrap();
+    let _unpacked = Temp(unpack_dir(stem).unwrap());
+    let field = temp.0.join(format!("{stem}.rgisfield"));
+    let renamed = field.with_extension("rgispkg");
+    std::fs::write(&field, &bytes).unwrap();
+    std::fs::write(&renamed, &bytes).unwrap();
+    let check = |command, params: Value| {
+        let mut opened = Session::new(Project::default());
+        let mark = opened.notice_mark();
+        opened.run(command, &params).unwrap();
+        let layer = &opened.map().layers[0];
+        assert_eq!(layer.dataset.features.len(), 3);
+        assert!(layer.gpkg.is_none());
+        assert!(layer.postgis.is_none());
+        let notices: Vec<_> = opened
+            .notices_since(mark)
+            .iter()
+            .filter(|notice| notice.text.contains("doesn't save to the table"))
+            .map(|notice| notice.text.clone())
+            .collect();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("1 layer(s) of this field project"));
+        for (cmd, provider) in [("gpkg.saveEdits", "GeoPackage"), ("pg.saveEdits", "PostGIS")] {
+            let error = opened.run(cmd, &json!({"layer": "R"})).unwrap_err();
+            assert!(error.contains(&format!("not a {provider} layer loaded for editing")), "{error}");
+        }
+        assert_eq!(roads(&gpkg), 10);
+        notices
+    };
+    let expected = check("project.open", json!({"path": field}));
+    assert_eq!(check("project.open", json!({"path": renamed})), expected);
+    let text = crate::cmd::items::package_text(&bytes).unwrap();
+    assert_eq!(check("project.openText", json!({"text": text, "package": true})), expected);
+}
+
+/// A full table stays editable from both a saved project and an ordinary project package,
+/// even when its map's name ends in the same suffix as a field map.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn ordinary_projects_and_packages_keep_full_table_edit_links() {
+    let temp = Temp::new("full-table");
+    let gpkg = roads_gpkg(&temp.0);
+    let mut home = Session::new(Project::new("Home"));
+    home.map_mut().name = "Home (offline)".into();
+    home.run("gpkg.addLayer", &json!({"path": gpkg, "table": "roads", "name": "R"})).unwrap();
+    let project = temp.0.join("Home.rgis");
+    home.run("project.saveAs", &json!({"path": project})).unwrap();
+    // An offline suffix alone is not the signature of a field package.
+    home.project.name = "Survey".into();
+    let package = temp.0.join("Survey.rgispkg");
+    home.run("project.package", &json!({"path": package})).unwrap();
+
+    for path in [project, package] {
+        let mut opened = Session::new(Project::default());
+        let mark = opened.notice_mark();
+        opened.run("project.open", &json!({"path": path})).unwrap();
+        let layer = &opened.map().layers[0];
+        assert_eq!(layer.dataset.features.len(), 10);
+        let link = layer.gpkg.as_ref().unwrap();
+        assert!(link.versions.changes(&layer.dataset.features).is_empty());
+        assert!(!opened.notices_since(mark).iter().any(|notice| notice.text.contains("doesn't save to the table")));
+    }
+}
+
 /// A GeoPackage layer loaded for editing goes to the field. Its copy holds only the roads in the
 /// area: it mustn't save to the table, where the roads it lacks would be deleted. Its edits come
 /// back by Bring Back, and the table is saved from the home map, whole.
