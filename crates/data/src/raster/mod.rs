@@ -1615,6 +1615,7 @@ fn north_up<B: AsRef<[f32]>>(bands: &[B], w: u32, h: u32, affine: [f64; 6], max:
     Ok((out, ow, oh, GeoTransform { origin_x: min_x, origin_y: max_y, pixel_width: cell, pixel_height: -cell }))
 }
 
+/// Decodes a bounded image and reserves each output band fallibly before converting its pixels.
 fn from_image_unrotated(name: &str, bytes: &[u8], bbox: [f64; 4]) -> Result<Raster> {
     let [w, s, e, n] = bbox;
     if !(w < e && s < n) {
@@ -1630,7 +1631,7 @@ fn from_image_unrotated(name: &str, bytes: &[u8], bbox: [f64; 4]) -> Result<Rast
     reader.limits(limits);
     let img = reader.decode().map_err(|e| DataError::Format(format!("{name}: {e}")))?.into_rgba8();
     let (width, height) = img.dimensions();
-    let mut bands: Vec<Vec<f32>> = (0..4).map(|_| Vec::with_capacity(width as usize * height as usize)).collect();
+    let mut bands = (0..4).map(|_| grid::<f32>(width as usize, height as usize)).collect::<Result<Vec<_>>>()?;
     for px in img.pixels() {
         for (b, v) in bands.iter_mut().zip(px.0) {
             b.push(f32::from(v));
@@ -2570,7 +2571,13 @@ mod scan_tests {
         let e = r.extent();
         assert!((e.min_x - 10.0).abs() < 1e-9 && (e.max_y - 41.0).abs() < 1e-9);
         assert!(r.place([1.0, 1.0, 0.0, 2.0]).is_err() && r.place([0.0, f64::NAN, 1.0, 2.0]).is_err());
-        assert!(from_image("o", &encode(picture(4, 4, true), image::ImageFormat::Png), [0.0, 0.0, 1.0, 1.0], 0.0).unwrap().georeferenced);
+        let placed = from_image("o", &encode(picture(4, 4, true), image::ImageFormat::Png), [0.0, 0.0, 1.0, 1.0], 0.0).unwrap();
+        assert!(placed.georeferenced);
+        assert_eq!(placed.color, ColorHint::Rgb { alpha: true });
+        for (band, expected) in placed.bands.iter().zip([3.0, 2.0, 7.0, 200.0]) {
+            assert_eq!(band.data.len(), 16);
+            assert_eq!(band.data.get(11).copied(), Some(expected));
+        }
     }
 
     #[test]
