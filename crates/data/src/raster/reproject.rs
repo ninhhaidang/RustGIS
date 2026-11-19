@@ -144,6 +144,10 @@ mod tests {
         ds.push(Some(Geometry::Point(Coord::new(7.0, 46.0))), vec![]);
         assert_eq!(ds.lonlat_extent(), ds.extent());
         assert_eq!(ds.extent_to_lonlat(&Extent::EMPTY), Extent::EMPTY);
+        // And a longitude/latitude box asked of it (a selection, a view) is the same box.
+        let asked = Extent::from_points(Coord::new(5.9, 45.8), Coord::new(10.5, 47.8));
+        assert_eq!(ds.extent_from_lonlat(&asked), asked);
+        assert_eq!(ds.extent_from_lonlat(&Extent::EMPTY), Extent::EMPTY);
     }
 
     /// Each system judges what it is given, as its transformer does: Web Mercator writes a latitude
@@ -204,6 +208,24 @@ mod tests {
         assert!(parts[0][0].is_finite() && !parts[0][1].is_finite(), "{out:?}");
         assert_eq!(utm.whole_geometry(&far), None);
         assert!(utm.whole_geometry(&Geometry::Point(Coord::new(9.0, 47.0))).is_some());
+    }
+
+    /// A box partly outside what the target holds gives the box of the part that converts, finite;
+    /// one wholly outside gives an empty box (what `Dataset::extent_from_lonlat` asks of a layer
+    /// in its own system): UTM 32N can't bring back a place on the equator 90° from its central
+    /// meridian, a corner of the first box and the whole of the second.
+    #[test]
+    fn a_box_partly_outside_its_target_keeps_the_part_that_converts() {
+        let utm = Crs::LonLat.to(Crs::Epsg(32632)).unwrap();
+        let t = Crs::Epsg(32632).transformer().unwrap();
+        let lost = Coord::new(99.0, 0.0);
+        assert!(t.from_lonlat(lost).is_none());
+        let partly = utm.extent(&Extent::from_points(Coord::new(3.0, 0.0), lost));
+        assert!(!partly.is_empty() && partly.min_x.is_finite() && partly.max_x.is_finite(), "{partly:?}");
+        // The meridian at 9° E, well inside the zone, is held; the box's own corners are too.
+        assert!(partly.contains(t.from_lonlat(Coord::new(9.0, 0.0)).unwrap()), "{partly:?}");
+        assert!(partly.contains(t.from_lonlat(Coord::new(3.0, 0.0)).unwrap()), "{partly:?}");
+        assert!(utm.extent(&Extent::from_points(lost, lost)).is_empty());
     }
 
     /// A box follows its curved edges: in LV95 the middle of Switzerland's longitude/latitude

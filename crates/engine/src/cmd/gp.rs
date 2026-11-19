@@ -1456,11 +1456,13 @@ fn env_rows(
         .filter(|l| !l.is_raster() && l.selection.is_empty())
         .map(|l| {
             let ds = full.get(&l.name.to_ascii_lowercase()).unwrap_or(&l.dataset);
+            // The extent in the layer's own coordinates, as its features' boxes are.
+            let own = ds.extent_from_lonlat(&e);
             let rows: Vec<usize> = ds
                 .features
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&e)))
+                .filter(|(_, f)| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&own)))
                 .map(|(i, _)| i)
                 .collect();
             (l.name.to_ascii_lowercase(), rows)

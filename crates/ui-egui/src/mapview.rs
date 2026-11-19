@@ -2294,10 +2294,13 @@ pub(crate) fn text_graphic_at(app: &RustGisApp, ctx: &egui::Context, rect: Rect,
     let clip = map.view.clip_distance.map(|d| (map.camera.center_lonlat(), d));
     map.layers.iter().filter(|l| l.graphics && l.selectable && map.draws_at(l, scale) && map.layer_opacity(l) > 0.0).find_map(|l| {
         let drawn = l.drawn_rows(scale);
+        // Boxes in longitude/latitude, as the view distance is measured there: none when the
+        // layer's coordinates can't be converted, as none of it is drawn then.
+        let to_lonlat = l.dataset.lonlat_conversion().ok()?;
         (0..l.dataset.features.len()).rev().filter(|r| drawn.get(*r) == Some(&true)).find_map(|row| {
             let g = l.dataset.features.get(row)?.geometry.as_ref()?;
             if let Some((centre, d)) = clip {
-                let e = g.extent();
+                let e = to_lonlat.extent(&g.extent());
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
                 if e.is_empty() || rustgis_engine::geom::haversine_m(centre, near) > d {
                     return None;
@@ -2322,7 +2325,11 @@ fn text_shown(
     use rustgis_engine::map::graphics;
     let ds = &l.dataset;
     let text = graphics::expand(graphics::label(ds, row)?, tokens);
-    let at = lonlat_to_screen(app, rect, ds.features.get(row)?.geometry.as_ref()?.label_point()?)?;
+    // Its place in longitude/latitude, from the layer's own coordinates (the identity today).
+    let place = ds.features.get(row)?.geometry.as_ref()?.label_point()?;
+    let to_lonlat = ds.lonlat_conversion().ok()?;
+    let place = if to_lonlat.is_identity() { place } else { to_lonlat.point(place)? };
+    let at = lonlat_to_screen(app, rect, place)?;
     let job = label_job(
         &text,
         graphics::font_size(ds, row),

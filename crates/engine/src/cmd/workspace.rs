@@ -589,11 +589,15 @@ pub fn infographic_of(s: &Session, only: Option<&str>) -> Value {
         if only.as_ref().is_some_and(|o| *o != l.name.to_ascii_lowercase()) {
             continue;
         }
+        // The view in the layer's own coordinates, as its features' boxes are.
+        let own = l.dataset.extent_from_lonlat(&e);
         let rows: Vec<usize> = l
             .visible_rows()
             .iter()
             .enumerate()
-            .filter(|(r, v)| **v && l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).is_some_and(|g| g.extent().intersects(&e)))
+            .filter(|(r, v)| {
+                **v && l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).is_some_and(|g| g.extent().intersects(&own))
+            })
             .map(|(r, _)| r)
             .collect();
         let numbers: Vec<Value> = l
@@ -637,8 +641,10 @@ fn snapshot(m: &mut rustgis_map::Map, e: &Extent) -> rustgis_map::Map {
         let features = std::mem::take(&mut l.dataset.features);
         let mut c = l.clone();
         l.dataset.features = features;
+        // The extent in the layer's own coordinates, as its features' boxes are.
+        let own = l.dataset.extent_from_lonlat(e);
         c.dataset.features =
-            l.dataset.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(e))).cloned().collect();
+            l.dataset.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&own))).cloned().collect();
         c.selection.clear();
         // Only part of the rows read: no longer the layer its file's record describes.
         c.synced = None;

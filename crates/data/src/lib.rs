@@ -799,6 +799,20 @@ impl Dataset {
         self.coord_crs().to(raster::Crs::LonLat)
     }
 
+    /// A longitude/latitude box in its own coordinates ([`Dataset::coord_crs`]), as
+    /// [`raster::Reprojection::extent`] converts it: for asking which features a box reaches, once
+    /// for the box rather than once a feature. The box itself while they are longitude/latitude,
+    /// as every dataset's are today. A box partly outside what its system holds gives the box of
+    /// the part that converts, as [`raster::Reprojection::extent`] does; unlike a streamed source's
+    /// `extent_from_lonlat`, it isn't refused. Empty when its system can't be converted, which
+    /// longitude/latitude never fails to be (see [`Dataset::extent_to_lonlat`]).
+    pub fn extent_from_lonlat(&self, e: &Extent) -> Extent {
+        match raster::Crs::LonLat.to(self.coord_crs()) {
+            Ok(to) => to.extent(e),
+            Err(_) => Extent::EMPTY,
+        }
+    }
+
     /// Pushes a feature with the next id, padding/truncating attributes to the schema.
     pub fn push(&mut self, geometry: Option<Geometry>, mut attrs: Vec<Value>) {
         attrs.resize(self.fields.len(), Value::Null);

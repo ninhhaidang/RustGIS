@@ -858,13 +858,18 @@ pub struct WithinReport {
 }
 
 /// Searches like [`within_counted`], also counting shapes refused for invalid latitudes and
-/// shapes measured without vertices whose coordinates are missing or infinite.
+/// shapes measured without vertices whose coordinates are missing or infinite. Shapes are measured
+/// in longitude/latitude, converted from the dataset's own coordinates ([`Dataset::coord_crs`]),
+/// which they are already today; a place that doesn't convert counts as missing.
 pub fn within_report(ds: &Dataset, rows: &[usize], at: Coord, radius_m: f64) -> WithinReport {
     use rustgis_geom::MAX_LAT;
     // A center that's no place (a latitude past ±90°, a coordinate missing) reaches nothing.
     if !(at.x.is_finite() && at.y.abs() <= 90.0 && radius_m >= 0.0) {
         return WithinReport::default();
     }
+    // Nothing reached when its system can't be converted, which longitude/latitude never fails to
+    // be (`Dataset::coord_crs`).
+    let Ok(lonlat) = ds.lonlat_conversion() else { return WithinReport::default() };
     let m = rustgis_geom::lonlat_to_merc(at);
     let k = radius_scale(at);
     let polar_point = at.y.abs() > MAX_LAT;
@@ -880,7 +885,14 @@ pub fn within_report(ds: &Dataset, rows: &[usize], at: Coord, radius_m: f64) -> 
     let mut out: Vec<(usize, f64)> = rows
         .iter()
         .filter_map(|r| {
-            let g = ds.features.get(*r)?.geometry.as_ref()?;
+            let own = ds.features.get(*r)?.geometry.as_ref()?;
+            let converted;
+            let g = if lonlat.is_identity() {
+                own
+            } else {
+                converted = lonlat.geometry(own);
+                &converted
+            };
             let (mut invalid, mut missing) = (false, false);
             g.for_each_coord(|c| {
                 invalid |= c.y.is_finite() && c.y.abs() > 90.0;

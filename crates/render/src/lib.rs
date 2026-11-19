@@ -3686,6 +3686,9 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
         let layer: &rustgis_map::Layer = layer;
         let styler = layer.styler_with(env.at_scale(Some(scale)));
         let mut here: Vec<(f64, UprightMarker)> = Vec::new();
+        // Boxes in longitude/latitude for the view distance, from the dataset's own coordinates:
+        // none is drawn when they can't be converted, as `within_view_distance` draws none.
+        let to_lonlat = clip.and_then(|_| layer.dataset.lonlat_conversion().ok());
         for (row, g) in layer.projected_cache().iter().enumerate() {
             if rows.get(row) != Some(&true) {
                 continue;
@@ -3695,7 +3698,10 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
                 Some(Geometry::MultiPoint(v)) => v,
                 _ => continue,
             };
-            let lonlat = clip.and_then(|_| layer.dataset.features.get(row).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()));
+            let lonlat = clip.and_then(|_| {
+                let own = layer.dataset.features.get(row).and_then(|f| f.geometry.as_ref())?.extent();
+                Some(to_lonlat.as_ref().map_or(rustgis_geom::Extent::EMPTY, |t| t.extent(&own)))
+            });
             if let (Some((centre, d)), Some(e)) = (clip, lonlat) {
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
                 if e.is_empty() || rustgis_geom::haversine_m(centre, near) > d {
@@ -4060,9 +4066,17 @@ impl Drop for TiltGlint {
 /// map's view distance, lon/lat): one reaching into it (its box's nearest point within the
 /// distance) is kept, one with no geometry isn't.
 pub(crate) fn within_view_distance(rows: &mut [bool], dataset: &rustgis_data::Dataset, centre: Coord, d: f64) {
+    // Each box in longitude/latitude, from the dataset's own coordinates: none is drawn when they
+    // can't be converted, as `Layer::projected_in` draws none.
+    let to = dataset.lonlat_conversion().ok();
     for (r, keep) in rows.iter_mut().enumerate() {
         if *keep {
-            let e = dataset.features.get(r).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()).filter(|e| !e.is_empty());
+            let e = dataset
+                .features
+                .get(r)
+                .and_then(|f| f.geometry.as_ref())
+                .and_then(|g| to.as_ref().map(|t| t.extent(&g.extent())))
+                .filter(|e| !e.is_empty());
             *keep = e.is_some_and(|e| {
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
                 rustgis_geom::haversine_m(centre, near) <= d

@@ -185,7 +185,9 @@ fn by_rect(s: &mut Session, p: &Value) -> CmdResult {
     if !matches!(s.map().flat(), rustgis_map::projection::Flat::Mercator) {
         for (id, rows) in &mut hits {
             if let Some(l) = s.map().layer(*id) {
-                rows.retain(|r| l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).is_some_and(|g| g.extent().intersects(&ll)));
+                // The rectangle in the layer's own coordinates, as its features' boxes are.
+                let own = l.dataset.extent_from_lonlat(&ll);
+                rows.retain(|r| l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).is_some_and(|g| g.extent().intersects(&own)));
             }
         }
         hits.retain(|(_, rows)| !rows.is_empty());
