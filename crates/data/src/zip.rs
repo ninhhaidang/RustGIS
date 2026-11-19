@@ -248,23 +248,22 @@ fn read_within(bytes: &[u8], want: impl Fn(&str) -> bool, budget: usize, spreads
     if count > MAX_ENTRIES {
         return Err(Failure::Member(format!("the archive holds {count} entries; at most {MAX_ENTRIES} can be read")));
     }
-    let mut p = u32_at(bytes, add(&[eocd, 16]).ok_or_else(bad)?).ok_or_else(bad)?;
-    // Like calamine's ZIP reader, allow a preamble whose bytes weren't included in the
-    // recorded offsets, as well as archives whose offsets already include those bytes.
-    let central_size = u32_at(bytes, add(&[eocd, 12]).ok_or_else(bad)?).ok_or_else(bad)?;
-    let central_end = if spreadsheet { eocd.saturating_sub(3) } else { eocd };
-    let abutting = eocd.checked_sub(central_size).filter(|start| *start >= p && (!spreadsheet || *start < central_end));
-    let central = if count == 0 {
-        p
-    } else if let Some(start) = abutting.filter(|start| u32_at(bytes, *start) == Some(0x0201_4B50)) {
-        start
+    let recorded = u32_at(bytes, add(&[eocd, 16]).ok_or_else(bad)?).ok_or_else(bad)?;
+    let central = if spreadsheet && count != 0 {
+        // Like calamine's ZIP reader, allow a preamble not included in recorded offsets.
+        let size = u32_at(bytes, add(&[eocd, 12]).ok_or_else(bad)?).ok_or_else(bad)?;
+        let end = eocd.saturating_sub(3);
+        let is_header = |start| u32_at(bytes, start) == Some(0x0201_4B50);
+        eocd.checked_sub(size)
+            .filter(|&start| start >= recorded && start < end && is_header(start))
+            // A digital-signature trailer may separate the directory from EOCD.
+            .or_else(|| (recorded..end).find(|&start| is_header(start)))
+            .ok_or_else(bad)?
     } else {
-        // A digital-signature trailer may separate the directory from EOCD. Match
-        // calamine's ZIP lookup: otherwise take the first central header from p.
-        (p..central_end).find(|start| u32_at(bytes, *start) == Some(0x0201_4B50)).ok_or_else(bad)?
+        recorded
     };
-    let offset = central.checked_sub(p).ok_or_else(bad)?;
-    p = central;
+    let offset = central.checked_sub(recorded).ok_or_else(bad)?;
+    let mut p = central;
     let mut out = Vec::new();
     for _ in 0..count {
         if spreadsheet && crate::progress::check().is_err() {
@@ -382,6 +381,16 @@ mod tests {
                 Err(Failure::Member(m)) if m.contains("too large: it expands to 5 bytes, past the 4 bytes left to expand")
             ));
         }
+    }
+
+    #[test]
+    fn only_spreadsheet_reads_infer_unrecorded_zip_preambles() {
+        let entries = [("a.txt".to_string(), b"hello".to_vec())];
+        let archive = write(&entries).unwrap();
+        assert_eq!(read(&archive).unwrap(), entries);
+        let prefixed = [b"preamble".as_slice(), &archive].concat();
+        assert!(read(&prefixed).is_err());
+        assert!(matches!(read_all_within(&prefixed, 5), Ok(actual) if actual == entries));
     }
 
     #[test]

@@ -122,12 +122,19 @@ pub(super) fn check(bytes: &[u8], cell_limit: usize, byte_limit: usize) -> Resul
         if let Some(c) = cell.as_mut() {
             match &event {
                 Event::Start(e) => {
+                    let name = e.name();
+                    if matches!(name.as_ref(), "table:table-cell" | "table:covered-table-cell") {
+                        return Err(xml_error("nested cell"));
+                    }
                     c.depth = add(c.depth, 1, bytes.len())?;
-                    if e.name().as_ref() == "office:annotation" && c.annotation.is_none() {
+                    if name.as_ref() == "office:annotation" {
+                        if c.annotation.is_some() {
+                            return Err(xml_error("nested annotation"));
+                        }
                         c.annotation = Some(c.depth);
                     }
                     if c.string && c.annotation.is_none() {
-                        let n = if e.name().as_ref() == "text:s" { repeat(e, "text:c", byte_limit)? } else { 1 };
+                        let n = if name.as_ref() == "text:s" { repeat(e, "text:c", byte_limit)? } else { 1 };
                         c.bytes = add(c.bytes, n, byte_limit)?;
                     }
                 }

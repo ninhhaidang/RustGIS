@@ -937,6 +937,23 @@ mod tests {
     }
 
     #[test]
+    fn ods_rejects_malformed_nesting_but_preserves_ordinary_annotated_text() {
+        let book = |content| {
+            ods(&format!(
+                r#"<table:table table:name="S"><table:table-row><table:table-cell office:string-value="message"/></table:table-row><table:table-row><table:table-cell office:value-type="string">{content}</table:table-cell></table:table-row></table:table>"#
+            ))
+        };
+        refused_before_calamine(&book("<office:annotation><office:annotation/></office:annotation>"), "nested annotation");
+        for cell in ["<table:table-cell/>", "<table:covered-table-cell/>"] {
+            refused_before_calamine(&book(cell), "nested cell");
+        }
+        let clean = book("<office:annotation><text:p>note</text:p></office:annotation><text:p><text:span>value</text:span></text:p>");
+        let (ds, report) = read(&clean, "book", None, &CsvOptions::default()).unwrap();
+        assert_eq!(ds.value(0, 0), &Value::Text("value".into()));
+        assert!(report.messages.is_empty());
+    }
+
+    #[test]
     fn ordinary_repeats_preambles_and_mixed_case_members_keep_values_and_notices() {
         for null in [false, true] {
             let note = if null { "&lt;Null&gt;" } else { " kept " };
