@@ -505,6 +505,12 @@ fn patch_sized(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType, size: f3
         GeometryType::Point => {
             let rad = size / 2.0;
             let c = r.center();
+            // An image, without the symbol's colours, as on the map; one that doesn't draw is the
+            // circle below, as there.
+            if let Some(image) = crate::markerimages::image(p.ctx(), s.marker) {
+                image.paint(p, c, size);
+                return;
+            }
             match s.marker {
                 Marker::Square => {
                     p.rect_filled(Rect::from_center_size(c, vec2(rad * 1.8, rad * 1.8)), 0.0, c32(s.fill));
@@ -5761,8 +5767,9 @@ pub(crate) fn stroke_classes(r: &Renderer) -> Vec<(ClassRef, String, Symbol)> {
 }
 
 /// A stroke's markers along the editor's preview line, from `x.0` to `x.1` at `y`, scaled by `k`:
-/// markers as dots (squares as squares), hash marks as ticks, `w` wide. A sketch, not the map's
-/// drawing: other shapes and outlines aren't shown, and inner placements are marked at the middle.
+/// markers as dots (squares as squares, images as themselves, unturned), hash marks as ticks, `w`
+/// wide. A sketch, not the map's drawing: other shapes and outlines aren't shown, and inner
+/// placements are marked at the middle.
 fn marker_preview(ui: &Ui, m: &LineMarkers, x: (f32, f32), y: f32, k: f32, c: egui::Color32, w: f32) {
     let mut xs = Vec::new();
     if m.at.has(Placements::INTERVAL) {
@@ -5783,7 +5790,13 @@ fn marker_preview(ui: &Ui, m: &LineMarkers, x: (f32, f32), y: f32, k: f32, c: eg
         xs.push((x.0 + x.1) / 2.0);
     }
     let half = (m.size * k).max(1.0) / 2.0;
+    // An image, looked up once for all its places.
+    let image = if let LineMark::Marker(mark) = m.mark { crate::markerimages::image(ui.ctx(), mark) } else { None };
     for at in xs {
+        if let Some(image) = &image {
+            image.paint(ui.painter(), pos2(at, y), 2.0 * half);
+            continue;
+        }
         match m.mark {
             LineMark::Hash => {
                 let (sin, cos) = m.angle.to_radians().sin_cos();
@@ -7574,6 +7587,36 @@ pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A point layer given an image by `layer.marker` shows it in its patch (the Layers row and the
+    /// symbol editor's swatch), and a stroke's image marker shows on the stroke editor's line, not
+    /// circles (#2266).
+    #[test]
+    fn a_picture_marker_shows_in_its_patch() {
+        let png =
+            "iVBORw0KGgoAAAANSUhEUgAAABgAAAAMCAYAAAB4MH11AAAAIElEQVR4nGO4ICPznxQsE3OBJMwwasGoBaMWjFpAGAMALk9r//PjorkAAAAASUVORK5CYII=";
+        let mut app = RustGisApp::with_sample();
+        app.run("layer.marker", json!({"layer": "Cities", "image": png, "size": 14})).unwrap();
+        let l = app.session.map().layer_by_name("Cities").unwrap();
+        let (s, g) = (l.renderer.base_symbol(), l.geometry_type());
+        let ctx = egui::Context::default();
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(18.0, 14.0));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| patch(ui.painter(), r, &s, g));
+        // The image alone: one mesh on its own texture (not the font atlas's), and no circle.
+        let image = |c: &egui::epaint::ClippedShape| matches!(&c.shape, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default());
+        assert_eq!(out.shapes.len(), 1);
+        assert!(out.shapes.iter().all(image));
+        // On the stroke editor's line: once at its middle, once more at each end.
+        let one = LineMarkers { mark: LineMark::Marker(s.marker), size: 12.0, at: Placements::MIDDLE, ..LineMarkers::default() };
+        let ends = LineMarkers { at: Placements::VERTICES, ..one };
+        for (m, n) in [(one, 1), (ends, 2)] {
+            let line = |ui: &mut Ui| marker_preview(ui, &m, (0.0, 80.0), 7.0, 1.0, egui::Color32::RED, 1.0);
+            let shapes = ctx.run_ui(egui::RawInput::default(), line).shapes;
+            assert_eq!((shapes.len(), shapes.iter().all(image)), (n, true), "{:?}", m.at);
+        }
+        // (Its texture's upload isn't handed to a renderer here.)
+        out.textures_delta.clear();
+    }
 
     /// The stroke and fill editors send an image back with every change, so it is kept; one that
     /// can't be drawn (a file's, not kept or not an image) becomes the circle it showed as, which

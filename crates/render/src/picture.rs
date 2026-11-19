@@ -144,7 +144,7 @@ fn with_marker<R>(p: Picture, f: impl FnOnce(&Pixmap, f32) -> R) -> Option<R> {
     MARKERS_DECODED.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.images.contains_key(&p) {
-            let img = png_or_jpeg(p.base64()).then(|| decode_sized(p.base64(), MARKER_SIDE)).flatten();
+            let img = marker_image(p, MARKER_SIDE);
             let size = img.as_ref().map_or(0, |(i, _)| i.data().len());
             // Evict the oldest (not all of them) to stay within the count and memory budget.
             while cache.images.len() >= MARKERS || (cache.bytes + size > MARKERS_BYTES && !cache.images.is_empty()) {
@@ -159,6 +159,13 @@ fn with_marker<R>(p: Picture, f: impl FnOnce(&Pixmap, f32) -> R) -> Option<R> {
         }
         cache.images.get(&p)?.as_ref().map(|(img, aspect)| f(img, *aspect))
     })
+}
+
+/// Picture marker `p`'s image at most `side` pixels per side, and its height for its width; `None`
+/// where it's drawn as a circle (no image, whose base64 is empty, not a PNG or JPEG, or one that
+/// doesn't decode).
+pub(crate) fn marker_image(p: Picture, side: u32) -> Option<(Pixmap, f32)> {
+    png_or_jpeg(p.base64()).then(|| decode_sized(p.base64(), side)).flatten()
 }
 
 /// Picture marker `p`'s height for its width; `None` if its image doesn't decode (it's drawn as a
@@ -216,6 +223,25 @@ mod tests {
         let gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
         for not in [gif, "iVBORw0KGgoAAAAé", "", "%%%", "bm90IGFuIGltYWdl"] {
             assert!(!png_or_jpeg(not) && !readable(not), "{not}");
+        }
+    }
+
+    /// A marker's image comes scaled down to the side asked for, keeping its proportions from
+    /// before; one the map draws as a circle gives none.
+    #[test]
+    fn a_marker_image_fits_the_side_asked_for() {
+        let mut bytes = Vec::new();
+        image::RgbImage::from_pixel(200, 50, image::Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let wide = Picture::new(&base64::engine::general_purpose::STANDARD.encode(&bytes));
+        let (img, aspect) = marker_image(wide, 64).unwrap();
+        assert_eq!((img.width(), img.height(), aspect), (64, 16, 0.25));
+        // Smaller than the side: as it is.
+        assert_eq!(marker_image(wide, 400).map(|(i, _)| (i.width(), i.height())), Some((200, 50)));
+        let gif = Picture::new("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+        for none in [Picture::default(), gif, Picture::new("bm90IGFuIGltYWdl")] {
+            assert!(marker_image(none, 64).is_none());
         }
     }
 
