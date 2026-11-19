@@ -53,6 +53,13 @@ pub fn thread_scratch() -> usize {
     scaled(physical().map(|m| m / 4), SCRATCH_FLOOR, SCRATCH_CEILING, 1)
 }
 
+/// Feature storage kept only by undo and redo snapshots. On the desktop the history can use
+/// a quarter of physical memory, from 256 MiB up to 4 GiB. The browser and unknown hosts use
+/// the floor.
+pub fn undo_history() -> usize {
+    scaled(physical(), 256 << 20, usize::try_from(4_u64 << 30).unwrap_or(usize::MAX), 1)
+}
+
 /// A limit of units costing `bytes` each: as many as [`SHARE`] of `memory` holds, within `floor`
 /// and `ceiling`; `floor` when the memory isn't known.
 pub fn scaled(memory: Option<u64>, floor: usize, ceiling: usize, bytes: u64) -> usize {

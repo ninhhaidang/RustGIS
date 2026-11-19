@@ -1560,7 +1560,13 @@ below the web app's fixed limits and never above a ceiling.
 | `densityCells`: cells of a Kernel Density raster | 16 million | 16 bytes a cell | 512 million |
 | `bufferBytes`: memory for Buffer's output and Select Layer By Location's buffered selectors | 512 MiB (128 MiB in the web app) | the bytes themselves | 8 GiB |
 | `threadScratchBytes`: working memory a tool's threads take together, beyond one thread's | 256 MiB | a sixteenth of memory, on top of the quarter | 4 GiB |
+| `undoBytes`: estimated feature rows, attributes and geometry kept only in Undo and Redo | 256 MiB | the bytes themselves | 4 GiB |
 | `projectBytes`: the largest project file saved or opened (see [Projects](workspace.md#projects)) | 512 MiB | 5 bytes for each byte of the file (about 800 MiB for every 16 GB) | 4 GiB |
+
+Undo history keeps up to 40 steps. When the estimated memory for saved copies of features
+exceeds `undoBytes`, RustGIS drops the oldest Undo steps first, then the farthest Redo steps.
+It keeps the newest Undo step even if that step alone exceeds the limit. The first time this
+happens in a project, a message says so. Edits can still create a temporary full copy of a layer.
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster

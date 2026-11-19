@@ -44,6 +44,7 @@ pub mod service_tokens;
 pub mod sources;
 #[cfg(test)]
 mod tests;
+mod undo_memory;
 
 pub use project::Project;
 pub use rustgis_analysis as analysis;
@@ -619,8 +620,9 @@ struct ProjectFiles {
 }
 
 /// An undo or redo step: the project before it, the layout open then, its label, who made it,
-/// and which state of the project it is ([`Session::dirty`]). File origins accompany changes
-/// made by the command only: undoing an ordinary edit must not undo a subsequent Save As.
+/// which state of the project it is ([`Session::dirty`]), and the identities of its feature
+/// allocations for memory accounting. File origins accompany changes made by the command only:
+/// undoing an ordinary edit must not undo a subsequent Save As.
 type Step = (
     Project,
     Option<usize>,
@@ -630,6 +632,7 @@ type Step = (
     Option<ProjectFiles>,
     (policy::Trust, policy::Trust, policy::Trust),
     construction::Cache,
+    undo_memory::Allocations,
 );
 
 /// What a project holds in the session beside itself: what [`Session::clear_history`] forgets
@@ -898,6 +901,7 @@ pub struct Session {
     /// session's, so a step that added or moved layouts opens the right one when undone).
     undo: Vec<Step>,
     redo: Vec<Step>,
+    undo_memory: undo_memory::Budget,
     /// The key the next command's undo step merges by ([`Session::merge_undo`]), and the key the
     /// last step was made under.
     merge: Option<String>,
@@ -1326,6 +1330,7 @@ impl Session {
             saved_over: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_memory: undo_memory::Budget::default(),
             merge: None,
             merged: None,
             put_aside: None,
@@ -1657,6 +1662,7 @@ impl Session {
     }
 
     /// Shared command bookkeeping for ordinary dispatch and execution of an already pinned retry.
+    /// Trims history once after both the command and its maintenance have recorded their steps.
     pub(crate) fn command_epilogue(&mut self, id: &str, params: &Value, run: impl FnOnce(&mut Self) -> CmdResult) -> CmdResult {
         let outermost = self.depth == 0;
         let _inputs = (outermost && self.log.on()).then(rustgis_data::provenance::Capture::start);
@@ -1668,6 +1674,7 @@ impl Session {
         // Restored on every path, including panics outside `guarded`, so a later notice is not
         // attributed to an aborted command. Mirrors the capture scope's restore-on-drop.
         let previous = std::mem::replace(&mut self.diagnostic_source, source);
+        let history_deferred = std::mem::replace(&mut self.undo_memory.deferred, true);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let notice_mark = self.notice_mark();
             if self.depth > 0 {
@@ -1686,6 +1693,7 @@ impl Session {
             let (at, start) = (project_log::now_ms(), web_time::Instant::now());
             #[cfg(not(target_arch = "wasm32"))]
             let files_before: Vec<String> = self.mbtiles_files().map(str::to_string).collect();
+            let history_before = self.history_position();
             let res = self.with_unread_bools(source, run);
             self.beyond_said = None;
             // Whichever command took its last layer away (removed, undone, the project closed):
@@ -1703,6 +1711,9 @@ impl Session {
                 cmd::terrain_blocks::after_command(self, id);
             }
             self.notice_landed_pixels();
+            if res.is_ok() && !history_deferred && self.history_position() != history_before {
+                self.trim_undo_memory();
+            }
             // And the coordinate systems that needed a missing datum grid, after every command.
             self.say_grid_notes();
             // A plugin's command waiting for its fetches answers `pending` and runs again when they
@@ -1745,6 +1756,7 @@ impl Session {
             res
         }));
         self.diagnostic_source = previous;
+        self.undo_memory.deferred = history_deferred;
         // Every top-level invocation consumes its key, even a refusal or panic before guarded.
         if outermost {
             self.merge = None;
@@ -1828,8 +1840,9 @@ impl Session {
         if token.is_empty() {
             return;
         }
-        for (project, ..) in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            project.discard_import_reservation(token);
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            step.0.discard_import_reservation(token);
+            step.8 = undo_memory::allocations(&step.0);
         }
     }
 
@@ -1915,6 +1928,8 @@ impl Session {
         self.guarded_inner(label, true, false, f)
     }
 
+    /// Commits the snapshot to history only for commands that own an Undo step. Nested guards
+    /// leave memory eviction to the enclosing transaction, which can still fail or replace them.
     fn guarded_inner(
         &mut self,
         label: &'static str,
@@ -2003,7 +2018,18 @@ impl Session {
                     files.identity != self.file_identity || files.path != self.path || files.opened_package != self.opened_package
                 });
                 if key.is_none() || key != self.merged || self.undo.is_empty() {
-                    self.undo.push((snap, open_layout, label, self.actor.clone(), state, files, trust.clone(), construction_snapshot));
+                    let allocations = undo_memory::allocations(&snap);
+                    self.undo.push((
+                        snap,
+                        open_layout,
+                        label,
+                        self.actor.clone(),
+                        state,
+                        files,
+                        trust.clone(),
+                        construction_snapshot,
+                        allocations,
+                    ));
                     if self.undo.len() > UNDO_LIMIT {
                         self.undo.remove(0);
                     }
@@ -2096,6 +2122,11 @@ impl Session {
         if self.depth == 0 {
             self.put_aside = None;
             self.published_syncs.clear();
+            // Frame maintenance and some policy adapters run a guard without command dispatch.
+            // Otherwise the command epilogue trims once, after any maintenance steps.
+            if res.is_ok() && !self.undo_memory.deferred && self.state != state {
+                self.trim_undo_memory();
+            }
         }
         self.fix_active_layer();
         self.revision = self.revision.wrapping_add(1);
@@ -2996,6 +3027,7 @@ impl Session {
     /// front end setting up how the project starts): what [`PutAside`] holds, dropped.
     pub fn clear_history(&mut self) {
         drop(self.take_project_state());
+        self.undo_memory.clear();
         self.project_starts = self.project_starts.wrapping_add(1);
         // A state of its own: undo back past a replacement made within a command (a task's step)
         // reaches a state of the project before, which isn't this one's saved state.
@@ -3033,9 +3065,18 @@ impl Session {
         self.states
     }
 
+    /// Applies the shared budget after a committed edit or a history move changes what the
+    /// stacks hold. Nested edits and savepoints can still roll back or discard temporary steps.
+    fn trim_undo_memory(&mut self) {
+        if let Some(notice) = self.undo_memory.trim(&self.project, &mut self.undo, &mut self.redo) {
+            self.notify_text(notice, false);
+        }
+    }
+
+    /// Restores the newest Undo snapshot, keeping the outgoing project's allocations for Redo.
     pub(crate) fn undo(&mut self) -> bool {
         self.merged = None;
-        let Some((p, saved, label, actor, state, mut files, trust, constructions)) = self.undo.pop() else { return false };
+        let Some((p, saved, label, actor, state, mut files, trust, constructions, _)) = self.undo.pop() else { return false };
         let (open, was) = (self.open_layout_name(), self.active_layout);
         let cur = std::mem::replace(&mut self.project, p);
         let old_constructions = std::mem::replace(&mut self.constructions, constructions);
@@ -3055,14 +3096,26 @@ impl Session {
         self.keep_tile_pick(&cur);
         self.keep_headers_said(&cur);
         self.keep_synced(&cur);
-        self.redo.push((cur, was, label, actor, std::mem::replace(&mut self.state, state), files, old_trust, old_constructions));
+        let allocations = undo_memory::allocations(&cur);
+        self.redo.push((
+            cur,
+            was,
+            label,
+            actor,
+            std::mem::replace(&mut self.state, state),
+            files,
+            old_trust,
+            old_constructions,
+            allocations,
+        ));
         self.touch_all_geometry();
         true
     }
 
+    /// Restores the nearest Redo snapshot, keeping the outgoing project's allocations for Undo.
     pub(crate) fn redo(&mut self) -> bool {
         self.merged = None;
-        let Some((p, saved, label, actor, state, mut files, trust, constructions)) = self.redo.pop() else { return false };
+        let Some((p, saved, label, actor, state, mut files, trust, constructions, _)) = self.redo.pop() else { return false };
         let (open, was) = (self.open_layout_name(), self.active_layout);
         let cur = std::mem::replace(&mut self.project, p);
         let old_constructions = std::mem::replace(&mut self.constructions, constructions);
@@ -3082,7 +3135,18 @@ impl Session {
         self.keep_tile_pick(&cur);
         self.keep_headers_said(&cur);
         self.keep_synced(&cur);
-        self.undo.push((cur, was, label, actor, std::mem::replace(&mut self.state, state), files, old_trust, old_constructions));
+        let allocations = undo_memory::allocations(&cur);
+        self.undo.push((
+            cur,
+            was,
+            label,
+            actor,
+            std::mem::replace(&mut self.state, state),
+            files,
+            old_trust,
+            old_constructions,
+            allocations,
+        ));
         self.touch_all_geometry();
         true
     }

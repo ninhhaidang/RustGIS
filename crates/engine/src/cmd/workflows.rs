@@ -475,6 +475,7 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         "densityCells": rustgis_analysis::max_density_cells(),
         "bufferBytes": rustgis_analysis::max_buffer_bytes(),
         "threadScratchBytes": rustgis_analysis::scratch_budget(),
+        "undoBytes": s.undo_memory.limit,
         "projectBytes": crate::project::max_bytes(),
         // The threads one piece of work uses now, and the cores they come from (#1562).
         "threads": rustgis_data::threads::max(),
