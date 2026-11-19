@@ -476,6 +476,8 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         "bufferBytes": rustgis_analysis::max_buffer_bytes(),
         "threadScratchBytes": rustgis_analysis::scratch_budget(),
         "undoBytes": s.undo_memory.limit,
+        // What the limits follow: the computer, a container's limit, or RUSTGIS_MEMORY_BYTES.
+        "memorySource": rustgis_data::memory::source(),
         "projectBytes": crate::project::max_bytes(),
         "fileBytes": rustgis_data::io::max_bytes(),
         // The threads one piece of work uses now, and the cores they come from (#1562).

@@ -146,3 +146,10 @@ jobs:
           name: overlay-findings
           path: ${{ runner.temp }}/overlay-findings
           if-no-files-found: ignore
+      # The command line's peak memory per workflow, as a multiple of loading alone, against
+      # xtask/memory-limits.txt (xtask/src/memory.rs). It runs the rustgis-cli the tests above
+      # built, so it costs only its own run; on Linux (GNU time), when the tests cover rustgis-cli,
+      # as they do whenever a package it uses changes.
+      - name: Peak memory
+        if: matrix.os == 'ubuntu-latest' && (inputs.packages == '--workspace' || contains(format('{0} ', inputs.packages), '-p rustgis-cli '))
+        run: cargo xtask memory --cli target/debug/rustgis-cli

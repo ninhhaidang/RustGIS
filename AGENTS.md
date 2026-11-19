@@ -134,6 +134,8 @@ the pull request which of these it reaches and why the rest don't apply:
 `cargo xtask ci` (fmt, clippy -D warnings, tests, layers) before every commit.
 `cargo xtask test-hygiene` (also in CI) requires `// test-wait: reason` on timer waits in tests and
 `#[ignore = "reason"]` on ignored tests; prefer completion or progress signals.
+`cargo xtask memory` (in CI on Linux) fails when a command line workflow's peak memory grows past
+its limit in `xtask/memory-limits.txt`; a change that lowers one commits the lower limit with it.
 While you work, `cargo xtask changed` runs the same checks on only the packages your branch changes
 and those that depend on them (and `test-hygiene` on the whole workspace), or everything when a
 changed file such as `Cargo.lock` is outside every package and nothing includes it.

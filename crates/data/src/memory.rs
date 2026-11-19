@@ -14,29 +14,63 @@ pub const SHARE: u64 = 4;
 /// `None` in the browser, or when it can't be read. Also `None` in a fuzzing build (cargo-fuzz sets
 /// `cfg(fuzzing)`), so the limits sit at their floors: a quarter of the runner's memory is more than
 /// the fuzzer's 2 GB memory cap, which a header claiming a vast image would reach by design (#1952).
+///
+/// On the desktop, [`OVERRIDE`] set to a positive whole number of bytes replaces the memory read,
+/// a container's limit included, for tests and to reproduce a smaller computer; any other value is
+/// ignored. [`source`] says which one was used.
 pub fn physical() -> Option<u64> {
+    reading().0
+}
+
+/// Where [`physical`]'s figure came from: `"override"` ([`OVERRIDE`]), `"container"` (a
+/// container's limit, lower than the computer's memory), `"computer"`, or `"unknown"` (the browser,
+/// a fuzzing build, or memory that couldn't be read), so a leftover override doesn't change the
+/// limits unnoticed.
+pub fn source() -> &'static str {
+    reading().1
+}
+
+/// The memory and its source, read once.
+fn reading() -> (Option<u64>, &'static str) {
     #[cfg(fuzzing)]
     {
-        None
+        (None, "unknown")
     }
     #[cfg(all(not(fuzzing), not(target_arch = "wasm32")))]
     {
-        static MEMORY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        static MEMORY: std::sync::OnceLock<(Option<u64>, &'static str)> = std::sync::OnceLock::new();
         *MEMORY.get_or_init(read)
     }
     #[cfg(all(not(fuzzing), target_arch = "wasm32"))]
     {
-        None
+        (None, "unknown")
     }
 }
 
+/// The environment variable that replaces the memory [`physical`] reads.
+pub const OVERRIDE: &str = "RUSTGIS_MEMORY_BYTES";
+
+/// The memory [`OVERRIDE`]'s value gives: a positive whole number of bytes, else `None`.
+#[cfg(any(test, all(not(fuzzing), not(target_arch = "wasm32"))))]
+fn overridden(value: Option<&str>) -> Option<u64> {
+    value?.trim().parse::<u64>().ok().filter(|m| *m > 0)
+}
+
+/// The memory to plan for: the override when it is set, else physical memory, or a container's
+/// limit when that is lower.
 #[cfg(all(not(fuzzing), not(target_arch = "wasm32")))]
-fn read() -> Option<u64> {
-    let mut s = sysinfo::System::new().ok()?;
+fn read() -> (Option<u64>, &'static str) {
+    if let Some(m) = overridden(std::env::var(OVERRIDE).ok().as_deref()) {
+        return (Some(m), "override");
+    }
+    let Some(mut s) = sysinfo::System::new().ok() else { return (None, "unknown") };
     s.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
-    let total = Some(s.total_memory()).filter(|m| *m > 0)?;
+    let Some(total) = Some(s.total_memory()).filter(|m| *m > 0) else { return (None, "unknown") };
     // A container's limit, on Linux; none is reported elsewhere.
-    Some(s.cgroup_limits().map(|c| c.total_memory).filter(|m| *m > 0).map_or(total, |c| c.min(total)))
+    match s.cgroup_limits().map(|c| c.total_memory).filter(|m| *m > 0 && *m < total) {
+        Some(limit) => (Some(limit), "container"),
+        None => (Some(total), "computer"),
+    }
 }
 
 /// The scratch memory work's threads may take together beyond one thread's, in the browser and
@@ -83,6 +117,15 @@ mod tests {
         assert_eq!(scaled(None, 100, 1_000, 8), 100, "unknown memory: the floor");
         assert_eq!(scaled(Some(u64::MAX), 100, usize::MAX, 0) as u64, u64::MAX / SHARE, "no overflow or division by zero");
         assert_eq!(scaled(Some(16 * GIB), 100, 50, 8), 100, "a ceiling below the floor is the floor");
+    }
+
+    #[test]
+    fn the_override_is_a_positive_number_of_bytes() {
+        assert_eq!(overridden(Some("8589934592")), Some(8 * GIB));
+        assert_eq!(overridden(Some(" 1024 ")), Some(1024));
+        for junk in [None, Some(""), Some("0"), Some("-1"), Some("8 GiB"), Some("1e9"), Some("99999999999999999999")] {
+            assert_eq!(overridden(junk), None, "{junk:?}");
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

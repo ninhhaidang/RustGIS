@@ -1,0 +1,16 @@
+# Peak memory of `rustgis-cli run` per scenario, as a multiple of the peak for loading the table
+# alone (`cargo xtask memory`, xtask/src/memory.rs), with the limits of an 8 GiB computer
+# (RUSTGIS_MEMORY_BYTES). A measured ratio over its limit fails CI. Limits only come down: when a
+# change lowers a ratio, run `cargo xtask memory --update` and commit this file with it.
+# edits_growth is how much the peak grows from 24 to 32 one-cell edits, once Undo's memory budget
+# is full (#2431). load_mib, the one absolute limit, is loading's peak in MiB: the baseline every
+# ratio divides by, so a loader that held more can't pass by lowering them.
+load_mib = 200.00
+join = 2.10
+calculate = 3.15
+export = 1.75
+edits_2 = 2.75
+edits_24 = 17.85
+edits_32 = 17.85
+save = 2.50
+edits_growth = 0.10

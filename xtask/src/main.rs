@@ -1,6 +1,9 @@
-//! `cargo xtask ci | changed [--list] [base] | layers | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
+//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
 //!
 //! - `layers`: enforces the crate layering (nothing below L6 may depend on egui/eframe/rfd).
+//! - `memory [--cli <path>] [--update]`: the command line's peak memory on generated data, per
+//!   workflow and as a multiple of loading alone, checked against `xtask/memory-limits.txt`
+//!   (Linux; see `memory.rs`).
 //! - `test-hygiene`: timer waits in tests need same-line reasons; ignored tests need reasons.
 //! - `ci`: test hygiene, fmt, clippy -D warnings, tests, layering and the project schema check.
 //! - `changed [--list] [base]`: the same, on only the packages a branch changes and those that
@@ -13,6 +16,7 @@
 //!   (`dist/web`) from the template `apps/rustgis-web/sw.js`, listing the built files to cache.
 
 mod changed;
+mod memory;
 mod notices;
 mod test_hygiene;
 
@@ -198,6 +202,7 @@ fn main() -> ExitCode {
     let r = match task.as_str() {
         "layers" => layers(),
         "test-hygiene" => test_hygiene::run(&root()),
+        "memory" => memory::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
         "changed" => changed::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "notices" => {
@@ -223,7 +228,7 @@ fn main() -> ExitCode {
             Some(other) => Err(format!("unknown argument {other}: usage: cargo xtask schema [--check]")),
         },
         "web-pwa" => web_pwa(std::env::args().nth(2)),
-        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
+        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

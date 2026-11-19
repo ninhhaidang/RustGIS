@@ -708,6 +708,15 @@ fn main() -> ExitCode {
 fn cli() -> ExitCode {
     // Datum grids: RustGIS's own folder, then those PROJ uses on this computer (#2032 A4).
     rustgis_engine::data::raster::crs::use_grid_folders();
+    // A RUSTGIS_MEMORY_BYTES left set would change every memory limit; say so on each run.
+    if rustgis_engine::data::memory::source() == "override"
+        && let Some(m) = rustgis_engine::data::memory::physical()
+    {
+        eprintln!(
+            "rustgis-cli: memory limits follow RUSTGIS_MEMORY_BYTES ({:.1} GiB), not this computer's memory",
+            m as f64 / (1u64 << 30) as f64
+        );
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().map(|s| s.as_str()) else { return usage() };
     if !args.iter().any(|a| a == "--no-plugins") {
