@@ -17,8 +17,9 @@ pub const PIXELS_CEILING: usize = 512_000_000;
 /// Largest output raster built (pixels): on the desktop, as many as a quarter of the computer's
 /// memory holds at 16 bytes each (a tool holds its input, its output and a working grid or two),
 /// from [`PIXELS_FLOOR`] up to [`PIXELS_CEILING`] (#1291 step 2).
+/// Less once RustGIS holds more than half the memory, never below the floor ([`rustgis_data::memory::planned`], #2431).
 pub fn max_pixels() -> usize {
-    rustgis_data::memory::scaled(rustgis_data::memory::physical(), PIXELS_FLOOR, PIXELS_CEILING, 16)
+    rustgis_data::memory::planned(PIXELS_FLOOR, PIXELS_CEILING, 16)
 }
 
 /// Room for a grid of `w × h` cells of `T` (an output band, or a working grid of one), empty: a

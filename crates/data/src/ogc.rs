@@ -3098,8 +3098,9 @@ pub const PAGED_FEATURES_CEILING: usize = 1_000_000;
 /// Most features read from a collection that comes in pages: on the desktop, as many as a quarter
 /// of the computer's memory holds at 20 KB each (about 100,000 for every 8 GB, the pages read
 /// included), from [`PAGED_FEATURES_FLOOR`] up to [`PAGED_FEATURES_CEILING`] (#1318).
+/// Less once RustGIS holds more than half the memory, never below the floor ([`crate::memory::planned`], #2431).
 pub fn max_paged_features() -> usize {
-    crate::memory::scaled(crate::memory::physical(), PAGED_FEATURES_FLOOR, PAGED_FEATURES_CEILING, 20 << 10)
+    crate::memory::planned(PAGED_FEATURES_FLOOR, PAGED_FEATURES_CEILING, 20 << 10)
 }
 
 /// The most bytes of why a layer's protocol buffer pages couldn't be read that its note says.
@@ -3123,8 +3124,9 @@ pub const DECODED_CEILING: usize = 3 << 30;
 /// Most memory, in bytes, an ArcGIS layer's protocol buffer pages may take once read: on the
 /// desktop a quarter of the computer's memory, from [`DECODED_FLOOR`] up to [`DECODED_CEILING`].
 /// The download budget doesn't bound it: a vertex takes 1 to 3 bytes in a page and 16 read.
+/// Less once RustGIS holds more than half the memory, never below the floor ([`crate::memory::planned`], #2431).
 pub fn max_decoded_bytes() -> usize {
-    crate::memory::scaled(crate::memory::physical(), DECODED_FLOOR, DECODED_CEILING, 1)
+    crate::memory::planned(DECODED_FLOOR, DECODED_CEILING, 1)
 }
 
 /// A feature collection page's JSON `next` link, resolved against the page's address.

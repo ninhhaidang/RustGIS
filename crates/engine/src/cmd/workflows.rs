@@ -478,6 +478,12 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         "undoBytes": s.undo_memory.limit,
         // What the limits follow: the computer, a container's limit, or RUSTGIS_MEMORY_BYTES.
         "memorySource": rustgis_data::memory::source(),
+        // What the process holds (layers, tables, rasters, Undo history, copies being made), as of
+        // the last command: past half the memory, the limits that follow it plan for less (#2431).
+        "heldBytes": rustgis_data::memory::held(),
+        // What the computer has free now (null: not known, or RUSTGIS_MEMORY_BYTES is set): the
+        // limits plan for no more than this, less what is kept for drawing (#2431).
+        "freeBytes": rustgis_data::memory::available(),
         "projectBytes": crate::project::max_bytes(),
         "fileBytes": rustgis_data::io::max_bytes(),
         // The threads one piece of work uses now, and the cores they come from (#1562).
@@ -827,6 +833,9 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
         copy.view_size = view_size;
         copy.active_layer = active_layer;
         copy.opened = opened;
+        // The copy shares this session's rows, which this session already counts in what the
+        // process holds (#2431): it neither measures nor adds them again.
+        copy.undo_memory.memory = None;
         copy.sync_policy_generation();
         copy.tools_ahead = Some(super::gp::Ahead::Recording(Vec::new()));
         copy.files_ahead = Some(super::gp::FilesAhead::Recording(Vec::new()));

@@ -1590,8 +1590,9 @@ const BUFFER_STORAGE_ERROR: &str = "Buffer output or distance selectors exceed t
 
 /// Buffer's retained-storage budget on this computer: on the desktop a quarter of its memory, from
 /// [`MAX_BUFFER_BYTES`] up to [`BUFFER_BYTES_CEILING`] (#1291 step 2); fixed in the browser.
+/// Less once RustGIS holds more than half the memory, never below the floor ([`rustgis_data::memory::planned`], #2431).
 pub fn max_buffer_bytes() -> usize {
-    rustgis_data::memory::scaled(rustgis_data::memory::physical(), MAX_BUFFER_BYTES, BUFFER_BYTES_CEILING, 1)
+    rustgis_data::memory::planned(MAX_BUFFER_BYTES, BUFFER_BYTES_CEILING, 1)
 }
 
 /// [`BUFFER_STORAGE_ERROR`] with the budget it ran out of, so a run refused here but not on a

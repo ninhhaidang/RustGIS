@@ -29,6 +29,11 @@ pub(crate) struct Budget {
     room_said: bool,
     // The copies of background edits not landed yet ([`Budget::reserve`]).
     in_flight: Arc<AtomicU64>,
+    // This session's part of what the process holds ([`Budget::publish`]).
+    holding: rustgis_data::memory::Holding,
+    /// What the computer has free now ([`rustgis_data::memory::available`]; tests pass fixed
+    /// amounts). `None`: not known, and only [`Self::memory`] bounds an edit's copy.
+    pub(crate) free: fn() -> Option<u64>,
     // Keeping the weak key prevents address reuse while its estimate is cached, without keeping
     // the rows themselves alive. Copy-on-write gives changed rows a different key.
     estimates: HashMap<usize, (Key, usize)>,
@@ -43,6 +48,9 @@ impl Default for Budget {
             memory: rustgis_data::memory::physical(),
             room_said: false,
             in_flight: Arc::default(),
+            holding: rustgis_data::memory::Holding::default(),
+            // Unit tests here don't depend on what else runs; they set it where they test it.
+            free: if cfg!(test) { || None } else { rustgis_data::memory::available },
             estimates: HashMap::new(),
         }
     }
@@ -104,30 +112,59 @@ impl Budget {
         (bytes as u64).saturating_add(raster_bytes(projects))
     }
 
+    /// Says what the session holds ([`Self::held`]) to the process-wide figure the memory limits
+    /// plan with ([`rustgis_data::memory::planned`], #2431 fix 3), after each command. Copies still
+    /// being made count through their [`Reservation`]s. Nothing is measured where the memory isn't
+    /// known (the browser), as no limit follows it there.
+    pub(crate) fn publish(&mut self, live: &Project, undo: &[Step], redo: &[Step]) {
+        if self.memory.is_some() {
+            let held = self.held(live, undo, redo);
+            self.holding.set(held);
+            // Estimates of rows nothing holds any more go, as `trim` does, which runs only when the
+            // history moves: a command that replaces rows without a step would otherwise leave them.
+            self.estimates.retain(|_, (key, _)| key.strong_count() > 0);
+        }
+    }
+
     /// Makes room for an edit that copies `copy` bytes of rows (#2431 fix 3): when what the session
     /// holds, the copies of edits still running in the background and this copy pass the memory
-    /// it plans to use ([`rustgis_data::memory::usable`]), history is set aside until they fit:
-    /// Redo first, farthest first, as the edit clears it anyway, then Undo, oldest first. What is
-    /// set aside is freed just before the edit copies, or given back if it never does
-    /// ([`Session::put_back`](crate::Session)), and counted as held until then. `Err` gives what is held and the memory planned
-    /// for, with the history left as it is, when the copy wouldn't fit even with the history gone.
+    /// it plans to use ([`rustgis_data::memory::usable`]), or the copy passes what the computer has
+    /// free now less [`rustgis_data::memory::margin`] (other programs use the rest), history is set
+    /// aside until they fit. What is set aside counts as free for the copy, before the margin is
+    /// taken off: its memory goes back to RustGIS's allocator, which the copy then reuses, not to
+    /// the system. Copies of other edits still running count against what is free only once they
+    /// have allocated it. Redo is set aside first, farthest first, as the edit clears it anyway,
+    /// then Undo, oldest first. What is set aside is freed just before the edit copies, or given
+    /// back if it never does ([`Session::put_back`](crate::Session)), and counted as held until
+    /// then. `Err` gives what is held and the memory planned for, with the history left as it is,
+    /// when the copy wouldn't fit even with the history gone.
     pub(crate) fn make_room(
         &mut self,
         live: &Project,
         undo: &mut Vec<Step>,
         redo: &mut Vec<Step>,
         copy: u64,
-    ) -> Result<Option<Aside>, (u64, u64)> {
-        let Some(usable) = rustgis_data::memory::usable(self.memory) else { return Ok(None) };
+    ) -> Result<Option<Aside>, NoRoom> {
+        let Some(memory) = self.memory else { return Ok(None) };
+        let Some(usable) = rustgis_data::memory::usable(Some(memory)) else { return Ok(None) };
         let running = self.in_flight.load(Ordering::Relaxed);
-        let fits = |held: u64| held.saturating_add(running).saturating_add(copy) <= usable;
+        let free = (self.free)();
+        let margin = rustgis_data::memory::margin(memory);
         let before = self.held(live, undo, redo);
+        let planned = |held: u64| held.saturating_add(running).saturating_add(copy) <= usable;
+        // What is set aside is added to what is free before the margin is taken off, so it
+        // doesn't make up for less free than the margin.
+        let fits = |held: u64| {
+            planned(held) && free.is_none_or(|free| copy <= free.saturating_add(before.saturating_sub(held)).saturating_sub(margin))
+        };
         if fits(before) {
             return Ok(None);
         }
         let open = self.held(live, &[], &[]);
         if !fits(open) {
-            return Err((open.saturating_add(running), usable));
+            // Said by what refuses it: the memory RustGIS plans to use, or what is free now.
+            let free = if planned(open) { free } else { None };
+            return Err(NoRoom { held: open.saturating_add(running), usable, free });
         }
         let mut aside = Aside::default();
         while !fits(self.held(live, undo, redo)) {
@@ -153,7 +190,7 @@ impl Budget {
     /// background makes, until it lands (and the project holds it) or is abandoned.
     pub(crate) fn reserve(&self, bytes: u64) -> Reservation {
         self.in_flight.fetch_add(bytes, Ordering::Relaxed);
-        Reservation { in_flight: Arc::clone(&self.in_flight), bytes }
+        Reservation { in_flight: Arc::clone(&self.in_flight), bytes, _held: rustgis_data::memory::Holding::of(bytes) }
     }
 
     /// The estimated size of `features`' rows: what the first write to them copies while a
@@ -205,10 +242,22 @@ pub(crate) fn free_on_copy(slot: &AsideSlot) -> Box<dyn FnOnce()> {
     Box::new(move || drop(slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()))
 }
 
+/// Why an edit's copy can't fit even with no history ([`Budget::make_room`]): what RustGIS holds
+/// (the copies still being made included) and the memory it plans to use, and what the computer
+/// has free when that is what refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NoRoom {
+    pub(crate) held: u64,
+    pub(crate) usable: u64,
+    pub(crate) free: Option<u64>,
+}
+
 /// A background edit's copy, counted as held while it runs ([`Budget::reserve`]).
 pub struct Reservation {
     in_flight: Arc<AtomicU64>,
     bytes: u64,
+    // Counted in what the process holds too, for the limits (#2431), until dropped.
+    _held: rustgis_data::memory::Holding,
 }
 
 impl Drop for Reservation {
@@ -316,6 +365,9 @@ mod tests {
         data.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![Value::Text("a".repeat(text_len))]);
         session.map_mut().add_layer(rustgis_map::Layer::new(0, data));
         session.undo_memory.limit = 2 << 10;
+        // What the computer has free is left out unless a test sets it, so tests don't depend on
+        // what else runs.
+        session.undo_memory.free = || None;
         session
     }
 
@@ -516,6 +568,7 @@ mod tests {
         session.run("layer.addDataText", &json!({"fileName": "calc.csv", "text": text})).unwrap();
         session.undo_memory.limit = 1 << 30;
         session.undo_memory.memory = None;
+        session.undo_memory.free = || None;
         for t in ["b", "c"] {
             session.run("edit.setValue", &json!({"table": "calc", "row": 0, "field": "t", "value": t.repeat(4096)})).unwrap();
         }
@@ -730,6 +783,66 @@ mod tests {
         assert!(err.contains("nothing selected"), "{err}");
         assert_eq!(session.undo_depth(), 2, "Move that changes nothing keeps the history");
         assert!(!session.notices_since(mark).iter().any(|n| n.text.contains("make room")));
+    }
+
+    /// After each command a session says what it holds to the process-wide figure the memory
+    /// limits plan with, and takes it back when dropped; a background copy counts until it is
+    /// dropped; where the memory isn't known nothing is measured (#2431).
+    #[test]
+    fn a_session_says_what_it_holds_for_the_limits() {
+        let mut session = session(4096);
+        session.undo_memory.memory = Some(1 << 40);
+        edit(&mut session, "b");
+        let held = session.undo_memory.held(&session.project, &session.undo, &session.redo);
+        assert!(held > 4096, "{held}");
+        assert_eq!(session.undo_memory.holding.bytes(), held);
+        let copy = session.undo_memory.reserve(1 << 20);
+        assert_eq!(copy._held.bytes(), 1 << 20, "a copy being made is counted");
+        drop(copy);
+        // Unknown memory: what was said stays as it was, and nothing is measured.
+        let mut unknown = self::session(4096);
+        unknown.undo_memory.memory = None;
+        edit(&mut unknown, "c");
+        assert_eq!(unknown.undo_memory.holding.bytes(), 0);
+    }
+
+    /// The computer's free memory bounds an edit's copy too, when other programs use most of it
+    /// (#2431): history set aside counts as free for the copy, as the copy reuses its memory; an
+    /// edit whose copy doesn't fit in what is free even then is refused, saying so.
+    #[test]
+    fn an_edit_fits_in_what_the_computer_has_free() {
+        let mut session = session(4096);
+        session.undo_memory.limit = 1 << 30;
+        session.undo_memory.memory = None;
+        for text in ["b", "c"] {
+            edit(&mut session, &text.repeat(4096));
+        }
+        // Plenty planned for (1 TiB), but only the margin and a little free.
+        session.undo_memory.memory = Some(1 << 40);
+        session.undo_memory.free = || Some(rustgis_data::memory::margin(1 << 40) + 64);
+        let mark = session.notice_mark();
+        edit(&mut session, "d");
+        assert!(session.undo_depth() < 3, "older steps were dropped for the copy");
+        assert!(session.notices_since(mark).iter().any(|n| n.text.contains("make room")));
+        // Nothing free beyond the margin and no history to set aside: refused, saying why.
+        session.clear_history();
+        session.undo_memory.free = || Some(rustgis_data::memory::margin(1 << 40));
+        let err = session.run("edit.setValue", &json!({"layer": "rows", "row": 0, "field": "text", "value": "e"})).unwrap_err();
+        assert!(err.contains("the computer has only about") && err.contains("as other programs"), "{err}");
+        assert_eq!(value(&session), &Value::Text("d".into()), "nothing changed");
+        // Less free than the margin: steps set aside make room only beyond it, so an edit that
+        // fits in them alone is refused, with the history left as it is.
+        for text in ["f", "g"] {
+            session.undo_memory.memory = None;
+            edit(&mut session, &text.repeat(4096));
+        }
+        session.undo_memory.memory = Some(1 << 40);
+        session.undo_memory.free = || Some(rustgis_data::memory::margin(1 << 40) - (1 << 20));
+        let depth = session.undo_depth();
+        let err = session.run("edit.setValue", &json!({"layer": "rows", "row": 0, "field": "text", "value": "h"})).unwrap_err();
+        assert!(err.contains("the computer has only about"), "{err}");
+        assert_eq!(session.undo_depth(), depth, "the history is left as it is");
+        assert_eq!(value(&session), &Value::Text("g".repeat(4096)), "nothing changed");
     }
 
     /// Undo and Redo copy no rows and aren't checked (they are registered as `.view()`, so they

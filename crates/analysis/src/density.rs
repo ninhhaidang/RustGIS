@@ -42,8 +42,9 @@ pub const DENSITY_CELLS_FLOOR: usize = 16_000_000;
 /// a quarter of the computer's memory holds at 16 bytes a cell (the sums, the output and the
 /// GeoTIFF written from it), from [`DENSITY_CELLS_FLOOR`] up to the most any tool's output raster
 /// takes ([`crate::rasterops::PIXELS_CEILING`]) (#1291 step 2).
+/// Less once RustGIS holds more than half the memory, never below the floor ([`rustgis_data::memory::planned`], #2431).
 pub fn max_density_cells() -> usize {
-    rustgis_data::memory::scaled(rustgis_data::memory::physical(), DENSITY_CELLS_FLOOR, crate::rasterops::PIXELS_CEILING, 16)
+    rustgis_data::memory::planned(DENSITY_CELLS_FLOOR, crate::rasterops::PIXELS_CEILING, 16)
 }
 
 /// Upper limit on aggregate cell visits across all points on one thread, to prevent CPU

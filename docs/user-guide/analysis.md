@@ -1558,6 +1558,28 @@ starting RustGIS: it replaces the memory read from the computer and any containe
 command line says so on every run. It isn't a way to go faster: a value above the computer's
 memory raises every limit past what it has, and a large job can then run out of memory.
 
+The limits below other than `threadScratchBytes`, `undoBytes` and `projectBytes` plan for less
+when memory is short, never below their floors. They plan for the smallest of three figures:
+- a quarter of the memory;
+- what is left of three quarters of it after what RustGIS holds, which matters once it holds more
+  than half: on a 16 GiB computer holding 10 GiB, 2 GiB instead of 4 GiB;
+- what the computer has free now, less what is kept for drawing and the window (a twentieth of the
+  memory, from 256 MiB up to 2 GiB), which matters when other programs use most of it.
+
+What is held counts the open layers, tables and rasters, what only Undo and Redo keep and the
+copies of edits running in the background, in every project open in the process, as of the last
+command; `limits.heldBytes` gives it, and `limits.freeBytes` what is free. What is free is read each
+time, so the same job can pass now and be refused a minute later when another program has taken
+memory meanwhile. It isn't read when `RUSTGIS_MEMORY_BYTES` is set (`freeBytes` is then `null`), so
+tests give the same limits whatever else runs, nor in a container whose memory limit RustGIS
+follows (the container's own count includes file cache, so the limit bounds it instead). On macOS
+the system counts memory other programs are using as available too, so this figure rarely lowers
+anything there. A file refused for its size says what is held and
+free, and the limit otherwise. Removing layers or tables you no longer need raises the limits once
+Undo no longer keeps them: saving and reopening the project lets go of the Undo history. Reading a
+file again, or opening another project while a large one is open, plans against the lowered limits
+too, so a file that opened earlier in the session can be refused later.
+
 | Limit | Floor (web app value in brackets) | Desktop: a quarter of memory at | Ceiling |
 |---|---|---|---|
 | `rasterSamples`: samples a raster read holds (cells times bands) | 120 million (32 million in the web app) | 8 bytes a sample | 1 billion |
@@ -1578,7 +1600,8 @@ happens in a project, a message says so. Edits can still create a temporary full
 Before an edit of a layer's or table's features or fields, RustGIS checks that this copy fits
 beside what it already holds: the open layers, tables and rasters, what only Undo and Redo keep,
 and the copies of edits still running in the background, all within three quarters of the
-computer's memory. When it doesn't fit, Redo steps are set aside first (the edit clears them
+computer's memory, and that the copy fits in what the computer has free now, less what is kept for
+drawing (Undo steps set aside count as free for it, as the copy reuses their memory). When it doesn't fit, Redo steps are set aside first (the edit clears them
 anyway), then the oldest Undo steps. They are freed only once the edit starts copying; an edit
 that fails before that, or is cancelled before it starts copying, gives them back, unless the
 project was changed while it ran in the background. One that fails after it started copying has
@@ -1586,7 +1609,7 @@ used them, as a finished edit would have. A message says when steps are freed to
 first time in a project, and each time steps set aside for a background edit are freed because the
 Undo history changed while it ran. Undo and Redo copy nothing and aren't checked. An edit that
 wouldn't fit even with no Undo history is refused before anything changes, and the message gives
-the size of the copy and what is held. An edit the desktop runs in the background is checked when it starts; one that needs Undo
+the size of the copy and what is held, or what is free when other programs use the memory. An edit the desktop runs in the background is checked when it starts; one that needs Undo
 steps set aside while another such edit is still running is refused, to run again once that one
 has finished. Edits made by a
 script, model, task or plugin aren't checked, nor is Paste Special (it makes a layer of its own) or
