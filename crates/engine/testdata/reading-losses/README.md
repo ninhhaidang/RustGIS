@@ -39,3 +39,29 @@ geometry type `Point` or `Point Z`. CRS is omitted, meaning the format's default
 OGC:CRS84. This is not a fixture for an unknown CRS or for CRS fallback behavior.
 
 The independently encoded [Shapefile pairs](SHAPEFILE.md) cover point and line Z/M loss.
+
+## XLSX
+
+Four independently encoded Office Open XML workbooks, written offline with Python 3.13's
+standard-library `zipfile` (Deflate) and literal XML. No spreadsheet application, RustGIS
+exporter, third-party code or data was used. Each ZIP holds only `[Content_Types].xml`,
+`_rels/.rels`, `xl/workbook.xml`, `xl/_rels/workbook.xml.rels` and
+`xl/worksheets/sheet1.xml`. ZIP timestamps are fixed at 1980-01-01.
+
+Each workbook has one sheet, `Places`, with headers `wkt`, `id`, `note` in A1:C1 and one
+row. B2 is the number 7. A2 is an inline string; C2 is absent except in the error case.
+WKT uses the reader's existing default longitude/latitude convention; these cases do not
+exercise coordinate-system assumptions.
+
+| File | A2 (WKT) | C2 | Current loss classification |
+| --- | --- | --- | --- |
+| `book-clean.xlsx` | `POINT(1 2)` | absent | None; no command notice |
+| `book-z.xlsx` | `POINT Z(1 2 3)` | absent | Imports with a Z/M-loss notice |
+| `book-collection.xlsx` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | absent | Silent: only the first member remains |
+| `book-error.xlsx` | `POINT(1 2)` | error cell (`t="e"`, value `#DIV/0!`) | Silent: the error becomes Null |
+
+The clean workbook is shared by all three pairs. All four must retain exactly one point
+at (1, 2), integer `id=7` and text `note=Null`, through both `sheets::read` and
+`layer.addData`. Thus refusal, losing the whole geometry, retaining the second member or
+dropping an attribute cannot pass. The error cell is valid spreadsheet content, not a
+malformed archive; formulas, date conversion and ODS nesting are outside these fixtures.
