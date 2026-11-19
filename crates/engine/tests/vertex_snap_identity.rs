@@ -203,3 +203,62 @@ fn projection_cuts_do_not_supply_source_addresses_or_bridge_the_world() {
     // This remains an ordinary in-memory feature layer.
     assert_eq!(s.map().layer(id).unwrap().geometry_type(), GeometryType::Polyline);
 }
+
+/// A vertex snapped to is the feature's own place, bit for bit, not the map's place for it brought
+/// back, on Web Mercator and on a world projection: a vertex dragged onto another feature's lands
+/// exactly on it, so the two share the place.
+#[test]
+fn a_snapped_vertex_is_the_stored_place_exactly() {
+    let target = Coord::new(7.123456789012345, 46.98765432109876);
+    let line = Geometry::Line(vec![vec![Coord::new(7.0, 46.9), target], vec![Coord::new(7.2, 47.1), Coord::new(7.3, 47.2)]]);
+    for projection in [None, Some("robinson")] {
+        let (mut s, id) = fixture(line.clone());
+        if let Some(code) = projection {
+            s.map_mut().projection = Projection::from_code(code).unwrap();
+        }
+        s.map_mut().camera.res = 1e-3;
+        s.map_mut().editing.snapping = Snapping { enabled: true, tolerance_px: 50.0, vertex: true, edge: true, end: true };
+        let near = Coord::new(target.x + 1e-8, target.y - 1e-8);
+        let (at, kind) = snap_except(&mut s, near, None).expect("snaps");
+        assert_eq!(kind, "end", "{projection:?}");
+        assert_eq!((at.x.to_bits(), at.y.to_bits()), (target.x.to_bits(), target.y.to_bits()), "{projection:?}: {at:?}");
+        // The other part's first vertex dragged onto it.
+        s.run("edit.vertex", &json!({"layer": id, "row": 0, "part": 1, "action": "move", "index": 0, "lon": at.x, "lat": at.y})).unwrap();
+        let Some(Geometry::Line(parts)) = &s.map().layer(id).unwrap().dataset.features[0].geometry else { panic!("a line") };
+        assert_eq!(parts[1][0], parts[0][1], "{projection:?}");
+    }
+}
+
+/// A stored vertex past 180° (a shape drawn across the antimeridian) is snapped to as stored,
+/// where the map shows it: past the edge on Web Mercator, one turn round on a world projection.
+#[test]
+fn a_vertex_past_the_antimeridian_is_snapped_to_as_stored() {
+    let places =
+        (0..12).map(|i| Coord::new(180.0 + 7.123456789012345 * f64::from(i % 5 + 1) / 3.0, -60.0 + 11.987654321098765 * f64::from(i)));
+    for (past, projection) in places.flat_map(|p| [(p, None), (p, Some("robinson"))]) {
+        let (mut s, _) = fixture(Geometry::Line(vec![vec![Coord::new(170.0, 10.0), past]]));
+        if let Some(code) = projection {
+            s.map_mut().projection = Projection::from_code(code).unwrap();
+        }
+        s.map_mut().camera.res = 1e-3;
+        s.map_mut().editing.snapping = Snapping { enabled: true, tolerance_px: 50.0, vertex: true, edge: true, end: true };
+        let hits: Vec<_> =
+            [past.x, past.x - 360.0].into_iter().filter_map(|x| snap_except(&mut s, Coord::new(x + 1e-8, past.y), None)).collect();
+        assert!(!hits.is_empty(), "{projection:?} {past:?}");
+        for (at, kind) in hits {
+            assert_eq!(kind, "end");
+            assert_eq!((at.x.to_bits(), at.y.to_bits()), (past.x.to_bits(), past.y.to_bits()), "{projection:?}: {at:?}");
+        }
+    }
+}
+
+/// Of two stored places a turn apart, the one the map draws at the hit is snapped to: on Web
+/// Mercator, (0°, 0°) is drawn there and 360° a world away.
+#[test]
+fn a_place_one_turn_away_is_another_vertex() {
+    let (mut s, _) = fixture(Geometry::MultiPoint(vec![Coord::new(360.0, 0.0), Coord::new(0.0, 0.0)]));
+    s.map_mut().camera.res = 1e-3;
+    s.map_mut().editing.snapping = Snapping { enabled: true, tolerance_px: 50.0, vertex: true, edge: true, end: true };
+    let (at, kind) = snap_except(&mut s, Coord::new(1e-8, 1e-8), None).expect("snaps");
+    assert_eq!((at, kind), (Coord::new(0.0, 0.0), "vertex"));
+}

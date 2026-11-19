@@ -49,7 +49,7 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
     let line = line(p)?;
     let id = selection_layer(s)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
-    let mut cuts = Vec::new();
+    let mut cut_up = Vec::new();
     let (mut missed, mut work) = (0, 0);
     for &r in &l.selection {
         let Some(f) = l.dataset.features.get(r) else { continue };
@@ -60,11 +60,19 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
                 for g in &pieces {
                     super::super::edit::validate(g)?;
                 }
-                let pieces = pieces.into_iter().map(|g| l.dataset.geometry_from_lonlat(g)).collect::<Result<Vec<_>, _>>()?;
-                cuts.push((r, f.clone(), pieces));
+                cut_up.push((r, f, pieces));
             }
             None => missed += 1,
         }
+    }
+    // The polygons' places, and the line's where it was snapped to one, stay as stored: looked for
+    // once for every piece.
+    let originals: Vec<&Geometry> = cut_up.iter().filter_map(|(_, f, _)| f.geometry.as_ref()).collect();
+    let held = super::held_places(s, id, &originals, &cut_up.iter().flat_map(|(_, _, pieces)| pieces).collect::<Vec<_>>());
+    let mut cuts = Vec::new();
+    for (r, f, pieces) in cut_up {
+        let pieces = pieces.into_iter().map(|g| l.dataset.edit_from_lonlat(g, &held)).collect::<Result<Vec<_>, _>>()?;
+        cuts.push((r, f.clone(), pieces));
     }
     if cuts.is_empty() {
         return Err("the line doesn't cut a selected polygon: draw it across the polygon, from outside to outside".into());
@@ -101,15 +109,19 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
 pub(super) fn reshape(s: &mut Session, p: &Value) -> CmdResult {
     let line = line(p)?;
     let id = selection_layer(s)?;
-    let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+    let l = s.map().layer(id).ok_or("no such layer")?;
     let [r] = l.selection.as_slice() else { return Err("select one feature to reshape".into()) };
     let r = *r;
     let f = l.dataset.features.get(r).cloned().ok_or("no such row")?;
-    // Reshaped in longitude/latitude, from the layer's own coordinates, and written back in them.
-    let lonlat = l.dataset.geometry_to_lonlat(f.geometry.as_ref().ok_or("the feature has no shape")?)?;
+    // Reshaped in longitude/latitude, from the layer's own coordinates, and written back in them,
+    // what the line left (or snapped to) as stored.
+    let own = f.geometry.as_ref().ok_or("the feature has no shape")?;
+    let lonlat = l.dataset.geometry_to_lonlat(own)?;
     let done = sketch_edit::reshape(&lonlat, &line)?;
     super::super::edit::validate(&done.geometry)?;
-    let reshaped = l.dataset.geometry_from_lonlat(done.geometry)?;
+    let held = super::held_places(s, id, &[own], &[&done.geometry]);
+    let reshaped = l.dataset.edit_from_lonlat(done.geometry, &held)?;
+    let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     if let Some(feat) = l.dataset.features.get_mut(r) {
         feat.geometry = Some(reshaped);
     }

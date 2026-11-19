@@ -446,7 +446,7 @@ impl Dataset {
         if to.is_identity() {
             return Ok(Cow::Borrowed(g));
         }
-        convert_keeping_missing(&to, g)
+        convert_keeping_missing(&to, g, &HeldPlaces::default())
             .map(Cow::Owned)
             .ok_or_else(|| format!("a place of this feature in {} can't be given in longitude/latitude", to.source().label()))
     }
@@ -460,7 +460,41 @@ impl Dataset {
         if to.is_identity() {
             return Ok(g);
         }
-        edit_into_own(&to, &g).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
+        edit_into_own(&to, &g, &HeldPlaces::default()).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
+    }
+
+    /// An edit of its own places, as [`Dataset::geometry_from_lonlat`] writes it, except that a
+    /// place reading exactly as a held one in longitude/latitude ([`Dataset::hold_places`]) is
+    /// written as it is held, not converted back. An edit then moves only what it moved: the places
+    /// it left, or snapped to, stay exactly as stored, whatever a round trip through
+    /// longitude/latitude would do to them (about a nanometre in UTM, but up to metres where a
+    /// projection's inverse is approximate, as Robinson's is). As it is while its coordinates are
+    /// longitude/latitude, as every dataset's are today.
+    pub fn edit_from_lonlat(&self, g: Geometry, held: &HeldPlaces) -> std::result::Result<Geometry, String> {
+        let to = raster::Crs::LonLat.to(self.coord_crs())?;
+        if to.is_identity() {
+            return Ok(g);
+        }
+        edit_into_own(&to, &g, held).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
+    }
+
+    /// Whether an edit's places, given in longitude/latitude, are written as they are, with
+    /// nothing to hold ([`Dataset::hold_places`]): its coordinates are longitude/latitude, as every
+    /// dataset's are today.
+    pub fn edits_in_lonlat(&self) -> bool {
+        self.lonlat_conversion().is_ok_and(|to| to.is_identity())
+    }
+
+    /// Adds the places of `g`, a geometry in its coordinates (or in a dataset's of the same
+    /// system), to `held`, each by how it reads in longitude/latitude, for an edit to keep
+    /// ([`Dataset::edit_from_lonlat`]): those `within` a box in its coordinates, or all. Nothing
+    /// while its coordinates are longitude/latitude; a place that can't be converted adds nothing.
+    pub fn hold_places(&self, g: &Geometry, within: Option<&Extent>, held: &mut HeldPlaces) {
+        if let Ok(to) = self.lonlat_conversion()
+            && !to.is_identity()
+        {
+            held.add(&to, g, within);
+        }
     }
 
     /// How many of its values a saved project holds as null, not as they are: numbers that aren't
@@ -918,24 +952,85 @@ impl Dataset {
     }
 }
 
-/// An edit `g` in longitude/latitude in the target system, as [`convert_keeping_missing`]; `None`
-/// also when it reaches past 85.05° for Web Mercator, which would hold the place at 85.05°, where
-/// it ends, rather than refuse it.
-fn edit_into_own(to: &raster::Reprojection, g: &Geometry) -> Option<Geometry> {
-    let mut clamped = false;
-    if to.target() == raster::Crs::WebMercator {
-        g.for_each_coord(|c| clamped |= c.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT);
-    }
-    if clamped { None } else { convert_keeping_missing(to, g) }
+/// Places a dataset already holds, in its own coordinates, by the exact longitude/latitude each
+/// reads as: what an edit written back keeps as stored ([`Dataset::edit_from_lonlat`]).
+#[derive(Clone, Debug, Default)]
+pub struct HeldPlaces {
+    places: std::collections::HashMap<(u64, u64), Coord>,
+    /// When set, the only readings held from now on ([`HeldPlaces::want_only`]).
+    wanted: Option<std::collections::HashSet<(u64, u64)>>,
 }
 
-/// `g` converted, its missing coordinates (NaN, infinite) kept as they are; `None` when a place
-/// that is one can't be converted.
-fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry) -> Option<Geometry> {
+impl HeldPlaces {
+    fn key(c: Coord) -> (u64, u64) {
+        (c.x.to_bits(), c.y.to_bits())
+    }
+
+    /// Adds the places of `g` (those `within` a box, or all), read in longitude/latitude through
+    /// `to`.
+    fn add(&mut self, to: &raster::Reprojection, g: &Geometry, within: Option<&Extent>) {
+        g.for_each_coord(|c| {
+            if c.is_finite()
+                && within.is_none_or(|e| e.contains(c))
+                && let Some(read) = to.point(c)
+            {
+                let key = Self::key(read);
+                if self.wanted.as_ref().is_none_or(|w| w.contains(&key)) {
+                    self.places.entry(key).or_insert(c);
+                }
+            }
+        });
+    }
+
+    /// From now on, holds only places that one of `edited`'s (in longitude/latitude) reads as and
+    /// that isn't held yet: a search of many stored places keeps only those an edit asks for.
+    pub fn want_only(&mut self, edited: &[&Geometry]) {
+        let mut wanted = std::collections::HashSet::new();
+        for g in edited {
+            g.for_each_coord(|c| {
+                if c.is_finite() && self.get(c).is_none() {
+                    wanted.insert(Self::key(c));
+                }
+            });
+        }
+        self.wanted = Some(wanted);
+    }
+
+    /// The held place that reads exactly as `c` in longitude/latitude.
+    pub fn get(&self, c: Coord) -> Option<Coord> {
+        self.places.get(&Self::key(c)).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.places.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.places.is_empty()
+    }
+}
+
+/// An edit `g` in longitude/latitude in the target system, as [`convert_keeping_missing`], a held
+/// place written as held; `None` also when it reaches past 85.05° for Web Mercator, which would
+/// hold the place at 85.05°, where it ends, rather than refuse it.
+fn edit_into_own(to: &raster::Reprojection, g: &Geometry, held: &HeldPlaces) -> Option<Geometry> {
+    let mut clamped = false;
+    if to.target() == raster::Crs::WebMercator {
+        g.for_each_coord(|c| clamped |= c.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT && held.get(c).is_none());
+    }
+    if clamped { None } else { convert_keeping_missing(to, g, held) }
+}
+
+/// `g` converted, its missing coordinates (NaN, infinite) kept as they are and a held place
+/// written as held; `None` when a place that is one can't be converted.
+fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry, held: &HeldPlaces) -> Option<Geometry> {
     let lost = std::cell::Cell::new(false);
     let out = g.map_coords(&|c| {
         if !c.is_finite() {
             return c;
+        }
+        if let Some(own) = held.get(c) {
+            return own;
         }
         to.point(c).unwrap_or_else(|| {
             lost.set(true);
@@ -957,18 +1052,59 @@ mod tests {
         let to = raster::Crs::LonLat.to(raster::Crs::Epsg(32632)).unwrap();
         let t = raster::Crs::Epsg(32632).transformer().unwrap();
         let g = Geometry::Line(vec![vec![Coord::new(9.0, 47.0), Coord::new(f64::NAN, 47.0)]]);
-        let Some(Geometry::Line(parts)) = convert_keeping_missing(&to, &g) else { panic!("converted") };
+        let Some(Geometry::Line(parts)) = convert_keeping_missing(&to, &g, &HeldPlaces::default()) else { panic!("converted") };
         assert_eq!(parts[0][0], t.from_lonlat(Coord::new(9.0, 47.0)).unwrap());
         assert!(parts[0][1].x.is_nan() && parts[0][1].y == 47.0, "{:?}", parts[0][1]);
         let lost = Geometry::Line(vec![vec![Coord::new(9.0, 47.0), Coord::new(99.0, 0.0)]]);
-        assert!(convert_keeping_missing(&to, &lost).is_none());
+        assert!(convert_keeping_missing(&to, &lost, &HeldPlaces::default()).is_none());
         // Web Mercator would hold 89° at 85.05°: an edit reaching there is refused; one within
         // 85.05°, or missing a coordinate, is written.
         let merc = raster::Crs::LonLat.to(raster::Crs::WebMercator).unwrap();
-        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 89.0))).is_none());
-        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 80.0))).is_some());
-        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, f64::NAN))).is_some());
-        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(f64::NAN, 89.0))).is_some());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 89.0)), &HeldPlaces::default()).is_none());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, 80.0)), &HeldPlaces::default()).is_some());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(10.0, f64::NAN)), &HeldPlaces::default()).is_some());
+        assert!(edit_into_own(&merc, &Geometry::Point(Coord::new(f64::NAN, 89.0)), &HeldPlaces::default()).is_some());
+    }
+
+    /// An edit written back keeps every place it didn't move exactly as stored, even through
+    /// Robinson, whose inverse is approximate; a moved or inserted place is converted, and one
+    /// snapped to another feature's place takes that place as stored. Moved places checked with
+    /// PROJ 9.6.0: `printf "21 61\n25 65\n" | cs2cs -f %.6f +proj=longlat +datum=WGS84 +to ESRI:54030`.
+    #[test]
+    fn an_edit_written_back_keeps_what_it_did_not_move() {
+        let rob = raster::Crs::parse("ESRI:54030").unwrap();
+        let (to_own, to_lonlat) = (raster::Crs::LonLat.to(rob).unwrap(), rob.to(raster::Crs::LonLat).unwrap());
+        let own = |c: Coord| to_own.point(c).unwrap();
+        let stored: Vec<Coord> = [(10.0, 50.0), (20.0, 60.0), (30.0, 70.0), (170.0, 80.0)].map(|(x, y)| own(Coord::new(x, y))).to_vec();
+        let other = own(Coord::new(-40.0, 30.5));
+        let (feature, neighbour) = (Geometry::Line(vec![stored.clone()]), Geometry::Point(other));
+        let mut held = HeldPlaces::default();
+        held.add(&to_lonlat, &feature, None);
+        held.add(&to_lonlat, &neighbour, None);
+        assert_eq!(held.len(), 5);
+        // Wanting only one reading, a search holds no other.
+        let mut only = HeldPlaces::default();
+        only.want_only(&[&Geometry::Point(to_lonlat.point(other).unwrap())]);
+        only.add(&to_lonlat, &feature, None);
+        only.add(&to_lonlat, &neighbour, None);
+        assert_eq!(only.len(), 1);
+        // As the edit reads them: the feature's places in longitude/latitude.
+        let read: Vec<Coord> = stored.iter().map(|c| to_lonlat.point(*c).unwrap()).collect();
+        let snapped = to_lonlat.point(other).unwrap();
+        // The second place moved, one inserted after it, and the last snapped to the neighbour.
+        let edited = Geometry::Line(vec![vec![read[0], Coord::new(21.0, 61.0), Coord::new(25.0, 65.0), read[2], read[3], snapped]]);
+        let Some(Geometry::Line(parts)) = edit_into_own(&to_own, &edited, &held) else { panic!("written") };
+        let out = &parts[0];
+        for (i, s) in [(0, 0), (3, 2), (4, 3)] {
+            assert_eq!((out[i].x.to_bits(), out[i].y.to_bits()), (stored[s].x.to_bits(), stored[s].y.to_bits()), "place {i}");
+        }
+        assert_eq!((out[5].x.to_bits(), out[5].y.to_bits()), (other.x.to_bits(), other.y.to_bits()));
+        for (c, proj) in [(out[1], (1569350.169588, 6433621.288413)), (out[2], (1794351.609176, 6816459.832181))] {
+            assert!((c.x - proj.0).abs() < 1e-3 && (c.y - proj.1).abs() < 1e-3, "{c:?} vs PROJ {proj:?}");
+        }
+        // Without them held, the same edit is converted whole, as a fresh drawing is.
+        let Some(Geometry::Line(whole)) = edit_into_own(&to_own, &edited, &HeldPlaces::default()) else { panic!("written") };
+        assert_eq!(whole[0][1], out[1]);
     }
 
     #[test]

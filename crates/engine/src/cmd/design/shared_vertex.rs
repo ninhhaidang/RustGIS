@@ -21,8 +21,11 @@ pub(super) fn run(s: &mut Session, p: &Value) -> CmdResult {
         return Err("lon and lat are degrees".into());
     }
     let layer = s.map().layer(id).ok_or("no such layer")?;
-    // The place in the layer's own coordinates, where its vertices are matched exactly.
-    let Geometry::Point(at) = layer.dataset.geometry_from_lonlat(Geometry::Point(Coord::new(lon, lat)))? else {
+    // The place in the layer's own coordinates, where its vertices are matched exactly: a stored
+    // place it was snapped to, as stored.
+    let place = Geometry::Point(Coord::new(lon, lat));
+    let held = super::held_places(s, id, &[], &[&place]);
+    let Geometry::Point(at) = layer.dataset.edit_from_lonlat(place, &held)? else {
         return Err("the place can't be given in the layer's coordinates".into());
     };
     let source = layer.dataset.features.get(row).ok_or("no such row")?.geometry.as_ref().ok_or("the feature has no shape")?;

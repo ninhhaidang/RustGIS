@@ -132,6 +132,9 @@ fn coerce(v: &Attr, ty: FieldType) -> (Attr, Cut) {
 fn paste(s: &mut Session, p: &Value) -> CmdResult {
     let src = clip(s, p)?;
     let id = s.layer_id(p)?;
+    // Pasted where they were copied from, in a layer of the same system, their places stay as
+    // stored there.
+    let held = super::design::held_places(s, id, &[], &src.features.iter().filter_map(|f| f.geometry.as_ref()).collect::<Vec<_>>());
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     if l.is_raster() {
         return Err("features can't be pasted into a raster layer".into());
@@ -172,7 +175,7 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
         .filter(|ft| !ft.geometry.as_ref().is_some_and(|g| want != GeometryType::None && g.kind() != want))
         .collect();
     for ft in &mut taken {
-        ft.geometry = ft.geometry.take().map(|g| l.dataset.geometry_from_lonlat(g)).transpose()?;
+        ft.geometry = ft.geometry.take().map(|g| l.dataset.edit_from_lonlat(g, &held)).transpose()?;
     }
     for ft in taken {
         next = next.saturating_add(1);

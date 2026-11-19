@@ -145,6 +145,8 @@ pub(crate) fn add_feature(s: &mut Session, p: &Json) -> CmdResult {
 
 /// Inserts an already validated construction through the same attributes, templates and rules.
 pub(crate) fn add_geometry(s: &mut Session, id: u32, p: &Json, g: Geometry) -> CmdResult {
+    // A place snapped to a stored one stays as stored.
+    let held = super::design::held_places(s, id, &[], &[&g]);
     let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
     let want = l.geometry_type();
     let ok = want == g.kind() || want == GeometryType::None;
@@ -153,7 +155,7 @@ pub(crate) fn add_geometry(s: &mut Session, id: u32, p: &Json, g: Geometry) -> C
     }
     validate(&g)?;
     // Given in longitude/latitude, written in the layer's own coordinates.
-    let g = l.dataset.geometry_from_lonlat(g)?;
+    let g = l.dataset.edit_from_lonlat(g, &held)?;
     // A feature template's defaults, then the given attributes.
     let template = match ps(p, "template") {
         Some(t) => {

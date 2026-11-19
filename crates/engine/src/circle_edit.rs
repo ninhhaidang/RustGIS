@@ -154,8 +154,10 @@ pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: CircleSpec) -
     }
     let l = s.map().layer(id).ok_or("circle geometry is missing")?;
     let g = l.dataset.features.get(row).and_then(|f| f.geometry.clone()).ok_or("circle geometry is missing")?;
-    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates.
-    if g != l.dataset.geometry_from_lonlat(spec.geometry()?)? {
+    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates,
+    // its places that read as the spec's kept as stored, as the edit wrote them.
+    let held = crate::cmd::design::held_places(s, id, &[&g], &[]);
+    if g != l.dataset.edit_from_lonlat(spec.geometry()?, &held)? {
         return Err("an edit rule changed the circle geometry".into());
     }
     s.constructions.remember(key, Record { spec: Construction::Circle(spec), geometry: g })
