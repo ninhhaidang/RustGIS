@@ -1185,7 +1185,7 @@ impl Renderer {
         }
         let e = rustgis_data::query::parse_fields(text, ds)?;
         if rustgis_data::query::uses_area(&e)
-            && let Some(message) = rustgis_data::ambiguous_area_message(
+            && let Some(message) = ds.ambiguous_area_message(
                 ds.features
                     .iter()
                     .enumerate()

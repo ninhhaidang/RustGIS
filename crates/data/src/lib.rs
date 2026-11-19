@@ -862,6 +862,61 @@ impl Dataset {
         self.coord_crs().to(raster::Crs::LonLat)
     }
 
+    /// `m` of one of its geometries on the WGS 84 ellipsoid, measured in longitude/latitude
+    /// ([`Geometry::wgs84_measure`]) from its own coordinates; refused as
+    /// [`Dataset::geometry_to_lonlat`] refuses.
+    pub fn wgs84_measure(&self, g: &Geometry, m: Measure) -> std::result::Result<Option<f64>, String> {
+        Ok(self.geometry_to_lonlat(g)?.wgs84_measure(m))
+    }
+
+    /// [`ambiguous_area_message`] for these of its geometries, read in longitude/latitude, where a
+    /// ring through both poles is one; it also counts those that can't be given there, whose area
+    /// can't be measured either.
+    pub fn ambiguous_area_message<'a>(&self, geometries: impl Iterator<Item = &'a Geometry>) -> Option<String> {
+        let unplaced = std::cell::Cell::new(0usize);
+        let ambiguous = ambiguous_area_message(geometries.filter_map(|g| match self.geometry_to_lonlat(g) {
+            Ok(g) => Some(g),
+            Err(_) => {
+                unplaced.set(unplaced.get() + 1);
+                None
+            }
+        }));
+        let unplaced = (unplaced.get() > 0).then(|| {
+            format!("area can't be measured for {} feature(s) with a place that can't be given in longitude/latitude", unplaced.get())
+        });
+        match (ambiguous, unplaced) {
+            (Some(a), Some(u)) => Some(format!("{a}; {u}")),
+            (a, u) => a.or(u),
+        }
+    }
+
+    /// The dataset in longitude/latitude, the space analysis tools work in: borrowed while its
+    /// coordinates are longitude/latitude ([`Dataset::coord_crs`]), as every dataset's are today;
+    /// otherwise a copy with every geometry converted, missing coordinates kept. Refused, naming
+    /// the first feature that can't be, when one of its places can't be converted. Once a dataset
+    /// records its own system (C2 of #2032), the copy is to be recorded as longitude/latitude, so
+    /// that it isn't converted again.
+    pub fn in_lonlat(&self) -> std::result::Result<Cow<'_, Dataset>, String> {
+        let to = self.lonlat_conversion()?;
+        if to.is_identity() {
+            return Ok(Cow::Borrowed(self));
+        }
+        let mut out = self.clone();
+        for f in &mut out.features {
+            if let Some(g) = &mut f.geometry {
+                *g = convert_keeping_missing(&to, g, &HeldPlaces::default()).ok_or_else(|| {
+                    format!(
+                        "{}: feature {} has a place in {} that can't be given in longitude/latitude",
+                        self.name,
+                        f.id,
+                        to.source().label()
+                    )
+                })?;
+            }
+        }
+        Ok(Cow::Owned(out))
+    }
+
     /// A longitude/latitude box in its own coordinates ([`Dataset::coord_crs`]), as
     /// [`raster::Reprojection::extent`] converts it: for asking which features a box reaches, once
     /// for the box rather than once a feature. The box itself while they are longitude/latitude,
@@ -874,6 +929,27 @@ impl Dataset {
             Ok(to) => to.extent(e),
             Err(_) => Extent::EMPTY,
         }
+    }
+
+    /// `results`, a dataset in longitude/latitude made from this one (a tool's update of it), in
+    /// its own coordinates: as it is while they are longitude/latitude, as every dataset's are
+    /// today; otherwise each geometry written back as an edit is ([`Dataset::edit_from_lonlat`]),
+    /// its stored places kept as stored. Refused, naming the first feature, when one of its places
+    /// can't be held in its system.
+    pub fn results_from_lonlat(&self, mut results: Dataset) -> std::result::Result<Dataset, String> {
+        if self.edits_in_lonlat() {
+            return Ok(results);
+        }
+        let mut held = HeldPlaces::default();
+        for g in self.features.iter().filter_map(|f| f.geometry.as_ref()) {
+            self.hold_places(g, None, &mut held);
+        }
+        for f in &mut results.features {
+            if let Some(g) = f.geometry.take() {
+                f.geometry = Some(self.edit_from_lonlat(g, &held).map_err(|e| format!("{}: feature {}: {e}", self.name, f.id))?);
+            }
+        }
+        Ok(results)
     }
 
     /// Pushes a feature with the next id, padding/truncating attributes to the schema.
@@ -1043,6 +1119,22 @@ fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry, held: &HeldP
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Analysis and measurement read a longitude/latitude dataset as it is: no copy, and the
+    /// measure and the area check of the geometry itself.
+    #[test]
+    fn a_lonlat_dataset_is_read_as_it_is() {
+        let ring = vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(0.0, 1.0), Coord::new(0.0, 0.0)];
+        let g = Geometry::Polygon(vec![vec![ring]]);
+        let mut d = Dataset::new("t", GeometryType::Polygon, Vec::new());
+        d.push(Some(g.clone()), Vec::new());
+        assert!(matches!(d.in_lonlat(), Ok(Cow::Borrowed(b)) if std::ptr::eq(b, &d)));
+        assert_eq!(d.wgs84_measure(&g, Measure::Area), Ok(g.wgs84_measure(Measure::Area)));
+        assert!(d.wgs84_measure(&g, Measure::Area).unwrap().is_some_and(|a| a > 1.2e10));
+        assert_eq!(d.ambiguous_area_message(std::iter::once(&g)), None);
+        let results = d.clone();
+        assert_eq!(d.results_from_lonlat(results.clone()).map(|r| r.features), Ok(results.features));
+    }
 
     /// An edit's conversion keeps a missing coordinate (NaN) as it is, as edits in
     /// longitude/latitude do, converts the rest, and refuses a place that can't be converted:

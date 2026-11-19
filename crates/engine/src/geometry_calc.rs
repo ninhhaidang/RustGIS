@@ -84,8 +84,7 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
         return Err("no features to calculate".into());
     }
     if property == "area"
-        && let Some(message) =
-            rustgis_data::ambiguous_area_message(rows.iter().filter_map(|&r| l.dataset.features.get(r)?.geometry.as_ref()))
+        && let Some(message) = l.dataset.ambiguous_area_message(rows.iter().filter_map(|&r| l.dataset.features.get(r)?.geometry.as_ref()))
     {
         return Err(format!("{}: {message}", l.dataset.name));
     }
@@ -102,6 +101,9 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
             if g.kind() != l.geometry_type() {
                 return Err("feature geometry does not match the layer".into());
             }
+            // Measured and placed in longitude/latitude, from the layer's own coordinates.
+            let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("feature {}: {e}", f.id))?;
+            let g = g.as_ref();
             // Lengths and areas use longitude differences, so a shape drawn or buffered across the
             // antimeridian may run past ±180°; a coordinate has to be a real longitude.
             let max_x = if matches!(property, "x" | "y") { 180.0 } else { 360.0 };

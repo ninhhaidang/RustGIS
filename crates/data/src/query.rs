@@ -159,6 +159,9 @@ pub enum Fault {
     Date,
     /// `clamp(low, x, high)` with `low` above `high`.
     ClampBounds,
+    /// `$area`, `$perimeter` or `$length` of a feature with a place its system can't give in
+    /// longitude/latitude, where it is measured.
+    Unmeasurable,
 }
 
 impl Fault {
@@ -173,6 +176,7 @@ impl Fault {
             Fault::Text => "text that isn't a number",
             Fault::Date => "a date used as a number",
             Fault::ClampBounds => "a clamp whose low bound is above its high bound",
+            Fault::Unmeasurable => "a feature with a place that can't be given in longitude/latitude",
         }
     }
 
@@ -1224,7 +1228,7 @@ impl Parser<'_> {
         if self.validate_areas
             && m == Measure::Area
             && let Some(message) =
-                self.area_check.get_or_init(|| crate::ambiguous_area_message(self.ds.features.iter().filter_map(|f| f.geometry.as_ref())))
+                self.area_check.get_or_init(|| self.ds.ambiguous_area_message(self.ds.features.iter().filter_map(|f| f.geometry.as_ref())))
         {
             return Err(format!("{}: {message}", self.ds.name));
         }
@@ -1931,16 +1935,15 @@ impl<'a> Eval<'a> {
                     .map(Value::Int)
                     .unwrap_or(Value::Null),
                 Var::Id => self.ds.features.get(self.row).and_then(|f| i64::try_from(f.id).ok()).map(Value::Int).unwrap_or(Value::Null),
-                Var::Measure(m, size) => self
-                    .ds
-                    .features
-                    .get(self.row)
-                    .and_then(|f| f.geometry.as_ref())
-                    .and_then(|g| g.wgs84_measure(*m))
-                    // A hole larger than its polygon measures below zero: no sensible area.
-                    .filter(|v| *v >= 0.0)
-                    .map(|v| real(v / size))
-                    .unwrap_or(Value::Null),
+                Var::Measure(m, size) => match self.ds.features.get(self.row).and_then(|f| f.geometry.as_ref()) {
+                    None => Value::Null,
+                    // Measured in longitude/latitude: a place that can't be converted is an error.
+                    Some(g) => match self.ds.wgs84_measure(g, *m) {
+                        Err(_) => self.fail(Fault::Unmeasurable),
+                        // A hole larger than its polygon measures below zero: no sensible area.
+                        Ok(v) => v.filter(|v| *v >= 0.0).map(|v| real(v / size)).unwrap_or(Value::Null),
+                    },
+                },
             }),
             // An operand that is missing (null without an error) makes the result null whatever
             // else failed, so an error is the result's only when no operand is missing:

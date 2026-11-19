@@ -236,7 +236,7 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         .iter()
         .any(|rule| (rule.kind == RuleKind::Constraint || l.dataset.field_index(&rule.field).is_some()) && uses_area(&rule.expression));
     if (display_area || rule_area)
-        && let Some(message) = rustgis_data::ambiguous_area_message(changes.iter().filter_map(|change| {
+        && let Some(message) = l.dataset.ambiguous_area_message(changes.iter().filter_map(|change| {
             let feature = l.dataset.features.get(change.row?)?;
             (rule_area || change.before().is_none_or(|before| before.geometry != feature.geometry))
                 .then_some(feature.geometry.as_ref())
@@ -1268,7 +1268,11 @@ fn merge(s: &mut Session, _: &Json) -> CmdResult {
     if sel.len() < 2 {
         return Err("select two or more features to merge".into());
     }
-    let geoms: Vec<Geometry> = sel.iter().filter_map(|r| l.dataset.features.get(*r)?.geometry.clone()).collect();
+    // Merged in longitude/latitude, from the layer's own coordinates, and written back in them, the
+    // places it keeps as stored.
+    let originals: Vec<&Geometry> = sel.iter().filter_map(|r| l.dataset.features.get(*r)?.geometry.as_ref()).collect();
+    let geoms: Vec<Geometry> =
+        originals.iter().map(|g| l.dataset.geometry_to_lonlat(g).map(std::borrow::Cow::into_owned)).collect::<Result<_, _>>()?;
     let kind = |g: &Geometry| match g {
         Geometry::Point(_) | Geometry::MultiPoint(_) => 0,
         Geometry::Line(_) => 1,
@@ -1278,6 +1282,11 @@ fn merge(s: &mut Session, _: &Json) -> CmdResult {
         return Err("merge features of one kind (all points, all lines or all polygons), each with a shape".into());
     }
     let merged = rustgis_analysis::topology::merge(&geoms).ok_or("these features can't be merged")?;
+    let mut held = rustgis_data::HeldPlaces::default();
+    for g in &originals {
+        l.dataset.hold_places(g, None, &mut held);
+    }
+    let merged = l.dataset.edit_from_lonlat(merged, &held)?;
     let keep = sel.first().copied().ok_or("nothing selected")?;
     let mut changes = Vec::new();
     for r in sel.iter().skip(1).rev() {
@@ -1932,9 +1941,9 @@ fn archive_restore(s: &mut Session, p: &Json) -> CmdResult {
             rule.kind == RuleKind::Constraint
                 && rustgis_data::query::parse_fields(&rule.expression, &l.dataset).is_ok_and(|expr| rustgis_data::query::uses_area(&expr))
         }))
-        && let Some(message) = rustgis_data::ambiguous_area_message(
-            touched.iter().filter_map(|(fid, _)| l.dataset.features.get(*index.get(fid)?)?.geometry.as_ref()),
-        )
+        && let Some(message) = l
+            .dataset
+            .ambiguous_area_message(touched.iter().filter_map(|(fid, _)| l.dataset.features.get(*index.get(fid)?)?.geometry.as_ref()))
     {
         return Err(format!("{}: {message}", l.dataset.name));
     }
@@ -2285,9 +2294,13 @@ fn topology_rules(s: &mut Session, p: &Json) -> CmdResult {
 struct TopologyInput {
     rule: TopologyRule,
     layer: String,
+    /// The layer in longitude/latitude, where the rules are checked, and its covering layer's.
     data: rustgis_data::Dataset,
     rows: Vec<usize>,
     by: Option<rustgis_data::Dataset>,
+    /// Why the layer, or its covering layer, can't be given in longitude/latitude: the check is
+    /// refused rather than run on coordinates of another system.
+    unreadable: Option<String>,
 }
 
 /// The rules as the map has them now, each with what it reads; a rule whose layer is gone is left
@@ -2299,11 +2312,21 @@ fn topology_checks(s: &Session) -> Vec<TopologyInput> {
         let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
         // A covering layer that is gone leaves the rule with nothing to check (its layer's
         // latitudes are still checked).
-        let by = match &rule {
-            TopologyRule::MustBeCoveredBy { by, .. } => s.map().layer_by_name(by).map(|b| b.dataset.clone()),
-            _ => None,
+        // Both in longitude/latitude: a copy only of a layer in another system.
+        let lonlat = |d: &rustgis_data::Dataset| d.in_lonlat().map(std::borrow::Cow::into_owned);
+        let (by, by_unreadable) = match &rule {
+            TopologyRule::MustBeCoveredBy { by, .. } => match s.map().layer_by_name(by).map(|b| lonlat(&b.dataset)) {
+                Some(Ok(d)) => (Some(d), None),
+                Some(Err(e)) => (None, Some(e)),
+                None => (None, None),
+            },
+            _ => (None, None),
         };
-        inputs.push(TopologyInput { rule, layer: l.name.clone(), data: l.dataset.clone(), rows, by });
+        let (data, unreadable) = match lonlat(&l.dataset) {
+            Ok(d) => (d, by_unreadable),
+            Err(e) => (l.dataset.clone(), Some(e)),
+        };
+        inputs.push(TopologyInput { rule, layer: l.name.clone(), data, rows, by, unreadable });
     }
     inputs
 }
@@ -2341,6 +2364,9 @@ fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<Vec<rustgis_anal
         // A cancelled run stops between rules too (a gaps rule's union doesn't look), as an error,
         // so no result short of its rules is ever taken.
         rustgis_data::progress::check().map_err(|_| "the topology check was cancelled".to_string())?;
+        if let Some(e) = &i.unreadable {
+            return Err(format!("{}: {e}", i.layer));
+        }
         rustgis_analysis::validate_latitudes(&i.data, i.rows.iter().copied())?;
         found.push(match (&i.rule, &i.by) {
             (TopologyRule::MustNotOverlap { .. }, _) => t::overlaps(&i.data, &i.rows),

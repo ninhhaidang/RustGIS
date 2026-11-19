@@ -1211,7 +1211,8 @@ struct MapInputs<'a> {
     /// The rows of each layer (by lowercase name) the tool runs on: the selection or the
     /// environment's extent.
     rows: std::collections::HashMap<String, Vec<usize>>,
-    /// Streamed layers the tool reads, loaded whole (by lowercase name).
+    /// Streamed layers the tool reads, loaded whole, and copies of layers in another system than
+    /// longitude/latitude, converted ([`lonlat_inputs`]), by lowercase name.
     loaded: std::collections::HashMap<String, Dataset>,
     /// Import warnings from local file inputs, kept in the tool result and history.
     messages: Vec<String>,
@@ -1266,6 +1267,9 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
             }
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    let mut full = full;
+    lonlat_inputs(&snap.map, spec, params, &mut full)?;
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
     Ok(MapInputs { snap, rows, loaded: full, messages, flat: std::cell::OnceCell::new(), view: std::cell::OnceCell::new() })
@@ -1383,6 +1387,47 @@ fn streamed_inputs(
     Ok((full, said))
 }
 
+/// The layers a tool reads, in longitude/latitude, the space analysis tools work in
+/// ([`Inputs::dataset`]): those read whole (streamed layers, files) converted where they are, and
+/// a converted copy of each other layer it names whose coordinates are in another system. Nothing
+/// is copied while every dataset is in longitude/latitude, as every one is today.
+fn lonlat_inputs(
+    map: &rustgis_map::Map,
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
+    full: &mut std::collections::HashMap<String, Dataset>,
+) -> Result<(), String> {
+    for ds in full.values_mut() {
+        if let std::borrow::Cow::Owned(converted) = ds.in_lonlat()? {
+            *ds = converted;
+        }
+    }
+    // Every text the parameters hold that names a layer, not only layer parameters: a tool may
+    // name one elsewhere, and a layer it reads must be in longitude/latitude.
+    fn texts<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
+        match v {
+            Value::String(s) => out.push(s),
+            Value::Array(a) => a.iter().for_each(|x| texts(x, out)),
+            Value::Object(o) => o.values().for_each(|x| texts(x, out)),
+            _ => {}
+        }
+    }
+    let mut names = layer_names(spec, params);
+    texts(params, &mut names);
+    for n in names {
+        let key = n.to_ascii_lowercase();
+        if full.contains_key(&key) {
+            continue;
+        }
+        if let Some(l) = map.layer_by_name(n).filter(|l| !l.is_raster())
+            && let std::borrow::Cow::Owned(converted) = l.dataset.in_lonlat()?
+        {
+            full.insert(key, converted);
+        }
+    }
+    Ok(())
+}
+
 /// The executor's source-read choice, shared with pure permission planning.
 /// Selected in-memory windows need no whole read, except for the PMTiles exporter.
 pub(crate) fn reads_full_source(layer: &rustgis_map::Layer, spec: Option<&rustgis_analysis::ToolSpec>) -> bool {
@@ -1493,7 +1538,10 @@ impl Inputs for MapInputs<'_> {
         self.loaded
             .get(layer)
             .or_else(|| self.loaded.get(&layer.to_ascii_lowercase()))
-            .or_else(|| project_input(&self.snap.map, &self.snap.tables, layer, false).map(|i| i.dataset()))
+            // A layer read as it is only in longitude/latitude: one in another system is
+            // converted before the run ([`lonlat_inputs`]) when the tool names it, and isn't read
+            // in its own coordinates otherwise.
+            .or_else(|| project_input(&self.snap.map, &self.snap.tables, layer, false).map(|i| i.dataset()).filter(|d| d.edits_in_lonlat()))
     }
     fn table(&self, id: u32) -> Option<&Dataset> {
         self.snap.tables.iter().find(|t| t.id == id).map(|t| &t.dataset)
@@ -2874,7 +2922,8 @@ fn apply_with(
         }
         Output::Update { layer, dataset } => {
             let l = s.map_mut().layers.iter_mut().find(|l| l.name.eq_ignore_ascii_case(&layer)).ok_or("the input layer disappeared")?;
-            l.dataset = dataset;
+            // Made in longitude/latitude, written back in the layer's own coordinates.
+            l.dataset = l.dataset.results_from_lonlat(dataset)?;
             // Under the layer's name now: a background run's layer may have been renamed meanwhile.
             l.dataset.name.clone_from(&l.name);
             // A streamed layer updated by a tool holds the whole result in memory from now on.

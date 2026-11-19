@@ -169,6 +169,8 @@ pub struct ToolResult {
 
 /// Access to the map's layers by name.
 pub trait Inputs {
+    /// A vector layer or table by name, in longitude/latitude: the space every tool reads its
+    /// inputs in and writes its outputs in.
     fn dataset(&self, layer: &str) -> Option<&Dataset>;
     /// A standalone table by its id: an input given as a number, which no name is taken for.
     fn table(&self, _id: u32) -> Option<&Dataset> {

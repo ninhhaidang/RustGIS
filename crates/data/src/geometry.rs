@@ -9,10 +9,10 @@ const LABEL_GRID_STEPS: usize = 64;
 const _: () = assert!(LABEL_GRID_STEPS > 0 && LABEL_GRID_STEPS < (u128::BITS - 1) as usize);
 
 /// A counted explanation when these features contain rings with no single enclosed area.
-pub fn ambiguous_area_message<'a>(geometries: impl Iterator<Item = &'a Geometry>) -> Option<String> {
+pub fn ambiguous_area_message<G: std::borrow::Borrow<Geometry>>(geometries: impl Iterator<Item = G>) -> Option<String> {
     let (mut features, mut rings) = (0usize, 0usize);
     for geometry in geometries {
-        let count = geometry.ambiguous_area_rings();
+        let count = geometry.borrow().ambiguous_area_rings();
         if count > 0 {
             features += 1;
             rings += count;
