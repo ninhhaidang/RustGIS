@@ -65,6 +65,7 @@ pub use rustgis_geom::{Coord, Extent};
 pub use value::{Field, FieldType, Value};
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Whether this build runs other programs: GDAL's (for the formats read through it), DuckDB (SQL
 /// queries and DuckDB databases) and the `geolibre` runner. Not in the browser, which runs none,
@@ -432,6 +433,33 @@ impl Dataset {
     /// returns another system, that needs a notice, as AGENTS.md's "Never silent" asks.
     pub fn coord_crs(&self) -> raster::Crs {
         raster::Crs::LonLat
+    }
+
+    /// One of its geometries in longitude/latitude, the space edits work in (a vertex dragged to a
+    /// place, a move on the ground): borrowed as it is while its coordinates are
+    /// longitude/latitude ([`Dataset::coord_crs`]), as every dataset's are today. A missing
+    /// coordinate (NaN, infinite) stays as it is, for the edit to judge as it does today; refused,
+    /// naming its system, when its system can't be converted or one of its places can't be.
+    pub fn geometry_to_lonlat<'a>(&self, g: &'a Geometry) -> std::result::Result<Cow<'a, Geometry>, String> {
+        let to = self.coord_crs().to(raster::Crs::LonLat)?;
+        if to.is_identity() {
+            return Ok(Cow::Borrowed(g));
+        }
+        convert_keeping_missing(&to, g)
+            .map(Cow::Owned)
+            .ok_or_else(|| format!("a place of this feature in {} can't be given in longitude/latitude", to.source().label()))
+    }
+
+    /// An edited geometry in longitude/latitude, written back in its own coordinates
+    /// ([`Dataset::coord_crs`]): as it is while they are longitude/latitude, as every dataset's are
+    /// today. A missing coordinate stays as it is; refused, naming its system, when one of its
+    /// places can't be held there.
+    pub fn geometry_from_lonlat(&self, g: Geometry) -> std::result::Result<Geometry, String> {
+        let to = raster::Crs::LonLat.to(self.coord_crs())?;
+        if to.is_identity() {
+            return Ok(g);
+        }
+        convert_keeping_missing(&to, &g).ok_or_else(|| format!("the edit reaches a place {} can't hold", to.target().label()))
     }
 
     /// How many of its values a saved project holds as null, not as they are: numbers that aren't
@@ -889,9 +917,40 @@ impl Dataset {
     }
 }
 
+/// `g` converted, its missing coordinates (NaN, infinite) kept as they are; `None` when a place
+/// that is one can't be converted.
+fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry) -> Option<Geometry> {
+    let lost = std::cell::Cell::new(false);
+    let out = g.map_coords(&|c| {
+        if !c.is_finite() {
+            return c;
+        }
+        to.point(c).unwrap_or_else(|| {
+            lost.set(true);
+            c
+        })
+    });
+    (!lost.get()).then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An edit's conversion keeps a missing coordinate (NaN) as it is, as edits in
+    /// longitude/latitude do, converts the rest, and refuses a place that can't be converted:
+    /// UTM 32N can't bring back one on the equator 90° from its central meridian.
+    #[test]
+    fn an_edits_conversion_keeps_missing_coordinates() {
+        let to = raster::Crs::LonLat.to(raster::Crs::Epsg(32632)).unwrap();
+        let t = raster::Crs::Epsg(32632).transformer().unwrap();
+        let g = Geometry::Line(vec![vec![Coord::new(9.0, 47.0), Coord::new(f64::NAN, 47.0)]]);
+        let Some(Geometry::Line(parts)) = convert_keeping_missing(&to, &g) else { panic!("converted") };
+        assert_eq!(parts[0][0], t.from_lonlat(Coord::new(9.0, 47.0)).unwrap());
+        assert!(parts[0][1].x.is_nan() && parts[0][1].y == 47.0, "{:?}", parts[0][1]);
+        let lost = Geometry::Line(vec![vec![Coord::new(9.0, 47.0), Coord::new(99.0, 0.0)]]);
+        assert!(convert_keeping_missing(&to, &lost).is_none());
+    }
 
     #[test]
     fn an_io_error_keeps_its_source() {

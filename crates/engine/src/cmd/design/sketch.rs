@@ -53,11 +53,14 @@ pub(super) fn cut_polygon(s: &mut Session, p: &Value) -> CmdResult {
     let (mut missed, mut work) = (0, 0);
     for &r in &l.selection {
         let Some(f) = l.dataset.features.get(r) else { continue };
-        match f.geometry.as_ref().map(|g| sketch_edit::cut_polygon(g, &line, &mut work)).transpose()?.flatten() {
+        // Cut in longitude/latitude, from the layer's own coordinates; the pieces go back in them.
+        let lonlat = f.geometry.as_ref().map(|g| l.dataset.geometry_to_lonlat(g)).transpose()?;
+        match lonlat.map(|g| sketch_edit::cut_polygon(&g, &line, &mut work)).transpose()?.flatten() {
             Some(pieces) => {
                 for g in &pieces {
                     super::super::edit::validate(g)?;
                 }
+                let pieces = pieces.into_iter().map(|g| l.dataset.geometry_from_lonlat(g)).collect::<Result<Vec<_>, _>>()?;
                 cuts.push((r, f.clone(), pieces));
             }
             None => missed += 1,
@@ -102,10 +105,13 @@ pub(super) fn reshape(s: &mut Session, p: &Value) -> CmdResult {
     let [r] = l.selection.as_slice() else { return Err("select one feature to reshape".into()) };
     let r = *r;
     let f = l.dataset.features.get(r).cloned().ok_or("no such row")?;
-    let done = sketch_edit::reshape(f.geometry.as_ref().ok_or("the feature has no shape")?, &line)?;
+    // Reshaped in longitude/latitude, from the layer's own coordinates, and written back in them.
+    let lonlat = l.dataset.geometry_to_lonlat(f.geometry.as_ref().ok_or("the feature has no shape")?)?;
+    let done = sketch_edit::reshape(&lonlat, &line)?;
     super::super::edit::validate(&done.geometry)?;
+    let reshaped = l.dataset.geometry_from_lonlat(done.geometry)?;
     if let Some(feat) = l.dataset.features.get_mut(r) {
-        feat.geometry = Some(done.geometry);
+        feat.geometry = Some(reshaped);
     }
     l.touch_geometry();
     apply(s, id, vec![Change { before: Some(f), row: Some(r) }])?;
@@ -147,15 +153,11 @@ pub(super) fn trace(s: &mut Session, p: &Value) -> CmdResult {
             (id, row, part)
         }
     };
-    let g = s
-        .map()
-        .layer(id)
-        .and_then(|l| l.dataset.features.get(row))
-        .ok_or("no such row")?
-        .geometry
-        .as_ref()
-        .ok_or("the feature has no shape")?;
-    let t = sketch_edit::trace(g, from, to, part)?;
+    // Traced in longitude/latitude, from the layer's own coordinates.
+    let l = s.map().layer(id).ok_or("no such row")?;
+    let own = l.dataset.features.get(row).ok_or("no such row")?.geometry.as_ref().ok_or("the feature has no shape")?;
+    let g = l.dataset.geometry_to_lonlat(own)?;
+    let t = sketch_edit::trace(&g, from, to, part)?;
     let path: Vec<[f64; 2]> = t.path.iter().map(|c| [c.x, c.y]).collect();
     // How far each point was moved onto the edge, so a far-off point isn't taken silently.
     Ok(json!({"layer": id, "row": row, "path": path, "fromOffM": t.from_m, "toOffM": t.to_m}))
@@ -170,8 +172,9 @@ pub fn trace_between(s: &mut Session, from: Coord, to: Coord) -> Option<Vec<Coor
     // the ring under the clicks can't be named. Not traced; the click is an ordinary vertex.
     let (id, row, part) = nearest_edge(s, from, to, px, None)?;
     let part = part?;
-    let g = s.map().layer(id)?.dataset.features.get(row)?.geometry.as_ref()?;
-    sketch_edit::trace(g, from, to, Some(part)).ok().map(|t| t.path)
+    let l = s.map().layer(id)?;
+    let g = l.dataset.geometry_to_lonlat(l.dataset.features.get(row)?.geometry.as_ref()?).ok()?;
+    sketch_edit::trace(&g, from, to, Some(part)).ok().map(|t| t.path)
 }
 
 /// The drawn line or polygon feature with a ring or part passing nearest both points, each within
@@ -213,7 +216,9 @@ fn nearest_edge(s: &mut Session, from: Coord, to: Coord, px: f64, only: Option<u
             // part numbers may not be the source's. The chosen part is passed on only when it is
             // the source part of that number, projected (same length, same first, middle and
             // last points); otherwise the trace picks the part itself.
-            let source: Vec<&Vec<Coord>> = match l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) {
+            // The source in longitude/latitude, from the layer's own coordinates, as it is projected.
+            let lonlat = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()).and_then(|g| l.dataset.geometry_to_lonlat(g).ok());
+            let source: Vec<&Vec<Coord>> = match lonlat.as_deref() {
                 Some(Geometry::Line(parts)) => parts.iter().collect(),
                 Some(Geometry::Polygon(polys)) => polys.iter().flatten().collect(),
                 _ => Vec::new(),

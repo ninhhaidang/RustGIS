@@ -176,7 +176,13 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     let zs: Vec<(usize, Option<f64>)> = new_rows
         .iter()
         .map(|r| {
-            (*r, s.map().layer(id).and_then(|l| l.dataset.features.get(*r)).and_then(|f| f.geometry.as_ref()).and_then(|g| z_of(s, g)))
+            // Sampled at its place in longitude/latitude, from the layer's own coordinates.
+            let z = s.map().layer(id).and_then(|l| {
+                let g = l.dataset.features.get(*r)?.geometry.as_ref()?;
+                let lonlat = l.dataset.geometry_to_lonlat(g).ok()?;
+                z_of(s, &lonlat)
+            });
+            (*r, z)
         })
         .collect();
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
@@ -456,7 +462,13 @@ pub fn commands() -> Vec<C> {
             let mut shifted: HashMap<(u32, usize), Geometry> = HashMap::new();
             for l in s.map().layers.iter().filter(|l| !l.is_raster()) {
                 for r in &l.selection {
-                    let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).filter(|g| within_square(g)) else { continue };
+                    // Moved in longitude/latitude, from the layer's own coordinates (`modify` writes
+                    // it back in them).
+                    let Some(own) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
+                    let g = l.dataset.geometry_to_lonlat(own)?;
+                    if !within_square(&g) {
+                        continue;
+                    }
                     // A vertex missing a coordinate stays as it was, as on the ground.
                     let done = g.map_coords(&|c: Coord| if c.is_finite() { shift(c, dx, dy) } else { c });
                     if within_square(&done) {
@@ -830,13 +842,14 @@ fn move_planes(
     stays: impl Fn((u32, usize)) -> bool,
     reach_m: f64,
 ) -> Result<(HashMap<(u32, usize), Coord>, usize, usize), String> {
-    let selected: Vec<((u32, usize), &Geometry)> = s
-        .map()
-        .layers
-        .iter()
-        .filter(|l| !l.is_raster())
-        .flat_map(|l| l.selection.iter().filter_map(move |r| Some(((l.id, *r), l.dataset.features.get(*r)?.geometry.as_ref()?))))
-        .collect();
+    // In longitude/latitude, from each layer's own coordinates.
+    let mut selected: Vec<((u32, usize), std::borrow::Cow<'_, Geometry>)> = Vec::new();
+    for l in s.map().layers.iter().filter(|l| !l.is_raster()) {
+        for r in &l.selection {
+            let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
+            selected.push(((l.id, *r), l.dataset.geometry_to_lonlat(g)?));
+        }
+    }
     // Most moves stay within the square: then no feature needs grouping.
     let stay: Vec<bool> = selected.iter().map(|(key, _)| stays(*key)).collect();
     if stay.iter().all(|s| *s) {
@@ -897,7 +910,7 @@ fn move_planes(
     }
     let (mut planes, mut ground, mut steps) = (HashMap::new(), 0usize, CenterSteps::new());
     for ids in members.values() {
-        let geoms = || ids.iter().filter_map(|i| selected.get(*i).map(|(_, g)| *g));
+        let geoms = || ids.iter().filter_map(|i| selected.get(*i).map(|(_, g)| &**g));
         if ids.iter().all(|i| stay.get(*i).copied().unwrap_or(true)) {
             continue;
         }
@@ -1080,9 +1093,13 @@ fn modify(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Re
         for r in l.selection.clone() {
             // Read first, writing only a row that changes: the first write copies the layer's rows
             // when Undo shares them, and frees history set aside for that copy (#2431).
+            // Changed in longitude/latitude, and written back in the layer's own coordinates.
             let Some(f) = l.dataset.features.get(r) else { continue };
-            let Some(g) = f.geometry.as_ref().map(|g| change((id, r), g)).transpose()?.flatten() else { continue };
+            let Some(own) = f.geometry.as_ref() else { continue };
+            let lonlat = l.dataset.geometry_to_lonlat(own)?;
+            let Some(g) = change((id, r), &lonlat)? else { continue };
             super::edit::validate(&g)?;
+            let g = l.dataset.geometry_from_lonlat(g)?;
             let Some(f) = l.dataset.features.get_mut(r) else { continue };
             let before = f.clone();
             f.geometry = Some(g);
@@ -1126,14 +1143,10 @@ fn edit_vertex(s: &mut Session, p: &Json) -> CmdResult {
         }
         Ok(Coord::new(lon, lat))
     };
-    let g = s
-        .map()
-        .layer(id)
-        .and_then(|l| l.dataset.features.get(row))
-        .ok_or("no such row")?
-        .geometry
-        .clone()
-        .ok_or("the feature has no shape")?;
+    // In longitude/latitude, from the layer's own coordinates (`replace_geometry` writes it back).
+    let l = s.map().layer(id).ok_or("no such row")?;
+    let own = l.dataset.features.get(row).ok_or("no such row")?.geometry.as_ref().ok_or("the feature has no shape")?;
+    let g = l.dataset.geometry_to_lonlat(own)?.into_owned();
     let (g, v) = match ps(p, "action").ok_or("action is required")? {
         "move" => (g.move_vertex(v, at()?).ok_or("no such vertex")?, v),
         "insert" => {
@@ -1147,10 +1160,12 @@ fn edit_vertex(s: &mut Session, p: &Json) -> CmdResult {
     Ok(json!({"part": v.part, "ring": v.ring, "index": v.index}))
 }
 
-/// Replaces a feature's shape with one of the layer's kind, as one edit.
+/// Replaces a feature's shape with one of the layer's kind, as one edit: `g` in longitude/latitude,
+/// written in the layer's own coordinates.
 pub(crate) fn replace_geometry(s: &mut Session, id: u32, row: usize, g: Geometry) -> Result<(), String> {
     super::edit::validate(&g)?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+    let g = l.dataset.geometry_from_lonlat(g)?;
     if l.geometry_type() != GeometryType::None && l.geometry_type() != g.kind() {
         return Err(format!("a {} can't replace a {}", g.kind().label(), l.geometry_type().label()));
     }
@@ -1258,9 +1273,13 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     // A vertex past ±90° is no place: the search would take it for the pole, so the lines are
     // refused up front, before any is split.
+    // The lines are split in longitude/latitude, from the layer's own coordinates, and the pieces
+    // written back in them.
     let mut beyond_pole = false;
     for feat in l.selection.iter().filter_map(|r| l.dataset.features.get(*r)) {
-        if let Some(Geometry::Line(parts)) = &feat.geometry {
+        if let Some(g) = &feat.geometry
+            && let Geometry::Line(parts) = &*l.dataset.geometry_to_lonlat(g)?
+        {
             beyond_pole |= parts.iter().flatten().any(|c| c.is_finite() && c.y.abs() > 90.0);
         }
     }
@@ -1275,7 +1294,9 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
     let mut unmeasured = 0usize;
     for r in l.selection.clone() {
         let Some(f) = l.dataset.features.get(r).cloned() else { continue };
-        let Some(Geometry::Line(parts)) = &f.geometry else { continue };
+        let Some(own) = &f.geometry else { continue };
+        let lonlat = l.dataset.geometry_to_lonlat(own)?;
+        let Geometry::Line(parts) = &*lonlat else { continue };
         steps.floor = f64::INFINITY;
         // The nearest segment of the nearest part, in the analysis plane (Web Mercator within
         // ±85.05°, not clamped beyond it, #1033). Where the point asked or the line reaches beyond
@@ -1362,11 +1383,12 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
         a_parts.push(first);
         let mut b_parts = vec![second];
         b_parts.extend(parts.iter().skip(pi + 1).cloned());
+        let (a, b) = (l.dataset.geometry_from_lonlat(Geometry::Line(a_parts))?, l.dataset.geometry_from_lonlat(Geometry::Line(b_parts))?);
         if let Some(feat) = l.dataset.features.get_mut(r) {
-            feat.geometry = Some(Geometry::Line(a_parts));
+            feat.geometry = Some(a);
             changes.push(Change { before: Some(f.clone()), row: Some(r) });
         }
-        l.dataset.push(Some(Geometry::Line(b_parts)), f.attrs.clone());
+        l.dataset.push(Some(b), f.attrs.clone());
         changes.push(Change { before: None, row: Some(l.dataset.features.len() - 1) });
         rough += usize::from(unsure);
     }
@@ -2034,8 +2056,11 @@ fn snap_excluding(
                 continue;
             }
             if let Some((_, _, v)) = vertex.filter(|(layer, source_row, _)| *layer == id && *source_row == row) {
-                if let Some(source) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) {
-                    snap_vertex::consider(source, v, &flat, sn, m, &mut consider);
+                // In longitude/latitude, from the layer's own coordinates, as the map projects it.
+                if let Some(source) =
+                    l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()).and_then(|g| l.dataset.geometry_to_lonlat(g).ok())
+                {
+                    snap_vertex::consider(&source, v, &flat, sn, m, &mut consider);
                 }
                 continue;
             }

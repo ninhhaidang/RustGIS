@@ -66,7 +66,14 @@ fn copy(s: &mut Session) -> CmdResult {
     let id = source(s).ok_or("nothing is selected")?;
     let l = s.map().layer(id).ok_or("no such layer")?;
     let mut data = Dataset::new(l.name.clone(), l.geometry_type(), l.dataset.fields.clone());
-    data.features = l.selection.iter().filter_map(|r| l.dataset.features.get(*r).cloned()).collect();
+    // In longitude/latitude, from the layer's own coordinates: the clipboard's, and its GeoJSON's.
+    let mut features = Vec::with_capacity(l.selection.len());
+    for r in &l.selection {
+        let Some(f) = l.dataset.features.get(*r) else { continue };
+        let geometry = f.geometry.as_ref().map(|g| l.dataset.geometry_to_lonlat(g).map(std::borrow::Cow::into_owned)).transpose()?;
+        features.push(rustgis_data::Feature { id: f.id, geometry, attrs: f.attrs.clone() });
+    }
+    data.features = features.into();
     let n = data.features.len();
     let text = rustgis_data::io::to_geojson(&data).to_string();
     let layer = l.name.clone();
@@ -79,21 +86,21 @@ fn cut(s: &mut Session, _: &Value) -> CmdResult {
     let id = source(s).ok_or("nothing is selected")?;
     let out = copy(s)?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
-    let mut sel = std::mem::take(&mut l.selection);
+    let copied = std::mem::take(&mut l.selection);
+    let mut sel = copied.clone();
     sel.sort_unstable();
     sel.dedup();
+    let mut gone = std::collections::HashMap::new();
     for r in sel.into_iter().rev() {
         if r < l.dataset.features.len() {
-            l.dataset.features.remove(r);
+            gone.insert(r, l.dataset.features.remove(r));
         }
     }
     l.touch_geometry();
-    // `copy` left the removed features on the clipboard; the archive gets them too.
-    let removed: Vec<super::design::Change> = s
-        .clipboard
-        .as_ref()
-        .map(|c| c.data.features.iter().map(|f| super::design::Change { before: Some(f.clone()), row: None }).collect())
-        .unwrap_or_default();
+    // The archive gets the removed features in the order they were copied, as stored, in the
+    // layer's own coordinates (the clipboard holds them in longitude/latitude).
+    let removed: Vec<super::design::Change> =
+        copied.iter().filter_map(|r| gone.get(r)).map(|f| super::design::Change { before: Some(f.clone()), row: None }).collect();
     super::design::apply(s, id, removed)?;
     Ok(out)
 }
@@ -157,10 +164,17 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     // Per field, what converting the pasted values cut, and the values that aren't null but that
     // the field can't hold.
     let mut unfit = vec![(Cuts::default(), 0usize); l.dataset.fields.len()];
-    for ft in src.features {
-        if ft.geometry.as_ref().is_some_and(|g| want != GeometryType::None && g.kind() != want) {
-            continue;
-        }
+    // The features the layer takes, their shapes in longitude/latitude written in its own
+    // coordinates: all converted before any is added.
+    let mut taken: Vec<Feature> = src
+        .features
+        .into_iter()
+        .filter(|ft| !ft.geometry.as_ref().is_some_and(|g| want != GeometryType::None && g.kind() != want))
+        .collect();
+    for ft in &mut taken {
+        ft.geometry = ft.geometry.take().map(|g| l.dataset.geometry_from_lonlat(g)).transpose()?;
+    }
+    for ft in taken {
         next = next.saturating_add(1);
         let attrs = l
             .dataset

@@ -139,6 +139,12 @@ mod tests {
         ds.crs = Some(Crs::Epsg(2056));
         assert_eq!(ds.coord_crs(), Crs::LonLat);
         assert!(ds.coord_crs().to(Crs::LonLat).unwrap().is_identity());
+        // An edit reads and writes its geometry as it is: borrowed, not copied, and a place that
+        // isn't one (NaN) kept, as the edit checks it.
+        let g = Geometry::Line(vec![vec![Coord::new(7.0, 46.0), Coord::new(f64::NAN, 47.0)]]);
+        let read = ds.geometry_to_lonlat(&g).unwrap();
+        assert!(matches!(read, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(format!("{:?}", ds.geometry_from_lonlat(read.into_owned()).unwrap()), format!("{g:?}"));
         // So its longitude/latitude box is its geometry's.
         ds.push(Some(Geometry::Point(Coord::new(2_600_000.0, 1_200_000.0))), vec![]);
         ds.push(Some(Geometry::Point(Coord::new(7.0, 46.0))), vec![]);

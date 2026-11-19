@@ -152,9 +152,10 @@ pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: CircleSpec) -
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for circles".into());
     }
-    let g =
-        s.map().layer(id).and_then(|l| l.dataset.features.get(row)).and_then(|f| f.geometry.clone()).ok_or("circle geometry is missing")?;
-    if g != spec.geometry()? {
+    let l = s.map().layer(id).ok_or("circle geometry is missing")?;
+    let g = l.dataset.features.get(row).and_then(|f| f.geometry.clone()).ok_or("circle geometry is missing")?;
+    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates.
+    if g != l.dataset.geometry_from_lonlat(spec.geometry()?)? {
         return Err("an edit rule changed the circle geometry".into());
     }
     s.constructions.remember(key, Record { spec: Construction::Circle(spec), geometry: g })

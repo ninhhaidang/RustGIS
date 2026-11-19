@@ -317,6 +317,8 @@ fn add(s: &mut Session, p: &Value) -> CmdResult {
         num("fontSize", *graphics::FONT_SIZE.start(), *graphics::FONT_SIZE.end()),
         opt(image),
     ];
+    // Drawn in longitude/latitude, written in the layer's own coordinates.
+    let g = l.dataset.geometry_from_lonlat(g)?;
     l.dataset.push(Some(g), attrs);
     let row = l.dataset.features.len() - 1;
     // By name, as a layer made before the field lacks it.
@@ -372,6 +374,8 @@ fn edit(s: &mut Session, p: &Value) -> CmdResult {
     };
     if let Some(g) = placed {
         let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+        // Placed in longitude/latitude, written in the layer's own coordinates.
+        let g = l.dataset.geometry_from_lonlat(g)?;
         if let Some(ft) = l.dataset.features.get_mut(row) {
             ft.geometry = Some(g);
         }

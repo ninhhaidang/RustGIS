@@ -216,9 +216,10 @@ pub(crate) fn remember(s: &mut Session, id: u32, row: usize, spec: BoxSpec) -> R
     if key.3 == u64::MAX {
         return Err("feature IDs have reached their limit; create a fresh layer for boxes".into());
     }
-    let g =
-        s.map().layer(id).and_then(|l| l.dataset.features.get(row)).and_then(|f| f.geometry.clone()).ok_or("box geometry is missing")?;
-    if g != spec.geometry()? {
+    let l = s.map().layer(id).ok_or("box geometry is missing")?;
+    let g = l.dataset.features.get(row).and_then(|f| f.geometry.clone()).ok_or("box geometry is missing")?;
+    // The spec is in longitude/latitude; the feature as written, in the layer's own coordinates.
+    if g != l.dataset.geometry_from_lonlat(spec.geometry()?)? {
         return Err("an edit rule changed the box geometry".into());
     }
     s.constructions.remember(key, Record { spec: Construction::Box(spec), geometry: g })

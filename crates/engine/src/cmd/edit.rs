@@ -151,6 +151,8 @@ pub(crate) fn add_geometry(s: &mut Session, id: u32, p: &Json, g: Geometry) -> C
         return Err(format!("{} can't go in a {} layer", g.kind().label(), want.label()));
     }
     validate(&g)?;
+    // Given in longitude/latitude, written in the layer's own coordinates.
+    let g = l.dataset.geometry_from_lonlat(g)?;
     // A feature template's defaults, then the given attributes.
     let template = match ps(p, "template") {
         Some(t) => {
