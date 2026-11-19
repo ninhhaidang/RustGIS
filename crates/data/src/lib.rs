@@ -368,6 +368,16 @@ pub struct Dataset {
 }
 
 impl Dataset {
+    /// The coordinate system its geometry is in: longitude/latitude (WGS 84), as every dataset's
+    /// is today, whatever system it was read in ([`Dataset::crs`]). Drawing converts geometry from
+    /// it ([`raster::Crs::to`]), so a dataset that keeps the coordinates it was read in can say so
+    /// here without the map changing. Longitude/latitude never fails to convert. The map draws none of
+    /// a layer whose conversion fails (`Layer::projected_in`) and doesn't say so yet: before this
+    /// returns another system, that needs a notice, as AGENTS.md's "Never silent" asks.
+    pub fn coord_crs(&self) -> raster::Crs {
+        raster::Crs::LonLat
+    }
+
     /// How many of its values a saved project holds as null, not as they are: numbers that aren't
     /// finite (NaN, infinity), which JSON can't write ([`Value`]'s `Serialize`). Zero for a window
     /// onto a source, whose rows aren't saved.

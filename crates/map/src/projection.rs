@@ -5,6 +5,7 @@
 //! works in that system's units, so panning, zooming and hit testing are the same for all of
 //! them; only conversions between longitude/latitude and map coordinates go through here.
 
+use rustgis_data::raster::{Crs, Reprojection};
 use rustgis_geom::{Coord, Extent, lonlat_to_merc, merc_to_lonlat};
 
 use rustgis_data::vn2000_towgs84;
@@ -833,6 +834,17 @@ impl Flat {
         g.map_coords(&f)
     }
 
+    /// A geometry in `to_lonlat`'s source system in map coordinates: `to_lonlat` (a conversion
+    /// to [`Crs::LonLat`]) takes it to longitude/latitude, then [`Flat::project`] draws it.
+    /// Longitude/latitude geometry is projected as it is. `None` for a conversion to another
+    /// system, whose results the map can't take.
+    pub fn project_from(&self, to_lonlat: &Reprojection, g: &rustgis_data::Geometry) -> Option<rustgis_data::Geometry> {
+        if to_lonlat.target() != Crs::LonLat {
+            return None;
+        }
+        Some(if to_lonlat.is_identity() { self.project(g) } else { self.project(&to_lonlat.geometry(g)) })
+    }
+
     /// Map coordinates to longitude/latitude.
     pub fn inverse(&self, m: Coord) -> Option<Coord> {
         match self {
@@ -856,14 +868,8 @@ impl Flat {
         if e.is_empty() {
             return out;
         }
-        let n = 16;
-        for i in 0..=n {
-            for j in 0..=n {
-                let c = Coord::new(e.min_x + e.width() * i as f64 / n as f64, e.min_y + e.height() * j as f64 / n as f64);
-                if let Some(m) = self.forward_checked(c) {
-                    out.expand(m);
-                }
-            }
+        for m in e.samples(16).filter_map(|c| self.forward_checked(c)) {
+            out.expand(m);
         }
         out
     }
@@ -909,6 +915,30 @@ mod tests {
         let data = rustgis_data::raster::Crs::Epsg(23030).transformer().unwrap();
         let c = data.to_lonlat(m).unwrap();
         assert!((c.x - at.x).abs() < 1e-7 && (c.y - at.y).abs() < 1e-7, "{c:?}");
+    }
+
+    /// A geometry in a system of its own is drawn where its longitude/latitude is: in a map in the
+    /// same system, at its own coordinates (within the round trip through WGS 84, 1.1 mm at Bern);
+    /// longitude/latitude geometry is projected as it is.
+    #[test]
+    fn a_geometry_is_drawn_from_its_own_system() {
+        use rustgis_data::Geometry;
+        let from = Crs::Epsg(2056).to(Crs::LonLat).unwrap();
+        let native = Geometry::Line(vec![vec![Coord::new(2_600_000.0, 1_200_000.0), Coord::new(2_683_000.0, 1_248_000.0)]]);
+        let lonlat = from.geometry(&native);
+        let lv95 = Flat::Custom(std::sync::Arc::new(Projector::new("EPSG:2056").unwrap()));
+        for flat in [Flat::Mercator, lv95.clone(), Flat::Custom(std::sync::Arc::new(Projector::new("robinson +lon_0=150").unwrap()))] {
+            assert_eq!(flat.project_from(&from, &native), Some(flat.project(&lonlat)), "{flat:?}");
+        }
+        let Some(Geometry::Line(parts)) = lv95.project_from(&from, &native) else { panic!("a line") };
+        let Geometry::Line(want) = &native else { panic!("a line") };
+        for (m, c) in parts[0].iter().zip(&want[0]) {
+            assert!((m.x - c.x).abs() < 2e-3 && (m.y - c.y).abs() < 2e-3, "{m:?} {c:?}");
+        }
+        let same = Crs::LonLat.to(Crs::LonLat).unwrap();
+        assert_eq!(lv95.project_from(&same, &lonlat), Some(lv95.project(&lonlat)));
+        // A conversion to another system than longitude/latitude isn't drawn.
+        assert_eq!(lv95.project_from(&Crs::Epsg(2056).to(Crs::Epsg(32632)).unwrap(), &native), None);
     }
 
     #[test]

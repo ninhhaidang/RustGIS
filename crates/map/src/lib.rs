@@ -58,6 +58,7 @@ pub struct LockedPlace {
     pub callout: Option<[f32; 2]>,
 }
 
+use rustgis_data::raster::Crs;
 use rustgis_data::{Dataset, Geometry, GeometryType};
 use rustgis_geom::{Coord, Extent};
 use serde::{Deserialize, Serialize};
@@ -346,6 +347,9 @@ pub struct Layer {
     /// The projection the cache is in.
     #[serde(skip)]
     projected_for: String,
+    /// The coordinate system the cache was projected from ([`Dataset::coord_crs`]).
+    #[serde(skip)]
+    projected_crs: Option<Crs>,
     /// Allocation identities and byte totals, shared with render snapshots without retaining rows.
     #[serde(skip)]
     view_memory: view_memory::Cache,
@@ -550,6 +554,7 @@ impl Layer {
             thinned: Default::default(),
             projected_rev: u64::MAX,
             projected_for: String::new(),
+            projected_crs: None,
             geometry_rev: 0,
             view_memory: Default::default(),
             geometry_kinds: Default::default(),
@@ -721,6 +726,8 @@ impl Layer {
             self.projected_extents = cache.extents;
             self.projected_vertices = cache.vertices;
             self.projected_for = cache.key;
+            // A source reads its window in longitude/latitude, and its read projects from there.
+            self.projected_crs = Some(Crs::LonLat);
             self.projected_rev = self.geometry_rev;
             let feature_bytes =
                 if padded { rustgis_data::source::memory::features_bytes(&self.dataset.features) } else { cache.feature_bytes };
@@ -1073,13 +1080,18 @@ impl Layer {
     /// the projection can't use breaks a line): hit-testing and snapping use the shape, never a
     /// vertex index, which only the source geometry has.
     pub fn projected_in(&mut self, flat: &projection::Flat, key: &str) -> &[Option<Geometry>] {
-        if self.projected_rev != self.geometry_rev || self.projected.len() != self.dataset.features.len() || self.projected_for != key {
+        if !self.is_cached(key) {
             self.display = None;
             if !matches!(flat, projection::Flat::Mercator) {
                 self.display_levels.clear();
             }
+            // From the layer's own coordinate system. Longitude/latitude, every layer's today,
+            // can't fail; a system that can't be converted draws nothing (a layer read in one is
+            // converted as it is read, which says why it can't be).
+            let crs = self.dataset.coord_crs();
+            let to_lonlat = crs.to(Crs::LonLat).ok();
             let projected: Vec<Option<Geometry>> =
-                self.dataset.features.iter().map(|ft| ft.geometry.as_ref().map(|g| flat.project(g))).collect();
+                self.dataset.features.iter().map(|ft| flat.project_from(to_lonlat.as_ref()?, ft.geometry.as_ref()?)).collect();
             self.projected_extents =
                 std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
             self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
@@ -1087,6 +1099,7 @@ impl Layer {
             self.thinned = Default::default();
             self.projected_rev = self.geometry_rev;
             self.projected_for = key.to_string();
+            self.projected_crs = Some(crs);
             self.trim_display_levels(self.lod_budget());
         }
         &self.projected
@@ -1104,7 +1117,9 @@ impl Layer {
     /// Every failure clears the active display; recent reusable levels may remain cached.
     pub fn prepare_display(&mut self, flat: &projection::Flat, tol: f64, whole_layer_eligible: bool) -> bool {
         self.display = None;
-        let Some(level) = lod::level(tol).filter(|_| matches!(flat, projection::Flat::Mercator)) else { return false };
+        // The display copies are made from longitude/latitude rows ([`lod::display`]).
+        let lonlat = self.dataset.coord_crs() == Crs::LonLat;
+        let Some(level) = lod::level(tol).filter(|_| lonlat && matches!(flat, projection::Flat::Mercator)) else { return false };
         self.trim_thinned_levels(self.lod_budget());
         let used: usize = self.thinned.iter().filter_map(|(_, c)| c.as_ref()).map(|c| lod::cache_bytes(c)).sum();
         let budget = self.lod_budget().saturating_sub(used);
@@ -1202,7 +1217,9 @@ impl Layer {
             }
             None => {
                 let t = lod::tolerance(level);
-                let copy = if matches!(flat, projection::Flat::Mercator) {
+                // Projected and thinned at once from longitude/latitude rows; from any other
+                // system, the projected geometry is thinned.
+                let copy = if matches!(flat, projection::Flat::Mercator) && self.dataset.coord_crs() == Crs::LonLat {
                     lod::project_budgeted(&self.dataset.features, level, budget)
                 } else {
                     lod::thin_budgeted(&self.projected, t, budget)
@@ -1253,6 +1270,7 @@ impl Layer {
         self.thinned = Default::default();
         self.projected_rev = u64::MAX;
         self.projected_for.clear();
+        self.projected_crs = None;
     }
 
     /// Takes the projected geometry cache `other` (a copy of this layer, such as one drawn off
@@ -1280,6 +1298,7 @@ impl Layer {
                 self.thinned = other.thinned.clone();
                 self.projected_rev = other.projected_rev;
                 self.projected_for.clone_from(&other.projected_for);
+                self.projected_crs = other.projected_crs;
             }
             let budget = self.lod_budget();
             self.trim_thinned_levels(budget);
@@ -1290,9 +1309,13 @@ impl Layer {
         fits
     }
 
-    /// Whether the projected geometry cache is filled for a projection.
+    /// Whether the projected geometry cache is filled for a projection, from the layer's current
+    /// rows and its coordinate system ([`Dataset::coord_crs`]).
     pub fn is_cached(&self, key: &str) -> bool {
-        self.projected_for == key && self.projected_rev == self.geometry_rev && self.projected.len() == self.dataset.features.len()
+        self.projected_for == key
+            && self.projected_rev == self.geometry_rev
+            && self.projected.len() == self.dataset.features.len()
+            && self.projected_crs == Some(self.dataset.coord_crs())
     }
 
     /// Marks geometry as changed.
@@ -3261,6 +3284,7 @@ impl Layer {
             thinned: _,
             projected_rev: _,
             projected_for: _,
+            projected_crs: _,
             view_memory: _,
             geometry_kinds: _,
             geometry_rev: _,

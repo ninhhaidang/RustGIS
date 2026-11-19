@@ -149,6 +149,19 @@ impl Extent {
     pub fn contains(&self, c: Coord) -> bool {
         c.x >= self.min_x && c.x <= self.max_x && c.y >= self.min_y && c.y <= self.max_y
     }
+    /// `n + 1` by `n + 1` places evenly over the box, its edges and corners included, column by
+    /// column from the west: what a box taken into another system is found from, so a box the
+    /// conversion curves is followed. `n` is taken between 1 (the four corners) and 1024; no
+    /// places for an empty box.
+    pub fn samples(&self, n: usize) -> impl Iterator<Item = Coord> + '_ {
+        // A grid of at least the corners, and no larger than 1025 by 1025.
+        let n = n.clamp(1, 1024);
+        let steps = if self.is_empty() { 0 } else { n + 1 };
+        (0..steps).flat_map(move |i| {
+            (0..steps)
+                .map(move |j| Coord::new(self.min_x + self.width() * i as f64 / n as f64, self.min_y + self.height() * j as f64 / n as f64))
+        })
+    }
     /// Grows every side by `f` of the size (0.1 = 10 %), with a minimum pad for points.
     pub fn padded(&self, f: f64, min_pad: f64) -> Extent {
         if self.is_empty() {
@@ -990,6 +1003,19 @@ pub fn format_dms(c: Coord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box's samples cover it evenly, corners and edges included; an empty box has none.
+    #[test]
+    fn a_box_is_sampled_over_its_edges_and_inside() {
+        let e = Extent::new(0.0, 10.0, 4.0, 12.0);
+        let s: Vec<Coord> = e.samples(2).collect();
+        assert_eq!(s.len(), 9);
+        assert_eq!((s[0], s[1], s[8]), (Coord::new(0.0, 10.0), Coord::new(0.0, 11.0), Coord::new(4.0, 12.0)));
+        assert!(s.iter().all(|c| e.contains(*c)));
+        assert_eq!(Extent::EMPTY.samples(16).count(), 0);
+        assert_eq!(e.samples(0).count(), 4);
+        assert_eq!(e.samples(usize::MAX).count(), 1025 * 1025);
+    }
 
     #[test]
     fn a_weighted_point_counts_as_that_many() {

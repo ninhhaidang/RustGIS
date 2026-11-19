@@ -407,7 +407,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
 /// shape that failed conversion is refused: missing geometry cannot identify its source shape.
 fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Dataset)>) -> Result<std::borrow::Cow<'a, Dataset>> {
     let Some(c) = crs else { return Ok(std::borrow::Cow::Borrowed(ds)) };
-    let t = c.transformer().map_err(DataError::Format)?;
+    let t = Crs::LonLat.to(c).map_err(DataError::Format)?;
     let (read, raw): (Vec<&Feature>, Vec<&Feature>) = match as_held {
         Some((read, raw)) => (read.features.iter().collect(), raw.features.iter().collect()),
         None => (Vec::new(), Vec::new()),
@@ -441,7 +441,7 @@ fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Da
         match held {
             Some(h) => row.geometry = h.geometry.clone(),
             // Looks at Cancel without counting: the write that follows counts the features.
-            None => crate::io::project_each(std::slice::from_mut(&mut row), &t, c, false)?,
+            None => crate::io::project_each(std::slice::from_mut(&mut row), &t, false)?,
         }
         rows.push(row);
     }

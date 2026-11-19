@@ -592,22 +592,21 @@ pub fn project(ds: &Dataset, crs: Crs) -> Result<Dataset> {
         return Ok(ds.clone());
     }
     let mut out = ds.clone();
-    let t = crs.transformer().map_err(DataError::Format)?;
-    project_features(&mut out.features, &t, crs)?;
+    let to = Crs::LonLat.to(crs).map_err(DataError::Format)?;
+    project_features(&mut out.features, &to)?;
     Ok(out)
 }
 
-/// Converts features' longitude/latitude geometry in place to the coordinates of `crs`, through
-/// its transformer `t`, as a step of the progress. Fails on a coordinate the system can't hold,
-/// naming its feature.
-pub(crate) fn project_features(features: &mut [crate::Feature], t: &crate::raster::Transformer, crs: Crs) -> Result<()> {
+/// Converts features' geometry in place from `to`'s source system to its target, as a step of the
+/// progress. Fails on a coordinate the target can't hold, naming its feature.
+pub(crate) fn project_features(features: &mut [crate::Feature], to: &crate::raster::Reprojection) -> Result<()> {
     crate::progress::begin(features.len());
-    project_each(features, t, crs, true)
+    project_each(features, to, true)
 }
 
 /// [`project_features`] without a step of its own: it counts each feature in the step under way
 /// when `count` is set, and otherwise only stops once the run is cancelled.
-pub(crate) fn project_each(features: &mut [crate::Feature], t: &crate::raster::Transformer, crs: Crs, count: bool) -> Result<()> {
+pub(crate) fn project_each(features: &mut [crate::Feature], to: &crate::raster::Reprojection, count: bool) -> Result<()> {
     for f in features {
         if count {
             crate::progress::step(1)?;
@@ -615,12 +614,9 @@ pub(crate) fn project_each(features: &mut [crate::Feature], t: &crate::raster::T
             crate::progress::check()?;
         }
         if let Some(g) = f.geometry.take() {
-            let mut ok = true;
-            let p = g.map_coords(&|c| t.from_lonlat(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
-            p.for_each_coord(|c| ok &= c.is_finite());
-            if !ok {
-                return Err(DataError::Format(format!("feature {} can't be placed in {}", f.id, crs.label())));
-            }
+            let Some(p) = to.whole_geometry(&g) else {
+                return Err(DataError::Format(format!("feature {} can't be placed in {}", f.id, to.target().label())));
+            };
             f.geometry = Some(p);
         }
     }
@@ -637,11 +633,11 @@ pub fn define_projection(ds: &Dataset, crs: Crs) -> Result<Dataset> {
     }
     let from = ds.crs.unwrap_or(Crs::LonLat);
     let native = project(ds, from)?;
-    let to = crs.transformer().map_err(DataError::Format)?;
+    let to = crs.to(Crs::LonLat).map_err(DataError::Format)?;
     let mut out = native;
     for f in &mut out.features {
         if let Some(g) = f.geometry.take() {
-            let g = g.map_coords(&|c| to.to_lonlat(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
+            let g = to.geometry(&g);
             let mut valid = true;
             g.for_each_coord(|c| valid &= c.is_finite() && c.x.abs() <= 180.0 && c.y.abs() <= 90.0);
             if !valid {
