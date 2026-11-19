@@ -157,6 +157,17 @@ impl<K: Clone + PartialEq> Tip<K> {
         true
     }
 
+    /// Instead of `show`, with a cursor in `here` (what the help would be about there) but other
+    /// help shown over it (a function's signature over its command's): not shown, and what Escape
+    /// closed stays closed only while the cursor is still in it.
+    pub fn hide(&mut self, here: Option<&K>) {
+        if here != self.dismissed.as_ref() {
+            self.dismissed = None;
+        }
+        self.shown = None;
+        self.size = None;
+    }
+
     /// After the box (`out`): the help `found` for the cursor at char `at` (None: no cursor, or
     /// none to show it by, such as a list open over it), as what it's about and the char where
     /// that starts, drawn by `draw`
@@ -200,6 +211,35 @@ impl<K: Clone + PartialEq> Tip<K> {
         let (_, size) = popup(ui, id, corner, room, |ui| draw(ui, width));
         self.shown = Some(k);
         self.size = Some(size);
+    }
+}
+
+/// Where Ctrl+Space asked a box for its list (the text's hash and the cursor): the list shows
+/// there with nothing typed, until the text or the cursor moves on.
+#[derive(Clone, Default)]
+pub(crate) struct Asked(Option<(u64, usize)>);
+
+impl Asked {
+    /// Before the box (its id `id`, its text `text`) sees the keys, with it focused: Ctrl+Space
+    /// asks for the list at its cursor. Whether it did (the list Escape closed may show again,
+    /// `List::reopen`).
+    pub fn keys(&mut self, ui: &Ui, id: Id, text: &str) -> bool {
+        if !ui.memory(|m| m.has_focus(id)) || !ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Space)) {
+            return false;
+        }
+        let at = TextEditState::load(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0);
+        self.0 = at.map(|at| (egui::util::hash(text), at));
+        true
+    }
+
+    /// Whether the list was asked for at cursor `at` of the text hashed `text`, and still is
+    /// there; once either moved on, forgotten.
+    pub fn here(&mut self, text: u64, at: Option<usize>) -> bool {
+        let here = at.is_some_and(|at| self.0 == Some((text, at)));
+        if !here {
+            self.0 = None;
+        }
+        here
     }
 }
 

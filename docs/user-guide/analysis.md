@@ -1600,7 +1600,9 @@ themes: `#` comments in green italics, the command id, and the JSON's strings, n
 `notebook.run`), and parameters that aren't valid JSON are red and underlined. A script is read to
 its 10,000th line; any further are dimmed, as Run doesn't read them. Typing a line's first word
 opens a list of the commands it starts, under the cursor: ↑/↓ to move, Enter or Tab to accept,
-Escape to close, or a click. Beside it, the highlighted command's help: its signature (keys with `?`
+Escape to close, or a click; Ctrl+Space opens it with nothing typed yet (on an empty line, every
+command), or again after Escape closed it (on macOS, where Ctrl+Space may switch the input source,
+type the first letter instead). Beside it, the highlighted command's help: its signature (keys with `?`
 may be left out), its name, its parameters one per line, and where it sits in the interface.
 Accepting a command on a line of its own adds its braces: with its required keys ready for their
 values, the cursor at the first (`map.goToXY {"lon": , "lat": }`), or empty with the cursor inside
@@ -1646,7 +1648,11 @@ the field lists alike.
 Accepting one writes it as the string needs it, the rest of the string left as written: a field
 begun with an escaped quote is closed with one (`"where": "\"Pop Est\""`), and a function comes
 with its brackets, the cursor inside. A key inside another key's objects, such as a display
-filter's `"where"`, offers nothing yet. A `{` or `[`
+filter's `"where"`, offers nothing yet. There too Ctrl+Space opens the list with nothing typed
+(`"where": "` lists all the fields, functions and variables). With the cursor in a function's
+call, the help by it is the function's signature instead of the command's, the argument the cursor
+is in marked (`round(x[, places])`), with what the function gives, as in Calculate Field; Escape
+closes it until the cursor leaves the call, and out of it the command's help is back. A `{` or `[`
 typed closes itself, the cursor inside, unless text follows it or it's in a string or a comment;
 so does a `"` where a string can start (after a space, `{`, `[`, `,` or `:`). A `}` or `]` typed
 before the same one steps over it, as does a `"` typed before the quote that ends its string, and

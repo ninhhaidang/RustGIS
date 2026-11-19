@@ -1,15 +1,15 @@
 //! Autocomplete for the Script pane (#662): a floating list of suggestions just under the cursor,
 //! as in a code editor. ↑/↓ move the highlight, Enter or Tab accept it, Escape closes the list, or
-//! a click accepts an item. What to offer at a cursor (`offer_at`) is worked out apart from the
-//! box and tested on its own: command ids (a line's first word), a command's parameter keys in
-//! its `{…}` and in its second-level objects (`key_at`), and the ids some values take: tools for
-//! a `gp.run` line's `"tool"`, commands for a `task.addStep` line's `"command"` (`value_at`),
-//! whose own keys then go in its `"params": {…}`, and what the project holds: layers for a
-//! `"layer"`, the line's layer's fields for a `"field"` and the keys described as taking fields
-//! (in their arrays too, #846), maps, layouts, tables and label classes,
-//! and in a `gp.run` line's `"params"` what the tool's parameter takes by its kind (`tool_value`),
-//! as the tool's form offers it. Typing aids beside it: a command's parameters added on accept
-//! (`template`), and braces, brackets and quotes that close themselves (`brace`).
+//! a click accepts an item; Ctrl+Space opens it with nothing typed yet. What to offer at a cursor
+//! (`offer_at`) is worked out apart from the box and tested on its own: command ids (a line's
+//! first word), a command's parameter keys in its `{…}` and in its second-level objects
+//! (`key_at`), and the ids some values take: tools for a `gp.run` line's `"tool"`, commands for a
+//! `task.addStep` line's `"command"` (`value_at`), whose own keys then go in its `"params": {…}`,
+//! and what the project holds: layers for a `"layer"`, the line's layer's fields for a `"field"`
+//! and the keys described as taking fields (in their arrays too, #846), maps, layouts, tables and
+//! label classes, and in a `gp.run` line's `"params"` what the tool's parameter takes by its kind
+//! (`tool_value`), as the tool's form offers it. Typing aids beside it: a command's parameters
+//! added on accept (`template`), and braces, brackets and quotes that close themselves (`brace`).
 //! Quoted text is read by one rule everywhere (`rustgis_engine::Quotes`), the one the colours use.
 
 use egui::text::{CCursor, CCursorRange};
@@ -18,7 +18,7 @@ use egui::{Id, Ui};
 use rustgis_engine::Quotes;
 use rustgis_engine::cmd::workflows::refused_in_script;
 
-use crate::completion::{Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
+use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
 
 /// The fewest characters typed before ids are offered (one would offer most of them).
 const MIN_TYPED: usize = 2;
@@ -87,14 +87,15 @@ impl Of {
 /// the commands a script can run. Case aside, an id equal to the word isn't offered again.
 #[cfg(test)]
 pub fn offer(script: &str, at: usize, ids: &[String]) -> Option<Offer> {
-    let (start, word) = word_at(script, at)?;
+    let (start, word) = word_at(script, at, false)?;
     complete(start, at, &word, ids)
 }
 
 /// The command id being typed at char `at` of `script`, and where it starts (a char index): the
-/// cursor at the end of a line's first word (comments aside), at least `MIN_TYPED` characters.
-/// It reads the cursor's line only, so working an offer out costs no more for a long script.
-pub fn word_at(script: &str, at: usize) -> Option<(usize, String)> {
+/// cursor at the end of a line's first word (comments aside), at least `MIN_TYPED` characters;
+/// when `asked` (Ctrl+Space), any word, empty on a blank line. It reads the cursor's line only,
+/// so working an offer out costs no more for a long script.
+pub fn word_at(script: &str, at: usize, asked: bool) -> Option<(usize, String)> {
     let (before, after) = script.split_at(byte_at(script, at)?);
     // The cursor ends the word: no word character right after it.
     if after.chars().next().is_some_and(|c| !c.is_whitespace()) {
@@ -102,7 +103,8 @@ pub fn word_at(script: &str, at: usize) -> Option<(usize, String)> {
     }
     let line = before.rsplit('\n').next().unwrap_or_default();
     let word = line.trim_start();
-    if word.chars().count() < MIN_TYPED || word.chars().any(char::is_whitespace) || word.starts_with('#') {
+    let fewest = if asked { 0 } else { MIN_TYPED };
+    if word.chars().count() < fewest || word.chars().any(char::is_whitespace) || word.starts_with('#') {
         return None;
     }
     Some((at - word.chars().count(), word.to_string()))
@@ -542,15 +544,59 @@ pub struct InExpression {
     data: Option<Of>,
 }
 
+/// An expression the cursor is in (`expression_in`): where its string's text starts (a char
+/// index of the script), what it holds, escapes read, and where each of its chars starts in the
+/// script from there (`unescape`), the cursor in its chars, and the layer's or table's rows it's
+/// over, if any.
+struct ExpressionRead<'a> {
+    start: usize,
+    text: String,
+    places: Vec<usize>,
+    cursor: usize,
+    data: Option<(&'a rustgis_engine::data::Dataset, Of)>,
+}
+
+impl ExpressionRead<'_> {
+    /// What the expression's reading says goes at its cursor (`query::complete_at`), given to
+    /// `then` with the fields it's over: none (the language's own words) without rows.
+    fn read<T>(
+        &self,
+        then: impl FnOnce(rustgis_engine::data::query::Completion, &rustgis_engine::data::Dataset) -> Option<T>,
+    ) -> Option<T> {
+        let none = rustgis_engine::data::Dataset::new("", rustgis_engine::data::GeometryType::Polygon, Vec::new());
+        let ds = self.data.as_ref().map_or(&none, |(d, _)| d);
+        then(rustgis_engine::data::query::complete_at(&self.text, self.cursor, ds)?, ds)
+    }
+}
+
 /// What an expression box offers (#1240) for the expression being typed at char `at` of
-/// `script`: the cursor in the string of a command's key that takes one (its type `sql` or
-/// `expression`, `rustgis_engine::expression_keys`), of a `gp.run` line's tool's parameter that
-/// does (`ParamKind::Expression`), or of a `task.addStep` line's command's key that does, in its
-/// `"params"`; anywhere in it. Over the fields of the line's (or the step's) layer or table
-/// (`line_data`), or of the tool's input; without one, the language's own words.
-fn expression_at(script: &str, at: usize, session: &rustgis_engine::Session) -> Option<Offer> {
-    let h = hint_at(script, at)?;
-    let line = line_of(script, &h)?;
+/// `script` (`expression_in`); with no word typed, only when `asked` (Ctrl+Space), as the box.
+fn expression_at(script: &str, at: usize, session: &rustgis_engine::Session, asked: bool) -> Option<Offer> {
+    let e = expression_in(script, at, &hint_at(script, at)?, session)?;
+    let offer = e.read(|completion, ds| crate::exprcomplete::offer_from(&completion, &e.text, ds, asked))?;
+    let items = offer.items().to_vec();
+    let from = e.start + e.places.get(offer.start())?;
+    let of = Of::Expression(Box::new(InExpression { offer, text: e.start, data: e.data.map(|(_, of)| of) }));
+    Some(Offer { start: from, end: at, items, of: Some(of) })
+}
+
+/// The call of a function the cursor at char `at` of `script` is in, in an expression in line
+/// `h` (`expression_in`), the innermost, and where its `(` is (a char index of the script): its
+/// signature floats there (`hint`), as in an expression box.
+fn call_at(script: &str, at: usize, h: &Hint, session: &rustgis_engine::Session) -> Option<(rustgis_engine::data::query::Call, usize)> {
+    let e = expression_in(script, at, h, session)?;
+    let call = e.read(|completion, _| completion.call)?;
+    Some((call, e.start + e.places.get(call.open)?))
+}
+
+/// The expression the cursor at char `at` of `script` is in (#1240), in line `h`: in the string of a
+/// command's key that takes one (its type `sql` or `expression`, `rustgis_engine::expression_keys`),
+/// of a `gp.run` line's tool's parameter that does (`ParamKind::Expression`), or of a
+/// `task.addStep` line's command's key that does, in its `"params"`; anywhere in it. Over the
+/// fields of the line's (or the step's) layer or table (`line_data`), or of the tool's input;
+/// without one, the language's own words.
+fn expression_in<'a>(script: &str, at: usize, h: &Hint, session: &'a rustgis_engine::Session) -> Option<ExpressionRead<'a>> {
+    let line = line_of(script, h)?;
     let before = scan(script.get(byte_at(script, h.brace)?..byte_at(script, at)?)?);
     let (start, data) = match before.value {
         Some((start, key, false)) => {
@@ -561,20 +607,14 @@ fn expression_at(script: &str, at: usize, session: &rustgis_engine::Session) -> 
         }
         Some(_) => return None,
         // In a `gp.run` or `task.addStep` line's `"params"`.
-        None => params_expression_at(script, at, &h, before.nested.filter(|n| n.key == "params")?.brace, session)?,
+        None => params_expression_at(script, at, h, before.nested.filter(|n| n.key == "params")?.brace, session)?,
     };
-    let chars: Vec<char> = script.chars().collect();
-    let (text, places) = unescape(chars.get(start..)?)?;
+    // From the string's text to its line's end, where `unescape` stops anyway: not the whole script.
+    let raw: Vec<char> = script.get(byte_at(script, start)?..)?.split('\n').next()?.chars().collect();
+    let (text, places) = unescape(&raw)?;
     // The cursor in the middle of an escape (`\|"`) is in no char of the text.
     let cursor = places.iter().position(|p| start + p == at)?;
-    let none = rustgis_engine::data::Dataset::new("", rustgis_engine::data::GeometryType::Polygon, Vec::new());
-    let ds = data.as_ref().map_or(&none, |(d, _)| d);
-    let completion = rustgis_engine::data::query::complete_at(&text, cursor, ds)?;
-    let offer = crate::exprcomplete::offer_from(&completion, &text, ds, false)?;
-    let items = offer.items().to_vec();
-    let from = start + places.get(offer.start())?;
-    let of = Of::Expression(Box::new(InExpression { offer, text: start, data: data.map(|(_, of)| of) }));
-    Some(Offer { start: from, end: at, items, of: Some(of) })
+    Some(ExpressionRead { start, text, places, cursor, data })
 }
 
 /// Where the expression being typed at char `at` of `script` starts (a char index), in the
@@ -656,12 +696,14 @@ fn expression_written(script: &str, e: &InExpression, item: &str) -> Option<(Str
 /// keys their entries describe; in a `gp.run` line the tool ids for its `"tool"` and the tool's
 /// keys and values (`tool_value`) in its `"params"`, in a `task.addStep` line the command ids for
 /// its `"command"` and that command's keys in its `"params"`; in the string of a key that takes
-/// an expression, what an expression box offers there (`expression_at`).
-fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::Session) -> Option<Offer> {
-    if let Some((start, word)) = word_at(script, at) {
+/// an expression, what an expression box offers there (`expression_at`). When `asked`
+/// (Ctrl+Space), a line's first word and an expression's word are offered with nothing typed
+/// yet; keys and values are anyway.
+fn offer_at(script: &str, at: usize, ids: &[String], session: &rustgis_engine::Session, asked: bool) -> Option<Offer> {
+    if let Some((start, word)) = word_at(script, at, asked) {
         return complete(start, at, &word, ids);
     }
-    if let Some(offer) = expression_at(script, at, session) {
+    if let Some(offer) = expression_at(script, at, session, asked) {
         return Some(offer);
     }
     if let Some(ValueAt { hint, start, word, key, listed }) = value_at(script, at) {
@@ -1235,8 +1277,10 @@ struct State {
     /// The hash is taken each frame the box has focus: the length alone misses a script replaced by
     /// one as long, and a change made by code comes with no input event to wait for. It reads the
     /// text once, as egui's own layout already does each frame (the layouter's cache key, the
-    /// galley cache), so it adds a constant, not a new order of cost.
-    worked: Option<Worked<(u64, u64, Option<u32>), Option<Offer>>>,
+    /// galley cache), so it adds a constant, not a new order of cost. And whether it was asked for.
+    worked: Option<Worked<(u64, u64, Option<u32>, bool), Option<Offer>>>,
+    /// Where Ctrl+Space asked for the list: it shows there with nothing typed.
+    asked: Asked,
     /// The help by the cursor (`hint`).
     hint: HintState,
 }
@@ -1254,12 +1298,27 @@ impl Offered for Offer {
 /// The help shown by the cursor while it's in a line's `{…}`.
 #[derive(Clone, Default)]
 struct HintState {
-    /// Where it floats, for the command whose braces the cursor is in (`completion::Tip`).
+    /// Where the command's help floats, for the command whose braces the cursor is in
+    /// (`completion::Tip`).
     tip: Tip<Hint>,
+    /// Where a function's signature floats instead, for the call the cursor is in (its `(`, a
+    /// char index of the script). Each has what Escape closed of its own: closing one doesn't
+    /// close the other, and going through a call doesn't bring back a command's help closed.
+    call: Tip<usize>,
     /// What it was worked out to show, for which cursor, script (its hash), language (the help is
-    /// translated) and plugins' revision (a plugin's command comes and goes with its plugin): not
-    /// again each frame the cursor blinks.
-    worked: Option<Worked<(&'static str, u64), Option<(Hint, Help)>>>,
+    /// translated), plugins' revision (a plugin's command comes and goes with its plugin) and
+    /// project (the session's revision and active layer: the fields an expression is read over):
+    /// not again each frame the cursor blinks.
+    worked: Option<Worked<(&'static str, u64, u64, Option<u32>), Option<Shown>>>,
+}
+
+/// What the help by the cursor shows: the help of the command whose braces it's in (a command's
+/// or tool's), or the signature of the call of a function it's in, in an expression there, with
+/// the command whose braces it's in and where that call's `(` is (a char index of the script).
+#[derive(Clone)]
+enum Shown {
+    Help(Hint, Help),
+    Call(Hint, usize, rustgis_engine::data::query::Call),
 }
 
 fn load(ui: &Ui, box_id: Id) -> State {
@@ -1279,7 +1338,7 @@ pub fn filter(ui: &Ui, box_id: Id) -> egui::EventFilter {
         tab: true,
         horizontal_arrows: true,
         vertical_arrows: true,
-        escape: state.list.is_open() || state.hint.tip.is_shown(),
+        escape: state.list.is_open() || state.hint.tip.is_shown() || state.hint.call.is_shown(),
     }
 }
 
@@ -1291,14 +1350,20 @@ pub fn close(ui: &Ui, box_id: Id) {
     }
 }
 
-/// Before the box sees the keys: with the list open and the box focused, its keys (`List::keys`);
+/// Before the box sees the keys: with the box focused, Ctrl+Space asks for the list at the cursor
+/// (with nothing typed, or one Escape closed); with the list open, its keys (`List::keys`);
 /// with the help by the cursor shown instead, Escape closes it. Returns the item to accept, if
 /// any. A list worked out for another text than `script` (changed from outside the box since) is
 /// dropped, not acted on: its word could be elsewhere now.
 pub fn keys(ui: &Ui, box_id: Id, script: &str) -> Option<(Offer, String)> {
     let mut state = load(ui, box_id);
+    if state.asked.keys(ui, box_id, script) {
+        state.list.reopen();
+        store(ui, box_id, state);
+        return None;
+    }
     // The help by the cursor (no list open): Escape closes it.
-    if !state.list.is_open() && state.hint.tip.keys(ui, box_id) {
+    if !state.list.is_open() && (state.hint.tip.keys(ui, box_id) || state.hint.call.keys(ui, box_id)) {
         store(ui, box_id, state);
         return None;
     }
@@ -1328,11 +1393,13 @@ pub fn show(
 ) -> Option<(Offer, String)> {
     let mut state = load(ui, box_id);
     let worked = &mut state.worked;
+    let asked = &mut state.asked;
     let work = |at: Option<usize>| {
         let text = egui::util::hash(script);
-        let with = (rustgis_engine::plugins::revision(), session.revision, session.active_layer);
+        let here = asked.here(text, at);
+        let with = (rustgis_engine::plugins::revision(), session.revision, session.active_layer, here);
         Worked::get(worked, at, text, &with).unwrap_or_else(|| {
-            let offer = at.and_then(|at| offer_at(script, at, &script_ids_cached(ui, session), session));
+            let offer = at.and_then(|at| offer_at(script, at, &script_ids_cached(ui, session), session, here));
             *worked = Some(Worked { at, text, with, value: offer.clone() });
             offer
         })
@@ -1379,40 +1446,60 @@ pub fn show(
 
 /// After the list: with no list open, the help of the command whose parameters the cursor is in
 /// (its line's `{…}`), floating by the cursor, so the signature and parameters stay in view while
-/// they're typed. Not with text selected, a cursor out of view, the window left, or once Escape
-/// closed it (until the cursor leaves those braces).
+/// they're typed; in the call of a function in an expression there (`call_at`), the function's
+/// signature instead, its argument at the cursor marked, as an expression box shows it (#1240).
+/// Not with text selected, a cursor out of view, the window left, or once Escape closed it (until
+/// the cursor leaves those braces, or that call).
 pub fn hint(ui: &Ui, box_id: Id, out: &TextEditOutput, visible: egui::Rect, script: &str, session: &rustgis_engine::Session) {
     let mut state = load(ui, box_id);
     let focused = out.response.response.has_focus() && ui.input(|i| i.focused);
     let at = out.cursor_range.filter(|r| focused && !state.list.is_open() && r.is_empty()).map(|r| r.primary.index.0);
     // Its own hash of the script, not the list's: it mustn't depend on how `show` ran this frame.
     let text = egui::util::hash(script);
-    // The help is translated, and a plugin's command comes and goes with its plugin.
-    let with = (crate::i18n::current().code(), rustgis_engine::plugins::revision());
+    // The help is translated, a plugin's command comes and goes with its plugin, and an
+    // expression is read over the project's fields.
+    let with = (crate::i18n::current().code(), rustgis_engine::plugins::revision(), session.revision, session.active_layer);
     let kept = Worked::get(&state.hint.worked, at, text, &with);
     let found = match kept {
         Some(found) => found,
         None => {
             let found = at.and_then(|at| {
                 let h = hint_at(script, at)?;
+                if let Some((call, open)) = call_at(script, at, &h, session) {
+                    return Some(Shown::Call(h, open, call));
+                }
                 let help = help_at(session, script, at, &h)?;
-                Some((h, help))
+                Some(Shown::Help(h, help))
             });
             state.hint.worked = Some(Worked { at, text, with, value: found.clone() });
             found
         }
     };
-    // Anchored at the line's `{`.
-    let rows = found.as_ref().map_or(0, |(_, help)| help.params.len() + 3);
-    let (about, help): (Option<(Hint, usize)>, Option<Help>) = found
-        .map(|(h, help)| {
-            let brace = h.brace;
-            ((h, brace), help)
-        })
-        .unzip();
-    state.hint.tip.show(ui, box_id.with("complete_hint"), out, visible, at, about, rows, |ui, width| {
-        if let Some(help) = &help {
-            draw_help(ui, help, width);
+    let (help, call) = match found {
+        Some(Shown::Help(h, help)) => (Some((h, help)), None),
+        Some(Shown::Call(h, open, call)) => {
+            // In a call its command's help is hidden, not left: what Escape closed of it stays
+            // closed while the cursor is still in that command's braces (`Tip::hide`).
+            state.hint.tip.hide(Some(&h));
+            (None, Some((open, call)))
+        }
+        None => (None, None),
+    };
+    // Anchored at the line's `{`, the signature at the call's `(`.
+    if call.is_none() {
+        let rows = help.as_ref().map_or(0, |(_, help)| help.params.len() + 3);
+        let about = help.as_ref().map(|(h, _)| (h.clone(), h.brace));
+        state.hint.tip.show(ui, box_id.with("complete_hint"), out, visible, at, about, rows, |ui, width| {
+            if let Some((_, help)) = &help {
+                draw_help(ui, help, width);
+            }
+        });
+    }
+    let about = call.as_ref().map(|(open, _)| (*open, *open));
+    let rows = crate::exprcomplete::TIP_ROWS;
+    state.hint.call.show(ui, box_id.with("complete_call"), out, visible, at, about, rows, |ui, width| {
+        if let Some((_, call)) = &call {
+            crate::exprcomplete::draw_call(ui, call, width);
         }
     });
     store(ui, box_id, state);
@@ -1546,6 +1633,11 @@ pub fn braces(ui: &Ui, before: Option<Before>, out: &TextEditOutput, script: &mu
 #[cfg(test)]
 mod tests {
     use super::{Offer, offer};
+
+    /// What `offer_at` offers where Ctrl+Space didn't ask.
+    fn unasked(script: &str, at: usize, ids: &[String], session: &rustgis_engine::Session) -> Option<Offer> {
+        super::offer_at(script, at, ids, session, false)
+    }
 
     /// The ids as the pane has them (`script_ids`): those a script refuses already left out.
     fn ids() -> Vec<String> {
@@ -2313,7 +2405,7 @@ mod tests {
     #[test]
     fn the_key_being_typed_is_not_given() {
         let app = crate::RustGisApp::with_sample();
-        let keys = |s: &str, at: usize| super::offer_at(s, at, &[], &app.session).map(|o| o.items).unwrap_or_default();
+        let keys = |s: &str, at: usize| unasked(s, at, &[], &app.session).map(|o| o.items).unwrap_or_default();
         let s = r#"map.goToXY {"lat": 5}"#;
         assert_eq!(keys(s, 16), ["lat"], "a closed key can be changed");
         let s = r#"map.goToXY {"lat": 5, "lat": 6}"#;
@@ -2426,6 +2518,164 @@ mod tests {
         assert!((h.get_by_label(&sig).rect().left() - first).abs() < 0.5, "it didn't move with the cursor");
     }
 
+    /// In a call in an expression (#1240) the function's signature shows instead of the command's
+    /// help, the innermost call's; Escape closes it until the cursor leaves the call, and out of
+    /// it the command's help is back.
+    #[test]
+    fn a_call_in_an_expression_shows_its_signature() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = pane();
+        let help = super::help(&h.state().session, "select.byAttributes").unwrap();
+        let sig = format!("{}{}", help.id, help.keys);
+        let shows =
+            |h: &egui_kittest::Harness<'static, crate::RustGisApp>, label: &str| h.query_by_role_and_label(Role::Label, label).is_some();
+        let round = "round(x[, places])";
+        type_in(&mut h, r#"select.byAttributes {"layer": "Countries", "where": "round(pop_est, "#);
+        assert!(shows(&h, round), "the signature");
+        assert!(h.query_by_label(&sig).is_none(), "not the command's help too");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(!shows(&h, round), "Escape closes it");
+        assert!(h.query_by_label(&sig).is_none(), "and the command's help doesn't take its place");
+        type_in(&mut h, "2)");
+        h.get_by_label(&sig);
+        type_in(&mut h, " + round(abs(");
+        assert!(shows(&h, "abs(x)"), "the innermost call's");
+        assert!(!shows(&h, round));
+    }
+
+    /// A command's help closed with Escape stays closed through a call in its expression: the
+    /// signature shows in the call, and out of it the help doesn't come back, as the cursor never
+    /// left the braces. A call in another command's braces is leaving them.
+    #[test]
+    fn a_closed_commands_help_stays_closed_through_a_call() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = pane();
+        let help = super::help(&h.state().session, "select.byAttributes").unwrap();
+        let sig = format!("{}{}", help.id, help.keys);
+        type_in(&mut h, r#"select.byAttributes {"layer": "Countries", "where": "pop_est > "#);
+        h.get_by_label(&sig);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_label(&sig).is_none(), "closed");
+        type_in(&mut h, "round(");
+        assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_some(), "the signature in the call");
+        type_in(&mut h, "1)");
+        assert!(h.query_by_label(&sig).is_none(), "still closed out of the call");
+        type_in(&mut h, "\"}\nselect.byAttributes {");
+        h.get_by_label(&sig);
+        // Closed in one command, then straight into a call in another, and back: shown again, as
+        // the cursor left its braces.
+        let mut h = pane();
+        let help = super::help(&h.state().session, "labels.style").unwrap();
+        let styled = format!("{}{}", help.id, help.keys);
+        type_in(&mut h, r#"labels.style {"size": 1, "#);
+        h.get_by_label(&styled);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_label(&styled).is_none(), "closed");
+        type_in(&mut h, "\nselect.byAttributes {\"layer\": \"Countries\", \"where\": \"round(");
+        assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_some(), "another command's call");
+        // Straight back into the first command's braces (a click there).
+        let id = egui::Id::unique("script_text");
+        let mut state = egui::widgets::text_edit::TextEditState::load(&h.ctx, id).unwrap_or_default();
+        let back = egui::text::CCursorRange::one(egui::text::CCursor::new("labels.style {".chars().count()));
+        state.cursor.set_char_range(Some(back));
+        state.store(&h.ctx, id);
+        h.run();
+        h.get_by_label(&styled);
+    }
+
+    /// Ctrl+Space opens the list with nothing typed: a line's first word, an expression's; and
+    /// one Escape closed. Typing on leaves it to what's typed again.
+    #[test]
+    fn ctrl_space_asks_for_the_list() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = pane();
+        let ask = |h: &mut egui_kittest::Harness<'static, crate::RustGisApp>| {
+            h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Space);
+            h.run();
+        };
+        let mut ids = super::script_ids(&h.state().session);
+        ids.sort();
+        ask(&mut h);
+        h.get_by_role_and_label(Role::Button, &ids[0]);
+        assert_eq!(h.state().workflow.script, "", "nothing typed");
+        type_in(&mut h, "x");
+        assert!(h.query_by_role_and_label(Role::Button, &ids[0]).is_none(), "typed on: as unasked");
+        let mut h = pane();
+        let s = r#"select.byAttributes {"layer": "Countries", "where": ""#;
+        type_in(&mut h, s);
+        let first = super::offer_at(s, s.chars().count(), &[], &h.state().session, true).unwrap().items[0].clone();
+        assert!(h.query_by_role_and_label(Role::Button, &first).is_none(), "an expression unasked");
+        ask(&mut h);
+        h.get_by_role_and_label(Role::Button, &first);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, &first).is_none(), "closed");
+        ask(&mut h);
+        h.get_by_role_and_label(Role::Button, &first);
+    }
+
+    /// Asked for (Ctrl+Space), a line's first word and an expression's word are offered with
+    /// nothing typed; not where no list goes.
+    #[test]
+    fn asked_offers_with_nothing_typed() {
+        let app = crate::RustGisApp::with_sample();
+        let session = &app.session;
+        let mut ids = super::script_ids(session);
+        ids.sort();
+        let asked = |s: &str| super::offer_at(s, s.chars().count(), &ids, session, true).map(|o| o.items).unwrap_or_default();
+        let plain = |s: &str| unasked(s, s.chars().count(), &ids, session).map(|o| o.items).unwrap_or_default();
+        assert_eq!(asked(""), ids, "an empty script: every id");
+        assert_eq!(asked("map.zoomFull\n  "), ids, "an empty line");
+        assert!(plain("").is_empty());
+        let m = asked("m");
+        assert!(!m.is_empty() && m.iter().all(|i| i.starts_with('m')), "one letter: those it starts");
+        assert!(plain("m").is_empty());
+        let s = r#"select.byAttributes {"layer": "Countries", "where": ""#;
+        assert!(asked(s).iter().any(|i| i == "pop_est") && asked(s).iter().any(|i| i == "upper()"), "an expression's all");
+        assert!(plain(s).is_empty());
+        assert!(asked(&format!("{s}pop_est > ")).iter().any(|i| i == "pop_est"), "after an operator");
+        for none in ["# ", "map.zoomFull ", "select.byAttributes {", r#"layer.rename {"layer": "Countries", "name": ""#] {
+            assert!(asked(none).is_empty(), "{none}");
+        }
+    }
+
+    /// The call the cursor is in, in an expression (#1240): its function, its argument and where
+    /// its `(` is in the script, past escapes; the innermost; in a tool's or a step's
+    /// `"params"`. None out of a call, in another key's string or in a comment.
+    #[test]
+    fn call_at_finds_the_call_in_an_expression() {
+        let app = crate::RustGisApp::with_sample();
+        let call = |s: &str| {
+            let at = s.chars().count();
+            let (c, open) = super::call_at(s, at, &super::hint_at(s, at)?, &app.session)?;
+            Some((c.spec.signature, c.arg, open))
+        };
+        let open = |s: &str| s.chars().count() - s.chars().rev().position(|c| c == '(').unwrap() - 1;
+        let s = r#"select.byAttributes {"layer": "Countries", "where": "round(pop_est, "#;
+        assert_eq!(call(s), Some(("round(x[, places])", 1, open(s))));
+        let s = r#"select.byAttributes {"layer": "Countries", "where": "round(abs("#;
+        assert_eq!(call(s), Some(("abs(x)", 0, open(s))), "the innermost");
+        let s = r#"select.byAttributes {"layer": "Countries", "where": "\"name\" = 'é' OR round("#;
+        assert_eq!(call(s), Some(("round(x[, places])", 0, open(s))), "past escapes and wide chars");
+        let s = r#"gp.run {"tool": "selectByAttributes", "params": {"input": "Countries", "where": "round("#;
+        assert_eq!(call(s).map(|c| c.0), Some("round(x[, places])"), "a tool's");
+        let s = r#"task.addStep {"command": "select.byAttributes", "params": {"layer": "Countries", "where": "round("#;
+        assert_eq!(call(s).map(|c| c.0), Some("round(x[, places])"), "a step's");
+        for none in [
+            r#"select.byAttributes {"layer": "Countries", "where": "round(1) "#,
+            r#"layer.rename {"layer": "Countries", "name": "round("#,
+            r#"# select.byAttributes {"where": "round("#,
+        ] {
+            assert_eq!(call(none), None, "{none}");
+        }
+    }
+
     /// In a second-level object (a top-level key's `{…}`, or an object in its `[…]`), a key starts
     /// an entry at its top, as at the line's top level; not deeper, in a value, or once the object
     /// is closed.
@@ -2498,7 +2748,7 @@ mod tests {
     fn an_expressions_words_are_offered_in_its_string() {
         let app = crate::RustGisApp::with_sample();
         let session = &app.session;
-        let at = |s: &str, at: usize| super::offer_at(s, at, &[], session);
+        let at = |s: &str, at: usize| unasked(s, at, &[], session);
         let end = |s: &str| at(s, s.chars().count());
         let items =
             |o: Option<super::Offer>| o.filter(|o| matches!(o.of, Some(super::Of::Expression(_)))).map(|o| o.items).unwrap_or_default();
@@ -2557,7 +2807,7 @@ mod tests {
         let mut app = crate::RustGisApp::with_sample();
         app.run("layer.rename", serde_json::json!({"layer": "Cities", "name": "Big \"cities\""})).unwrap();
         let id = app.session.map().layer_by_name("Big \"cities\"").unwrap().id;
-        let end = |s: &str| super::offer_at(s, s.chars().count(), &[], &app.session).unwrap();
+        let end = |s: &str| unasked(s, s.chars().count(), &[], &app.session).unwrap();
         let o = end(r#"select.byAttributes {"layer": "Big \"cities\"", "where": "pop_"#);
         assert!(matches!(&o.of, Some(super::Of::Expression(e)) if e.data == Some(super::Of::Fields(id))), "a command's expression");
         assert!(o.items.iter().any(|i| i == "pop_max"));
@@ -2579,7 +2829,7 @@ mod tests {
     fn an_expressions_item_is_put_escaped() {
         let app = crate::RustGisApp::with_sample();
         let put = |s: &str, item: &str| {
-            let offer = super::offer_at(s, s.chars().count(), &[], &app.session).unwrap();
+            let offer = unasked(s, s.chars().count(), &[], &app.session).unwrap();
             let (new, at) = super::accepted(s, &offer, item, &app.session).unwrap();
             let chars: Vec<char> = new.chars().collect();
             format!("{}|{}", chars[..at].iter().collect::<String>(), chars[at..].iter().collect::<String>())
@@ -2590,7 +2840,7 @@ mod tests {
         let e = ["", "u00e9"].join("\\");
         assert_eq!(put(&format!(r#"{head}"name = '{e}' OR up"#), "upper()"), format!(r#"{head}"name = '{e}' OR upper(|)"#));
         let s = format!(r#"{head}"pop_ > 1", "mode": "new"}}"#);
-        let offer = super::offer_at(&s, head.chars().count() + 5, &[], &app.session).unwrap();
+        let offer = unasked(&s, head.chars().count() + 5, &[], &app.session).unwrap();
         let (new, _) = super::accepted(&s, &offer, "pop_est", &app.session).unwrap();
         assert_eq!(new, format!(r#"{head}"pop_est > 1", "mode": "new"}}"#), "mid string: the rest is left");
     }
@@ -2601,7 +2851,7 @@ mod tests {
     #[test]
     fn a_tools_keys_are_offered_in_params() {
         let app = crate::RustGisApp::with_sample();
-        let keys = |s: &str| super::offer_at(s, s.chars().count(), &[], &app.session).map(|o| o.items).unwrap_or_default();
+        let keys = |s: &str| unasked(s, s.chars().count(), &[], &app.session).map(|o| o.items).unwrap_or_default();
         assert_eq!(keys(r#"gp.run {"tool": "buffer", "params": {""#), ["input", "distance", "units", "dissolve", "output"]);
         assert_eq!(keys(r#"gp.run {"params": {"input": "Cities", "d"#), Vec::<String>::new(), "no tool yet");
         assert_eq!(keys(r#"gp.run {"tool": "Buffer", "params": {"input": "Cities", "d"#), ["distance", "dissolve"], "by name");
@@ -2610,17 +2860,17 @@ mod tests {
         assert!(keys(r#"gp.run {"tool": "buffer", "params": {"output": "a", "o"#).is_empty(), "given in params");
         assert_eq!(keys(r#"gp.run {"output": 1, "tool": "buffer", "params": {"o"#), ["output"], "given at the top level");
         let s = r#"gp.run {"params": {""#;
-        let o = super::offer_at(&format!(r#"{s}"}}, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{s}"}}, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session).unwrap();
         assert_eq!(o.items.len(), 5, "the tool after params");
         assert_eq!(o.of, Some(super::Of::ToolKeys("buffer".into())));
         let s = r#"gp.run {"tool": "buffer", "params": {"distance": 5, "distance"}}"#;
         assert!(keys(&s[..s.len() - 2]).is_empty(), "the same key given before in params");
         let s = r#"gp.run {"params": {""#;
-        let o = super::offer_at(&format!(r#"{s}"}}, "output": 1, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{s}"}}, "output": 1, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session).unwrap();
         assert!(o.items.iter().any(|k| k == "output"), "a top-level key after params isn't given in it");
-        let o = super::offer_at(&format!(r#"{s}"}}, "x": {{"output": 1}}, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session);
+        let o = unasked(&format!(r#"{s}"}}, "x": {{"output": 1}}, "tool": "buffer"}}"#), s.chars().count(), &[], &app.session);
         assert!(o.is_some_and(|o| o.items.iter().any(|k| k == "output")), "nor a key of a later object");
-        let o = super::offer_at(&format!("{s}\n\"tool\": \"buffer\"}}}}"), s.chars().count(), &[], &app.session);
+        let o = unasked(&format!("{s}\n\"tool\": \"buffer\"}}}}"), s.chars().count(), &[], &app.session);
         assert!(o.is_none(), "a tool on another line: a command is one line");
     }
 
@@ -2683,7 +2933,7 @@ mod tests {
     #[test]
     fn tool_ids_are_offered_for_gp_runs_tool() {
         let app = crate::RustGisApp::with_sample();
-        let offer = |s: &str| super::offer_at(s, s.chars().count(), &[], &app.session);
+        let offer = |s: &str| unasked(s, s.chars().count(), &[], &app.session);
         let o = offer(r#"gp.run {"tool": "BUF"#).unwrap();
         assert_eq!((o.items.first().map(String::as_str), o.of), (Some("buffer"), Some(super::Of::ToolIds)));
         assert!(o.items.iter().all(|id| id.to_lowercase().starts_with("buf")));
@@ -2702,7 +2952,7 @@ mod tests {
     #[test]
     fn layers_and_fields_are_offered_for_their_values() {
         let mut app = crate::RustGisApp::with_sample();
-        let offer = |app: &crate::RustGisApp, s: &str| super::offer_at(s, s.chars().count(), &[], &app.session);
+        let offer = |app: &crate::RustGisApp, s: &str| unasked(s, s.chars().count(), &[], &app.session);
         let names: Vec<String> = app.session.map().layers.iter().map(|l| l.name.clone()).collect();
         let o = offer(&app, r#"labels.style {"layer": ""#).unwrap();
         assert_eq!((o.items, o.of), (names, Some(super::Of::Layers)));
@@ -2715,7 +2965,7 @@ mod tests {
         let o = offer(&app, r#"labels.field {"layer": "cities", "field": ""#).unwrap();
         assert_eq!((o.items, o.of), (fields.clone(), Some(super::Of::Fields(id))));
         let s = r#"labels.field {"field": ""#;
-        let o = super::offer_at(&format!(r#"{s}", "layer": "Cities"}}"#), s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{s}", "layer": "Cities"}}"#), s.chars().count(), &[], &app.session).unwrap();
         assert_eq!(o.items, fields, "the layer after the field");
         assert!(offer(&app, r#"labels.field {"layer": "Nowhere", "field": ""#).is_none(), "a layer that isn't there");
         assert!(offer(&app, r#"labels.field {"layer": 99, "field": ""#).is_none(), "a layer given as a number");
@@ -2741,7 +2991,7 @@ mod tests {
     fn keys_that_take_fields_offer_them_in_arrays_too() {
         use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType};
         let mut app = crate::RustGisApp::with_sample();
-        let offer = |app: &crate::RustGisApp, s: &str| super::offer_at(s, s.chars().count(), &[], &app.session);
+        let offer = |app: &crate::RustGisApp, s: &str| unasked(s, s.chars().count(), &[], &app.session);
         let cities = app.session.map().layer_by_name("Cities").unwrap();
         let id = cities.id;
         let fields: Vec<String> = cities.dataset.fields.iter().map(|f| f.name.clone()).collect();
@@ -2753,7 +3003,7 @@ mod tests {
         assert_eq!(offer(&app, &s).unwrap().items, numeric[1..], "not one given before");
         let s = r#"data.explore {"layer": "Cities", "fields": [""#;
         let line = format!(r#"{s}", "{}"]}}"#, numeric[1]);
-        let o = super::offer_at(&line, s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&line, s.chars().count(), &[], &app.session).unwrap();
         assert!(!o.items.contains(&numeric[1]) && o.items.contains(&numeric[0]), "nor one given after");
         let s = format!(r#"data.explore {{"layer": "Cities", "fields": ["{}"#, numeric[0]);
         assert_eq!(offer(&app, &s).unwrap().items[0], numeric[0], "the one being typed stays");
@@ -2830,7 +3080,7 @@ mod tests {
     fn a_tools_values_are_offered_by_kind() {
         use rustgis_engine::data::{Dataset, Field, FieldType, GeometryType};
         let mut app = crate::RustGisApp::with_sample();
-        let offer = |app: &crate::RustGisApp, s: &str| super::offer_at(s, s.chars().count(), &[], &app.session);
+        let offer = |app: &crate::RustGisApp, s: &str| unasked(s, s.chars().count(), &[], &app.session);
         let names = |app: &crate::RustGisApp, keep: fn(&rustgis_engine::map::Layer) -> bool| -> Vec<String> {
             app.session.map().layers.iter().filter(|l| keep(l)).map(|l| l.name.clone()).collect()
         };
@@ -2867,7 +3117,7 @@ mod tests {
             "previous array entry excluded with execution's trimming and casing"
         );
         let before = r#"gp.run {"tool":"pivotTable","params":{"input":"Cities","fields":[""#;
-        let o = super::offer_at(&format!(r#"{before}","name"]}}}}"#), before.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{before}","name"]}}}}"#), before.chars().count(), &[], &app.session).unwrap();
         assert!(!o.items.iter().any(|f| f.eq_ignore_ascii_case("name")), "later array entry excluded");
         let id = app.session.project.tables[0].id;
         for tool in ["summaryStatistics", "pivotTable"] {
@@ -2877,17 +3127,17 @@ mod tests {
             assert_eq!((o.items, o.of), (vec!["total".to_string()], Some(super::Of::TableFields(id))), "numeric ID before another key");
         }
         let before = r#"gp.run {"tool":"summaryStatistics","params":{"case":[""#;
-        let o = super::offer_at(&format!(r#"{before}"],"input":{id}}}}}"#), before.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{before}"],"input":{id}}}}}"#), before.chars().count(), &[], &app.session).unwrap();
         assert_eq!(
             (o.items, o.of),
             (["total".to_string()].to_vec(), Some(super::Of::TableFields(id))),
             "numeric standalone table ID after array"
         );
         let s = r#"gp.run {"tool": "summaryStatistics", "params": {"case": [""#;
-        let o = super::offer_at(&format!(r#"{s}"], "input": "Cities"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{s}"], "input": "Cities"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
         assert_eq!(o.items, fields, "the input after a field array");
         let s = r#"gp.run {"tool": "summaryStatistics", "params": {"field": ""#;
-        let o = super::offer_at(&format!(r#"{s}", "input": "Cities"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
+        let o = unasked(&format!(r#"{s}", "input": "Cities"}}}}"#), s.chars().count(), &[], &app.session).unwrap();
         assert_eq!(o.items, numeric, "the input after the field");
         let o = offer(&app, r#"gp.run {"tool": "summaryStatistics", "params": {"input": "Stats", "field": ""#).unwrap();
         assert_eq!(o.items, ["total"], "a table's fields");
@@ -2908,7 +3158,7 @@ mod tests {
         let before = format!(r#"gp.run {{"tool":"pivotTable","params":{{"input":{id},"fields":[""#);
         let text = format!(r#"{before}",{quoted}]}}}}"#);
         assert_eq!(
-            super::offer_at(&text, before.chars().count(), &[], &app.session).unwrap().items,
+            unasked(&text, before.chars().count(), &[], &app.session).unwrap().items,
             ["total"],
             "escaped name after cursor excluded"
         );
@@ -2984,7 +3234,7 @@ mod tests {
         use super::Of;
         let mut app = crate::RustGisApp::with_sample();
         named_objects(&mut app);
-        let offer = |app: &crate::RustGisApp, text: &str| super::offer_at(text, text.chars().count(), &[], &app.session);
+        let offer = |app: &crate::RustGisApp, text: &str| unasked(text, text.chars().count(), &[], &app.session);
         for (text, name, of) in [
             (r#"bookmark.add {"map": "at"#, "Atlas", Of::Maps),
             (r#"layout.page {"layout": "sh"#, "Sheet", Of::Layouts),
@@ -3017,7 +3267,7 @@ mod tests {
         table.id = 3;
         table.name = "STATS".into();
         app.session.project.tables.push(table);
-        let names = |text: &str| super::offer_at(text, text.chars().count(), &[], &app.session).unwrap().items;
+        let names = |text: &str| unasked(text, text.chars().count(), &[], &app.session).unwrap().items;
         assert_eq!(names(r#"bookmark.add {"map": ""#), ["Atlas"]);
         assert_eq!(names(r#"layout.page {"layout": ""#), ["Sheet"]);
         // Tables prefer an exact name: these two spellings each address a different table.
@@ -3029,12 +3279,12 @@ mod tests {
         let mut app = crate::RustGisApp::with_sample();
         named_objects(&mut app);
         app.session.run("labels.class.rename", &serde_json::json!({"layer": "Cities", "class": "Default", "name": "Base"})).unwrap();
-        let offer = |app: &crate::RustGisApp, text: &str| super::offer_at(text, text.chars().count(), &[], &app.session);
+        let offer = |app: &crate::RustGisApp, text: &str| unasked(text, text.chars().count(), &[], &app.session);
         assert_eq!(offer(&app, r#"labels.style {"class": ""#).unwrap().items, ["Large", "Base"]);
         assert_eq!(offer(&app, r#"labels.style {"layer": "Cities", "class": "la"#).unwrap().items, ["Large"]);
         let text = r#"labels.style {"class": ""#;
         let later = format!(r#"{text}", "layer": "Countries"}}"#);
-        assert_eq!(super::offer_at(&later, text.chars().count(), &[], &app.session).unwrap().items, ["Default"]);
+        assert_eq!(unasked(&later, text.chars().count(), &[], &app.session).unwrap().items, ["Default"]);
         for id in ["labels.class.remove", "labels.class.move"] {
             let text = format!("{id} {{\"class\": \"");
             assert_eq!(offer(&app, &text).unwrap().items, ["Large"]);
@@ -3125,7 +3375,7 @@ mod tests {
     #[test]
     fn a_second_level_objects_keys_are_offered() {
         let app = crate::RustGisApp::with_sample();
-        let offer = |s: &str| super::offer_at(s, s.chars().count(), &[], &app.session);
+        let offer = |s: &str| unasked(s, s.chars().count(), &[], &app.session);
         let keys = |s: &str| offer(s).map(|o| o.items).unwrap_or_default();
         assert_eq!(keys(r#"topology.rules {"add": {""#), ["rule", "layer", "by"]);
         assert_eq!(keys(r#"topology.rules {"add": {"rule": "x", ""#), ["layer", "by"]);
@@ -3133,7 +3383,7 @@ mod tests {
         let s = r#"layer.displayFilters {"filters": [{"name": "a"}, {""#;
         assert_eq!(keys(s), ["name", "minScale", "maxScale", "where"], "another object: nothing given in it");
         let s = r#"layer.displayFilters {"filters": [{"na"#;
-        let later = super::offer_at(&format!(r#"{s}"}}, {{"name": "b"}}]}}"#), s.chars().count(), &[], &app.session);
+        let later = unasked(&format!(r#"{s}"}}, {{"name": "b"}}]}}"#), s.chars().count(), &[], &app.session);
         assert_eq!(later.map(|o| o.items), Some(vec!["name".to_string()]), "a later object of the array isn't this one");
         assert!(keys(r#"topology.rules {"remove": {""#).is_empty(), "an entry that describes none");
         assert!(keys(r#"topology.rules {"nope": {""#).is_empty(), "no such entry");
@@ -3151,7 +3401,7 @@ mod tests {
     fn a_steps_command_and_its_keys_are_offered() {
         let app = crate::RustGisApp::with_sample();
         let ids = super::script_ids(&app.session);
-        let offer = |s: &str| super::offer_at(s, s.chars().count(), &ids, &app.session);
+        let offer = |s: &str| unasked(s, s.chars().count(), &ids, &app.session);
         let o = offer(r#"task.addStep {"command": "LABELS.ST"#).unwrap();
         assert_eq!((o.items, o.of), (vec!["labels.style".to_string()], Some(super::Of::CommandIds)));
         assert!(offer(r#"task.addStep {"command": "ui."#).is_none(), "no interface command");
@@ -3164,7 +3414,7 @@ mod tests {
         let keys = |s: &str| offer(s).map(|o| o.items).unwrap_or_default();
         assert_eq!(keys(r#"task.addStep {"command": "labels.style", "params": {"si"#), ["size"]);
         let s = r#"task.addStep {"params": {"si"#;
-        let after = super::offer_at(&format!(r#"{s}"}}, "command": "labels.style"}}"#), s.chars().count(), &ids, &app.session);
+        let after = unasked(&format!(r#"{s}"}}, "command": "labels.style"}}"#), s.chars().count(), &ids, &app.session);
         assert_eq!(after.map(|o| o.items), Some(vec!["size".to_string()]), "the command after params");
         assert!(keys(r#"task.addStep {"params": {""#).is_empty(), "no command");
         assert!(keys(r#"task.addStep {"command": "nope", "params": {""#).is_empty(), "an unknown command");

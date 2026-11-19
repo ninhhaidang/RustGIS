@@ -7,7 +7,8 @@
 //! for that long, `{"click": label}` clicks the first widget whose label contains the text (with
 //! `"exact": true`, whose whole label is the text), `{"combo": text}` opens the combo box showing
 //! that text, `{"type": text}` types into the focused box,
-//! `{"key": "Enter"}` presses a key (egui's key names), `{"dark": true}` switches theme,
+//! `{"key": "Enter"}` presses a key (egui's key names; `"ctrl": true` holds Ctrl, `{"key": "Space",
+//! "ctrl": true}`), `{"dark": true}` switches theme,
 //! `{"drag": [x, y, dx, dy]}` presses the pointer at (x, y) and moves it by (dx, dy), holding
 //! it (shots then catch the map mid-drag; `{"release": true}` lets go; `"button": "secondary"`; `"ctrl": true` holds Ctrl
 //! drags with the right button),
@@ -454,8 +455,9 @@ fn main() {
                 harness.step();
             }
         } else if let Some(k) = l.get("key").and_then(|v| v.as_str()) {
+            let mods = if l.get("ctrl").and_then(Value::as_bool).unwrap_or(false) { egui::Modifiers::CTRL } else { egui::Modifiers::NONE };
             match egui::Key::from_name(k) {
-                Some(key) => harness.key_press(key),
+                Some(key) => harness.key_press_modifiers(mods, key),
                 None => eprintln!("no key named '{k}'"),
             }
             for _ in 0..3 {
