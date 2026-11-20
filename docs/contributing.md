@@ -12,9 +12,9 @@ for the conventions.
    and ARM64); pushes to `main` test them all. `ci:full` also builds the release apps. The nightly
    workflow tests and release-builds them all when there are new commits, and opens an issue on
    failure.
-5. The docs workflow builds a site and web-app preview. A first-time fork contributor's preview
-   needs a maintainer to add `preview` or re-run the workflow; returning contributors' previews
-   publish automatically.
+5. The docs workflow builds a site and web-app preview. A fork's preview needs a maintainer to
+   add `preview` or re-run the workflow, for each new commit. Previews share one origin, so the
+   preview app keeps its settings, including AI provider keys, only until the page closes.
 
 Pull requests merge through a merge queue: the queue tests each one merged with `main` and the
 pull requests ahead of it, and squash-merges it only if that passes, so two changes that pass apart

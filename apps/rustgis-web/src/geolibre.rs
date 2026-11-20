@@ -42,7 +42,10 @@ async function tools(still = () => true) {
 // visits. The runner itself loads only when a tool runs.
 // The suffix changes when RustGIS reads the list differently.
 const MANIFESTS = `${BASE}/manifests.json?v=1`;
+// A pull request preview shares its origin, and so its caches, with unreviewed previews: it lists
+// the tools every visit instead of trusting a list another preview could have put there.
 async function manifestCache() {
+  if (document.querySelector('meta[name="rustgis-preview"]')) return null;
   try { return await caches.open("rustgis-geolibre"); } catch (_) { return null; }
 }
 export async function geolibre_manifests() {

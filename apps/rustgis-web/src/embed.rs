@@ -206,6 +206,20 @@ pub fn pref_pair(
     if embedded { (Box::new(|_| None), Box::new(|_, _| {})) } else { (Box::new(load_persistent), Box::new(save_persistent)) }
 }
 
+/// A pull request preview's `(load_pref, save_pref)`: preferences kept in memory for the visit
+/// (an AI provider's model and address among them), never read from or written to browser storage,
+/// which every preview shares with unreviewed ones.
+pub fn visit_prefs() -> (PrefLoad, PrefSave) {
+    let kept = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::<String, String>::new()));
+    let read = kept.clone();
+    (
+        Box::new(move |key: &str| read.borrow().get(key).cloned()),
+        Box::new(move |key: &str, value: &str| {
+            kept.borrow_mut().insert(key.to_string(), value.to_string());
+        }),
+    )
+}
+
 pub fn ready() -> Value {
     json!({"rustgis": "ready"})
 }
@@ -441,6 +455,21 @@ mod tests {
         let notices: Vec<String> = undecodable.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("1 ?data="), "{notices:?}");
+    }
+
+    #[test]
+    fn a_preview_keeps_its_preferences_for_the_visit() {
+        let (load_pref, save_pref) = visit_prefs();
+        assert_eq!(load_pref("assistant_url_openai"), None);
+        save_pref("assistant_url_openai", "https://example.test/v1");
+        save_pref("assistant_model_openai", "a-model");
+        assert_eq!(load_pref("assistant_url_openai").as_deref(), Some("https://example.test/v1"));
+        save_pref("assistant_url_openai", "");
+        assert_eq!(load_pref("assistant_url_openai").as_deref(), Some(""));
+        assert_eq!(load_pref("assistant_model_openai").as_deref(), Some("a-model"));
+        // Another visit starts empty.
+        let (load_again, _) = visit_prefs();
+        assert_eq!(load_again("assistant_model_openai"), None);
     }
 
     #[test]

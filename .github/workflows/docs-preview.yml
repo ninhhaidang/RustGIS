@@ -7,9 +7,8 @@
 # docs-preview-publish.yml, started when this workflow finishes, holds the deploy key and publishes
 # the site to https://preview.rustgis.app/pr-<N>/, or removes a closed pull request's preview. It
 # runs no pull request code. Splitting the two is what lets fork pull requests get a preview:
-# GitHub gives a fork's `pull_request` run no secrets. A fork's preview publishes on every push once
-# its author has a commit on main; a first-time contributor's is published only once a maintainer
-# approves the commit, by adding the `preview` label or re-running this workflow.
+# GitHub gives a fork's `pull_request` run no secrets. A fork's preview is published only once a
+# maintainer approves the commit, by adding the `preview` label or re-running this workflow.
 name: docs-preview
 
 on:
@@ -67,8 +66,8 @@ jobs:
           export PATH="$RUNNER_TEMP/bin:$PATH"
           cd apps/rustgis-web
           trunk build --release --public-url ./
-          # The service worker, as web-deploy.yml adds it, so the preview installs as an app too.
-          cargo xtask web-pwa ../../dist/web
+          # No service worker: previews share one origin, where a cached app could be replaced by
+          # another preview's code (docs-preview-publish.yml marks the app as a preview).
           mkdir -p ../../site/app
           cp -r ../../dist/web/. ../../site/app/
 

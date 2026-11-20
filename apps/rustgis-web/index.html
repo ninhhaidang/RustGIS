@@ -66,7 +66,42 @@
     // The service worker (sw.js, written by `cargo xtask web-pwa` for deployed builds) lets the app
     // start offline. A new deploy waits until the user reloads from the notice, so the page never
     // changes under them. The notebook widget (?embed) runs without one.
+    //
+    // A pull request preview (marked by the workflow that publishes it) shares its origin with
+    // every other preview, whose pages are unreviewed code that can read and replace anything kept
+    // there. It installs no worker and removes, for the whole origin, the workers, caches and saved
+    // settings that earlier previews left (an AI provider key among them), so nothing kept there
+    // runs or is read; the app then keeps its settings in memory. A worker left from an earlier
+    // build still answers this page's requests after it is unregistered, so a page it serves is
+    // loaded again, once, without it.
     (function () {
+      if (document.querySelector('meta[name="rustgis-preview"]')) {
+        try { localStorage.clear(); } catch (e) {}
+        // A browser with site storage blocked can throw here rather than reject: there is then
+        // nothing of the origin's to remove.
+        try { forget(); } catch (e) {}
+        return;
+      }
+      function forget() {
+        var sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
+        var removed = Promise.all([
+          sw ? sw.getRegistrations().then(function (all) {
+            return Promise.all(all.map(function (reg) { return reg.unregister(); }));
+          }) : null,
+          window.caches ? caches.keys().then(function (names) {
+            return Promise.all(names.map(function (name) { return caches.delete(name); }));
+          }) : null,
+        ]).catch(function () {});
+        // The flag stops a loop when the worker can't be removed; a page loaded without one clears it.
+        var again = "rustgis-preview-reloaded";
+        if (sw && sw.controller) {
+          var tried = false;
+          try { tried = sessionStorage.getItem(again) === "1"; sessionStorage.setItem(again, "1"); } catch (e) { tried = true; }
+          if (!tried) removed.then(function () { location.reload(); });
+        } else {
+          try { sessionStorage.removeItem(again); } catch (e) {}
+        }
+      }
       if (!("serviceWorker" in navigator) || location.protocol === "file:" || new URLSearchParams(location.search).has("embed")) return;
       window.addEventListener("load", function () {
         navigator.serviceWorker.register("sw.js").then(function (reg) {
