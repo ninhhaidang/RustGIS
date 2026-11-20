@@ -617,14 +617,17 @@ pub fn default_export_note(ds: &Dataset, path: &str) -> Option<String> {
     })
 }
 
-/// The dataset (in longitude/latitude, as every dataset is) in `crs`'s coordinates. Fails on a
-/// coordinate the system can't hold, naming its feature.
+/// The dataset in `crs`'s coordinates, from the system it holds them in ([`Dataset::coord_crs`]:
+/// longitude/latitude, as every dataset's are today), by the direct operation between the two
+/// ([`Crs::to`]). A copy as it is when it holds them in `crs`. Fails on a coordinate the system
+/// can't hold, naming its feature.
 pub fn project(ds: &Dataset, crs: Crs) -> Result<Dataset> {
-    if crs == Crs::LonLat {
+    let from = ds.coord_crs();
+    if crs == from {
         return Ok(ds.clone());
     }
     let mut out = ds.clone();
-    let to = Crs::LonLat.to(crs).map_err(DataError::Format)?;
+    let to = from.to(crs).map_err(DataError::Format)?;
     project_features(&mut out.features, &to)?;
     Ok(out)
 }
@@ -708,9 +711,12 @@ pub fn write_bytes_in(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usi
             return Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())));
         }
         check_projected(&ext, crs)?;
-        return projected_bytes(&project(ds, crs)?, &ext, crs);
     }
-    projected_bytes(ds, &ext, crs)
+    // From the system the dataset holds its coordinates in: as they are when that is `crs`.
+    if crs == ds.coord_crs() {
+        return projected_bytes(ds, &ext, crs);
+    }
+    projected_bytes(&project(ds, crs)?, &ext, crs)
 }
 
 /// [`write_bytes_in`] for a dataset already in `crs`'s coordinates.
@@ -790,11 +796,15 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
 /// also returns the table written.
 pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> Result<(usize, Option<GpkgWritten>)> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if crs != Crs::LonLat && PROJECTED_FORMATS.contains(&ext.as_str()) {
+        check_projected(&ext, crs)?;
+    }
     let projected;
-    let ds = if crs == Crs::LonLat || !PROJECTED_FORMATS.contains(&ext.as_str()) {
+    // From the system the dataset holds its coordinates in ([`project`]): as they are when that
+    // is `crs`, and when `crs` is one the format can't hold, which is refused below.
+    let ds = if crs == ds.coord_crs() || (crs != Crs::LonLat && !PROJECTED_FORMATS.contains(&ext.as_str())) {
         ds
     } else {
-        check_projected(&ext, crs)?;
         projected = project(ds, crs)?;
         &projected
     };
@@ -4310,6 +4320,8 @@ impl std::ops::AddAssign for CsvLosses {
 pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str) -> Result<Vec<String>> {
     Ok(match ext {
         "csv" => {
+            // Of the longitude/latitude the file is written in.
+            let ds = ds.in_lonlat().map_err(DataError::Format)?;
             let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?;
             let mut notes = losses.notes(&ds.fields, target);
             notes.extend(losses.coordinates_note(&ds.fields, target));
@@ -4486,13 +4498,16 @@ fn shapefile_geometry_losses(g: Option<&Geometry>, gt: GeometryType, drawable: f
 /// What an export to a Shapefile in `crs` says it leaves out of the geometry it writes, one
 /// notice per kind with a count, or none: vertices with a missing (NaN) or infinite coordinate,
 /// and the line parts or polygon rings without enough vertices to draw. Features left out whole
-/// are [`left_out_note`]'s. In another system than longitude/latitude, the export writes the
-/// projected copy and refuses a coordinate that doesn't project to a finite one ([`project`]), so
-/// every vertex it writes is drawable (an infinite latitude in Web Mercator is written at
-/// 85.05°), and only parts too short to draw are left out. `target` names what was written; line
+/// are [`left_out_note`]'s. In another system than the one the layer holds its coordinates in
+/// ([`Dataset::coord_crs`], longitude/latitude today), the export writes the projected copy and
+/// refuses a coordinate that doesn't project to a finite one ([`project`]), so every vertex it
+/// writes is drawable (an infinite latitude in Web Mercator is written at 85.05°), and only parts
+/// too short to draw are left out. `target` names what was written; line
 /// breaks and other control characters in it show as spaces.
 pub fn shapefile_geometry_notes(ds: &Dataset, target: &str, crs: Crs) -> Vec<String> {
-    let drawable: fn(&Coord) -> bool = if crs == Crs::LonLat { |c| c.x.is_finite() && c.y.is_finite() } else { |_| true };
+    // Written as held when `crs` is the system the layer holds its coordinates in; otherwise a
+    // converted copy, which refused every vertex that isn't a place.
+    let drawable: fn(&Coord) -> bool = if crs == ds.coord_crs() { |c| c.x.is_finite() && c.y.is_finite() } else { |_| true };
     let (mut vertices, mut parts) = (0usize, 0usize);
     for f in &ds.features {
         let Some((v, p)) = shapefile_geometry_losses(f.geometry.as_ref(), ds.geometry_type, drawable) else { continue };
@@ -7867,5 +7882,71 @@ mod tests {
         assert_eq!(read_back.features[0].attrs[0], Value::Float(10.0));
         assert_eq!(read_back.fields[1].ty, FieldType::Integer);
         assert_eq!(read_back.features[0].attrs[1], Value::Int(1));
+    }
+
+    /// A layer held in its own system (UTM 32N here; every layer's is longitude/latitude until
+    /// #2032 C2) is written from it: in longitude/latitude for a format that holds only those, in
+    /// another system by the direct operation between the two, and in its own as it is.
+    #[test]
+    fn a_layer_is_written_from_the_system_it_holds() {
+        let (utm, etrs) = (Crs::Epsg(32632), Crs::Epsg(25832));
+        let lonlat = Coord::new(9.0, 48.7);
+        let at = utm.transformer().unwrap().from_lonlat(lonlat).unwrap();
+        let mut ds = Dataset::new("held", GeometryType::Point, vec![]);
+        ds.push(Some(Geometry::Point(at)), vec![]);
+        let _held = crate::tests::HeldIn::new(utm);
+        assert_eq!(ds.coord_crs(), utm);
+        // GeoJSON: longitude/latitude.
+        let (bytes, _) = write_bytes_in(&ds, "geojson", Crs::LonLat).unwrap();
+        let read = read_bytes("held.geojson", &bytes).unwrap().0;
+        let Some(Geometry::Point(p)) = read.features[0].geometry.clone() else { panic!("a point") };
+        assert!((p.x - lonlat.x).abs() < 1e-9 && (p.y - lonlat.y).abs() < 1e-9, "{p:?}");
+        // Its own system: the coordinates as they are.
+        let same = project(&ds, utm).unwrap();
+        assert_eq!(same.features[0].geometry, ds.features[0].geometry);
+        // Another: by the direct operation from it.
+        let other = project(&ds, etrs).unwrap();
+        let want = utm.to(etrs).unwrap().point(at).unwrap();
+        assert_eq!(other.features[0].geometry, Some(Geometry::Point(want)));
+        // A file written whole, in the layer's own system, and in longitude/latitude.
+        let d = std::env::temp_dir().join(format!("rustgis-held-writes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        write_path_in(&ds, &d.join("own.fgb"), utm).unwrap();
+        write_path_in(&ds, &d.join("lonlat.csv"), Crs::LonLat).unwrap();
+        for name in ["own.fgb", "lonlat.csv"] {
+            let read = read_path(&d.join(name)).unwrap().0;
+            let Some(Geometry::Point(p)) = read.features[0].geometry.clone() else { panic!("{name}: a point") };
+            assert!((p.x - lonlat.x).abs() < 1e-9 && (p.y - lonlat.y).abs() < 1e-9, "{name}: {p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The notes of an export of a layer held in its own system (UTM 32N here) are those of what
+    /// is written: a CSV's of the longitude/latitude it writes (as for the same layer held in
+    /// them), and a Shapefile's vertices left out only when it is written as held.
+    #[test]
+    fn an_exports_notes_are_of_what_it_writes() {
+        let utm = Crs::Epsg(32632);
+        // With x and y fields, which a CSV reader could take for the position: a point the file
+        // can't give a longitude/latitude would be said.
+        let fields = vec![Field::new("x", FieldType::Double), Field::new("y", FieldType::Double)];
+        let mut lonlat = Dataset::new("held", GeometryType::Point, fields);
+        for (lon, lat) in [(9.0, 48.7), (10.0, 50.0)] {
+            lonlat.push(Some(Geometry::Point(Coord::new(lon, lat))), vec![Value::Float(1.0), Value::Float(2.0)]);
+        }
+        let want = export_losses_notes(&lonlat, "csv", None, "out.csv").unwrap();
+        let held = project(&lonlat, utm).unwrap();
+        let _held = crate::tests::HeldIn::new(utm);
+        assert_eq!(export_losses_notes(&held, "csv", None, "out.csv").unwrap(), want);
+        // A line with a missing coordinate: its vertex is left out of a Shapefile written as
+        // held, and noted; in any other system the export's conversion refuses the line instead
+        // (`project`), so there is nothing to note.
+        let mut line = Dataset::new("line", GeometryType::Polyline, vec![]);
+        let parts = vec![vec![Coord::new(500_000.0, 5_400_000.0), Coord::new(f64::NAN, 5_400_100.0), Coord::new(500_100.0, 5_400_200.0)]];
+        line.push(Some(Geometry::Line(parts)), vec![]);
+        let own = shapefile_geometry_notes(&line, "out.shp", utm);
+        assert!(own.iter().any(|n| n.contains("1 vertex with a missing or infinite coordinate")), "{own:?}");
+        assert!(shapefile_geometry_notes(&line, "out.shp", Crs::Epsg(25832)).is_empty());
     }
 }

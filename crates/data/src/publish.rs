@@ -401,13 +401,20 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
     Ok(Published { files, read: read_back, rows, features: ds.features.len(), notes })
 }
 
-/// `ds` in the file's coordinate system `crs` (`None`: longitude/latitude, as it is held). Given
-/// the file as read and in its own coordinates (`as_held`, the same rows), a feature whose shape
-/// is the one read takes the file's coordinates as they are; any other is projected. A native
+/// `ds` in the file's coordinate system `crs` (`None`: longitude/latitude), from the system it
+/// holds its coordinates in ([`Dataset::coord_crs`]). Given the file as read and in its own
+/// coordinates (`as_held`, the same rows), a feature of a layer held in longitude/latitude whose
+/// shape is the one read takes the file's coordinates as they are; any other is projected. A native
 /// shape that failed conversion is refused: missing geometry cannot identify its source shape.
 fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Dataset)>) -> Result<std::borrow::Cow<'a, Dataset>> {
-    let Some(c) = crs else { return Ok(std::borrow::Cow::Borrowed(ds)) };
-    let t = Crs::LonLat.to(c).map_err(DataError::Format)?;
+    // From the system the layer holds its coordinates in: as they are when that is the file's.
+    let (c, from) = (crs.unwrap_or(Crs::LonLat), ds.coord_crs());
+    if c == from {
+        return Ok(std::borrow::Cow::Borrowed(ds));
+    }
+    let t = from.to(c).map_err(DataError::Format)?;
+    // The file as read is matched by its longitude/latitude: only a layer held in them is.
+    let as_held = as_held.filter(|_| from == Crs::LonLat);
     let (read, raw): (Vec<&Feature>, Vec<&Feature>) = match as_held {
         Some((read, raw)) => (read.features.iter().collect(), raw.features.iter().collect()),
         None => (Vec::new(), Vec::new()),
@@ -777,6 +784,21 @@ fn same_rows(ds: &Dataset, back: &Dataset, tolerance: f64) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{Coord, Field, GeometryType};
+
+    /// A layer held in the file's own system (#2032 C2) is written as it is held; one held in
+    /// another is converted from it, without matching the file as read in longitude/latitude.
+    #[test]
+    fn a_layer_held_in_the_files_system_is_written_as_it_is() {
+        let (utm, etrs) = (Crs::Epsg(32632), Crs::Epsg(25832));
+        let at = Coord::new(500_000.0, 5_400_000.0);
+        let mut ds = Dataset::new("held", GeometryType::Point, vec![]);
+        ds.push(Some(Geometry::Point(at)), vec![]);
+        let _held = crate::tests::HeldIn::new(utm);
+        let same = in_file(&ds, Some(utm), None).unwrap();
+        assert!(matches!(same, std::borrow::Cow::Borrowed(_)));
+        let other = in_file(&ds, Some(etrs), Some((&ds, &ds))).unwrap();
+        assert_eq!(other.features[0].geometry, Some(Geometry::Point(utm.to(etrs).unwrap().point(at).unwrap())));
+    }
 
     /// A small polygon layer of parcels with an owner, an area with decimals and a count.
     fn parcels() -> Dataset {

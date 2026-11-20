@@ -51,6 +51,8 @@ struct Runs {
     chunks: bool,
     /// Rows it reports as unreadable, as a GeoPackage's bad rows are.
     unreadable: usize,
+    /// The system it gives its features in.
+    held: Crs,
 }
 
 impl Runs {
@@ -77,6 +79,7 @@ impl Runs {
             passes: Default::default(),
             chunks: true,
             unreadable: 0,
+            held: Crs::LonLat,
         }
     }
 }
@@ -84,6 +87,9 @@ impl Runs {
 impl FeatureSource for Runs {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+    fn coord_crs(&self) -> Crs {
+        self.held
     }
     fn read(&self, _: &Request) -> Result<Batch> {
         Ok(Batch {
@@ -653,5 +659,35 @@ fn a_mixed_layer_added_to_a_geopackage_keeps_every_kind() {
         assert_eq!((kind("mixed"), kind("other")), ("GEOMETRY".to_string(), "MULTIPOLYGON".to_string()));
         let rows: i64 = c.query_row("SELECT count(*) FROM mixed WHERE geom IS NOT NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 300);
+    }
+}
+
+/// A source that gives its features in its own system (UTM 32N here; every source gives
+/// longitude/latitude until #2032 C2) is exported a chunk at a time from it: a GeoJSON in
+/// longitude/latitude, a GeoPackage in its own system and one in Web Mercator, which counts places
+/// past where Web Mercator ends by their latitude (a square's 5 vertices at 86° N), not by the
+/// source's northings.
+#[test]
+fn a_streamed_export_is_written_from_the_system_its_source_gives() {
+    let d = folder("held");
+    let mut lonlat = squares();
+    let ring = vec![Coord::new(9.0, 86.0), Coord::new(9.5, 86.0), Coord::new(9.5, 86.5), Coord::new(9.0, 86.5), Coord::new(9.0, 86.0)];
+    lonlat.push_next(Some(Geometry::Polygon(vec![vec![ring]])), vec![Value::Null, Value::Int(-2), Value::Null, Value::Null]);
+    let utm = Crs::Epsg(32632);
+    let ds = crate::io::project(&lonlat, utm).unwrap();
+    let layer = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
+    let src = Runs { held: utm, ..Runs::new(&ds, 10) };
+    let first = |ds: &Dataset| match &ds.features[0].geometry {
+        Some(Geometry::Polygon(p)) => p[0][0][0],
+        g => panic!("{g:?}"),
+    };
+    let want = first(&lonlat);
+    for (name, crs, beyond) in [("out.geojson", Crs::LonLat, 0), ("own.gpkg", utm, 0), ("merc.gpkg", Crs::WebMercator, 5)] {
+        let e = write_source_in(&src, &layer, &d.join(name), crs).unwrap();
+        assert_eq!(e.written, 302, "{name}");
+        // Northings in the millions: only the square at 86° N is past 85.05°.
+        assert_eq!(e.beyond_web_mercator, beyond, "{name}");
+        let p = first(&read_back(&d.join(name)));
+        assert!((p.x - want.x).abs() < 1e-7 && (p.y - want.y).abs() < 1e-7, "{name}: {p:?} {want:?}");
     }
 }

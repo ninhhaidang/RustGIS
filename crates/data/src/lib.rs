@@ -439,6 +439,10 @@ impl Dataset {
     /// a layer whose conversion fails (`Layer::projected_in`) and doesn't say so yet: before this
     /// returns another system, that needs a notice, as AGENTS.md's "Never silent" asks.
     pub fn coord_crs(&self) -> raster::Crs {
+        #[cfg(test)]
+        if let Some(held) = tests::held_in() {
+            return held;
+        }
         raster::Crs::LonLat
     }
 
@@ -748,7 +752,19 @@ fn web_mercator_note(layers: &[(&Dataset, rustgis_geom::Extent)], target: &str) 
         .filter_map(|(ds, e)| {
             let mut moved = 0usize;
             if !ds.windowed {
-                let mut count = |c: Coord| moved += usize::from(c.x.is_finite() && c.y.abs() > MAX_LAT);
+                // By latitude, from the system the layer holds its coordinates in: none counted
+                // when that can't be converted (its export can't be written either).
+                let to = match ds.lonlat_conversion() {
+                    Ok(t) => (!t.is_identity()).then_some(t),
+                    Err(_) => return None,
+                };
+                let mut count = |c: Coord| {
+                    let c = match &to {
+                        Some(t) => t.point(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)),
+                        None => c,
+                    };
+                    moved += usize::from(c.x.is_finite() && c.y.abs() > MAX_LAT)
+                };
                 for g in ds.features.iter().filter_map(|f| f.geometry.as_ref()) {
                     if shapefile {
                         crate::io::shapefile_vertices(g, ds.geometry_type, &mut count);
@@ -1132,6 +1148,50 @@ fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry, held: &HeldP
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// The system this thread's tests hold every dataset's coordinates in ([`HeldIn`]).
+        static HELD_IN: std::cell::Cell<Option<raster::Crs>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// What [`Dataset::coord_crs`] says on this thread while a [`HeldIn`] is alive: what a dataset
+    /// that keeps the coordinates it was read in (#2032 C2) will say, for the paths that convert
+    /// from it to be tried before it does.
+    pub(crate) fn held_in() -> Option<raster::Crs> {
+        HELD_IN.try_with(std::cell::Cell::get).ok().flatten()
+    }
+
+    /// Every dataset on this thread is taken to hold its coordinates in a system until dropped,
+    /// on the thread that made it (it can't be sent to another).
+    pub(crate) struct HeldIn(Option<raster::Crs>, std::marker::PhantomData<*const ()>);
+
+    impl HeldIn {
+        pub(crate) fn new(crs: raster::Crs) -> HeldIn {
+            HeldIn(HELD_IN.with(|h| h.replace(Some(crs))), std::marker::PhantomData)
+        }
+    }
+
+    impl Drop for HeldIn {
+        fn drop(&mut self) {
+            let _ = HELD_IN.try_with(|h| h.set(self.0));
+        }
+    }
+
+    /// An export in Web Mercator counts the places past where it ends by their latitude, from the
+    /// system the layer holds its coordinates in (UTM 32N here): one at 86° N, not every northing.
+    #[test]
+    fn web_mercators_end_is_counted_by_latitude() {
+        let utm = raster::Crs::Epsg(32632);
+        let t = utm.transformer().unwrap();
+        let mut ds = Dataset::new("held", GeometryType::Point, vec![]);
+        for lat in [48.7, 86.0] {
+            ds.push(Some(Geometry::Point(t.from_lonlat(Coord::new(9.0, lat)).unwrap())), vec![]);
+        }
+        let _held = HeldIn::new(utm);
+        let note = web_mercator_note(&[(&ds, ds.extent())], "out.gpkg").unwrap_or_default();
+        assert_eq!(note, web_mercator_said(&[("held", Some(1))], "out.gpkg").unwrap_or_default());
+        assert!(!note.is_empty());
+    }
 
     /// Analysis and measurement read a longitude/latitude dataset as it is: no copy, and the
     /// measure and the area check of the geometry itself.

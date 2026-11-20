@@ -239,7 +239,11 @@ fn write_chunks_as(
         GeometryType::None => first_kind(src, 1 << 20)?,
         t => t,
     };
-    let t = if crs == Crs::LonLat { None } else { Some(Crs::LonLat.to(crs).map_err(DataError::Format)?) };
+    // From the system the source gives its features in.
+    let held = src.coord_crs();
+    let t = if crs == held { None } else { Some(held.to(crs).map_err(DataError::Format)?) };
+    // The longitude/latitude of a place, for the count of those Web Mercator can't hold.
+    let to_lonlat = if held == Crs::LonLat { None } else { Some(held.to(Crs::LonLat).map_err(DataError::Format)?) };
     let mut total = 0usize;
     let mut filtered = 0usize;
     let mut skipped = 0usize;
@@ -277,7 +281,13 @@ fn write_chunks_as(
             // leave out only features without geometry.
             if crs == Crs::WebMercator {
                 for g in chunk.iter().filter_map(|f| f.geometry.as_ref()) {
-                    g.for_each_coord(|c| beyond_web_mercator += usize::from(c.x.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT));
+                    g.for_each_coord(|c| {
+                        let c = match &to_lonlat {
+                            Some(t) => t.point(c).unwrap_or(rustgis_geom::Coord::new(f64::NAN, f64::NAN)),
+                            None => c,
+                        };
+                        beyond_web_mercator += usize::from(c.x.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT)
+                    });
                 }
             }
             if let Some(t) = &t {
