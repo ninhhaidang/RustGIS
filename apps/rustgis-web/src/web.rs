@@ -1214,6 +1214,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
     let copernicus_ctx = ctx.clone();
     let clipboard_ctx = ctx.clone();
     Services {
+        save_project: None,
         // The browser's camera isn't asked yet (a phone's shell asks its own).
         take_photo: None,
         // A text field's Paste: the page reads the clipboard (Firefox and Safari show a Paste

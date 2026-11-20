@@ -755,6 +755,9 @@ pub struct Session {
     /// The state last saved, or opened from its file; `None` when no state of the open project is
     /// (recovered work). The project has unsaved changes while another is open ([`Session::dirty`]).
     saved: Option<u64>,
+    /// How many times [`Session::mark_unsaved`] has run, so a save that finishes later can tell
+    /// whether a change outside undo came after the state it wrote.
+    unsaved_marks: u64,
     /// Favourite, recent and saved data sources (kept with the app's preferences, not the
     /// project).
     pub sources: sources::Sources,
@@ -1299,6 +1302,7 @@ impl Session {
             state: 0,
             states: 0,
             saved: Some(0),
+            unsaved_marks: 0,
             sources: sources::Sources::default(),
             extensions: extensions::State::default(),
             connections: connections::Connections::default(),
@@ -3310,6 +3314,7 @@ impl Session {
     /// crash: no state of it is in a file).
     pub fn mark_unsaved(&mut self) {
         self.saved = None;
+        self.unsaved_marks = self.unsaved_marks.wrapping_add(1);
     }
 
     /// A state of the project not given before in this session, for a change just made.

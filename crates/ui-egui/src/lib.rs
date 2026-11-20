@@ -396,6 +396,9 @@ pub struct Services {
     /// Offers bytes as a download named `file_name`; success means submission to the host's
     /// download mechanism. Browsers do not expose confirmation that the file was saved.
     pub download: Option<Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>>>,
+    /// Starts saving a project through the phone's native picker. The shell reports the
+    /// eventual result through [`RustGisApp::complete_project_save`].
+    pub save_project: Option<Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>>>,
     pub inbox: Option<Inbox>,
     /// Reads a saved preference (`language`, …).
     pub load_pref: Option<Box<dyn Fn(&str) -> Option<String>>>,
@@ -2342,13 +2345,7 @@ impl RustGisApp {
             self.session.mark_unsaved();
             self.ui.history_jump = None;
         }
-        // On Android the file is written once the user has chosen its place, and the shell
-        // says then whether it was.
-        let offered = if cfg!(any(target_os = "android", target_os = "ios")) {
-            crate::i18n::fmt("Choose where to save {name}.", &[("name", &file)])
-        } else {
-            crate::i18n::fmt("Download offered: {name}. The browser doesn't say whether it saved the file.", &[("name", &file)])
-        };
+        let offered = crate::i18n::fmt("Download offered: {name}. The browser doesn't say whether it saved the file.", &[("name", &file)]);
         self.session.notify(offered, false);
         report.notify(&mut self.session);
         for note in construction_notes {
@@ -4374,6 +4371,9 @@ impl RustGisApp {
                     }
                     return r;
                 }
+            }
+            "ui.save" | "ui.saveAs" if self.services.save_project.is_some() => {
+                saveprompt::start_project_save(self)?;
             }
             // The browser can't write a file in place: Save downloads the project again under the
             // file name it was saved or opened as, and Save As (or a first Save) asks for one.

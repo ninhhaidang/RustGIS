@@ -84,6 +84,18 @@ impl Shared {
         self.add(Event::Failed(text));
     }
 
+    /// Project picker outcomes also release the front end's pending save.
+    fn save_result(&self, project: bool, result: Result<String, String>) {
+        self.add(if project {
+            Event::ProjectSave(result)
+        } else {
+            match result {
+                Ok(name) => Event::Saved { name },
+                Err(error) => Event::Failed(error),
+            }
+        });
+    }
+
     fn showing(&self) -> bool {
         *self.showing.lock().unwrap_or_else(|e| e.into_inner()) > 0
     }
@@ -108,7 +120,7 @@ enum Asked {
     Open { purpose: String },
     /// A file to save: offered under `name`, written to `temporary` until the picker has put it
     /// where the user chose.
-    Save { name: String, temporary: PathBuf },
+    Save { name: String, temporary: PathBuf, project: bool },
 }
 
 struct PickerIvars {
@@ -162,13 +174,14 @@ impl PickerDelegate {
                 wake(self.mtm());
             }
             None => {}
-            Some(Asked::Save { name, temporary }) => {
-                if urls.is_empty() {
-                    shared.failed(i18n::fmt("{name} wasn't saved: no place was chosen for it.", &[("name", &name)]));
+            Some(Asked::Save { name, temporary, project }) => {
+                let result = if urls.is_empty() {
+                    Err(i18n::fmt("{name} wasn't saved: no place was chosen for it.", &[("name", &name)]))
                 } else {
                     // The picker has copied the file where the user chose.
-                    shared.add(Event::Saved { name });
-                }
+                    Ok(name)
+                };
+                shared.save_result(project, result);
                 remove_with_folder(&temporary);
                 count(&shared.showing, false);
                 wake(self.mtm());
@@ -847,6 +860,7 @@ struct Saving {
     name: String,
     temporary: PathBuf,
     done: Written,
+    project: bool,
 }
 
 impl Drop for Ios {
@@ -894,13 +908,13 @@ impl Ios {
                 None => return,
             }
         };
-        let Some(Saving { name, temporary, .. }) = self.saving.borrow_mut().take() else { return };
+        let Some(Saving { name, temporary, project, .. }) = self.saving.borrow_mut().take() else { return };
         let presenter = written.and_then(|()| self.presenter());
         let presenter = match presenter {
             Ok(presenter) => presenter,
             Err(error) => {
                 remove_with_folder(&temporary);
-                self.shared.failed(i18n::fmt("{name} wasn't saved: {error}", &[("name", &name), ("error", &error)]));
+                self.shared.save_result(project, Err(i18n::fmt("{name} wasn't saved: {error}", &[("name", &name), ("error", &error)])));
                 return;
             }
         };
@@ -908,7 +922,7 @@ impl Ios {
         let urls = NSArray::from_retained_slice(&[url]);
         let picker =
             UIDocumentPickerViewController::initForExportingURLs_asCopy(UIDocumentPickerViewController::alloc(self.mtm), &urls, true);
-        let delegate = PickerDelegate::new(self.mtm, self.shared.clone(), self.folders.clone(), Asked::Save { name, temporary });
+        let delegate = PickerDelegate::new(self.mtm, self.shared.clone(), self.folders.clone(), Asked::Save { name, temporary, project });
         picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         self.picker.replace(Some(delegate));
         // Declined, it is seen on a later frame ([`Ios::check_presented`]).
@@ -954,9 +968,9 @@ impl Ios {
             return;
         }
         match self.picker.borrow().as_ref().and_then(|delegate| delegate.ivars().asked.borrow_mut().take()) {
-            Some(Asked::Save { name, temporary }) => {
+            Some(Asked::Save { name, temporary, project }) => {
                 remove_with_folder(&temporary);
-                self.shared.failed(i18n::fmt("{name} wasn't saved: {error}", &[("name", &name), ("error", &error)]));
+                self.shared.save_result(project, Err(i18n::fmt("{name} wasn't saved: {error}", &[("name", &name), ("error", &error)])));
             }
             // A request for files that will get none ends by name.
             Some(Asked::Open { purpose }) => {
@@ -1017,7 +1031,7 @@ impl Platform for Ios {
         self.present(&presenter, &picker, false)
     }
 
-    fn save_file(&self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
+    fn save_file(&self, name: &str, bytes: Vec<u8>, project: bool) -> Result<(), String> {
         // Refused, not dropped: the caller is told the file wasn't saved.
         self.not_already_asking(i18n::fmt("{name} wasn't saved: another file is waiting for its place to be chosen.", &[("name", name)]))?;
         // The export picker copies a file: it is written to the app's tmp folder first, under
@@ -1035,7 +1049,7 @@ impl Platform for Ios {
             return Err(i18n::fmt("{name} wasn't saved: {error}", &[("name", name), ("error", &e.to_string())]));
         }
         // Waiting from now: another save is refused until this one's picker has answered.
-        self.saving.replace(Some(Saving { name: name.to_string(), temporary, done }));
+        self.saving.replace(Some(Saving { name: name.to_string(), temporary, done, project }));
         Ok(())
     }
 

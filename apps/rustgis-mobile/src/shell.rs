@@ -196,6 +196,7 @@ impl<P: Phone> App<P> {
                     self.app.photos.push(path);
                 }
                 Event::Saved { name } => self.app.session.notify(i18n::fmt("Saved {name}.", &[("name", &name)]), false),
+                Event::ProjectSave(result) => self.app.complete_project_save(result),
                 Event::Position(fix) if self.locating => self.app.report_position(fix),
                 // A fix that was on its way when positioning was turned off.
                 Event::Position(_) => {}
@@ -451,7 +452,9 @@ fn use_picker<P: Phone + 'static>(
         }
     }));
     let saver = phone.clone();
-    app.services.download = Some(Box::new(move |name: &str, bytes: Vec<u8>| saver.save_file(name, bytes)));
+    app.services.download = Some(Box::new(move |name: &str, bytes: Vec<u8>| saver.save_file(name, bytes, false)));
+    let saver = phone.clone();
+    app.services.save_project = Some(Box::new(move |name: &str, bytes: Vec<u8>| saver.save_file(name, bytes, true)));
     app.services.inbox = Some(inbox.clone());
     let (camera, photographing) = (phone.clone(), asked.clone());
     app.services.take_photo = Some(Box::new(move || {
@@ -722,7 +725,7 @@ mod tests {
             self.0.set(true);
             Ok(())
         }
-        fn save_file(&self, _: &str, _: Vec<u8>) -> Result<(), String> {
+        fn save_file(&self, _: &str, _: Vec<u8>, _: bool) -> Result<(), String> {
             Ok(())
         }
         fn locate(&self, _: bool) -> Result<(), String> {

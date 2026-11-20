@@ -37,17 +37,64 @@ pub(crate) struct SavePromptState {
     pub asked: u64,
     /// The project changed while the dialog showed: it asks again, and says why.
     pub changed: bool,
+    pending: Option<PendingSave>,
+}
+
+struct PendingSave {
+    snapshot: rustgis_engine::platform::SaveSnapshot,
+    after: Option<Discard>,
 }
 
 /// Whether running command `id` from the interface asks first: it replaces the project, which
-/// has unsaved changes, in the desktop app or on a phone.
-///
-/// A phone's shell saves through the system's picker, as the browser saves by downloading, but
-/// it has no page to warn before leaving: so it asks too. Its Save starts the save and leaves
-/// the project as it is (the picker answers later, and the dialog reads the result at once);
-/// Don't Save and Cancel are the desktop's.
+/// has unsaved changes, in the desktop app or in a shell that can confirm a save.
 pub(crate) fn asks(app: &RustGisApp, id: &str) -> bool {
-    REPLACES.contains(&id) && app.session.dirty() && (app.opens_files() || cfg!(any(target_os = "android", target_os = "ios")))
+    REPLACES.contains(&id) && app.session.dirty() && (app.opens_files() || app.services.save_project.is_some())
+}
+
+/// Sends the same portable project text as the download path. The picker supplies the final
+/// file name, so the request leaves the live project name alone.
+pub(crate) fn start_project_save(app: &mut RustGisApp) -> Result<(), String> {
+    if app.save_prompt.pending.is_some() {
+        return Err(tl!("A project save is already in progress.").into());
+    }
+    let save = app.services.save_project.as_ref().ok_or(tl!("This build cannot save through the native picker."))?;
+    let name = app.session.project.name.replace(['/', '\\'], "-");
+    let file = format!("{name}.rgis");
+    let notes = app.session.construction_output_notes()?;
+    let (text, report) = app.session.project.saved_text(None)?;
+    save(&file, text.into_bytes())?;
+    app.save_prompt.pending = Some(PendingSave { snapshot: app.session.save_snapshot(), after: None });
+    report.notify(&mut app.session);
+    for note in notes {
+        app.session.notify(note, false);
+    }
+    Ok(())
+}
+
+impl RustGisApp {
+    /// Consumes the native picker's result. Only the snapshot that reached the file is saved.
+    /// A failed or cancelled write abandons any action that was waiting for it.
+    pub fn complete_project_save(&mut self, result: Result<String, String>) {
+        let pending = self.save_prompt.pending.take();
+        match result {
+            Ok(name) => self.session.notify(crate::i18n::fmt("Saved {name}.", &[("name", &name)]), false),
+            Err(error) => {
+                self.session.notify(error, true);
+                return;
+            }
+        }
+        let Some(saved) = pending else { return };
+        if self.session.mark_snapshot_saved(saved.snapshot)
+            && let Some(what) = saved.after
+        {
+            if self.session.dirty() {
+                ask(self, what);
+                self.save_prompt.changed = true;
+            } else {
+                proceed(self, what);
+            }
+        }
+    }
 }
 
 /// Whether the project has unsaved changes in a shell that asks about them (the desktop app).
@@ -69,7 +116,7 @@ pub(crate) fn ask(app: &mut RustGisApp, what: Discard) {
 /// Whether the dialog is waiting for an answer: what asked it waits too (the Project tab stays
 /// open, so Cancel goes back to it; it closes once the project is replaced).
 pub(crate) fn waiting(app: &RustGisApp) -> bool {
-    app.save_prompt.asking.is_some()
+    app.save_prompt.asking.is_some() || app.save_prompt.pending.as_ref().is_some_and(|p| p.after.is_some())
 }
 
 /// Whether the app ends with unsaved changes the user hasn't agreed to lose: the project has
@@ -139,16 +186,7 @@ pub(crate) fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     // The shell closes the window, or the replaced project draws, on the next frame.
     ctx.request_repaint();
     match answer {
-        // Save As when the project has no file. A save that fails says why (its notice), and one
-        // cancelled leaves the changes unsaved: either way nothing is discarded. This reads the
-        // result at once: on the desktop, the only shell that asks (`asks`), `ui.save` writes the
-        // file, and Save As's picker returns, before it does. A shell that saved later (the
-        // browser's download dialog) would have to go on from there instead.
-        Answer::Save => {
-            if app.run("ui.save", Value::Null).is_ok() && !app.session.dirty() {
-                proceed(app, what);
-            }
-        }
+        Answer::Save => save_then(app, what),
         Answer::DontSave => proceed(app, what),
         Answer::Cancel => {}
     }
@@ -159,6 +197,23 @@ enum Answer {
     Save,
     DontSave,
     Cancel,
+}
+
+/// The desktop returns from Save after writing. A phone's pending save keeps the continuation.
+fn save_then(app: &mut RustGisApp, what: Discard) {
+    if let Err(error) = app.run("ui.save", Value::Null) {
+        // A phone's native save can fail before any picker shows, and nothing else says so; the
+        // desktop's save reports its own failures.
+        if app.services.save_project.is_some() {
+            app.session.notify(error, true);
+        }
+        return;
+    }
+    if let Some(pending) = &mut app.save_prompt.pending {
+        pending.after = Some(what);
+    } else if !app.session.dirty() {
+        proceed(app, what);
+    }
 }
 
 /// Does what waited for the answer. Quitting removes the recovery copy as a clean exit does
@@ -333,6 +388,62 @@ mod tests {
         assert!(app.session.dirty() && app.session.project.name == "World Atlas" && app.session.map().name == "Edited");
         assert!(app.session.notices.iter().any(|n| n.error), "the failure is said");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The native picker answers later. Only its successful project write lets New proceed.
+    #[test]
+    fn native_project_save_resumes_replacement_after_success() {
+        let mut h = launch();
+        h.state_mut().services.open_async = Some(Box::new(|_| {}));
+        h.state_mut().services.save_project = Some(Box::new(|name, bytes| {
+            assert_eq!(name, "World Atlas.rgis");
+            assert!(String::from_utf8(bytes).unwrap().contains("\"Edited\""));
+            Ok(())
+        }));
+        edit(&mut h, "Edited");
+        for result in [Err("Picker cancelled".into()), Ok("World Atlas.rgis".into())] {
+            h.state_mut().run_by_user("project.new", Value::Null).unwrap();
+            frames(&mut h, 2);
+            click(&mut h, "Save");
+            assert!(waiting(h.state()) && h.state().session.dirty());
+            assert_eq!(h.state().session.project.name, "World Atlas");
+            h.state_mut().complete_project_save(result);
+            assert!(!waiting(h.state()));
+        }
+        assert!(!h.state().session.dirty());
+        assert_eq!(h.state().session.project.name, "Untitled");
+    }
+
+    /// A phone save refused before its picker shows (here, one already waiting) is said, and the
+    /// project stays as it was.
+    #[test]
+    fn native_project_save_refused_before_the_picker_is_said() {
+        let mut h = launch();
+        h.state_mut().services.open_async = Some(Box::new(|_| {}));
+        h.state_mut().services.save_project = Some(Box::new(|_, _| Err("No picker".into())));
+        edit(&mut h, "Edited");
+        h.state_mut().run_by_user("project.new", Value::Null).unwrap();
+        frames(&mut h, 2);
+        let mark = h.state().session.notice_mark();
+        click(&mut h, "Save");
+        let app = h.state();
+        assert!(!waiting(app) && app.session.dirty() && app.session.map().name == "Edited");
+        assert!(app.session.notices_since(mark).iter().any(|n| n.error && n.text.contains("No picker")), "the failure is said");
+    }
+
+    /// A direct Save As writes the submitted state. Any edit after submission is still unsaved.
+    #[test]
+    fn native_save_marks_the_written_snapshot() {
+        let mut h = launch();
+        h.state_mut().services.save_project = Some(Box::new(|_, _| Ok(())));
+        edit(&mut h, "On disk");
+        h.state_mut().run("ui.saveAs", Value::Null).unwrap();
+        edit(&mut h, "In memory");
+        h.state_mut().complete_project_save(Ok("atlas.rgis".into()));
+        assert!(h.state().session.dirty());
+        h.state_mut().run("edit.undo", Value::Null).unwrap();
+        assert_eq!(h.state().session.map().name, "On disk");
+        assert!(!h.state().session.dirty());
     }
 
     /// New from the toolbar: Cancel keeps the project, Don't Save replaces it, and Save writes it
