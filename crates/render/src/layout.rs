@@ -1266,22 +1266,18 @@ fn outline_lonlat(pm: &mut Canvas, map: &Map, view: &View, ring: &[Option<Coord>
             &placed[..]
         }
     };
+    let project = |c: Coord| match &globe {
+        Some(g) => g.forward(c),
+        // A tilted frame's outline breaks where it passes behind the eye, and any frame's where
+        // its projection can't show the place (#2369).
+        None => map.to_map(c).and_then(|m| view.camera.try_to_screen(m, view.width, view.height)),
+    };
     let mut pb = PathBuilder::new();
     let mut first = true;
-    for c in ring {
-        let Some(c) = c else {
-            first = true;
-            continue;
-        };
-        let at = match &globe {
-            Some(g) => g.forward(*c),
-            // A tilted frame's outline breaks where it passes behind the eye, and any frame's where
-            // its projection can't show the place (#2369).
-            None => map.to_map(*c).and_then(|m| view.camera.try_to_screen(m, view.width, view.height)),
-        };
+    let mut push = |at: Option<(f64, f64)>| {
         let Some((x, y)) = at else {
             first = true;
-            continue;
+            return;
         };
         let (x, y) = (x as f32 * ppp, y as f32 * ppp);
         if first {
@@ -1290,6 +1286,32 @@ fn outline_lonlat(pm: &mut Canvas, map: &Map, view: &View, ring: &[Option<Coord>
         } else {
             pb.line_to(x, y);
         }
+    };
+    let mut previous: Option<(Coord, Option<(f64, f64)>)> = None;
+    for &c in ring {
+        let at = c.and_then(project);
+        if globe.is_none()
+            && let (Some((last, last_at)), Some(c)) = (previous, c)
+            && last_at.is_some() != at.is_some()
+        {
+            // Reach the overview's projection boundary, rather than stop at the last sample
+            // inside it (#2433). Keep the valid side of 24 halvings, as frame_outline_lonlat
+            // does for the source frame's boundary. An explicit gap never enters this search.
+            let (mut inside, mut outside, mut found) = if last_at.is_some() { (last, c, last_at) } else { (c, last, at) };
+            for _ in 0..24 {
+                // Samples can straddle ±180° on a regional projection without a wrapping edge:
+                // follow their short arc rather than bisect across the other side of the map.
+                let lon = inside.x + ((outside.x - inside.x + 540.0).rem_euclid(360.0) - 180.0) / 2.0;
+                let mid = Coord::new(lon, (inside.y + outside.y) / 2.0);
+                match project(mid) {
+                    Some(point) => (inside, found) = (mid, Some(point)),
+                    None => outside = mid,
+                }
+            }
+            push(found);
+        }
+        push(at);
+        previous = c.map(|c| (c, at));
     }
     if let Some(p) = pb.finish() {
         pm.stroke_path(&p, &paint(color, 1.0), &Stroke { width: width * ppp, ..Stroke::default() }, Transform::identity(), None);
@@ -6079,6 +6101,74 @@ Elaboração: RustGIS",
         // The equator's row is crossed only by a line joining the top edge to the bottom one.
         let across: Vec<_> = red.iter().filter(|p| p.1.abs() < 1.0).collect();
         assert!(across.is_empty(), "the outline crosses the equator at {across:?}");
+    }
+
+    #[test]
+    fn an_extent_indicator_reaches_its_locators_projection_boundary() {
+        let source = Map::new("s");
+        let mut locator = Map::new("m");
+        locator.set_projection(rustgis_map::Projection::Custom("EPSG:32631".into()));
+        let center = Coord::new(3.0, 0.0);
+        let camera = rustgis_map::layout::frame_camera(&source, center, 1.75e8, 0.0, 0.0);
+        let top = source.to_lonlat(camera.to_map(40.0 * PT_PER_MM, 0.0, 80.0 * PT_PER_MM, 20.0 * PT_PER_MM)).unwrap().y;
+        let red = outline_on(source, (center, 1.75e8, 80.0, 20.0), locator.clone(), (center, 1.5e8));
+        // UTM's forward transform accepts 30 degrees on either side of its central meridian.
+        // All four ends reach that boundary, whether entering or leaving the visible area.
+        for lon in [-27.0 + 1e-7, 33.0 - 1e-7] {
+            for lat in [-top, top] {
+                let edge = locator.to_map(Coord::new(lon, lat)).unwrap();
+                let middle = locator.to_map(center).unwrap();
+                let expected = ((edge.x - middle.x) / 150_000.0, (middle.y - edge.y) / 150_000.0);
+                let distance = red.iter().map(|p| (p.0 - expected.0).hypot(p.1 - expected.1)).fold(f64::INFINITY, f64::min);
+                assert!(distance < 0.6, "the outline stops {distance:.2} mm short of ({lon}, {lat})");
+            }
+        }
+    }
+
+    /// A boundary search on either side of the date line follows the short arc, in either
+    /// direction, rather than drawing a chord across the UTM overview (#2433).
+    #[test]
+    fn an_overviews_boundary_search_crosses_the_date_line_on_the_short_arc() {
+        for (code, center, inside, outside, edge) in
+            [("EPSG:32655", 147.0, 176.0, -179.0, 177.0 - 1e-7), ("EPSG:32606", -147.0, -176.0, 179.0, -177.0 + 1e-7)]
+        {
+            let mut map = Map::new("overview");
+            map.set_projection(rustgis_map::Projection::Custom(code.into()));
+            let camera = rustgis_map::layout::frame_camera(&map, Coord::new(center, 0.0), 1e8, 0.0, 0.0);
+            let view = View { width: 600.0, height: 400.0, pixels_per_point: 1.0, camera, sky: false };
+            let screen = |lon| {
+                let p = map.to_map(Coord::new(lon, 10.0)).unwrap();
+                camera.try_to_screen(p, view.width, view.height).unwrap()
+            };
+            let start = screen(inside);
+            let end = screen(edge);
+            for reverse in [false, true] {
+                let mut ring = [Some(Coord::new(inside, 10.0)), Some(Coord::new(outside, 10.0))];
+                if reverse {
+                    ring.reverse();
+                }
+                let mut canvas = Canvas::new(600, 400).unwrap();
+                outline_lonlat(&mut canvas, &map, &view, &ring, false, Rgba::rgb(255, 0, 0), 2.0);
+                let pm = canvas.into_pixmap();
+                let red: Vec<_> = (0..400)
+                    .flat_map(|y| (0..600).map(move |x| (x, y)))
+                    .filter(|&(x, y)| {
+                        let (r, g, b) = rgb(&pm, x, y);
+                        r > 180 && g < 90 && b < 90
+                    })
+                    .map(|(x, y)| (f64::from(x), f64::from(y)))
+                    .collect();
+                assert!(!red.is_empty(), "{code}, reverse {reverse}: no outline");
+                assert!(
+                    red.iter().all(|p| p.0 >= start.0.min(end.0) - 2.0 && p.0 <= start.0.max(end.0) + 2.0),
+                    "{code}, reverse {reverse}: a chord across the overview"
+                );
+                assert!(
+                    red.iter().any(|p| (p.0 - end.0).hypot(p.1 - end.1) < 2.0),
+                    "{code}, reverse {reverse}: the outline does not reach the boundary"
+                );
+            }
+        }
     }
 
     /// A flat frame on a custom projection whose edges run off its world (Mollweide, zoomed out
