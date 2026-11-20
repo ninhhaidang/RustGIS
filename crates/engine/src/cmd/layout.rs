@@ -3375,6 +3375,35 @@ fn say_legend_fit(s: &mut Session, li: usize, id: u32) {
     }
 }
 
+/// Says how many lines of the text `id` of the layout `li` don't fit its box (#2346), as the
+/// layout view and an export count them: on the series' current page, measured at 300 dpi as a
+/// wrapped text is broken.
+fn say_text_fit(s: &mut Session, li: usize, id: u32) {
+    let Some(l) = s.project.layouts.get(li) else { return };
+    if !matches!(l.element(id).map(|e| &e.kind), Some(ElementKind::Text { .. })) {
+        return;
+    }
+    let page = l.series.as_ref().map_or(0, |sr| sr.page);
+    let series = series_info(s, li, page);
+    let info = rustgis_render::layout::PageInfo {
+        page: page + 1,
+        pages: series.as_ref().map_or(1, |i| i.0),
+        page_name: series.map(|i| i.1).unwrap_or_default(),
+    };
+    let said = rustgis_render::layout::text_loss(l, &s.project.maps, 300.0, &info, id)
+        .as_ref()
+        .and_then(rustgis_render::layout::lines_left_out_notice);
+    if let Some(said) = said {
+        s.warn(said);
+    }
+}
+
+/// What a text is given that changes the lines it breaks into or the room they have, or shows it
+/// (#2346): a move or a turn doesn't, nor a colour (the Format pane sets one at each step of a
+/// pick), except one that shows a text without ink, which `update` tells apart.
+const TEXT_FIT_KEYS: [&str; 12] =
+    ["text", "size", "w", "h", "wrap", "font", "fallback", "bold", "italic", "letterSpacing", "align", "visible"];
+
 /// The `"columns"` a legend is given, refused outside 1 to [`MAX_LEGEND_COLUMNS`].
 fn legend_columns_param(p: &Value) -> Result<Option<usize>, String> {
     let Some(v) = p.get("columns").filter(|v| !v.is_null()) else { return Ok(None) };
@@ -3726,6 +3755,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
     if kind == "chart" {
         say_chart_losses(s, i, id);
     }
+    say_text_fit(s, i, id);
     if let Some(said) = empty_colorbar {
         s.warn(said);
     }
@@ -4863,6 +4893,8 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     }
     let l = active(s, p)?;
     let e = l.element_mut(id).ok_or_else(|| format!("no element {id}"))?;
+    // A text with no ink isn't measured: given a colour that shows it, it is told (#2346).
+    let shown = col.is_some_and(|c| c.a() > 0) && matches!(&e.kind, ElementKind::Text { color, .. } if color.a() == 0);
     let num = |k: &str, lo: f64, hi: f64| f(p, k).map(|v| v.clamp(lo, hi));
     if let Some(v) = num("x", -5000.0, 5000.0) {
         e.x = v;
@@ -5096,6 +5128,10 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
         if (id == basis.frame && given(&["scale", "w"])) || (id == basis.text_id && given(&["text", "size", "bold"])) || restyled {
             refit_scale_box(s, li, &basis);
         }
+    }
+    // After the scale box is refitted: a text is measured in the box it is saved with.
+    if shown || TEXT_FIT_KEYS.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+        say_text_fit(s, li, id);
     }
     if let Some(w) = font_told {
         return Ok(json!({"warning": w}));
@@ -5583,7 +5619,7 @@ fn layout_bytes_inner(
         *cur = saved.clone();
     }
     let (pages, png) = result?;
-    if let Some(note) = rustgis_render::layout::clipped_text_notice(&clipped.into_iter().collect::<Vec<_>>()) {
+    if let Some(note) = rustgis_render::layout::clipped_text_notice(&saved, &clipped.into_iter().collect::<Vec<_>>()) {
         s.warn(note);
     }
     pictured_notices(s, &frames_pictured, &pages_pictured);
@@ -5806,8 +5842,9 @@ fn layout_svg(s: &mut Session, li: usize, dpi: f64) -> Result<String, String> {
     // Rendering borrows the current layout; it does not step or modify the series page.
     let layout = s.project.layouts.get(li).ok_or("no layout")?;
     let clipped = rustgis_render::layout::clipped_text(layout, &s.project.maps, dpi, &info);
+    let note = rustgis_render::layout::clipped_text_notice(layout, &clipped);
     let (text, pictured) = rustgis_render::svg::layout_svg(layout, &mut s.project.maps, dpi, &info)?;
-    if let Some(note) = rustgis_render::layout::clipped_text_notice(&clipped) {
+    if let Some(note) = note {
         s.warn(note);
     }
     pictured_notices(s, &pictured, &[]);

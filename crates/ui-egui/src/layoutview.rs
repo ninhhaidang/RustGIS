@@ -124,6 +124,9 @@ pub struct LayoutView {
     page_wait: Option<PageWait>,
     /// The last clipping warning shown, cleared when the text fits or another layout opens.
     text_warning: Option<String>,
+    /// The texts of the layout drawn (by its index) cut off on its page, with their lines left
+    /// out of their box, as the Format pane tells them (#2346).
+    text_losses: Option<(usize, Vec<rustgis_engine::render::layout::TextLoss>)>,
     /// Page zoom (0 or 1 = fit) and pan, in screen points, of the layout `viewed` names.
     zoom: f32,
     pan: egui::Vec2,
@@ -210,6 +213,7 @@ pub(crate) fn follow_project(app: &mut RustGisApp) {
         app.layout.typing.clear();
         app.layout.viewed = None;
         app.layout.text_warning = None;
+        app.layout.text_losses = None;
         app.layout.views.clear();
     }
     app.layout.project = Some(opened);
@@ -273,6 +277,7 @@ impl LayoutView {
             return;
         }
         self.text_warning = None;
+        self.text_losses = None;
         if let Some(old) = self.viewed.replace(name.to_string()) {
             self.views.insert(old, (self.zoom, self.pan));
         }
@@ -749,13 +754,21 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
             let web = cfg!(target_arch = "wasm32");
             let frames = (web && pending.frames) || said.to_come;
             say_frame_shadows(app, &said);
-            let clipped = rustgis_engine::render::layout::clipped_text(&layout, &app.session.project.maps, dpi, &info);
-            let note = rustgis_engine::render::layout::clipped_text_notice(&clipped);
+            let losses = rustgis_engine::render::layout::text_losses(&layout, &app.session.project.maps, dpi, &info);
+            let clipped = losses.iter().map(|l| (l.id, l.name.clone())).collect::<Vec<_>>();
+            let note = rustgis_engine::render::layout::clipped_text_notice(&layout, &clipped);
             if note != app.layout.text_warning {
                 if let Some(note) = &note {
                     app.session.warn(note.clone());
                 }
                 app.layout.text_warning = note;
+            }
+            // The Format pane is drawn before the page: a count that changed shows on the next
+            // frame, without waiting for an input event.
+            let losses = Some((li, losses));
+            if app.layout.text_losses != losses {
+                app.layout.text_losses = losses;
+                ui.ctx().request_repaint();
             }
             // Waiting for the frames draws it again anyway: the legends are asked about once
             // they are whole.
@@ -1660,6 +1673,25 @@ pub fn format(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+/// What the Format pane says of a text's lines left out (#2346), below its box or past the 200
+/// a text draws, as the page drawn counts them: `None` when they all fit.
+fn lines_left_out_label(loss: &rustgis_engine::render::layout::TextLoss) -> Option<String> {
+    // Lines past the 200 a text draws aren't the box's: no box draws them. Lines left out of
+    // both are said of both, as the command's notice says them.
+    let n = || loss.left_out.max(1).to_string();
+    match (loss.left_out, loss.at_least, loss.below_box, loss.past_limit) {
+        (0, false, ..) => None,
+        (1, false, _, false) => Some(tl!("1 line doesn't fit the box").to_string()),
+        (_, false, _, false) => Some(crate::i18n::fmt("{n} lines don't fit the box", &[("n", &n())])),
+        (_, true, _, false) => Some(crate::i18n::fmt("{n} or more lines don't fit the box", &[("n", &n())])),
+        (_, false, true, true) => Some(crate::i18n::fmt("{n} lines don't fit the box or the 200 a text draws", &[("n", &n())])),
+        (_, true, true, true) => Some(crate::i18n::fmt("{n} or more lines don't fit the box or the 200 a text draws", &[("n", &n())])),
+        (1, false, false, true) => Some(tl!("1 line isn't drawn: a text draws 200 at most").to_string()),
+        (_, false, false, true) => Some(crate::i18n::fmt("{n} lines aren't drawn: a text draws 200 at most", &[("n", &n())])),
+        (_, true, false, true) => Some(crate::i18n::fmt("{n} or more lines aren't drawn: a text draws 200 at most", &[("n", &n())])),
+    }
+}
+
 /// The selected element's properties.
 fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
     let Some(e) = app.layout.selected.and_then(|id| layout.element(id)).cloned() else { return };
@@ -2287,6 +2319,13 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
         let (mut it, mut al, mut ls, mut fam, mut named) = (*italic, *align, *letter_spacing, *font, font_name.clone());
         let mut wr = *wrap;
         let tokens = [rustgis_engine::map::graphics::TOKENS, rustgis_engine::map::layout::PAGE_TOKENS];
+        let warning = app
+            .layout
+            .text_losses
+            .as_ref()
+            .filter(|(drawn, _)| *drawn == li)
+            .and_then(|(_, losses)| losses.iter().find(|l| l.id == id))
+            .and_then(lines_left_out_label);
         let fields = crate::textform::Fields {
             text: &mut buf,
             size: &mut sz,
@@ -2295,6 +2334,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
             italic: Some(&mut it),
             align: Some(&mut al),
             wrap: Some(&mut wr),
+            warning,
             letter_spacing: Some(&mut ls),
             font: Some(&mut fam),
             font_name: Some(&mut named),
@@ -3539,6 +3579,51 @@ mod tests {
         h.get_by_role_and_label(Role::CheckBox, "Wrap to the box").click();
         h.run_steps(3);
         assert!(!wraps(h.state()));
+    }
+
+    /// The Format pane tells lines below a text's box from lines past the 200 a text draws, and
+    /// says both when it loses both, as the command's notice does (#2346).
+    #[test]
+    fn the_format_pane_tells_the_box_from_the_200_line_limit() {
+        use crate::layoutview::lines_left_out_label;
+        use rustgis_engine::render::layout::TextLoss;
+        let loss =
+            |left_out, below_box, past_limit| TextLoss { id: 1, name: "Note".into(), left_out, at_least: false, below_box, past_limit };
+        assert_eq!(lines_left_out_label(&loss(0, false, false)), None);
+        assert_eq!(lines_left_out_label(&loss(3, true, false)).as_deref(), Some("3 lines don't fit the box"));
+        assert_eq!(lines_left_out_label(&loss(50, false, true)).as_deref(), Some("50 lines aren't drawn: a text draws 200 at most"));
+        assert_eq!(lines_left_out_label(&loss(200, true, true)).as_deref(), Some("200 lines don't fit the box or the 200 a text draws"));
+    }
+
+    /// The Format pane says how many lines of the text selected don't fit its box, as the page
+    /// drawn counts them, and says nothing once they fit (#2346).
+    #[test]
+    fn the_format_pane_says_the_lines_left_out_of_a_text() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Notes", "template": "blank"})).unwrap();
+        let out =
+            app.run("layout.addElement", json!({"kind": "text", "text": "one\ntwo\nthree", "x": 10, "y": 10, "w": 60, "h": 2})).unwrap();
+        let id = out["element"].as_u64().unwrap() as u32;
+        app.run("ui.pane.format", json!({})).unwrap();
+        app.layout.selected = Some(id);
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                with_format(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert!(h.query_by_label("2 lines don't fit the box").is_some());
+        h.state_mut().run("layout.update", json!({"element": id, "h": 40})).unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("2 lines don't fit the box").is_none(), "they fit");
     }
 
     /// A number dragged in the Format pane and let go is applied (#607): X moves the element by

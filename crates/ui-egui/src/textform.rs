@@ -25,6 +25,9 @@ pub struct Fields<'a> {
     pub align: Option<&'a mut TextAlign>,
     /// Broken into lines to fit its box's width (#2346): a layout text's.
     pub wrap: Option<&'a mut bool>,
+    /// What is lost of a layout text, said under its wrap row in the warning colour: its lines
+    /// that don't fit its box (#2346).
+    pub warning: Option<String>,
     /// Points between letters, from −5 (tighter) to 50.
     pub letter_spacing: Option<&'a mut f64>,
     /// Sans-serif or serif: a layout text's (a text graphic is drawn in the map's sans); with
@@ -176,6 +179,11 @@ pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&
             let on = *w;
             r.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, tl!("Wrap to the box")));
             out.wrap = r.changed();
+            ui.end_row();
+        }
+        if let Some(w) = f.warning {
+            ui.label("");
+            ui.colored_label(ui.visuals().warn_fg_color, w);
             ui.end_row();
         }
         if let Some(ls) = f.letter_spacing {
@@ -348,6 +356,7 @@ mod tests {
                         italic: f.styled.then_some(&mut f.italic),
                         align: f.styled.then_some(&mut f.align),
                         wrap: f.wraps.then_some(&mut f.wrap),
+                        warning: None,
                         letter_spacing: f.styled.then_some(&mut spacing),
                         font: None,
                         font_name: None,

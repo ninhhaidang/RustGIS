@@ -39458,6 +39458,44 @@ fn text_elements_take_wrap() {
     assert!(wraps(&s, plain));
 }
 
+/// `layout.addElement` and `layout.update` say how many lines of a text don't fit its box when
+/// they set what it breaks into or its room, or show it, wrapped or not (#2346); a move says
+/// nothing, nor a hidden text, nor a text that fits.
+#[test]
+fn text_elements_say_the_lines_left_out_of_their_box() {
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "blank", "width": 120, "height": 90})).unwrap();
+    let said = |s: &mut Session, cmd: &str, p: Value| {
+        s.notices.clear();
+        let out = s.run(cmd, &p).unwrap();
+        let said: Vec<String> = s.notices.iter().filter(|n| n.text.contains("fit its box")).map(|n| n.text.clone()).collect();
+        (out, said)
+    };
+    let (out, notes) = said(&mut s, "layout.addElement", json!({"kind":"text", "text":"one\ntwo\nthree", "x":10, "y":10, "w":60, "h":2}));
+    let id = out["element"].as_u64().unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with(&format!("2 lines of the text \"Text\" ({id}) don't fit its box")), "{notes:?}");
+    // Moved, it loses the same lines: not said again.
+    assert!(said(&mut s, "layout.update", json!({"element": id, "x": 20})).1.is_empty());
+    // Hidden, it loses nothing on the page; shown again, it says what it loses.
+    assert!(said(&mut s, "layout.update", json!({"element": id, "visible": false})).1.is_empty());
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "visible": true})).1.len(), 1);
+    // Without ink it shows nothing; given ink again, it says what it loses, and another colour after
+    // that (each step of a pick) says nothing more.
+    assert!(said(&mut s, "layout.update", json!({"element": id, "color": "#00000000"})).1.is_empty());
+    assert_eq!(said(&mut s, "layout.update", json!({"element": id, "color": "#1F2937"})).1.len(), 1);
+    assert!(said(&mut s, "layout.update", json!({"element": id, "color": "#374151"})).1.is_empty());
+    // Room for them all: nothing to say.
+    assert!(said(&mut s, "layout.update", json!({"element": id, "h": 40})).1.is_empty());
+    // Wrapped in a narrow box, its sentence breaks into more lines than the box holds.
+    let sentence = "Population counts from the 2020 census; boundaries simplified for print";
+    let (_, notes) = said(&mut s, "layout.update", json!({"element": id, "text": sentence, "w": 20, "h": 6, "wrap": true}));
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains(&format!("of the text \"Text\" ({id}) don't fit its box")), "{notes:?}");
+    // A text that fits, added: nothing said.
+    assert!(said(&mut s, "layout.addElement", json!({"kind":"text", "text":"Source", "x":10, "y":60, "w":60, "h":10})).1.is_empty());
+}
+
 /// A layout chart groups, orders and cuts its bars by the options of `layout.addElement` and
 /// `layout.update`, writes none of them at their defaults, refuses a bad one (changing nothing)
 /// and refuses them for other kinds; it says what it leaves out: bars past its limit, features
