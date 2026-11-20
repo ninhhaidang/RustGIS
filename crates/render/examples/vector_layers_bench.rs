@@ -8,17 +8,58 @@
 //! - **zoom:** from the whole map to about a metre a point over its centre, 1.5× a step, and back
 //!   out (the way out finds the levels of detail built on the way in, those still kept);
 //! - **pan 10 m / pan 3 m:** west to east across it at 10 and 3 Web Mercator metres a point, a
-//!   quarter of the view a step, so every frame brings new features in.
+//!   quarter of the view a step, so every frame brings new features in;
+//! - **tilt 10 m:** the same pan at 10 m, tilted 60°.
+//!
+//! `BENCH_BACKEND=gpu` times the GPU scene instead (`Backend::Gpu`): what the CPU does for a GPU
+//! frame, tessellating the layers the GPU draws and drawing the rest into pictures, not the
+//! device's upload and draw. It says how many frames fell back to the CPU whole, the pictures
+//! and vertices (mesh vertices and point instances) the median scene holds, and, after the
+//! sequences, which layers alone draw on the CPU in a flat view. `BENCH_PNG` keeps CPU frames only,
+//! so it is refused with it.
 //!
 //! Made for swisstopo's swiss-map-vector25 (`SMV25_CHLV95LN02.gpkg`, 336,000 features in LV95,
 //! from data.geo.admin.ch, one map sheet). For a profiler, `BENCH_ONLY=2,zoom` (a pixel scale and a sequence) runs
 //! that sequence three times on the whole map and nothing else; `BENCH_THREADS=1` draws on one thread.
 use rustgis_geom::{Coord, lonlat_to_merc};
 use rustgis_map::{Basemap, Camera, Map};
-use rustgis_render::{View, render};
+use rustgis_render::gpu_scene::DrawCmd;
+use rustgis_render::{Backend, RenderOutput, View, render_backend};
 
 /// Frames kept so far (`BENCH_PNG`).
 static FRAME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// What a frame came out as.
+#[derive(Clone, Copy, Default)]
+struct Drawn {
+    /// A GPU scene was asked for and the whole frame came back drawn on the CPU.
+    cpu_frame: bool,
+    /// A GPU scene's pictures (layers drawn on the CPU) and their pixels.
+    images: usize,
+    image_px: u64,
+    /// A GPU scene's mesh and extrusion vertices, and point instances.
+    vertices: usize,
+}
+
+impl Drawn {
+    fn of(r: &RenderOutput) -> Drawn {
+        let RenderOutput::Gpu(scene) = r else { return Drawn { cpu_frame: true, ..Drawn::default() } };
+        let mut d = Drawn::default();
+        for c in &scene.cmds {
+            match c {
+                DrawCmd::Image { pixmap } => {
+                    d.images += 1;
+                    d.image_px += u64::from(pixmap.width()) * u64::from(pixmap.height());
+                }
+                DrawCmd::Mesh { vertices, .. } => d.vertices += vertices.len(),
+                DrawCmd::Extrusion { vertices, .. } => d.vertices += vertices.len(),
+                DrawCmd::Points { instances, .. } => d.vertices += instances.len(),
+                _ => {}
+            }
+        }
+        d
+    }
+}
 
 /// Stops the run: its numbers would be wrong.
 fn fail(why: impl std::fmt::Display) -> ! {
@@ -38,7 +79,15 @@ fn main() {
         eprintln!("{e}");
         return;
     }
-    println!("{} threads", rustgis_data::threads::max());
+    let backend = match std::env::var("BENCH_BACKEND").as_deref() {
+        Err(_) | Ok("cpu") => Backend::Cpu,
+        Ok("gpu") => Backend::Gpu,
+        Ok(other) => fail(format!("BENCH_BACKEND={other}: cpu or gpu")),
+    };
+    if backend.is_gpu() && std::env::var_os("BENCH_PNG").is_some() {
+        fail("BENCH_PNG keeps CPU frames: not with BENCH_BACKEND=gpu");
+    }
+    println!("{} threads, {} backend", rustgis_data::threads::max(), if backend.is_gpu() { "GPU" } else { "CPU" });
     let t = std::time::Instant::now();
     let file = std::path::Path::new(&path);
     let names = match rustgis_data::source::layers(file) {
@@ -106,8 +155,14 @@ fn main() {
     }
     let back: Vec<Camera> = zoom.iter().rev().skip(1).copied().collect();
     zoom.extend(back);
-    let sequences: [(&str, Vec<Camera>); 4] =
-        [("whole", (0..4).map(|_| camera(centre, whole)).collect()), ("zoom", zoom), ("pan 10 m", pan(10.0)), ("pan 3 m", pan(3.0))];
+    let tilt: Vec<Camera> = pan(10.0).into_iter().map(|c| Camera { pitch: 60.0, ..c }).collect();
+    let sequences: [(&str, Vec<Camera>); 5] = [
+        ("whole", (0..4).map(|_| camera(centre, whole)).collect()),
+        ("zoom", zoom),
+        ("pan 10 m", pan(10.0)),
+        ("pan 3 m", pan(3.0)),
+        ("tilt 10 m", tilt),
+    ];
     let ids: Vec<u32> = layers.iter().map(|l| l.0).collect();
     let show = |m: &mut Map, only: Option<u32>| {
         for id in &ids {
@@ -117,24 +172,45 @@ fn main() {
         }
     };
     let view = |camera: Camera, ppp: f64| View { width: 1920.0, height: 1080.0, pixels_per_point: ppp, camera, sky: false };
-    // Each frame's time, ms; a frame not drawn stops the run.
-    let run = |m: &mut Map, cams: &[Camera], ppp: f64| -> Vec<f64> {
+    // Each frame's time, ms, and what it came out as; a frame not drawn stops the run.
+    let run_drawn = |m: &mut Map, cams: &[Camera], ppp: f64| -> Vec<(f64, Drawn)> {
         cams.iter()
             .map(|c| {
                 let t = std::time::Instant::now();
-                let Some(r) = render(m, &view(*c, ppp)) else { fail(format!("no frame drawn at {:.1} m a point", c.res)) };
+                let Some(r) = render_backend(m, &view(*c, ppp), backend) else { fail(format!("no frame drawn at {:.1} m a point", c.res)) };
                 let ms = t.elapsed().as_secs_f64() * 1000.0;
-                // `BENCH_PNG=dir` keeps each frame drawn, to look at or compare.
-                if let Some(dir) = std::env::var_os("BENCH_PNG") {
+                // `BENCH_PNG=dir` keeps each frame drawn on the CPU, to look at or compare.
+                if let (Some(dir), RenderOutput::Cpu(r)) = (std::env::var_os("BENCH_PNG"), &r) {
                     let n = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let to = std::path::Path::new(&dir).join(format!("frame{n:03}.png"));
                     if let Err(e) = r.pixmap.save_png(&to) {
                         fail(format!("{}: {e}", to.display()));
                     }
                 }
-                ms
+                (ms, Drawn::of(&r))
             })
             .collect()
+    };
+    let run = |m: &mut Map, cams: &[Camera], ppp: f64| -> Vec<f64> { run_drawn(m, cams, ppp).into_iter().map(|d| d.0).collect() };
+    // For a GPU scene: how many frames came back drawn on the CPU, and a scene's pictures and
+    // vertices (the median frame's).
+    let scenes = |drawn: &[(f64, Drawn)]| -> String {
+        if !backend.is_gpu() {
+            return String::new();
+        }
+        let cpu = drawn.iter().filter(|d| d.1.cpu_frame).count();
+        let mut gpu: Vec<Drawn> = drawn.iter().filter(|d| !d.1.cpu_frame).map(|d| d.1).collect();
+        gpu.sort_by_key(|d| d.vertices);
+        let Some(mid) = gpu.get(gpu.len() / 2).copied() else {
+            return format!("; {cpu} of {} frames on the CPU whole: no GPU scene", drawn.len());
+        };
+        format!(
+            "; {cpu} of {} frames on the CPU whole; a scene: {} pictures ({:.1} Mpx), {:.0}k vertices",
+            drawn.len(),
+            mid.images,
+            mid.image_px as f64 / 1e6,
+            mid.vertices as f64 / 1e3
+        )
     };
     let summary = |times: &[f64]| {
         let mut s = times.to_vec();
@@ -153,9 +229,10 @@ fn main() {
             fail(format!("BENCH_ONLY={only}: a pixel scale and a sequence, such as 2,zoom"))
         };
         for _ in 0..3 {
-            let times = run(&mut m, cams, ppp);
+            let drawn = run_drawn(&mut m, cams, ppp);
+            let times: Vec<f64> = drawn.iter().map(|d| d.0).collect();
             let each: Vec<String> = times.iter().zip(cams.iter()).map(|(t, c)| format!("{:.1}m:{t:.0}", c.res)).collect();
-            println!("{ppp}x {name}: {}\n  {}", summary(&times), each.join(" "));
+            println!("{ppp}x {name}: {}{}\n  {}", summary(&times), scenes(&drawn), each.join(" "));
         }
         return;
     }
@@ -165,7 +242,9 @@ fn main() {
     for ppp in [1.0f64, 2.0] {
         for (name, cams) in &sequences {
             show(&mut m, None);
-            println!("{ppp}x {name:10} all layers: {}", summary(&run(&mut m, cams, ppp)));
+            let drawn = run_drawn(&mut m, cams, ppp);
+            let times: Vec<f64> = drawn.iter().map(|d| d.0).collect();
+            println!("{ppp}x {name:10} all layers: {}{}", summary(&times), scenes(&drawn));
             // Each layer alone on every fourth frame (each built once already, by the whole map's
             // run): the slowest six, with what they draw.
             let sample: Vec<Camera> = cams.iter().step_by(4).copied().collect();
@@ -183,5 +262,24 @@ fn main() {
                 println!("{ppp}x {name:10}   {layer:30} {rows:>7} features {v:>8} vertices: {ms:6.0} ms a frame");
             }
         }
+    }
+    // The layers a GPU scene draws on the CPU: each alone, over the whole map and at 3 m, flat;
+    // after the sequences, so it warms no cache they time.
+    if backend.is_gpu() {
+        let mut on_cpu = Vec::new();
+        for (id, name, rows, v) in &layers {
+            show(&mut m, Some(*id));
+            let drawn = run_drawn(&mut m, &[camera(centre, whole), camera(centre, 3.0)], 1.0);
+            if drawn.iter().any(|d| d.1.cpu_frame || d.1.images > 0) {
+                let why = match m.layer_mut(*id) {
+                    Some(l) if l.has_strokes() && l.has_fills() => "stacked strokes and fills",
+                    Some(l) if l.has_strokes() => "stacked strokes",
+                    Some(l) if l.has_fills() => "stacked fills",
+                    _ => "other: a style the GPU can't take, a mesh over its limit or too far in",
+                };
+                on_cpu.push(format!("  {name:30} {rows:>7} features {v:>8} vertices: {why}"));
+            }
+        }
+        println!("{} of {} layers draw on the CPU in a GPU scene:\n{}", on_cpu.len(), layers.len(), on_cpu.join("\n"));
     }
 }
