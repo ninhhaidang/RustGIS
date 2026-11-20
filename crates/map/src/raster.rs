@@ -732,6 +732,57 @@ impl RasterLayer {
         Some(stats)
     }
 
+    /// What a frame draws it from ([`crate::look`]): its settings and its pixels' allocation, which
+    /// doesn't keep them. `None` when drawing reads more than it holds: read in place (the part in
+    /// view is read as the map draws), still being read, or lit by cast shadows or sky worked out
+    /// in the background.
+    pub fn look(&self) -> Option<RasterLook> {
+        let RasterLayer {
+            path,
+            in_place,
+            // Read into `data`, compared itself.
+            file_name: _,
+            embedded: _,
+            subdataset,
+            crs,
+            time_zarr,
+            placement,
+            style,
+            data,
+            // What it says, not what it draws.
+            error: _,
+            // Worked out from the pixels and the style.
+            masked: _,
+            cast: _,
+            opening,
+            read_still,
+            read_generation: _,
+            restyle,
+            look,
+            pixels_said: _,
+            error_said: _,
+            failed_at: _,
+            failures: _,
+            lost_said: _,
+            look_lost: _,
+            dropped: _,
+        } = self;
+        if *in_place || opening.is_some() || read_still.is_some() || self.casts_shadows() {
+            return None;
+        }
+        Some(RasterLook {
+            path: path.clone(),
+            subdataset: subdataset.clone(),
+            crs: crs.clone(),
+            time_zarr: time_zarr.clone(),
+            placement: *placement,
+            style: style.clone(),
+            restyle: *restyle,
+            look: look.clone(),
+            data: Arc::downgrade(data.as_ref()?),
+        })
+    }
+
     /// Whether it is drawn with cast shadows or sky visibility (Shaded Relief with a shadow or a
     /// sky above 0): its frames are drawn again as they land (see [`RasterLayer::cast_shadows`]).
     pub fn casts_shadows(&self) -> bool {
@@ -1685,6 +1736,37 @@ impl RasterMask {
 
 fn one() -> f64 {
     1.0
+}
+
+/// What a frame draws a raster layer from ([`RasterLayer::look`]).
+#[derive(Clone, Debug)]
+pub struct RasterLook {
+    path: Option<String>,
+    subdataset: Option<String>,
+    crs: Option<String>,
+    time_zarr: Option<ZarrTime>,
+    placement: Option<[f64; 4]>,
+    style: RasterStyle,
+    restyle: bool,
+    look: Option<AddressLook>,
+    /// The pixels, by allocation.
+    data: Weak<Raster>,
+}
+
+impl RasterLook {
+    /// Whether `other` draws as this did.
+    pub fn same(&self, other: &RasterLook) -> bool {
+        let RasterLook { path, subdataset, crs, time_zarr, placement, style, restyle, look, data } = self;
+        *path == other.path
+            && *subdataset == other.subdataset
+            && *crs == other.crs
+            && *time_zarr == other.time_zarr
+            && placement.map(|p| p.map(f64::to_bits)) == other.placement.map(|p| p.map(f64::to_bits))
+            && *style == other.style
+            && *restyle == other.restyle
+            && *look == other.look
+            && Weak::ptr_eq(data, &other.data)
+    }
 }
 
 /// The look an address gives a GeoTIFF read in place (`…/scene.tif#bands=5,3,2&range=0,3000`, as

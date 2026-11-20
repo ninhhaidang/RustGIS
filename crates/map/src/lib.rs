@@ -18,6 +18,7 @@ pub mod graticule;
 pub mod label_by;
 pub mod layout;
 pub mod lod;
+pub mod look;
 pub mod palette;
 pub mod paths;
 pub mod planets;
