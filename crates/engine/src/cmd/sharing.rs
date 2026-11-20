@@ -515,6 +515,7 @@ fn styled_features(l: &Layer, budget: &mut usize) -> Result<Vec<Value>, String> 
     let mut out = Vec::new();
     // Its symbol by expression (no map scale: the page zooms on its own).
     let styler = l.styler(None);
+    let to = l.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", l.name))?;
     for (row, ft) in l.dataset.features.rows().enumerate() {
         if *budget == 0 {
             break;
@@ -523,7 +524,7 @@ fn styled_features(l: &Layer, budget: &mut usize) -> Result<Vec<Value>, String> 
             continue;
         }
         let Some(g) = ft.geometry() else { continue };
-        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
+        let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
         let sym = styler.symbol(row);
         let props: serde_json::Map<String, Value> =
             l.dataset.fields.iter().enumerate().map(|(i, f)| (f.name.clone(), json!(l.dataset.value(row, i).to_string()))).collect();

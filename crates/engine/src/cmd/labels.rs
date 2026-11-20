@@ -867,13 +867,14 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         out_fields,
     );
     let mut moved = Vec::new();
+    let to = l.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", l.name))?;
     for (row, ft) in l.dataset.features.rows().enumerate() {
         if rows.get(row) != Some(&true) {
             continue;
         }
         // In longitude/latitude, as the annotation layer holds its points and moved labels are.
         let Some(g) = ft.geometry() else { continue };
-        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
+        let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
         let Some(at) = g.label_point() else { continue };
         for (i, class) in matcher.classes_of(&l.dataset, row).filter(|(_, c)| c.visible) {
             let text = match by_text(i).and_then(|e| e.text_cut(&l.dataset, row)) {

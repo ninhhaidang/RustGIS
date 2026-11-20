@@ -1280,6 +1280,7 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
     };
     let mut mesh = Mesh { keep_lines, ..Mesh::default() };
     let rows = l.visible_rows();
+    let to = l.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", l.name))?;
     for (row, ft) in l.dataset.features.iter().enumerate() {
         if row.is_multiple_of(256) {
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
@@ -1287,7 +1288,7 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
         // A feature with no geometry draws nothing, so its height is neither used nor reported.
         let Some(g) = ft.geometry.as_ref().filter(|_| rows.get(row) == Some(&true)) else { continue };
         // Placed from longitude/latitude, whatever system the layer holds its coordinates in.
-        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id))?;
+        let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id))?;
         // A height that isn't a finite number takes the default, and is counted.
         let height = match hf {
             Some(fi) => match l.dataset.value(row, fi).as_f64().filter(|h| h.is_finite()) {

@@ -852,6 +852,10 @@ pub struct Session {
     pub(crate) crs_used_elsewhere: Vec<(String, String)>,
     /// When the frame path last looked for missing datum grids ([`Session::say_grid_notes`]).
     grid_notes_checked: Option<web_time::Instant>,
+    /// Each layer held in another system (by instance) and the geometry revision and system whose
+    /// places were last counted for [`Session::say_unplaced`], so a version of a layer is looked at
+    /// once.
+    unplaced_checked: std::collections::HashMap<u64, (u64, rustgis_data::raster::Crs)>,
     /// The datum grids the map's layers were last projected with
     /// ([`rustgis_data::raster::crs::grid_generation`]).
     grid_generation: u64,
@@ -1337,6 +1341,7 @@ impl Session {
             grid_pairs: Vec::new(),
             crs_used_elsewhere: Vec::new(),
             grid_notes_checked: None,
+            unplaced_checked: Default::default(),
             grid_generation: rustgis_data::raster::crs::grid_generation(),
             grid_downloads_said: Default::default(),
             grid_turns: 0,
@@ -1767,6 +1772,7 @@ impl Session {
             self.undo_memory.publish(&self.project, &self.undo, &self.redo);
             // And the coordinate systems that needed a missing datum grid, after every command.
             self.say_grid_notes();
+            self.say_unplaced();
             // A plugin's command waiting for its fetches answers `pending` and runs again when they
             // land: logged then, once. (Another command's `pending`, a download the web app makes, is
             // logged as it is asked for: nothing runs it again.)
@@ -3060,6 +3066,60 @@ impl Session {
         if due {
             self.grid_notes_checked = Some(web_time::Instant::now());
             self.say_grid_notes();
+            self.say_unplaced();
+        }
+    }
+
+    /// Says, once for each version of a layer's geometry, that a layer held in another system
+    /// has features with a place that can't be given in longitude/latitude, which the map and
+    /// the globe draw from: they draw such a feature without that place (a line broken there, a
+    /// point not at all), and labels' lines, block diagrams and terrain water leave it out. Or
+    /// that none of the layer is drawn, when its system can't be converted.
+    /// Layers in longitude/latitude, every layer read today, are passed over at no cost. A held
+    /// layer's count reads each of its places through the conversion, on the UI thread with no
+    /// Cancel, once per version of its geometry: as long as converting it for the map takes.
+    fn say_unplaced(&mut self) {
+        // One notice per kind, with the count and the layers it is about.
+        let (mut features, mut partly, mut undrawn) = (0usize, Vec::new(), Vec::new());
+        let mut seen = std::collections::HashSet::new();
+        for map in &self.project.maps {
+            for l in map.layers.iter().filter(|l| !l.is_raster() && l.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat) {
+                seen.insert(l.instance_id());
+                let version = (l.geometry_rev(), l.dataset.coord_crs());
+                if self.unplaced_checked.insert(l.instance_id(), version) == Some(version) {
+                    continue;
+                }
+                match l.dataset.unplaced_in_lonlat() {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        features += n;
+                        partly.push(format!("map '{}', layer '{}' ({n})", map.name, l.name));
+                    }
+                    Err(e) => undrawn.push(format!("map '{}', layer '{}': {e}", map.name, l.name)),
+                }
+            }
+        }
+        // Layers gone are forgotten, so the map stays as small as the project.
+        self.unplaced_checked.retain(|id, _| seen.contains(id));
+        let listed = |v: &[String]| {
+            let more = v.len().saturating_sub(10);
+            let shown = v.iter().take(10).cloned().collect::<Vec<_>>().join("; ");
+            if more > 0 { format!("{shown}; and {more} more") } else { shown }
+        };
+        if features > 0 {
+            let text = format!(
+                "{features} feature(s) have a place that can't be given in longitude/latitude: the map and the globe draw them without it, and labels' lines, block diagrams and terrain water leave them out ({})",
+                listed(&partly)
+            );
+            self.notice(text, rustgis_data::diagnostics::Severity::Warning);
+        }
+        if !undrawn.is_empty() {
+            let text = format!(
+                "{} layer(s) aren't drawn, as their system can't be given in longitude/latitude: {}",
+                undrawn.len(),
+                listed(&undrawn)
+            );
+            self.notice(text, rustgis_data::diagnostics::Severity::Warning);
         }
     }
 

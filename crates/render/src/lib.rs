@@ -4743,7 +4743,7 @@ fn render_frame(
             // The globe draws the lon/lat geometry itself (a layer held in another system, its
             // copy in longitude/latitude); the flat map its Web Mercator copy.
             let geoms: Vec<Option<&Geometry>> = if globe.is_some() && ds_ptr.coord_crs() != rustgis_data::raster::Crs::LonLat {
-                layer.projected_cache().iter().map(Option::as_ref).collect()
+                layer.lonlat_cache().iter().map(Option::as_ref).collect()
             } else if globe.is_some() {
                 ds_ptr.features.iter().map(|f| f.geometry.as_ref()).collect()
             } else if display_only {
@@ -6007,7 +6007,7 @@ fn layer_masks(
                             if ml.lonlat_in().is_empty() {
                                 ml.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).for_each(&mut add);
                             } else {
-                                ml.projected_cache().iter().flatten().for_each(&mut add);
+                                ml.lonlat_cache().iter().flatten().for_each(&mut add);
                             }
                         } else {
                             ml.projected_in(flat, key).iter().flatten().for_each(&mut add);

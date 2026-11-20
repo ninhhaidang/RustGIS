@@ -159,9 +159,10 @@ fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), Stri
     }
     // In longitude/latitude, as a search area is, whatever system the layer holds them in.
     let mut geometries: Vec<Geometry> = Vec::new();
+    let to = layer.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", layer.name))?;
     for f in layer.selection.iter().filter_map(|row| layer.dataset.features.row(*row)) {
         if let Some(g) = f.geometry() {
-            let g = layer.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", layer.name, f.id()))?;
+            let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", layer.name, f.id()))?;
             geometries.push(g.into_owned());
         }
     }

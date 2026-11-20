@@ -448,9 +448,8 @@ impl Dataset {
     /// Drawing converts geometry from it ([`raster::Crs::to`]), so a dataset that keeps the
     /// coordinates it was read in can say so here without the map changing. Longitude/latitude
     /// never fails to convert, and [`Dataset::hold_in`] only holds a dataset where every place
-    /// converts. The map draws none of a layer whose conversion fails (`Layer::projected_in`) and
-    /// doesn't say so yet: before a reader holds a file's own system (#2032 C2b), that needs a
-    /// notice, as AGENTS.md's "Never silent" asks.
+    /// converts. A place that can't be converted isn't drawn, and the session says so
+    /// ([`Dataset::unplaced_in_lonlat`]).
     pub fn coord_crs(&self) -> raster::Crs {
         self.held_in
     }
@@ -492,8 +491,14 @@ impl Dataset {
     /// coordinate (NaN, infinite) stays as it is, for the edit to judge as it does today; refused,
     /// naming its system, when its system can't be converted or one of its places can't be.
     pub fn geometry_to_lonlat<'a>(&self, g: &'a Geometry) -> std::result::Result<Cow<'a, Geometry>, String> {
-        let to = self.coord_crs().to(raster::Crs::LonLat)?;
-        Self::converted_to_lonlat(&to, g)
+        Self::geometry_to_lonlat_by(&self.lonlat_conversion()?, g)
+    }
+
+    /// [`Dataset::geometry_to_lonlat`] by `to`, its [`Dataset::lonlat_conversion`] made once for
+    /// many geometries: refused, naming its system, when one of the geometry's places can't be
+    /// converted.
+    pub fn geometry_to_lonlat_by<'a>(to: &raster::Reprojection, g: &'a Geometry) -> std::result::Result<Cow<'a, Geometry>, String> {
+        Self::converted_to_lonlat(to, g)
             .ok_or_else(|| format!("a place of this feature in {} can't be given in longitude/latitude", to.source().label()))
     }
 
@@ -973,6 +978,30 @@ impl Dataset {
         }
     }
 
+    /// How many of its features have a place that can't be given in longitude/latitude, which
+    /// the map, the globe and the drawings made from either leave out: none while its coordinates
+    /// are longitude/latitude, as every dataset's are today. Refused, naming its system, when the
+    /// system can't be converted at all (then none of it is drawn). It reads every place through
+    /// the conversion, on the calling thread, with no Cancel: as long as converting the layer
+    /// takes.
+    pub fn unplaced_in_lonlat(&self) -> std::result::Result<usize, String> {
+        let to = self.lonlat_conversion()?;
+        if to.is_identity() {
+            return Ok(0);
+        }
+        // Counted, not converted: a place that isn't a number is kept, as a conversion keeps it.
+        let unplaced = |g: &Geometry| {
+            let lost = std::cell::Cell::new(false);
+            g.for_each_coord(|c| {
+                if !lost.get() && c.is_finite() && to.point(c).is_none() {
+                    lost.set(true);
+                }
+            });
+            lost.get()
+        };
+        Ok(self.features.rows().filter_map(|r| r.geometry()).filter(|g| unplaced(g)).count())
+    }
+
     /// The dataset in longitude/latitude, the space analysis tools work in: borrowed while its
     /// coordinates are longitude/latitude ([`Dataset::coord_crs`]), as every dataset's are today;
     /// otherwise a copy with every geometry converted, missing coordinates kept. Refused, naming
@@ -1017,15 +1046,20 @@ impl Dataset {
     /// `results`, a dataset in longitude/latitude made from this one (a tool's update of it), in
     /// its own coordinates: as it is while they are longitude/latitude, as every dataset's are
     /// today; otherwise each geometry written back as an edit is ([`Dataset::edit_from_lonlat`]),
-    /// its stored places kept as stored. Refused, naming the first feature, when one of its places
-    /// can't be held in its system.
+    /// its stored places kept as stored. Every stored place is read, but only those the results
+    /// read as are held, so what is held is as large as the results, not the layer. Refused, naming
+    /// the first feature, when one of its places can't be held in its system.
     pub fn results_from_lonlat(&self, mut results: Dataset) -> std::result::Result<Dataset, String> {
         if self.edits_in_lonlat() {
             return Ok(results);
         }
         let mut held = HeldPlaces::default();
-        for g in self.features.iter().filter_map(|f| f.geometry.as_ref()) {
-            self.hold_places(g, None, &mut held);
+        let edits: Vec<&Geometry> = results.features.rows().filter_map(|r| r.geometry()).collect();
+        if !edits.is_empty() {
+            held.want_only(&edits);
+            for g in self.features.rows().filter_map(|r| r.geometry()) {
+                self.hold_places(g, None, &mut held);
+            }
         }
         for f in &mut results.features {
             if let Some(g) = f.geometry.take() {
@@ -1039,10 +1073,9 @@ impl Dataset {
     /// `merged`, its features in longitude/latitude as [`Dataset::in_lonlat`] gives them with some
     /// updated, added or left out (an offline area's sync), in its own coordinates: a feature whose
     /// id isn't in `changed` is taken as it holds it, not converted back; a changed one is written
-    /// back as [`Dataset::results_from_lonlat`] writes it: every stored place is read, but only
-    /// those the changes read as are held, so what is held is as large as the changes, not the
-    /// layer. As it is while its
-    /// coordinates are longitude/latitude, as every dataset's are today.
+    /// back as [`Dataset::results_from_lonlat`] writes it, holding only the stored places the
+    /// changes read as. As it is while its coordinates are longitude/latitude, as every dataset's
+    /// are today.
     pub fn merged_from_lonlat(
         &self,
         mut merged: Dataset,

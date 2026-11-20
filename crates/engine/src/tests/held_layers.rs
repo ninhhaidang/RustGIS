@@ -583,6 +583,29 @@ fn a_held_layers_offline_edits_sync_alike() {
     assert_eq!(after[1..], before[1..]);
 }
 
+/// An offline map held in the source's own system, as the project keeps it, is compared with its
+/// area's last synced copy as it is held: a feature not edited offline leaves a source edit made
+/// since in place, and one edited offline replaces the source's.
+#[test]
+fn a_held_offline_map_keeps_the_sources_later_edits() {
+    let mut s = session(UTM);
+    s.run("offline.download", &json!({"name": "Field", "extent": [11.4, 48.6, 11.6, 48.8]})).unwrap();
+    s.run("offline.open", &json!({"name": "Field"})).unwrap();
+    s.run("edit.setValue", &json!({"layer": "Wells", "row": 1, "field": "n", "value": 99})).unwrap();
+    s.run("map.activate", &json!({"name": "Map"})).unwrap();
+    // The source's own edit, made after the download, of a feature the offline map left alone.
+    s.run("edit.setValue", &json!({"layer": "Wells", "row": 0, "field": "n", "value": 7})).unwrap();
+    let returned = s.project.maps.iter().find(|m| m.name == "Field (offline)").unwrap().clone();
+    assert_eq!(returned.layers.iter().find(|l| l.name == "Wells").unwrap().dataset.coord_crs(), UTM);
+    let ai = s.project.offline_areas.iter().position(|a| a.name == "Field").unwrap();
+    crate::cmd::workspace::sync_area(&mut s, ai, &returned).unwrap();
+    let wells = &s.map().layer_by_name("Wells").unwrap().dataset;
+    let n = wells.field_index("n").unwrap();
+    assert_eq!(wells.value(0, n), &Cell::Int(7), "an unedited offline copy replaced the source's edit");
+    assert_eq!(wells.value(1, n), &Cell::Int(99));
+    assert_eq!(wells.coord_crs(), UTM);
+}
+
 /// A web scene leaves out, and says, a feature of a held layer with a place that can't be given
 /// in longitude/latitude, rather than failing the whole scene.
 #[test]
@@ -607,5 +630,41 @@ fn a_web_scene_leaves_out_what_it_cannot_place() {
     assert!(
         said.iter().any(|n| n.contains("1 feature(s) left out of the scene: a place can't be given in longitude/latitude")),
         "{said:?}"
+    );
+}
+
+/// A held layer's feature with a place that can't be given in longitude/latitude is drawn without
+/// it, and that is said in one notice for every such layer, once for each version of a layer's
+/// geometry; layers whose places all convert say nothing.
+#[test]
+fn a_held_layers_undrawable_features_are_said_once() {
+    let mut s = session(UTM);
+    let said_of = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark)
+            .iter()
+            .map(|n| n.text.clone())
+            .filter(|t| t.contains("can't be given in longitude/latitude: the map"))
+            .collect()
+    };
+    let mark = s.notice_mark();
+    let _ = s.run("select.clear", &Value::Null);
+    assert!(said_of(&s, mark).is_empty(), "{:?}", said_of(&s, mark));
+    // Far beyond any place UTM 32N holds.
+    for name in ["Wells", "Roads"] {
+        let l = s.map_mut().layers.iter_mut().find(|l| l.name == name).unwrap();
+        let far = Coord::new(1e12, 1e12);
+        let g = if name == "Wells" { Geometry::Point(far) } else { Geometry::Line(vec![vec![far, Coord::new(far.x + 1.0, far.y)]]) };
+        l.dataset.push(Some(g), vec![]);
+        l.touch_geometry();
+    }
+    let mark = s.notice_mark();
+    let _ = s.run("select.clear", &Value::Null);
+    let _ = s.run("select.clear", &Value::Null);
+    let said = said_of(&s, mark);
+    assert_eq!(
+        said,
+        [
+            "2 feature(s) have a place that can't be given in longitude/latitude: the map and the globe draw them without it, and labels' lines, block diagrams and terrain water leave them out (map 'Map', layer 'Roads' (1); map 'Map', layer 'Wells' (1))"
+        ]
     );
 }
