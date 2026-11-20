@@ -88,6 +88,7 @@ pub const CAPABILITIES: &[&str] = &[
     "picture-markers",
     "layout-element-ink",
     "layout-element-wrap",
+    "layout-chart-data",
     "field-generation",
     "crs-wkt",
     "zarr-window",

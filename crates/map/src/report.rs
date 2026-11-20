@@ -140,10 +140,11 @@ pub struct Stat {
     pub kind: StatKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StatKind {
     Count,
+    #[default]
     Sum,
     Mean,
     Min,

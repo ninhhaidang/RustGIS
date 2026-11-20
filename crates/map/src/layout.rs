@@ -10,6 +10,7 @@ use rustgis_geom::Coord;
 use serde::{Deserialize, Serialize};
 
 use crate::raster::{Colorizer, Normalizer, RasterLayer, RasterMask, RasterRenderer, RasterStyle};
+use crate::report::StatKind;
 use crate::symbology::Dash;
 use crate::{Camera, Layer, Map, Rgba};
 
@@ -1061,18 +1062,37 @@ pub enum ElementKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<Rgba>,
     },
-    /// A bar chart of a numeric field of a layer in a frame's map, one bar per feature.
+    /// A bar chart of a numeric field of a layer in a frame's map: one bar per feature, or one
+    /// per value of a `group` field ([`ElementKind::chart_data`], #2487).
     Chart {
         frame: u32,
         layer: String,
         field: String,
-        /// Bars are labelled with this field, if set.
+        /// Bars are labelled with this field, if set (not read when grouped: a bar is labelled
+        /// with its value of `group`).
         #[serde(default)]
         label: Option<String>,
         /// The colour of its labels and title (#2257); none, the dark grey of [`INK`]. Its bars
         /// keep their own colour. Left out when none, so layouts saved before keep their bytes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<Rgba>,
+        /// One bar per value of this field, its height `statistic` of `field` over the features
+        /// with that value; none, one bar per feature. The fields below are left out at their
+        /// defaults, so layouts saved before keep their bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        /// What a grouped bar measures (sum by default); a bar per feature is its own value.
+        #[serde(default, skip_serializing_if = "is_default")]
+        statistic: StatKind,
+        #[serde(default, skip_serializing_if = "is_default")]
+        order: ChartOrder,
+        /// The most bars drawn, 1 to [`MAX_CHART_BARS`] (read clamped).
+        #[serde(default = "chart_bars", skip_serializing_if = "is_chart_bars")]
+        bars: usize,
+        /// The bars past `bars` gathered in a last "Other" bar (so `bars` - 1 of their own),
+        /// rather than left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        other: bool,
     },
     /// A rectangle drawn on the page (a neatline or a backdrop). `width` is the outline's, in
     /// points (0: none).
@@ -1117,6 +1137,84 @@ pub enum ElementKind {
 
 fn rows() -> usize {
     12
+}
+
+/// The bars a chart draws unless told otherwise, and the most it takes.
+pub const CHART_BARS: usize = 20;
+pub const MAX_CHART_BARS: usize = 100;
+
+fn chart_bars() -> usize {
+    CHART_BARS
+}
+
+fn is_chart_bars(n: &usize) -> bool {
+    *n == CHART_BARS
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// How a chart orders its bars.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChartOrder {
+    /// The largest value first.
+    #[default]
+    Descending,
+    /// The smallest value first.
+    Ascending,
+    /// By label, A to Z (case aside).
+    Category,
+    /// As the features come in the layer (grouped, as each value first comes).
+    Layer,
+}
+
+impl ChartOrder {
+    pub const ALL: [ChartOrder; 4] = [ChartOrder::Descending, ChartOrder::Ascending, ChartOrder::Category, ChartOrder::Layer];
+    pub fn code(self) -> &'static str {
+        match self {
+            ChartOrder::Descending => "descending",
+            ChartOrder::Ascending => "ascending",
+            ChartOrder::Category => "category",
+            ChartOrder::Layer => "layer",
+        }
+    }
+    pub fn from_code(s: &str) -> Option<ChartOrder> {
+        ChartOrder::ALL.into_iter().find(|o| o.code().eq_ignore_ascii_case(s))
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            ChartOrder::Descending => "Largest first",
+            ChartOrder::Ascending => "Smallest first",
+            ChartOrder::Category => "By label",
+            ChartOrder::Layer => "Layer order",
+        }
+    }
+}
+
+/// What a bar with no value of a chart's `group` field is labelled, as a report's chart does.
+pub const CHART_BLANK: &str = "(blank)";
+/// The label of the bar gathering a chart's bars past its limit.
+pub const CHART_OTHER: &str = "Other";
+
+/// The bars a chart draws from its layer, and what it leaves out of them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChartData {
+    /// Each bar's value and label, in the order drawn.
+    pub bars: Vec<(f64, String)>,
+    /// Whether its bars have labels: when grouped, or labelled by a field.
+    pub labelled: bool,
+    /// Bars past its limit, left out (none when gathered in an "Other" bar).
+    pub left_out: usize,
+    /// Bars whose statistic is past a number's range (a sum or mean overflowing), left out; an
+    /// Other bar's counts the bars it would gather.
+    pub out_of_range: usize,
+    /// Features with no number in its field (not a number, or not finite), left out; a count
+    /// counts them.
+    pub no_number: usize,
+    /// Its title: the field, or the statistic of the field by the group.
+    pub title: String,
 }
 
 impl ElementKind {
@@ -1231,6 +1329,206 @@ impl ElementKind {
             | ElementKind::Chart { frame, .. } => Some(*frame),
             _ => None,
         }
+    }
+
+    /// Whether a chart uses what a chart had none of before (grouping, its statistic, its order,
+    /// its limit, an "Other" bar): an older reader would draw it as one bar per feature, the 20
+    /// largest, and save it again without them; a statistic kept while ungrouped is lost so too.
+    pub fn chart_uses_data_options(&self) -> bool {
+        matches!(self, ElementKind::Chart { group, statistic, order, bars, other, .. }
+            if group.is_some() || *statistic != StatKind::default() || *order != ChartOrder::default() || *bars != CHART_BARS || *other)
+    }
+
+    /// The bars a chart draws from `ds`, its layer's features (#2487); `None` for another kind, or
+    /// when its field or group field isn't in `ds`. Ungrouped, a bar per feature with a number in
+    /// its field; grouped, a bar per value of the group field ([`CHART_BLANK`] for none), its
+    /// statistic of the field over that value's features. Ordered, then cut to its limit, the
+    /// bars past it left out or gathered in a last [`CHART_OTHER`] bar, the statistic over their
+    /// features (their sum, ungrouped), whatever the order.
+    ///
+    /// It holds a value and an index per feature with a number (16 bytes) ungrouped. Grouped, it
+    /// holds a 40-byte tally and an index per value, with the value's name once: at most the
+    /// group field's own text again when every feature has a value of its own. Labels are read
+    /// only for the bars drawn, or, sorted by label, a label and its lowercase copy per bar for
+    /// the sort.
+    pub fn chart_data(&self, ds: &rustgis_data::Dataset) -> Option<ChartData> {
+        let ElementKind::Chart { field, label, group, statistic, order, bars, other, .. } = self else { return None };
+        let fi = ds.field_index(field)?;
+        let gi = match group {
+            Some(g) => Some(ds.field_index(g)?),
+            None => None,
+        };
+        let number = |row: usize| ds.value(row, fi).as_f64().filter(|v| v.is_finite());
+        let (mut no_number, mut out_of_range) = (0, 0);
+        // Grouped, a tally per value of the group field, in the order the values first come, and
+        // each one's name (none: blank, apart from a value that reads "(blank)").
+        let mut groups: Vec<Tally> = Vec::new();
+        let mut names: Vec<Option<String>> = Vec::new();
+        // Each bar's value and its group, or ungrouped its feature's row.
+        let mut drawn: Vec<(f64, usize)> = Vec::new();
+        let stat = match gi {
+            Some(gi) => {
+                // Each name is held once, in `index`; a text is looked up as it is, and only a new
+                // value's name is copied.
+                let mut index = std::collections::HashMap::<String, usize>::new();
+                let mut blank = None;
+                for row in 0..ds.features.len() {
+                    let owned;
+                    let text = match ds.value(row, gi) {
+                        rustgis_data::Value::Null => None,
+                        rustgis_data::Value::Text(t) => Some(t.as_str()),
+                        v => {
+                            owned = v.to_string();
+                            Some(owned.as_str())
+                        }
+                    }
+                    .filter(|t| !t.trim().is_empty());
+                    let at = match text {
+                        None => *blank.get_or_insert_with(|| {
+                            groups.push(Tally::default());
+                            groups.len() - 1
+                        }),
+                        Some(t) => match index.get(t) {
+                            Some(at) => *at,
+                            None => {
+                                groups.push(Tally::default());
+                                index.insert(t.to_string(), groups.len() - 1);
+                                groups.len() - 1
+                            }
+                        },
+                    };
+                    let Some(t) = groups.get_mut(at) else { continue };
+                    t.records += 1;
+                    match number(row) {
+                        Some(n) => t.add(n),
+                        None if *statistic != StatKind::Count => no_number += 1,
+                        None => {}
+                    }
+                }
+                // A value whose features have no number has no bar: they are counted in `no_number`;
+                // one whose statistic is past a number's range, in `out_of_range`.
+                names = vec![None; groups.len()];
+                for (name, i) in index {
+                    if let Some(slot) = names.get_mut(i) {
+                        *slot = Some(name);
+                    }
+                }
+                for (i, t) in groups.iter().enumerate() {
+                    match t.value(*statistic) {
+                        Some(v) => drawn.push((v, i)),
+                        None if t.numbers > 0 => out_of_range += 1,
+                        None => {}
+                    }
+                }
+                *statistic
+            }
+            None => {
+                for row in 0..ds.features.len() {
+                    match number(row) {
+                        Some(n) => drawn.push((n, row)),
+                        None => no_number += 1,
+                    }
+                }
+                StatKind::Sum
+            }
+        };
+        let li = label.as_deref().and_then(|l| ds.field_index(l));
+        let name = |i: usize| match gi {
+            Some(_) => names.get(i).and_then(|n| n.as_deref()).unwrap_or(CHART_BLANK).to_string(),
+            None => li.map(|l| ds.value(i, l).to_string()).unwrap_or_default(),
+        };
+        // Stable sorts: equal values keep the layer's order.
+        match order {
+            ChartOrder::Descending => drawn.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)),
+            ChartOrder::Ascending => drawn.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)),
+            ChartOrder::Category => drawn.sort_by_cached_key(|(_, i)| name(*i).to_lowercase()),
+            ChartOrder::Layer => {}
+        }
+        let limit = (*bars).clamp(1, MAX_CHART_BARS);
+        let mut left_out = 0;
+        let mut gathered = None;
+        if drawn.len() > limit {
+            if *other {
+                let rest = drawn.split_off(limit - 1);
+                let mut t = Tally::default();
+                for (v, i) in &rest {
+                    match gi {
+                        Some(_) => t.merge(groups.get(*i)),
+                        None => {
+                            t.records += 1;
+                            t.add(*v);
+                        }
+                    }
+                }
+                gathered = t.value(stat);
+                // A gathered statistic past a number's range has no bar: its bars are said.
+                if gathered.is_none() {
+                    out_of_range += rest.len();
+                }
+            } else {
+                left_out = drawn.len() - limit;
+                drawn.truncate(limit);
+            }
+        }
+        let mut out: Vec<(f64, String)> = drawn.into_iter().map(|(v, i)| (v, name(i))).collect();
+        out.extend(gathered.map(|v| (v, CHART_OTHER.to_string())));
+        let title = match (group, stat) {
+            (Some(g), StatKind::Count) => format!("Count by {g}"),
+            (Some(g), s) => format!("{} of {field} by {g}", s.label()),
+            (None, _) => field.clone(),
+        };
+        // An Other bar is named, so it isn't taken for one feature's.
+        let labelled = gi.is_some() || li.is_some() || gathered.is_some();
+        Some(ChartData { bars: out, labelled, left_out, out_of_range, no_number, title })
+    }
+}
+
+/// A chart bar's features as its statistic reads them: how many, and their numbers' sum, least
+/// and greatest.
+#[derive(Clone, Copy, Debug)]
+struct Tally {
+    records: usize,
+    numbers: usize,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+
+impl Default for Tally {
+    fn default() -> Self {
+        Tally { records: 0, numbers: 0, sum: 0.0, min: f64::INFINITY, max: f64::NEG_INFINITY }
+    }
+}
+
+impl Tally {
+    fn add(&mut self, n: f64) {
+        self.numbers += 1;
+        self.sum += n;
+        self.min = self.min.min(n);
+        self.max = self.max.max(n);
+    }
+
+    fn merge(&mut self, other: Option<&Tally>) {
+        let Some(o) = other else { return };
+        self.records += o.records;
+        self.numbers += o.numbers;
+        self.sum += o.sum;
+        self.min = self.min.min(o.min);
+        self.max = self.max.max(o.max);
+    }
+
+    /// Its statistic, read from the tally as [`StatKind::apply`] reads it from the numbers; none
+    /// without a number (a count but one), or past a number's range.
+    fn value(&self, stat: StatKind) -> Option<f64> {
+        let v = match stat {
+            StatKind::Count => self.records as f64,
+            _ if self.numbers == 0 => return None,
+            StatKind::Sum => self.sum,
+            StatKind::Mean => self.sum / self.numbers as f64,
+            StatKind::Min => self.min,
+            StatKind::Max => self.max,
+        };
+        Some(v).filter(|v| v.is_finite())
     }
 }
 
@@ -1921,6 +2219,191 @@ pub fn color_scale(rl: &RasterLayer) -> Option<ColorScale> {
 mod tests {
     use super::*;
     use crate::symbology::MAX_DASH_STEP;
+
+    /// A chart of layer "t" with `extra` keys (its field among them).
+    fn chart(extra: serde_json::Value) -> ElementKind {
+        let mut c = serde_json::json!({"frame": 1, "layer": "t"});
+        if let (Some(c), Some(e)) = (c.as_object_mut(), extra.as_object()) {
+            c.extend(e.clone());
+        }
+        serde_json::from_value(serde_json::json!({ "Chart": c })).unwrap()
+    }
+
+    /// Places: name, region, people; a missing number for region "S", a blank region.
+    fn places() -> rustgis_data::Dataset {
+        use rustgis_data::{Dataset, Field, FieldType, Value};
+        let mut ds = Dataset::new(
+            "t",
+            rustgis_data::GeometryType::Point,
+            vec![Field::new("name", FieldType::Text), Field::new("region", FieldType::Text), Field::new("people", FieldType::Double)],
+        );
+        let text = |t: &str| Value::Text(t.into());
+        for (name, region, people) in [
+            ("a", text("N"), Value::Float(10.0)),
+            ("b", text("S"), Value::Float(4.0)),
+            ("c", text("N"), Value::Float(2.0)),
+            ("d", text("E"), Value::Float(7.0)),
+            ("e", text("S"), Value::Null),
+            ("f", Value::Null, Value::Float(1.0)),
+            ("g", text("W"), Value::Float(-3.0)),
+        ] {
+            ds.push(None, vec![text(name), region, people]);
+        }
+        ds
+    }
+
+    fn bars(d: &ChartData) -> Vec<(f64, &str)> {
+        d.bars.iter().map(|(v, n)| (*v, n.as_str())).collect()
+    }
+
+    /// Ungrouped, a bar per feature with a number, largest first, labelled by its field; the
+    /// rest are counted, not drawn.
+    #[test]
+    fn an_ungrouped_chart_draws_a_bar_per_feature() {
+        let d = chart(serde_json::json!({"field": "people", "label": "name"})).chart_data(&places()).unwrap();
+        assert_eq!(bars(&d), [(10.0, "a"), (7.0, "d"), (4.0, "b"), (2.0, "c"), (1.0, "f"), (-3.0, "g")]);
+        assert_eq!((d.labelled, d.left_out, d.no_number, d.title.as_str()), (true, 0, 1, "people"));
+        // A label field the layer hasn't leaves the bars unlabelled; a field it hasn't, no chart.
+        assert!(!chart(serde_json::json!({"field": "people", "label": "gone"})).chart_data(&places()).unwrap().labelled);
+        assert!(chart(serde_json::json!({"field": "gone"})).chart_data(&places()).is_none());
+        assert!(chart(serde_json::json!({"field": "people", "group": "gone"})).chart_data(&places()).is_none());
+    }
+
+    /// Grouped, a bar per value (blank ones together), the statistic over its features; a count
+    /// counts features with no number, the others leave them out and say how many.
+    #[test]
+    fn a_grouped_chart_draws_the_statistic_per_value() {
+        let ds = places();
+        let grouped =
+            |stat: &str| chart(serde_json::json!({"field": "people", "group": "region", "statistic": stat})).chart_data(&ds).unwrap();
+        let sum = grouped("sum");
+        assert_eq!(bars(&sum), [(12.0, "N"), (7.0, "E"), (4.0, "S"), (1.0, CHART_BLANK), (-3.0, "W")]);
+        assert_eq!((sum.labelled, sum.no_number, sum.title.as_str()), (true, 1, "Sum of people by region"));
+        let count = grouped("count");
+        assert_eq!(bars(&count), [(2.0, "N"), (2.0, "S"), (1.0, "E"), (1.0, CHART_BLANK), (1.0, "W")]);
+        assert_eq!((count.no_number, count.title.as_str()), (0, "Count by region"));
+        assert_eq!(bars(&grouped("mean")), [(7.0, "E"), (6.0, "N"), (4.0, "S"), (1.0, CHART_BLANK), (-3.0, "W")]);
+        assert_eq!(bars(&grouped("min"))[0], (7.0, "E"));
+        assert_eq!(bars(&grouped("max"))[0], (10.0, "N"));
+        // A value whose features have no number has no bar.
+        let mut only_null = places();
+        only_null.features.truncate(1);
+        let i = only_null.field_index("people").unwrap();
+        only_null.features[0].attrs[i] = rustgis_data::Value::Null;
+        let d = chart(serde_json::json!({"field": "people", "group": "region"})).chart_data(&only_null).unwrap();
+        assert_eq!((d.bars.len(), d.no_number), (0, 1));
+        // A value that reads "(blank)" is a bar of its own; a blank one joins the features with none.
+        let mut blanks = places();
+        let i = blanks.field_index("region").unwrap();
+        blanks.features[0].attrs[i] = rustgis_data::Value::Text(CHART_BLANK.into());
+        blanks.features[1].attrs[i] = rustgis_data::Value::Text("  ".into());
+        let d = chart(serde_json::json!({"field": "people", "group": "region", "statistic": "count", "order": "layer"}))
+            .chart_data(&blanks)
+            .unwrap();
+        assert_eq!(bars(&d), [(1.0, CHART_BLANK), (2.0, CHART_BLANK), (1.0, "N"), (1.0, "E"), (1.0, "S"), (1.0, "W")]);
+    }
+
+    /// The four orders; ties keep the layer's order.
+    #[test]
+    fn a_chart_orders_its_bars() {
+        let ds = places();
+        let ordered = |order: &str| {
+            let d = chart(serde_json::json!({"field": "people", "group": "region", "statistic": "count", "order": order}))
+                .chart_data(&ds)
+                .unwrap();
+            d.bars.into_iter().map(|(_, n)| n).collect::<Vec<_>>()
+        };
+        assert_eq!(ordered("descending"), ["N", "S", "E", CHART_BLANK, "W"]);
+        assert_eq!(ordered("ascending"), ["E", CHART_BLANK, "W", "N", "S"]);
+        assert_eq!(ordered("category"), [CHART_BLANK, "E", "N", "S", "W"]);
+        assert_eq!(ordered("layer"), ["N", "S", "E", CHART_BLANK, "W"]);
+    }
+
+    /// Past its limit, bars are left out and counted, or gathered in a last Other bar measured
+    /// over their features, whatever the order; a limit of 1 gathers them all.
+    #[test]
+    fn a_chart_past_its_limit_leaves_bars_out_or_gathers_them() {
+        let ds = places();
+        let cut = |extra: serde_json::Value| {
+            let mut keys = serde_json::json!({"field": "people", "group": "region"});
+            if let (Some(k), Some(e)) = (keys.as_object_mut(), extra.as_object()) {
+                k.extend(e.clone());
+            }
+            chart(keys).chart_data(&ds).unwrap()
+        };
+        let left = cut(serde_json::json!({"bars": 2}));
+        assert_eq!((bars(&left), left.left_out), (vec![(12.0, "N"), (7.0, "E")], 3));
+        let other = cut(serde_json::json!({"bars": 3, "other": true}));
+        assert_eq!((bars(&other), other.left_out), (vec![(12.0, "N"), (7.0, "E"), (2.0, CHART_OTHER)], 0));
+        // Ascending, Other still comes last; its mean is over the features of the bars it gathers.
+        let mean = cut(serde_json::json!({"bars": 2, "other": true, "order": "ascending", "statistic": "mean"}));
+        assert_eq!(bars(&mean), [(-3.0, "W"), (4.8, CHART_OTHER)]);
+        let all = cut(serde_json::json!({"bars": 1, "other": true, "statistic": "count"}));
+        assert_eq!(bars(&all), [(7.0, CHART_OTHER)]);
+        // Fewer bars than the limit: no Other bar.
+        assert_eq!(cut(serde_json::json!({"bars": 9, "other": true})).bars.len(), 5);
+        // Ungrouped, Other sums the features past the limit; a limit out of range is read clamped.
+        // Unlabelled, the bars are labelled then, so the Other bar is named.
+        let ungrouped = chart(serde_json::json!({"field": "people", "bars": 3, "other": true})).chart_data(&ds).unwrap();
+        assert_eq!((bars(&ungrouped), ungrouped.labelled), (vec![(10.0, ""), (7.0, ""), (4.0, CHART_OTHER)], true));
+        assert!(!chart(serde_json::json!({"field": "people", "bars": 3})).chart_data(&ds).unwrap().labelled);
+        assert_eq!(cut(serde_json::json!({"bars": 0})).bars.len(), 1);
+        let mut many = rustgis_data::Dataset::new(
+            "t",
+            rustgis_data::GeometryType::Point,
+            vec![rustgis_data::Field::new("people", rustgis_data::FieldType::Double)],
+        );
+        for i in 0..150 {
+            many.push(None, vec![rustgis_data::Value::Float(i as f64)]);
+        }
+        let d = chart(serde_json::json!({"field": "people", "bars": 5000})).chart_data(&many).unwrap();
+        assert_eq!((d.bars.len(), d.left_out), (MAX_CHART_BARS, 50));
+        // An Other bar past a number's range isn't drawn: the bars it would gather are left out.
+        let mut huge = places();
+        let i = huge.field_index("people").unwrap();
+        for f in &mut huge.features {
+            f.attrs[i] = rustgis_data::Value::Float(f64::MAX);
+        }
+        let d = chart(serde_json::json!({"field": "people", "bars": 2, "other": true})).chart_data(&huge).unwrap();
+        assert_eq!((d.bars.len(), d.left_out, d.out_of_range), (1, 0, 6));
+        // So is a grouped bar's: N sums two of them; a count of the same features is drawn.
+        let grouped =
+            |stat: &str| chart(serde_json::json!({"field": "people", "group": "region", "statistic": stat})).chart_data(&huge).unwrap();
+        let sum = grouped("sum");
+        assert_eq!((sum.bars.len(), sum.out_of_range), (3, 2));
+        assert!(sum.bars.iter().all(|(v, n)| v.is_finite() && n != "N" && n != "S"));
+        assert_eq!((grouped("count").bars.len(), grouped("count").out_of_range), (5, 0));
+    }
+
+    /// The options are left out at their defaults, so a chart saved before keeps its bytes, and
+    /// read back as written otherwise.
+    #[test]
+    fn a_charts_options_are_saved_only_when_set() {
+        let plain = chart(serde_json::json!({"field": "people"}));
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"Chart": {"frame": 1, "layer": "t", "field": "people", "label": null}})
+        );
+        assert!(!plain.chart_uses_data_options());
+        let set = chart(
+            serde_json::json!({"field": "people", "group": "region", "statistic": "mean", "order": "category", "bars": 5, "other": true}),
+        );
+        let back: ElementKind = serde_json::from_value(serde_json::to_value(&set).unwrap()).unwrap();
+        assert_eq!(back, set);
+        assert!(set.chart_uses_data_options());
+        for one in [
+            serde_json::json!({"group": "region"}),
+            // Kept while ungrouped, which an older reader would save without.
+            serde_json::json!({"statistic": "count"}),
+            serde_json::json!({"order": "layer"}),
+            serde_json::json!({"bars": 21}),
+            serde_json::json!({"other": true}),
+        ] {
+            let mut keys = one.clone();
+            keys["field"] = serde_json::json!("people");
+            assert!(chart(keys).chart_uses_data_options(), "{one}");
+        }
+    }
 
     /// Under the balanced light (#1977) flat ground is drawn in the ramp's own colour, so a relief's
     /// colour bar is that colour, whatever the sun's height; under the plain light, the ramp.

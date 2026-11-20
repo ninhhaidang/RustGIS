@@ -73,6 +73,9 @@ impl Project {
         if !required.contains(&"layout-element-wrap") && self.layouts.iter().any(|l| l.elements.iter().any(wraps)) {
             required.push("layout-element-wrap");
         }
+        if !required.contains(&"layout-chart-data") && self.layouts.iter().any(|l| l.elements.iter().any(charts_data)) {
+            required.push("layout-chart-data");
+        }
         // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
         // points as its WKT does (angles in grads, a datum transformation the definition can't
         // hold).
@@ -112,6 +115,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("picture-markers", command_uses_picture_marker),
     ("layout-element-ink", command_uses_element_ink),
     ("layout-element-wrap", command_uses_element_wrap),
+    ("layout-chart-data", command_uses_chart_data),
 ];
 
 /// A layout command that gives an element a background: an older reader warns that it ignores
@@ -150,6 +154,38 @@ fn command_uses_element_wrap(id: &str, params: &Value) -> bool {
         "layout.addElement" | "layout.update" => params.get("wrap").and_then(crate::cmd::bool_value) == Some(true),
         "layout.import" => imported_layout_uses(params, "\"wrap\"", wraps),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_wrap)),
+        _ => false,
+    }
+}
+
+/// Whether a layout element is a chart grouped, ordered, cut or gathered as an older reader's
+/// can't be (#2487): it would draw a bar per feature, the 20 largest.
+fn charts_data(e: &rustgis_map::layout::Element) -> bool {
+    e.kind.chart_uses_data_options()
+}
+
+/// A layout command that groups, orders or cuts a chart, or gathers its rest in an Other bar:
+/// an older reader warns that it ignores those keys and draws a bar per feature, the 20 largest.
+/// One that gives the defaults, or takes a group away, keeps a chart as an older reader draws it;
+/// a label given to `layout.update`, which an older reader's update doesn't take, needs it too.
+fn command_uses_chart_data(id: &str, params: &Value) -> bool {
+    use rustgis_map::layout::{CHART_BARS, ChartOrder};
+    use rustgis_map::report::StatKind;
+    match id {
+        "layout.addElement" | "layout.update" => {
+            let text = |k: &str| params.get(k).and_then(Value::as_str).map(str::trim);
+            // An older reader's update takes no chart label: it would say nothing and keep the old.
+            (id == "layout.update" && params.get("label").is_some_and(|v| !v.is_null()))
+                || text("group").is_some_and(|g| !g.is_empty())
+                || text("statistic").and_then(StatKind::from_code).is_some_and(|s| s != StatKind::default())
+                || text("order").and_then(ChartOrder::from_code).is_some_and(|o| o != ChartOrder::default())
+                || params.get("bars").and_then(Value::as_u64).is_some_and(|n| n != CHART_BARS as u64)
+                || params.get("other").and_then(crate::cmd::bool_value) == Some(true)
+        }
+        "layout.import" => ["\"group\"", "\"statistic\"", "\"order\"", "\"bars\"", "\"other\""]
+            .iter()
+            .any(|key| imported_layout_uses(params, key, charts_data)),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_data)),
         _ => false,
     }
 }
@@ -703,6 +739,63 @@ mod tests {
                 document["tasks"] = value;
                 let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
                 let expected = if required { json!(["layout-element-wrap"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
+            }
+        }
+    }
+
+    /// A chart grouped, ordered, cut or with an Other bar is required where it is saved, so an
+    /// older reader refuses the project instead of drawing a bar per feature, the 20 largest; so
+    /// is a saved command that makes one. Options at their defaults, or a group taken away, need
+    /// nothing, nor are they written.
+    #[test]
+    fn chart_data_capability_follows_saved_layouts_and_commands() {
+        use rustgis_map::layout::{CHART_BARS, ChartOrder, ElementKind};
+        use rustgis_map::report::StatKind;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_chart_data.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-chart-data"]));
+        let reread = Project::from_json(&saved.to_string()).unwrap();
+        assert!(matches!(
+            &reread.layouts[0].elements[1].kind,
+            ElementKind::Chart { group: Some(g), statistic: StatKind::Mean, order: ChartOrder::Category, bars: 5, other: true, .. } if g == "region"
+        ));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let ElementKind::Chart { group, statistic, order, bars, other, .. } = &mut e.kind {
+                (*group, *statistic, *order, *bars, *other) = (None, StatKind::default(), ChartOrder::default(), CHART_BARS, false);
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "a plain chart needs nothing");
+        for key in ["group", "statistic", "order", "bars", "other"] {
+            assert!(!base["layouts"].to_string().contains(&format!("\"{key}\"")), "nor writes {key}");
+        }
+        let layout = &saved["layouts"][0];
+        for (id, params, required) in [
+            ("layout.addElement", json!({"kind": "chart", "group": "region"}), true),
+            ("layout.update", json!({"element": 2, "statistic": "count"}), true),
+            ("layout.update", json!({"element": 2, "order": "layer"}), true),
+            ("layout.update", json!({"element": 2, "bars": 8}), true),
+            ("layout.update", json!({"element": 2, "other": "on"}), true),
+            ("layout.update", json!({"element": 2, "group": ""}), false),
+            ("layout.update", json!({"element": 2, "statistic": "sum", "order": "descending", "bars": 20, "other": false}), false),
+            ("layout.update", json!({"element": 2, "label": "name"}), true),
+            ("layout.update", json!({"element": 2, "label": ""}), true),
+            ("layout.addElement", json!({"kind": "chart", "label": "name"}), false),
+            ("layout.import", json!({"text": layout.to_string()}), true),
+            ("layout.import", json!({"text": base["layouts"][0].to_string()}), false),
+            ("layout.import", json!({"path": "regions.rgislayout"}), false),
+        ] {
+            let script = format!("{id}= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Chart", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Chart", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-chart-data"]) } else { Value::Null };
                 assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
             }
         }

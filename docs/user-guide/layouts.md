@@ -477,6 +477,20 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   so it reads on whatever is behind it: give it a **Background** for a box. From a command:
   `layout.update={"element":5,"color":"#FFFFFF"}`, and `"color":null` for the default;
   `layout.addElement` takes it too.
+- **Chart frame**: a bar chart of a layer of the frame's map. Its properties pick the **Layer**
+  and the numeric **Field**, and by default draw a bar per feature, the largest first, each
+  labelled by the **Label** field. **Group by** a field draws a bar per value of that field
+  instead (features with none together as "(blank)"), its **Statistic** of the field over that
+  value's features: sum, count (features, numbers or not, so a count can chart a text field),
+  mean, minimum or maximum. A text field charted that way gives way to the layer's first numeric
+  field when the chart stops grouping or counting, and the chart says so. **Order** puts the
+  largest first, the smallest first, the labels A to Z or the bars in the layer's order. **Bars** sets how many are drawn (1 to 100, 20 by default);
+  **Past the limit** leaves the rest out, which the chart says, or gathers them in a last
+  **Other bar**, its statistic over their features (their sum when not grouped), last whatever
+  the order. A negative value is drawn the other way from a line at zero. Features with no number
+  in the field are left out, and the chart says how many. From a command:
+  `layout.update={"element":6,"group":"region","statistic":"mean","order":"category","bars":8,"other":true}`,
+  and `"group":""` for a bar per feature again; `layout.addElement` takes them too.
 - **Rulers and guides**: rulers start on along the top and left and show millimetres from the page's corner.
   Drag out of a ruler to add a guide, drag a guide to move it, and drag it back onto a ruler to
   remove it. Guides are saved with the layout but never printed or exported. **Clear Guides**

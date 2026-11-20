@@ -159,6 +159,16 @@ commands with `"wrap": true` require it too, since an older reader warns that it
 and adds the text unwrapped; `"wrap": false` needs nothing. A saved `layout.import` whose `text`
 has a wrapped text requires it as well. Layout files are not covered, as for backgrounds (#2277).
 
+Projects with a layout chart grouped by a field, or with a statistic, an order or a number of bars
+other than the defaults, or with an Other bar (`group`, `statistic`, `order`, `bars`, `other` on a
+chart element) require `layout-chart-data`, so an older reader refuses them instead of drawing a
+bar per feature, the 20 largest, and saving the chart again without them. A statistic counts
+grouped or not: one kept while a chart is ungrouped would be lost too. Saved `layout.addElement`
+and `layout.update` commands that set one of them require it too, and so does a `layout.update`
+that gives a chart's `label` (`""` too), which an older reader's update doesn't take; giving the
+defaults, or `"group": ""`, needs nothing. A saved `layout.import` whose `text` has such a chart
+requires it as well. Layout files are not covered, as for backgrounds (#2277).
+
 A coordinate system read from WKT is saved with its PROJ definition, which older readers read,
 and its WKT beside it (`wkt`), which this release reads first. Projects, map files and layer
 files require `crs-wkt` when a saved system's definition doesn't place points as its WKT does

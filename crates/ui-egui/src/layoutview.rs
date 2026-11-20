@@ -6,11 +6,12 @@
 
 use egui::{Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use rustgis_engine::map::layout::{
-    Arrange, ArrowStyle, Background, CoordFormat, Element, ElementKind, Grid, GridKind, GridStyle, INK, Layout, LineHead,
-    MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_COLORBAR_TICKS, MAX_FRAME_SCALE, MAX_GRID_WIDTH,
-    MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarStyle, ScaleUnits, TickSide,
-    frame_camera, line_angle, line_length,
+    Arrange, ArrowStyle, Background, ChartOrder, CoordFormat, Element, ElementKind, Grid, GridKind, GridStyle, INK, Layout, LineHead,
+    MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_CHART_BARS, MAX_COLORBAR_TICKS, MAX_FRAME_SCALE,
+    MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarStyle,
+    ScaleUnits, TickSide, frame_camera, line_angle, line_length,
 };
+use rustgis_engine::map::report::StatKind;
 use rustgis_engine::map::symbology::Dash;
 use serde_json::{Value, json};
 
@@ -1954,6 +1955,95 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             ui.end_row();
                         }
                     }
+                    ElementKind::Chart { frame, layer, field, label, group, statistic, order, bars, other, .. } => {
+                        // The feature layers of the frame's map, and the fields of the chart's layer (#2487).
+                        let map = match layout.element(*frame).map(|f| &f.kind) {
+                            Some(ElementKind::MapFrame { map, .. }) => {
+                                app.session.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(map))
+                            }
+                            _ => None,
+                        };
+                        let layers: Vec<String> = map
+                            .map(|m| m.layers.iter().filter(|l| !l.is_raster() && !l.graphics).map(|l| l.name.clone()).collect())
+                            .unwrap_or_default();
+                        let fields: Vec<(String, bool)> = map
+                            .and_then(|m| m.layer_by_name(layer))
+                            .map(|l| l.dataset.fields.iter().map(|f| (f.name.clone(), f.ty.is_numeric())).collect())
+                            .unwrap_or_default();
+                        let none = tl!("None");
+                        let named = |current: &Option<String>| {
+                            let mut items = vec![(none.to_string(), current.is_none(), json!(""))];
+                            items.extend(fields.iter().map(|(n, _)| (n.clone(), current.as_deref() == Some(n.as_str()), json!(n))));
+                            items
+                        };
+                        let input_label = ui.label(tl!("Layer"));
+                        let items: Vec<_> = layers.iter().map(|n| (n.clone(), n == layer, json!(n))).collect();
+                        if let Some(v) = choice(ui, ("chart_layer", id), input_label.id, layer, &items) {
+                            update(app, json!({"layer": v}));
+                        }
+                        ui.end_row();
+                        // A count reads no number, so it charts any field.
+                        let counts = group.is_some() && *statistic == StatKind::Count;
+                        let input_label = ui.label(tl!("Field"));
+                        let items: Vec<_> =
+                            fields.iter().filter(|(_, num)| counts || *num).map(|(n, _)| (n.clone(), n == field, json!(n))).collect();
+                        if let Some(v) = choice(ui, ("chart_field", id), input_label.id, field, &items) {
+                            update(app, json!({"field": v}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Group by"));
+                        if let Some(v) = choice(ui, ("chart_group", id), input_label.id, group.as_deref().unwrap_or(none), &named(group)) {
+                            update(app, json!({"group": v}));
+                        }
+                        ui.end_row();
+                        // Grouped, a bar is labelled with its value and measures a statistic;
+                        // otherwise it is a feature's, labelled by a field.
+                        if group.is_some() {
+                            let input_label = ui.label(tl!("Statistic"));
+                            let items: Vec<_> = [StatKind::Sum, StatKind::Count, StatKind::Mean, StatKind::Min, StatKind::Max]
+                                .into_iter()
+                                .map(|k| (tl!(k.label()).to_string(), k == *statistic, json!(k)))
+                                .collect();
+                            if let Some(v) = choice(ui, ("chart_statistic", id), input_label.id, tl!(statistic.label()), &items) {
+                                update(app, json!({"statistic": v}));
+                            }
+                        } else {
+                            let input_label = ui.label(tl!("Label"));
+                            if let Some(v) =
+                                choice(ui, ("chart_label", id), input_label.id, label.as_deref().unwrap_or(none), &named(label))
+                            {
+                                update(app, json!({"label": v}));
+                            }
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Order"));
+                        let items: Vec<_> =
+                            ChartOrder::ALL.into_iter().map(|o| (tl!(o.label()).to_string(), o == *order, json!(o.code()))).collect();
+                        if let Some(v) = choice(ui, ("chart_order", id), input_label.id, tl!(order.label()), &items) {
+                            update(app, json!({"order": v}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Bars"));
+                        let mut n = *bars as u64;
+                        let drag = Dragged::lend(ui, drag_key("bars"), &mut n);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).update_while_editing(false).range(1..=MAX_CHART_BARS as u64))
+                            .labelled_by(input_label.id);
+                        if drag.settled(ui, &r, &mut n) && n as usize != *bars {
+                            update(app, json!({"bars": n}));
+                        }
+                        ui.end_row();
+                        // The bars past the limit: left out (and said), or gathered in a last bar.
+                        ui.label(tl!("Past the limit"));
+                        ui.horizontal(|ui| {
+                            for (text, gather) in [("Leave out", false), ("Other bar", true)] {
+                                if ui.selectable_label(*other == gather, tl!(text)).clicked() && *other != gather {
+                                    update(app, json!({"other": gather}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
                     ElementKind::Table { rows, .. } => {
                         let input_label = ui.label(tl!("Rows"));
                         let mut n = *rows as u64;
@@ -2383,6 +2473,24 @@ fn dash_picked(ui: &mut Ui, salt: (&str, u32), dash: Option<Dash>, width: f64, l
 /// Why a locked element, or a frame with a locked surround, isn't deleted.
 pub(crate) fn locked_delete() -> &'static str {
     tl!("It is locked, or one of its surrounds is: unlock it first")
+}
+
+/// A drop-down of `items` (shown text, whether it is the one set, the value it sends) showing
+/// `current`, labelled by `label`; the value of the item picked, when it isn't the one set.
+fn choice(ui: &mut Ui, salt: (&str, u32), label: egui::Id, current: &str, items: &[(String, bool, Value)]) -> Option<Value> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (text, set, value) in items {
+                if ui.selectable_label(*set, text.as_str()).clicked() && !*set {
+                    picked = Some(value.clone());
+                }
+            }
+        })
+        .response
+        .labelled_by(label);
+    picked
 }
 
 /// The ink an element starts with when Ink is turned on (#2257): white over a background that is
