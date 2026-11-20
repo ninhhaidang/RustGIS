@@ -1549,9 +1549,9 @@ cores; `gp.env` returns the threads and cores as `limits.threads` and `limits.co
 runs on one thread.
 
 `gp.env` also returns the memory limits on this computer (`limits`). On the desktop they follow the
-computer's memory, or a container's limit when it is lower: each plans for a quarter of it, never
+computer's memory, or a memory limit set on RustGIS (a container's, or a service's such as systemd's `MemoryMax`) when it is lower: each plans for a quarter of it, never
 below the web app's fixed limits and never above a ceiling. `limits.memorySource` says what they
-follow: `computer`, `container` (a container's limit, lower than the computer's memory),
+follow: `computer`, `container` (such a limit, lower than the computer's memory),
 `override` or `unknown`. For tests, or to reproduce a smaller computer, set the environment
 variable `RUSTGIS_MEMORY_BYTES` to the memory in bytes (such as `8589934592` for 8 GiB) before
 starting RustGIS: it replaces the memory read from the computer and any container limit, and the

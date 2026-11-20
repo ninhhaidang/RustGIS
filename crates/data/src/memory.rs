@@ -69,8 +69,15 @@ fn read() -> (Option<u64>, &'static str) {
     let Some(mut s) = sysinfo::System::new().ok() else { return (None, "unknown") };
     s.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
     let Some(total) = Some(s.total_memory()).filter(|m| *m > 0) else { return (None, "unknown") };
-    // A container's limit, on Linux; none is reported elsewhere.
-    match s.cgroup_limits().map(|c| c.total_memory).filter(|m| *m > 0 && *m < total) {
+    // A container's limit, on Linux; none is reported elsewhere. The limits of this process's own
+    // control group and those above it count, not only the root's: a `systemd-run` scope or a
+    // service's `MemoryMax` sits below the root, which is all a container's own namespace shows.
+    let own = sysinfo::get_current_pid().ok().and_then(|pid| {
+        s.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[pid]), false, sysinfo::ProcessRefreshKind::nothing());
+        s.process(pid)?.cgroup_limits()
+    });
+    let limits = [own, s.cgroup_limits()].into_iter().flatten().map(|c| c.total_memory);
+    match limits.filter(|m| *m > 0 && *m < total).min() {
         Some(limit) => (Some(limit), "container"),
         None => (Some(total), "computer"),
     }
