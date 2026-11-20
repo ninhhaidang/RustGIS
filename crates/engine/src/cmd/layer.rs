@@ -1831,8 +1831,14 @@ pub(crate) fn add_photos_to(s: &mut Session, name: &str, zoom: Option<bool>, fee
     let id = match existing {
         Some(id) => {
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+            // Read in longitude/latitude, held in the layer's system.
+            let mut photos = Vec::new();
             for f in ds.features.into_iter().take(added) {
-                l.dataset.push(f.geometry, f.attrs);
+                let g = f.geometry.map(|g| l.dataset.geometry_from_lonlat(g)).transpose().map_err(|e| format!("{}: {e}", l.name))?;
+                photos.push((g, f.attrs));
+            }
+            for (g, attrs) in photos {
+                l.dataset.push(g, attrs);
             }
             l.touch_geometry();
             s.active_layer = Some(id);

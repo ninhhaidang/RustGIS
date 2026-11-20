@@ -529,6 +529,8 @@ impl From<TableFile> for Table {
                 crs_incomplete,
                 zm_dropped,
                 windowed: false,
+                // Saved in longitude/latitude, as `Dataset`'s own saving writes them.
+                held_in: rustgis_data::raster::Crs::LonLat,
             },
         }
     }
@@ -2461,6 +2463,7 @@ impl Durable for Table {
             crs_incomplete: _,
             zm_dropped: _,
             windowed: _,
+            held_in: _,
         } = dataset;
         if let Some(v) = provenance {
             p.string(Leaf::Table, v, true, rustgis_map::paths::is_local(v));

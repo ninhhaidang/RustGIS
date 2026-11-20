@@ -300,12 +300,15 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
         cpg: original.cpg.as_ref().map(|(_, b)| b.clone()),
     };
     let (read_back, _) = crate::io::read_shapefile_parts(back, &name, crs)?;
-    if let Some(why) = same_rows(ds, &read_back, if crs.is_some() { PROJECTED_TOLERANCE } else { 0.0 }) {
+    // Read back in longitude/latitude, so compared with the layer in it, whatever system the
+    // layer holds its coordinates in.
+    let in_lonlat = ds.in_lonlat().map_err(|e| refused(path, e))?;
+    if let Some(why) = same_rows(&in_lonlat, &read_back, if crs.is_some() { PROJECTED_TOLERANCE } else { 0.0 }) {
         return Err(refused(path, format!("the file couldn't hold the layer as it is: {why}")));
     }
 
     if crs.is_some()
-        && let Some(note) = projection_note(ds, &read_back)?
+        && let Some(note) = projection_note(&in_lonlat, &read_back)?
     {
         notes.push(format!("{}: {note}", path.display()));
     }
@@ -454,6 +457,7 @@ fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Da
     }
     let mut out = ds.clone();
     out.features = rows.into();
+    out.held_in = c;
     Ok(std::borrow::Cow::Owned(out))
 }
 
@@ -793,11 +797,12 @@ mod tests {
         let at = Coord::new(500_000.0, 5_400_000.0);
         let mut ds = Dataset::new("held", GeometryType::Point, vec![]);
         ds.push(Some(Geometry::Point(at)), vec![]);
-        let _held = crate::tests::HeldIn::new(utm);
+        ds.held_in = utm;
         let same = in_file(&ds, Some(utm), None).unwrap();
         assert!(matches!(same, std::borrow::Cow::Borrowed(_)));
         let other = in_file(&ds, Some(etrs), Some((&ds, &ds))).unwrap();
         assert_eq!(other.features[0].geometry, Some(Geometry::Point(utm.to(etrs).unwrap().point(at).unwrap())));
+        assert_eq!(other.coord_crs(), etrs);
     }
 
     /// A small polygon layer of parcels with an owner, an area with decimals and a count.
@@ -1562,6 +1567,25 @@ mod tests {
         assert!(published.notes[0].contains("'OWNER' C(5) to C(24)"), "{:?}", published.notes);
         let (back, _) = crate::io::read_path(&path).unwrap();
         assert_eq!(back.features.iter().next().unwrap().attrs[0], Value::Text("Smith and Jones Holdings".into()));
+    }
+
+    /// A layer held in the file's system (#2032 C2) is compared with what the file reads back as
+    /// in longitude/latitude, not its metres with degrees: an edit of its table is written.
+    #[test]
+    fn a_layer_held_in_the_files_system_publishes_an_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parcels.shp");
+        let crs = Crs::parse("EPSG:32616").unwrap();
+        crate::io::write_path_in(&parcels(), &path, crs).unwrap();
+        let (mut ds, sync) = read(&path);
+        ds.hold_in(crs).unwrap();
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[0].attrs[0] = Value::Text("Smyth".into());
+        ds.features = rows.into();
+        let published = shapefile(&ds, &path, &sync).unwrap();
+        assert!(published.notes.is_empty(), "{:?}", published.notes);
+        let (back, _) = crate::io::read_path(&path).unwrap();
+        assert_eq!(back.features.iter().next().unwrap().attrs[0], Value::Text("Smyth".into()));
     }
 
     /// A projected file's unedited shapes stay where they were, to the tolerance.

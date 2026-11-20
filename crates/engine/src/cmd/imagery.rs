@@ -453,6 +453,19 @@ fn report_resampled_classes(s: &mut Session, source: &Raster, out: &Raster, meth
 /// The largest whole number a raster's 32-bit float pixels hold exactly.
 const EXACT_WHOLE: f64 = 16_777_216.0;
 
+/// The conversion of a layer's own coordinates to longitude/latitude, for polygons read one by
+/// one ([`rasterops::transform_feature_polygons_to_lonlat`]): none while they are
+/// longitude/latitude, as they are unless the layer holds another system. The same operation
+/// as [`rustgis_data::Dataset::lonlat_conversion`]'s: a conversion to longitude/latitude is the
+/// system's own, never a direct one between two others.
+fn held_transformer(ds: &rustgis_data::Dataset) -> Result<Option<rustgis_data::raster::Transformer>, String> {
+    let crs = ds.coord_crs();
+    if crs == Crs::LonLat {
+        return Ok(None);
+    }
+    crs.transformer().map(Some).map_err(|e| format!("{}: {e}", ds.name))
+}
+
 /// `raster.rasterize`: a polygon layer's selected (or all) features burned onto a grid given as
 /// `raster.project`'s is, each cell whose centre falls in a polygon taking its field's value, a
 /// text field's code or one `value` (see `rustgis_analysis::warp::rasterize`). A new layer, and
@@ -491,10 +504,12 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     rows.dedup();
     let (mut no_value, mut no_polygon) = (0, 0);
     let mut burns: Vec<(Vec<Vec<Vec<Coord>>>, rustgis_data::Value)> = Vec::new();
+    // Burned from longitude/latitude, whatever system the layer holds its coordinates in.
+    let own = held_transformer(ds)?;
     for row in rows {
         let Some(feature) = ds.features.get(row) else { continue };
         let parts = match &feature.geometry {
-            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, None).ok(),
+            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, own.as_ref()).ok(),
             _ => None,
         };
         let Some(parts) = parts else {
@@ -1035,7 +1050,11 @@ fn zone_rings(s: &Session, z: &str) -> Result<Vec<Vec<Coord>>, String> {
     let l =
         s.map().layer_by_name(z).filter(|l| l.geometry_type() == GeometryType::Polygon).ok_or_else(|| format!("no polygon layer '{z}'"))?;
     let row = l.selection.first().copied().unwrap_or(0);
-    let Some(Geometry::Polygon(polys)) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) else {
+    let Some(g) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) else {
+        return Err("the zone has no polygon".into());
+    };
+    // In longitude/latitude, whatever system the layer holds its coordinates in.
+    let Geometry::Polygon(polys) = &*l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{z}: {e}"))? else {
         return Err("the zone has no polygon".into());
     };
     polys.first().cloned().ok_or_else(|| "the zone has no polygon".into())
@@ -1230,10 +1249,12 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             }
             let mut polygons: Vec<Vec<Vec<Coord>>> = Vec::new();
             let mut failed_features = Vec::new();
+            // In longitude/latitude, whatever system the layer holds its coordinates in.
+            let own = held_transformer(&l.dataset)?;
             for &row in &rows {
                 let Some(f) = l.dataset.features.get(row) else { continue };
                 match &f.geometry {
-                    Some(Geometry::Polygon(polys)) => match rasterops::transform_feature_polygons_to_lonlat(polys, None) {
+                    Some(Geometry::Polygon(polys)) => match rasterops::transform_feature_polygons_to_lonlat(polys, own.as_ref()) {
                         Ok(transformed) => {
                             polygons.extend(transformed);
                         }

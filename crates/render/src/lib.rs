@@ -4708,6 +4708,10 @@ fn render_frame(
                 && (!complete_source || thin_complete)
                 && layer.diagram.is_none()
                 && layer.prepare_display(&flat, thin_tol, complete_source);
+            if globe.is_some() {
+                // In longitude/latitude, which the globe draws (none for a layer held there).
+                layer.lonlat_in();
+            }
             if globe.is_none() && !display_only {
                 if complete_source {
                     layer.projected_in(&flat, &key);
@@ -4729,8 +4733,11 @@ fn render_frame(
             // move rows (#1046).
             let label_id = |row: usize| layer.dataset.features.get(row).map_or(row as u64, |f| f.id);
             let (labels, selection, ds_ptr) = (&layer.labels, &layer.selection, &layer.dataset);
-            // The globe draws the lon/lat geometry itself; the flat map its Web Mercator copy.
-            let geoms: Vec<Option<&Geometry>> = if globe.is_some() {
+            // The globe draws the lon/lat geometry itself (a layer held in another system, its
+            // copy in longitude/latitude); the flat map its Web Mercator copy.
+            let geoms: Vec<Option<&Geometry>> = if globe.is_some() && ds_ptr.coord_crs() != rustgis_data::raster::Crs::LonLat {
+                layer.projected_cache().iter().map(Option::as_ref).collect()
+            } else if globe.is_some() {
                 ds_ptr.features.iter().map(|f| f.geometry.as_ref()).collect()
             } else if display_only {
                 layer.display_cache().map_or(&[][..], |(g, _)| g).iter().map(Option::as_ref).collect()
@@ -5985,7 +5992,12 @@ fn layer_masks(
                         }
                     } else if let Some(ml) = map.layers.get_mut(mi) {
                         if ctx.globe.is_some() {
-                            ml.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).for_each(&mut add);
+                            // In longitude/latitude: its copy there when it is held in another system.
+                            if ml.lonlat_in().is_empty() {
+                                ml.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).for_each(&mut add);
+                            } else {
+                                ml.projected_cache().iter().flatten().for_each(&mut add);
+                            }
                         } else {
                             ml.projected_in(flat, key).iter().flatten().for_each(&mut add);
                         }
@@ -6418,8 +6430,12 @@ fn square_lines(
         }
         let Some(layer) = map.layer_by_name(&name) else { continue };
         let mut runs = Vec::new();
-        for g in layer.dataset.features.iter().filter_map(|f| f.geometry.as_ref()) {
-            let (parts, rings): (Vec<&Vec<Coord>>, bool) = match g {
+        // Read in longitude/latitude, whatever system the layer holds its coordinates in; a
+        // feature that can't be given there squares nothing (nor any, in a system that can't be
+        // converted), as the map draws none of it.
+        let Ok(to) = layer.dataset.lonlat_conversion() else { continue };
+        for g in layer.dataset.features.iter().filter_map(|f| rustgis_data::Dataset::converted_to_lonlat(&to, f.geometry.as_ref()?)) {
+            let (parts, rings): (Vec<&Vec<Coord>>, bool) = match &*g {
                 Geometry::Line(parts) => (parts.iter().collect(), false),
                 Geometry::Polygon(polys) => (polys.iter().flatten().collect(), true),
                 _ => continue,

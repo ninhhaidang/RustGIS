@@ -867,11 +867,14 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         out_fields,
     );
     let mut moved = Vec::new();
-    for (row, ft) in l.dataset.features.iter().enumerate() {
+    for (row, ft) in l.dataset.features.rows().enumerate() {
         if rows.get(row) != Some(&true) {
             continue;
         }
-        let Some(at) = ft.geometry.as_ref().and_then(Geometry::label_point) else { continue };
+        // In longitude/latitude, as the annotation layer holds its points and moved labels are.
+        let Some(g) = ft.geometry() else { continue };
+        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
+        let Some(at) = g.label_point() else { continue };
         for (i, class) in matcher.classes_of(&l.dataset, row).filter(|(_, c)| c.visible) {
             let text = match by_text(i).and_then(|e| e.text_cut(&l.dataset, row)) {
                 Some(Some((t, was_cut))) => {
@@ -894,7 +897,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
             }
             // A label moved by hand becomes an annotation where it was put, and stays moved there
             // (its class's offset leaves it).
-            let put = class.moved_to(ft.id);
+            let put = class.moved_to(ft.id());
             let at = put.map_or(at, |[x, y]| Coord::new(x, y));
             let e = exprs.get(i).and_then(Option::as_ref);
             let number = |v: Option<f32>| v.map_or(Attr::Null, |v| Attr::Float(f64::from(v)));
@@ -906,11 +909,11 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
                 attrs.push(c.map_or(Attr::Null, |c| Attr::Text(format!("{},{},{},{}", c.r(), c.g(), c.b(), c.a()))));
             }
             if by_angle {
-                let turns = class.by.angle.is_some() && !along(class, ft.geometry.as_ref());
+                let turns = class.by.angle.is_some() && !along(class, ft.geometry());
                 attrs.push(number(e.filter(|_| turns).and_then(|e| e.angle(&l.dataset, row))));
             }
             ds.push(Some(Geometry::Point(at)), attrs);
-            let flat = put.is_none() && along(class, ft.geometry.as_ref());
+            let flat = put.is_none() && along(class, ft.geometry());
             flattened += usize::from(flat);
             repeated += usize::from(flat && class.repeat.is_some());
             if let (Some(put), Some(new)) = (put, ds.features.last()) {

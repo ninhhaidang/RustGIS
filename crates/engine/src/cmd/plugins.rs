@@ -612,6 +612,7 @@ impl Bridge<'_> {
             crs_incomplete: false,
             zm_dropped: false,
             windowed: false,
+            held_in: rustgis_data::raster::Crs::LonLat,
         };
         let mut ds = ds;
         let mut member = None;

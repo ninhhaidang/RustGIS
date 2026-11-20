@@ -862,6 +862,11 @@ fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, Strin
             if l.is_raster() || tol <= 0.0 {
                 continue;
             }
+            // Simplified in longitude/latitude, as the package saves it, whatever system the
+            // layer holds its coordinates in.
+            if let std::borrow::Cow::Owned(ds) = l.dataset.in_lonlat()? {
+                l.dataset = ds;
+            }
             for f in &mut l.dataset.features {
                 if let Some(g) = &f.geometry {
                     let (simple, said) = rustgis_analysis::simplify_geometry(g, tol * 111_320.0);
@@ -1280,9 +1285,9 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
         }
         // A feature with no geometry draws nothing, so its height is neither used nor reported.
-        if rows.get(row) != Some(&true) || ft.geometry.is_none() {
-            continue;
-        }
+        let Some(g) = ft.geometry.as_ref().filter(|_| rows.get(row) == Some(&true)) else { continue };
+        // Placed from longitude/latitude, whatever system the layer holds its coordinates in.
+        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id))?;
         // A height that isn't a finite number takes the default, and is counted.
         let height = match hf {
             Some(fi) => match l.dataset.value(row, fi).as_f64().filter(|h| h.is_finite()) {
@@ -1300,13 +1305,13 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
         let below = h < 0.0;
         let orient = |o: Orient| if below { o.reversed() } else { o };
         // A solid of zero height would be two coincident caps facing apart: STL leaves it out.
-        if !mesh.keep_lines && h == 0.0 && !matches!(ft.geometry, Some(Geometry::Line(_))) {
+        if !mesh.keep_lines && h == 0.0 && !matches!(&*g, Geometry::Line(_)) {
             mesh.flat += 1;
             continue;
         }
         let before = mesh.vertices;
-        match &ft.geometry {
-            Some(Geometry::Polygon(polys)) => {
+        match &*g {
+            Geometry::Polygon(polys) => {
                 for rings in polys {
                     // Each ring open (no closing vertex), outer first then holes.
                     let mut open: Vec<Vec<(f64, f64)>> = rings
@@ -1371,7 +1376,7 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
                     }
                 }
             }
-            Some(Geometry::Line(parts)) => {
+            Geometry::Line(parts) => {
                 for part in parts {
                     let n = part.len();
                     if n < 2 {
@@ -1390,7 +1395,7 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
                     mesh.face(Item::Polyline((0..n).map(|i| v + i).collect()))?;
                 }
             }
-            Some(g @ (Geometry::Point(_) | Geometry::MultiPoint(_))) => {
+            g @ (Geometry::Point(_) | Geometry::MultiPoint(_)) => {
                 let pts: Vec<rustgis_geom::Coord> = match g {
                     Geometry::Point(c) => vec![*c],
                     Geometry::MultiPoint(c) => c.clone(),
@@ -1413,7 +1418,6 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
                     }
                 }
             }
-            None => {}
         }
         if mesh.vertices > before {
             s.constructions.count_feature(s.map().instance_id(), l, ft, &mut mesh.constructions);

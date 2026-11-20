@@ -1081,28 +1081,49 @@ impl Layer {
     /// vertex index, which only the source geometry has.
     pub fn projected_in(&mut self, flat: &projection::Flat, key: &str) -> &[Option<Geometry>] {
         if !self.is_cached(key) {
-            self.display = None;
             if !matches!(flat, projection::Flat::Mercator) {
                 self.display_levels.clear();
             }
-            // From the layer's own coordinate system. Longitude/latitude, every layer's today,
-            // can't fail; a system that can't be converted draws nothing (a layer read in one is
-            // converted as it is read, which says why it can't be).
-            let crs = self.dataset.coord_crs();
-            let to_lonlat = crs.to(Crs::LonLat).ok();
-            let projected: Vec<Option<Geometry>> =
-                self.dataset.features.iter().map(|ft| flat.project_from(to_lonlat.as_ref()?, ft.geometry.as_ref()?)).collect();
-            self.projected_extents =
-                std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
-            self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
-            self.projected = std::sync::Arc::new(projected);
-            self.thinned = Default::default();
-            self.projected_rev = self.geometry_rev;
-            self.projected_for = key.to_string();
-            self.projected_crs = Some(crs);
-            self.trim_display_levels(self.lod_budget());
+            self.fill_projected(key, |to_lonlat, g| flat.project_from(to_lonlat, g));
         }
         &self.projected
+    }
+
+    /// Its geometry in longitude/latitude, for the globe, which draws there: kept in the
+    /// projected geometry cache ([`Layer::projected_cache`]) under its own key, so it is converted
+    /// once, not every frame. Empty while its coordinates are longitude/latitude, as every layer's
+    /// are unless held in another system: the geometry is then drawn as it is.
+    pub fn lonlat_in(&mut self) -> &[Option<Geometry>] {
+        const KEY: &str = "longitude/latitude";
+        if self.dataset.coord_crs() == Crs::LonLat {
+            return &[];
+        }
+        if !self.is_cached(KEY) {
+            self.display_levels.clear();
+            self.fill_projected(KEY, |to_lonlat, g| Some(to_lonlat.geometry(g)));
+        }
+        &self.projected
+    }
+
+    /// Fills the projected geometry cache for `key` with `project` of each geometry, given the
+    /// conversion of the layer's own coordinate system to longitude/latitude. Longitude/latitude,
+    /// every layer's unless held in another, can't fail; a system that can't be converted draws
+    /// nothing (a layer read in one is converted as it is read, which says why it can't be).
+    fn fill_projected(&mut self, key: &str, project: impl Fn(&rustgis_data::raster::Reprojection, &Geometry) -> Option<Geometry>) {
+        self.display = None;
+        let crs = self.dataset.coord_crs();
+        let to_lonlat = crs.to(Crs::LonLat).ok();
+        let projected: Vec<Option<Geometry>> =
+            self.dataset.features.iter().map(|ft| project(to_lonlat.as_ref()?, ft.geometry.as_ref()?)).collect();
+        self.projected_extents =
+            std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
+        self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
+        self.projected = std::sync::Arc::new(projected);
+        self.thinned = Default::default();
+        self.projected_rev = self.geometry_rev;
+        self.projected_for = key.to_string();
+        self.projected_crs = Some(crs);
+        self.trim_display_levels(self.lod_budget());
     }
 
     /// Web Mercator copies of every geometry (see [`Layer::projected_in`]).
@@ -3312,6 +3333,7 @@ impl Layer {
             crs_incomplete: _,
             zm_dropped: _,
             windowed: _,
+            held_in: _,
         } = dataset;
         if let Some(v) = provenance {
             out.push((LayerRole::Dataset, v.as_str(), true, paths::is_local(v)));

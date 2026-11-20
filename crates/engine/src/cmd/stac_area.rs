@@ -157,8 +157,14 @@ fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), Stri
     if layer.selection.len() > area::MAX_FEATURES {
         return Err(format!("more than {} features are selected: select fewer or use a bounding box", area::MAX_FEATURES));
     }
-    let geometries: Vec<Geometry> =
-        layer.selection.iter().filter_map(|row| layer.dataset.features.get(*row)).filter_map(|f| f.geometry.clone()).collect();
+    // In longitude/latitude, as a search area is, whatever system the layer holds them in.
+    let mut geometries: Vec<Geometry> = Vec::new();
+    for f in layer.selection.iter().filter_map(|row| layer.dataset.features.row(*row)) {
+        if let Some(g) = f.geometry() {
+            let g = layer.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", layer.name, f.id()))?;
+            geometries.push(g.into_owned());
+        }
+    }
     let mut notes = Vec::new();
     if geometries.len() < layer.selection.len() {
         notes.push(format!(

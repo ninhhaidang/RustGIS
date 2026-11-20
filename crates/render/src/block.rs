@@ -468,11 +468,20 @@ fn units(layer: &rustgis_map::Layer, b: &Block, env: &rustgis_data::query::Env) 
     // The polygons reaching the box (Web Mercator rings, and their box), each part on its own, in
     // row order.
     let mut parts: Vec<(usize, Vec<Vec<Coord>>, Extent)> = Vec::new();
+    // Its conversion to longitude/latitude, made once for its polygons (none: a system that can't
+    // be converted, of which the map draws nothing either).
+    let to = layer.dataset.lonlat_conversion().ok();
     for (row, ft) in layer.dataset.features.iter().enumerate() {
         if keep.as_ref().is_some_and(|k| !k.get(row).copied().unwrap_or(false)) {
             continue;
         }
-        let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
+        // In longitude/latitude, whatever system the layer holds its coordinates in; a polygon
+        // that can't be given there makes no contact, as the map draws none of it.
+        let Some(lonlat) = ft.geometry.as_ref().zip(to.as_ref()).and_then(|(g, to)| rustgis_data::Dataset::converted_to_lonlat(to, g))
+        else {
+            continue;
+        };
+        let Geometry::Polygon(polys) = &*lonlat else { continue };
         for rings in polys {
             let mut e = Extent::EMPTY;
             rings.iter().flatten().for_each(|c| e.expand(*c));

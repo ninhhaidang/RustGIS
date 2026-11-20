@@ -485,11 +485,20 @@ fn still_good(water: &Water, read_at: web_time::Instant) -> bool {
 fn polygons(layer: &rustgis_map::Layer, level: Option<&str>, drawn: Option<&[bool]>) -> Vec<(Vec<Vec<Coord>>, Option<f64>)> {
     let field = level.and_then(|f| layer.dataset.field_index(f));
     let mut polygons = Vec::new();
+    // Its conversion to longitude/latitude, made once for its polygons (none: a system that can't
+    // be converted, of which the map draws nothing either).
+    let to = layer.dataset.lonlat_conversion().ok();
     for (row, ft) in layer.dataset.features.iter().enumerate() {
         if drawn.is_some_and(|d| !d.get(row).copied().unwrap_or(false)) {
             continue;
         }
-        let Some(Geometry::Polygon(parts)) = &ft.geometry else { continue };
+        // In longitude/latitude, whatever system the layer holds its coordinates in; a polygon
+        // that can't be given there holds no water, as the map draws none of it.
+        let Some(lonlat) = ft.geometry.as_ref().zip(to.as_ref()).and_then(|(g, to)| rustgis_data::Dataset::converted_to_lonlat(to, g))
+        else {
+            continue;
+        };
+        let Geometry::Polygon(parts) = &*lonlat else { continue };
         let given = field.and_then(|i| ft.attrs.get(i)).and_then(rustgis_data::Value::as_f64).filter(|v| v.is_finite());
         for rings in parts {
             let rings: Vec<Vec<Coord>> = rings.iter().map(|r| r.iter().map(|c| lonlat_to_merc(*c)).collect()).collect();

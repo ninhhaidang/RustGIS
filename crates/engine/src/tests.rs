@@ -27,6 +27,9 @@ mod block_model;
 #[path = "tests/write_notices.rs"]
 mod write_notices;
 
+#[path = "tests/held_layers.rs"]
+mod held_layers;
+
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;
 

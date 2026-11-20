@@ -75,6 +75,8 @@ pub fn commands() -> Vec<C> {
                 return Err("nothing is selected in this layer".into());
             }
             let mut ds = rustgis_data::Dataset::new(format!("{} selection", l.name), l.geometry_type(), l.dataset.fields.clone());
+            // Its coordinates as they are, held in the layer's system.
+            ds.held_in = l.dataset.held_in;
             for r in &l.selection {
                 if let Some(f) = l.dataset.features.get(*r) {
                     ds.push(f.geometry.clone(), f.attrs.clone());
