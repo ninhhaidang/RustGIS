@@ -132,6 +132,7 @@ impl SizeBy {
                     label: format!("{} {}", self.field, crate::symbology::fmt_num(v)),
                     symbol: hide_zero(Symbol { size, ..like }),
                     strokes: scaled_marks(strokes, k),
+                    fills: Vec::new(),
                     fallback: false,
                 }
             })

@@ -8871,7 +8871,7 @@ mod tests {
         named.set_class_style(&ClassRef::Index(1), &ClassStyle { label: Some("up to 4".into()), ..Default::default() }, g).unwrap();
         assert_eq!(labels(interface_legend(&named, named.legend())), ["up to 4", "up to 4", more_than.as_str()]);
         // Another renderer's row named like an open class is left alone.
-        let row = LegendEntry { label: "up to 4".into(), symbol: Symbol::default_for(g, 0), strokes: Vec::new(), fallback: false };
+        let row = LegendEntry::plain("up to 4".into(), Symbol::default_for(g, 0));
         assert_eq!(labels(interface_legend(&Renderer::Single(Symbol::default_for(g, 0)), vec![row])), ["up to 4"]);
     }
 

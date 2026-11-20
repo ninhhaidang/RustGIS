@@ -9,10 +9,11 @@
 //! always in range, and read from a project through [`de_diagram`], which takes a malformed one
 //! (a hostile file) as `None` and leaves the rest of the layer reading.
 
-use rustgis_data::Dataset;
+use rustgis_data::{Dataset, GeometryType};
 use serde::{Deserialize, Serialize};
 
 use crate::color::Rgba;
+use crate::fills::{FillLayer, FillPattern};
 use crate::symbology::{LegendEntry, LineMark, LineMarkers, LineStroke, Marker, Symbol};
 
 /// The most categories one diagram lists (each is a slice or a bar).
@@ -256,9 +257,11 @@ impl DiagramSettings {
     }
 
     /// The legend rows of its categories: one per category, in draw order, its field the label.
-    /// On a line layer the colour goes in the stroke, which is what a line's swatch draws; else it
-    /// is the fill, with a white outline.
-    pub fn legend(&self, line: bool) -> Vec<LegendEntry> {
+    /// Each row carries its colour in a stack of its own, or it would take the layer's stacked
+    /// strokes or fills and every category would look the same: on a line layer one stroke, on a
+    /// polygon layer one fill (with a white outline), on a point layer its mark.
+    pub fn legend(&self, g: GeometryType) -> Vec<LegendEntry> {
+        let line = g == GeometryType::Polyline;
         self.categories
             .iter()
             .map(|c| LegendEntry {
@@ -270,7 +273,15 @@ impl DiagramSettings {
                     size: 7.0,
                     marker: Marker::Circle,
                 },
-                strokes: vec![category_mark(c.colour)],
+                strokes: match g {
+                    GeometryType::Point => vec![category_mark(c.colour)],
+                    GeometryType::Polyline => vec![LineStroke { color: Some(c.colour), width: Some(1.0), ..LineStroke::default() }],
+                    _ => Vec::new(),
+                },
+                fills: match g {
+                    GeometryType::Polygon => vec![FillLayer { color: Some(c.colour), pattern: FillPattern::Solid }],
+                    _ => Vec::new(),
+                },
                 fallback: false,
             })
             .collect()
@@ -510,14 +521,26 @@ mod tests {
 
     #[test]
     fn legend_lists_one_row_per_category() {
-        let l = settings().legend(false);
+        let l = settings().legend(GeometryType::Point);
         assert_eq!(l.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["pop_male", "pop_female"]);
         assert_eq!(l[0].symbol.fill, CATEGORY_COLORS[0]);
         assert_eq!(l[0].symbol.stroke, Rgba::rgb(0xFF, 0xFF, 0xFF), "a white outline on a polygon or point layer");
         assert!(l.iter().all(|e| !e.fallback));
         assert_eq!(l[0].strokes[0].color, Some(CATEGORY_COLORS[0]), "its own mark, not the layer's stacked ones");
-        let line = settings().legend(true);
+        let line = settings().legend(GeometryType::Polyline);
         assert_eq!(line[0].symbol.stroke, CATEGORY_COLORS[0], "a line's swatch draws its stroke, so the colour is there");
+        assert_eq!(
+            line[0].strokes,
+            [LineStroke { color: Some(CATEGORY_COLORS[0]), width: Some(1.0), ..LineStroke::default() }],
+            "one stroke, not the layer's"
+        );
+        let area = settings().legend(GeometryType::Polygon);
+        assert_eq!(
+            area[0].fills,
+            [FillLayer { color: Some(CATEGORY_COLORS[0]), pattern: FillPattern::Solid }],
+            "one fill, not the layer's"
+        );
+        assert!(area[0].strokes.is_empty());
     }
 
     #[test]

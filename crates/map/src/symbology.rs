@@ -993,15 +993,28 @@ pub struct LegendEntry {
     pub symbol: Symbol,
     /// The stacked strokes its class has of its own; empty, it takes the layer's `line_strokes`.
     pub strokes: Vec<LineStroke>,
+    /// The stacked fills its class has of its own; empty, it takes the layer's `fill_layers`.
+    pub fills: Vec<FillLayer>,
     /// The Unique Values fallback row (`<all other values>`), told apart from a class whatever
     /// its label: a legend can leave it out without touching a class that bears the same name.
     pub fallback: bool,
 }
 
 impl LegendEntry {
-    /// A class's row, with the stacked strokes it has of its own, if any.
-    fn class(label: String, symbol: Symbol, strokes: Option<&Vec<LineStroke>>) -> Self {
-        LegendEntry { label, symbol, strokes: strokes.cloned().unwrap_or_default(), fallback: false }
+    /// A class's row, with the stacked strokes and fills it has of its own, if any.
+    fn class(label: String, symbol: Symbol, strokes: Option<&Vec<LineStroke>>, fills: Option<&Vec<FillLayer>>) -> Self {
+        LegendEntry {
+            label,
+            symbol,
+            strokes: strokes.cloned().unwrap_or_default(),
+            fills: fills.cloned().unwrap_or_default(),
+            fallback: false,
+        }
+    }
+
+    /// A row with no stacked strokes or fills of its own.
+    pub fn plain(label: String, symbol: Symbol) -> Self {
+        LegendEntry { label, symbol, strokes: Vec::new(), fills: Vec::new(), fallback: false }
     }
 }
 
@@ -1703,6 +1716,7 @@ impl Renderer {
             other_fills,
             other_strokes,
             class_strokes,
+            class_fills,
             ..
         } = self
         else {
@@ -1766,13 +1780,14 @@ impl Renderer {
             .into_iter()
             .filter(|i| used.get(*i).copied().unwrap_or(false))
             .filter_map(|i| classes.get(i))
-            .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
+            .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k), class_fills.get(k)))
             .collect();
         if other_used && visible {
             v.push(LegendEntry {
                 label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()),
                 symbol: *other,
                 strokes: other_strokes.clone(),
+                fills: other_fills.clone(),
                 fallback: true,
             });
         }
@@ -1813,7 +1828,7 @@ impl Renderer {
         let used = rows.is_none_or(|rows| {
             (0..ds.features.len()).any(|r| rows.get(r).copied().unwrap_or(true) && fi.and_then(|fi| ds.value(r, fi).as_f64()).is_none())
         });
-        used.then(|| LegendEntry { label: "No data".into(), symbol: self.symbol_in(ds, 0, None), strokes: Vec::new(), fallback: false })
+        used.then(|| LegendEntry::plain("No data".into(), self.symbol_in(ds, 0, None)))
     }
 
     /// Every row of its legend, whatever the features: the classes, then a Unique Values'
@@ -1821,23 +1836,26 @@ impl Renderer {
     pub fn legend(&self) -> Vec<LegendEntry> {
         match self {
             Renderer::Single(_) => Vec::new(),
-            Renderer::Unique { classes, other, class_labels, other_label, class_strokes, other_strokes, .. } => {
+            Renderer::Unique {
+                classes, other, class_labels, other_label, class_strokes, other_strokes, class_fills, other_fills, ..
+            } => {
                 // Keep symbols attached to their classes in `class_order` and the fallback at the end.
                 let mut v: Vec<LegendEntry> = self
                     .class_order()
                     .into_iter()
                     .filter_map(|i| classes.get(i))
-                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
+                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k), class_fills.get(k)))
                     .collect();
                 v.push(LegendEntry {
                     label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()),
                     symbol: *other,
                     strokes: other_strokes.clone(),
+                    fills: other_fills.clone(),
                     fallback: true,
                 });
                 v
             }
-            Renderer::Graduated { breaks, symbols, min, class_labels, class_strokes, .. } => {
+            Renderer::Graduated { breaks, symbols, min, class_labels, class_strokes, class_fills, .. } => {
                 let mut lo = *min;
                 breaks
                     .iter()
@@ -1846,19 +1864,14 @@ impl Renderer {
                     .map(|(i, (b, s))| {
                         let label = class_labels.get(&i).cloned().unwrap_or_else(|| range_label(lo, *b));
                         lo = *b;
-                        LegendEntry::class(label, *s, class_strokes.get(&i))
+                        LegendEntry::class(label, *s, class_strokes.get(&i), class_fills.get(&i))
                     })
                     .collect()
             }
             Renderer::Proportional { base, min_size, max_size, min, max, .. } => vec![
-                LegendEntry { label: fmt_num(*min), symbol: Symbol { size: *min_size, ..*base }, strokes: Vec::new(), fallback: false },
-                LegendEntry {
-                    label: fmt_num((min + max) / 2.0),
-                    symbol: Symbol { size: min_size + (max_size - min_size) * 0.707, ..*base },
-                    strokes: Vec::new(),
-                    fallback: false,
-                },
-                LegendEntry { label: fmt_num(*max), symbol: Symbol { size: *max_size, ..*base }, strokes: Vec::new(), fallback: false },
+                LegendEntry::plain(fmt_num(*min), Symbol { size: *min_size, ..*base }),
+                LegendEntry::plain(fmt_num((min + max) / 2.0), Symbol { size: min_size + (max_size - min_size) * 0.707, ..*base }),
+                LegendEntry::plain(fmt_num(*max), Symbol { size: *max_size, ..*base }),
             ],
         }
     }
@@ -1987,7 +2000,7 @@ impl Renderer {
         // The class's row in `legend()`, which lists the classes and then `other`. Unique Values
         // rows are sorted by label, so that class's row is built here rather than looked up.
         let row = match (&mut *self, class) {
-            (Renderer::Unique { classes, class_labels, class_strokes, .. }, ClassRef::Value(v)) => {
+            (Renderer::Unique { classes, class_labels, class_strokes, class_fills, .. }, ClassRef::Value(v)) => {
                 let i = classes.iter().position(|(k, _)| k == v).ok_or_else(|| format!("no class with the value '{v}'"))?;
                 if let Some((k, s)) = classes.get_mut(i) {
                     restyle(s);
@@ -2004,7 +2017,7 @@ impl Renderer {
                 }
                 return classes
                     .get(i)
-                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
+                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k), class_fills.get(k)))
                     .ok_or_else(|| "the class has no legend row".into());
             }
             (Renderer::Unique { classes, other, other_label, .. }, ClassRef::Other) => {

@@ -311,6 +311,13 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     symbols grow to hold a large one, up to 2048 points, past which the symbol is cut. A legend
     already on the page keeps its size, so with a larger symbol its last rows may be cut and its
     labels run past its right edge: make it larger to fit.
+  - **Line and polygon symbols**: a line's swatch is drawn with the stacked strokes of its class or
+    layer (casings, offsets, dashes, markers and images along it, by symbol level when the layer
+    draws by levels), and a polygon's with its stacked fills (hatches, dots, gradients,
+    shapeburst), as the map draws them, with the transparency of the layer and its groups and its
+    reference scale at the frame's scale. A stroke wider than the row, or shifted off it, is cut at
+    the row; the row keeps its height. A diagram's categories keep their own colour. A layer with
+    no stacked strokes or fills keeps its plain swatch, see-through with the layer.
   - **Web layers**: a visible WMS or WMTS layer with a legend is listed by its name over its
     service's legend picture, the one for the frame's scale (as the Layers pane shows it), a
     pixel a point and narrowed to fit the legend's width, in the order the map draws its layers

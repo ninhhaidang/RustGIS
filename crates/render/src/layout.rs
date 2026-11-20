@@ -2056,12 +2056,7 @@ fn layer_shown(l: &rustgis_map::Layer, scale: f64, show_no_data: bool, env: &Env
 fn raster_classes(l: &rustgis_map::Layer, all_classes: bool) -> Option<Vec<LegendEntry>> {
     let classes = l.raster.as_ref()?.legend_classes(all_classes)?;
     let symbol = |fill| rustgis_map::Symbol { fill, stroke: RASTER_SWATCH_EDGE, stroke_width: 0.5, size: 0.0, marker: Default::default() };
-    Some(
-        classes
-            .into_iter()
-            .map(|(fill, label)| LegendEntry { label, symbol: symbol(fill), strokes: Vec::new(), fallback: false })
-            .collect(),
-    )
+    Some(classes.into_iter().map(|(fill, label)| LegendEntry::plain(label, symbol(fill))).collect())
 }
 
 /// Names only the source whose read stopped this page, leaving unrelated failures generic.
@@ -2287,6 +2282,12 @@ fn widest(rows: &[LegendRow], scale: f64) -> f32 {
 /// [`rustgis_map::Layer::strokes`] finds them for a feature.
 fn row_strokes<'a>(l: &'a rustgis_map::Layer, en: &'a LegendEntry) -> &'a [rustgis_map::LineStroke] {
     if en.strokes.is_empty() { &l.line_strokes } else { &en.strokes }
+}
+
+/// The stacked fills a legend's class row draws: its class's own, else its layer's, as
+/// [`rustgis_map::Layer::fills`] finds them for a feature.
+fn row_fills<'a>(l: &'a rustgis_map::Layer, en: &'a LegendEntry) -> &'a [rustgis_map::fills::FillLayer] {
+    if en.fills.is_empty() { &l.fill_layers } else { &en.fills }
 }
 
 /// The width of a legend's column of swatches at 1:`scale`, in points: it grows to hold the widest
@@ -2526,7 +2527,7 @@ fn legend_rows_missing<'a>(
         }
         // A layer with a diagram lists its categories under its classes.
         if let Some(d) = &l.diagram {
-            entries.extend(d.legend(l.geometry_type() == GeometryType::Polyline));
+            entries.extend(d.legend(l.geometry_type()));
         }
         if entries.is_empty() {
             // A Unique Values layer that lists nothing draws nothing visible (#207); a raster has
@@ -2646,14 +2647,22 @@ fn legend_column(
         match row {
             LegendRow::Plain(l, name) => {
                 let s = l.renderer.symbol_for(&l.dataset, 0);
-                swatch(pm, (r.x(), y, sw, height), l, (&s, l.line_strokes.as_slice()), map.layer_opacity(l), opts.scale, ppp);
+                swatch(pm, (r.x(), y, sw, height), l, (&s, &l.line_strokes, &l.fill_layers), map.layer_opacity(l), opts.scale, ppp);
                 text::text_at(pm, name, r.x() + sw + 6.0 * ppp, y + height / 2.0, 9.0 * 1.33 * ppp, dark, false, text::Align::Left, false);
             }
             LegendRow::Head(name) => {
                 text::text_at(pm, name, r.x(), y + line / 2.0, 9.0 * 1.33 * ppp, dark, true, text::Align::Left, false);
             }
             LegendRow::Class(l, en) => {
-                swatch(pm, (r.x() + 6.0 * ppp, y, sw, height), l, (&en.symbol, row_strokes(l, en)), map.layer_opacity(l), opts.scale, ppp);
+                swatch(
+                    pm,
+                    (r.x() + 6.0 * ppp, y, sw, height),
+                    l,
+                    (&en.symbol, row_strokes(l, en), row_fills(l, en)),
+                    map.layer_opacity(l),
+                    opts.scale,
+                    ppp,
+                );
                 text::text_at(
                     pm,
                     &en.label,
@@ -2965,54 +2974,130 @@ pub fn frame_plain_under(
     background && seen.all(|p| rgba(p) == first)
 }
 
-/// A legend entry's symbol `s` of the layer `l` in the box (`x`, `y`, `w`, `h`): a point as
-/// [`point_swatch`] draws it with `strokes`, or a line or a filled box a swatch wide, in the middle
-/// of the box.
+/// A legend entry's symbol `s` of the layer `l` in the box (`x`, `y`, `w`, `h`), with its stacked
+/// `strokes` and `fills` (#2490): a point as [`point_swatch`] draws it, or a line or a filled box a
+/// swatch wide in the middle of the box, by the paths the map draws its features with. See-through
+/// (`opacity`) or grown with the layer's reference scale at 1:`scale`, it is composited as one and
+/// cut to the box, as a point's is.
 fn swatch(
     pm: &mut Canvas,
     (x, y, w, h): (f32, f32, f32, f32),
     l: &rustgis_map::Layer,
-    (s, strokes): (&rustgis_map::Symbol, &[rustgis_map::LineStroke]),
+    (s, strokes, fills): (&rustgis_map::Symbol, &[rustgis_map::LineStroke], &[rustgis_map::fills::FillLayer]),
     opacity: f32,
     scale: f64,
     ppp: f32,
 ) {
     let gt = l.geometry_type();
+    let k = l.size_factor(scale);
     if gt == GeometryType::Point {
-        point_swatch(pm, (x, y, w, h), (s, strokes), opacity, ppp * l.size_factor(scale));
+        point_swatch(pm, (x, y, w, h), (s, strokes), opacity, ppp * k);
         return;
     }
-    let (x, w) = (x + (w - LEGEND_SWATCH * ppp) / 2.0, LEGEND_SWATCH * ppp);
+    // A layer with no stack keeps the swatch it always had; any stack is drawn as the map draws
+    // it, cut to the box.
+    let plain = if gt == GeometryType::Polyline { strokes.is_empty() } else { fills.is_empty() };
+    if plain && opacity >= 0.999 && k == 1.0 {
+        flat_swatch(pm, (x, y, w, h), gt, s, (ppp, ppp));
+    } else if plain {
+        composited(pm, (x, y, w, h), opacity, |c, (left, top)| flat_swatch(c, (x - left, y - top, w, h), gt, s, (ppp, ppp * k)));
+    } else {
+        composited(pm, (x, y, w, h), opacity, |c, (left, top)| {
+            stacked_swatch(c, (x - left, y - top, w, h), l, (s, strokes, fills), ppp, k)
+        });
+    }
+}
+
+/// The part of the box (`x`, `w`) a line or polygon swatch takes: [`LEGEND_SWATCH`] across, in its
+/// middle.
+fn swatch_across(x: f32, w: f32, ppp: f32) -> (f32, f32) {
+    (x + (w - LEGEND_SWATCH * ppp) / 2.0, LEGEND_SWATCH * ppp)
+}
+
+/// The three points of a line swatch in the box, in pixels.
+fn swatch_line((x, y, w, h): (f32, f32, f32, f32), ppp: f32) -> [(f32, f32); 3] {
+    let (x, w) = swatch_across(x, w, ppp);
     let cy = y + h / 2.0;
-    match gt {
-        GeometryType::Polyline => {
-            let mut pb = PathBuilder::new();
-            pb.move_to(x, cy + h * 0.2);
-            pb.line_to(x + w * 0.4, cy - h * 0.2);
-            pb.line_to(x + w, cy + h * 0.1);
-            if let Some(p) = pb.finish() {
-                pm.stroke_path(
-                    &p,
-                    &paint(s.stroke, 1.0),
-                    &Stroke { width: s.stroke_width.max(1.0) * ppp, ..Stroke::default() },
-                    Transform::identity(),
-                    None,
-                );
-            }
+    [(x, cy + h * 0.2), (x + w * 0.4, cy - h * 0.2), (x + w, cy + h * 0.1)]
+}
+
+/// A polygon swatch's box in the box, in pixels.
+fn swatch_box((x, y, w, h): (f32, f32, f32, f32), ppp: f32) -> Option<Rect> {
+    let (x, w) = swatch_across(x, w, ppp);
+    Rect::from_xywh(x, y + h * 0.2, w, h * 0.6)
+}
+
+/// A line or polygon swatch of the symbol `s` alone, its shape at `ppp` and its widths at `wppp`.
+fn flat_swatch(pm: &mut Canvas, cell: (f32, f32, f32, f32), gt: GeometryType, s: &rustgis_map::Symbol, (ppp, wppp): (f32, f32)) {
+    if gt == GeometryType::Polyline {
+        let [a, b, c] = swatch_line(cell, ppp);
+        let mut pb = PathBuilder::new();
+        pb.move_to(a.0, a.1);
+        pb.line_to(b.0, b.1);
+        pb.line_to(c.0, c.1);
+        if let Some(p) = pb.finish() {
+            pm.stroke_path(
+                &p,
+                &paint(s.stroke, 1.0),
+                &Stroke { width: s.stroke_width.max(1.0) * wppp, ..Stroke::default() },
+                Transform::identity(),
+                None,
+            );
         }
-        _ => {
-            if let Some(b) = Rect::from_xywh(x, y + h * 0.2, w, h * 0.6) {
-                pm.fill_rect(b, &paint(s.fill, 1.0), Transform::identity(), None);
-                let p = PathBuilder::from_rect(b);
-                pm.stroke_path(
-                    &p,
-                    &paint(s.stroke, 1.0),
-                    &Stroke { width: s.stroke_width.max(0.5) * ppp, ..Stroke::default() },
-                    Transform::identity(),
-                    None,
-                );
-            }
+    } else if let Some(b) = swatch_box(cell, ppp) {
+        pm.fill_rect(b, &paint(s.fill, 1.0), Transform::identity(), None);
+        let p = PathBuilder::from_rect(b);
+        pm.stroke_path(
+            &p,
+            &paint(s.stroke, 1.0),
+            &Stroke { width: s.stroke_width.max(0.5) * wppp, ..Stroke::default() },
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// A line or polygon swatch with its stacked `strokes` or `fills`, drawn by the map's own paths
+/// for a feature of that shape: [`crate::stroke_paths::Paths`] and [`crate::Ctx::filled`], at
+/// `ppp` and the layer's reference scale `k`. The canvas stands for a view whose map units are
+/// its points, y up, so the shape's pixels are its coordinates.
+fn stacked_swatch(
+    pm: &mut Canvas,
+    cell: (f32, f32, f32, f32),
+    l: &rustgis_map::Layer,
+    (s, strokes, fills): (&rustgis_map::Symbol, &[rustgis_map::LineStroke], &[rustgis_map::fills::FillLayer]),
+    ppp: f32,
+    k: f32,
+) {
+    let (w, h) = (f64::from(pm.width()) / f64::from(ppp), f64::from(pm.height()) / f64::from(ppp));
+    let camera = rustgis_map::Camera::new(Coord::new(w / 2.0, -h / 2.0), 1.0);
+    let view = View { width: w, height: h, pixels_per_point: f64::from(ppp), camera, sky: false };
+    let ctx = crate::Ctx {
+        view: &view,
+        ppp: ppp * k,
+        wireframe: false,
+        cull: Extent::EMPTY,
+        globe: None,
+        sprites: Default::default(),
+        bursts: Default::default(),
+    };
+    let at = |(x, y): (f32, f32)| Coord::new(f64::from(x / ppp), -f64::from(y / ppp));
+    if l.geometry_type() == GeometryType::Polyline {
+        // Drawn level by level, as the map draws a feature's strokes with symbol levels on.
+        let mut ordered: Vec<(usize, rustgis_map::LineStroke)> = strokes.iter().copied().enumerate().collect();
+        if l.stroke_levels {
+            ordered.sort_by_key(|(i, st)| st.level_at(*i));
         }
+        let ordered: Vec<rustgis_map::LineStroke> = ordered.into_iter().map(|(_, st)| st).collect();
+        let part: Vec<Coord> = swatch_line(cell, ppp).into_iter().map(at).collect();
+        crate::stroke_paths::Paths::default().draw(&ctx, pm, &[part], s, &ordered);
+    } else if let Some(b) = swatch_box(cell, ppp) {
+        let ring: Vec<Coord> =
+            [(b.left(), b.top()), (b.right(), b.top()), (b.right(), b.bottom()), (b.left(), b.bottom()), (b.left(), b.top())]
+                .into_iter()
+                .map(at)
+                .collect();
+        ctx.filled(pm, &[vec![ring]], s, fills);
     }
 }
 
@@ -3045,18 +3130,31 @@ fn point_swatch(
         draw_point(pm, (cx, cy), s, strokes, ppp);
         return;
     }
+    composited(pm, (x, y, w, h), opacity, |c, (left, top)| draw_point(c, (cx - left, cy - top), s, strokes, ppp));
+}
+
+/// Draws by `draw` into a picture of the box (`x`, `y`, `w`, `h`), no larger than the page, and
+/// composites it as one at `opacity`, cut to the box. `draw` gets the picture and where its corner
+/// sits on the canvas, in pixels.
+fn composited(pm: &mut Canvas, (x, y, w, h): (f32, f32, f32, f32), opacity: f32, draw: impl FnOnce(&mut Canvas, (f32, f32))) {
     // Kept on the canvas: a picture as large as the canvas then covers all of it that shows.
     let (left, top) = (x.floor().max(0.0), y.floor().max(0.0));
     let (cw, ch) = (((x + w).ceil() - left) as u32, ((y + h).ceil() - top) as u32);
     let (cw, ch) = (cw.min(pm.width()), ch.min(pm.height()));
     if let Some(mut picture) = pm.sub(cw, ch) {
-        draw_point(&mut picture, (cx - left, cy - top), s, strokes, ppp);
-        // A recording keeps what lies past its picture's edge, so it is cut here, at the box.
-        let clip = Rect::from_xywh(x, y, w, h).map(|r| crate::vector::Clip {
-            path: PathBuilder::from_rect(r),
-            rule: FillRule::Winding,
-            transform: Transform::identity(),
-        });
+        draw(&mut picture, (left, top));
+        let Some(r) = Rect::from_xywh(x, y, w, h) else { return };
+        let clip = if picture.is_recording() {
+            // A recording keeps what lies past its picture's edge, so it is cut here, at the box.
+            Some(crate::vector::Clip { path: PathBuilder::from_rect(r), rule: FillRule::Winding, transform: Transform::identity() })
+        } else {
+            // Pixels are cut in the picture, by a mask its size rather than the page's.
+            if let Some(mut m) = Mask::new(cw, ch) {
+                m.fill_path(&PathBuilder::from_rect(r), FillRule::Winding, true, Transform::from_translate(-left, -top));
+                picture.pixels().apply_mask(&m);
+            }
+            None
+        };
         pm.place(picture, Transform::from_translate(left, top), opacity, rustgis_map::effects::Blend::Normal, clip);
     }
 }
@@ -7374,6 +7472,255 @@ Elaboração: RustGIS",
         // The layer's name, then a row each, the swatch 6 points in.
         assert_eq!(at(14, 22), Some((255, 0, 0)));
         assert_eq!(at(14, 37), Some((0, 255, 0)));
+    }
+
+    /// A one-feature line or polygon layer, edited by `edit`.
+    fn shape_legend_map(gt: GeometryType, edit: impl FnOnce(&mut rustgis_map::Layer)) -> Map {
+        use rustgis_data::{Dataset, Geometry};
+        let mut map = Map::new("m");
+        let mut d = Dataset::new("shapes", gt, vec![]);
+        let (a, b, c) = (Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0));
+        let g = match gt {
+            GeometryType::Polyline => Geometry::Line(vec![vec![a, c]]),
+            _ => Geometry::Polygon(vec![vec![vec![a, b, c, a]]]),
+        };
+        d.push(Some(g), vec![]);
+        map.add_dataset(d);
+        if let Some(l) = map.layers.last_mut() {
+            edit(l);
+        }
+        map
+    }
+
+    /// How many pixels in `xs` × `ys` are within 40 of `c` in every channel.
+    fn inked(pm: &Pixmap, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>, c: Rgba) -> usize {
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 40;
+        ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|(x, y)| pm.pixel(*x, *y).is_some_and(|p| near(p.red(), c.r()) && near(p.green(), c.g()) && near(p.blue(), c.b())))
+            .count()
+    }
+
+    /// A stacked stroke `width` points wide in `color`.
+    fn plain_stroke(color: Rgba, width: f32) -> rustgis_map::LineStroke {
+        rustgis_map::LineStroke { color: Some(color), width: Some(width), ..rustgis_map::LineStroke::default() }
+    }
+
+    /// Hatch lines `spacing` points apart, a point wide, across.
+    fn hatch(color: Rgba, spacing: f32) -> rustgis_map::fills::FillLayer {
+        rustgis_map::fills::FillLayer {
+            color: Some(color),
+            pattern: rustgis_map::fills::FillPattern::Hatch { angle: 0.0, spacing, width: 1.0, offset: 0.0 },
+        }
+    }
+
+    /// A line or polygon layer with no stacked strokes or fills keeps the swatch it always had,
+    /// pixel for pixel (#2490): a line through three points, or a box with its outline.
+    #[test]
+    fn a_plain_line_or_polygon_keeps_its_swatch() {
+        let s = rustgis_map::Symbol {
+            fill: Rgba::rgb(255, 0, 0),
+            stroke: Rgba::rgb(0, 0, 255),
+            stroke_width: 2.0,
+            ..rustgis_map::Symbol::default_for(GeometryType::Polygon, 0)
+        };
+        for gt in [GeometryType::Polyline, GeometryType::Polygon] {
+            let map = shape_legend_map(gt, |l| l.renderer = rustgis_map::Renderer::Single(s));
+            let mut want = Pixmap::new(200, 200).unwrap();
+            want.fill(tiny_skia::Color::WHITE);
+            let stroke = Stroke { width: 2.0, ..Stroke::default() };
+            crate::canvas::with_canvas(&mut want, |c| {
+                if gt == GeometryType::Polyline {
+                    let mut pb = PathBuilder::new();
+                    pb.move_to(0.0, 10.5);
+                    pb.line_to(6.4, 4.5);
+                    pb.line_to(16.0, 9.0);
+                    c.stroke_path(&pb.finish().unwrap(), &paint(s.stroke, 1.0), &stroke, Transform::identity(), None);
+                } else {
+                    let b = Rect::from_xywh(0.0, 3.0, 16.0, 9.0).unwrap();
+                    c.fill_rect(b, &paint(s.fill, 1.0), Transform::identity(), None);
+                    c.stroke_path(&PathBuilder::from_rect(b), &paint(s.stroke, 1.0), &stroke, Transform::identity(), None);
+                }
+            });
+            assert!(same_corner(&point_legend(&map), &want, 16, 15), "{gt:?}");
+        }
+    }
+
+    /// A line's stacked strokes show in its swatch as on the map: a casing under its core, and
+    /// dashes (#2490).
+    #[test]
+    fn a_legend_draws_a_lines_casing_and_dashes() {
+        let (black, red) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 0, 0));
+        let drawn =
+            |strokes: Vec<rustgis_map::LineStroke>| point_legend(&shape_legend_map(GeometryType::Polyline, |l| l.line_strokes = strokes));
+        let cased = drawn(vec![plain_stroke(black, 8.0), plain_stroke(red, 2.0)]);
+        assert!(inked(&cased, 0..16, 0..15, black) > 20, "the casing");
+        assert!(inked(&cased, 0..16, 0..15, red) > 5, "the core over it");
+        let dashed = rustgis_map::LineStroke {
+            dash: rustgis_map::symbology::Dash::new(&[2.0, 4.0]),
+            cap: rustgis_map::LineCap::Butt,
+            ..plain_stroke(red, 2.0)
+        };
+        let dashed = drawn(vec![plain_stroke(black, 8.0), dashed]);
+        assert!(inked(&dashed, 0..16, 0..15, red) * 3 < inked(&cased, 0..16, 0..15, red) * 2, "a dashed core shows less of it");
+        // One plain stroke draws in its own colour alone.
+        assert_eq!(inked(&drawn(vec![plain_stroke(red, 2.0)]), 0..16, 0..15, black), 0);
+    }
+
+    /// Markers along a line show in its swatch (#2490).
+    #[test]
+    fn a_legend_draws_markers_along_a_line() {
+        let blue = Rgba::rgb(0, 0, 255);
+        let map = shape_legend_map(GeometryType::Polyline, |l| {
+            l.line_strokes = vec![plain_stroke(Rgba::rgb(128, 128, 128), 1.0), square_mark(blue, 6.0)];
+        });
+        assert!(inked(&point_legend(&map), 0..16, 0..15, blue) > 10);
+    }
+
+    /// With symbol levels on, a line's swatch draws its strokes level by level, as the map does.
+    #[test]
+    fn a_legend_draws_a_lines_strokes_by_level() {
+        let (black, red) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 0, 0));
+        let drawn = |levels: bool| {
+            let map = shape_legend_map(GeometryType::Polyline, |l| {
+                l.line_strokes = vec![
+                    rustgis_map::LineStroke { level: Some(1), ..plain_stroke(red, 2.0) },
+                    rustgis_map::LineStroke { level: Some(0), ..plain_stroke(black, 8.0) },
+                ];
+                l.stroke_levels = levels;
+            });
+            inked(&point_legend(&map), 0..16, 0..15, red)
+        };
+        assert!(drawn(true) > 5, "the core's level is above the casing's");
+        assert_eq!(drawn(false), 0, "in their order, the casing covers the core");
+    }
+
+    /// A stroke shifted past its row is cut at the swatch's box, not drawn over the next row.
+    #[test]
+    fn a_legend_cuts_a_shifted_stroke_at_its_box() {
+        let red = Rgba::rgb(255, 0, 0);
+        for (offset, shows) in [(4.0, true), (30.0, false)] {
+            let map = shape_legend_map(GeometryType::Polyline, |l| {
+                l.line_strokes = vec![rustgis_map::LineStroke { offset, ..plain_stroke(red, 3.0) }];
+            });
+            let pm = point_legend(&map);
+            assert_eq!(inked(&pm, 0..16, 0..15, red) > 0, shows, "offset {offset}");
+            assert_eq!(inked(&pm, 0..200, 15..200, red), 0, "offset {offset}: nothing below its row");
+        }
+        // One plain stroke wider than the row is cut at it too.
+        let map = shape_legend_map(GeometryType::Polyline, |l| l.line_strokes = vec![plain_stroke(red, 30.0)]);
+        let pm = point_legend(&map);
+        assert!(inked(&pm, 0..16, 0..15, red) > 50);
+        assert_eq!(inked(&pm, 0..200, 15..200, red), 0, "a wide stroke: nothing below its row");
+    }
+
+    /// A polygon's stacked fills show in its swatch: a hatch over a fill, and a class's own fills
+    /// in its row, the other classes' plain (#2490).
+    #[test]
+    fn a_legend_draws_a_polygons_stacked_fills() {
+        let (black, red, white) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 0, 0), Rgba::rgb(255, 255, 255));
+        let solid = rustgis_map::fills::FillLayer { color: Some(Rgba::rgb(0, 200, 0)), pattern: rustgis_map::fills::FillPattern::Solid };
+        let map = shape_legend_map(GeometryType::Polygon, |l| l.fill_layers = vec![solid, hatch(black, 3.0)]);
+        let pm = point_legend(&map);
+        assert!(inked(&pm, 1..15, 4..11, black) > 5, "the hatch");
+        assert!(inked(&pm, 1..15, 4..11, Rgba::rgb(0, 200, 0)) > 5, "the fill under it");
+        // Classes: only the first has fills of its own, and the layer none.
+        let s = rustgis_map::Symbol { fill: red, stroke_width: 0.0, ..rustgis_map::Symbol::default_for(GeometryType::Polygon, 0) };
+        let map = shape_legend_map(GeometryType::Polygon, |l| {
+            l.renderer = rustgis_map::Renderer::Unique {
+                field: "g".into(),
+                classes: vec![("a".to_string(), s), ("b".to_string(), s)],
+                other: s,
+                ramp: rustgis_map::Ramp::Ember,
+                class_labels: Default::default(),
+                other_label: None,
+                class_strokes: Default::default(),
+                other_strokes: Vec::new(),
+                class_fills: [("a".to_string(), vec![hatch(black, 3.0)])].into_iter().collect(),
+                other_fills: Vec::new(),
+                expression: None,
+            };
+        });
+        let pm = point_legend(&map);
+        // The layer's name, then a row a class, the swatch 6 points in.
+        assert!(inked(&pm, 7..21, 19..26, black) > 5, "class a's hatch");
+        assert_eq!(inked(&pm, 7..21, 19..26, red), 0, "a hatch with no fill under it leaves the paper");
+        assert!(inked(&pm, 7..21, 19..26, white) > 5);
+        assert_eq!(inked(&pm, 7..21, 34..41, black), 0, "class b has none");
+        assert!(inked(&pm, 7..21, 34..41, red) > 50, "its symbol's fill");
+    }
+
+    /// A diagram's categories keep their own colour on a layer with stacked strokes or fills.
+    #[test]
+    fn a_diagrams_rows_keep_their_colour_on_lines_and_polygons() {
+        let (black, red, green) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 0, 0), Rgba::rgb(0, 255, 0));
+        let category = |field: &str, colour| rustgis_map::DiagramCategory { field: field.into(), colour };
+        for gt in [GeometryType::Polyline, GeometryType::Polygon] {
+            let map = shape_legend_map(gt, |l| {
+                l.line_strokes = vec![plain_stroke(black, 8.0)];
+                l.fill_layers = vec![hatch(black, 3.0)];
+                l.diagram = Some(rustgis_map::DiagramSettings {
+                    kind: rustgis_map::DiagramKind::Pie,
+                    categories: vec![category("a", red), category("b", green)],
+                    size: rustgis_map::DiagramSize::Fixed(12.0),
+                    start_angle: 0.0,
+                    background: None,
+                    stroke: rustgis_map::DiagramSettings::default_stroke(),
+                    stroke_width: 0.75,
+                    labels: rustgis_map::DiagramLabel::None,
+                });
+            });
+            let pm = point_legend(&map);
+            assert_eq!(inked(&pm, 6..22, 15..45, black), 0, "{gt:?}: not the layer's stack");
+            // A one-point line is mostly part-covered pixels: its hue tells it.
+            let tinted = |ys: std::ops::Range<u32>, hue: fn(tiny_skia::PremultipliedColorU8) -> bool| {
+                ys.flat_map(|y| (6..22).map(move |x| (x, y))).filter(|(x, y)| pm.pixel(*x, *y).is_some_and(hue)).count()
+            };
+            assert!(tinted(15..30, |p| p.red() > p.green().saturating_add(60)) > 5, "{gt:?}: red");
+            assert!(tinted(30..45, |p| p.green() > p.red().saturating_add(60)) > 5, "{gt:?}: green");
+        }
+    }
+
+    /// A see-through line or polygon layer's swatch is see-through too, as its points' are.
+    #[test]
+    fn a_legend_draws_a_see_through_polygon_see_through() {
+        let s = rustgis_map::Symbol {
+            fill: Rgba::rgb(255, 0, 0),
+            stroke_width: 0.0,
+            ..rustgis_map::Symbol::default_for(GeometryType::Polygon, 0)
+        };
+        let map = shape_legend_map(GeometryType::Polygon, |l| {
+            l.renderer = rustgis_map::Renderer::Single(s);
+            l.transparency = 50.0;
+        });
+        let p = point_legend(&map).pixel(8, 7).unwrap();
+        assert_eq!(p.red(), 255);
+        assert!((100..160).contains(&p.green()), "{}", p.green());
+    }
+
+    /// A line grows with its layer's reference scale in the swatch, as on the map.
+    #[test]
+    fn a_legend_scales_a_line_with_its_reference_scale() {
+        let blue = Rgba::rgb(0, 0, 255);
+        let drawn = |reference: Option<f64>| {
+            let map = shape_legend_map(GeometryType::Polyline, |l| {
+                l.line_strokes = vec![plain_stroke(blue, 2.0)];
+                l.reference_scale = reference;
+            });
+            inked(&point_legend(&map), 0..16, 0..15, blue)
+        };
+        // Drawn at 1:1e6: a reference of 1:2e6 makes it twice as wide.
+        assert!(drawn(Some(2e6)) * 2 > drawn(None) * 3, "{} against {}", drawn(Some(2e6)), drawn(None));
+    }
+
+    /// A vector export draws the stacked fills and strokes a raster one does.
+    #[test]
+    fn a_recorded_legend_draws_stacked_fills_and_strokes() {
+        let (black, red) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 0, 0));
+        let map = shape_legend_map(GeometryType::Polygon, |l| l.fill_layers = vec![hatch(black, 3.0)]);
+        assert!(inked(&recorded_legend(&map, 200), 1..15, 4..11, black) > 5);
+        let map = shape_legend_map(GeometryType::Polyline, |l| l.line_strokes = vec![plain_stroke(black, 8.0), plain_stroke(red, 2.0)]);
+        let pm = recorded_legend(&map, 200);
+        assert!(inked(&pm, 0..16, 0..15, black) > 20 && inked(&pm, 0..16, 0..15, red) > 5);
     }
 
     /// A box off the pixel grid: a recording cuts its symbol at the box, not at the whole pixels
