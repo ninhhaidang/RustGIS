@@ -93,6 +93,125 @@ fn with_label(s: &Session, id: u32, field: &str, label: &str) -> usize {
 
 const AREA: [f64; 4] = [-20.0, -40.0, 60.0, 40.0];
 
+/// A map imported from another project under an offline title is renamed, so an area of the
+/// same name here doesn't take it for its offline copy (and sync it as the area's edits).
+#[test]
+fn an_imported_offline_titled_map_is_not_taken_for_an_area_copy() {
+    let temp = Temp::new("import-offline-title");
+    let mut home = home(&temp);
+    package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
+    let maps = home.project.maps.len();
+    let mut other = crate::Project::default();
+    // Another project's offline copy, saved before maps carried their area's ID.
+    other.maps[0].name = "Crew (offline)".into();
+    home.run("map.import", &json!({"text": serde_json::to_string(&other).unwrap()})).unwrap();
+    assert!(home.project.maps.iter().any(|m| m.name == "Crew (imported)" && m.offline_area_id.is_none()));
+    assert!(home.notices.iter().any(|n| n.text.contains("renamed")), "{:?}", home.notices);
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    assert_eq!(home.map().name, "Crew (offline)");
+    assert_eq!(home.project.maps.len(), maps + 2);
+}
+
+/// A map imported with its area's ID loses it, and says so; an ordinary map imports with neither
+/// notice.
+#[test]
+fn importing_maps_says_when_an_area_association_is_dropped() {
+    let temp = Temp::new("import-detach");
+    let mut home = home(&temp);
+    package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    let path = temp.0.join("with-area.rgis");
+    home.run("project.save", &json!({"path": path})).unwrap();
+
+    let mut other = Session::new(crate::Project::default());
+    let mark = other.notice_mark();
+    other.run("map.import", &json!({"path": path})).unwrap();
+    let texts: Vec<_> = other.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(texts.iter().any(|t| t.starts_with("1 imported map(s) were detached")), "{texts:?}");
+    assert!(other.project.maps.iter().all(|m| m.offline_area_id.is_none()));
+
+    let mark = other.notice_mark();
+    other.run("map.import", &json!({"text": serde_json::to_string(&crate::Project::default()).unwrap()})).unwrap();
+    let texts: Vec<_> = other.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(!texts.iter().any(|t| t.contains("detached") || t.contains("renamed")), "{texts:?}");
+}
+
+/// Removing an area whose copy is the only map keeps the map but not its association, so the
+/// project still saves and reopens.
+#[test]
+fn removing_an_area_clears_the_association_of_the_copy_it_keeps() {
+    let temp = Temp::new("remove-only-copy");
+    let mut home = home(&temp);
+    package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    home.project.maps.retain(|m| m.offline_area_id.is_some());
+    home.project.active_map = 0;
+    home.run("offline.remove", &json!({"name": "Crew"})).unwrap();
+    assert_eq!(home.project.maps.len(), 1);
+    assert!(home.project.maps[0].offline_area_id.is_none());
+    // Nor does its title still name the area's copy.
+    assert_eq!(home.project.maps[0].name, "Crew (kept)");
+    assert!(home.notices.iter().any(|n| n.text.contains("kept as 'Crew (kept)'")), "{:?}", home.notices);
+    let path = temp.0.join("removed.rgis");
+    home.run("project.save", &json!({"path": path})).unwrap();
+    home.run("project.open", &json!({"path": path})).unwrap();
+}
+
+/// A legacy home tab gains its association on rename, so callers still find it after save and reopen.
+#[test]
+fn bring_back_refreshes_a_renamed_home_offline_map() {
+    let temp = Temp::new("rename-home-offline");
+    let mut home = home(&temp);
+    let source = home.map().name.clone();
+    let (_, out) = package(&mut home, &json!({"name": "Crew", "extent": AREA})).unwrap();
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    // A home project saved before maps carried their area ID.
+    home.map_mut().offline_area_id = None;
+    home.run("map.rename", &json!({"name": "Renamed at home"})).unwrap();
+    let path = temp.0.join("home.rgis");
+    home.run("project.save", &json!({"path": path})).unwrap();
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(saved["requires"].as_array().unwrap().contains(&json!("offline-map-area-id")));
+    home.run("project.open", &json!({"path": path})).unwrap();
+    assert_eq!(home.map().name, "Renamed at home");
+
+    let mut field = phone(&temp, &out, "phone");
+    let cities = layer(&field, "Cities");
+    let name = text_field(&field, cities);
+    let count = |s: &Session, label| with_label(s, layer(s, "Cities"), &name, label);
+    add_point(&mut field, cities, &name, "Captured after rename", [10.0, 5.0]);
+    let (done, _) = bring_back(&temp, &mut field, &mut home, "phone");
+    assert_eq!(done["area"], "Crew");
+    assert_eq!(done["added"], 1);
+    assert_eq!(count(&home, "Captured after rename"), 1);
+
+    home.run("map.activate", &json!({"name": source})).unwrap();
+    assert_eq!(count(&home, "Captured after rename"), 1);
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    assert_eq!(home.map().name, "Renamed at home");
+    assert_eq!(home.project.maps.len(), 2);
+
+    // Reusing the old title for another map must not redirect Sync, Package or Remove.
+    home.run("map.new", &json!({"name": "Crew (offline)"})).unwrap();
+    home.run("offline.open", &json!({"name": "Crew"})).unwrap();
+    assert_eq!(home.map().name, "Renamed at home");
+    add_point(&mut home, cities, &name, "Edited at home", [11.0, 5.0]);
+    let (area, bytes) = package(&mut home, &Value::Null).unwrap();
+    assert_eq!(area, "Crew");
+    assert_eq!(home.project.offline_areas.len(), 1);
+    let repacked = phone(&temp, &bytes, "repacked");
+    assert_eq!(repacked.map().name, "Crew (offline)");
+    assert_eq!(count(&repacked, "Edited at home"), 1);
+    assert_eq!(repacked.project.field_origin.as_ref().unwrap().area, home.project.offline_areas[0].id);
+
+    home.run("offline.sync", &json!({"name": "Crew"})).unwrap();
+    home.run("map.activate", &json!({"name": source})).unwrap();
+    assert_eq!(count(&home, "Edited at home"), 1);
+    home.run("offline.remove", &json!({"name": "Crew"})).unwrap();
+    assert!(home.project.maps.iter().all(|map| map.name != "Renamed at home"));
+    assert!(home.project.maps.iter().any(|map| map.name == "Crew (offline)"));
+}
+
 /// One package, copied to two phones (emailed to a crew, AirDropped to a second device). Each fixes
 /// a city and captures a point. A is brought back first. B's copy is of a state the area has left:
 /// bringing it back would undo A's fix and delete A's point (B's copy lacks it), so it is refused

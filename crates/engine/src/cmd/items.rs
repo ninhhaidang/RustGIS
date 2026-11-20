@@ -535,7 +535,21 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     };
     let mut names = Vec::new();
     let first_map = s.project.maps.len();
+    let mut detached_offline = 0;
+    let mut renamed_offline = 0;
     for mut m in maps.into_iter().take(MAX_IMPORTED_MAPS) {
+        // A map imported without its home area becomes an independent copy.
+        detached_offline += usize::from(m.offline_area_id.take().is_some());
+        // Nor may its title make it one: an older project matches its offline copy by the name
+        // "<area> (offline)", and syncing an unrelated map would delete what it lacks.
+        let suffix = super::field::OFFLINE;
+        if m.name.len() > suffix.len()
+            && m.name.is_char_boundary(m.name.len() - suffix.len())
+            && m.name[m.name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        {
+            m.name = format!("{} (imported)", &m.name[..m.name.len() - suffix.len()]);
+            renamed_offline += 1;
+        }
         // A binding in a file is no authority to use a login here.
         crate::s3_connections::clear_bindings(m.addresses_mut());
         crate::project::clear_login_bindings(m.addresses_mut());
@@ -548,6 +562,18 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
         names.push(m.name.clone());
         m.renew_instance_id();
         s.project.maps.push(m);
+    }
+    if detached_offline > 0 {
+        s.notify(
+            format!("{detached_offline} imported map(s) were detached from their offline areas, which aren't imported with maps"),
+            false,
+        );
+    }
+    if renamed_offline > 0 {
+        s.notify(
+            format!("{renamed_offline} imported map(s) titled as offline copies were renamed \"… (imported)\", so they aren't taken for this project's offline maps"),
+            false,
+        );
     }
     if let Some(message) = super::design::display_area_messages(s.project.maps.iter().skip(first_map).flat_map(|map| map.layers.iter())) {
         s.notify(message, false);
@@ -747,6 +773,7 @@ fn template(p: &Project) -> (Project, TemplateLosses) {
         })
         .saturating_add(t.tables.iter().filter(|table| table.source.is_some()).count());
     for m in &mut t.maps {
+        m.offline_area_id = None;
         for l in &mut m.layers {
             l.dataset.features.clear();
             l.selection.clear();

@@ -1,0 +1,36 @@
+{
+  "format": 2,
+  "name": "Renamed offline map",
+  "requires": ["offline-map-area-id", "field-origin"],
+  "active_map": 1,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    },
+    {
+      "name": "Renamed at home",
+      "offline_area_id": "00112233445566778899aabbccddeeff",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ],
+  "offline_areas": [
+    {
+      "id": "00112233445566778899aabbccddeeff",
+      "name": "Crew",
+      "map": "Map",
+      "extent": {"min_x": -20, "min_y": -40, "max_x": 60, "max_y": 40},
+      "created": 0,
+      "data": {
+        "name": "Map",
+        "layers": [],
+        "basemap": "Paper",
+        "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+      }
+    }
+  ]
+}

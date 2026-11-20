@@ -1086,6 +1086,7 @@
           "layout-element-wrap",
           "layout-chart-data",
           "field-generation",
+          "offline-map-area-id",
           "crs-wkt",
           "zarr-window"
         ],
@@ -1171,6 +1172,7 @@
     "layout-element-wrap",
     "layout-chart-data",
     "field-generation",
+    "offline-map-area-id",
     "crs-wkt",
     "zarr-window"
   ],

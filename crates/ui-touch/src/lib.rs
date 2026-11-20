@@ -157,7 +157,7 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
                     } else {
                         0
                     }
-                    + usize::from(app.session.map().name.ends_with(" (offline)"))
+                    + usize::from(can_send_field_package(app))
                     + copies_rows(&ctx)
             }
             Sheet::Capture => capture_rows(app, &ctx),
@@ -265,6 +265,20 @@ fn stop_track(app: &mut RustGisApp, ctx: &egui::Context) -> bool {
     track::set_field(ctx, state);
     app.session.notify(tl!("The track is kept and still recorded: Stop tries to add it again."), true);
     false
+}
+
+/// Field provenance survives a tab rename. Old field packages can still have just the title. A
+/// field package goes back with its one map only, so a field project with a map added doesn't
+/// offer it (sending would refuse it).
+fn can_send_field_package(app: &RustGisApp) -> bool {
+    let map = app.session.map();
+    let project = &app.session.project;
+    if project.field_origin.is_some() {
+        return project.maps.len() == 1;
+    }
+    // An area ID with no area (a damaged file) is no copy to send.
+    let area = map.offline_area_id.as_deref().map(|id| project.offline_areas.iter().any(|a| a.id == id));
+    area.unwrap_or_else(|| map.name.ends_with(" (offline)"))
 }
 
 /// Draws where the device is: a dot, in a ring as wide as the position is good to.
@@ -1459,7 +1473,7 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         }
         // A map opened from a field package goes back as one: its edits and photos, for Bring Back
         // on the computer it came from.
-        if app.session.map().name.ends_with(" (offline)") && row(ui, t, "package", tl!("Send Field Package")) {
+        if can_send_field_package(app) && row(ui, t, "package", tl!("Send Field Package")) {
             set_sheet(&ctx, Sheet::None);
             run(app, "ui.saveItem", json!({"kind": "fieldPackage"}));
         }
@@ -1875,6 +1889,13 @@ mod tests {
                 frame(&mut app, &ctx, shown);
             }
         }
+    }
+
+    #[test]
+    fn a_map_naming_a_missing_area_is_not_offered_for_sending() {
+        let mut app = RustGisApp::with_sample();
+        app.session.map_mut().offline_area_id = Some("gone".into());
+        assert!(!can_send_field_package(&app));
     }
 
     #[test]

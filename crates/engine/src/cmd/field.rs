@@ -40,8 +40,8 @@ pub fn is_field_package(name: &str) -> bool {
 
 /// A field package of the active map, as (name, bytes).
 ///
-/// An offline area's map (`<area> (offline)` of one of this project's areas, or the map of a
-/// project opened from a field package) is packaged as it is, to bring its edits back. Any other map is first made an offline area of this project (`extent`
+/// The map of a home offline area or of an opened field package goes as it is, so its edits
+/// can come back. Any other map is first made an offline area of this project (`extent`
 /// and `name` as for `offline.download`, the view by default), whose map is packaged.
 ///
 /// Never silent: the raster layers an offline area leaves behind, the tile layers that stay
@@ -109,15 +109,12 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
     if opened_field && s.project.maps.len() != 1 {
         return Err("a returning field project must hold only its original field map: remove added maps before sending it back".into());
     }
-    // An offline area's map: named for one of this project's areas, or opened from a field
-    // package (the phone's project holds no areas). A map only named so is packaged as any other.
-    let returning = s
-        .map()
-        .name
-        .strip_suffix(OFFLINE)
-        .map(str::to_string)
-        .filter(|area| opened_field || s.project.offline_areas.iter().any(|a| a.name.eq_ignore_ascii_case(area)))
-        .or_else(|| opened_field.then(|| s.map().name.clone()));
+    let home_area = if opened_field { None } else { super::workspace::map_area_index(&s.project, s.project.active_map) };
+    let returning = if opened_field {
+        Some(s.map().name.strip_suffix(OFFLINE).unwrap_or(&s.map().name).to_string())
+    } else {
+        home_area.and_then(|i| s.project.offline_areas.get(i)).map(|area| area.name.clone())
+    };
     // Only a map coming back from the field carries its photos. Its persisted provenance
     // survives an ordinary Save As; going out, the photos named are at home.
     let coming_back = returning.is_some() && opened_field;
@@ -168,9 +165,7 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
                     false,
                 );
             }
-            let mut m = data;
-            m.name = format!("{name}{OFFLINE}");
-            (name, m)
+            (name, data)
         }
     };
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
@@ -272,7 +267,9 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
         }
         s.project.field_origin.clone()
     } else {
-        let ai = s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(&area)).ok_or("the offline area was not found")?;
+        let ai = home_area
+            .or_else(|| s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(&area)))
+            .ok_or("the offline area was not found")?;
         let new_home = s.project.origin_id.is_empty().then(crate::project::field_id).transpose()?;
         let new_area = s.project.offline_areas.get(ai).is_some_and(|a| a.id.is_empty()).then(crate::project::field_id).transpose()?;
         // The first package of an area gives it the state a return is checked against; later ones
@@ -317,7 +314,12 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
     }
     let mut project = crate::project::Project::new(area.clone());
     project.field_origin = origin;
-    // Rasters were taken out above, so the map goes as it is.
+    // The package has no home offline areas and carries its association in field_origin.
+    map.offline_area_id = None;
+    if !coming_back {
+        // Older phones also look at the outgoing title to show Send Field Package.
+        map.name = format!("{area}{OFFLINE}");
+    }
     project.maps = vec![map];
     let home = &s.project;
     let stayed: Vec<String> = [

@@ -8,7 +8,7 @@ use rustgis_map::view::Keyframe;
 use serde_json::{Value, json};
 
 use super::{b, f, ps};
-use crate::project::{Job, OfflineArea};
+use crate::project::{Job, OfflineArea, Project};
 use crate::{CmdResult, CommandSpec as C, Session};
 
 /// Removes every Shapefile index not in use and says what it freed, what stayed and why, and which
@@ -268,14 +268,18 @@ pub fn commands() -> Vec<C> {
         C::new("offline.sync", "Sync", "Data › Offline", offline_sync).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": offline area}"#),
         C::new("offline.remove", "Remove", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
-            let before = s.project.offline_areas.len();
-            s.project.offline_areas.retain(|a| !a.name.eq_ignore_ascii_case(n));
-            if s.project.offline_areas.len() == before {
-                return Err(format!("no offline area '{n}'"));
+            let ai = s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no offline area '{n}'"))?;
+            let area = s.project.offline_areas.remove(ai);
+            let kept = offline_map_index(&s.project, &area);
+            // A copy kept as the only map is no longer the area's: neither its saved association
+            // nor its title may still claim the area that is gone.
+            for m in &mut s.project.maps {
+                if !area.id.is_empty() && m.offline_area_id.as_deref() == Some(area.id.as_str()) {
+                    m.offline_area_id = None;
+                }
             }
-            let map_name = format!("{n} (offline)");
-            if s.project.maps.len() > 1
-                && let Some(i) = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(&map_name))
+            if let Some(i) = kept
+                && s.project.maps.len() > 1
             {
                 s.project.maps.remove(i);
                 // The active map stays the same map; if it was the removed one, a neighbour.
@@ -284,24 +288,41 @@ pub fn commands() -> Vec<C> {
                 if a == i {
                     s.active_layer = s.map().layers.first().map(|l| l.id);
                 }
+            } else if let Some(m) = kept.and_then(|i| s.project.maps.get_mut(i))
+                && m.name.eq_ignore_ascii_case(&offline_map_name(&area.name))
+            {
+                let old = std::mem::replace(&mut m.name, format!("{} (kept)", area.name));
+                let kept = m.name.clone();
+                // Layouts, presentations and other areas made from it follow, as on a rename.
+                super::navigate::follow_renamed_map(s, &old, &kept);
+                s.notify(format!("The offline area's map was the only one, so it was kept as '{kept}'"), false);
             }
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": offline area}"#),
         C::new("offline.open", "Open Offline Map", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
-            let a =
-                s.project.offline_areas.iter().find(|a| a.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no offline area '{n}'"))?;
+            let ai = s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no offline area '{n}'"))?;
+            let a = s.project.offline_areas.get_mut(ai).ok_or("no such area")?;
             crate::project::ensure_map_imports_complete(&a.data)?;
-            let map_name = format!("{} (offline)", a.name);
-            if let Some(i) = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(&map_name)) {
-                // An offline map saved before offline copies were unlinked from their tables.
-                let unbound = s.project.maps.get_mut(i).map_or(0, unbind_map_table_edits);
-                note_unbound(s, unbound, &format!("the offline map '{map_name}'"));
+            let id = ensure_area_id(a)?;
+            let a = s.project.offline_areas.get(ai).ok_or("no such area")?;
+            let extent = a.extent;
+            if let Some(i) = offline_map_index(&s.project, a) {
+                if let Some(m) = s.project.maps.get_mut(i) {
+                    // Upgrade a legacy name match while the association is still known.
+                    m.offline_area_id = Some(id);
+                    let unbound = unbind_map_table_edits(m);
+                    let copy = format!("the offline map '{}'", m.name);
+                    note_unbound(s, unbound, &copy);
+                }
                 s.project.active_map = i;
             } else {
                 let mut m = a.data.clone();
-                m.name = map_name;
+                let map_name = offline_map_name(&a.name);
+                let taken = |n: &str| s.project.maps.iter().any(|m| m.name.eq_ignore_ascii_case(n));
+                m.name = if taken(&map_name) { super::numbered(&map_name, taken) } else { map_name };
+                m.offline_area_id = Some(id);
                 m.renew_instance_id();
                 // An area saved before offline copies were unlinked from their tables.
                 let unbound = unbind_map_table_edits(&mut m);
@@ -320,8 +341,7 @@ pub fn commands() -> Vec<C> {
                 s.project.active_map = s.project.maps.len() - 1;
             }
             s.active_layer = s.map().layers.first().map(|l| l.id);
-            let e = s.project.offline_areas.iter().find(|a| a.name.eq_ignore_ascii_case(n)).map(|a| a.extent).unwrap_or(Extent::EMPTY);
-            s.zoom_to(&e);
+            s.zoom_to(&extent);
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": offline area}"#),
@@ -636,6 +656,7 @@ fn snapshot(m: &mut rustgis_map::Map, e: &Extent) -> rustgis_map::Map {
     // feature layer is copied without its features, and only the features in the extent added.
     let layers = std::mem::take(&mut m.layers);
     let mut out = m.clone();
+    out.offline_area_id = None;
     m.layers = layers;
     for l in m.layers.iter_mut().filter(|l| !l.is_raster()) {
         let features = std::mem::take(&mut l.dataset.features);
@@ -673,11 +694,57 @@ pub(crate) fn unbind_map_table_edits(m: &mut rustgis_map::Map) -> usize {
     m.layers.iter_mut().map(unbind_table_edits).filter(|had| *had).count()
 }
 
-/// [`unbind_map_table_edits`] for each of `project`'s offline areas' maps (`<area> (offline)`),
-/// as the number of layers that had a link. The project's other maps keep theirs.
-pub(crate) fn unbind_offline_maps(project: &mut crate::project::Project) -> usize {
-    let names: Vec<String> = project.offline_areas.iter().map(|a| format!("{}{}", a.name, super::field::OFFLINE)).collect();
-    project.maps.iter_mut().filter(|m| names.iter().any(|n| m.name.eq_ignore_ascii_case(n))).map(unbind_map_table_edits).sum()
+fn offline_map_name(area: &str) -> String {
+    format!("{area}{}", super::field::OFFLINE)
+}
+
+/// Legacy areas were saved without IDs. Give one an ID before binding a map to it.
+fn ensure_area_id(area: &mut OfflineArea) -> Result<String, String> {
+    if area.id.is_empty() {
+        area.id = crate::project::field_id()?;
+    }
+    Ok(area.id.clone())
+}
+
+/// Finds the open copy by identity before trying the original title of an unmarked map.
+fn offline_map_index(project: &Project, area: &OfflineArea) -> Option<usize> {
+    let maps = &project.maps;
+    let by_id = maps.iter().position(|m| m.offline_area_id.as_deref().is_some_and(|id| id == area.id));
+    by_id.or_else(|| {
+        let name = offline_map_name(&area.name);
+        maps.iter()
+            .position(|m| m.offline_area_id.is_none() && m.name.eq_ignore_ascii_case(&name) && !m.name.eq_ignore_ascii_case(&area.map))
+    })
+}
+
+/// Resolves the reverse association using the same precedence as opening the area.
+pub(crate) fn map_area_index(project: &Project, map: usize) -> Option<usize> {
+    project.offline_areas.iter().position(|area| offline_map_index(project, area) == Some(map))
+}
+
+/// Before a rename takes away a legacy copy's only link to its area, record the area ID.
+pub(crate) fn bind_offline_map_before_rename(project: &mut Project, map: usize) -> Result<(), String> {
+    if project.maps.get(map).is_some_and(|m| m.offline_area_id.is_none())
+        && let Some(area) = map_area_index(project, map).and_then(|i| project.offline_areas.get_mut(i))
+    {
+        let id = ensure_area_id(area)?;
+        if let Some(m) = project.maps.get_mut(map) {
+            m.offline_area_id = Some(id);
+        }
+    }
+    Ok(())
+}
+
+/// Unlinks table edits on marked offline copies and on legacy copies matched to an area.
+pub(crate) fn unbind_offline_maps(project: &mut Project) -> usize {
+    let offline: Vec<usize> = project.offline_areas.iter().filter_map(|a| offline_map_index(project, a)).collect();
+    project
+        .maps
+        .iter_mut()
+        .enumerate()
+        .filter(|(i, m)| m.offline_area_id.is_some() || offline.contains(i))
+        .map(|(_, m)| unbind_map_table_edits(m))
+        .sum()
 }
 
 /// Says that `n` layers of an offline copy no longer save to their tables, when `n` isn't 0.
@@ -724,7 +791,7 @@ pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     // Unique among areas, and its offline map's name ("<area> (offline)") unused by other maps.
     let taken = |s: &Session, n: &str| {
         s.project.offline_areas.iter().any(|a| a.name.eq_ignore_ascii_case(n))
-            || s.project.maps.iter().any(|m| m.name.eq_ignore_ascii_case(&format!("{n} (offline)")))
+            || s.project.maps.iter().any(|m| m.name.eq_ignore_ascii_case(&offline_map_name(n)))
     };
     while taken(s, &name) {
         i += 1;
@@ -769,8 +836,7 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
     let n = ps(p, "name").ok_or("name is required")?;
     let ai = s.project.offline_areas.iter().position(|a| a.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no offline area '{n}'"))?;
     let area = s.project.offline_areas.get(ai).cloned().ok_or("no such area")?;
-    let offline_map = format!("{} (offline)", area.name);
-    let edited = s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(&offline_map)).cloned().unwrap_or_else(|| area.data.clone());
+    let edited = offline_map_index(&s.project, &area).and_then(|i| s.project.maps.get(i)).cloned().unwrap_or_else(|| area.data.clone());
     sync_area(s, ai, &edited)
 }
 
@@ -786,7 +852,7 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
 /// said as a conflict).
 pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -> CmdResult {
     let area = s.project.offline_areas.get(ai).cloned().ok_or("no such area")?;
-    let offline_map = format!("{} (offline)", area.name);
+    let offline_map = offline_map_index(&s.project, &area);
     let si = s
         .project
         .maps
@@ -876,10 +942,11 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
         }
     }
     let fresh = s.project.maps.get_mut(si).map(|m| snapshot(m, &area.extent)).ok_or("the source map is gone")?;
-    if let Some(m) = s.project.maps.iter_mut().find(|m| m.name.eq_ignore_ascii_case(&offline_map)) {
+    if let Some(m) = offline_map.and_then(|i| s.project.maps.get_mut(i)) {
         let name = m.name.clone();
         *m = fresh.clone();
         m.name = name;
+        m.offline_area_id = (!area.id.is_empty()).then(|| area.id.clone());
         // A copy of the source map: a map, and layers, of its own.
         m.renew_instance_id();
         for l in &mut m.layers {

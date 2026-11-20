@@ -566,7 +566,7 @@ fn legacy_field_package(project: &Project) -> bool {
 /// Unlinks the maps of the project just opened that hold only some of a table's rows from the
 /// GeoPackage or PostGIS tables they were loaded from, as offline copies made now are, and says so:
 /// every map of a field project (`field`, opened from a field package, or one with a field
-/// origin), else a home project's offline maps (`<area> (offline)`). Saved before offline copies
+/// origin), else a home project's offline maps. Saved before offline copies
 /// were unlinked, they would delete from the table every row they lack.
 fn unlink_partial_copies(s: &mut Session, field: bool) {
     if field || s.project.field_origin.is_some() {

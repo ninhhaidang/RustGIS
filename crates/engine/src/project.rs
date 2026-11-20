@@ -90,6 +90,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-element-wrap",
     "layout-chart-data",
     "field-generation",
+    "offline-map-area-id",
     "crs-wkt",
     "zarr-window",
 ];
@@ -1703,6 +1704,7 @@ impl Project {
             }
         })?;
         let mut area_ids = std::collections::HashSet::new();
+        let mut offline_map_ids = std::collections::HashSet::new();
         if (!p.origin_id.is_empty() && !valid_field_id(&p.origin_id))
             || p.field_origin.as_ref().is_some_and(|origin| {
                 !valid_field_id(&origin.project)
@@ -1713,6 +1715,7 @@ impl Project {
                 (!area.id.is_empty() && (!valid_field_id(&area.id) || !area_ids.insert(area.id.as_str())))
                     || (!area.generation.is_empty() && !valid_field_id(&area.generation))
             })
+            || p.maps.iter().any(|map| map.offline_area_id.as_deref().is_some_and(|id| !valid_field_id(id) || !offline_map_ids.insert(id)))
         {
             return Err("not a RustGIS project: an offline field identity is invalid or duplicated".into());
         }

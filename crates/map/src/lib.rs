@@ -1597,6 +1597,9 @@ pub enum Drawn {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Map {
     pub name: String,
+    /// The home project's offline area this map edits, independent of the tab title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_area_id: Option<String>,
     pub layers: Vec<Layer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_groups: Vec<ServiceGroup>,
@@ -1749,6 +1752,7 @@ impl Map {
     pub fn new(name: impl Into<String>) -> Self {
         Map {
             name: name.into(),
+            offline_area_id: None,
             layers: Vec::new(),
             service_groups: Vec::new(),
             groups: Vec::new(),
@@ -3146,6 +3150,7 @@ impl Map {
     pub fn slots(&self) -> Vec<Slot<'_>> {
         let Map {
             name: _,
+            offline_area_id: _,
             layers,
             service_groups,
             groups: _,

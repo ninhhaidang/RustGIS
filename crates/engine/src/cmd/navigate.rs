@@ -197,6 +197,7 @@ pub fn commands() -> Vec<C> {
         C::new("map.rename", "Rename Map", "Layers", |s, p| {
             let (i, name) = rename_choice(&super::InputSource::input_context(&*s), p)?;
             let old = s.project.maps.get(i).map(|m| m.name.clone()).ok_or("no map")?;
+            super::workspace::bind_offline_map_before_rename(&mut s.project, i)?;
             if let Some(m) = s.project.maps.get_mut(i) {
                 m.name = name.clone();
             }
@@ -263,6 +264,7 @@ fn duplicate_map(s: &mut Session, p: &Value) -> CmdResult {
     let i = map_at(s, p)?;
     let mut m = s.project.maps.get(i).ok_or("no map")?.clone();
     m.name = super::copy_name(ps(p, "name"), &m.name, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+    m.offline_area_id = None;
     m.label_lock = None;
     m.label_lock_line_anchors.clear();
     m.renew_instance_id();
@@ -284,7 +286,7 @@ fn duplicate_map(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Points layout map frames, presentation map pages and offline areas at a renamed map (#287),
 /// so they keep finding it.
-fn follow_renamed_map(s: &mut Session, old: &str, new: &str) {
+pub(crate) fn follow_renamed_map(s: &mut Session, old: &str, new: &str) {
     let renamed = |m: &mut String| {
         if m.eq_ignore_ascii_case(old) {
             *m = new.to_string();

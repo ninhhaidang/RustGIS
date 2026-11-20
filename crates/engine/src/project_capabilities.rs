@@ -326,7 +326,9 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
     let (mut block, mut shape, mut water, mut shore, mut relief, mut light, mut legends, mut sized, mut pictures, mut zarr) =
         (false, false, false, false, false, false, false, false, false, false);
+    let mut offline_area_id = false;
     for map in maps {
+        offline_area_id |= map.offline_area_id.is_some();
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
             // A round block (#2318), which an older reader would draw and save as a box.
@@ -355,6 +357,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (sized, super::SIZE_BY_CAPABILITY),
         (pictures, "picture-markers"),
         (zarr, "zarr-window"),
+        (offline_area_id, "offline-map-area-id"),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))
