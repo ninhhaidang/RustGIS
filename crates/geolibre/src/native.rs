@@ -29,6 +29,7 @@ impl Scratch {
         for _ in 0..16 {
             let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let dir = parent.join(format!("rustgis-gp-{}-{nanos:x}-{n}", std::process::id()));
+            #[cfg_attr(not(unix), expect(unused_mut, reason = "only Unix sets a mode on the builder"))]
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
