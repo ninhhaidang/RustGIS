@@ -1067,6 +1067,10 @@ fn plugins_can_have_a_tab_of_their_own() {
     m["commands"][0]["label"] = json!("Tab Hello");
     m["tools"][0]["name"] = json!("Tab Points");
     m["tools"][1]["name"] = json!("Tab Select");
+    // Commands whose data needs a sign-in (#2378): a key on the button and on the menu row.
+    for c in m["commands"].as_array_mut().unwrap() {
+        c["login"] = json!("earthdata");
+    }
     m["tab"] = json!({"label": "Hello Tab", "groups": [
         {"label": "Things", "items": ["h", "tool:m", {"menu": "More", "items": ["e", "tool:x"]}]}
     ]});
@@ -1117,8 +1121,8 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
     use rustgis_ui_egui::rustgis_engine::plugins as rp;
     let mut m: serde_json::Value = serde_json::from_str(&rp::testing::manifest("ui-small", &[])).unwrap();
     m["commands"] = json!([
-        {"id": "e", "label": "Compact Error"},
-        {"id": "h", "label": "Width Probe"},
+        {"id": "e", "label": "Compact Error", "login": "copernicus"},
+        {"id": "h", "label": "Width Probe", "login": "arcgis"},
         {"id": "h-large", "label": "Default Large"}
     ]);
     m["tools"][0]["name"] = json!("Compact Points");

@@ -282,18 +282,23 @@ fn tooltip_for(app: &RustGisApp, resp: Response, title: &str, desc: &str, id: &s
 }
 
 fn bg(ui: &Ui, r: Rect, resp: &Response, checked: bool, t: &Tokens) {
-    let fill = if resp.is_pointer_button_down_on() {
-        t.pressed
-    } else if checked {
-        t.checked
-    } else if resp.hovered() {
-        t.hover
-    } else {
-        return;
-    };
+    let Some(fill) = bg_fill(resp, checked, t) else { return };
     ui.painter().rect_filled(r, CornerRadius::same(6), fill);
     if checked {
         ui.painter().rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, t.accent.gamma_multiply(0.55)), egui::StrokeKind::Inside);
+    }
+}
+
+/// The fill a ribbon button paints behind its icon in `resp`'s state, if any (none at rest).
+pub fn bg_fill(resp: &Response, checked: bool, t: &Tokens) -> Option<egui::Color32> {
+    if resp.is_pointer_button_down_on() {
+        Some(t.pressed)
+    } else if checked {
+        Some(t.checked)
+    } else if resp.hovered() {
+        Some(t.hover)
+    } else {
+        None
     }
 }
 
@@ -334,9 +339,8 @@ pub fn big(
 /// The shared icon and label layout of large ribbon controls. A split button gives this only
 /// its primary region, keeping even a long translated label clear of the adjacent arrow.
 fn paint_big(ui: &Ui, r: Rect, icon: &str, label: &str, on: bool, menu: bool, t: &Tokens) {
-    let ic = Rect::from_center_size(pos2(r.center().x, r.min.y + 21.0), vec2(32.0, 32.0));
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
-    icons::paint(ui.painter(), ic, icon, c, a);
+    icons::paint(ui.painter(), big_icon_rect(r), icon, c, a);
     let mut lines = label.split('\n').peekable();
     let mut y = r.min.y + 42.0;
     while let Some(l) = lines.next() {
@@ -507,7 +511,7 @@ fn small_button(
     let (r, resp) = ui.allocate_exact_size(vec2(SMALL_ICON_BUTTON_WIDTH + tw, 22.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, on, if label.is_empty() { desc } else { label }));
     bg(ui, r, &resp, checked, &t);
-    let ic = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(18.0, 18.0));
+    let ic = small_icon_rect(r);
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
     icons::paint(ui.painter(), ic, icon, c, a);
     if !label.is_empty() {
@@ -595,12 +599,23 @@ fn small_menu_with(
 pub fn row_button(ui: &mut Ui, on: bool, button: egui::Button<'_>, expand: f32) -> Response {
     let under = ui.painter().add(egui::Shape::Noop);
     let resp = ui.add_enabled(on, button);
-    if on && (resp.hovered() || resp.is_pointer_button_down_on()) {
-        let t = Tokens::get(ui.ctx());
-        let fill = if resp.is_pointer_button_down_on() { t.pressed } else { t.hover };
+    if let Some(fill) = row_fill(on, &resp, &Tokens::get(ui.ctx())) {
         ui.painter().set(under, egui::Shape::rect_filled(resp.rect.expand2(vec2(expand, 0.0)), CornerRadius::same(5), fill));
     }
     resp
+}
+
+/// The highlight a menu row paints under itself in `resp`'s state, if any (none at rest or disabled).
+pub fn row_fill(on: bool, resp: &Response, t: &Tokens) -> Option<egui::Color32> {
+    if !on {
+        None
+    } else if resp.is_pointer_button_down_on() {
+        Some(t.pressed)
+    } else if resp.hovered() {
+        Some(t.hover)
+    } else {
+        None
+    }
 }
 
 /// Room for a menu row's icon before its label.
@@ -608,12 +623,34 @@ const MENU_ICON_W: f32 = 22.0;
 
 /// A menu row that runs a command (disabled when the command is).
 pub fn menu_item(ui: &mut Ui, app: &mut RustGisApp, icon: &str, label: &str, id: &str, params: Value) {
+    menu_item_response(ui, app, icon, label, id, params);
+}
+
+/// [`menu_item`], returning the row's response.
+pub fn menu_item_response(ui: &mut Ui, app: &mut RustGisApp, icon: &str, label: &str, id: &str, params: Value) -> Response {
     let on = enabled(app, id);
     let shortcut = crate::keymap::shortcut_text(ui.ctx(), app, id, &params);
-    if menu_row(ui, icon, tl!(label), &shortcut, on).clicked() {
+    let resp = menu_row(ui, icon, tl!(label), &shortcut, on);
+    if resp.clicked() {
         let _ = app.run_by_user(id, params);
         ui.close();
     }
+    resp
+}
+
+/// Where a menu row draws its icon.
+pub fn menu_icon_rect(ui: &Ui, resp: &Response) -> Rect {
+    Rect::from_center_size(resp.rect.left_center() + vec2(ui.spacing().button_padding.x + MENU_ICON_W / 2.0 - 2.0, 0.0), vec2(16.0, 16.0))
+}
+
+/// Where a large button draws its icon.
+pub fn big_icon_rect(r: Rect) -> Rect {
+    Rect::from_center_size(pos2(r.center().x, r.min.y + 21.0), vec2(32.0, 32.0))
+}
+
+/// Where a small button draws its icon.
+pub fn small_icon_rect(r: Rect) -> Rect {
+    Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(18.0, 18.0))
 }
 
 /// A menu row with an icon (empty for none) before an already translated label, and a shortcut
@@ -677,16 +714,7 @@ fn menu_icon(ui: &Ui, resp: &Response, icon: &str) {
         return;
     }
     let t = Tokens::get(ui.ctx());
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(
-            resp.rect.left_center() + vec2(ui.spacing().button_padding.x + MENU_ICON_W / 2.0 - 2.0, 0.0),
-            vec2(16.0, 16.0),
-        ),
-        icon,
-        t.icon,
-        t.accent,
-    );
+    icons::paint(ui.painter(), menu_icon_rect(ui, resp), icon, t.icon, t.accent);
 }
 
 /// A ribbon group: controls laid out left to right over a centred label, with a separator.

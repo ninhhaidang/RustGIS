@@ -227,6 +227,14 @@ cargo build --release --target wasm32-unknown-unknown
   thread, which can't draw or cancel until a command answers, so there a command still stops
   after 120 seconds and its error says so. Long work such as downloading a dataset belongs in a
   tool, which the desktop app runs in the background with progress and Cancel.
+- `commands[].login`: the sign-in the command's data needs, one RustGIS keeps for the user:
+  `earthdata` (an Earthdata Login token), `copernicus` (a Copernicus Data Space sign-in) or
+  `arcgis` (an ArcGIS session). On the plugin's tab, the command's button and menu row show a key
+  over their icon: green while that sign-in is kept (an Earthdata token or an ArcGIS session that
+  hasn't expired or renews itself, a sign-in remembered on this computer included), red and
+  struck through while it is missing; the tooltip says which sign-in and where to give it. The
+  command still runs either way, so it should still say what's missing. Any other value refuses
+  the plugin; RustGIS versions before it ignore the field.
 - Tool parameter `kind`s: `layer`, `vectorLayer`, `polygonLayer`, `pointLayer`, `field`,
   `numericField`, `number`, `text`, `choice` (with 1 to 64 `choices`), `bool` and `file` (see
   [File parameters](#file-parameters)). Each has `name`, `label`, optional `help`, `required`

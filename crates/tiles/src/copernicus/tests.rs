@@ -496,3 +496,15 @@ fn a_remembered_sign_in_that_couldnt_be_deleted_is_never_signed_in_with() {
     assert_eq!(authorization_fresh(DATA), None);
     assert!(asked.recv_timeout(Duration::from_millis(200)).is_err(), "the earlier password is never sent");
 }
+
+/// A remembered sign-in the store couldn't delete after it was refused, found damaged or signed
+/// out of is never tried again, so it doesn't count as one a request can use (#2378).
+#[test]
+fn a_remembered_sign_in_that_is_never_tried_again_is_not_usable() {
+    assert!(usable_remembered(Known::Kept { retry_at: 0 }));
+    assert!(usable_remembered(Known::Kept { retry_at: 4_000_000_000 }));
+    assert!(!usable_remembered(Known::Kept { retry_at: i64::MAX }));
+    for k in [Known::Unread, Known::Nothing, Known::Unreadable] {
+        assert!(!usable_remembered(k));
+    }
+}

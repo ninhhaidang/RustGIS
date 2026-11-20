@@ -203,6 +203,22 @@ pub struct CommandDecl {
     /// that takes longer, such as downloading a dataset.
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// The sign-in the command's data needs, which RustGIS keeps for the user: its button shows a
+    /// key, green while that sign-in is kept and red while it is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<Login>,
+}
+
+/// A sign-in RustGIS keeps for the user, which a plugin command can need (`commands[].login`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Login {
+    /// An Earthdata Login token (NASA's data hosts).
+    Earthdata,
+    /// A Copernicus Data Space Ecosystem sign-in.
+    Copernicus,
+    /// An ArcGIS session (ArcGIS Online or an Enterprise portal).
+    Arcgis,
 }
 
 fn no_params() -> String {

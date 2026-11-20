@@ -244,12 +244,28 @@ pub fn is_remembered() -> bool {
 /// a sign-in or sign-out. `None` while the store is in use (a sign-in with the remembered one under
 /// way, which may wait up to a request's timeout).
 pub fn is_remembered_now() -> Option<bool> {
-    let known = match REMEMBERED.known.try_lock() {
-        Ok(k) => k,
-        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return None,
-    };
-    Some(matches!(*known, Known::Kept { .. }))
+    known_now().map(|k| matches!(k, Known::Kept { .. }))
+}
+
+/// [`is_remembered_now`] for one a request can still sign in with: not one refused or damaged
+/// that the store couldn't delete, which this session never tries again.
+pub fn is_usable_remembered_now() -> Option<bool> {
+    known_now().map(usable_remembered)
+}
+
+/// What the store holds, as this session knows it; `None` while the store is in use.
+fn known_now() -> Option<Known> {
+    match REMEMBERED.known.try_lock() {
+        Ok(k) => Some(*k),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(*e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Whether `known` holds a sign-in a request can still use: `retry_at` is `i64::MAX` only for one
+/// refused or damaged that couldn't be deleted (or kept when a sign-out couldn't delete it).
+fn usable_remembered(known: Known) -> bool {
+    matches!(known, Known::Kept { retry_at } if retry_at != i64::MAX)
 }
 
 /// The username and password as the store keeps them.

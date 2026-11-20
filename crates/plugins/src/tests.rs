@@ -322,6 +322,31 @@ fn command_timeouts_are_bounded() {
     assert!(e.contains("timeout of 86401 seconds"), "{e}");
 }
 
+/// A command names the sign-in its data needs (#2378): one RustGIS keeps, or none.
+#[test]
+fn command_login_is_one_rustgis_keeps() {
+    use crate::Login;
+    let manifest = |login: Option<Value>| {
+        let mut c = json!({"id": "c", "label": "C"});
+        if let Some(l) = login {
+            c["login"] = l;
+        }
+        json!({"id": "signed", "name": "Signed", "version": "1.0.0", "commands": [c]})
+    };
+    for (text, login) in [("earthdata", Login::Earthdata), ("copernicus", Login::Copernicus), ("arcgis", Login::Arcgis)] {
+        let m = Manifest::parse(&manifest(Some(json!(text))).to_string()).unwrap();
+        assert_eq!(m.commands[0].login, Some(login));
+        // Written back as given.
+        assert_eq!(serde_json::to_value(&m.commands[0]).unwrap()["login"], json!(text));
+    }
+    // Left out: none, and not written back.
+    let m = Manifest::parse(&manifest(None).to_string()).unwrap();
+    assert_eq!(m.commands[0].login, None);
+    assert!(serde_json::to_value(&m.commands[0]).unwrap().get("login").is_none());
+    let e = Manifest::parse(&manifest(Some(json!("dropbox"))).to_string()).unwrap_err();
+    assert!(e.contains("dropbox") && e.contains("earthdata"), "{e}");
+}
+
 /// A WebAssembly command's host requests are refused once its time limit has passed.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
