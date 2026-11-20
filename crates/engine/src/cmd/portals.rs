@@ -25,7 +25,7 @@ pub fn commands() -> Vec<C> {
             r#"{"dataset": "a Hugging Face dataset, owner/name, or an ArcGIS web map's item id (portal.search lists them)", "portal"?: "huggingface" (the default) | "arcgis-portal" | "earthdata-gis", "url"?: "the ArcGIS portal"}"#,
         ),
         C::new("portal.add", "Add Open Data", "Home › Add › Web Data", portal_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"url": "a resource's address, as portal.search lists it", "use"?: "file" (read by address, the default) | "zarr" (a store: its variable, or the first, at "index"'s steps, as layer.addZarr) | "wms" | "wfs" | "arcgis" (a service), "variable"?: "a Zarr store's variable", "index"?: {"time": 0}, "layer"?: "a service's layer (default: its first)", "name"?: text, "portal"?: "the portal's address the resource came from (an address it gives may not reach into the local network)"}"#,
+            r#"{"url": "a resource's address, as portal.search lists it", "use"?: "file" (read by address, the default) | "features" (a web service's features by their address, read page by page as service.add reads them) | "zarr" (a store: its variable, or the first, at "index"'s steps, as layer.addZarr) | "wms" | "wfs" | "arcgis" (a service), "variable"?: "a Zarr store's variable", "index"?: {"time": 0}, "layer"?: "a service's layer (default: its first)", "name"?: text, "portal"?: "the portal's address the resource came from (an address it gives may not reach into the local network)"}"#,
         ),
     ]
 }
@@ -140,6 +140,7 @@ pub fn dataset_json(d: &portal::Dataset) -> Value {
         .iter()
         .map(|r| match &r.using {
             Use::File => json!({"format": r.format, "url": r.url, "use": "file"}),
+            Use::Features => json!({"format": r.format, "url": r.url, "use": "features"}),
             Use::Zarr => json!({"format": r.format, "url": r.url, "use": "zarr"}),
             Use::Service { kind, layer } => json!({"format": r.format, "url": r.url, "use": kind, "layer": layer}),
         })
@@ -174,6 +175,7 @@ fn portal_files(_s: &mut Session, p: &Value) -> CmdResult {
         .iter()
         .map(|r| match &r.using {
             Use::File => json!({"path": r.format, "url": r.url, "use": "file"}),
+            Use::Features => json!({"path": r.format, "url": r.url, "use": "features"}),
             Use::Zarr => json!({"path": r.format, "url": r.url, "use": "zarr"}),
             Use::Service { kind, layer } => json!({"title": r.format, "url": r.url, "use": kind, "layer": layer}),
         })
@@ -190,8 +192,11 @@ fn portal_add(s: &mut Session, p: &Value) -> CmdResult {
     crate::render::rustgis_tiles::address::check(url, from)?;
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty());
     match ps(p, "use").unwrap_or("file") {
-        "file" => {
+        using @ ("file" | "features") => {
             let mut q = json!({"url": url});
+            if using == "features" {
+                q["service"] = json!(true);
+            }
             if let Some(n) = name {
                 q["name"] = json!(n);
             }
@@ -224,7 +229,7 @@ fn portal_add(s: &mut Session, p: &Value) -> CmdResult {
             }
             super::service::add(s, &q)
         }
-        other => Err(format!("'{other}': a resource is used as a file, or a wms, wfs or arcgis service")),
+        other => Err(format!("'{other}': a resource is used as a file, as a service's features, or as a wms, wfs or arcgis service")),
     }
 }
 

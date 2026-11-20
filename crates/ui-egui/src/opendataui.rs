@@ -429,7 +429,7 @@ fn about(id: Option<&str>) -> &'static str {
             "Weather and climate data from dynamical.org (NOAA GFS, GEFS and HRRR, ECMWF, DWD ICON…) as Zarr stores: open a dataset, pick a variable and its time steps, and add it."
         }
         Some("earthdata-gis") => "NASA's Earthdata GIS: imagery, maps, features and web maps of Earth science data.",
-        Some("geolens") => "A GeoLens server's datasets, read as features (the first 1,000 of each).",
+        Some("geolens") => "A GeoLens server's datasets, read as features.",
         Some("huggingface") => {
             "Datasets on Hugging Face by name or owner/name; browse a dataset's files and add GeoTIFFs, GeoParquet, PMTiles, LiDAR and other files."
         }
@@ -657,19 +657,24 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) {
         }
         Some(Act::Add(url, using, title)) => {
             app.ui.opendata.error = None;
-            let r = match using {
-                Use::File | Use::Zarr => app.run("ui.addUrl", json!({"url": url, "name": title})).map(|_| ()),
-                // A service: Add From Service, connected, to pick its layer.
-                Use::Service { kind, .. } => app
-                    .run("ui.dialog", json!({"name": "addService"}))
-                    .and_then(|_| app.run("ui.addService", json!({"url": url, "type": kind})))
-                    .map(|_| ()),
-            };
-            if let Err(e) = r {
+            if let Err(e) = add(app, &url, &using, &title) {
                 app.ui.opendata.error = Some(e);
             }
         }
         None | Some(Act::Details(_)) => {}
+    }
+}
+
+/// Adds a result's resource: a file by its address, a service's features page by page, or a
+/// service through Add From Service, connected, to pick its layer.
+fn add(app: &mut RustGisApp, url: &str, using: &Use, title: &str) -> Result<(), String> {
+    match using {
+        Use::File | Use::Zarr => app.run("ui.addUrl", json!({"url": url, "name": title})).map(|_| ()),
+        Use::Features => app.run("ui.addUrl", json!({"url": url, "name": title, "service": true})).map(|_| ()),
+        Use::Service { kind, .. } => app
+            .run("ui.dialog", json!({"name": "addService"}))
+            .and_then(|_| app.run("ui.addService", json!({"url": url, "type": kind})))
+            .map(|_| ()),
     }
 }
 
@@ -811,4 +816,66 @@ fn catalog_picker(ui: &mut egui::Ui, st: &mut State, sets: &'static [Set], w: f3
         }
     });
     ui.end_row();
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::io::{Read, Write};
+
+    /// A GeoLens dataset's 1,500 features, served in two pages.
+    fn serve() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let next = format!("{base}/api/collections/trees/items?limit=1000&after=1000");
+        let page = move |from: u32, to: u32, next: Option<&str>| {
+            let features: Vec<Value> = (from..to)
+                .map(|i| json!({"type": "Feature", "id": i, "properties": {"n": i}, "geometry": {"type": "Point", "coordinates": [f64::from(i % 90), 1.0]}}))
+                .collect();
+            let mut p = json!({"type": "FeatureCollection", "numberMatched": 1500, "features": features});
+            if let Some(h) = next {
+                p["links"] = json!([{"rel": "next", "type": "application/geo+json", "href": h}]);
+            }
+            p.to_string()
+        };
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("/");
+                let body = if path.contains("after=1000") { page(1000, 1500, None) } else { page(0, 1000, Some(&next)) };
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        base
+    }
+
+    /// Web Data's Add reads a GeoLens dataset's every page, not only the server's first 1,000.
+    #[test]
+    fn a_geolens_dataset_is_added_page_by_page() {
+        let _turn = crate::fetching::turn();
+        let base = serve();
+        let mut h =
+            egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 860.0)).with_max_steps(64).with_step_dt(0.05).build_ui_state(
+                |ui, app: &mut RustGisApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                RustGisApp::with_sample(),
+            );
+        let url = format!("{base}/api/collections/trees/items?limit=1000");
+        add(h.state_mut(), &url, &Use::Features, "Street Trees").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while h.state().session.map().layer_by_name("Street Trees").is_none() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting");
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: frames land the background download
+        }
+        assert_eq!(h.state().session.map().layer_by_name("Street Trees").unwrap().dataset.features.len(), 1500);
+    }
 }

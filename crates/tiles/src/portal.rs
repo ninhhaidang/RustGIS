@@ -94,6 +94,9 @@ pub struct Portal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Use {
     File,
+    /// A web service's features by their address (an OGC API Features collection's items), read
+    /// page by page, following each page's `next` link.
+    Features,
     /// A Zarr store, whose variable and steps are picked.
     Zarr,
     /// `wms`, `wfs` or `arcgis`, and the layer an address names (an ArcGIS layer's number).
@@ -1070,8 +1073,8 @@ fn ign_dataset(f: &Value) -> Option<Dataset> {
     })
 }
 
-/// A GeoLens dataset: its features (OGC API Features, as GeoJSON). Rasters, drawn from tiles
-/// signed for a while, are left out.
+/// A GeoLens dataset: its features (OGC API Features, as GeoJSON), every page of them. Rasters,
+/// drawn from tiles signed for a while, are left out.
 fn geolens_dataset(base: &str, f: &Value) -> Option<Dataset> {
     let p = f.get("properties")?;
     let id = text(f, "id", 100);
@@ -1093,7 +1096,7 @@ fn geolens_dataset(base: &str, f: &Value) -> Option<Dataset> {
         resources: vec![Resource {
             format: "GeoJSON".into(),
             url: format!("{base}/api/collections/{id}/items?limit={GEOLENS_FEATURES}"),
-            using: Use::File,
+            using: Use::Features,
         }],
         listing: None,
         kind,
@@ -1103,7 +1106,7 @@ fn geolens_dataset(base: &str, f: &Value) -> Option<Dataset> {
     })
 }
 
-/// How many features a GeoLens dataset is read with: a page of its server's, the most it gives.
+/// How many features a page of a GeoLens dataset is asked for.
 pub const GEOLENS_FEATURES: usize = 1000;
 
 /// A Hugging Face dataset (public, not gated): its files are listed after.
@@ -1470,6 +1473,7 @@ mod tests {
         let ds = gl.parse("https://datasets.geolibre.app/api/search/datasets/?q=", g, None, "").unwrap();
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].resources[0].url, "https://datasets.geolibre.app/api/collections/8c26-1/items?limit=1000");
+        assert_eq!(ds[0].resources[0].using, Use::Features, "read page by page");
 
         let hf = Portal::new(Some("huggingface"), None).unwrap();
         let h = br#"[{"id":"giswqs/geospatial","downloads":10,"gated":false,"private":false,"tags":["license:mit","region:us"]},{"id":"a/gated","gated":"manual"},{"id":"noslash"}]"#;
