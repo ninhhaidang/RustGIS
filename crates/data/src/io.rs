@@ -1078,7 +1078,15 @@ pub fn write_atomic_with<T, E: From<std::io::Error>>(
 /// regular files keep their permissions; a replaced link uses a new file's permissions.
 pub fn replace_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    atomic_write_at(path, |out| out.write_all(bytes))
+    replace_atomic_with(path, |out| out.write_all(bytes))
+}
+
+/// [`replace_atomic`] with the content written through a buffer, without concatenating it first.
+pub fn replace_atomic_with<T, E: From<std::io::Error>>(
+    path: &Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    atomic_write_at(path, write)
 }
 
 /// Stages content beside the chosen destination; errors and cancellation retain the old file.

@@ -3358,6 +3358,19 @@ impl Session {
         self.saved != Some(self.state)
     }
 
+    /// The archive an open project came from. This is distinct from the file Save writes.
+    pub fn opened_package(&self) -> Option<&std::path::Path> {
+        self.opened_package.as_deref()
+    }
+
+    /// Restores file provenance after the shell has opened its own private recovery copy.
+    /// The restored project has unsaved work, even when its original file still exists.
+    pub fn restore_recovery_paths(&mut self, path: Option<PathBuf>, package: Option<PathBuf>) {
+        self.path = path;
+        self.opened_package = package;
+        self.mark_unsaved();
+    }
+
     /// Which state the project is in: another after each change, an earlier one after undo. A
     /// front end compares it to tell whether the project changed since it last looked.
     pub fn state(&self) -> u64 {

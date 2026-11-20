@@ -917,9 +917,39 @@ fn unpack_into(bytes: &[u8], dir: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// Reads a field package's project, its relative paths resolved against `dir`.
+/// Reads a field package with paths to its unpacked basemaps and photos. Absolute paths to
+/// photos stay usable after opening a recovery copy, which has no unpack directory of its own.
+/// References that cannot store an absolute path are left relative and reported on open.
 pub(crate) fn project_in(text: &str, dir: &Path) -> Result<Project, String> {
-    Project::from_import_json(text, Some(dir))
+    let mut project = Project::from_import_json(text, Some(dir))?;
+    let photos = std::path::absolute(dir.join(PHOTOS)).map_err(|e| e.to_string())?;
+    let mut relative = 0_usize;
+    if photos.is_dir() {
+        for map in &mut project.maps {
+            rewrite_photos(map, |path| {
+                if let Some(name) = path.strip_prefix("photos/").filter(|name| plain_file(name)) {
+                    let file = photos.join(name);
+                    if file.is_file() {
+                        if let Some(path) = file.to_str() {
+                            return path.to_string();
+                        }
+                        relative += 1;
+                    }
+                }
+                path.to_string()
+            });
+        }
+    }
+    if relative > 0 {
+        project.read_notices.push((
+            crate::project::ReadPart::Maps,
+            crate::notice_text::NoticeText::format(
+                "{count} unpacked field photo reference(s) kept their relative paths because the unpack folder is not UTF-8. They may stop resolving after Save As or recovery.",
+                [("count", relative.to_string().into())],
+            ),
+        ));
+    }
+    Ok(project)
 }
 
 /// Removes the offline areas past the first `had` of this project: those a field package just made,
@@ -1215,6 +1245,45 @@ mod tests {
     fn value(s: &Session, name: &str, row: usize, field: &str) -> String {
         let l = s.map().layers.iter().find(|l| l.name == name).unwrap();
         l.dataset.value(row, l.dataset.field_index(field).unwrap()).to_string()
+    }
+
+    /// A package names the unpacked photo by absolute path so it can be saved or recovered elsewhere.
+    #[test]
+    fn field_photo_fixture_resolves_to_the_unpacked_file() {
+        let temp = Temp::new("field-photo-fixture");
+        let relative = "photos/site.jpg";
+        let archive = rustgis_data::zip::write(&[
+            ("Survey.rgis".into(), include_bytes!("../../../../schema/fixtures/field_photos.rgis").to_vec()),
+            (relative.into(), b"photo bytes".to_vec()),
+        ])
+        .unwrap();
+        let photo_notices = |project: &mut Project| {
+            project
+                .take_read_notices(&[crate::project::ReadPart::Maps])
+                .iter()
+                .map(crate::notice_text::NoticeText::english)
+                .filter(|notice| notice.contains("unpacked field photo reference"))
+                .collect::<Vec<_>>()
+        };
+        let unpacked = temp.path().join("unpacked");
+        let text = unpack_into(&archive, &unpacked).unwrap();
+        let mut project = project_in(&text, &unpacked).unwrap();
+        assert!(photo_notices(&mut project).is_empty());
+        let photo = unpacked.join(relative);
+        assert_eq!(value(&Session::new(project), "Sites", 0, "photos"), photo.display().to_string());
+        assert_eq!(std::fs::read(photo).unwrap(), b"photo bytes");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let unpacked = temp.path().join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));
+            let text = unpack_into(&archive, &unpacked).unwrap();
+            let mut project = project_in(&text, &unpacked).unwrap();
+            let notices = photo_notices(&mut project);
+            assert_eq!(notices.len(), 1);
+            assert!(notices[0].starts_with("1 unpacked field photo reference"));
+            assert_eq!(value(&Session::new(project), "Sites", 0, "photos"), relative);
+        }
     }
 
     #[test]

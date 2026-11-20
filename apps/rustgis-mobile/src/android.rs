@@ -30,14 +30,11 @@ impl shell::Phone for Phone {
 
 /// Points the app's folders (`rustgis_data::dirs`) at the app's own storage: Android has no
 /// `HOME`, so without this there are no settings, no tile cache and no recovery folder.
-/// Returns whether there is such storage.
+/// Returns the private root once RustGIS has adopted it.
 ///
 /// Run first in [`android_main`], before anything asks for a folder.
-fn set_folders(app: &AndroidApp) -> bool {
-    match app.internal_data_path() {
-        Some(data) => dirs::set_root(data),
-        None => false,
-    }
+fn set_folders(app: &AndroidApp) -> Option<std::path::PathBuf> {
+    app.internal_data_path().filter(|root| dirs::set_root(root.clone()))
 }
 
 /// Android's entry point for a `NativeActivity` (`android-activity` calls it on its own thread).
@@ -47,7 +44,7 @@ fn set_folders(app: &AndroidApp) -> bool {
 fn android_main(android: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("rustgis"));
     let folders = set_folders(&android);
-    let mut app = shell::front_end(folders);
+    let mut app = shell::front_end(folders.as_deref());
     let phone = Phone::new(&android);
     // The app's external files folder (`/sdcard/Android/data/org.rustgis.mobile/files`), where
     // `adb push` can put files.
@@ -61,9 +58,8 @@ fn android_main(android: AndroidApp) {
     if let Err(e) = shell::run(app, phone, pushed, options) {
         log::error!("the app stopped: {e}");
     }
-    // The activity is gone (Back, or the system destroyed it). winit's event loop can't be
-    // made twice in a process, so a process left alive would answer the next launch with a
-    // blank window: end it, and the next launch starts afresh. Phase 1 keeps the session
-    // across this instead (`onSaveInstanceState`).
+    // If the event loop returns, exit the process so the next launch can create a new loop.
+    // Activity destruction alone does not make winit exit the loop. Recovery checkpoints are
+    // submitted during editing so a restart can offer a complete copy even if on_exit is skipped.
     std::process::exit(0);
 }

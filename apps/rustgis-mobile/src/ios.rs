@@ -1200,7 +1200,7 @@ pub fn main() {
     std::mem::forget(WindowWatcher::start(mtm));
     let folders = folders();
     let made = std::fs::create_dir_all(&folders.support).is_ok() && rustgis_engine::data::dirs::set_root(folders.support.clone());
-    let mut app = shell::front_end(made);
+    let mut app = shell::front_end(made.then_some(folders.support.as_path()));
     // The app's Documents folder: files put there from a computer (Finder, `xcrun simctl`) are
     // opened once the window is up, as on Android.
     let documents = PathBuf::from(NSHomeDirectory().to_string()).join("Documents");

@@ -6,7 +6,7 @@
 //! position, the camera. `shell` is what both share. See `README.md` for how to build and install
 //! them.
 //!
-//! Not here yet: preferences and the keychain; autosave.
+//! Not here yet: preferences and the keychain.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(any(target_os = "android", target_os = "ios", test))]

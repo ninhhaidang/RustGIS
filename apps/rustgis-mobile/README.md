@@ -229,7 +229,8 @@ own was used outside the area) is said, as a later package from the same phone r
 | HTTPS trust | The bundled Mozilla roots, not the device's certificates; the session says so once (`rustgis_data::http`) |
 | Folders | Settings, app data and the cache are in the app's internal storage, set once at start-up (`rustgis_data::dirs::set_root`) |
 | GeoLibre tools, GDAL formats, DuckDB | Not available: a phone can't run their programs. `rustgis_data::RUNS_PROGRAMS` is false on Android and iOS, so no program is looked for, and each place they would appear says so: a file read through GDAL or a DuckDB database is refused with the reason (convert it on a computer), the SQL pane says why it can't query, and the Geoprocessing pane shows a card in place of the GeoLibre tools. Add Data's Database… stays: its PostGIS, MySQL and SQL Server connections need no program. The app is built without the engine's `geolibre` feature |
-| Preferences, the keychain, autosave | Not wired up yet |
+| Recovery copies | The first foreground edit submits a recovery copy in app-private storage immediately. Edits within two seconds of a submission are grouped into a copy due at the end of that interval. When the exit hook runs, it submits the latest edit immediately and gives the writer up to two seconds to finish. Suspending or destroying the Android activity can skip this hook, so edits still waiting to be submitted can be lost. The next launch offers the last complete copy, if one exists. |
+| Preferences, the keychain | Not wired up yet |
 | Soft keyboard | It opens for a text field, and the touch interface keeps the field above it. `NativeActivity`'s text input is still poor (no suggestions, no composing): a real app moves to `GameActivity` |
 
 ## What phase 0 found

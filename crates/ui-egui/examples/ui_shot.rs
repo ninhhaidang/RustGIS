@@ -36,6 +36,8 @@
 //! app has one (Settings › Autosave; a copy left there is offered by the recovery dialog).
 //! `"touch": true` on the first line gives the run a stand-in for a phone's touch interface (the
 //! map alone), kept as a phone's shell keeps it: the View tab then has Touch Interface.
+//! The phone's foreground recovery policy requires both `"recovery"` and `"touch": true`.
+//! A recovery folder without touch uses the desktop interval.
 //! `"gridFolders": true` on the first line reads and keeps datum grids in RustGIS's grid folder, as
 //! the desktop app does (Settings › Datum Grids; set `RUSTGIS_APP_DATA_DIR` for a run's own).
 //! `"memorySecrets": true` on the first line supplies an isolated in-memory credential store for
@@ -175,14 +177,19 @@ fn main() {
     let mut app = RustGisApp::with_sample();
     // As the desktop app does: Add Data, Load All, models and scripts run on a thread of their own.
     app.reads_off_frame = lines.first().and_then(|l| l.get("readsOffFrame")).and_then(Value::as_bool).unwrap_or(false);
-    if lines.first().and_then(|l| l.get("touch")).and_then(Value::as_bool) == Some(true) {
+    let touch = lines.first().and_then(|l| l.get("touch")).and_then(Value::as_bool) == Some(true);
+    if touch {
         app.touch = Some(touch_stand_in);
     }
     // As the desktop app does: linked files changed on disk are reported (#1477).
     app.watch_files = lines.first().and_then(|l| l.get("watchFiles")).and_then(Value::as_bool).unwrap_or(false);
     if let Some(dir) = lines.first().and_then(|l| l.get("recovery")).and_then(Value::as_str) {
         let store = rustgis_ui_egui::FolderStore::open(std::path::Path::new(dir)).expect("recovery folder");
-        app = app.with_services(rustgis_ui_egui::Services { recovery: Some(Box::new(store)), ..Default::default() });
+        app = if touch {
+            app.with_edit_recovery(Box::new(store))
+        } else {
+            app.with_services(rustgis_ui_egui::Services { recovery: Some(Box::new(store)), ..Default::default() })
+        };
     }
     if lines.first().and_then(|l| l.get("memorySecrets")).and_then(Value::as_bool) == Some(true) {
         app.session.database_logins.set_store(Some(std::sync::Arc::new(rustgis_engine::data::secrets::MemorySecrets::new())));

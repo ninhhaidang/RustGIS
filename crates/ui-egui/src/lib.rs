@@ -420,7 +420,7 @@ pub struct Services {
     /// Makes an HTTP request (the AI assistant's calls to its model) and puts the response, of any
     /// status, in the slot (the browser's fetch; the desktop sends it on a thread).
     pub http: Option<Box<dyn Fn(rustgis_assistant::HttpRequest, Slot<Result<rustgis_assistant::HttpResponse, rustgis_assistant::Error>>)>>,
-    /// Where autosave keeps the recovery copy of unsaved work (the desktop's recovery folder).
+    /// Where autosave keeps the recovery copy of unsaved work (the native app's recovery folder).
     /// `None` turns autosave off: the browser for now, and a second copy of the desktop app
     /// running alongside the first, which mustn't touch its copy.
     pub recovery: Option<Box<dyn RecoveryStore>>,
@@ -2743,10 +2743,26 @@ impl RustGisApp {
         }
     }
 
+    /// Enables foreground recovery for a phone. The store must be in the app's private storage
+    /// and must be installed before the first frame, so it can offer the last run's copy.
+    /// Call this after [`Self::with_services`], which replaces the entire service bundle.
+    pub fn with_edit_recovery(mut self, store: Box<dyn RecoveryStore>) -> Self {
+        self.services.recovery = Some(store);
+        self.autosave.phone = true;
+        autosave::next_offer(&mut self);
+        self
+    }
+
     /// A clean exit (the desktop app's `on_exit`): the recovery copy of this run's unsaved work
     /// is removed, as recovery is for a run that didn't close. Call it once, as the app closes.
     pub fn end_autosave(&mut self) {
         autosave::end(self);
+    }
+
+    /// The phone's activity ending (Back): submit the latest edit and give the writer a short
+    /// chance to finish. The last complete copy stays available for the next launch.
+    pub fn finish_recovery_copy(&mut self) {
+        autosave::finish(self);
     }
 
     /// The app closing (the desktop app's `on_exit`): an export still writing is cancelled and
@@ -6514,7 +6530,9 @@ impl RustGisApp {
         // reach.
         self.note_last_project();
         saveprompt::close_requested(self, ctx);
-        autosave::tick(self, ctx);
+        if !self.autosave.phone {
+            autosave::tick(self, ctx);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if self.watch_files {
             diskwatch::tick(self, ctx);
@@ -6850,6 +6868,11 @@ impl RustGisApp {
         pluginstart::frame_drawn(self, &ctx);
         // Cancel, save prompts and any project changes from UI controls take effect first.
         chrome::advance_history_jump(self, &ctx);
+        // Capture and photo attachment land during UI handling. Submit a due checkpoint
+        // in the same frame, after those edits.
+        if self.autosave.phone {
+            autosave::tick(self, &ctx);
+        }
         // CJK text this frame drew with no face for it: the next frame's `logic` deals with it
         // (`ensure_data_cjk_font`), so there must be a next frame, though no input comes.
         if rustgis_engine::render::fonts::peek_missing_cjk().iter().any(|s| !self.cjk_scripts_handled.contains(s)) {
