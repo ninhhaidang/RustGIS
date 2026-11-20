@@ -148,8 +148,10 @@ pub(crate) fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     let name = &app.session.project.name;
     let name = if name.trim().is_empty() { tl_raw!("Untitled").to_string() } else { name.clone() };
     let mut answer = None;
-    egui::Modal::new(egui::Id::unique("save_prompt")).show(ctx, |ui| {
-        ui.set_width(380.0);
+    let frame = egui::Frame::popup(&ctx.global_style());
+    let width = crate::widgets::dialog_width(ctx, 380.0, frame);
+    egui::Modal::new(egui::Id::unique("save_prompt")).frame(frame).show(ctx, |ui| {
+        ui.set_width(width);
         ui.label(egui::RichText::new(crate::i18n::fmt("Save changes to {name}?", &[("name", &name)])).font(semibold(15.0)));
         ui.add_space(4.0);
         ui.label(tl!("Your changes will be lost if you don't save them."));
@@ -160,7 +162,7 @@ pub(crate) fn show(app: &mut RustGisApp, ctx: &egui::Context) {
             );
         }
         ui.add_space(10.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true), |ui| {
             if crate::widgets::dialog_button(ui, tl!("Save"), Some(t.accent), vec2(84.0, 28.0)).clicked() {
                 answer = Some(Answer::Save);
             }
@@ -313,6 +315,33 @@ mod tests {
     /// Whether the last frame held back the window's close (`CancelClose`).
     fn close_cancelled(h: &Harness) -> bool {
         h.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
+    }
+
+    #[test]
+    fn project_save_dialogs_fit_a_narrow_viewport() {
+        let mut h = launch();
+        h.state_mut().touch = Some(RustGisApp::map_view);
+        h.state_mut().chrome = Some(RustGisApp::map_view);
+        h.state_mut().services.download = Some(Box::new(|_, _| Ok(())));
+        h.set_size(vec2(360.0, 760.0));
+        edit(&mut h, "Edited");
+        h.state_mut().run_by_user("project.new", Value::Null).unwrap();
+        frames(&mut h, 5);
+        for label in ["Save", "Don't Save", "Cancel"] {
+            let button = h.get_by_role_and_label(Role::Button, label);
+            assert!(h.ctx.content_rect().contains_rect(button.rect()), "{label}: {:?}", button.rect());
+        }
+        click(&mut h, "Cancel");
+        h.state_mut().run("ui.saveAs", Value::Null).unwrap();
+        for height in [760.0, 360.0] {
+            h.set_size(vec2(360.0, height));
+            frames(&mut h, 5);
+            let label = h.get_by_label("File name");
+            let save = h.get_by_role_and_label(Role::Button, "Save");
+            for rect in [label.rect(), save.rect()] {
+                assert!(h.ctx.content_rect().contains_rect(rect), "{rect:?} outside viewport");
+            }
+        }
     }
 
     /// Closing the window with unsaved changes waits for an answer: Cancel keeps the app open

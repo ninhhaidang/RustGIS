@@ -398,8 +398,10 @@ pub(crate) fn offer(app: &mut RustGisApp, ctx: &egui::Context) {
     let name = if r.name.trim().is_empty() { tl_raw!("Untitled").to_string() } else { r.name.clone() };
     let file = r.path.as_deref().map(|p| std::path::Path::new(p).file_name().map_or(p.to_string(), |n| n.to_string_lossy().into_owned()));
     let mut decision = None;
-    egui::Modal::new(egui::Id::unique("autosave_recover")).show(ctx, |ui| {
-        ui.set_width(420.0_f32.min((ctx.content_rect().width() - 32.0).max(1.0)));
+    let frame = egui::Frame::popup(&ctx.global_style());
+    let width = crate::widgets::dialog_width(ctx, 420.0, frame);
+    let height = (ctx.content_rect().height() - frame.total_margin().sum().y - 16.0).max(0.0);
+    let contents = |ui: &mut egui::Ui| {
         ui.label(egui::RichText::new(tl!("Recover unsaved work?")).font(semibold(15.0)));
         ui.add_space(4.0);
         // On a phone the OS can stop a backgrounded app as part of normal use.
@@ -445,7 +447,7 @@ pub(crate) fn offer(app: &mut RustGisApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(crate::i18n::fmt("It didn't open: {error}", &[("error", e)])).color(t.red));
         }
         ui.add_space(10.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true), |ui| {
             // A copy that didn't open isn't offered again; Discard and Later remain.
             if app.autosave.offer_error.is_none()
                 && !blocked
@@ -462,6 +464,11 @@ pub(crate) fn offer(app: &mut RustGisApp, ctx: &egui::Context) {
                 decision = Some("later");
             }
         });
+    };
+    egui::Modal::new(egui::Id::unique("autosave_recover")).frame(frame).show(ctx, |ui| {
+        ui.set_width(width);
+        ui.set_max_height(height);
+        egui::ScrollArea::vertical().min_scrolled_height(0.0).auto_shrink([false, true]).show(ui, contents);
     });
     match decision {
         Some("recover") => {
@@ -1326,6 +1333,44 @@ mod tests {
         assert!(restarted.session.notices_since(mark).is_empty());
         assert_eq!(restarted.session.map().layer_by_name("Parcels").unwrap().renderer, renderer);
         restarted.services.recovery.as_ref().unwrap().flush();
+    }
+
+    #[test]
+    fn recovery_actions_are_reachable_after_scrolling_a_long_diagnostic() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut app = RustGisApp::new(Session::new(Project::default()));
+        app.autosave.offer = Some(Recovery { name: "Survey".into(), time: now_secs(), ..Recovery::default() });
+        app.autosave.offer_error = Some(
+            (1..=12)
+                .map(|line| format!("Diagnostic line {line} of 12 for the copy that was kept with unsaved changes."))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(360.0, 360.0))
+            .allow_missing_glyphs()
+            .with_context_setup(|ctx| crate::theme::install_fonts(ctx, &[], None))
+            .build_ui_state(|ui, app| super::offer(app, ui.ctx()), app);
+        h.run();
+        h.hover_at(egui::pos2(180.0, 240.0));
+        h.run();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -1000.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.run();
+
+        for label in ["Discard", "Later"] {
+            let button = h.get_by_role_and_label(egui::Role::Button, label);
+            assert!(h.ctx.content_rect().contains_rect(button.rect()), "{label} is outside the viewport");
+        }
+        h.get_by_role_and_label(egui::Role::Button, "Later").click();
+        h.run();
+        assert!(h.state().autosave.later);
     }
 
     /// The dialog's age reads as a whole sentence in every range: never "1 minutes ago".

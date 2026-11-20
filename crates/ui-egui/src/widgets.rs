@@ -803,6 +803,11 @@ pub fn primary_button(ui: &mut Ui, label: &str, enabled: bool, min_size: egui::V
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
+/// Maximum content width inside the dialog frame and a small margin at each edge of the viewport.
+pub(crate) fn dialog_width(ctx: &egui::Context, preferred: f32, frame: egui::Frame) -> f32 {
+    preferred.min((ctx.content_rect().width() - frame.total_margin().sum().x - 16.0).max(0.0))
+}
+
 /// A dialog button (OK, Cancel…): `fill` paints it as the default action, otherwise it takes the
 /// theme's button look. Painted like [`primary_button`] so the label sits in the middle.
 pub fn dialog_button(ui: &mut Ui, label: &str, fill: Option<egui::Color32>, min_size: egui::Vec2) -> Response {

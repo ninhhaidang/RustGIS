@@ -924,23 +924,47 @@ fn sketch(app: &RustGisApp, painter: &egui::Painter, cross: egui::Pos2, t: &Toke
 /// is the one to tap next. Says whether it was tapped.
 fn action(ui: &mut Ui, t: &Tokens, label: &str, width: f32, main: bool, enabled: bool) -> bool {
     let text = RichText::new(label).size(16.0).color(if main { t.on_accent } else { t.text });
-    let button = egui::Button::new(text).fill(if main { t.accent } else { t.input }).min_size(Vec2::new(width, TARGET));
-    ui.add_enabled(enabled, button).clicked()
+    let button = egui::Button::new(text).fill(if main { t.accent } else { t.input }).wrap();
+    ui.add_enabled_ui(enabled, |ui| ui.add_sized(Vec2::new(width, TARGET), button)).inner.clicked()
 }
 
 /// The Capture sheet: the layer to capture into, where the cross is, the buttons that capture
 /// there, and a field for each of the layer's attributes. A point is added where the cross is.
-/// A line or polygon is drawn a vertex at a time, each where the cross is when Add Vertex is
-/// tapped, and added by Finish. The sheet stays up after a feature, emptied, for the next one.
+/// A line or polygon is drawn a vertex at a time and added by Finish. Keep the actions pinned
+/// while at least one field row fits below them. A shorter sheet scrolls as a single body.
 fn capture(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     heading(ui, t, tl!("Capture"));
+    let ctx = ui.ctx().clone();
+    let available = ui.available_height();
+    let crowded = ctx.egui_wants_keyboard_input() && available < CROWDED_ROWS * TARGET;
+    // Measure the drawn controls so location, edit mode and wrapped labels all count.
+    let layout_id = egui::Id::unique("touch_capture_layout");
+    let previous = ctx.data(|data| data.get_temp::<(f32, bool)>(layout_id));
+    let form_room = TARGET + ui.spacing().item_spacing.y;
+    let fits = |actions_height| actions_height + form_room <= available;
+    let scroll_all = crowded || previous.is_none_or(|(height, _)| !fits(height));
+    let layout_changed = previous.is_none_or(|(_, scrolled)| scrolled != scroll_all);
+    let height = if scroll_all {
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| capture_body(app, ui, t, crowded, true, layout_changed)).inner
+    } else {
+        capture_body(app, ui, t, crowded, false, layout_changed)
+    };
+    ctx.data_mut(|data| data.insert_temp(layout_id, (height, scroll_all)));
+    if scroll_all != (crowded || !fits(height)) {
+        ctx.request_repaint();
+    }
+}
+
+/// Draws the Capture controls and form once, then returns the height needed to pin the controls.
+fn capture_body(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, crowded: bool, scroll_all: bool, layout_changed: bool) -> f32 {
+    let start = ui.next_widget_position().y;
     let ctx = ui.ctx().clone();
     let mut state = form(&ctx);
     let layers = capture_layers(app);
     let Some(target) = capture_layer(app, &state) else {
         ui.label(RichText::new(tl!("This map has no layer to capture into. Add Data puts one on it.")).color(t.text_dim));
         ui.add_space(8.0);
-        return;
+        return ui.next_widget_position().y - start;
     };
     state = state.for_layer(target.instance);
     // A template chosen and since removed from the layer is let go, and said, before a button can
@@ -994,11 +1018,9 @@ fn capture(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // Typing in a window the soft keyboard leaves short (a phone held sideways), the rows above
     // the fields would take all of it and hide the field: they step aside until the keyboard
     // goes.
-    let crowded = ctx.egui_wants_keyboard_input() && ui.available_height() < CROWDED_ROWS * TARGET;
     if crowded {
         ui.label(RichText::new(tl!("Close the keyboard for the buttons.")).size(13.0).color(t.text_dim));
     } else {
-        // The buttons stay in reach above the fields, however many the layer has.
         let place = match (cross, state.snap) {
             (Some((lon, lat)), Some(snapped)) => rustgis_ui_egui::i18n::fmt(
                 "At the cross, {snapped}: {lon}, {lat}",
@@ -1080,32 +1102,48 @@ fn capture(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             });
         }
     }
-    let edit_mode = state.edit_mode;
-    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-        // The layer: one chip for each layer that takes features, in a row that scrolls sideways.
-        egui::ScrollArea::horizontal().id_salt("touch_capture_layers").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_min_height(TARGET);
-                for layer in &layers {
-                    let on = layer.id == target.id;
-                    let text = RichText::new(&layer.name).size(15.0).color(if on { t.accent_text } else { t.text });
-                    let chip = egui::Button::new(text).fill(if on { t.checked } else { t.input }).min_size(Vec2::new(TARGET, TARGET - 8.0));
-                    // The next frame shows the chosen layer's fields, empty (`Form::for_layer`).
-                    if ui.add(chip).clicked() && !on {
-                        state.layer = Some(layer.instance);
-                    }
+    // The layer: one chip for each layer that takes features, in a row that scrolls sideways.
+    egui::ScrollArea::horizontal().id_salt("touch_capture_layers").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(TARGET);
+            for layer in &layers {
+                let on = layer.id == target.id;
+                let text = RichText::new(&layer.name).size(15.0).color(if on { t.accent_text } else { t.text });
+                let chip = egui::Button::new(text).fill(if on { t.checked } else { t.input }).min_size(Vec2::new(TARGET, TARGET - 8.0));
+                // The next frame shows the chosen layer's fields, empty (`Form::for_layer`).
+                if ui.add(chip).clicked() && !on {
+                    state.layer = Some(layer.instance);
                 }
-            });
-        });
-        // Edit mode changes shapes, not attributes: the form is for a new feature.
-        // Photos for the next feature, where the device has a camera to ask; in Edit mode those
-        // already taken stay in sight (a photo for the feature edited is Add Photo's).
-        if edit_mode {
-            if !state.photos.is_empty() {
-                photo_row(app, ui, t, &mut state.photos, false);
             }
-            return;
+        });
+    });
+    let actions_height = ui.next_widget_position().y - start;
+    let mut fields = |ui: &mut Ui| {
+        // Keep focused fields and their widget state when the scroll viewport moves.
+        ui.scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique("touch_capture_fields")), |ui| {
+            capture_fields(app, ui, t, &target, &mut state, layout_changed);
+        });
+    };
+    if scroll_all {
+        fields(ui);
+    } else {
+        egui::ScrollArea::vertical().id_salt("touch_capture_form").auto_shrink([false, true]).show(ui, fields);
+    }
+    // The layer is kept only when a chip chose it: until then the sheet follows the active layer.
+    set_form(&ctx, state);
+    actions_height
+}
+
+/// Draws the rows for a new feature, keeping the focused field in view when the viewport changes.
+fn capture_fields(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, target: &Target, state: &mut Form, layout_changed: bool) {
+    // Edit mode changes shapes, not attributes: the form is for a new feature.
+    // Photos for the next feature, where the device has a camera to ask; in Edit mode those
+    // already taken stay in sight (a photo for the feature edited is Add Photo's).
+    if state.edit_mode {
+        if !state.photos.is_empty() {
+            photo_row(app, ui, t, &mut state.photos, false);
         }
+    } else {
         if app.services.take_photo.is_some() || !state.photos.is_empty() {
             photo_row(app, ui, t, &mut state.photos, true);
         }
@@ -1144,8 +1182,8 @@ fn capture(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             });
         }
         // The soft keyboard came or went: the field being typed in is brought back into view.
-        let window = ctx.content_rect().height();
-        let resized = (window - state.window).abs() > 0.5;
+        let window = ui.ctx().content_rect().height();
+        let resized = layout_changed || (window - state.window).abs() > 0.5;
         state.window = window;
         for (i, (field, list)) in fields.iter().zip(lists).enumerate() {
             use rustgis_ui_egui::rustgis_engine::data::FieldType;
@@ -1242,9 +1280,7 @@ fn capture(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 }
             }
         }
-    });
-    // The layer is kept only when a chip chose it: until then the sheet follows the active layer.
-    set_form(&ctx, state);
+    }
 }
 
 /// The Capture sheet's buttons for the device's position: Go to My Position and Average, or,
@@ -1597,6 +1633,123 @@ mod tests {
         let input =
             egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(411.0, 914.0))), ..Default::default() };
         ctx.run_ui(input, |ui| chrome(app, ui)).drop_without_applying_deltas();
+    }
+
+    /// The polygon actions, layer chip and first field can all scroll through the short sheet.
+    #[test]
+    fn landscape_capture_scrolls_actions_and_form_into_view() {
+        let ctx = egui::Context::default();
+        let mut app = RustGisApp::with_sample();
+        app.chrome = Some(chrome);
+        let target = target(&mut app, GeometryType::Polygon);
+        let field = &app.session.map().layer(target.id).unwrap().dataset.fields[0];
+        let field_label = field.alias.as_ref().unwrap_or(&field.name).clone();
+        set_sheet(&ctx, Sheet::Capture);
+        let mut seen = [false; 4];
+        let labels = ["Undo Vertex", "Finish Polygon", &target.name, &field_label];
+        for step in 0..44 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 360.0))),
+                time: Some(f64::from(step) * 0.1),
+                ..Default::default()
+            };
+            if step >= 4 {
+                use egui::TouchPhase::{End, Move, Start};
+                let (phase, y) = match step % 4 {
+                    0 => (Start, 271.0),
+                    1 => (Move, 241.0),
+                    2 => (Move, 211.0),
+                    _ => (End, 211.0),
+                };
+                let pos = egui::pos2(400.0, y);
+                input.events.push(egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(0), phase, pos, force: None });
+                if phase != End {
+                    input.events.push(egui::Event::PointerMoved(pos));
+                }
+                if matches!(phase, Start | End) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == Start,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                if phase == End {
+                    input.events.push(egui::Event::PointerGone);
+                }
+            }
+            let output = ctx.run_ui(input, |ui| {
+                app.logic(&ctx);
+                app.ui(ui);
+            });
+            for painted in &output.shapes {
+                if let egui::epaint::Shape::Text(text) = &painted.shape
+                    && painted.clip_rect.contains_rect(text.visual_bounding_rect())
+                {
+                    for (visible, label) in seen.iter_mut().zip(labels) {
+                        *visible |= text.galley.text() == label;
+                    }
+                }
+            }
+            output.drop_without_applying_deltas();
+            if seen.iter().all(|visible| *visible) {
+                return;
+            }
+        }
+        assert!(seen.iter().all(|visible| *visible), "visibility for {labels:?}: {seen:?}");
+    }
+
+    #[test]
+    fn portrait_capture_keeps_finish_visible_while_the_form_scrolls() {
+        let ctx = egui::Context::default();
+        let mut app = RustGisApp::with_sample();
+        app.chrome = Some(chrome);
+        let target = target(&mut app, GeometryType::Polygon);
+        for i in 0..8 {
+            app.session.run("edit.addField", &json!({"layer": target.id, "name": format!("Extra_{i}"), "type": "text"})).unwrap();
+        }
+        set_sheet(&ctx, Sheet::Capture);
+        set_form(&ctx, Form { shown: Some(target.instance), vertices: vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)], ..Form::default() });
+        let pos = egui::pos2(190.0, 660.0);
+        let mut last_field_visible = false;
+        for step in 0..18 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(360.0, 760.0))),
+                time: Some(f64::from(step) * 0.1),
+                events: vec![egui::Event::PointerMoved(pos)],
+                ..Default::default()
+            };
+            if step >= 5 {
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, -160.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                });
+            }
+            let output = ctx.run_ui(input, |ui| {
+                app.logic(&ctx);
+                app.ui(ui);
+            });
+            let visible = |label| {
+                output.shapes.iter().any(|painted| {
+                    matches!(&painted.shape, egui::epaint::Shape::Text(text)
+                        if text.galley.text() == label && painted.clip_rect.contains_rect(text.visual_bounding_rect()))
+                })
+            };
+            let (finish, layer, last_field) = (visible("Finish Polygon"), visible(&target.name), visible("Extra_7"));
+            output.drop_without_applying_deltas();
+            if step == 4 {
+                assert!(!last_field, "last field starts below the scroll viewport");
+            }
+            if step >= 4 {
+                assert!(finish, "Finish went out of view on frame {step}");
+                assert!(layer, "layer choice went out of view on frame {step}");
+            }
+            last_field_visible |= last_field;
+        }
+        assert!(last_field_visible, "the form scrolled to the last field");
     }
 
     #[test]
