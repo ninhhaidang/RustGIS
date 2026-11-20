@@ -287,8 +287,8 @@ Widths and offsets are in points: they keep their size on screen at every scale,
 keep their coordinates. A positive offset shifts the stroke to the right of the line's direction
 (the order of its vertices) and a negative one to the left, so two copies of an edge drawn in
 opposite directions land on opposite sides of it. Strokes are saved with the project and drawn in
-exports and in a layout legend's swatch. By command, bottom stroke first (`[]` goes back to the
-single stroke):
+exports, in a layout legend's swatch, and in the patches of the Layers and Symbology panes (along
+a straight line). By command, bottom stroke first (`[]` goes back to the single stroke):
 
 ```text
 layer.lineStrokes={"layer":"Rivers","strokes":[{"color":"#000000","width":11.5,"offset":8.5},{"color":"#FF8C00","width":7,"offset":8.5,"cap":"round","join":"round"}]}
@@ -400,7 +400,7 @@ A gradient's `from` and `to` are places in the feature's box (`[across, down]`, 
 
 `[]` goes back to the single fill (for a class, to the layer's fills). Fills draw on the CPU (on the
 globe, patterns keep to the screen rather than the map as it turns). A layout legend draws
-them in the polygon's swatch; the Layers pane's legend shows the symbol's colour.
+them in the polygon's swatch, and the Layers and Symbology panes in its patch.
 
 **Hatch only flagged polygons.** Use an overlay to hatch unreliable estimates while keeping
 the choropleth's colours visible.
@@ -412,8 +412,7 @@ the choropleth's colours visible.
    colour and spacing so the choropleth shows through. Set **Outline width** to 0 if the
    choropleth already draws the boundaries.
 3. Include both layers in the [layout legend](layouts.md#layouts). The overlay's swatch
-   shows its hatch lines; the Layers pane shows a solid colour, so a name such as
-   “(hatched)” still helps there.
+   shows its hatch lines, as does its patch in the Layers pane.
 
 The new layer contains a copy of the selected features. Recreate it if the flag values change.
 

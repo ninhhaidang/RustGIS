@@ -178,7 +178,7 @@ pub(crate) fn fills_editor(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tok
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(4), t.ribbon);
         let swatch = Rect::from_center_size(r.center(), vec2(r.width().min(120.0) - 8.0, r.height() - 10.0));
-        preview(ui, swatch, &fills, &base);
+        preview(ui.painter(), swatch, &fills, &base);
         if borrowed {
             ui.label(
                 egui::RichText::new(tl!("This class is drawn with the layer's fills. Changing them here gives it its own."))
@@ -469,8 +469,8 @@ pub(crate) fn fills_editor(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tok
 /// The stacked `fills` on `r`, bottom first: a colour fills it, hatch lines cross it at their
 /// angle and spacing, markers sit on their grid (as circles, images as themselves), a gradient or
 /// shapeburst shades it (in cells), each in its colour or `base`'s.
-fn preview(ui: &Ui, r: Rect, fills: &[FillLayer], base: &Symbol) {
-    let p = ui.painter().with_clip_rect(r);
+pub(crate) fn preview(p: &egui::Painter, r: Rect, fills: &[FillLayer], base: &Symbol) {
+    let p = p.with_clip_rect(r);
     let one = [FillLayer::default()];
     let shown = if fills.is_empty() { &one[..] } else { fills };
     // (Only what the map draws: a hatch of no width, a marker of no size, no colour to show.)
@@ -495,7 +495,7 @@ fn preview(ui: &Ui, r: Rect, fills: &[FillLayer], base: &Symbol) {
             }
             FillPattern::Dots { marker, size, spacing, displacement, .. } => {
                 // An image, looked up once for all its dots.
-                let image = crate::markerimages::image(ui.ctx(), marker);
+                let image = crate::markerimages::image(p.ctx(), marker);
                 // (No finer than 4 points in the swatch: it is a picture, not every dot.)
                 let [dx, dy] = spacing.map(|s| s.max(4.0));
                 // (Shifts widened with the spacing, so a half shift stays a half.)
@@ -611,11 +611,11 @@ mod tests {
         let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 20.0));
         let textured =
             |c: &egui::epaint::ClippedShape| matches!(&c.shape, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default());
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| preview(ui, r, &[dots(Marker::Picture(pic))], &base));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| preview(ui.painter(), r, &[dots(Marker::Picture(pic))], &base));
         assert!(!out.shapes.is_empty() && out.shapes.iter().all(textured));
         out.textures_delta.clear();
         // A shape is still circles.
-        let shapes = ctx.run_ui(egui::RawInput::default(), |ui| preview(ui, r, &[dots(Marker::Circle)], &base)).shapes;
+        let shapes = ctx.run_ui(egui::RawInput::default(), |ui| preview(ui.painter(), r, &[dots(Marker::Circle)], &base)).shapes;
         assert!(shapes.iter().all(|c| matches!(c.shape, egui::Shape::Circle(_))));
     }
 

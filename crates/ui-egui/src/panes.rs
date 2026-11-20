@@ -8,6 +8,7 @@ use rustgis_engine::Session;
 use rustgis_engine::analysis::{ParamKind, tools};
 use rustgis_engine::cmd::layer::hidden_fill_opacity;
 use rustgis_engine::data::GeometryType;
+use rustgis_engine::map::fills::FillLayer;
 use rustgis_engine::map::raster::{Normalizer, RasterLegend, RasterStyle, Rock, relief_ambient};
 use rustgis_engine::map::symbology::{
     ClassRef, ClassStyle, Dash, LegendEntry, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_EXPRESSION_CLASSES, MAX_LABEL,
@@ -493,15 +494,67 @@ fn glyph(p: &egui::Painter, at: egui::Pos2, g: Glyph, px: f32, c: egui::Color32)
     p.text(at, Align2::CENTER_CENTER, g.ch, egui::FontId::new(px, family), c);
 }
 
-/// Paints a symbol patch for a layer of geometry type `g`.
-pub fn patch(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType) {
-    patch_sized(p, r, s, g, s.size.clamp(4.0, 14.0), (s.size * 1.4).clamp(8.0, 18.0));
+/// What a patch draws over its symbol, as the map does (#2490): a line's stacked strokes (a
+/// point's marks), whether they are drawn in levels, and a polygon's stacked fills. Empty, the
+/// symbol alone.
+#[derive(Clone, Copy, Default)]
+pub struct Stack<'a> {
+    pub strokes: &'a [LineStroke],
+    pub fills: &'a [FillLayer],
+    pub levels: bool,
 }
 
-/// [`patch`] with a point drawn `size` across and a character marker at `glyph_px`, as given,
-/// for rows whose sizes compare (size legends).
-fn patch_sized(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType, size: f32, glyph_px: f32) {
+impl<'a> Stack<'a> {
+    /// What layer `l` draws a row with: the row's own `strokes` and `fills` (a class's), else the
+    /// layer's, as the map finds them for a feature. A graphics layer's symbols are plain.
+    pub fn of(l: &'a Layer, strokes: &'a [LineStroke], fills: &'a [FillLayer]) -> Self {
+        if l.graphics {
+            return Stack::default();
+        }
+        Stack {
+            strokes: if strokes.is_empty() { &l.line_strokes } else { strokes },
+            fills: if fills.is_empty() { &l.fill_layers } else { fills },
+            levels: l.stroke_levels,
+        }
+    }
+}
+
+/// Paints a symbol patch for a layer of geometry type `g`, with its stack.
+pub fn patch(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType, stack: Stack) {
+    patch_sized(p, r, s, g, None, stack);
+}
+
+/// The one scale layer `l`'s size rows `sized` share, so the largest symbol, or its marks with
+/// their offsets, fills a patch's box (14 points) and the rows keep comparing.
+fn size_rows_scale(l: &Layer, sized: &[LegendEntry]) -> f32 {
+    let across = |e: &LegendEntry| {
+        let marks = Stack::of(l, &e.strokes, &e.fills).strokes;
+        if marks.is_empty() { e.symbol.size } else { 2.0 * marks_reach(marks, &e.symbol) }
+    };
+    let top = sized.iter().map(across).fold(0.0, f32::max);
+    if top > 14.0 { 14.0 / top } else { 1.0 }
+}
+
+/// [`patch`], its point scaled by `k` for rows whose sizes compare (size legends), else drawn
+/// between 4 and 14 points across. A stack is drawn by the editors' previews, shrunk to fit `r`
+/// (a point's marks at the map's size or the size row's `k` when they fit) and cut to it.
+fn patch_sized(p: &egui::Painter, r: Rect, s: &Symbol, g: GeometryType, k: Option<f32>, stack: Stack) {
+    let (size, glyph_px) = match k {
+        Some(k) => (s.size * k, s.size * k * 1.4),
+        None => (s.size.clamp(4.0, 14.0), (s.size * 1.4).clamp(8.0, 18.0)),
+    };
+    let half = r.width().min(r.height()) / 2.0;
     match g {
+        GeometryType::Point if !stack.strokes.is_empty() => {
+            // The marks as large as the map draws them (a size row's at its scale), smaller only to fit.
+            let k = k.unwrap_or(1.0).min(half / marks_reach(stack.strokes, s));
+            marks_preview(&p.with_clip_rect(r), r.center(), stack.strokes, s, k);
+        }
+        GeometryType::Polyline if !stack.strokes.is_empty() => {
+            let k = (half / strokes_reach(stack.strokes, s)).min(1.0);
+            strokes_preview(&p.with_clip_rect(r), (r.min.x + 2.0, r.max.x - 2.0), r.center().y, stack.strokes, s, stack.levels, k);
+        }
+        GeometryType::Polygon if !stack.fills.is_empty() => crate::fill_editor::preview(p, r.shrink(2.0), stack.fills, s),
         GeometryType::Point => {
             let rad = size / 2.0;
             let c = r.center();
@@ -2015,7 +2068,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         };
         icons::paint(ui.painter(), pr, icon, t.icon, t.accent);
     } else {
-        patch(ui.painter(), pr, &l.renderer.base_symbol(), l.geometry_type());
+        patch(ui.painter(), pr, &l.renderer.base_symbol(), l.geometry_type(), Stack::of(l, &[], &[]));
     }
     x += 24.0;
     let out_of_range = !app.session.map().in_scale_range(l, scale);
@@ -2143,17 +2196,12 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         // At most 40 classes, then the size rows the legend ends with.
         let sizes = l.with_size_legend(Vec::new()).len().min(vector_legend.len());
         let (classes, sized) = vector_legend.split_at(vector_legend.len() - sizes);
-        // The size rows share one scale, so the patch's box keeps them apart.
-        let top = sized.iter().map(|e| e.symbol.size).fold(0.0, f32::max);
-        let k = if top > 14.0 { 14.0 / top } else { 1.0 };
+        let k = size_rows_scale(l, sized);
         for (e, scale) in classes.iter().take(40).map(|e| (e, None)).chain(sized.iter().map(|e| (e, Some(k)))) {
             let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &e.label));
             let pr = Rect::from_center_size(pos2(r.min.x + 84.0, r.center().y), vec2(18.0, 14.0));
-            match scale {
-                Some(k) => patch_sized(ui.painter(), pr, &e.symbol, l.geometry_type(), e.symbol.size * k, e.symbol.size * k * 1.4),
-                None => patch(ui.painter(), pr, &e.symbol, l.geometry_type()),
-            }
+            patch_sized(ui.painter(), pr, &e.symbol, l.geometry_type(), scale, Stack::of(l, &e.strokes, &e.fills));
             ui.painter().text(pos2(r.min.x + 100.0, r.center().y), Align2::LEFT_CENTER, &e.label, regular(11.5), t.text);
         }
     }
@@ -4650,7 +4698,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         ui.add_space(6.0);
     }
     match &l.renderer {
-        Renderer::Single(s) => symbol_editor(app, ui, *s, hidden_fill_opacity(&l, None), g, t),
+        Renderer::Single(s) => symbol_editor(app, ui, *s, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t),
         Renderer::Unique { field, classes, ramp, expression, .. } => {
             field_combo(app, ui, "Field", if expression.is_some() { tl!("(expression)") } else { field.as_str() }, &all, "unique");
             // Or by an expression's values: blank goes back to the field.
@@ -4702,7 +4750,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         }
         Renderer::Proportional { field, base, .. } => {
             field_combo(app, ui, "Field", field, &numeric, "proportional");
-            symbol_editor(app, ui, *base, hidden_fill_opacity(&l, None), g, t);
+            symbol_editor(app, ui, *base, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t);
             legend_list(app, ui, &l, t);
         }
     }
@@ -5335,6 +5383,7 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                         Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(18.0, 14.0)),
                         &e.symbol,
                         l.geometry_type(),
+                        Stack::of(l, &e.strokes, &e.fills),
                     );
                     ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, &e.label, regular(11.5), t.text);
                     continue;
@@ -5508,13 +5557,13 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
 }
 
 /// `hidden`: the opacity of a fill No Fill hides, which its swatch shows ([`hidden_fill_opacity`]).
-fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8>, g: GeometryType, t: &Tokens) {
+fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8>, stack: Stack, g: GeometryType, t: &Tokens) {
     egui::Frame::NONE.fill(t.pane_header).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(44.0, 36.0), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(4), t.ribbon);
-            patch(ui.painter(), r.shrink(6.0), &s, g);
+            patch(ui.painter(), r.shrink(6.0), &s, g, stack);
             ui.label(egui::RichText::new(tl!("Symbol")).font(semibold(12.5)));
         });
         egui::Grid::new("symbol_grid").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
@@ -5828,10 +5877,10 @@ pub(crate) fn stroke_classes(r: &Renderer) -> Vec<(ClassRef, String, Symbol)> {
 }
 
 /// A stroke's markers along the editor's preview line, from `x.0` to `x.1` at `y`, scaled by `k`:
-/// markers as dots (squares as squares, images as themselves, unturned), hash marks as ticks, `w`
-/// wide. A sketch, not the map's drawing: other shapes and outlines aren't shown, and inner
-/// placements are marked at the middle.
-fn marker_preview(ui: &Ui, m: &LineMarkers, x: (f32, f32), y: f32, k: f32, c: egui::Color32, w: f32) {
+/// markers as dots (squares as squares, images as themselves, unturned) with their outlines `w`
+/// wide, as on the map, hash marks as ticks (at least half a point). A sketch, not the map's
+/// drawing: other shapes aren't shown, and inner placements are marked at the middle.
+fn marker_preview(p: &egui::Painter, m: &LineMarkers, x: (f32, f32), y: f32, k: f32, c: egui::Color32, w: f32) {
     let mut xs = Vec::new();
     if m.at.has(Placements::INTERVAL) {
         let step = (m.interval * k).max(4.0);
@@ -5852,24 +5901,40 @@ fn marker_preview(ui: &Ui, m: &LineMarkers, x: (f32, f32), y: f32, k: f32, c: eg
     }
     let half = (m.size * k).max(1.0) / 2.0;
     // An image, looked up once for all its places.
-    let image = if let LineMark::Marker(mark) = m.mark { crate::markerimages::image(ui.ctx(), mark) } else { None };
+    let image = if let LineMark::Marker(mark) = m.mark { crate::markerimages::image(p.ctx(), mark) } else { None };
+    // (An outline the map draws: a colour to show and a width.)
+    let outline = m.outline.filter(|o| o.a() > 0 && w > 0.0).map(|o| Stroke::new(w.max(0.5), c32(o)));
     for at in xs {
         if let Some(image) = &image {
-            image.paint(ui.painter(), pos2(at, y), 2.0 * half);
+            image.paint(p, pos2(at, y), 2.0 * half);
             continue;
         }
         match m.mark {
             LineMark::Hash => {
                 let (sin, cos) = m.angle.to_radians().sin_cos();
                 let (dx, dy) = (half * sin, half * cos);
-                ui.painter().line_segment([pos2(at - dx, y + dy), pos2(at + dx, y - dy)], Stroke::new(w, c));
+                p.line_segment([pos2(at - dx, y + dy), pos2(at + dx, y - dy)], Stroke::new(w.max(0.5), c));
             }
             LineMark::Marker(Marker::Square) => {
-                ui.painter().rect_filled(Rect::from_center_size(pos2(at, y), vec2(half * 1.8, half * 1.8)), CornerRadius::ZERO, c);
+                let r = Rect::from_center_size(pos2(at, y), vec2(half * 1.8, half * 1.8));
+                p.rect_filled(r, CornerRadius::ZERO, c);
+                if let Some(o) = outline {
+                    p.rect_stroke(r, CornerRadius::ZERO, o, egui::StrokeKind::Middle);
+                }
             }
-            LineMark::Marker(Marker::Char(g)) => glyph(ui.painter(), pos2(at, y), g, (2.0 * half).max(6.0), c),
+            // An outline-only character shows in its outline's colour, as a plain patch's does.
+            LineMark::Marker(Marker::Char(g)) => {
+                let col = match outline {
+                    Some(o) if c.a() == 0 => o.color,
+                    _ => c,
+                };
+                glyph(p, pos2(at, y), g, (2.0 * half).max(6.0), col);
+            }
             LineMark::Marker(_) => {
-                ui.painter().circle_filled(pos2(at, y), half, c);
+                p.circle_filled(pos2(at, y), half, c);
+                if let Some(o) = outline {
+                    p.circle_stroke(pos2(at, y), half, o);
+                }
             }
         }
     }
@@ -6001,22 +6066,93 @@ fn symbol_mark(s: &Symbol) -> LineStroke {
     LineStroke { markers: Some(m), ..LineStroke::default() }
 }
 
-/// A point layer's marks at the middle of `r`, bottom first, shifted as they are on the map (their
-/// offsets turned with their angles).
-fn marks_preview(ui: &Ui, r: Rect, strokes: &[LineStroke], base: &Symbol) {
-    let shown: Vec<LineStroke> = if strokes.is_empty() { vec![symbol_mark(base)] } else { strokes.to_vec() };
-    let reach = shown.iter().filter_map(|st| st.markers.map(|m| m.offset_along.hypot(st.offset) + m.size / 2.0)).fold(1.0_f32, f32::max);
-    let k = (18.0 / reach).min(1.0);
-    for st in &shown {
+/// How far stroke `st`'s marker reaches from its middle, in points: its half size, and half its
+/// outline's width when it draws one (the stroke's width, else `base`'s).
+fn mark_reach(st: &LineStroke, m: &LineMarkers, base: &Symbol) -> f32 {
+    let outline = if m.outline.is_some_and(|o| o.a() > 0) { st.resolve(base).1.max(0.0) } else { 0.0 };
+    (m.size + outline) / 2.0
+}
+
+/// How far a point's marks reach from it, in points (at least 1): their offsets and
+/// [`mark_reach`]es.
+fn marks_reach(marks: &[LineStroke], base: &Symbol) -> f32 {
+    marks.iter().filter_map(|st| st.markers.map(|m| m.offset_along.hypot(st.offset) + mark_reach(st, &m, base))).fold(1.0_f32, f32::max)
+}
+
+/// A point layer's `marks` round `centre`, bottom first, scaled by `k`, shifted as they are on the
+/// map (their offsets turned with their angles).
+fn marks_preview(p: &egui::Painter, centre: egui::Pos2, marks: &[LineStroke], base: &Symbol, k: f32) {
+    for st in marks {
         let Some(m) = st.markers else { continue };
         let (c, w) = st.resolve(base);
         // A mark of no colour of its own takes the symbol's fill.
         let c = if st.color.is_none() { base.fill } else { c };
         let (sin, cos) = m.angle.to_radians().sin_cos();
         let (ox, oy) = (m.offset_along * k, st.offset * k);
-        let at = r.center() + vec2(ox * cos - oy * sin, ox * sin + oy * cos);
+        let at = centre + vec2(ox * cos - oy * sin, ox * sin + oy * cos);
         let one = LineMarkers { at: Placements::FIRST, ..m };
-        marker_preview(ui, &one, (at.x, at.x), at.y, k, c32(c), (w * k).max(0.5));
+        marker_preview(p, &one, (at.x, at.x), at.y, k, c32(c), w * k);
+    }
+}
+
+/// How far a line's stacked `strokes` reach either side of it, in points (at least 1): their
+/// offsets and half widths (a marker's [`mark_reach`]).
+fn strokes_reach(strokes: &[LineStroke], base: &Symbol) -> f32 {
+    let reach = |st: &LineStroke| (st.resolve(base).1 / 2.0).max(st.markers.map_or(0.0, |m| mark_reach(st, &m, base)));
+    strokes.iter().map(|st| st.offset.abs() + reach(st)).fold(1.0_f32, f32::max)
+}
+
+/// A line's stacked `strokes` along a straight line from `x.0` to `x.1` at `y`, bottom first,
+/// scaled by `k`: a positive offset shows below it. In `levels`, a stroke shows over the lower
+/// levels' (ties keep their stack order), as the map has it.
+fn strokes_preview(p: &egui::Painter, (x0, x1): (f32, f32), y: f32, strokes: &[LineStroke], base: &Symbol, levels: bool, k: f32) {
+    let mut ordered: Vec<(u8, LineStroke)> =
+        strokes.iter().enumerate().map(|(i, st)| (if levels { st.level_at(i) } else { 0 }, *st)).collect();
+    ordered.sort_by_key(|(level, _)| *level);
+    let cap_pad = |st: &LineStroke, w: f32| if st.cap == LineCap::Butt { 0.0 } else { w / 2.0 };
+    for (_, st) in &ordered {
+        let (c, w) = st.resolve(base);
+        let y = y + st.offset * k;
+        if let Some(m) = &st.markers {
+            // (Along a line, as on the map, hash marks of no width aren't drawn.)
+            if !matches!(m.mark, LineMark::Hash) || w > 0.0 {
+                marker_preview(p, m, (x0, x1), y, k, c32(c), w * k);
+            }
+            continue;
+        }
+        // A line of no width isn't drawn on the map; one under half a point shows at half.
+        if w.is_nan() || w <= 0.0 {
+            continue;
+        }
+        let w = (w * k).max(0.5);
+        let pad = cap_pad(st, w);
+        // The dashes along the preview, scaled as the strokes are. Solid when the map draws the
+        // pattern solid: under a pixel a round on this screen, at the pattern's own size.
+        let steps: Vec<f32> = st.dash.map(|d| d.even_steps().iter().map(|v| v * k).collect()).unwrap_or_default();
+        let mut runs = Vec::new();
+        if st.dash.is_some_and(|d| d.period() * p.ctx().pixels_per_point() >= 1.0) && steps.iter().sum::<f32>() > 0.0 {
+            let (mut x, mut on) = (x0, true);
+            for step in steps.iter().cycle().take(4096) {
+                if x >= x1 {
+                    break;
+                }
+                let end = (x + step).min(x1);
+                if on {
+                    runs.push((x, end));
+                }
+                (x, on) = (end, !on);
+            }
+        } else {
+            runs.push((x0, x1));
+        }
+        for (from, to) in runs {
+            if st.cap == LineCap::Round {
+                p.circle_filled(pos2(from, y), w / 2.0, c32(c));
+                p.circle_filled(pos2(to, y), w / 2.0, c32(c));
+            }
+            let (a, b) = if st.cap == LineCap::Square { (from - pad, to + pad) } else { (from, to) };
+            p.line_segment([pos2(a, y), pos2(b, y)], Stroke::new(w, c32(c)));
+        }
     }
 }
 
@@ -6404,58 +6540,12 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(4), t.ribbon);
         if points {
-            marks_preview(ui, r, &strokes, &base);
-        }
-        let mut preview: Vec<LineStroke> = if strokes.is_empty() { vec![LineStroke::default()] } else { strokes.clone() };
-        // In levels, a stroke shows over the lower levels' (ties keep their stack order), as the map has it.
-        if l.stroke_levels {
-            let mut levelled: Vec<(u8, LineStroke)> = preview.iter().enumerate().map(|(i, st)| (st.level_at(i), *st)).collect();
-            levelled.sort_by_key(|(level, _)| *level);
-            preview = levelled.into_iter().map(|(_, st)| st).collect();
-        }
-        let reach = preview
-            .iter()
-            .map(|st| st.offset.abs() + st.resolve(&base).1.max(st.markers.map_or(0.0, |m| m.size)) / 2.0)
-            .fold(1.0_f32, f32::max);
-        let k = (18.0 / reach).min(1.0);
-        let (x0, x1) = (r.min.x + 14.0, r.max.x - 14.0);
-        let cap_pad = |st: &LineStroke, w: f32| if st.cap == LineCap::Butt { 0.0 } else { w / 2.0 };
-        for st in preview.iter().filter(|_| !points) {
-            let (c, w) = st.resolve(&base);
-            let w = (w * k).max(0.5);
-            let y = r.center().y + st.offset * k;
-            if let Some(m) = &st.markers {
-                marker_preview(ui, m, (x0, x1), y, k, c32(c), w);
-                continue;
-            }
-            let pad = cap_pad(st, w);
-            // The dashes along the preview, scaled as the strokes are. Solid when the map draws the
-            // pattern solid: under a pixel a round on this screen, at the pattern's own size.
-            let steps: Vec<f32> = st.dash.map(|d| d.even_steps().iter().map(|v| v * k).collect()).unwrap_or_default();
-            let mut runs = Vec::new();
-            if st.dash.is_some_and(|d| d.period() * ui.ctx().pixels_per_point() >= 1.0) && steps.iter().sum::<f32>() > 0.0 {
-                let (mut x, mut on) = (x0, true);
-                for step in steps.iter().cycle().take(4096) {
-                    if x >= x1 {
-                        break;
-                    }
-                    let end = (x + step).min(x1);
-                    if on {
-                        runs.push((x, end));
-                    }
-                    (x, on) = (end, !on);
-                }
-            } else {
-                runs.push((x0, x1));
-            }
-            for (from, to) in runs {
-                if st.cap == LineCap::Round {
-                    ui.painter().circle_filled(pos2(from, y), w / 2.0, c32(c));
-                    ui.painter().circle_filled(pos2(to, y), w / 2.0, c32(c));
-                }
-                let (a, b) = if st.cap == LineCap::Square { (from - pad, to + pad) } else { (from, to) };
-                ui.painter().line_segment([pos2(a, y), pos2(b, y)], Stroke::new(w, c32(c)));
-            }
+            let marks = if strokes.is_empty() { vec![symbol_mark(&base)] } else { strokes.clone() };
+            marks_preview(ui.painter(), r.center(), &marks, &base, (18.0 / marks_reach(&marks, &base)).min(1.0));
+        } else {
+            let line = if strokes.is_empty() { vec![LineStroke::default()] } else { strokes.clone() };
+            let k = (18.0 / strokes_reach(&line, &base)).min(1.0);
+            strokes_preview(ui.painter(), (r.min.x + 14.0, r.max.x - 14.0), r.center().y, &line, &base, l.stroke_levels, k);
         }
         // The line's direction.
         let (ay, ax) = (r.max.y - 6.0, r.max.x - 8.0);
@@ -7662,7 +7752,7 @@ mod tests {
         let (s, g) = (l.renderer.base_symbol(), l.geometry_type());
         let ctx = egui::Context::default();
         let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(18.0, 14.0));
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| patch(ui.painter(), r, &s, g));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| patch(ui.painter(), r, &s, g, Stack::default()));
         // The image alone: one mesh on its own texture (not the font atlas's), and no circle.
         let image = |c: &egui::epaint::ClippedShape| matches!(&c.shape, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default());
         assert_eq!(out.shapes.len(), 1);
@@ -7671,12 +7761,117 @@ mod tests {
         let one = LineMarkers { mark: LineMark::Marker(s.marker), size: 12.0, at: Placements::MIDDLE, ..LineMarkers::default() };
         let ends = LineMarkers { at: Placements::VERTICES, ..one };
         for (m, n) in [(one, 1), (ends, 2)] {
-            let line = |ui: &mut Ui| marker_preview(ui, &m, (0.0, 80.0), 7.0, 1.0, egui::Color32::RED, 1.0);
+            let line = |ui: &mut Ui| marker_preview(ui.painter(), &m, (0.0, 80.0), 7.0, 1.0, egui::Color32::RED, 1.0);
             let shapes = ctx.run_ui(egui::RawInput::default(), line).shapes;
             assert_eq!((shapes.len(), shapes.iter().all(image)), (n, true), "{:?}", m.at);
         }
         // (Its texture's upload isn't handed to a renderer here.)
         out.textures_delta.clear();
+    }
+
+    /// The shapes a patch paints in an 18×14 box for layer `name`'s symbol, with its stack or
+    /// without, its point scaled by `k` as a size row's.
+    fn patch_shapes(app: &RustGisApp, name: &str, stacked: bool, k: Option<f32>) -> Vec<egui::epaint::ClippedShape> {
+        let l = app.session.map().layer_by_name(name).unwrap();
+        let stack = if stacked { Stack::of(l, &[], &[]) } else { Stack::default() };
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(18.0, 14.0));
+        let draw = |ui: &mut Ui| patch_sized(ui.painter(), r, &l.renderer.base_symbol(), l.geometry_type(), k, stack);
+        let mut out = egui::Context::default().run_ui(egui::RawInput::default(), draw);
+        // (The font atlas's upload isn't handed to a renderer here.)
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    /// The colours `shapes` paint with, in order: fills, then outlines.
+    fn inks(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Color32> {
+        use egui::Shape;
+        shapes
+            .iter()
+            .flat_map(|c| match &c.shape {
+                Shape::LineSegment { stroke, .. } => vec![stroke.color],
+                Shape::Rect(r) => vec![r.fill, r.stroke.color],
+                Shape::Circle(c) => vec![c.fill, c.stroke.color],
+                Shape::Path(p) => vec![p.fill],
+                _ => Vec::new(),
+            })
+            .filter(|c| c.a() > 0)
+            .collect()
+    }
+
+    /// A row's patch shows the stack the map draws its features with, cut to its box (#2490): a
+    /// line's casing and dashed core, a polygon's fills under its outline, a point's marks (a size
+    /// row's at its scale). A layer with none keeps the patch it had.
+    #[test]
+    fn a_patch_shows_its_layers_stack() {
+        let (black, red, green) = (egui::Color32::BLACK, egui::Color32::from_rgb(255, 0, 0), egui::Color32::from_rgb(0, 200, 0));
+        let mut app = RustGisApp::with_sample();
+        for name in ["Rivers", "Lakes", "Cities"] {
+            assert_eq!(patch_shapes(&app, name, true, None), patch_shapes(&app, name, false, None), "{name} has no stack");
+        }
+        let strokes = json!([{"color": "#000000", "width": 6}, {"color": "#FF0000", "width": 2, "dash": [2, 2], "cap": "flat"}]);
+        app.run("layer.lineStrokes", json!({"layer": "Rivers", "strokes": strokes})).unwrap();
+        let fills = json!([{"color": "#00C800"}, {"color": "#000000", "pattern": "hatch", "spacing": 3}]);
+        app.run("layer.fillLayers", json!({"layer": "Lakes", "fills": fills})).unwrap();
+        app.run(
+            "layer.lineStrokes",
+            json!({"layer": "Cities", "strokes": [{"color": "#FF0000", "markers": {"mark": "circle", "size": 10}}]}),
+        )
+        .unwrap();
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(18.0, 14.0));
+        let map = app.session.map();
+        let symbol = |name: &str| map.layer_by_name(name).unwrap().renderer.base_symbol();
+
+        let line = patch_shapes(&app, "Rivers", true, None);
+        let ink = inks(&line);
+        assert_eq!(ink.first(), Some(&black), "the casing first");
+        assert!(ink.iter().filter(|c| **c == red).count() > 2, "the core's dashes over it");
+        assert!(!ink.contains(&c32(symbol("Rivers").stroke)), "not the symbol's single line");
+        assert!(line.iter().all(|c| r.contains_rect(c.clip_rect)), "cut to the box");
+
+        let polygon = inks(&patch_shapes(&app, "Lakes", true, None));
+        assert_eq!(polygon.first(), Some(&green), "the fill");
+        assert!(polygon.contains(&black), "the hatch over it");
+        assert_eq!(polygon.last(), Some(&c32(symbol("Lakes").stroke)), "the outline over both");
+
+        let across = |k| {
+            let shapes = patch_shapes(&app, "Cities", true, k);
+            assert!(!inks(&shapes).contains(&c32(symbol("Cities").fill)), "the mark, not the symbol's marker");
+            shapes.iter().find_map(|c| {
+                matches!(&c.shape, egui::Shape::Circle(dot) if dot.fill == red).then(|| c.shape.visual_bounding_rect().width())
+            })
+        };
+        assert_eq!(across(None), Some(10.0), "the mark as large as the map draws it");
+        assert_eq!(across(Some(0.5)), Some(5.0), "a size row's at its scale");
+
+        // Size rows share the scale that fits the largest: its symbol, or its marks when larger.
+        let cities = map.layer_by_name("Cities").unwrap();
+        let row = |size: f32, mark: f32| LegendEntry {
+            label: String::new(),
+            symbol: Symbol { size, ..symbol("Cities") },
+            strokes: vec![LineStroke { markers: Some(LineMarkers { size: mark, ..LineMarkers::default() }), ..LineStroke::default() }],
+            fills: Vec::new(),
+            fallback: false,
+        };
+        assert_eq!(size_rows_scale(cities, &[row(10.0, 4.0), row(20.0, 7.0)]), 1.0, "marks that fit as drawn");
+        assert_eq!(size_rows_scale(cities, &[row(10.0, 14.0), row(20.0, 28.0)]), 0.5, "the largest marks, not the symbol");
+
+        // As the map: an outline-only mark shows its outline, and a line of no width isn't drawn.
+        let blue = egui::Color32::from_rgb(0, 0, 255);
+        let hollow = json!([{"color": "#00000000", "width": 2, "markers": {"mark": "square", "size": 10, "outline": "#0000FF"}}]);
+        app.run("layer.lineStrokes", json!({"layer": "Cities", "strokes": hollow})).unwrap();
+        assert!(inks(&patch_shapes(&app, "Cities", true, None)).contains(&blue), "the hollow square's outline");
+        let unseen = json!([{"color": "#000000", "width": 6}, {"color": "#0000FF", "width": 0}]);
+        app.run("layer.lineStrokes", json!({"layer": "Rivers", "strokes": unseen})).unwrap();
+        assert!(!inks(&patch_shapes(&app, "Rivers", true, None)).contains(&blue), "no line of no width");
+        let ticks = json!([{"color": "#0000FF", "width": 0, "markers": {"mark": "hash", "size": 6}}]);
+        app.run("layer.lineStrokes", json!({"layer": "Rivers", "strokes": ticks})).unwrap();
+        assert!(!inks(&patch_shapes(&app, "Rivers", true, None)).contains(&blue), "no hash marks of no width along a line");
+        // A wide outline counts in the fit: the whole mark stays in the box.
+        let ringed = json!([{"color": "#FF0000", "width": 8, "markers": {"mark": "circle", "size": 10, "outline": "#0000FF"}}]);
+        app.run("layer.lineStrokes", json!({"layer": "Cities", "strokes": ringed})).unwrap();
+        let shapes = patch_shapes(&app, "Cities", true, None);
+        assert!(inks(&shapes).contains(&blue), "the outline");
+        assert!(shapes.iter().all(|c| r.expand(0.01).contains_rect(c.shape.visual_bounding_rect())), "inside the box, outline and all");
     }
 
     /// The stroke and fill editors send an image back with every change, so it is kept; one that

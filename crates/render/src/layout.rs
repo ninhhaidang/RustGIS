@@ -3098,7 +3098,9 @@ fn stacked_swatch(
         view: &view,
         ppp: ppp * k,
         wireframe: false,
-        cull: Extent::EMPTY,
+        // (The swatch's own view: the stroke and fill paths don't cull today, and one that does
+        // still keeps the swatch, where an empty extent would drop it.)
+        cull: crate::cull_extent(&view, crate::CULL_MARGIN),
         globe: None,
         sprites: Default::default(),
         bursts: Default::default(),
@@ -7737,6 +7739,23 @@ Elaboração: RustGIS",
         assert!(inked(&pm, 7..21, 19..26, white) > 5);
         assert_eq!(inked(&pm, 7..21, 34..41, black), 0, "class b has none");
         assert!(inked(&pm, 7..21, 34..41, red) > 50, "its symbol's fill");
+    }
+
+    /// A polygon's outline is drawn over its stacked fills, as on the map (#2490).
+    #[test]
+    fn a_legend_draws_a_polygons_outline_over_its_fills() {
+        let (blue, green) = (Rgba::rgb(0, 0, 255), Rgba::rgb(0, 200, 0));
+        let s = rustgis_map::Symbol { stroke: blue, stroke_width: 2.0, ..rustgis_map::Symbol::default_for(GeometryType::Polygon, 0) };
+        let solid = rustgis_map::fills::FillLayer { color: Some(green), pattern: rustgis_map::fills::FillPattern::Solid };
+        let map = shape_legend_map(GeometryType::Polygon, |l| {
+            l.renderer = rustgis_map::Renderer::Single(s);
+            l.fill_layers = vec![solid];
+        });
+        let pm = point_legend(&map);
+        // The box's top edge, 3 points down, under the 2-point outline; its inside, the fill.
+        assert!(inked(&pm, 1..15, 3..4, blue) > 10, "the outline");
+        assert_eq!(inked(&pm, 1..15, 3..4, green), 0, "no fill over it");
+        assert!(inked(&pm, 2..14, 5..10, green) > 50, "the fill inside");
     }
 
     /// A diagram's categories keep their own colour on a layer with stacked strokes or fills.
