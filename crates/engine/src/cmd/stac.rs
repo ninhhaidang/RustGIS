@@ -1263,13 +1263,21 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                     return Err(e);
                 }
             };
+            let file = first.split('#').next().unwrap_or(first);
+            // A file left to the app to download (a plugin's command in the app, whose address
+            // doesn't name a GeoTIFF) added nothing yet, and would come as a file read whole.
+            if r.get("pending").and_then(Value::as_bool) == Some(true) {
+                undo(s);
+                return Err(format!(
+                    "{file}: left to the app to download, not read in place as a GeoTIFF; a data cube needs cloud-optimised GeoTIFFs (.tif) read in place"
+                ));
+            }
             // The tile layer add_url put in (at the index it gives, and the file's address) follows
             // the slider through its dates; a file read whole instead (a GeoTIFF that isn't
             // cloud-optimised) can't.
             let m = s.map_mut();
-            let file = first.split('#').next();
             let at = r.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok());
-            match at.and_then(|i| m.tiles.get_mut(i)).filter(|t| t.url.split('#').next() == file) {
+            match at.and_then(|i| m.tiles.get_mut(i)).filter(|t| t.url.split('#').next() == Some(file)) {
                 Some(t) => {
                     t.time_urls = urls;
                     t.name = name;
@@ -1280,10 +1288,7 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 None => {
                     undo(s);
-                    return Err(format!(
-                        "{}: not a cloud-optimised GeoTIFF read in place; a data cube needs those",
-                        first.split('#').next().unwrap_or(first)
-                    ));
+                    return Err(format!("{file}: not a cloud-optimised GeoTIFF read in place; a data cube needs those"));
                 }
             }
         }
