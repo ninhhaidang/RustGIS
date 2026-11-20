@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod area_labels;
+mod bands;
 mod block;
 pub mod cancel;
 mod canvas;
@@ -881,7 +882,7 @@ struct Ctx<'a> {
     /// Set when drawing the globe; coordinates are then longitude/latitude, not Web Mercator.
     globe: Option<Globe>,
     /// Point marker sprites drawn so far, by symbol and quarter-pixel offset.
-    sprites: std::cell::RefCell<std::collections::HashMap<SpriteKey, Option<Pixmap>>>,
+    sprites: std::cell::RefCell<std::collections::HashMap<SpriteKey, Option<std::sync::Arc<Pixmap>>>>,
     /// The pixels the frame's shapeburst fills have worked on (`gradient_fill::FRAME_BURST_PX`),
     /// shared by a layer's scaled context (a reference scale's) with the frame's.
     bursts: std::rc::Rc<std::cell::Cell<f32>>,
@@ -1329,12 +1330,12 @@ impl Ctx<'_> {
                 let c = reach as f32 + qx as f32 / 4.0;
                 let d = reach as f32 + qy as f32 / 4.0;
                 draw_marker(&mut sp, c, d, s, 1.0, None, self.ppp);
-                sp.into_pixmap()
+                std::sync::Arc::new(sp.into_pixmap())
             });
             sprites.insert(key, sprite);
         }
         if let Some(Some(sp)) = sprites.get(&key) {
-            blend_over(pm.pixels(), sp, ix - reach, iy - reach);
+            pm.pixel_op(bands::PixelOp::Sprite { pixmap: sp.clone(), x: ix - reach, y: iy - reach });
         }
     }
 
@@ -1397,10 +1398,10 @@ impl Ctx<'_> {
         };
         if let Some(f) = fill {
             let area = if width > 0.0 { inner } else { sx * sy };
-            splat_color(pm.pixels(), cx, cy, f, area);
+            pm.pixel_op(bands::PixelOp::Splat { cx, cy, color: f, coverage: area });
         }
         if width > 0.0 {
-            splat_color(pm.pixels(), cx, cy, stroke, outer - inner);
+            pm.pixel_op(bands::PixelOp::Splat { cx, cy, color: stroke, coverage: outer - inner });
         }
         true
     }
@@ -1494,7 +1495,8 @@ impl Ctx<'_> {
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
             return false;
         }
-        small_polygon_pixels(pm.pixels(), [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)], width, s.fill, s.stroke, share as f32);
+        let b = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+        pm.pixel_op(bands::PixelOp::SmallPolygon { b, width, fill: s.fill, stroke: s.stroke, share: share as f32 });
         true
     }
 
@@ -1838,7 +1840,7 @@ fn contours(path: &tiny_skia::Path) -> Vec<tiny_skia::Path> {
 }
 
 /// Blends `color` at `coverage` (in pixels, spread bilinearly) around (`cx`, `cy`) device pixels.
-fn splat_color(pm: &mut Pixmap, cx: f32, cy: f32, color: Rgba, coverage: f32) {
+fn splat_color(pm: &mut tiny_skia::PixmapMut, cx: f32, cy: f32, color: Rgba, coverage: f32) {
     if color.a() == 0 || coverage.is_nan() || coverage <= 0.0 || !cx.is_finite() || !cy.is_finite() {
         return;
     }
@@ -1867,9 +1869,12 @@ fn splat_color(pm: &mut Pixmap, cx: f32, cy: f32, color: Rgba, coverage: f32) {
     }
 }
 
-/// Coverage of a tiny box and its mitred outline in each touched device pixel.
-fn small_polygon_pixels(pm: &mut Pixmap, b: [f32; 4], width: f32, fill: Rgba, stroke: Rgba, share: f32) {
-    if b[2] + width < 0.0 || b[3] + width < 0.0 || b[0] - width >= pm.width() as f32 || b[1] - width >= pm.height() as f32 {
+/// Coverage of a tiny box and its mitred outline in each touched device pixel, on `pm` whose first
+/// row is the frame's row `top` (a band, [`bands`]). Snapped in the frame's own coordinates, then
+/// moved up: a band's pixels are the whole frame's.
+fn small_polygon_pixels(pm: &mut tiny_skia::PixmapMut, top: u32, b: [f32; 4], width: f32, fill: Rgba, stroke: Rgba, share: f32) {
+    let t = top as f32;
+    if b[2] + width < 0.0 || b[3] + width < t || b[0] - width >= pm.width() as f32 || b[1] - width >= t + pm.height() as f32 {
         return;
     }
     // tiny-skia's path rasterizer samples at quarter-pixel intervals.
@@ -1887,10 +1892,12 @@ fn small_polygon_pixels(pm: &mut Pixmap, b: [f32; 4], width: f32, fill: Rgba, st
         }
         d[3] = (a + (d[3] as u16 * inv + 127) / 255).min(255) as u8;
     }
+    // Quarter pixels, moved by whole rows: exact.
+    let up = |b: [f32; 4]| [b[0], b[1] - t, b[2], b[3] - t];
     let hw = width / 2.0;
-    let outer = snap([b[0] - hw, b[1] - hw, b[2] + hw, b[3] + hw]);
-    let inner = snap([b[0] + hw, b[1] + hw, b[2] - hw, b[3] - hw]);
-    let b = snap(b);
+    let outer = up(snap([b[0] - hw, b[1] - hw, b[2] + hw, b[3] + hw]));
+    let inner = up(snap([b[0] + hw, b[1] + hw, b[2] - hw, b[3] - hw]));
+    let b = up(snap(b));
     let (w, h) = (pm.width() as i64, pm.height() as i64);
     let (x0, y0) = ((outer[0].floor() as i64).clamp(0, w), (outer[1].floor() as i64).clamp(0, h));
     let (x1, y1) = ((outer[2].ceil() as i64).clamp(0, w), (outer[3].ceil() as i64).clamp(0, h));
@@ -2023,7 +2030,7 @@ fn draw_marker(pm: &mut Canvas, x: f32, y: f32, s: &Symbol, opacity: f32, halo: 
 }
 
 /// Composites premultiplied `src` over `dst` with its top left corner at (`x`, `y`).
-fn blend_over(dst: &mut Pixmap, src: &Pixmap, x: i64, y: i64) {
+fn blend_over(dst: &mut tiny_skia::PixmapMut, src: &Pixmap, x: i64, y: i64) {
     let (dw, dh) = (dst.width() as i64, dst.height() as i64);
     let (sw, sh) = (src.width() as i64, src.height() as i64);
     let (x0, x1) = (x.max(0), (x + sw).min(dw));
@@ -4896,6 +4903,9 @@ fn render_frame(
                         draw_diagrams(dest);
                     }
                 } else {
+                    // Drawn in bands on several threads on a large frame (#1067), from here to the
+                    // layer's diagrams.
+                    dest.begin_bands();
                     let mut stroke_paths = stroke_paths::Paths::default();
                     // Symbol levels: lines with stacked strokes wait, and go down a level at a time
                     // after the rest (each batch of a streamed layer on its own).
@@ -5026,6 +5036,7 @@ fn render_frame(
                     if !tilted_extrusion {
                         draw_diagrams(dest);
                     }
+                    dest.end_bands();
                 }
                 cpu_dirty |= drawn_here;
             }
@@ -9089,6 +9100,52 @@ mod tests {
         // Point markers are stamped from sprites at quarter-pixel offsets (the cities' anti-aliased
         // edges moved by up to an eighth of a pixel); nothing else changed this frame.
         assert_eq!(h, 0x89e2_f6ec_5589_a46e, "golden pixmap hash changed: {h:#x}");
+    }
+
+    /// #1067: a frame large enough to draw its layers in bands comes out the same, byte for byte,
+    /// whatever the user's thread setting: countries, rivers and lakes crossing bands, city
+    /// markers stamped from sprites, and a dense layer of tiny squares drawn as pixels.
+    #[test]
+    fn a_large_frame_is_the_same_on_one_thread_or_many() {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = rustgis_data::threads::set_max(None);
+            }
+        }
+        let _restore = Restore;
+        let mut m = sample_world();
+        let mut d = Dataset::new("dense", GeometryType::Polygon, vec![]);
+        for i in 0..20_000 {
+            let (x, y, s) = (-10.0 + f64::from(i % 200) * 0.2, 35.0 + f64::from(i / 200) * 0.2, 0.05 + f64::from(i % 7) * 0.03);
+            d.push(
+                Some(Geometry::Polygon(vec![vec![vec![
+                    Coord::new(x, y),
+                    Coord::new(x + s, y),
+                    Coord::new(x + s, y + s),
+                    Coord::new(x, y + s),
+                    Coord::new(x, y),
+                ]]])),
+                vec![],
+            );
+        }
+        m.add_dataset(d);
+        let europe = lonlat_to_merc(Coord::new(10.0, 48.0));
+        let view = View {
+            width: 1200.0,
+            height: 1000.0,
+            pixels_per_point: 1.0,
+            camera: Camera { center: europe, res: 2500.0, bearing: 0.0, pitch: 0.0 },
+            sky: false,
+        };
+        assert!(bands::applies(1200, 1000));
+        let mut draw = |threads: usize| {
+            rustgis_data::threads::set_max(Some(threads)).unwrap();
+            render(&mut m, &view).expect("render").pixmap
+        };
+        // (On a machine with one core both are one thread; `bands::tests` draws on several anyway.)
+        let one = draw(1);
+        assert!(one.data() == draw(6).data(), "six threads drew other pixels than one");
     }
 
     fn square_layer(m: &mut Map, name: &str, x: f64, y: f64, s: f64) -> u32 {

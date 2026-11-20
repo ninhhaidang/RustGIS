@@ -34,7 +34,8 @@ const MARKERS_BYTES: usize = 128 << 20;
 /// cheap keys collide never swap), and their keys oldest first (for eviction).
 #[derive(Default)]
 struct Cache {
-    images: HashMap<u64, (String, Option<Pixmap>)>,
+    /// Shared, so a frame drawn in bands keeps the picture, not a copy ([`Canvas::draw_shared`]).
+    images: HashMap<u64, (String, Option<Arc<Pixmap>>)>,
     order: std::collections::VecDeque<u64>,
 }
 
@@ -44,7 +45,7 @@ struct Cache {
 #[derive(Default)]
 struct Markers {
     /// Each image as drawn, and its height for its width.
-    images: HashMap<Picture, Option<(Pixmap, f32)>>,
+    images: HashMap<Picture, Option<(Arc<Pixmap>, f32)>>,
     /// The images compressed, for recording canvases (vector exports), done the first time one
     /// records it: every point then shares them, and a writer keeps them once.
     packed: HashMap<Picture, Option<Arc<Pixels>>>,
@@ -129,20 +130,20 @@ pub fn draw(pm: &mut Canvas, ds: &Dataset, row: usize, (x0, y0, x1, y1): (f32, f
                 let Some(old) = cache.order.pop_front() else { break };
                 cache.images.remove(&old);
             }
-            if cache.images.insert(key, (b64.clone(), decode(b64))).is_none() {
+            if cache.images.insert(key, (b64.clone(), decode(b64).map(Arc::new))).is_none() {
                 cache.order.push_back(key);
             }
         }
         let Some((_, Some(img))) = cache.images.get(&key) else { return };
         let t = Transform::from_row(w / img.width() as f32, 0.0, 0.0, h / img.height() as f32, x0.min(x1), y0.min(y1));
         let paint = PixmapPaint { opacity, quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
-        pm.draw_pixmap(0, 0, img.as_ref(), &paint, t, None);
+        pm.draw_shared(img, None, &paint, t);
     });
 }
 
 /// Runs `f` on picture marker `p`'s decoded image, its height for its width and, with `pack`, the
 /// image compressed (see [`Markers::packed`]); `None` if it has none or it doesn't decode.
-fn with_marker<R>(p: Picture, pack: bool, f: impl FnOnce(&Pixmap, f32, Option<&Arc<Pixels>>) -> R) -> Option<R> {
+fn with_marker<R>(p: Picture, pack: bool, f: impl FnOnce(&Arc<Pixmap>, f32, Option<&Arc<Pixels>>) -> R) -> Option<R> {
     if p.is_default() {
         return None;
     }
@@ -150,7 +151,7 @@ fn with_marker<R>(p: Picture, pack: bool, f: impl FnOnce(&Pixmap, f32, Option<&A
         let mut cache = cache.borrow_mut();
         let cache = &mut *cache;
         if !cache.images.contains_key(&p) {
-            let img = marker_image(p, MARKER_SIDE);
+            let img = marker_image(p, MARKER_SIDE).map(|(i, aspect)| (Arc::new(i), aspect));
             let size = img.as_ref().map_or(0, |(i, _)| i.data().len());
             // Evict the oldest (not all of them) to stay within the count and memory budget.
             while cache.images.len() >= MARKERS || (cache.bytes + size > MARKERS_BYTES && !cache.images.is_empty()) {
@@ -172,7 +173,7 @@ fn with_marker<R>(p: Picture, pack: bool, f: impl FnOnce(&Pixmap, f32, Option<&A
                 .packed
                 .entry(p)
                 .or_insert_with(|| {
-                    let px = Pixels::new(img.as_ref()).map(Arc::new);
+                    let px = Pixels::new(Pixmap::as_ref(img)).map(Arc::new);
                     cache.bytes += px.as_ref().map_or(0, |px| px.cost());
                     px
                 })
@@ -206,7 +207,7 @@ pub(crate) fn draw_marker(pm: &mut Canvas, p: Picture, width: f32, t: Transform,
         let height = width * aspect;
         let at = t.pre_translate(-width / 2.0, -height / 2.0).pre_scale(width / img.width() as f32, height / img.height() as f32);
         let paint = PixmapPaint { opacity, quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
-        pm.draw_shared(img.as_ref(), packed, &paint, at);
+        pm.draw_shared(img, packed, &paint, at);
     })
     .is_some()
 }

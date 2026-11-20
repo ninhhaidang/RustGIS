@@ -601,7 +601,7 @@ fn draw_with(
     // Drawn at its own size and fully opaque: a plain copy over, much cheaper than the
     // rasteriser's general image drawing.
     if k == 1.0 && opacity >= 1.0 {
-        crate::blend_over(pm, &lay, x0 as i64, y0 as i64);
+        crate::blend_over(&mut pm.as_mut(), &lay, x0 as i64, y0 as i64);
         return;
     }
     let quality = if style.resampling == Resampling::Bilinear { FilterQuality::Bilinear } else { FilterQuality::Nearest };

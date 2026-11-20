@@ -8,6 +8,10 @@
 //! alone, cut to the path; a pixmap drawn is placed as a picture. What is drawn on the pixels
 //! gathers on a transparent pixmap of the canvas's size, placed as one picture (cropped to what
 //! was drawn) before the next thing kept, so the drawing order stays.
+//!
+//! A canvas that draws pixels can keep a layer's drawing for bands instead
+//! ([`Canvas::begin_bands`], see [`crate::bands`]): drawn band by band on several threads when the
+//! layer ends ([`Canvas::end_bands`]), or before anything else touches the pixels.
 
 use std::sync::Arc;
 
@@ -16,12 +20,15 @@ use tiny_skia::{
     BlendMode, Color, FillRule, IntRect, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
 };
 
+use crate::bands::{Bands, PixelOp};
 use crate::vector::{self, Brush, Clip, Drawing, GlyphRun};
 
 /// See the module.
 pub struct Canvas {
     pm: Pixmap,
     rec: Option<Box<Recording>>,
+    /// The drawing kept for bands ([`Canvas::begin_bands`]); only on a canvas that draws pixels.
+    bands: Option<Box<Bands>>,
 }
 
 /// A recording canvas's drawing, and what its pixels hold.
@@ -46,7 +53,7 @@ impl Canvas {
 
     /// A canvas drawing onto `pm`, keeping what it has.
     pub fn from_pixmap(pm: Pixmap) -> Canvas {
-        Canvas { pm, rec: None }
+        Canvas { pm, rec: None, bands: None }
     }
 
     /// A canvas `width` × `height` pixels that records (see the module).
@@ -63,6 +70,7 @@ impl Canvas {
                 halo: None,
                 decorative: false,
             })),
+            bands: None,
         })
     }
 
@@ -90,8 +98,55 @@ impl Canvas {
     }
 
     /// The pixels drawn (on a recording canvas, those not yet placed).
-    pub fn into_pixmap(self) -> Pixmap {
+    pub fn into_pixmap(mut self) -> Pixmap {
+        self.draw_kept();
         self.pm
+    }
+
+    /// Keeps what is drawn from now on for bands, drawn on several threads (see [`crate::bands`]),
+    /// on a large canvas that draws pixels; on a recording or small one, or in the browser, nothing
+    /// changes. Ended by [`Canvas::end_bands`]; anything that touches the pixels meanwhile first
+    /// draws what is kept, so the order stays.
+    pub(crate) fn begin_bands(&mut self) {
+        if self.rec.is_none() && self.bands.is_none() && crate::bands::applies(self.pm.width(), self.pm.height()) {
+            self.bands = Some(Box::default());
+        }
+    }
+
+    /// Draws what is kept for bands and keeps no more ([`Canvas::begin_bands`]).
+    pub(crate) fn end_bands(&mut self) {
+        self.draw_kept();
+        self.bands = None;
+    }
+
+    /// Draws what is kept for bands, if anything, keeping on.
+    fn draw_kept(&mut self) {
+        if let Some(b) = &mut self.bands {
+            b.draw(&mut self.pm);
+        }
+    }
+
+    /// Draws what is kept once it has grown past its limit.
+    fn draw_kept_if_full(&mut self) {
+        if self.bands.as_ref().is_some_and(|b| b.full()) {
+            self.draw_kept();
+        }
+    }
+
+    /// The bytes of drawing waiting for bands.
+    #[cfg(test)]
+    pub(crate) fn kept_bytes(&self) -> usize {
+        self.bands.as_ref().map_or(0, |b| b.bytes())
+    }
+
+    /// Draws `op` straight on the pixels, or keeps it for bands.
+    pub(crate) fn pixel_op(&mut self, op: PixelOp) {
+        if let Some(b) = &mut self.bands {
+            b.pixels(op);
+            self.draw_kept_if_full();
+            return;
+        }
+        op.apply(&mut self.pixels().as_mut(), 0);
     }
 
     /// What a recording canvas kept, everything drawn placed; `None` if it doesn't record.
@@ -110,13 +165,14 @@ impl Canvas {
         self.pm.height()
     }
 
-    /// The pixels, to read.
+    /// The pixels, to read (what is kept for bands not yet drawn: [`Canvas::end_bands`] first).
     pub fn pixmap(&self) -> &Pixmap {
         &self.pm
     }
 
     /// The pixels, for drawing that is pixels by nature (see the module).
     pub fn pixels(&mut self) -> &mut Pixmap {
+        self.draw_kept();
         if let Some(r) = &mut self.rec {
             r.dirty = true;
         }
@@ -125,6 +181,10 @@ impl Canvas {
 
     /// Fills `path` with `paint`, as `Pixmap::fill_path` does.
     pub fn fill_path(&mut self, path: &Path, paint: &Paint, rule: FillRule, transform: Transform, mask: Option<&Mask>) {
+        if mask.is_none() && self.bands.as_mut().is_some_and(|b| b.fill(path, paint, rule, transform)) {
+            self.draw_kept_if_full();
+            return;
+        }
         if self.rec.is_none() || mask.is_some() || paint.blend_mode != BlendMode::SourceOver {
             self.pixels().fill_path(path, paint, rule, transform, mask);
             return;
@@ -146,6 +206,10 @@ impl Canvas {
 
     /// Strokes `path` with `paint` and `stroke`, as `Pixmap::stroke_path` does.
     pub fn stroke_path(&mut self, path: &Path, paint: &Paint, stroke: &Stroke, transform: Transform, mask: Option<&Mask>) {
+        if mask.is_none() && self.bands.as_mut().is_some_and(|b| b.stroke(path, paint, stroke, transform)) {
+            self.draw_kept_if_full();
+            return;
+        }
         if self.rec.is_none() || mask.is_some() || paint.blend_mode != BlendMode::SourceOver {
             self.pixels().stroke_path(path, paint, stroke, transform, mask);
             return;
@@ -175,8 +239,12 @@ impl Canvas {
 
     /// Fills `rect` with `paint`, as `Pixmap::fill_rect` does.
     pub fn fill_rect(&mut self, rect: Rect, paint: &Paint, transform: Transform, mask: Option<&Mask>) {
+        if mask.is_none() && self.bands.as_mut().is_some_and(|b| b.rect(rect, paint, transform)) {
+            self.draw_kept_if_full();
+            return;
+        }
         if self.rec.is_none() {
-            self.pm.fill_rect(rect, paint, transform, mask);
+            self.pixels().fill_rect(rect, paint, transform, mask);
             return;
         }
         self.fill_path(&PathBuilder::from_rect(rect), paint, FillRule::Winding, transform, mask);
@@ -185,6 +253,10 @@ impl Canvas {
     /// Draws `pixmap` with its top left at (`x`, `y`) moved by `transform`, as
     /// `Pixmap::draw_pixmap` does.
     pub fn draw_pixmap(&mut self, x: i32, y: i32, pixmap: PixmapRef, paint: &PixmapPaint, transform: Transform, mask: Option<&Mask>) {
+        if mask.is_none() && self.bands.as_mut().is_some_and(|b| b.pixmap(x, y, pixmap, paint, transform)) {
+            self.draw_kept_if_full();
+            return;
+        }
         let blend = blend_of(paint.blend_mode);
         if self.rec.is_none() || mask.is_some() || blend.is_none() {
             self.pixels().draw_pixmap(x, y, pixmap, paint, transform, mask);
@@ -210,11 +282,18 @@ impl Canvas {
     /// same pixels already compressed, which a writer keeps once ([`Drawing::shared_image`]).
     pub(crate) fn draw_shared(
         &mut self,
-        pixmap: PixmapRef,
+        pixmap: &Arc<Pixmap>,
         pixels: Option<&Arc<vector::Pixels>>,
         paint: &PixmapPaint,
         transform: Transform,
     ) {
+        // Kept for bands as the shared pixmap, not a copy for each place.
+        if let Some(b) = &mut self.bands {
+            b.shared_pixmap(pixmap, paint, transform);
+            self.draw_kept_if_full();
+            return;
+        }
+        let pixmap = Pixmap::as_ref(pixmap);
         let Some(pixels) = pixels.filter(|_| self.rec.is_some() && blend_of(paint.blend_mode) == Some(Blend::Normal)) else {
             self.draw_pixmap(0, 0, pixmap, paint, transform, None);
             return;
@@ -227,7 +306,7 @@ impl Canvas {
     /// Covers the whole canvas with `color`.
     pub fn fill(&mut self, color: Color) {
         if self.rec.is_none() {
-            self.pm.fill(color);
+            self.pixels().fill(color);
             return;
         }
         let Some(r) = Rect::from_xywh(0.0, 0.0, self.width() as f32, self.height() as f32) else { return };
@@ -330,7 +409,8 @@ impl Canvas {
     /// `blend`, inside `clip` (in this canvas's space). `child` comes from [`Canvas::sub`] (or
     /// draws pixels), so it records only when this canvas does: its recording is placed on this
     /// one's, its pixels on these pixels.
-    pub fn place(&mut self, child: Canvas, transform: Transform, opacity: f32, blend: Blend, clip: Option<Clip>) {
+    pub fn place(&mut self, mut child: Canvas, transform: Transform, opacity: f32, blend: Blend, clip: Option<Clip>) {
+        child.draw_kept();
         if self.rec.is_none() || !child.is_recording() {
             let paint = PixmapPaint { opacity, blend_mode: crate::blend_mode(blend), quality: tiny_skia::FilterQuality::Bilinear };
             // Cut to `clip` as the recording is: a mask the size of these pixels.
