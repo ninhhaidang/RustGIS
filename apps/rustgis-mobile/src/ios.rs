@@ -563,6 +563,7 @@ fn fix(location: &CLLocation) -> Option<Fix> {
         lat: place.latitude,
         accuracy: Some(accuracy).filter(|a| a.is_finite()),
         time: (ms.is_finite() && ms >= 0.0).then_some(ms as i64),
+        elapsed_realtime_nanos: None,
     })
 }
 

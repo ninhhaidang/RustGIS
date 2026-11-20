@@ -1863,18 +1863,77 @@ mod tests {
         assert_eq!(app.session.notices_since(mark).len(), 1);
         // With one, the map's middle (the capture cross) goes to it.
         app.locate = true;
-        app.position = Some(Fix { lon: 30.0, lat: -2.0, accuracy: Some(5.0), time: None });
+        app.position = Some(Fix { lon: 30.0, lat: -2.0, accuracy: Some(5.0), time: None, elapsed_realtime_nanos: None });
         go_to_position(&mut app);
         let (lon, lat) = cross_place(&app).unwrap();
         assert!((lon - 30.0).abs() < 1e-6 && (lat + 2.0).abs() < 1e-6, "{lon} {lat}");
         // Every sheet draws with the position on the map, its ring too (a wide one, to be drawn).
         // An accuracy out of all measure draws too, without its ring.
         for accuracy in [500_000.0, 1e300, f64::INFINITY] {
-            app.position = Some(Fix { lon: 30.0, lat: -2.0, accuracy: Some(accuracy), time: None });
+            app.position = Some(Fix { lon: 30.0, lat: -2.0, accuracy: Some(accuracy), time: None, elapsed_realtime_nanos: None });
             for shown in [Sheet::None, Sheet::Capture, Sheet::More] {
                 frame(&mut app, &ctx, shown);
             }
         }
+    }
+
+    #[test]
+    fn live_position_prefers_a_recent_accurate_android_fix() {
+        use rustgis_ui_egui::rustgis_engine::platform::Event;
+
+        let mut app = RustGisApp::with_sample();
+        app.locate = true;
+        let mut received = Vec::new();
+        for (line, expected_lat) in [
+            ("position\t2.2945\t48.85840\t5\t10000\t1000000000", 48.85840),
+            // One second later, the network fix is 150 m north. The wall clock jumped ahead.
+            ("position\t2.2945\t48.85975\t150\t20000\t2000000000", 48.85840),
+            // Exactly five seconds after the GPS fix, the network fix can replace it.
+            ("position\t2.2945\t48.85975\t150\t24000\t6000000000", 48.85975),
+            // A newer, better fix replaces the network fix even if the wall clock went back.
+            ("position\t2.2945\t48.85850\t4\t8000\t7000000000", 48.85850),
+            // A late GPS fix is older, even though its wall clock time and accuracy look better.
+            ("position\t2.2945\t48.85830\t3\t30000\t6999999999", 48.85850),
+        ] {
+            let Event::Position(fix) = Event::parse(line) else { panic!("invalid position event: {line}") };
+            received.push(fix);
+            app.report_position(fix);
+            assert_eq!(app.position.unwrap().lat, expected_lat);
+            go_to_position(&mut app);
+            let (_, lat) = cross_place(&app).unwrap();
+            assert!((lat - expected_lat).abs() < 1e-6, "{lat}");
+        }
+        // Track recording and averaging still receive every fix in arrival order.
+        assert_eq!(app.fixes.into_iter().collect::<Vec<_>>(), received);
+    }
+
+    #[test]
+    fn live_position_uses_the_fix_timestamp_without_a_monotonic_clock() {
+        use rustgis_ui_egui::rustgis_engine::platform::Fix;
+
+        let mut app = RustGisApp::with_sample();
+        let current = Fix { lon: 30.0, lat: -2.0, accuracy: Some(5.0), time: Some(10_000), elapsed_realtime_nanos: None };
+        app.report_position(current);
+        // A little less accurate: GPS jitter still moves the marker.
+        let jitter = Fix { accuracy: Some(8.0), time: Some(11_000), ..current };
+        app.report_position(jitter);
+        assert_eq!(app.position, Some(jitter));
+        // Much less accurate and recent: held back until five seconds have passed.
+        app.report_position(Fix { accuracy: None, time: Some(15_999), ..jitter });
+        assert_eq!(app.position, Some(jitter));
+        let stale = Fix { accuracy: None, time: Some(16_000), ..jitter };
+        app.report_position(stale);
+        assert_eq!(app.position, Some(stale));
+        // A late fix, a little older than the shown one, is dropped even though it is better.
+        app.report_position(Fix { accuracy: Some(1.0), time: Some(15_999), ..current });
+        assert_eq!(app.position, Some(stale));
+        // The clock set back: the fix is taken instead of freezing the position.
+        let after_step = Fix { accuracy: Some(5.0), time: Some(1_000), ..current };
+        app.report_position(after_step);
+        assert_eq!(app.position, Some(after_step));
+        let next = Fix { accuracy: Some(5.0), time: Some(2_000), ..current };
+        app.report_position(next);
+        assert_eq!(app.position, Some(next));
     }
 
     #[test]
@@ -2247,7 +2306,7 @@ mod tests {
         start_track(&mut app, &ctx);
         // A position the line can't hold makes the layer refuse the track.
         for lon in [f64::NAN, 10.0, 10.01] {
-            app.report_position(Fix { lon, lat: 5.0, accuracy: Some(3.0), time: None });
+            app.report_position(Fix { lon, lat: 5.0, accuracy: Some(3.0), time: None, elapsed_realtime_nanos: None });
         }
         frame(&mut app, &ctx, Sheet::None);
         let mark = app.session.notice_mark();
@@ -2270,7 +2329,13 @@ mod tests {
         let mut app = RustGisApp::with_sample();
         start_track(&mut app, &ctx);
         for i in 0..rustgis_ui_egui::FIXES_KEPT + 5 {
-            app.report_position(Fix { lon: 10.0, lat: 5.0, accuracy: Some(3.0), time: i64::try_from(i).ok() });
+            app.report_position(Fix {
+                lon: 10.0,
+                lat: 5.0,
+                accuracy: Some(3.0),
+                time: i64::try_from(i).ok(),
+                elapsed_realtime_nanos: None,
+            });
         }
         let mark = app.session.notice_mark();
         frame(&mut app, &ctx, Sheet::None);
@@ -2285,7 +2350,13 @@ mod tests {
         let mut app = RustGisApp::with_sample();
         start_track(&mut app, &ctx);
         for i in 0..3 {
-            app.report_position(Fix { lon: 10.0 + f64::from(i) * 0.01, lat: 5.0, accuracy: Some(3.0), time: Some(i64::from(i) * 1000) });
+            app.report_position(Fix {
+                lon: 10.0 + f64::from(i) * 0.01,
+                lat: 5.0,
+                accuracy: Some(3.0),
+                time: Some(i64::from(i) * 1000),
+                elapsed_realtime_nanos: None,
+            });
         }
         frame(&mut app, &ctx, Sheet::None);
         // As the More sheet's row does: the track is added, then the interface goes.

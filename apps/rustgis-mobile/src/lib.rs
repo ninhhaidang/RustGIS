@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn the_oldest_positions_go_past_the_limit_and_are_counted() {
         use rustgis_engine::platform::{Event, Fix};
-        let at = |lon: f64| Event::Position(Fix { lon, lat: 0.0, accuracy: None, time: None });
+        let at = |lon: f64| Event::Position(Fix { lon, lat: 0.0, accuracy: None, time: None, elapsed_realtime_nanos: None });
         let mut queue = super::Queue::new(2);
         queue.add(Event::Cancelled);
         for lon in [1.0, 2.0, 3.0] {

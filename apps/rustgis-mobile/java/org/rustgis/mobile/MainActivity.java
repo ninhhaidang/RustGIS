@@ -22,8 +22,9 @@ import java.util.ArrayList;
  *   ended     purpose               a request whose every file failed to be copied
  *   cancelled                        a picker closed without a choice
  *   saved     name                   a file written where the user chose
- *   position  lon  lat  accuracy  time   where the device is (accuracy in metres, or empty;
- *                                        time in milliseconds since 1970)
+ *   position  lon  lat  accuracy  time  elapsed   where the device is (accuracy in metres, or
+ *                                        empty; time in milliseconds since 1970; elapsed in
+ *                                        nanoseconds since boot, from getElapsedRealtimeNanos)
  *   stopped                          positioning ended without being asked to
  *   photo     name  path             a photo the camera took, in the app's photos folder
  *   failed    text                   what went wrong, to show the user
@@ -310,7 +311,8 @@ public class MainActivity extends NativeActivity {
             @Override
             public void onLocationChanged(android.location.Location fix) {
                 add("position\t" + fix.getLongitude() + "\t" + fix.getLatitude() + "\t"
-                        + (fix.hasAccuracy() ? Float.toString(fix.getAccuracy()) : "") + "\t" + fix.getTime());
+                        + (fix.hasAccuracy() ? Float.toString(fix.getAccuracy()) : "") + "\t" + fix.getTime()
+                        + "\t" + fix.getElapsedRealtimeNanos());
             }
 
             @Override

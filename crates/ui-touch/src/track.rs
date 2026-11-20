@@ -319,7 +319,7 @@ mod tests {
     use super::*;
 
     fn fix(lon: f64, lat: f64, accuracy: Option<f64>, time: Option<i64>) -> Fix {
-        Fix { lon, lat, accuracy, time }
+        Fix { lon, lat, accuracy, time, elapsed_realtime_nanos: None }
     }
 
     #[test]

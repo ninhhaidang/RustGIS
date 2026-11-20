@@ -17,6 +17,8 @@ pub struct Fix {
     pub accuracy: Option<f64>,
     /// When the system found it, in milliseconds since 1970 (UTC), when it says.
     pub time: Option<i64>,
+    /// When the system found it, in nanoseconds since boot on Android.
+    pub elapsed_realtime_nanos: Option<u64>,
 }
 
 /// What the system did since the front end last asked.
@@ -66,7 +68,8 @@ impl Event {
     /// Reads an event a shell passed as one line of tab-separated fields (`picked`, `cancelled`,
     /// `ended`, `saved`, `photo`, `position`, `stopped`, `failed`). A line that is none of these is a failure that quotes it: nothing a
     /// shell reports is dropped. A position is `position`, longitude, latitude, accuracy (empty
-    /// when unknown) and, optionally, its time in milliseconds since 1970.
+    /// when unknown), optionally its time in milliseconds since 1970, then optionally the
+    /// monotonic fix time in nanoseconds since boot.
     pub fn parse(line: &str) -> Event {
         let fields: Vec<&str> = line.split('\t').collect();
         match fields.as_slice() {
@@ -79,7 +82,7 @@ impl Event {
             ["stopped"] => Event::Stopped,
             // A name is the user's own text and may hold a tab: the rest of the line is the name.
             ["saved", name @ ..] if !name.is_empty() => Event::Saved { name: name.join("\t") },
-            ["position", lon, lat, accuracy, rest @ ..] if rest.len() <= 1 => {
+            ["position", lon, lat, accuracy, rest @ ..] if rest.len() <= 2 => {
                 let unknown = || Event::Failed(format!("The system reported something RustGIS doesn't know: {line}"));
                 // A time given that isn't one is a line RustGIS doesn't know, as below.
                 let time = match rest.first() {
@@ -89,15 +92,22 @@ impl Event {
                         _ => return unknown(),
                     },
                 };
+                let elapsed_realtime_nanos = match rest.get(1) {
+                    None => None,
+                    Some(ns) => match ns.parse::<u64>() {
+                        Ok(ns) => Some(ns),
+                        Err(_) => return unknown(),
+                    },
+                };
                 match (lon.parse::<f64>(), lat.parse::<f64>()) {
                     // A place on the Earth, or it is no position: a failure that quotes the line.
                     (Ok(lon), Ok(lat)) if (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat) => {
                         // No accuracy given is no accuracy; one given that isn't a distance is a
                         // line RustGIS doesn't know, not a position quietly taken without it.
                         match accuracy.parse::<f64>() {
-                            _ if accuracy.is_empty() => Event::Position(Fix { lon, lat, accuracy: None, time }),
+                            _ if accuracy.is_empty() => Event::Position(Fix { lon, lat, accuracy: None, time, elapsed_realtime_nanos }),
                             Ok(metres) if metres.is_finite() && metres >= 0.0 => {
-                                Event::Position(Fix { lon, lat, accuracy: Some(metres), time })
+                                Event::Position(Fix { lon, lat, accuracy: Some(metres), time, elapsed_realtime_nanos })
                             }
                             _ => unknown(),
                         }
@@ -165,14 +175,17 @@ mod tests {
         assert_eq!(Event::parse("stopped"), Event::Stopped);
         assert_eq!(
             Event::parse("position\t-83.92\t35.96\t4.5"),
-            Event::Position(Fix { lon: -83.92, lat: 35.96, accuracy: Some(4.5), time: None })
+            Event::Position(Fix { lon: -83.92, lat: 35.96, accuracy: Some(4.5), time: None, elapsed_realtime_nanos: None })
         );
         // No accuracy given: the position stands without it.
-        assert_eq!(Event::parse("position\t10\t20\t"), Event::Position(Fix { lon: 10.0, lat: 20.0, accuracy: None, time: None }));
+        assert_eq!(
+            Event::parse("position\t10\t20\t"),
+            Event::Position(Fix { lon: 10.0, lat: 20.0, accuracy: None, time: None, elapsed_realtime_nanos: None })
+        );
         // With its time.
         assert_eq!(
             Event::parse("position\t10\t20\t3\t1794787200000"),
-            Event::Position(Fix { lon: 10.0, lat: 20.0, accuracy: Some(3.0), time: Some(1_794_787_200_000) })
+            Event::Position(Fix { lon: 10.0, lat: 20.0, accuracy: Some(3.0), time: Some(1_794_787_200_000), elapsed_realtime_nanos: None })
         );
         assert_eq!(Event::parse("saved\tmap.png"), Event::Saved { name: "map.png".into() });
         assert_eq!(Event::parse("saved\tmy\tmap.png"), Event::Saved { name: "my\tmap.png".into() });
@@ -198,7 +211,8 @@ mod tests {
             "position\t10\t20\tinf",
             "position\t10\t20\t3\tsoon",
             "position\t10\t20\t3\t-5",
-            "position\t10\t20\t3\t1\t2",
+            "position\t10\t20\t3\t1\t-2",
+            "position\t10\t20\t3\t1\t2\t3",
         ] {
             match Event::parse(line) {
                 Event::Failed(text) => assert!(text.ends_with(line), "{text}"),
