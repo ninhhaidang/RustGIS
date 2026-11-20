@@ -3,6 +3,8 @@
 //! (y down, from its top left). A group composites its items as one layer: with an opacity, a
 //! blend mode and a clip, as the renderer composites a layer drawn offscreen.
 
+use std::sync::Arc;
+
 use ab_glyph::{Font, FontRef, GlyphId};
 use rustgis_map::effects::Blend;
 #[cfg(test)]
@@ -45,6 +47,9 @@ pub struct Drawing {
     overflowed: bool,
     /// The glyphs (by face and id) whose outlines are counted in `cost`, and what each counted.
     outlines: std::collections::HashMap<(usize, u16), usize>,
+    /// The shared pixels counted in `cost`, by their address (held, so it isn't reused while
+    /// they are keys): a writer keeps them once, however many places they are drawn in.
+    shared: std::collections::HashMap<usize, Arc<Pixels>>,
 }
 
 /// One thing drawn.
@@ -172,17 +177,26 @@ pub struct Glyph {
     pub ch: char,
 }
 
-/// A picture, kept compressed: its pixels as zlib RGB and, where any isn't opaque, zlib alpha.
-/// `transform` takes its pixel space (0..width, 0..height, y down) to the drawing.
+/// A picture placed: its [`Pixels`], which `transform` takes from their pixel space (0..width,
+/// 0..height, y down) to the drawing.
 pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub(crate) rgb_z: Vec<u8>,
-    pub(crate) alpha_z: Option<Vec<u8>>,
+    pub pixels: Arc<Pixels>,
     pub transform: Transform,
     pub opacity: f32,
     /// Smoothed when scaled up (pictures and rasters drawn smooth), rather than blocky.
     pub smooth: bool,
+    /// Its pixels are drawn in many places (a picture marker at each point, see
+    /// [`Drawing::shared_image`]): a writer keeps them once and places them at each.
+    pub shared: bool,
+}
+
+/// A picture's pixels, kept compressed: zlib RGB and, where any isn't opaque, zlib alpha. Pictures
+/// placed from the same `Arc` are one picture to a writer (see [`Image::shared`]).
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    pub(crate) rgb_z: Vec<u8>,
+    pub(crate) alpha_z: Option<Vec<u8>>,
 }
 
 /// Items composited together: see the module. `transform` takes the items' space to the
@@ -223,6 +237,7 @@ impl Drawing {
             cost: 0,
             overflowed: false,
             outlines: Default::default(),
+            shared: Default::default(),
         }
     }
 
@@ -281,8 +296,28 @@ impl Drawing {
         if !transform.is_finite() || opacity.is_nan() || opacity <= 0.0 {
             return;
         }
-        let Some(image) = Image::new(image, transform, opacity.min(1.0), smooth) else { return };
-        self.cost += image.rgb_z.len() + image.alpha_z.as_ref().map_or(0, Vec::len) + 300;
+        let Some(pixels) = Pixels::new(image) else { return };
+        self.cost += pixels.cost() + 300;
+        self.push(Item::Image(Image { pixels: Arc::new(pixels), transform, opacity: opacity.min(1.0), smooth, shared: false }));
+    }
+
+    /// Places `pixels`, drawn in many places (a picture marker at each point), with `transform`
+    /// (see [`Image`]): counted once in the drawing's cost, as a writer keeps them once.
+    pub fn shared_image(&mut self, pixels: &Arc<Pixels>, transform: Transform, opacity: f32, smooth: bool) {
+        if !transform.is_finite() || opacity.is_nan() || opacity <= 0.0 {
+            return;
+        }
+        // Refused as `push` refuses, before the pixels are kept: a drawing past its budget doesn't
+        // hold on to pixels it never places.
+        let key = Arc::as_ptr(pixels) as usize;
+        let added = if self.shared.contains_key(&key) { 300 } else { pixels.cost() + 300 };
+        if self.count >= MAX_ITEMS || self.cost.saturating_add(added) > max_cost() {
+            self.overflowed = true;
+            return;
+        }
+        self.shared.entry(key).or_insert_with(|| Arc::clone(pixels));
+        self.cost += added;
+        let image = Image { pixels: Arc::clone(pixels), transform, opacity: opacity.min(1.0), smooth, shared: true };
         self.push(Item::Image(image));
     }
 
@@ -312,9 +347,12 @@ impl Drawing {
             return;
         }
         // Outlines this drawing already counts are written once: not counted again.
-        let held: usize = child.outlines.iter().filter(|(k, _)| self.outlines.contains_key(k)).map(|(_, c)| *c).sum();
+        // Shared pixels too.
+        let held: usize = child.outlines.iter().filter(|(k, _)| self.outlines.contains_key(k)).map(|(_, c)| *c).sum::<usize>()
+            + child.shared.iter().filter(|(k, _)| self.shared.contains_key(k)).map(|(_, p)| p.cost()).sum::<usize>();
         let (count, cost) = (child.count, child.cost.saturating_sub(held));
         let outlines = std::mem::take(&mut child.outlines);
+        let shared = std::mem::take(&mut child.shared);
         let (_, _, items) = child.finish();
         // (A group's own entry counts too, and its clip's path.)
         let clip = clip.filter(|c| c.transform.is_finite());
@@ -324,6 +362,7 @@ impl Drawing {
             return;
         }
         self.outlines.extend(outlines);
+        self.shared.extend(shared);
         self.count += count;
         self.cost += cost;
         let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
@@ -385,15 +424,18 @@ impl Brush {
     }
 }
 
-impl Image {
+impl Pixels {
     /// `pm` compressed (see [`compress_rgba`]); `None` for one with nothing showing.
-    fn new(pm: PixmapRef, transform: Transform, opacity: f32, smooth: bool) -> Option<Image> {
+    pub(crate) fn new(pm: PixmapRef) -> Option<Pixels> {
         let (rgb_z, alpha_z) = compress_rgba(pm)?;
-        Some(Image { width: pm.width(), height: pm.height(), rgb_z, alpha_z, transform, opacity, smooth })
+        Some(Pixels { width: pm.width(), height: pm.height(), rgb_z, alpha_z })
     }
-}
 
-impl Image {
+    /// What a writer gives them: their compressed bytes.
+    pub(crate) fn cost(&self) -> usize {
+        self.rgb_z.len() + self.alpha_z.as_ref().map_or(0, Vec::len)
+    }
+
     /// The picture's pixels, decompressed (its alpha where it keeps one).
     pub(crate) fn pixmap(&self) -> Option<tiny_skia::Pixmap> {
         let rgb = miniz_oxide::inflate::decompress_to_vec_zlib(&self.rgb_z).ok()?;
@@ -531,7 +573,7 @@ pub(crate) fn replay(items: &[Item], pm: &mut Pixmap, base: Transform) {
                 }
             }
             Item::Image(image) => {
-                let Some(pic) = image.pixmap() else { continue };
+                let Some(pic) = image.pixels.pixmap() else { continue };
                 let pp = PixmapPaint { opacity: image.opacity, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
                 pm.draw_pixmap(0, 0, pic.as_ref(), &pp, base.pre_concat(image.transform), None);
             }
@@ -643,6 +685,37 @@ mod tests {
         assert_eq!(page.cost(), before + inner + 120 + path_cost(&square()));
     }
 
+    /// Pixels drawn in many places count once, in a drawing and in one it's placed in that has
+    /// them already; a picture of its own counts at each place.
+    #[test]
+    fn shared_pixels_count_once() {
+        let mut pic = Pixmap::new(8, 8).unwrap();
+        pic.fill(Color::from_rgba8(10, 20, 30, 255));
+        let px = Arc::new(Pixels::new(pic.as_ref()).unwrap());
+        let mut d = Drawing::new(10.0, 10.0);
+        d.shared_image(&px, Transform::identity(), 1.0, true);
+        d.shared_image(&px, Transform::from_translate(2.0, 0.0), 0.5, true);
+        assert_eq!(d.cost(), px.cost() + 600);
+        let mut child = Drawing::new(10.0, 10.0);
+        child.shared_image(&px, Transform::identity(), 1.0, true);
+        d.place(child, Transform::identity(), 1.0, Blend::Normal, None);
+        assert_eq!(d.cost(), px.cost() + 900 + 120, "held already");
+        let mut own = Drawing::new(10.0, 10.0);
+        own.image(pic.as_ref(), Transform::identity(), 1.0, true);
+        own.image(pic.as_ref(), Transform::identity(), 1.0, true);
+        assert_eq!(own.cost(), 2 * (px.cost() + 300));
+        let (_, _, items) = d.finish();
+        let Item::Image(first) = &items[0] else { panic!("a picture") };
+        assert!(first.shared && Arc::ptr_eq(&first.pixels, &px));
+        // Past the budget, a placement is refused before its pixels are kept.
+        TEST_MAX_COST.with(|l| l.set(Some(px.cost() + 299)));
+        let held = Arc::strong_count(&px);
+        let mut full = Drawing::new(10.0, 10.0);
+        full.shared_image(&px, Transform::identity(), 1.0, true);
+        TEST_MAX_COST.with(|l| l.set(None));
+        assert!(full.overflowed() && full.is_empty() && full.shared.is_empty() && Arc::strong_count(&px) == held);
+    }
+
     #[test]
     fn pictures_keep_alpha_only_when_they_need_it() {
         let mut d = Drawing::new(10.0, 10.0);
@@ -654,9 +727,9 @@ mod tests {
         d.image(half.as_ref(), Transform::identity(), 1.0, true);
         let (_, _, items) = d.finish();
         let [Item::Image(a), Item::Image(b)] = items.as_slice() else { panic!("two pictures") };
-        assert!(a.alpha_z.is_none());
-        let rgb = miniz_oxide::inflate::decompress_to_vec_zlib(&b.rgb_z).unwrap();
-        let alpha = miniz_oxide::inflate::decompress_to_vec_zlib(b.alpha_z.as_ref().unwrap()).unwrap();
+        assert!(a.pixels.alpha_z.is_none());
+        let rgb = miniz_oxide::inflate::decompress_to_vec_zlib(&b.pixels.rgb_z).unwrap();
+        let alpha = miniz_oxide::inflate::decompress_to_vec_zlib(b.pixels.alpha_z.as_ref().unwrap()).unwrap();
         assert_eq!((rgb.len(), alpha.len()), (4 * 2 * 3, 4 * 2));
         // Unpremultiplied: the colour is the colour, the alpha apart.
         assert!(rgb[0].abs_diff(200) <= 1 && rgb[1].abs_diff(100) <= 1 && alpha[0] == 128);

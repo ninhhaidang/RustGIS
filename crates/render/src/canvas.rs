@@ -9,6 +9,8 @@
 //! gathers on a transparent pixmap of the canvas's size, placed as one picture (cropped to what
 //! was drawn) before the next thing kept, so the drawing order stays.
 
+use std::sync::Arc;
+
 use rustgis_map::effects::Blend;
 use tiny_skia::{
     BlendMode, Color, FillRule, IntRect, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
@@ -201,6 +203,25 @@ impl Canvas {
                 r.drawing.place(one, Transform::identity(), 1.0, blend, None);
             }
         });
+    }
+
+    /// Draws `pixmap` moved by `transform`, as [`Canvas::draw_pixmap`] does, for a picture drawn
+    /// in many places (a picture marker at each point): a recording canvas keeps `pixels`, the
+    /// same pixels already compressed, which a writer keeps once ([`Drawing::shared_image`]).
+    pub(crate) fn draw_shared(
+        &mut self,
+        pixmap: PixmapRef,
+        pixels: Option<&Arc<vector::Pixels>>,
+        paint: &PixmapPaint,
+        transform: Transform,
+    ) {
+        let Some(pixels) = pixels.filter(|_| self.rec.is_some() && blend_of(paint.blend_mode) == Some(Blend::Normal)) else {
+            self.draw_pixmap(0, 0, pixmap, paint, transform, None);
+            return;
+        };
+        let smooth = paint.quality != tiny_skia::FilterQuality::Nearest;
+        let opacity = paint.opacity;
+        self.keep(|r| r.drawing.shared_image(pixels, r.ts.pre_concat(transform), opacity, smooth));
     }
 
     /// Covers the whole canvas with `color`.
@@ -468,7 +489,11 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["fill", "picture", "stroke", "clipped"]);
         let Item::Image(pic) = &items[1] else { panic!("the item expected") };
-        assert_eq!((pic.width, pic.height, pic.transform.tx, pic.transform.ty), (5, 5, 40.0, 10.0), "cropped to what was drawn");
+        assert_eq!(
+            (pic.pixels.width, pic.pixels.height, pic.transform.tx, pic.transform.ty),
+            (5, 5, 40.0, 10.0),
+            "cropped to what was drawn"
+        );
         let Item::Stroke { path, stroke, .. } = &items[2] else { panic!("the item expected") };
         // The dashes cut from the square's 80 px outline, kept solid.
         assert!(stroke.width == 2.0 && path.segments().filter(|s| matches!(s, tiny_skia::PathSegment::MoveTo(_))).count() == 10);

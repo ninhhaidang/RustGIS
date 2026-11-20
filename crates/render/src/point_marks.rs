@@ -122,7 +122,7 @@ pub(crate) fn draw(pm: &mut Canvas, x: f32, y: f32, sym: &Symbol, strokes: &[Lin
 
 /// How far from its centre, in its sizes, a shape reaches at an angle: a square's and a triangle's
 /// corners lie past the 0.6 that holds them upright.
-fn turned_reach(shape: rustgis_map::Marker) -> f32 {
+pub(crate) fn turned_reach(shape: rustgis_map::Marker) -> f32 {
     match shape {
         rustgis_map::Marker::Square => 0.9 * std::f32::consts::FRAC_1_SQRT_2,
         rustgis_map::Marker::Triangle => 0.625,

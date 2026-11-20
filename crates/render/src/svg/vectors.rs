@@ -1,17 +1,18 @@
 //! A recorded [`Drawing`](crate::vector::Drawing)'s items as SVG: paths with their fill and
-//! stroke, gradients and clips in `<defs>`, pictures as PNG, groups with their opacity and blend
-//! mode, and glyphs as their outlines, each defined once and placed with `<use>` (a run keeps its
-//! text as an `aria-label`).
+//! stroke, gradients and clips in `<defs>`, pictures as PNG (one drawn in many places defined
+//! once, placed with `<use>`), groups with their opacity and blend mode, and glyphs as their
+//! outlines, each defined once and placed with `<use>` (a run keeps its text as an `aria-label`).
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use ab_glyph::{Font, OutlineCurve};
 use base64::Engine;
 use rustgis_map::effects::Blend;
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Path, PathSegment, Transform};
 
-use crate::vector::{Brush, GlyphRun, Group, Image, Item, Stroke};
+use crate::vector::{Brush, GlyphRun, Group, Image, Item, Pixels, Stroke};
 
 /// What the items refer to, written once into the document's `<defs>`.
 #[derive(Default)]
@@ -20,6 +21,9 @@ pub(super) struct Defs {
     count: usize,
     /// Glyph outlines by face (its `FontRef`'s address) and glyph id: their ids.
     glyphs: HashMap<(usize, u16), Option<String>>,
+    /// Shared pictures (see [`Image::shared`]) by their pixels' address and whether smoothed:
+    /// their ids, and the pixels (held, so the address isn't reused by others while a key).
+    images: HashMap<(usize, bool), (Arc<Pixels>, String)>,
 }
 
 impl Defs {
@@ -60,7 +64,7 @@ pub(super) fn items(out: &mut String, defs: &mut Defs, items: &[Item]) -> Option
                 path_element(out, path, &format!(r#" fill="none"{}{}"#, stroke_attrs(*color, stroke), transform_attr(*transform)));
             }
             Item::Glyphs(run) => glyphs(out, defs, run),
-            Item::Image(image) => picture(out, image)?,
+            Item::Image(image) => picture(out, defs, image)?,
             Item::Group(g) => group(out, defs, g)?,
         }
     }
@@ -265,21 +269,51 @@ fn outline_data(font: &ab_glyph::FontRef<'static>, id: ab_glyph::GlyphId) -> Opt
     (!d.is_empty()).then_some(d)
 }
 
-/// A picture, as PNG, stretched over its pixels where it lies; `None` if it can't be read back or
-/// encoded.
-fn picture(out: &mut String, image: &Image) -> Option<()> {
-    let png = image.pixmap()?.encode_png().ok()?;
-    let _ = writeln!(
-        out,
-        r#"<image width="{}" height="{}" preserveAspectRatio="none"{}{}{} xlink:href="data:image/png;base64,{}"/>"#,
-        image.width,
-        image.height,
-        if image.opacity < 1.0 { format!(r#" opacity="{}""#, num(image.opacity)) } else { String::new() },
-        if image.smooth { "" } else { r#" image-rendering="optimizeSpeed""# },
-        transform_attr(image.transform),
-        base64::engine::general_purpose::STANDARD.encode(png)
-    );
+/// A picture, as PNG, stretched over its pixels where it lies (a shared one defined once and
+/// placed with `<use>`); `None` if it can't be read back or encoded.
+fn picture(out: &mut String, defs: &mut Defs, image: &Image) -> Option<()> {
+    let opacity = if image.opacity < 1.0 { format!(r#" opacity="{}""#, num(image.opacity)) } else { String::new() };
+    let (px, rendering) = (&image.pixels, rendering_attr(image.smooth));
+    if !image.shared {
+        let png = png_base64(px)?;
+        let transform = transform_attr(image.transform);
+        let _ = writeln!(
+            out,
+            r#"<image width="{}" height="{}" preserveAspectRatio="none"{opacity}{rendering}{transform} xlink:href="data:image/png;base64,{png}"/>"#,
+            px.width, px.height
+        );
+        return Some(());
+    }
+    // A shared picture (a picture marker at each point): its PNG once, in the defs, and a `<use>`
+    // of it at each place.
+    let key = (Arc::as_ptr(px) as usize, image.smooth);
+    let id = match defs.images.get(&key) {
+        Some((_, id)) => id.clone(),
+        None => {
+            let png = png_base64(px)?;
+            let id = defs.id("picture");
+            let _ = writeln!(
+                defs.text,
+                r#"<image id="{id}" width="{}" height="{}" preserveAspectRatio="none"{rendering} xlink:href="data:image/png;base64,{png}"/>"#,
+                px.width, px.height
+            );
+            defs.images.insert(key, (Arc::clone(px), id.clone()));
+            id
+        }
+    };
+    let _ = writeln!(out, r##"<use xlink:href="#{id}"{opacity}{}/>"##, transform_attr(image.transform));
     Some(())
+}
+
+/// `px` as a PNG, in base64; `None` if it can't be read back.
+fn png_base64(px: &Pixels) -> Option<String> {
+    let png = px.pixmap()?.encode_png().ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(png))
+}
+
+/// ` image-rendering="optimizeSpeed"` for a picture drawn blocky; nothing for a smooth one.
+fn rendering_attr(smooth: bool) -> &'static str {
+    if smooth { "" } else { r#" image-rendering="optimizeSpeed""# }
 }
 
 /// A group: inside its clip (in the outer space), moved by its transform, composited with its
@@ -501,6 +535,26 @@ mod tests {
         assert_eq!(svg, draw(false));
     }
 
+    /// Pixels drawn in many places (a picture marker at each point) are one `<image>` in the defs,
+    /// placed with a `<use>` at each; a picture of its own stays where it's drawn.
+    #[test]
+    fn a_shared_picture_is_defined_once() {
+        let mut pic = tiny_skia::Pixmap::new(2, 2).unwrap();
+        pic.fill(Color::BLACK);
+        let px = Arc::new(Pixels::new(pic.as_ref()).unwrap());
+        let mut d = Drawing::new(10.0, 10.0);
+        d.shared_image(&px, Transform::from_translate(1.0, 0.0), 1.0, true);
+        d.shared_image(&px, Transform::from_translate(5.0, 0.0), 0.5, true);
+        d.image(pic.as_ref(), Transform::identity(), 1.0, true);
+        let (_, _, list) = d.finish();
+        let (mut svg, mut defs) = (String::new(), Defs::default());
+        items(&mut svg, &mut defs, &list).unwrap();
+        assert_eq!(defs.text.matches("<image id=\"picture1\" width=\"2\" height=\"2\"").count(), 1, "{}", defs.text);
+        assert!(svg.contains(r##"<use xlink:href="#picture1" transform="matrix(1 0 0 1 1 0)"/>"##), "{svg}");
+        assert!(svg.contains(r##"<use xlink:href="#picture1" opacity="0.5" transform="matrix(1 0 0 1 5 0)"/>"##), "{svg}");
+        assert_eq!(svg.matches("<image ").count(), 1, "the picture of its own, in place: {svg}");
+    }
+
     #[test]
     fn a_picture_that_cant_be_read_back_fails_the_writing() {
         let mut d = Drawing::new(10.0, 10.0);
@@ -509,7 +563,7 @@ mod tests {
         d.image(pic.as_ref(), Transform::identity(), 1.0, true);
         let (_, _, mut list) = d.finish();
         if let Some(Item::Image(image)) = list.first_mut() {
-            image.rgb_z = vec![1, 2, 3];
+            std::sync::Arc::get_mut(&mut image.pixels).unwrap().rgb_z = vec![1, 2, 3];
         }
         // An unusable result is an error, not a page with a gap in it.
         assert!(items(&mut String::new(), &mut Defs::default(), &list).is_none());

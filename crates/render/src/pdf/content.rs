@@ -15,7 +15,7 @@ use tiny_skia::{Color, FillRule, LineCap, LineJoin, Path, PathSegment, Transform
 
 use super::fonts::Fonts;
 use super::{Doc, Layers};
-use crate::vector::{Brush, Clip, GlyphRun, Group, Image, Item, Stroke};
+use crate::vector::{Brush, Clip, GlyphRun, Group, Image, Item, Pixels, Stroke};
 
 /// Writes the content of a page `size` (drawing pixels) shown at `page` (points); its content
 /// stream's and resource dictionary's object numbers.
@@ -337,36 +337,62 @@ impl Writer<'_> {
         }
     }
 
-    /// Places a picture: an image object (with its alpha as a soft mask) drawn where it lies.
+    /// Places a picture: an image object (with its alpha as a soft mask) drawn where it lies; a
+    /// shared picture's object written the first time it's placed in the document, and reused.
     fn image(&mut self, out: &mut Vec<u8>, st: &mut State, image: &Image) {
+        let px = &image.pixels;
+        let id = if image.shared {
+            let key = (std::sync::Arc::as_ptr(px) as usize, image.smooth);
+            let id = match self.doc.images.get(&key) {
+                Some((_, id)) => *id,
+                None => {
+                    let id = self.image_object(px, image.smooth);
+                    self.doc.images.insert(key, (std::sync::Arc::clone(px), id));
+                    id
+                }
+            };
+            // Once in the page's resources, however many times it's placed.
+            if !self.res.xobjects.contains(&id) {
+                self.res.xobjects.push(id);
+            }
+            id
+        } else {
+            let id = self.image_object(px, image.smooth);
+            self.res.xobjects.push(id);
+            id
+        };
+        self.alpha(out, st, image.opacity);
+        // The unit square (an image's space, its first row at the top) onto its pixels, then on.
+        let (w, h) = (px.width as f32, px.height as f32);
+        let saved = begin(out, st, image.transform.pre_concat(Transform::from_row(w, 0.0, 0.0, -h, 0.0, h)));
+        let _ = writeln!(out, "/X{id} Do");
+        end(out, st, Some(saved));
+    }
+
+    /// Writes `px` as an image object (with its alpha as a soft mask); its object number.
+    fn image_object(&mut self, px: &Pixels, smooth: bool) -> usize {
         let id = self.doc.reserve();
         let mut dict = format!(
             "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8{}",
-            image.width,
-            image.height,
-            if image.smooth { " /Interpolate true" } else { "" }
+            px.width,
+            px.height,
+            if smooth { " /Interpolate true" } else { "" }
         );
-        if let Some(alpha) = &image.alpha_z {
+        if let Some(alpha) = &px.alpha_z {
             let mask = self.doc.reserve();
             self.doc.stream(
                 mask,
                 &format!(
                     "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceGray /BitsPerComponent 8",
-                    image.width, image.height
+                    px.width, px.height
                 ),
                 alpha,
                 true,
             );
             let _ = write!(dict, " /SMask {mask} 0 R");
         }
-        self.doc.stream(id, &dict, &image.rgb_z, true);
-        self.res.xobjects.push(id);
-        self.alpha(out, st, image.opacity);
-        // The unit square (an image's space, its first row at the top) onto its pixels, then on.
-        let (w, h) = (image.width as f32, image.height as f32);
-        let saved = begin(out, st, image.transform.pre_concat(Transform::from_row(w, 0.0, 0.0, -h, 0.0, h)));
-        let _ = writeln!(out, "/X{id} Do");
-        end(out, st, Some(saved));
+        self.doc.stream(id, &dict, &px.rgb_z, true);
+        id
     }
 
     /// Writes a group inside its clip, moved by its transform: as a transparency group when it has

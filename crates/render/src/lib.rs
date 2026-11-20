@@ -4892,7 +4892,8 @@ fn render_frame(
                     let mut stroke_paths = stroke_paths::Paths::default();
                     // Symbol levels: lines with stacked strokes wait, and go down a level at a time
                     // after the rest (each batch of a streamed layer on its own).
-                    let levels = layer.stroke_levels && layer.has_strokes();
+                    let has_strokes = layer.has_strokes();
+                    let levels = layer.stroke_levels && has_strokes;
                     // Polygons with stacked fills (patterns) draw them in place of their single fill.
                     let has_fills = layer.has_fills();
                     let mut stacked: Vec<(&[Vec<Coord>], Symbol, &[LineStroke])> = Vec::new();
@@ -4912,17 +4913,27 @@ fn render_frame(
                         since_look += rustgis_map::lod::vertices(g);
                         let e = extents.get(row).copied().unwrap_or_else(|| g.extent());
                         // A point's marks, shifted from it, or a tall image may show while the point is
-                        // off the view.
+                        // off the view; a line's stacked strokes, shifted sideways, or its markers too.
                         let marked_in = || {
-                            if globe.is_some() || !matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
+                            if globe.is_some() || matches!(g, Geometry::Polygon(_)) {
+                                return false;
+                            }
+                            // (A line layer with no stacked strokes isn't styled for it.)
+                            if matches!(g, Geometry::Line(_)) && !has_strokes {
                                 return false;
                             }
                             let (sym, strokes) = styler.style(row);
-                            let marks = styler.marks(row, strokes);
-                            let reach = match sym.marker {
-                                _ if !marks.is_empty() => point_marks::reach(&sym, &marks),
-                                Marker::Picture(_) => sym.size * marker_reach(sym.marker),
-                                _ => return false,
+                            let reach = match g {
+                                Geometry::Line(_) if strokes.is_empty() => return false,
+                                Geometry::Line(_) => line_markers::reach(strokes, sym.stroke_width),
+                                _ => {
+                                    let marks = styler.marks(row, strokes);
+                                    match sym.marker {
+                                        _ if !marks.is_empty() => point_marks::reach(&sym, &marks),
+                                        Marker::Picture(_) => sym.size * marker_reach(sym.marker),
+                                        _ => return false,
+                                    }
+                                }
                             };
                             // In the layer's pixels (`ctx` is scaled by its size factor).
                             let r = f64::from(reach * ctx.ppp) * map_per_px;
@@ -12222,6 +12233,103 @@ mod tests {
             let r = render(&mut m, &view).unwrap();
             assert_eq!(r.pixmap.pixels().iter().any(|p| red(*p)), shows, "{transparency}");
         }
+    }
+
+    #[test]
+    fn a_lines_markers_and_shifted_strokes_show_while_it_is_off_the_view() {
+        use base64::Engine;
+        use rustgis_map::{LineMark, LineMarkers, LineStroke, Picture};
+        // A line 40 px above a 200 px view (140 px north of its centre), past its cull margin.
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("rail", GeometryType::Polyline, vec![]);
+        let lat = 140.0 * 1500.0 / 111_319.49;
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, lat), Coord::new(1.0, lat)]])), vec![]);
+        let id = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let red = |p: tiny_skia::PremultipliedColorU8| p.red() > 200 && p.green() < 60 && p.blue() < 60;
+        // A red image ten times as tall as wide: 10 pt wide along the line, it reaches 50 px down
+        // from it, 10 px into the view.
+        let mut tall = tiny_skia::Pixmap::new(4, 40).unwrap();
+        tall.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+        let tall = Picture::new(&base64::engine::general_purpose::STANDARD.encode(tall.encode_png().unwrap()));
+        let images = LineMarkers { mark: LineMark::Marker(Marker::Picture(tall)), size: 10.0, interval: 30.0, ..LineMarkers::default() };
+        let stroke = LineStroke { color: Some(Rgba::rgb(255, 0, 0)), width: Some(4.0), ..LineStroke::default() };
+        // Its images, and a stroke 50 pt to the right of its direction (down the screen, going
+        // east), 4 pt wide: y 8 to 12.
+        for (stroke, rows) in [(LineStroke { markers: Some(images), ..stroke }, 0..8), (LineStroke { offset: 50.0, ..stroke }, 8..12)] {
+            m.layer_mut(id).unwrap().line_strokes = vec![stroke];
+            let r = render(&mut m, &view).unwrap();
+            let shows = rows.clone().any(|y| (0..200).any(|x| r.pixmap.pixel(x, y).is_some_and(red)));
+            assert!(shows, "{stroke:?} shows in rows {rows:?}");
+        }
+    }
+
+    /// A picture marker drawn at many places, along lines and at points, is one picture to a vector
+    /// export: kept once in the frame's drawing, written once into a PDF.
+    #[test]
+    fn a_picture_marker_is_one_picture_in_a_vector_export() {
+        use base64::Engine;
+        use rustgis_map::{LineMark, LineMarkers, LineStroke, Picture};
+        // Noise, which compresses little: its pixels outweigh what placing it takes.
+        let mut noise = tiny_skia::Pixmap::new(300, 150).unwrap();
+        let mut seed = 7u32;
+        for px in noise.pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [r, g, b, _] = seed.to_le_bytes();
+            *px = tiny_skia::ColorU8::from_rgba(r, g, b, 255).premultiply();
+        }
+        let picture = Picture::new(&base64::engine::general_purpose::STANDARD.encode(noise.encode_png().unwrap()));
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("icons", GeometryType::Point, vec![]);
+        for x in [-0.5, 0.0, 0.5] {
+            d.push(Some(Geometry::Point(Coord::new(x, 0.3))), vec![]);
+        }
+        let id = m.add_dataset(d);
+        let none = Rgba::new(0, 0, 0, 0);
+        m.layer_mut(id).unwrap().renderer = rustgis_map::Renderer::Single(Symbol {
+            fill: none,
+            stroke: none,
+            stroke_width: 0.0,
+            size: 20.0,
+            marker: Marker::Picture(picture),
+        });
+        let mut d = Dataset::new("rail", GeometryType::Polyline, vec![]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, -0.3), Coord::new(1.0, -0.3)]])), vec![]);
+        let line = m.add_dataset(d);
+        let markers =
+            LineMarkers { mark: LineMark::Marker(Marker::Picture(picture)), size: 12.0, interval: 40.0, ..LineMarkers::default() };
+        m.layer_mut(line).unwrap().line_strokes = vec![LineStroke { markers: Some(markers), ..LineStroke::default() }];
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let mut record = || render_complete_recorded(&mut m, &view, &mut None).unwrap().recorded.unwrap().into_drawing().unwrap();
+        let drawing = record();
+        let cost = drawing.cost();
+        let (_, _, items) = drawing.finish();
+        fn images(items: &[vector::Item], out: &mut Vec<std::sync::Arc<vector::Pixels>>) {
+            for i in items {
+                match i {
+                    vector::Item::Image(image) if image.shared => out.push(image.pixels.clone()),
+                    vector::Item::Image(_) => panic!("a picture marker drawn as a picture of its own"),
+                    vector::Item::Group(g) => images(&g.items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut shared = Vec::new();
+        images(&items, &mut shared);
+        assert!(shared.len() >= 6, "three points and markers along the line: {}", shared.len());
+        assert!(shared.iter().all(|p| std::sync::Arc::ptr_eq(p, &shared[0])), "one picture");
+        let once = shared[0].cost();
+        assert!(once > 50_000 && cost < 2 * once, "its pixels counted once: {cost} for {} of {once}", shared.len());
+        let pdf = pdf::write(&[pdf::Page::drawing(record(), 50.0, 50.0)], "");
+        let objects = pdf::tests::objects(&pdf);
+        let written: Vec<&String> = objects.iter().map(|o| &o.0).filter(|dict| dict.contains("/Subtype /Image")).collect();
+        assert_eq!(written.len(), 1, "the image written once: {written:?}");
+        let placed: usize = objects.iter().map(|o| String::from_utf8_lossy(&o.1).matches(" Do\n").count()).sum();
+        assert!(placed >= shared.len(), "and placed at each: {placed}");
     }
 
     #[test]

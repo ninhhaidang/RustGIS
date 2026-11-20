@@ -533,7 +533,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   PDF (their labels as the letters' shapes, each run labelled with its text), so the page can be
   finished in a vector editor. What a PDF keeps as pictures is a picture in the SVG too, at the
   export's `dpi`, and a frame whose vectors would pass the budget is drawn as a picture, with a
-  notice. A text element uses the viewer's
+  notice. A picture marker's image is written once and placed with `<use>` wherever drawn, so a
+  vector editor shows each place as a clone of it. A text element uses the viewer's
   font (a named family where the viewer has it, else its serif or sans-serif), so its alignment
   and line widths can differ from PNG/PDF and can
   change when edited. A picture standing for a whole element is clipped to its box;

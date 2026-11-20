@@ -97,8 +97,10 @@ marker; the symbol's fill and outline don't show. It turns with **Rotation**, is
 selected, and is kept in the project file. A project that has one opens only in a RustGIS that
 draws them. An image that doesn't decode draws a circle, so the point still shows; opening a
 project, map file or layer file, or adding styles, says which layers and styles have such an image,
-or one too large to keep. The **Layers** pane, its legend and the editors' previews (the symbol's,
-the strokes' and the fills') show the image too, whole within their patch and not turned:
+or one too large to keep. A PDF or SVG export keeps the image once, however many points and lines
+draw it (in an SVG each place is a `<use>` of it, a clone in a vector editor). The **Layers**
+pane, its legend and the editors' previews (the symbol's, the strokes' and the fills') show the
+image too, whole within their patch and not turned:
 
 ```text
 layer.marker={"layer":"Schools","image":"iVBORw0KGgo…","size":16}
