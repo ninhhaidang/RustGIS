@@ -170,6 +170,17 @@ that gives a chart's `label` (`""` too), which an older reader's update doesn't 
 defaults, or `"group": ""`, needs nothing. A saved `layout.import` whose `text` has such a chart
 requires it as well. Layout files are not covered, as for backgrounds (#2277).
 
+Projects with a layout chart drawn as columns, with its values or their decimals, its own title
+or none, a bar colour or labels against its bars (`orientation`, `values`, `decimals`, `title`,
+`bar_color`, `label_align` on a chart element) require `layout-chart-look`, so an older reader
+refuses them instead of drawing bars running across in the default blue, with the title the
+chart is given, and saving it again without them. Saved `layout.addElement` commands for a chart
+that set one of them require it too. A saved `layout.update` requires it for `values`,
+`decimals`, `barColor` and `labelAlign` only: its `title` and `orientation` may be a legend's or
+a colorbar's, which the command alone doesn't tell, and the project the update ran on requires it
+for its chart anyway. Giving the defaults needs nothing. A saved `layout.import` whose `text` has
+such a chart requires it as well. Layout files are not covered, as for backgrounds (#2277).
+
 A coordinate system read from WKT is saved with its PROJ definition, which older readers read,
 and its WKT beside it (`wkt`), which this release reads first. Projects, map files and layer
 files require `crs-wkt` when a saved system's definition doesn't place points as its WKT does

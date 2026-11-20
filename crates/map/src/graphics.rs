@@ -319,10 +319,15 @@ pub fn scale_ratio(scale: f64) -> String {
 
 /// `v` rounded, its thousands apart with commas (`6,300,000`).
 pub fn thousands(v: f64) -> String {
-    let s = format!("{:.0}", v.clamp(0.0, 1e15));
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+    commas(&format!("{:.0}", v.clamp(0.0, 1e15)))
+}
+
+/// `digits`, a whole number written out, with its thousands apart with commas (`6300000` to
+/// `6,300,000`).
+pub fn commas(digits: &str) -> String {
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);

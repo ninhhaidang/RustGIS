@@ -7,9 +7,9 @@
 use egui::{Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use rustgis_engine::map::layout::{
     Arrange, ArrowStyle, Background, ChartOrder, CoordFormat, Element, ElementKind, Grid, GridKind, GridStyle, INK, Layout, LineHead,
-    MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_CHART_BARS, MAX_COLORBAR_TICKS, MAX_FRAME_SCALE,
-    MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarStyle,
-    ScaleUnits, TickSide, frame_camera, line_angle, line_length,
+    MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_CHART_BARS, MAX_CHART_DECIMALS, MAX_COLORBAR_TICKS,
+    MAX_FRAME_SCALE, MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM,
+    ScaleBarStyle, ScaleUnits, TextAlign, TickSide, frame_camera, line_angle, line_length,
 };
 use rustgis_engine::map::report::StatKind;
 use rustgis_engine::map::symbology::Dash;
@@ -1328,12 +1328,28 @@ pub(crate) fn save_drafts(app: &mut RustGisApp) {
             ("name", _) => Some(e.name.clone()),
             ("text", ElementKind::Text { text, .. }) => Some(text.clone()),
             ("title", ElementKind::Legend { title, .. } | ElementKind::Colorbar { title, .. }) => Some(title.clone()),
+            ("title", ElementKind::Chart { title, .. }) => title.clone(),
             _ => None,
         });
         if current.is_some_and(|c| c != text) {
             let _ = app.run("layout.update", json!({"layout": l, "element": id, field: text}));
         }
     }
+}
+
+/// A row picking horizontal or vertical: the one picked when it changes, as its command code.
+fn orientation_row(ui: &mut Ui, current: Orientation) -> Option<&'static str> {
+    ui.label(tl!("Orientation"));
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        for (label, o, code) in [("Horizontal", Orientation::Horizontal, "horizontal"), ("Vertical", Orientation::Vertical, "vertical")] {
+            if ui.selectable_label(current == o, tl!(label)).clicked() && current != o {
+                picked = Some(code);
+            }
+        }
+    });
+    ui.end_row();
+    picked
 }
 
 /// Saves all text being typed, the field the Format pane shows included: for a command that
@@ -1785,15 +1801,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             .labelled_by(input_label.id);
                         ui.end_row();
                         let vertical = *orientation == Orientation::Vertical;
-                        ui.label(tl!("Orientation"));
-                        ui.horizontal(|ui| {
-                            for (label, v) in [("Horizontal", false), ("Vertical", true)] {
-                                if ui.selectable_label(vertical == v, tl!(label)).clicked() && vertical != v {
-                                    update(app, json!({"orientation": if v { "vertical" } else { "horizontal" }}));
-                                }
-                            }
-                        });
-                        ui.end_row();
+                        if let Some(o) = orientation_row(ui, *orientation) {
+                            update(app, json!({"orientation": o}));
+                        }
                         ui.label(tl!("Labels"));
                         ui.horizontal(|ui| {
                             let sides =
@@ -1955,7 +1965,23 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             ui.end_row();
                         }
                     }
-                    ElementKind::Chart { frame, layer, field, label, group, statistic, order, bars, other, .. } => {
+                    ElementKind::Chart {
+                        frame,
+                        layer,
+                        field,
+                        label,
+                        group,
+                        statistic,
+                        order,
+                        bars,
+                        other,
+                        orientation,
+                        values,
+                        decimals,
+                        title,
+                        label_align,
+                        ..
+                    } => {
                         // The feature layers of the frame's map, and the fields of the chart's layer (#2487).
                         let map = match layout.element(*frame).map(|f| &f.kind) {
                             Some(ElementKind::MapFrame { map, .. }) => {
@@ -2043,6 +2069,77 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             }
                         });
                         ui.end_row();
+                        // How it draws its bars (#2487).
+                        let vertical = *orientation == Orientation::Vertical;
+                        if let Some(o) = orientation_row(ui, *orientation) {
+                            update(app, json!({"orientation": o}));
+                        }
+                        // Its own title is typed below; picking it starts from the title it is given.
+                        ui.label(tl!("Title"));
+                        let own = title.as_deref().is_some_and(|t| !t.is_empty());
+                        ui.horizontal(|ui| {
+                            let modes = [("Automatic", title.is_none()), ("None", title.as_deref() == Some("")), ("Own", own)];
+                            for (text, on) in modes {
+                                if ui.selectable_label(on, tl!(text)).clicked() && !on {
+                                    // Its own title starts as the one it is given, cut to a title's 200 characters.
+                                    let value = match text {
+                                        "Automatic" => Value::Null,
+                                        "None" => json!(""),
+                                        _ => json!(e.kind.chart_given_title().unwrap_or_default().chars().take(200).collect::<String>()),
+                                    };
+                                    // Its own title being typed is dropped, so the field losing its
+                                    // focus, now or with the selection, doesn't bring it back.
+                                    app.layout.typing.remove(&(li, id, "title"));
+                                    update(app, json!({"title": value}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        if let Some(t) = title.as_deref().filter(|_| own) {
+                            let input_label = ui.label(tl!("Title text"));
+                            if let Some(tt) = text_field(app, ui, (li, id, "title"), t, false, input_label.id) {
+                                update(app, json!({"title": tt}));
+                            }
+                            ui.end_row();
+                        }
+                        let input_label = ui.label(tl!("Values"));
+                        let mut on = *values;
+                        if ui.checkbox(&mut on, "").labelled_by(input_label.id).changed() {
+                            update(app, json!({"values": on}));
+                        }
+                        ui.end_row();
+                        if *values {
+                            let input_label = ui.label(tl!("Decimals"));
+                            let auto = tl!("Automatic");
+                            let mut items = vec![(auto.to_string(), decimals.is_none(), json!("auto"))];
+                            items.extend((0..=MAX_CHART_DECIMALS).map(|d| (d.to_string(), *decimals == Some(d), json!(d))));
+                            let current = decimals.map_or(auto.to_string(), |d| d.to_string());
+                            if let Some(v) = choice(ui, ("chart_decimals", id), input_label.id, &current, &items) {
+                                update(app, json!({"decimals": v}));
+                            }
+                            ui.end_row();
+                        }
+                        ui.label(tl!("Bar color"));
+                        let mut c = crate::theme::c32(e.kind.chart_look().unwrap_or_default().bar_color);
+                        let resp = crate::widgets::color_button(ui, &mut c);
+                        if resp.changed() {
+                            crate::widgets::one_step_per_press(app, &resp);
+                            update(app, json!({"barColor": crate::theme::rgba(c).hex()}));
+                        }
+                        ui.end_row();
+                        // Columns have their labels centred under them.
+                        if !vertical {
+                            ui.label(tl!("Labels"));
+                            ui.horizontal(|ui| {
+                                let right = *label_align == TextAlign::Right;
+                                for (text, v) in [("Left", false), ("By the bars", true)] {
+                                    if ui.selectable_label(right == v, tl!(text)).clicked() && right != v {
+                                        update(app, json!({"labelAlign": if v { "right" } else { "left" }}));
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
                     }
                     ElementKind::Table { rows, .. } => {
                         let input_label = ui.label(tl!("Rows"));
@@ -3919,6 +4016,42 @@ mod tests {
         h.state_mut().layout.selected = ids.get(1).copied();
         h.run_steps(2);
         assert_eq!(h.state().ui.right, Some(Format));
+    }
+
+    /// Picking Automatic or None for a chart's title drops its own title being typed, so the
+    /// field losing its focus doesn't bring it back (#2487).
+    #[test]
+    fn a_charts_title_mode_drops_the_title_being_typed() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::map::layout::ElementKind;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Charts"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let p = json!({"layout": li, "kind": "chart", "layer": "Cities", "title": "Mine"});
+        let id = app.run("layout.addElement", p).unwrap()["element"].as_u64().unwrap() as u32;
+        app.layout.selected = Some(id);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(420.0, 1600.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                let layout = app.session.project.layouts[li].clone();
+                egui::ScrollArea::vertical().show(ui, |ui| super::properties(app, ui, &layout, li));
+            },
+            app,
+        );
+        h.run_steps(2);
+        h.query_all_by_role(Role::TextInput).find(|n| n.value().as_deref() == Some("Mine")).unwrap().focus();
+        h.run_steps(2);
+        h.query_all_by_role(Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(" draft");
+        h.run_steps(2);
+        assert!(!h.state().layout.typing.is_empty(), "being typed");
+        h.get_by_role_and_label(Role::Button, "None").click();
+        h.run_steps(3);
+        let title = match &h.state().session.project.layouts[li].element(id).unwrap().kind {
+            ElementKind::Chart { title, .. } => title.clone(),
+            k => panic!("{k:?}"),
+        };
+        assert_eq!(title.as_deref(), Some(""), "no title, not the one typed");
+        assert!(h.state().layout.typing.is_empty());
     }
 
     /// Capture To Clipboard draws the text still being typed into the Format pane.

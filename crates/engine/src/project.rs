@@ -89,6 +89,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-element-ink",
     "layout-element-wrap",
     "layout-chart-data",
+    "layout-chart-look",
     "field-generation",
     "offline-map-area-id",
     "crs-wkt",

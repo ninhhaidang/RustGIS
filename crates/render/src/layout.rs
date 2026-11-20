@@ -8,8 +8,8 @@ use rustgis_data::GeometryType;
 use rustgis_data::query::{Env, SeriesPage};
 use rustgis_geom::{Coord, Extent};
 use rustgis_map::layout::{
-    ArrowStyle, ColorScale, ElementKind, FrameShape, Grid, GridKind, INK, Layout, LineHead, MAX_LEGEND_COLUMNS, Orientation, PT_PER_MM,
-    ScaleBarStyle, ScaleUnits, TextAlign, TickSide, frame_camera,
+    ArrowStyle, ChartLook, ColorScale, ElementKind, FrameShape, Grid, GridKind, INK, Layout, LineHead, MAX_LEGEND_COLUMNS, Orientation,
+    PT_PER_MM, ScaleBarStyle, ScaleUnits, TextAlign, TickSide, frame_camera,
 };
 use rustgis_map::symbology::LegendEntry;
 use rustgis_map::{Map, Rgba};
@@ -585,7 +585,10 @@ fn draw_page(
             ElementKind::Chart { frame: f, layer, color, .. } => {
                 let ds = frame(*f).and_then(|fr| maps.get(fr.1)).and_then(|m| m.layer_by_name(layer)).map(|l| &l.dataset);
                 match ds.and_then(|ds| e.kind.chart_data(ds)) {
-                    Some(data) => chart(&mut pm, r, &data, color.unwrap_or(INK), ppp),
+                    Some(data) => {
+                        let look = e.kind.chart_look().unwrap_or_default();
+                        chart(&mut pm, r, &data, &look, color.unwrap_or(INK), ppp, layout.decimal_comma)
+                    }
                     None => placeholder(&mut pm, r, "Chart", ppp),
                 }
             }
@@ -3552,9 +3555,10 @@ fn table(pm: &mut Canvas, r: Rect, ds: &rustgis_data::Dataset, rows: usize, ink:
     }
 }
 
-/// A bar chart of `data`'s bars ([`ElementKind::chart_data`]): its title and labels in `dark`.
-/// With a negative value, bars run either way from a zero line (#2487).
-fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, dark: Rgba, ppp: f64) {
+/// A bar chart of `data`'s bars ([`ElementKind::chart_data`]) drawn as `look` says, its title,
+/// labels and values in `dark`, its values with a decimal comma when `comma`. With a negative
+/// value, bars run either way from a zero line (#2487).
+fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, look: &ChartLook, dark: Rgba, ppp: f64, comma: bool) {
     let ppp = ppp as f32;
     let vals = &data.bars;
     let max = vals.iter().map(|v| v.0).fold(0.0_f64, f64::max);
@@ -3563,34 +3567,163 @@ fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, dark: 
         placeholder(pm, r, "Chart", ppp as f64);
         return;
     }
-    let span = max - min;
     let px = 7.5 * 1.33 * ppp;
-    let title_h = px * 1.6;
-    text::text_at(pm, &data.title, r.x(), r.y() + title_h / 2.0, px * 1.15, dark, true, text::Align::Left, false);
-    let label_w = if data.labelled { r.width() * 0.32 } else { 0.0 };
-    let bar_area = r.width() - label_w - 4.0;
-    let bh = ((r.height() - title_h) / vals.len() as f32).min(18.0 * ppp);
-    // Where the bars start: the left of the bar area when none is negative.
-    let zero = r.x() + label_w + bar_area * (-min / span) as f32;
-    for (i, (v, name)) in vals.iter().enumerate() {
-        let y = r.y() + title_h + bh * i as f32;
-        let w = (bar_area * (v.abs() / span) as f32).max(1.0);
-        let x = if *v < 0.0 { zero - w } else { zero };
-        if let Some(b) = Rect::from_xywh(x, y + bh * 0.15, w, bh * 0.7) {
-            pm.fill_rect(b, &paint(Rgba::rgb(0x3B, 0x82, 0xC4), 1.0), Transform::identity(), None);
-        }
-        if data.labelled {
-            let mut t: String = name.chars().take(30).collect();
-            while !t.is_empty() && text::measure(&t, 7.5, false) * ppp > label_w - 4.0 * ppp {
-                t.pop();
-            }
-            text::text_at(pm, &t, r.x(), y + bh / 2.0, px.min(bh * 0.9), dark, false, text::Align::Left, false);
+    // No title leaves its room to the bars.
+    let title_h = if data.title.is_empty() { 0.0 } else { px * 1.6 };
+    if !data.title.is_empty() {
+        text::text_at(pm, &data.title, r.x(), r.y() + title_h / 2.0, px * 1.15, dark, true, text::Align::Left, false);
+    }
+    // Each bar's value as written past its end, when it has them.
+    let values: Vec<String> = if look.values {
+        vals.iter().map(|(v, _)| decimal(rustgis_map::layout::chart_value_text(*v, look.decimals), comma)).collect()
+    } else {
+        Vec::new()
+    };
+    let bars = ChartBars { r, title_h, vals, values: &values, min, max, px, ppp, dark, look };
+    match look.orientation {
+        Orientation::Horizontal => bars.across(pm, data.labelled),
+        Orientation::Vertical => bars.columns(pm, data.labelled),
+    }
+}
+
+/// `name`'s first 30 characters, cut from their end while `too_wide` says they don't fit.
+fn fit_label(name: &str, too_wide: impl Fn(&str) -> bool) -> String {
+    let mut t: String = name.chars().take(30).collect();
+    while !t.is_empty() && too_wide(&t) {
+        t.pop();
+    }
+    t
+}
+
+/// What [`chart`] draws its bars from: its box, the height of its title over the bars, the bars
+/// and their values written out (none without), the least and greatest value (0 among them), its
+/// text size and pixels per point.
+struct ChartBars<'a> {
+    r: Rect,
+    title_h: f32,
+    vals: &'a [(f64, String)],
+    values: &'a [String],
+    min: f64,
+    max: f64,
+    px: f32,
+    ppp: f32,
+    dark: Rgba,
+    look: &'a ChartLook,
+}
+
+impl ChartBars<'_> {
+    fn bar(&self, pm: &mut Canvas, x: f32, y: f32, w: f32, h: f32) {
+        if let Some(b) = Rect::from_xywh(x, y, w, h) {
+            pm.fill_rect(b, &paint(self.look.bar_color, 1.0), Transform::identity(), None);
         }
     }
-    if min < 0.0
-        && let Some(line) = Rect::from_xywh(zero - 0.375 * ppp, r.y() + title_h, 0.75 * ppp, bh * vals.len() as f32)
-    {
-        pm.fill_rect(line, &paint(dark, 1.0), Transform::identity(), None);
+
+    /// What part `v` is of the span from the lowest value (or zero) to the highest (or zero). A span
+    /// past a number's range (the largest number and its opposite) is taken by halves.
+    fn share(&self, v: f64) -> f32 {
+        let span = self.max - self.min;
+        (if span.is_finite() { v / span } else { (v / 2.0) / (self.max / 2.0 - self.min / 2.0) }) as f32
+    }
+
+    /// The widest of the values written at `size` pixels past the bars running one way:
+    /// positive ones, or negative ones (`negative`); 0 without values.
+    fn widest(&self, size: f32, negative: bool) -> f32 {
+        self.vals
+            .iter()
+            .zip(self.values)
+            .filter(|((v, _), _)| (*v < 0.0) == negative)
+            .map(|(_, t)| text::measure(t, size / 1.33, false))
+            .fold(0.0, f32::max)
+    }
+
+    /// Bars running across, labels in a column at their left, each value past its bar's end with
+    /// room kept for it at the side its bar runs to.
+    fn across(&self, pm: &mut Canvas, labelled: bool) {
+        let (r, ppp, px) = (self.r, self.ppp, self.px);
+        let label_w = if labelled { r.width() * 0.32 } else { 0.0 };
+        let bh = ((r.height() - self.title_h) / self.vals.len() as f32).min(18.0 * ppp);
+        let size = px.min(bh * 0.9);
+        let gap = 2.0 * ppp;
+        let room = |negative: bool, size: f32| {
+            let w = self.widest(size, negative);
+            if w > 0.0 { w + gap } else { 0.0 }
+        };
+        // Values take at most half the width beside the labels, written smaller past that.
+        let beside = r.width() - label_w - 4.0;
+        let mut value_size = size;
+        let (mut room_lo, mut room_hi) = (room(true, size), room(false, size));
+        if room_lo + room_hi > beside * 0.5 {
+            // Only the text grows smaller: the gaps beside it stay as they are.
+            let gaps = [room_lo, room_hi].iter().filter(|w| **w > 0.0).count() as f32 * gap;
+            let text = room_lo + room_hi - gaps;
+            value_size = (size * (beside * 0.5 - gaps) / text).max(0.0);
+            (room_lo, room_hi) = (room(true, value_size), room(false, value_size));
+        }
+        let bar_area = beside - room_lo - room_hi;
+        // Where the bars start: the left of the bar area when none is negative.
+        let zero = r.x() + label_w + room_lo + bar_area * self.share(-self.min);
+        let right = self.look.label_align == TextAlign::Right;
+        for (i, (v, name)) in self.vals.iter().enumerate() {
+            let y = r.y() + self.title_h + bh * i as f32;
+            let w = (bar_area * self.share(v.abs())).max(1.0);
+            let x = if *v < 0.0 { zero - w } else { zero };
+            self.bar(pm, x, y + bh * 0.15, w, bh * 0.7);
+            if labelled {
+                let t = fit_label(name, |t| text::measure(t, 7.5, false) * ppp > label_w - 4.0 * ppp);
+                // At the column's right, the label ends where the bars' side begins.
+                let (lx, align) = if right { (r.x() + label_w - 2.0 * ppp, text::Align::Right) } else { (r.x(), text::Align::Left) };
+                text::text_at(pm, &t, lx, y + bh / 2.0, size, self.dark, false, align, false);
+            }
+            if let Some(t) = self.values.get(i) {
+                let (vx, align) = if *v < 0.0 { (x - gap, text::Align::Right) } else { (x + w + gap, text::Align::Left) };
+                text::text_at(pm, t, vx, y + bh / 2.0, value_size, self.dark, false, align, false);
+            }
+        }
+        if self.min < 0.0
+            && let Some(line) = Rect::from_xywh(zero - 0.375 * ppp, r.y() + self.title_h, 0.75 * ppp, bh * self.vals.len() as f32)
+        {
+            pm.fill_rect(line, &paint(self.dark, 1.0), Transform::identity(), None);
+        }
+    }
+
+    /// Columns standing on a zero line, each label centred under its column and cut to its width,
+    /// each value over a column (under one going down), made smaller to fit a narrow column.
+    fn columns(&self, pm: &mut Canvas, labelled: bool) {
+        let (r, ppp, px) = (self.r, self.ppp, self.px);
+        let slot = r.width() / self.vals.len() as f32;
+        let widest = self.widest(px, false).max(self.widest(px, true));
+        let value_px = if widest > slot * 0.95 { px * slot * 0.95 / widest } else { px };
+        let value_h = value_px * 1.4;
+        let room_hi = if self.max > 0.0 && !self.values.is_empty() { value_h } else { 0.0 };
+        let room_lo = if self.min < 0.0 && !self.values.is_empty() { value_h } else { 0.0 };
+        let label_h = if labelled { px * 1.4 } else { 0.0 };
+        let top = r.y() + self.title_h + room_hi;
+        let plot_h = r.bottom() - label_h - room_lo - top;
+        if plot_h <= 0.0 {
+            placeholder(pm, r, "Chart", ppp as f64);
+            return;
+        }
+        // Where the columns stand: the bottom of the plot when none is negative.
+        let zero = top + plot_h * self.share(self.max);
+        for (i, (v, name)) in self.vals.iter().enumerate() {
+            let cx = r.x() + slot * (i as f32 + 0.5);
+            let h = (plot_h * self.share(v.abs())).max(1.0);
+            let y = if *v < 0.0 { zero } else { zero - h };
+            self.bar(pm, cx - slot * 0.35, y, slot * 0.7, h);
+            if let Some(t) = self.values.get(i) {
+                let vy = if *v < 0.0 { zero + h + value_h / 2.0 } else { zero - h - value_h / 2.0 };
+                text::text_at(pm, t, cx, vy, value_px, self.dark, false, text::Align::Center, false);
+            }
+            if labelled {
+                let t = fit_label(name, |t| text::measure(t, px / 1.33, false) > slot - 2.0 * ppp);
+                text::text_at(pm, &t, cx, r.bottom() - label_h / 2.0, px, self.dark, false, text::Align::Center, false);
+            }
+        }
+        if self.min < 0.0
+            && let Some(line) = Rect::from_xywh(r.x(), zero - 0.375 * ppp, r.width(), 0.75 * ppp)
+        {
+            pm.fill_rect(line, &paint(self.dark, 1.0), Transform::identity(), None);
+        }
     }
 }
 
@@ -3684,7 +3817,7 @@ mod tests {
             let before = draw(&|c| chart_before(c, r, ds, "n", label, INK, ppp));
             let kind = chart_kind(serde_json::json!({"field": "n", "label": label}));
             let now = draw(&|c| match kind.chart_data(ds) {
-                Some(data) => chart(c, r, &data, INK, ppp),
+                Some(data) => chart(c, r, &data, &ChartLook::default(), INK, ppp, false),
                 None => placeholder(c, r, "Chart", ppp),
             });
             assert!(before.pixmap().data() == now.pixmap().data(), "{label:?} at {ppp}");
@@ -3702,15 +3835,120 @@ mod tests {
         let data = chart_kind(serde_json::json!({"field": "n"})).chart_data(&ds).unwrap();
         let mut c = Canvas::new(200, 120).unwrap();
         let r = Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap();
-        chart(&mut c, r, &data, INK, 1.0);
+        chart(&mut c, r, &data, &ChartLook::default(), INK, 1.0, false);
         // Bar area 196 px over a span of 4: zero at 49 px. Rows of 18 px under a 16 px title,
         // their bars from 18.7 to 30.6 px and from 36.7 to 48.6 px down.
-        let blue = |x: u32, y: u32| c.pixmap().pixel(x, y).is_some_and(|p| p.blue() > 150 && p.red() < 100);
-        assert!(blue(150, 25) && !blue(30, 25), "3 runs right of zero");
-        assert!(blue(30, 43) && !blue(70, 43), "-1 runs left of zero");
+        assert!(bar_blue(&c, 150, 25) && !bar_blue(&c, 30, 25), "3 runs right of zero");
+        assert!(bar_blue(&c, 30, 43) && !bar_blue(&c, 70, 43), "-1 runs left of zero");
         // Between the bars, the zero line (0.75 px wide, so partly covering its pixel).
         let line = c.pixmap().pixel(49, 34).unwrap();
         assert!(line.alpha() > 60 && line.blue() < 60, "the zero line: {line:?}");
+    }
+
+    /// A chart of `vals` (value and name, labelled by the name) drawn with the keys `extra` on a
+    /// 200 × 120 canvas filling it.
+    fn chart_drawn(vals: &[(f64, &str)], extra: serde_json::Value) -> Canvas {
+        use rustgis_data::{Dataset, Field, FieldType, Geometry, Value};
+        let mut ds = Dataset::new("t", GeometryType::Point, vec![Field::new("name", FieldType::Text), Field::new("n", FieldType::Double)]);
+        for (n, name) in vals {
+            ds.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![Value::Text((*name).into()), Value::Float(*n)]);
+        }
+        let mut keys = serde_json::json!({"field": "n", "order": "layer"});
+        if let (Some(k), Some(e)) = (keys.as_object_mut(), extra.as_object()) {
+            k.extend(e.clone());
+        }
+        let kind = chart_kind(keys);
+        let data = kind.chart_data(&ds).unwrap();
+        let mut c = Canvas::new(200, 120).unwrap();
+        let r = Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap();
+        chart(&mut c, r, &data, &kind.chart_look().unwrap(), INK, 1.0, false);
+        c
+    }
+
+    fn bar_blue(c: &Canvas, x: u32, y: u32) -> bool {
+        c.pixmap().pixel(x, y).is_some_and(|p| p.blue() > 150 && p.red() < 100)
+    }
+
+    /// Ink (dark, opaque enough) in the pixels `xs` × `ys`, read unpremultiplied: a bar's
+    /// half-covered edge is its own colour, not a dark one.
+    fn chart_inked(c: &Canvas, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>) -> bool {
+        xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+            .any(|(x, y)| c.pixmap().pixel(x, y).map(|p| p.demultiply()).is_some_and(|p| p.alpha() > 80 && p.blue() < 90 && p.red() < 90))
+    }
+
+    /// Columns stand on the bottom, a slot each, 70 % of it wide; with no title they take its room.
+    #[test]
+    fn a_vertical_chart_draws_columns() {
+        let c = chart_drawn(&[(3.0, "a"), (1.0, "b")], serde_json::json!({"orientation": "Vertical", "title": ""}));
+        // Slots of 100 px, columns from 15 to 85 and 115 to 185; 3 fills the 120 px, 1 a third.
+        assert!(bar_blue(&c, 50, 10) && bar_blue(&c, 50, 110), "3 fills its slot's height");
+        assert!(!bar_blue(&c, 150, 60) && bar_blue(&c, 150, 100), "1 stands a third as high");
+        assert!(!bar_blue(&c, 100, 110) && !bar_blue(&c, 5, 110), "gaps between and beside the columns");
+        // A negative one hangs from a zero line in the ink.
+        let c = chart_drawn(&[(3.0, "a"), (-1.0, "b")], serde_json::json!({"orientation": "Vertical", "title": ""}));
+        assert!(bar_blue(&c, 50, 60) && !bar_blue(&c, 50, 100), "3 stands above zero at 90 px");
+        assert!(bar_blue(&c, 150, 105) && !bar_blue(&c, 150, 60), "-1 hangs below it");
+        // Labelled, the labels sit under the columns, centred on them.
+        let c = chart_drawn(&[(3.0, "a"), (1.0, "b")], serde_json::json!({"orientation": "Vertical", "label": "name", "title": ""}));
+        assert!(chart_inked(&c, 40..60, 108..120) && chart_inked(&c, 140..160, 108..120) && !bar_blue(&c, 50, 112));
+    }
+
+    /// Values are written past each bar's end, the bars kept short enough to leave them room;
+    /// a negative one's past its left end.
+    #[test]
+    fn a_charts_values_are_written_past_its_bars() {
+        let plain = chart_drawn(&[(3.0, "a")], serde_json::json!({}));
+        let valued = chart_drawn(&[(3.0, "a")], serde_json::json!({"values": true}));
+        // One row of 18 px under a 16 px title: the bar from 18.7 to 30.6 px down.
+        assert!(bar_blue(&plain, 194, 25) && !chart_inked(&plain, 150..200, 18..32));
+        assert!(!bar_blue(&valued, 194, 25) && bar_blue(&valued, 150, 25) && chart_inked(&valued, 185..200, 18..32), "3 at the bar's end");
+        let negative = chart_drawn(&[(3.0, "a"), (-1.0, "b")], serde_json::json!({"values": true}));
+        assert!(chart_inked(&negative, 0..40, 36..50), "-1 left of its bar");
+    }
+
+    /// Values too wide for the chart are written smaller, leaving the bars half its width.
+    #[test]
+    fn a_charts_wide_values_leave_its_bars_room() {
+        let c = chart_drawn(&[(1e12, "a"), (-1e12, "b")], serde_json::json!({"values": true}));
+        // The bars of 1e12 and -1e12 take the bar area between them: at least half of the 196 px.
+        let blue = (0..200).filter(|x| bar_blue(&c, *x, 25) || bar_blue(&c, *x, 43)).count();
+        assert!(blue >= 97, "{blue} px of bar");
+        assert!(chart_inked(&c, 150..200, 18..32), "its value beside it");
+    }
+
+    /// The largest number and its opposite span past a number's range: each bar still takes its
+    /// half of the chart, across or as columns.
+    #[test]
+    fn a_charts_bars_past_a_numbers_range_take_their_half() {
+        let across = chart_drawn(&[(f64::MAX, "a"), (-f64::MAX, "b")], serde_json::json!({}));
+        let row = |y: u32| (0..200).filter(|x| bar_blue(&across, *x, y)).count();
+        assert!(row(25) > 50 && row(43) > 50, "{} and {} px", row(25), row(43));
+        let columns = chart_drawn(&[(f64::MAX, "a"), (-f64::MAX, "b")], serde_json::json!({"orientation": "Vertical"}));
+        let up = (0..120).filter(|y| bar_blue(&columns, 50, *y)).count();
+        let down = (0..120).filter(|y| bar_blue(&columns, 150, *y)).count();
+        assert!(up > 30 && down > 30, "{up} and {down} px");
+    }
+
+    /// No title gives its room to the bars; a bar colour is drawn as given.
+    #[test]
+    fn a_chart_without_a_title_and_with_a_bar_colour() {
+        let titled = chart_drawn(&[(3.0, "a")], serde_json::json!({}));
+        let untitled = chart_drawn(&[(3.0, "a")], serde_json::json!({"title": ""}));
+        assert!(!bar_blue(&titled, 150, 8) && bar_blue(&untitled, 150, 8));
+        assert!(chart_inked(&titled, 0..20, 0..16) && !chart_inked(&untitled, 0..20, 0..16), "the title, or none");
+        let rose = chart_drawn(&[(3.0, "a")], serde_json::json!({"bar_color": [194, 24, 91, 255]}));
+        let p = rose.pixmap().pixel(150, 25).unwrap();
+        assert!(p.red() > 180 && p.green() < 40 && p.blue() > 80 && p.blue() < 100, "{p:?}");
+    }
+
+    /// Labels at the right of their column end against the bars; at its left, from its edge.
+    #[test]
+    fn a_charts_labels_sit_left_or_against_the_bars() {
+        let left = chart_drawn(&[(3.0, "Madrid")], serde_json::json!({"label": "name"}));
+        let right = chart_drawn(&[(3.0, "Madrid")], serde_json::json!({"label": "name", "label_align": "Right"}));
+        // The labels' column is 64 px wide.
+        assert!(chart_inked(&left, 0..6, 18..32) && !chart_inked(&left, 56..63, 18..32));
+        assert!(!chart_inked(&right, 0..6, 18..32) && chart_inked(&right, 50..63, 18..32));
     }
 
     /// Both map frames share the index feature, even though the locator draws a different map.
@@ -3837,7 +4075,7 @@ mod tests {
             assert_eq!(reddish(&draw(&|c| colorbar(c, r, &grey, &bar(ink), 1.0))), expected, "colorbar {ink:?}");
             // Its bars keep their blue.
             let data = chart_kind(serde_json::json!({"field": "n", "label": "name"})).chart_data(&ds).unwrap();
-            assert_eq!(reddish(&draw(&|c| chart(c, r, &data, ink, 1.0))), expected, "chart {ink:?}");
+            assert_eq!(reddish(&draw(&|c| chart(c, r, &data, &ChartLook::default(), ink, 1.0, false))), expected, "chart {ink:?}");
         }
         // Two columns 90 px wide, a header and two rows 17 px high: (175, 25) is in the first
         // row's empty right end, (175, 8) in the header's.
