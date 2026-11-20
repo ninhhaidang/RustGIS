@@ -1382,6 +1382,65 @@ fn gpu_mesh_limit_spans_a_streamed_layers_batches() {
     assert!(scene.cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })), "the rest drawn on the CPU");
 }
 
+/// A tilted view of a streamed layer too dense to mesh, on the GPU backend, is drawn on the CPU
+/// as the CPU backend draws it. The GPU frame tried first stops at the layer's batch past the
+/// limit (#2540), which is no error of its source.
+#[test]
+fn a_tilted_view_of_a_streamed_layer_too_dense_to_mesh_is_drawn_on_the_cpu() {
+    let mut ds = Dataset::new("dense", GeometryType::Polygon, vec![]);
+    for i in 0..270 {
+        for j in 0..270 {
+            let (x, y) = (i as f64 * 0.01, j as f64 * 0.01);
+            let ring = vec![Coord::new(x, y), Coord::new(x + 0.008, y), Coord::new(x, y + 0.008)];
+            ds.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        }
+    }
+    let mut map = Map::new("dense");
+    map.add_dataset(ds);
+    map.layers[0] = streamed(&map.layers[0], 72_900 / 8 + 1);
+    let camera = Camera { center: lonlat_to_merc(Coord::new(1.35, 1.35)), res: 1000.0, bearing: 0.0, pitch: 50.0 };
+    let view = View { width: 400.0, height: 400.0, pixels_per_point: 1.0, camera, sky: false };
+    // The GPU attempt alone: it declines, with no error for the source and no failed source.
+    crate::MESHED.with(|m| m.borrow_mut().clear());
+    let mut failed = None;
+    assert!(crate::gpu_turned(&mut map, &view, false, false, &mut failed, &crate::Env::default()).is_none());
+    assert!(crate::MESHED.with(|m| m.borrow().iter().any(|(_, too_dense)| *too_dense)), "a batch past the limit");
+    assert!(failed.is_none() && map.layers[0].source.as_ref().is_some_and(|s| s.error.is_none()), "no error: {failed:?}");
+    let Some(RenderOutput::Cpu(gpu)) = render_backend(&mut map, &view, Backend::Gpu) else { panic!("drawn on the CPU") };
+    let cpu = render_backend(&mut map, &view, Backend::Cpu);
+    let Some(RenderOutput::Cpu(cpu)) = cpu else { panic!("cpu") };
+    assert!(gpu.pixmap.data() == cpu.pixmap.data(), "as the CPU backend draws it");
+}
+
+/// A streamed layer whose first batch is drawn on the CPU (reaching too far for f32) and whose
+/// next one meshes, putting that picture in the scene: the GPU frame tried first for a tilted view
+/// stops there, before the layer above (#2540), and the view is drawn as the CPU backend draws it.
+#[test]
+fn a_tilted_view_stops_trying_the_gpu_at_a_picture_already_in_the_scene() {
+    let square = |x: f64, y: f64, s: f64| {
+        Some(Geometry::Polygon(vec![vec![vec![Coord::new(x, y), Coord::new(x + s, y), Coord::new(x + s, y + s), Coord::new(x, y + s)]]]))
+    };
+    let mut map = Map::new("mixed");
+    map.basemap = rustgis_map::Basemap::Blank;
+    let mut ds = Dataset::new("mixed", GeometryType::Polygon, vec![]);
+    ds.push(square(1.0 - 0.025, 0.5 - 0.025, 0.05), vec![]);
+    ds.push(square(1.0, 0.5, 1e-7), vec![]);
+    map.add_dataset(ds);
+    map.layers[0] = streamed(&map.layers[0], 1);
+    let mut top = Dataset::new("top", GeometryType::Polygon, vec![]);
+    top.push(square(1.0 + 2e-7, 0.5, 1e-7), vec![]);
+    map.add_dataset(top);
+    let camera = Camera { center: lonlat_to_merc(Coord::new(1.0, 0.5)), res: rustgis_map::camera::MIN_RES, bearing: 0.0, pitch: 50.0 };
+    let view = View { width: 400.0, height: 400.0, pixels_per_point: 1.0, camera, sky: false };
+    crate::MESHED.with(|m| m.borrow_mut().clear());
+    let Some(RenderOutput::Cpu(gpu)) = render_backend(&mut map, &view, Backend::Gpu) else { panic!("drawn on the CPU") };
+    let meshed = crate::MESHED.with(|m| m.borrow().clone());
+    assert!(meshed.iter().filter(|(n, _)| n == "mixed").count() >= 2, "both batches tried: {meshed:?}");
+    assert!(!meshed.iter().any(|(n, _)| n == "top"), "went on: {meshed:?}");
+    let Some(RenderOutput::Cpu(cpu)) = render_backend(&mut map, &view, Backend::Cpu) else { panic!("cpu") };
+    assert!(gpu.pixmap.data() == cpu.pixmap.data(), "as the CPU backend draws it");
+}
+
 /// Counts full render traversals independently of interaction-window reads.
 struct CountedLod {
     chunks: Chunks,

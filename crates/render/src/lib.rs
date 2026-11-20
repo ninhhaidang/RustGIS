@@ -2391,6 +2391,13 @@ const COMPLETE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
+    /// The layers meshed on this test thread, in order (`mesh::collect_layer`), and whether each
+    /// came back too dense to mesh.
+    pub(crate) static MESHED: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
     static SNAPSHOT_TEST_LIMIT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
@@ -4128,6 +4135,11 @@ fn frame_water(map: &Map, view: &View, labels_to: &Labels) -> Option<(std::sync:
     ground.water().cloned().map(|w| (w, pending))
 }
 
+/// Whether a GPU scene's commands hold a picture drawn on the CPU.
+fn holds_picture(cmds: &[gpu_scene::DrawCmd]) -> bool {
+    cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. }))
+}
+
 /// Draws one north-up frame. `labels_to` says where its labels go: a turned or tilted view the
 /// frame stands in for places them itself (and draws their icons). `full_res_rasters` marks an
 /// export, which draws everything as it will stay: rasters at full resolution, and labels in
@@ -4224,6 +4236,12 @@ fn render_frame(
     }
     // Set when tiny-skia actually rasterizes into the accumulator.
     let mut cpu_dirty = false;
+    // A GPU frame standing in for a turned or tilted view ([`gpu_turned`]) is of no use with a
+    // picture in it: that view is then drawn on the CPU whole. So it stops at the first layer
+    // that would leave one, rather than draw the rest (#2540).
+    let pictureless = backend.is_gpu() && matches!(labels_to, Labels::Turned(_) | Labels::Tilted(..));
+    // Set when such a frame stops that way.
+    let mut declined = false;
     if map.draws_world_outline() {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
@@ -4468,6 +4486,11 @@ fn render_frame(
         // A frame no longer wanted stops between layers (see `cancel`).
         if cancel::requested() {
             break;
+        }
+        // What is drawn so far already leaves a picture, waiting or in the scene (see
+        // `pictureless`).
+        if pictureless && (cpu_dirty || holds_picture(&cmds)) {
+            return None;
         }
         if let Some(id) = below.take() {
             draw_tiles!(Some(id));
@@ -4832,6 +4855,16 @@ fn render_frame(
                     Err(mesh::TessError::Refused | mesh::TessError::Imprecise) => mesh_room,
                 };
                 gpu_done = collected.is_ok();
+                #[cfg(test)]
+                MESHED.with(|m| m.borrow_mut().push((layer.name.clone(), collected == Err(mesh::TessError::TooDense))));
+                // Too dense to mesh, the layer's features in view would be drawn as a picture
+                // (see `pictureless`): not drawn at all.
+                if pictureless && collected == Err(mesh::TessError::TooDense) {
+                    declined = true;
+                    // Only to stop drawing: `declined` turns it into this frame's `None` before
+                    // it is reported or kept as the layer's error.
+                    return Err(rustgis_data::DataError::Cancelled);
+                }
             }
             // The layer's diagram, its fields, and how far a chart reaches past its feature (map
             // units). Graphics take none (`layer.diagram` refuses them).
@@ -5691,6 +5724,10 @@ fn render_frame(
                 chunk.dataset.features = Vec::new().into();
                 Ok(())
             });
+            // Declined (`pictureless`): no frame, whatever the source made of the stop.
+            if declined {
+                return None;
+            }
             if let Err(e) = result {
                 // Stopped, not failed: the source is fine.
                 if cancel::requested() {
@@ -5706,7 +5743,9 @@ fn render_frame(
                 source.clear_error();
             }
         } else if let Err(e) = draw_chunk(layer) {
-            log::warn!("cannot render layer '{}': {e}", layer.name);
+            if !declined {
+                log::warn!("cannot render layer '{}': {e}", layer.name);
+            }
             return None;
         }
         if let (Some(spool), Some(x)) = (&mut extrusions, &layer.extrusion)
@@ -5747,8 +5786,8 @@ fn render_frame(
     }
     pm.layer(None);
     // A frame stopped part-way (see `cancel`) is no frame: its tiles, labels and effects aren't
-    // worth working out.
-    if cancel::requested() {
+    // worth working out. Nor is one the last layer left a picture in (see `pictureless`).
+    if cancel::requested() || (pictureless && (cpu_dirty || holds_picture(&cmds))) {
         return None;
     }
     if let Some(id) = below {
@@ -9224,6 +9263,74 @@ mod tests {
             if let gpu_scene::DrawCmd::Mesh { vertices, .. } = c {
                 assert!(vertices.len() <= mesh::MAX_LAYER_VERTICES, "{} vertices", vertices.len());
             }
+        }
+    }
+
+    /// A turned or tilted view with a layer too dense to mesh is drawn on the CPU, as the CPU
+    /// backend draws it, and the GPU frame tried first stops at that layer: the one above it is
+    /// never meshed (#2540). Without it, the view stays a GPU scene.
+    #[test]
+    fn a_turned_or_tilted_view_stops_trying_the_gpu_at_a_layer_too_dense_to_mesh() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("dense", GeometryType::Polygon, vec![]);
+        for i in 0..270 {
+            for j in 0..270 {
+                let (x, y) = (i as f64 * 0.01, j as f64 * 0.01);
+                let ring = vec![Coord::new(x, y), Coord::new(x + 0.008, y), Coord::new(x, y + 0.008)];
+                d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+            }
+        }
+        let dense = m.add_dataset(d);
+        // Added last, so on top: drawn after the dense layer.
+        square_layer(&mut m, "sparse", 1.0, 0.2, 0.4);
+        let at = lonlat_to_merc(Coord::new(1.35, 0.5));
+        for (bearing, pitch) in [(30.0, 0.0), (0.0, 50.0), (20.0, 60.0)] {
+            let camera = Camera { center: at, res: 1000.0, bearing, pitch };
+            let view = View { width: 400.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+            MESHED.with(|m| m.borrow_mut().clear());
+            let Some(RenderOutput::Cpu(gpu)) = render_backend(&mut m, &view, Backend::Gpu) else {
+                panic!("turned {bearing}°, tilted {pitch}°: drawn on the CPU")
+            };
+            let meshed = MESHED.with(|m| m.borrow().clone());
+            assert!(meshed.contains(&("dense".into(), true)), "turned {bearing}°, tilted {pitch}°: too dense: {meshed:?}");
+            assert!(!meshed.iter().any(|(n, _)| n == "sparse"), "turned {bearing}°, tilted {pitch}°: went on: {meshed:?}");
+            let cpu = render(&mut m, &view).expect("cpu");
+            assert!(gpu.pixmap.data() == cpu.pixmap.data(), "turned {bearing}°, tilted {pitch}°: as the CPU draws it");
+            // Without the dense layer, the view is a GPU scene with the sparse layer meshed.
+            m.layer_mut(dense).expect("dense").visible = false;
+            MESHED.with(|m| m.borrow_mut().clear());
+            assert!(
+                matches!(render_backend(&mut m, &view, Backend::Gpu), Some(RenderOutput::Gpu(_))),
+                "turned {bearing}°, tilted {pitch}°: a GPU scene"
+            );
+            assert!(MESHED.with(|m| m.borrow().iter().any(|(n, _)| n == "sparse")));
+            m.layer_mut(dense).expect("dense").visible = true;
+        }
+    }
+
+    /// So does one with a layer drawn on the CPU for another reason: a polygon reaching too far
+    /// from its origin for f32, zoomed in all the way. The layer above it is never meshed.
+    #[test]
+    fn a_turned_or_tilted_view_stops_trying_the_gpu_after_a_layer_drawn_on_the_cpu() {
+        let mut m = Map::new("Map");
+        // The world's outline is too far for f32 this far in as well: none.
+        m.basemap = rustgis_map::Basemap::Blank;
+        // About 5 km across, over a view of a few centimetres.
+        square_layer(&mut m, "far", 1.0 - 0.025, 0.5 - 0.025, 0.05);
+        square_layer(&mut m, "near", 1.0, 0.5, 1e-7);
+        let at = lonlat_to_merc(Coord::new(1.0, 0.5));
+        for (bearing, pitch) in [(30.0, 0.0), (0.0, 50.0)] {
+            let camera = Camera { center: at, res: rustgis_map::camera::MIN_RES, bearing, pitch };
+            let view = View { width: 400.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+            MESHED.with(|m| m.borrow_mut().clear());
+            let Some(RenderOutput::Cpu(gpu)) = render_backend(&mut m, &view, Backend::Gpu) else {
+                panic!("turned {bearing}°, tilted {pitch}°: drawn on the CPU")
+            };
+            let meshed = MESHED.with(|m| m.borrow().clone());
+            assert!(meshed.contains(&("far".into(), false)), "turned {bearing}°, tilted {pitch}°: tried: {meshed:?}");
+            assert!(!meshed.iter().any(|(n, _)| n == "near"), "turned {bearing}°, tilted {pitch}°: went on: {meshed:?}");
+            let cpu = render(&mut m, &view).expect("cpu");
+            assert!(gpu.pixmap.data() == cpu.pixmap.data(), "turned {bearing}°, tilted {pitch}°: as the CPU draws it");
         }
     }
 
