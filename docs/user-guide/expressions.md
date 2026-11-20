@@ -240,6 +240,13 @@ argument being typed marked (`round(x[, places])`) and what the function gives. 
 opens hides it, and it comes back when the list closes; Escape with no list open closes it until
 the cursor leaves that call.
 
+The same list, signature and closing brackets help in the other one-line expression boxes: the
+**By Expression** boxes of a layer's symbol and of a label class, Unique Values' **Expression**,
+a report's **Where** and an attribute rule's expression. Apart from the rule's, which **Add**
+applies, those boxes apply what's written when they lose focus, and a click in the list keeps the
+focus, so a field taken from it isn't applied half written; while the list is open Escape closes
+it, not the box.
+
 A number goes into a number field as it is: a decimal field keeps every digit of `1 / 3` (a
 whole number past 2^53 becomes the nearest decimal, as a decimal field holds it). A whole-number
 field holds whole numbers, so a decimal result, or text written as one, loses its fraction toward

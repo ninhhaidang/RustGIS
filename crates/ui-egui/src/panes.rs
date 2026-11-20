@@ -6382,10 +6382,10 @@ fn symbol_by_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::map::
     });
 }
 
-/// One By Expression box: `label`, then the expression set (`cur`), checked against `ds` as it is
-/// typed. Gives the text to apply (blank: none) when the box loses focus with one that reads and
-/// differs from `cur`; one that doesn't read shows why, and stays in its box unapplied until it is
-/// fixed or Escape drops it.
+/// One By Expression box: `label`, then the expression set (`cur`), with the suggestions of
+/// [`crate::exprcomplete::expr_edit`] and checked against `ds` as it is typed. Gives the text to
+/// apply (blank: none) when the box loses focus with one that reads and differs from `cur`; one
+/// that doesn't read shows why, and stays in its box unapplied until it is fixed or Escape drops it.
 pub(crate) fn expression_box(
     ui: &mut Ui,
     id: egui::Id,
@@ -6424,14 +6424,13 @@ pub(crate) fn expression_box(
                     ui.label(label)
                 })
                 .inner;
-            ui.add(
-                egui::TextEdit::singleline(&mut buf)
-                    .id(id)
-                    .hint_text(tl!("None"))
+            // Suggestions as it's typed: the fields, functions, variables and keywords (#1240).
+            crate::exprcomplete::expr_edit(ui, id, &mut buf, Some(ds), |e| {
+                e.hint_text(tl!("None"))
                     .char_limit(rustgis_engine::data::query::MAX_LEN)
                     .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY),
-            )
+                    .desired_width(f32::INFINITY)
+            })
             .labelled_by(input_label.id)
         })
         .inner;
@@ -6454,7 +6453,9 @@ pub(crate) fn expression_box(
     } else if r.has_focus() {
         ui.data_mut(|d| d.insert_temp(typing, (cur.clone(), buf.clone())));
     }
-    if let Some(e) = error.filter(|_| focused || r.lost_focus() || kept.is_some()) {
+    // Not while a word is still being chosen from the list (`pop_`, with `pop_est` offered).
+    let shown = (focused || r.lost_focus() || kept.is_some()) && !crate::exprcomplete::offering(ui, id);
+    if let Some(e) = error.filter(|_| shown) {
         ui.label(egui::RichText::new(crate::i18n::fmt("Invalid: {error}", &[("error", &e)])).small().color(t.red));
     }
     apply
@@ -8969,6 +8970,56 @@ mod tests {
         assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["high", "low"], "the rows the query keeps");
         assert_eq!(h.state().session.undo_depth(), steps + 1);
         assert!(h.query_all_by_role(Role::ComboBox).any(|n| n.value().as_deref() == Some("(expression)")));
+    }
+
+    /// A By Expression box (symbols, Unique Values, labels) offers the fields as it's typed (#1240):
+    /// a word still being chosen isn't said to be invalid, a click in the list writes the field and
+    /// keeps the focus, so nothing half typed is applied, and leaving the box applies what's
+    /// written.
+    #[test]
+    fn an_expression_box_completes_before_it_applies() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::data::{Dataset, Field, FieldType};
+        let ds = Dataset::new("t", GeometryType::Polygon, vec![Field::new("pop_est", FieldType::Integer)]);
+        let id = egui::Id::unique("expression_box_test");
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(480.0, 360.0)).allow_missing_glyphs().build_ui_state(
+            move |ui, applied: &mut Vec<String>| {
+                let t = Tokens::get(ui.ctx());
+                if let Some(text) = expression_box(ui, id, "Size", None, &ds, &t) {
+                    applied.push(text);
+                }
+                // Somewhere else to click.
+                let _ = ui.button("Elsewhere");
+            },
+            Vec::new(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        h.event(egui::Event::Text("pop_".into()));
+        h.run();
+        assert!(h.query_by_label_contains("Invalid:").is_none(), "a word being chosen isn't an error yet");
+        let at = h.get_by_role_and_label(Role::Button, "pop_est").rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.step();
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.run();
+        assert!(h.ctx.memory(|m| m.has_focus(id)), "the box keeps the focus");
+        assert!(h.state().is_empty(), "nothing applied while the field is picked");
+        h.event(egui::Event::Text(" / 1000".into()));
+        h.run();
+        h.get_by_label("Elsewhere").click();
+        h.run();
+        assert_eq!(h.state(), &["pop_est / 1000".to_string()], "applied on leaving the box");
     }
 
     /// A different populated field fixes classification without changing the query or styling on failure.

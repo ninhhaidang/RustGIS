@@ -111,13 +111,13 @@ pub fn report(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     });
     ui.horizontal(|ui| {
         let input_label = ui.label(tl!("Where"));
-        let resp = ui
-            .add(
-                egui::TextEdit::singleline(&mut app.reports.where_clause)
-                    .hint_text("pop_max > 1000000")
-                    .desired_width(ui.available_width()),
-            )
-            .labelled_by(input_label.id);
+        // Suggestions from the fields of the layer reported on (#1240).
+        let ds = rustgis_engine::cmd::report::layer_of(&app.session, i).ok().map(|l| &l.dataset);
+        let width = ui.available_width();
+        let resp = crate::exprcomplete::expr_edit(ui, egui::Id::unique(("report_where", i)), &mut app.reports.where_clause, ds, |e| {
+            e.hint_text("pop_max > 1000000").desired_width(width)
+        })
+        .labelled_by(input_label.id);
         if resp.lost_focus() {
             if app.reports.where_clause != r.where_clause {
                 let w = app.reports.where_clause.clone();
@@ -373,4 +373,51 @@ fn preview(app: &mut RustGisApp, ui: &mut Ui, i: usize, t: &Tokens) {
             app.reports.page += 1;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A report's Where offers the reported layer's fields as it's typed (#1240): a field clicked
+    /// in the list is written and the box keeps the focus, so the clause typed isn't put back to
+    /// the stored one, and leaving the box sets it.
+    #[test]
+    fn the_where_box_offers_the_reported_layers_fields() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("report.new", serde_json::json!({"layer": "Cities"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(520.0, 900.0)).allow_missing_glyphs().build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let t = Tokens::get(ui.ctx());
+                report(app, ui, &t);
+            },
+            app,
+        );
+        h.run();
+        h.get_by_role_and_label(Role::TextInput, "Where").click();
+        h.run();
+        h.event(egui::Event::Text("pop_m".into()));
+        h.run();
+        let at = h.get_by_role_and_label(Role::Button, "pop_max").rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.step();
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.run();
+        assert_eq!(h.state().reports.where_clause, "pop_max", "written, not put back");
+        h.event(egui::Event::Text(" > 1000000".into()));
+        h.run();
+        h.get_by_role_and_label(Role::TextInput, "Title").click();
+        h.run();
+        assert_eq!(h.state().session.project.reports[0].where_clause, "pop_max > 1000000");
+    }
 }
