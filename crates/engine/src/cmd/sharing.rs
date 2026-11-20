@@ -506,33 +506,36 @@ fn css(c: Rgba) -> String {
     format!("rgba({},{},{},{:.3})", c.r(), c.g(), c.b(), f64::from(c.a()) / 255.0)
 }
 
-/// A layer's visible features as GeoJSON, each with its drawn style.
-fn styled_features(l: &Layer, budget: &mut usize) -> Vec<Value> {
+/// A layer's visible features as GeoJSON, each with its drawn style: in longitude/latitude,
+/// whatever system the layer holds its coordinates in; refused, naming the feature, when one of
+/// its places can't be given there.
+fn styled_features(l: &Layer, budget: &mut usize) -> Result<Vec<Value>, String> {
     let rows = l.visible_rows();
     let opacity = 1.0 - f64::from(l.transparency.clamp(0.0, 100.0)) / 100.0;
     let mut out = Vec::new();
     // Its symbol by expression (no map scale: the page zooms on its own).
     let styler = l.styler(None);
-    for (row, ft) in l.dataset.features.iter().enumerate() {
+    for (row, ft) in l.dataset.features.rows().enumerate() {
         if *budget == 0 {
             break;
         }
         if rows.get(row) != Some(&true) {
             continue;
         }
-        let Some(g) = &ft.geometry else { continue };
+        let Some(g) = ft.geometry() else { continue };
+        let g = l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
         let sym = styler.symbol(row);
         let props: serde_json::Map<String, Value> =
             l.dataset.fields.iter().enumerate().map(|(i, f)| (f.name.clone(), json!(l.dataset.value(row, i).to_string()))).collect();
         out.push(json!({
             "type": "Feature",
-            "geometry": rustgis_data::io::geometry_to_geojson(g),
+            "geometry": rustgis_data::io::geometry_to_geojson(&g),
             "properties": props,
             "style": {"fill": css(sym.fill), "stroke": css(sym.stroke), "width": sym.stroke_width, "size": sym.size, "opacity": opacity},
         }));
         *budget -= 1;
     }
-    out
+    Ok(out)
 }
 
 /// A self-contained web map page: the map's layers (rasters as images) drawn on a canvas in Web
@@ -571,7 +574,7 @@ fn web_map_html(m: &Map, title: &str) -> Result<String, String> {
                 json!({"name": l.name, "image": base64::engine::general_purpose::STANDARD.encode(png), "bounds": [a.x, a.y, b.x, b.y]}),
             );
         } else {
-            layers.push(json!({"name": l.name, "features": styled_features(l, &mut budget)}));
+            layers.push(json!({"name": l.name, "features": styled_features(l, &mut budget)?}));
         }
     }
     let c = m.center_lonlat();
@@ -864,7 +867,8 @@ fn ogc_zip(title: &str, layers: &[&Dataset], extra: &[(String, Vec<u8>)]) -> Res
                 json!({"spatial": {"bbox": [[e.min_x, e.min_y, e.max_x, e.max_y]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"}});
         }
         entries.push((format!("collections/{id}.json"), serde_json::to_vec_pretty(&col).map_err(|e| e.to_string())?));
-        let mut fc = rustgis_data::io::to_geojson(ds);
+        // GeoJSON is longitude/latitude, whatever system the layer holds its coordinates in.
+        let mut fc = rustgis_data::io::to_geojson(&*ds.in_lonlat()?);
         fc["numberReturned"] = json!(ds.features.len());
         entries.push((format!("collections/{id}/items.json"), serde_json::to_vec(&fc).map_err(|e| e.to_string())?));
         cols.push(col);
@@ -882,7 +886,7 @@ fn ogc_zip(title: &str, layers: &[&Dataset], extra: &[(String, Vec<u8>)]) -> Res
 /// A web layer: the layer as an OGC API Features collection, its style, and a viewer page.
 fn web_layer_zip(s: &Session, l: &Layer) -> Result<Vec<u8>, String> {
     let style = serde_json::to_vec_pretty(&web_style(l)).map_err(|e| e.to_string())?;
-    let geojson = serde_json::to_vec(&rustgis_data::io::to_geojson(&l.dataset)).map_err(|e| e.to_string())?;
+    let geojson = serde_json::to_vec(&rustgis_data::io::to_geojson(&*l.dataset.in_lonlat()?)).map_err(|e| e.to_string())?;
     let mut m = s.map().clone();
     m.layers = vec![l.clone()];
     let e = l.extent();

@@ -587,11 +587,26 @@ impl Bridge<'_> {
         let target = asked_crs(self.s.map(), l, p)?;
         let limit = uint(p, "limit").and_then(|n| usize::try_from(n).ok()).unwrap_or(usize::MAX);
         let rows: Vec<usize> = if b(p, "selected") == Some(true) { l.selection.clone() } else { (0..l.dataset.features.len()).collect() };
+        // In longitude/latitude, which a response holds unless `crs` asks for another system,
+        // whatever system the layer holds its coordinates in.
+        let mut features = rustgis_data::Features::default();
+        for r in rows.iter().take(limit).filter_map(|&i| l.dataset.features.row(i)) {
+            let n = features.len();
+            features.push_row(r.to_feature());
+            if let Some(g) = r.geometry()
+                && let std::borrow::Cow::Owned(g) =
+                    l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, r.id()))?
+            {
+                features.set_geometry(n, Some(g));
+            }
+        }
+        // Its geometry is longitude/latitude (above); `crs` stays the layer's, as the system it
+        // was read in, which `export_error` reads.
         let ds = rustgis_data::Dataset {
             name: l.name.clone(),
             geometry_type: l.dataset.geometry_type,
             fields: l.dataset.fields.clone(),
-            features: rows.iter().take(limit).filter_map(|&i| l.dataset.features.get(i).cloned()).collect(),
+            features,
             source: None,
             crs: l.dataset.crs,
             crs_incomplete: false,

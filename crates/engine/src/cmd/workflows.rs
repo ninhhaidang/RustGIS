@@ -2089,14 +2089,16 @@ fn converted(ds: &Dataset, p: &Value) -> Result<(String, Vec<String>), String> {
     let name_field =
         ps(p, "nameField").and_then(|n| ds.field_index(n)).or_else(|| ds.fields.iter().position(|f| f.name.eq_ignore_ascii_case("name")));
     let format = conversion_format(p)?;
+    // Every format here is longitude/latitude, whatever system the layer holds its coordinates
+    // in; the notes below read the layer itself, converting as they need.
+    let lonlat = ds.in_lonlat()?;
     let text = match format {
-        "geojson" => rustgis_data::io::to_geojson_text(ds).map_err(|e| e.to_string())?,
-        "csv" => rustgis_data::io::to_csv(ds).map_err(|e| e.to_string())?,
-        "kml" => rustgis_data::interop::to_kml(ds, name_field).map_err(|e| e.to_string())?,
-        "gpx" => rustgis_data::interop::to_gpx(ds, name_field).map_err(|e| e.to_string())?,
-        _ => rustgis_data::interop::to_wkt_csv(ds).map_err(|e| e.to_string())?,
+        "geojson" => rustgis_data::io::to_geojson_text(&lonlat).map_err(|e| e.to_string())?,
+        "csv" => rustgis_data::io::to_csv(&lonlat).map_err(|e| e.to_string())?,
+        "kml" => rustgis_data::interop::to_kml(&lonlat, name_field).map_err(|e| e.to_string())?,
+        "gpx" => rustgis_data::interop::to_gpx(&lonlat, name_field).map_err(|e| e.to_string())?,
+        _ => rustgis_data::interop::to_wkt_csv(&lonlat).map_err(|e| e.to_string())?,
     };
-    // Every format here is longitude/latitude.
     let target = ps(p, "path").unwrap_or(&ds.name);
     let mut notes = rustgis_data::export_notes([(ds, ds.lonlat_extent())], target, rustgis_data::raster::Crs::LonLat);
     notes.extend(rustgis_data::io::export_losses_notes(ds, format, name_field, target).map_err(|e| e.to_string())?);

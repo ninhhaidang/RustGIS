@@ -878,7 +878,9 @@ fn package_gp(s: &mut Session) -> Result<Vec<u8>, String> {
             k += 1;
             file = format!("results/{base}_{k}.geojson");
         }
-        entries.push((file, rustgis_data::io::to_geojson(&l.dataset).to_string().into_bytes()));
+        // GeoJSON is longitude/latitude, whatever system the result holds its coordinates in.
+        let ds = l.dataset.in_lonlat()?;
+        entries.push((file, rustgis_data::io::to_geojson(&ds).to_string().into_bytes()));
     }
     rustgis_data::zip::write(&entries)
 }
