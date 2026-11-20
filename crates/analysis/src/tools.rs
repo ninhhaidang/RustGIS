@@ -4728,7 +4728,10 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     let field = s(p, "field");
     let fi = find_field_case_insensitive(ds, field)?;
     let mut raw_pts: Vec<(Coord, f64)> = Vec::new();
-    for r in rows(inp, p, "input", ds) {
+    for (n, r) in rows(inp, p, "input", ds).into_iter().enumerate() {
+        if n % LOOK_EVERY == 0 {
+            crate::control::check()?;
+        }
         let Some(g) = ds.features.get(r).and_then(|f| f.geometry.as_ref()) else { continue };
         let Some(v) = ds.value(r, fi).as_f64().filter(|v| v.is_finite()) else { continue };
         match g {
@@ -4756,31 +4759,9 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         }
     }
     let (crs, crs_note) = raster_crs(ds, p, "Ordinary Kriging")?;
-    let (mut raw_pts, beyond_note) = points_in(crs, raw_pts)?;
-    // Deduplicate sample points by coordinate to prevent singular kriging matrix
-    raw_pts.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then_with(|| a.0.y.total_cmp(&b.0.y)));
-    let mut accum: Vec<(Coord, f64, usize)> = Vec::with_capacity(raw_pts.len());
-    for (c, v) in raw_pts {
-        let mut duplicate_idx = None;
-        for (i, (last_c, _, _)) in accum.iter().enumerate().rev() {
-            if c.x - last_c.x >= 1e-9 {
-                break;
-            }
-            if (c.y - last_c.y).abs() < 1e-9 {
-                duplicate_idx = Some(i);
-                break;
-            }
-        }
-        if let Some(i) = duplicate_idx {
-            if let Some((_, sum, count)) = accum.get_mut(i) {
-                *sum += v;
-                *count += 1;
-            }
-            continue;
-        }
-        accum.push((c, v, 1));
-    }
-    let pts: Vec<(Coord, f64)> = accum.into_iter().map(|(c, sum, count)| (c, sum / count as f64)).collect();
+    let (raw_pts, beyond_note) = points_in(crs, raw_pts)?;
+    // Points at the same place as one, so the kriging matrix isn't singular.
+    let pts = merge_coincident(raw_pts)?;
     if pts.len() < 2 {
         return Err(with_note("kriging needs at least two points with values".into(), &beyond_note));
     }
@@ -4853,6 +4834,109 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     })
 }
 
+/// How many points or rows Kriging's preparation goes through between two looks at Cancel.
+const LOOK_EVERY: usize = 4096;
+
+/// Kriging's sample points with those at the same place (within 1e-9 in x and in y) as one, their
+/// values averaged: in x then y order, each point joins the latest point kept before it that is
+/// less than 1e-9 to its left and less than 1e-9 above or below it, else is kept. The points kept
+/// so far are found through cells of 4e-9 around each point, so a run of points sharing an x (a
+/// survey line, a grid's column) costs as little as any other: linear work, looking at Cancel
+/// every [`LOOK_EVERY`] points. A point first scans back a few steps, as the merge always did,
+/// which settles nearly every one; only a point in a longer run within 1e-9 to its left looks in
+/// the cells, and only such runs are filed in them. The cells hold no list of their own: each
+/// holds its latest point filed, and each point the one filed before it in its cell. The sort is one short step without a look. (A cell is four times
+/// the tolerance so a point's cell number, rounded, is never more than one cell from its
+/// neighbour's: two coordinates within 1e-9 of each other but not equal are under 2^23, where the
+/// rounding is a fraction of a cell. From 2^24 on, where only equal coordinates are that close, a
+/// coordinate is its own cell, numbered by its bits, which no cell number below reaches: huge
+/// coordinates don't all share the last cell.)
+fn merge_coincident(mut points: Vec<(Coord, f64)>) -> Result<Vec<(Coord, f64)>, String> {
+    const NEAR: f64 = 1e-9;
+    // How far back each point scans before it looks in the cells.
+    const SCAN: usize = 8;
+    let cell = coincident_cell;
+    points.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then_with(|| a.0.y.total_cmp(&b.0.y)));
+    let mut kept: Vec<(Coord, f64, usize)> = Vec::with_capacity(points.len());
+    // The cells, filed only when a run needs them: the latest point filed in each cell, and for
+    // each point filed the one filed before it in its cell. Points are filed in the order kept, from
+    // the first within 1e-9 to the left of the point that needs them (`window`: none before it can
+    // be near it or any point after it), up to `filed`.
+    let mut latest: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut before: Vec<Option<usize>> = Vec::new();
+    let (mut window, mut filed) = (0usize, 0usize);
+    for (n, (c, v)) in points.into_iter().enumerate() {
+        if n % LOOK_EVERY == 0 {
+            crate::control::check()?;
+        }
+        // The points kept just before it first, as the scan back always went: most points end it
+        // within a few steps (a point found, or one past 1e-9 to the left). A run that goes on (a
+        // shared x) is looked up in the cells instead.
+        let mut joins: Option<usize> = None;
+        let mut settled = false;
+        for (i, (k, _, _)) in kept.iter().enumerate().rev().take(SCAN) {
+            if c.x - k.x >= NEAR {
+                settled = true;
+                break;
+            }
+            if (c.y - k.y).abs() < NEAR {
+                joins = Some(i);
+                settled = true;
+                break;
+            }
+        }
+        settled |= kept.len() <= SCAN;
+        if !settled {
+            while kept.get(window).is_some_and(|(k, _, _)| c.x - k.x >= NEAR) {
+                window += 1;
+            }
+            for i in filed.max(window)..kept.len() {
+                if let (Some((k, _, _)), Some(slot)) = (kept.get(i), before.get_mut(i)) {
+                    *slot = latest.insert((cell(k.x), cell(k.y)), i);
+                }
+            }
+            filed = kept.len();
+        }
+        // (A point kept is never to the right of it, so never a column of cells to its right.)
+        let (cx, cy) = (cell(c.x), cell(c.y));
+        for dx in (-1..=0).filter(|_| !settled) {
+            for dy in -1..=1 {
+                // A cell's points, latest first: its first near one is its latest.
+                let mut at = latest.get(&(cx.saturating_add(dx), cy.saturating_add(dy))).copied();
+                while let Some(i) = at {
+                    if kept.get(i).is_some_and(|(k, _, _)| c.x - k.x < NEAR && (c.y - k.y).abs() < NEAR) {
+                        if joins.is_none_or(|j| i > j) {
+                            joins = Some(i);
+                        }
+                        break;
+                    }
+                    at = before.get(i).copied().flatten();
+                }
+            }
+        }
+        match joins.and_then(|i| kept.get_mut(i)) {
+            Some((_, sum, count)) => {
+                *sum += v;
+                *count += 1;
+            }
+            None => {
+                before.push(None);
+                kept.push((c, v, 1));
+            }
+        }
+    }
+    Ok(kept.into_iter().map(|(c, sum, count)| (c, sum / count as f64)).collect())
+}
+
+/// The cell [`merge_coincident`] files a coordinate `v` under: below 2^24, which 4e-9 of the
+/// axis, numbered from zero (under 2^53, an i64 exactly); from 2^24 on, the coordinate's own bits,
+/// whose magnitude (an exponent of 24 or more) is past 2^60, beyond every number below.
+fn coincident_cell(v: f64) -> i64 {
+    const CELL: f64 = 4e-9;
+    const EXACT_FROM: f64 = 16_777_216.0;
+    if v.abs() < EXACT_FROM { (v / CELL).floor() as i64 } else { v.to_bits() as i64 }
+}
+
 /// The projected system an interpolation takes from a layer read in `crs` when it is given none
 /// (#1743): `None` for none or a geographic one (degrees, with nothing to say), else the system, or
 /// why it can't be used. The Geostatistical Wizard's hint shows the same choice.
@@ -4921,15 +5005,27 @@ pub fn projected_crs(text: &str) -> Result<(Crs, Option<String>), String> {
 }
 
 /// `pts` (longitude/latitude) in `crs`, and a note counting those left out because the system
-/// can't hold them (see [`in_projected`]). One short step without a Cancel check: a point costs a
-/// projection and its round trip, far less than the interpolation that follows.
+/// can't hold them (see [`in_projected`]). A point costs a projection and its round trip: Cancel is
+/// looked at every [`LOOK_EVERY`] points.
 pub fn points_in(crs: Crs, pts: Vec<(Coord, f64)>) -> Result<(Vec<(Coord, f64)>, Option<String>), String> {
     if crs == Crs::LonLat {
         return Ok((pts, None));
     }
     let to = crs.transformer()?;
     let n = pts.len();
-    let kept: Vec<(Coord, f64)> = pts.into_iter().filter_map(|(c, v)| in_projected(crs, &to, c).map(|c| (c, v))).collect();
+    // (In the points' own storage, as a filtered collect of the same kind reuses it.)
+    let kept: Vec<(Coord, f64)> = pts
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (c, v))| {
+            if i % LOOK_EVERY == 0
+                && let Err(cancelled) = crate::control::check()
+            {
+                return Some(Err(cancelled));
+            }
+            in_projected(crs, &to, c).map(|c| Ok((c, v)))
+        })
+        .collect::<Result<_, crate::control::Cancelled>>()?;
     let beyond = n - kept.len();
     Ok((kept, beyond_note(crs, beyond)))
 }
@@ -11327,6 +11423,156 @@ mod tests {
             assert!(r.messages.iter().any(|m| m.starts_with("1 point(s) beyond what")), "{tool}: {:?}", r.messages);
             assert!(!r.messages.iter().any(|m| m.contains("was read in")), "{tool}: {:?}", r.messages);
         }
+    }
+
+    /// Kriging's merge of coincident points as it was before cells: the scan back through the
+    /// points kept, the reference the cells are checked against.
+    fn merge_by_scanning(mut points: Vec<(Coord, f64)>) -> Vec<(Coord, f64)> {
+        points.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then_with(|| a.0.y.total_cmp(&b.0.y)));
+        let mut kept: Vec<(Coord, f64, usize)> = Vec::new();
+        for (c, v) in points {
+            let mut joins = None;
+            for (i, (k, _, _)) in kept.iter().enumerate().rev() {
+                if c.x - k.x >= 1e-9 {
+                    break;
+                }
+                if (c.y - k.y).abs() < 1e-9 {
+                    joins = Some(i);
+                    break;
+                }
+            }
+            match joins {
+                Some(i) => {
+                    kept[i].1 += v;
+                    kept[i].2 += 1;
+                }
+                None => kept.push((c, v, 1)),
+            }
+        }
+        kept.into_iter().map(|(c, sum, count)| (c, sum / count as f64)).collect()
+    }
+
+    /// Kriging's coincident points merge as the old scan merged them, bit for bit: exact repeats,
+    /// points just inside and just outside 1e-9 of each other, runs that chain, columns sharing an
+    /// x, negative and large coordinates.
+    #[test]
+    fn kriging_merges_coincident_points_as_before() {
+        let c = Coord::new;
+        // A small generator, so the cases are the same on every run.
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut cases: Vec<Vec<(Coord, f64)>> = vec![
+            vec![(c(0.0, 0.0), 1.0), (c(0.0, 0.0), 3.0), (c(1.0, 1.0), 5.0)],
+            vec![(c(0.0, 0.0), 1.0), (c(0.9e-9, 0.0), 2.0), (c(1.0e-9, 0.0), 3.0), (c(0.0, 1.0e-9), 4.0), (c(0.0, 0.99e-9), 5.0)],
+            // A chain: each within 1e-9 of the one before, not of the first.
+            (0..20).map(|i| (c(f64::from(i) * 0.6e-9, 0.0), f64::from(i))).collect(),
+            vec![(c(-1.0e-9, -5.0), 1.0), (c(-0.2e-9, -5.0 + 0.5e-9), 2.0), (c(8.0e6, 1.0), 3.0), (c(8.0e6 + 1.0e-9, 1.0), 4.0)],
+            vec![(c(4.0e6, 4.0e6), 1.0), (c(4.0e6 + 9.3e-10, 4.0e6), 2.0), (c(1.0e15, 1.0e15), 3.0), (c(1.0e15, 1.0e15), 4.0)],
+            // Either side of 2^23 (a coordinate's last step there is under 1e-9), and of 2^24.
+            vec![
+                (c(8_388_607.999_999_999, 1.0), 1.0),
+                (c(8_388_608.0, 1.0), 2.0),
+                (c(1.0, 8_388_607.999_999_999), 3.0),
+                (c(1.0, 8_388_608.0), 4.0),
+            ],
+            vec![
+                (c(16_777_215.999_999_998, 0.0), 1.0),
+                (c(16_777_216.0, 0.0), 2.0),
+                (c(16_777_216.0, 0.0), 3.0),
+                (c(-16_777_216.0, -0.0), 4.0),
+            ],
+            // Zero's two signs, and a tiny negative beside them.
+            vec![(c(0.0, 0.0), 1.0), (c(-0.0, -0.0), 2.0), (c(-1.0e-12, 1.0e-12), 3.0), (c(-0.6e-9, -0.0), 4.0)],
+            // Coordinates far past any cell number, all different, and some repeated.
+            (0..2000).map(|i| (c(1.0e11 + f64::from(i % 1500) * 1.0e3, -1.0e300 + f64::from(i % 1500) * 1.0e290), 1.0)).collect(),
+        ];
+        // Columns sharing an x, with near repeats of earlier points among them.
+        for _ in 0..20 {
+            let mut points = Vec::new();
+            for _ in 0..400 {
+                let x = f64::from((next() % 4) as u32) + [0.0, 0.4e-9, 1.1e-9][(next() % 3) as usize];
+                let y = f64::from((next() % 50) as u32) * 0.7e-9;
+                points.push((c(x, y), f64::from((next() % 100) as u32)));
+            }
+            cases.push(points);
+        }
+        for (k, points) in cases.into_iter().enumerate() {
+            let want = merge_by_scanning(points.clone());
+            let got = merge_coincident(points).unwrap_or_else(|e| panic!("{e}"));
+            let bits = |v: &[(Coord, f64)]| v.iter().map(|(c, v)| (c.x.to_bits(), c.y.to_bits(), v.to_bits())).collect::<Vec<_>>();
+            assert_eq!(bits(&got), bits(&want), "case {k}");
+        }
+    }
+
+    /// Kriging's merge files coordinates far past any cell number (which once all shared the last
+    /// one, making the merge quadratic) each in a cell of its own, apart from every nearer cell.
+    #[test]
+    fn kriging_files_huge_coordinates_in_cells_of_their_own() {
+        let cells: HashSet<i64> = (0..10_000).map(|i| coincident_cell(1.0e11 + f64::from(i) * 1.0e3)).collect();
+        assert_eq!(cells.len(), 10_000);
+        let far = [16_777_216.0, -16_777_216.0, 1.0e11, -1.0e11, 1.0e300, -1.0e300, f64::MAX, -f64::MAX];
+        let near = [16_777_215.999_999_998, -16_777_215.999_999_998, 0.0, -0.0];
+        for f in far {
+            assert_eq!(coincident_cell(f), coincident_cell(f));
+            for n in near {
+                assert!(coincident_cell(f).abs_diff(coincident_cell(n)) > 1, "{f} {n}");
+            }
+        }
+        // 100,000 of them merge, each kept.
+        let points: Vec<(Coord, f64)> = (0..100_000).map(|i| (Coord::new(1.0e11 + f64::from(i) * 1.0e3, 1.0e11), 1.0)).collect();
+        assert_eq!(merge_coincident(points).map(|m| m.len()), Ok(100_000));
+    }
+
+    /// Kriging's preparation looks at Cancel as it reads and merges its points, not only once the
+    /// grid is worked out: 40,000 points sharing an x (the old merge's slowest case).
+    #[test]
+    fn kriging_preparation_looks_at_cancel_as_it_goes() {
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for i in 0..40_000 {
+            pts.push(Some(Geometry::Point(Coord::new(0.0, f64::from(i)))), vec![Value::Float(1.0)]);
+        }
+        let m = Map(HashMap::from([("pts".to_string(), pts)]));
+        let params = serde_json::json!({"input": "pts", "field": "v", "extent": "0,0,1,1", "pixelSize": 1});
+        // Never cancelled: counts the looks.
+        let counting = crate::control::Control::cancelled_at_look(u64::MAX);
+        let _ = crate::run_with("kriging", &m, &params, &counting);
+        // Reading the rows and merging the points, each every 4,096: at least 20 looks before the grid.
+        assert!(counting.looked() >= 20, "{}", counting.looked());
+        // The reading's ten looks (rows 0, 4096, … 36864), the merge's ten, then the grid's few.
+        assert!(counting.looked() <= 25, "{}", counting.looked());
+        // Cancelled at the merge's fifth look, after 16,384 points merged: it stops there. (A look
+        // added to reading the rows would move this.)
+        let cancelled = crate::control::Control::cancelled_at_look(15);
+        let e = crate::run_with("kriging", &m, &params, &cancelled).unwrap_err();
+        assert!(e.contains("cancelled"), "{e}");
+        assert_eq!(cancelled.looked(), 15);
+    }
+
+    /// Kriging's preparation in a projected system looks at Cancel while it projects the points
+    /// too: 40,000 points sharing a longitude, in Web Mercator.
+    #[test]
+    fn kriging_looks_at_cancel_while_it_projects_its_points() {
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for i in 0..40_000 {
+            pts.push(Some(Geometry::Point(Coord::new(0.0, f64::from(i) * 0.001))), vec![Value::Float(1.0)]);
+        }
+        let m = Map(HashMap::from([("pts".to_string(), pts)]));
+        let params = serde_json::json!({"input": "pts", "field": "v", "crs": "EPSG:3857", "extent": "0,0,1000,1000", "pixelSize": 1000});
+        let counting = crate::control::Control::cancelled_at_look(u64::MAX);
+        let _ = crate::run_with("kriging", &m, &params, &counting);
+        // Ten looks each reading, projecting and merging, then the grid's few: the count is what
+        // shows the projection's ten (without them it is 20 and a few).
+        assert!((30..=35).contains(&counting.looked()), "{}", counting.looked());
+        // Cancelled at its 15th look (the projection's fifth): it stops there.
+        let cancelled = crate::control::Control::cancelled_at_look(15);
+        let e = crate::run_with("kriging", &m, &params, &cancelled).unwrap_err();
+        assert!(e.contains("cancelled"), "{e}");
+        assert_eq!(cancelled.looked(), 15);
     }
 
     #[test]
