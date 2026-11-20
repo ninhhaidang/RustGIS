@@ -10,9 +10,9 @@ use rustgis_engine::cmd::layer::hidden_fill_opacity;
 use rustgis_engine::data::GeometryType;
 use rustgis_engine::map::raster::{Normalizer, RasterLegend, RasterStyle, Rock, relief_ambient};
 use rustgis_engine::map::symbology::{
-    ClassRef, ClassStyle, Dash, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_EXPRESSION_CLASSES, MAX_LABEL,
-    MAX_LINE_MARKER_SIZE, MAX_MARKER_INTERVAL, MAX_STROKE_OFFSET, MAX_STROKE_WIDTH, MAX_STROKES, MIN_MARKER_INTERVAL, OTHER_VALUES,
-    Placements, normalize_label,
+    ClassRef, ClassStyle, Dash, LegendEntry, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_EXPRESSION_CLASSES, MAX_LABEL,
+    MAX_LINE_MARKER_SIZE, MAX_MARKER_INTERVAL, MAX_STROKE_OFFSET, MAX_STROKE_WIDTH, MAX_STROKES, MIN_MARKER_INTERVAL, OPEN_ABOVE,
+    OPEN_BELOW, OTHER_VALUES, Placements, fmt_num, normalize_label, range_label,
 };
 use rustgis_engine::map::tiles::{TileKind, TileLayer};
 use rustgis_engine::map::{
@@ -1980,10 +1980,12 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     // range, what its definition query keeps, so the pane still shows its symbology.
     let vector_legend = match &raster_legend {
         Some(_) => Vec::new(),
-        None => l
-            .shown_legend(scale)
-            .or_else(|| (!l.in_scale_range(scale)).then(|| l.with_size_legend(l.renderer.legend_for(&l.dataset, &l.visible_rows()))))
-            .unwrap_or_default(),
+        None => interface_legend(
+            &l.renderer,
+            l.shown_legend(scale)
+                .or_else(|| (!l.in_scale_range(scale)).then(|| l.with_size_legend(l.renderer.legend_for(&l.dataset, &l.visible_rows()))))
+                .unwrap_or_default(),
+        ),
     };
     let has_legend = match &raster_legend {
         Some(rl) => !rl.is_empty(),
@@ -5301,7 +5303,7 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
         ui,
         |ui| {
             ui.set_width(ui.available_width());
-            let legend = l.renderer.legend();
+            let legend = interface_legend(&l.renderer, l.renderer.legend());
             // Unique Values legends sort their classes (by value or by label): row i shows class `order[i]`,
             // and the rows past them (`<all other values>`) keep their place.
             let order = l.renderer.class_order();
@@ -5435,12 +5437,24 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
 /// a bound out, and one to split the widest class in two. A bound being dragged or typed is held
 /// here and applied once, when the drag stops or the field is left, so a drag is one undo step.
 fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64], min: f64, ramp: &Ramp) {
+    // On a layer read in place the first class takes every value up to its bound and a last class
+    // every value past the bound before it. That last class has no bound to type.
+    let open_top = breaks.last().is_some_and(|v| *v >= OPEN_ABOVE);
     let mut b = breaks.to_vec();
-    let speed = ((b.last().copied().unwrap_or(min) - min).abs() / 200.0).max(1e-9);
+    let typed = b.len().saturating_sub(usize::from(open_top));
+    let lowest = if min <= OPEN_BELOW { b.first().copied().unwrap_or(0.0) } else { min };
+    let highest = typed.checked_sub(1).and_then(|i| b.get(i)).copied().unwrap_or(lowest);
+    // With one bound left there is no span to drag over: its own size sets the pace.
+    let span = match (highest > lowest, lowest == 0.0) {
+        (true, _) => highest - lowest,
+        (false, false) => lowest.abs(),
+        (false, true) => 1.0,
+    };
+    let speed = (span / 200.0).max(1e-9);
     let mut apply = false;
     let mut remove = None;
     let (layer, last) = (app.session.active_layer, b.len().saturating_sub(1));
-    for (i, v) in b.iter_mut().enumerate() {
+    for (i, v) in b.iter_mut().take(typed).enumerate() {
         ui.horizontal(|ui| {
             let id = egui::Id::unique(("manual-break", layer, field, i));
             if let Some(held) = ui.data(|d| d.get_temp::<f64>(id)) {
@@ -5456,22 +5470,34 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
                 apply = true;
             }
             // The last bound closes the classes at the field's largest value: taking it out would
-            // only bring it back.
-            if i < last && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
+            // only bring it back. Before an open last class, any bound can go while one is left.
+            let removable = if open_top { typed > 1 } else { i < last };
+            if removable && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
                 remove = Some(i);
             }
         });
+    }
+    // (After the bounds, so a bound being dragged shows here as it moves.)
+    if let Some(top) = typed.checked_sub(1).and_then(|i| b.get(i)).filter(|_| open_top) {
+        let n = (typed + 1).to_string();
+        ui.label(crate::i18n::fmt("Class {n} more than {bound}", &[("n", &n), ("bound", &fmt_num(*top))]));
     }
     if let Some(i) = remove {
         b.remove(i);
         apply = true;
     }
-    if b.len() < 12 && ui.button(tl!("Split the widest class")).clicked() {
-        let lower = |i: usize| if i == 0 { min } else { b[i - 1] };
-        if let Some(i) = (0..b.len()).max_by(|&x, &y| (b[x] - lower(x)).total_cmp(&(b[y] - lower(y)))) {
-            b.insert(i, (lower(i) + b[i]) / 2.0);
-            apply = true;
-        }
+    let lower = |i: usize| i.checked_sub(1).and_then(|j| b.get(j)).copied().unwrap_or(min);
+    // An open class has no width to halve.
+    let widest = (0..b.len())
+        .filter_map(|i| Some((i, lower(i), *b.get(i)?)))
+        .filter(|&(_, lo, hi)| lo > OPEN_BELOW && hi < OPEN_ABOVE)
+        .max_by(|x, y| (x.2 - x.1).total_cmp(&(y.2 - y.1)));
+    if b.len() < 12
+        && let Some((i, lo, hi)) = widest
+        && ui.button(tl!("Split the widest class")).clicked()
+    {
+        b.insert(i, lo.midpoint(hi));
+        apply = true;
     }
     if apply
         && let Err(e) =
@@ -5741,6 +5767,41 @@ pub(crate) fn notify_image_replaced(app: &mut RustGisApp, count: usize) {
     app.session.notify(text, false);
 }
 
+/// Legend rows as the panes show them: a Graduated Colors class open at an end, which the
+/// renderer names in English for layouts and exports, is named in the interface language. The
+/// rows can be a part of the classes, so they are matched by label: not where a label set by hand
+/// reads the same.
+fn interface_legend(r: &Renderer, mut rows: Vec<LegendEntry>) -> Vec<LegendEntry> {
+    let Renderer::Graduated { breaks, min, class_labels, .. } = r else { return rows };
+    let mut lo = *min;
+    let mut open = Vec::new();
+    for (i, &hi) in breaks.iter().enumerate() {
+        if class_labels.contains_key(&i) {
+            lo = hi;
+            continue;
+        }
+        let said = match (lo <= OPEN_BELOW, hi >= OPEN_ABOVE) {
+            (true, true) => Some(tl!("every value").to_string()),
+            (true, false) => Some(crate::i18n::fmt("up to {bound}", &[("bound", &fmt_num(hi))])),
+            (false, true) => Some(crate::i18n::fmt("more than {bound}", &[("bound", &fmt_num(lo))])),
+            (false, false) => None,
+        };
+        let english = range_label(lo, hi);
+        if let Some(said) = said
+            && !class_labels.values().any(|own| *own == english)
+        {
+            open.push((english, said));
+        }
+        lo = hi;
+    }
+    for row in &mut rows {
+        if let Some((_, said)) = open.iter().find(|(english, _)| *english == row.label) {
+            row.label = said.clone();
+        }
+    }
+    rows
+}
+
 /// The classes a line layer's strokes can be set for, with their legend labels and symbols.
 pub(crate) fn stroke_classes(r: &Renderer) -> Vec<(ClassRef, String, Symbol)> {
     match r {
@@ -5755,7 +5816,7 @@ pub(crate) fn stroke_classes(r: &Renderer) -> Vec<(ClassRef, String, Symbol)> {
                 .collect()
         }
         Renderer::Graduated { symbols, .. } => {
-            let legend = r.legend();
+            let legend = interface_legend(r, r.legend());
             symbols
                 .iter()
                 .enumerate()
@@ -8747,6 +8808,71 @@ mod tests {
         assert_eq!(breaks.last(), Some(&20.0), "only the rows kept by the query are classified");
         assert_eq!(h.state().session.undo_depth(), undo + 1);
         assert!(h.query_all_by_label("Choose a field to apply this renderer:").next().is_none());
+    }
+
+    /// Manual classes on a layer read in place end in an open class (#2497): it has no bound to
+    /// edit, and Split the widest class halves only a class with two bounds.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_open_manual_class_has_no_bound_to_edit_or_split() {
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as V, raster::Crs, source::gpkg};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("buildings.gpkg");
+        let mut data = Dataset::new("buildings", GeometryType::Point, vec![Field::new("height", FieldType::Double)]);
+        for h in [2.0, 12.0, 40.0] {
+            data.push(Some(Geometry::Point(Coord::new(h, 0.0))), vec![V::Float(h)]);
+        }
+        gpkg::write_in(&data, &path, Crs::LonLat).unwrap();
+        let mut app = RustGisApp::new(Session::new(rustgis_engine::Project::default()));
+        let id = app.run("layer.addData", json!({"path": &path, "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        app.run("layer.symbology", json!({"type": "graduated", "field": "height", "breaks": [4, 25]})).unwrap();
+        app.ui.open_right(RightPane::Symbology);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(64).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        let breaks = |h: &egui_kittest::Harness<'_, RustGisApp>| match &h.state().session.map().layer(id).unwrap().renderer {
+            Renderer::Graduated { breaks, .. } => breaks.clone(),
+            r => panic!("{r:?}"),
+        };
+        assert_eq!(breaks(&h), [4.0, 25.0, OPEN_ABOVE]);
+        for shown in ["Class 1 up to", "Class 2 up to", "Class 3 more than 25"] {
+            assert!(h.query_by_label(shown).is_some(), "no {shown}");
+        }
+        assert!(h.query_by_label("Class 3 up to").is_none(), "the open class has a bound to edit");
+        h.get_by_label("Split the widest class").click();
+        h.run_steps(3);
+        assert_eq!(breaks(&h), [4.0, 14.5, 25.0, OPEN_ABOVE]);
+    }
+
+    /// The panes name open classes through the catalog; closed classes and other renderers keep
+    /// the renderer's labels.
+    #[test]
+    fn open_classes_are_named_in_the_interface_language() {
+        use rustgis_engine::data::{Dataset, Field, FieldType};
+        let g = GeometryType::Polygon;
+        let d = Dataset::new("t", g, vec![Field::new("height", FieldType::Double)]);
+        let r = Renderer::graduated_manual_open(&d, "height", &[4.0, 25.0], Ramp::Ember, Symbol::default_for(g, 0)).unwrap();
+        let labels = |rows: Vec<LegendEntry>| rows.into_iter().map(|e| e.label).collect::<Vec<_>>();
+        let up_to = crate::i18n::fmt("up to {bound}", &[("bound", "4")]);
+        let more_than = crate::i18n::fmt("more than {bound}", &[("bound", "25")]);
+        let want = [up_to.as_str(), "4 – 25", more_than.as_str()];
+        assert_eq!(labels(interface_legend(&r, r.legend())), want);
+        let strokes: Vec<String> = stroke_classes(&r).into_iter().map(|(_, label, _)| label).collect();
+        assert_eq!(strokes, want);
+        // A class named by hand like an open class keeps its name, and so does the open class.
+        let mut named = r.clone();
+        named.set_class_style(&ClassRef::Index(1), &ClassStyle { label: Some("up to 4".into()), ..Default::default() }, g).unwrap();
+        assert_eq!(labels(interface_legend(&named, named.legend())), ["up to 4", "up to 4", more_than.as_str()]);
+        // Another renderer's row named like an open class is left alone.
+        let row = LegendEntry { label: "up to 4".into(), symbol: Symbol::default_for(g, 0), strokes: Vec::new(), fallback: false };
+        assert_eq!(labels(interface_legend(&Renderer::Single(Symbol::default_for(g, 0)), vec![row])), ["up to 4"]);
     }
 
     /// No numeric candidates means an explanation, not an empty field selector.

@@ -42734,6 +42734,102 @@ fn manual_breaks_are_the_ones_given() {
     }
 }
 
+/// Manual classes on a layer read in place (#2497): its features are those of the last view read,
+/// so its range is unknown. The first class takes every value up to its bound and one more class
+/// every value past the last, whatever the view holds, and the classes are saved with the project.
+#[test]
+fn manual_breaks_on_a_layer_read_in_place_are_open_at_both_ends() {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+    use rustgis_map::symbology::{OPEN_ABOVE, OPEN_BELOW};
+    use rustgis_map::{ClassMethod, Renderer};
+    // Heights 1 to 40 along the equator, each at its own longitude.
+    let mut ds = Dataset::new("buildings", GeometryType::Point, vec![Field::new("height", FieldType::Double)]);
+    for h in 1..=40 {
+        ds.push(Some(Geometry::Point(Coord::new(f64::from(h), 0.0))), vec![V::Float(f64::from(h))]);
+    }
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-open-classes-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("buildings.fgb");
+    rustgis_data::io::write_path(&ds, &path).unwrap();
+    let mut s = Session::new(Project::default());
+    let id =
+        s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let layer = |s: &Session| s.map().layer(id).unwrap().clone();
+    assert!(layer(&s).is_streamed() && layer(&s).dataset.features.is_empty());
+    let classes = |s: &Session| match layer(s).renderer {
+        Renderer::Graduated { breaks, min, method, .. } => (breaks, min, method),
+        r => panic!("{r:?}"),
+    };
+    let labels = |s: &Session| layer(s).renderer.legend().into_iter().map(|e| e.label).collect::<Vec<_>>();
+    let manual = |b: Value| json!({"layer": id, "type": "graduated", "field": "height", "method": "manual", "breaks": b});
+    // With no bounds given or kept and no view read yet, the refusal says what to do.
+    let refused = s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual"}));
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "'height' has no values in the view read so far: give manual breaks, or read a view where it has some"
+    );
+    s.run("layer.symbology", &manual(json!([4, 7, 10, 15, 25]))).unwrap();
+    assert_eq!(classes(&s), (vec![4.0, 7.0, 10.0, 15.0, 25.0, OPEN_ABOVE], OPEN_BELOW, ClassMethod::Manual));
+    assert_eq!(labels(&s), ["up to 4", "4 – 7", "7 – 10", "10 – 15", "15 – 25", "more than 25"]);
+    // A view holding only low heights is read: they set no bound.
+    let v = view_of(&mut s, rustgis_geom::Extent::new(0.5, -1.0, 3.5, 1.0));
+    crate::render::render_png(s.map_mut(), &v).unwrap();
+    let read: Vec<f64> = layer(&s).dataset.features.iter().filter_map(|f| f.attrs.first()?.as_f64()).collect();
+    assert!(!read.is_empty() && read.iter().all(|h| *h < 20.0), "{read:?}");
+    s.run("layer.symbology", &manual(json!([5, 20]))).unwrap();
+    assert_eq!(classes(&s), (vec![5.0, 20.0, OPEN_ABOVE], OPEN_BELOW, ClassMethod::Manual));
+    assert_eq!(labels(&s), ["up to 5", "5 – 20", "more than 20"]);
+    // Manual with no bounds keeps the current classes, with one open class at the top.
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual"})).unwrap();
+    assert_eq!(classes(&s).0, [5.0, 20.0, OPEN_ABOVE]);
+    // Twelve classes from the view switch to Manual as twelve: the open class takes the place of
+    // the bound that closed them at the largest value read.
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "equalInterval", "classes": 12}))
+        .unwrap();
+    let twelve = classes(&s).0;
+    assert_eq!(twelve.len(), 12);
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual"})).unwrap();
+    let (breaks, min, _) = classes(&s);
+    assert_eq!((breaks.len(), breaks.get(..11), breaks.last(), min), (12, twelve.get(..11), Some(&OPEN_ABOVE), OPEN_BELOW));
+    // Manual with no bounds to keep starts from the view's classes, open at both ends.
+    s.run("layer.symbology", &json!({"layer": id, "type": "single"})).unwrap();
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual", "classes": 3})).unwrap();
+    let (breaks, min, method) = classes(&s);
+    assert_eq!((breaks.len(), breaks.last(), min, method), (3, Some(&OPEN_ABOVE), OPEN_BELOW, ClassMethod::Manual));
+    // A label and colour set by hand stay when the classes turn open: each feature keeps its class.
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "equalInterval", "classes": 3}))
+        .unwrap();
+    s.run("layer.classStyle", &json!({"layer": id, "index": 1, "label": "Tall", "color": "#ff0000"})).unwrap();
+    let red = layer(&s).renderer.legend()[1].symbol.fill;
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual"})).unwrap();
+    assert_eq!((classes(&s).0.last(), labels(&s)[1].as_str()), (Some(&OPEN_ABOVE), "Tall"));
+    assert_eq!(layer(&s).renderer.legend()[1].symbol.fill, red);
+    // One class stays one, of every value.
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "equalInterval", "classes": 1}))
+        .unwrap();
+    assert_eq!(classes(&s).0.len(), 1);
+    s.run("layer.symbology", &json!({"layer": id, "type": "graduated", "field": "height", "method": "manual"})).unwrap();
+    assert_eq!(classes(&s).0, [OPEN_ABOVE]);
+    assert_eq!(labels(&s), ["every value"]);
+    s.run("layer.symbology", &manual(json!([5, 20]))).unwrap();
+    // Saved and opened again, the classes are the same.
+    let saved = layer(&s).renderer;
+    let project = dir.0.join("open.rgis");
+    s.run("project.saveAs", &json!({"path": project.display().to_string()})).unwrap();
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": project.display().to_string()})).unwrap();
+    let opened = t.map().layer_by_name("buildings").unwrap();
+    assert!(opened.is_streamed());
+    assert_eq!(opened.renderer, saved);
+}
+
 /// Raster-side projection failures retain good multipart coverage and reach both command results.
 #[test]
 fn raster_projection_failures_are_reported_for_zonal_statistics_and_clipping() {

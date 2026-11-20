@@ -150,7 +150,7 @@ pub fn commands() -> Vec<C> {
         .when(need_layer),
         C::new("layer.symbology", "Symbology", "Style › Drawing", symbology).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
-            .params(r#"{"layer"?, "type": "single"|"unique"|"graduated"|"proportional", "field"?, "expression"?: expression|null (unique: class by this expression's values instead of a field; blank or null: by a field; with neither key, Unique Values keep the layer's expression), "classes"?: 1..12, "method"?: "naturalBreaks"|"equalInterval"|"quantile"|"geometricInterval"|"standardDeviation"|"arithmeticProgression"|"headTailBreaks"|"manual", "breaks"?: [numbers] (manual: the classes' upper bounds, closed by the field's largest value), "ramp"?: string}"#),
+            .params(r#"{"layer"?, "type": "single"|"unique"|"graduated"|"proportional", "field"?, "expression"?: expression|null (unique: class by this expression's values instead of a field; blank or null: by a field; with neither key, Unique Values keep the layer's expression), "classes"?: 1..12, "method"?: "naturalBreaks"|"equalInterval"|"quantile"|"geometricInterval"|"standardDeviation"|"arithmeticProgression"|"headTailBreaks"|"manual", "breaks"?: [numbers] (manual: the classes' upper bounds, closed by the field's largest value; on a layer read in place, the first class takes every value up to its bound and one more class every value past the last), "ramp"?: string}"#),
         C::new("layer.ramp", "Color Scheme", "Style › Drawing", |s, p| {
             let r = s.ramp(s_req(p, "ramp")?)?;
             let mut dropped = None;
@@ -6772,11 +6772,39 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
             // Manual with no bounds keeps the layer's current ones on the same field, so switching
             // to it changes nothing.
             let kept = match &l.renderer {
-                Renderer::Graduated { field: f, breaks, .. } if *f == field => Some(breaks.clone()),
+                Renderer::Graduated { field: f, breaks, .. } if *f == field => {
+                    let mut b = breaks.clone();
+                    // On a layer read in place, the last bound closed the classes at the largest
+                    // value read: the open class takes its place, so the classes keep their number.
+                    let open = rustgis_map::symbology::OPEN_ABOVE;
+                    if l.is_streamed() && b.last().is_some_and(|v| *v < open) {
+                        b.pop();
+                        if b.is_empty() {
+                            b.push(open);
+                        }
+                    }
+                    Some(b)
+                }
                 _ => None,
             };
             match (method, typed.or(kept)) {
+                // A layer read in place holds only the features of the last view read, so its
+                // range is unknown: the classes take every value up to the first bound and past
+                // the last.
+                (ClassMethod::Manual, Some(b)) if l.is_streamed() => Renderer::graduated_manual_open(&l.dataset, &field, &b, ramp, base)?,
                 (ClassMethod::Manual, Some(b)) => Renderer::graduated_manual(&l.dataset, &rows()?, &field, &b, ramp, base)?,
+                // Manual with nothing to keep starts from the view's classes, open at both ends.
+                (ClassMethod::Manual, None) if l.is_streamed() => {
+                    let r = Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp, base).map_err(|e| {
+                        // The file has values; the view read so far holds none.
+                        if e == format!("'{field}' has no numeric values") {
+                            format!("'{field}' has no values in the view read so far: give manual breaks, or read a view where it has some")
+                        } else {
+                            e
+                        }
+                    })?;
+                    r.opened().unwrap_or(r)
+                }
                 _ => Renderer::graduated(&l.dataset, &rows()?, &field, classes, method, ramp, base)?,
             }
         }
@@ -6789,8 +6817,15 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
         other => return Err(format!("unknown symbology '{other}'")),
     };
     // Applied again on the same field, the classes keep the labels set by hand, and the colours
-    // and outlines set by hand too while the colour scheme stays (#314).
-    r.carry_edits_from(&l.renderer, g);
+    // and outlines set by hand too while the colour scheme stays (#314). Closed classes made open
+    // on a layer read in place class every feature as before, so their edits carry over too.
+    let opened = match &r {
+        Renderer::Graduated { breaks, .. } if l.is_streamed() && breaks.last() == Some(&rustgis_map::symbology::OPEN_ABOVE) => {
+            l.renderer.opened()
+        }
+        _ => None,
+    };
+    r.carry_edits_from(opened.as_ref().unwrap_or(&l.renderer), g);
     // The same field and scheme again carry the classes' alpha, which No Fill made 0.
     if hidden == Some(NoFill::Symbols) {
         r.map_symbols(show_fill);

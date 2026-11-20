@@ -47,7 +47,10 @@ Select a layer in Layers and open **Style › Symbology** (or the Symbology pane
   while those stay under 40% of the values they were taken from: for a few very large values among
   many small ones (city sizes, incomes). It sets its own number of classes, at most the number
   asked. Manual keeps the bounds you type: each class's upper bound is a number to edit or take out, **Split the widest
-  class** adds one, and the field's largest value closes the last class. If no field is
+  class** adds one, and the field's largest value closes the last class. On a layer read in
+  place, whose values aren't all at hand, the field's range is unknown: the first class takes
+  every value up to its bound, and one more class takes every value past the last bound, shown
+  as "up to 4" and "more than 25" in the legend. If no field is
   chosen, the current renderer's field is kept when it is numeric; otherwise the first numeric
   field is used. If the layer has no numeric field, or the
   switch fails for another reason, the pane shows why and keeps the current renderer. When numeric
