@@ -799,7 +799,7 @@ Close {name}	Zamknij {name}
 Closest	Najbliższy
 Coded values, one per line: code=description	Kody wartości, po jednym w wierszu: kod=opis
 Collapse or Expand the Ribbon	Zwiń lub rozwiń wstążkę
-Collapse the ribbon (Ctrl+F1)	Zwiń wstążkę (Ctrl+F1)
+Collapse the ribbon	Zwiń wstążkę
 Collection	Kolekcja
 Collection {id}: choose dates and Find Items	Kolekcja {id}: wybierz daty i pozycję Znajdź elementy
 Collections	Kolekcje
@@ -1395,7 +1395,7 @@ exit rotary	wyjazd z ronda
 exit roundabout	zjazd z ronda
 Expand Group	Rozwiń grupę
 Expand Legend	Rozwiń legendę
-Expand the ribbon (Ctrl+F1)	Rozwiń wstążkę (Ctrl+F1)
+Expand the ribbon	Rozwiń wstążkę
 Expand Tile Legend	Rozwiń legendę kafli
 Explode	Rozbij
 Exploratory 3D Analysis	Eksploracyjna analiza 3D

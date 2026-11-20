@@ -799,7 +799,7 @@ Close {name}	Cerrar {name}
 Closest	Más cercana
 Coded values, one per line: code=description	Valores codificados, uno por línea: código=descripción
 Collapse or Expand the Ribbon	Contraer o expandir la cinta
-Collapse the ribbon (Ctrl+F1)	Contraer la cinta (Ctrl+F1)
+Collapse the ribbon	Contraer la cinta
 Collection	Colección
 Collection {id}: choose dates and Find Items	Colección {id}: elija fechas y Buscar ítems
 Collections	Colecciones
@@ -1395,7 +1395,7 @@ exit rotary	salga de la rotonda
 exit roundabout	salga de la rotonda
 Expand Group	Expandir grupo
 Expand Legend	Expandir leyenda
-Expand the ribbon (Ctrl+F1)	Expandir la cinta (Ctrl+F1)
+Expand the ribbon	Expandir la cinta
 Expand Tile Legend	Expandir leyenda de teselas
 Explode	Descomponer
 Exploratory 3D Analysis	Análisis 3D exploratorio

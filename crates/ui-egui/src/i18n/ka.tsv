@@ -799,7 +799,7 @@ Close {name}	{name}-ის დახურვა
 Closest	უახლოესი
 Coded values, one per line: code=description	კოდირებული მნიშვნელობები, თითო ხაზზე ერთი: კოდი=აღწერა
 Collapse or Expand the Ribbon	ლენტის აკეცვა ან გაშლა
-Collapse the ribbon (Ctrl+F1)	ლენტის ჩაკეცვა (Ctrl+F1)
+Collapse the ribbon	ლენტის ჩაკეცვა
 Collection	კოლექცია
 Collection {id}: choose dates and Find Items	კოლექცია {id}: აირჩიეთ თარიღები და დააჭირეთ „ელემენტების პოვნა“
 Collections	კოლექციები
@@ -1395,7 +1395,7 @@ exit rotary	გამოდით წრიული მოძრაობიდ
 exit roundabout	გამოდით წრიული მოძრაობიდან
 Expand Group	ჯგუფის გაშლა
 Expand Legend	ლეგენდის გაშლა
-Expand the ribbon (Ctrl+F1)	ლენტის გაშლა (Ctrl+F1)
+Expand the ribbon	ლენტის გაშლა
 Expand Tile Legend	ფილების ლეგენდის გაშლა
 Explode	დაშლა
 Exploratory 3D Analysis	კვლევითი 3D ანალიზი

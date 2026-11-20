@@ -799,7 +799,7 @@ Close {name}	Tutup {name}
 Closest	Terdekat
 Coded values, one per line: code=description	Nilai berkode, satu per baris: kode=deskripsi
 Collapse or Expand the Ribbon	Ciutkan atau Perluas Ribbon
-Collapse the ribbon (Ctrl+F1)	Ciutkan ribbon (Ctrl+F1)
+Collapse the ribbon	Ciutkan ribbon
 Collection	Koleksi
 Collection {id}: choose dates and Find Items	Koleksi {id}: pilih tanggal lalu Cari Item
 Collections	Koleksi
@@ -1395,7 +1395,7 @@ exit rotary	keluar dari bundaran
 exit roundabout	keluar dari bundaran
 Expand Group	Perluas Grup
 Expand Legend	Perluas Legenda
-Expand the ribbon (Ctrl+F1)	Perluas ribbon (Ctrl+F1)
+Expand the ribbon	Perluas ribbon
 Expand Tile Legend	Perluas Legenda Ubin
 Explode	Pecah (Explode)
 Exploratory 3D Analysis	Analisis 3D Eksploratif

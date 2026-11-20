@@ -799,7 +799,7 @@ Close {name}	Chiudi {name}
 Closest	Più vicina
 Coded values, one per line: code=description	Valori codificati, uno per riga: codice=descrizione
 Collapse or Expand the Ribbon	Comprimi o espandi la barra multifunzione
-Collapse the ribbon (Ctrl+F1)	Comprimi la barra multifunzione (Ctrl+F1)
+Collapse the ribbon	Comprimi la barra multifunzione
 Collection	Collezione
 Collection {id}: choose dates and Find Items	Collezione {id}: scegli le date e Trova item
 Collections	Collezioni
@@ -1395,7 +1395,7 @@ exit rotary	esci dalla rotatoria
 exit roundabout	esci dalla rotonda
 Expand Group	Espandi gruppo
 Expand Legend	Espandi legenda
-Expand the ribbon (Ctrl+F1)	Espandi la barra multifunzione (Ctrl+F1)
+Expand the ribbon	Espandi la barra multifunzione
 Expand Tile Legend	Espandi legenda dei tile
 Explode	Esplodi
 Exploratory 3D Analysis	Analisi 3D esplorativa

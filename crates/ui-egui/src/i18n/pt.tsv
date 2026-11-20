@@ -799,7 +799,7 @@ Close {name}	Fechar {name}
 Closest	Mais próxima
 Coded values, one per line: code=description	Valores codificados, um por linha: código=descrição
 Collapse or Expand the Ribbon	Recolher ou expandir a faixa de opções
-Collapse the ribbon (Ctrl+F1)	Recolher a faixa de opções (Ctrl+F1)
+Collapse the ribbon	Recolher a faixa de opções
 Collection	Coleção
 Collection {id}: choose dates and Find Items	Coleção {id}: escolha as datas e Encontrar itens
 Collections	Coleções
@@ -1395,7 +1395,7 @@ exit rotary	saia da rotatória
 exit roundabout	saia da rotatória
 Expand Group	Expandir grupo
 Expand Legend	Expandir legenda
-Expand the ribbon (Ctrl+F1)	Expandir a faixa de opções (Ctrl+F1)
+Expand the ribbon	Expandir a faixa de opções
 Expand Tile Legend	Expandir legenda de blocos
 Explode	Explodir
 Exploratory 3D Analysis	Análise 3D exploratória

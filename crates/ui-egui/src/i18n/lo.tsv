@@ -799,7 +799,7 @@ Close {name}	ປິດ {name}
 Closest	ໃກ້ທີ່ສຸດ
 Coded values, one per line: code=description	ຄ່າລະຫັດ, ໜຶ່ງອັນຕໍ່ແຖວ: code=ຄຳອະທິບາຍ
 Collapse or Expand the Ribbon	ຫຍໍ້ ຫຼື ຂະຫຍາຍຣິບບອນ
-Collapse the ribbon (Ctrl+F1)	ຫຍໍ້ຣິບບອນ (Ctrl+F1)
+Collapse the ribbon	ຫຍໍ້ຣິບບອນ
 Collection	ຊຸດຂໍ້ມູນ (Collection)
 Collection {id}: choose dates and Find Items	ຊຸດຂໍ້ມູນ {id}: ເລືອກວັນທີ ແລະ ຊອກຫາລາຍການ
 Collections	ຊຸດຂໍ້ມູນຕ່າງໆ
@@ -1395,7 +1395,7 @@ exit rotary	ອອກຈາກວົງວຽນ
 exit roundabout	ອອກຈາກວົງວຽນ
 Expand Group	ຂະຫຍາຍກຸ່ມ
 Expand Legend	ຂະຫຍາຍຄຳອະທິບາຍສັນຍະລັກ
-Expand the ribbon (Ctrl+F1)	ຂະຫຍາຍຣິບບອນ (Ctrl+F1)
+Expand the ribbon	ຂະຫຍາຍຣິບບອນ
 Expand Tile Legend	ຂະຫຍາຍຄຳອະທິບາຍສັນຍະລັກໄທລ໌
 Explode	ແຍກສ່ວນປະກອບ
 Exploratory 3D Analysis	ການວິເຄາະ 3D ເຊີງສຳຫຼວດ

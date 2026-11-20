@@ -799,7 +799,7 @@ Close {name}	Kapat: {name}
 Closest	En Yakın
 Coded values, one per line: code=description	Kodlu değerler, her satıra bir tane: kod=açıklama
 Collapse or Expand the Ribbon	Şeridi Daralt veya Genişlet
-Collapse the ribbon (Ctrl+F1)	Şeridi daralt (Ctrl+F1)
+Collapse the ribbon	Şeridi daralt
 Collection	Koleksiyon
 Collection {id}: choose dates and Find Items	Koleksiyon {id}: tarihleri seçin ve Öğeleri Bul'a tıklayın
 Collections	Koleksiyonlar
@@ -1395,7 +1395,7 @@ exit rotary	döner kavşaktan çıkın
 exit roundabout	göbekten çıkın
 Expand Group	Grubu Genişlet
 Expand Legend	Lejantı Genişlet
-Expand the ribbon (Ctrl+F1)	Şeridi genişlet (Ctrl+F1)
+Expand the ribbon	Şeridi genişlet
 Expand Tile Legend	Karo Lejantını Genişlet
 Explode	Parçala
 Exploratory 3D Analysis	Keşifsel 3B Analiz

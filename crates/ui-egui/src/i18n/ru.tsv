@@ -799,7 +799,7 @@ Close {name}	Закрыть {name}
 Closest	Ближайшее
 Coded values, one per line: code=description	Кодированные значения, по одному в строке: код=описание
 Collapse or Expand the Ribbon	Свернуть или развернуть ленту
-Collapse the ribbon (Ctrl+F1)	Свернуть ленту (Ctrl+F1)
+Collapse the ribbon	Свернуть ленту
 Collection	Коллекция
 Collection {id}: choose dates and Find Items	Коллекция {id}: выберите даты и нажмите «Найти элементы»
 Collections	Коллекции
@@ -1395,7 +1395,7 @@ exit rotary	съезд с кольца
 exit roundabout	съезд с кольца
 Expand Group	Развернуть группу
 Expand Legend	Развернуть легенду
-Expand the ribbon (Ctrl+F1)	Развернуть ленту (Ctrl+F1)
+Expand the ribbon	Развернуть ленту
 Expand Tile Legend	Развернуть легенду тайлов
 Explode	Разбить
 Exploratory 3D Analysis	Исследовательский 3D-анализ

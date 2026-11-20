@@ -799,7 +799,7 @@ Close {name}	{name} বন্ধ করুন
 Closest	সবচেয়ে কাছের
 Coded values, one per line: code=description	প্রতি লাইনে একটি করে coded value: code=description
 Collapse or Expand the Ribbon	Ribbon গুটিয়ে নিন বা প্রসারিত করুন
-Collapse the ribbon (Ctrl+F1)	Ribbon গুটিয়ে নিন (Ctrl+F1)
+Collapse the ribbon	Ribbon গুটিয়ে নিন
 Collection	সংগ্রহ
 Collection {id}: choose dates and Find Items	Collection {id}: তারিখ বেছে Find Items করুন
 Collections	Collection-সমূহ
@@ -1395,7 +1395,7 @@ exit rotary	রোটারি থেকে বের হন
 exit roundabout	রাউন্ডঅ্যাবাউট থেকে বের হন
 Expand Group	Group প্রসারিত করুন
 Expand Legend	Legend প্রসারিত করুন
-Expand the ribbon (Ctrl+F1)	Ribbon প্রসারিত করুন (Ctrl+F1)
+Expand the ribbon	Ribbon প্রসারিত করুন
 Expand Tile Legend	Tile legend প্রসারিত করুন
 Explode	বিস্ফোরিত করুন
 Exploratory 3D Analysis	অনুসন্ধানমূলক 3D বিশ্লেষণ

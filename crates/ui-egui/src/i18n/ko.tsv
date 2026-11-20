@@ -799,7 +799,7 @@ Close {name}	{name} 닫기
 Closest	가장 가까움
 Coded values, one per line: code=description	코드 값, 한 줄에 하나씩: code=설명
 Collapse or Expand the Ribbon	리본 축소 또는 확장
-Collapse the ribbon (Ctrl+F1)	리본 축소 (Ctrl+F1)
+Collapse the ribbon	리본 축소
 Collection	컬렉션
 Collection {id}: choose dates and Find Items	컬렉션 {id}: 날짜를 선택하고 항목 찾기
 Collections	컬렉션
@@ -1395,7 +1395,7 @@ exit rotary	로터리 진출
 exit roundabout	회전교차로 진출
 Expand Group	그룹 펼치기
 Expand Legend	범례 펼치기
-Expand the ribbon (Ctrl+F1)	리본 확장 (Ctrl+F1)
+Expand the ribbon	리본 확장
 Expand Tile Legend	타일 범례 펼치기
 Explode	분해
 Exploratory 3D Analysis	탐색적 3D 분석

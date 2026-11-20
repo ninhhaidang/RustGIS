@@ -799,7 +799,7 @@ Close {name}	{name} を閉じる
 Closest	最近距離
 Coded values, one per line: code=description	コード値 (1 行に 1 つ): コード=説明
 Collapse or Expand the Ribbon	リボンの折りたたみ/展開
-Collapse the ribbon (Ctrl+F1)	リボンを折りたたむ (Ctrl+F1)
+Collapse the ribbon	リボンを折りたたむ
 Collection	コレクション
 Collection {id}: choose dates and Find Items	コレクション {id}: 日付を選んで [アイテムを検索]
 Collections	コレクション
@@ -1395,7 +1395,7 @@ exit rotary	ロータリーを出る
 exit roundabout	環状交差点を出る
 Expand Group	グループを展開
 Expand Legend	凡例を展開
-Expand the ribbon (Ctrl+F1)	リボンを展開 (Ctrl+F1)
+Expand the ribbon	リボンを展開
 Expand Tile Legend	タイル凡例を展開
 Explode	分解
 Exploratory 3D Analysis	探索的 3D 解析

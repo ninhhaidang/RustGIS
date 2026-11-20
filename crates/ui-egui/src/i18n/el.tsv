@@ -799,7 +799,7 @@ Close {name}	Κλείσιμο {name}
 Closest	Πλησιέστερο
 Coded values, one per line: code=description	Κωδικοποιημένες τιμές, μία ανά γραμμή: κωδικός=περιγραφή
 Collapse or Expand the Ribbon	Σύμπτυξη ή ανάπτυξη της κορδέλας
-Collapse the ribbon (Ctrl+F1)	Σύμπτυξη της κορδέλας (Ctrl+F1)
+Collapse the ribbon	Σύμπτυξη της κορδέλας
 Collection	Συλλογή
 Collection {id}: choose dates and Find Items	Συλλογή {id}: επιλέξτε ημερομηνίες και «Εύρεση στοιχείων»
 Collections	Συλλογές
@@ -1394,7 +1394,7 @@ exit rotary	έξοδος από την κυκλική πλατεία
 exit roundabout	έξοδος από τον κυκλικό κόμβο
 Expand Group	Ανάπτυξη ομάδας
 Expand Legend	Ανάπτυξη υπομνήματος
-Expand the ribbon (Ctrl+F1)	Ανάπτυξη της κορδέλας (Ctrl+F1)
+Expand the ribbon	Ανάπτυξη της κορδέλας
 Expand Tile Legend	Ανάπτυξη υπομνήματος tiles
 Explode	Διάσπαση
 Exploratory 3D Analysis	Διερευνητική ανάλυση 3D

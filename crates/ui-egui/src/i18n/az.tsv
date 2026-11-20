@@ -799,7 +799,7 @@ Close {name}	Bağla: {name}
 Closest	Ən yaxın
 Coded values, one per line: code=description	Kodlu qiymətlər, hər sətirdə bir: kod=təsvir
 Collapse or Expand the Ribbon	Lenti yığ və ya aç
-Collapse the ribbon (Ctrl+F1)	Lenti yığ (Ctrl+F1)
+Collapse the ribbon	Lenti yığ
 Collection	Kolleksiya
 Collection {id}: choose dates and Find Items	Kolleksiya {id}: tarixləri seçin və «Elementləri tap» düyməsini basın
 Collections	Kolleksiyalar
@@ -1395,7 +1395,7 @@ exit rotary	dairəvi yoldan çıxın
 exit roundabout	dairəvi yoldan çıxın
 Expand Group	Qrupu genişləndir
 Expand Legend	Legendanı genişləndir
-Expand the ribbon (Ctrl+F1)	Lenti aç (Ctrl+F1)
+Expand the ribbon	Lenti aç
 Expand Tile Legend	Kafel legendasını genişləndir
 Explode	Parçala
 Exploratory 3D Analysis	Kəşfiyyat 3D analizi

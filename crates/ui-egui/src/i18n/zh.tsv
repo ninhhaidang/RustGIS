@@ -851,7 +851,7 @@ Close {name}	关闭 {name}
 Closest	最近距离
 Coded values, one per line: code=description	编码值，每行一个：代码=描述
 Collapse or Expand the Ribbon	折叠或展开功能区
-Collapse the ribbon (Ctrl+F1)	折叠功能区 (Ctrl+F1)
+Collapse the ribbon	折叠功能区
 Collection	集合
 collection	集合
 Collection {id}: choose dates and Find Items	集合 {id}：选择日期并“查找项目”
@@ -1042,6 +1042,7 @@ Current extent	当前范围
 Current Project	当前工程
 Current scale ({scale})	当前比例尺（{scale}）
 Current time	当前时间
+Current: {action}	当前：{action}
 Curve	曲线
 Curved	曲线
 Custom	自定义
@@ -1090,6 +1091,7 @@ Dates	日期
 Dates a cell needs	单元所需日期数
 Dates a cell needs is a whole number, or empty for half	单元所需日期数应为整数，留空则为一半
 DateTime	日期时间
+Datum Grids	基准转换格网
 Day	日
 Day and night shading for a time.	某一时刻的昼夜阴影。
 decade	十年
@@ -1218,6 +1220,7 @@ Double-click	双击
 Double-click to add	双击添加
 Download	下载
 download	下载
+Download Datum Grids	下载基准转换格网
 Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	下载这些 GeoLibre 工具的{language}翻译（约 2 MB，来源：languages.geolibre.app）
 Download\nMap	下载\n地图
 Download and Install	下载并安装
@@ -1347,6 +1350,7 @@ Each class labels the features its own clause matches, so a feature can get a la
 Each click on the map adds a point, until you click this again.	每次单击地图都会添加一个点，直到再次单击此按钮。
 Each geoprocessing run becomes a step, chained by its outputs	每次地理处理运行成为一个步骤，按其输出串联
 Each line's whole result, to read or copy	每一行的完整结果，供查看或复制
+Earliest available state	最早可用状态
 Earth Index has no points in the view	Earth Index 在视图中没有点
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1478,7 +1482,7 @@ exit rotary	驶出转盘
 exit roundabout	驶出环岛
 Expand Group	展开分组
 Expand Legend	展开图例
-Expand the ribbon (Ctrl+F1)	展开功能区 (Ctrl+F1)
+Expand the ribbon	展开功能区
 Expand Tile Legend	展开瓦片图例
 Explode	分解
 Exploratory 3D Analysis	探索性三维分析
@@ -2364,6 +2368,7 @@ Manual	手动
 Manually reread this archive from disk without changing its presentation. Undo cannot restore overwritten file contents.	从磁盘手动重新读取此归档，不更改其呈现方式。撤销无法恢复被覆盖的文件内容。
 Map	地图
 map	地图
+Map Tiles	地图瓦片
 Map\nFrame	地图\n框
 Map (the current view)	地图（当前视图）
 map by date	按日期显示地图
@@ -2682,6 +2687,7 @@ No Pop-ups	无弹出窗口
 No presentations yet. Publish › New Presentation starts one.	暂无演示文稿。使用“发布 › 新建演示文稿”新建一个。
 No preset reads every non-empty value. Use an explicit format with edit.convertField, or correct the text first.	没有预设格式能解析所有非空值。请为 edit.convertField 指定格式，或先修正文本。
 No products	无产品
+No project changes to undo or redo.	没有可撤销或重做的工程更改。
 No project opened or saved yet	尚未打开或保存过工程
 No project sources are waiting for an S3 connection.	没有等待 S3 连接的工程数据源。
 No properties	无属性
@@ -2786,6 +2792,7 @@ Older copies waiting: {n}.	等待中的旧副本：{n}。
 Oldest first	最早优先
 Ollama (local)	Ollama（本地）
 On	开
+On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	在高分辨率（HiDPI）显示器上，按显示器的物理像素获取栅格瓦片和 WMS 图像，细节最高可增至两倍，文字和线条更清晰、更细小。关闭后按逻辑像素获取并拉伸显示，画面较模糊，文字较大。
 On Hold	已挂起
 on hold	已挂起
 On its own tab, {tab}.	在其自己的选项卡 {tab} 中。
@@ -3788,6 +3795,7 @@ Shared vertices must be on or off	共享折点必须为开或关
 Shares made, with Manage tools to update them.	已创建的共享，可使用管理工具进行更新。
 sharp left	向左急转
 sharp right	向右急转
+Sharp Tiles on HiDPI Displays	在高分屏上使用高清瓦片
 Shift+	Shift+
 Shift+drag	Shift+拖动
 Shift+Enter starts a new line.	按 Shift+Enter 换行。
@@ -4504,8 +4512,10 @@ Title	标题
 To	至
 to	至
 Toggle Dark Mode	切换深色模式
+Toggle Downloading Datum Grids	开关基准转换格网下载
 Toggle GPU Rendering	切换 GPU 渲染
 Toggle Imperial Measurements	切换英制测量单位
+Toggle Sharp Tiles on HiDPI Displays	开关高分屏高清瓦片
 Token Required	需要令牌
 Tolerance	容差
 Tolerance (km)	容差（km）
@@ -4612,6 +4622,7 @@ Unbind from Time Slider	从时间滑块解除绑定
 Undo	撤销
 Undo (Ctrl+Z)	撤销（Ctrl+Z）
 Undo doesn't remove the recorded step: delete it in Edit Steps once you stop recording.	撤销不会移除已录制的步骤：请在停止录制后在“编辑步骤”中将其删除。
+Undo History	撤销历史
 Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	撤销会恢复内存中的数据和配置，但不会恢复被覆盖的文件或历史流式内容。
 Undo the last change.	撤销上一次更改。
 Undo {action}	撤销 {action}
@@ -4805,6 +4816,8 @@ What the walls stand on: the ground, a field or the constant Base (m).	墙体立
 What to do, where to find it and why	做什么、在哪里找到以及原因
 What's near a point	某点附近有什么
 What's new	新功能
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use for this session when this is off.	当坐标系精度最高的基准转换需要本地缺少的格网时，从 PROJ 格网服务器（cdn.proj.org）下载。关闭此选项后，本次会话仍会使用已下载的格网。
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use when this is off: to stop using them, delete the datum-grids folder in RustGIS's app data and start RustGIS again (grids installed for PROJ are still used).	当坐标系精度最高的基准转换需要本地缺少的格网时，从 PROJ 格网服务器（cdn.proj.org）下载。关闭后仍会使用已下载的格网。如需停用，请删除 RustGIS 应用数据中的 datum-grids 文件夹并重启。PROJ 自带或另外安装的格网仍可使用。
 When a file holds several layers, choose the ones to add instead of adding them all.	当文件包含多个图层时，选择要添加的图层，而不是全部添加。
 When its place is taken, the label tries the other places round the point, corners first.	当其位置被占用时，标注会尝试点周围的其他位置，优先角部。
 WHERE	WHERE

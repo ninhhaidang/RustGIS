@@ -799,7 +799,7 @@ Close {name}	Fermer {name}
 Closest	Plus proche
 Coded values, one per line: code=description	Valeurs codées, une par ligne : code=description
 Collapse or Expand the Ribbon	Réduire ou développer le ruban
-Collapse the ribbon (Ctrl+F1)	Réduire le ruban (Ctrl+F1)
+Collapse the ribbon	Réduire le ruban
 Collection	Collection
 Collection {id}: choose dates and Find Items	Collection {id} : choisissez les dates puis Rechercher des éléments
 Collections	Collections
@@ -1395,7 +1395,7 @@ exit rotary	sortez du rond-point
 exit roundabout	sortez du rond-point
 Expand Group	Développer le groupe
 Expand Legend	Développer la légende
-Expand the ribbon (Ctrl+F1)	Développer le ruban (Ctrl+F1)
+Expand the ribbon	Développer le ruban
 Expand Tile Legend	Développer la légende des tuiles
 Explode	Éclater
 Exploratory 3D Analysis	Analyse 3D exploratoire

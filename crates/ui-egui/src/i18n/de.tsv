@@ -799,7 +799,7 @@ Close {name}	{name} schließen
 Closest	Nächste
 Coded values, one per line: code=description	Codierte Werte, einer pro Zeile: Code=Beschreibung
 Collapse or Expand the Ribbon	Menüband reduzieren oder erweitern
-Collapse the ribbon (Ctrl+F1)	Menüband minimieren (Strg+F1)
+Collapse the ribbon	Menüband minimieren
 Collection	Sammlung
 Collection {id}: choose dates and Find Items	Sammlung {id}: Zeitraum wählen und Elemente finden
 Collections	Sammlungen
@@ -1395,7 +1395,7 @@ exit rotary	Kreisverkehr verlassen
 exit roundabout	Kreisverkehr verlassen
 Expand Group	Gruppe erweitern
 Expand Legend	Legende erweitern
-Expand the ribbon (Ctrl+F1)	Menüband erweitern (Strg+F1)
+Expand the ribbon	Menüband erweitern
 Expand Tile Legend	Kachellegende erweitern
 Explode	Zerlegen
 Exploratory 3D Analysis	Explorative 3D-Analyse

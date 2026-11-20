@@ -461,9 +461,13 @@ fn plugin_tr_raw(lang: Lang, s: &str) -> Option<&'static str> {
 /// A location such as `Map › Navigate`, translated segment by segment and shown in
 /// display form as one line.
 pub fn location(loc: &str) -> String {
+    rtl::visual(&location_raw(loc))
+}
+
+/// A translated location in logical order, as typed into Command Search.
+pub(crate) fn location_raw(loc: &str) -> String {
     let lang = current();
-    let loc = loc.split(" › ").map(|s| tr_raw(lang, s)).collect::<Vec<_>>().join(" › ");
-    rtl::visual(&loc)
+    loc.split(" › ").map(|s| tr_raw(lang, s)).collect::<Vec<_>>().join(" › ")
 }
 
 /// Translates `template`, fills its `{name}` placeholders in one pass (values are never

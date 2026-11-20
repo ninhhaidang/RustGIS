@@ -799,7 +799,7 @@ Close {name}	Đóng {name}
 Closest	Gần nhất
 Coded values, one per line: code=description	Giá trị mã, mỗi dòng một giá trị: mã=mô tả
 Collapse or Expand the Ribbon	Thu gọn hoặc mở rộng ribbon
-Collapse the ribbon (Ctrl+F1)	Thu gọn ribbon (Ctrl+F1)
+Collapse the ribbon	Thu gọn ribbon
 Collection	Tập hợp
 Collection {id}: choose dates and Find Items	Tập hợp {id}: chọn ngày rồi Tìm mục
 Collections	Tập hợp
@@ -1395,7 +1395,7 @@ exit rotary	ra khỏi vòng xuyến
 exit roundabout	ra khỏi vòng xuyến
 Expand Group	Mở rộng nhóm
 Expand Legend	Mở rộng chú giải
-Expand the ribbon (Ctrl+F1)	Mở rộng ribbon (Ctrl+F1)
+Expand the ribbon	Mở rộng ribbon
 Expand Tile Legend	Mở rộng chú giải ô bản đồ
 Explode	Tách rời
 Exploratory 3D Analysis	Phân tích 3D khám phá

@@ -799,7 +799,7 @@ Close {name}	{name} sluiten
 Closest	Dichtstbij
 Coded values, one per line: code=description	Gecodeerde waarden, één per regel: code=beschrijving
 Collapse or Expand the Ribbon	Lint samenvouwen of uitvouwen
-Collapse the ribbon (Ctrl+F1)	Lint samenvouwen (Ctrl+F1)
+Collapse the ribbon	Lint samenvouwen
 Collection	Collectie
 Collection {id}: choose dates and Find Items	Collectie {id}: kies datums en Items zoeken
 Collections	Collecties
@@ -1395,7 +1395,7 @@ exit rotary	verlaat het verkeersplein
 exit roundabout	verlaat de rotonde
 Expand Group	Groep uitvouwen
 Expand Legend	Legenda uitvouwen
-Expand the ribbon (Ctrl+F1)	Lint uitvouwen (Ctrl+F1)
+Expand the ribbon	Lint uitvouwen
 Expand Tile Legend	Tegellegenda uitvouwen
 Explode	Opsplitsen
 Exploratory 3D Analysis	Verkennende 3D-analyse

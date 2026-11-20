@@ -800,7 +800,7 @@ Close {name}	關閉 {name}
 Closest	最近距離
 Coded values, one per line: code=description	編碼值，每行一個：代碼=描述
 Collapse or Expand the Ribbon	摺疊或展開功能區
-Collapse the ribbon (Ctrl+F1)	摺疊功能區 (Ctrl+F1)
+Collapse the ribbon	摺疊功能區
 Collection	集合
 Collection {id}: choose dates and Find Items	集合 {id}：選擇日期並「查詢項目」
 Collections	集合
@@ -1396,7 +1396,7 @@ exit rotary	駛出圓環
 exit roundabout	駛出圓環
 Expand Group	展開群組
 Expand Legend	展開圖例
-Expand the ribbon (Ctrl+F1)	展開功能區 (Ctrl+F1)
+Expand the ribbon	展開功能區
 Expand Tile Legend	展開圖磚圖例
 Explode	分解
 Exploratory 3D Analysis	探索性 3D 分析

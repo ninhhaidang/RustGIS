@@ -799,7 +799,7 @@ Close {name}	بستن {name}
 Closest	نزدیک‌ترین
 Coded values, one per line: code=description	مقادیر کدشده، هر خط یکی: code=description
 Collapse or Expand the Ribbon	جمع‌کردن یا بازکردن نوار (Ribbon)
-Collapse the ribbon (Ctrl+F1)	جمع‌کردن نوار (Ribbon) (Ctrl+F1)
+Collapse the ribbon	جمع‌کردن نوار (Ribbon)
 Collection	مجموعه
 Collection {id}: choose dates and Find Items	مجموعه {id}: تاریخ‌ها را انتخاب کنید و Find Items را بزنید
 Collections	مجموعه‌ها
@@ -1395,7 +1395,7 @@ exit rotary	خروج از چرخ‌بر
 exit roundabout	خروج از دوربرگ
 Expand Group	گسترش گروه
 Expand Legend	گسترش افسانه
-Expand the ribbon (Ctrl+F1)	گسترش نوار (Ctrl+F1)
+Expand the ribbon	گسترش نوار
 Expand Tile Legend	گسترش شرح کاشی
 Explode	انفجار
 Exploratory 3D Analysis	تحلیل سه‌بعدی کاوشگرانه
