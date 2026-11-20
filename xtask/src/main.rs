@@ -1,11 +1,14 @@
-//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
+//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
 //!
 //! - `layers`: enforces the crate layering (nothing below L6 may depend on egui/eframe/rfd).
 //! - `memory [--cli <path>] [--update]`: the command line's peak memory on generated data, per
 //!   workflow and as a multiple of loading alone, checked against `xtask/memory-limits.txt`
 //!   (Linux; see `memory.rs`).
+//! - `rows [--update] [--list]`: direct uses of a layer's rows outside `rustgis-data`, which
+//!   may not rise above the count in `xtask/row-uses.txt` (see `rows.rs`).
 //! - `test-hygiene`: timer waits in tests need same-line reasons; ignored tests need reasons.
-//! - `ci`: test hygiene, fmt, clippy -D warnings, tests, layering and the project schema check.
+//! - `ci`: test hygiene, fmt, clippy -D warnings, tests, layering, direct row uses and the
+//!   project schema check.
 //! - `changed [--list] [base]`: the same, on only the packages a branch changes and those that
 //!   depend on them (see `changed.rs`).
 //! - `notices [--check]`: writes the third-party licence notices the packages ship (see
@@ -18,6 +21,7 @@
 mod changed;
 mod memory;
 mod notices;
+mod rows;
 mod test_hygiene;
 
 use std::process::{Command, ExitCode};
@@ -75,14 +79,15 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
 }
 
-/// `cargo xtask ci`: test hygiene, fmt, clippy with warnings as errors, tests, layering and the
-/// project schema check, on the whole workspace.
+/// `cargo xtask ci`: test hygiene, fmt, clippy with warnings as errors, tests, layering, direct row
+/// uses and the project schema check, on the whole workspace.
 fn ci() -> Result<(), String> {
     test_hygiene::run(&root())?;
     cargo(&["fmt", "--all", "--check"])
         .and_then(|_| cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
         .and_then(|_| cargo(&["test", "--workspace", "-q"]))
         .and_then(|_| layers())
+        .and_then(|_| rows::run(&root(), &[]))
         .and_then(|_| schema(true))
 }
 
@@ -202,6 +207,7 @@ fn main() -> ExitCode {
     let r = match task.as_str() {
         "layers" => layers(),
         "test-hygiene" => test_hygiene::run(&root()),
+        "rows" => rows::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "memory" => memory::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
         "changed" => changed::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
@@ -228,7 +234,7 @@ fn main() -> ExitCode {
             Some(other) => Err(format!("unknown argument {other}: usage: cargo xtask schema [--check]")),
         },
         "web-pwa" => web_pwa(std::env::args().nth(2)),
-        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
+        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

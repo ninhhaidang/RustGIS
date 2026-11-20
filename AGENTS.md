@@ -149,6 +149,12 @@ the pull request which of these it reaches and why the rest don't apply:
 `#[ignore = "reason"]` on ignored tests; prefer completion or progress signals.
 `cargo xtask memory` (in CI on Linux) fails when a command line workflow's peak memory grows past
 its limit in `xtask/memory-limits.txt`; a change that lowers one commits the lower limit with it.
+`cargo xtask rows` (also in CI) fails when code outside `rustgis-data` uses a layer's rows directly
+(`Feature` fields, the row vector) more often than `xtask/row-uses.txt` allows: use the accessors on
+`Features` (`row`, `rows`, `value`, `set_value`, …), and `--update` when you lower the count (#2431).
+It counts only the libraries and programs built for the host, not tests, examples, benches or code
+built only for other targets, nor a row indexed without reading a field (`features[i]` alone); use
+the accessors there too.
 While you work, `cargo xtask changed` runs the same checks on only the packages your branch changes
 and those that depend on them (and `test-hygiene` on the whole workspace), or everything when a
 changed file such as `Cargo.lock` is outside every package and nothing includes it.

@@ -1,0 +1,7 @@
+# Direct uses of a layer's rows outside rustgis-data: the row vector behind `Features`, or a
+# `Feature`'s `id`, `geometry` and `attrs`, in the workspace's libraries and programs (`cargo xtask
+# rows`, xtask/src/rows.rs). Moving rows to columns (#2431) needs this at zero, so it only comes
+# down: new code reads and changes rows through the accessors on `Features`
+# (crates/data/src/row_access.rs). When a change lowers it, run `cargo xtask rows --update` and
+# commit this file with it.
+count = 839

@@ -85,6 +85,9 @@ rustix = { version = "1.1", features = ["process", "fs"] }
 pdf = ["dep:hayro"]
 # The JSON Schema of the saved types (`cargo xtask schema`).
 schema = ["dep:schemars", "rustgis-geom/schema"]
+# Marks direct uses of the row vector and of `Feature`'s fields as deprecated, so that
+# `cargo xtask rows` can count them outside this crate (#2431). Nothing else turns it on.
+count-row-uses = []
 
 [dev-dependencies]
 # Writing sample GeoParquet files.
