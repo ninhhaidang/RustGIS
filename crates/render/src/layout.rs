@@ -2980,6 +2980,7 @@ pub fn frame_coverage_judged_on(
     // Put back when this ends, a panic in the drawing included.
     struct Aside<'a> {
         basemap: rustgis_map::Basemap,
+        paper: Option<rustgis_map::Rgba>,
         tiles: Vec<rustgis_map::TileLayer>,
         graticule: bool,
         lock: Option<Vec<(rustgis_map::LabelKey, rustgis_map::LockedPlace)>>,
@@ -2993,6 +2994,7 @@ pub fn frame_coverage_judged_on(
                 l.visible = true;
             }
             self.map.basemap = self.basemap;
+            self.map.paper = self.paper;
             self.map.tiles = std::mem::take(&mut self.tiles);
             self.map.graticule = self.graticule;
             self.map.label_lock = self.lock.take();
@@ -3008,6 +3010,8 @@ pub fn frame_coverage_judged_on(
     let aside = Aside {
         outlines,
         basemap: std::mem::replace(&mut map.basemap, rustgis_map::Basemap::Blank),
+        // Judged on white paper: a blank basemap's paper colour (#2532) would count as drawn.
+        paper: map.paper.take(),
         tiles: std::mem::take(&mut map.tiles),
         graticule: std::mem::replace(&mut map.graticule, false),
         lock: map.label_lock.take(),
@@ -4826,6 +4830,13 @@ mod tests {
         // A 100 mm frame at 1:1,000,000 shows about 0.9° across: the square sits in its middle.
         let plain = |map: &mut Map, under| frame_plain_under(map, Coord::new(0.0, 0.0), 1_000_000.0, (100.0, 100.0), under, 128);
         assert!(plain(&mut map, (2.0, 70.0, 25.0, 25.0)), "a corner is the blank paper");
+        // A paper colour (#2532) is the background too, and coverage still finds only the data.
+        let white = frame_coverage(&mut map, Coord::new(0.0, 0.0), 1_000_000.0, 100.0, 100.0, 64);
+        map.paper = Some(Rgba::rgb(0xF1, 0xEA, 0xDF));
+        assert!(plain(&mut map, (2.0, 70.0, 25.0, 25.0)), "a corner is the coloured paper");
+        assert_eq!(frame_coverage(&mut map, Coord::new(0.0, 0.0), 1_000_000.0, 100.0, 100.0, 64), white);
+        assert_eq!(map.paper, Some(Rgba::rgb(0xF1, 0xEA, 0xDF)), "put back after coverage");
+        map.paper = None;
         assert!(!plain(&mut map, (40.0, 40.0, 20.0, 20.0)), "the data in the middle");
         assert!(!plain(&mut map, (48.0, 48.0, 4.0, 4.0)), "one colour all over, but the data's, not the background");
         map.graticule = true;

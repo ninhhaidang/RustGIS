@@ -240,6 +240,7 @@ impl MapLook {
             service_groups: _,
             groups,
             basemap,
+            paper,
             tiles,
             camera,
             // Not compared (see `same`), so not kept.
@@ -270,6 +271,7 @@ impl MapLook {
                 service_groups: Vec::new(),
                 groups: groups.clone(),
                 basemap: *basemap,
+                paper: *paper,
                 tiles: tiles.clone(),
                 camera: *camera,
                 bookmarks: Vec::new(),
@@ -307,6 +309,7 @@ impl MapLook {
             service_groups: _,
             groups,
             basemap,
+            paper,
             tiles,
             camera,
             bookmarks: _,
@@ -333,6 +336,7 @@ impl MapLook {
             && groups.len() == map.groups.len()
             && groups.iter().zip(&map.groups).all(|(a, b)| same_group(a, b))
             && *basemap == map.basemap
+            && *paper == map.paper
             && *tiles == map.tiles
             && *camera == map.camera
             && *graticule == map.graticule
@@ -502,5 +506,9 @@ mod tests {
         assert!(!grouped.same(&MapLook::of(&map)));
         map.graticule = !map.graticule;
         assert!(!before.same(&MapLook::of(&map)));
+        // The blank basemap's paper colour (#2532) is the map's background.
+        let white = MapLook::of(&map);
+        map.paper = Some(Rgba([241, 234, 223, 255]));
+        assert!(!white.same(&MapLook::of(&map)), "a new paper colour draws the map again");
     }
 }

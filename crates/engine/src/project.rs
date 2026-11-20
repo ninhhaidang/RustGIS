@@ -95,6 +95,7 @@ pub const CAPABILITIES: &[&str] = &[
     "offline-map-area-id",
     "crs-wkt",
     "zarr-window",
+    "blank-paper",
 ];
 /// Independent marker sizes alongside classified point colours (`Layer::size_by`).
 pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";

@@ -122,6 +122,7 @@ fn step() -> impl Strategy<Value = (&'static str, Value)> {
         (prop::sample::select(vec!["legend", "scaleBar", "northArrow", "text", "rectangle", "grid", "colorbar"]), name())
             .prop_map(|(k, t)| ("layout.addElement", json!({"kind": k, "text": t}))),
         prop::sample::select(vec!["paper", "midnight", "ocean", "atlas", "blank"]).prop_map(|n| ("map.basemap", json!({"name": n}))),
+        prop::sample::select(vec!["#F1EADF", "#101820"]).prop_map(|c| ("map.basemap", json!({"name": "blank", "color": c}))),
         prop::sample::select(vec!["Albers Equal Area Conic +lat_1=29.5 +lat_2=45.5", "EPSG:3857", "EPSG:4326"])
             .prop_map(|t| ("map.projection", json!({"type": t}))),
         (-180.0..180.0f64).prop_map(|b| ("map.setBearing", json!({"bearing": b}))),

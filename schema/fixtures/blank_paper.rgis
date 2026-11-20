@@ -1,0 +1,15 @@
+{
+  "format": 2,
+  "name": "Blank paper",
+  "requires": ["blank-paper"],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Blank",
+      "paper": [241, 234, 223, 255],
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ]
+}

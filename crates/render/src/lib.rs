@@ -3282,8 +3282,12 @@ pub fn gpu_may_turn(map: &Map, view: &View) -> bool {
 
 /// The colours of a tilted view's sky (at the top) and of the fog it fades into at the
 /// horizon, from the basemap. A body without the Earth's atmosphere has neither: the ground
-/// fades into the black of space (#223).
+/// fades into the black of space (#223). A blank basemap's paper colour is both, as it is (#2532):
+/// the block stands on the page's own colour.
 pub fn tilt_sky(map: &Map) -> (Rgba, Rgba) {
+    if let Some(paper) = map.blank_paper() {
+        return (paper, paper);
+    }
     if !map.body().is_earth() {
         let space = globe_space(true);
         return (space, space);
@@ -6088,13 +6092,17 @@ struct Space {
     stars: bool,
     /// The glow of an atmosphere around the disc: the Earth's (#223).
     atmosphere: bool,
+    /// A blank basemap's paper colour (#2532), which the light space takes, so a globe frame
+    /// sits on the page's colour.
+    paper: Option<Rgba>,
 }
 
 /// The space around the globe for `view`: the interactive view's starry sky, or for exports a
-/// light space (dark on the Midnight basemap) without stars.
+/// light space (a blank basemap's paper colour; dark on the Midnight basemap) without stars.
 fn space(view: &View, map: &Map) -> Space {
     let dark = view.sky || map.basemap == rustgis_map::Basemap::Midnight;
-    Space { dark, stars: view.sky && map.view.effects.stars, atmosphere: map.body().is_earth() }
+    let paper = map.blank_paper().filter(|_| !dark);
+    Space { dark, stars: view.sky && map.view.effects.stars, atmosphere: map.body().is_earth(), paper }
 }
 
 /// Side of the starfield tile in logical points: the stars repeat this far apart.
@@ -6217,7 +6225,7 @@ fn globe_shading(pm: &mut Pixmap, g: &Globe, water: Rgba, space: Space, ppp: f32
 /// The globe's surroundings and ocean: space (dark or light, starry when it says so), an
 /// atmosphere glow, and the ocean disc.
 fn draw_globe_backdrop(pm: &mut Pixmap, g: &Globe, water: Rgba, space: Space, ppp: f32) {
-    let bg = globe_space(space.dark);
+    let bg = space.paper.unwrap_or_else(|| globe_space(space.dark));
     pm.fill(tiny_skia::Color::from_rgba8(bg.r(), bg.g(), bg.b(), 255));
     if space.stars {
         draw_stars(pm, ppp);
@@ -9470,6 +9478,44 @@ mod tests {
         );
         let (water, ..) = m.basemap.palette();
         assert_eq!(scene.clear, mesh::premul(water), "the clear colour is the basemap's water");
+    }
+
+    /// A blank basemap's paper colour (#2532) is the flat view's canvas on the CPU and the GPU's
+    /// clear colour, a tilted view's sky and fog as it is, and the light space around a globe;
+    /// another basemap leaves it unused.
+    #[test]
+    fn a_blank_paper_colour_is_the_canvas_the_clear_colour_and_the_sky() {
+        let cream = Rgba::rgb(0xF1, 0xEA, 0xDF);
+        let mut m = Map::new("Map");
+        (m.basemap, m.graticule, m.paper) = (rustgis_map::Basemap::Blank, false, Some(cream));
+        let view = View { width: 200.0, height: 120.0, pixels_per_point: 1.0, camera: Camera::world(), sky: false };
+        let pm = render(&mut m, &view).unwrap().pixmap;
+        let p = pm.pixel(5, 5).unwrap();
+        assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (0xF1, 0xEA, 0xDF, 255));
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        assert_eq!(scene.clear, mesh::premul(cream));
+        assert_eq!(tilt_sky(&m), (cream, cream), "no white mixed in");
+        // A globe's light space (exports, a publication's locator) is the paper too; the
+        // interactive view keeps its dark sky.
+        m.projection = rustgis_map::Projection::Globe;
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 200_000.0, bearing: 0.0, pitch: 0.0 };
+        let corner = |m: &mut Map, sky: bool| {
+            let pm = render(m, &View { camera, sky, ..view }).unwrap().pixmap;
+            let p = pm.pixel(2, 2).unwrap();
+            Rgba::rgb(p.red(), p.green(), p.blue())
+        };
+        assert_eq!(corner(&mut m, false), cream, "a globe on the paper");
+        assert_eq!(corner(&mut m, true), globe_space(true), "the view's sky");
+        m.projection = rustgis_map::Projection::default();
+        m.paper = Some(Rgba::new(0xF1, 0xEA, 0xDF, 0));
+        assert_eq!((m.palette().0, tilt_sky(&m).0), (cream, cream), "a file's translucent paper is drawn opaque");
+        m.paper = None;
+        let white = Rgba::rgb(0xFF, 0xFF, 0xFF);
+        assert_eq!(m.palette().0, white, "without a colour, blank stays white");
+        m.paper = Some(cream);
+        m.basemap = rustgis_map::Basemap::Paper;
+        assert_eq!(m.palette(), m.basemap.palette(), "another basemap keeps its own colours");
+        assert_ne!(tilt_sky(&m).0, cream);
     }
 
     #[test]

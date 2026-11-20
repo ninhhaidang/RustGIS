@@ -230,6 +230,7 @@ s.set_center(114.1, 22.4, scale=2_000_000)          # bearing= and pitch= tilt a
 s.zoom_to(s["Cities"])                              # or a box: (west, south, east, north)
 s.bounds                                            # what the map shows now
 s.set_basemap("paper")                              # paper, midnight, ocean, atlas, blank
+s.set_basemap("blank", color="#F1EADF")             # blank on a coloured page
 s.add_tiles("https://tile.openstreetmap.org/{z}/{x}/{y}.png", name="OpenStreetMap")
 ```
 

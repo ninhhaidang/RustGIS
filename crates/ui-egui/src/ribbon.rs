@@ -714,6 +714,27 @@ pub(crate) fn sample_data_gallery(ui: &mut Ui, app: &mut RustGisApp) {
     }
 }
 
+/// The blank basemap's paper colour (#2532), while the map is on it with no web basemap over it:
+/// the colour a map frame shows on a coloured page. The picker is drawn in the gallery itself: a
+/// colour button's picker is a popup of its own, and opening it would close this menu.
+fn blank_paper(ui: &mut Ui, app: &mut RustGisApp) {
+    let map = app.session.map();
+    if map.basemap != Basemap::Blank || !map.tiles.iter().all(|t| t.overlay) {
+        return;
+    }
+    let mut c = crate::theme::c32(map.palette().0);
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new(tl!("Paper color")).id_salt("blank_paper").show(ui, |ui| {
+        let picked = ui.scope(|ui| egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque));
+        if picked.inner {
+            crate::widgets::one_step_per_press(app, &picked.response);
+            let [r, g, b, _] = c.to_srgba_unmultiplied();
+            let _ =
+                app.run("map.basemap", json!({"name": "blank", "color": rustgis_engine::map::Rgba::rgb(r, g, b).hex(), "keepTiles": true}));
+        }
+    });
+}
+
 pub(crate) fn basemap_gallery(ui: &mut Ui, app: &mut RustGisApp) {
     let t = Tokens::get(ui.ctx());
     ui.label(egui::RichText::new(tl!("Basemaps")).font(semibold(12.5)));
@@ -755,6 +776,7 @@ pub(crate) fn basemap_gallery(ui: &mut Ui, app: &mut RustGisApp) {
             }
         }
     });
+    blank_paper(ui, app);
     web_basemaps(ui, app, &t);
     planet_basemaps(ui, app);
     tile_layers(ui, app, &t);

@@ -77,7 +77,7 @@ pub fn commands() -> Vec<C> {
         .view()
         .params(r#"{"scale": number}"#),
         C::new("map.basemap", "Basemap", "Home › Add", basemap).roles(&[]).effects(crate::policy::Effects::NONE)
-            .params(r#"{"name": "paper"|"midnight"|"ocean"|"atlas"|"blank", "keepTiles"?: bool (keeps the web tile basemaps over it)}"#),
+            .params(r##"{"name": "paper"|"midnight"|"ocean"|"atlas"|"blank", "keepTiles"?: bool (keeps the web tile basemaps over it), "color"?: "#RRGGBB" (blank: the paper's colour, drawn where a blank map draws white, the tilted view's sky included; null or #FFFFFF: white; default: as it was. Another basemap takes the paper off and keeps its own colours; a color given with it is said as a warning)}"##),
         C::new("map.graticule", "Graticule", "View › Display", graticule).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool (toggles when omitted, on when a type or crs is given), "type"?: "degrees"|"measured"|"utm", "crs"?: a projected system for the measured grid (EPSG:2056, WKT or a PROJ string; "" or null: the map's own when projected, else the UTM zone at the view's centre)}"#),
         C::new("map.reloadWebLayers", "Reload Web Layers", "View › Display", |_, _| {
@@ -924,11 +924,40 @@ fn graticule(s: &mut Session, p: &Value) -> CmdResult {
 
 fn basemap(s: &mut Session, p: &Value) -> CmdResult {
     let n = s_name(p)?;
+    let basemap = Basemap::from_code(n).ok_or_else(|| format!("unknown basemap '{n}'"))?;
+    // The blank basemap's paper (#2532): absent keeps it, null takes it off (white).
+    let paper = match p.get("color") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        // Six hex digits: `from_hex` alone would take a sign in a pair ("#+F0000").
+        Some(Value::String(c)) => match c
+            .trim()
+            .strip_prefix('#')
+            .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(rustgis_map::Rgba::from_hex)
+        {
+            Some(rgba) => Some(Some(rgba)),
+            None => return Err(format!("color must be \"#RRGGBB\" (opaque), not '{c}'")),
+        },
+        Some(_) => return Err("color must be \"#RRGGBB\" or null".into()),
+    };
     let m = s.map_mut();
-    m.basemap = Basemap::from_code(n).ok_or_else(|| format!("unknown basemap '{n}'"))?;
+    m.basemap = basemap;
     // A built-in basemap takes the place of the web basemaps (tile overlays stay).
     if !super::b(p, "keepTiles").unwrap_or(false) {
         m.tiles.retain(|t| t.overlay);
+    }
+    if basemap != Basemap::Blank {
+        // Another basemap draws its own colours: the paper goes, not to be saved unseen.
+        m.paper = None;
+        if paper.is_some_and(|c| c.is_some()) {
+            let warning = format!("color is for the blank basemap only: {} keeps its own colours", basemap.label());
+            s.warn(&warning);
+            return Ok(json!({"warning": warning}));
+        }
+    } else if let Some(paper) = paper {
+        // White is the blank basemap's own paper: nothing to keep, or to require of a reader.
+        m.paper = paper.filter(|c| *c != rustgis_map::Rgba::rgb(0xFF, 0xFF, 0xFF));
     }
     Ok(Value::Null)
 }
@@ -1180,7 +1209,7 @@ fn new_map(s: &mut Session, p: &Value) -> CmdResult {
         name = format!("{base}{i}");
     }
     let mut m = Map::new(name.clone());
-    m.basemap = s.map().basemap;
+    (m.basemap, m.paper) = (s.map().basemap, s.map().paper);
     s.project.maps.push(m);
     s.project.active_map = s.project.maps.len() - 1;
     s.active_layer = None;

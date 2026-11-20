@@ -108,7 +108,8 @@ diagram cut to a circle), `terrain-water`,
 `terrain-water-shore` (a terrain water's shore band other than the default),
 `terrain-block-water` (water in a block diagram's walls),
 `shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour),
-`shaded-relief-light` (a Shaded Relief's ambient or balanced light) and
+`shaded-relief-light` (a Shaded Relief's ambient or balanced light),
+`blank-paper` (a blank basemap's paper colour) and
 `normalized-legend-urls` for normalized legend addresses. Project
 requirements include offline map snapshots. `table-export-order` protects saved task commands,
 command notebook cells and replayable history using Export Table sort or limit options.

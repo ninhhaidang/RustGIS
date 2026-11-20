@@ -377,6 +377,13 @@ def test_the_view(sample):
     assert abs(sample.info()["center"]["lon"] - 114.17) < 0.01
     sample.set_basemap("paper")
     assert sample.info()["basemap"] == "paper"
+    # The blank basemap's paper colour (#2532); with another basemap it is a warning.
+    sample.set_basemap("blank", color="#F1EADF")
+    assert sample.info()["basemap"] == "blank"
+    assert "blank basemap only" in sample.set_basemap("paper", color="#F1EADF")["warning"]
+    assert sample.info()["basemap"] == "paper"
+    with pytest.raises(rustgis.RustGISError, match="RRGGBB"):
+        sample.set_basemap("blank", color="cream")
 
 
 

@@ -428,7 +428,11 @@ place names there. On the desktop, its optional `url` selects another Valhalla s
 </figure>
 
 **Home › Add › Basemap** offers five built-in basemaps drawn from a world outline (Paper, Midnight,
-Ocean, Atlas, Blank), which need no network, and web tile layers over them:
+Ocean, Atlas, Blank), which need no network, and web tile layers over them. On Blank, **Paper
+color** under the basemaps sets the colour the map draws where it would draw white, a tilted view's
+sky included, so a map frame sits on a coloured layout page without a white box around it
+(`map.basemap {"name": "blank", "color": "#F1EADF"}`). Choosing another basemap takes the paper
+colour off, as that basemap draws its own colours:
 
 - **Raster tiles** from an XYZ or TMS template (`https://…/{z}/{x}/{y}.png`; `{-y}` for rows
   from the south, `{s}` for subdomains, `{q}` for Bing-style quadkeys) or a WMS through

@@ -15472,6 +15472,70 @@ fn the_globe_has_stars_that_turn_off() {
     assert!(corner(&mut s) == starry);
 }
 
+/// A publication's globe locator keeps the map's blank paper (#2532), so the space around its
+/// disc is the page's colour too.
+#[test]
+fn a_globe_locator_keeps_the_blank_paper() {
+    let mut s = world();
+    s.run("map.basemap", &json!({"name": "blank", "color": "#F1EADF"})).unwrap();
+    let r = s.run("layout.publication", &json!({"extent": [-46.8, -11.6, -38.5, -2.2]})).unwrap();
+    let globe = r["locator"].as_str().unwrap().to_string();
+    let m = s.project.maps.iter().find(|m| m.name == globe).unwrap();
+    assert_eq!(m.blank_paper(), Some(rustgis_map::Rgba::rgb(0xF1, 0xEA, 0xDF)));
+}
+
+/// A blank basemap's paper colour (#2532): kept until null or another basemap, opaque #RRGGBB only,
+/// a warning (not an error) when given with another basemap, and drawn in a layout's map frame.
+#[test]
+fn a_blank_basemap_takes_a_paper_colour() {
+    let cream = rustgis_map::Rgba::rgb(0xF1, 0xEA, 0xDF);
+    let mut s = Session::new(Project::default());
+    s.map_mut().graticule = false;
+    assert_eq!(s.run("map.basemap", &json!({"name": "blank", "color": "#F1EADF"})).unwrap(), Value::Null);
+    assert_eq!(s.map().paper, Some(cream));
+    assert_eq!(s.map().palette().0, cream);
+    s.run("map.basemap", &json!({"name": "blank"})).unwrap();
+    assert_eq!(s.map().paper, Some(cream), "no color keeps it");
+    for bad in [json!("#F1EADF80"), json!("F1EADF"), json!("#F1EA"), json!("#+F0000"), json!("cream"), json!(3)] {
+        let e = s.run("map.basemap", &json!({"name": "blank", "color": bad})).unwrap_err();
+        assert!(e.contains("#RRGGBB"), "{e}");
+        assert_eq!(s.map().paper, Some(cream), "a refused colour changes nothing");
+    }
+    // A new map starts on the same basemap, its paper included.
+    let first = s.project.active_map;
+    s.run("map.new", &json!({"name": "Second"})).unwrap();
+    assert_eq!((s.map().basemap, s.map().paper), (rustgis_map::Basemap::Blank, Some(cream)));
+    s.project.active_map = first;
+    // A layout's map frame on a cream page draws the cream paper, not a white box.
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "blank"})).unwrap();
+    s.run("layout.addFrame", &json!({"x": 20, "y": 20, "w": 150, "h": 100})).unwrap();
+    let dir = std::env::temp_dir().join(format!("rustgis-blank-paper-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("paper.png");
+    s.run("layout.export", &json!({"path": path.display().to_string(), "dpi": 72})).unwrap();
+    let pm = crate::render::decode_png(&std::fs::read(&path).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    // 72 dpi: a point a pixel; 25 mm in from the page's corner lies inside the frame.
+    let inside = pm.pixel(71, 71).unwrap();
+    assert_eq!((inside.red(), inside.green(), inside.blue()), (0xF1, 0xEA, 0xDF));
+    s.run("map.basemap", &json!({"name": "blank", "color": "#ffffff"})).unwrap();
+    assert_eq!(s.map().paper, None, "white is the blank basemap's own paper");
+    s.run("map.basemap", &json!({"name": "blank", "color": "#F1EADF"})).unwrap();
+    s.run("map.basemap", &json!({"name": "blank", "color": null})).unwrap();
+    assert_eq!(s.map().paper, None, "null: white again");
+    s.run("map.basemap", &json!({"name": "blank", "color": "#F1EADF"})).unwrap();
+    // Another basemap: no error, a warning, and the paper goes.
+    let mark = s.notice_mark();
+    let v = s.run("map.basemap", &json!({"name": "paper", "color": "#F1EADF"})).unwrap();
+    assert!(v["warning"].as_str().is_some_and(|w| w.contains("blank basemap only")), "{v}");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("blank basemap only")));
+    assert_eq!(s.map().basemap, rustgis_map::Basemap::Paper);
+    assert_eq!(s.map().paper, None);
+    s.run("map.basemap", &json!({"name": "blank"})).unwrap();
+    assert_eq!(s.map().palette().0, rustgis_map::Rgba::rgb(0xFF, 0xFF, 0xFF), "back on blank: white");
+    assert_eq!(s.run("map.basemap", &json!({"name": "ocean"})).unwrap(), Value::Null, "no color, no warning");
+}
+
 #[test]
 fn exports_draw_the_globe_in_light_space() {
     // #352: the dark, starry space is the interactive view's; exports and layouts print a light

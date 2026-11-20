@@ -1953,7 +1953,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             // Not its web tiles (fetched and drawn over the basemap on the disc), swipe, time
             // slider, layer groups (their hidden layers left out here), bookmarks or animation.
             let mut m = rustgis_map::Map::new(name);
-            m.basemap = src.basemap;
+            (m.basemap, m.paper) = (src.basemap, src.paper);
             m.graticule = src.graticule;
             m.body = src.body.clone();
             m.set_projection(rustgis_map::Projection::Globe);
