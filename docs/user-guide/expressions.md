@@ -104,9 +104,9 @@ An unknown field, variable or function is an error that names it.
 
 | Operator | Result |
 | --- | --- |
-| `+ - * /` | Arithmetic; `/` always divides exactly (`7 / 2` is 3.5) |
-| `%` | Remainder |
-| `^` | Power |
+| `+ - * /` | Arithmetic; `/` always divides exactly (`7 / 2` is 3.5); null for a division by zero |
+| `%` | Remainder; null for a division by zero |
+| `^` | Power; null for a division by zero (`0 ^ -1`) or a result that isn't a finite number (`(-8) ^ 0.5`) |
 | `\|\|` | Joins the two values as text; null when either is null |
 | `= <> < <= > >=` | Comparison; `==` and `!=` are also accepted |
 | `LIKE`, `ILIKE` | Text pattern: `%` matches any run of characters, `_` one character |
@@ -140,9 +140,12 @@ Rules shared by all of them:
 - **Nulls.** Arithmetic with a null gives null. A comparison with a null is *unknown*: it
   matches neither `pop > 100` nor `NOT pop > 100`; `IS NULL` tests for it. `AND` is false when
   either side is false and `OR` true when either side is true, whatever the other side is.
-- **Errors give null**: a division by zero, the square root of a negative number, a result too
-  large to represent. Where the result is stored (Calculate Field, calculation attribute rules),
-  a notice says how many rows an error made null, which error, and the first three of those rows.
+- **Errors give null**: a division by zero, the square root of a negative number, the logarithm
+  of zero or a negative number, a result too large to represent, a value that isn't a finite
+  number, text that isn't a number in `-`, `*`, `/`, `%` or `^` or as a number argument, a clamp
+  whose low bound is above its high bound. Where the result is stored (Calculate Field,
+  calculation attribute rules), a notice says how many rows an error made null, which error,
+  and the first three of those rows.
 - **`IN`** compares with each value as `=` does; a `NULL` in the list matches nothing, so
   `x NOT IN (1, NULL)` is true for 2.
 - **As a condition**, a value that isn't true or false counts as true when it is a non-zero
@@ -158,12 +161,12 @@ Rules shared by all of them:
 | `abs(x)` | Absolute value |
 | `round(x[, places])` | Rounded half away from zero to `places` decimals (0 by default; negative rounds to tens, hundreds…) |
 | `floor(x)`, `ceil(x)` | Rounded down, up |
-| `sqrt(x)`, `exp(x)`, `ln(x)`, `log10(x)` | Square root, eˣ, natural and base-10 logarithm |
+| `sqrt(x)`, `exp(x)`, `ln(x)`, `log10(x)` | Square root, eˣ, natural and base-10 logarithm; null for a negative number (`sqrt`), when too large to represent (`exp`), for zero or a negative number (`ln`, `log10`) |
 | `pi()` | π |
 | `min(a, b, …)`, `max(a, b, …)` | The smallest, largest number; values that aren't numbers are skipped |
 | `clamp(low, x, high)` | `x` kept within `low`…`high`; null when `low` is above `high` |
 | `scale_linear(x, d0, d1, r0, r1)` | `x` mapped from the domain `d0`…`d1` to the range `r0`…`r1`, clamped to the domain |
-| `scale_exp(x, d0, d1, r0, r1, exponent)` | As `scale_linear`, along a curve: 0.5 grows fast then slowly, 2 slowly then fast |
+| `scale_exp(x, d0, d1, r0, r1, exponent)` | As `scale_linear`, along a curve: 0.5 grows fast then slowly, 2 slowly then fast; null with a negative exponent at the domain's start |
 | `to_string(x)` | `x` as text |
 | `to_int(x)`, `to_real(x)` | `x` as a whole number (cut toward zero), as a decimal number; null if it isn't a number |
 | `length(s)` | Number of characters |

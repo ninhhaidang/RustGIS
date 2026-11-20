@@ -18,7 +18,7 @@ use egui::{Id, Ui};
 use rustgis_engine::Quotes;
 use rustgis_engine::cmd::workflows::refused_in_script;
 
-use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
+use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
 
 /// The fewest characters typed before ids are offered (one would offer most of them).
 const MIN_TYPED: usize = 2;
@@ -1535,7 +1535,7 @@ pub fn hint(ui: &Ui, box_id: Id, out: &TextEditOutput, visible: egui::Rect, scri
     if call.is_none() {
         let rows = help.as_ref().map_or(0, |(_, help)| help.params.len() + 3);
         let about = help.as_ref().map(|(h, _)| (h.clone(), h.brace));
-        state.hint.tip.show(ui, box_id.with("complete_hint"), out, visible, at, about, rows, |ui, width| {
+        state.hint.tip.show(ui, box_id.with("complete_hint"), out, visible, at, about, rows, Side::Below, |ui, width| {
             if let Some((_, help)) = &help {
                 draw_help(ui, help, width);
             }
@@ -1543,7 +1543,7 @@ pub fn hint(ui: &Ui, box_id: Id, out: &TextEditOutput, visible: egui::Rect, scri
     }
     let about = call.as_ref().map(|(open, _)| (*open, *open));
     let rows = crate::exprcomplete::TIP_ROWS;
-    state.hint.call.show(ui, box_id.with("complete_call"), out, visible, at, about, rows, |ui, width| {
+    state.hint.call.show(ui, box_id.with("complete_call"), out, visible, at, about, rows, Side::Below, |ui, width| {
         if let Some((_, call)) = &call {
             crate::exprcomplete::draw_call(ui, call, width);
         }

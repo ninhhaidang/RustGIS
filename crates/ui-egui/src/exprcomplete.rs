@@ -11,7 +11,7 @@ use egui::{Id, Ui};
 use rustgis_engine::data::Dataset;
 use rustgis_engine::data::query::{self, Call, Completion, FuncSpec, Kw, Place, VARS};
 
-use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
+use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
 
 /// The most fields the list holds (typing narrows them; it scrolls): a table of hundreds of
 /// columns mustn't draw hundreds of rows. The functions, variables and keywords after them are
@@ -171,7 +171,8 @@ pub(crate) fn offering(ui: &Ui, id: Id) -> bool {
 /// A single-line box for an expression over `ds` (none: no suggestions nor signature, as both
 /// come from reading the expression against its fields), its id `id`, styled by
 /// `style` (hint, font, width…), with the suggestion list, and the signature of the call the
-/// cursor is in floating by it while no list shows. Returns the box's response.
+/// cursor is in floating over it while no list shows, so what goes under the box (its error, its
+/// help) stays in view; under it only when there's no room over it. Returns the box's response.
 pub(crate) fn expr_edit(
     ui: &mut Ui,
     id: Id,
@@ -235,8 +236,9 @@ pub(crate) fn expr_edit(
     let cursor = out.cursor_range.filter(|r| focused && r.is_empty()).map(|r| r.primary.index.0);
     let call = state.worked.as_ref().filter(|w| cursor.is_some() && w.at == cursor && w.text == hash).and_then(|w| w.value.1);
     let at = cursor.filter(|_| !state.list.is_open());
-    // Kept by its `(`, and anchored there.
-    state.tip.show(ui, id.with("expr_tip"), &out, visible, at, call.map(|c| (c.open, c.open)), TIP_ROWS, |ui, width| {
+    // Kept by its `(`, and anchored there; over the line, as under the box are its error and help.
+    let about = call.map(|c| (c.open, c.open));
+    state.tip.show(ui, id.with("expr_tip"), &out, visible, at, about, TIP_ROWS, Side::Above, |ui, width| {
         if let Some(call) = &call {
             draw_call(ui, call, width);
         }

@@ -35,20 +35,34 @@ pub(crate) trait Offered: Clone + PartialEq {
     fn end(&self) -> usize;
 }
 
-/// Where a popup of `size` (last frame's) goes by `cursor`: under it if it fits, else above if it
-/// fits, else on the side with more room, a line and a half clear of the cursor's line (the line
-/// next to it stays in view whole, with room around it); kept on screen sideways. Its corner,
-/// and the height its content may take (it scrolls beyond: a short window, a long help).
-pub(crate) fn place(cursor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32) -> (egui::Pos2, f32) {
-    around(cursor.expand2(egui::vec2(0.0, cursor.height() * 1.5)), size, screen, min)
+/// Which side of the cursor's line (or a button) a popup goes on when it fits there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    /// Under it: a list or help reads on from where the cursor is.
+    Below,
+    /// Over it: what's under a one-line box (its error, its help) stays in view.
+    Above,
 }
 
-/// Where a popup of `size` goes by `anchor`: under it if it fits, else above if it fits, else on
-/// the side with more room; kept on screen sideways. Its corner, and the height its content may
-/// take.
-fn around(anchor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32) -> (egui::Pos2, f32) {
+/// Where a popup of `size` (last frame's) goes by `cursor`: on side `side` if it fits, else on
+/// the other if it fits, else on the side with more room, a line and a half clear of the
+/// cursor's line (the line next to it stays in view whole, with room around it); kept on screen
+/// sideways. Its corner, and the height its content may take (it scrolls beyond: a short
+/// window, a long help).
+pub(crate) fn place(cursor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32, side: Side) -> (egui::Pos2, f32) {
+    around(cursor.expand2(egui::vec2(0.0, cursor.height() * 1.5)), size, screen, min, side)
+}
+
+/// Where a popup of `size` goes by `anchor`: on side `side` if it fits, else on the other if it
+/// fits, else on the side with more room; kept on screen sideways. Its corner, and the height
+/// its content may take.
+fn around(anchor: egui::Rect, size: egui::Vec2, screen: egui::Rect, min: f32, side: Side) -> (egui::Pos2, f32) {
     let (below, above) = (screen.bottom() - anchor.bottom(), anchor.top() - screen.top());
-    let under = size.y <= below || (size.y > above && below >= above);
+    let more_below = below >= above;
+    let under = match side {
+        Side::Below => size.y <= below || (size.y > above && more_below),
+        Side::Above => size.y > above && (size.y <= below || more_below),
+    };
     let room = (if under { below } else { above } - FRAME).max(min);
     let y = if under { anchor.bottom() } else { anchor.top() - size.y.min(above) };
     let x = anchor.left().min(screen.right() - size.x).max(screen.left());
@@ -121,7 +135,7 @@ impl<W: PartialEq, T: Clone> Worked<W, T> {
 }
 
 /// Help floating by a box's cursor while it's in something the help is about (a command's
-/// braces, a function's call), so it stays in view while that is typed: on the cursor's line,
+/// braces, a function's call), so it stays in view while that is typed: by the cursor's line,
 /// which it doesn't cover, and anchored sideways at where that starts, so it doesn't slide with
 /// each key typed. Escape closes it until the cursor leaves what it was about (its key, `K`).
 #[derive(Clone)]
@@ -173,8 +187,9 @@ impl<K: Clone + PartialEq> Tip<K> {
     /// After the box (`out`): the help `found` for the cursor at char `at` (None: no cursor, or
     /// none to show it by, such as a list open over it), as what it's about and the char where
     /// that starts, drawn by `draw`
-    /// (given the width it takes), `rows` monospace lines high at first guess. Not with the
-    /// cursor out of the box's view (`visible`) or what Escape closed.
+    /// (given the width it takes), `rows` monospace lines high at first guess, on side `side` of
+    /// the cursor's line when it fits there. Not with the cursor out of the box's view
+    /// (`visible`) or what Escape closed.
     pub fn show(
         &mut self,
         ui: &Ui,
@@ -184,6 +199,7 @@ impl<K: Clone + PartialEq> Tip<K> {
         at: Option<usize>,
         found: Option<(K, usize)>,
         rows: usize,
+        side: Side,
         draw: impl FnOnce(&mut Ui, f32),
     ) {
         // Out of what Escape closed (in nothing, or straight into something else), it may show
@@ -209,10 +225,15 @@ impl<K: Clone + PartialEq> Tip<K> {
         let screen = ui.ctx().content_rect();
         let width = (screen.width() - FRAME).clamp(0.0, HELP_WIDTH);
         let size = self.size.unwrap_or(egui::vec2(width + FRAME, row * rows as f32));
-        let (corner, room) = place(anchor, size, screen, row * 3.0);
-        let (_, size) = popup(ui, id, corner, room, |ui| draw(ui, width));
+        let (corner, room) = place(anchor, size, screen, row * 3.0, side);
+        let (_, drawn) = popup(ui, id, corner, room, |ui| draw(ui, width));
+        // Placed by a guess or by other help's size: over the line, its bottom edge would sit
+        // off the line until something repaints, so place it again by what it holds now.
+        if drawn != size {
+            ui.ctx().request_repaint();
+        }
         self.shown = Some(k);
-        self.size = Some(size);
+        self.size = Some(drawn);
     }
 }
 
@@ -428,7 +449,7 @@ impl<O: Offered> List<O> {
         let row = row_height(ui);
         let size = self.drawn.map_or(egui::vec2(MIN_WIDTH + 16.0, row * offer.items().len().min(MAX_ROWS) as f32 + 12.0), |(_, s)| s);
         let screen = ui.ctx().content_rect();
-        let (corner, room) = place(cursor, size, screen, row * 3.0);
+        let (corner, room) = place(cursor, size, screen, row * 3.0, Side::Below);
         let mut clicked = None;
         let scroll = &mut self.scroll;
         let items = offer.items();
@@ -729,7 +750,7 @@ pub(crate) fn menu(
         }
         let row = row_height(ui);
         let size = s.drawn.map_or(egui::vec2(MIN_WIDTH + 16.0, row * n.min(MAX_ROWS) as f32 + 12.0), |(_, size)| size);
-        let (corner, room) = around(button.rect, size, ui.ctx().content_rect(), row * 3.0);
+        let (corner, room) = around(button.rect, size, ui.ctx().content_rect(), row * 3.0, Side::Below);
         let (selected, pointer_leads) = (s.selected.min(n - 1), s.pointer_leads);
         let scroll = &mut s.scroll;
         let mut got = Rows::default();
@@ -1234,10 +1255,15 @@ mod tests {
     fn a_popup_leaves_a_line_clear_of_the_cursor() {
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let cursor = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(2.0, 20.0));
-        let (corner, _) = super::place(cursor, egui::vec2(200.0, 100.0), screen, 60.0);
+        let (corner, _) = super::place(cursor, egui::vec2(200.0, 100.0), screen, 60.0, super::Side::Below);
         assert_eq!(corner, egui::pos2(100.0, 150.0), "under, clear of the line below");
-        let cursor = cursor.translate(egui::vec2(0.0, 400.0));
-        let (corner, _) = super::place(cursor, egui::vec2(200.0, 100.0), screen, 60.0);
+        let low = cursor.translate(egui::vec2(0.0, 400.0));
+        let (corner, _) = super::place(low, egui::vec2(200.0, 100.0), screen, 60.0, super::Side::Below);
         assert_eq!(corner.y + 100.0, 470.0, "above, clear of the line over it");
+        // Asked to go over the line: there when it fits, under it when it doesn't.
+        let (corner, _) = super::place(low, egui::vec2(200.0, 100.0), screen, 60.0, super::Side::Above);
+        assert_eq!(corner.y + 100.0, 470.0, "over, clear of the line over it");
+        let (corner, _) = super::place(cursor, egui::vec2(200.0, 100.0), screen, 60.0, super::Side::Above);
+        assert_eq!(corner, egui::pos2(100.0, 150.0), "no room over it: under");
     }
 }
