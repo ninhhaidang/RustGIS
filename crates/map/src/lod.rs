@@ -5,7 +5,11 @@
 //! only the vertices its shape needs to stay within a set distance of the original (#1750), so
 //! the map draws from far fewer vertices and looks the same. Copies are made per level (a
 //! tolerance of 2^level projection units) on first use and kept, a few at a time; the renderer
-//! picks the level just under a device pixel at the view's zoom.
+//! picks the level just under a device pixel at the view's zoom. A level is built on several
+//! threads ([`rustgis_data::threads`]), each row on its own, so it is the same on any number.
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rustgis_data::{Coord, Geometry};
 
@@ -27,6 +31,21 @@ pub const LEVELS_KEPT: usize = 3;
 
 /// Additional geometry retained for display levels per layer, excluding original/projected data.
 pub const CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most rows a thread takes at a time while it builds a level ([`map_budgeted`]); fewer, so
+/// each thread takes several turns, in a layer of few rows.
+const CHUNK_ROWS: usize = 256;
+
+/// A level of fewer vertices than this is built on the calling thread alone.
+const THREADS_FROM_VERTICES: usize = 50_000;
+
+/// What building a row takes beside its result, per vertex: each run projected (16 bytes a vertex),
+/// which vertices to keep, and the kept ones, before the row is counted in the budget.
+const SCRATCH_PER_VERTEX: usize = 48;
+
+/// And per part (a line's run, a polygon's ring or polygon), with or without vertices: the list
+/// the row's copy holds it in.
+const SCRATCH_PER_PART: usize = std::mem::size_of::<Vec<Coord>>();
 
 /// Inputs of an unsuccessful display attempt, so unchanged frames do not repeat the work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,20 +135,8 @@ pub(crate) fn display(
 /// Builds only Mercator display geometry within `budget`. Callers apply their own eligibility
 /// and saving rules; exact consumers already have extents and need no second extent table.
 pub(crate) fn project_budgeted(features: &[rustgis_data::Feature], level: i32, budget: usize) -> Option<Vec<Option<Geometry>>> {
-    let mut bytes = features.len().checked_mul(std::mem::size_of::<Option<Geometry>>())?;
-    if bytes > budget {
-        return None;
-    }
-    let mut geometries = Vec::with_capacity(features.len());
-    for f in features {
-        let g = f.geometry.as_ref().map(|g| project_thinned(g, &crate::projection::Flat::Mercator, tolerance(level)));
-        bytes = bytes.checked_add(g.as_ref().map_or(0, heap_bytes))?;
-        if bytes > budget {
-            return None;
-        }
-        geometries.push(g);
-    }
-    Some(geometries)
+    let tol = tolerance(level);
+    map_budgeted(features, budget, |f| f.geometry.as_ref(), |g| project_thinned(g, &crate::projection::Flat::Mercator, tol))
 }
 
 /// Heap allocation held by a geometry's vectors (the enum itself is in its containing array).
@@ -147,20 +154,97 @@ pub(crate) fn cache_bytes(geoms: &Vec<Option<Geometry>>) -> usize {
 /// Build one level without first allocating a whole window's extra geometry. Running out of
 /// budget discards only this optional display cache; drawing still uses the full projection.
 pub(crate) fn thin_budgeted(geoms: &[Option<Geometry>], tol: f64, budget: usize) -> Option<Vec<Option<Geometry>>> {
-    let mut bytes = geoms.len().checked_mul(std::mem::size_of::<Option<Geometry>>())?;
-    if bytes > budget {
-        return None;
+    map_budgeted(geoms, budget, Option::as_ref, |g| thin(g, tol))
+}
+
+/// `build` of each item's geometry (`geometry`), in order ([`map_budgeted_on`]), on up to the
+/// user's thread count ([`rustgis_data::threads`]): one below [`THREADS_FROM_VERTICES`], and no
+/// more than [`rustgis_data::memory::thread_scratch`] holds, beyond one thread's, with each thread
+/// building the biggest row at once ([`row_scratch`]).
+fn map_budgeted<T: Sync>(
+    items: &[T],
+    budget: usize,
+    geometry: impl Fn(&T) -> Option<&Geometry> + Sync,
+    build: impl Fn(&Geometry) -> Geometry + Sync,
+) -> Option<Vec<Option<Geometry>>> {
+    let (total, biggest) =
+        items.iter().filter_map(&geometry).fold((0usize, 0usize), |(t, b), g| (t.saturating_add(vertices(g)), b.max(row_scratch(g))));
+    let threads = threads_for(total, biggest, rustgis_data::threads::for_items(items.len()), rustgis_data::memory::thread_scratch());
+    map_budgeted_on(items, budget, threads, |item| geometry(item).map(&build))
+}
+
+/// The threads to build a level of `total` vertices on, the biggest row taking `biggest` bytes to
+/// build ([`row_scratch`]): at most `most`, one below [`THREADS_FROM_VERTICES`], and as many as
+/// `scratch` bytes hold beyond one thread's, each building a row as big as the biggest.
+fn threads_for(total: usize, biggest: usize, most: usize, scratch: usize) -> usize {
+    if total < THREADS_FROM_VERTICES {
+        return 1;
     }
-    let mut copy = Vec::with_capacity(geoms.len());
-    for g in geoms {
-        let thinned = g.as_ref().map(|g| thin(g, tol));
-        bytes = bytes.checked_add(thinned.as_ref().map_or(0, heap_bytes))?;
-        if bytes > budget {
-            return None;
+    let affordable = (scratch / biggest.max(1)).saturating_add(1);
+    most.min(affordable).max(1)
+}
+
+/// What building a level's copy of `g` takes before the row is counted in the budget: its
+/// vertices ([`SCRATCH_PER_VERTEX`]) and its parts, empty ones too ([`SCRATCH_PER_PART`]).
+fn row_scratch(g: &Geometry) -> usize {
+    let parts = match g {
+        Geometry::Point(_) | Geometry::MultiPoint(_) => 1,
+        Geometry::Line(parts) => parts.len(),
+        Geometry::Polygon(polys) => polys.iter().map(|rings| rings.len().saturating_add(1)).fold(0, usize::saturating_add),
+    };
+    vertices(g).saturating_mul(SCRATCH_PER_VERTEX).saturating_add(parts.saturating_mul(SCRATCH_PER_PART))
+}
+
+/// `build` of each item, in order, on up to `threads` threads taking turns at chunks of rows (at
+/// most [`CHUNK_ROWS`], and eight turns a thread where the rows allow);
+/// `None` when the copy (a slot a row, and each geometry's heap) takes more than `budget` bytes,
+/// as one thread would find it. Each row is built on its own, so the copy is the same on any
+/// number of threads. Past the budget the threads stop after the row they are on: at most one row
+/// each beyond it is made, and dropped. A thread the system refuses costs speed: the others, and
+/// this one, take its rows.
+fn map_budgeted_on<T: Sync>(
+    items: &[T],
+    budget: usize,
+    threads: usize,
+    build: impl Fn(&T) -> Option<Geometry> + Sync,
+) -> Option<Vec<Option<Geometry>>> {
+    let slots = items.len().checked_mul(std::mem::size_of::<Option<Geometry>>())?;
+    let left = budget.checked_sub(slots)?;
+    let mut copy: Vec<Option<Geometry>> = Vec::with_capacity(items.len());
+    copy.resize_with(items.len(), || None);
+    let (used, over, next) = (AtomicUsize::new(0), AtomicBool::new(false), AtomicUsize::new(0));
+    type Chunk<'a, T> = Mutex<Option<(&'a [T], &'a mut [Option<Geometry>])>>;
+    let rows = items.len().div_ceil(threads.max(1).saturating_mul(8)).clamp(1, CHUNK_ROWS);
+    let chunks: Vec<Chunk<T>> = items.chunks(rows).zip(copy.chunks_mut(rows)).map(|c| Mutex::new(Some(c))).collect();
+    let work = || {
+        while !over.load(Ordering::Relaxed) {
+            let Some(chunk) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
+            // Never held while a row is built, so never poisoned; if it were, its rows still are.
+            let Some((rows, out)) = chunk.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { continue };
+            for (row, out) in rows.iter().zip(out) {
+                let g = build(row);
+                let bytes = g.as_ref().map_or(0, heap_bytes);
+                // Bytes held in memory: their sum fits.
+                if used.fetch_add(bytes, Ordering::Relaxed).saturating_add(bytes) > left {
+                    over.store(true, Ordering::Relaxed);
+                    return;
+                }
+                *out = g;
+            }
         }
-        copy.push(thinned);
+    };
+    if threads <= 1 || chunks.len() <= 1 {
+        work();
+    } else {
+        std::thread::scope(|scope| {
+            for _ in 1..threads.min(chunks.len()) {
+                let _ = std::thread::Builder::new().name("rustgis-lod".into()).spawn_scoped(scope, work);
+            }
+            work();
+        });
     }
-    Some(copy)
+    drop(chunks);
+    (!over.load(Ordering::Relaxed)).then_some(copy)
 }
 
 /// The level for a tolerance in projection units: the largest whose tolerance (2^level) is at
@@ -405,6 +489,116 @@ pub fn vertices(g: &Geometry) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer of every kind of row, longitude/latitude: none, points, wavy lines and rings of a
+    /// few to thousands of vertices.
+    fn rows(n: usize) -> Vec<Option<Geometry>> {
+        (0..n)
+            .map(|i| {
+                let (x, y) = ((i % 97) as f64 * 0.3 - 14.0, (i % 61) as f64 * 0.2 + 40.0);
+                let len = 3 + (i * 7919) % if i % 50 == 0 { 5000 } else { 200 };
+                let wave = |k: usize| {
+                    let t = k as f64 / len as f64;
+                    Coord::new(x + t * 0.2, y + (t * 40.0).sin() * 0.01 + ((k * 31) % 7) as f64 * 1e-5)
+                };
+                match i % 5 {
+                    0 => None,
+                    1 => Some(Geometry::Point(Coord::new(x, y))),
+                    2 | 3 => Some(Geometry::Line(vec![(0..len).map(wave).collect(), vec![Coord::new(x, y), Coord::new(x + 0.1, y)]])),
+                    _ => {
+                        let mut ring: Vec<Coord> = (0..len)
+                            .map(|k| {
+                                let a = k as f64 / len as f64 * std::f64::consts::TAU;
+                                Coord::new(x + a.cos() * 0.05 + ((k * 13) % 5) as f64 * 1e-5, y + a.sin() * 0.05)
+                            })
+                            .collect();
+                        ring.push(ring[0]);
+                        Some(Geometry::Polygon(vec![vec![ring]]))
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// What one thread builds, row by row, as levels were built before they took threads: the
+    /// running bytes checked after each row.
+    fn one_by_one(
+        items: &[Option<Geometry>],
+        budget: usize,
+        build: impl Fn(&Option<Geometry>) -> Option<Geometry>,
+    ) -> Option<Vec<Option<Geometry>>> {
+        let mut bytes = items.len().checked_mul(std::mem::size_of::<Option<Geometry>>())?;
+        let mut copy = Vec::with_capacity(items.len());
+        for g in items {
+            let g = build(g);
+            bytes = bytes.checked_add(g.as_ref().map_or(0, heap_bytes))?;
+            if bytes > budget {
+                return None;
+            }
+            copy.push(g);
+        }
+        (bytes <= budget).then_some(copy)
+    }
+
+    /// A level is the same, row for row, on one thread or many, projected and thinned or thinned
+    /// alone, and as levels were built one row at a time.
+    #[test]
+    fn a_level_is_the_same_on_one_thread_or_many() {
+        let rows = rows(3000);
+        let flat = crate::projection::Flat::Mercator;
+        let project = |g: &Option<Geometry>| g.as_ref().map(|g| project_thinned(g, &flat, 40.0));
+        let projected: Vec<Option<Geometry>> = rows.iter().map(|g| g.as_ref().map(|g| flat.project(g))).collect();
+        let thinned = |g: &Option<Geometry>| g.as_ref().map(|g| thin(g, 40.0));
+        for (items, build) in [(&rows, &project as &(dyn Fn(&Option<Geometry>) -> Option<Geometry> + Sync)), (&projected, &thinned)] {
+            let one = map_budgeted_on(items, usize::MAX, 1, build).unwrap();
+            assert_eq!(Some(&one), one_by_one(items, usize::MAX, build).as_ref());
+            assert!(one.iter().flatten().map(vertices).sum::<usize>() < items.iter().flatten().map(vertices).sum::<usize>() / 2, "thinned");
+            for threads in [2, 6] {
+                assert!(map_budgeted_on(items, usize::MAX, threads, build).unwrap() == one, "{threads} threads");
+            }
+        }
+    }
+
+    /// A small level is built on one thread; a big one on as many as the scratch memory holds, each
+    /// building a row as big as its biggest.
+    #[test]
+    fn threads_follow_the_vertices_and_the_scratch() {
+        let line = |n: usize| Geometry::Line(vec![(0..n).map(|i| Coord::new(i as f64, 0.0)).collect()]);
+        let row = row_scratch(&line(1_000_000));
+        assert_eq!(row, 1_000_000 * SCRATCH_PER_VERTEX + SCRATCH_PER_PART);
+        assert_eq!(threads_for(THREADS_FROM_VERTICES - 1, 480, 16, usize::MAX), 1);
+        assert_eq!(threads_for(THREADS_FROM_VERTICES, 480, 16, usize::MAX), 16);
+        assert_eq!(threads_for(10_000_000, row, 16, 3 * row), 4);
+        assert_eq!(threads_for(10_000_000, row, 16, row / 2), 1);
+        assert_eq!(threads_for(10_000_000, 0, 16, 0), 1);
+        assert_eq!(threads_for(10_000_000, row, 1, usize::MAX), 1);
+        // Parts count without vertices: a row of 700,000 empty runs or rings takes as much to
+        // build as one of about 350,000 vertices, and starts as few threads.
+        let empty_runs = Geometry::Line(vec![Vec::new(); 700_000]);
+        let empty_rings = Geometry::Polygon(vec![vec![Vec::new(); 700_000]]);
+        assert_eq!(vertices(&empty_runs), 0);
+        for g in [&empty_runs, &empty_rings] {
+            assert!(row_scratch(g) >= 700_000 * SCRATCH_PER_PART);
+            assert_eq!(threads_for(10_000_000, row_scratch(g), 16, 4 * row_scratch(g)), 5);
+        }
+    }
+
+    /// A level over its budget is refused on many threads exactly where one thread refuses it: a
+    /// byte short of what it takes.
+    #[test]
+    fn a_level_over_budget_is_refused_on_any_number_of_threads() {
+        let rows = rows(3000);
+        let thinned = |g: &Option<Geometry>| g.as_ref().map(|g| thin(g, 1e-4));
+        let full = map_budgeted_on(&rows, usize::MAX, 1, thinned).unwrap();
+        let takes = cache_bytes(&full);
+        for threads in [1, 2, 6] {
+            assert!(map_budgeted_on(&rows, takes, threads, thinned).is_some(), "{threads} threads");
+            assert!(map_budgeted_on(&rows, takes - 1, threads, thinned).is_none(), "{threads} threads");
+            assert!(map_budgeted_on(&rows, takes / 3, threads, thinned).is_none(), "{threads} threads");
+            assert!(map_budgeted_on(&rows, 10, threads, thinned).is_none(), "{threads} threads");
+        }
+        assert!(one_by_one(&rows, takes, thinned).is_some() && one_by_one(&rows, takes - 1, thinned).is_none());
+    }
 
     #[test]
     fn preprojection_thinning_bounds_mercator_error_at_all_latitudes() {
