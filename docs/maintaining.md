@@ -136,7 +136,8 @@ cell or history entry that gives one (`layout.addElement` or `layout.update` wit
 `background` other than `null`), require `layout-element-background`, so an older reader
 refuses them instead of opening the layout and saving it again, or running the command,
 without the background. Layout files (`.rgislayout`) carry no format header yet and are not
-covered (#2277).
+covered. `layout.import` already reads one, ahead of the release that writes it: it refuses a
+newer format or an unknown `requires` entry by name (#2277).
 
 Projects, map files and layer files with a window of a Zarr variable that follows the time slider
 (`layer.addZarr` with `"time": true` and `"cells"` or `"bbox"`) require `zarr-window`, so an older

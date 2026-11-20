@@ -5692,6 +5692,9 @@ pub(crate) fn import(s: &mut Session, text: &str) -> CmdResult {
     if text.len() as u64 > MAX_LAYOUT {
         return Err("the layout file is too large".into());
     }
+    // A newer format, or a capability this release doesn't know, is refused by name rather than
+    // read without what it adds (#2277). A file without a header is a legacy layout.
+    crate::project::check_format(text, "layout")?;
     let mut l: Layout = serde_json::from_str(text).map_err(|e| format!("not a RustGIS layout: {e}"))?;
     // Refused before anything is said of it.
     if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {

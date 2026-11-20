@@ -49,6 +49,9 @@ mod service_logins;
 #[path = "tests/scopes_and_redaction.rs"]
 mod scopes_and_redaction;
 
+#[path = "tests/layout_files.rs"]
+mod layout_files;
+
 /// Where the tests' plugins folder keeps what plugins remember: not the user's.
 fn plugin_settings_dir() -> std::path::PathBuf {
     rustgis_plugins::store::dir().unwrap().join("settings")
