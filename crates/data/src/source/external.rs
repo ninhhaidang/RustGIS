@@ -101,6 +101,21 @@ pub(crate) fn output(c: Command, timeout: std::time::Duration, what: &str) -> st
     output_with_budget(c, timeout, what, None)
 }
 
+/// Like [`output`], writing `input` to the program's standard input and then closing it: for what
+/// mustn't be in its arguments, which every user of the machine can read while it runs (a query
+/// can hold a signed address or a password) and which Linux limits to 128 KiB each. A thread
+/// writes it, so a program that prints while it reads can't block on a full pipe; one that stops
+/// reading early (an error) just ends the write.
+#[cfg(not(windows))]
+pub(crate) fn output_with_input(
+    c: Command,
+    timeout: std::time::Duration,
+    what: &str,
+    input: Vec<u8>,
+) -> std::io::Result<std::process::Output> {
+    run(c, timeout, what, None, Some(input))
+}
+
 /// Like [`output`], optionally monitoring the total file size in a private workspace. Scratch
 /// files stay there too. This is checked every 50 ms, not an OS quota: writes can overshoot
 /// between checks. On a limit, timeout or monitoring error the child is killed and reaped.
@@ -108,10 +123,20 @@ pub(crate) fn output(c: Command, timeout: std::time::Duration, what: &str) -> st
 /// their pipe handles, and waiting for EOF would defeat the timeout. Such readers remain detached
 /// until the inherited handles close. Normal completion still joins both readers.
 pub(crate) fn output_with_budget(
+    c: Command,
+    timeout: std::time::Duration,
+    what: &str,
+    workspace: Option<(&Path, u64)>,
+) -> std::io::Result<std::process::Output> {
+    run(c, timeout, what, workspace, None)
+}
+
+fn run(
     mut c: Command,
     timeout: std::time::Duration,
     what: &str,
     workspace: Option<(&Path, u64)>,
+    input: Option<Vec<u8>>,
 ) -> std::io::Result<std::process::Output> {
     if let Some((dir, max)) = workspace {
         check_workspace(dir, max, what)?;
@@ -121,7 +146,22 @@ pub(crate) fn output_with_budget(
     }
     use std::io::Read;
     use std::process::Stdio;
-    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    let mut child = c.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Never joined: a descendant holding the pipe without reading it mustn't hold the caller.
+    if let (Some(bytes), Some(mut pipe)) = (input, child.stdin.take()) {
+        let writer = std::thread::Builder::new().spawn(move || {
+            use std::io::Write as _;
+            // A program that exits before reading everything closes the pipe: nothing to report.
+            let _ = pipe.write_all(&bytes);
+        });
+        // No thread to write with: the program is stopped rather than run with part of its input.
+        if let Err(e) = writer {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    }
     let drain = |p: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -397,6 +437,19 @@ mod tests {
         let path = dir.path().to_path_buf();
         drop(dir);
         assert!(!path.exists(), "the source, output and scratch are removed after stopping the child");
+    }
+
+    /// Input larger than a pipe holds reaches a program that prints it back as it reads (no
+    /// deadlock), and a program that stops reading early just ends the write.
+    #[cfg(unix)]
+    #[test]
+    fn input_goes_through_the_programs_standard_input() {
+        let input: Vec<u8> = (0..4 << 20).map(|i| (i % 251) as u8).collect();
+        let out = output_with_input(Command::new("cat"), std::time::Duration::from_secs(60), "cat", input.clone()).unwrap();
+        assert!(out.status.success());
+        assert!(out.stdout == input, "the whole input, in order");
+        let out = output_with_input(Command::new("true"), std::time::Duration::from_secs(60), "true", input).unwrap();
+        assert!(out.status.success());
     }
 
     #[cfg(unix)]

@@ -15,7 +15,7 @@
 
 use super::Family;
 pub use super::external::ReloadWorkspace;
-use super::external::{self, TempFile, fnv1a, output, stamp, touch};
+use super::external::{self, TempFile, fnv1a, stamp, touch};
 use crate::secrets::Secret;
 use crate::{DataError, Result};
 use std::path::{Path, PathBuf};
@@ -571,20 +571,63 @@ fn prelude(dir: &Path, database: Option<&Database>, confined: bool) -> Result<St
     Ok(s)
 }
 
+/// Whether `script` breaks a line only inside a quoted string or name. DuckDB reads a script given
+/// on its standard input line by line, and a line that starts a statement with `.` is one of its
+/// own commands (`.shell` among them): the user's SQL and every path and name are quoted
+/// ([`literal`], [`ident`]), so none can start one. A doubled quote closes and reopens the quote.
+/// What DuckDB would read as a quote or a comment that this doesn't follow (`--`, `/*`, `$$`, a
+/// backtick, `E'…'`) is refused outside quotes too: the scripts RustGIS writes use none of them.
+fn breaks_only_in_quotes(script: &str) -> bool {
+    let mut quote = None;
+    let mut before = ' ';
+    for c in script.chars() {
+        match (quote, c) {
+            (None, '\'' | '"') if before.is_alphanumeric() || before == '_' => return false,
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, '\n' | '\r' | '$' | '`') => return false,
+            (None, '-') if before == '-' => return false,
+            (None, '*') if before == '/' => return false,
+            _ => {}
+        }
+        before = if quote.is_some() { ' ' } else { c };
+    }
+    true
+}
+
 /// Runs a script.
 fn run_script(dir: &Path, script: &str, database: Option<&Database>, timeout: std::time::Duration) -> Result<()> {
-    let duckdb = program().ok_or_else(missing)?;
+    run_script_with(&program().ok_or_else(missing)?, dir, script, database, timeout)
+}
+
+fn run_script_with(duckdb: &Path, dir: &Path, script: &str, database: Option<&Database>, timeout: std::time::Duration) -> Result<()> {
+    if !breaks_only_in_quotes(script) {
+        return Err(DataError::Format("DuckDB: the script breaks a line outside a quoted text".into()));
+    }
     // An empty start-up file, so the user's own (~/.duckdbrc) can't change what runs.
     let init = dir.join("init.sql");
     if !init.is_file() {
         std::fs::write(&init, b"")?;
     }
     let mut c = Command::new(duckdb);
-    c.arg("-init").arg(&init).arg("-c").arg(script);
     if let Some(p) = password(database) {
         c.env("PGPASSWORD", p);
     }
-    let out = output(c, timeout, "DuckDB")?;
+    // The script goes to its standard input, never its arguments: the user's SQL can hold a signed
+    // address, a secret's keys or a password, and any user of a Unix machine can list a program's
+    // arguments while it runs. `-bail` stops at the first error, as `-c` does. Windows doesn't show
+    // one user's arguments to another, and reads a pipe as text there (a CR LF in a quoted value
+    // would become LF), so it keeps `-c`.
+    #[cfg(not(windows))]
+    let out = {
+        c.arg("-init").arg(&init).arg("-bail");
+        external::output_with_input(c, timeout, "DuckDB", script.as_bytes().to_vec())?
+    };
+    #[cfg(windows)]
+    let out = {
+        c.arg("-init").arg(&init).arg("-c").arg(script);
+        external::output(c, timeout, "DuckDB")?
+    };
     if !out.status.success() {
         return Err(DataError::Format(format!("DuckDB: {}", message(&String::from_utf8_lossy(&out.stderr), &out.status))));
     }
@@ -1142,6 +1185,84 @@ fn ours(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in `duckdb` that writes its arguments and its standard input to files beside it.
+    #[cfg(unix)]
+    fn recording_duckdb(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let exe = dir.join("duckdb");
+        std::fs::write(&exe, "#!/bin/sh\nhere=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$here/args.txt\"\ncat > \"$here/input.txt\"\n")
+            .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        exe
+    }
+
+    /// Runs `script` with a stand-in just written, which can be "busy" a moment while another test
+    /// starts a program.
+    #[cfg(unix)]
+    fn run_with_stand_in(exe: &Path, dir: &Path, script: &str) -> Result<()> {
+        let mut ran = run_script_with(exe, dir, script, None, std::time::Duration::from_secs(30));
+        for _ in 0..100 {
+            if !matches!(&ran, Err(DataError::Io(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: a just-written stand-in program is briefly busy
+            ran = run_script_with(exe, dir, script, None, std::time::Duration::from_secs(30));
+        }
+        ran
+    }
+
+    /// A query's text, credentials and all, reaches DuckDB on its standard input, never in its
+    /// arguments, which every user of the machine can list while it runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_querys_credentials_stay_out_of_duckdbs_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = recording_duckdb(dir.path());
+        let secret = "X-Amz-Signature=0123456789abcdef-synthetic";
+        let sql = format!("SELECT * FROM read_parquet('https://bucket.example/data.parquet?{secret}')\nWHERE 'line;\n.shell no' <> ''");
+        let script =
+            format!("{} CREATE TEMP TABLE r AS SELECT * FROM query({});", prelude(dir.path(), None, false).unwrap(), literal(&sql));
+        run_with_stand_in(&exe, dir.path(), &script).unwrap();
+        let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
+        let input = std::fs::read_to_string(dir.path().join("input.txt")).unwrap();
+        assert!(!args.contains(secret) && !args.contains("read_parquet"), "{args}");
+        assert!(args.lines().any(|a| a == "-bail") && !args.lines().any(|a| a == "-c"), "{args}");
+        assert_eq!(input, script, "the whole script, as it was");
+    }
+
+    /// A script longer than Linux takes in one argument (128 KiB) reaches DuckDB.
+    #[cfg(unix)]
+    #[test]
+    fn a_script_longer_than_an_argument_can_be_reaches_duckdb() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = recording_duckdb(dir.path());
+        let script = format!("SELECT {};", literal(&"x".repeat(1 << 20)));
+        run_with_stand_in(&exe, dir.path(), &script).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("input.txt")).unwrap().len(), script.len());
+    }
+
+    /// Line breaks only inside quotes: outside, a line starting with `.` would be one of DuckDB's
+    /// own commands.
+    #[test]
+    fn a_script_breaks_lines_only_inside_quotes() {
+        assert!(breaks_only_in_quotes("SELECT * FROM query('SELECT 1;\n.shell x\n');"));
+        assert!(breaks_only_in_quotes("SELECT \"a\nb\" FROM t WHERE c = 'it''s\n';"));
+        assert!(!breaks_only_in_quotes("SELECT 1;\n.shell x"));
+        assert!(!breaks_only_in_quotes("SELECT 'a''' ;\r.shell x"));
+        // What DuckDB reads as a comment or a quote of another kind, outside quotes.
+        for other in ["SELECT 1 -- '", "SELECT 1 /* ' */", "SELECT $$a'$$", "SELECT `'`", "SELECT E'\\''", "SELECT x'1'"] {
+            assert!(!breaks_only_in_quotes(other), "{other}");
+        }
+        assert!(breaks_only_in_quotes(
+            "SELECT 'a--b /* $ ` E''' AS \"x--\" FROM \"s\".\"t\" WHERE n = -1 AND m = 2 - -3 AND d IN ['a', ('b')];"
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let e =
+            run_script_with(Path::new("/nonexistent/duckdb"), dir.path(), "SELECT 1;\n.shell x", None, std::time::Duration::from_secs(1))
+                .unwrap_err();
+        assert!(e.to_string().contains("outside a quoted text"), "{e}");
+    }
 
     #[test]
     fn where_programs_cant_run_the_message_says_so_instead_of_asking_for_an_install() {
