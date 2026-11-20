@@ -598,6 +598,12 @@ PROVIDERS = [
     ("wcs", lambda: QgsRasterLayer("cache=PreferNetwork&crs=EPSG:2056&format=GTiff&identifier=dem&url=https://example.invalid/wcs", "wcs", "wcs")),
     ("arcgisfeatureserver", lambda: QgsVectorLayer("crs='EPSG:2056' url='https://example.invalid/arcgis/rest/services/Roads/FeatureServer/0'", "afs", "arcgisfeatureserver")),
     ("arcgismapserver", lambda: QgsRasterLayer("crs='EPSG:2056' format='PNG32' layer='0' url='https://example.invalid/arcgis/rest/services/Topo/MapServer'", "ams", "arcgismapserver")),
+    # Web services the importer adds through RustGIS's service commands (#882 piece 10b).
+    ("oapif", lambda: QgsVectorLayer("typename='roads' url='https://example.invalid/ogcapi'", "oapif", "OAPIF")),
+    ("wfs-filtered", lambda: QgsVectorLayer("sql='SELECT * FROM roads WHERE kind = \\'a\\'' typename='ms:roads' url='https://example.invalid/wfs' version='2.0.0'", "wfs filtered", "WFS")),
+    ("arcgisimageserver", lambda: QgsRasterLayer("crs='EPSG:2056' format='png' url='https://example.invalid/arcgis/rest/services/Elev/ImageServer'", "ais", "arcgisimageserver")),
+    ("arcgisvectortileservice", lambda: vector_tiles("serviceType=arcgis&type=xyz&url=https://example.invalid/arcgis/rest/services/Base/VectorTileServer", "avts")),
+    ("wmts", lambda: QgsRasterLayer("crs=EPSG:2056&format=image/png&layers=roads&styles=default&tileMatrixSet=EPSG:2056&url=https://example.invalid/wmts/WMTSCapabilities.xml", "wmts", "wms")),
     ("vectortile", lambda: __import__("qgis.core", fromlist=["QgsVectorTileLayer"]).QgsVectorTileLayer("type=xyz&url=https://example.invalid/tiles/%7Bz%7D/%7Bx%7D/%7By%7D.pbf&zmax=14&zmin=0", "vector tiles")),
     ("postgres", lambda: QgsVectorLayer("dbname='gis' host=db.invalid port=5432 user='me' password='secret' sslmode=disable key='id' srid=2056 type=Point table=\"public\".\"towns\" (geom)", "postgis", "postgres")),
     ("mssql", lambda: QgsVectorLayer("dbname='gis' host=db.invalid user='me' password='secret' srid=2056 type=Point table=\"dbo\".\"towns\" (geom)", "mssql", "mssql")),

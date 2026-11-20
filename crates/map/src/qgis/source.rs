@@ -47,10 +47,38 @@ pub enum Source {
     /// (`filter`). The project reads such a one as that layer's source with the filter; the rest
     /// are noted.
     Virtual { query: String, from: Option<VirtualFrom>, filter: Option<String> },
-    /// A WMS or WMTS layer.
-    Wms { url: String, layer: String, crs: Option<String> },
-    /// A WFS or OGC API Features layer.
-    Wfs { url: String, layer: String },
+    /// A WMS or WMTS layer (`wmts`: its source names a tile matrix set, as QGIS's WMTS layers do).
+    Wms { url: String, layer: String, crs: Option<String>, wmts: bool, options: WebOptions },
+    /// A WFS or OGC API Features (`ogc_api`) layer: the service's address and the feature type or
+    /// collection.
+    Wfs {
+        url: String,
+        layer: String,
+        ogc_api: bool,
+        /// The filter its `sql=` sets: the `WHERE` clause of a `SELECT * FROM t WHERE …`
+        /// (`Ok`), or the query itself when it is any other (`Err`).
+        filter: Option<Result<String, String>>,
+        /// What the source says that RustGIS doesn't read ([`WebOptions`]).
+        options: WebOptions,
+    },
+    /// A layer of an ArcGIS REST service (`arcgisfeatureserver`, `arcgismapserver`,
+    /// `arcgisimageserver`, `arcgisvectortileservice`): the service's address
+    /// (`…/FeatureServer`, `…/MapServer`, `…/ImageServer`, `…/VectorTileServer`) and the layer
+    /// RustGIS's service commands name in it: a feature layer by its number (`3`), the whole map
+    /// (`map`) or one of its layers drawn alone (`map:3`), an image service's image (`image`), or
+    /// a vector tile service's tiles in its own style (`style`).
+    ArcGis {
+        url: String,
+        layer: String,
+        /// The layer is a feature layer (its features read, and drawn in the QGIS layer's style).
+        features: bool,
+        /// A vector tile layer's style is one QGIS was given (`styleUrl`), rather than the
+        /// service's own.
+        style: bool,
+        options: WebOptions,
+    },
+    /// A WCS coverage: the service's address and the coverage's name (`identifier`).
+    Wcs { url: String, coverage: String, options: WebOptions },
     /// A PostGIS table: QGIS's connection text (its password left out), the table, and the names
     /// of the connection's other settings (`sslrootcert`, `authcfg`, …), which a saved connection
     /// doesn't keep (never their values).
@@ -59,6 +87,132 @@ pub enum Source {
     SqlServer { connection: String, table: String, dropped: Vec<String> },
     /// One RustGIS doesn't read.
     Other { provider: String },
+}
+
+/// What a web service layer's source says that RustGIS doesn't read: its other options, by name
+/// only (their values may be keys), and whether it names a login (a user name, a password or
+/// QGIS's saved authentication, `authcfg`), which is never carried over.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WebOptions {
+    /// At most 32 options, as `name=…`.
+    pub ignored: Vec<String>,
+    /// How many more there are, past those 32 (counted, not named).
+    pub more: usize,
+    pub login: bool,
+}
+
+impl WebOptions {
+    /// With the query of a service's address (`…?a=1&token=…`), which isn't kept with the address:
+    /// a login's key, or a part with no name or no value (which may be a key itself), is a login;
+    /// anything else an option, named, never its value.
+    fn with_address_query(mut self, query: &str) -> Self {
+        self = self.with_rest(query.split('&').filter(|p| !p.is_empty()).skip(MAX_PARTS).count());
+        for part in query.split('&').filter(|p| !p.is_empty()).take(MAX_PARTS) {
+            match part.split_once('=') {
+                // A name with whitespace in it (written, `+`, or percent-encoded: decoded once to
+                // tell) holds a word of its own, which may be a key: a login, as in a source's
+                // options ([`WebOptions::of`]).
+                Some((k, v))
+                    if is_login(&rustgis_data::address::percent_decode(k))
+                        || v.is_empty()
+                        || rustgis_data::address::percent_decode(&k.replace('+', " ")).contains(char::is_whitespace) =>
+                {
+                    self.login = true;
+                }
+                Some((k, _)) if !k.is_empty() => self.note(k),
+                _ => self.login = true,
+            }
+        }
+        self
+    }
+
+    /// With `rest` parts past those read (the first [`MAX_PARTS`]), if any: counted, never named,
+    /// and taken as a login (one of them may be a key).
+    fn with_rest(mut self, rest: usize) -> Self {
+        if rest > 0 {
+            self.more += rest;
+            self.login = true;
+        }
+        self
+    }
+
+    /// Notes the option `key` (`name=…`), or counts it once 32 are named.
+    fn note(&mut self, key: &str) {
+        if self.ignored.len() < 32 {
+            self.ignored.push(noted_option(&format!("{key}=")));
+        } else {
+            self.more += 1;
+        }
+    }
+
+    /// The options of `pairs` other than those named in `read` (what RustGIS reads, or what
+    /// changes nothing it draws), and the login among them. Names are matched in any case.
+    fn of(pairs: &[(String, String)], read: &[&str]) -> Self {
+        let mut out = WebOptions::default();
+        for (k, v) in pairs {
+            let k = k.trim();
+            // A value with no name (`=abc`) may be a key: taken as a login, as an address's part
+            // with no name is.
+            if k.is_empty() {
+                out.login |= !v.trim().is_empty();
+                continue;
+            }
+            // A name with a space in it holds a word written on its own before the pair (`… abc
+            // key=…` in a connection text), which may be a key: taken as a login, never named.
+            if k.contains(char::is_whitespace) {
+                out.login = true;
+                continue;
+            }
+            if read.iter().any(|r| r.eq_ignore_ascii_case(k)) {
+                continue;
+            }
+            // A login's name written encoded (`api%5Fkey`) is a login all the same.
+            if is_login(&rustgis_data::address::percent_decode(k)) {
+                out.login = true;
+                continue;
+            }
+            // A segment with no value (`…&abc&…`, or `abc=`) may be a key or a password written
+            // on its own: taken as a login, as an address's bare part is, never named. `styles`
+            // with none is the server's default style, which changes nothing.
+            if v.trim().is_empty() {
+                if !k.eq_ignore_ascii_case("styles") {
+                    out.login = true;
+                }
+                continue;
+            }
+            if is_login(k) {
+                out.login = true;
+            } else {
+                out.note(k);
+            }
+        }
+        out
+    }
+}
+
+/// Whether a source option or address key is a login's: a user name, a password, a token or key,
+/// or QGIS's saved authentication.
+fn is_login(key: &str) -> bool {
+    const LOGIN: [&str; 15] = [
+        "user",
+        "username",
+        "password",
+        "pass",
+        "secret",
+        "authcfg",
+        "authkey",
+        "token",
+        "access_token",
+        "apikey",
+        "api_key",
+        "api-key",
+        "key",
+        "client_secret",
+        "signature",
+    ];
+    let key = key.trim();
+    // A header QGIS sends with each request (`http-header:Authorization=…`) is a login too.
+    LOGIN.iter().any(|l| l.eq_ignore_ascii_case(key)) || key.get(..12).is_some_and(|p| p.eq_ignore_ascii_case("http-header:"))
 }
 
 /// The layer a virtual layer selects from: a source it names (`layer=provider:source:name`), or
@@ -116,7 +270,21 @@ pub fn read(provider: &str, datasource: &str, dir: &str) -> Source {
                 }
                 (Some("xyz"), Some(url)) => Source::Xyz { url, zmin: zoom("zmin"), zmax: zoom("zmax"), vector, style: get("styleUrl") },
                 (_, Some(url)) if provider == "wms" => match get("layers") {
-                    Some(layer) => Source::Wms { url, layer, crs: get("crs") },
+                    Some(layer) => {
+                        // What RustGIS reads, and what changes nothing it draws: the system and
+                        // image format it asks (its own), the legend and resolution settings, the
+                        // identify settings.
+                        const READ: [&str; 9] =
+                            ["url", "layers", "crs", "format", "tileMatrixSet", "contextualWMSLegend", "dpiMode", "featureCount", "type"];
+                        let mut options = WebOptions::of(&q, &READ).with_rest(rest_of(datasource));
+                        // A style of its own (not the server's default) isn't asked for.
+                        if let Some(i) = options.ignored.iter().position(|o| o == "styles=…")
+                            && get("styles").is_none_or(|v| v.eq_ignore_ascii_case("default"))
+                        {
+                            options.ignored.remove(i);
+                        }
+                        Source::Wms { url, layer, crs: get("crs"), wmts: get("tileMatrixSet").is_some(), options }
+                    }
                     None => Source::Other { provider: provider.into() },
                 },
                 _ => Source::Other { provider: provider.into() },
@@ -139,11 +307,87 @@ pub fn read(provider: &str, datasource: &str, dir: &str) -> Source {
         }
         "memory" => memory(datasource),
         "virtual" => virtual_layer(datasource, dir),
-        "WFS" | "wfs" | "OAPIF" | "oapif" => {
-            let kv = conninfo(datasource);
-            let get = |k: &str| kv.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+        p if p.eq_ignore_ascii_case("wfs") || p.eq_ignore_ascii_case("oapif") => {
+            let (kv, left) = conninfo_rest(datasource);
+            let get = |k: &str| kv.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+            // What RustGIS reads (the address, the type, the filter), and what it does its own way:
+            // the version it asks, the system it asks in, pages, and a layer read whole rather
+            // than by the view's area.
+            const READ: [&str; 11] = [
+                "url",
+                "typename",
+                "sql",
+                "version",
+                "srsname",
+                "pagingEnabled",
+                "pageSize",
+                "restrictToRequestBBOX",
+                "skipInitialGetFeature",
+                "hideDownloadProgressDialog",
+                "preferCoordinatesForWfsT11",
+            ];
+            // (`SELECT * FROM t` alone keeps every feature: no filter.)
+            let filter = get("sql").and_then(|q| match select_all(&q) {
+                Some((table, Some(clause))) => Some(Ok(unqualified(&clause, &table))),
+                Some((_, None)) => None,
+                None => Some(Err(q)),
+            });
             match (get("url"), get("typename")) {
-                (Some(url), Some(layer)) => Source::Wfs { url, layer },
+                (Some(url), Some(layer)) => Source::Wfs {
+                    url,
+                    layer,
+                    ogc_api: provider.eq_ignore_ascii_case("oapif"),
+                    filter,
+                    options: WebOptions::of(&kv, &READ).with_rest(left),
+                },
+                _ => Source::Other { provider: provider.into() },
+            }
+        }
+        "arcgisfeatureserver" | "arcgismapserver" | "arcgisimageserver" => arcgis(provider, datasource),
+        "arcgisvectortileservice" => {
+            let q = query(datasource);
+            let get = |k: &str| q.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+            // `…/VectorTileServer`, or its tiles' address under it (`…/tile/{z}/{y}/{x}.pbf`).
+            let address = get("url");
+            let (root, rest) = address
+                .as_deref()
+                .and_then(|u| {
+                    let lower = u.to_ascii_lowercase();
+                    // The service itself: the last `/VectorTileServer` that ends a folder of the
+                    // path (a folder of the same name above it is part of its address; the query,
+                    // which may hold a key, is never searched).
+                    let path = lower.split_once('?').map_or(lower.as_str(), |(p, _)| p);
+                    let end = path
+                        .match_indices("/vectortileserver")
+                        .map(|(i, m)| i + m.len())
+                        .filter(|&e| matches!(path.as_bytes().get(e), None | Some(b'/')))
+                        .last()?;
+                    Some((u.get(..end)?.to_string(), u.get(end..)?.to_string()))
+                })
+                .unzip();
+            const READ: [&str; 4] = ["url", "type", "serviceType", "styleUrl"];
+            let mut options = WebOptions::of(&q, &READ).with_rest(rest_of(datasource));
+            // The address's own query (a key, a token) isn't kept with the service's address: a
+            // login's key is a login, anything else an option (named, never its value). A part with no
+            // name (`?abc`) or no value (`?abc=`) may be a key itself: never named, taken as a login.
+            if let Some(query) = rest.as_deref().and_then(|r| r.split_once('?')).map(|(_, q)| q) {
+                options = options.with_address_query(query);
+            }
+            match root {
+                Some(url) => Source::ArcGis { url, layer: "style".into(), features: false, style: get("styleUrl").is_some(), options },
+                None => Source::Other { provider: provider.into() },
+            }
+        }
+        "wcs" => {
+            let q = query(datasource);
+            let get = |k: &str| q.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+            // The system and format it is asked in are RustGIS's own (a GeoTIFF on the map's
+            // grid); the cache setting changes nothing drawn.
+            const READ: [&str; 5] = ["url", "identifier", "crs", "format", "cache"];
+            match (get("url"), get("identifier")) {
+                (Some(url), Some(coverage)) => {
+                    Source::Wcs { url, coverage, options: WebOptions::of(&q, &READ).with_rest(rest_of(datasource)) }
+                }
                 _ => Source::Other { provider: provider.into() },
             }
         }
@@ -209,6 +453,54 @@ pub fn read(provider: &str, datasource: &str, dir: &str) -> Source {
             None => Source::Other { provider: provider.into() },
         },
         _ => Source::Other { provider: provider.into() },
+    }
+}
+
+/// An ArcGIS REST service layer (`arcgisfeatureserver`: `url='…/FeatureServer/3'` or
+/// `…/MapServer/3`; `arcgismapserver`: `url='…/MapServer'`, with `layer='3'` for one of its
+/// layers; `arcgisimageserver`: `url='…/ImageServer'`), as [`Source::ArcGis`].
+fn arcgis(provider: &str, datasource: &str) -> Source {
+    let (kv, left) = conninfo_rest(datasource);
+    let get = |k: &str| kv.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.trim().to_string()).filter(|v| !v.is_empty());
+    let other = || Source::Other { provider: provider.into() };
+    let Some(address) = get("url") else { return other() };
+    // The address's own query (a token, say) isn't kept with it, and is noted ([`WebOptions::with_address_query`]).
+    let (path, query) = address.split_once('?').unwrap_or((&address, ""));
+    let url = path.trim_end_matches('/').to_string();
+    let lower = url.to_ascii_lowercase();
+    // The system it is asked in and the image format are RustGIS's own.
+    const READ: [&str; 4] = ["url", "layer", "crs", "format"];
+    let options = WebOptions::of(&kv, &READ).with_rest(left).with_address_query(query);
+    let layer =
+        |url: String, layer: String, features: bool| Source::ArcGis { url, layer, features, style: false, options: options.clone() };
+    match provider {
+        "arcgisfeatureserver" => match url.rsplit_once('/') {
+            Some((root, id))
+                if id.parse::<u32>().is_ok() && ["/featureserver", "/mapserver"].iter().any(|s| root.to_ascii_lowercase().ends_with(s)) =>
+            {
+                layer(root.to_string(), id.to_string(), true)
+            }
+            _ => other(),
+        },
+        "arcgismapserver" if lower.ends_with("/mapserver") => match get("layer") {
+            Some(l) if l.parse::<u32>().is_ok() => layer(url, format!("map:{l}"), false),
+            // Layers RustGIS doesn't draw alone (several, or by name): the whole map, noted.
+            Some(_) => {
+                let mut whole = layer(url, "map".into(), false);
+                if let Source::ArcGis { options, .. } = &mut whole {
+                    // First, within the 32 named: the last one named makes room, counted instead.
+                    if options.ignored.len() >= 32 && options.ignored.pop().is_some() {
+                        options.more += 1;
+                    }
+                    options.ignored.insert(0, noted_option("layer=…"));
+                }
+                whole
+            }
+            None => layer(url, "map".into(), false),
+        },
+        // QGIS adds an image service through either provider.
+        "arcgismapserver" | "arcgisimageserver" if lower.ends_with("/imageserver") => layer(url, "image".into(), false),
+        _ => other(),
     }
 }
 
@@ -582,21 +874,41 @@ fn csv(datasource: &str, dir: &str) -> Source {
     }
 }
 
-/// `key=value` pairs joined by `&`, each value percent-decoded (QGIS's web sources).
+/// The most `&`-joined parts of a web source, or of an address's query, read; the rest are
+/// counted ([`WebOptions::with_rest`]).
+const MAX_PARTS: usize = 200;
+
+/// The non-empty parts of a web source past the first [`MAX_PARTS`], which [`query`] doesn't read.
+fn rest_of(s: &str) -> usize {
+    s.split('&').skip(MAX_PARTS).filter(|p| !p.is_empty()).count()
+}
+
+/// `key=value` pairs joined by `&`, each value percent-decoded (QGIS's web sources), the first
+/// [`MAX_PARTS`].
 fn query(s: &str) -> Vec<(String, String)> {
     s.split('&')
-        .take(200)
+        .take(MAX_PARTS)
         .filter_map(|kv| kv.split_once('=').or(Some((kv, ""))))
         .map(|(k, v)| (k.to_string(), rustgis_data::address::percent_decode(v)))
         .collect()
 }
 
-/// `key=value` and `key='value'` pairs joined by spaces (QGIS's connection texts).
+/// `key=value` and `key='value'` pairs joined by spaces (QGIS's connection texts), the first 100.
 fn conninfo(s: &str) -> Vec<(String, String)> {
+    conninfo_rest(s).0
+}
+
+/// [`conninfo`], and how many pairs it doesn't keep: those past the 100 it reads, and one for text
+/// it can't read as a pair (which stops it).
+fn conninfo_rest(s: &str) -> (Vec<(String, String)>, usize) {
     let mut out = Vec::new();
+    let mut unread = 0usize;
     let mut rest = s.trim();
-    while !rest.is_empty() && out.len() < 100 {
-        let Some((k, after)) = rest.split_once('=') else { break };
+    while !rest.is_empty() {
+        let Some((k, after)) = rest.split_once('=') else {
+            unread += 1;
+            break;
+        };
         let k = k.trim().to_string();
         let (v, next) = if let Some(quoted) = after.strip_prefix('\'') {
             // A quote or backslash escaped with a backslash is part of the value (libpq's rule).
@@ -618,10 +930,14 @@ fn conninfo(s: &str) -> Vec<(String, String)> {
             let end = after.find(' ').unwrap_or(after.len());
             (after.get(..end).unwrap_or_default().to_string(), after.get(end..).unwrap_or_default())
         };
-        out.push((k, v));
+        if out.len() < 100 {
+            out.push((k, v));
+        } else {
+            unread += 1;
+        }
         rest = next.trim_start();
     }
-    out
+    (out, unread)
 }
 
 /// A connection text's `table="schema"."table" (geom)`, as `schema.table` (or `table`).
@@ -681,6 +997,148 @@ pub fn is_relative(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A segment with no value in a web source may be a key written on its own: it is taken as a
+    /// login, never named, in the WMS, WCS and ArcGIS vector tile sources alike; `styles` with none
+    /// is the default style, not an option. A credential under another name than `password` or
+    /// `token` (an API key, a header) is a login too.
+    #[test]
+    fn a_bare_segment_is_counted_never_named() {
+        let dir = "/data";
+        let secret = "s3cr3tT0ken";
+        for (provider, source) in [
+            ("wms", format!("crs=EPSG:2056&format=image/png&layers=a&styles&{secret}&url=https://wms.example.com/")),
+            ("wcs", format!("identifier=dem&{secret}&url=https://wcs.example.com/")),
+            (
+                "arcgisvectortileservice",
+                format!("serviceType=arcgis&{secret}&type=xyz&url=https://example.com/arcgis/rest/services/v/VectorTileServer"),
+            ),
+        ] {
+            let got = read(provider, &source, dir);
+            let options = match &got {
+                Source::Wms { options, .. } | Source::Wcs { options, .. } | Source::ArcGis { options, .. } => options.clone(),
+                other => panic!("{provider}: {other:?}"),
+            };
+            assert!(options.ignored.iter().all(|o| !o.contains(secret)), "{provider}: {options:?}");
+            assert!(options.login && options.more == 0, "{provider}: {options:?}");
+            assert!(!format!("{got:?}").contains(&format!("{secret}=")), "{provider}");
+        }
+    }
+
+    /// Credentials under other names than `password` or `token` are logins: not named, noted as
+    /// a login.
+    #[test]
+    fn keys_and_headers_are_logins() {
+        for option in ["apikey=abc", "access_token=abc", "http-header:Authorization=Bearer%20abc", "client_secret=abc"] {
+            let Source::Wcs { options, .. } = read("wcs", &format!("identifier=dem&{option}&url=https://wcs.example.com/"), "/data") else {
+                panic!("{option}: a WCS source")
+            };
+            assert!(options.login && options.ignored.is_empty(), "{option}: {options:?}");
+        }
+    }
+
+    /// An ArcGIS service address with a query (a token) is read: the layer from its path, the
+    /// token a login, never kept with the address.
+    #[test]
+    fn an_arcgis_address_with_a_query_is_read() {
+        let Source::ArcGis { url, layer, features, options, .. } =
+            read("arcgisfeatureserver", "url='https://example.com/arcgis/rest/services/P/FeatureServer/0?token=s3cret&f=json'", "/data")
+        else {
+            panic!("an ArcGIS source")
+        };
+        assert_eq!((url.as_str(), layer.as_str(), features), ("https://example.com/arcgis/rest/services/P/FeatureServer", "0", true));
+        assert!(options.login && options.ignored == ["f=…"], "{options:?}");
+        // A login's name written encoded is a login, never named.
+        let Source::ArcGis { options, .. } =
+            read("arcgisfeatureserver", "url='https://example.com/arcgis/rest/services/P/FeatureServer/0?api%5Fkey=abc'", "/data")
+        else {
+            panic!("an ArcGIS source")
+        };
+        assert!(options.login && options.ignored.is_empty(), "{options:?}");
+        let Source::Wcs { options, .. } = read("wcs", "identifier=dem&to%6Ben=abc&url=https://wcs.example.com/", "/data") else {
+            panic!("a WCS source")
+        };
+        assert!(options.login && options.ignored.is_empty(), "{options:?}");
+        // A name with an encoded space holds a word of its own: a login, never named.
+        let Source::ArcGis { options, .. } =
+            read("arcgisfeatureserver", "url='https://example.com/arcgis/rest/services/P/FeatureServer/0?S3CRET%20TOKEN=x'", "/data")
+        else {
+            panic!("an ArcGIS source")
+        };
+        assert!(options.login && options.ignored.is_empty(), "{options:?}");
+        // Any whitespace encoded (a tab) is the same; an ordinary option is still named.
+        let Source::ArcGis { options, .. } = read(
+            "arcgisfeatureserver",
+            "url='https://example.com/arcgis/rest/services/P/FeatureServer/0?S3CRET%09TOKEN=x&f=json'",
+            "/data",
+        ) else {
+            panic!("an ArcGIS source")
+        };
+        assert!(options.login && options.ignored == ["f=…"], "{options:?}");
+        let Source::ArcGis { url, .. } =
+            read("arcgismapserver", "url='https://example.com/arcgis/rest/services/T/MapServer?token=s3cret'", "/data")
+        else {
+            panic!("an ArcGIS source")
+        };
+        assert_eq!(url, "https://example.com/arcgis/rest/services/T/MapServer");
+    }
+
+    /// A vector tile service address's part with no value (`?abc=`) may be a key: taken as a
+    /// login, never named, as a part with no name is.
+    #[test]
+    fn an_address_part_with_no_value_is_a_login() {
+        let source = "serviceType=arcgis&type=xyz&url=https://example.com/arcgis/rest/services/v/VectorTileServer/tile/%7Bz%7D/%7By%7D/%7Bx%7D.pbf?S3CRET=";
+        let Source::ArcGis { options, .. } = read("arcgisvectortileservice", source, "/data") else { panic!("an ArcGIS source") };
+        assert!(options.login && options.ignored.is_empty(), "{options:?}");
+    }
+
+    /// A vector tile service under a folder of the same name keeps that folder in its address.
+    #[test]
+    fn a_vector_tile_service_is_its_last_folder_of_that_name() {
+        let source = "serviceType=arcgis&type=xyz&url=https://example.com/VectorTileServer/rest/services/Base/VectorTileServer/tile/%7Bz%7D/%7By%7D/%7Bx%7D.pbf";
+        let Source::ArcGis { url, .. } = read("arcgisvectortileservice", source, "/data") else { panic!("an ArcGIS source") };
+        assert_eq!(url, "https://example.com/VectorTileServer/rest/services/Base/VectorTileServer");
+        // One named in the query (a key's value, say) is never the service: the address keeps none
+        // of the query.
+        let keyed = "serviceType=arcgis&type=xyz&url=https://example.com/rest/services/Base/VectorTileServer?token=abc/VectorTileServer/x";
+        let Source::ArcGis { url, options, .. } = read("arcgisvectortileservice", keyed, "/data") else { panic!("an ArcGIS source") };
+        assert_eq!(url, "https://example.com/rest/services/Base/VectorTileServer");
+        assert!(options.login, "{options:?}");
+    }
+
+    /// The parts of a web source past the 200 read are counted and taken as a login (one of them
+    /// may be a key), not dropped unsaid.
+    #[test]
+    fn parts_past_those_read_are_counted_as_a_login() {
+        let many: String = (0..205).map(|i| format!("&opt{i}=v")).collect();
+        let Source::Wcs { options, .. } = read("wcs", &format!("identifier=dem&url=https://wcs.example.com/{many}"), "/data") else {
+            panic!("a WCS source")
+        };
+        assert!(options.login, "{options:?}");
+        // Every option is either named or counted: the 198 read and the 7 past them.
+        assert_eq!(options.ignored.len() + options.more, 205, "{options:?}");
+    }
+
+    /// A connection text's pairs past the 100 read are each counted, and a value with no name is
+    /// a login.
+    #[test]
+    fn connection_pairs_past_those_read_are_each_counted() {
+        let many: String = (0..150).map(|i| format!(" opt{i}='v'")).collect();
+        let Source::Wfs { options, .. } = read("WFS", &format!("url='https://wfs.example.com/' typename='roads'{many}"), "/data") else {
+            panic!("a WFS source")
+        };
+        assert_eq!(options.ignored.len() + options.more, 150, "{options:?}");
+        assert!(options.login, "{options:?}");
+        let Source::Wcs { options, .. } = read("wcs", "identifier=dem&=s3cret&url=https://wcs.example.com/", "/data") else {
+            panic!("a WCS source")
+        };
+        assert!(options.login && options.ignored.is_empty(), "{options:?}");
+        // A word on its own before a pair isn't named with it.
+        let Source::Wfs { options, .. } = read("WFS", "url='https://wfs.example.com/' typename='roads' S3CRET extra='v'", "/data") else {
+            panic!("a WFS source")
+        };
+        assert!(options.login && options.ignored.iter().all(|o| !o.contains("S3CRET")), "{options:?}");
+    }
 
     #[test]
     fn sources_read_as_their_providers_write_them() {
@@ -765,7 +1223,9 @@ mod tests {
             Source::Wms {
                 url: "https://wms.geo.admin.ch/".into(),
                 layer: "ch.swisstopo.pixelkarte-farbe".into(),
-                crs: Some("EPSG:2056".into())
+                crs: Some("EPSG:2056".into()),
+                wmts: false,
+                options: WebOptions::default()
             }
         );
         // A password stays behind.
@@ -782,6 +1242,13 @@ mod tests {
         let pg = read("postgres", r#"dbname='gis' password='x table=leak' table="dbo"."towns" (geom)"#, dir);
         assert_eq!(pg, Source::Postgres { connection: "dbname=gis".into(), table: "dbo.towns".into(), dropped: Vec::new() });
         let pg = read("postgres", r"dbname='gis' password='x\' table=leak' table=t", dir);
+        // An unquoted filter's words aren't settings: `AND port=6543` is part of `sql=`, so the
+        // connection doesn't take 6543 as its port.
+        let Source::Postgres { connection, .. } = read("postgres", "dbname='gis' host=db table=t (geom) sql=active=1 AND port=6543", dir)
+        else {
+            panic!("a PostGIS source")
+        };
+        assert_eq!(connection, "dbname=gis host=db");
         assert_eq!(pg, Source::Postgres { connection: "dbname=gis".into(), table: "t".into(), dropped: Vec::new() });
         // Settings a saved connection doesn't keep, by name.
         let Source::Postgres { dropped, .. } = read(
@@ -892,11 +1359,171 @@ mod tests {
         );
         let Source::Csv { path, .. } = read("delimitedtext", "file://server/share/p.csv?xField=x", dir) else { panic!() };
         assert_eq!(path, "file://server/share/p.csv");
-        // A service's vector tiles are for the services' part.
+        // A service's vector tiles: the service, in its own style.
         assert_eq!(
             read("arcgisvectortileservice", "serviceType=arcgis&type=xyz&url=https://e.org/VectorTileServer", dir),
-            Source::Other { provider: "arcgisvectortileservice".into() }
+            Source::ArcGis {
+                url: "https://e.org/VectorTileServer".into(),
+                layer: "style".into(),
+                features: false,
+                style: false,
+                options: WebOptions::default()
+            }
         );
+    }
+
+    /// Web service layers, as QGIS 4.2.3 writes them: each as the service and the layer RustGIS's
+    /// service commands name, with what the source says that RustGIS doesn't read.
+    #[test]
+    fn web_service_sources_read_as_qgis_writes_them() {
+        let dir = "/p";
+        let none = WebOptions::default();
+        // WFS, every option QGIS writes for a plain layer read or harmless.
+        let wfs = "pagingEnabled='true' srsname='EPSG:2056' typename='ms:roads' url='https://example.invalid/wfs' version='2.0.0'";
+        assert_eq!(
+            read("WFS", wfs, dir),
+            Source::Wfs {
+                url: "https://example.invalid/wfs".into(),
+                layer: "ms:roads".into(),
+                ogc_api: false,
+                filter: None,
+                options: none.clone()
+            }
+        );
+        // Its filter: a WHERE clause on the type (named with it or not), or another query, kept.
+        let filtered = r"sql='SELECT * FROM roads WHERE roads.kind = \'a\'' typename='ms:roads' url='https://example.invalid/wfs'";
+        let Source::Wfs { filter, .. } = read("WFS", filtered, dir) else { panic!() };
+        assert_eq!(filter, Some(Ok("kind = 'a'".into())));
+        let Source::Wfs { filter, .. } = read("WFS", "sql='SELECT kind FROM roads' typename='t' url='https://e.org/wfs'", dir) else {
+            panic!()
+        };
+        assert_eq!(filter, Some(Err("SELECT kind FROM roads".into())));
+        // Every feature: no filter.
+        let every = "sql='SELECT * FROM roads' typename='t' url='https://e.org/wfs'";
+        let Source::Wfs { filter, .. } = read("WFS", every, dir) else { panic!() };
+        assert_eq!(filter, None);
+        // A login is said, never its values; other options by name.
+        let login = "user='me' password='secret' authcfg=x maxNumFeatures='10' typename='t' url='https://e.org/wfs'";
+        let Source::Wfs { options, .. } = read("WFS", login, dir) else { panic!() };
+        assert_eq!(options, WebOptions { ignored: vec!["maxNumFeatures=…".into()], more: 0, login: true });
+        assert!(!format!("{options:?}").contains("secret"));
+        // OGC API Features, under its provider's name in any case.
+        for provider in ["OAPIF", "oapif"] {
+            assert_eq!(
+                read(provider, "typename='roads' url='https://example.invalid/ogcapi'", dir),
+                Source::Wfs {
+                    url: "https://example.invalid/ogcapi".into(),
+                    layer: "roads".into(),
+                    ogc_api: true,
+                    filter: None,
+                    options: none.clone()
+                }
+            );
+        }
+        let arcgis = |url: &str, layer: &str, features: bool| Source::ArcGis {
+            url: url.into(),
+            layer: layer.into(),
+            features,
+            style: false,
+            options: WebOptions::default(),
+        };
+        // A feature service's layer, or a map service's layer read as features.
+        assert_eq!(
+            read("arcgisfeatureserver", "crs='EPSG:2056' url='https://example.invalid/arcgis/rest/services/Roads/FeatureServer/0'", dir),
+            arcgis("https://example.invalid/arcgis/rest/services/Roads/FeatureServer", "0", true)
+        );
+        assert_eq!(
+            read("arcgisfeatureserver", "url='https://e.org/rest/services/M/MapServer/12/'", dir),
+            arcgis("https://e.org/rest/services/M/MapServer", "12", true)
+        );
+        // A feature service with no layer named isn't one RustGIS adds.
+        assert!(matches!(read("arcgisfeatureserver", "url='https://e.org/rest/services/R/FeatureServer'", dir), Source::Other { .. }));
+        // A map service: one of its layers, or the whole map.
+        assert_eq!(
+            read(
+                "arcgismapserver",
+                "crs='EPSG:2056' format='PNG32' layer='0' url='https://example.invalid/arcgis/rest/services/Topo/MapServer'",
+                dir
+            ),
+            arcgis("https://example.invalid/arcgis/rest/services/Topo/MapServer", "map:0", false)
+        );
+        assert_eq!(
+            read("arcgismapserver", "crs='EPSG:2056' url='https://e.org/rest/services/Topo/MapServer'", dir),
+            arcgis("https://e.org/rest/services/Topo/MapServer", "map", false)
+        );
+        // Several layers: the whole map, said.
+        let Source::ArcGis { layer, options, .. } =
+            read("arcgismapserver", "layer='0,1' url='https://e.org/rest/services/T/MapServer'", dir)
+        else {
+            panic!()
+        };
+        assert_eq!((layer.as_str(), options.ignored), ("map", vec!["layer=…".to_string()]));
+        // An image service, through either provider.
+        for provider in ["arcgisimageserver", "arcgismapserver"] {
+            assert_eq!(
+                read(provider, "crs='EPSG:2056' format='png' url='https://example.invalid/arcgis/rest/services/Elev/ImageServer'", dir),
+                arcgis("https://example.invalid/arcgis/rest/services/Elev/ImageServer", "image", false)
+            );
+        }
+        // A vector tile service by its tiles' address, with a style QGIS was given and a login.
+        let vts = "authcfg=k1&serviceType=arcgis&styleUrl=https://e.org/s.json&type=xyz&url=https%3A%2F%2Fe.org%2Frest%2Fservices%2FB%2FVectorTileServer%2Ftile%2F%7Bz%7D%2F%7By%7D%2F%7Bx%7D.pbf";
+        assert_eq!(
+            read("arcgisvectortileservice", vts, dir),
+            Source::ArcGis {
+                url: "https://e.org/rest/services/B/VectorTileServer".into(),
+                layer: "style".into(),
+                features: false,
+                style: true,
+                options: WebOptions { ignored: Vec::new(), more: 0, login: true }
+            }
+        );
+        // A token in the service's address is a login (never kept or said); another key, by name.
+        let tokened =
+            "serviceType=arcgis&type=xyz&url=https%3A%2F%2Fe.org%2Frest%2Fservices%2FB%2FVectorTileServer%3Ftoken%3Dsecret%26f%3Djson";
+        let Source::ArcGis { url, options, .. } = read("arcgisvectortileservice", tokened, dir) else { panic!() };
+        assert_eq!(url, "https://e.org/rest/services/B/VectorTileServer");
+        assert_eq!(options, WebOptions { ignored: vec!["f=…".into()], more: 0, login: true });
+        // A part with no name may be a key: never said, taken as a login.
+        let bare = "type=xyz&url=https%3A%2F%2Fe.org%2Frest%2Fservices%2FB%2FVectorTileServer%3FSECRETVALUE";
+        let Source::ArcGis { options, .. } = read("arcgisvectortileservice", bare, dir) else { panic!() };
+        assert_eq!(options, WebOptions { ignored: Vec::new(), more: 0, login: true });
+        // Past 32 options, the rest are counted.
+        let many: String = (0..40).map(|i| format!("o{i}='x' ")).collect();
+        let Source::Wfs { options, .. } = read("WFS", &format!("{many}typename='t' url='https://e.org/wfs'"), dir) else { panic!() };
+        assert_eq!((options.ignored.len(), options.more), (32, 8));
+        // WCS.
+        assert_eq!(
+            read("wcs", "cache=PreferNetwork&crs=EPSG:2056&format=GTiff&identifier=dem&url=https://example.invalid/wcs", dir),
+            Source::Wcs { url: "https://example.invalid/wcs".into(), coverage: "dem".into(), options: none.clone() }
+        );
+        let Source::Wcs { options, .. } = read("wcs", "identifier=dem&time=2024-01-01&url=https://e.org/wcs", dir) else { panic!() };
+        assert_eq!(options.ignored, vec!["time=…".to_string()]);
+        // WMTS: a WMS source naming a tile matrix set.
+        let wmts = "crs=EPSG%3A2056&format=image%2Fpng&layers=roads&styles=default&tileMatrixSet=EPSG%3A2056&url=https%3A%2F%2Fexample.invalid%2Fwmts%2FWMTSCapabilities.xml";
+        assert_eq!(
+            read("wms", wmts, dir),
+            Source::Wms {
+                url: "https://example.invalid/wmts/WMTSCapabilities.xml".into(),
+                layer: "roads".into(),
+                crs: Some("EPSG:2056".into()),
+                wmts: true,
+                options: WebOptions::default()
+            }
+        );
+        // A WMS layer's login and a style of its own are said; the server's default style isn't.
+        let Source::Wms { options, .. } = read("wms", "authcfg=x&layers=a&styles=night&url=https://e.org/wms", dir) else { panic!() };
+        assert_eq!(options, WebOptions { ignored: vec!["styles=…".into()], more: 0, login: true });
+        let Source::Wms { options, .. } = read("wms", "layers=a&styles=&url=https://e.org/wms", dir) else { panic!() };
+        assert_eq!(options, WebOptions::default());
+        // A token given as an option is a login too.
+        let Source::Wcs { options, .. } = read("wcs", "identifier=dem&token=t1&url=https://e.org/wcs", dir) else { panic!() };
+        assert_eq!(options, WebOptions { ignored: Vec::new(), more: 0, login: true });
+        // Without the address or the layer: none RustGIS adds.
+        for (provider, source) in
+            [("WFS", "typename='t'"), ("wcs", "url=https://e.org/wcs"), ("arcgisvectortileservice", "url=https://e.org/x")]
+        {
+            assert!(matches!(read(provider, source, dir), Source::Other { .. }), "{provider}");
+        }
     }
 
     #[test]

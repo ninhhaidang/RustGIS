@@ -1085,7 +1085,7 @@ fn every_corpus_file_reads() {
         read_style(&text, "layer", &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     }
     let projects = files("generated/qgs", &["qgs", "qgz"]);
-    assert_eq!(projects.len(), 31, "project corpus changed: {projects:?}");
+    assert_eq!(projects.len(), 36, "project corpus changed: {projects:?}");
     for path in &projects {
         let bytes = std::fs::read(path).unwrap();
         let text = if path.extension().is_some_and(|e| e == "qgz") {
@@ -2849,6 +2849,34 @@ fn the_corpus_sources_read_as_qgis_wrote_them() {
     assert_eq!(sources, [filtered, (file(gpkg, Some("points"), None), None)]);
     let Source::Virtual { query, from: None, filter: None } = one("virtual-grouped") else { panic!() };
     assert_eq!(query, "SELECT kind, count(*) AS n FROM pts GROUP BY kind");
+    // Web services: each as the service and the layer RustGIS's service commands name (#882 10b).
+    let none = super::WebOptions::default();
+    let wfs = |layer: &str, ogc_api: bool, url: &str, filter: Option<Result<String, String>>| Source::Wfs {
+        url: url.into(),
+        layer: layer.into(),
+        ogc_api,
+        filter,
+        options: none.clone(),
+    };
+    assert_eq!(one("wfs"), wfs("ms:roads", false, "https://example.invalid/wfs", None));
+    assert_eq!(one("wfs-filtered"), wfs("ms:roads", false, "https://example.invalid/wfs", Some(Ok("kind = 'a'".into()))));
+    assert_eq!(one("oapif"), wfs("roads", true, "https://example.invalid/ogcapi", None));
+    let arcgis = |service: &str, layer: &str, features: bool| Source::ArcGis {
+        url: format!("https://example.invalid/arcgis/rest/services/{service}"),
+        layer: layer.into(),
+        features,
+        style: false,
+        options: none.clone(),
+    };
+    assert_eq!(one("arcgisfeatureserver"), arcgis("Roads/FeatureServer", "0", true));
+    assert_eq!(one("arcgismapserver"), arcgis("Topo/MapServer", "map:0", false));
+    assert_eq!(one("arcgisimageserver"), arcgis("Elev/ImageServer", "image", false));
+    assert_eq!(one("arcgisvectortileservice"), arcgis("Base/VectorTileServer", "style", false));
+    assert_eq!(one("wcs"), Source::Wcs { url: "https://example.invalid/wcs".into(), coverage: "dem".into(), options: none.clone() });
+    let Source::Wms { layer, wmts: true, .. } = one("wmts") else { panic!() };
+    assert_eq!(layer, "roads");
+    let Source::Wms { wmts: false, options, .. } = one("wms") else { panic!() };
+    assert_eq!(options, none);
 }
 
 /// A virtual layer on another layer of the project reads as that layer's file, with both

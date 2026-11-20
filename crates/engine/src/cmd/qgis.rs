@@ -12,7 +12,7 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("project.importQgis", "Import QGIS Project", "Project › Import", import_project).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).params(
+        C::new("project.importQgis", "Import QGIS Project", "Project › Import", import_project).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files).with(crate::policy::Effect::Network)).params(
             r#"{"path"?: "*.qgs|*.qgz", "text"?: "a .qgs file's text", "data"?: "a .qgs or .qgz file, base64", "dir"?: "the folder its relative paths start from (default: the file's)"} → the layers added and notes on what wasn't carried over"#,
         ),
         C::new("style.importQgis", "Import QGIS Style", "Style › Styles", import_style).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).when(need_layer).params(
@@ -59,15 +59,21 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
     crate::project::read_file(std::path::Path::new(path), MAX_FILE)
 }
 
-/// Imports a QGIS project as a new map. On the thread that runs it, as opening a project is: it
-/// adds layers to the session one after another, each through the command that adds its kind
-/// (a tile archive through that command's add itself, `tiles::add_with_metadata_wait`, with no
-/// wait for its metadata, as Add Data adds one), and no part of it runs on its own yet. Its work is bounded by the project: at most
+/// Imports a QGIS project as a new map. On the thread that runs it, as opening a project is,
+/// because it changes the session as it goes and RustGIS has no background path yet for a command
+/// that runs other commands on the session (the import as a whole off the window, with progress
+/// and Cancel, would be that path): it adds layers one after another, each through the command
+/// that adds its kind, and later layers, groups and relations read those added before. (A tile
+/// archive goes through that command's add itself, `tiles::add_with_metadata_wait`, with no
+/// wait for its metadata, as Add Data adds one.) Its work is bounded by the project: at most
 /// [`qgis::MAX_LAYERS`] layers, each read once by the command that adds it (a file's layers, and
 /// a virtual layer on one, each read their file), archives added without waiting for their
 /// metadata, annotation pictures within [`MAX_PICTURE_BYTES`]. A local archive's file is looked
-/// for on this thread (`is_file`), which a slow network share can hold up. Running the whole
-/// import off the window, with progress and Cancel, is for the import as a whole.
+/// for on this thread (`is_file`), which a slow network share can hold up, and a web service's
+/// layer (WMS, WMTS, WFS, OGC API, ArcGIS, WCS) asks its service on this thread, through
+/// `service.add`: its capabilities, then a WFS, OGC API or ArcGIS layer's features (each page
+/// within the read limits) or a WCS coverage over the project's saved view. No step looks at
+/// Cancel.
 fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     let text = qgis_text(p)?;
     // The folder relative paths start from: `dir` (a blank one is none, so they don't start
@@ -88,6 +94,9 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     m.basemap = rustgis_map::Basemap::Blank;
     m.graticule = false;
     let degrees = project.crs.as_deref().and_then(Geographic::of);
+    // The map draws in the project's coordinate system (its saved view reads in it). Without one,
+    // the saved view's coordinates are in no known system, so it isn't read.
+    let mut projected = project.crs.is_some();
     if let Some(crs) = &project.crs {
         let code = match crs.as_str() {
             "EPSG:3857" | "EPSG:900913" => "mercator",
@@ -96,7 +105,10 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
             other => other,
         };
         match s.run_part("map.projection", &json!({"type": code})) {
-            Err(e) => report.approximated("", format!("the project's coordinate system {crs} ({e}), drawn in Web Mercator")),
+            Err(e) => {
+                projected = false;
+                report.approximated("", format!("the project's coordinate system {crs} ({e}), drawn in Web Mercator"));
+            }
             Ok(_) if degrees.is_some_and(|g| !g.wgs84 || !g.greenwich) => {
                 let meridian = if degrees.is_some_and(|g| !g.greenwich) { ", its longitudes taken as from Greenwich" } else { "" };
                 report.approximated("", format!("the project's coordinate system {crs}, drawn in Equirectangular on WGS 84{meridian}"));
@@ -125,15 +137,21 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
     let mut drawn: Vec<(String, bool, Option<Drawn>)> = Vec::new();
     // What each of the project's layers came in as, by its index in `project.layers`.
     let mut came_in: Vec<CameIn> = Vec::new();
+    // The view the project was saved with, in degrees: the area a WCS coverage is asked for (none
+    // when the map couldn't take the project's coordinate system, which the view is in).
+    let view = if projected { coverage_view(s, &project, degrees) } else { None };
     let tree_layers = project.layers.iter().enumerate().rev().map(|(i, l)| (Some(i), l));
     for (index, layer) in tree_layers.chain(project.main_annotations.iter().map(|l| (None, l))) {
         let before: std::collections::HashSet<u32> = s.map().layers.iter().map(|l| l.id).collect();
         let tiles = s.map().tiles.len();
+        // The tiles a web tile layer landed on the map as, when it is one.
+        let mut landed_on = None;
         let result = if layer.kind == "annotation" {
             add_annotations(s, layer, crs, canvas.as_ref(), dir.is_some(), &mut pictures, &mut report)
                 .map(|(name, d)| Some((name, Some(d))))
         } else {
-            add_layer(s, layer, dir.is_some(), &mut connections, &mut report).map(|name| name.map(|name| (name, None)))
+            add_layer(s, layer, dir.is_some(), view, &mut landed_on, &mut connections, &mut report)
+                .map(|name| name.map(|name| (name, None)))
         };
         match result {
             Ok(Some((name, d))) => {
@@ -145,7 +163,7 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
                     // A web tile layer on the same tiles as one added before takes its place (the
                     // map keeps one tile layer of the same tiles): that one isn't on the map, nor
                     // among those added, said under its name.
-                    let key = tile_key(&layer.source);
+                    let key = landed_on;
                     if let Some(k) = &key {
                         for c in came_in.iter_mut().filter(|c| c.key.as_ref() == Some(k)) {
                             c.tile = false;
@@ -200,21 +218,19 @@ struct CameIn {
     ids: Vec<u32>,
     /// A web tile layer was added for it.
     tile: bool,
-    /// The tiles it was added as (see [`tile_key`]), while its tile layer is on the map.
-    key: Option<(String, &'static str)>,
+    /// The tiles it was added as (see [`landed`]), while its tile layer is on the map.
+    key: Option<(String, rustgis_map::tiles::TileKind)>,
 }
 
-/// The tiles a web tile layer is added as: its address and kind, as the map tells tile layers of
-/// the same tiles apart. (`map.addTiles` replaces an overlay of the same address and kind with the
-/// same look or name, `tiles.rs`'s `add_with_metadata_wait`; imported ones are overlays with no
-/// look of their own, so two on the same tiles always merge. A change there changes this.)
-fn tile_key(source: &Source) -> Option<(String, &'static str)> {
-    match source {
-        // Trimmed, as the map keeps the address.
-        Source::Xyz { url, vector, .. } => Some((url.trim().to_string(), if *vector { "vector" } else { "raster" })),
-        Source::Archive { path, kind, .. } => Some((path.clone(), kind)),
-        _ => None,
-    }
+/// The tiles a web tile layer landed on the map as (the tile layer at the `index` an add
+/// answers): its address and kind, as the map tells tile layers of the same tiles apart. (Adding
+/// tiles replaces an overlay of the same address and kind with the same look or name,
+/// `tiles.rs`'s `add`; imported ones are overlays with no look of their own, so two on the same
+/// tiles always merge, whichever QGIS sources they came from: two map service layers drawn as the
+/// same whole map, say. A change there changes this.)
+fn landed(s: &Session, added: &Value) -> Option<(String, rustgis_map::tiles::TileKind)> {
+    let index = usize::try_from(added.get("index")?.as_u64()?).ok()?;
+    s.map().tiles.get(index).map(|t| (t.url.clone(), t.kind))
 }
 
 /// Makes the project's layer tree groups as layer groups, nested as in QGIS, and puts each layer
@@ -313,11 +329,15 @@ fn note_texts_under_layers_above(drawn: &[(String, bool, Option<Drawn>)], report
 /// Adds one QGIS layer to the active map with its style: `Ok(Some(name))` when added, `Ok(None)`
 /// when its source is one RustGIS doesn't read (noted). Without the project's folder (`has_dir`:
 /// a project given as text or data with no `dir`), a relative path has nothing to start from and
-/// is noted rather than looked for in the working directory.
+/// is noted rather than looked for in the working directory. A web service's layer is added
+/// through `service.add`, as Add Web Data adds one (a WCS coverage over `view`, the project's
+/// saved view in degrees, or whole without one). A web tile layer's tiles go in `tile`.
 fn add_layer(
     s: &mut Session,
     layer: &qgis::ProjectLayer,
     has_dir: bool,
+    view: Option<Extent>,
+    tile: &mut Option<(String, rustgis_map::tiles::TileKind)>,
     connections: &mut usize,
     report: &mut Report,
 ) -> Result<Option<String>, String> {
@@ -333,6 +353,8 @@ fn add_layer(
             return Ok(None);
         }
     }
+    // The filter a web feature layer's source sets, read as its definition query.
+    let mut service_filter = None;
     match &layer.source {
         Source::File { path, layer: table, ignored, .. } => {
             if !ignored.is_empty() {
@@ -367,6 +389,7 @@ fn add_layer(
             }
             let before = s.active_layer;
             let added = s.run_part("map.addTiles", &q)?;
+            *tile = landed(s, &added);
             web_settings(s, &added, before, layer, report);
             if *vector {
                 note_vector_tile_style(name, style.is_some(), report);
@@ -425,6 +448,7 @@ fn add_layer(
                     return Err(e);
                 }
             };
+            *tile = landed(s, &added);
             web_settings(s, &added, before, layer, report);
             if *vector {
                 note_vector_tile_style(name, false, report);
@@ -478,15 +502,111 @@ fn add_layer(
             report.skipped(name, format!("the virtual layer `{shown}{more}`: {why}"));
             return Ok(None);
         }
-        Source::Wms { url, layer: wms, .. } => {
+        Source::Wms { url, layer: wms, wmts, options, .. } => {
+            note_web_options(name, options, report);
+            if *wmts {
+                report.approximated(
+                    name,
+                    "its tile matrix set: RustGIS takes the service's Web Mercator one where the layer has one, else one in its own system, which may not be the one QGIS chose",
+                );
+            }
             let before = s.active_layer;
-            let added = s.run_part("service.add", &json!({"url": url, "type": "wms", "layer": wms, "name": name}))?;
+            let kind = if *wmts { "wmts" } else { "wms" };
+            let added = s.run_part("service.add", &json!({"url": url, "type": kind, "layer": wms, "name": name}))?;
+            *tile = landed(s, &added);
             web_settings(s, &added, before, layer, report);
             return Ok(Some(name.to_string()));
         }
-        Source::Wfs { url, layer: typename } => {
-            report.skipped(name, format!("the WFS layer {typename} at {url} (add it with Home › Add › Web Data)"));
-            return Ok(None);
+        Source::Wfs { url, layer: typename, ogc_api, filter, options } => {
+            note_web_options(name, options, report);
+            match filter {
+                Some(Ok(clause)) => service_filter = Some(clause.as_str()),
+                Some(Err(query)) => {
+                    let shown: String = query.chars().take(200).collect();
+                    let more = if query.chars().count() > 200 { "…" } else { "" };
+                    report.skipped(
+                        name,
+                        format!("its filter `{shown}{more}`: RustGIS reads one that selects every column of the layer with a WHERE clause"),
+                    );
+                }
+                None => {}
+            }
+            let kind = if *ogc_api { "ogcapi" } else { "wfs" };
+            let before = s.active_layer;
+            let added = s.run_part("service.add", &json!({"url": url, "type": kind, "layer": typename, "name": name}))?;
+            // A QGIS OGC API layer is a collection's features, which its bare name names (a
+            // collection without them isn't listed by it, and is noted). Should a service still
+            // answer it with tiles: a web layer's settings, its filter and style noted.
+            if added.get("index").is_some() {
+                tiles_not_features(name, layer, service_filter, report);
+                *tile = landed(s, &added);
+                web_settings(s, &added, before, layer, report);
+                return Ok(Some(name.to_string()));
+            }
+            added_one(s, before)?;
+        }
+        Source::ArcGis { url, layer: wanted, features, style, options } => {
+            // Layers of a map service it doesn't draw alone (several, or by name): its whole map,
+            // said as a change to what is drawn, not as a setting left unread.
+            let mut options = options.clone();
+            if wanted == "map"
+                && let Some(i) = options.ignored.iter().position(|o| o == "layer=…")
+            {
+                options.ignored.remove(i);
+                report
+                    .approximated(name, "the layers QGIS draws of its map service (several, or by name): the whole map, every layer drawn");
+            }
+            note_web_options(name, &options, report);
+            let before = s.active_layer;
+            let add = |s: &mut Session, wanted: &str| {
+                s.run_part("service.add", &json!({"url": url, "type": "arcgis", "layer": wanted, "name": name}))
+            };
+            let added = match (add(s, wanted), wanted.strip_prefix("map:")) {
+                (Ok(added), _) => added,
+                // A cached map draws no layer alone (it lists none): the whole map, said.
+                (Err(e), Some(id)) if e.contains(&format!("no layer '{wanted}'")) => match add(s, "map") {
+                    Ok(added) => {
+                        report.approximated(name, format!("its map layer {id} alone, which the service doesn't list: the whole map"));
+                        added
+                    }
+                    // Both causes said: the layer isn't listed, and the whole map failed too.
+                    Err(whole) => return Err(format!("{e}; its whole map, tried instead: {whole}")),
+                },
+                (Err(e), _) => return Err(e),
+            };
+            if *style {
+                report.approximated(name, "the vector tile style QGIS was given: drawn in the service's own style");
+            }
+            // A tile layer answers its index: its settings, and for features asked, what tiles
+            // can't take. Anything else is a new map layer (features, or an image or a map drawn
+            // as one), which takes the layer's style below, as a file's does.
+            if added.get("index").is_some() {
+                if *features {
+                    tiles_not_features(name, layer, None, report);
+                }
+                *tile = landed(s, &added);
+                web_settings(s, &added, before, layer, report);
+                return Ok(Some(name.to_string()));
+            }
+            added_one(s, before)?;
+        }
+        Source::Wcs { url, coverage, options } => {
+            note_web_options(name, options, report);
+            let bbox = view.map_or_else(|| json!("full"), |v| json!([v.min_x, v.min_y, v.max_x, v.max_y]));
+            let before = s.active_layer;
+            s.run_part("service.add", &json!({"url": url, "type": "wcs", "layer": coverage, "name": name, "bbox": bbox}))?;
+            added_one(s, before)?;
+            if view.is_some() {
+                report.approximated(
+                    name,
+                    "its coverage, read once over the view the project was saved with (wider where the view crosses the antimeridian or holds a pole): the layer has data only inside the box read",
+                );
+            } else {
+                report.approximated(
+                    name,
+                    "its coverage, read once and whole (the project has no saved view RustGIS can use), at the resolution that fits it",
+                );
+            }
         }
         Source::Postgres { connection, table, dropped } => {
             database_note(s, name, "PostGIS", table, connection, dropped, connections, report);
@@ -517,12 +637,19 @@ fn add_layer(
         return Ok(Some(added_name));
     }
     layer.style.apply(l);
-    // What reads only against the layer's fields: its definition query, and what the style names.
-    if let Some(q) = &layer.definition_query {
+    // What reads only against the layer's fields: its definition query (with the filter its web
+    // source sets, both kept), and what the style names.
+    let mut kept = Vec::new();
+    for q in layer.definition_query.iter().map(String::as_str).chain(service_filter) {
         match parse_imported(q, &l.dataset) {
-            Ok(_) => l.definition_query = Some(q.clone()),
+            Ok(_) => kept.push(q),
             Err(e) => report.skipped(name, format!("its filter `{q}` ({e})")),
         }
+    }
+    match kept.as_slice() {
+        [] => {}
+        [q] => l.definition_query = Some((*q).to_string()),
+        both => l.definition_query = Some(both.iter().map(|q| format!("({q})")).collect::<Vec<_>>().join(" AND ")),
     }
     check_fields(l, name, &layer.style.rules, layer.style.categories_by.as_ref(), &layer.style.bool_classes, report);
     if layer.style.diagram.is_some() {
@@ -530,6 +657,42 @@ fn add_layer(
     }
     bind_time(l, name, layer.style.time.as_deref(), report);
     Ok(Some(added_name))
+}
+
+/// That `service.add` added a map layer (now the active one), which the layer's settings go on:
+/// an answer that added none (one still waiting for its service) is an error, so no other layer
+/// takes them.
+fn added_one(s: &Session, before: Option<u32>) -> Result<(), String> {
+    if s.active_layer.is_some() && s.active_layer != before { Ok(()) } else { Err("the service added no layer".into()) }
+}
+
+/// Notes what a feature layer that came in as tiles (an OGC API collection its service gives as
+/// tiles) doesn't take: its filters and its QGIS style.
+fn tiles_not_features(name: &str, layer: &qgis::ProjectLayer, service_filter: Option<&str>, report: &mut Report) {
+    for q in layer.definition_query.iter().map(String::as_str).chain(service_filter) {
+        report.skipped(name, format!("its filter `{q}`: the service gives the layer as tiles, which take none"));
+    }
+    // A style of its own (a renderer QGIS saved), not drawn: said; none, nothing to say.
+    if layer.style.renderer.is_some() {
+        report.approximated(name, "its style: the service gives the layer as tiles, drawn in RustGIS's colours");
+    }
+}
+
+/// Notes what a web service layer's source says that RustGIS doesn't read: its other options, by
+/// name, and its login, which isn't carried over (never its values).
+fn note_web_options(name: &str, options: &qgis::WebOptions, report: &mut Report) {
+    if !options.ignored.is_empty() {
+        let more = if options.more > 0 { format!(" and {} more", options.more) } else { String::new() };
+        report.approximated(name, format!("its source options {}{more} (not read)", options.ignored.join(", ")));
+    } else if options.more > 0 {
+        report.approximated(name, format!("{} of its source options (not read, not named)", options.more));
+    }
+    if options.login {
+        report.approximated(
+            name,
+            "its login (a user name and password, a token or key, or QGIS's saved authentication): not carried over; the service is asked with the login saved in RustGIS for it, if there is one, else without one (add a web-service connection with the login to use one)",
+        );
+    }
 }
 
 /// Notes that a vector tile layer's own style (QGIS's, made in QGIS or from a MapLibre style,
@@ -1247,7 +1410,83 @@ pub(crate) fn web_settings(s: &mut Session, added: &Value, before: Option<u32>, 
 /// Goes to the project's saved view, or to its layers when that view shows none of them.
 fn go_to_view(s: &mut Session, project: &qgis::Project, degrees: Option<Geographic>) {
     let data = s.map().full_extent();
-    let saved = project.extent.and_then(|[x0, y0, x1, y1]| match degrees {
+    let saved = saved_view(s, project, degrees);
+    let target = match saved {
+        Some(e) if !e.is_empty() && (data.is_empty() || e.intersects(&data)) => e,
+        _ => data,
+    };
+    if !target.is_empty() {
+        s.zoom_to(&target);
+    }
+    // QGIS turns the map clockwise; a bearing faces the top of the view east of north.
+    if project.rotation != 0.0 {
+        s.map_mut().camera.set_bearing(-project.rotation);
+    }
+}
+
+/// The area a WCS coverage is asked for over: the project's saved view in degrees. A view in
+/// degrees is [`saved_view`]'s. A projected one is read along its edges (where a polar view's
+/// farthest latitude can be, not only at its corners), all the way round where it crosses the
+/// antimeridian or holds a pole (one that projects to a point inside it; a pole drawn as a line,
+/// as Web Mercator's, is no point). `None` (the whole coverage) when it has no area.
+fn coverage_view(s: &Session, project: &qgis::Project, degrees: Option<Geographic>) -> Option<Extent> {
+    let area = |v: &Extent| v.width() > 0.0 && v.height() > 0.0;
+    if degrees.is_some() {
+        // A view in degrees past ±180° crosses the antimeridian: its longitudes on both sides of
+        // it are asked for (all of them), not only the part `saved_view` keeps for the map.
+        let across = project.extent.is_some_and(|[x0, _, x1, _]| x0 < -180.0 || x1 > 180.0);
+        return saved_view(s, project, degrees).map(|v| if across { Extent::new(-180.0, v.min_y, 180.0, v.max_y) } else { v }).filter(area);
+    }
+    let [x0, y0, x1, y1] = project.extent?;
+    let m = s.map();
+    const STEPS: u32 = 16;
+    let mut view: Option<Extent> = None;
+    for i in 0..=STEPS {
+        let t = f64::from(i) / f64::from(STEPS);
+        let (x, y) = (x0 + t * (x1 - x0), y0 + t * (y1 - y0));
+        for (x, y) in [(x, y0), (x, y1), (x0, y), (x1, y)] {
+            // A place of the view's edge the map can't give in degrees (past its projection's
+            // edge): the box would fall short of the view, so the coverage is read whole.
+            let c = m.to_lonlat(Coord::new(x, y))?;
+            view = Some(view.unwrap_or(Extent::EMPTY).union(&Extent::new(c.x, c.y, c.x, c.y)));
+        }
+    }
+    let mut view = view?;
+    // Edges more than half way round: across the antimeridian (the box between them would be the
+    // other side of the world).
+    if view.width() > 180.0 {
+        view = Extent::new(-180.0, view.min_y, 180.0, view.max_y);
+    }
+    let inside = |p: Coord| p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+    let holds = |lat: f64| {
+        let at = |lon: f64| m.to_map(Coord::new(lon, lat));
+        match (at(0.0), at(90.0), at(180.0)) {
+            (Some(a), Some(b), Some(c)) => {
+                let near = |p: Coord, q: Coord| (p.x - q.x).abs() + (p.y - q.y).abs() <= 1e-6 * (1.0 + a.x.abs() + a.y.abs());
+                near(a, b) && near(a, c) && inside(a)
+            }
+            _ => false,
+        }
+    };
+    if holds(90.0) {
+        view = Extent::new(-180.0, view.min_y, 180.0, 90.0);
+    }
+    if holds(-90.0) {
+        view = Extent::new(-180.0, -90.0, 180.0, view.max_y);
+    }
+    // Longitudes past ±180° (a view across the antimeridian, given unwrapped): both sides of it,
+    // all the way round, rather than the part the clamp below would keep.
+    if view.min_x < -180.0 || view.max_x > 180.0 {
+        view = Extent::new(-180.0, view.min_y, 180.0, view.max_y);
+    }
+    // A place on the antimeridian or a pole, brought back a rounding step past it, is on it.
+    let view = Extent::new(view.min_x.max(-180.0), view.min_y.max(-90.0), view.max_x.min(180.0), view.max_y.min(90.0));
+    Some(view).filter(area)
+}
+
+/// The view `project` was saved with, in degrees (on the map's projection, as the import set it).
+fn saved_view(s: &Session, project: &qgis::Project, degrees: Option<Geographic>) -> Option<Extent> {
+    project.extent.and_then(|[x0, y0, x1, y1]| match degrees {
         // In degrees already (from Greenwich: the view of a project on another prime meridian
         // is left to its data).
         Some(g) if g.greenwich => Some(Extent::new(x0.max(-180.0), y0.max(-90.0), x1.min(180.0), y1.min(90.0))).filter(|e| !e.is_empty()),
@@ -1260,18 +1499,7 @@ fn go_to_view(s: &mut Session, project: &qgis::Project, degrees: Option<Geograph
                 .flatten()
                 .fold(None, |e: Option<Extent>, c| Some(e.unwrap_or(Extent::EMPTY).union(&Extent::new(c.x, c.y, c.x, c.y))))
         }
-    });
-    let target = match saved {
-        Some(e) if !e.is_empty() && (data.is_empty() || e.intersects(&data)) => e,
-        _ => data,
-    };
-    if !target.is_empty() {
-        s.zoom_to(&target);
-    }
-    // QGIS turns the map clockwise; a bearing faces the top of the view east of north.
-    if project.rotation != 0.0 {
-        s.map_mut().camera.set_bearing(-project.rotation);
-    }
+    })
 }
 
 /// Binds `l` to the time slider on `field` (from a QGIS layer's time settings), when it has the
