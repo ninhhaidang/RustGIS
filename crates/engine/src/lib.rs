@@ -840,6 +840,10 @@ pub struct Session {
     /// The definitions of the systems whose datum grid note this session has said
     /// ([`Session::say_grid_notes`]).
     crs_notes_said: Vec<String>,
+    /// The pairs of systems whose direct operation's grid note this session has said, so their
+    /// grids are asked for again when downloads are turned on ([`Session::want_grids_in_use`]),
+    /// as the systems in use are.
+    grid_pairs: Vec<(rustgis_data::raster::Crs, rustgis_data::raster::Crs)>,
     /// The coordinate systems a background export used on its worker thread, as (definition,
     /// label), for [`Session::say_grid_notes`].
     pub(crate) crs_used_elsewhere: Vec<(String, String)>,
@@ -1326,6 +1330,7 @@ impl Session {
             notices_given: 0,
             beyond_said: None,
             crs_notes_said: Vec::new(),
+            grid_pairs: Vec::new(),
             crs_used_elsewhere: Vec::new(),
             grid_notes_checked: None,
             grid_generation: rustgis_data::raster::crs::grid_generation(),
@@ -2890,12 +2895,24 @@ impl Session {
             // else where to turn them on, where this front end has the setting.
             // The systems behind them, by definition, for downloading the grids a note says are missing.
             let behind = self.systems_in_use();
+            // And the direct operations between two systems a command converted between (an
+            // export from a layer's system to another), whose grids are their own.
+            let pairs: Vec<(&str, (rustgis_data::raster::Crs, rustgis_data::raster::Crs))> =
+                found.iter().filter_map(|(d, _)| Some((d.as_str(), rustgis_data::raster::crs::pair_systems(d)?))).collect();
+            for (_, pair) in &pairs {
+                if !self.grid_pairs.contains(pair) {
+                    self.grid_pairs.push(*pair);
+                }
+            }
             let mut coming: Vec<String> = Vec::new();
-            for (_, crs) in behind.iter().filter(|(def, _)| found.iter().any(|(d, _)| d == def)) {
-                for name in crate::grids::want(*crs) {
-                    if !coming.contains(&name) {
-                        coming.push(name);
-                    }
+            let wanted = behind
+                .iter()
+                .filter(|(def, _)| found.iter().any(|(d, _)| d == def))
+                .flat_map(|(_, crs)| crate::grids::want(*crs))
+                .chain(pairs.iter().flat_map(|(_, (a, b))| crate::grids::want_between(*a, *b)));
+            for name in wanted {
+                if !coming.contains(&name) {
+                    coming.push(name);
                 }
             }
             let tail = if !self.offers_grid_downloads {
@@ -2905,7 +2922,9 @@ impl Session {
                 self.sync_grid_turns();
                 self.grid_downloads_said.extend(coming.iter().cloned());
                 format!(". RustGIS is downloading {}", names_said(&coming))
-            } else if crate::grids::enabled() && found.iter().all(|(d, _)| behind.iter().any(|(b, _)| b == d)) {
+            } else if crate::grids::enabled()
+                && found.iter().all(|(d, _)| behind.iter().any(|(b, _)| b == d) || pairs.iter().any(|(p, _)| p == d))
+            {
                 ". None of the grids they need can be downloaded from PROJ's grid server now".to_string()
             } else if crate::grids::enabled() {
                 // A system only a command used (an export's target): its grids aren't asked for
@@ -2914,6 +2933,7 @@ impl Session {
             } else if behind
                 .iter()
                 .any(|(d, crs)| found.iter().any(|(f, _)| f == d) && !rustgis_data::raster::crs::missing_grids(*crs).is_empty())
+                || pairs.iter().any(|(_, (a, b))| !rustgis_data::raster::crs::missing_grids_between(*a, *b).is_empty())
             {
                 ". Settings › Datum Grids › Download Datum Grids gets them from PROJ's grid server".to_string()
             } else {
@@ -3005,16 +3025,18 @@ impl Session {
         out
     }
 
-    /// Starts downloading the datum grids the systems in use need, when downloads are on (the
+    /// Starts downloading the datum grids the systems in use need, and those of the conversions
+    /// between two systems a grid note named, when downloads are on (the
     /// setting turned on, a grid that arrived and brings up the next), and says which: the names of
     /// those on their way.
     pub fn want_grids_in_use(&mut self) -> Vec<String> {
         let mut coming: Vec<String> = Vec::new();
-        for (_, crs) in self.systems_in_use() {
-            for name in crate::grids::want(crs) {
-                if !coming.contains(&name) {
-                    coming.push(name);
-                }
+        let systems = self.systems_in_use().into_iter().flat_map(|(_, crs)| crate::grids::want(crs));
+        // And those of the conversions between two systems a note named.
+        let pairs = self.grid_pairs.iter().flat_map(|(a, b)| crate::grids::want_between(*a, *b));
+        for name in systems.chain(pairs).collect::<Vec<_>>() {
+            if !coming.contains(&name) {
+                coming.push(name);
             }
         }
         // Each grid's download said once: a later ask finds those still coming.

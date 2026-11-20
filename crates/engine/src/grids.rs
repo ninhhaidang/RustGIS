@@ -6,8 +6,8 @@
 //! is only ever asked for here. The frame path may start a download (the session asks for the
 //! grids of the systems in use), but it runs on a thread of its own: a frame never waits for one.
 //!
-//! A file read on a thread of its own waits for its system's grids before its features are
-//! converted ([`crate::cmd::reads::ReadAhead::run_waiting_for_grids`]), so they land where the grid puts
+//! A file read on a thread of its own waits for its system's grids (and those of a conversion
+//! between two systems it makes) before its features are converted ([`crate::cmd::reads::ReadAhead::run_waiting_for_grids`]), so they land where the grid puts
 //! them. Elsewhere a download starts in the background, and the session says what it brought:
 //! rasters, streamed layers and the map follow at once, while a layer read whole before keeps the places
 //! it was given until it is opened again (it is held in longitude/latitude).
@@ -199,13 +199,33 @@ pub fn want(crs: Crs) -> Vec<String> {
     want_in(crs, false)
 }
 
+/// [`want`] for the direct operation from `source` to `target`
+/// ([`crs::missing_grids_between`]): the grids a conversion between them needs beyond each one's own.
+pub fn want_between(source: Crs, target: Crs) -> Vec<String> {
+    want_between_in(source, target, false)
+}
+
+/// [`want_between`]; `first`: ahead of the grids queued before, for a read waiting for them.
+fn want_between_in(source: Crs, target: Crs, first: bool) -> Vec<String> {
+    if !enabled() {
+        return Vec::new();
+    }
+    want_grids(crs::missing_grids_between(source, target), first)
+}
+
 /// [`want`]; `first`: ahead of the grids queued before, for a read waiting for them.
 fn want_in(crs: Crs, first: bool) -> Vec<String> {
     if !enabled() {
         return Vec::new();
     }
+    want_grids(crs::missing_grids(crs), first)
+}
+
+/// Queues `grids` that aren't on their way or settled, and gives the names of those started or
+/// already on their way; `first`: ahead of the grids queued before.
+fn want_grids(grids: Vec<MissingGrid>, first: bool) -> Vec<String> {
     let mut coming = Vec::new();
-    for grid in crs::missing_grids(crs) {
+    for grid in grids {
         match claim(&grid.name) {
             Claim::Mine => {
                 coming.push(grid.name.clone());
@@ -556,13 +576,14 @@ fn start(grid: MissingGrid) {
     );
 }
 
-/// Gets the grids `crs` needs before a file in it is read ([`crs::set_grid_waiter`]): each one
-/// missing is downloaded on a thread of its own, or was already on its way, and the read waits for
-/// them, then asks again, as the next operation's grids come up where the first's don't reach. It
-/// waits at most [`WAIT`] in all, for all the systems of one read, and stops waiting when its read is cancelled; the downloads go
-/// on, and what they bring is said and used from then on.
+/// Gets the grids a system needs before a file in it is read, or a conversion between two systems
+/// needs before it is made ([`crs::set_grid_waiter`]): each one missing is downloaded on a thread
+/// of its own, or was already on its way, and the read waits for them, then asks again, as the
+/// next operation's grids come up where the first's don't reach. It waits at most [`WAIT`] in
+/// all, for all the systems and pairs of one read, and stops waiting when its read is cancelled;
+/// the downloads go on, and what they bring is said and used from then on.
 #[cfg(not(target_arch = "wasm32"))]
-fn wait_for(crs: Crs, read: u64) {
+fn wait_for(of: crs::GridsOf, read: u64) {
     thread_local! {
         /// The read waited for on this thread, and when its wait ends: one for all its systems.
         static DEADLINE: std::cell::Cell<Option<(u64, web_time::Instant)>> = const { std::cell::Cell::new(None) };
@@ -580,7 +601,10 @@ fn wait_for(crs: Crs, read: u64) {
     let control = rustgis_analysis::control::current();
     // A few rounds at most: each brings the grids the operation chosen after the last needs.
     for _ in 0..4 {
-        let coming = want_in(crs, true);
+        let coming = match of {
+            crs::GridsOf::System(crs) => want_in(crs, true),
+            crs::GridsOf::Pair(a, b) => want_between_in(a, b, true),
+        };
         if coming.is_empty() {
             return;
         }
