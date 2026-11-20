@@ -225,6 +225,7 @@ mod tests {
                 walls: BLOCK_WALLS,
                 walls_layer: None,
                 shape: Default::default(),
+                water: None,
             }),
             water: None,
         });

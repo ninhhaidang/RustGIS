@@ -361,8 +361,19 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
 }
 
 fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static str> {
-    let (mut block, mut shape, mut water, mut shore, mut relief, mut light, mut legends, mut sized, mut pictures, mut zarr) =
-        (false, false, false, false, false, false, false, false, false, false);
+    let (
+        mut block,
+        mut shape,
+        mut water,
+        mut shore,
+        mut block_water,
+        mut relief,
+        mut light,
+        mut legends,
+        mut sized,
+        mut pictures,
+        mut zarr,
+    ) = (false, false, false, false, false, false, false, false, false, false, false);
     let mut offline_area_id = false;
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
@@ -373,6 +384,8 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
             water |= t.water.is_some();
             // A shore band other than the default, which an older reader would save away.
             shore |= t.water.as_ref().is_some_and(|w| w.shore != rustgis_map::view::WATER_SHORE);
+            // The water in a block's walls (#2317), which an older reader would save away.
+            block_water |= t.block.as_ref().is_some_and(|b| b.water.is_some());
         }
         relief |= map.layers.iter().any(relief_effects);
         light |= map.layers.iter().any(relief_light);
@@ -388,6 +401,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (shape, "terrain-block-shape"),
         (water, "terrain-water"),
         (shore, "terrain-water-shore"),
+        (block_water, "terrain-block-water"),
         (relief, "shaded-relief-effects"),
         (light, "shaded-relief-light"),
         (legends, "normalized-legend-urls"),

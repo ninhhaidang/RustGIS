@@ -75,6 +75,7 @@ pub const CAPABILITIES: &[&str] = &[
     "terrain-block-shape",
     "terrain-water",
     "terrain-water-shore",
+    "terrain-block-water",
     "shaded-relief-effects",
     "normalized-legend-urls",
     "field-origin",

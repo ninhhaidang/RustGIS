@@ -747,7 +747,7 @@ impl Glint {
 
 /// How far inside the water's outline its shore band reaches, in logical pixels (#1915): a few,
 /// as relief artists draw it.
-const SHORE_PX: f32 = 4.0;
+pub(crate) const SHORE_PX: f32 = 4.0;
 
 /// The strokes the shore band is drawn with, each narrower than the one before, so it fades from
 /// the outline inward in as many steps.
@@ -894,6 +894,7 @@ mod tests {
                 depth: Some(300.0),
                 walls: rustgis_map::view::BLOCK_WALLS,
                 walls_layer: None,
+                water: None,
                 shape: rustgis_map::view::BlockShape::Box,
             }),
             water: None,

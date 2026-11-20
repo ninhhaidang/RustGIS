@@ -106,6 +106,7 @@ New project saves and map/layer exports write format 2. Their `requires` header 
 features present in the saved payload: `terrain-block`, `terrain-block-shape` (a block
 diagram cut to a circle), `terrain-water`,
 `terrain-water-shore` (a terrain water's shore band other than the default),
+`terrain-block-water` (water in a block diagram's walls),
 `shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour),
 `shaded-relief-light` (a Shaded Relief's ambient or balanced light) and
 `normalized-legend-urls` for normalized legend addresses. Project

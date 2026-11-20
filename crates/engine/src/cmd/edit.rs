@@ -1223,6 +1223,26 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
             false,
         );
     }
+    // Nor a block's walls, when the depths of that water came from the field (#2317): the block's
+    // depth for all of it if it has one, else no water in the walls, said.
+    if let Some(t) = s.map_mut().view.terrain.as_mut()
+        && t.water.as_ref().is_some_and(|w| w.layer.eq_ignore_ascii_case(&layer_name))
+        && let Some(b) = t.block.as_mut()
+        && let Some(bw) = b.water.as_mut()
+        && bw.field.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&removed))
+    {
+        let note = match bw.depth {
+            Some(d) => {
+                bw.field = None;
+                format!("Block: its water's depths came from the deleted field {removed}, so its walls show all of it {d} m deep")
+            }
+            None => {
+                b.water = None;
+                format!("Block: its water's depths came from the deleted field {removed}, so its walls show no water")
+            }
+        };
+        s.notify(note, false);
+    }
     Ok(json!({"rulesRemoved": removed_rules}))
 }
 
