@@ -766,11 +766,12 @@ it by default (see [Writing](#writing)).
 
 This differs from changing the map's coordinate system, which only changes the display, or
 exporting to another CRS, which converts coordinate numbers while preserving locations.
-A layer read from a file keeps the file's own numbers, so Define Projection only relabels them. A
-layer kept in a saved project (by this release or an older one) and opened again holds its
-geometry in longitude/latitude, as projects save it: its native numbers are first reconstructed
-through the previous CRS, where small floating-point rounding differences are possible. A layer
-read from its file again when the project opens keeps the file's numbers.
+A layer read from a file keeps the file's own numbers, so Define Projection only relabels them. So
+does a layer kept in a project saved by this release, which keeps its numbers in its own system.
+A layer kept in a project saved by an older release holds its geometry in longitude/latitude, as
+those releases saved it: its native numbers are first reconstructed through the previous CRS,
+where small floating-point rounding differences are possible. A layer read from its file again
+when the project opens keeps the file's numbers.
 Edits already made to the layer are reinterpreted too. If the wrong CRS already discarded or
 clamped coordinates, import the original file again to recover them accurately.
 

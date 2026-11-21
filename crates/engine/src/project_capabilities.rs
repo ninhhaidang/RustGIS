@@ -39,6 +39,10 @@ impl Project {
         {
             required.push("field-generation");
         }
+        // A table saved in a coordinate system of its own, as a layer's is (map_capabilities).
+        if !required.contains(&super::NATIVE_COORDINATES) && self.tables.iter().any(|t| held_natively(&t.dataset)) {
+            required.push(super::NATIVE_COORDINATES);
+        }
         // Saved symbology keeps its images too.
         if !required.contains(&"picture-markers") && self.styles.iter().any(|s| s.renderer.has_picture_markers()) {
             required.push("picture-markers");
@@ -402,6 +406,13 @@ fn zarr_window(layer: &Layer) -> bool {
     layer.raster.as_ref().and_then(|r| r.time_zarr.as_ref()).is_some_and(|z| z.window.is_some())
 }
 
+/// Whether a dataset is saved in a coordinate system of its own (`Dataset::held_in`): an older
+/// reader would take its coordinates for longitude/latitude, and save it again without its
+/// system (one with no features too, such as a template's layers).
+fn held_natively(ds: &rustgis_data::Dataset) -> bool {
+    !ds.windowed && ds.coord_crs() != rustgis_data::raster::Crs::LonLat
+}
+
 /// The capabilities a layer needs, in [`map_capabilities`]'s order.
 fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
     [
@@ -410,6 +421,7 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
         (layer.size_by.is_some(), super::SIZE_BY_CAPABILITY),
         (layer.has_picture_markers(), "picture-markers"),
         (zarr_window(layer), "zarr-window"),
+        (held_natively(&layer.dataset), super::NATIVE_COORDINATES),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))
@@ -430,7 +442,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         mut pictures,
         mut zarr,
     ) = (false, false, false, false, false, false, false, false, false, false, false);
-    let (mut offline_area_id, mut paper) = (false, false);
+    let (mut offline_area_id, mut paper, mut native) = (false, false, false);
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
@@ -450,6 +462,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         sized |= map.layers.iter().any(|layer| layer.size_by.is_some());
         pictures |= map.layers.iter().any(Layer::has_picture_markers);
         zarr |= map.layers.iter().any(zarr_window);
+        native |= map.layers.iter().any(|layer| held_natively(&layer.dataset));
         legends |= map.tiles.iter().any(|tile| {
             tile.legends.iter().any(|legend| rustgis_data::login_address::inner(&legend.url).len() > rustgis_map::tiles::MAX_LEGEND_URL)
         });
@@ -468,6 +481,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (zarr, "zarr-window"),
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
+        (native, super::NATIVE_COORDINATES),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))

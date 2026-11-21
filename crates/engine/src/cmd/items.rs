@@ -862,8 +862,8 @@ fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, Strin
             if l.is_raster() || tol <= 0.0 {
                 continue;
             }
-            // Simplified in longitude/latitude, as the package saves it, whatever system the
-            // layer holds its coordinates in.
+            // Simplified in longitude/latitude, as the tolerance is in degrees, whatever system
+            // the layer holds its coordinates in; the package saves it there.
             if let std::borrow::Cow::Owned(ds) = l.dataset.in_lonlat()? {
                 l.dataset = ds;
             }

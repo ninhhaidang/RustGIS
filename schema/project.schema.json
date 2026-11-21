@@ -745,6 +745,18 @@
         "geometry_type": {
           "$ref": "#/$defs/GeometryType"
         },
+        "held_in": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Crs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The system its features are in, when not longitude/latitude (`Dataset::held_in`)."
+        },
         "id": {
           "default": 0,
           "format": "uint32",
@@ -1093,7 +1105,8 @@
           "crs-wkt",
           "zarr-window",
           "blank-paper",
-          "layout-frame-border"
+          "layout-frame-border",
+          "native-coordinates"
         ],
         "type": "string"
       },
@@ -1184,7 +1197,8 @@
     "crs-wkt",
     "zarr-window",
     "blank-paper",
-    "layout-frame-border"
+    "layout-frame-border",
+    "native-coordinates"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

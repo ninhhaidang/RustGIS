@@ -198,6 +198,14 @@ too, since an older reader warns that it ignores the key; `"border": null` only 
 back and needs nothing. A saved `layout.import` whose `text` has such a frame requires it as well.
 Layout files are not covered, as for backgrounds (#2277).
 
+Projects, map files and layer files with a layer or table held in a coordinate system of its own
+(`Dataset::held_in`: a file's system, kept since #2580) save its features in that system, exactly,
+with `held_in` beside them, and require `native-coordinates`: an older reader would read those
+coordinates as longitude/latitude, and one that saved the project again would lose its system and
+its exact coordinates. That holds for one with no features too (a template's layers), whose system
+an older reader would also save away. A layer or table in longitude/latitude, or a window onto a
+streamed source, is saved as before and requires nothing (#2032 C2d).
+
 A coordinate system read from WKT is saved with its PROJ definition, which older readers read,
 and its WKT beside it (`wkt`), which this release reads first. Projects, map files and layer
 files require `crs-wkt` when a saved system's definition doesn't place points as its WKT does

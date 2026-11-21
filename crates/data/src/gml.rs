@@ -879,8 +879,8 @@ mod tests {
     }
 
     /// A place a file's system can't give in longitude/latitude is kept missing (NaN), as when the
-    /// reader converted the file, so the layer still saves and is read in longitude/latitude; its
-    /// other places keep the file's numbers.
+    /// reader converted the file, so the layer's places that convert are still read in
+    /// longitude/latitude; its other places keep the file's numbers.
     #[test]
     fn a_place_with_no_longitude_latitude_is_kept_missing() {
         let gml = r#"<ogr:FeatureCollection xmlns:ogr="http://ogr.maptools.org/" xmlns:gml="http://www.opengis.net/gml">

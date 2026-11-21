@@ -411,8 +411,9 @@ impl<'de> Deserialize<'de> for Features {
 
 /// A feature class: a named table of features sharing a schema and geometry type.
 /// Its geometry is in the system it holds its coordinates in ([`Dataset::held_in`]): a file's
-/// own system for a file read in one, WGS 84 longitude/latitude for one without, for features
-/// drawn or made by tools and plugins, and for a saved project's.
+/// own system for a file read in one (and a saved project keeps it), WGS 84 longitude/latitude
+/// for one without, for features drawn or made by tools and plugins, and for a project saved by
+/// an older release.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Dataset {
     pub name: String,
@@ -424,7 +425,8 @@ pub struct Dataset {
     pub source: Option<String>,
     /// The coordinate system it was read in, when that isn't longitude/latitude: what an export
     /// writes by default. Its geometry is in [`Dataset::held_in`], which is this system for a file
-    /// read now and longitude/latitude for one a saved project holds.
+    /// read now or a project saved by this release, and longitude/latitude for one a project saved
+    /// by an older release holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crs: Option<raster::Crs>,
     /// Import lost geometry while interpreting source coordinates. Defining a projection cannot
@@ -440,9 +442,11 @@ pub struct Dataset {
     #[serde(skip)]
     pub windowed: bool,
     /// The system its geometry is in ([`Dataset::coord_crs`]): longitude/latitude unless it was
-    /// put in another with [`Dataset::hold_in`]. A project saves its features in
-    /// longitude/latitude, as older releases read them, so a saved dataset reads back held there.
-    #[serde(skip, default = "held_in_lonlat")]
+    /// put in another with [`Dataset::hold_in`]. A project saves its features in it, exactly,
+    /// with the system beside them (`held_in`, absent for longitude/latitude, as every release
+    /// saved them before), so a saved dataset reads back held as it was; a project with one
+    /// requires `native-coordinates`.
+    #[serde(default = "held_in_lonlat")]
     pub held_in: raster::Crs,
     /// The system of the map it is shown on, when that map draws it straight into its own system
     /// (the map's `direct_system`, set by the map): its places are then given in
@@ -453,7 +457,8 @@ pub struct Dataset {
     pub shown_in: Option<raster::Crs>,
 }
 
-/// What a dataset read from a project holds its coordinates in ([`Dataset::held_in`]).
+/// What a dataset saved without a system of its own holds its coordinates in
+/// ([`Dataset::held_in`]): longitude/latitude, as every release saved them before.
 fn held_in_lonlat() -> raster::Crs {
     raster::Crs::LonLat
 }
@@ -653,20 +658,8 @@ impl Serialize for Dataset {
         st.serialize_field("geometry_type", &self.geometry_type)?;
         st.serialize_field("fields", &self.fields)?;
         let none: &[Feature] = &[];
-        // In longitude/latitude, as every release reads a saved dataset's features: converted a
-        // row at a time as it is written, so a large layer held in another system isn't copied
-        // whole. A place that can't be given there fails the save, naming its feature, rather
-        // than being saved wrong; `hold_in` only holds a dataset whose places all convert.
-        if self.windowed {
-            st.serialize_field("features", none)?;
-        } else {
-            let to = self.lonlat_conversion().map_err(serde::ser::Error::custom)?;
-            if to.is_identity() {
-                st.serialize_field("features", self.features.as_slice())?;
-            } else {
-                st.serialize_field("features", &SavedInLonLat { ds: self, to })?;
-            }
-        }
+        // In the system it holds them in, exactly, as it reads them back (`held_in`, below).
+        st.serialize_field("features", if self.windowed { none } else { self.features.as_slice() })?;
         st.serialize_field("source", &self.source)?;
         if let Some(crs) = &self.crs {
             st.serialize_field("crs", crs)?;
@@ -683,53 +676,13 @@ impl Serialize for Dataset {
         } else {
             st.skip_field("zm_dropped")?;
         }
+        // Absent for longitude/latitude, as every release saved a dataset before.
+        if self.held_in != raster::Crs::LonLat && !self.windowed {
+            st.serialize_field("held_in", &self.held_in)?;
+        } else {
+            st.skip_field("held_in")?;
+        }
         st.end()
-    }
-}
-
-/// A dataset's rows in longitude/latitude as [`Dataset::in_lonlat`] gives them, each converted as
-/// it is written ([`Dataset`]'s `Serialize`), written as [`Feature`] writes itself.
-struct SavedInLonLat<'a> {
-    ds: &'a Dataset,
-    to: raster::Reprojection,
-}
-
-impl Serialize for SavedInLonLat<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::{Error, SerializeSeq, SerializeStruct};
-        struct Values<'a>(RowRef<'a>);
-        impl Serialize for Values<'_> {
-            fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-                s.collect_seq(self.0.values())
-            }
-        }
-        struct Row<'a>(RowRef<'a>, Option<Geometry>);
-        impl Serialize for Row<'_> {
-            fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut st = s.serialize_struct("Feature", 3)?;
-                st.serialize_field("id", &self.0.id())?;
-                st.serialize_field("geometry", &self.1)?;
-                st.serialize_field("attrs", &Values(self.0))?;
-                st.end()
-            }
-        }
-        let mut seq = s.serialize_seq(Some(self.ds.features.len()))?;
-        for (i, r) in self.ds.features.rows().enumerate() {
-            stop_when_asked(i).map_err(S::Error::custom)?;
-            let geometry = match r.geometry() {
-                Some(g) => Some(convert_keeping_missing(&self.to, g, &HeldPlaces::default()).ok_or_else(|| {
-                    S::Error::custom(format!(
-                        "{}: feature {} has a place in {} that can't be given in longitude/latitude",
-                        self.ds.name,
-                        r.id(),
-                        self.to.source().label()
-                    ))
-                })?),
-                None => None,
-            };
-            seq.serialize_element(&Row(r, geometry))?;
-        }
-        seq.end()
     }
 }
 
@@ -1434,6 +1387,55 @@ fn convert_keeping_missing(to: &raster::Reprojection, g: &Geometry, held: &HeldP
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dataset held in another system saves its features there, exactly, with the system
+    /// beside them, and reads back held as it was, bit for bit, with no conversion (#2032 C2d):
+    /// in UTM, in Robinson and in a system given by its PROJ definition. A window onto a source
+    /// saves no rows, and one in longitude/latitude no system, as every release saved them.
+    #[test]
+    fn a_held_dataset_reads_back_bit_for_bit() {
+        let defined =
+            raster::Crs::parse("+proj=tmerc +lat_0=0 +lon_0=9 +k=0.9996 +x_0=500000 +y_0=0 +ellps=GRS80 +units=m +no_defs").unwrap();
+        let bits = |ds: &Dataset| -> Vec<Vec<(u64, u64)>> {
+            ds.features
+                .rows()
+                .map(|r| {
+                    let mut out = Vec::new();
+                    if let Some(g) = r.geometry() {
+                        g.for_each_coord(|c| out.push((c.x.to_bits(), c.y.to_bits())));
+                    }
+                    out
+                })
+                .collect()
+        };
+        for crs in [raster::Crs::Epsg(32632), raster::Crs::parse("ESRI:54030").unwrap(), defined] {
+            let mut ds = Dataset::new("held", GeometryType::Polyline, vec![Field::new("n", FieldType::Integer)]);
+            let line = |x: f64| vec![Coord::new(x, 48.7), Coord::new(x + 0.013, 48.71), Coord::new(x + 0.031, 48.69)];
+            ds.push(Some(Geometry::Line(vec![line(11.5), line(11.6)])), vec![Value::Int(1)]);
+            ds.push(None, vec![Value::Int(2)]);
+            ds.push(Some(Geometry::Line(vec![line(8.1)])), vec![Value::Int(3)]);
+            ds.hold_in(crs).unwrap();
+            // Through JSON text, as a project saves it.
+            let saved = serde_json::to_string(&ds).unwrap();
+            let held_in = serde_json::from_str::<serde_json::Value>(&saved).unwrap()["held_in"].clone();
+            assert_eq!(held_in, serde_json::to_value(crs).unwrap(), "{}", crs.label());
+            let back: Dataset = serde_json::from_str(&saved).unwrap();
+            assert_eq!(back.coord_crs(), crs, "{}", crs.label());
+            assert_eq!(bits(&back), bits(&ds), "{}", crs.label());
+            assert_eq!(back.features.len(), 3);
+        }
+        let mut window = Dataset::new("window", GeometryType::Point, vec![]);
+        window.push(Some(Geometry::Point(Coord::new(11.5, 48.7))), vec![]);
+        window.hold_in(raster::Crs::Epsg(32632)).unwrap();
+        window.windowed = true;
+        let v = serde_json::to_value(&window).unwrap();
+        assert!(v.get("held_in").is_none() && v["features"] == serde_json::json!([]), "{v}");
+        let mut plain = Dataset::new("plain", GeometryType::Point, vec![]);
+        plain.push(Some(Geometry::Point(Coord::new(11.5, 48.7))), vec![]);
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(v.get("held_in").is_none(), "{v}");
+        assert_eq!(serde_json::from_value::<Dataset>(v).unwrap().coord_crs(), raster::Crs::LonLat);
+    }
 
     /// A layer made from another is held as that one is, with its system for exports; one with a
     /// place the system can't hold stays in longitude/latitude with no system of its own.

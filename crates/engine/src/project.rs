@@ -98,7 +98,11 @@ pub const CAPABILITIES: &[&str] = &[
     "zarr-window",
     "blank-paper",
     "layout-frame-border",
+    NATIVE_COORDINATES,
 ];
+/// A layer or table saved in a coordinate system of its own, not longitude/latitude
+/// (`Dataset::held_in`, #2032 C2d): an older reader would read its coordinates as degrees.
+pub(crate) const NATIVE_COORDINATES: &str = "native-coordinates";
 /// Independent marker sizes alongside classified point colours (`Layer::size_by`).
 pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";
 /// The most entries a document's `requires` may list: past it the document is refused without
@@ -515,12 +519,15 @@ struct TableFile {
     crs_incomplete: bool,
     #[serde(default)]
     zm_dropped: bool,
+    /// The system its features are in, when not longitude/latitude (`Dataset::held_in`).
+    #[serde(default)]
+    held_in: Option<rustgis_data::raster::Crs>,
 }
 
 impl From<TableFile> for Table {
     /// Loads stored data under a fresh runtime identity, never one supplied by the file.
     fn from(t: TableFile) -> Self {
-        let TableFile { id, name, geometry_type, fields, features, source, crs, crs_incomplete, zm_dropped } = t;
+        let TableFile { id, name, geometry_type, fields, features, source, crs, crs_incomplete, zm_dropped, held_in } = t;
         Table {
             id,
             instance_id: next_table_instance(),
@@ -534,8 +541,8 @@ impl From<TableFile> for Table {
                 crs_incomplete,
                 zm_dropped,
                 windowed: false,
-                // Saved in longitude/latitude, as `Dataset`'s own saving writes them.
-                held_in: rustgis_data::raster::Crs::LonLat,
+                // As `Dataset`'s own saving writes them.
+                held_in: held_in.unwrap_or(rustgis_data::raster::Crs::LonLat),
                 shown_in: None,
             },
         }

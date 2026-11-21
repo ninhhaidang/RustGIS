@@ -401,20 +401,96 @@ fn a_selection_layer_of_a_held_layer_is_relabelled_as_it_is() {
     assert_eq!(after, before, "relabelled, not converted, without a recorded system");
 }
 
-/// A project saves a held layer in longitude/latitude, as older releases read it, and opens it
-/// back held there, at the same places.
+/// A project saves a held layer's features in its own system, exactly, with the system beside
+/// them, and requires `native-coordinates`, so an older release refuses it rather than read them
+/// as degrees (#2032 C2d). It opens back held as it was, bit for bit, as do a layer file and a map
+/// file of it. A project of layers in longitude/latitude saves them as every release did, and
+/// requires nothing.
 #[test]
-fn a_held_layer_is_saved_in_lonlat() {
-    let [plain, mut held] = both();
+fn a_held_layer_is_saved_with_its_own_coordinates() {
+    let [mut plain, mut held] = both();
     let dir = Dir::new("project");
     let path = dir.path().join("held.rgis");
     held.run("project.saveAs", &json!({"path": path.display().to_string()})).unwrap();
-    let mut back = Session::new(Project::default());
-    back.run("project.open", &json!({"path": path.display().to_string()})).unwrap();
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["requires"], json!(["native-coordinates"]));
+    let wells = &saved["maps"][0]["layers"].as_array().unwrap().iter().find(|l| l["name"] == "Wells").unwrap()["dataset"];
+    assert_eq!(wells["held_in"], json!({"Epsg": 32632}));
+    let x = wells["features"][0]["geometry"]["Point"]["x"].as_f64().unwrap();
+    assert!((600_000.0..800_000.0).contains(&x), "features saved in UTM 32N: {x}");
+    let (back, said) = opened(&path);
+    assert!(said.is_empty(), "nothing to say: {said:?}");
     for layer in ["Wells", "Roads", "Parcels"] {
-        assert_eq!(back.map().layer_by_name(layer).unwrap().dataset.coord_crs(), Crs::LonLat);
-        assert_close(&lonlat(&back, layer), &lonlat(&plain, layer), layer);
+        assert_eq!(back.map().layer_by_name(layer).unwrap().dataset.coord_crs(), UTM, "{layer}");
+        assert_eq!(stored(&back, layer), stored(&held, layer), "{layer}: bit for bit");
     }
+    // A layer file and a map file keep them alike, and require it too.
+    let lyr = dir.path().join("wells.rgislyr");
+    held.run("layer.save", &json!({"layer": "Wells", "path": lyr.display().to_string()})).unwrap();
+    let rgismap = dir.path().join("held.rgismap");
+    held.run("map.save", &json!({"path": rgismap.display().to_string()})).unwrap();
+    for (command, file) in [("layer.addLayerFile", &lyr), ("map.import", &rgismap)] {
+        let header: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert_eq!(header["requires"], json!(["native-coordinates"]), "{command}");
+        let mut s = Session::new(Project::default());
+        s.run(command, &json!({"path": file.display().to_string()})).unwrap();
+        let wells = s.project.maps.iter().flat_map(|m| &m.layers).filter(|l| l.name.starts_with("Wells")).last().unwrap();
+        assert_eq!(wells.dataset.coord_crs(), UTM, "{command}");
+        let got: Vec<Option<Geometry>> = wells.dataset.features.iter().map(|f| f.geometry.clone()).collect();
+        assert_eq!(got, stored(&held, "Wells"), "{command}: bit for bit");
+    }
+    let lonlat_path = dir.path().join("plain.rgis");
+    plain.run("project.saveAs", &json!({"path": lonlat_path.display().to_string()})).unwrap();
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&lonlat_path).unwrap()).unwrap();
+    assert!(saved.get("requires").is_none(), "{}", saved["requires"]);
+    let wells = &saved["maps"][0]["layers"].as_array().unwrap().iter().find(|l| l["name"] == "Wells").unwrap()["dataset"];
+    assert!(wells.get("held_in").is_none());
+    // A held layer with no features (a template's) requires it too: an older reader would save
+    // it again without its system.
+    let mut empty = Session::new(Project::default());
+    let mut ds = Dataset::new("Empty", GeometryType::Point, Vec::new());
+    ds.hold_in(UTM).unwrap();
+    empty.map_mut().add_dataset(ds);
+    assert!(empty.project.required_capabilities().contains(&"native-coordinates"));
+}
+
+/// A table held in a system of its own is saved there with its system and requires
+/// `native-coordinates`, and opens back held, bit for bit; one in longitude/latitude requires
+/// nothing (#2032 C2d).
+#[test]
+fn a_held_table_is_saved_with_its_own_coordinates() {
+    let dir = Dir::new("project-table");
+    for (crs, required) in [(UTM, true), (Crs::LonLat, false)] {
+        let mut s = Session::new(Project::default());
+        let mut ds = layers().remove(0);
+        ds.hold_in(crs).unwrap();
+        let rows: Vec<Option<Geometry>> = ds.features.iter().map(|f| f.geometry.clone()).collect();
+        s.project.add_table(ds);
+        let path = dir.path().join(format!("{}.rgis", crs.label().replace(':', "-")));
+        s.run("project.saveAs", &json!({"path": path.display().to_string()})).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.get("requires").is_some_and(|r| r == &json!(["native-coordinates"])), required, "{}", crs.label());
+        let (back, said) = opened(&path);
+        assert!(said.is_empty(), "nothing to say: {said:?}");
+        let t = &back.project.tables[0].dataset;
+        assert_eq!(t.coord_crs(), crs);
+        assert_eq!(t.features.iter().map(|f| f.geometry.clone()).collect::<Vec<_>>(), rows, "{}: bit for bit", crs.label());
+    }
+}
+
+/// A session with the project at `path` opened, and what was said meanwhile besides that it
+/// opened.
+fn opened(path: &std::path::Path) -> (Session, Vec<String>) {
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("project.open", &json!({"path": path.display().to_string()})).unwrap();
+    let said = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| !t.starts_with("Opened ")).collect();
+    (s, said)
+}
+
+/// A layer's geometry as it holds it.
+fn stored(s: &Session, layer: &str) -> Vec<Option<Geometry>> {
+    s.map().layer_by_name(layer).unwrap().dataset.features.iter().map(|f| f.geometry.clone()).collect()
 }
 
 /// The numbers of a text file (an OBJ's vertices), in order.
@@ -1241,4 +1317,26 @@ fn a_project_saved_by_an_older_release_opens_as_it_did() {
     let saved_again: Value = serde_json::from_str(&std::fs::read_to_string(&again).unwrap()).unwrap();
     let again_kept = saved_again["maps"][0]["layers"].as_array().unwrap().iter().find(|l| l["name"] == "Kept").unwrap();
     assert_eq!(again_kept["dataset"]["features"], saved_kept["dataset"]["features"]);
+}
+
+/// A project fixture with a layer kept in UTM 32N, its features saved there (#2032 C2d), opens
+/// held there, at the places PROJ gives for its points' longitude/latitude: `printf "48.7 11.5\n48.71
+/// 11.5\n" | cs2cs -d 6 EPSG:4326 EPSG:32632` gives 683944.533251 5397122.834867 and 683908.073487
+/// 5398234.294584 (PROJ 9.9.0, PROJ_NETWORK=OFF).
+#[test]
+fn the_held_layer_fixture_opens_held() {
+    let p = Project::from_json(include_str!("../../../../schema/fixtures/held_native.rgis")).unwrap();
+    let wells = &p.maps[0].layers[0].dataset;
+    assert_eq!(wells.coord_crs(), UTM);
+    let at: Vec<Coord> = wells
+        .features
+        .iter()
+        .map(|f| match f.geometry {
+            Some(Geometry::Point(c)) => c,
+            ref g => panic!("a point: {g:?}"),
+        })
+        .collect();
+    for (c, (x, y)) in at.iter().zip([(683_944.533_251, 5_397_122.834_867), (683_908.073_487, 5_398_234.294_584)]) {
+        assert!((c.x - x).abs() < 1e-6 && (c.y - y).abs() < 1e-6, "{c:?}");
+    }
 }
