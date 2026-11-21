@@ -7,7 +7,8 @@ use std::cell::{OnceCell, RefCell};
 use std::ops::Range;
 
 use super::{FuncSpec, Kw, Lexed, Open, Parser, Probe, Tok, lex_spans};
-use crate::Dataset;
+use crate::value::ClassText;
+use crate::{Dataset, Value};
 
 /// Where the cursor is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,9 @@ pub struct Completion {
     /// The field (its index in the dataset) a value typed here is compared with: `name = ▮`,
     /// `name LIKE '▮`, `name IN ('a', ▮`, `pop BETWEEN ▮`.
     pub field: Option<usize>,
+    /// Whether the value typed here is a `LIKE` / `ILIKE` pattern, where `%` and `_` match more
+    /// than themselves (`name LIKE '▮`).
+    pub pattern: bool,
 }
 
 /// A call the cursor is in, from [`complete_at`]: its function, which argument (from 0), and
@@ -129,7 +133,88 @@ pub fn complete_at(text: &str, cursor: usize, ds: &Dataset) -> Option<Completion
         symbols: if code { symbols } else { Vec::new() },
         call,
         field: probe.field,
+        pattern: probe.pattern,
     })
+}
+
+/// The most features [`field_values`] reads of a layer. Where a value compared with a field is
+/// typed, its values are read again as the text changes, on the thread that draws, so a layer of
+/// millions mustn't be read whole each time (nor kept read: an edit, a reload or a view read would
+/// have to end that). An evenly spread sample of this many finds the values that matter; a value
+/// only a few features hold may be missed, and the list says when it read a sample.
+pub const VALUES_READ: usize = 10_000;
+
+/// The longest text [`field_values`] gives, in chars. A longer one is a description, not a
+/// value anyone compares with by typing it, and a list as wide as its widest item would run off
+/// the screen with it.
+pub(crate) const VALUE_CHARS: usize = 100;
+
+/// A value of a field, from [`field_values`]: as an expression writes it ([`literal`]: `'O''Br'`,
+/// `3.25`), and as it reads (`O'Br`), what is typed inside its quotes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldValue {
+    pub written: String,
+    pub text: String,
+}
+
+/// The distinct values of a field that [`field_values`] read, and of how many features.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldValues {
+    /// Each value once, by what is written (`3` and `3.0` are one), in Unique Values' order (by
+    /// number when they all read as numbers). No null, true or false (`IS NULL`, `TRUE` and
+    /// `FALSE` are the language's own words), no number that isn't finite or is written longer
+    /// than [`VALUE_CHARS`] (`1e300` in full), no text that breaks a line or is longer than it.
+    pub values: Vec<FieldValue>,
+    /// How many features were read.
+    pub read: usize,
+    /// How many features the dataset holds: more than `read` when a sample was read.
+    pub of: usize,
+}
+
+/// The distinct values field `field` of `ds` holds, read from at most `most` of its features,
+/// evenly spread: what can be typed as a value compared with that field (`name = '▮`). A
+/// streamed layer's dataset holds the features read for the view only (`Dataset::windowed`), so
+/// those are its values here.
+pub fn field_values(ds: &Dataset, field: usize, most: usize) -> FieldValues {
+    let of = ds.features.len();
+    let step = usize::try_from(crate::source::stride(of as u64, most.max(1))).unwrap_or(usize::MAX);
+    let mut seen = std::collections::HashSet::new();
+    let mut values = Vec::new();
+    let mut read = 0;
+    for f in ds.features.iter().step_by(step) {
+        read += 1;
+        let Some(v) = f.attrs.get(field) else { continue };
+        if matches!(v, Value::Text(t) if t.chars().nth(VALUE_CHARS).is_some() || t.chars().any(char::is_control)) {
+            continue;
+        }
+        // A float is written in full (`1e300` as 301 digits): too long to list, as a text is.
+        if let Some(written) = literal(v).filter(|w| !matches!(v, Value::Float(_)) || w.len() <= VALUE_CHARS)
+            && !seen.contains(&written)
+        {
+            seen.insert(written.clone());
+            values.push((ClassText::new(v.to_string()), written));
+        }
+    }
+    let by_number = ClassText::numeric(values.iter().map(|(t, _)| t));
+    values.sort_by(|a, b| if by_number { a.0.cmp(&b.0) } else { a.0.text().cmp(b.0.text()) });
+    let values = values.into_iter().map(|(text, written)| FieldValue { written, text: text.into_text() }).collect();
+    FieldValues { values, read, of }
+}
+
+/// `v` as an expression writes it, to compare a field with: a number as it is (in full, `3.25`,
+/// not rounded as a table shows it), a text, date or date-time in single quotes (a `'` in it
+/// doubled, as the lexer reads it). None for what is no literal: null, true or false (keywords),
+/// a number that isn't finite, and a whole number of 9e15 or more, which the lexer reads as a
+/// float (`query::num`), so that it would pick no feature, or its neighbour's.
+pub fn literal(v: &Value) -> Option<String> {
+    match v {
+        Value::Int(i) if i.unsigned_abs() < 9_000_000_000_000_000 => Some(i.to_string()),
+        // `-0` is `0`, the one value.
+        Value::Float(x) if x.is_finite() => Some(if *x == 0.0 { 0.0 } else { *x }.to_string()),
+        Value::Text(t) => Some(format!("'{}'", t.replace('\'', "''"))),
+        Value::Date(_) | Value::DateTime(_) => Some(format!("'{v}'")),
+        Value::Int(_) | Value::Float(_) | Value::Null | Value::Bool(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +229,107 @@ mod tests {
             GeometryType::Polygon,
             vec![Field::new("name", FieldType::Text), Field::new("pop", FieldType::Integer), Field::new("Pop Est", FieldType::Integer)],
         )
+    }
+
+    /// Each value is written as the language reads it back: the expression comparing the field
+    /// with what [`literal`] wrote picks the feature that holds it, and no other (a text compares
+    /// letter case aside, so these differ in more than case).
+    #[test]
+    fn a_value_written_picks_its_feature() {
+        use crate::{Date, DateTime};
+        let fields = vec![
+            Field::new("t", FieldType::Text),
+            Field::new("i", FieldType::Integer),
+            Field::new("r", FieldType::Double),
+            Field::new("d", FieldType::Date),
+            Field::new("s", FieldType::DateTime),
+        ];
+        let mut d = Dataset::new("t", GeometryType::Point, fields);
+        let rows = [
+            ("O'Brien", -5, 3.25, "2026-03-05", "2026-03-05T08:00:00Z"),
+            ("Pop Est", 7, 0.1 + 0.2, "1999-12-31", "2026-03-05T08:00:00+02:00"),
+            ("", 0, 1e-7, "2000-02-29", "2026-03-05T08:00:00.250"),
+            ("x", 8_999_999_999_999_999, 2.5, "2000-03-01", "2026-03-05T09:00:00Z"),
+            ("y", 8_999_999_999_999_998, 3.5, "2000-03-02", "2026-03-05T10:00:00Z"),
+        ];
+        for (t, i, r, day, at) in rows {
+            let attrs = vec![
+                Value::Text(t.into()),
+                Value::Int(i),
+                Value::Float(r),
+                Value::Date(Date::parse(day).unwrap()),
+                Value::DateTime(DateTime::parse(at).unwrap()),
+            ];
+            d.push(None, attrs);
+        }
+        for (row, f) in d.features.clone().iter().enumerate() {
+            for (i, v) in f.attrs.iter().enumerate() {
+                let written = literal(v).unwrap();
+                let name = &d.fields[i].name;
+                assert_eq!(crate::query::select(&format!("{name} = {written}"), &d), Ok(vec![row]), "{name} = {written}");
+            }
+        }
+        assert_eq!(literal(&Value::Text("O'Brien".into())).as_deref(), Some("'O''Brien'"));
+        assert_eq!(literal(&Value::Float(3.0)).as_deref(), Some("3"));
+        assert_eq!(literal(&Value::Float(-0.0)).as_deref(), Some("0"));
+        assert_eq!(literal(&Value::Int(8_999_999_999_999_999)).as_deref(), Some("8999999999999999"));
+        assert_eq!(literal(&Value::Int(-8_999_999_999_999_999)).as_deref(), Some("-8999999999999999"));
+        for v in [
+            Value::Null,
+            Value::Bool(true),
+            Value::Float(f64::NAN),
+            Value::Float(f64::INFINITY),
+            Value::Int(9_000_000_000_000_000),
+            Value::Int(9_007_199_254_740_993),
+            Value::Int(i64::MIN),
+        ] {
+            assert_eq!(literal(&v), None, "{v:?}");
+        }
+    }
+
+    /// A field's values: each once, in Unique Values' order, without what is no literal (null,
+    /// true, false, a text that breaks a line or too long to list); of a large layer, an evenly
+    /// spread sample.
+    #[test]
+    fn a_fields_values_are_read_once_each_from_a_bounded_sample() {
+        let fields = vec![Field::new("t", FieldType::Text), Field::new("n", FieldType::Double), Field::new("b", FieldType::Boolean)];
+        let mut d = Dataset::new("t", GeometryType::Point, fields);
+        let too_long = "x".repeat(VALUE_CHARS + 1);
+        for (t, n) in [
+            ("b", Value::Int(10)),
+            ("A", Value::Float(9.0)),
+            ("b", Value::Float(10.0)),
+            ("two\nlines", Value::Null),
+            ("A", Value::Float(f64::NAN)),
+            ("A", Value::Float(1e300)),
+            ("A", Value::Float(-1e-300)),
+            (too_long.as_str(), Value::Null),
+        ] {
+            d.push(None, vec![Value::Text(t.into()), n, Value::Bool(true)]);
+        }
+        d.push(None, vec![Value::Text("x".repeat(VALUE_CHARS)), Value::Float(-1.5)]);
+        let written = |field| field_values(&d, field, VALUES_READ).values.into_iter().map(|v| v.written).collect::<Vec<_>>();
+        let v = field_values(&d, 0, VALUES_READ);
+        assert_eq!((v.read, v.of), (9, 9));
+        let longest = "x".repeat(VALUE_CHARS);
+        assert_eq!(written(0), ["'A'".to_string(), "'b'".to_string(), format!("'{longest}'")], "up to the longest text listed");
+        assert_eq!(v.values.first(), Some(&FieldValue { written: "'A'".into(), text: "A".into() }));
+        assert_eq!(written(1), ["-1.5", "9", "10"], "by number, `10` and `10.0` once, none written too long");
+        assert!(field_values(&d, 2, VALUES_READ).values.is_empty(), "true and false are keywords");
+        assert!(field_values(&d, 9, VALUES_READ).values.is_empty(), "no such field");
+        // Past the most read: every other feature, from the first.
+        let mut big = Dataset::new("t", GeometryType::Point, vec![Field::new("i", FieldType::Integer)]);
+        for i in 0..10 {
+            big.push(None, vec![Value::Int(i)]);
+        }
+        let v = field_values(&big, 0, 5);
+        assert_eq!((v.read, v.of), (5, 10));
+        assert_eq!(v.values.iter().map(|v| v.written.as_str()).collect::<Vec<_>>(), ["0", "2", "4", "6", "8"]);
+        let v = field_values(&big, 0, 4);
+        assert_eq!((v.read, v.of, v.values.len()), (4, 10, 4), "no more than the most read");
+        assert_eq!(field_values(&big, 0, 0).read, 1, "at least one");
+        let empty = field_values(&Dataset::new("t", GeometryType::Point, vec![]), 0, 5);
+        assert_eq!((empty.read, empty.of, empty.values.len()), (0, 0, 0));
     }
 
     /// At the end of `text`.

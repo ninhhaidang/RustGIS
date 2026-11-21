@@ -1,9 +1,10 @@
 //! A box where an expression is written, with suggestions as it is typed (#1240): the shared
 //! list (`completion`) under the cursor, holding what the language takes there as the parser
 //! reads it (`query::complete_at`): the dataset's fields, its functions, variables and keywords,
-//! each with its help beside. It opens once a character of the word is typed, or with
-//! Ctrl+Space. Nothing is listed here by hand: what the language learns is offered too. A `(`,
-//! `'` or `"` typed closes itself, as the Script pane's braces do (`completion::pairs`).
+//! each with its help beside, and where a value compared with a field goes, that field's values.
+//! It opens once a character of the word is typed, or with Ctrl+Space. Nothing is listed here by
+//! hand: what the language learns is offered too. A `(`, `'` or `"` typed closes itself, as the
+//! Script pane's braces do (`completion::pairs`).
 
 use egui::text::{CCursor, CCursorRange};
 use egui::widgets::text_edit::{TextEditOutput, TextEditState};
@@ -17,6 +18,9 @@ use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Side, Tip, Wor
 /// columns mustn't draw hundreds of rows. The functions, variables and keywords after them are
 /// the language's, a few dozen, and always all there.
 const MAX_FIELDS: usize = 50;
+
+/// The most values of a field the list holds, as of fields: typing narrows them.
+const MAX_VALUES: usize = 50;
 
 /// How many lines a call's signature is first guessed to take (the signature, and the
 /// description on up to three): where it goes before it's drawn once.
@@ -32,6 +36,33 @@ enum Item {
     /// A variable (its entry in `VARS`) by the name it was matched by.
     Variable(usize, &'static str),
     Keyword(Kw),
+    /// A value of a field, as the expression writes it (`'Paris'`, `10`), the field's name, and
+    /// what it was read from.
+    Value(String, String, ValuesRead),
+}
+
+/// Which features a field's values were read from, for the help to say when it isn't all of the
+/// layer's (`query::field_values`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ValuesRead {
+    read: usize,
+    of: usize,
+    /// A streamed layer's: its dataset holds the features read for the view.
+    view: bool,
+}
+
+impl ValuesRead {
+    /// What the help says of where the values come from; None when they are all the layer's.
+    fn note(self) -> Option<String> {
+        let (read, of) = (self.read.to_string(), self.of.to_string());
+        let args = [("read", read.as_str()), ("of", of.as_str())];
+        match (self.view, self.read < self.of) {
+            (false, false) => None,
+            (false, true) => Some(crate::i18n::fmt("Values of {read} of {of} features, evenly spread", &args)),
+            (true, false) => Some(crate::i18n::fmt("Values of the {of} features read for the view", &args)),
+            (true, true) => Some(crate::i18n::fmt("Values of {read} of the {of} features read for the view, evenly spread", &args)),
+        }
+    }
 }
 
 /// What to offer at a cursor: the word it replaces (chars), the quote a field name was begun
@@ -76,16 +107,17 @@ fn starts_with(name: &str, prefix: &str) -> bool {
 }
 
 /// What to offer in `text`, an expression over `ds`, where `c` (`complete_at`) says what goes:
-/// what goes there that starts with the word typed (the word typed whole isn't offered again).
+/// the values of the field compared with there first (`values`), then what goes there that
+/// starts with the word typed (the word typed whole isn't offered again).
 /// Only once a character of the word is typed (a quote begun counts), unless `asked`
 /// (Ctrl+Space).
 pub(crate) fn offer_from(c: &Completion, text: &str, ds: &Dataset, asked: bool) -> Option<Offer> {
-    if c.place == Place::Text || (c.word.is_empty() && !asked) {
+    let mut of = values(c, text, ds, asked);
+    if (c.place == Place::Text && of.is_empty()) || (c.word.is_empty() && !asked) {
         return None;
     }
     let p = c.prefix.as_str();
     let fits = |name: &str| starts_with(name, p) && !name.eq_ignore_ascii_case(p);
-    let mut of = Vec::new();
     if c.operand {
         // A field another one shadows (`name` after `Name`: the expression reads the first, letter
         // case aside) isn't offered: written, it would read the other. Looked for among the
@@ -118,8 +150,51 @@ pub(crate) fn offer_from(c: &Completion, text: &str, ds: &Dataset, asked: bool) 
         return None;
     }
     let items = of.iter().map(shown).collect();
-    let quote = (c.place == Place::Field).then(|| text.chars().nth(c.word.start)).flatten();
+    let quote = (c.place != Place::Code).then(|| text.chars().nth(c.word.start)).flatten();
     Some(Offer { start: c.word.start, end: c.word.end, quote, items, of })
+}
+
+/// The values of the field a value typed at `c` is compared with (`name = '▮`, `pop IN (▮`),
+/// as the expression writes them, first in the list: inside a text, a text, date or date-time
+/// field's that start with what's typed (letter case aside, and not what's typed whole); where a
+/// value goes with no word typed, when the list is asked for (Ctrl+Space), any field's (a number
+/// as it is). None in a field's name, nor of a value compared with no field (`upper(name) = '`).
+/// Read again whenever the text, the cursor or the rows change, from a bounded sample
+/// (`query::VALUES_READ`).
+fn values(c: &Completion, text: &str, ds: &Dataset, asked: bool) -> Vec<Item> {
+    use rustgis_engine::data::FieldType;
+    let Some((i, field)) = c.field.and_then(|i| Some((i, ds.fields.get(i)?))) else { return Vec::new() };
+    let quoted = matches!(field.ty, FieldType::Text | FieldType::Date | FieldType::DateTime);
+    let wanted = match c.place {
+        Place::Text => quoted,
+        // Not just before a value already written (`pop = ▮1.5`, `name = ▮'Lima'`): only its
+        // start would be replaced (`3.5`, `'Paris''Lima'`).
+        Place::Code => {
+            let next = text.chars().nth(c.word.end);
+            c.operand && c.word.is_empty() && asked && next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ','))
+        }
+        Place::Field => false,
+    };
+    if !wanted {
+        return Vec::new();
+    }
+    let got = query::field_values(ds, i, query::VALUES_READ);
+    let read = ValuesRead { read: got.read, of: got.of, view: ds.windowed };
+    let lower = c.prefix.to_lowercase();
+    got.values
+        .into_iter()
+        // Inside a text only a value written in quotes (a number in a text field of a hostile
+        // file would be written bare over the quote begun).
+        .filter(|v| {
+            let typed = v.written.starts_with('\'') && v.text.to_lowercase().starts_with(&lower) && v.text != c.prefix;
+            c.place == Place::Code || typed
+        })
+        // In a `LIKE` pattern a `%` or `_` matches more than itself, and the language has no
+        // escape: such a value would pick others too.
+        .filter(|v| !(c.pattern && v.text.contains(['%', '_'])))
+        .take(MAX_VALUES)
+        .map(|v| Item::Value(v.written, field.name.clone(), read))
+        .collect()
 }
 
 /// An item as the list shows it, each apart from the others, as it is picked by what it shows:
@@ -131,6 +206,7 @@ fn shown(item: &Item) -> String {
         Item::Function(f) => format!("{}()", f.name),
         Item::Variable(_, name) => name.to_string(),
         Item::Keyword(k) => k.word().to_string(),
+        Item::Value(written, ..) => written.clone(),
     }
 }
 
@@ -139,8 +215,11 @@ fn shown(item: &Item) -> String {
 struct State {
     list: List<Offer>,
     /// What was worked out to offer, and the call the cursor is in, for which cursor, text (its
-    /// hash) and fields (their names' hash: another layer's offer others), whether it was asked
-    /// for and whether an item was just accepted there.
+    /// hash) and source (its fields' names' hash: another layer's offer others), whether it was
+    /// asked for and whether an item was just accepted there. Worked out again when [`rows`]
+    /// changes.
+    ///
+    /// [`rows`]: Self::rows
     worked: Option<Worked<(u64, bool, bool), (Option<Offer>, Option<Call>)>>,
     /// The signature of the call the cursor is in, floating by it while the list is closed, for
     /// the call's `(` (where it starts).
@@ -151,6 +230,10 @@ struct State {
     /// (`pop` taken mustn't offer `"Pop Est"`, for Enter to take next), until the text or the
     /// cursor moves on, or Ctrl+Space asks.
     accepted: Option<(u64, usize)>,
+    /// The rows [`worked`](Self::worked) read the values from, held: an edit then moves them
+    /// (`Arc::make_mut` doesn't change rows in place while one is held), as do a streamed
+    /// layer's view read and another layer, and the values offered are read again.
+    rows: Option<std::sync::Weak<Vec<rustgis_engine::data::Feature>>>,
 }
 
 fn load(ui: &Ui, id: Id) -> State {
@@ -220,7 +303,16 @@ pub(crate) fn expr_edit_lines(
     let out: TextEditOutput = build(text).id(id).event_filter(filter).show(ui);
     let visible = out.text_clip_rect;
     let hash = egui::util::hash(text.as_str());
-    let fields = ds.map_or(0, |d| egui::util::hash(d.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()));
+    let rows = ds.map(|d| d.features.allocation_key());
+    let same = match (&state.rows, &rows) {
+        (Some(was), Some(is)) => was.ptr_eq(is),
+        (was, is) => was.is_none() && is.is_none(),
+    };
+    if !same {
+        state.worked = None;
+    }
+    state.rows = rows;
+    let source = ds.map_or(0, |d| egui::util::hash(d.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()));
     let worked = &mut state.worked;
     let asked = &mut state.asked;
     let accepted = &mut state.accepted;
@@ -231,7 +323,7 @@ pub(crate) fn expr_edit_lines(
             *accepted = None;
         }
         let quiet = accepted.is_some() && !here;
-        let with = (fields, here, quiet);
+        let with = (source, here, quiet);
         let (offer, _) = Worked::get(worked, at, hash, &with).unwrap_or_else(|| {
             let c = at.zip(ds).and_then(|(at, ds)| Some((query::complete_at(text.as_str(), at, ds)?, ds)));
             let offer = c.as_ref().filter(|_| !quiet).and_then(|(c, ds)| offer_from(c, text.as_str(), ds, here));
@@ -460,6 +552,13 @@ fn draw_help(ui: &mut Ui, item: &Item, ds: Option<&Dataset>, width: f32) {
                 code(ui, k.word());
                 ui.label(tl!(k.description()));
             }
+            Item::Value(written, field, read) => {
+                code(ui, written);
+                ui.label(crate::i18n::fmt("A value of {field}", &[("field", &field_ref(field))]));
+                if let Some(note) = read.note() {
+                    ui.label(egui::RichText::new(note).small().weak());
+                }
+            }
         }
     });
 }
@@ -523,8 +622,9 @@ pub(crate) fn menus(ui: &mut Ui) -> Option<String> {
 /// too: a field as the expression names it (in the quote it was begun with; a `!` name holding a
 /// `!` in double quotes, as `!` has no escape), a function with its brackets, the cursor inside
 /// them as a `(` typed closes itself (`pair`), after them when it takes no arguments (before
-/// other text, the bracket only open; a `(` already there is used, not doubled), a variable or
-/// keyword as it is; as one undo step of the box, the cursor after it. Nothing when it doesn't
+/// other text, the bracket only open; a `(` already there is used, not doubled), a variable,
+/// keyword or value as it is (a value in its quotes, over the text begun and its closing quote);
+/// as one undo step of the box, the cursor after it. Nothing when it doesn't
 /// fit (`written`). Either way the box keeps the focus (a click on the list took it), so the list
 /// stays open when nothing was put. Returns where it was put: the new text's hash and the cursor.
 fn accept(ui: &Ui, id: Id, text: &mut String, offer: &Offer, item: &str) -> Option<(u64, usize)> {
@@ -542,13 +642,14 @@ fn accept(ui: &Ui, id: Id, text: &mut String, offer: &Offer, item: &str) -> Opti
 }
 
 /// How many of `rest`, the text after the cursor, are still the word being replaced: the rest of
-/// a name or variable (`po▮p`), or of a quoted name with its closing quote (`"Po▮p Est"`; a
-/// doubled `"` is one inside the name). None of an unclosed quoted name: what follows is left.
+/// a name or variable (`po▮p`), or of a quoted name or text with its closing quote
+/// (`"Po▮p Est"`, `'Pa▮ris'`; a doubled `"` or `'` is one inside it). None of an unclosed quoted
+/// name or text: what follows is left.
 fn word_rest(rest: &[char], quote: Option<char>) -> usize {
     let Some(q) = quote else { return rest.iter().take_while(|c| c.is_alphanumeric() || **c == '_').count() };
     let mut i = 0;
     while let Some(&c) = rest.get(i) {
-        if c == q && q == '"' && rest.get(i + 1) == Some(&'"') {
+        if c == q && q != '!' && rest.get(i + 1) == Some(&q) {
             i += 2;
         } else if c == q {
             return i + 1;
@@ -589,6 +690,7 @@ pub(crate) fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, 
         Item::Function(f) => format!("{}(", f.name),
         Item::Variable(_, name) => name.to_string(),
         Item::Keyword(k) => k.word().to_string(),
+        Item::Value(written, ..) => written.clone(),
     };
     if before.len() + put.chars().count() + after.len() > query::MAX_LEN {
         return None;
@@ -603,7 +705,7 @@ pub(crate) fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, 
 mod tests {
     use super::*;
     use egui::{Key, Modifiers};
-    use rustgis_engine::data::{Field, FieldType, GeometryType};
+    use rustgis_engine::data::{Field, FieldType, GeometryType, Value};
 
     fn ds() -> Dataset {
         Dataset::new(
@@ -637,6 +739,160 @@ mod tests {
     /// The items offered at the end of `text`.
     fn items(text: &str, asked: bool) -> Vec<String> {
         offer_at(text, text.chars().count(), &ds(), asked).map(|o| o.items).unwrap_or_default()
+    }
+
+    /// [`ds`] with rows: names (one with a `'`, one null) and numbers.
+    fn places() -> Dataset {
+        let mut d = ds();
+        for (name, pop) in [("Paris", 10), ("Pamplona", 3), ("O'Brien", 10), ("Lima", 25)] {
+            d.push(None, vec![Value::Text(name.into()), Value::Int(pop)]);
+        }
+        d.push(None, vec![Value::Null, Value::Null]);
+        d
+    }
+
+    /// The items offered over [`places`] at the end of `text`.
+    fn offered(text: &str, asked: bool) -> Vec<String> {
+        offer_at(text, text.chars().count(), &places(), asked).map(|o| o.items).unwrap_or_default()
+    }
+
+    /// Where a value compared with a field goes, the field's values are offered as the expression
+    /// writes them: inside a text, a text field's that start with what's typed; with Ctrl+Space
+    /// where a value goes, any field's, first. Not a number's inside a text, nor with no field
+    /// compared, nor null.
+    #[test]
+    fn a_fields_values_are_offered_where_one_is_compared_with_it() {
+        assert_eq!(offered("name = '", false), ["'Lima'", "'O''Brien'", "'Pamplona'", "'Paris'"]);
+        assert_eq!(offered("name = 'pa", false), ["'Pamplona'", "'Paris'"], "letter case aside");
+        assert_eq!(offered("name LIKE 'Pa", false), ["'Pamplona'", "'Paris'"]);
+        let mut wild = places();
+        for name in ["Route_66", "100%", "Route 66"] {
+            wild.push(None, vec![Value::Text(name.into()), Value::Null]);
+        }
+        let like = |text: &str| offer_at(text, text.chars().count(), &wild, false).map(|o| o.items).unwrap_or_default();
+        assert_eq!(like("name LIKE 'R"), ["'Route 66'"], "a `_` in a pattern matches more");
+        assert_eq!(like("name ILIKE '1"), Vec::<String>::new(), "so does a `%`");
+        assert_eq!(like("name = 'R"), ["'Route 66'", "'Route_66'"], "not in a comparison");
+        assert_eq!(like("name IN ('R"), ["'Route 66'", "'Route_66'"]);
+        assert_eq!(offered("name IN ('Lima', 'O''", false), ["'O''Brien'"], "a doubled quote is one");
+        assert!(offered("name = 'Paris", false).is_empty(), "not what's typed whole");
+        assert!(offered("name = 'x", false).is_empty());
+        assert!(offered("pop = '", false).is_empty(), "a number isn't written in quotes");
+        assert!(offered("upper(name) = '", false).is_empty(), "compared with no field");
+        assert!(offered("'", false).is_empty(), "compared with nothing");
+        assert!(offered("pop = ", false).is_empty(), "nothing typed, not asked");
+        let asked = offered("pop = ", true);
+        assert_eq!(asked.get(..3), Some(&["3".to_string(), "10".to_string(), "25".to_string()][..]), "{asked:?}");
+        assert!(asked.contains(&"pop".to_string()) && asked.contains(&"round()".to_string()), "then the rest");
+        assert_eq!(offered("name IN ('Lima', ", true).first().map(String::as_str), Some("'Lima'"));
+        assert!(!offered("pop = p", true).contains(&"3".to_string()), "a word typed is no value");
+        for (text, at) in [("pop = 1.5", 6), ("name = 'Lima'", 7), ("pop IN (3, 10)", 8)] {
+            let items = offer_at(text, at, &places(), true).map(|o| o.items).unwrap_or_default();
+            assert!(!items.iter().any(|i| i == "3" || i == "'Paris'"), "not before a value written: {text}");
+        }
+        assert_eq!(offer_at("pop IN (3, )", 11, &places(), true).unwrap().items.first().map(String::as_str), Some("3"));
+        // Of a layer of no rows, none.
+        assert_eq!(items("name = '", false), Vec::<String>::new());
+        // A number in a text field (a hostile file) isn't written bare over the quote begun.
+        let mut odd = places();
+        odd.push(None, vec![Value::Int(7)]);
+        assert!(offer_at("name = '", 8, &odd, false).unwrap().items.iter().all(|i| i.starts_with('\'')));
+    }
+
+    /// The values offered are the rows' as they are now: other rows of the same fields (another
+    /// layer, an edit, a streamed layer's view read) are read again, with the text and cursor
+    /// unchanged.
+    #[test]
+    fn values_follow_the_rows_they_are_read_from() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let id = Id::unique("expr");
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, (text, data): &mut (String, Dataset)| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, Some(data), |e| e).labelled_by(label.id);
+            },
+            ("name = 'P".to_string(), places()),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        h.event(egui::Event::Text("i".into()));
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, "'Pisa'").is_none());
+        let mut other = ds();
+        other.push(None, vec![Value::Text("Pisa".into())]);
+        h.state_mut().1 = other;
+        h.run();
+        assert_eq!(h.state().0, "name = 'Pi");
+        assert!(h.query_by_role_and_label(Role::Button, "'Pisa'").is_some(), "the new rows' values");
+        // Edited where they are, nothing else holding them.
+        h.state_mut().1.push(None, vec![Value::Text("Pistoia".into())]);
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, "'Pistoia'").is_some(), "the edited rows' values");
+    }
+
+    /// Accepting a value writes it in its quotes over the text begun and the quote that closed
+    /// itself; a number as it is.
+    #[test]
+    fn accepting_a_value_writes_it_whole() {
+        for (text, item, want) in [
+            ("name = 'Pa▮'", "'Paris'", "name = 'Paris'▮"),
+            ("name = 'Pa▮", "'Paris'", "name = 'Paris'▮"),
+            ("name = 'Pa▮ris' AND pop > 1", "'Pamplona'", "name = 'Pamplona'▮ AND pop > 1"),
+            ("name = 'O''▮'", "'O''Brien'", "name = 'O''Brien'▮"),
+            ("name IN ('Lima', '▮')", "'Paris'", "name IN ('Lima', 'Paris'▮)"),
+        ] {
+            let at = text.chars().position(|c| c == '▮').unwrap();
+            let text = text.replace('▮', "");
+            let offer = offer_at(&text, at, &places(), false).unwrap();
+            let (new, cursor) = written(&text, &offer, item).unwrap();
+            let mut got: Vec<char> = new.chars().collect();
+            got.insert(cursor, '▮');
+            assert_eq!(got.into_iter().collect::<String>(), want, "{text}");
+        }
+        let text = "pop > ";
+        let offer = offer_at(text, 6, &places(), true).unwrap();
+        assert_eq!(written(text, &offer, "25"), Some(("pop > 25".to_string(), 8)));
+    }
+
+    /// Typed in the box: a `'` after `=` closes itself, the text typed in it lists the field's
+    /// values, and Enter writes the one highlighted over the text and its closing quote.
+    #[test]
+    fn a_value_typed_in_the_box_is_taken_from_the_list() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let id = Id::unique("expr");
+        let mut h = boxed(id, Some(places()), "");
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        for typed in ["name = ", "'", "P", "a", "r"] {
+            h.event(egui::Event::Text(typed.into()));
+            h.run();
+        }
+        assert_eq!(h.state(), "name = 'Par'", "the quote closed itself");
+        assert!(h.query_by_role_and_label(Role::Button, "'Paris'").is_some(), "offered");
+        assert!(h.query_by_role_and_label(Role::Button, "'Pamplona'").is_none(), "narrowed");
+        h.key_press(Key::Enter);
+        h.run();
+        assert_eq!(h.state(), "name = 'Paris'");
+        assert!(h.query_by_role_and_label(Role::Button, "'Paris'").is_none(), "closed once taken");
+    }
+
+    /// The help says when the values aren't all of the layer's: of a sample, or of a streamed
+    /// layer's view.
+    #[test]
+    fn a_values_help_says_what_they_were_read_from() {
+        let note = |read, of, view| ValuesRead { read, of, view }.note();
+        assert_eq!(note(4, 4, false), None);
+        assert_eq!(note(10_000, 25_000, false).as_deref(), Some("Values of 10000 of 25000 features, evenly spread"));
+        assert_eq!(note(40, 40, true).as_deref(), Some("Values of the 40 features read for the view"));
+        assert_eq!(note(10_000, 30_000, true).as_deref(), Some("Values of 10000 of the 30000 features read for the view, evenly spread"));
+        let mut streamed = places();
+        streamed.windowed = true;
+        let offer = offer_at("name = '", 8, &streamed, false).unwrap();
+        assert!(matches!(offer.of.first(), Some(Item::Value(_, field, ValuesRead { read: 5, of: 5, view: true })) if field == "name"));
     }
 
     fn catalog_harness(size: egui::Vec2) -> egui_kittest::Harness<'static, ()> {

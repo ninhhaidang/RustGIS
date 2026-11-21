@@ -35,7 +35,7 @@ mod complete;
 #[cfg(test)]
 mod legacy;
 
-pub use complete::{Call, Completion, Place, complete_at};
+pub use complete::{Call, Completion, FieldValue, FieldValues, Place, VALUES_READ, complete_at, field_values, literal};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
@@ -819,6 +819,8 @@ struct Probe {
     call: Option<(Option<Func>, usize, usize)>,
     /// The field a value at the end is compared with (`name = ▮`, `name IN (▮`).
     field: Option<usize>,
+    /// Whether that value is a `LIKE` / `ILIKE` pattern (`name LIKE ▮`).
+    pattern: bool,
 }
 
 /// How a token is written, for the symbols [`Probe`] notes.
@@ -864,8 +866,15 @@ impl Parser<'_> {
     }
     /// Notes that a value at the end would be compared with `l`, when `l` is a field.
     fn note_compared(&self, l: &Expr) {
+        self.note_compared_as(l, false);
+    }
+    /// As [`note_compared`](Self::note_compared), the value a `LIKE` pattern when `pattern`.
+    fn note_compared_as(&self, l: &Expr, pattern: bool) {
         if let Expr::Field(f) = l {
-            self.note(self.pos, |p| p.field = Some(*f));
+            self.note(self.pos, |p| {
+                p.field = Some(*f);
+                p.pattern = pattern;
+            });
         }
     }
     fn probing(&self) -> bool {
@@ -971,7 +980,7 @@ impl Parser<'_> {
         }
         let negate = self.eat_kw(Kw::Not);
         if self.eat_kw(Kw::Like) || self.eat_kw(Kw::Ilike) {
-            self.note_compared(&l);
+            self.note_compared_as(&l, true);
             let p = self.concat()?;
             return Ok(match (l, p) {
                 (Expr::Field(field), Expr::Lit(Value::Text(pattern))) => Expr::Like { field, pattern, negate },
