@@ -1824,6 +1824,28 @@ mod tests {
         h.run();
     }
 
+    /// The SQL tab's box suggests as the clause is typed: Enter takes the field offered rather
+    /// than break the line, and no error shows while a word is still being chosen.
+    #[test]
+    fn the_sql_box_suggests_as_the_clause_is_typed() {
+        use egui::accesskit::Role;
+        let mut h = harness(with_cities());
+        h.run();
+        h.get_by_label("+ New expression").click();
+        h.run();
+        // Counted, as the field buttons under the box name them too.
+        let shown = |h: &egui_kittest::Harness<'static, RustGisApp>| h.query_all_by_role_and_label(Role::Button, "pop_max").count();
+        let pop = shown(&h);
+        h.event(egui::Event::Text("pop_m".into()));
+        h.run();
+        assert_eq!(shown(&h), pop + 1, "the field offered");
+        assert!(h.query_by_label_contains("Invalid:").is_none(), "no error while it is offered");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.get_by_role(Role::MultilineTextInput).value().as_deref(), Some("pop_max"), "Enter took the field");
+        assert_eq!(shown(&h), pop, "the list closed");
+    }
+
     /// The SQL tab writes a draft: typing applies nothing, Check counts, Apply sets the clause in
     /// one undo step, and Clear takes it away in another (#618).
     #[test]

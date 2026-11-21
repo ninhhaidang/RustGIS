@@ -247,6 +247,13 @@ applies, those boxes apply what's written when they lose focus, and a click in t
 focus, so a field taken from it isn't applied half written; while the list is open Escape closes
 it, not the box.
 
+They help too in the clause boxes of several lines: Select By Attributes' **Where**, the Layer
+Properties **Query** tab and a label class's SQL query. There the list shows under the cursor's
+line and the signature over the line of its call. While the list is open, Enter takes its item
+rather than break the line or apply the clause, and Escape closes it, not the dialog. In the Query
+tab, Escape with the list or a signature shown closes that and keeps the clause typed; the next
+Escape drops the clause.
+
 A number goes into a number field as it is: a decimal field keeps every digit of `1 / 3` (a
 whole number past 2^53 becomes the nearest decimal, as a decimal field holds it). A whole-number
 field holds whole numbers, so a decimal result, or text written as one, loses its fraction toward

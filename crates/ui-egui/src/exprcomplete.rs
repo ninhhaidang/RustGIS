@@ -180,6 +180,21 @@ pub(crate) fn expr_edit(
     ds: Option<&Dataset>,
     style: impl for<'t> FnOnce(egui::TextEdit<'t>) -> egui::TextEdit<'t>,
 ) -> egui::Response {
+    expr_edit_lines(ui, id, text, ds, |text| style(egui::TextEdit::singleline(text)))
+}
+
+/// A box of several lines for an expression, as [`expr_edit`] is one of a line: `build` makes the
+/// box from the text (`TextEdit::multiline`, a dialog's `text_box`), styled. The list shows under
+/// the cursor's line and the signature over the line of its call's `(`, so what goes under the box
+/// stays in view. While the list is open, Enter and Tab take its item, not a new line or the
+/// dialog's button, and Escape closes it, not the dialog or the box.
+pub(crate) fn expr_edit_lines(
+    ui: &mut Ui,
+    id: Id,
+    text: &mut String,
+    ds: Option<&Dataset>,
+    build: impl for<'t> FnOnce(&'t mut String) -> egui::TextEdit<'t>,
+) -> egui::Response {
     let mut state = load(ui, id);
     // The list's keys, taken before the box sees them: Ctrl+Space asks for the list.
     if state.asked.keys(ui, id, text) {
@@ -202,7 +217,7 @@ pub(crate) fn expr_edit(
     let open = state.list.is_open();
     let escape = open || state.tip.is_shown();
     let filter = egui::EventFilter { tab: open, horizontal_arrows: true, vertical_arrows: true, escape };
-    let out: TextEditOutput = style(egui::TextEdit::singleline(text).id(id).event_filter(filter)).show(ui);
+    let out: TextEditOutput = build(text).id(id).event_filter(filter).show(ui);
     let visible = out.text_clip_rect;
     let hash = egui::util::hash(text.as_str());
     let fields = ds.map_or(0, |d| egui::util::hash(d.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()));

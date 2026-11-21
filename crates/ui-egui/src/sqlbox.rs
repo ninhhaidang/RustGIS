@@ -93,15 +93,16 @@ fn editor(
     let id = ui.make_persistent_id("sqlbox_text");
     // Taken before the box sees it, so it applies rather than breaking the line.
     let ctrl_enter = ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
-    let edit = egui::TextEdit::multiline(&mut d.text)
-        .id(id)
-        .hint_text(tl!("e.g. pop_max > 1000000"))
-        .desired_rows(3)
-        // No longer than a clause can be, so a paste isn't read again each frame only to be refused.
-        .char_limit(rustgis_engine::data::query::MAX_LEN)
-        .desired_width(f32::INFINITY)
-        .font(egui::TextStyle::Monospace);
-    let r = ui.add(edit);
+    // Suggestions as it's typed: the fields, functions, variables and keywords (#1240).
+    let r = crate::exprcomplete::expr_edit_lines(ui, id, &mut d.text, Some(ds), |text| {
+        egui::TextEdit::multiline(text)
+            .hint_text(tl!("e.g. pop_max > 1000000"))
+            .desired_rows(3)
+            // No longer than a clause can be, so a paste isn't read again each frame only to be refused.
+            .char_limit(rustgis_engine::data::query::MAX_LEN)
+            .desired_width(f32::INFINITY)
+            .font(egui::TextStyle::Monospace)
+    });
     // A new box takes the keyboard, so the clause can be typed at once.
     if std::mem::take(&mut d.focus) {
         r.request_focus();
@@ -146,7 +147,11 @@ fn editor(
     if apply == Some(Apply::Clear) {
         d.open = false;
     }
+    // Not said while a word is still being chosen from the list (`pop_`, with `pop_est` offered),
+    // nor what Check found for the same text: Check and Apply still look at it.
+    let offering = crate::exprcomplete::offering(ui, id);
     match (&reads, &d.check) {
+        (Err(_), _) if offering => {}
         (Err(e), _) => {
             let said = if stored == Some(text.as_str()) {
                 crate::i18n::fmt("This clause no longer reads, so no feature is labelled: {error}", &[("error", e)])
@@ -159,7 +164,7 @@ fn editor(
             let said = crate::i18n::fmt("Valid: {n} of {of} features match", &[("n", &n.to_string()), ("of", &of.to_string())]);
             ui.label(RichText::new(said).small().color(t.green));
         }
-        (Ok(()), Some((checked, at, Err(e)))) if *checked == text && *at == version => {
+        (Ok(()), Some((checked, at, Err(e)))) if *checked == text && *at == version && !offering => {
             ui.label(RichText::new(crate::i18n::fmt("Invalid: {error}", &[("error", e)])).small().color(t.red));
         }
         _ => {}

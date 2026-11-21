@@ -2525,19 +2525,28 @@ fn select_by_attributes(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) -> 
             .labelled_by(input_label.id);
         ui.end_row();
     });
-    ui.label(egui::RichText::new(tl!("Where")).font(semibold(12.5)));
-    ui.add(
-        text_box(&mut app.dialogs.text)
+    let input_label = ui.label(egui::RichText::new(tl!("Where")).font(semibold(12.5)));
+    // Suggestions as it's typed: the fields, functions, variables and keywords (#1240).
+    let ds = app.session.map().layer_by_name(&app.dialogs.layer).map(|l| &l.dataset);
+    let id = egui::Id::unique("sba_where");
+    crate::exprcomplete::expr_edit_lines(ui, id, &mut app.dialogs.text, ds, |text| {
+        text_box(text)
             .hint_text(tl!("e.g. pop_est > 100000000 AND continent = 'Asia'"))
             .desired_rows(3)
             .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Monospace),
-    );
-    let fields = app.session.map().layer_by_name(&app.dialogs.layer).map(|l| l.dataset.fields.as_slice()).unwrap_or_default();
+            .font(egui::TextStyle::Monospace)
+    })
+    .labelled_by(input_label.id);
+    let fields = ds.map(|d| d.fields.as_slice()).unwrap_or_default();
     field_chips(ui, fields, &mut app.dialogs.text);
-    // Live validation.
-    let check =
-        app.session.map().layer_by_name(&app.dialogs.layer).map(|l| rustgis_engine::data::query::select(&app.dialogs.text, &l.dataset));
+    // Live validation, once no suggestion is offered: a word still being chosen isn't an error yet.
+    let offering = crate::exprcomplete::offering(ui, id);
+    let check = app
+        .session
+        .map()
+        .layer_by_name(&app.dialogs.layer)
+        .filter(|_| !offering)
+        .map(|l| rustgis_engine::data::query::select(&app.dialogs.text, &l.dataset));
     match (&check, app.dialogs.text.trim().is_empty()) {
         (_, true) => {}
         (Some(Ok(rows)), _) => {
@@ -3509,6 +3518,42 @@ mod tests {
         let input = h.get_by_role(Role::TextInput).rect();
         assert!(!signature.intersects(error), "the signature {signature:?} covers the error {error:?}");
         assert!(signature.bottom() <= input.top(), "the signature {signature:?} floats over the box {input:?}");
+    }
+
+    /// Select By Attributes' box of several lines suggests as it is typed: Enter takes the field
+    /// offered, not Apply; no error while a word is still being chosen; Escape closes the list,
+    /// not the dialog.
+    #[test]
+    fn select_by_attributes_suggests_as_its_clause_is_typed() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        // Counted, as the field buttons under the box name them too.
+        let shown = |h: &egui_kittest::Harness<'static, RustGisApp>, name: &str| h.query_all_by_role_and_label(Role::Button, name).count();
+        let (pop, continent) = (shown(&h, "pop_est"), shown(&h, "continent"));
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("sba_where")));
+        h.run();
+        h.event(egui::Event::Text("pop_e".into()));
+        h.run();
+        assert_eq!(shown(&h, "pop_est"), pop + 1, "the field offered");
+        assert!(h.query_by_label_contains("Invalid:").is_none(), "no error while it is offered");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.text, "pop_est");
+        assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "Enter took the field, not Apply");
+        assert_eq!(h.state().dialogs.error, None, "and didn't run");
+        h.event(egui::Event::Text(" > 1 AND cont".into()));
+        h.run();
+        assert_eq!(shown(&h, "continent"), continent + 1, "offered on");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert_eq!(shown(&h, "continent"), continent, "the list closed");
+        assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "Escape took the list, not the dialog");
+        assert!(h.query_by_label_contains("Invalid:").is_some(), "the error once the list is closed");
     }
 
     /// The app in a harness, its fonts installed on the first pass (the dialog draws on the next).
