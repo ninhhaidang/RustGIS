@@ -1567,6 +1567,150 @@ fn a_streamed_shapefile_says_null_markers_once_and_in_its_exports() {
     }
 }
 
+/// What the map's reads of a layer read in place lost (`Batch::notes`, here a Shapefile line left
+/// out for a NaN point under a stored box that frames the layer) is said once for its opening, not
+/// on each read of the view, and again once after the source is opened anew; a clean file says
+/// nothing.
+#[test]
+fn a_streamed_layer_says_its_view_reads_notes_once() {
+    use rustgis_data::{Dataset, Geometry, GeometryType};
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-streamed-read-notes-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    const SAID: &str = "have a coordinate that isn't a number under a bounding box that is one";
+    for (name, nan) in [("roads", true), ("clean", false)] {
+        let mut ds = Dataset::new(name, GeometryType::Polyline, vec![]);
+        for k in 0..3 {
+            let k = f64::from(k);
+            ds.push(Some(Geometry::Line(vec![vec![rustgis_geom::Coord::new(k, k), rustgis_geom::Coord::new(k + 1.0, k + 1.0)]])), vec![]);
+        }
+        let shp = dir.0.join(format!("{name}.shp"));
+        rustgis_data::io::write_path(&ds, &shp).unwrap();
+        if nan {
+            // The second record's first x (each record 8 + 80 bytes after the 100-byte header, a
+            // point's x 48 bytes into its content), its stored box (1, 1, 2, 2) left as it is.
+            let mut b = std::fs::read(&shp).unwrap();
+            b[244..252].copy_from_slice(&f64::NAN.to_le_bytes());
+            std::fs::write(&shp, b).unwrap();
+        }
+        let mut s = Session::new(Project::default());
+        let added = s.run("layer.addData", &json!({"path": shp.display().to_string(), "stream": true})).unwrap();
+        let id = added["layer"].as_u64().unwrap() as u32;
+        assert!(s.map().layer(id).unwrap().is_streamed(), "{name} is read in place");
+        let notes = |s: &Session, mark| -> Vec<String> {
+            s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains(SAID)).collect()
+        };
+        let expected: &[&str] = if nan {
+            &[
+                "roads: 1 shape(s) have a coordinate that isn't a number under a bounding box that is one: they're left out of the read, but the layer's extent and its index still take in their stored boxes",
+            ]
+        } else {
+            &[]
+        };
+        // The view read again and again, as redraws after a change do, says it once.
+        let reads = |s: &mut Session| {
+            for _ in 0..3 {
+                s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().reset();
+                s.map_mut().sync_sources(&rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0), 1000.0, true);
+                s.notice_landed_rasters();
+            }
+        };
+        let mark = s.notice_mark();
+        reads(&mut s);
+        assert_eq!(s.map().layer(id).unwrap().dataset.features.len(), if nan { 2 } else { 3 }, "{name}: the view read");
+        assert_eq!(notes(&s, mark), expected, "{name}: view reads");
+        // Opened anew (the file may have changed), the source says it again, once.
+        let mark = s.notice_mark();
+        s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().reopen().unwrap();
+        reads(&mut s);
+        assert_eq!(notes(&s, mark), expected, "{name}: reopened");
+        // Undo and redo bring back the same opening, not what it had said then: a snapshot taken
+        // before the note was read, and one taken while it was read but not yet said, each leave
+        // it said once, by the live layer.
+        let mark = s.notice_mark();
+        let source = s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap();
+        source.forget_read_notes();
+        source.reset();
+        s.run("layer.rename", &json!({"layer": id, "name": format!("{name} 1")})).unwrap();
+        s.map_mut().sync_sources(&rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0), 1000.0, true);
+        s.run("layer.rename", &json!({"layer": id, "name": format!("{name} 2")})).unwrap();
+        s.notice_landed_rasters();
+        for step in ["edit.undo", "edit.redo", "edit.undo", "edit.undo"] {
+            s.run(step, &Value::Null).unwrap();
+            reads(&mut s);
+        }
+        assert_eq!(s.map().layer(id).unwrap().name, name, "undone");
+        assert_eq!(notes(&s, mark).len(), expected.len(), "{name}: undo and redo: {:?}", notes(&s, mark));
+    }
+}
+
+/// A Shapefile with a NaN point under a backwards stored box: the index can't frame the shape, so
+/// reads by area (the map's) never visit it and no read note counts it. The source's open-time note
+/// says it, "1 shape(s) have no usable bounding box", as Add Data adds the layer read in place:
+/// once, however often the map reads it. The same file with its box in order says nothing of it.
+#[test]
+fn a_streamed_shapefile_says_a_shape_without_a_usable_box_once_as_it_is_added() {
+    use rustgis_data::{Dataset, Geometry, GeometryType};
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-streamed-unboxed-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    const UNBOXED: &str = "1 shape(s) have no usable bounding box";
+    let mut ds = Dataset::new("roads", GeometryType::Polyline, vec![]);
+    for k in 0..3 {
+        let k = f64::from(k);
+        ds.push(Some(Geometry::Line(vec![vec![rustgis_geom::Coord::new(k, k), rustgis_geom::Coord::new(k + 1.0, k + 1.0)]])), vec![]);
+    }
+    let clean = dir.0.join("clean.shp");
+    rustgis_data::io::write_path(&ds, &clean).unwrap();
+    let shp = dir.0.join("roads.shp");
+    rustgis_data::io::write_path(&ds, &shp).unwrap();
+    // The second record's stored box made backwards, (2, 2, 1, 1) at 200..232, and its first x
+    // (at 244) NaN.
+    let mut b = std::fs::read(&shp).unwrap();
+    for (at, v) in [(200, 2.0), (208, 2.0), (216, 1.0), (224, 1.0)] {
+        b[at..at + 8].copy_from_slice(&f64::to_le_bytes(v));
+    }
+    b[244..252].copy_from_slice(&f64::NAN.to_le_bytes());
+    std::fs::write(&shp, b).unwrap();
+    let unboxed = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains(UNBOXED)).collect()
+    };
+    let reads = |s: &mut Session| {
+        for _ in 0..3 {
+            for l in s.map_mut().layers.iter_mut() {
+                if let Some(source) = l.source.as_mut() {
+                    source.reset();
+                }
+            }
+            s.map_mut().sync_sources(&rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0), 1000.0, true);
+            s.notice_landed_rasters();
+        }
+    };
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("layer.addData", &json!({"path": shp.display().to_string(), "stream": true})).unwrap();
+    reads(&mut s);
+    assert!(s.map().layers.iter().any(|l| l.is_streamed()), "read in place");
+    assert_eq!(unboxed(&s, mark).len(), 1, "added: {:?}", s.notices_since(mark));
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("layer.addData", &json!({"path": clean.display().to_string(), "stream": true})).unwrap();
+    reads(&mut s);
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("no usable bounding box")), "{:?}", s.notices_since(mark));
+}
+
 /// Load All Features of a GeoPackage read in place says the date-times it read rounded to the
 /// microsecond; a clean one says nothing of them.
 #[test]

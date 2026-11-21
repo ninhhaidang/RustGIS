@@ -233,7 +233,7 @@ fn not_a_box(b: [f32; 4]) -> bool {
 }
 
 /// Whether `b` is a box: its corners numbers, in order.
-fn usable(b: [f32; 4]) -> bool {
+pub(super) fn usable(b: [f32; 4]) -> bool {
     let [x0, y0, x1, y1] = b;
     b.iter().all(|v| v.is_finite()) && x0 <= x1 && y0 <= y1
 }

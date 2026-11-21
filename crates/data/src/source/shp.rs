@@ -244,7 +244,7 @@ impl FeatureSource for ShpSource {
         let mut buf = Vec::new();
         let mut row = vec![0u8; self.table.row_len];
         let mut features = Vec::new();
-        let (mut skipped, mut unread_dates, mut null_text) = (0, Vec::new(), Vec::new());
+        let (mut skipped, mut unread_dates, mut null_text, mut boxed_off) = (0, Vec::new(), Vec::new(), 0u64);
         // An extent the file's system couldn't bound (#1925) has no boxes for the index to sample
         // by: every record is visited, tested, and the matches sampled as they come.
         let late = req.extent.is_some() && bounds.is_none();
@@ -267,9 +267,12 @@ impl FeatureSource for ShpSource {
             }
             let geometry = match parse_shape(&buf) {
                 // A coordinate that isn't a number (NaN or infinite) has no place: the record is
-                // left out and counted, as one that can't be converted (#1985).
+                // left out and counted, as one that can't be converted (#1985). One under a stored
+                // box the index takes ([`index::usable`]) is counted apart too, as the index framed
+                // it by that box; a backwards one it can't frame, and counts as unboxed instead.
                 Ok(Some(g)) if !g.is_finite() => {
                     skipped += 1;
+                    boxed_off += u64::from(index::usable(record_box(&buf, u64::from(place.len))));
                     return Ok(());
                 }
                 Ok(Some(g)) => match self.reproject.read(g) {
@@ -326,7 +329,18 @@ impl FeatureSource for ShpSource {
         } else {
             self.index.visit(bounds, limit, &mut each)?
         };
-        Ok(Batch { features, matched, complete, skipped, unread_dates, rounded_dates: Vec::new(), null_text, notes: Vec::new() })
+        Ok(Batch {
+            features,
+            matched,
+            complete,
+            skipped,
+            unread_dates,
+            rounded_dates: Vec::new(),
+            null_text,
+            // A sampled read visits only some of the matches, so its count is of those; a late one
+            // visits the whole layer, so its count is of the layer.
+            notes: boxed_off_note(boxed_off, !late && !complete, late),
+        })
     }
     fn streams_chunks(&self) -> bool {
         true
@@ -342,11 +356,13 @@ impl FeatureSource for ShpSource {
             return Ok(Batch { complete: true, ..Batch::default() });
         }
         let bounds = extent.map(|e| [e.min_x as f32, e.min_y as f32, e.max_x as f32, e.max_y as f32]);
+        // As in `read`, an extent the file's system couldn't bound (#1925) visits every record.
+        let late = req.extent.is_some() && bounds.is_none();
         let mut shp = Cursor::open(&self.shp)?;
         let mut dbf = Cursor::open(&self.dbf)?;
         let mut buf = Vec::new();
         let mut row = vec![0u8; self.table.row_len];
-        let (mut skipped, mut unread_dates, mut null_text) = (0, Vec::new(), Vec::new());
+        let (mut skipped, mut unread_dates, mut null_text, mut boxed_off) = (0, Vec::new(), Vec::new(), 0u64);
         // The same directory, ordering, extent rules and read-only scan fallback as sampled
         // reads, with no interaction row cap. The index visits records without materializing
         // their directory or the complete feature collection in memory.
@@ -366,9 +382,12 @@ impl FeatureSource for ShpSource {
             }
             let geometry = match parse_shape(&buf) {
                 // A coordinate that isn't a number (NaN or infinite) has no place: the record is
-                // left out and counted, as one that can't be converted (#1985).
+                // left out and counted, as one that can't be converted (#1985). One under a stored
+                // box the index takes ([`index::usable`]) is counted apart too, as the index framed
+                // it by that box; a backwards one it can't frame, and counts as unboxed instead.
                 Ok(Some(g)) if !g.is_finite() => {
                     skipped += 1;
+                    boxed_off += u64::from(index::usable(record_box(&buf, u64::from(place.len))));
                     return Ok(());
                 }
                 Ok(Some(g)) => match self.reproject.read(g) {
@@ -414,9 +433,33 @@ impl FeatureSource for ShpSource {
             unread_dates,
             rounded_dates: Vec::new(),
             null_text,
-            notes: Vec::new(),
+            notes: boxed_off_note(boxed_off, false, late),
         })
     }
+}
+
+/// Says how many shapes a read left out for a coordinate that isn't a number while their stored
+/// box is one the index takes (finite and in order, [`index::usable`]): [`record_box`] doesn't read
+/// the points, so the layer's extent and its index still take in those boxes. A backwards stored
+/// box over such a point isn't counted here: the index can't frame it from the points, so it's
+/// left out of the extent and counted with the shapes that have no usable box. A `sampled` read visited only some of the matches, so its count is of
+/// the shapes it read, not of the layer. A `late` read (an area the layer's system couldn't bound,
+/// #1925) visited every record and can't place a NaN shape's stored box in the area, so its count
+/// is of the whole layer, and says so.
+fn boxed_off_note(n: u64, sampled: bool, late: bool) -> Vec<String> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let what = if sampled {
+        format!("{n} of the shapes read (a sample of the layer, which may hold more)")
+    } else if late {
+        format!("{n} shape(s) in the layer (a count of the whole layer, as the area couldn't be placed in its coordinates)")
+    } else {
+        format!("{n} shape(s)")
+    };
+    vec![format!(
+        "{what} have a coordinate that isn't a number under a bounding box that is one: they're left out of the read, but the layer's extent and its index still take in their stored boxes"
+    )]
 }
 
 /// A file read at offsets, through a buffer that a nearby offset reuses.
@@ -469,6 +512,12 @@ fn le_f64(b: &[u8], at: usize) -> Option<f64> {
 /// counts say, or a line or polygon whose parts' starts don't fit its points ([`parse_shape`]'s
 /// rules, so a record it won't read frames nothing), isn't a box. `c` holds a line's or polygon's
 /// whole array of parts' starts where the record has room for it.
+///
+/// The points themselves aren't read: a line, polygon or multipoint with a stored box in order over
+/// a point that isn't a number keeps that box here, though a read leaves the shape out, counts it
+/// and says so ([`boxed_off_note`]). A backwards one stays backwards, as the index can't frame it
+/// from points that don't read, so it's counted as having no usable box instead. Telling it apart here would mean reading every record's points to
+/// build the index, for files (#1985's) with such shapes by the thousand.
 fn record_box(c: &[u8], len: u64) -> [f32; 4] {
     const NONE: [f32; 4] = [f32::NAN; 4];
     const NOT_A_BOX: [f32; 4] = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];

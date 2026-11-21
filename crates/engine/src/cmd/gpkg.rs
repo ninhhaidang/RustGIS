@@ -157,6 +157,8 @@ pub(crate) fn reset_sources(s: &mut Session, path: &std::path::Path, table: &str
                 })
             {
                 if !reopen {
+                    // Its rows were written: what reading them said may no longer hold.
+                    source.forget_read_notes();
                     source.reset();
                     n += 1;
                 } else {
