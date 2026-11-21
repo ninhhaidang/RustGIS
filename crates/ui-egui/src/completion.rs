@@ -86,7 +86,55 @@ pub(crate) fn popup(ui: &Ui, id: Id, corner: egui::Pos2, room: f32, content: imp
             .inner
     });
     let rect = area.response.rect;
+    // A box inside a menu sits on a foreground layer too, and a click in it brings the menu to
+    // the top, over the popup. As the menu's sublayer, the popup stays drawn right above it
+    // (egui clears sublayers each pass, so this is set on every one); and where it's drawn is
+    // kept for the menu, which would take a click on it past its own edge as one outside it.
+    let parent = ui.layer_id();
+    if parent.order == egui::Order::Foreground {
+        ui.ctx().set_sublayer(parent, area.response.layer_id);
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.ctx().data_mut(|d| {
+            let drawn = d.get_temp_mut_or_default::<Vec<(u64, egui::Rect)>>(over_menu_id());
+            drawn.retain(|(at, _)| at + 1 >= pass);
+            drawn.push((pass, rect));
+        });
+    }
     (rect, rect.size() + egui::vec2(0.0, area.inner))
+}
+
+fn over_menu_id() -> Id {
+    Id::unique("completion_over_menu")
+}
+
+/// Whether the click under way (held, or let go this pass) was pressed on a popup drawn over a
+/// menu (a menu's box's list, or its signature): that click is the popup's, not one outside the
+/// menu, though the list, taking its item on the press, is gone where it's let go. The popup
+/// drawn the last pass counts, as the menu checks its clicks before its box draws it again.
+pub(crate) fn pressed_over_menu(ctx: &egui::Context) -> bool {
+    let id = over_menu_id().with("pressed");
+    // Where the button went down this pass, read from the pass's events: a press let go in the
+    // same pass (a quick tap, a slow frame) has no `press_origin` left by then.
+    let (pressed, held) = ctx.input(|i| {
+        let pressed = i.events.iter().find_map(|e| match e {
+            egui::Event::PointerButton { pos, pressed: true, .. } => Some(*pos),
+            _ => None,
+        });
+        (pressed, i.pointer.any_down() || i.pointer.any_released())
+    });
+    if let Some(pos) = pressed {
+        let pass = ctx.cumulative_pass_nr();
+        let on = ctx
+            .data(|d| d.get_temp::<Vec<(u64, egui::Rect)>>(over_menu_id()))
+            .is_some_and(|drawn| drawn.iter().any(|(at, r)| at + 1 >= pass && r.contains(pos)));
+        ctx.data_mut(|d| d.insert_temp(id, on));
+        on
+    } else if held {
+        ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false)
+    } else {
+        ctx.data_mut(|d| d.remove::<bool>(id));
+        false
+    }
 }
 
 /// How a list and its help sit in a screen `width` wide: the help beside the list in the room the

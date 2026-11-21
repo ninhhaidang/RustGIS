@@ -588,6 +588,11 @@ fn small_menu_with(
     ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, label, regular(11.5), t.text);
     caret(ui.painter(), pos2(r.max.x - 9.0, r.center().y), t.text);
     let resp = tooltip(app, resp, label, desc, "ui.menu", &Value::Null);
+    // A click on the suggestion list of a box in the menu (Display Filters) isn't one outside it,
+    // even past the menu's edge.
+    let on_list = crate::completion::pressed_over_menu(ui.ctx());
+    let close =
+        if on_list && close == egui::PopupCloseBehavior::CloseOnClickOutside { egui::PopupCloseBehavior::IgnoreClicks } else { close };
     egui::Popup::menu(&resp).close_behavior(close).show(|ui| {
         ui.set_min_width(MENU_MIN_W);
         menu(ui, app);

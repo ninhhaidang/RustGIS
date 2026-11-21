@@ -1057,6 +1057,44 @@ mod tests {
         assert_eq!(h.state(), "round(1)");
     }
 
+    /// A box inside a menu (the ribbon's Display Filters): a click in the box brings the menu,
+    /// a foreground area as the list is, to the top. The list stays drawn over it, and a click
+    /// there still reaches the list.
+    #[test]
+    fn the_list_stays_over_a_menu_its_box_is_in() {
+        use egui_kittest::kittest::Queryable;
+        let id = Id::unique("expr");
+        let menu = Id::unique("menu");
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            move |ui, text: &mut String| {
+                egui::Area::new(menu).order(egui::Order::Foreground).fixed_pos(egui::pos2(20.0, 20.0)).show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_size(egui::vec2(400.0, 250.0));
+                        let label = ui.label("Filter");
+                        let _ = expr_edit(ui, id, text, Some(&ds()), |e| e).labelled_by(label.id);
+                    });
+                });
+            },
+            String::new(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        h.event(egui::Event::Text("po".into()));
+        h.run();
+        let at = h.ctx.read_response(id).expect("the box").rect.center();
+        h.event(egui::Event::PointerMoved(at));
+        h.event(button(at, true));
+        h.step();
+        h.event(button(at, false));
+        h.run();
+        let item = h.get_by_role_and_label(egui::accesskit::Role::Button, "pop").rect().center();
+        let menu_layer = egui::LayerId::new(egui::Order::Foreground, menu);
+        assert_ne!(h.ctx.layer_id_at(item), Some(menu_layer), "the list is drawn over the menu");
+        click(&mut h, "pop");
+        assert_eq!(h.state(), "pop");
+    }
+
     /// A click whose press and release come in one frame (a quick tap, a slow frame) reaches the
     /// item too, and the box keeps the focus. (kittest's `click()` gives each its own frame.)
     #[test]

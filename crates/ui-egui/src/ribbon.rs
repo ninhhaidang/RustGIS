@@ -4325,8 +4325,11 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
             small_form_menu(ui, app, "filter", &label, "Show different features at different scales.", |ui, app| {
                 let input_label =
                     ui.label(egui::RichText::new(tl!("Below 1:5,000,000 show everything; beyond it only what matches:")).small().weak());
-                ui.add(egui::TextEdit::singleline(&mut app.forms.expression).hint_text("pop_max > 1000000").desired_width(220.0))
-                    .labelled_by(input_label.id);
+                let id = egui::Id::unique("display_filters_where");
+                crate::exprcomplete::expr_edit(ui, id, &mut app.forms.expression, Some(&layer.dataset), |e| {
+                    e.hint_text("pop_max > 1000000").desired_width(220.0)
+                })
+                .labelled_by(input_label.id);
                 if ui.button(tl!("Set Filter")).clicked() {
                     let w = app.forms.expression.trim().to_string();
                     let _ =

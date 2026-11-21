@@ -242,10 +242,11 @@ the cursor leaves that call.
 
 The same list, signature and closing brackets help in the other one-line expression boxes: the
 **By Expression** boxes of a layer's symbol and of a label class, Unique Values' **Expression**,
-a report's **Where** and an attribute rule's expression. Apart from the rule's, which **Add**
-applies, those boxes apply what's written when they lose focus, and a click in the list keeps the
-focus, so a field taken from it isn't applied half written; while the list is open Escape closes
-it, not the box.
+a report's **Where**, an attribute rule's expression and the ribbon's **Display Filters** box
+(Style › Drawing Effects). Apart from the rule's, which **Add** applies, and the display filter's,
+which **Set Filter** applies, those boxes apply what's written when they lose focus, and a click
+in the list keeps the focus, so a field taken from it isn't applied half written; while the list
+is open Escape closes it, not the box nor the Display Filters menu.
 
 They help too in the clause boxes of several lines: Select By Attributes' **Where**, the Layer
 Properties **Query** tab and a label class's SQL query. There the list shows under the cursor's

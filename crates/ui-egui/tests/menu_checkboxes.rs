@@ -186,3 +186,62 @@ fn celestial_body_choices_dismiss_the_basemap_gallery() {
         assert!(!egui::Popup::is_any_open(&h.ctx), "{} must dismiss the gallery", body.name);
     }
 }
+
+/// The primary button `pressed`, or let go, at `pos`.
+fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+}
+
+/// A click on the suggestion list of Display Filters' box writes the item and keeps the menu open,
+/// on a row past the menu's bottom edge too, where it's no longer over the menu: whether the
+/// button is let go frames after the press, as a click usually is, or in the same frame (a quick
+/// tap, a slow frame). A click elsewhere still closes the menu, either way (#1240).
+#[test]
+fn display_filters_keeps_its_menu_open_on_a_click_in_its_list() {
+    use egui::accesskit::Role;
+    for held in [true, false] {
+        let mut app = empty_app();
+        let text = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"pop_est":1},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}"#;
+        let (dataset, _) = read_geojson(text, "Areas").unwrap();
+        app.session.map_mut().add_dataset(dataset);
+        app.run("layer.select", json!({"layer": "Areas"})).unwrap();
+        app.ui.tab = "Style".into();
+        let mut h = harness(app);
+        click(&mut h, "Display Filters");
+        h.get_by_role_and_label(Role::TextInput, "Below 1:5,000,000 show everything; beyond it only what matches:").click();
+        h.run();
+        h.event(egui::Event::Text("p".into()));
+        h.run();
+        let menu_bottom = h.get_by_role_and_label(Role::Button, "Clear Filters").rect().max.y;
+        let row = h.get_by_role_and_label(Role::Button, "perimeter()");
+        assert!(row.rect().min.y > menu_bottom + 8.0, "the row is past the menu's edge");
+        let at = row.rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        if held {
+            h.event(button(at, true));
+            h.step();
+            h.step();
+            h.event(button(at, false));
+        } else {
+            // kittest gives each pointer event a frame of its own: both into one frame by hand.
+            h.input_mut().events.extend([button(at, true), button(at, false)]);
+        }
+        h.run();
+        assert!(egui::Popup::is_any_open(&h.ctx), "a click in the list keeps the menu open (held: {held})");
+        assert_eq!(h.state().forms.expression, "perimeter()", "held: {held}");
+        // A click on the map, outside the menu, still closes it.
+        let away = egui::pos2(1750.0, 1100.0);
+        h.event(egui::Event::PointerMoved(away));
+        h.step();
+        if held {
+            h.event(button(away, true));
+            h.step();
+            h.event(button(away, false));
+        } else {
+            h.input_mut().events.extend([button(away, true), button(away, false)]);
+        }
+        h.run();
+        assert!(!egui::Popup::is_any_open(&h.ctx), "a click outside closes the menu (held: {held})");
+    }
+}
