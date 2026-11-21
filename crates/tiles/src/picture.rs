@@ -171,6 +171,12 @@ pub fn pace() -> Option<(Pace, Instant)> {
     PACE.with(|p| p.get()).map(|p| (p.pace, p.until))
 }
 
+/// What the map being drawn on this thread lacks so far (inside [`paced`]): a picture of it kept
+/// partway is unfinished too.
+pub fn lacking() -> Option<Unfinished> {
+    PACE.with(|p| p.get()).and_then(|p| p.lacks)
+}
+
 /// Notes, for [`paced`], what the map being drawn on this thread still lacks: a renderer drawing
 /// at its pace calls it when it left something out or stood something in, so the map is drawn
 /// again (`Next`: the next frame; `Later`: once it stops moving). Outside `paced`, nothing.

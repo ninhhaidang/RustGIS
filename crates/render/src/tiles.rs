@@ -21,7 +21,7 @@ use crate::{PlacedIcon, PlacedLabel, View};
 const MOSAIC: f64 = 2048.0;
 
 /// What drawing the tile layers found.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct TileOutput {
     pub labels: Vec<(PlacedLabel, f64)>,
     pub attribution: Vec<String>,

@@ -41,6 +41,7 @@ pub mod svg;
 pub mod terrain;
 mod text;
 pub use text::CALLOUT_WIDTH;
+mod frame_cache;
 pub mod tile_mesh;
 mod tiles;
 pub mod vector;
@@ -761,11 +762,6 @@ fn outline_level_for(map_per_px: f64) -> usize {
     }
 }
 
-/// The built-in world outline in longitude/latitude, for the globe.
-fn world_lonlat() -> &'static Vec<Geometry> {
-    world_lonlat_of(sample_data::view())
-}
-
 /// The world outline in view `wv`, in longitude/latitude.
 fn world_lonlat_of(wv: sample_data::View) -> &'static Vec<Geometry> {
     static W: [OnceLock<Vec<Geometry>>; sample_data::VIEW_COUNT] = [const { OnceLock::new() }; sample_data::VIEW_COUNT];
@@ -785,15 +781,15 @@ thread_local! {
 }
 
 /// The built-in world outline in a custom projection's coordinates (kept per projection).
-fn world_in(flat: &rustgis_map::projection::Flat, key: &str) -> std::rc::Rc<Vec<Geometry>> {
+fn world_in(wv: sample_data::View, flat: &rustgis_map::projection::Flat, key: &str) -> std::rc::Rc<Vec<Geometry>> {
     WORLD_IN.with(|cell| {
-        let lonlat = world_lonlat();
+        let lonlat = world_lonlat_of(wv);
         // An outline not at hand yet is drawn empty, not kept.
         if lonlat.is_empty() {
             return std::rc::Rc::new(Vec::new());
         }
         cell.borrow_mut()
-            .entry(format!("{}:{key}", sample_data::view().index()))
+            .entry(format!("{}:{key}", wv.index()))
             .or_insert_with(|| std::rc::Rc::new(lonlat.iter().map(|g| flat.project(g)).collect()))
             .clone()
     })
@@ -882,7 +878,7 @@ struct Ctx<'a> {
     /// Set when drawing the globe; coordinates are then longitude/latitude, not Web Mercator.
     globe: Option<Globe>,
     /// Point marker sprites drawn so far, by symbol and quarter-pixel offset.
-    sprites: std::cell::RefCell<std::collections::HashMap<SpriteKey, Option<std::sync::Arc<Pixmap>>>>,
+    sprites: std::cell::RefCell<Sprites>,
     /// The pixels the frame's shapeburst fills have worked on (`gradient_fill::FRAME_BURST_PX`),
     /// shared by a layer's scaled context (a reference scale's) with the frame's.
     bursts: std::rc::Rc<std::cell::Cell<f32>>,
@@ -890,6 +886,9 @@ struct Ctx<'a> {
 
 /// A marker sprite's symbol and quarter-pixel offset.
 type SpriteKey = (Rgba, Rgba, u32, u32, Marker, u8, u8);
+
+/// The marker sprites a frame has drawn ([`Ctx::sprites`]).
+type Sprites = std::collections::HashMap<SpriteKey, Option<std::sync::Arc<Pixmap>>>;
 
 impl Ctx<'_> {
     /// Logical screen position of a coordinate, `None` when it is behind the globe.
@@ -4145,6 +4144,18 @@ fn holds_picture(cmds: &[gpu_scene::DrawCmd]) -> bool {
     cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. }))
 }
 
+/// Whether a frame of `map` for `view` can start from a kept picture and keep its own
+/// ([`frame_cache`]): flat and north-up, with no layer drawing from another (a mask, the swipe,
+/// labels turned square to another layer's lines, terrain water).
+fn keeps_pictures(map: &Map, view: &View) -> bool {
+    view.camera.bearing == 0.0
+        && view.camera.pitch == 0.0
+        && !map.projection.is_globe()
+        && map.swipe.is_none()
+        && map.view.terrain.as_ref().is_none_or(|t| t.water.is_none())
+        && map.layers.iter().all(|l| l.mask.is_none() && l.labels.in_order().all(|c| c.square_to.is_none()))
+}
+
 /// Draws one north-up frame. `labels_to` says where its labels go: a turned or tilted view the
 /// frame stands in for places them itself (and draws their icons). `full_res_rasters` marks an
 /// export, which draws everything as it will stay: rasters at full resolution, and labels in
@@ -4228,6 +4239,61 @@ fn render_frame(
         Some(g) => g.may_see(e),
         None => e.intersects(&mesh_cull),
     };
+    // Bottom first; a higher depth priority draws later (on top) whatever the order.
+    let mut order: Vec<usize> = (0..map.layers.len()).rev().collect();
+    order.sort_by_key(|i| map.layers.get(*i).map_or(0, |l| l.priority));
+    // The worldview read once: the frame's key, the outline and its level must be of the same
+    // one, though another thread may switch it mid-frame.
+    let worldview = sample_data::view();
+    // A screen frame starts from the picture kept of the last one, under its first changed layer
+    // (see `frame_cache`), and keeps its own.
+    let mut cached = (!pm.is_recording()
+        && !gpu
+        && !full_res_rasters
+        && matches!(labels_to, Labels::Own)
+        && frame_cache::fits(w, h)
+        && keeps_pictures(map, view))
+    .then(|| {
+        let frame = frame_cache::Frame {
+            map: rustgis_map::look::MapLook::of(map),
+            view: *view,
+            style_env: style_env.clone(),
+            label_env: label_env.clone(),
+            tiles: (!map.tiles.is_empty() || map.view.terrain.is_some()).then(rustgis_tiles::cache::generation),
+            sources: map.layers.iter().any(|l| l.source.is_some()).then(rustgis_map::source::generation),
+            // Only when drawn: asking for an outline not at hand says so in the log.
+            worldview: map.draws_world_outline().then(|| (worldview, world_of(worldview).len())),
+            // Whether they were indexed so far, without indexing them for a map with no text.
+            fonts: families::installed_now().is_some(),
+            font_generation: fonts::font_generation(),
+            layers: map.layers.len(),
+            tokens: map.layers.iter().any(|l| l.graphics).then(|| {
+                let t = rustgis_map::graphics::TokenValues::of(map, scale);
+                (t.now / 60, t.layers)
+            }),
+            tile_slots: map.tile_slots(),
+        };
+        // By id and place in the list, which labels take their priority from.
+        let looks = order
+            .iter()
+            .filter_map(|i| Some(((map.layers.get(*i)?.id, *i), rustgis_map::look::LayerLook::of(map.layers.get(*i)?))))
+            .collect();
+        frame_cache::plan(frame, looks, u64::from(w) * u64::from(h))
+    });
+    let start = cached.as_ref().map_or(0, |p| p.start);
+    // A frame with no kept picture to start from draws what lies under its layers.
+    let cold = cached.as_ref().is_none_or(|p| p.restored.is_none());
+    let mut captured: Option<(usize, frame_cache::Checkpoint)> = None;
+    // The layer kept alone (`frame_cache::Alone`): its picture once composited, and the rest once
+    // it is done.
+    let alone_at = cached.as_ref().and_then(|p| p.alone_at);
+    let mut drawn_alone: Option<(usize, Pixmap)> = None;
+    let mut captured_alone: Option<(usize, frame_cache::Alone)> = None;
+    // Kept only as drawn in full so far: tiles still to come, to draw, or to ask for again after
+    // a failure are drawn again rather than restored as they stood.
+    let complete = |t: &tiles::TileOutput| {
+        !t.pending && t.errors.is_empty() && t.partial.is_empty() && t.pending_in_place.is_empty() && rustgis_tiles::lacking().is_none()
+    };
 
     // Basemap.
     let (water, land, outline, grat) = map.palette();
@@ -4247,15 +4313,13 @@ fn render_frame(
     let pictureless = backend.is_gpu() && matches!(labels_to, Labels::Turned(_) | Labels::Tilted(..));
     // Set when such a frame stops that way.
     let mut declined = false;
-    if map.draws_world_outline() {
+    // A frame started from a kept picture has its basemap and the tile layers under its layers.
+    if cold && map.draws_world_outline() {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
-        // The worldview read once: the outline and its level must be of the same one, though
-        // another thread may switch it mid-frame.
-        let worldview = sample_data::view();
-        let custom_world = custom.then(|| world_in(&flat, &key));
+        let custom_world = custom.then(|| world_in(worldview, &flat, &key));
         let outlines: &Vec<Geometry> = match (&globe, &custom_world) {
-            (Some(_), _) => world_lonlat(),
+            (Some(_), _) => world_lonlat_of(worldview),
             (None, Some(w)) => w,
             (None, None) => world_of(worldview),
         };
@@ -4314,7 +4378,7 @@ fn render_frame(
             }
         }
     }
-    if map.graticule && grat.a() > 0 {
+    if cold && map.graticule && grat.a() > 0 {
         let p = paint(grat, 1.0);
         // A measured or UTM graticule's lines (#1042), else latitudes and longitudes.
         let grid = mapgrid::lines(map, view);
@@ -4432,7 +4496,9 @@ fn render_frame(
             }
         }};
     }
-    draw_tiles!(None);
+    if cold {
+        draw_tiles!(None);
+    }
 
     // Layers, bottom first.
     let mut label_candidates: Vec<Candidate> = Vec::new();
@@ -4449,6 +4515,15 @@ fn render_frame(
     let distance = viewing_distance(map.ground_res_at(&view.camera), view.height);
     // Graphics text: always drawn, and other labels keep clear of it.
     let mut fixed_labels: Vec<PlacedLabel> = Vec::new();
+    if let Some(c) = cached.as_ref().and_then(|p| p.restored.as_ref()) {
+        pm = Canvas::from_pixmap(c.pixels.clone());
+        // What the layers below left for those above: the sprites drawn, the shapeburst budget.
+        ctx.sprites.borrow_mut().clone_from(&c.sprites);
+        ctx.bursts.set(c.bursts);
+        label_candidates.clone_from(&c.candidates);
+        fixed_labels.clone_from(&c.fixed);
+        tile_out = c.tiles.clone();
+    }
     let tokens = rustgis_map::graphics::TokenValues::of(map, scale);
     let n_layers = map.layers.len();
     // Masks: layers shown only inside another layer's polygons, or left of the swipe divider.
@@ -4457,9 +4532,6 @@ fn render_frame(
     // Of those held in another system, the ids, noted read once a label is squared to them.
     let mut square_held = std::collections::HashMap::new();
     let square_lines = square_lines(map, &ctx, &flat, &mut square_held);
-    // Bottom first; a higher depth priority draws later (on top) whatever the order.
-    let mut order: Vec<usize> = (0..n_layers).rev().collect();
-    order.sort_by_key(|i| map.layers.get(*i).map_or(0, |l| l.priority));
     let clip = map.view.clip_distance.map(|d| (view.camera.center_lonlat(), d));
     // Each layer group's visibility, scale range and transparency apply to its layers, its
     // subgroups' too (#413, #836).
@@ -4487,20 +4559,44 @@ fn render_frame(
         .and_then(|w| Some((map.layer_by_name(&w.layer)?.id, w.shore)));
     // The layer drawn last, whose tile layers go over it before the next.
     let mut below: Option<u32> = None;
-    for li in order {
+    for (at, li) in order.into_iter().enumerate() {
         // Each layer drawn is a layer of the recording (#1815); what comes between them isn't.
         pm.layer(None);
         // A frame no longer wanted stops between layers (see `cancel`).
         if cancel::requested() {
             break;
         }
+        if let Some((a, pixels)) = drawn_alone.take().filter(|_| complete(&tile_out)) {
+            let (candidates, fixed, tiles) = (label_candidates.clone(), fixed_labels.clone(), tile_out.clone());
+            let (sprites, bursts) = (ctx.sprites.borrow().clone(), ctx.bursts.get());
+            captured_alone = Some((a, frame_cache::Alone { pixels, sprites, bursts, candidates, fixed, tiles }));
+        }
         // What is drawn so far already leaves a picture, waiting or in the scene (see
         // `pictureless`).
         if pictureless && (cpu_dirty || holds_picture(&cmds)) {
             return None;
         }
+        // Already in the picture the frame started from, with the tile layers over them.
+        if at < start {
+            continue;
+        }
         if let Some(id) = below.take() {
             draw_tiles!(Some(id));
+        }
+        if cached.as_ref().is_some_and(|p| p.capture_at == Some(at)) && complete(&tile_out) {
+            captured = Some((
+                at,
+                frame_cache::Checkpoint {
+                    pixels: pm.pixels().clone(),
+                    sprites: ctx.sprites.borrow().clone(),
+                    bursts: ctx.bursts.get(),
+                    // Over a restored picture, its tiles are as old as that picture.
+                    taken: cached.as_ref().and_then(|p| p.restored.as_ref()).map_or_else(web_time::Instant::now, |c| c.taken),
+                    candidates: label_candidates.clone(),
+                    fixed: fixed_labels.clone(),
+                    tiles: tile_out.clone(),
+                },
+            ));
         }
         below = map.layers.get(li).map(|l| l.id);
         // The water under the shore band, read only when its layer is drawn; shore tiles on
@@ -4543,6 +4639,20 @@ fn render_frame(
                 mask,
             );
         };
+        // The layer the frame started under, kept alone: composited at its opacity now, which is
+        // what drawing it would end with (see `frame_cache`).
+        if at == start
+            && offscreen
+            && let Some(a) = cached.as_ref().and_then(|p| p.recombine.as_ref())
+        {
+            composite(&mut pm, &a.pixels);
+            ctx.sprites.borrow_mut().clone_from(&a.sprites);
+            ctx.bursts.set(a.bursts);
+            label_candidates.clone_from(&a.candidates);
+            fixed_labels.clone_from(&a.fixed);
+            tile_out = a.tiles.clone();
+            continue;
+        }
         if let Some(rl) = &layer.raster {
             if let Some(data) = &rl.data {
                 let place = match &globe {
@@ -4615,6 +4725,9 @@ fn render_frame(
                     let mut target = Pixmap::new(w, h)?;
                     draw_it(&mut target, 1.0);
                     composite(&mut pm, &target);
+                    if alone_at == Some(at) {
+                        drawn_alone = Some((at, target));
+                    }
                 } else {
                     draw_it(pm.pixels(), opacity);
                 }
@@ -5096,6 +5209,11 @@ fn render_frame(
                         }
                     } else {
                         composite(&mut pm, target.pixmap());
+                        // Not with a selection or graphics text, drawn over the composite, nor
+                        // with extruded charts, placed after it.
+                        if alone_at == Some(at) && layer.selection.is_empty() && !layer.graphics && layer.extrusion.is_none() {
+                            drawn_alone = Some((at, target.pixmap().clone()));
+                        }
                     }
                 }
             }
@@ -5802,8 +5920,16 @@ fn render_frame(
     if cancel::requested() || (pictureless && (cpu_dirty || holds_picture(&cmds))) {
         return None;
     }
+    if let Some((a, pixels)) = drawn_alone.take().filter(|_| complete(&tile_out)) {
+        let (candidates, fixed, tiles) = (label_candidates.clone(), fixed_labels.clone(), tile_out.clone());
+        let (sprites, bursts) = (ctx.sprites.borrow().clone(), ctx.bursts.get());
+        captured_alone = Some((a, frame_cache::Alone { pixels, sprites, bursts, candidates, fixed, tiles }));
+    }
     if let Some(id) = below {
         draw_tiles!(Some(id));
+    }
+    if let Some(plan) = cached.take() {
+        frame_cache::keep(plan, captured, captured_alone);
     }
     // A band of a tilted view: the sun's glint on the terrain's water, over the water's own fill.
     if matches!(labels_to, Labels::Tilted(..) | Labels::Shared)
