@@ -198,6 +198,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   takes the view's bearing and pitch, and **Bearing** and **Pitch** in its properties (or
   `layout.update` with `bearing` and `pitch`) set them. Its north arrows turn with it. **Grid** draws a labelled graticule over a frame; **Extent Indicator** outlines another frame's
   extent (an overview map).
+- **Frame borders**: the **Border** section of a frame's properties sets the line drawn round it,
+  along its shape for a round or polygon frame: its **Color** and **Line width** (dark grey and
+  0.8 pt to begin with, up to 20 pt). The line is centred on the frame's edge, as a rectangle's
+  outline is, so a wide border reaches half its width past the frame. A width of 0 draws no
+  border, so a frame on a coloured page (a blank
+  basemap with a paper colour) blends into it; **Default Border** brings the dark grey line back.
+  Scripts set the same with `layout.update` and `"border": {"color": "#C8B89A", "width": 0}`
+  (the keys not given keep theirs; `null` gives the default back).
 - **Extent indicators**: the **Extent Indicator** section of an overview frame's properties sets
   the outline's **Color** and **Line width** (red and 2 pt to begin with), so it can sit quietly on a
   muted page, and **Remove Extent Indicator** takes it away. Scripts set the same with `color`

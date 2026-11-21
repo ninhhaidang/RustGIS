@@ -915,6 +915,13 @@ pub enum ElementKind {
         extent_color: Rgba,
         #[serde(default = "indicator_width", skip_serializing_if = "is_indicator_width")]
         extent_width: f64,
+        /// The outline drawn round the frame, along its shape: its colour and width (points), 0
+        /// for none (#2557). Dark grey and 0.8 unless set, and left out then, so layouts saved
+        /// before keep their bytes.
+        #[serde(default = "frame_border_color", skip_serializing_if = "is_frame_border_color")]
+        border_color: Rgba,
+        #[serde(default = "frame_border_width", skip_serializing_if = "is_frame_border_width")]
+        border_width: f64,
         /// The map turned to a bearing (degrees clockwise from north) and tilted to a pitch
         /// (degrees from looking straight down, 0 to 85), as the map view is.
         #[serde(default, skip_serializing_if = "is_zero")]
@@ -1394,6 +1401,12 @@ impl ElementKind {
             | ElementKind::Chart { color, .. } => Some(color),
             _ => None,
         }
+    }
+
+    /// Whether it is a map frame whose border isn't the default one (#2557).
+    pub fn has_custom_border(&self) -> bool {
+        matches!(self, ElementKind::MapFrame { border_color, border_width, .. }
+            if !is_frame_border_color(border_color) || !is_frame_border_width(border_width))
     }
 
     /// The map frame this element belongs to.
@@ -2044,9 +2057,10 @@ impl Layout {
             let mut cut = e.name.chars().nth(200).is_some();
             e.name = e.name.chars().take(200).collect();
             match &mut e.kind {
-                ElementKind::MapFrame { center, scale, shape, grid, bearing, pitch, extent_width, .. } => {
+                ElementKind::MapFrame { center, scale, shape, grid, bearing, pitch, extent_width, border_width, .. } => {
                     *scale = finite_or(*scale, 50_000_000.0).clamp(MIN_FRAME_SCALE, MAX_FRAME_SCALE);
                     *extent_width = finite_or(*extent_width, INDICATOR_WIDTH).clamp(MIN_INDICATOR_WIDTH, MAX_INDICATOR_WIDTH);
+                    *border_width = finite_or(*border_width, FRAME_BORDER_WIDTH).clamp(0.0, MAX_FRAME_BORDER_WIDTH);
                     *bearing = crate::camera::normalize_bearing(*bearing);
                     *pitch = crate::camera::normalize_pitch(*pitch);
                     if !center.is_finite() {
@@ -2219,6 +2233,28 @@ pub const INDICATOR_WIDTH: f64 = 2.0;
 /// The narrowest and widest an extent indicator's outline may be (points); to hide it, remove it.
 pub const MIN_INDICATOR_WIDTH: f64 = 0.1;
 pub const MAX_INDICATOR_WIDTH: f64 = 20.0;
+
+/// A map frame's border until it is set (#2557): dark grey, 0.8 points.
+pub const FRAME_BORDER_COLOR: Rgba = Rgba::rgb(0x30, 0x30, 0x30);
+pub const FRAME_BORDER_WIDTH: f64 = 0.8;
+/// The widest a map frame's border may be (points); 0 draws none.
+pub const MAX_FRAME_BORDER_WIDTH: f64 = MAX_INDICATOR_WIDTH;
+
+fn frame_border_color() -> Rgba {
+    FRAME_BORDER_COLOR
+}
+
+fn is_frame_border_color(c: &Rgba) -> bool {
+    *c == FRAME_BORDER_COLOR
+}
+
+fn frame_border_width() -> f64 {
+    FRAME_BORDER_WIDTH
+}
+
+fn is_frame_border_width(w: &f64) -> bool {
+    *w == FRAME_BORDER_WIDTH
+}
 
 fn indicator_color() -> Rgba {
     INDICATOR_COLOR
@@ -2802,6 +2838,8 @@ mod tests {
                 extent_of: None,
                 extent_color: INDICATOR_COLOR,
                 extent_width: INDICATOR_WIDTH,
+                border_color: FRAME_BORDER_COLOR,
+                border_width: FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -2819,7 +2857,7 @@ mod tests {
     #[test]
     fn hostile_layouts_are_repaired() {
         let text = r#"{"name":"x","width":1e300,"height":-5,"elements":[
-            {"id":3,"name":"a","x":0,"y":0,"w":1e9,"h":10,"kind":{"MapFrame":{"map":"M","center":{"x":1e300,"y":200},"scale":-1,"shape":{"Polygon":[[0,0],[1,1]]},"extent_of":3,"extent_width":1e9}}},
+            {"id":3,"name":"a","x":0,"y":0,"w":1e9,"h":10,"kind":{"MapFrame":{"map":"M","center":{"x":1e300,"y":200},"scale":-1,"shape":{"Polygon":[[0,0],[1,1]]},"extent_of":3,"extent_width":1e9,"border_width":1e9}}},
             {"id":3,"name":"b","x":0,"y":0,"w":10,"h":10,"kind":{"Text":{"text":"t","size":1e9,"color":[0,0,0,255],"letter_spacing":-1e9}}},
             {"id":9,"name":"c","x":0,"y":0,"w":10,"h":10,"kind":{"Legend":{"frame":42,"title":"L"}}}],
             "series":{"frame":77,"layer":"x"}}"#;
@@ -2844,9 +2882,10 @@ mod tests {
         assert_ne!(ids[0], ids[1], "duplicate ids are renumbered");
         assert!(l.width <= 5000.0 && l.height >= 20.0 && l.series.is_none());
         match &l.elements[0].kind {
-            ElementKind::MapFrame { scale, shape, extent_of, center, extent_width, .. } => {
+            ElementKind::MapFrame { scale, shape, extent_of, center, extent_width, border_width, .. } => {
                 assert!(*scale == MIN_FRAME_SCALE && *shape == FrameShape::Rectangle && extent_of.is_none() && center.is_finite());
                 assert_eq!(*extent_width, MAX_INDICATOR_WIDTH);
+                assert_eq!(*border_width, MAX_FRAME_BORDER_WIDTH, "a border past the widest is brought into range");
             }
             _ => panic!("frame expected"),
         }
@@ -3038,6 +3077,8 @@ mod tests {
                     extent_of: None,
                     extent_color: INDICATOR_COLOR,
                     extent_width: INDICATOR_WIDTH,
+                    border_color: FRAME_BORDER_COLOR,
+                    border_width: FRAME_BORDER_WIDTH,
                     bearing: 0.0,
                     pitch: 0.0,
                 },

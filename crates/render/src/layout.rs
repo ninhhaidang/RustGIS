@@ -482,7 +482,7 @@ fn draw_page(
             ((e.x * k - f64::from(bounds.x())) as f32, (e.y * k - f64::from(bounds.y())) as f32, (e.w * k) as f32, (e.h * k) as f32);
         let Some(r) = Rect::from_xywh(x, y, ew.max(1.0), eh.max(1.0)) else { continue };
         match &e.kind {
-            ElementKind::MapFrame { shape, grid, extent_of, extent_color, extent_width, .. } => {
+            ElementKind::MapFrame { shape, grid, extent_of, extent_color, extent_width, border_color, border_width, .. } => {
                 let Some(&(_, mi, cam, fw, fh)) = frame(e.id) else {
                     placeholder(&mut pm, r, "Missing map", ppp);
                     continue;
@@ -557,11 +557,15 @@ fn draw_page(
                         None,
                     );
                 }
-                if let Some(p) = &path {
+                // Its border along its shape (#2557); a width of 0 or a clear colour draws none.
+                if let Some(p) = &path
+                    && *border_width > 0.0
+                    && border_color.0[3] > 0
+                {
                     pm.stroke_path(
                         p,
-                        &paint(Rgba::rgb(0x30, 0x30, 0x30), 1.0),
-                        &Stroke { width: 0.8 * ppp as f32, ..Stroke::default() },
+                        &paint(*border_color, 1.0),
+                        &Stroke { width: *border_width as f32 * ppp as f32, ..Stroke::default() },
                         Transform::identity(),
                         None,
                     );
@@ -5433,6 +5437,8 @@ mod tests {
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -5535,6 +5541,8 @@ mod tests {
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             };
@@ -5681,6 +5689,8 @@ mod tests {
             extent_of,
             extent_color: color,
             extent_width: width,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6268,6 +6278,71 @@ Elaboração: RustGIS",
         assert!(t > 0 && w > 3 * t, "a wider outline covers more: {t} at 1 pt, {w} at 6 pt");
     }
 
+    /// A map frame's border (#2557): dark grey and 0.8 pt by default, in its own colour and width
+    /// once set, none at a width of 0, and along the frame's shape, a round frame's leaving the
+    /// corners of its box clear.
+    #[test]
+    fn a_map_frame_border_takes_its_colour_and_width_or_none() {
+        use rustgis_map::layout::{FRAME_BORDER_COLOR, FRAME_BORDER_WIDTH, INDICATOR_COLOR, INDICATOR_WIDTH};
+        let page = |shape: FrameShape, border_color: Rgba, border_width: f64| {
+            let mut map = Map::new("m");
+            (map.basemap, map.graticule) = (rustgis_map::Basemap::Blank, false);
+            let mut l = Layout::new("Layout", 100.0, 100.0);
+            l.add(
+                "Frame",
+                (20.0, 20.0, 60.0, 60.0),
+                ElementKind::MapFrame {
+                    map: "m".into(),
+                    center: Coord::new(0.0, 0.0),
+                    scale: 1e7,
+                    shape,
+                    grid: None,
+                    extent_of: None,
+                    extent_color: INDICATOR_COLOR,
+                    extent_width: INDICATOR_WIDTH,
+                    border_color,
+                    border_width,
+                    bearing: 0.0,
+                    pitch: 0.0,
+                },
+            );
+            render(&l, &mut [map], 96.0, &PageInfo::default()).unwrap()
+        };
+        // Pixels of a tone (a line this thin is blended with the white page), over the whole page
+        // or in the frame box's top-left corner.
+        let count = |pm: &Pixmap, tone: fn(u8, u8, u8) -> bool, corner: bool| {
+            let edge = (20.0 * PT_PER_MM + 6.0) as u32;
+            let (w, h) = if corner { (edge, edge) } else { (pm.width(), pm.height()) };
+            (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let (r, g, b) = rgb(pm, x, y);
+                    tone(r, g, b)
+                })
+                .count()
+        };
+        let grey: fn(u8, u8, u8) -> bool = |r, g, b| r.max(g).max(b) - r.min(g).min(b) < 12 && r < 240;
+        let bluish: fn(u8, u8, u8) -> bool = |r, _, b| i32::from(b) - i32::from(r) > 30;
+        let inked: fn(u8, u8, u8) -> bool = |r, g, b| r.min(g).min(b) < 240;
+        let blue = Rgba::rgb(0x1F, 0x4E, 0x9A);
+        let default = page(FrameShape::Rectangle, FRAME_BORDER_COLOR, FRAME_BORDER_WIDTH);
+        assert!(count(&default, grey, false) > 0, "dark grey by default");
+        assert_eq!(count(&default, bluish, false), 0);
+        let thin = page(FrameShape::Rectangle, blue, 1.0);
+        let thick = page(FrameShape::Rectangle, blue, 6.0);
+        assert_eq!(count(&thin, grey, false), 0, "no grey once recoloured");
+        let (t, w) = (count(&thin, bluish, false), count(&thick, bluish, false));
+        assert!(t > 0 && w > 3 * t, "a wider border covers more: {t} at 1 pt, {w} at 6 pt");
+        let none = page(FrameShape::Rectangle, blue, 0.0);
+        assert_eq!(count(&none, inked, false), 0, "no border at 0");
+        let clear = page(FrameShape::Rectangle, Rgba::new(0x1F, 0x4E, 0x9A, 0), 3.0);
+        assert_eq!(count(&clear, inked, false), 0, "none in a clear colour");
+        let round = page(FrameShape::Circle, blue, 3.0);
+        assert!(count(&round, bluish, false) > 0, "a round frame has its border too");
+        assert_eq!(count(&round, bluish, true), 0, "along the circle, not the box's corner");
+        assert!(count(&thick, bluish, true) > 0, "a rectangle's border reaches its corner");
+    }
+
     /// On a globe, the extent indicator is drawn where the globe shows the area, also away from
     /// the disc's centre (#2348): through the flat camera, Svalbard 18° north of the centre came out
     /// half as far again up, nearly 5 mm off on a 50 mm locator.
@@ -6287,6 +6362,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6334,6 +6411,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6386,6 +6465,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6457,6 +6538,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6500,6 +6583,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6697,6 +6782,8 @@ Elaboração: RustGIS",
             extent_of,
             extent_color: INDICATOR_COLOR,
             extent_width: INDICATOR_WIDTH,
+            border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+            border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
             bearing: 0.0,
             pitch: 0.0,
         };
@@ -6790,6 +6877,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -6914,6 +7003,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -6953,6 +7044,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -7209,6 +7302,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -7241,6 +7336,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },
@@ -7615,6 +7712,8 @@ Elaboração: RustGIS",
                 extent_of: None,
                 extent_color: rustgis_map::layout::INDICATOR_COLOR,
                 extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },

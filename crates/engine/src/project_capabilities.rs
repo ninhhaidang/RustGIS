@@ -79,6 +79,10 @@ impl Project {
         if !required.contains(&"layout-chart-look") && self.layouts.iter().any(|l| l.elements.iter().any(charts_look)) {
             required.push("layout-chart-look");
         }
+        if !required.contains(&"layout-frame-border") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.has_custom_border()))
+        {
+            required.push("layout-frame-border");
+        }
         // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
         // points as its WKT does (angles in grads, a datum transformation the definition can't
         // hold).
@@ -121,7 +125,20 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-chart-data", command_uses_chart_data),
     ("layout-chart-look", command_uses_chart_look),
     ("blank-paper", command_uses_blank_paper),
+    ("layout-frame-border", command_uses_frame_border),
 ];
+
+/// A layout command that changes a map frame's border (#2557): an older reader warns that it
+/// ignores `border` and draws the default one. `null` only gives the default back, which an older
+/// reader's frames always have.
+fn command_uses_frame_border(id: &str, params: &Value) -> bool {
+    match id {
+        "layout.update" => params.get("border").is_some_and(|b| !b.is_null()),
+        "layout.import" => imported_layout_uses(params, "\"border_", |e| e.kind.has_custom_border()),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_frame_border)),
+        _ => false,
+    }
+}
 
 /// A `map.basemap` command that gives the blank basemap a paper colour (#2532): an older reader
 /// ignores `color` and draws white. White, `null` or another basemap leaves no paper to keep.
@@ -1141,6 +1158,65 @@ mod tests {
         let mut unknown = saved;
         unknown["requires"] = json!(["blank-paper", "future-paper"]);
         assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-paper"));
+    }
+
+    /// A map frame's border other than the default (#2557) is required where it is saved, so an
+    /// older reader refuses the project instead of drawing the default line and saving it so. The
+    /// default border is not written and needs nothing.
+    #[test]
+    fn frame_border_capability_follows_saved_layouts_and_commands() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_frame_border.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-frame-border"]));
+        let frames = &saved["layouts"][0]["elements"];
+        assert!(frames[0]["kind"]["MapFrame"].get("border_color").is_none());
+        assert!(frames[0]["kind"]["MapFrame"].get("border_width").is_none());
+        assert_eq!(frames[1]["kind"]["MapFrame"]["border_width"], json!(0.0));
+        assert_eq!(frames[2]["kind"]["MapFrame"]["border_color"], json!([200, 184, 154, 255]));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(reopened.layouts, fixture.layouts);
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let rustgis_map::layout::ElementKind::MapFrame { border_color, border_width, .. } = &mut e.kind {
+                *border_color = rustgis_map::layout::FRAME_BORDER_COLOR;
+                *border_width = rustgis_map::layout::FRAME_BORDER_WIDTH;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "default borders need nothing");
+        // A saved update that changes a border needs it; null only gives the default back.
+        for (params, required) in [
+            (json!({"element": 1, "border": {"width": 0}}), true),
+            (json!({"element": 1, "border": {"color": "#C8B89A"}}), true),
+            (json!({"element": 1, "border": null}), false),
+            (json!({"element": 1, "name": "Main"}), false),
+        ] {
+            let script = format!("layout.update {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Border", "command": "layout.update", "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Border", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                if required {
+                    assert_eq!(saved["requires"], json!(["layout-frame-border"]), "{params}");
+                } else {
+                    assert!(saved.get("requires").is_none(), "{params}");
+                }
+            }
+        }
+        // An imported layout's text with a changed border needs it; with the default, none.
+        for (layout, required) in [(&saved["layouts"][0], true), (&base["layouts"][0], false)] {
+            let params = json!({"text": layout.to_string()});
+            let mut document = base.clone();
+            document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Import", "command": "layout.import", "params": params}]}]);
+            let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+            assert_eq!(saved.get("requires").is_some(), required, "{layout}");
+        }
+        let mut unknown = saved;
+        unknown["requires"] = json!(["layout-frame-border", "future-border"]);
+        assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-border"));
     }
 
     /// Nondefault relief effects survive project, map and layer files; ordinary relief needs none.

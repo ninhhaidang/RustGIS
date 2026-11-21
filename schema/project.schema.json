@@ -1091,7 +1091,8 @@
           "offline-map-area-id",
           "crs-wkt",
           "zarr-window",
-          "blank-paper"
+          "blank-paper",
+          "layout-frame-border"
         ],
         "type": "string"
       },
@@ -1180,7 +1181,8 @@
     "offline-map-area-id",
     "crs-wkt",
     "zarr-window",
-    "blank-paper"
+    "blank-paper",
+    "layout-frame-border"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

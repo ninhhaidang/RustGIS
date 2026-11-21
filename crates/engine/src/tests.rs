@@ -12852,6 +12852,34 @@ fn layouts_compose_export_and_round_trip() {
     let err = s.run("layout.update", &json!({"element": inset, "extentIndicator": {"color": "#000000"}})).unwrap_err();
     assert!(err.contains("no extent indicator"), "{err}");
     s.run("layout.addElement", &json!({"kind": "extentIndicator", "frame": inset, "of": frame})).unwrap();
+    // Its border (#2557): dark grey and 0.8 pt by default and not written, its colour and width
+    // set apart, 0 for none, kept within range, and null giving the default back.
+    let border = |s: &Session| match s.project.layouts[0].element(inset as u32).map(|e| &e.kind) {
+        Some(rustgis_map::layout::ElementKind::MapFrame { border_color, border_width, .. }) => (border_color.hex(), *border_width),
+        _ => panic!("the inset is a map frame"),
+    };
+    assert_eq!(border(&s), ("#303030".to_string(), 0.8));
+    assert!(!serde_json::to_string(&s.project.layouts[0]).unwrap().contains("border_"), "the default isn't written");
+    let said = s.notices.len();
+    s.run("layout.update", &json!({"element": inset, "border": {"color": "#C8B89A"}})).unwrap();
+    assert!(!s.notices.iter().skip(said).any(|n| n.text.contains("ignores")), "border is a key layout.update reads");
+    assert_eq!(border(&s), ("#C8B89A".to_string(), 0.8), "the width kept");
+    s.run("layout.update", &json!({"element": inset, "border": {"width": 0}})).unwrap();
+    assert_eq!(border(&s), ("#C8B89A".to_string(), 0.0), "the colour kept");
+    s.run("layout.update", &json!({"element": inset, "border": {"width": 99}})).unwrap();
+    assert_eq!(border(&s).1, rustgis_map::layout::MAX_FRAME_BORDER_WIDTH);
+    let saved: rustgis_map::layout::Layout = serde_json::from_str(&serde_json::to_string(&s.project.layouts[0]).unwrap()).unwrap();
+    assert_eq!(saved.element(inset as u32).map(|e| &e.kind), s.project.layouts[0].element(inset as u32).map(|e| &e.kind));
+    for bad in [json!({"width": "thin"}), json!({"color": 123}), json!(3), json!(false)] {
+        assert!(s.run("layout.update", &json!({"element": inset, "border": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(border(&s), ("#C8B89A".to_string(), rustgis_map::layout::MAX_FRAME_BORDER_WIDTH), "a refused border changes nothing");
+    let err = s.run("layout.update", &json!({"element": chart, "border": {"width": 1}})).unwrap_err();
+    assert!(err.contains("only map frames"), "{err}");
+    s.run("layout.update", &json!({"element": inset, "locked": true})).unwrap();
+    assert!(s.run("layout.update", &json!({"element": inset, "border": null})).is_err(), "a locked frame keeps its border");
+    s.run("layout.update", &json!({"element": inset, "locked": false, "border": null})).unwrap();
+    assert_eq!(border(&s), ("#303030".to_string(), 0.8));
     assert!(s.run("layout.addElement", &json!({"kind": "sparkles"})).is_err());
     // A hairline rule keeps its height when added and when edited (#211).
     let rule = s.run("layout.addElement", &json!({"kind": "rectangle", "color": "#000000", "w": 136, "h": 0.15})).unwrap()["element"]

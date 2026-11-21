@@ -1399,6 +1399,52 @@ fn text_field(
 }
 
 /// A map frame's grid options; `set` sends the changed ones (`false` removes the grid).
+/// An outline in a map frame's properties (its extent indicator, its border): the command key its
+/// changes go under, its width's drag id, and its colour and width (points) within `range`.
+struct Outline {
+    key: &'static str,
+    drag: egui::Id,
+    color: rustgis_engine::map::Rgba,
+    width: f64,
+    range: std::ops::RangeInclusive<f64>,
+}
+
+/// An outline's Color and Line width rows, one component for the extent indicator and the border
+/// (#2557): each change goes to `update` as `{key: {"color"|"width": …}}`, the width with `hint`
+/// on hover.
+fn outline_rows(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    grid: impl egui::AsIdSalt,
+    line: Outline,
+    hint: Option<&str>,
+    update: &dyn Fn(&mut RustGisApp, Value),
+) {
+    egui::Grid::new(grid).num_columns(2).show(ui, |ui| {
+        ui.label(tl!("Color"));
+        let mut c = crate::theme::c32(line.color);
+        let resp = crate::widgets::color_button(ui, &mut c);
+        if resp.changed() {
+            crate::widgets::one_step_per_press(app, &resp);
+            update(app, json!({line.key: {"color": crate::theme::rgba(c).hex()}}));
+        }
+        ui.end_row();
+        let input_label = ui.label(tl!("Line width"));
+        let mut w = line.width;
+        let drag = Dragged::lend(ui, line.drag, &mut w);
+        let mut r = ui
+            .add(egui::DragValue::new(&mut w).update_while_editing(false).range(line.range).speed(0.05).max_decimals(2).suffix(" pt"))
+            .labelled_by(input_label.id);
+        if let Some(hint) = hint {
+            r = r.on_hover_text(hint);
+        }
+        if drag.settled(ui, &r, &mut w) && (w - line.width).abs() > 1e-6 {
+            update(app, json!({line.key: {"width": w}}));
+        }
+        ui.end_row();
+    });
+}
+
 fn grid_properties(app: &mut RustGisApp, ui: &mut Ui, grid: Option<&Grid>, id: u32, set: &dyn Fn(&mut RustGisApp, Value)) {
     let mut on = grid.is_some();
     if ui.checkbox(&mut on, tl!("Show grid")).changed() {
@@ -2440,35 +2486,23 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
         ui.add_space(4.0);
         egui::CollapsingHeader::new(tl!("Extent Indicator")).id_salt(("frame_indicator", id)).default_open(true).show(ui, |ui| {
             ui.label(egui::RichText::new(crate::i18n::fmt("Outlines {frame}", &[("frame", &other)])).size(11.5));
-            egui::Grid::new(("indicator_props", id)).num_columns(2).show(ui, |ui| {
-                ui.label(tl!("Color"));
-                let mut c = crate::theme::c32(*extent_color);
-                let resp = crate::widgets::color_button(ui, &mut c);
-                if resp.changed() {
-                    crate::widgets::one_step_per_press(app, &resp);
-                    update(app, json!({"extentIndicator": {"color": crate::theme::rgba(c).hex()}}));
-                }
-                ui.end_row();
-                let input_label = ui.label(tl!("Line width"));
-                let mut w = *extent_width;
-                let drag = Dragged::lend(ui, drag_key("extentWidth"), &mut w);
-                let r = ui
-                    .add(
-                        egui::DragValue::new(&mut w)
-                            .update_while_editing(false)
-                            .range(rustgis_engine::map::layout::MIN_INDICATOR_WIDTH..=rustgis_engine::map::layout::MAX_INDICATOR_WIDTH)
-                            .speed(0.05)
-                            .max_decimals(2)
-                            .suffix(" pt"),
-                    )
-                    .labelled_by(input_label.id);
-                if drag.settled(ui, &r, &mut w) && (w - extent_width).abs() > 1e-6 {
-                    update(app, json!({"extentIndicator": {"width": w}}));
-                }
-                ui.end_row();
-            });
+            let range = rustgis_engine::map::layout::MIN_INDICATOR_WIDTH..=rustgis_engine::map::layout::MAX_INDICATOR_WIDTH;
+            let line = Outline { key: "extentIndicator", drag: drag_key("extentWidth"), color: *extent_color, width: *extent_width, range };
+            outline_rows(app, ui, ("indicator_props", id), line, None, &update);
             if ui.button(tl!("Remove Extent Indicator")).clicked() {
                 update(app, json!({"extentIndicator": false}));
+            }
+        });
+    }
+    // Its border along its shape (#2557): its colour and width, 0 for none.
+    if let ElementKind::MapFrame { border_color, border_width, .. } = &e.kind {
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(tl!("Border")).id_salt(("frame_border", id)).show(ui, |ui| {
+            let range = 0.0..=rustgis_engine::map::layout::MAX_FRAME_BORDER_WIDTH;
+            let line = Outline { key: "border", drag: drag_key("borderWidth"), color: *border_color, width: *border_width, range };
+            outline_rows(app, ui, ("border_props", id), line, Some(tl!("0 draws no border")), &update);
+            if e.kind.has_custom_border() && ui.button(tl!("Default Border")).clicked() {
+                update(app, json!({"border": null}));
             }
         });
     }
@@ -3901,6 +3935,43 @@ mod tests {
         assert!(matches!(kind, ElementKind::MapFrame { extent_of: None, .. }), "removed");
         h.run_steps(2);
         assert!(h.query_by_label("Remove Extent Indicator").is_none(), "and its section with it");
+    }
+
+    /// A frame's Border section (#2557): Default Border shows only for a border of its own, and
+    /// gives the frame the default one back.
+    #[test]
+    fn a_frame_border_goes_back_to_the_default() {
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::map::layout::ElementKind;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Borders"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let frame = app.session.project.layouts[li].elements.iter().find(|e| matches!(e.kind, ElementKind::MapFrame { .. })).unwrap().id;
+        app.layout.selected = Some(frame);
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 1400.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                with_format(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Border").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Default Border").is_none(), "the default border has nothing to go back to");
+        h.state_mut().run("layout.update", json!({"layout": li, "element": frame, "border": {"width": 0}})).unwrap();
+        h.run_steps(3);
+        h.get_by_label("Default Border").click();
+        h.run_steps(2);
+        let kind = &h.state().session.project.layouts[li].element(frame).unwrap().kind;
+        assert!(!kind.has_custom_border(), "the default border again");
+        h.run_steps(2);
+        assert!(h.query_by_label("Default Border").is_none(), "and its button gone");
     }
 
     /// A legend's properties list the layers of its frame's map; unticking one leaves it out of

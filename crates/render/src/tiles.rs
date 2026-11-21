@@ -1884,6 +1884,8 @@ pub(crate) mod tests {
                 extent_of: None,
                 extent_color: INDICATOR_COLOR,
                 extent_width: INDICATOR_WIDTH,
+                border_color: rustgis_map::layout::FRAME_BORDER_COLOR,
+                border_width: rustgis_map::layout::FRAME_BORDER_WIDTH,
                 bearing: 0.0,
                 pitch: 0.0,
             },

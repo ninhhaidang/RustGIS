@@ -96,6 +96,7 @@ pub const CAPABILITIES: &[&str] = &[
     "crs-wkt",
     "zarr-window",
     "blank-paper",
+    "layout-frame-border",
 ];
 /// Independent marker sizes alongside classified point colours (`Layer::size_by`).
 pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";

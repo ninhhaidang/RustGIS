@@ -183,6 +183,14 @@ a colorbar's, which the command alone doesn't tell, and the project the update r
 for its chart anyway. Giving the defaults needs nothing. A saved `layout.import` whose `text` has
 such a chart requires it as well. Layout files are not covered, as for backgrounds (#2277).
 
+Projects with a map frame whose border isn't the default dark grey 0.8 pt line (`border_color`,
+`border_width` on a map frame, a width of 0 drawing none) require `layout-frame-border`, so an
+older reader refuses them instead of drawing the default border and saving the frame again
+without its own (#2557). A saved `layout.update` that gives a frame a `border` object requires it
+too, since an older reader warns that it ignores the key; `"border": null` only gives the default
+back and needs nothing. A saved `layout.import` whose `text` has such a frame requires it as well.
+Layout files are not covered, as for backgrounds (#2277).
+
 A coordinate system read from WKT is saved with its PROJ definition, which older readers read,
 and its WKT beside it (`wkt`), which this release reads first. Projects, map files and layer
 files require `crs-wkt` when a saved system's definition doesn't place points as its WKT does
