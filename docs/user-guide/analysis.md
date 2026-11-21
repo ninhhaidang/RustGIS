@@ -1309,6 +1309,31 @@ How each problem is repaired:
 - Lines may cross themselves, so only their repeated vertices and their parts with fewer than 2
   distinct points are repaired. Points have nothing to repair but non-finite coordinates.
 
+**Rule** (`rule`) chooses what the rebuild takes to be inside, when rings cross, overlap or sit in
+the wrong place. A valid polygon, or one fixed without moving a coordinate, comes out the same
+either way.
+
+- **Shells Minus Holes** (the default) is the rebuild above: rings keep the roles the data gives
+  them.
+- **Even-Odd** reads each ring's own area the same way, so a bowtie keeps both triangles and a ring
+  traced twice counts once, then keeps what lies inside an odd number of rings, whatever their
+  roles. This is close to the "linework" method of make-valid tools. Where two parts overlap is left
+  out, a ring listed as a part inside another is a hole, and what of a hole lies outside its
+  exterior ring is a part. It suits data whose ring roles may be wrong, such as a hole stored as a
+  part of its own: Shells Minus Holes fills it, Even-Odd keeps it a hole. Each part is combined
+  first, then the parts together, so a hole two parts both have stays out of both, and a part
+  whose exterior ring has no area is dropped with its holes, as under Shells Minus Holes. Duplicates,
+  a hole repeated in its own part or a part repeated whole (the same corners in the same order,
+  from any vertex and either way round, a vertex in the middle of a straight edge aside), are left
+  out first, since each pair would cancel out, and the tool says how many. Features rebuilt under Even-Odd have
+  `even_odd` in `repairs` after the codes.
+
+| Shape | Shells Minus Holes | Even-Odd |
+| --- | --- | --- |
+| Two overlapping squares | one merged polygon | two pieces, the overlap left out |
+| A square with a ring listed as a part inside it | the square, filled | the square with a hole |
+| A hole partly outside its square | the square with a notch | the square with a notch, and the part outside as its own piece |
+
 When a ring of a part crosses itself, Check Geometry doesn't check that part against its other
 rings or the other parts; Repair Geometry checks the feature again after the fixes that move no
 coordinate, and adds `hole_outside_shell`, `rings_intersect` and `parts_overlap` when the rebuild

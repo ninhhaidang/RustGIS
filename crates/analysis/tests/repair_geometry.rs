@@ -1038,13 +1038,10 @@ fn windings(g: &Geometry) -> Vec<(String, Geometry)> {
     all
 }
 
-/// The two examples of overlapping parts in the PostGIS manual's ST_MakeValid page
-/// (https://postgis.net/docs/ST_MakeValid.html), whose "structure" method gives one polygon for
-/// each, as merging the parts does here. The manual gives no areas: the expected ones are this
-/// tool's own (geo's overlay), pinned so that a change shows, and checked against what any union
-/// of the parts must cover: at least the largest part, less than all of them added up.
-#[test]
-fn the_postgis_manual_examples_merge_into_one_polygon() {
+/// The PostGIS manual's two ST_MakeValid examples of overlapping parts
+/// (https://postgis.net/docs/ST_MakeValid.html), each ring a part of its own, with the area this
+/// tool gives them merged (see [`the_postgis_manual_examples_merge_into_one_polygon`]).
+fn postgis_examples() -> Vec<(Vec<Vec<(f64, f64)>>, f64)> {
     let ring = |s: &str| -> Vec<(f64, f64)> {
         s.split(',')
             .map(|p| match p.split_whitespace().map(str::parse::<f64>).collect::<Vec<_>>()[..] {
@@ -1077,6 +1074,17 @@ fn the_postgis_manual_examples_merge_into_one_polygon() {
             19872.857,
         ),
     ];
+    examples.into()
+}
+
+/// The two examples of overlapping parts in the PostGIS manual's ST_MakeValid page
+/// (https://postgis.net/docs/ST_MakeValid.html), whose "structure" method gives one polygon for
+/// each, as merging the parts does here. The manual gives no areas: the expected ones are this
+/// tool's own (geo's overlay), pinned so that a change shows, and checked against what any union
+/// of the parts must cover: at least the largest part, less than all of them added up.
+#[test]
+fn the_postgis_manual_examples_merge_into_one_polygon() {
+    let examples = postgis_examples();
     for (rings, want) in examples {
         // Each ring a part of its own, as the manual's MULTIPOLYGONs have them.
         let owned: Vec<Vec<Ring>> = rings.iter().map(|r| vec![r.as_slice()]).collect();
@@ -1092,4 +1100,259 @@ fn the_postgis_manual_examples_merge_into_one_polygon() {
         // Relative, so that an overlay rounding a vertex a little differently still passes.
         assert!((got - want).abs() <= want * 1e-6, "area {got} not {want}");
     }
+}
+
+/// The output and repairs of one polygon feature holding `g`, repaired under `rule` (#2003), and
+/// the run's messages.
+fn one_by(rule: &str, g: Geometry) -> (Option<Geometry>, String, Vec<String>) {
+    let mut l = layer(GeometryType::Polygon);
+    add(&mut l, Some(g), "x");
+    let r = rustgis_analysis::run("repairGeometry", &l, &json!({"input": "input", "rule": rule})).unwrap();
+    valid(dataset(&r));
+    let (g, repairs) = rows(&r).remove(0);
+    (g, repairs, r.messages.clone())
+}
+
+/// The hole count of each part of a polygon geometry, sorted, and its area.
+fn shape(g: &Geometry) -> (Vec<usize>, f64) {
+    let Geometry::Polygon(parts) = g else { panic!("a polygon: {g:?}") };
+    let mut holes: Vec<usize> = parts.iter().map(|rings| rings.len() - 1).collect();
+    holes.sort_unstable();
+    (holes, area(g))
+}
+
+/// The shapes where Even-Odd gives another polygon than the default, with what it gives: each
+/// part's hole count, the area, and the repairs.
+fn rule_cases() -> Vec<(&'static str, Geometry, Vec<usize>, f64, &'static str)> {
+    let twice: Ring = &[(0., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)];
+    let small: Ring = &[(20., 0.), (22., 0.), (22., 2.), (20., 2.), (20., 0.)];
+    let arms = multi(&[&[&[(0., 4.), (10., 4.), (10., 6.), (0., 6.), (0., 4.)]], &[&[(4., 0.), (6., 0.), (6., 10.), (4., 10.), (4., 0.)]]]);
+    vec![
+        // Where two parts overlap is left out: two L shapes touching at two corners; four arms.
+        ("two overlapping parts", multi(&[&[SQUARE], &[OVERLAPPING]]), vec![0, 0], 150.0, "parts_overlap, even_odd"),
+        ("plus sign", arms, vec![0, 0, 0, 0], 32.0, "parts_overlap, even_odd"),
+        // What of a hole lies outside its exterior ring is a part.
+        ("hole outside its shell", poly(&[SQUARE, OUTSIDE]), vec![0, 0], 100.5, "hole_outside_shell, even_odd"),
+        (
+            "hole crossing its shell",
+            poly(&[SQUARE, &[(8., 4.), (8., 6.), (12., 6.), (12., 4.), (8., 4.)]]),
+            vec![0, 0],
+            100.0,
+            "hole_outside_shell, even_odd",
+        ),
+        // A ring listed as a part inside another is a hole, whichever way it is wound.
+        (
+            "hole listed as a part",
+            multi(&[&[SQUARE], &[&[(2., 2.), (2., 4.), (4., 4.), (4., 2.), (2., 2.)]]]),
+            vec![1],
+            96.0,
+            "parts_overlap, even_odd",
+        ),
+        (
+            "part inside another, wound the same way",
+            multi(&[&[SQUARE], &[&[(2., 2.), (8., 2.), (8., 8.), (2., 8.), (2., 2.)]]]),
+            vec![1],
+            64.0,
+            "parts_overlap, even_odd",
+        ),
+        // Duplicates are left out first rather than cancel each other out.
+        ("the same part twice", multi(&[&[SQUARE], &[SQUARE]]), vec![0], 100.0, "parts_overlap, even_odd"),
+        (
+            "the same part twice, from another vertex",
+            multi(&[&[SQUARE], &[&[(10., 0.), (10., 10.), (0., 10.), (0., 0.), (10., 0.)]]]),
+            vec![0],
+            100.0,
+            "parts_overlap, even_odd",
+        ),
+        (
+            "the same part twice, once with a vertex in the middle of an edge",
+            multi(&[&[SQUARE], &[&[(0., 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)]]]),
+            vec![0],
+            100.0,
+            "parts_overlap, even_odd",
+        ),
+        // A ring's own area is read as the default reads it: traced twice, it counts once.
+        ("a ring traced twice", poly(&[twice]), vec![0], 100.0, "self_intersection, even_odd"),
+        ("a ring traced twice beside a part", multi(&[&[twice], &[small]]), vec![0, 0], 104.0, "self_intersection, even_odd"),
+    ]
+}
+
+/// Shells Minus Holes, named, is the default exactly: the same output, coordinate for coordinate,
+/// with the same repairs and notices, on every shape the default rebuilds and every shape the two
+/// rules differ on.
+#[test]
+fn shells_minus_holes_named_is_the_default() {
+    let shapes = rebuilt().into_iter().map(|(_, g, _)| g).chain(rule_cases().into_iter().map(|(_, g, ..)| g));
+    for g in shapes {
+        let mut l = layer(GeometryType::Polygon);
+        add(&mut l, Some(g.clone()), "x");
+        let default = run(&l);
+        let named = rustgis_analysis::run("repairGeometry", &l, &json!({"input": "input", "rule": "Shells Minus Holes"})).unwrap();
+        assert_eq!(dataset(&named).features[0].geometry, dataset(&default).features[0].geometry, "{g:?}");
+        assert_eq!(rows(&named), rows(&default), "{g:?}");
+        assert_eq!(named.messages, default.messages, "{g:?}");
+    }
+}
+
+/// Even-Odd (#2003): what lies inside an odd number of rings, each ring's own area first, in every
+/// winding. A hole listed as a part stays a hole; overlaps are left out; duplicates are left out
+/// first and said; a ring that runs back over itself keeps its area. The feature's repairs say the
+/// rule, and one notice says how many features it rebuilt.
+#[test]
+fn even_odd_keeps_what_lies_inside_an_odd_number_of_rings() {
+    for (name, g, holes, want, code) in rule_cases() {
+        for (winding, g) in windings(&g) {
+            let (got, repairs, messages) = one_by("Even-Odd", g);
+            let got = got.unwrap_or_else(|| panic!("{name}, {winding}: no geometry ({repairs})"));
+            let (got_holes, got_area) = shape(&got);
+            assert_eq!(got_holes, holes, "{name}, {winding}: {got:?}");
+            assert!((got_area - want).abs() < 1e-6, "{name}, {winding}: area {got_area}");
+            assert_eq!(repairs, code, "{name}, {winding}");
+            assert!(messages.iter().any(|m| m.contains("1 feature was rebuilt by the Even-Odd rule")), "{name}: {messages:?}");
+            let dup = messages.iter().any(|m| m.contains("1 duplicate ring was left out"));
+            assert_eq!(dup, name.starts_with("the same part twice"), "{name}, {winding}: {messages:?}");
+        }
+    }
+    // The hole listed as a part, exactly: the square with a hole where the ring was.
+    let (got, ..) = one_by("Even-Odd", multi(&[&[SQUARE], &[&[(2., 2.), (2., 4.), (4., 4.), (4., 2.), (2., 2.)]]]));
+    assert_eq!(got.as_ref().map(norm), Some(norm(&poly(&[SQUARE, &[(2., 2.), (2., 4.), (4., 4.), (4., 2.), (2., 2.)]]))));
+    // As under the default: a hole equal to its exterior ring leaves no area (they aren't of one
+    // role, so they aren't duplicates), and so does a ring with all its points on one line.
+    for g in [poly(&[SQUARE, SQUARE]), poly(&[&[(0., 0.), (5., 5.), (10., 10.), (0., 0.)]])] {
+        let (got, repairs, messages) = one_by("Even-Odd", g.clone());
+        assert_eq!((got, repairs.as_str()), (None, "no_area"), "{g:?}");
+        // No duplicate was left out, so none is said.
+        assert!(!messages.iter().any(|m| m.contains("duplicate ring")), "{g:?}: {messages:?}");
+    }
+    // Two holes covering the square, one with a vertex mid-edge: one is a duplicate, left out, the
+    // other cancels the square, so no area is left, and the duplicate is still said.
+    let mid: &[(f64, f64)] = &[(0., 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)];
+    let (got, repairs, messages) = one_by("Even-Odd", poly(&[SQUARE, SQUARE, mid]));
+    assert_eq!((got, repairs.as_str()), (None, "no_area"));
+    assert!(messages.iter().any(|m| m.contains("1 duplicate ring was left out")), "{messages:?}");
+    // A feature valid as it is, or fixed without moving a coordinate, comes out the same under
+    // either rule; one the overlay rebuilds (the bowtie) says the rule.
+    for g in [poly(&[SQUARE, HOLE]), poly(&[&[(0., 0.), (10., 0.), (10., 10.), (0., 10.)]]), poly(&[BOWTIE])] {
+        let (got, repairs, messages) = one_by("Even-Odd", g.clone());
+        let (want, default_repairs) = one(GeometryType::Polygon, Some(g.clone()));
+        assert_eq!(got.as_ref().map(norm), want.as_ref().map(norm), "{g:?}");
+        let rebuilt = default_repairs.contains("self_intersection");
+        assert_eq!(repairs.ends_with("even_odd"), rebuilt, "{g:?}: {repairs}");
+        assert_eq!(messages.iter().any(|m| m.contains("Even-Odd")), rebuilt, "{g:?}");
+    }
+}
+
+/// The PostGIS manual's two examples under Even-Odd: 4 and 14 polygons, the counts the manual
+/// shows for its "linework" method.
+#[test]
+fn even_odd_gives_the_postgis_manual_linework_counts() {
+    for ((rings, _), want) in postgis_examples().into_iter().zip([4, 14]) {
+        let owned: Vec<Vec<Ring>> = rings.iter().map(|r| vec![r.as_slice()]).collect();
+        let parts: Vec<&[Ring]> = owned.iter().map(Vec::as_slice).collect();
+        let (got, repairs, _) = one_by("Even-Odd", multi(&parts));
+        let Some(Geometry::Polygon(polys)) = got else { panic!("{repairs}") };
+        assert_eq!(polys.len(), want, "{repairs}");
+    }
+}
+
+/// A rule the tool doesn't know is refused with its choices, not read as the default; any letter
+/// case of a choice is the choice.
+#[test]
+fn an_unknown_rule_is_refused() {
+    let mut l = layer(GeometryType::Polygon);
+    add(&mut l, Some(poly(&[BOWTIE])), "x");
+    let e = rustgis_analysis::run("repairGeometry", &l, &json!({"input": "input", "rule": "Odd-Even"})).unwrap_err();
+    assert!(e.contains("Shells Minus Holes") && e.contains("Even-Odd"), "{e}");
+    // Lowercase picks Even-Odd itself, not a quiet fall back to the default: its notice says so.
+    let r = rustgis_analysis::run("repairGeometry", &l, &json!({"input": "input", "rule": "even-odd"})).unwrap();
+    assert!(r.messages.iter().any(|m| m.contains("rebuilt by the Even-Odd rule")), "{:?}", r.messages);
+}
+
+/// Under Even-Odd the notices say what Even-Odd did: not the default's "merged" or "taken out";
+/// parts that overlap are said even when a part's ring crosses itself (which keeps the checks from
+/// relating it); and a duplicate written with -0.0 where the other has 0.0 is the same ring.
+#[test]
+fn even_odd_says_what_it_did() {
+    let (_, repairs, messages) = one_by("Even-Odd", multi(&[&[SQUARE], &[OVERLAPPING]]));
+    assert_eq!(repairs, "parts_overlap, even_odd");
+    assert!(!messages.iter().any(|m| m.contains("were merged") || m.contains("were taken out")), "{messages:?}");
+    // The overlap is said by parity: what an even number of parts cover is left out.
+    assert!(messages.iter().any(|m| m.contains("keeps what an odd number of parts cover")), "{messages:?}");
+    // No hole outside its ring here, so no notice of one; a hole outside its ring gets its own,
+    // counted, saying it became area.
+    assert!(!messages.iter().any(|m| m.contains("holes not inside their exterior ring")), "{messages:?}");
+    let (_, repairs, messages) = one_by("Even-Odd", poly(&[SQUARE, OUTSIDE]));
+    assert_eq!(repairs, "hole_outside_shell, even_odd");
+    let said = "holes not inside their exterior ring in 1 feature were combined by the Even-Odd rule";
+    assert!(messages.iter().any(|m| m.contains(said) && m.contains("is area, as a part, where no other ring covers it")), "{messages:?}");
+    // A bowtie part with a square overlapping one lobe: the overlap is left out and said.
+    let lobes: Ring = &[(0., 0.), (4., 4.), (4., 0.), (0., 4.), (0., 0.)];
+    let (got, repairs, _) = one_by("Even-Odd", multi(&[&[lobes], &[&[(3., 1.), (6., 1.), (6., 3.), (3., 3.), (3., 1.)]]]));
+    assert!(repairs.contains("parts_overlap") && repairs.contains("self_intersection"), "{repairs}");
+    assert!(got.is_some(), "{repairs}");
+    // A part's own hole is no overlap: a square with a hole, and a bowtie part well apart, which
+    // sends the feature to the overlay.
+    let far: Ring = &[(20., 0.), (22., 2.), (22., 0.), (20., 2.), (20., 0.)];
+    let (_, repairs, _) = one_by("Even-Odd", multi(&[&[SQUARE, HOLE], &[far]]));
+    assert_eq!(repairs, "self_intersection, even_odd");
+    // Parts sharing an edge, rounded to the grid, aren't taken for overlapping either (they touch
+    // along a line, which the checks say as such).
+    let side: Ring = &[(10., 0.), (20., 0.), (20., 10.), (10., 10.), (10., 0.)];
+    let (_, repairs, _) = one_by("Even-Odd", multi(&[&[SQUARE], &[side], &[far]]));
+    assert!(repairs.contains("even_odd"), "{repairs}");
+    // -0.0 and 0.0: one ring, left out once as a duplicate rather than canceled.
+    let neg: Ring = &[(-0.0, 0.), (10., 0.), (10., 10.), (-0.0, 10.), (-0.0, 0.)];
+    let (got, _, messages) = one_by("Even-Odd", multi(&[&[SQUARE], &[neg]]));
+    assert_eq!(got.map(|g| area(&g)), Some(100.0));
+    assert!(messages.iter().any(|m| m.contains("1 duplicate ring was left out")), "{messages:?}");
+}
+
+/// Even-Odd leaves out only duplicates no one means, gives an arealess part nothing, and says what
+/// it did with holes and parts, without taking a part's own hole or an island in it for an overlap.
+#[test]
+fn even_odd_builds_part_by_part() {
+    let far: Ring = &[(20., 0.), (22., 2.), (22., 0.), (20., 2.), (20., 0.)];
+    let inner: Ring = &[(2., 2.), (8., 2.), (8., 8.), (2., 8.), (2., 2.)];
+    let middle: Ring = &[(4., 4.), (6., 4.), (6., 6.), (4., 6.), (4., 4.)];
+    // Two parts with the same hole: the hole is in neither, so it stays out, and the inner part,
+    // inside the outer, is a hole.
+    let (got, repairs, messages) = one_by("Even-Odd", multi(&[&[SQUARE, middle], &[inner, middle]]));
+    assert_eq!(got.map(|g| area(&g)), Some(64.0), "{repairs}");
+    assert!(repairs.contains("parts_overlap"), "{repairs}");
+    assert!(!messages.iter().any(|m| m.contains("duplicate")), "{messages:?}");
+    // An island in another part's hole, and a bowtie part well apart: no overlap.
+    let (got, repairs, _) = one_by("Even-Odd", multi(&[&[SQUARE, inner], &[middle], &[far]]));
+    assert_eq!(repairs, "self_intersection, even_odd");
+    assert_eq!(got.map(|g| area(&g)), Some(100.0 - 36.0 + 4.0 + 2.0));
+    // A part whose exterior ring has no area takes its holes with it, as under the default.
+    let flat: Ring = &[(0., 0.), (5., 0.), (10., 0.), (0., 0.)];
+    let g = poly(&[flat, HOLE]);
+    assert_eq!(one_by("Even-Odd", g.clone()).0, one_by("Shells Minus Holes", g).0);
+    // A hole crossing itself with a lobe outside its exterior ring: said, as under the default.
+    let lobes: Ring = &[(8., 4.), (12., 6.), (12., 4.), (8., 6.), (8., 4.)];
+    for rule in ["Shells Minus Holes", "Even-Odd"] {
+        let (_, repairs, _) = one_by(rule, poly(&[SQUARE, lobes]));
+        assert!(repairs.contains("hole_outside_shell"), "{rule}: {repairs}");
+    }
+    // Parts meeting along a line are joined, and that is said.
+    let side: Ring = &[(10., 0.), (20., 0.), (20., 10.), (10., 10.), (10., 0.)];
+    let (got, repairs, messages) = one_by("Even-Odd", multi(&[&[SQUARE], &[side], &[far]]));
+    assert!(repairs.contains("parts_overlap"), "{repairs}");
+    assert!(messages.iter().any(|m| m.contains("joins parts that meet along a line")), "{messages:?}");
+    assert_eq!(got.map(|g| area(&g)), Some(202.0));
+}
+
+/// What Even-Odd's notices say is what it did: a part repeated whole is left out as a duplicate,
+/// not said as an overlap left out, and where two holes of a part overlap is area again.
+#[test]
+fn even_odd_notices_match_the_result() {
+    let (got, repairs, messages) = one_by("Even-Odd", multi(&[&[SQUARE], &[SQUARE]]));
+    assert_eq!(got.map(|g| area(&g)), Some(100.0), "{repairs}");
+    assert!(messages.iter().any(|m| m.contains("1 duplicate ring was left out")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("keeps a part repeated whole once")), "{messages:?}");
+    let left: Ring = &[(2., 2.), (6., 2.), (6., 6.), (2., 6.), (2., 2.)];
+    let right: Ring = &[(4., 4.), (8., 4.), (8., 8.), (4., 8.), (4., 4.)];
+    let (got, _, messages) = one_by("Even-Odd", poly(&[SQUARE, left, right]));
+    assert_eq!(got.map(|g| area(&g)), Some(100.0 - 28.0 + 4.0));
+    assert!(messages.iter().any(|m| m.contains("where two holes overlap is area again")), "{messages:?}");
 }

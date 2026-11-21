@@ -31,7 +31,10 @@ Based on the RustGIS user guide, Analysis › Geoprocessing tools
      repaired; features with a missing or non-finite coordinate, even in a hole, or left with no
      usable points or, for polygons, no area once repaired are written without geometry; valid
      points and lines are kept; other features too complex to check, or whose repair fails,
-     are written unchanged)
+     are written unchanged; optional `rule`: "Shells Minus Holes", the default, merges
+     overlapping parts and fills a ring listed as a part, or "Even-Odd", which keeps what lies
+     inside an odd number of rings, so overlaps are left out and a hole stored as a part stays a
+     hole)
    - selection: `selectByLocation` (`input`, `select`, `distance`, `invert`), `selectByAttributes`
      (`input`, `where`)
    - statistics: `countPoints` (Summarize Within: `polygons`, `points`, `statistics`: summary

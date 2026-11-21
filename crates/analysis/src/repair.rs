@@ -31,6 +31,7 @@
 use crate::validity::{self, At, Checked, Code, Limit, Problem, Room};
 use geo::algorithm::bool_ops::{BooleanOps, FillRule, OpType};
 use geo::orient::{Direction, Orient};
+use geo::{Area, Euclidean, Length};
 use rustgis_data::{Coord, Geometry};
 
 /// Work per vertex the overlay takes in or makes, against the same bound as a check
@@ -109,6 +110,10 @@ pub(crate) struct Repaired {
     /// When the overlay rebuilt it, how far its coordinates may have moved, in their units (degrees,
     /// as coordinates are stored).
     pub moved: Option<f64>,
+    /// Under [`Rule::EvenOdd`], rings dropped as duplicates before the rings were combined, since a
+    /// pair would cancel out: a hole repeated in its part, and every ring of a part repeated whole
+    /// (the same corners, [`normal_form`]).
+    pub duplicates: usize,
 }
 
 /// What [`repair`] made of one geometry.
@@ -118,20 +123,84 @@ pub(crate) enum Outcome {
     Valid,
     Repaired(Repaired),
     Gone(Gone),
+    /// No area left ([`Gone::NoArea`]) once `duplicates` duplicate rings were left out
+    /// ([`Rule::EvenOdd`]), which the tool still counts.
+    GoneAfterDuplicates {
+        duplicates: usize,
+    },
     Kept(Kept),
 }
 
-/// Repairs one geometry, spending at most [`validity::MAX_WORK`] on each check and on the
-/// overlay, and asking `has_room` whether the browser can give the overlay's memory before it runs
-/// (see `web_has_room` in the tools).
-pub(crate) fn repair(g: Option<&Geometry>, has_room: &dyn Fn(u64) -> bool) -> Outcome {
-    repair_with(g, validity::MAX_WORK, &|_| true, has_room)
+/// How the rebuild by area decides what is inside a polygon whose rings cross, overlap or sit in
+/// the wrong place (#2003). Both give a valid geometry; they differ in what the rings are taken to
+/// mean, and only for such polygons: one valid as it is, or fixed without moving a coordinate, is
+/// written the same either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Rule {
+    /// Each part is its exterior ring's area less the union of its holes', and the feature is the
+    /// union of its parts: the rings' roles as OGC gives them (GEOS's "structure"). Parts that
+    /// overlap merge, a hole outside its exterior ring disappears, and a ring listed as a part of
+    /// its own is filled even when it lies inside another part.
+    #[default]
+    ShellsMinusHoles,
+    /// Each ring's own area as [`Rule::ShellsMinusHoles`] reads it (its loops by winding, so a
+    /// ring traced twice or a bowtie keeps its area), then the rings combined by parity whatever
+    /// their roles, first within each part and then the parts together: what lies inside an odd
+    /// number of rings is in, close to GEOS's "linework" method. Where two parts overlap is left
+    /// out, where two holes of a part overlap is area again, a ring listed as a part inside another
+    /// is a hole, and what of a hole lies outside its exterior ring is a part. A hole repeated in
+    /// its part and a part repeated whole are dropped first, since a pair would cancel out
+    /// ([`Repaired::duplicates`]); linework would cancel them.
+    EvenOdd,
 }
 
-/// [`repair`] with a work `budget`, asking `allow` before each reservation of a buffer whether to
+/// Each rule by the name Repair Geometry's `rule` parameter gives it, in the order it offers them.
+const NAMED: &[(&str, Rule)] = &[("Shells Minus Holes", Rule::ShellsMinusHoles), ("Even-Odd", Rule::EvenOdd)];
+/// The names of [`NAMED`], in its order, as the parameter's choices.
+pub(crate) const RULES: [&str; NAMED.len()] = {
+    let mut names = [""; NAMED.len()];
+    let mut i = 0;
+    while i < NAMED.len() {
+        names[i] = NAMED[i].0;
+        i += 1;
+    }
+    names
+};
+
+impl Rule {
+    /// The rule a tool parameter names, as [`NAMED`] spells it, in any case.
+    pub(crate) fn named(name: &str) -> Option<Rule> {
+        NAMED.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, rule)| *rule)
+    }
+}
+
+/// The memory, per vertex, that [`Rule::EvenOdd`] holds besides the overlay's
+/// ([`OVERLAY_BYTES`]), at most, while [`distinct_rings`] finds duplicates: each ring's normal form
+/// kept (16), and while one is made its two readings (32), Booth's failure table (16), a rotation
+/// (16) and the least so far (16; the table and the rotation are never held together); and, held
+/// with them, a ring's place in `keep` (16), a part's holes listed (24 a ring), with their corner
+/// counts (32), the ids kept (8) and their keys (32, up to twice that as a growing list reserves),
+/// a ring at least 4 vertices. At most about 116 a vertex for large rings, about 48 for many small
+/// ones; 128 leaves room.
+const EVEN_ODD_BYTES: u64 = 128;
+
+/// Repairs one geometry under `rule`, spending at most [`validity::MAX_WORK`] on each check and on
+/// the overlay, and asking `has_room` whether the browser can give the overlay's memory before it
+/// runs (see `web_has_room` in the tools).
+pub(crate) fn repair_by(g: Option<&Geometry>, rule: Rule, has_room: &dyn Fn(u64) -> bool) -> Outcome {
+    repair_by_with(g, rule, validity::MAX_WORK, &|_| true, has_room)
+}
+
+/// [`repair_by`] with a work `budget`, asking `allow` before each reservation of a buffer whether to
 /// try it, as [`validity::check_with`] does: tests refuse some to stand in for running out of
 /// memory.
-pub(crate) fn repair_with(g: Option<&Geometry>, budget: u64, allow: &dyn Fn(usize) -> bool, has_room: &dyn Fn(u64) -> bool) -> Outcome {
+pub(crate) fn repair_by_with(
+    g: Option<&Geometry>,
+    rule: Rule,
+    budget: u64,
+    allow: &dyn Fn(usize) -> bool,
+    has_room: &dyn Fn(u64) -> bool,
+) -> Outcome {
     let first = validity::check_with(g, budget, allow);
     if first.problems.is_empty() {
         return Outcome::Valid;
@@ -148,11 +217,13 @@ pub(crate) fn repair_with(g: Option<&Geometry>, budget: u64, allow: &dyn Fn(usiz
         Geometry::Line(parts) => match lines(parts, room) {
             Err(limit) => Outcome::Kept(kept_for(limit)),
             Ok((parts, _)) if parts.is_empty() => Outcome::Gone(Gone::TooFewPoints),
-            Ok((parts, dropped)) => {
-                verified(Repaired { geometry: Geometry::Line(parts), codes: first.codes(), dropped, narrow: 0, moved: None }, budget, allow)
-            }
+            Ok((parts, dropped)) => verified(
+                Repaired { geometry: Geometry::Line(parts), codes: first.codes(), dropped, narrow: 0, moved: None, duplicates: 0 },
+                budget,
+                allow,
+            ),
         },
-        Geometry::Polygon(polys) => polygon(polys, &first, budget, allow, has_room),
+        Geometry::Polygon(polys) => polygon(polys, &first, rule, budget, allow, has_room),
         // A point's only problems, a missing or non-finite coordinate, are handled above.
         Geometry::Point(_) | Geometry::MultiPoint(_) => Outcome::Kept(Kept::Failed),
     }
@@ -264,6 +335,7 @@ fn rings(polys: &[Vec<Vec<Coord>>], room: Room) -> Result<(Vec<Vec<Vec<Coord>>>,
 fn polygon(
     polys: &[Vec<Vec<Coord>>],
     first: &Checked,
+    rule: Rule,
     budget: u64,
     allow: &dyn Fn(usize) -> bool,
     has_room: &dyn Fn(u64) -> bool,
@@ -297,7 +369,7 @@ fn polygon(
     }
     codes.sort_unstable();
     if second.problems.is_empty() {
-        return Outcome::Repaired(Repaired { geometry: fixed, codes, dropped, narrow: 0, moved: None });
+        return Outcome::Repaired(Repaired { geometry: fixed, codes, dropped, narrow: 0, moved: None, duplicates: 0 });
     }
     let Geometry::Polygon(parts) = &fixed else { return Outcome::Kept(Kept::Failed) };
     if gone(second).is_some() {
@@ -309,7 +381,12 @@ fn polygon(
     if size.saturating_mul(OVERLAY_COST) > budget {
         return Outcome::Kept(Kept::Work);
     }
-    if !has_room(size.saturating_mul(OVERLAY_BYTES)) {
+    // Even-Odd's duplicate keys aren't charged for one part with one hole or none, which can have
+    // no duplicate ([`distinct_rings`] makes none). Otherwise they are, an upper bound: rings and
+    // parts of sizes no other shares get no key either.
+    let keyed = !matches!(parts.as_slice(), [rings] if rings.len() < 3);
+    let per_vertex = if rule == Rule::EvenOdd && keyed { OVERLAY_BYTES + EVEN_ODD_BYTES } else { OVERLAY_BYTES };
+    if !has_room(size.saturating_mul(per_vertex)) {
         return Outcome::Kept(Kept::Memory);
     }
     let Some(step) = grid_step(parts.iter().flatten().flatten().map(|c| (c.x, c.y))) else { return Outcome::Kept(Kept::Failed) };
@@ -322,14 +399,18 @@ fn polygon(
         Ok(c) => c,
         Err(limit) => return Outcome::Kept(kept_for(limit)),
     };
-    let rebuilt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| by_area(parts, &crossing, room)));
-    let Rebuilt { polys, no_area, narrow, found } = match rebuilt {
+    let rebuilt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match rule {
+        Rule::ShellsMinusHoles => by_area(parts, &crossing, room),
+        Rule::EvenOdd => by_parity(parts, &crossing, room),
+    }));
+    let Rebuilt { polys, no_area, narrow, found, duplicates } = match rebuilt {
         Ok(Ok(rebuilt)) => rebuilt,
         Ok(Err(kept)) => return Outcome::Kept(kept),
         Err(_) => return Outcome::Kept(Kept::Failed),
     };
     if polys.is_empty() {
-        return Outcome::Gone(Gone::NoArea);
+        // The duplicates left out on the way are still said.
+        return if duplicates > 0 { Outcome::GoneAfterDuplicates { duplicates } } else { Outcome::Gone(Gone::NoArea) };
     }
     for code in found {
         if !codes.contains(&code) {
@@ -338,7 +419,11 @@ fn polygon(
     }
     codes.sort_unstable();
     let moved = Some(step * GRID_STEPS_MOVED);
-    verified(Repaired { geometry: Geometry::Polygon(polys), codes, dropped: dropped.saturating_add(no_area), narrow, moved }, budget, allow)
+    verified(
+        Repaired { geometry: Geometry::Polygon(polys), codes, dropped: dropped.saturating_add(no_area), narrow, moved, duplicates },
+        budget,
+        allow,
+    )
 }
 
 /// The step of the integer grid i_overlay rounds the points `pts` to: it takes half the larger
@@ -503,7 +588,7 @@ fn wider(mut polys: Vec<geo::Polygon<f64>>, step: f64, narrow: &mut usize, room:
 /// itself isn't related to its other rings or to other parts (see `Checked::unrelated`).
 type Found = Vec<Code>;
 
-/// What [`by_area`] made of a feature's parts.
+/// What [`by_area`] or [`by_parity`] made of a feature's parts.
 struct Rebuilt {
     /// The rings of the result.
     polys: Vec<Vec<Vec<Coord>>>,
@@ -512,6 +597,388 @@ struct Rebuilt {
     /// Holes and parts dropped as narrower than a step of the overlay's grid in any direction.
     narrow: usize,
     found: Found,
+    /// Rings dropped first as duplicates, a hole repeated in its part or every ring of a part
+    /// repeated whole ([`Rule::EvenOdd`] only).
+    duplicates: usize,
+}
+
+/// The area `ring` stands for, as both rules read one ring: as it is when simple (it isn't in
+/// `crossing`, the rings that cross, touch or run back over themselves, by part and ring, sorted),
+/// otherwise its loops by non-zero winding, so both lobes of a bowtie count and a ring traced twice
+/// counts once.
+fn ring_area(ring: &[Coord], at: (usize, usize), crossing: &[(usize, usize)], room: Room) -> Result<geo::MultiPolygon<f64>, Kept> {
+    let ring = geo::LineString(room.collect(ring.len(), ring.iter().map(|c| geo::Coord { x: c.x, y: c.y })).map_err(kept_for)?);
+    let poly = geo::Polygon::new(ring, vec![]);
+    if crossing.binary_search(&at).is_err() {
+        // A simple ring: its area as it is, wound as the overlay expects.
+        return Ok(geo::MultiPolygon::new(vec![poly.orient(Direction::Default)]));
+    }
+    on_grid(std::iter::once(poly.exterior()))?;
+    Ok(poly.boolean_op_with_fill_rule(&geo::MultiPolygon::new(vec![]), OpType::Union, FillRule::NonZero))
+}
+
+/// The rebuild under [`Rule::EvenOdd`] of `parts` (closed rings, each with 3 distinct points or
+/// more; `crossing` as in [`ring_area`]), built as [`by_area`] builds its own, part by part and then
+/// the parts together, with parity in place of shells minus holes:
+/// - duplicates (the same corners, [`normal_form`]) left out first ([`distinct_rings`]): a hole repeated in its part, and a part
+///   repeated whole, which parity would otherwise cancel out;
+/// - each ring's own area ([`ring_area`]); a part whose exterior ring has none is left out with its
+///   holes, as [`by_area`] leaves it;
+/// - a part's holes narrower than a step of the overlay's grid dropped, then the part's rings
+///   combined by parity, so its holes' overlaps come back and a hole partly outside its ring adds
+///   that part as area;
+/// - the parts, the narrow ones dropped, combined by parity, so where parts overlap is left out and
+///   parts meeting along a line are joined.
+///
+/// Besides the checks' codes it finds those the checks can't tell of a part with a ring crossing
+/// itself ([`unrelated_hole_codes`]), and [`Code::PartsOverlap`] when the parts' combination makes fewer polygons than it was given (parts joined)
+/// or less area than they had, by more than rounding to the grid could take: it moves each edge by
+/// at most half a step on each axis, so changes the area by less than the rings' length times a
+/// step.
+///
+/// It has no Cancel check of its own: its passes over the rings are bounded by the work budget
+/// `polygon` checks before calling it, and the tool looks at Cancel between features.
+fn by_parity(parts: &[Vec<Vec<Coord>>], crossing: &[(usize, usize)], room: Room) -> Result<Rebuilt, Kept> {
+    let empty = geo::MultiPolygon::<f64>::new(vec![]);
+    let Distinct { keep, duplicates } = distinct_rings(parts, room).map_err(kept_for)?;
+    let mut all: Vec<geo::Polygon<f64>> = Vec::new();
+    let mut no_area = 0usize;
+    let mut narrow = 0usize;
+    let mut found = Found::new();
+    // `keep` is by part, then ring, and keeps every exterior ring of a part it keeps.
+    for kept in keep.chunk_by(|a, b| a.0 == b.0) {
+        let Some(&(p, 0)) = kept.first() else { continue };
+        let Some(rings) = parts.get(p) else { continue };
+        let Some(shell) = rings.first() else { continue };
+        let shell = ring_area(shell, (p, 0), crossing, room)?;
+        if shell.0.is_empty() {
+            // Its holes go with it.
+            no_area += 1;
+            continue;
+        }
+        let mut cut: Vec<geo::Polygon<f64>> = Vec::new();
+        for &(_, r) in kept.get(1..).unwrap_or_default() {
+            let Some(hole) = rings.get(r) else { continue };
+            let hole = ring_area(hole, (p, r), crossing, room)?;
+            if hole.0.is_empty() {
+                no_area += 1;
+            }
+            for piece in hole.0 {
+                room.grow(&mut cut).map_err(kept_for)?;
+                cut.push(piece);
+            }
+        }
+        if !cut.is_empty() {
+            let step = on_grid(rings_of(&shell.0).chain(rings_of(&cut)))?;
+            cut = wider(cut, step, &mut narrow, room)?;
+            // What is left is on that grid too; checked again all the same, since a panic in the
+            // overlay can't be caught in the browser.
+            on_grid(rings_of(&shell.0).chain(rings_of(&cut)))?;
+        }
+        let part = if cut.is_empty() {
+            shell
+        } else {
+            let cut = geo::MultiPolygon::new(cut);
+            let related = (0..rings.len()).all(|r| crossing.binary_search(&(p, r)).is_err());
+            if !related {
+                unrelated_hole_codes(&shell, &cut, &mut found);
+            }
+            let mut pieces: Vec<geo::Polygon<f64>> = room.vec(shell.0.len().saturating_add(cut.0.len())).map_err(kept_for)?;
+            pieces.extend(shell.0);
+            pieces.extend(cut.0);
+            geo::MultiPolygon::new(pieces).boolean_op_with_fill_rule(&empty, OpType::Union, FillRule::EvenOdd)
+        };
+        if part.0.is_empty() {
+            no_area += 1;
+        }
+        for piece in part.0 {
+            room.grow(&mut all).map_err(kept_for)?;
+            all.push(piece);
+        }
+    }
+    let combined = if parts.len() > 1 && all.len() > 1 {
+        // Parts narrower than a step of the grid, in any direction, are dropped first; finding the
+        // step checks the grid can take every vertex, which holds for those left.
+        let step = on_grid(rings_of(&all))?;
+        let all = wider(all, step, &mut narrow, room)?;
+        // Every part narrower than a step (two thin rectangles overlapping): none left, so no area,
+        // as a part with none is, not a grid with no coordinates to check.
+        if all.is_empty() {
+            return Ok(Rebuilt { polys: Vec::new(), no_area, narrow, found, duplicates });
+        }
+        // The overlay rounds the parts left to their own grid, finer where a distant sliver was
+        // dropped: that step, not the first, bounds what rounding can take from their area.
+        let step = on_grid(rings_of(&all))?;
+        let given = all.len();
+        let each: f64 = all.iter().map(Area::unsigned_area).sum();
+        let length: f64 = rings_of(&all).map(|r| Euclidean.length(r)).sum();
+        let combined = geo::MultiPolygon::new(all).boolean_op_with_fill_rule(&empty, OpType::Union, FillRule::EvenOdd);
+        if combined.0.len() < given || each - combined.unsigned_area() > length * step {
+            found.push(Code::PartsOverlap);
+        }
+        combined
+    } else {
+        geo::MultiPolygon::new(all)
+    };
+    Ok(Rebuilt { polys: polygons(&combined, room).map_err(kept_for)?, no_area, narrow, found, duplicates })
+}
+
+/// What the checks don't tell of the holes of a part with a ring crossing itself, which they
+/// can't relate to the rest: [`Code::HoleOutsideShell`] when some of `cut`, its holes' areas, lies
+/// outside `shell`, its exterior ring's, and [`Code::RingsIntersect`] when holes overlap or touch
+/// along a line, which their union tells by making fewer polygons than it was given.
+fn unrelated_hole_codes(shell: &geo::MultiPolygon<f64>, cut: &geo::MultiPolygon<f64>, found: &mut Found) {
+    if !found.contains(&Code::HoleOutsideShell) && !cut.boolean_op_with_fill_rule(shell, OpType::Difference, FillRule::NonZero).0.is_empty()
+    {
+        found.push(Code::HoleOutsideShell);
+    }
+    if cut.0.len() > 1
+        && !found.contains(&Code::RingsIntersect)
+        && on_grid(rings_of(&cut.0)).is_ok()
+        && cut.boolean_op_with_fill_rule(&geo::MultiPolygon::new(vec![]), OpType::Union, FillRule::NonZero).0.len() < cut.0.len()
+    {
+        found.push(Code::RingsIntersect);
+    }
+}
+
+/// What [`distinct_rings`] keeps of a polygon's rings.
+struct Distinct {
+    /// The rings to combine, by part and then ring.
+    keep: Vec<(usize, usize)>,
+    /// How many rings were left out as duplicates.
+    duplicates: usize,
+}
+
+/// The rings of `parts` to combine under [`Rule::EvenOdd`], without duplicates whose
+/// canceling out no one means: a hole repeated in its own part, and a part repeated whole (its
+/// exterior ring and its holes, after the first). A hole repeated in another part is kept: each of
+/// the parts has it, and leaving one out would fill it. The same ring is the same corners in the
+/// same cyclic order, from any vertex and in either direction, a vertex in the middle of a straight
+/// edge aside ([`normal_form`]): a copy with one more such vertex would cancel its twin out as
+/// surely. Only rings, and parts, of as many corners are compared, so a polygon that can have no
+/// duplicate costs no normal form. In buffers reserved fallibly.
+fn distinct_rings(parts: &[Vec<Vec<Coord>>], room: Room) -> Result<Distinct, Limit> {
+    let n = parts.iter().map(Vec::len).fold(0usize, usize::saturating_add);
+    let mut keep: Vec<(usize, usize)> = room.vec(n)?;
+    // One part with one hole or none can have no duplicate.
+    if let [rings] = parts
+        && rings.len() < 3
+    {
+        keep.extend((0..rings.len()).map(|r| (0, r)));
+        return Ok(Distinct { keep, duplicates: 0 });
+    }
+    let mut duplicates = 0usize;
+    for (p, rings) in parts.iter().enumerate() {
+        let Some((_, rest)) = rings.split_first() else { continue };
+        keep.push((p, 0));
+        let mut holes = room.collect(rest.len(), rest.iter().enumerate().map(|(h, ring)| (h + 1, ring.as_slice())))?;
+        let (kept, left_out) = first_of_each(&mut holes, room)?;
+        duplicates += left_out;
+        keep.extend(kept.into_iter().map(|r| (p, r)));
+    }
+    // Parts that may be the same: the same number of rings kept, of the same number of points.
+    let mut sizes: Vec<(usize, usize, usize)> = room.vec(parts.len())?;
+    for kept in keep.chunk_by(|a, b| a.0 == b.0) {
+        let Some(&(p, _)) = kept.first() else { continue };
+        let points = kept.iter().filter_map(|&(p, r)| parts.get(p)?.get(r)).map(|r| corner_count(r)).fold(0usize, usize::saturating_add);
+        sizes.push((kept.len(), points, p));
+    }
+    sizes.sort_unstable();
+    let mut repeated: Vec<usize> = Vec::new();
+    let mut keyed: Vec<(Vec<Vec<(u64, u64)>>, usize)> = Vec::new();
+    for group in sizes.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        if group.len() < 2 {
+            continue;
+        }
+        keyed.clear();
+        for &(count, _, p) in group {
+            let from = keep.partition_point(|k| k.0 < p);
+            let mut forms = room.vec(count)?;
+            for &(p, r) in keep.get(from..from.saturating_add(count)).unwrap_or_default() {
+                let Some(ring) = parts.get(p).and_then(|rings| rings.get(r)) else { continue };
+                forms.push(normal_form(ring, room)?);
+            }
+            // The exterior ring first, then the holes in any order.
+            if let Some((_, holes)) = forms.split_first_mut() {
+                holes.sort_unstable();
+            }
+            room.grow(&mut keyed)?;
+            keyed.push((forms, p));
+        }
+        keyed.sort_unstable();
+        for pair in keyed.windows(2) {
+            if let [first, then] = pair
+                && first.0 == then.0
+            {
+                room.grow(&mut repeated)?;
+                repeated.push(then.1);
+            }
+        }
+    }
+    repeated.sort_unstable();
+    let before = keep.len();
+    keep.retain(|(p, _)| repeated.binary_search(p).is_err());
+    Ok(Distinct { duplicates: duplicates + (before - keep.len()), keep })
+}
+
+/// Of `rings` (an id and the ring), the ids of those that aren't a duplicate (the same corners, [`normal_form`]) of another with
+/// a lower id, in order, and how many are. Only rings with as many corners ([`corner_count`]) get
+/// a normal form.
+fn first_of_each(rings: &mut [(usize, &[Coord])], room: Room) -> Result<(Vec<usize>, usize), Limit> {
+    // One ring or none: no duplicate, and no corners to count.
+    if let [] | [_] = rings {
+        return Ok((room.collect(rings.len(), rings.iter().map(|&(id, _)| id))?, 0));
+    }
+    let mut sized = room.collect(rings.len(), rings.iter().map(|&(id, ring)| (corner_count(ring), id, ring)))?;
+    sized.sort_unstable_by_key(|&(n, id, _)| (n, id));
+    let mut kept: Vec<usize> = room.vec(rings.len())?;
+    let mut keyed: Vec<(Vec<(u64, u64)>, usize)> = Vec::new();
+    for group in sized.chunk_by(|a, b| a.0 == b.0) {
+        if let [(_, id, _)] = group {
+            kept.push(*id);
+            continue;
+        }
+        for &(_, id, ring) in group {
+            room.grow(&mut keyed)?;
+            keyed.push((normal_form(ring, room)?, id));
+        }
+    }
+    keyed.sort_unstable();
+    let mut duplicates = 0usize;
+    for (i, (form, id)) in keyed.iter().enumerate() {
+        if i > 0 && keyed.get(i - 1).is_some_and(|prev| prev.0 == *form) {
+            duplicates += 1;
+        } else {
+            kept.push(*id);
+        }
+    }
+    kept.sort_unstable();
+    Ok((kept, duplicates))
+}
+
+/// A ring without its closing repeat.
+fn open(ring: &[Coord]) -> &[Coord] {
+    match ring.split_last() {
+        Some((last, rest)) if Some(last) == rest.first() => rest,
+        _ => ring,
+    }
+}
+
+/// How far from 0, how near it, and how close together coordinates may be for
+/// [`straight_through`]'s test to be exact: each 0 or between `1 / EXACT_SPAN` and `EXACT_SPAN` in
+/// size, and any two on one axis equal or at least `1 / EXACT_SPAN` apart. The differences'
+/// products then run from 1e-200 to 4e200, and the rounding tails the test's later stages
+/// multiply together (each at least about 1e-116, from a coordinate or difference of 1e-100) stay
+/// within an f64's normal range too.
+const EXACT_SPAN: f64 = 1e100;
+
+/// Whether `b`, between `a` and `c` in a ring, lies on the straight line from `a` to `c`, exactly
+/// (by Shewchuk's adaptive orientation test, as geo's robust kernel gives it: J. R. Shewchuk,
+/// "Adaptive precision floating-point arithmetic and fast robust geometric predicates", Discrete &
+/// Computational Geometry 18(3), 1997, 305–363), and strictly between them: a vertex in the middle
+/// of a straight edge, which doesn't change the ring. A spike, going back the way it came, isn't.
+///
+/// The test is exact only where its products neither overflow nor underflow (Shewchuk's own
+/// condition; past it, an overflow's NaN reads as collinear and an underflow's 0 as on the line):
+/// so only within [`EXACT_SPAN`] of 0, and with no two coordinates closer than its inverse but
+/// equal, is a vertex on a slanted edge taken for one mid-edge. Elsewhere it stays a corner. Real
+/// coordinates, in degrees, meters or feet, are well inside. A horizontal or vertical edge needs no
+/// such test: its vertices share one coordinate exactly, at any size.
+fn straight_through(a: Coord, b: Coord, c: Coord) -> bool {
+    use geo::kernels::{Kernel, Orientation, RobustKernel};
+    let g = |p: Coord| geo::Coord { x: p.x, y: p.y };
+    let within = |lo: f64, v: f64, hi: f64| lo.min(hi) <= v && v <= lo.max(hi);
+    let sized = |v: f64| v == 0.0 || (1.0 / EXACT_SPAN..=EXACT_SPAN).contains(&v.abs());
+    let small = |p: Coord| sized(p.x) && sized(p.y);
+    let apart = |u: f64, v: f64| u == v || (u - v).abs() >= 1.0 / EXACT_SPAN;
+    let exact = small(a)
+        && small(b)
+        && small(c)
+        && [(a.x, b.x), (a.x, c.x), (b.x, c.x), (a.y, b.y), (a.y, c.y), (b.y, c.y)].iter().all(|&(u, v)| apart(u, v));
+    let between = b != a && b != c && within(a.x, b.x, c.x) && within(a.y, b.y, c.y);
+    // On a horizontal or vertical edge, being on the line is the shared coordinate being equal:
+    // exact at any size, so the range above isn't needed there.
+    let level = (a.x == b.x && b.x == c.x) || (a.y == b.y && b.y == c.y);
+    between && (level || (exact && RobustKernel::orient2d(g(a), g(b), g(c)) == Orientation::Collinear))
+}
+
+/// The corners of an open ring: its vertices but those in the middle of a straight edge
+/// ([`straight_through`]), each tested against its neighbors as written, so a straight run of
+/// several loses them all. A ring of fewer than three vertices keeps them.
+fn corners(pts: &[Coord]) -> impl Iterator<Item = &Coord> {
+    let n = pts.len();
+    pts.iter()
+        .enumerate()
+        .filter(move |&(i, &b)| {
+            n < 3 || {
+                let (a, c) = (pts.get((i + n - 1) % n), pts.get((i + 1) % n));
+                !matches!((a, c), (Some(&a), Some(&c)) if straight_through(a, b, c))
+            }
+        })
+        .map(|(_, c)| c)
+}
+
+/// How many corners a closed ring has ([`corners`]): the size its [`normal_form`] has.
+fn corner_count(ring: &[Coord]) -> usize {
+    corners(open(ring)).count()
+}
+
+/// A closed ring's corners ([`corners`]) as bits, without the closing repeat: its least rotation
+/// (as a sequence of points) in whichever direction reads less, the same for the same ring whatever
+/// vertex it starts at, whichever way it is wound, and whatever vertices it has in the middle of a
+/// straight edge. In time and memory linear in the ring, however often it passes one vertex
+/// ([`least_rotation`]).
+fn normal_form(ring: &[Coord], room: Room) -> Result<Vec<(u64, u64)>, Limit> {
+    let pts = open(ring);
+    let n = corners(pts).count();
+    // Plus 0.0 makes -0.0 the same as 0.0: the same point, which writers and reprojection give either way.
+    let forward = room.collect(n, corners(pts).map(|c| ((c.x + 0.0).to_bits(), (c.y + 0.0).to_bits())))?;
+    let backward = room.collect(n, forward.iter().rev().copied())?;
+    let mut best: Option<Vec<(u64, u64)>> = None;
+    for seq in [forward, backward] {
+        let start = least_rotation(&seq, room)?;
+        let form = room.collect(n, seq.iter().skip(start).chain(seq.iter().take(start)).copied())?;
+        if best.as_ref().is_none_or(|b| form < *b) {
+            best = Some(form);
+        }
+    }
+    Ok(best.unwrap_or_default())
+}
+
+/// Where the lexicographically least rotation of `s` starts, by Booth's algorithm in linear time
+/// (K. S. Booth, "Lexicographically least circular substrings", Information Processing Letters
+/// 10(4–5), 1980, 240–242): a failure function over `s` read twice round, as Knuth–Morris–Pratt
+/// matching uses one. 0 for an empty `s`.
+fn least_rotation(s: &[(u64, u64)], room: Room) -> Result<usize, Limit> {
+    let n = s.len();
+    let len = n.saturating_mul(2);
+    // f[j]: the failure function's value at j, one more than the index it points to (0 for none),
+    // so it stays unsigned.
+    let mut f: Vec<usize> = room.collect(len, std::iter::repeat_n(0, len))?;
+    let at = |i: usize| s.get(i % n.max(1)).copied().unwrap_or_default();
+    let mut k = 0usize;
+    for j in 1..len {
+        let sj = at(j);
+        let mut i = f.get(j.saturating_sub(k + 1)).copied().unwrap_or(0);
+        while i != 0 && sj != at(k + i) {
+            if sj < at(k + i) {
+                k = j.saturating_sub(i);
+            }
+            i = f.get(i.saturating_sub(1)).copied().unwrap_or(0);
+        }
+        if sj != at(k + i) {
+            // i == 0 here: no proper prefix matches.
+            if sj < at(k) {
+                k = j;
+            }
+            if let Some(v) = f.get_mut(j.saturating_sub(k)) {
+                *v = 0;
+            }
+        } else if let Some(v) = f.get_mut(j.saturating_sub(k)) {
+            *v = i + 1;
+        }
+    }
+    Ok(k % n.max(1))
 }
 
 /// The rebuild by area (see the module doc) of `parts`, closed rings each with 3 distinct points
@@ -525,16 +992,7 @@ struct Rebuilt {
 /// ones are dropped first, so their vanishing isn't taken for a merge).
 fn by_area(parts: &[Vec<Vec<Coord>>], crossing: &[(usize, usize)], room: Room) -> Result<Rebuilt, Kept> {
     let empty = geo::MultiPolygon::<f64>::new(vec![]);
-    let area = |ring: &Vec<Coord>, at: (usize, usize)| -> Result<geo::MultiPolygon<f64>, Kept> {
-        let ring = geo::LineString(room.collect(ring.len(), ring.iter().map(|c| geo::Coord { x: c.x, y: c.y })).map_err(kept_for)?);
-        let poly = geo::Polygon::new(ring, vec![]);
-        if crossing.binary_search(&at).is_err() {
-            // A simple ring: its area as it is, wound as the overlay expects.
-            return Ok(geo::MultiPolygon::new(vec![poly.orient(Direction::Default)]));
-        }
-        on_grid(std::iter::once(poly.exterior()))?;
-        Ok(poly.boolean_op_with_fill_rule(&empty, OpType::Union, FillRule::NonZero))
-    };
+    let area = |ring: &Vec<Coord>, at: (usize, usize)| ring_area(ring, at, crossing, room);
     let mut all: Vec<geo::Polygon<f64>> = Vec::new();
     let mut no_area = 0usize;
     let mut narrow = 0usize;
@@ -570,21 +1028,8 @@ fn by_area(parts: &[Vec<Vec<Coord>>], crossing: &[(usize, usize)], room: Room) -
             // The holes' areas, each wound the same way, make their union under non-zero winding.
             let cut = geo::MultiPolygon::new(cut);
             let related = (0..rings.len()).all(|r| crossing.binary_search(&(p, r)).is_err());
-            if !related
-                && !found.contains(&Code::HoleOutsideShell)
-                && !cut.boolean_op_with_fill_rule(&shell, OpType::Difference, FillRule::NonZero).0.is_empty()
-            {
-                found.push(Code::HoleOutsideShell);
-            }
-            // Holes that overlap or touch along a line merge, which their union tells by making
-            // fewer polygons than it was given, as the parts' union does below.
-            if !related
-                && cut.0.len() > 1
-                && !found.contains(&Code::RingsIntersect)
-                && on_grid(rings_of(&cut.0)).is_ok()
-                && cut.boolean_op_with_fill_rule(&empty, OpType::Union, FillRule::NonZero).0.len() < cut.0.len()
-            {
-                found.push(Code::RingsIntersect);
+            if !related {
+                unrelated_hole_codes(&shell, &cut, &mut found);
             }
             shell.boolean_op_with_fill_rule(&cut, OpType::Difference, FillRule::NonZero)
         };
@@ -611,7 +1056,7 @@ fn by_area(parts: &[Vec<Vec<Coord>>], crossing: &[(usize, usize)], room: Room) -
     } else {
         all
     };
-    Ok(Rebuilt { polys: polygons(&merged, room).map_err(kept_for)?, no_area, narrow, found })
+    Ok(Rebuilt { polys: polygons(&merged, room).map_err(kept_for)?, no_area, narrow, found, duplicates: 0 })
 }
 
 /// The overlay's polygons as rings, copied fallibly.
@@ -634,6 +1079,91 @@ fn polygons(m: &geo::MultiPolygon<f64>, room: Room) -> Result<Vec<Vec<Vec<Coord>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`repair_by`] under the default rule.
+    fn repair(g: Option<&Geometry>, has_room: &dyn Fn(u64) -> bool) -> Outcome {
+        repair_by(g, Rule::default(), has_room)
+    }
+
+    /// [`repair_by_with`] under the default rule.
+    fn repair_with(g: Option<&Geometry>, budget: u64, allow: &dyn Fn(usize) -> bool, has_room: &dyn Fn(u64) -> bool) -> Outcome {
+        repair_by_with(g, Rule::default(), budget, allow, has_room)
+    }
+
+    /// Booth's least rotation agrees with trying every rotation, on every sequence of up to 8
+    /// symbols from 3, repeats and all.
+    #[test]
+    fn least_rotation_is_the_least_of_all_rotations() {
+        let room = Room(&|_| true);
+        for n in 1..=8usize {
+            for code in 0..3usize.pow(n as u32) {
+                let s: Vec<(u64, u64)> = (0..n).map(|k| ((code / 3usize.pow(k as u32) % 3) as u64, 0)).collect();
+                let rotation = |start: usize| -> Vec<(u64, u64)> { s[start..].iter().chain(&s[..start]).copied().collect() };
+                let least = (0..n).map(rotation).min().unwrap();
+                assert_eq!(rotation(least_rotation(&s, room).unwrap()), least, "{s:?}");
+            }
+        }
+        assert_eq!(least_rotation(&[], room).unwrap(), 0);
+    }
+
+    /// The same ring has one normal form from any vertex, in either direction, and a different ring
+    /// another; a ring passing one vertex 100,000 times takes linear time, where trying each pass as
+    /// a start would take about 10^10 steps.
+    #[test]
+    fn a_ring_has_one_normal_form() {
+        let room = Room(&|_| true);
+        let square: Vec<Coord> = ring(SQUARE);
+        let want = normal_form(&square, room).unwrap();
+        let open = &square[..square.len() - 1];
+        for start in 0..open.len() {
+            for reversed in [false, true] {
+                let mut r: Vec<Coord> = open[start..].iter().chain(&open[..start]).copied().collect();
+                if reversed {
+                    r.reverse();
+                }
+                r.push(r[0]);
+                assert_eq!(normal_form(&r, room).unwrap(), want, "from {start}, reversed {reversed}");
+            }
+        }
+        assert_ne!(normal_form(&ring(&[(0., 0.), (10., 0.), (10., 11.), (0., 10.), (0., 0.)]), room).unwrap(), want);
+        // A vertex in the middle of a straight edge, or a straight run of them, doesn't change the
+        // ring; one past the edge's end (a spike out and back along it) does.
+        let mid = ring(&[(0., 0.), (2.5, 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)]);
+        assert_eq!(normal_form(&mid, room).unwrap(), want);
+        assert_eq!(corner_count(&mid), 4);
+        let past = ring(&[(0., 0.), (12., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)]);
+        assert_ne!(normal_form(&past, room).unwrap(), want);
+        // Where the orientation test isn't exact (its products overflowing or underflowing), a
+        // vertex is a corner, never taken for one on the line, on it or not: these two triangles
+        // aren't one ring. Within its range, one on the line is mid-edge.
+        let c = Coord::new;
+        assert!(!straight_through(c(-1e200, -1e200), c(0., 0.5e200), c(1e200, 1e200)));
+        assert!(!straight_through(c(0., 0.), c(0., 1.), c(1e200, 1e200)), "off the line, overflowing");
+        assert!(!straight_through(c(0., 0.), c(1e-200, 1.5e-200), c(2e-200, 2e-200)), "off the line, underflowing");
+        // A tiny coordinate beside ordinary ones, where the test's later stages would underflow: off
+        // the line by 1e-400, which the test would read as 0.
+        assert!(!straight_through(c(1e-200, -1.), c(0.5, -1e-200), c(1., 1.)), "a tiny coordinate");
+        // A horizontal or vertical edge is exact at any size: a midpoint at y = 1e-101, or far out.
+        assert!(straight_through(c(0., 1e-101), c(5., 1e-101), c(10., 1e-101)), "a tiny level edge");
+        assert!(straight_through(c(1e200, 0.), c(1e200, 5.), c(1e200, 10.)), "a far vertical edge");
+        assert!(!straight_through(c(0., 1e-101), c(12., 1e-101), c(10., 1e-101)), "past the end still counts");
+        // Ordinary data, floating-point noise near 0 included, is within the test's range.
+        assert!(straight_through(c(0., 0.), c(6e-17, 6e-17), c(1., 1.)));
+        assert!(straight_through(c(-1e100, -1e100), c(0., 0.), c(1e100, 1e100)));
+        assert!(straight_through(c(0., 0.), c(1e-90, 1e-90), c(2e-90, 2e-90)));
+        let t1 = ring(&[(-1e200, -1e200), (1e200, 1e200), (1e200, -1e200), (-1e200, -1e200)]);
+        let t2 = ring(&[(-1e200, -1e200), (0., 0.5e200), (1e200, 1e200), (1e200, -1e200), (-1e200, -1e200)]);
+        assert_ne!(normal_form(&t1, room).unwrap(), normal_form(&t2, room).unwrap());
+        // At the closing vertex too: a square starting mid-edge.
+        let from_mid = ring(&[(5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.), (5., 0.)]);
+        assert_eq!(normal_form(&from_mid, room).unwrap(), want);
+        let mut star = vec![Coord::new(0., 0.)];
+        for k in 0..100_000 {
+            let a = f64::from(k) * 1e-5;
+            star.extend([Coord::new(a.cos(), a.sin()), Coord::new(0., 0.)]);
+        }
+        assert_eq!(normal_form(&star, room).unwrap().len(), star.len() - 1);
+    }
 
     type Ring<'a> = &'a [(f64, f64)];
 
@@ -793,6 +1323,46 @@ mod tests {
         assert_eq!(hull_of(&[]), []);
     }
 
+    /// Under Even-Odd, a square with two holes covering it, one with a vertex mid-edge: one hole is
+    /// a duplicate, left out, and the other cancels the square, so no area is left, and the
+    /// duplicate left out on the way is still given to the tool to say.
+    #[test]
+    fn duplicates_left_out_before_no_area_are_still_counted() {
+        let mid: Ring = &[(0., 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)];
+        let g = poly(&[SQUARE, SQUARE, mid]);
+        assert_eq!(repair_by(Some(&g), Rule::EvenOdd, &|_| true), Outcome::GoneAfterDuplicates { duplicates: 1 });
+        // With no duplicate, no area is as it was.
+        assert_eq!(repair_by(Some(&poly(&[SQUARE, SQUARE])), Rule::EvenOdd, &|_| true), Outcome::Gone(Gone::NoArea));
+    }
+
+    /// Under Even-Odd, a part repeated with a vertex in the middle of a straight edge is the same
+    /// part, left out as a duplicate, not a copy that cancels its twin out.
+    #[test]
+    fn a_part_repeated_with_a_vertex_mid_edge_is_a_duplicate_under_even_odd() {
+        // The same square twice, once with a vertex in the middle of its bottom edge: without
+        // seeing them as one, parity cancels them out and the feature has no area.
+        let mid: Ring = &[(0., 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 0.)];
+        let g = multi(&[&[SQUARE], &[mid]]);
+        match repair_by(Some(&g), Rule::EvenOdd, &|_| true) {
+            Outcome::Repaired(r) => {
+                assert_eq!(r.duplicates, 1);
+                assert!((area(&r.geometry) - 100.0).abs() < 1e-9, "{:?}", r.geometry);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Under Even-Odd, parts all narrower than a step of the grid (two thin overlapping rectangles,
+    /// a billionth wide, where a step is 2⁻²⁷) are dropped, leaving no area: the feature has none,
+    /// not a repair that failed.
+    #[test]
+    fn parts_all_too_narrow_leave_no_area_under_even_odd() {
+        let a: Ring = &[(0., 0.), (1e-9, 0.), (1e-9, 10.), (0., 10.), (0., 0.)];
+        let b: Ring = &[(0.5e-9, 0.), (1.5e-9, 0.), (1.5e-9, 10.), (0.5e-9, 10.), (0.5e-9, 0.)];
+        let g = multi(&[&[a], &[b]]);
+        assert_eq!(repair_by(Some(&g), Rule::EvenOdd, &|_| true), Outcome::Gone(Gone::NoArea));
+    }
+
     #[test]
     fn what_can_not_be_repaired_has_its_reason() {
         assert_eq!(repair(None, &|_| true), Outcome::Gone(Gone::Null));
@@ -838,6 +1408,21 @@ mod tests {
         });
         assert_eq!(r, Outcome::Kept(Kept::Memory));
         assert_eq!(asked.get(), (6 + 2 * 5) * OVERLAY_BYTES);
+        // Under Even-Odd, one part of one ring makes no duplicate keys, so it's asked the same; two
+        // parts, which can, are asked for the keys too.
+        let ask = |g: &Geometry| {
+            let asked = std::cell::Cell::new(0);
+            let _ = repair_by_with(Some(g), Rule::EvenOdd, validity::MAX_WORK, &|_| true, &|need| {
+                asked.set(need);
+                false
+            });
+            asked.get()
+        };
+        assert_eq!(ask(&star), (6 + 2 * 5) * OVERLAY_BYTES);
+        let Geometry::Polygon(one) = &star else { panic!("a polygon") };
+        let two = Geometry::Polygon(vec![one[0].clone(), one[0].clone()]);
+        let size = 12 + 2 * validity::check(Some(&two), validity::MAX_WORK).contacts;
+        assert_eq!(ask(&two), size * (OVERLAY_BYTES + EVEN_ODD_BYTES));
         // Without an overlay nothing is asked of the browser.
         let unclosed = poly(&[&[(0., 0.), (10., 0.), (10., 10.), (0., 10.)]]);
         assert!(matches!(repair(Some(&unclosed), &|_| false), Outcome::Repaired(_)));
@@ -910,9 +1495,10 @@ mod tests {
 
     #[test]
     fn a_repair_that_is_not_valid_is_not_kept() {
-        let bad = Repaired { geometry: poly(&[BOWTIE]), codes: vec![Code::SelfIntersection], dropped: 0, narrow: 0, moved: None };
+        let bad =
+            Repaired { geometry: poly(&[BOWTIE]), codes: vec![Code::SelfIntersection], dropped: 0, narrow: 0, moved: None, duplicates: 0 };
         assert_eq!(verified(bad, validity::MAX_WORK, &|_| true), Outcome::Kept(Kept::Failed));
-        let busy = Repaired { geometry: poly(&[BOWTIE]), codes: vec![], dropped: 0, narrow: 0, moved: None };
+        let busy = Repaired { geometry: poly(&[BOWTIE]), codes: vec![], dropped: 0, narrow: 0, moved: None, duplicates: 0 };
         assert_eq!(verified(busy, 0, &|_| true), Outcome::Kept(Kept::Work));
     }
 }
