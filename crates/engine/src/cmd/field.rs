@@ -1899,12 +1899,24 @@ mod tests {
         {
             use std::os::unix::ffi::OsStrExt as _;
             let unpacked = temp.path().join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));
-            let (text, _) = unpack_into(&archive, &unpacked).unwrap();
-            let mut project = project_in(&text, &unpacked).unwrap();
-            let notices = photo_notices(&mut project);
-            assert_eq!(notices.len(), 1);
-            assert!(notices[0].starts_with("1 unpacked field photo reference"));
-            assert_eq!(value(&Session::new(project), "Sites", 0, "photos"), relative);
+            // Where the file system allows such a name: macOS's refuses one that isn't UTF-8
+            // (EILSEQ, 92 there). Any other failure to make or remove the folder fails the test.
+            let allowed = match std::fs::create_dir(&unpacked) {
+                Ok(()) => {
+                    std::fs::remove_dir(&unpacked).unwrap();
+                    true
+                }
+                Err(e) if cfg!(target_os = "macos") && e.raw_os_error() == Some(92) => false,
+                Err(e) => panic!("{}: {e}", unpacked.display()),
+            };
+            if allowed {
+                let (text, _) = unpack_into(&archive, &unpacked).unwrap();
+                let mut project = project_in(&text, &unpacked).unwrap();
+                let notices = photo_notices(&mut project);
+                assert_eq!(notices.len(), 1);
+                assert!(notices[0].starts_with("1 unpacked field photo reference"));
+                assert_eq!(value(&Session::new(project), "Sites", 0, "photos"), relative);
+            }
         }
     }
 
