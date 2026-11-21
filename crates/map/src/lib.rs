@@ -900,8 +900,23 @@ impl Layer {
     /// features naming them as [`Layer::load_all`] would. `None` for a layer not
     /// read in place, or whose source can't be read so (one by its web address).
     pub fn chunk_export(&self) -> Result<Option<(std::sync::Arc<dyn rustgis_data::source::FeatureSource>, Dataset)>, String> {
+        self.chunk_copy(source::SourceLayer::visit_source)
+    }
+
+    /// A streamed layer's complete reader for a geographic extent, and a dataset describing
+    /// its rows. A reader that can visit an extent may still only sample its interactive views.
+    pub fn chunk_in_extent(&self) -> Result<Option<(std::sync::Arc<dyn rustgis_data::source::FeatureSource>, Dataset)>, String> {
+        self.chunk_copy(source::SourceLayer::visit_extent_source)
+    }
+
+    /// Opens the source and prepares an empty dataset with the layer's fields. The caller
+    /// selects the traversal contract it needs and decides which rows to retain.
+    fn chunk_copy(
+        &self,
+        visit: impl FnOnce(&source::SourceLayer) -> Option<std::sync::Arc<dyn rustgis_data::source::FeatureSource>>,
+    ) -> Result<Option<(std::sync::Arc<dyn rustgis_data::source::FeatureSource>, Dataset)>, String> {
         let Some(copy) = self.open_source()? else { return Ok(None) };
-        let Some(src) = copy.visit_source() else { return Ok(None) };
+        let Some(src) = visit(&copy) else { return Ok(None) };
         let info = src.info();
         // (A reload that read no rows leaves the reader without a type: the layer's declared one
         // stands, as in `load_all_counted`.)

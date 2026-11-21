@@ -2954,10 +2954,11 @@ impl RustGisApp {
                 let mark = self.session.notice_mark();
                 return exportjob::start(self, "map.exportBlock", params).inspect_err(|e| self.command_failed(id, e, mark));
             }
-            // Ordering and writing a standalone table grows with its rows, like Export Features.
-            if id == "share.exportTable" {
+            // Table exports and field packages can both read and write large inputs.
+            if matches!(id, "share.exportTable" | "offline.package") {
+                let command = if id == "offline.package" { "offline.package" } else { "share.exportTable" };
                 let mark = self.session.notice_mark();
-                return exportjob::start(self, "share.exportTable", params).inspect_err(|e| self.command_failed(id, e, mark));
+                return exportjob::start(self, command, params).inspect_err(|e| self.command_failed(id, e, mark));
             }
             // Converting the labels of a layer read in place reads all of its source first, on a
             // thread of its own, whoever asks (a click, the assistant).
@@ -4546,6 +4547,20 @@ impl RustGisApp {
             }
             "ui.saveItem" => {
                 let kind = p.get("kind").and_then(Value::as_str).ok_or("kind is required")?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if kind == "fieldPackage" && self.reads_off_frame && self.services.download.is_none() {
+                    exportjob::idle(self)?;
+                    let name = rustgis_engine::cmd::field::suggested_name(&self.session, p);
+                    let Some(path) = dialogs::pick_save(&name, &["rgisfield"], tl!("RustGIS field package")) else {
+                        return Ok(Value::Null);
+                    };
+                    let mut params = p.clone();
+                    if let Some(fields) = params.as_object_mut() {
+                        fields.remove("kind");
+                        fields.insert("path".into(), json!(path));
+                    }
+                    return self.run("offline.package", params);
+                }
                 // A field package makes an offline area first: one not saved after all goes again.
                 let areas = self.session.project.offline_areas.len();
                 let session = &mut self.session;

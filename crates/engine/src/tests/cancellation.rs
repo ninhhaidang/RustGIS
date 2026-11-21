@@ -135,19 +135,27 @@ pub(super) fn long_commands(boundaries: bool) {
         ("layout.export", json!({"path": out("layout.pdf"), "dpi": 36})),
         ("report.export", json!({"path": out("report.pdf"), "dpi": 36})),
         ("source.publish", json!({"layer": "towns"})),
+        ("offline.package", json!({"path": out("crew.rgisfield")})),
     ];
     s.run("report.new", &json!({"layer": "Cities"})).unwrap();
     // A standalone table to export ranked and limited.
     s.run("layer.addDataText", &json!({"fileName": "ranks.csv", "text": "name,score\na,1\nb,3\n"})).unwrap();
     let registered = crate::cmd::exports::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(listed(&exports), registered, "add a new background export here");
+    // Reuse the same origin and generation on every retry. The open area includes a real
+    // streamed layer to exercise cancellation during its source traversal as well as the write.
+    let mut field = session(&s);
+    field.run("layer.addData", &json!({"path": out("towns.shp"), "name": "Streamed towns", "stream": true})).unwrap();
+    field.run("offline.package", &json!({"path": out("seed.rgisfield"), "name": "Crew", "extent": [9, 44, 11, 46]})).unwrap();
+    field.run("offline.open", &json!({"name": "Crew"})).unwrap();
     for (command, p) in &exports {
         // A block's model needs a block on the DEM, which the other exports don't draw.
         let block = *command == "map.exportBlock";
         if block {
             s.run("map.terrain", &json!({"layer": dem, "block": {}})).unwrap();
         }
-        exercise(&s, command, p, Kind::Export, &dir.0, boundaries);
+        let input = if *command == "offline.package" { &field } else { &s };
+        exercise(input, command, p, Kind::Export, &dir.0, boundaries);
         if block {
             s.run("map.terrain", &json!({"off": true})).unwrap();
         }

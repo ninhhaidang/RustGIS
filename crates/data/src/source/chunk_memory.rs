@@ -1,5 +1,5 @@
 //! Allocation accounting for the chunks of a complete traversal (drawing, exports).
-use crate::{Feature, Geometry, Value};
+use crate::{DataError, Extent, Feature, Geometry, Value};
 use std::mem::size_of;
 
 /// Allocated vector storage owned by a geometry, excluding the enum in its containing array.
@@ -79,4 +79,20 @@ impl<'a> Chunker<'a> {
         self.used = 0;
         (self.visit)(chunk)
     }
+}
+
+/// A streamed row kept for a copy clipped to `extent`: `None` when it has no shape or its shape's
+/// extent misses `extent`, else the row with exactly `width` values (cut, or padded with nulls)
+/// and the heap bytes it holds. Fails, rather than aborting, when the values can't be allocated.
+pub fn clip_row(mut row: Feature, extent: &Extent, width: usize) -> Result<Option<(Feature, usize)>, DataError> {
+    if row.geometry.as_ref().is_none_or(|g| !g.extent().intersects(extent)) {
+        return Ok(None);
+    }
+    row.attrs.truncate(width);
+    row.attrs
+        .try_reserve(width.saturating_sub(row.attrs.len()))
+        .map_err(|_| DataError::Format("not enough memory for the copied attributes".into()))?;
+    row.attrs.resize(width, Value::Null);
+    let bytes = feature_bytes(&row);
+    Ok(Some((row, bytes)))
 }

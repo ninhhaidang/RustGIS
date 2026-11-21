@@ -146,9 +146,12 @@ A field package (`.rgisfield`) carries a map to the phone and its edits back.
 1. **On the computer**, with the map in view, **Data › Offline › Package for the Field** makes
    the package: a project of that map, the features in view, and the MBTiles and PMTiles
    archives its tile layers use. The package records the area it was made from in your project,
-   so save the project after packaging. Raster layers are left out, and the package says so.
+   so save the project after packaging. A layer read in place from a supported local file is
+   copied within the area while it fits the package budget. The copy is for reference, and
+   Bring Back skips edits to it. The sender gets a notice about anything left behind, including
+   rasters and streamed layers that could not be copied.
 2. **On the phone**, open the package with **Open Project** (or **Add Data**). It is unpacked into
-   a folder of its own and its map opens.
+   a folder of its own and its map opens. Any notices about what stayed behind appear as it opens.
 3. **In the field**, capture and edit as above.
 4. **Back from the field**, **Send Field Package**, in the More sheet, saves the map as a field
    package again, with the photos its features name, wherever you choose (a cloud drive, email,

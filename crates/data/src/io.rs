@@ -1070,7 +1070,7 @@ pub fn write_atomic_with<T, E: From<std::io::Error>>(
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     let path = link_target(path)?;
-    atomic_write_at(&path, write)
+    atomic_write_at(path, write)
 }
 
 /// Atomically replaces an app-managed file, replacing a final symbolic link rather than
@@ -1086,25 +1086,42 @@ pub fn replace_atomic_with<T, E: From<std::io::Error>>(
     path: &Path,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    atomic_write_at(path, write)
+    atomic_write_at(path.to_path_buf(), write)
 }
 
-/// Stages content beside the chosen destination; errors and cancellation retain the old file.
+/// Writes and syncs bytes beside the destination, preserving the destination until
+/// [`StagedWrite::commit`] installs them. Dropping the result discards the staged file.
+pub fn stage_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<StagedWrite> {
+    use std::io::Write;
+    stage_at(link_target(path)?, |w| w.write_all(bytes)).map(|(staged, ())| staged)
+}
+
+/// Stages and installs a write, retaining the old file on error or cancellation.
 fn atomic_write_at<T, E: From<std::io::Error>>(
-    path: &Path,
+    path: std::path::PathBuf,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
+    let (staged, value) = stage_at(path, write)?;
+    staged.commit()?;
+    Ok(value)
+}
+
+/// Syncs the temporary file on the writing thread, so installation only needs a rename
+/// and a directory sync.
+fn stage_at<T, E: From<std::io::Error>>(
+    path: std::path::PathBuf,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
+) -> std::result::Result<(StagedWrite, T), E> {
     use std::io::Write;
-    let tmp = temp_beside(path)?;
+    let tmp = temp_beside(&path)?;
     // Opened before the guard, so a name already taken is never removed.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-    // Removes the file on an error and on a panic in `write` alike, unless it was moved into place.
-    let staged = Staged(&tmp);
+    let staged = StagedWrite { path, tmp: Some(tmp) };
     // The new file takes the old one's mode before any content is written, so a private file
     // (0600) never becomes readable by others. On Windows a new file inherits its folder's access
     // rules, and copying a read-only flag would only make the rename fail.
     #[cfg(unix)]
-    match std::fs::symlink_metadata(path) {
+    match std::fs::symlink_metadata(&staged.path) {
         Ok(old) if !old.file_type().is_symlink() => {
             use std::os::unix::fs::PermissionsExt;
             let permissions = old.permissions();
@@ -1124,15 +1141,42 @@ fn atomic_write_at<T, E: From<std::io::Error>>(
     out.get_ref().sync_all()?;
     // Closed before the rename, including on Windows.
     drop(out);
-    // A cancel that came while it was written leaves the file there before as it was. This is
-    // the last look: the rename commits the file, and a Cancel after it finds it written.
-    if crate::progress::check().is_err() {
-        return Err(std::io::Error::other(DataError::Cancelled).into());
+    Ok((staged, value))
+}
+
+/// An atomic write awaiting installation. An error or drop removes its temporary file.
+pub struct StagedWrite {
+    path: std::path::PathBuf,
+    tmp: Option<std::path::PathBuf>,
+}
+
+impl StagedWrite {
+    /// The destination resolved at staging time, after following any symbolic links.
+    pub fn destination(&self) -> &Path {
+        &self.path
     }
-    std::fs::rename(&tmp, path)?;
-    std::mem::forget(staged);
-    sync_folder(path);
-    Ok(value)
+
+    /// Installs the staged file, checking Cancel just before the rename. The previous file
+    /// remains in place if installation fails.
+    pub fn commit(mut self) -> std::io::Result<()> {
+        if crate::progress::check().is_err() {
+            return Err(std::io::Error::other(DataError::Cancelled));
+        }
+        if let Some(tmp) = &self.tmp {
+            std::fs::rename(tmp, &self.path)?;
+            self.tmp = None;
+            sync_folder(&self.path);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagedWrite {
+    fn drop(&mut self) {
+        if let Some(tmp) = &self.tmp {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
 }
 
 /// The file a write to `path` replaces: `path` itself, or, when it is a symbolic link, the file
@@ -1160,16 +1204,6 @@ fn link_target(path: &Path) -> std::io::Result<std::path::PathBuf> {
 
 /// How many symbolic links in a row [`link_target`] follows, as many as Linux does.
 const MAX_LINKS: usize = 40;
-
-/// A file being written beside its destination: removed when dropped, as an export that
-/// failed or panicked leaves it. A finished export forgets it once the file is renamed.
-struct Staged<'a>(&'a Path);
-
-impl Drop for Staged<'_> {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.0);
-    }
-}
 
 // ---------------------------------------------------------------------------------------------
 // GeoJSON (RFC 7946)

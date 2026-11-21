@@ -515,20 +515,20 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
     let origin = if is_package { path.canonicalize() } else { std::path::absolute(&path) }
         .map_err(|error| format!("{}: {error}", path.display()))?;
     super::connections::clear_active();
-    let proj = (|| {
+    let proj = (|| -> Result<_, String> {
         if is_field {
             let bytes = crate::project::read_file(&path, MAX_PACKAGE)?;
             let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let (dir, text) = super::field::unpack(&bytes, &stem)?;
-            super::field::project_in(&text, &dir)
+            let (dir, text, notes) = super::field::unpack(&bytes, &stem)?;
+            Ok((super::field::project_in(&text, &dir)?, notes))
         } else if is_package {
             let bytes = crate::project::read_file(&path, MAX_PACKAGE)?;
-            Project::from_import_json(&super::items::package_text(&bytes)?, None)
+            Ok((Project::from_import_json(&super::items::package_text(&bytes)?, None)?, Vec::new()))
         } else {
-            Project::load(&path)
+            Ok((Project::load(&path)?, Vec::new()))
         }
     })();
-    let proj = match proj {
+    let (proj, notes) = match proj {
         Ok(proj) => proj,
         Err(error) => {
             super::connections::restore_active(s);
@@ -549,6 +549,9 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
         s.path = Some(origin);
     }
     s.notify(format!("Opened {}", s.project.name), false);
+    for note in notes {
+        s.warn(note);
+    }
     super::connections::resolve_project(s);
     super::connections::note_waiting(s);
     Ok(Value::Null)

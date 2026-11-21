@@ -38,7 +38,7 @@ fn home(temp: &Temp) -> Session {
 /// Opens the package on a "phone": unpacked into a folder of its own, as `project.open` does.
 fn phone(temp: &Temp, bytes: &[u8], name: &str) -> Session {
     let dir = temp.0.join(name);
-    let text = unpack_into(bytes, &dir).unwrap();
+    let (text, _) = unpack_into(bytes, &dir).unwrap();
     let mut s = Session::new(project_in(&text, &dir).unwrap());
     s.opened_package = Some(temp.0.join(format!("{name}.rgisfield")));
     s

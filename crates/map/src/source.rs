@@ -967,6 +967,11 @@ impl SourceLayer {
         self.handle.as_ref().filter(|h| h.visits_chunks()).cloned()
     }
 
+    /// A source that can provide all features in an extent a chunk at a time.
+    pub(super) fn visit_extent_source(&self) -> Option<Arc<dyn FeatureSource>> {
+        self.handle.as_ref().filter(|h| h.visits_extent_chunks()).cloned()
+    }
+
     /// A source capable of a complete, ordered render traversal.
     pub fn chunk_source(&self) -> Option<Arc<dyn FeatureSource>> {
         self.handle.as_ref().filter(|h| h.streams_chunks()).cloned()

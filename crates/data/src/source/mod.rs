@@ -352,6 +352,12 @@ pub trait FeatureSource: Send + Sync {
     fn visits_chunks(&self) -> bool {
         self.streams_chunks()
     }
+    /// Whether a complete bounded traversal for a geographic extent is available. This also
+    /// covers readers whose view and whole-export paths still use their existing sample or
+    /// whole-read contracts.
+    fn visits_extent_chunks(&self) -> bool {
+        self.visits_chunks()
+    }
     /// Visits every matching feature in source painter order: the features and ids a complete
     /// [`FeatureSource::read`] of the same extent gives, in the same order and with the same
     /// skipped count when there is no extent (an extent read through an index may order and skip
