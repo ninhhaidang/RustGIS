@@ -94,6 +94,7 @@ pub enum Landed {
     Ran(Result<Value, String>),
     NotRun(String),
 }
+mod annotation;
 mod boxedit;
 mod circleedit;
 #[cfg(not(target_arch = "wasm32"))]
@@ -689,6 +690,7 @@ pub enum RightPane {
     Symbology,
     History,
     Editing,
+    Annotation,
     Design,
     Workflows,
     Script,
@@ -1267,6 +1269,7 @@ pub struct RustGisApp {
     pub(crate) boxes: boxedit::State,
     pub(crate) circles: circleedit::State,
     pub(crate) conversion: shapeconvert::State,
+    pub(crate) annotation: annotation::State,
     pub ui: UiState,
     pub map: mapview::MapView,
     pub dialogs: dialogs::Dialogs,
@@ -1581,6 +1584,7 @@ impl RustGisApp {
             boxes: boxedit::State::default(),
             circles: circleedit::State::default(),
             conversion: shapeconvert::State::default(),
+            annotation: annotation::State::default(),
             ui,
             map: mapview::MapView::default(),
             dialogs: dialogs::Dialogs::default(),
@@ -2877,6 +2881,15 @@ impl RustGisApp {
         if id.starts_with(rustgis_engine::plugins::PREFIX) {
             return self.ask_plugin(id, params).map(|()| Value::Null);
         }
+        if id == "raster.imageGrid" {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.reads_off_frame {
+                return readjob::run_then(self, "raster.imageGrid", params, Some(annotation::show_grid_result));
+            }
+            let result = self.run(id, params);
+            annotation::show_grid_result(self, Landed::Ran(result.clone()));
+            return result;
+        }
         self.run(id, params)
     }
 
@@ -2961,11 +2974,15 @@ impl RustGisApp {
             if id == "source.syncState" {
                 return readjob::run_then(self, "source.syncState", params, Some(sync_state_said));
             }
-            // Counting a column goes over every row of the layer: on a thread of its own, and the
-            // answer shown once it lands (the table's Statistics window).
+            // Direct desktop callers receive a queue acknowledgement; callbacks receive the frame.
+            // Script lines use engine dispatch and consume their prepared worker results instead.
+            if id == "raster.imageGrid" {
+                return readjob::run(self, "raster.imageGrid", params);
+            }
             if id == "edit.previewShapeConversion" {
                 return readjob::run_shape_conversion(self, params);
             }
+            // Counting a column goes over every row: the Statistics window shows the landed answer.
             if id == "table.statistics" {
                 return readjob::run_then(self, "table.statistics", params, Some(table::statistics_landed));
             }
@@ -3098,6 +3115,7 @@ impl RustGisApp {
         // Nested commands (including scripts) can replace rows too; never retarget a chosen
         // vertex or held gesture to the replacement feature at the same row.
         crate::vertexedit::cancel_stale_drag(self);
+        annotation::sync(self);
         crate::boxedit::cancel_stale(self);
         crate::circleedit::cancel_stale(self);
         if let Err(e) = &r {
@@ -3559,6 +3577,23 @@ impl RustGisApp {
                     return self.run_ui("ui.pane.layerProperties", &json!({"tab": "source", "layer": layer}));
                 }
             }
+            "ui.pane.annotation" => {
+                if self.ui.right == Some(RightPane::Annotation) {
+                    self.ui.close_right(RightPane::Annotation);
+                } else {
+                    annotation::open(self)?;
+                }
+            }
+            "ui.annotationImage" => annotation::select_image(self, p)?,
+            "ui.annotationFilename" => {
+                annotation::filename_option(self, p.get("on").and_then(Value::as_bool).ok_or_else(|| tl!("on is required").to_string())?)
+            }
+            "ui.annotationGrid" => annotation::select_grid(
+                self,
+                p.get("pixels").and_then(Value::as_bool).ok_or_else(|| tl!("pixels is required").to_string())?,
+            )?,
+            "ui.annotationCancel" => annotation::cancel_read(self),
+            "ui.annotationLayer" => annotation::select_layer(self, p)?,
             "ui.pane.editing" => toggle_right(&mut self.ui, RightPane::Editing),
             "ui.pane.design" => toggle_right(&mut self.ui, RightPane::Design),
             "ui.pane.script" => toggle_right(&mut self.ui, RightPane::Script),
@@ -5065,13 +5100,16 @@ impl RustGisApp {
             "ui.exportLayer" if p.get("format").and_then(Value::as_str).is_none() => {
                 self.dialogs.open("exportLayer", &self.session)?;
             }
-            "ui.exportLayer" if self.services.download.is_some() => {
+            "ui.exportLayer" | "ui.annotationExport" if self.services.download.is_some() => {
+                let annotation_export = id == "ui.annotationExport";
                 let id = self.export_target(p)?;
                 let construction_notes = self.session.layer_construction_output_notes(id)?;
                 let l = self.session.map().layer(id).ok_or_else(|| tl!("select a layer in the Layers pane first").to_string())?;
                 // Any format the dialog offers here (`dialogs::export_formats`): not GeoPackage or
                 // FlatGeobuf, which the data crate refuses in the browser.
                 let ext = p.get("format").and_then(Value::as_str).unwrap_or("geojson").to_ascii_lowercase();
+                let download_ext = if ext == "shp" { "zip".to_string() } else { ext.clone() };
+                let name = annotation::export_name(self, id, &download_ext, annotation_export)?;
                 rustgis_engine::cmd::share::gpkg_table(p, &ext)?;
                 // A streamed layer exports its whole source, not the features read for the view.
                 use std::borrow::Cow;
@@ -5095,8 +5133,7 @@ impl RustGisApp {
                         return Err(e);
                     }
                 };
-                let ext = if ext == "shp" { "zip".to_string() } else { ext };
-                let name = format!("{}.{ext}", l.name);
+                let ext = download_ext;
                 // The features written, read whole, give their own extent, in longitude/latitude
                 // (not a raster's, or the one a streamed layer's source declares).
                 let mut notes = rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs);
@@ -5214,7 +5251,8 @@ impl RustGisApp {
                     return self.run("share.exportMap", args);
                 }
             }
-            "ui.exportLayer" => {
+            "ui.exportLayer" | "ui.annotationExport" => {
+                let annotation_export = id == "ui.annotationExport";
                 let ext = p.get("format").and_then(Value::as_str).unwrap_or("geojson").to_ascii_lowercase();
                 let label = dialogs::EXPORT_FORMATS
                     .iter()
@@ -5225,6 +5263,7 @@ impl RustGisApp {
                 // Checked as the command checks them, before a file is asked for; then passed on.
                 let gpkg = rustgis_engine::cmd::share::gpkg_table(p, &ext)?;
                 let id = self.export_target(p)?;
+                let name = annotation::export_name(self, id, &ext, annotation_export)?;
                 let with_table = |mut args: Value| {
                     for key in ["mode", "tableName"] {
                         if let Some(v) = p.get(key) {
@@ -5243,7 +5282,6 @@ impl RustGisApp {
                     }
                     return Ok(Value::Null);
                 }
-                let name = self.session.map().layer(id).map(|l| format!("{}.{ext}", l.name)).unwrap_or_default();
                 if let Some(path) = dialogs::pick_save(&name, &[ext.as_str()], label) {
                     // The format chosen decides: its extension is added unless it was typed (a dot
                     // in the name, as in "U.S. Cities", isn't taken for one).
@@ -6406,6 +6444,7 @@ impl RustGisApp {
 
     /// Per-frame work that doesn't draw (theme, fonts, files that arrived).
     pub fn logic(&mut self, ctx: &egui::Context) {
+        annotation::sync(self);
         #[cfg(not(target_arch = "wasm32"))]
         self.session.statistics_need_read_ahead(self.reads_off_frame);
         let _diagnostics = self.session.diagnostics.enter();

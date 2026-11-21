@@ -284,6 +284,7 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
         id if super::edit::table_edit_in_background(id).is_some() => ("Edit Table", super::edit::table_ahead(s, spec.id, params)?, None),
         "topology.validate" => ("Error Inspector", super::design::topology_ahead(s, params), None),
         "source.syncState" => ("Source File State", super::publish::sync_ahead(s, params), None),
+        "raster.imageGrid" => ("Read Original Image Grid", crate::image_grid::ahead(s, params), None),
         "edit.previewShapeConversion" => ("Preview Shape Conversion", crate::shape_conversion::ahead(s, params), None),
         "table.statistics" => ("Column Statistics", super::table_stats::stats_ahead(s, params), None),
         "layer.sizeBy" => ("Size by Field", super::layer::size_by_ahead(s, params), None),

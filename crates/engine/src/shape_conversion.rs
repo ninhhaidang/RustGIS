@@ -213,27 +213,7 @@ fn target(s: &Session, p: &Value) -> Result<Proposal, String> {
 }
 fn frame(raster: Option<&rustgis_map::raster::RasterLayer>, p: &Value) -> Result<Frame, String> {
     if let Some(r) = raster {
-        let grid = if let Some(bytes) = &r.embedded {
-            rustgis_data::raster::geotiff::read_image_grid(std::io::Cursor::new(bytes.as_slice()))
-        } else {
-            let path = r
-                .path
-                .as_deref()
-                .filter(|p| rustgis_map::paths::is_local(p))
-                .ok_or("choose a local or embedded GeoTIFF; remote original grids are not read by conversion")?;
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let input = std::fs::File::open(path).map_err(|e| e.to_string())?;
-                rustgis_data::raster::geotiff::read_image_grid(input)
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let _ = path;
-                return Err("upload the original GeoTIFF to use its grid in the browser".into());
-            }
-        }
-        .map_err(|e| e.to_string())?;
-        Frame::from_grid(&grid)
+        crate::image_grid::read(r)
     } else if let Some(f) = p.get("frame") {
         serde_json::from_value(f.clone()).map_err(|e| e.to_string())
     } else {
@@ -618,6 +598,131 @@ mod tests {
         let Shape::Circle(fit) = proposal.shape else { panic!() };
         assert_eq!(fit.frame, frame);
         assert!((fit.radius - 1.).abs() < 1e-5);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod linked_images {
+        use super::*;
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+
+        struct Dir(std::path::PathBuf);
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        fn pixels() -> Raster {
+            Raster::new(
+                "image",
+                64,
+                64,
+                vec![vec![1.; 4096]],
+                GeoTransform { origin_x: 100., origin_y: 2000., pixel_width: 2., pixel_height: -3. },
+                Crs::from_epsg(3857).unwrap(),
+                None,
+                ColorHint::Gray,
+                "UInt8",
+            )
+            .unwrap()
+        }
+        fn setup(case: &str, kind: &str, queued: bool) -> (Dir, Session, u32, u32, Frame) {
+            let dir = Dir(std::env::temp_dir().join(format!("rustgis-conversion-linked-{}-{case}-{kind}-{queued}", std::process::id())));
+            std::fs::create_dir_all(&dir.0).unwrap();
+            let path = dir.0.join("image.tif");
+            let bytes = geotiff::write(&pixels(), 0).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let frame = Frame::from_grid(&geotiff::read_image_grid(std::io::Cursor::new(&bytes)).unwrap()).unwrap();
+            let geometry = if kind == "circle" {
+                CircleSpec { frame: frame.clone(), center: [32., 32.], radius: 5., tolerance: 0.01 }.geometry().unwrap()
+            } else {
+                BoxSpec { frame: frame.clone(), center: [32., 32.], width: 12., height: 8., angle: 27. }.geometry().unwrap()
+            };
+            let (mut s, layer) = ordinary(geometry);
+            let image = s.map_mut().add_raster(
+                "Image",
+                rustgis_map::RasterLayer::from_path(rustgis_data::raster::read_path(&path).unwrap(), path.display().to_string()),
+            );
+            (dir, s, layer, image, frame)
+        }
+        fn preview(s: &mut Session, params: &Value, queued: bool) -> Result<Value, String> {
+            if queued {
+                let read = crate::cmd::reads::read_ahead(s, "edit.previewShapeConversion", params)?;
+                let done = read.run(&rustgis_analysis::control::Control::new())?;
+                crate::cmd::reads::read_land(s, done)
+            } else {
+                s.run("edit.previewShapeConversion", params)
+            }
+        }
+        fn apply(s: &mut Session, layer: u32, params: &Value, queued: bool, expected: &Frame) {
+            let before = s.map().layer(layer).unwrap().dataset.features[0].clone();
+            let depth = s.undo_depth();
+            let value = preview(s, params, queued).unwrap();
+            let proposal: Proposal = serde_json::from_value(value.clone()).unwrap();
+            let frame = match proposal.shape {
+                Shape::Circle(c) => c.frame,
+                Shape::RotatedBox(b) => b.frame,
+            };
+            assert_eq!(&frame, expected);
+            assert_eq!(s.undo_depth(), depth);
+            assert_eq!(s.map().layer(layer).unwrap().dataset.features[0], before);
+            s.run("edit.applyShapeConversion", &json!({"preview":value,"confirm":true})).unwrap();
+            assert_eq!(s.undo_depth(), depth + 1);
+            let after = &s.map().layer(layer).unwrap().dataset.features[0];
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.attrs, before.attrs);
+            assert!(s.circle_spec(layer, 0).is_some() || s.box_spec(layer, 0).is_some());
+        }
+
+        #[test]
+        fn shape_conversion_verified_local_images_preview_and_apply_in_both_read_paths() {
+            for queued in [false, true] {
+                for kind in ["circle", "rotatedBox"] {
+                    let (_dir, mut s, layer, image, frame) = setup("verified", kind, queued);
+                    apply(&mut s, layer, &json!({"layer":layer,"row":0,"kind":kind,"image":image}), queued, &frame);
+                }
+            }
+        }
+
+        #[test]
+        fn shape_conversion_local_image_failures_preserve_features_and_recover_after_reload() {
+            for queued in [false, true] {
+                for kind in ["circle", "rotatedBox"] {
+                    for case in ["missing", "unverified", "changed"] {
+                        let (dir, mut s, layer, image, frame) = setup(case, kind, queued);
+                        let raster = s.map_mut().layer_mut(image).unwrap().raster.as_mut().unwrap();
+                        let expected = match case {
+                            "missing" => {
+                                raster.data = None;
+                                "pixels are not loaded"
+                            }
+                            "unverified" => {
+                                raster.data = Some(std::sync::Arc::new(pixels()));
+                                "no verified original file revision"
+                            }
+                            _ => {
+                                let path = dir.0.join("image.tif");
+                                let mut bytes = std::fs::read(&path).unwrap();
+                                bytes.push(0); // Valid TIFF, deterministically different length even on coarse-timestamp filesystems.
+                                std::fs::write(path, bytes).unwrap();
+                                "file changed"
+                            }
+                        };
+                        let before = s.map().layer(layer).unwrap().dataset.features[0].clone();
+                        let depth = s.undo_depth();
+                        let params = json!({"layer":layer,"row":0,"kind":kind,"image":image});
+                        let error = preview(&mut s, &params, queued).unwrap_err();
+                        assert!(error.contains(expected), "{error}");
+                        assert!(error.contains("Reload Data") && error.contains("retry"), "{error}");
+                        assert!(!error.contains("Reload Grid"), "conversion has no Reload Grid action: {error}");
+                        assert_eq!(s.undo_depth(), depth);
+                        assert_eq!(s.map().layer(layer).unwrap().dataset.features[0], before);
+                        assert!(s.box_spec(layer, 0).is_none() && s.circle_spec(layer, 0).is_none());
+                        s.run("layer.reloadData", &json!({"layer":image})).unwrap();
+                        apply(&mut s, layer, &params, queued, &frame);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

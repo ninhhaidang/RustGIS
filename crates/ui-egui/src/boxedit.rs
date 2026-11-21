@@ -50,6 +50,17 @@ fn selected(app: &RustGisApp) -> Option<(u32, usize, BoxSpec)> {
 pub(crate) fn drawing(app: &RustGisApp) -> bool {
     app.boxes.gesture.is_some()
 }
+pub(crate) fn new_drawing(app: &RustGisApp) -> bool {
+    app.boxes.gesture.as_ref().is_some_and(|g| g.row.is_none())
+}
+pub(crate) fn error(app: &RustGisApp) -> Option<&str> {
+    app.boxes.error.as_deref()
+}
+pub(crate) fn clear_idle_error(app: &mut RustGisApp) {
+    if app.boxes.gesture.is_none() {
+        app.boxes.error = None;
+    }
+}
 pub(crate) fn cancel(app: &mut RustGisApp) {
     app.boxes = State::default();
     app.map.cancel_rotated_box_drag();
@@ -61,6 +72,7 @@ fn valid(app: &RustGisApp, g: &Gesture) -> bool {
         && g.map == app.session.project.active_map
         && g.map_name == app.session.map().name
         && app.session.active_layer == Some(g.layer)
+        && (g.row.is_some() || crate::annotation::drawing_frame(app).is_ok_and(|frame| frame == g.original.frame))
         && app.session.map().layer(g.layer).is_some_and(|l| {
             l.instance_id() == g.instance
                 && l.replacement_revision() == g.replacement
@@ -69,7 +81,16 @@ fn valid(app: &RustGisApp, g: &Gesture) -> bool {
         })
 }
 pub(crate) fn cancel_stale(app: &mut RustGisApp) {
-    if app.boxes.gesture.as_ref().is_some_and(|g| !valid(app, g)) {
+    if let Some(grid_changed) = app.boxes.gesture.as_ref().filter(|g| !valid(app, g)).map(|g| {
+        g.row.is_none()
+            && (g.project != app.session.opened
+                || g.map != app.session.project.active_map
+                || g.map_name != app.session.map().name
+                || !crate::annotation::drawing_frame(app).is_ok_and(|frame| frame == g.original.frame))
+    }) {
+        if grid_changed {
+            crate::annotation::drawing_cancelled(app);
+        }
         cancel(app);
     }
     if !app.forms.template.is_empty()
@@ -142,7 +163,19 @@ pub(crate) fn drag_start(app: &mut RustGisApp, rect: Rect, origin: Pos2, force_n
     let Some(id) = app.session.active_layer else { return false };
     let (row, original, handle) = match chosen {
         Some((_, row, b, h)) => (Some(row), b, h),
-        None => (None, BoxSpec { frame: Frame::default(), center: [0., 0.], width: 1., height: 1., angle: 0. }, Handle::New),
+        None => {
+            let frame = match crate::annotation::drawing_frame(app) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    if app.boxes.error.as_deref() != Some(error.as_str()) {
+                        app.session.notify(error.clone(), true);
+                    }
+                    app.boxes.error = Some(error);
+                    return false;
+                }
+            };
+            (None, BoxSpec { frame, center: [0., 0.], width: 1., height: 1., angle: 0. }, Handle::New)
+        }
     };
     let Some(start) = original.frame.to_local(c) else { return false };
     if let Some(row) = row {

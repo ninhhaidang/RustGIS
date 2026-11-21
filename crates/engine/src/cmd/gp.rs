@@ -803,6 +803,8 @@ pub(crate) struct ToolAhead {
     result: Result<rustgis_analysis::ToolResult, String>,
     full_ids: FullIds,
     millis: u64,
+    /// Runtime identities of successfully installed outputs on the worker, in return order.
+    grid_outputs: Vec<rustgis_map::Layer>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -864,6 +866,7 @@ pub(crate) struct RanAheads {
     tools: Vec<RanAhead>,
     files: Vec<FileAhead>,
     zones: Vec<super::imagery::ZoneMeans>,
+    grids: Vec<crate::image_grid::Prepared>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -874,11 +877,13 @@ pub(crate) struct RanAheads {
 pub(crate) fn taking<T>(s: &mut Session, ran: RanAheads, run: impl FnOnce(&mut Session) -> T) -> T {
     s.tools_ahead = Some(Ahead::Taking(ran.tools.into()));
     s.files_ahead = Some(FilesAhead::Taking(ran.files.into()));
+    s.grids_ahead = Some(crate::image_grid::Ahead::taking(ran.grids));
     s.zones_ahead = Some(super::imagery::ZonesAhead::Taking(ran.zones.into()));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(s)));
     s.tools_ahead = None;
     s.files_ahead = None;
     s.zones_ahead = None;
+    s.grids_ahead = None;
     r.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
@@ -897,7 +902,11 @@ pub(crate) fn ran_ahead(s: &mut Session) -> RanAheads {
         Some(super::imagery::ZonesAhead::Recording(read)) => read,
         _ => Vec::new(),
     };
-    RanAheads { tools, files, zones }
+    let grids = match s.grids_ahead.take() {
+        Some(crate::image_grid::Ahead::Recording(read)) => read,
+        _ => Vec::new(),
+    };
+    RanAheads { tools, files, zones, grids }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -924,15 +933,19 @@ fn read_batch_file(s: &mut Session, path: &std::path::Path) -> Result<(Dataset, 
 #[cfg(not(target_arch = "wasm32"))]
 /// The next tool run ahead, if it is this one on the same inputs: its result, the streamed rows
 /// it read whole and how long it took. Any other drops the rest, which came after it.
-fn take_ahead(
-    s: &mut Session,
-    pin: &crate::policy::ToolPin,
-    params: &Value,
-) -> Option<(Result<rustgis_analysis::ToolResult, String>, FullIds, u64)> {
-    let Some(Ahead::Taking(ran)) = &mut s.tools_ahead else { return None };
-    let next = ran.pop_front()?;
+fn take_ahead(s: &mut Session, pin: &crate::policy::ToolPin, params: &Value) -> Option<Box<ToolAhead>> {
+    let Some(Ahead::Taking(ran)) = &mut s.tools_ahead else {
+        crate::image_grid::invalidate_script_grids(s);
+        return None;
+    };
+    let Some(next) = ran.pop_front() else {
+        s.tools_ahead = None;
+        crate::image_grid::invalidate_script_grids(s);
+        return None;
+    };
     let RanAhead::Tool(next) = next else {
         s.tools_ahead = None;
+        crate::image_grid::invalidate_script_grids(s);
         return None;
     };
     let now = Snapshot::of(s);
@@ -942,9 +955,10 @@ fn take_ahead(
         {
             s.tools_taken += 1;
         }
-        return Some((next.result, next.full_ids, next.millis));
+        return Some(next);
     }
     s.tools_ahead = None;
+    crate::image_grid::invalidate_script_grids(s);
     None
 }
 
@@ -2581,7 +2595,20 @@ pub(crate) fn execute(
     }
     let continuation = s.tool_continuation(&op)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let ran = take_ahead(s, pin, params);
+    let output_slot = match &s.tools_ahead {
+        Some(Ahead::Recording(recorded)) => Some(recorded.len()),
+        _ => None,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut ran = take_ahead(s, pin, params);
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::image_grid::script_grids_invalidated(s) {
+        return Err("the script inputs changed; run the script again".into());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let replayed_outputs = ran.as_mut().map(|tool| std::mem::take(&mut tool.grid_outputs));
+    #[cfg(not(target_arch = "wasm32"))]
+    let ran = ran.map(|tool| (tool.result, tool.full_ids, tool.millis));
     #[cfg(target_arch = "wasm32")]
     let ran = None;
     let (mut res, ids, millis) = match ran {
@@ -2632,6 +2659,7 @@ pub(crate) fn execute(
                     result: res.clone(),
                     full_ids: ids.clone(),
                     millis,
+                    grid_outputs: Vec::new(),
                 })));
             }
             (res, ids, millis)
@@ -2640,7 +2668,29 @@ pub(crate) fn execute(
     pin.current()?;
     continuation.check()?;
     fit_to_windows(s, &mut res, &ids);
-    apply_with(s, run_of(t0), kept(), res, millis, opts)
+    let applied = apply_with(s, run_of(t0), kept(), res, millis, opts);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok((out, _)) = &applied
+        && (recording || replayed_outputs.is_some())
+    {
+        let outputs = output_layers(s, out);
+        if let Some(recorded) = replayed_outputs {
+            crate::image_grid::replay_tool_outputs(s, &recorded, &outputs)?;
+        } else if let Some(index) = output_slot
+            && let Some(Ahead::Recording(recorded)) = &mut s.tools_ahead
+            && let Some(RanAhead::Tool(tool)) = recorded.get_mut(index)
+        {
+            tool.grid_outputs = outputs;
+        }
+    }
+    applied
+}
+
+/// The exact layers just installed by a tool, rather than similarly named layers in the map.
+#[cfg(not(target_arch = "wasm32"))]
+fn output_layers(s: &Session, out: &Value) -> Vec<rustgis_map::Layer> {
+    let ids = out.get("layer").into_iter().chain(out.get("layers").and_then(Value::as_array).into_iter().flatten());
+    ids.filter_map(Value::as_u64).filter_map(|id| u32::try_from(id).ok()).filter_map(|id| s.map().layer(id).cloned()).collect()
 }
 
 /// Counts classified reports across a batch and keeps a bounded sample for each code.
@@ -6777,4 +6827,70 @@ pub(crate) fn project_input<'a>(
 /// Builtin VectorLayers reads absent map names as files before MapInputs' table fallback.
 pub(crate) fn vector_file_input(spec: &rustgis_analysis::ToolSpec, map: &rustgis_map::Map, name: &str) -> bool {
     rustgis_analysis::TOOLS.iter().any(|t| std::ptr::eq(t, spec)) && map.layer_by_name(name).is_none()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod replay_rollback_tests {
+    use super::*;
+    use rustgis_data::{Field, FieldType, Geometry, GeometryType, Value as Cell};
+    fn prepare(s: &Session, params: &Value) -> Result<RanAheads, String> {
+        let mut worker = Session::new(s.project.clone());
+        worker.active_layer = s.active_layer;
+        worker.opened = s.opened;
+        worker.view_size = s.view_size;
+        worker.set_extensions(s.extensions().clone());
+        worker.tools_ahead = Some(Ahead::Recording(Vec::new()));
+        worker.grids_ahead = Some(crate::image_grid::Ahead::Recording(Vec::new()));
+        worker.run("script.run", params)?;
+        Ok(ran_ahead(&mut worker))
+    }
+    #[test]
+    fn annotation_grid_post_apply_replay_error_rolls_back_outputs_history_and_undo() {
+        let mut s = Session::new(crate::Project::default());
+        let mut samples = Dataset::new("Samples", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for (x, y, v) in [(0., 0., 1.), (2., 0., 2.), (0., 2., 3.), (2., 2., 4.)] {
+            samples.push(Some(Geometry::Point(rustgis_geom::Coord::new(x, y))), vec![Cell::Float(v)]);
+        }
+        // Another layer first, so a rollback that forgets the chosen one would pick it instead.
+        s.map_mut().add_dataset(Dataset::new("Other", GeometryType::Point, vec![]));
+        let chosen = s.map_mut().add_dataset(samples);
+        s.active_layer = Some(chosen);
+        s.run("project.rename", &json!({"name":"Before"})).unwrap();
+        s.run("project.rename", &json!({"name":"Future"})).unwrap();
+        s.run("edit.undo", &json!({})).unwrap();
+        s.mark_saved();
+        let params = json!({"script":format!("gp.run {}\nraster.imageGrid {}", json!({"tool":"idwInterpolation","params":{"input":"Samples","field":"v","extent":"0,0,2,2","pixelSize":0.5,"output":"Surface"}}), json!({"layer":"Surface"}))});
+        let before = serde_json::to_value(&s.project).unwrap();
+        let history = (s.undo_depth(), s.undo_label(), s.redo_label(), s.dirty());
+        let mut ran = prepare(&s, &params).unwrap();
+        // Corrupt only the recorded output identity: the tool's input snapshot and actual
+        // output still match, so replay accepts and applies it before binding fails.
+        let Some(RanAhead::Tool(tool)) = ran.tools.first_mut() else { panic!("expected prepared tool") };
+        tool.grid_outputs[0].name = "Injected output identity mismatch".into();
+        s.statistics_need_read_ahead(true);
+        let error = super::super::reads::taking(&mut s, "script.run", ran, |s| s.run("script.run", &params)).unwrap_err();
+        assert!(error.contains("tool outputs changed"), "{error}");
+        assert_eq!(s.tools_taken, 1, "the error must occur after the prepared tool was taken and applied");
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), before, "outputs and successful GP history must roll back");
+        assert_eq!(s.active_layer, Some(chosen), "the layer chosen before the script must stay chosen");
+        assert_eq!((s.undo_depth(), s.undo_label(), s.redo_label(), s.dirty()), history);
+        assert!(s.map().layer_by_name("Surface").is_none());
+        assert!(s.grids_ahead.is_none() && s.tools_ahead.is_none());
+        s.run("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.project.name, "Future", "a failed replay must preserve the prior Redo entry");
+        s.run("edit.undo", &json!({})).unwrap();
+        let ran = prepare(&s, &params).unwrap();
+        let answer = super::super::reads::taking(&mut s, "script.run", ran, |s| s.run("script.run", &params)).unwrap();
+        assert_eq!(answer["ran"][1]["result"]["width"], 4);
+        assert_eq!(s.map().layers.iter().filter(|layer| layer.name == "Surface").count(), 1);
+        assert!(s.map().layer_by_name("Surface (2)").is_none());
+        assert_eq!(s.undo_depth(), history.0 + 1);
+        s.run("edit.undo", &json!({})).unwrap();
+        // Undo deliberately bumps geometry revisions to invalidate rendering caches.
+        assert!(s.map().layer_by_name("Surface").is_none());
+        assert_eq!(s.map().layers.len(), 2);
+        assert_eq!(serde_json::to_value(&s.map().layers[0].dataset).unwrap(), before["maps"][0]["layers"][0]["dataset"]);
+        assert!(s.project.gp_history.is_empty());
+        assert_eq!(s.undo_depth(), history.0);
+    }
 }

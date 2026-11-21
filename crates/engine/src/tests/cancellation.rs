@@ -198,6 +198,8 @@ pub(super) fn long_commands(boundaries: bool) {
         .collect();
     std::fs::write(out("many.geojson"), json!({"type": "FeatureCollection", "features": many}).to_string()).unwrap();
     exercise(&s, "layer.addData", &json!({"path": out("many.geojson"), "stream": true}), Kind::Read, &dir.0, boundaries);
+    // Original TIFF headers share the read queue and both cancellation sweeps.
+    exercise(&s, "raster.imageGrid", &json!({"layer": dem}), Kind::Read, &dir.0, boundaries);
     // A PDF's page is read on the same queue: the file, then its drawing, Cancel looked at between
     // (#2336).
     s.run("layout.new", &json!({"page": "a4", "template": "map"})).unwrap();

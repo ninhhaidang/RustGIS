@@ -36,7 +36,9 @@ impl Frame {
         if epsg == 0 {
             return Err("construction grids currently require a recognised EPSG coordinate system".into());
         }
-        Ok(Self { epsg, width: grid.width(), height: grid.height(), affine: grid.affine() })
+        let frame = Self { epsg, width: grid.width(), height: grid.height(), affine: grid.affine() };
+        frame.grid()?;
+        Ok(frame)
     }
     fn grid(&self) -> Result<ImageGrid, String> {
         let crs = Crs::from_epsg(self.epsg)
@@ -293,6 +295,28 @@ mod tests {
     }
     fn spec() -> BoxSpec {
         BoxSpec { frame: Frame::default(), center: [1000., 1000.], width: 200., height: 100., angle: 30. }
+    }
+    #[test]
+    fn annotation_grid_frame_refuses_unsupported_crs_before_drawing() {
+        let affine = [500_000., 0.8, 0.2, 1000., 0.1, -0.8];
+        assert!(Crs::from_epsg(65535).is_none());
+        let grid = ImageGrid::new(400, 300, Crs::Epsg(65535), affine).unwrap();
+        assert_eq!(Frame::from_grid(&grid).unwrap_err(), "construction grid needs a supported EPSG coordinate system");
+    }
+    #[test]
+    fn annotation_grid_frame_rejects_custom_datum_and_retains_supported_pixel_round_trips() {
+        let affine = [500_000., 0.8, 0.2, 1000., 0.1, -0.8];
+        let custom = Crs::parse("+proj=aea +lat_1=20 +lat_2=60 +lat_0=40 +lon_0=-100 +ellps=clrk66 +units=m +no_defs").unwrap();
+        assert!(custom.lacks_datum_shift());
+        let grid = ImageGrid::new(400, 300, custom, affine).unwrap();
+        assert_eq!(Frame::from_grid(&grid).unwrap_err(), "construction grids currently require a recognised EPSG coordinate system");
+        for code in [3857, 32633] {
+            let grid = ImageGrid::new(400, 300, Crs::from_epsg(code).unwrap(), affine).unwrap();
+            let frame = Frame::from_grid(&grid).unwrap();
+            let point = [200., 150.];
+            let actual = frame.to_local(frame.to_lonlat(point).unwrap()).unwrap();
+            assert!((actual[0] - point[0]).abs() < 1e-6 && (actual[1] - point[1]).abs() < 1e-6);
+        }
     }
     fn add(s: &mut Session, b: &BoxSpec) -> usize {
         s.run("edit.addBox", &json!({"box":b,"attributes":{"class":"vehicle","_rustgis_box":"user-owned"}})).unwrap()["row"]

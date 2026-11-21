@@ -1051,6 +1051,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.mcpRelay", "MCP Relay", "Help › Help"),
     ("ui.pane.geoprocessing", "Tools Pane", "View › Windows"),
     ("ui.pane.symbology", "Symbology Pane", "Style › Drawing"),
+    ("ui.pane.annotation", "Annotate", "Analyze › Annotate"),
     ("ui.pane.labeling", "Labeling Pane", "View › Windows"),
     ("ui.pane.layerProperties", "Layer Properties Pane", "View › Windows"),
     ("ui.pane.diagnosticLog", "Messages", "View › Windows"),
@@ -1392,6 +1393,12 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
             if command_matches(id, label, loc, &ql) {
                 hits.push((id.into(), tl!(label).into(), crate::i18n::location(loc)));
             }
+        }
+        // A command whose label is the query comes first, so Enter runs it rather than one that
+        // matched only by its ribbon location ("Annotate" before Original Image Grid). The sort
+        // is stable: the rest keep their order.
+        if !ql.is_empty() {
+            hits.sort_by_key(|h| h.1.to_lowercase() != ql);
         }
         // The ribbon location is dropped when the palette is too narrow to show it.
         let show_loc = width >= 400.0;

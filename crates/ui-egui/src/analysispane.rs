@@ -2388,6 +2388,44 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn annotation_grid_script_pane_receives_the_frame_after_worker_delivery() {
+        use rustgis_engine::data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+        for off_frame in [false, true] {
+            let raster = Raster::new(
+                "Image",
+                2,
+                3,
+                vec![vec![1.; 6]],
+                GeoTransform { origin_x: 100., origin_y: 500., pixel_width: 2., pixel_height: -3. },
+                Crs::from_epsg(3857).unwrap(),
+                None,
+                ColorHint::Gray,
+                "UInt8",
+            )
+            .unwrap();
+            let bytes = geotiff::write(&raster, 0).unwrap();
+            let expected =
+                rustgis_engine::box_edit::Frame::from_grid(&geotiff::read_image_grid(std::io::Cursor::new(&bytes)).unwrap()).unwrap();
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let image = app.session.map_mut().add_raster("Image", rustgis_engine::map::RasterLayer::from_bytes(raster, "image.tif", bytes));
+            app.reads_off_frame = off_frame;
+            start_script(&mut app, format!("raster.imageGrid {}", json!({"layer":image})));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while crate::readjob::land(&mut app) {
+                assert!(std::time::Instant::now() < end, "grid script never landed");
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: await the script worker's real frame delivery
+            }
+            assert!(app.workflow.script_started.is_empty());
+            let run = app.workflow.script_last.as_ref().unwrap();
+            assert!(run.error.is_none(), "{:?}", app.workflow.script_out);
+            assert_eq!(run.ran.len(), 1);
+            assert_eq!(serde_json::from_value::<rustgis_engine::box_edit::Frame>(run.ran[0].result.clone()).unwrap(), expected);
+            assert!(app.workflow.script_out.iter().all(|(_, error)| !error));
+        }
+    }
+
     /// A Script pane run works its tools out on a thread of its own: the results say Running…
     /// until it lands, runs land in the order asked, and one cancelled or left says so.
     #[cfg(not(target_arch = "wasm32"))]

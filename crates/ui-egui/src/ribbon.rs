@@ -2259,6 +2259,18 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
         });
     });
     group(ui, "Windows", |ui| {
+        col(ui, |ui| {
+            small(
+                ui,
+                app,
+                "edit",
+                "Annotate",
+                "Show or hide the Annotate pane.",
+                "ui.pane.annotation",
+                Value::Null,
+                app.ui.right == Some(RightPane::Annotation),
+            );
+        });
         big(
             ui,
             app,
@@ -2632,6 +2644,19 @@ fn layer_hint(ui: &mut Ui, text: &str) {
 
 /// The Analyze tab: geoprocessing, workflows and notebooks. Its imagery groups are on the Imagery extension's tab (#1752).
 fn analyze_tab(app: &mut RustGisApp, ui: &mut Ui) {
+    group(ui, "Annotate", |ui| {
+        big(
+            ui,
+            app,
+            "edit",
+            "Annotate",
+            "Choose an image and target layer, then draw in the original image grid.",
+            "ui.pane.annotation",
+            Value::Null,
+            app.ui.right == Some(RightPane::Annotation),
+            false,
+        );
+    });
     analysis_groups(app, ui);
     notebook_group(app, ui);
 }

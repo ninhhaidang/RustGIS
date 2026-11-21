@@ -164,6 +164,102 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   [Geoprocessing tools](analysis.md#geoprocessing-tools), **Near the poles**).
 - **Status**: features added, changed and deleted per layer since the last save.
 
+### Annotating an image
+
+**Analyze → Annotate** opens the annotation pane. It is also available from **View → Windows**
+and Command Search. Add a GeoTIFF and a polygon feature layer first, then choose the **Image**
+and **Target layer** in the pane, enable editing, and choose Circle or Rotated Box.
+The ordinary tools remain available under Edit and share these settings.
+
+Selecting an image defaults the **New shape grid** to **Original image pixels**. RustGIS reads
+its original TIFF header, including rotation and shear, independently of any displayed overview.
+New box widths/heights and circle radii are then expressed in source-image pixels. A circle in
+image coordinates may appear elliptical on the map; a rectangle may appear skewed. The image is
+not resampled by this choice, and shapes are not clipped to its boundary.
+
+Choose **Web Mercator grid metres** explicitly to draw in map coordinates instead; those are not
+ground-distance metres. Choosing **No image** restores that grid. Under Edit, the same choices
+are in Editing → New shape grid when a circle or rotated box tool is active. Grid changes affect
+new shapes; existing shapes retain their own construction grid when moved, resized or rotated.
+Undo/Redo retain those constructions within the session.
+
+On desktop, header reads run in the background with progress and Cancel. Changing images,
+switching to Web Mercator or using **Cancel Grid Read** stops only that lookup and preserves
+unrelated queued work. The status-bar Cancel retains its queue-wide behaviour. Pixel-based
+drawing waits for a valid grid; a failed or cancelled read never silently substitutes map metres.
+After changing a source file externally, reload the image layer first, then use **Reload Grid**.
+Original-pixel drawing and conversion share the same [source checks](#image-source-checks).
+Removing/replacing an image invalidates its cached grid. Local and embedded GeoTIFFs are supported;
+download remote originals first. In the browser, upload the original GeoTIFF. Other local formats
+(including PNG, JPEG, ASCII grids and GDAL-converted images) are refused with guidance to export
+the image as a GeoTIFF and add that file; reloading the unsupported source cannot supply its grid.
+Construction grids require a supported EPSG coordinate system. Unsupported or custom systems
+are refused during the grid read; choose a supported image or **Web Mercator grid metres**.
+Changing projects or maps clears the old image binding, keeps pixel mode selected and reports a
+warning. Drawing stays blocked until you choose an image again or explicitly choose Web Mercator
+grid metres; opening the pane does not clear the warning.
+An image removed from the map keeps its last name as **Unavailable image**. Pixel drawing stays
+blocked and **Reload Grid** is disabled until the image is restored or another image is chosen.
+Choose **No image** to return explicitly to Web Mercator grid metres.
+**Original Image Grid** in Command Search reports the active image's original dimensions and
+EPSG coordinate system in a notice, while keeping the Annotate pane open.
+
+Space or middle-drag pans; releasing Space keeps the drawing tool. Use the selected object's
+existing handles, Undo/Redo, and **Export GeoJSON…**. **Shape details** is collapsed by default;
+expand it for numeric dimensions and additional editing controls. Map handles remain available
+while the section is hidden. Refused drawing gestures show an error notification even when
+**Shape details** is collapsed. The reason stays visible in the pane, and repeated refusals with
+the same message do not add duplicate notices. Changing the image/grid or invalidating its source
+cancels an unfinished new shape with an explanation; releasing afterwards does not save that
+preview or create an Undo step. Exports contain
+ordinary geographic polygons and feature properties; circles are polygon approximations.
+Check **Use image filename** to suggest `img1.geojson` for an image named `img1.tiff`.
+The preview shows the suggested basename; the save dialog still chooses the folder and lets
+you change the name. The option starts unchecked and applies only to this pane’s GeoJSON
+export; ordinary layer exports keep their layer-based names.
+
+Image selection, grid choices and exact constructions are session-only. Reopened polygons can
+be explicitly converted again. No image-binding metadata or palette sidecars are added.
+
+For CLI, Python, Assistant/MCP and permitted plugins, `raster.imageGrid={"layer":"Image"}`
+returns the original `epsg`, `width`, `height` and six affine coefficients in the same format
+accepted by `edit.addBox.box.frame` and `edit.addCircle.circle.frame`. The query is read-only,
+requires Files permission, and uses the shared read worker on desktop/MCP. Headless synchronous
+callers must run file reads off their own UI thread. The desktop Script pane prepares grid queries
+on its worker and shows the actual frame in each line's result, rather than a queue acknowledgement.
+Queries may follow replayable selection/edit steps or query embedded rasters produced by
+`gp.run` earlier in the same script. Accepted tool outputs retain their prepared raster data;
+repeated queries and tools with multiple raster outputs use the matching output's grid without
+rereading headers on the UI thread. Live output IDs and display styles are preserved. If a tool's
+inputs change while the script is being prepared, all dependent grid results are discarded and
+the script must be run again. File-opening or project-changing setup must run in a separate
+script first. Scoped callers should use the individually approved query.
+
+### Image source checks
+
+Local GeoTIFF loading records the file revision with its decoded pixels. If a verified file changes
+or becomes unverifiable during decoding, **Add Data** and **Reload Data** refuse that load rather
+than accepting potentially inconsistent pixels. Wait for writes/cloud synchronization to finish,
+then retry **Add Data**, or **Reload Data** for an existing layer. Or copy the image to a stable
+local location: for a new layer, add the copy with **Add Data**; for an existing layer, point it at
+the copy with **Repair Data Source** (**Reload Data** reads only the layer's current source, so it
+does not pick up the copy). This load-time check also applies outside annotation workflows.
+
+Original image grids are not offered for an image opened as a scan or laid over the view, which is
+drawn where it was placed rather than where its file puts it, nor for an image read in place a view
+at a time; choose map metres, or add the georeferenced GeoTIFF (clipped, if it is too large to open
+whole).
+
+Grid reads require loaded pixels and a matching verified revision. After known external edits,
+reload the image layer and retry the operation. Detection compares metadata, not content hashes:
+length and modification time, plus device/inode/change time on Unix or creation time on Windows.
+Rewrites preserving every compared field go undetected, so reload after known edits even without
+a warning. A cached grid remains aligned with the pixels retained in the session.
+
+If the initial revision capture fails, viewing can still load, but grid reads report the original
+metadata error. Check filesystem metadata support/access, or export the image as a GeoTIFF to
+another location and add it; repeated reloads cannot repair unsupported metadata.
+
 ### Rotated boxes
 
 Choose a loaded, visible polygon layer, turn **Edit › Edit** on, and select **Edit › Features ›
@@ -443,6 +539,8 @@ keep their current selection when opening the map menu.
    display overview. Local GeoTIFFs and embedded/browser-uploaded GeoTIFFs are supported; remote
    original grids must be downloaded and added first. An unreadable or unsupported source gives
    an error, without falling back to a different grid.
+   The same [image source checks](#image-source-checks) apply. If asked to reload, use
+   **Reload Data** on the image, then retry **Preview Conversion** or **Convert Now**.
 2. For a quick conversion, click **Convert Now** to fit and apply using the chosen shape and
    grid, without a preview or another confirmation. Alternatively, click **Preview Conversion**
    to show an orange outline without changing the feature or undo history, review or adjust the

@@ -24,6 +24,9 @@ pub struct Reads {
     job: Option<ReadJob>,
     /// The commands waiting for the read before, in order.
     waiting: VecDeque<Asked>,
+    /// Scoped cancellations deliver their callbacks on the next landing pass, after the UI
+    /// has replaced the old request, rather than dropping waiting completions silently.
+    cancelled: VecDeque<Asked>,
     #[cfg(test)]
     fail_spawn: bool,
 }
@@ -36,13 +39,31 @@ impl Reads {
                 && a.relay.is_none()
                 && a.params.get("request").and_then(Value::as_u64) == Some(request)
         };
+        self.cancel_where(belongs);
+    }
+    pub(crate) fn cancel_annotation_grid(&mut self, request: u64) {
+        self.cancel_where(|a| {
+            a.command == "raster.imageGrid" && a.relay.is_none() && matches!(a.then, Some(Completion::ImageGrid(id)) if id == request)
+        });
+    }
+    fn cancel_where(&mut self, belongs: impl Fn(&Asked) -> bool) {
         if let Some(job) = &mut self.job
             && belongs(&job.asked)
         {
-            job.cancel_waiting = false;
+            // A request-specific cancel must not downgrade an earlier status-bar Cancel.
+            if !job.control.is_cancelled() {
+                job.cancel_waiting = false;
+            }
             job.control.cancel();
         }
-        self.waiting.retain(|a| !belongs(a));
+        let waiting = std::mem::take(&mut self.waiting);
+        for asked in waiting {
+            if belongs(&asked) {
+                self.cancelled.push_back(asked);
+            } else {
+                self.waiting.push_back(asked);
+            }
+        }
     }
 }
 
@@ -76,12 +97,14 @@ pub type Then = fn(&mut RustGisApp, Landed);
 enum Completion {
     Command(Then),
     ShapeConversion(Option<u64>),
+    ImageGrid(u64),
 }
 impl Completion {
     fn deliver(self, app: &mut RustGisApp, result: Landed) {
         match self {
             Self::Command(then) => then(app, result),
             Self::ShapeConversion(request) => crate::shapeconvert::landed(app, request, result),
+            Self::ImageGrid(request) => crate::annotation::landed(app, request, result),
         }
     }
 }
@@ -121,6 +144,11 @@ pub fn run_then(app: &mut RustGisApp, command: &'static str, p: Value, then: Opt
 pub(crate) fn run_shape_conversion(app: &mut RustGisApp, p: Value) -> Result<Value, String> {
     let request = p.get("request").and_then(Value::as_u64);
     run_presented(app, "edit.previewShapeConversion", p, Some(Completion::ShapeConversion(request)), None, None)
+}
+
+/// Original grid lookup shares the read queue and carries its request through every outcome.
+pub(crate) fn run_image_grid(app: &mut RustGisApp, p: Value, request: u64) -> Result<Value, String> {
+    run_presented(app, "raster.imageGrid", p, Some(Completion::ImageGrid(request)), None, None)
 }
 
 /// Keeps a service layer's title and connection display name outside recorded parameters
@@ -173,6 +201,7 @@ fn run_presented(
             | "labels.convert"
             | "source.syncState"
             | "table.statistics"
+            | "raster.imageGrid"
             | "edit.previewShapeConversion"
             | "layer.sizeBy"
     )
@@ -385,7 +414,7 @@ fn file_name(path: &str) -> &str {
 
 /// Whether a read is under way or waiting.
 fn busy(app: &RustGisApp) -> bool {
-    app.reads.job.is_some() || !app.reads.waiting.is_empty()
+    app.reads.job.is_some() || !app.reads.waiting.is_empty() || !app.reads.cancelled.is_empty()
 }
 
 /// Why a command asked for can't run now: what was open when it was asked isn't any more.
@@ -499,6 +528,7 @@ fn start(app: &mut RustGisApp, mut asked: Asked, p: Value) -> Result<Value, Stri
                 | "service.layers"
                 | "script.run"
                 | "edit.previewShapeConversion"
+                | "raster.imageGrid"
                 | "layer.sizeBy"
         ) || rustgis_engine::cmd::edit::table_edit_in_background(asked.command).is_some()
         {
@@ -567,6 +597,25 @@ fn complete_here(app: &mut RustGisApp, asked: Asked, p: Value, done: Result<read
 pub fn land(app: &mut RustGisApp) -> bool {
     // History an ended edit set aside comes back now, not at the next command: Undo must see it.
     app.session.reclaim_rooms();
+    // Each one's caller hears why; the notices say it once a kind, with a count.
+    let mut cancelled: Vec<(String, usize)> = Vec::new();
+    for asked in std::mem::take(&mut app.reads.cancelled) {
+        let what = called(asked.command, &asked.what).to_string();
+        let why = crate::i18n::fmt("{what} was cancelled before starting", &[("what", &what)]);
+        match cancelled.iter_mut().find(|(w, _)| *w == what) {
+            Some((_, n)) => *n += 1,
+            None => cancelled.push((what, 1)),
+        }
+        not_run_asked(app, &asked, why);
+    }
+    for (what, n) in cancelled {
+        let why = if n == 1 {
+            crate::i18n::fmt("{what} was cancelled before starting", &[("what", &what)])
+        } else {
+            crate::i18n::fmt("{what} was cancelled before starting ({n} requests)", &[("what", &what), ("n", &n.to_string())])
+        };
+        app.session.notify(why, false);
+    }
     if !busy(app) {
         return false;
     }
@@ -661,7 +710,7 @@ pub fn land(app: &mut RustGisApp) -> bool {
 pub fn stop(app: &mut RustGisApp, wait: std::time::Duration) {
     let why = tl!("RustGIS is closing").to_string();
     let job = app.reads.job.take();
-    let waiting: Vec<Asked> = app.reads.waiting.drain(..).collect();
+    let waiting: Vec<Asked> = app.reads.cancelled.drain(..).chain(app.reads.waiting.drain(..)).collect();
     if let Some(job) = job {
         job.control.cancel();
         let end = std::time::Instant::now() + wait;
@@ -737,6 +786,113 @@ mod tests {
             assert!(std::time::Instant::now() < end, "the reads never landed");
             std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background read completion
         }
+    }
+
+    #[test]
+    fn annotation_grid_cancel_preserves_unrelated_waiting_reads() {
+        annotation_grid_cancel_case(false);
+    }
+
+    #[test]
+    fn annotation_grid_cancel_preserves_an_earlier_queue_wide_cancel() {
+        annotation_grid_cancel_case(true);
+    }
+
+    fn annotation_grid_cancel_case(queue_wide: bool) {
+        use rustgis_engine::{
+            Project, Session,
+            data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff},
+        };
+        let raster = Raster::new(
+            "image",
+            1,
+            1,
+            vec![vec![1.]],
+            GeoTransform { origin_x: 0., origin_y: 1., pixel_width: 1., pixel_height: -1. },
+            Crs::from_epsg(3857).unwrap(),
+            None,
+            ColorHint::Gray,
+            "UInt8",
+        )
+        .unwrap();
+        let bytes = geotiff::write(&raster, 0).unwrap();
+        let mut s = Session::new(Project::default());
+        let id = s.map_mut().add_raster("Image", rustgis_engine::map::RasterLayer::from_bytes(raster, "image.tif", bytes));
+        let mut app = RustGisApp::new(s);
+        app.reads_off_frame = true;
+        app.run("ui.annotationImage", json!({"image":id})).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("queued.csv");
+        std::fs::write(&file, "name,lon,lat\nQueued,1,2\n").unwrap();
+        run(&mut app, "layer.addData", json!({"path":file,"name":"Queued after grid"})).unwrap();
+        if queue_wide {
+            app.reads.cancel_for_tests();
+        }
+        app.run("ui.annotationCancel", Value::Null).unwrap();
+        app.run("ui.annotationCancel", Value::Null).unwrap();
+        let job = app.reads.job.as_ref().unwrap();
+        assert!(job.control.is_cancelled());
+        assert_eq!(job.cancel_waiting, queue_wide);
+        assert_eq!(app.reads.waiting.len(), 1);
+        landed(&mut app, 60);
+        assert_eq!(app.session.map().layer_by_name("Queued after grid").is_some(), !queue_wide);
+        assert!(crate::annotation::drawing_frame(&app).is_err());
+    }
+
+    #[test]
+    fn annotation_grid_scoped_cancel_delivers_waiting_callbacks_once_and_keeps_other_reads() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.csv");
+        std::fs::write(&path, "name,lon,lat\nA,1,2\n").unwrap();
+        app.reads_off_frame = true;
+        fn cancelled(app: &mut RustGisApp, result: Landed) {
+            let Landed::NotRun(why) = result else { panic!("cancelled waiting read must not run") };
+            assert!(why.contains("cancelled before starting"));
+            app.session.notify("Waiting callback delivered", false);
+        }
+        run(&mut app, "layer.addData", json!({"path":path,"name":"First"})).unwrap();
+        run_then(&mut app, "layer.addData", json!({"path":path,"name":"Cancel me"}), Some(cancelled)).unwrap();
+        run(&mut app, "layer.addData", json!({"path":path,"name":"Keep me"})).unwrap();
+        app.reads.cancel_where(|a| a.params["name"] == "Cancel me");
+        app.reads.cancel_where(|a| a.params["name"] == "Cancel me");
+        assert_eq!(app.reads.waiting.len(), 1);
+        landed(&mut app, 60);
+        assert!(app.session.map().layer_by_name("First").is_some());
+        assert!(app.session.map().layer_by_name("Keep me").is_some());
+        assert!(app.session.map().layer_by_name("Cancel me").is_none());
+        assert_eq!(app.session.notices.iter().filter(|n| n.text == "Waiting callback delivered").count(), 1);
+        assert!(app.reads.cancelled.is_empty());
+        assert!(!land(&mut app));
+    }
+
+    #[test]
+    fn annotation_grid_worker_failure_never_reads_headers_on_the_frame() {
+        use rustgis_engine::{
+            Project, Session,
+            data::raster::{ColorHint, Crs, GeoTransform, Raster},
+        };
+        let raster = Raster::new(
+            "image",
+            1,
+            1,
+            vec![vec![1.]],
+            GeoTransform { origin_x: 0., origin_y: 1., pixel_width: 1., pixel_height: -1. },
+            Crs::from_epsg(3857).unwrap(),
+            None,
+            ColorHint::Gray,
+            "UInt8",
+        )
+        .unwrap();
+        let mut s = Session::new(Project::default());
+        let id = s.map_mut().add_raster("Image", rustgis_engine::map::RasterLayer::from_bytes(raster, "image.tif", vec![0; 32]));
+        let mut app = RustGisApp::new(s);
+        app.reads_off_frame = true;
+        app.reads.fail_spawn = true;
+        app.run("ui.annotationImage", json!({"image":id})).unwrap();
+        assert!(!showing(&app));
+        assert!(crate::annotation::drawing_frame(&app).unwrap_err().contains("worker could not start"));
+        assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("worker could not start")));
     }
 
     #[test]

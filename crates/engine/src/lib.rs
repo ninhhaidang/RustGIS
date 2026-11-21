@@ -14,6 +14,7 @@ pub mod durable;
 pub mod extensions;
 pub mod geometry_calc;
 pub mod grids;
+pub mod image_grid;
 pub mod model;
 mod notice_text;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1085,6 +1086,9 @@ pub struct Session {
     /// ([`cmd::gp::FilesAhead`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) files_ahead: Option<cmd::gp::FilesAhead>,
+    /// Original grids read by a script worker and consumed at landing without file I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) grids_ahead: Option<image_grid::Ahead>,
     /// The zones' spectral means a script read on that copy, which its run here takes
     /// ([`cmd::imagery::ZonesAhead`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1446,6 +1450,8 @@ impl Session {
             tools_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
             files_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            grids_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
             zones_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2175,6 +2181,8 @@ impl Session {
         // The project's generation rolls back with it: a project opened part way (a task's step)
         // and then undone is the one before, still open.
         let opened = self.opened;
+        // The layer chosen before the command comes back with the project when it fails.
+        let open_layer = self.active_layer;
         let files = mutates.then(|| ProjectFiles {
             identity: self.file_identity,
             path: self.path.clone(),
@@ -2283,6 +2291,7 @@ impl Session {
                 let sync_changed = self.keep_synced(&committed);
                 (self.trusted_tasks, self.trusted_models, self.trusted_notebooks) = trust;
                 self.active_layout = open_layout;
+                self.active_layer = open_layer;
                 // Replaced during the command: what it held beside itself (its undo history, its
                 // trust, its unsaved state) comes back with it.
                 if self.opened != opened {

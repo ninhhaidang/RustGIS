@@ -609,6 +609,46 @@ fn archive_batch_resumes_same_context_after_validation_failure_or_cancellation()
 }
 
 #[test]
+fn annotation_grid_request_uses_the_mcp_worker_and_returns_the_original_frame() {
+    use rustgis_engine::{
+        box_edit::Frame,
+        data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff},
+    };
+    let raster = Raster::new(
+        "Image",
+        2,
+        3,
+        vec![vec![1.; 6]],
+        GeoTransform { origin_x: 100., origin_y: 200., pixel_width: 2., pixel_height: -3. },
+        Crs::from_epsg(3857).unwrap(),
+        None,
+        ColorHint::Gray,
+        "UInt8",
+    )
+    .unwrap();
+    let bytes = geotiff::write(&raster, 0).unwrap();
+    let expected = Frame::from_grid(&geotiff::read_image_grid(std::io::Cursor::new(&bytes)).unwrap()).unwrap();
+    let mut s = Session::new(Project::default());
+    let id = s.map_mut().add_raster("Image", rustgis_engine::map::RasterLayer::from_bytes(raster, "image.tif", bytes));
+    let depth = s.undo_depth();
+    let relay = Relay::start(0).unwrap();
+    let grant = relay.grant(true).unwrap();
+    let (_, rx) = queue(&relay, &grant, command(1, "raster.imageGrid", json!({"layer":id})));
+    assert_eq!(relay.poll(&mut s), 0);
+    assert!(rx.try_recv().is_err());
+    let done = worker(relay.take_archive_read().unwrap());
+    finish(&relay, &mut s, done);
+    let answer = reply(&rx);
+    assert!(answer.get("error").is_none(), "{answer}");
+    let result = answer.get("result").expect("grid result missing");
+    assert_eq!(result["isError"], false, "{answer}");
+    let actual: Frame = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(s.undo_depth(), depth);
+    relay.stop();
+}
+
+#[test]
 fn shape_conversion_preview_uses_the_worker_without_implicitly_applying() {
     use rustgis_engine::data::{Dataset, GeometryType};
     let mut s = Session::new(Project::default());
