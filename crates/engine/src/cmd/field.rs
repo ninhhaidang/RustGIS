@@ -1892,7 +1892,7 @@ mod tests {
         let mut project = project_in(&text, &unpacked).unwrap();
         assert!(photo_notices(&mut project).is_empty());
         let photo = unpacked.join(relative);
-        assert_eq!(value(&Session::new(project), "Sites", 0, "photos"), photo.display().to_string());
+        assert_eq!(Path::new(&value(&Session::new(project), "Sites", 0, "photos")), photo.as_path());
         assert_eq!(std::fs::read(photo).unwrap(), b"photo bytes");
 
         #[cfg(unix)]

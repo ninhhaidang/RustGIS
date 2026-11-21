@@ -5952,47 +5952,27 @@ mod tests {
     fn a_moving_flat_maps_gap_frame_is_drawn_off_the_ui_thread() {
         let _turn = crate::fetching::turn();
         let app = RustGisApp::with_sample();
-        let mut h =
-            egui_kittest::Harness::builder().with_size(vec2(900.0, 550.0)).with_step_dt(0.000_05).with_max_steps(10_000).build_ui_state(
-                |ui, app: &mut RustGisApp| {
-                    let ctx = ui.ctx().clone();
-                    app.logic(&ctx);
-                    app.ui(ui);
-                },
-                app,
-            );
-        let exact = |h: &mut egui_kittest::Harness<'_, RustGisApp>, what: &str| {
-            let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                h.step();
-                let st = h.state();
-                let res = (st.session.map().camera.res * 1000.0) as i64;
-                if st.map.key.is_some_and(|k| k.rev == st.session.revision && !k.draft && k.cam.2 == res) && !st.map.drawing() {
-                    break;
-                }
-                assert!(std::time::Instant::now() < end, "{what}");
-                std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the moving flat frame
-            }
-        };
-        exact(&mut h, "the first frame did not arrive");
-        let before = h.state().map.key.expect("a frame");
+        // Give the map widget a fixed viewport so changes in surrounding UI cannot request a redraw.
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(900.0, 550.0))
+            .with_context_setup(|ctx| crate::theme::install_fonts(ctx, &[], None))
+            .build_ui_state(|ui, app| show(app, ui), app);
+        let before = h.state().map.key.expect("the first frame");
+        assert!(!before.draft && !h.state().map.drawing());
         // The wheel zooming out, mid-gesture (the camera moved as the wheel moves it, not by a
         // command, which changes the map's revision): the frame no longer covers the view.
         h.state_mut().map.last_interaction = f64::MAX;
         h.state_mut().session.map_mut().camera.res *= 2.0;
         let res = h.state().session.map().camera.res;
         h.step();
-        assert!(h.state().map.motion_frame.busy(), "the gap's frame is drawn on the worker");
+        let gap = h.state().map.motion_frame.key().expect("the gap's frame is drawn on the worker");
+        assert!(gap.draft && gap.rev == before.rev, "the worker draws a draft for the same map: {gap:?}");
         assert_eq!(h.state().map.key, Some(before), "the last frame stays on screen meanwhile");
         // It lands while the map still moves, drawn for the zoomed-out camera.
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while h.state().map.key == Some(before) {
-            assert!(std::time::Instant::now() < end, "the gap's frame never landed");
-            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the gap frame
-            h.step();
-        }
+        h.state_mut().map.motion_frame.wait_for_result().expect("the gap frame worker must return a result");
+        h.step();
         let st = h.state();
-        assert!(st.map.key.is_some_and(|k| k.draft && k.rev == before.rev), "a frame drawn mid-motion stands in for the exact one");
+        assert_eq!(st.map.key, Some(gap), "the worker's draft is shown mid-motion");
         assert_eq!(st.map.tex_camera.res, res, "it was drawn for the camera the map had zoomed out to");
         assert!(st.map.tex_size.0 > st.session.view_size.0 * 1.2, "and over more than the view, for the next steps");
         // One still being drawn when the map comes to rest is stopped and dropped; the exact frame
@@ -6001,8 +5981,17 @@ mod tests {
         h.step();
         assert!(h.state().map.motion_frame.busy(), "the next gap's frame is drawn on the worker");
         h.state_mut().map.last_interaction = -10.0;
-        exact(&mut h, "the frame of the resting map did not arrive");
-        assert!(!h.state().map.motion_frame.busy() && !h.state().map.motion_dropped);
+        h.step();
+        let st = h.state_mut();
+        if st.map.motion_frame.busy() {
+            st.map.motion_frame.wait_for_result().expect("the obsolete gap frame worker must return a result");
+        }
+        let exact = st.map.tilt_settle.key().expect("the resting map draws an exact frame on the worker");
+        assert!(!exact.draft && exact.rev == before.rev && exact.cam.2 == (st.session.map().camera.res * 1000.0) as i64);
+        st.map.tilt_settle.wait_for_result().expect("the exact frame worker must return a result");
+        h.step();
+        assert_eq!(h.state().map.key, Some(exact), "the worker's exact frame is shown at rest");
+        assert!(!h.state().map.drawing() && !h.state().map.motion_dropped);
     }
 
     /// #1750: where frames are drawn on the UI thread (the browser), a slow map's gap frame

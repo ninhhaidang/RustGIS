@@ -37,6 +37,8 @@ pub(crate) type Prepared = Box<dyn std::any::Any + Send>;
 pub(crate) struct TiltSettle<K> {
     #[cfg(not(target_arch = "wasm32"))]
     job: Option<(K, std::sync::mpsc::Receiver<Done>, Stop)>,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    test_ready: Option<Done>,
     #[cfg(target_arch = "wasm32")]
     ready: Option<(K, Done)>,
     /// The last frame that couldn't be drawn (the renderer panicked): it isn't tried again.
@@ -48,6 +50,8 @@ impl<K> Default for TiltSettle<K> {
         TiltSettle {
             #[cfg(not(target_arch = "wasm32"))]
             job: None,
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            test_ready: None,
             #[cfg(target_arch = "wasm32")]
             ready: None,
             failed: None,
@@ -195,7 +199,11 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
         #[cfg(not(target_arch = "wasm32"))]
         let done = {
             let (_, rx, _) = self.job.as_ref()?;
-            match rx.try_recv() {
+            #[cfg(test)]
+            let result = self.test_ready.take().map_or_else(|| rx.try_recv(), Ok);
+            #[cfg(not(test))]
+            let result = rx.try_recv();
+            match result {
                 Ok(done) => self.job.take().map(|(k, ..)| (k, done)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
                 // The worker ended without an answer.
@@ -215,6 +223,14 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
             self.failed = Some(*k);
         }
         done
+    }
+
+    /// Waits for the current job's result in a test, leaving it for the UI to take on its next frame.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub fn wait_for_result(&mut self) -> Result<(), String> {
+        let (_, rx, _) = self.job.as_ref().ok_or("no frame was queued")?;
+        self.test_ready = Some(rx.recv_timeout(std::time::Duration::from_secs(30)).map_err(|err| err.to_string())?);
+        Ok(())
     }
 }
 
