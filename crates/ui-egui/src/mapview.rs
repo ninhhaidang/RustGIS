@@ -2300,9 +2300,14 @@ pub(crate) fn text_graphic_at(app: &RustGisApp, ctx: &egui::Context, rect: Rect,
         (0..l.dataset.features.len()).rev().filter(|r| drawn.get(*r) == Some(&true)).find_map(|row| {
             let g = l.dataset.features.get(row)?.geometry.as_ref()?;
             if let Some((centre, d)) = clip {
+                // No extent (an empty geometry, or one whose conversion isn't a number): nothing
+                // of it is drawn, and clamping to its extent would panic.
                 let e = to_lonlat.extent(&g.extent());
+                if e.is_empty() {
+                    return None;
+                }
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
-                if e.is_empty() || rustgis_engine::geom::haversine_m(centre, near) > d {
+                if rustgis_engine::geom::haversine_m(centre, near) > d {
                     return None;
                 }
             }
@@ -6364,6 +6369,31 @@ mod tests {
         assert_eq!(probe(&app), hit);
         app.run("group.set", json!({"group": "Notes", "transparency": 100})).unwrap();
         assert_eq!(probe(&app), None, "on a fully transparent layer");
+    }
+
+    /// #2008: with the view clipped at a distance, a graphic with no extent (an empty geometry)
+    /// is passed over, as it isn't drawn: the view's centre was clamped to its extent, from +∞
+    /// to −∞, which panicked. The text under it is still found.
+    #[test]
+    fn a_graphic_without_an_extent_is_passed_over_at_a_clipping_distance() {
+        let mut app = RustGisApp::with_sample();
+        let c = app.session.map().center_lonlat();
+        let r = app.run("graphics.add", json!({"shape": "text", "points": [[c.x, c.y]], "text": "Here", "fontSize": 20})).unwrap();
+        let hit = r["layer"].as_u64().zip(r["row"].as_u64()).map(|(l, r)| (l as u32, r as usize));
+        let id = hit.map(|(l, _)| l).expect("a graphics layer");
+        // Rows are looked at last first: the empty one, above the text, comes first.
+        let l = app.session.map_mut().layer_mut(id).expect("the graphics layer");
+        l.dataset.push(Some(rustgis_engine::data::Geometry::MultiPoint(Vec::new())), Vec::new());
+        l.touch_geometry();
+        app.run("map.clipping", json!({"distance": 1_000_000.0})).unwrap();
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let mut found = None;
+        let mut out = egui::Context::default().run_ui(Default::default(), |ui| {
+            let at = lonlat_to_screen(&app, rect, c).unwrap();
+            found = text_graphic_at(&app, ui.ctx(), rect, at);
+        });
+        out.textures_delta.clear();
+        assert_eq!(found, hit);
     }
 
     /// Trace follows the edge under two clicks; finishing a Reshape or Cut Polygon sketch (what a
