@@ -1909,7 +1909,9 @@ mod tests {
         assert_eq!(Path::new(&value(&Session::new(project), "Sites", 0, "photos")), photo.as_path());
         assert_eq!(std::fs::read(photo).unwrap(), b"photo bytes");
 
-        #[cfg(unix)]
+        // A folder whose name isn't UTF-8. Apple's APFS refuses such a name ("Illegal byte
+        // sequence"), so this part runs on other Unix systems.
+        #[cfg(all(unix, not(target_vendor = "apple")))]
         {
             use std::os::unix::ffi::OsStrExt as _;
             let unpacked = temp.path().join(std::ffi::OsStr::from_bytes(b"non-utf8-\xff"));

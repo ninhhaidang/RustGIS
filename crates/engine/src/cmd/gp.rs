@@ -4365,7 +4365,8 @@ mod batch_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    // Apple's APFS refuses a file name that isn't UTF-8 ("Illegal byte sequence").
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]
     fn batch_run_folder_skips_non_utf8_filename() {
         use std::os::unix::ffi::OsStrExt;
