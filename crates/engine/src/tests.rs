@@ -40457,6 +40457,213 @@ fn layout_charts_take_a_look() {
     assert!(s.run("layout.update", &json!({"element": chart, "group": "name"})).is_err());
 }
 
+/// A stack field with more values than the key has colours gathers the rest in its Other, and
+/// the chart says how many (#2487 part 3b); one that fits says nothing.
+#[test]
+fn a_stacked_charts_key_says_the_values_it_gathers() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType};
+    let mut s = Session::new(sample::world_project());
+    let mut ds = Dataset::new(
+        "Shops",
+        GeometryType::Point,
+        vec![Field::new("region", FieldType::Text), Field::new("kind", FieldType::Integer), Field::new("n", FieldType::Double)],
+    );
+    for k in 0..10 {
+        ds.push(
+            Some(Geometry::Point(rustgis_data::Coord::new(0.0, 0.0))),
+            vec![rustgis_data::Value::Text("A".into()), rustgis_data::Value::Int(k), rustgis_data::Value::Float(1.0)],
+        );
+    }
+    s.map_mut().add_dataset(ds);
+    s.run("layout.new", &json!({"name": "Charts"})).unwrap();
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    let mark = s.notice_mark();
+    s.run("layout.addElement", &json!({"kind": "chart", "layer": "Shops", "field": "n", "group": "region", "stack": "kind"})).unwrap();
+    let text = "the chart's key names 7 of the 10 values of kind on its bars: 3 are gathered in its grey Other";
+    assert!(said(&s, mark).iter().any(|t| t == text), "{:?}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.addElement", &json!({"kind": "chart", "layer": "Shops", "field": "n", "group": "kind", "stack": "region"})).unwrap();
+    assert!(!said(&s, mark).iter().any(|t| t.contains("key names")), "{:?}", said(&s, mark));
+    assert!(!said(&s, mark).iter().any(|t| t.contains("drawn whole")), "a finite stack: {:?}", said(&s, mark));
+    // A stretch adding up past a number's range, the bar's total within it: the bar is drawn
+    // whole, and the chart says so.
+    let mut ds = Dataset::new(
+        "Big",
+        GeometryType::Point,
+        vec![Field::new("region", FieldType::Text), Field::new("kind", FieldType::Text), Field::new("n", FieldType::Double)],
+    );
+    for (k, n) in [("x", 1e308), ("y", -1e308), ("x", 1e308)] {
+        ds.push(
+            Some(Geometry::Point(rustgis_data::Coord::new(0.0, 0.0))),
+            vec![rustgis_data::Value::Text("A".into()), rustgis_data::Value::Text(k.into()), rustgis_data::Value::Float(n)],
+        );
+    }
+    s.map_mut().add_dataset(ds);
+    let mark = s.notice_mark();
+    s.run("layout.addElement", &json!({"kind": "chart", "layer": "Big", "field": "n", "group": "region", "stack": "kind"})).unwrap();
+    let text = "1 bar of the chart is drawn whole, not stacked: its stretches add up past the largest number";
+    assert!(said(&s, mark).iter().any(|t| t == text), "{:?}", said(&s, mark));
+}
+
+/// A stacked chart in a box too short for its title and key says it draws as a placeholder, when
+/// added and when resized or retitled; one with room says nothing. Its stack field deleted, the
+/// chart draws its bars whole, and the next change to what it draws lets the stack go and says so
+/// (#2487 part 3b).
+#[test]
+fn a_stacked_chart_says_when_its_key_or_its_stack_field_leaves_it() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType};
+    use rustgis_map::layout::ElementKind;
+    let mut s = Session::new(sample::world_project());
+    let mut ds = Dataset::new(
+        "Shops",
+        GeometryType::Point,
+        vec![Field::new("region", FieldType::Text), Field::new("kind", FieldType::Text), Field::new("n", FieldType::Double)],
+    );
+    for (r, k) in [("A", "x"), ("A", "y"), ("B", "x")] {
+        ds.push(
+            Some(Geometry::Point(rustgis_data::Coord::new(0.0, 0.0))),
+            vec![rustgis_data::Value::Text(r.into()), rustgis_data::Value::Text(k.into()), rustgis_data::Value::Float(1.0)],
+        );
+    }
+    s.map_mut().add_dataset(ds);
+    s.run("layout.new", &json!({"name": "Charts"})).unwrap();
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    let crowded = "the chart's title and key leave its bars no room: it draws as a placeholder until its box is taller";
+    let mark = s.notice_mark();
+    let out = s
+        .run("layout.addElement", &json!({"kind": "chart", "layer": "Shops", "field": "n", "group": "region", "stack": "kind", "h": 8}))
+        .unwrap();
+    let id = out["element"].as_u64().unwrap();
+    assert!(said(&s, mark).iter().any(|t| t == crowded), "{:?}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "h": 60})).unwrap();
+    assert!(!said(&s, mark).iter().any(|t| t == crowded), "{:?}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "h": 8})).unwrap();
+    assert!(said(&s, mark).iter().any(|t| t == crowded), "resized: {:?}", said(&s, mark));
+    // Turned to columns, labelled and valued, a box with room across has none: the look says so.
+    s.run("layout.update", &json!({"element": id, "h": 16})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "orientation": "vertical", "values": true})).unwrap();
+    assert!(said(&s, mark).iter().any(|t| t == crowded), "restyled: {:?}", said(&s, mark));
+    s.run("layout.update", &json!({"element": id, "orientation": "horizontal", "values": false})).unwrap();
+    // Without a title it has room again; an unstacked chart never says it.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "title": "", "h": 12})).unwrap();
+    assert!(!said(&s, mark).iter().any(|t| t == crowded), "{:?}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.addElement", &json!({"kind": "chart", "layer": "Shops", "field": "n", "group": "region", "h": 8})).unwrap();
+    assert!(!said(&s, mark).iter().any(|t| t == crowded), "{:?}", said(&s, mark));
+    // Its stack field deleted: the bars are drawn whole until the chart is next told what to draw.
+    s.run("layout.update", &json!({"element": id, "h": 60})).unwrap();
+    s.run("edit.deleteField", &json!({"layer": "Shops", "field": "kind"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "bars": 5})).unwrap();
+    assert!(said(&s, mark).iter().any(|t| t == "Shops has no field 'kind': the chart no longer stacks by it"), "{:?}", said(&s, mark));
+    let stack = s.project.layouts[0].element(id as u32).map(|e| matches!(&e.kind, ElementKind::Chart { stack: None, .. }));
+    assert_eq!(stack, Some(true));
+}
+
+/// Stacked by a second field (#2487 part 3b), each bar of a chart that groups and sums or counts
+/// is split by that field's values, its stretches adding up to it. A stack the chart can't draw
+/// is refused when given (ungrouped, by the group field itself, a mean), and let go with a warning
+/// when a later change leaves it unable to; coloured by classes, a value of the key whose features
+/// have several colours keeps its palette colour, which a warning counts. It is written only
+/// when set, and Undo takes it back.
+#[test]
+fn layout_charts_stack_by_a_second_field() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType};
+    use rustgis_map::layout::ElementKind;
+    let mut s = Session::new(sample::world_project());
+    let mut ds = Dataset::new(
+        "Places",
+        GeometryType::Point,
+        vec![Field::new("region", FieldType::Text), Field::new("kind", FieldType::Text), Field::new("people", FieldType::Double)],
+    );
+    for (region, kind, people) in [("N", "town", 10.0), ("N", "town", 2.0), ("S", "city", 4.0), ("E", "city", 7.0), ("E", "town", 1.0)] {
+        ds.push(
+            Some(Geometry::Point(rustgis_data::Coord::new(0.0, 0.0))),
+            vec![rustgis_data::Value::Text(region.into()), rustgis_data::Value::Text(kind.into()), rustgis_data::Value::Float(people)],
+        );
+    }
+    s.map_mut().add_dataset(ds);
+    s.run("layout.new", &json!({"name": "Charts"})).unwrap();
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    let chart_p = |extra: Value| {
+        let mut p = json!({"kind": "chart", "layer": "Places", "field": "people", "group": "region"});
+        if let (Some(p), Some(e)) = (p.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        p
+    };
+    let r = s.run("layout.addElement", &chart_p(json!({"stack": "kind"}))).unwrap();
+    let chart = r["element"].as_u64().unwrap() as u32;
+    let data = |s: &Session| {
+        let layer = s.map().layers.iter().find(|l| l.name == "Places").unwrap();
+        s.project.layouts[0].element(chart).unwrap().kind.chart_data_of(layer, &rustgis_data::query::Env::default()).unwrap()
+    };
+    let key = |s: &Session| data(s).key.into_iter().map(|k| k.0).collect::<Vec<_>>();
+    // Towns 13, cities 11: N 12 all towns, E 8 a town and a city, S 4 a city.
+    assert_eq!(key(&s), ["town", "city"]);
+    assert_eq!(data(&s).stretches, vec![vec![12.0, 0.0], vec![1.0, 7.0], vec![0.0, 4.0]]);
+    let stack_of = |s: &Session| match s.project.layouts[0].element(chart).map(|e| &e.kind) {
+        Some(ElementKind::Chart { stack, .. }) => stack.clone(),
+        _ => None,
+    };
+
+    // Refused when given where it can't be drawn, and for other kinds; nothing is added.
+    let elements = s.project.layouts[0].elements.len();
+    for (p, why) in [
+        (json!({"kind": "chart", "layer": "Places", "field": "people", "stack": "kind"}), "doesn't group"),
+        (chart_p(json!({"stack": "region"})), "groups by that field"),
+        (chart_p(json!({"stack": "kind", "statistic": "mean"})), "wouldn't add up"),
+        (chart_p(json!({"stack": "gone"})), "no field 'gone' to stack by"),
+        (json!({"kind": "legend", "stack": "kind"}), "only charts take"),
+    ] {
+        let e = s.run("layout.addElement", &p).unwrap_err().to_string();
+        assert!(e.contains(why), "{p}: {e}");
+    }
+    assert_eq!(s.project.layouts[0].elements.len(), elements);
+    let e = s.run("layout.update", &json!({"element": chart, "stack": "region"})).unwrap_err().to_string();
+    assert!(e.contains("groups by that field"), "{e}");
+
+    // A change that leaves it unable to stack lets it go, and says so.
+    for change in [json!({"statistic": "mean"}), json!({"group": ""})] {
+        s.run("layout.update", &json!({"element": chart, "stack": "kind", "group": "region", "statistic": "sum"})).unwrap();
+        let mark = s.notice_mark();
+        let mut p = change.clone();
+        p["element"] = json!(chart);
+        s.run("layout.update", &p).unwrap();
+        assert_eq!(stack_of(&s), None, "{change}");
+        assert!(said(&s, mark).iter().any(|t| t.contains("no longer stacks by 'kind'")), "{change}: {:?}", said(&s, mark));
+    }
+    // Counting stacks too; Undo takes the stack back off.
+    s.run("layout.update", &json!({"element": chart, "group": "region", "statistic": "count"})).unwrap();
+    s.run("layout.update", &json!({"element": chart, "stack": "kind"})).unwrap();
+    assert_eq!(data(&s).stretches, vec![vec![2.0, 0.0], vec![1.0, 1.0], vec![0.0, 1.0]]);
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(stack_of(&s), None);
+    s.run("layout.update", &json!({"element": chart, "stack": "kind", "statistic": "sum"})).unwrap();
+
+    // Coloured by classes of the stack field, the key takes the classes' colours; by another
+    // field, both kinds have several and keep the palette's, which is said.
+    s.run("layer.symbology", &json!({"layer": "Places", "type": "unique", "field": "kind"})).unwrap();
+    s.run("layout.update", &json!({"element": chart, "classes": true})).unwrap();
+    let layer_colour = |s: &Session, row: usize| s.map().layers.iter().find(|l| l.name == "Places").unwrap().symbol(row).fill;
+    assert_eq!(data(&s).key.iter().map(|k| k.1).collect::<Vec<_>>(), vec![layer_colour(&s, 0), layer_colour(&s, 2)]);
+    assert_eq!(data(&s).key_kept, 0);
+    s.run("layer.symbology", &json!({"layer": "Places", "type": "unique", "field": "region"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": chart, "classes": true})).unwrap();
+    assert!(said(&s, mark).iter().any(|t| t.contains("2 values of the chart's key keep their palette colour")), "{:?}", said(&s, mark));
+
+    // Written only when set: "" takes it away.
+    let saved = |s: &Session| serde_json::to_string(&s.project.layouts[0].element(chart).unwrap().kind).unwrap();
+    assert!(saved(&s).contains("\"stack\":\"kind\""), "{}", saved(&s));
+    s.run("layout.update", &json!({"element": chart, "stack": ""})).unwrap();
+    assert!(!saved(&s).contains("\"stack\""), "{}", saved(&s));
+}
+
 /// A chart coloured by its layer's classes (#2487 part 3): grouped by the field the layer's Unique
 /// Values class by, each bar takes its class's colour, and follows the symbology when it
 /// changes; grouped otherwise, a bar whose features are in several classes keeps the bar colour,

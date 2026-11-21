@@ -9,7 +9,7 @@ use rustgis_engine::map::layout::{
     Arrange, ArrowStyle, Background, ChartOrder, CoordFormat, Element, ElementKind, Grid, GridKind, GridStyle, INK, Layout, LineHead,
     MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH, MAX_CHART_BARS, MAX_CHART_DECIMALS, MAX_COLORBAR_TICKS,
     MAX_FRAME_SCALE, MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM,
-    ScaleBarStyle, ScaleUnits, TextAlign, TickSide, frame_camera, line_angle, line_length,
+    ScaleBarStyle, ScaleUnits, TextAlign, TickSide, chart_stack_refusal, frame_camera, line_angle, line_length,
 };
 use rustgis_engine::map::report::StatKind;
 use rustgis_engine::map::symbology::Dash;
@@ -2059,6 +2059,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         title,
                         label_align,
                         classes,
+                        stack,
                         ..
                     } => {
                         // The feature layers of the frame's map, and the fields of the chart's layer (#2487).
@@ -2121,6 +2122,19 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             }
                         }
                         ui.end_row();
+                        // Grouped, summing or counting: stacked by another field (#2487 part 3b).
+                        if group.is_some() && matches!(statistic, StatKind::Sum | StatKind::Count) {
+                            let input_label = ui.label(tl!("Stack by"));
+                            // Only the fields it can stack by: not the one it groups by.
+                            let takes = |v: &Value| {
+                                v.as_str().is_none_or(|f| f.is_empty() || chart_stack_refusal(group.as_deref(), *statistic, f).is_none())
+                            };
+                            let items: Vec<_> = named(stack).into_iter().filter(|(_, _, v)| takes(v)).collect();
+                            if let Some(v) = choice(ui, ("chart_stack", id), input_label.id, stack.as_deref().unwrap_or(none), &items) {
+                                update(app, json!({"stack": v}));
+                            }
+                            ui.end_row();
+                        }
                         let input_label = ui.label(tl!("Order"));
                         let items: Vec<_> =
                             ChartOrder::ALL.into_iter().map(|o| (tl!(o.label()).to_string(), o == *order, json!(o.code()))).collect();
@@ -4248,6 +4262,44 @@ mod tests {
             h.run_steps(2);
             assert_eq!(classes(&h), on);
         }
+    }
+
+    /// The Stack by list stacks a grouped chart's bars by another field, and is shown only while
+    /// the chart groups and sums or counts (#2487 part 3b).
+    #[test]
+    fn stack_by_stacks_a_charts_bars() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::map::layout::ElementKind;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Charts"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let p = json!({"layout": li, "kind": "chart", "layer": "Countries", "field": "pop_est", "group": "continent"});
+        let id = app.run("layout.addElement", p).unwrap()["element"].as_u64().unwrap() as u32;
+        app.layout.selected = Some(id);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(420.0, 1600.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                let layout = app.session.project.layouts[li].clone();
+                egui::ScrollArea::vertical().show(ui, |ui| super::properties(app, ui, &layout, li));
+            },
+            app,
+        );
+        let stack = |h: &egui_kittest::Harness<RustGisApp>| match h.state().session.project.layouts[li].element(id).map(|e| &e.kind) {
+            Some(ElementKind::Chart { stack, .. }) => stack.clone(),
+            _ => None,
+        };
+        h.run_steps(2);
+        assert_eq!(stack(&h), None);
+        h.get_by_role_and_label(Role::ComboBox, "Stack by").click();
+        h.run_steps(2);
+        h.get_by_label("income_grp").click();
+        h.run_steps(3);
+        assert_eq!(stack(&h).as_deref(), Some("income_grp"));
+        // Taking a mean lets the stack go, and the row with it.
+        h.state_mut().run("layout.update", json!({"layout": li, "element": id, "statistic": "mean"})).unwrap();
+        h.run_steps(2);
+        assert_eq!(stack(&h), None);
+        assert!(h.query_by_label("Stack by").is_none());
     }
 
     /// Capture To Clipboard draws the text still being typed into the Format pane.

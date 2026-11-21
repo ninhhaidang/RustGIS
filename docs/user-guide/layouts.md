@@ -536,14 +536,35 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   leave the bar to the others. A bar whose features have several colours or show none,
   and an Other bar, keep the bar colour, and the chart says how many bars do, and why, when it
   is added or changed. The bars follow the symbology when it changes; those counts are not said
-  again then.
+  again then. The bars take the layer's colours whether the frame draws the layer or not: a
+  layer turned off, or outside its visible scale range, still colours them.
   **Labels** puts the labels of bars running across at the left of their column, or **By the
-  bars**, against them. Keep a title out of the chart to style it
-  as you like with a text element. From a command:
+  bars**, against them. Keep a title out of the chart to style it as you like with a text
+  element. From a command:
   `layout.update={"element":6,"orientation":"vertical","values":true,"decimals":0,"title":"","barColor":"#C2185B","labelAlign":"right"}`,
   `"title":null` for the title it is given again and `"barColor":null` for the default blue;
   `"classes":true` colours the bars by class;
   `layout.addElement` takes them too.
+- **Stacked bars**: a chart that groups and sums or counts can **Stack by** another field. Each
+  bar is then split by that field's values, a stretch per value, and a key under the title names
+  them: the population of each continent split by income group, for example. The stretches add
+  up to the bar, so the row is shown only for a sum or a count. The key lists the values the
+  bars drawn show, by their total over them, the largest first (A to Z when the bars go by
+  label); past 8 values, it keeps the 7 with the largest totals and gathers the rest in a grey
+  **Other**, and the chart says how many it gathers. The stretches take the colours diagrams
+  take, or, with **Color by class**, the colour each value's features share on the map, so
+  stacking by the field the layer's Unique Values class by gives each stretch its class's
+  colour; a value whose features have several colours, or show none, keeps its palette colour,
+  and the chart says how many do. Stretches below zero run the other way from the zero line, and
+  **Values** writes the bar's total. An Other bar is stacked too, from the bars it gathers. A
+  box too short to leave the bars room under the title and key shows the chart's placeholder,
+  and the chart says so when it is added, resized, retitled or turned (not when the layer's data
+  changes): make it taller. A stack field deleted from the layer leaves the bars whole, and the
+  chart's next change lets the stack go, saying so. Turning grouping off, taking a mean, minimum
+  or maximum, or moving the chart to a layer without the field lets the stack go, and the chart
+  says so. From a command:
+  `layout.update={"element":6,"group":"continent","stack":"income_grp"}`, and `"stack":""` for
+  whole bars again; `layout.addElement` takes it too.
 - **Rulers and guides**: rulers start on along the top and left and show millimetres from the page's corner.
   Drag out of a ruler to add a guide, drag a guide to move it, and drag it back onto a ruler to
   remove it. Guides are saved with the layout but never printed or exported. **Clear Guides**

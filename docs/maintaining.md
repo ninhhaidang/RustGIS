@@ -190,6 +190,15 @@ chart and `layout.update` commands that set `"classes": true` require it too (on
 the key); `false` needs nothing. A saved `layout.import` whose `text` has such a chart requires it
 as well. Layout files are not covered, as for backgrounds (#2277).
 
+Projects with a layout chart stacked by a second field (`stack` on a chart element) require
+`layout-chart-stack`, so an older reader refuses them instead of drawing each bar whole and
+saving it again without the field. It is required whenever the field is stored, even where the
+chart doesn't draw it stacked (ungrouped, or not summing or counting, which commands refuse or
+let go). Saved `layout.addElement` commands for a chart and `layout.update` commands that set a
+`stack` field require it too (only a chart takes the key); `""` needs nothing. A saved
+`layout.import` whose `text` has such a chart requires it as well. Layout files are not covered,
+as for backgrounds (#2277).
+
 Projects with a map frame whose border isn't the default dark grey 0.8 pt line (`border_color`,
 `border_width` on a map frame, a width of 0 drawing none) require `layout-frame-border`, so an
 older reader refuses them instead of drawing the default border and saving the frame again
