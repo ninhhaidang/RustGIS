@@ -190,6 +190,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             "tree" => tree(app, ui, &pid, item, &state, &tr, t),
             "form" => form(app, ui, &pid, item, &state, &tr, t),
             "choice" => choice(app, ui, &pid, item, &state, &tr, t),
+            "tabs" => tabs(app, ui, &pid, item, &state, &tr, t),
             "date" => date(app, ui, &pid, item, &state, &tr, t),
             "range" => range(app, ui, &pid, item, &state, &tr, t),
             _ => {}
@@ -966,6 +967,44 @@ fn choice(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, st
         let resp = resp.response.on_hover_text(if item.help.is_empty() { shown.clone() } else { tr(&item.help) });
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, on, &label));
     });
+    if let Some(n) = pick {
+        send(app, pid, item, json!(n));
+    }
+}
+
+/// A tab row: the same options a dropdown holds, drawn as a row of labels with the current one
+/// marked, so all of them are visible and switching is one click. It wraps when the panel is too
+/// narrow for the row, because a plugin panel is often docked at a few hundred pixels.
+fn tabs(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, state: &PanelState, tr: &dyn Fn(&str) -> String, t: &Tokens) {
+    let id = item.key();
+    let Some(st) = state.items.get(id) else { return };
+    let label = label_of(item, state, tr);
+    if !label.is_empty() {
+        ui.label(RichText::new(&label).size(11.0).color(t.text_dim));
+    }
+    let chosen = state.chosen(id);
+    // An option declared in plugin.json shows its label in the interface language; one the plugin
+    // sent is worded by the plugin already.
+    let declared: HashMap<&str, &str> =
+        item.options.iter().filter_map(|o| Some((o.get("id")?.as_str()?, o.get("label")?.as_str()?))).collect();
+    let named = |n: &TreeNode| if declared.get(n.id.as_str()) == Some(&n.label.as_str()) { tr(&n.label) } else { n.label.clone() };
+    let on = enabled(item, state) && !st.nodes.is_empty();
+    let mut pick = None;
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for n in st.nodes.iter() {
+                let current = chosen == Some(n.id.as_str());
+                let resp = ui.selectable_label(current, RichText::new(named(n)).size(12.0));
+                let resp = resp.on_hover_text(if item.help.is_empty() { named(n) } else { tr(&item.help) });
+                if resp.clicked() && !current {
+                    pick = Some(n.id.clone());
+                }
+            }
+        });
+    });
+    ui.add_space(2.0);
+    let _ = t;
     if let Some(n) = pick {
         send(app, pid, item, json!(n));
     }

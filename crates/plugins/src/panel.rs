@@ -40,7 +40,15 @@ pub const MAX_FORM_CHOICES: usize = 256;
 /// The most options a dropdown (`choice`) holds.
 pub const MAX_CHOICES: usize = 1_000;
 /// The widget kinds.
-pub const KINDS: &[&str] = &["text", "checkbox", "slider", "button", "tree", "form", "choice", "date", "range", "pick"];
+/// Whether a kind takes its value from a list of `options`: a dropdown, or a tab row, which is the
+/// same thing drawn as a row of labels instead of a menu. They differ only in how they look, so
+/// everything from `options` to the value they keep is shared.
+#[must_use]
+pub fn picks_an_option(kind: &str) -> bool {
+    matches!(kind, "choice" | "tabs")
+}
+
+pub const KINDS: &[&str] = &["text", "checkbox", "slider", "button", "tree", "form", "choice", "tabs", "date", "range", "pick"];
 /// What a pick asks for on the map: a point (the default) or a box.
 pub const PICK_SHAPES: &[&str] = &["point", "box"];
 /// The longest coordinate system a pick's value names, in characters (a PROJ definition).
@@ -124,7 +132,7 @@ impl PanelItemDecl {
     /// Whether it has a value (a checkbox, a slider, a tree, a form, a dropdown, a date, a range or
     /// a pick).
     pub fn has_value(&self) -> bool {
-        matches!(self.kind.as_str(), "checkbox" | "slider" | "tree" | "form" | "choice" | "date" | "range" | "pick")
+        matches!(self.kind.as_str(), "checkbox" | "slider" | "tree" | "form" | "choice" | "tabs" | "date" | "range" | "pick")
     }
 
     /// Whether it is a pick that asks for a box (a pick with no shape asks for a point).
@@ -259,7 +267,7 @@ impl PanelDecl {
             let kind = item.kind.as_str();
             if !KINDS.contains(&kind) {
                 return Err(format!(
-                    "plugin.json: panel item kind '{}' isn't text, checkbox, slider, button, tree, form, choice, date, range or pick",
+                    "plugin.json: panel item kind '{}' isn't text, checkbox, slider, button, tree, form, choice, tabs, date, range or pick",
                     clip(kind, 40)
                 ));
             }
@@ -293,11 +301,11 @@ impl PanelDecl {
             if !item.ranged() && (item.min != 0 || item.max != 0 || item.steps) {
                 return Err(what("min, max and steps are for sliders and ranges"));
             }
-            if kind != "choice" && !item.options.is_empty() {
-                return Err(what("options are for dropdowns (choice)"));
+            if !picks_an_option(kind) && !item.options.is_empty() {
+                return Err(what("options are for dropdowns and tab rows (choice, tabs)"));
             }
             let mut option_changes = Dropped::default();
-            let options = if kind == "choice" { choice_options_reported(&item.options, &mut option_changes) } else { Vec::new() };
+            let options = if picks_an_option(kind) { choice_options_reported(&item.options, &mut option_changes) } else { Vec::new() };
             if let Some(notice) = option_changes.notice() {
                 return Err(what(&format!("option labels or fields are invalid: {notice}")));
             }
@@ -319,11 +327,13 @@ impl PanelDecl {
                 ("range", Some(v)) if pair(v).is_some_and(|(a, b)| item.min <= a && a <= b && b <= item.max) => {}
                 ("range", Some(_)) => return Err(what("a range's default is [low, high], whole numbers from min to max, low first")),
                 ("checkbox", Some(_)) => return Err(what("a checkbox's default is true or false")),
-                ("choice", Some(Value::String(d))) if options.iter().any(|o| o.id == *d) => {}
-                ("choice", Some(_)) => return Err(what("a dropdown's default is the id of one of its options")),
+                ("choice" | "tabs", Some(Value::String(d))) if options.iter().any(|o| o.id == *d) => {}
+                ("choice" | "tabs", Some(_)) => {
+                    return Err(what("a dropdown's or a tab row's default is the id of one of its options"));
+                }
                 ("date", Some(Value::String(d))) if date(d).is_some() => {}
                 ("date", Some(_)) => return Err(what("a date's default is a date written YYYY-MM-DD")),
-                _ => return Err(what("only checkboxes, sliders, ranges, dropdowns and dates have a default")),
+                _ => return Err(what("only checkboxes, sliders, ranges, dropdowns, tab rows and dates have a default")),
             }
             if item.ranged() && (item.min > item.max || item.min < -SLIDER_LIMIT || item.max > SLIDER_LIMIT) {
                 return Err(what(&format!("a slider's or a range's min must not be above its max, both within ±{SLIDER_LIMIT}")));
@@ -905,7 +915,7 @@ impl PanelState {
                     let (lo, hi) = (lo.clamp(d.min, max), hi.clamp(d.min, max));
                     values.insert(id.clone(), json!([lo.min(hi), hi.max(lo)]));
                 }
-                "tree" | "choice" | "date" => {
+                "tree" | "choice" | "tabs" | "date" => {
                     values.insert(id.clone(), d.default.clone().filter(Value::is_string).unwrap_or(Value::Null));
                 }
                 "form" => {
@@ -926,7 +936,7 @@ impl PanelState {
                     min: d.min,
                     max: d.max.max(d.min),
                     labels: Vec::new(),
-                    nodes: Arc::new(if d.kind == "choice" { choice_options(&d.options) } else { Vec::new() }),
+                    nodes: Arc::new(if picks_an_option(&d.kind) { choice_options(&d.options) } else { Vec::new() }),
                     cut: None,
                     fields: Arc::default(),
                 },
@@ -995,7 +1005,7 @@ impl PanelState {
             let Some(v) = given.get(id) else { continue };
             let new = match d.kind.as_str() {
                 "checkbox" => v.as_bool().map(Value::Bool),
-                "tree" | "choice" => match v {
+                "tree" | "choice" | "tabs" => match v {
                     Value::Null => Some(Value::Null),
                     Value::String(n) if self.items.get(id).is_some_and(|s| holds(&s.nodes, n)) => Some(v.clone()),
                     _ => None,
@@ -1128,7 +1138,7 @@ impl PanelState {
                         "text" => item.kind == "text",
                         "min" | "max" | "labels" => item.ranged(),
                         "nodes" => item.kind == "tree",
-                        "options" => item.kind == "choice",
+                        "options" => picks_an_option(&item.kind),
                         "fields" => item.kind == "form",
                         _ => false,
                     };
@@ -1155,7 +1165,7 @@ impl PanelState {
                 ("text", d.kind != "text" || u.get("text").is_none_or(Value::is_string)),
                 ("labels", !d.ranged() || u.get("labels").is_none_or(Value::is_array)),
                 ("nodes", d.kind != "tree" || u.get("nodes").is_none_or(Value::is_array)),
-                ("options", d.kind != "choice" || u.get("options").is_none_or(Value::is_array)),
+                ("options", !picks_an_option(&d.kind) || u.get("options").is_none_or(Value::is_array)),
                 ("fields", d.kind != "form" || u.get("fields").is_none_or(Value::is_array)),
             ] {
                 if !valid {
@@ -1241,7 +1251,7 @@ impl PanelState {
                     dropped.cut.push((id.to_string(), given));
                 }
             }
-            if d.kind == "choice"
+            if picks_an_option(&d.kind)
                 && let Some(options) = u.get("options").and_then(Value::as_array)
             {
                 st.nodes = Arc::new(choice_options_reported(options, &mut dropped));
@@ -1291,7 +1301,7 @@ impl PanelState {
                     let (a, b) = (a.clamp(st.min, st.max), b.clamp(st.min, st.max));
                     *v = json!([a.min(b), a.max(b)]);
                 }
-                "tree" | "choice" if v.as_str().is_some_and(|n| !holds(&st.nodes, n)) => *v = Value::Null,
+                "tree" | "choice" | "tabs" if v.as_str().is_some_and(|n| !holds(&st.nodes, n)) => *v = Value::Null,
                 "form" => {
                     // A field the plugin added starts at its default and one it removed goes
                     // with it: neither is a value changed. One kept but no longer fitting is.

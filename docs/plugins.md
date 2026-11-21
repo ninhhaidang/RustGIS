@@ -411,8 +411,8 @@ an example.
 ### A panel
 
 A plugin can have a panel: a pane on the right of the map with texts, checkboxes, sliders,
-buttons, trees, forms, dropdowns, date pickers, range sliders and picks on the map bound to its
-commands. Declare it in `plugin.json`:
+buttons, trees, forms, dropdowns, tab rows, date pickers, range sliders and picks on the map bound
+to its commands. Declare it in `plugin.json`:
 
 ```json
 "panel": {
@@ -450,6 +450,10 @@ commands. Declare it in `plugin.json`:
       those of one declared in `plugin.json` shows its label translated with its `i18n` (whether
       the declaration or the plugin's answer gave it); any other label is shown as the plugin
       words it. Only the first 1,000 options given are looked at.
+    - `tabs`: a tab row, the same as a `choice` (its `options`, `default`, value and
+      translation) drawn as a row of labels with the chosen one marked, wrapping onto more rows
+      when the pane is narrow. Every option is in view and switching is one click, so keep it to
+      a few options and use a `choice` for a long list. Clicking the chosen tab does nothing.
     - `date`: a box for a date written `YYYY-MM-DD`, with a calendar button beside it. `default`
       is a date. Its value is the date, or `null`. A date typed runs the command when it is
       confirmed (Enter, or leaving the box); one that isn't a real date is put back.
@@ -472,7 +476,7 @@ commands. Declare it in `plugin.json`:
       a point, or with `"shape": "box"` a box. Its `label` is its command's unless given.
 - A checkbox runs its `command` when it changes, a slider or a range when it is let go, or
   stepped (never while it is dragged, while the pane shows the label of the value it would take),
-  a tree or a dropdown when a node or an option is chosen, a form's text and number fields when
+  a tree, a dropdown or a tab row when a node or an option is chosen, a form's text and number fields when
   they lose focus (so the plugin is not run on every keystroke), its other fields at once, a date
   when one is picked, and a pick when the place is picked. Without a `command`, a widget's value
   just goes with the plugin's next request.
@@ -491,7 +495,7 @@ button, a script or the command line):
 ```
 
 `values` has each checkbox (`true` or `false`), slider (a whole number), range (`[low, high]`),
-tree and dropdown (the chosen node's or option's id, or `null`), date (`"YYYY-MM-DD"`, or `null`),
+tree, dropdown and tab row (the chosen node's or option's id, or `null`), date (`"YYYY-MM-DD"`, or `null`),
 form (an object of its fields' values, by field id) and pick (the place picked last, or `null`),
 and `changed` the ones this call set: the widget the user just moved. A widget's command is run
 with `{"panel": {"release": 196}}` as its parameters, which sets the values before the call and is
@@ -519,10 +523,10 @@ Any command can answer the panel's new state, beside the rest of its answer:
 
 - An item can set `label` (`null` brings back the declared one), `enabled` and `visible`; a text
   its `text`; a slider or a range its `min`, `max` and `labels`, one per value from `min` (the
-  numbers when there are none); a tree its `nodes`; a dropdown its `options`; a form its `fields`.
+  numbers when there are none); a tree its `nodes`; a dropdown or a tab row its `options`; a form its `fields`.
   What an answer leaves out stays as it was. Fields belonging to another widget kind are ignored
   and reported: `text` outside a text widget, `min`/`max`/`labels` outside a slider or range,
-  `nodes` outside a tree, `options` outside a dropdown, and `fields` outside a form. Unknown item
+  `nodes` outside a tree, `options` outside a dropdown or a tab row, and `fields` outside a form. Unknown item
   ids and field names are also ignored and reported. Unknown panel-answer keys are reported too;
   echoed `changed` request metadata is accepted.
 - A tree's `nodes` are `[{"id": "env", "label": "Environment", "count": 67, "children": [...]}]`:
@@ -574,7 +578,7 @@ Any command can answer the panel's new state, beside the rest of its answer:
   has no panes, the commands still run with the values given.
 - RustGIS versions before panels ignore `panel` (and refuse a tab that names it): keep the
   commands usable from the ribbon too, or set `minRustgisVersion`. Versions before dropdowns,
-  dates and ranges refuse a panel that has one, so set `minRustgisVersion` to the first version
+  tab rows, dates and ranges refuse a panel that has one, so set `minRustgisVersion` to the first version
   with them.
 
 #### Picking a place on the map
