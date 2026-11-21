@@ -3,7 +3,9 @@
 //! Service's COGs and the Sentinel mosaics it publishes can be read in place. The sign-in is kept
 //! for the session, or remembered on this computer (`remember`); Sign out runs
 //! `copernicus.logout`. Like the Earthdata Login section of NASA Earthaccess, the password is
-//! never kept in the pane: it is handed to the command and emptied.
+//! never kept in the pane: it is handed to the command and emptied. In the web app, where a
+//! command can't wait for the browser's fetch, Sign in hands it to `Services::copernicus_sign_in`
+//! instead, and the sign-in lasts at most as long as the page (a refused renewal ends it sooner).
 
 use rustgis_engine::render::rustgis_tiles::{copernicus, earthdata};
 use serde_json::{Value, json};
@@ -24,16 +26,20 @@ pub struct State {
     was_remembered: bool,
     pub error: Option<String>,
     pub warning: Option<String>,
+    /// A sign-in sent by `Services::copernicus_sign_in` (the browser), until it answers.
+    pub pending: Option<crate::Slot<Result<String, String>>>,
 }
 
 /// The Copernicus Data Space pane.
 pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.label(egui::RichText::new(tl!("The Copernicus Data Space Ecosystem publishes the Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land Cover…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its STAC catalog is open, but reading its files needs a sign-in with a free account.")).weak());
-    if cfg!(target_arch = "wasm32") {
-        ui.label(tl!("Signing in to Copernicus Data Space needs the desktop app for now."));
-        return;
+    let done = app.ui.copernicus.pending.as_ref().and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
+    if let Some(r) = done {
+        app.ui.copernicus.pending = None;
+        answered(app, r.map(|_| Value::Null));
     }
+    let sending = app.ui.copernicus.pending.is_some();
     // `None` while a sign-in with the remembered account is under way (it may wait for its
     // request): nothing here waits for it.
     let remembered = copernicus::is_remembered_now();
@@ -44,14 +50,16 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
         app.ui.copernicus.was_remembered = on;
         app.ui.copernicus.remember = on;
     }
-    let busy = remembered.is_none();
+    let busy = remembered.is_none() || sending;
     if busy {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
     match copernicus::signed_in() {
         Some(info) => signed_in(app, ui, &info, remembered),
         None => {
-            let line = if busy {
+            let line = if sending {
+                tl!("Signing in…")
+            } else if busy {
                 tl!("Signing in with the account remembered on this computer…")
             } else if copernicus::expired() {
                 tl!("The sign-in expired. Sign in again.")
@@ -105,29 +113,32 @@ fn sign_out(app: &mut RustGisApp, ui: &mut egui::Ui, enabled: bool) {
     }
 }
 
-/// Username, password, one-time code, Remember and Sign in.
+/// Username, password, one-time code, Remember and Sign in. The fields are off while a sign-in is
+/// under way, so nothing is typed into them that its answer would leave behind.
 fn form(app: &mut RustGisApp, ui: &mut egui::Ui, busy: bool) {
     let w = ui.available_width();
     let mut enter = false;
-    egui::Grid::new("cdse_sign_in").num_columns(2).spacing(egui::vec2(10.0, 6.0)).show(ui, |ui| {
-        let st = &mut app.ui.copernicus;
-        let field = (w - 130.0).max(120.0);
-        let label = ui.label(tl!("Username"));
-        ui.add(egui::TextEdit::singleline(&mut st.username).hint_text(tl!("Your account's email address")).desired_width(field))
-            .labelled_by(label.id);
-        ui.end_row();
-        let label = ui.label(tl!("Password"));
-        let r = ui.add(egui::TextEdit::singleline(&mut st.password).password(true).desired_width(field)).labelled_by(label.id);
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        ui.end_row();
-        let label = ui.label(tl!("One-time code"));
-        let r = ui
-            .add(egui::TextEdit::singleline(&mut st.totp).hint_text(tl!("Only with two-factor authentication")).desired_width(field))
-            .labelled_by(label.id);
-        enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        ui.end_row();
+    ui.add_enabled_ui(!busy, |ui| {
+        egui::Grid::new("cdse_sign_in").num_columns(2).spacing(egui::vec2(10.0, 6.0)).show(ui, |ui| {
+            let st = &mut app.ui.copernicus;
+            let field = (w - 130.0).max(120.0);
+            let label = ui.label(tl!("Username"));
+            ui.add(egui::TextEdit::singleline(&mut st.username).hint_text(tl!("Your account's email address")).desired_width(field))
+                .labelled_by(label.id);
+            ui.end_row();
+            let label = ui.label(tl!("Password"));
+            let r = ui.add(egui::TextEdit::singleline(&mut st.password).password(true).desired_width(field)).labelled_by(label.id);
+            enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.end_row();
+            let label = ui.label(tl!("One-time code"));
+            let r = ui
+                .add(egui::TextEdit::singleline(&mut st.totp).hint_text(tl!("Only with two-factor authentication")).desired_width(field))
+                .labelled_by(label.id);
+            enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.end_row();
+        });
     });
-    if app.services.secrets.is_some() {
+    if can_remember(app) {
         ui.checkbox(&mut app.ui.copernicus.remember, tl!("Remember on this computer")).on_hover_text(tl!(
             "Keeps the username and password in the system's credential store, so RustGIS signs in by itself when it starts again. Not for an account with two-factor authentication. Unticked, a sign-in remembered before is deleted when you sign in."
         ));
@@ -141,13 +152,27 @@ fn form(app: &mut RustGisApp, ui: &mut egui::Ui, busy: bool) {
     }
 }
 
-/// Runs `copernicus.login` with what was typed; the password and the one-time code are emptied
-/// whatever it answers.
+/// Whether a sign-in can be remembered here: there is a credential store, and the sign-in is the
+/// command's (one sent by the browser is never remembered).
+fn can_remember(app: &RustGisApp) -> bool {
+    app.services.secrets.is_some() && app.services.copernicus_sign_in.is_none()
+}
+
+/// Runs `copernicus.login` with what was typed, or hands it to `Services::copernicus_sign_in`
+/// where there is one (the browser); the password and the one-time code are emptied whatever it
+/// answers.
 fn sign_in(app: &mut RustGisApp) {
+    let remember = can_remember(app);
     let st = &mut app.ui.copernicus;
     let password = std::mem::take(&mut st.password);
     let totp = std::mem::take(&mut st.totp);
-    let mut p = json!({"username": st.username.trim(), "password": password, "remember": st.remember && app.services.secrets.is_some()});
+    if let Some(send) = &app.services.copernicus_sign_in {
+        let slot = crate::Slot::default();
+        send(st.username.trim().to_string(), password, totp.trim().to_string(), slot.clone());
+        (st.error, st.warning, st.pending) = (None, None, Some(slot));
+        return;
+    }
+    let mut p = json!({"username": st.username.trim(), "password": password, "remember": st.remember && remember});
     if !totp.trim().is_empty() {
         p["totp"] = json!(totp.trim());
     }
@@ -160,9 +185,12 @@ fn sign_in(app: &mut RustGisApp) {
     answered(app, r);
 }
 
-/// Shows what a sign-in or sign-out said: its error, or the warning it gave.
+/// Shows what a sign-in or sign-out said: its error, or the warning it gave. The password and the
+/// one-time code are emptied whatever it says.
 fn answered(app: &mut RustGisApp, r: Result<Value, String>) {
     let st = &mut app.ui.copernicus;
+    st.password.clear();
+    st.totp.clear();
     (st.error, st.warning) = match r {
         Ok(v) => (None, v.get("warning").and_then(Value::as_str).map(str::to_string)),
         Err(e) => (Some(e), None),
@@ -349,6 +377,74 @@ mod tests {
         ] {
             assert!(std::panic::catch_unwind(|| copernicus::set_test_token_url(Some(elsewhere))).is_err(), "{elsewhere}");
         }
+    }
+
+    /// Where the browser sends the sign-in (`Services::copernicus_sign_in`), Sign in hands it what
+    /// was typed instead of running `copernicus.login`, empties the password and the one-time code,
+    /// and waits for its answer; a refusal is shown and the form is back for another try.
+    #[test]
+    fn the_browser_sends_the_sign_in() {
+        type Sent = (String, String, String, crate::Slot<Result<String, String>>);
+        let sent: std::sync::Arc<std::sync::Mutex<Vec<Sent>>> = Default::default();
+        let to = sent.clone();
+        let services = crate::Services {
+            copernicus_sign_in: Some(Box::new(move |username, password, totp, slot| {
+                to.lock().unwrap().push((username, password, totp, slot))
+            })),
+            ..Default::default()
+        };
+        let mut h = harness(RustGisApp::with_sample().with_services(services));
+        h.run();
+        assert!(h.query_by_label("Remember on this computer").is_none(), "a browser's sign-in isn't remembered");
+        type_into(&mut h, "Username", " synthetic.user@example.invalid ");
+        type_into(&mut h, "Password", "synthetic-password");
+        type_into(&mut h, "One-time code", " 123456 ");
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Sign in").click();
+        h.run();
+        let slot = {
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let (username, password, totp, slot) = &sent[0];
+            assert_eq!(
+                (username.as_str(), password.as_str(), totp.as_str()),
+                ("synthetic.user@example.invalid", "synthetic-password", "123456")
+            );
+            slot.clone()
+        };
+        let st = &h.state().ui.copernicus;
+        assert!(st.password.is_empty() && st.totp.is_empty(), "nothing typed is kept in the pane");
+        h.get_by_label("Signing in…");
+        assert!(!sign_in_on(&h), "one sign-in at a time");
+        assert!(
+            h.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Password").accesskit_node().is_disabled(),
+            "no typing while it waits"
+        );
+        type_into(&mut h, "Password", "typed-while-waiting");
+        type_into(&mut h, "One-time code", "654321");
+        let st = &h.state().ui.copernicus;
+        assert!(st.password.is_empty() && st.totp.is_empty(), "the fields are off while it waits");
+        // Even if something got in meanwhile, the answer leaves nothing behind.
+        h.state_mut().ui.copernicus.password = "typed-while-waiting".into();
+        h.state_mut().ui.copernicus.totp = "654321".into();
+
+        *slot.lock().unwrap() = Some(Err("Copernicus Data Space refused the sign-in: Invalid user credentials".into()));
+        h.run();
+        let st = &h.state().ui.copernicus;
+        assert!(st.pending.is_none() && st.error.as_deref().is_some_and(|e| e.contains("Invalid user credentials")), "{:?}", st.error);
+        assert!(st.password.is_empty() && st.totp.is_empty(), "nothing typed while it waited is kept");
+        h.get_by_label("Not signed in.");
+        type_into(&mut h, "Password", "synthetic-password");
+        assert!(sign_in_on(&h), "the form is back for another try");
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Sign in").click();
+        h.run();
+        let slot = sent.lock().unwrap()[1].3.clone();
+        h.state_mut().ui.copernicus.password = "typed-while-waiting".into();
+        *slot.lock().unwrap() = Some(Ok("synthetic.user@example.invalid".into()));
+        h.run();
+        let st = &h.state().ui.copernicus;
+        assert!(st.pending.is_none() && st.error.is_none() && st.warning.is_none(), "{:?}", st.error);
+        assert!(st.password.is_empty(), "a signed-in pane keeps no password for after Sign out");
+        assert_eq!(sent.lock().unwrap().len(), 2);
     }
 
     /// Without a credential store (the command line, a test) there is no Remember to tick.

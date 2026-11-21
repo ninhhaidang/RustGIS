@@ -40,11 +40,13 @@ pub fn sign_in(username: String, password: String, totp: String, slot: Slot<Resu
         Err(e) => return put(Err(e)),
     };
     drop(password);
+    // A sign-out while it is on its way wins: its answer isn't kept then.
+    let sent = copernicus::sending();
     SIGNING_IN.set(true);
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let (status, answer) = crate::arcgis::form_request(copernicus::TOKEN_URL, Some(&body), None, WHO).await?;
-            let info = copernicus::login_answer(&username, status, &answer)?;
+            let info = copernicus::login_answer(&sent, &username, status, &answer)?;
             // Files refused before the sign-in are asked for again.
             cache::clear();
             Ok(info.username)

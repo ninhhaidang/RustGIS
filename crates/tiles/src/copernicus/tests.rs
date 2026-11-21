@@ -159,25 +159,38 @@ fn a_refused_sign_in_says_why_without_the_password_and_keeps_the_one_before() {
 fn a_sign_in_answer_sent_from_the_browser_is_kept_like_one_made_here() {
     let _turn = crate::cache::turn();
     logout();
-    let info = login_answer(&format!(" {USER} "), 200, grant("web-access", "web-refresh", 30, 3600).as_bytes()).unwrap();
+    let info = login_answer(&sending(), &format!(" {USER} "), 200, grant("web-access", "web-refresh", 30, 3600).as_bytes()).unwrap();
     assert_eq!(info.username, USER);
     assert_eq!(authorization(DATA).as_deref(), Some("Bearer web-access"));
     let due = renewal_due().unwrap();
     assert_eq!(due.endpoint, TOKEN_URL);
     assert!(due.body.contains("refresh_token=web-refresh"), "{}", due.body);
-    let e = login_answer(USER, 401, br#"{"error":"invalid_grant","error_description":"Invalid user credentials"}"#).unwrap_err();
+    let e =
+        login_answer(&sending(), USER, 401, br#"{"error":"invalid_grant","error_description":"Invalid user credentials"}"#).unwrap_err();
     assert_eq!(e, "Copernicus Data Space refused the sign-in: Invalid user credentials");
-    let e = login_answer(USER, 502, b"<html>bad gateway</html>").unwrap_err();
+    let e = login_answer(&sending(), USER, 502, b"<html>bad gateway</html>").unwrap_err();
     assert!(e.contains("HTTP 502") && !e.contains("<html>"), "{e}");
-    let e = login_answer(USER, 200, b"<html>a proxy's page</html>").unwrap_err();
+    let e = login_answer(&sending(), USER, 200, b"<html>a proxy's page</html>").unwrap_err();
     assert!(e.contains("not a token") && !e.contains("<html>"), "{e}");
     assert_eq!(authorization(DATA).as_deref(), Some("Bearer web-access"), "a failed sign-in leaves the one before");
     assert!(!is_remembered(), "a sign-in from the browser is never remembered");
     logout();
     assert_eq!(authorization(DATA), None);
-    // Until the web app can sign in, its refusal sends the user where they can.
+    // A sign-out while a sign-in is on its way wins: the late answer isn't kept.
+    let sent = sending();
+    logout();
+    let e = login_answer(&sent, USER, 200, grant("late-access", "late-refresh", 30, 3600).as_bytes()).unwrap_err();
+    assert!(e.contains("Signed out while"), "{e}");
+    assert_eq!(authorization(DATA), None, "a sign-in answered after a sign-out isn't kept");
+    assert!(signed_in().is_none());
+    // The web app signs in from its panel: its refusal sends the user there.
     let web = refused_message_in(DATA, true);
-    assert!(web.contains("f.tif: Copernicus Data Space asks for a sign-in") && web.contains("the web app can't sign in yet"), "{web}");
+    assert!(
+        web.ends_with(
+            "f.tif: Copernicus Data Space asks for a sign-in for this file: sign in with a free account in Home › Add › Web Data › Copernicus Data Space…"
+        ),
+        "{web}"
+    );
     assert!(refused_message(DATA).ends_with("sign in with a free account (copernicus.login)"), "{}", refused_message(DATA));
 }
 

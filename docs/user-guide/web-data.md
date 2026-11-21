@@ -575,11 +575,13 @@ Cover 100 m and 10 m, Tree Cover Density…) and the Sentinel-1 and Sentinel-2 m
 a free CDSE account. **Home › Add › Web Data › Copernicus Data Space…** signs in from a
 panel: username, password, the one-time code for an account with two-factor authentication, and
 **Remember on this computer** (`remember`, below). It shows whether a sign-in is kept, as whom and
-until when its token is renewed, and **Sign out** runs `copernicus.logout`. The panel is for the
-desktop app only for now. `copernicus.login` signs in with the account's username and password (and
-`"totp"`, the one-time code, for an account with two-factor authentication). The password is sent
-only to CDSE's sign-in server (`identity.dataspace.copernicus.eu`), and kept only if remembered
-(below). The token it
+until when its token is renewed, and **Sign out** runs `copernicus.logout`. In the web app the
+panel sends the sign-in from the browser itself: there is no **Remember** there, and the sign-in
+lasts at most as long as the page. Its token is renewed meanwhile; if CDSE refuses a renewal, the
+sign-in ends sooner and the panel says it expired. `copernicus.login` signs in with the
+account's username and password (and `"totp"`, the one-time code, for an account with two-factor
+authentication). The password is sent only to CDSE's sign-in server
+(`identity.dataspace.copernicus.eu`), and kept only if remembered (below). The token it
 gives is kept until RustGIS closes, never in the project, and renewed before it expires; once it
 can't be renewed any more (after a long pause), the sign-in ends and `copernicus.status` says so.
 The token is sent only over HTTPS to CDSE's data servers (`download.dataspace.copernicus.eu` and
@@ -590,8 +592,8 @@ A collection's items list each band as an asset whose `alternate.https` address 
 server: add it with `layer.addUrl` (`"cog": true`, since the address ends in `$value`, and `"bbox"`
 for a window) and it is read in place, as any COG. A plugin does the same and never sees the token. `copernicus.status` reports the sign-in (as whom, when the token
 expires, until when it is renewed); `copernicus.logout` forgets it and empties the download cache.
-Signing in is for the desktop app and the command line (a password typed in a command line stays
-in the shell's history).
+The command is for the desktop app and the command line (a password typed in a command line stays
+in the shell's history); the web app signs in from the panel.
 
 With `"remember": true`, the username and password are also kept on this computer, in the system's
 credential store (Windows Credential Manager, the macOS Keychain, the Secret Service on Linux; the

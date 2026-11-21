@@ -70,11 +70,11 @@ fn login(_s: &mut Session, p: &Value) -> CmdResult {
     Ok(status_warning(warning))
 }
 
-/// Not in the browser: a command can't wait for the browser's fetch. The web app signs in with
-/// `Services::copernicus_sign_in`, which its panel doesn't offer yet.
+/// Not in the browser: a command can't wait for the browser's fetch. The web app signs in from
+/// its panel, with `Services::copernicus_sign_in`.
 #[cfg(target_arch = "wasm32")]
 fn login(_s: &mut Session, _p: &Value) -> CmdResult {
-    Err("signing in to Copernicus Data Space is for the desktop app and the command line".into())
+    Err("in the web app, sign in to Copernicus Data Space from Home › Add › Web Data › Copernicus Data Space…".into())
 }
 
 fn logout(_s: &mut Session, _p: &Value) -> CmdResult {
