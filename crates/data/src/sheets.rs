@@ -772,7 +772,7 @@ mod tests {
         // The header row comes after a blank one; the coordinates are UTM 33N.
         let opts = CsvOptions { crs: crate::raster::Crs::from_epsg(32633), ..CsvOptions::default() };
         let (ds, _) = read(&book, "book", Some("utm"), &opts).unwrap();
-        let e = ds.features[0].geometry.as_ref().unwrap().extent();
+        let e = ds.in_lonlat().unwrap().features[0].geometry.as_ref().unwrap().extent();
         assert!((e.min_x - 15.0).abs() < 0.01 && (e.min_y - 42.0).abs() < 0.05, "{e:?}");
         let (ds, _) = read(&book, "book", Some("Notes"), &CsvOptions::default()).unwrap();
         assert_eq!(ds.geometry_type, crate::GeometryType::None);

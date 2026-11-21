@@ -19,7 +19,7 @@ mod index;
 pub use cache::use_temporary_index_dir;
 pub use cache::{Emptied, empty_index_cache};
 
-use super::{Batch, FeatureSource, Reproject, Request, SourceInfo, clamp_limit, in_request};
+use super::{Batch, FeatureSource, Reproject, Request, SourceInfo, clamp_limit};
 use crate::io::group_rings;
 use crate::{DataError, Feature, Field, FieldType, Geometry, GeometryType, Result, Value};
 use rustgis_geom::{Coord, Extent};
@@ -220,6 +220,11 @@ impl FeatureSource for ShpSource {
         &self.info
     }
 
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
+    }
+
     /// Samples indexed records, falling back to geometry matches when the native view is refused.
     /// The fallback counts records and checks Cancel before reading each one.
     fn read(&self, req: &Request) -> Result<Batch> {
@@ -267,8 +272,8 @@ impl FeatureSource for ShpSource {
                     skipped += 1;
                     return Ok(());
                 }
-                Ok(Some(g)) => match self.reproject.geometry(g) {
-                    Some(g) => Some(g),
+                Ok(Some(g)) => match self.reproject.read(g) {
+                    Some(placed) => Some(placed),
                     None => {
                         skipped += 1;
                         return Ok(());
@@ -282,9 +287,10 @@ impl FeatureSource for ShpSource {
             };
             // The index's boxes are rounded outward to f32, so it can match a shape just outside. A
             // shape without geometry doesn't match an extent, bounded natively or not.
-            if geometry.as_ref().map_or(req.extent.is_some(), |g| !in_request(g, req)) {
+            if geometry.as_ref().map_or(req.extent.is_some(), |g| !g.in_request(req)) {
                 return Ok(());
             }
+            let geometry = geometry.map(|p| p.geometry);
             let attrs = if u64::from(i) < self.table.rows {
                 let at = self.table.header_len + u64::from(i) * self.table.row_len as u64;
                 if dbf.read_at(at, &mut row).is_err() {
@@ -365,8 +371,8 @@ impl FeatureSource for ShpSource {
                     skipped += 1;
                     return Ok(());
                 }
-                Ok(Some(g)) => match self.reproject.geometry(g) {
-                    Some(g) => Some(g),
+                Ok(Some(g)) => match self.reproject.read(g) {
+                    Some(placed) => Some(placed),
                     None => {
                         skipped += 1;
                         return Ok(());
@@ -379,9 +385,10 @@ impl FeatureSource for ShpSource {
                 }
             };
             // As in `read`, the shape itself is checked.
-            if geometry.as_ref().map_or(req.extent.is_some(), |g| !in_request(g, &req)) {
+            if geometry.as_ref().map_or(req.extent.is_some(), |g| !g.in_request(&req)) {
                 return Ok(());
             }
+            let geometry = geometry.map(|p| p.geometry);
             let attrs = if u64::from(i) < self.table.rows {
                 let at = self.table.header_len + u64::from(i) * self.table.row_len as u64;
                 if dbf.read_at(at, &mut row).is_err() {

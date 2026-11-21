@@ -1529,15 +1529,15 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         // What the drawing as a whole said goes with its first layer only.
         let mut rep = if layers.is_empty() { report.clone() } else { ReadReport::default() };
         if let Some((t, c)) = &transformer {
+            // Kept as the drawing holds them, in its system, where they have a place in
+            // longitude/latitude.
+            ds.held_in = *c;
             let mut lost = 0usize;
             for f in &mut ds.features {
                 crate::progress::check()?;
                 if let Some(g) = f.geometry.take() {
-                    let moved = g.map_coords(&|p| t.to_lonlat(p).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
-                    let mut ok = true;
-                    moved.for_each_coord(|p| ok &= p.is_finite());
-                    if ok {
-                        f.geometry = Some(moved);
+                    if crate::io::places_in_lonlat(&g, t) {
+                        f.geometry = Some(g);
                     } else {
                         lost += 1;
                     }
@@ -1859,7 +1859,8 @@ mod tests {
         let utm = dxf(&[(0, "SECTION"), (2, "ENTITIES"), (0, "POINT"), (10, "500000"), (20, "4649776"), (0, "ENDSEC"), (0, "EOF")]);
         let l = read("u.dxf", &utm, &Options { crs: Some(crs), ..Options::default() }).unwrap();
         assert!(l[0].1.messages.is_empty(), "{:?}", l[0].1.messages);
-        if let Some(Geometry::Point(c)) = &l[0].0.features[0].geometry {
+        assert_eq!(l[0].0.held_in, crs, "held in the drawing's system");
+        if let Some(Geometry::Point(c)) = &l[0].0.in_lonlat().unwrap().features[0].geometry {
             assert!((c.x - 15.0).abs() < 1e-6 && (c.y - 42.0).abs() < 0.01, "{c:?}");
         }
     }

@@ -257,7 +257,12 @@ fn write_chunks_as(
     let mut utc_dates = Vec::new();
     let mut fine_dates = Vec::new();
     let mut written_values = Vec::new();
-    let mut scratch = query.map(|expr| (expr, Cow::<Dataset>::Owned(layer.clone())));
+    // Measured ($area, $length) in the system the source gives its features in.
+    let mut scratch = query.map(|expr| {
+        let mut input = layer.clone();
+        input.held_in = held;
+        (expr, Cow::<Dataset>::Owned(input))
+    });
     let mut feed = |add: &mut dyn FnMut(&[Feature]) -> Result<()>| -> Result<()> {
         // A GeoPackage export that starts again feeds the features again, and counts them again.
         total = 0;

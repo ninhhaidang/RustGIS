@@ -173,7 +173,8 @@ fn a_streamed_web_mercator_export_counts_what_it_writes_at_85_degrees() {
             assert_eq!(e.beyond_web_mercator, n, ".{ext} in {}", crs.label());
             // As many as the file holds at 85.05°.
             let mut at_edge = 0;
-            for g in read_back(&path).features.iter().filter_map(|f| f.geometry.as_ref()) {
+            let back = read_back(&path);
+            for g in back.in_lonlat().unwrap().features.iter().filter_map(|f| f.geometry.as_ref()) {
                 g.for_each_coord(|c| at_edge += usize::from((c.y.abs() - rustgis_geom::MAX_LAT).abs() < 1e-6));
             }
             assert_eq!(at_edge, n, ".{ext} in {}", crs.label());
@@ -687,7 +688,7 @@ fn a_streamed_export_is_written_from_the_system_its_source_gives() {
         assert_eq!(e.written, 302, "{name}");
         // Northings in the millions: only the square at 86° N is past 85.05°.
         assert_eq!(e.beyond_web_mercator, beyond, "{name}");
-        let p = first(&read_back(&d.join(name)));
+        let p = first(&read_back(&d.join(name)).in_lonlat().unwrap());
         assert!((p.x - want.x).abs() < 1e-7 && (p.y - want.y).abs() < 1e-7, "{name}: {p:?} {want:?}");
     }
 }

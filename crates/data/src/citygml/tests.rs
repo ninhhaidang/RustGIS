@@ -204,7 +204,7 @@ fn a_compound_system_is_read_by_its_horizontal_part() {
     let out = read("model.gml", &bytes, None).unwrap();
     let ds = &out[0].0;
     assert_eq!(ds.crs, Some(Crs::Epsg(25832)));
-    let e = ds.extent();
+    let e = ds.lonlat_extent();
     assert!((e.min_x - 9.0).abs() < 0.01 && (e.min_y - 49.6).abs() < 0.1, "{e:?}");
     // One naming another system is refused.
     let other = inner.replace("EPSG:25832", "EPSG:25833");
@@ -1055,7 +1055,7 @@ fn a_system_given_reads_the_coordinates_as_written() {
     let ground = square(500_000.0, 5_500_000.0, 10.0, 0.0);
     let bytes = model("urn:ogc:def:crs:EPSG::4258", &building("b1", &surface("GroundSurface", &[polygon("g", &ground)])));
     let out = read("model.gml", &bytes, Some(Crs::Epsg(25832))).unwrap();
-    let e = out[0].0.extent();
+    let e = out[0].0.lonlat_extent();
     assert!((e.min_x - 9.0).abs() < 0.01 && (e.min_y - 49.6).abs() < 0.1, "{e:?}");
     // Latitude 10 to 12, longitude 0 to 4, given as the system the file names.
     let inner = surface("GroundSurface", &[polygon("g", "10 0 0 10 4 0 12 4 0 12 0 0 10 0 0")]);

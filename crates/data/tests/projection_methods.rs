@@ -41,6 +41,8 @@ fn explicit_method_1028_warns_in_full_and_streamed_shapefiles() {
         }
         let path = dir.path().join("p.shp");
         let (read, report) = io::read_path(&path).unwrap();
+        // Held in the file's system; placed in longitude/latitude.
+        let read = read.in_lonlat().unwrap();
         near(read.features.first().and_then(|f| f.geometry.as_ref()?.label_point()), 0.0, 45.0, 1e-9);
         let streamed = rustgis_data::source::open_path(&path, None).unwrap();
         for notes in [&report.messages, &streamed.info().notes] {
@@ -63,6 +65,8 @@ fn read_prj(prj: &str, x: f64, y: f64) -> (Option<Coord>, Vec<String>) {
         std::fs::write(dir.path().join(format!("p.{ext}")), bytes).unwrap();
     }
     let (read, report) = io::read_path(&dir.path().join("p.shp")).unwrap();
+    // Held in the file's system; placed in longitude/latitude.
+    let read = read.in_lonlat().unwrap();
     let at = match read.features.first().and_then(|f| f.geometry.clone()) {
         Some(Geometry::Point(c)) => Some(c),
         _ => None,

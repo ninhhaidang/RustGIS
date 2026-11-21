@@ -300,19 +300,27 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
         cpg: original.cpg.as_ref().map(|(_, b)| b.clone()),
     };
     let (read_back, _) = crate::io::read_shapefile_parts(back, &name, crs)?;
-    // Read back in longitude/latitude, so compared with the layer in it, whatever system the
-    // layer holds its coordinates in.
-    let in_lonlat = ds.in_lonlat().map_err(|e| match DataError::of_conversion(e) {
-        DataError::Format(e) => refused(path, e),
-        cancelled => cancelled,
-    })?;
-    if let Some(why) = same_rows(&in_lonlat, &read_back, if crs.is_some() { PROJECTED_TOLERANCE } else { 0.0 }) {
+    // Compared as they are when the layer holds its coordinates in the system the file is read
+    // back in (its own): written unconverted, they read back exactly. Otherwise both in
+    // longitude/latitude, so compared alike whatever systems the two hold them in.
+    fn lonlat<'d>(d: &'d Dataset, path: &Path) -> Result<std::borrow::Cow<'d, Dataset>> {
+        d.in_lonlat().map_err(|e| match DataError::of_conversion(e) {
+            DataError::Format(e) => refused(path, e),
+            cancelled => cancelled,
+        })
+    }
+    let systems_differ = ds.coord_crs() != read_back.coord_crs();
+    let (layer, back) = if systems_differ {
+        (lonlat(ds, path)?, lonlat(&read_back, path)?)
+    } else {
+        (std::borrow::Cow::Borrowed(ds), std::borrow::Cow::Borrowed(&read_back))
+    };
+    let projected = crs.is_some() && systems_differ;
+    if let Some(why) = same_rows(&layer, &back, if projected { PROJECTED_TOLERANCE } else { 0.0 }) {
         return Err(refused(path, format!("the file couldn't hold the layer as it is: {why}")));
     }
 
-    if crs.is_some()
-        && let Some(note) = projection_note(&in_lonlat, &read_back)?
-    {
+    if projected && let Some(note) = projection_note(&layer, &back)? {
         notes.push(format!("{}: {note}", path.display()));
     }
 
@@ -413,6 +421,19 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
 /// shape is the one read takes the file's coordinates as they are; any other is projected. A native
 /// shape that failed conversion is refused: missing geometry cannot identify its source shape.
 fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Dataset)>) -> Result<std::borrow::Cow<'a, Dataset>> {
+    // A native shape the read couldn't place (left without geometry) can't be told apart from a
+    // feature without one, whatever system the layer holds its coordinates in.
+    if let Some((read, raw)) = as_held {
+        for (i, (f, r)) in read.features.iter().zip(raw.features.iter()).enumerate() {
+            crate::progress::check()?;
+            if f.geometry.is_none() && r.geometry.is_some() {
+                return Err(DataError::Format(format!(
+                    "source shape {} couldn't be converted to longitude/latitude, so its native geometry can't be matched safely; check the source projection and add the file again; nothing was written",
+                    i + 1
+                )));
+            }
+        }
+    }
     // From the system the layer holds its coordinates in: as they are when that is the file's.
     let (c, from) = (crs.unwrap_or(Crs::LonLat), ds.coord_crs());
     if c == from {
@@ -421,9 +442,15 @@ fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Da
     let t = from.to(c).map_err(DataError::Format)?;
     // The file as read is matched by its longitude/latitude: only a layer held in them is.
     let as_held = as_held.filter(|_| from == Crs::LonLat);
-    let (read, raw): (Vec<&Feature>, Vec<&Feature>) = match as_held {
-        Some((read, raw)) => (read.features.iter().collect(), raw.features.iter().collect()),
-        None => (Vec::new(), Vec::new()),
+    // The file as read, in longitude/latitude as the layer reads it (converted from the file's
+    // own system by the conversion that gave the layer its copy).
+    let read_in_lonlat = match as_held {
+        Some((read, _)) => Some(read.in_lonlat().map_err(DataError::of_conversion)?),
+        None => None,
+    };
+    let (read, raw): (Vec<&Feature>, Vec<&Feature>) = match (&read_in_lonlat, as_held) {
+        (Some(read), Some((_, raw))) => (read.features.iter().collect(), raw.features.iter().collect()),
+        _ => (Vec::new(), Vec::new()),
     };
     // File reads number rows anew; persistent layer ids can have gaps after a deletion.
     // Exact geometry keys retain correspondence without trusting those regenerated ids.
@@ -431,12 +458,6 @@ fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Da
     let mut at: std::collections::HashMap<Vec<u8>, (usize, bool)> = std::collections::HashMap::new();
     for (i, f) in read.iter().enumerate() {
         crate::progress::check()?;
-        if f.geometry.is_none() && raw.get(i).is_some_and(|f| f.geometry.is_some()) {
-            return Err(DataError::Format(format!(
-                "source shape {} couldn't be converted to longitude/latitude, so its native geometry can't be matched safely; check the source projection and add the file again; nothing was written",
-                i + 1
-            )));
-        }
         at.entry(key(f)?)
             .and_modify(|(first, ambiguous)| *ambiguous |= raw.get(*first).zip(raw.get(i)).is_some_and(|(a, b)| a.geometry != b.geometry))
             .or_insert((i, false));
@@ -1703,9 +1724,12 @@ mod tests {
     }
 
     /// A publish whose read-back has projection round-off says so through `shapefile()`, on any
-    /// platform. Whether a given move's round trip is exact is up to the libm, so several are
-    /// tried in each system: each gives the note exactly when its read-back differs, and at least
-    /// one must, or the noted publish went untested.
+    /// platform: a layer held in longitude/latitude (as a project saved by an older release keeps
+    /// its copy), whose moves are converted into the file's system. Whether a given move's round
+    /// trip is exact is up to the libm, so several are tried in each system: each gives the note
+    /// exactly when its read-back differs, and at least one must, or the noted publish went
+    /// untested. A layer held in the file's system, as one read now is, writes its coordinates as
+    /// they are.
     #[test]
     fn a_publish_with_projection_round_off_says_so() {
         let dir = tempfile::tempdir().unwrap();
@@ -1717,7 +1741,9 @@ mod tests {
                 let mut ds = parcels();
                 ds.crs = Some(crs);
                 crate::io::write_path_in(&ds, &path, crs).unwrap();
-                let (mut ds, sync) = read(&path);
+                let (native, sync) = read(&path);
+                assert_eq!(native.held_in, crs, "{code}: read in the file's own system");
+                let mut ds = native.in_lonlat().unwrap().into_owned();
                 let mut rows: Vec<_> = ds.features.iter().cloned().collect();
                 if let Some(Geometry::Polygon(polys)) = &mut rows[1].geometry {
                     polys[0][0][1].y += dy;
@@ -1725,7 +1751,7 @@ mod tests {
                 ds.features = rows.into();
                 let published = shapefile(&ds, &path, &sync).unwrap();
                 let (back, _) = read(&path);
-                let off = differing(&ds, &back);
+                let off = differing(&ds, &back.in_lonlat().unwrap());
                 assert!(off.is_empty() || off == [2], "{code} {dy}: unedited shapes changed: {off:?}");
                 assert_eq!(published.notes.len(), usize::from(!off.is_empty()), "{code} {dy}: {:?}", published.notes);
                 if let Some(note) = published.notes.first() {

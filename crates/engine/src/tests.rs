@@ -21441,7 +21441,7 @@ fn citygml_layers_and_the_coordinate_system_given() {
     };
     // Placed in the Netherlands, as EPSG:28992 puts (85000, 447000).
     let placed = |s: &Session, name: &str| {
-        let e = s.map().layer_by_name(name).map(|l| l.dataset.extent()).unwrap();
+        let e = s.map().layer_by_name(name).map(|l| l.dataset.lonlat_extent()).unwrap();
         assert!((4.0..5.0).contains(&e.min_x) && (51.5..52.5).contains(&e.min_y), "{name}: {e:?}");
     };
 
@@ -26149,7 +26149,8 @@ fn projection_review_typed_layer_inputs_report_the_formula_choice() {
                     std::fs::write(&path, "e,n\n0,4984944.377977743\n").unwrap();
                     let result = session.run("layer.addData", &json!({"path":path,"x":"e","y":"n","crs":definition})).unwrap();
                     let layer = session.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
-                    assert!((layer.dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap().y - 45.0).abs() < 1e-9);
+                    let lonlat = layer.dataset.in_lonlat().unwrap();
+                    assert!((lonlat.features[0].geometry.as_ref().unwrap().label_point().unwrap().y - 45.0).abs() < 1e-9);
                 }
                 _ => {
                     session
@@ -26196,7 +26197,7 @@ fn a_typed_crs_says_its_grid_isnt_applied() {
         let added = s.run("layer.addData", &json!({"path": csv, "x": "e", "y": "n", "crs": definition})).unwrap();
         let id = added["layer"].as_u64().unwrap() as u32;
         // On UTM zone 17N's central meridian, 81°W.
-        let at = s.map().layer(id).unwrap().dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap();
+        let at = s.map().layer(id).unwrap().dataset.in_lonlat().unwrap().features[0].geometry.as_ref().unwrap().label_point().unwrap();
         assert!((at.x + 81.0).abs() < 1e-3, "{at:?}");
         assert_eq!(count(&s, mark), (expected, expected), "csv {definition}: {:?}", s.notices_since(mark));
         let mark = s.notice_mark();
@@ -26419,7 +26420,7 @@ fn layers_export_in_the_system_they_were_read_in() {
         let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
         let ds = if l.is_streamed() { l.load_all().unwrap() } else { l.dataset.clone() };
         assert_eq!(ds.crs.map(|c| c.label()).unwrap_or_else(|| "EPSG:4326".into()), want, "{file}");
-        let e = ds.extent();
+        let e = ds.lonlat_extent();
         assert!((e.min_x - 9.0).abs() < 1e-6 && (e.min_y - 51.451_18).abs() < 1e-5 && e.width() > 0.0139, "{file}: {e:?}");
     }
     // The .prj says the system, by its parameters and its code.
@@ -26461,7 +26462,7 @@ fn a_system_without_an_epsg_code_is_exported_in_its_own_system() {
         let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
         let ds = if l.is_streamed() { l.load_all().unwrap() } else { l.dataset.clone() };
         assert_eq!(ds.crs.map(|c| c.label()), Some(own.label()), "{file}");
-        let at = ds.features[0].geometry.as_ref().unwrap().extent();
+        let at = ds.in_lonlat().unwrap().features[0].geometry.as_ref().unwrap().extent();
         assert!((at.min_x + 90.049).abs() < 1e-6 && (at.min_y - 35.1495).abs() < 1e-6, "{file}: {at:?}");
     }
     // A system WKT1 has no name for can't be written into either: WGS 84, and the notice says so.
@@ -41468,7 +41469,10 @@ fn geopackage_edits_save_back() {
         let batch = source.read(&Request::all()).unwrap();
         assert_eq!(batch.features.len(), 3);
         let f = batch.features.iter().find(|f| f.id == 2).unwrap();
-        let Some(Geometry::Line(parts)) = &f.geometry else { panic!("reopened line: {:?}", f.geometry) };
+        // Given in the file's system (Web Mercator); placed in longitude/latitude.
+        let to = source.coord_crs().to(Crs::LonLat).unwrap();
+        let geometry = f.geometry.as_ref().map(|g| to.geometry(g));
+        let Some(Geometry::Line(parts)) = &geometry else { panic!("reopened line: {geometry:?}") };
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].len(), moved.len());
         for (a, b) in parts[0].iter().zip(&moved) {
@@ -42572,7 +42576,11 @@ fn raster_tools_read_projected_zone_files_without_reprojecting_twice() {
             let loaded = s.run("layer.addData", &json!({"path": path, "name": "loaded_zones"})).unwrap()["layer"].clone();
             let input = s.map().layer(loaded.as_u64().unwrap() as u32).unwrap().dataset.clone();
             assert_eq!(input.crs.map(|c| c.label()).unwrap_or_else(|| "EPSG:4326".into()), format!("EPSG:{epsg}"), "{ext}");
-            assert!(input.extent().contains(tr.to_lonlat(gt.to_world(2.0, 2.0)).unwrap()), "{epsg}, {ext}: {:?}", input.extent());
+            assert!(
+                input.lonlat_extent().contains(tr.to_lonlat(gt.to_world(2.0, 2.0)).unwrap()),
+                "{epsg}, {ext}: {:?}",
+                input.lonlat_extent()
+            );
             for raster in ["utm", "geographic"] {
                 let depth = s.undo_depth();
                 s.run(
@@ -42585,7 +42593,8 @@ fn raster_tools_read_projected_zone_files_without_reprojecting_twice() {
                     let field = out.field_index(&format!("{raster}_{stat}")).unwrap();
                     assert_eq!(out.value(0, field), &expected, "EPSG:{epsg}, {ext}, {raster}, {stat}");
                 }
-                assert_eq!(out.features[0].geometry, input.features[0].geometry);
+                // In longitude/latitude, where the tool works (the input is held in its file's system).
+                assert_eq!(out.in_lonlat().unwrap().features[0].geometry, input.in_lonlat().unwrap().features[0].geometry);
                 assert_eq!(out.crs, input.crs);
                 assert_eq!(s.undo_depth(), depth + 1);
                 assert!(s.undo());
@@ -45876,7 +45885,7 @@ fn web_mercator_exports_say_what_they_write_at_85_degrees() {
     let said = |s: &Session, mark| -> Vec<String> {
         s.notices_since(mark).iter().filter(|n| n.text.contains("where Web Mercator ends")).map(|n| n.text.clone()).collect()
     };
-    let south = |s: &Session, id: u32| s.map().layer(id).unwrap().dataset.extent().min_y;
+    let south = |s: &Session, id: u32| s.map().layer(id).unwrap().dataset.lonlat_extent().min_y;
     let mut beyond = 0;
     for g in
         s.map().layers.iter().filter(|l| l.name == "Countries").flat_map(|l| l.dataset.features.iter()).filter_map(|f| f.geometry.as_ref())

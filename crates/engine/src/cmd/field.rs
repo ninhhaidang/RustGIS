@@ -588,15 +588,18 @@ fn copy_stream(
     let (mut used, mut inside, mut outside) = (0usize, 0usize, 0usize);
     let mut fits = true;
     let info = src.info();
+    // Its rows come in the source's own system, held there in the copy; the area is compared in
+    // longitude/latitude.
+    let to_lonlat = src.coord_crs().to(rustgis_data::raster::Crs::LonLat).map_err(|e| format!("{}: {e}", layer.name))?;
     let batch = src
         .visit_chunks(Some(extent), 1 << 20, &mut |chunk| {
             progress::check()?;
             for row in chunk {
                 // Only a row the copy keeps is reshaped; one past the budget is just counted.
                 let Some((row, bytes)) = (if fits {
-                    source::chunk_memory::clip_row(row, &extent, dataset.fields.len())?
+                    source::chunk_memory::clip_row(row, &extent, dataset.fields.len(), &to_lonlat)?
                 } else {
-                    source::chunk_memory::clip_row(row, &extent, 0)?
+                    source::chunk_memory::clip_row(row, &extent, 0, &to_lonlat)?
                 }) else {
                     outside += 1;
                     continue;

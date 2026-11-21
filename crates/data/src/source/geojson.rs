@@ -11,9 +11,9 @@ use std::fs::{File, Metadata};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, in_request, stride};
+use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, stride};
 use crate::io::{
-    FeatureSink, Schema, declared_crs, geojson_attrs, geojson_geometry, geojson_has_z, geometry_to_lonlat, latitude_past_poles,
+    FeatureSink, Schema, declared_crs, geojson_attrs, geojson_geometry, geojson_has_z, geometry_to_lonlat, latitude_past_poles, lonlat_box,
     swapped_latitude_note,
 };
 use crate::{DataError, Feature, GeometryType, Result};
@@ -316,6 +316,11 @@ impl FeatureSource for GeoJsonSource {
         &self.info
     }
 
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
+    }
+
     fn lost_to_crs(&self) -> bool {
         !self.failed.is_empty()
     }
@@ -439,11 +444,19 @@ impl GeoJsonSource {
         let place = self.places.get(i as usize).ok_or(())?;
         let json = read_place(f, pos, buf, place).ok_or(())?;
         let geometry = geojson_geometry(&json).map_err(|_| ())?;
-        let geometry = match (self.reproject.transformer(), geometry) {
-            (Some(t), Some(g)) => Some(geometry_to_lonlat(&g, t).ok_or(())?),
-            (_, g) => g,
+        // Kept as the file holds it, in its own system; its box in longitude/latitude answers the
+        // request.
+        let lonlat = match (self.reproject.transformer(), &geometry) {
+            (Some(t), Some(g)) => Some(lonlat_box(g, t).ok_or(())?),
+            (_, g) => g.as_ref().map(crate::Geometry::extent),
         };
-        if geometry.as_ref().map_or(req.extent.is_some(), |g| !in_request(g, req)) || !wanted() {
+        // One without geometry doesn't match an extent.
+        let outside = match (&lonlat, &req.extent) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(e), Some(r)) => !e.intersects(r),
+        };
+        if outside || !wanted() {
             return Ok(None);
         }
         Ok(Some(Feature { id: u64::from(i) + 1, geometry, attrs: geojson_attrs(&json, &self.info.fields) }))

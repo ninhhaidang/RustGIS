@@ -221,7 +221,8 @@ fn web_mercator_answers_are_turned_to_longitude_latitude() {
         feature(&[geometry(&[], &[1_113_195, 0])]),
     ]);
     let (ds, report) = read(&bytes, "t").unwrap();
-    let Some(Geometry::Point(p)) = ds.features[0].geometry else { panic!("not a point") };
+    assert_eq!(ds.held_in, Crs::WebMercator, "held as the answer gives it");
+    let Some(Geometry::Point(p)) = ds.in_lonlat().unwrap().features[0].geometry else { panic!("not a point") };
     assert!((p.x - 10.0).abs() < 1e-4 && p.y.abs() < 1e-9, "{p:?}");
     assert_eq!(ds.crs, Some(Crs::WebMercator));
     assert!(report.messages.is_empty());
@@ -458,7 +459,7 @@ fn a_wkts_own_shift_wins_over_its_wkid() {
         |reference: Vec<u8>| answer(&[message(8, &reference), transform(false, 1.0, xy.x, xy.y), feature(&[geometry(&[], &[0, 0])])]);
     let at = |bytes: &[u8]| {
         let (ds, report) = read(bytes, "t").unwrap();
-        match &ds.features[0].geometry {
+        match &ds.in_lonlat().unwrap().features[0].geometry {
             Some(Geometry::Point(p)) => (*p, report.messages),
             g => panic!("{g:?}"),
         }

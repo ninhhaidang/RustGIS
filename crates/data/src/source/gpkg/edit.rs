@@ -521,7 +521,7 @@ impl EditTable {
             ValueRef::Blob(b) if is_empty_blob(b) => Some(None),
             ValueRef::Blob(b) => {
                 let (_, body) = split_blob(b)?;
-                self.src.reproject.geometry(wkb::decode(body)?).map(Some)
+                self.src.reproject.to_lonlat_geometry(wkb::decode(body)?).map(Some)
             }
             _ => None,
         }

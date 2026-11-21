@@ -590,13 +590,18 @@ impl Bridge<'_> {
         // In longitude/latitude, which a response holds unless `crs` asks for another system,
         // whatever system the layer holds its coordinates in.
         let mut features = rustgis_data::Features::default();
+        // Made at the first feature with a geometry, once for the layer.
+        let mut conversion = None;
         for r in rows.iter().take(limit).filter_map(|&i| l.dataset.features.row(i)) {
             let n = features.len();
             features.push_row(r.to_feature());
-            if let Some(g) = r.geometry()
-                && let std::borrow::Cow::Owned(g) =
-                    l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{}: feature {}: {e}", l.name, r.id()))?
-            {
+            let Some(g) = r.geometry() else { continue };
+            let failed = |e: String| format!("{}: feature {}: {e}", l.name, r.id());
+            let to = match &mut conversion {
+                Some(to) => &*to,
+                slot @ None => slot.insert(l.dataset.lonlat_conversion().map_err(failed)?),
+            };
+            if let std::borrow::Cow::Owned(g) = rustgis_data::Dataset::geometry_to_lonlat_by(to, g).map_err(failed)? {
                 features.set_geometry(n, Some(g));
             }
         }
@@ -613,6 +618,7 @@ impl Bridge<'_> {
             zm_dropped: false,
             windowed: false,
             held_in: rustgis_data::raster::Crs::LonLat,
+            shown_in: None,
         };
         let mut ds = ds;
         let mut member = None;

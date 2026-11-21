@@ -102,7 +102,7 @@ impl DragOwner {
             preview: shared_origin(app, d).and_then(|original| {
                 // Matched in the layer's own coordinates, where shared vertices are equal, and
                 // drawn in longitude/latitude, as the handles are.
-                let to = layer.dataset.lonlat_conversion().ok()?;
+                let to = layer.dataset.shown_conversion().ok()?;
                 let lonlat = |c: Coord| if to.is_identity() { Some(c) } else { to.point(c) };
                 let edges = shared_edges(layer.dataset.features.iter(), original);
                 Some(SharedPreview {

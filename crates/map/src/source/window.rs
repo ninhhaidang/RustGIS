@@ -1,5 +1,6 @@
 //! A view is decoded and projected on the source worker. The UI installs Arc-backed caches.
 use rustgis_data::query::Expr;
+use rustgis_data::raster::Crs;
 use rustgis_data::source::{Batch, FeatureSource, Request, memory};
 use rustgis_data::{DataError, Dataset, Field, Geometry, Result};
 use rustgis_geom::Extent;
@@ -17,6 +18,8 @@ pub(crate) struct Cache {
     pub projected_bytes: usize,
     /// The read kept the definition query's matches (its `matched` counts them).
     pub filtered: bool,
+    /// The system its rows are given in, the source's own ([`FeatureSource::coord_crs`]).
+    pub crs: Crs,
 }
 
 fn base_bytes(batch: &Batch, projected: &Vec<Option<Geometry>>) -> usize {
@@ -64,7 +67,11 @@ pub(super) fn read_mode(
     query: Option<&Query>,
 ) -> Result<(Batch, Cache)> {
     let read = |source: &dyn FeatureSource| -> Result<(Batch, Cache)> {
-        if full { Ok(whole(source.read(req)?, projection)) } else { read_with_fields(source, req, bytes, projection, estimate, fields) }
+        if full {
+            Ok(whole(source.read(req)?, projection, source.coord_crs()))
+        } else {
+            read_with_fields(source, req, bytes, projection, estimate, fields)
+        }
     };
     // A query that doesn't parse draws every feature, so the view is read as without one.
     let Some(query) = query else { return read(source) };
@@ -74,14 +81,15 @@ pub(super) fn read_mode(
     // Half the budget holds them; their projection and display levels take the rest.
     let first = read(source)?;
     if full {
-        check_areas(&expr, &first.0.features, &source.info().name, first.0.complete)?;
+        check_areas(&expr, &scratch, &first.0.features, &source.info().name, first.0.complete)?;
     }
     if first.0.complete || !source.visits_chunks() || numbers_rows(&expr) {
         return Ok(first);
     }
     drop(first);
     let (batch, areas) = read_filtered(source, req, if full { usize::MAX } else { bytes / 2 }, scratch, &expr, full, &query.env)?;
-    let (batch, mut cache) = if full { whole(batch, projection) } else { fit(batch, bytes, projection, fields)? };
+    let crs = source.coord_crs();
+    let (batch, mut cache) = if full { whole(batch, projection, crs) } else { fit(batch, bytes, projection, fields, crs)? };
     cache.filtered = true;
     if rustgis_data::query::uses_area(&expr) {
         cache.areas = areas;
@@ -104,7 +112,9 @@ pub(super) fn walked(source: &dyn FeatureSource, query: &Query) -> Option<(Datas
 /// validation before a geometry measurement expression is evaluated by the layer.
 fn parsed_query(source: &dyn FeatureSource, query: &Query) -> Option<(Dataset, Expr)> {
     let info = source.info();
-    let scratch = Dataset::new(info.name.clone(), info.geometry_type, query.fields.clone());
+    let mut scratch = Dataset::new(info.name.clone(), info.geometry_type, query.fields.clone());
+    // Its chunks come in the source's own system, which `$area` and `$length` measure from.
+    scratch.held_in = source.coord_crs();
     let expr = rustgis_data::query::parse(&query.text, &scratch).ok()?;
     Some((scratch, expr))
 }
@@ -159,7 +169,7 @@ fn read_filtered(
             )));
         }
         if measures_area && !strict {
-            areas.include(super::AmbiguousAreas::from_features(&scratch.features));
+            areas.include(super::AmbiguousAreas::from_features_in(&scratch.features, scratch.held_in));
         }
         let keep: Vec<bool> = (0..scratch.features.len()).map(|r| rustgis_data::query::matches(expr, &scratch, r, env)).collect();
         for (feature, _) in std::mem::take(&mut scratch.features).into_iter().zip(keep).filter(|(_, k)| *k) {
@@ -198,9 +208,11 @@ fn read_filtered(
 }
 
 /// An expression parsed against source metadata still needs validation against decoded geometry.
-fn check_areas(expr: &Expr, features: &[rustgis_data::Feature], name: &str, complete: bool) -> Result<()> {
+/// `held`, the query's scratch dataset, holds its coordinates as the source gives them, so the
+/// features' places are read in longitude/latitude from that system.
+fn check_areas(expr: &Expr, held: &Dataset, features: &[rustgis_data::Feature], name: &str, complete: bool) -> Result<()> {
     if rustgis_data::query::uses_area(expr)
-        && let Some(message) = rustgis_data::ambiguous_area_message(features.iter().filter_map(|f| f.geometry.as_ref()))
+        && let Some(message) = held.ambiguous_area_message(features.iter().filter_map(|f| f.geometry.as_ref()))
     {
         let scope = if complete { String::new() } else { format!("; count covers the {} feature(s) read for this view", features.len()) };
         return Err(DataError::Format(format!("Definition query: {name}: {message}{scope}")));
@@ -209,11 +221,11 @@ fn check_areas(expr: &Expr, features: &[rustgis_data::Feature], name: &str, comp
 }
 
 /// A whole read's cache: every feature projected, without a byte budget.
-fn whole(batch: Batch, projection: &crate::Projection) -> (Batch, Cache) {
+fn whole(batch: Batch, projection: &crate::Projection, crs: Crs) -> (Batch, Cache) {
     let flat = crate::projection::Flat::of(projection);
-    let projected: Vec<_> = batch.features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect();
+    let projected = projected_rows(&flat, crs, &batch.features);
     let cache = Cache {
-        areas: super::AmbiguousAreas::from_features(&batch.features),
+        areas: super::AmbiguousAreas::from_features_in(&batch.features, crs),
         extents: Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect()),
         vertices: projected.iter().flatten().map(crate::lod::thinnable).sum(),
         mean_bytes: 0,
@@ -222,8 +234,22 @@ fn whole(batch: Batch, projection: &crate::Projection) -> (Batch, Cache) {
         projected: Arc::new(projected),
         key: projection.code(),
         filtered: false,
+        crs,
     };
     (batch, cache)
+}
+
+/// Each feature's geometry, given in `crs` (the source's own system), in the map's coordinates on
+/// `flat`, as the map draws a layer held there ([`crate::projection::Flat::held`]): none when the
+/// system can't be converted, as the map draws none of such a layer.
+fn projected_rows(flat: &crate::projection::Flat, crs: Crs, features: &[rustgis_data::Feature]) -> Vec<Option<Geometry>> {
+    if crs == Crs::LonLat {
+        return features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect();
+    }
+    match flat.held(crs) {
+        Ok(held) => features.iter().map(|f| f.geometry.as_ref().map(|g| held.geometry(g).0)).collect(),
+        Err(_) => features.iter().map(|_| None).collect(),
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +274,7 @@ fn read_with_fields(
     fields: Option<usize>,
 ) -> Result<(Batch, Cache)> {
     let flat = crate::projection::Flat::of(projection);
+    let crs = source.coord_crs();
     let base_budget = bytes.saturating_mul(3) / 4;
     let count_for = |cost: usize| req.limit.min(base_budget.saturating_mul(9) / 10 / cost.max(1)).max(usize::from(req.limit > 0));
     let mut request = Request { limit: if estimate == 0 { req.limit.min(64) } else { count_for(estimate) }, ..*req };
@@ -255,7 +282,7 @@ fn read_with_fields(
     // Trusted row sizes avoid a second probe, but never exempt a newly oversized row.
     refuse_oversized(&batch, bytes)?;
     pad(&mut batch, bytes, fields)?;
-    let project = |batch: &Batch| batch.features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect::<Vec<_>>();
+    let project = |batch: &Batch| projected_rows(&flat, crs, &batch.features);
     let mut projected = project(&batch);
     // The first small uniform sample measures real geometry and trimmed attributes rather
     // than padded DBF widths. Later windows reuse the measured bytes per row, avoiding a
@@ -278,16 +305,16 @@ fn read_with_fields(
             projected = project(&batch);
         }
     }
-    trim(batch, projected, bytes, projection)
+    trim(batch, projected, bytes, projection, crs)
 }
 
 /// A view read some other way (a filtered walk) fitted to the view's `bytes` as a read is.
-fn fit(mut batch: Batch, bytes: usize, projection: &crate::Projection, fields: Option<usize>) -> Result<(Batch, Cache)> {
+fn fit(mut batch: Batch, bytes: usize, projection: &crate::Projection, fields: Option<usize>, crs: Crs) -> Result<(Batch, Cache)> {
     refuse_oversized(&batch, bytes)?;
     pad(&mut batch, bytes, fields)?;
     let flat = crate::projection::Flat::of(projection);
-    let projected = batch.features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect();
-    trim(batch, projected, bytes, projection)
+    let projected = projected_rows(&flat, crs, &batch.features);
+    trim(batch, projected, bytes, projection, crs)
 }
 
 /// Refuses a read holding a feature larger than the whole view budget.
@@ -323,7 +350,13 @@ fn pad(batch: &mut Batch, bytes: usize, fields: Option<usize>) -> Result<()> {
 
 /// Thins the rows and their projection evenly until they fit three quarters of `bytes`, and
 /// builds the window's cache.
-fn trim(mut batch: Batch, mut projected: Vec<Option<Geometry>>, bytes: usize, projection: &crate::Projection) -> Result<(Batch, Cache)> {
+fn trim(
+    mut batch: Batch,
+    mut projected: Vec<Option<Geometry>>,
+    bytes: usize,
+    projection: &crate::Projection,
+    crs: Crs,
+) -> Result<(Batch, Cache)> {
     let base_budget = bytes.saturating_mul(3) / 4;
     // Keep room for display levels. Actual allocation accounting also handles projections
     // that split at a world seam and create more parts than the original geometry.
@@ -350,7 +383,7 @@ fn trim(mut batch: Batch, mut projected: Vec<Option<Geometry>>, bytes: usize, pr
     let mean_bytes = base_bytes(&batch, &projected).div_ceil(batch.features.len().max(1));
     let feature_bytes = memory::features_bytes(&batch.features);
     let projected_bytes = crate::lod::cache_bytes(&projected);
-    let areas = super::AmbiguousAreas::from_features(&batch.features);
+    let areas = super::AmbiguousAreas::from_features_in(&batch.features, crs);
     Ok((
         batch,
         Cache {
@@ -363,6 +396,7 @@ fn trim(mut batch: Batch, mut projected: Vec<Option<Geometry>>, bytes: usize, pr
             feature_bytes,
             projected_bytes,
             filtered: false,
+            crs,
         },
     ))
 }

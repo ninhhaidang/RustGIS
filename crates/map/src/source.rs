@@ -49,8 +49,27 @@ pub struct AmbiguousAreas {
 impl AmbiguousAreas {
     /// Count each affected feature once and all of its ambiguous rings.
     pub fn from_features(features: &[rustgis_data::Feature]) -> Self {
+        Self::from_geometries(features.iter().filter_map(|feature| feature.geometry.as_ref()))
+    }
+
+    /// [`AmbiguousAreas::from_features`] of features given in `crs`, read in longitude/latitude
+    /// (a place that can't be given there is left out of its ring).
+    pub fn from_features_in(features: &[rustgis_data::Feature], crs: rustgis_data::raster::Crs) -> Self {
+        if crs == rustgis_data::raster::Crs::LonLat {
+            return Self::from_features(features);
+        }
+        let Ok(to) = crs.to(rustgis_data::raster::Crs::LonLat) else { return Self::default() };
+        // One converted geometry at a time, not a copy of the layer.
         let mut counts = Self::default();
-        for geometry in features.iter().filter_map(|feature| feature.geometry.as_ref()) {
+        for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
+            counts.include(Self::from_geometries(std::iter::once(&to.geometry(g))));
+        }
+        counts
+    }
+
+    fn from_geometries<'a>(geometries: impl Iterator<Item = &'a rustgis_data::Geometry>) -> Self {
+        let mut counts = Self::default();
+        for geometry in geometries {
             let rings = geometry.ambiguous_area_rings();
             if rings > 0 {
                 counts.rings = counts.rings.saturating_add(rings);
@@ -960,6 +979,12 @@ impl SourceLayer {
             new.conversion_info = Some(info);
         }
         Ok(new)
+    }
+
+    /// The system its features are given in ([`FeatureSource::coord_crs`]): the file's own for a
+    /// file read in place; longitude/latitude until it is open.
+    pub fn coord_crs(&self) -> rustgis_data::raster::Crs {
+        self.handle.as_ref().map_or(rustgis_data::raster::Crs::LonLat, |h| h.coord_crs())
     }
 
     /// A source that can be read whole a chunk at a time, for an export.

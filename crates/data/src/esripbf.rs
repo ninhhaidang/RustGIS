@@ -347,11 +347,13 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
         })?;
         any_geometry |= geometry.is_some();
         with_zm += usize::from(geometry.is_some() && (has_z || has_m));
+        // Kept as the answer holds it, in its own system, when it has a place in longitude/latitude
+        // (as `geometry_to_lonlat` would give it).
         let geometry = match (geometry, &to_lonlat) {
             (Some(g), Some(t)) => {
-                let g = crate::io::geometry_to_lonlat(&g, t);
-                unprojected += usize::from(g.is_none());
-                g
+                let ok = crate::io::lonlat_box(&g, t).is_some();
+                unprojected += usize::from(!ok);
+                ok.then_some(g)
             }
             (g, _) => g,
         };
@@ -361,6 +363,10 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
         ds.geometry_type = layer_type;
     }
     ds.crs = crs;
+    // Held as the answer gives its coordinates, in its own system, when RustGIS converts it.
+    if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
+        ds.held_in = c;
+    }
     // What couldn't be converted can't come back by defining the projection again.
     ds.crs_incomplete = unprojected > 0;
     let losses = Losses {

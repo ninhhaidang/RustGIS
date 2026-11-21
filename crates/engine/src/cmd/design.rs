@@ -70,11 +70,10 @@ pub(crate) fn display_area_messages<'a>(layers: impl Iterator<Item = &'a rustgis
     let (mut rings, mut features, mut names, mut windowed) = (0usize, 0usize, Vec::new(), false);
     for layer in layers.filter(|layer| has_area_display(layer)) {
         let before = features;
-        let counts = layer
-            .source
-            .as_ref()
-            .and_then(|source| source.unavailable_areas(&layer.dataset.features))
-            .unwrap_or_else(|| rustgis_map::source::AmbiguousAreas::from_features(&layer.dataset.features));
+        let counts =
+            layer.source.as_ref().and_then(|source| source.unavailable_areas(&layer.dataset.features)).unwrap_or_else(|| {
+                rustgis_map::source::AmbiguousAreas::from_features_in(&layer.dataset.features, layer.dataset.coord_crs())
+            });
         rings = rings.saturating_add(counts.rings);
         features = features.saturating_add(counts.features);
         if features > before {
@@ -1178,8 +1177,7 @@ fn edit_vertex(s: &mut Session, p: &Json) -> CmdResult {
 /// one of them reads as are held. The search reads the box of every feature of the layers in its
 /// system, each from its vertices, once a command (an added feature, a paste): work that grows
 /// with those layers, which C2 is to take to a spatial index.
-/// Empty while the layer is in longitude/latitude, as every layer is today: its edits are written
-/// as they are.
+/// Empty while the layer is in longitude/latitude: its edits are written as they are.
 pub(crate) fn held_places(s: &Session, id: u32, originals: &[&Geometry], edited: &[&Geometry]) -> rustgis_data::HeldPlaces {
     let mut held = rustgis_data::HeldPlaces::default();
     let Some(l) = s.map().layer(id).filter(|l| !l.dataset.edits_in_lonlat()) else { return held };
@@ -2209,8 +2207,10 @@ fn stored_place(s: &Session, id: u32, row: usize, at: Coord) -> Option<Coord> {
     let own = l.dataset.features.get(row)?.geometry.as_ref()?;
     // Only its places within a millionth of where the map shows the hit, in its own coordinates,
     // are read and projected: a snap asks on every pointer move.
-    let to_lonlat = l.dataset.lonlat_conversion().ok()?;
-    let shown = rustgis_data::raster::Crs::LonLat.to(l.dataset.coord_crs()).ok()?.point(s.map().to_lonlat(at)?)?;
+    // As the map shows its places ([`rustgis_data::Dataset::shown_conversion`]), so a vertex
+    // drawn straight into the map's system is the one it projects to.
+    let to_lonlat = l.dataset.shown_conversion().ok()?;
+    let shown = l.dataset.shown_from_lonlat().ok()?.point(s.map().to_lonlat(at)?)?;
     let reach = round_trip_reach(shown);
     // A world projection draws a longitude past ±180° (a shape drawn across the antimeridian) one
     // turn round; Web Mercator draws it past its edge. A place matched as read wins over one
@@ -2294,13 +2294,12 @@ fn topology_rules(s: &mut Session, p: &Json) -> CmdResult {
 struct TopologyInput {
     rule: TopologyRule,
     layer: String,
-    /// The layer in longitude/latitude, where the rules are checked, and its covering layer's.
+    /// The layer as it holds its coordinates, and its covering layer: rows shared with the map's,
+    /// so a check read ahead is known to have read what the rules read now. Each is converted to
+    /// longitude/latitude, where the rules are checked, as the check runs.
     data: rustgis_data::Dataset,
     rows: Vec<usize>,
     by: Option<rustgis_data::Dataset>,
-    /// Why the layer, or its covering layer, can't be given in longitude/latitude: the check is
-    /// refused rather than run on coordinates of another system.
-    unreadable: Option<String>,
 }
 
 /// The rules as the map has them now, each with what it reads; a rule whose layer is gone is left
@@ -2312,29 +2311,19 @@ fn topology_checks(s: &Session) -> Vec<TopologyInput> {
         let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
         // A covering layer that is gone leaves the rule with nothing to check (its layer's
         // latitudes are still checked).
-        // Both in longitude/latitude: a copy only of a layer in another system.
-        let lonlat = |d: &rustgis_data::Dataset| d.in_lonlat().map(std::borrow::Cow::into_owned);
-        let (by, by_unreadable) = match &rule {
-            TopologyRule::MustBeCoveredBy { by, .. } => match s.map().layer_by_name(by).map(|b| lonlat(&b.dataset)) {
-                Some(Ok(d)) => (Some(d), None),
-                Some(Err(e)) => (None, Some(e)),
-                None => (None, None),
-            },
-            _ => (None, None),
+        let by = match &rule {
+            TopologyRule::MustBeCoveredBy { by, .. } => s.map().layer_by_name(by).map(|b| b.dataset.clone()),
+            _ => None,
         };
-        let (data, unreadable) = match lonlat(&l.dataset) {
-            Ok(d) => (d, by_unreadable),
-            Err(e) => (l.dataset.clone(), Some(e)),
-        };
-        inputs.push(TopologyInput { rule, layer: l.name.clone(), data, rows, by, unreadable });
+        inputs.push(TopologyInput { rule, layer: l.name.clone(), data: l.dataset.clone(), rows, by });
     }
     inputs
 }
 
-/// Whether two layers' data are the same: the same rows (shared, not compared one by one), fields
-/// and geometry type.
+/// Whether two layers' data are the same: the same system they hold coordinates in (a relabel
+/// keeps the rows), the same rows (shared, not compared one by one), fields and geometry type.
 fn same_data(a: &rustgis_data::Dataset, b: &rustgis_data::Dataset) -> bool {
-    a.features.shares(&b.features) && a.fields == b.fields && a.geometry_type == b.geometry_type
+    a.coord_crs() == b.coord_crs() && a.features.shares(&b.features) && a.fields == b.fields && a.geometry_type == b.geometry_type
 }
 
 /// Whether `was` (what a check read on another thread) is what the rules read now.
@@ -2364,18 +2353,27 @@ fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<Vec<rustgis_anal
         // A cancelled run stops between rules too (a gaps rule's union doesn't look), as an error,
         // so no result short of its rules is ever taken.
         rustgis_data::progress::check().map_err(|_| "the topology check was cancelled".to_string())?;
-        if let Some(e) = &i.unreadable {
-            return Err(format!("{}: {e}", i.layer));
-        }
-        rustgis_analysis::validate_latitudes(&i.data, i.rows.iter().copied())?;
-        found.push(match (&i.rule, &i.by) {
-            (TopologyRule::MustNotOverlap { .. }, _) => t::overlaps(&i.data, &i.rows),
-            (TopologyRule::MustNotHaveGaps { .. }, _) => t::gaps(&i.data, &i.rows),
-            (TopologyRule::MustNotSelfIntersect { .. }, _) => t::self_intersections(&i.data, &i.rows),
-            (TopologyRule::MustNotHaveDangles { .. }, _) => t::dangles(&i.data, &i.rows, tol),
+        // In longitude/latitude, a copy only of a layer held in another system; refused, naming
+        // the layer, rather than checked on coordinates of another system.
+        // A cancel while converting is the check's cancel, said as the rules' is.
+        let named = |e: String| {
+            if matches!(rustgis_data::DataError::of_conversion(e.clone()), rustgis_data::DataError::Cancelled) {
+                "the topology check was cancelled".to_string()
+            } else {
+                format!("{}: {e}", i.layer)
+            }
+        };
+        let data = i.data.in_lonlat().map_err(named)?;
+        let by = i.by.as_ref().map(|b| b.in_lonlat().map_err(named)).transpose()?;
+        rustgis_analysis::validate_latitudes(&data, i.rows.iter().copied())?;
+        found.push(match (&i.rule, &by) {
+            (TopologyRule::MustNotOverlap { .. }, _) => t::overlaps(&data, &i.rows),
+            (TopologyRule::MustNotHaveGaps { .. }, _) => t::gaps(&data, &i.rows),
+            (TopologyRule::MustNotSelfIntersect { .. }, _) => t::self_intersections(&data, &i.rows),
+            (TopologyRule::MustNotHaveDangles { .. }, _) => t::dangles(&data, &i.rows, tol),
             (TopologyRule::MustBeCoveredBy { .. }, Some(by)) => {
                 rustgis_analysis::validate_latitudes(by, 0..by.features.len())?;
-                t::not_covered(&i.data, &i.rows, by)
+                t::not_covered(&data, &i.rows, by)
             }
             // Its covering layer is gone: nothing checked, nothing said, as it always was.
             (TopologyRule::MustBeCoveredBy { .. }, None) => t::Checked { errors: Vec::new(), complete: true, skipped: 0 },
@@ -2396,6 +2394,9 @@ const TOPOLOGY_AHEAD: &str = "topology.validate";
 struct TopologyAhead {
     inputs: Vec<TopologyInput>,
     tol: f64,
+    /// The datum grids there were when it was made ([`rustgis_data::raster::crs::grid_generation`]):
+    /// a grid that arrives meanwhile changes how a layer held in another system converts.
+    grids: u64,
     found: Result<Vec<rustgis_analysis::topology::Checked>, String>,
 }
 
@@ -2407,9 +2408,10 @@ pub(crate) fn topology_ahead(s: &Session, p: &Json) -> Option<super::reads::Read
     if inputs.is_empty() {
         return None;
     }
+    let grids = rustgis_data::raster::crs::grid_generation();
     Some(super::reads::ahead("Error Inspector", TOPOLOGY_AHEAD.to_string(), move || {
         let found = check_topology(&inputs, tol);
-        TopologyAhead { inputs, tol, found }
+        TopologyAhead { inputs, tol, grids, found }
     }))
 }
 
@@ -2424,9 +2426,15 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     let tol = topology_tolerance(p);
     let inputs = topology_checks(s);
     let found = match super::reads::take::<TopologyAhead>(s, TOPOLOGY_AHEAD) {
-        Some(ahead) if ahead.tol == tol && same_topology(&ahead.inputs, &inputs) => ahead.found?,
+        Some(ahead)
+            if ahead.tol == tol && ahead.grids == rustgis_data::raster::crs::grid_generation() && same_topology(&ahead.inputs, &inputs) =>
+        {
+            ahead.found?
+        }
         // Checking again here would hold the window: the check made on its thread is dropped.
-        Some(_) => return Err("the topology rules or their layers changed while they were checked: validate again".into()),
+        Some(_) => {
+            return Err("the topology rules, their layers or the datum grids changed while they were checked: validate again".into());
+        }
         None => check_topology(&inputs, tol)?,
     };
     // Rules whose layer, or covering layer, isn't on the map are checked for nothing: said.
@@ -2595,6 +2603,39 @@ pub(crate) fn new_feature_inputs(input: &super::InputContext<'_>, p: &Json) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A check of a layer held in another system, read ahead, is known to have read what the
+    /// rules read now: both share the layer's rows (each check converts its own copy as it runs),
+    /// and its errors are those of the same layer in longitude/latitude.
+    #[test]
+    fn a_held_layers_topology_read_ahead_is_still_current() {
+        let ring = |x: f64| {
+            vec![vec![
+                Coord::new(x, 48.7),
+                Coord::new(x + 0.01, 48.7),
+                Coord::new(x + 0.01, 48.71),
+                Coord::new(x, 48.71),
+                Coord::new(x, 48.7),
+            ]]
+        };
+        let mut errors = Vec::new();
+        for crs in [rustgis_data::raster::Crs::LonLat, rustgis_data::raster::Crs::Epsg(32632)] {
+            let mut ds = rustgis_data::Dataset::new("Parcels", GeometryType::Polygon, vec![]);
+            // Two overlapping squares.
+            ds.push(Some(Geometry::Polygon(vec![ring(11.5)])), vec![]);
+            ds.push(Some(Geometry::Polygon(vec![ring(11.505)])), vec![]);
+            ds.hold_in(crs).unwrap();
+            let mut s = Session::new(crate::Project::default());
+            s.map_mut().add_dataset(ds);
+            s.run("topology.rules", &json!({"add": {"rule": "mustNotOverlap", "layer": "Parcels"}})).unwrap();
+            let (ahead, now) = (topology_checks(&s), topology_checks(&s));
+            assert!(same_topology(&ahead, &now), "{crs:?}");
+            let found = check_topology(&ahead, 1.0).unwrap();
+            errors.push(found[0].errors.len());
+        }
+        assert_eq!(errors[0], errors[1]);
+        assert!(errors[0] > 0, "the overlap is found");
+    }
 
     #[test]
     fn a_center_is_found_within_the_commands_budget() {

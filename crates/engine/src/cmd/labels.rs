@@ -813,8 +813,10 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     }
     // Its features, all of them: a copy of a layer read in place holds those of its whole source.
     let whole = if s.map().layer(id).ok_or("no such layer")?.is_streamed() {
-        let (ds, unread) = super::whole::take_or_read(s, id)?;
+        let (mut ds, unread) = super::whole::take_or_read(s, id)?;
         let mut copy = s.map().layer(id).ok_or("no such layer")?.clone();
+        // Shown on the map as the live layer is, for moved labels' places (Dataset::shown_in).
+        ds.shown_in = copy.dataset.shown_in;
         copy.dataset = ds;
         copy.source = None;
         Some((copy, unread))
@@ -866,8 +868,28 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         GeometryType::Point,
         out_fields,
     );
+    // Made in longitude/latitude, then held as the labelled layer is (Dataset::hold_as).
+    let system = (l.dataset.coord_crs(), l.dataset.crs);
     let mut moved = Vec::new();
     let to = l.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", l.name))?;
+    // A moved label is drawn where the map puts its place, by the direct operation into the
+    // map's system when there is one (Dataset::shown_through): its annotation is put at the
+    // layer's coordinates the map draws there, given in longitude/latitude through WGS 84 as
+    // hold_as reads them back.
+    let shown = match l.dataset.shown_through() {
+        Some(_) => Some(l.dataset.shown_from_lonlat().map_err(|e| format!("{}: {e}", l.name))?),
+        None => None,
+    };
+    // Those the map's way doesn't reach are put through WGS 84, and said.
+    let astray = std::cell::Cell::new(0usize);
+    let put_at = |[x, y]: [f64; 2]| {
+        let c = Coord::new(x, y);
+        let Some(back) = &shown else { return c };
+        back.point(c).and_then(|own| to.point(own)).filter(|l| l.is_finite()).unwrap_or_else(|| {
+            astray.set(astray.get() + 1);
+            c
+        })
+    };
     for (row, ft) in l.dataset.features.rows().enumerate() {
         if rows.get(row) != Some(&true) {
             continue;
@@ -899,7 +921,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
             // A label moved by hand becomes an annotation where it was put, and stays moved there
             // (its class's offset leaves it).
             let put = class.moved_to(ft.id());
-            let at = put.map_or(at, |[x, y]| Coord::new(x, y));
+            let at = put.map_or(at, put_at);
             let e = exprs.get(i).and_then(Option::as_ref);
             let number = |v: Option<f32>| v.map_or(Attr::Null, |v| Attr::Float(f64::from(v)));
             if by_size {
@@ -936,6 +958,12 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         NoticeText::format(
             "{name}: {n} label(s) whose class repeats along lines converted once each",
             [("name", ds.name.clone().into()), ("n", repeated.to_string().into())],
+        )
+    });
+    let astray_note = (astray.get() > 0).then(|| {
+        NoticeText::format(
+            "{name}: {n} moved label(s) the map's own conversion doesn't reach put through WGS 84, which may be some decimetres from where they were drawn",
+            [("name", ds.name.clone().into()), ("n", astray.get().to_string().into())],
         )
     });
     let cut_note = (cut > 0).then(|| {
@@ -976,6 +1004,8 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         labels.classes.get_mut(class).unwrap_or(&mut labels.default).move_label(id, Some(at));
     }
     let (min_scale, max_scale) = (l.min_scale, l.max_scale);
+    // Before the labelled layer changes, so a cancel leaves it as it was.
+    super::workflows::hold_as(s, &mut ds, system)?;
     if let Some(src) = s.map_mut().layer_mut(id) {
         src.labels.enabled = false;
     }
@@ -991,7 +1021,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(note) = cut_note {
         s.notify(note, false);
     }
-    for note in [flattened_note, repeated_note].into_iter().flatten() {
+    for note in [flattened_note, repeated_note, astray_note].into_iter().flatten() {
         s.notify_text(note, false);
     }
     if let Some((_, unread)) = &whole {

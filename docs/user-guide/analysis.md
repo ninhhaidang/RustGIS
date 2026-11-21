@@ -803,7 +803,7 @@ gp.run={"tool":"near","params":{"input":"addresses","near":"hydrants","units":"F
 
 **Spatial Join** (`spatialJoin`, also `gp.spatialJoin`) copies attributes from `join` features
 to `target` features. Layers may have different source coordinate systems: their geometry is
-stored in longitude/latitude before the join. `match` is one of:
+converted to longitude/latitude for the join. `match` is one of:
 
 - **Intersects** (default), **Contains** (target contains join) or **Within** (target lies within
   join).
@@ -1207,7 +1207,8 @@ CRS metadata. Coordinates are used directly, without projection or snapping.
   output memory, including repeated text attributes, before building the segments; unavailable
   memory returns an error.
 - **Feature Envelope To Polygon** (`featureEnvelopeToPolygon`) writes one axis-aligned rectangle
-  around all coordinates of each feature in stored longitude/latitude axes. Point features and
+  around all coordinates of each feature in longitude/latitude axes (converted from the layer's
+  own system). Point features and
   horizontal or vertical lines have zero-area envelopes and are skipped with a count. Longitude
   bounds are literal, including for features spanning the antimeridian.
 - **Unsplit Line** (`unsplitLine`) joins line parts at exactly equal endpoints where precisely

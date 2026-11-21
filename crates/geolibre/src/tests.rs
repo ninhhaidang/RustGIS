@@ -364,6 +364,7 @@ fn vector_tools_work_in_metres_and_return_lonlat() {
     let r = rustgis_analysis::run("geolibre:buffer_vector", &f, &json!({"input": "pts", "distance": "1000"})).unwrap();
     let Output::Layers(layers) = r.output else { panic!("layers") };
     let Some(OutputLayer::Vector(ds)) = layers.first() else { panic!("a vector layer: {layers:?}") };
+    let ds = ds.in_lonlat().unwrap();
     let Some(Some(Geometry::Polygon(polys))) = ds.features.first().map(|f| f.geometry.clone()) else { panic!("a polygon") };
     let area = rustgis_geom::geodesic_ring_area_m2(&polys[0][0]).abs();
     let circle = std::f64::consts::PI * 1000.0 * 1000.0;
@@ -376,6 +377,7 @@ fn rasters_and_points_meet_in_one_coordinate_system() {
     let r = rustgis_analysis::run("geolibre:extract_raster_values_at_points", &f, &json!({"rasters": "dem", "points": "pts"})).unwrap();
     let Output::Layers(layers) = r.output else { panic!("layers") };
     let Some(OutputLayer::Vector(ds)) = layers.first() else { panic!("points: {layers:?}") };
+    let ds = ds.in_lonlat().unwrap();
     let p: Option<Coord> = ds.features.first().and_then(|f| f.geometry.as_ref()).map(|g| g.extent().center());
     let centre = f.points.extent().center();
     assert!(p.is_some_and(|c| (c.x - centre.x).abs() < 1e-6 && (c.y - centre.y).abs() < 1e-6), "back in lon/lat: {p:?}");
@@ -456,13 +458,28 @@ fn prepare_and_finish_without_a_runner() {
         c.x, c.y
     );
     let lines = vec!["working…".to_string(), r#"{"output":"/work/output.geojson","log":"/work/my_output.geojson","count":1}"#.to_string()];
-    let r = finish(&job, &[("output.geojson".into(), out.into_bytes())], &lines, None);
+    let r = finish(&job, &[("output.geojson".into(), out.clone().into_bytes())], &lines, None);
     let Output::Layers(layers) = r.output else { panic!("layers") };
     let Some(OutputLayer::Vector(ds)) = layers.first() else { panic!("a vector: {layers:?}") };
     assert_eq!(ds.name, "Test Buffer");
-    let p = ds.extent().center();
+    // Held in the working system, its numbers as the runner wrote them.
+    assert_eq!(ds.coord_crs(), Crs::Epsg(32617));
+    assert_eq!(ds.features[0].geometry, Some(Geometry::Point(c)));
+    let p = ds.in_lonlat().unwrap().extent().center();
     let want = f.points.extent().center();
-    assert!((p.x - want.x).abs() < 1e-6 && (p.y - want.y).abs() < 1e-6, "back in lon/lat: {p:?}");
+    assert!((p.x - want.x).abs() < 1e-6 && (p.y - want.y).abs() < 1e-6, "at the input's place: {p:?}");
+    // An output that names its system (the legacy GeoJSON `crs` member) is held in it as read,
+    // not converted a second time.
+    let named = out.replacen(
+        r#"{"type":"FeatureCollection","#,
+        r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:EPSG::32617"}},"#,
+        1,
+    );
+    let again = finish(&job, &[("output.geojson".into(), named.into_bytes())], &[], None);
+    let Output::Layers(layers) = again.output else { panic!("layers") };
+    let Some(OutputLayer::Vector(ds)) = layers.first() else { panic!("a vector: {layers:?}") };
+    assert_eq!(ds.coord_crs(), Crs::Epsg(32617));
+    assert_eq!(ds.features[0].geometry, Some(Geometry::Point(c)));
     assert!(r.messages.contains(&"working…".to_string()));
     assert!(r.messages.iter().any(|m| m == "Count: 1"), "results, without the output path: {:?}", r.messages);
     assert!(!r.messages.iter().any(|m| m.contains("/work/output.geojson")), "the output came back as a layer");

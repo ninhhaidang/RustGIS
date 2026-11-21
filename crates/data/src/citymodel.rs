@@ -566,8 +566,10 @@ pub(crate) fn finish(
         let to_lonlat = crs.transformer().map_err(|e| DataError::Format(format!("{file_name}: {e}")))?;
         let mut objects = HashSet::new();
         for row in &mut rows {
+            // Kept as the file holds it, in its system, when it has a place in longitude/latitude
+            // (as `geometry_to_lonlat` would give it).
             if let Some(g) = row.geometry.take() {
-                row.geometry = crate::io::geometry_to_lonlat(&g, &to_lonlat);
+                row.geometry = crate::io::lonlat_box(&g, &to_lonlat).map(|_| g);
                 if row.geometry.is_none() {
                     (row.unconverted, row.draws) = (true, false);
                     objects.insert(row.object);
@@ -1060,6 +1062,7 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
             report.extrusion = Some(crate::SuggestedExtrusion { height_field: HEIGHT.into(), base_field: BASE_HEIGHT.into() });
         }
         ds.crs = (crs != Crs::LonLat).then_some(crs);
+        ds.held_in = crs;
         ds.drop_zm(&mut report, z_dropped);
         out.push((ds, report));
     }

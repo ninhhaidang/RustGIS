@@ -4,7 +4,7 @@
 //! and otherwise scan, testing the envelope in each geometry's header before decoding it.
 
 use super::gpkg_blob::{field_type, is_empty_blob, is_whole_empty_blob, split_blob};
-use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, in_request, stride};
+use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, stride};
 use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use rusqlite::types::ValueRef;
@@ -416,11 +416,11 @@ impl GpkgSource {
         {
             return Ok(Row::Skip);
         }
-        let Some(geometry) = wkb::decode(body).and_then(|g| self.reproject.geometry(g)) else { return Ok(Row::Bad) };
-        if !in_request(&geometry, req) {
+        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else { return Ok(Row::Bad) };
+        if !placed.in_request(req) {
             return Ok(Row::Skip);
         }
-        Ok(Row::Feature(Feature { id, geometry: Some(geometry), attrs: attrs() }))
+        Ok(Row::Feature(Feature { id, geometry: Some(placed.geometry), attrs: attrs() }))
     }
 }
 
@@ -435,6 +435,11 @@ enum Row {
 impl FeatureSource for GpkgSource {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
     }
 
     /// Samples native-envelope matches, or decoded view matches when the native box is refused.

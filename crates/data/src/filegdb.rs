@@ -354,6 +354,10 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
     // A multipatch's heights are kept as fields and noted below; its measures aren't.
     let zm = table.geometry.is_some() && (table.has_m || (table.has_z && table.shape != Shape::Multipatch));
     ds.crs = crs;
+    // Held as the file holds its coordinates, in its own system, when RustGIS converts it.
+    if let Some(c) = crs.filter(|_| to_lonlat.is_some()) {
+        ds.held_in = c;
+    }
     let geometry_at = table.fields.iter().position(|f| f.kind == Kind::Geometry);
     let (mut curves, mut wall_hulls, mut unmerged, mut unprojected) = (0usize, 0usize, 0usize, 0usize);
     // Multipatches with points but no footprint: too few, all on one line, or not finite numbers.
@@ -406,11 +410,12 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
                 Err(()) => report.skipped += 1,
             }
         }
+        // Kept as the file holds it, in its own system, when it has a place in longitude/latitude.
         let geometry = match (geometry, &to_lonlat) {
             (Some(g), Some(t)) => {
-                let g = to_lonlat_geometry(g, t);
-                unprojected += usize::from(g.is_none());
-                g
+                let ok = crate::io::places_in_lonlat(&g, t);
+                unprojected += usize::from(!ok);
+                ok.then_some(g)
             }
             (g, _) => g,
         };
@@ -456,14 +461,6 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         });
     }
     Ok(Some((ds, report)))
-}
-
-/// Projects a geometry to longitude/latitude; `None` when a point can't be.
-fn to_lonlat_geometry(g: Geometry, t: &Transformer) -> Option<Geometry> {
-    let mut ok = true;
-    let out = g.map_coords(&|c| t.to_lonlat(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
-    out.for_each_coord(|c: Coord| ok &= c.is_finite());
-    ok.then_some(out)
 }
 
 // ---------------------------------------------------------------------------------------------

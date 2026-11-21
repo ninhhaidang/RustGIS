@@ -68,9 +68,17 @@ pub fn rows_digest(ds: &crate::Dataset) -> crate::Result<u64> {
         field.alias = None;
     }
     put(&mut h, &(&fields, &ds.crs));
+    // Its geometry in longitude/latitude, as every release before #2032 C2 held a file's rows
+    // (converted by the same transformer the readers converted them with), so a digest saved
+    // then still matches the file read now in its own coordinates.
+    let to = ds.lonlat_conversion().map_err(crate::DataError::Format)?;
     crate::progress::begin(ds.features.len());
     for f in ds.features.iter() {
-        put(&mut h, &(&f.geometry, &f.attrs));
+        if to.is_identity() {
+            put(&mut h, &(&f.geometry, &f.attrs));
+        } else {
+            put(&mut h, &(&f.geometry.as_ref().map(|g| to.geometry(g)), &f.attrs));
+        }
         for (index, value) in f.attrs.iter().enumerate() {
             if let crate::Value::Float(number) = value
                 && !number.is_finite()

@@ -201,13 +201,23 @@ impl Engine {
             }
             let mut ds = rustgis_engine::data::Dataset::new(found.name.clone(), found.geometry_type(), found.dataset.fields.clone());
             ds.zm_dropped = found.dataset.zm_dropped;
-            // Copied in longitude/latitude, the system a new dataset holds its coordinates in.
+            // Copied in longitude/latitude, the system a new dataset holds its coordinates in:
+            // exactly through WGS 84, as the whole layer's GeoJSON is, whatever map it is shown on.
+            // A layer whose system can't be converted fails only with a geometry to convert, as
+            // it did when each geometry was converted on its own.
+            let to = found.dataset.lonlat_conversion();
             for r in found.selection.iter().filter_map(|&i| found.dataset.features.row(i)) {
-                let g = r
-                    .geometry()
-                    .map(|g| found.dataset.geometry_to_lonlat(g).map(std::borrow::Cow::into_owned))
-                    .transpose()
-                    .map_err(|e| format!("{}: feature {}: {e}", found.name, r.id()))?;
+                let g = match r.geometry() {
+                    Some(g) => {
+                        let to = to.as_ref().map_err(|e| format!("{}: {e}", found.name))?;
+                        Some(
+                            rustgis_engine::data::Dataset::geometry_to_lonlat_by(to, g)
+                                .map_err(|e| format!("{}: feature {}: {e}", found.name, r.id()))?
+                                .into_owned(),
+                        )
+                    }
+                    None => None,
+                };
                 ds.push(g, r.values().cloned().collect());
             }
             let text = rustgis_engine::data::io::to_geojson(&ds).to_string();

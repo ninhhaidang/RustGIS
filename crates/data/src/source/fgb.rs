@@ -8,7 +8,7 @@
 //! sample are passed over without being fetched.
 
 use super::remote::{self, Remote};
-use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, in_request, stride};
+use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, stride};
 use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use flatgeobuf::geozero::{ColumnValue, CoordDimensions, PropertyProcessor, ToWkb};
@@ -380,14 +380,15 @@ impl FgbSource {
             if !late && !sample.wants() {
                 continue;
             }
-            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.geometry(g));
+            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !in_request(&geometry, req) || (late && !sample.wants()) {
+            if !geometry.in_request(req) || (late && !sample.wants()) {
                 continue;
             }
+            let geometry = geometry.geometry;
             let mut props = Props {
                 fields: &self.info.fields,
                 slots: &self.slots,
@@ -445,14 +446,15 @@ impl FgbSource {
             crate::progress::step(1)?;
             n += 1;
             let id = numbers.as_ref().and_then(|v| v.get(usize::try_from(n - 1).unwrap_or(usize::MAX)).copied()).unwrap_or(n);
-            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.geometry(g));
+            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !in_request(&geometry, &req) {
+            if !geometry.in_request(&req) {
                 continue;
             }
+            let geometry = geometry.geometry;
             let mut props = Props {
                 fields: &self.info.fields,
                 slots: &self.slots,
@@ -757,15 +759,15 @@ impl FgbSource {
                 continue;
             }
             let id = hits.items.get(this).map(|(_, i)| i + 1).unwrap_or(this as u64 + 1);
-            let geometry =
-                feat.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.geometry(g));
+            let geometry = feat.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !in_request(&geometry, req) || (late && !sample.wants()) {
+            if !geometry.in_request(req) || (late && !sample.wants()) {
                 continue;
             }
+            let geometry = geometry.geometry;
             let mut props = Props {
                 fields: &self.info.fields,
                 slots: &self.slots,
@@ -804,6 +806,11 @@ impl FgbSource {
 impl FeatureSource for FgbSource {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
     }
 
     fn read(&self, req: &Request) -> Result<Batch> {

@@ -288,6 +288,119 @@ fn features_are_copied_between_systems() {
     assert_close(&wells[9..], &wells[1..3], "into UTM");
 }
 
+/// The clipboard holds features in the system of the layer they were copied from. Its GeoJSON is
+/// their places in longitude/latitude through WGS 84 whatever map they were copied on, also one
+/// in another datum's system that draws them by a direct operation; pasted back into the layer
+/// they keep its numbers exactly. GeoJSON text naming its system (a legacy `crs` member) is
+/// pasted from that system: by the operation between the two into a layer held in another.
+#[test]
+fn the_clipboard_holds_features_in_their_own_system() {
+    let gk = Crs::Epsg(31467);
+    let mut s = session(gk);
+    s.run("map.projection", &json!({"type": "EPSG:25832"})).unwrap();
+    assert_eq!(s.map().flat().direct_system(), Some(Crs::Epsg(25832)));
+    s.run("select.rows", &json!({"layer": "Wells", "rows": [1, 2]})).unwrap();
+    let text = s.run("edit.copy", &Value::Null).unwrap()["text"].as_str().unwrap().to_string();
+    let places = |text: &str| -> Vec<Coord> {
+        let gj: Value = serde_json::from_str(text).unwrap();
+        gj["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| Coord::new(f["geometry"]["coordinates"][0].as_f64().unwrap(), f["geometry"]["coordinates"][1].as_f64().unwrap()))
+            .collect()
+    };
+    let exact: Vec<Coord> = lonlat(&s, "Wells")[1..3]
+        .iter()
+        .map(|g| match g {
+            Some(Geometry::Point(c)) => *c,
+            g => panic!("a point: {g:?}"),
+        })
+        .collect();
+    // Within 0.1 mm of WGS 84's, where the map's way is some decimetres off.
+    let copied = places(&text);
+    assert_eq!(copied.len(), exact.len(), "every copied feature in the text");
+    for (p, q) in copied.iter().zip(&exact) {
+        assert!((p.x - q.x).abs() < 1e-9 && (p.y - q.y).abs() < 1e-9, "{p:?} vs {q:?}");
+    }
+    s.run("map.projection", &json!({"type": "mercator"})).unwrap();
+    assert_eq!(s.run("edit.copy", &Value::Null).unwrap()["text"].as_str().unwrap(), text, "the same on Web Mercator");
+    let native = |s: &Session, layer: &str| -> Vec<Option<Geometry>> {
+        s.map().layer_by_name(layer).unwrap().dataset.features.iter().map(|f| f.geometry.clone()).collect()
+    };
+    s.run("edit.paste", &json!({"layer": "Wells"})).unwrap();
+    let wells = native(&s, "Wells");
+    assert_eq!(wells[9..], wells[1..3], "pasted where copied from, exactly");
+
+    // UTM 32N text into a layer in longitude/latitude and into the DHDN one.
+    let at = Coord::new(11.5, 48.7);
+    let in_utm = Crs::LonLat.to(UTM).unwrap().point(at).unwrap();
+    let pasted = json!({
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::32632"}},
+        "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [in_utm.x, in_utm.y]}}]
+    })
+    .to_string();
+    s.map_mut().add_dataset(Dataset::new("Plain", GeometryType::Point, vec![]));
+    s.run("edit.paste", &json!({"layer": "Plain", "text": pasted})).unwrap();
+    assert_close(&lonlat(&s, "Plain"), &[Some(Geometry::Point(at))], "UTM text into longitude/latitude");
+    s.run("edit.paste", &json!({"layer": "Wells", "text": pasted})).unwrap();
+    let want = UTM.to(gk).unwrap().point(in_utm).unwrap();
+    let Some(Geometry::Point(got)) = native(&s, "Wells")[11] else { panic!("a point") };
+    assert!((got.x - want.x).abs() < 1e-6 && (got.y - want.y).abs() < 1e-6, "UTM text into DHDN: {got:?} vs {want:?}");
+    // A layer pasted from a copy keeps what its import lost, so Define Projection still refuses it.
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().dataset.crs_incomplete = true;
+    s.run("select.rows", &json!({"layer": "Wells", "rows": [1]})).unwrap();
+    s.run("edit.copy", &Value::Null).unwrap();
+    let made = s.run("edit.pasteSpecial", &json!({"name": "Copied"})).unwrap();
+    let l = s.map().layer(made["layer"].as_u64().unwrap() as u32).unwrap();
+    assert!(l.dataset.crs_incomplete);
+    assert_eq!(l.dataset.coord_crs(), gk);
+}
+
+/// A route over a held network after Define Projection runs on the network as it now reads, not
+/// on a graph kept from before: the relabel keeps the rows, so the graph is kept under its system
+/// too. Here the UTM 32N numbers relabelled DHDN zone 3 lie about 2,800 km west, away from the
+/// route's ends.
+#[test]
+fn a_route_follows_a_relabelled_network() {
+    let mut s = session(UTM);
+    let route = json!({"layer": "Roads", "from": [11.4951, 48.6925], "to": [11.5295, 48.7290], "snapDistance": 100});
+    let first = s.run("analysis.route", &route).unwrap();
+    assert_eq!(s.run("analysis.route", &route).unwrap()["lengthKm"], first["lengthKm"], "the kept graph");
+    s.run("layer.defineProjection", &json!({"layer": "Roads", "crs": "EPSG:31467"})).unwrap();
+    let after = s.run("analysis.route", &route);
+    assert!(after.as_ref().is_err_and(|e| e.contains("from the network")), "a graph kept from before: {after:?}");
+}
+
+/// Define Projection on a layer made from a held layer's selection relabels it: its numbers stay
+/// as they are, now in the system given. The layer made keeps the system it was read in.
+#[test]
+fn a_selection_layer_of_a_held_layer_is_relabelled_as_it_is() {
+    let mut s = session(UTM);
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().dataset.crs = Some(UTM);
+    s.run("select.rows", &json!({"layer": "Wells", "rows": [0, 4]})).unwrap();
+    let made = s.run("select.layerFromSelection", &json!({"layer": "Wells"})).unwrap();
+    let id = made["layer"].as_u64().unwrap() as u32;
+    let l = s.map().layer(id).unwrap();
+    assert_eq!((l.dataset.coord_crs(), l.dataset.crs), (UTM, Some(UTM)));
+    let name = l.name.clone();
+    let before: Vec<Option<Geometry>> = l.dataset.features.iter().map(|f| f.geometry.clone()).collect();
+    s.run("layer.defineProjection", &json!({"layer": name, "crs": "EPSG:25832"})).unwrap();
+    let l = s.map().layer(id).unwrap();
+    assert_eq!(l.dataset.coord_crs(), Crs::Epsg(25832));
+    let after: Vec<Option<Geometry>> = l.dataset.features.iter().map(|f| f.geometry.clone()).collect();
+    assert_eq!(after, before, "relabelled, not converted");
+    // One without a recorded system too.
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().dataset.crs = None;
+    let made = s.run("select.layerFromSelection", &json!({"layer": "Wells"})).unwrap();
+    let id = made["layer"].as_u64().unwrap() as u32;
+    let name = s.map().layer(id).unwrap().name.clone();
+    s.run("layer.defineProjection", &json!({"layer": name, "crs": "EPSG:25832"})).unwrap();
+    let after: Vec<Option<Geometry>> = s.map().layer(id).unwrap().dataset.features.iter().map(|f| f.geometry.clone()).collect();
+    assert_eq!(after, before, "relabelled, not converted, without a recorded system");
+}
+
 /// A project saves a held layer in longitude/latitude, as older releases read it, and opens it
 /// back held there, at the same places.
 #[test]
@@ -707,6 +820,24 @@ fn a_held_layers_undrawable_features_are_said_once() {
     let said = said_of(&s, mark, of_map);
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].starts_with("2 feature(s)") && said[0].ends_with("(map 'Map', layer 'Wells' (2))"), "{said:?}");
+    // A version drawn first on a map in the layers' own system, which draws every place, says
+    // nothing; the globe's copy, which leaves them out, says so at the same version; going back
+    // to Web Mercator, which leaves out as many, says nothing more.
+    s.run("map.projection", &json!({"type": "EPSG:32632"})).unwrap();
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().touch_geometry();
+    let mark = s.notice_mark();
+    frame(&mut s);
+    assert!(said_of(&s, mark, of_map).is_empty(), "{:?}", said_of(&s, mark, of_map));
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap().lonlat_in();
+    let _ = s.run("select.clear", &Value::Null);
+    let said = said_of(&s, mark, of_map);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].ends_with("(map 'Map', layer 'Wells' (2))"), "{said:?}");
+    s.run("map.projection", &json!({"type": "mercator"})).unwrap();
+    frame(&mut s);
+    s.run("map.projection", &json!({"type": "EPSG:32632"})).unwrap();
+    frame(&mut s);
+    assert_eq!(said_of(&s, mark, of_map).len(), 1, "{:?}", said_of(&s, mark, of_map));
 }
 
 /// Every cell of a raster layer named in a command's answer.
@@ -933,4 +1064,181 @@ fn a_hidden_held_water_layers_undrawable_places_are_said() {
     let of_map = said(&s, mark, "can't be given in longitude/latitude: the map");
     assert_eq!(of_map.len(), 1, "{of_map:?}");
     assert!(of_map[0].ends_with("(map 'Map', layer 'Parcels' (1))"), "{of_map:?}");
+}
+
+/// On a map drawn in another system than the layer's, on another datum (DHDN 3-degree Gauss-Krüger
+/// zone 3 on ETRS89 UTM 32N, whose direct operation is some decimetres from the way through WGS 84:
+/// 0.37 m at Stuttgart in PROJ 9.9.0, see the map's
+/// `a_held_layer_is_drawn_straight_into_a_map_in_a_coordinate_system`), the places edits give and
+/// take are those the map draws: a vertex's handle is where the map draws the vertex, and a vertex
+/// moved to where the map draws it stays where it was stored. Calculate Geometry's coordinates are
+/// the layer's own through WGS 84, whatever map.
+#[test]
+fn edits_on_a_map_in_another_datums_system_land_on_what_it_draws() {
+    let gk = Crs::Epsg(31467);
+    let mut s = session(gk);
+    s.run("map.projection", &json!({"type": "EPSG:25832"})).unwrap();
+    let flat = s.map().flat();
+    assert_eq!(flat.direct_system(), Some(Crs::Epsg(25832)));
+    let id = s.map().layer_by_name("Roads").unwrap().id;
+    let stored = s.map().layer(id).unwrap().dataset.features[0].geometry.clone().unwrap();
+    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test")[0].clone().unwrap();
+    let (Geometry::Line(stored_parts), Geometry::Line(drawn_parts)) = (&stored, &drawn) else { panic!("a line") };
+    let l = s.map().layer(id).unwrap();
+    assert_eq!(l.dataset.shown_in, Some(Crs::Epsg(25832)), "the map told its layer its system");
+    let Geometry::Line(handles) = &*l.dataset.geometry_to_lonlat(&stored).unwrap() else { panic!("a line") };
+    let exact = l.dataset.lonlat_conversion().unwrap();
+    for ((h, d), c) in handles[0].iter().zip(&drawn_parts[0]).zip(&stored_parts[0]) {
+        let at = flat.forward_checked(*h).unwrap();
+        assert!((at.x - d.x).hypot(at.y - d.y) < 1e-6, "handle at {at:?}, vertex drawn at {d:?}");
+        // Through WGS 84 the handle would be off the line.
+        let via = flat.forward_checked(exact.point(*c).unwrap()).unwrap();
+        assert!((via.x - d.x).hypot(via.y - d.y) > 0.1, "{via:?} vs {d:?}");
+    }
+    // A vertex moved to where the map draws it, as a drag there gives it, keeps its place.
+    let at = flat.inverse(drawn_parts[0][1]).unwrap();
+    s.run("edit.vertex", &json!({"layer": "Roads", "row": 0, "action": "move", "index": 1, "lon": at.x, "lat": at.y})).unwrap();
+    let Some(Geometry::Line(after)) = &s.map().layer(id).unwrap().dataset.features[0].geometry else { panic!("a line") };
+    let (a, b) = (after[0][1], stored_parts[0][1]);
+    assert!((a.x - b.x).hypot(a.y - b.y) < 1e-6, "moved to {a:?} from {b:?}");
+    // Analysis reads the layer through WGS 84, as on any map.
+    let g = rustgis_data::Dataset::geometry_to_lonlat_by(&exact, &stored).unwrap();
+    s.run("map.projection", &json!({"type": "mercator"})).unwrap();
+    let l = s.map().layer(id).unwrap();
+    assert_eq!(l.dataset.shown_in, None);
+    assert_eq!(*l.dataset.geometry_to_lonlat(&stored).unwrap(), *g, "on Web Mercator, edits go through WGS 84");
+}
+
+/// A label moved on a map in another datum's system becomes an annotation where it was drawn:
+/// at the layer's coordinates the map's direct operation puts there, not those WGS 84 gives
+/// (some decimetres off between DHDN and ETRS89).
+#[test]
+fn a_moved_label_becomes_an_annotation_where_it_was_drawn() {
+    let gk = Crs::Epsg(31467);
+    let mut s = session(gk);
+    s.run("map.projection", &json!({"type": "EPSG:25832"})).unwrap();
+    let flat = s.map().flat();
+    assert_eq!(flat.direct_system(), Some(Crs::Epsg(25832)));
+    let id = s.map().layer_by_name("Wells").unwrap().id;
+    let drawn = s.map_mut().layer_mut(id).unwrap().projected_in(&flat, "test")[2].clone().unwrap();
+    let Geometry::Point(drawn) = drawn else { panic!("a point") };
+    let l = s.map().layer(id).unwrap();
+    let (moved, target) = (l.dataset.features[1].id, l.dataset.features[2].geometry.clone().unwrap());
+    let Geometry::Point(target) = target else { panic!("a point") };
+    // Put on the map where well 2 is drawn, as a drag there gives it.
+    let put = flat.inverse(drawn).unwrap();
+    s.run("labels.enable", &json!({"layer": "Wells", "on": true})).unwrap();
+    s.run("labels.move", &json!({"layer": "Wells", "feature": moved, "to": [put.x, put.y]})).unwrap();
+    let made = s.run("labels.convert", &json!({"layer": "Wells"})).unwrap();
+    let a = s.map().layer(made["layer"].as_u64().unwrap() as u32).unwrap();
+    assert_eq!(a.dataset.coord_crs(), gk, "held as the labelled layer is");
+    let Some(Geometry::Point(at)) = a.dataset.features[1].geometry else { panic!("a point") };
+    // Within the millimetre two inverses of the datum shift take: the direct one, then through
+    // WGS 84 as `hold_as` reads the annotation back. PROJ's own round trip moves it 0.85 mm:
+    // `echo 5401067.822206589 3684021.1657746523 | cs2cs -d 10 EPSG:31467 EPSG:25832` gives
+    // 683871.9767392263 5399346.3693805207, which `cs2cs -d 10 EPSG:25832 EPSG:31467` turns into
+    // 5401067.8229720965 3684021.1661309246 (PROJ 9.9.0, PROJ_NETWORK=OFF).
+    assert!((at.x - target.x).hypot(at.y - target.y) < 5e-3, "annotation at {at:?}, label drawn at {target:?}");
+    // Through WGS 84 it would be off the drawn label.
+    let plain = Crs::LonLat.to(gk).unwrap().point(put).unwrap();
+    assert!((plain.x - target.x).hypot(plain.y - target.y) > 0.1, "{plain:?} vs {target:?}");
+}
+
+/// A project saved by an older release opens as it did (#2032 C2): a layer it kept in the
+/// project holds its features in longitude/latitude, as they were saved, and a layer read in
+/// place from a UTM 32N Shapefile is read again in the file's own system, at the same places.
+/// Both export the file's own numbers to UTM 32N (the kept one within a micrometre, its round
+/// trip through longitude/latitude),
+/// draw alike on Web Mercator and on a UTM map, and saving the project again writes the kept
+/// layer's features as they were saved.
+#[test]
+fn a_project_saved_by_an_older_release_opens_as_it_did() {
+    let dir = Dir::new("older-project");
+    let shp = dir.path().join("parcels.shp");
+    let mut file = layers().remove(2);
+    file.hold_in(UTM).unwrap();
+    rustgis_data::io::write_path_in(&file, &shp, UTM).unwrap();
+    let numbers = |ds: &Dataset| ds.features.iter().map(|f| f.geometry.clone()).collect::<Vec<_>>();
+    // As the file holds them (its rings in the Shapefile's order).
+    let read = rustgis_data::io::read_path(&shp).unwrap().0;
+    assert_eq!(read.coord_crs(), UTM, "read in the file's own system");
+    let in_file = numbers(&read);
+
+    // As an older release saved it: the kept layer's features in longitude/latitude (every release
+    // held them there), and the layer read in place by its file's path.
+    let mut older = Session::new(Project::default());
+    let kept = older.run("layer.addData", &json!({"path": shp.display().to_string(), "name": "Kept"})).unwrap();
+    let kept = kept["layer"].as_u64().unwrap() as u32;
+    let lonlat = older.map().layer(kept).unwrap().dataset.in_lonlat().unwrap().into_owned();
+    older.map_mut().layer_mut(kept).unwrap().dataset = lonlat.clone();
+    older.run("layer.addData", &json!({"path": shp.display().to_string(), "name": "Streamed", "stream": true})).unwrap();
+    let project = dir.path().join("older.rgis");
+    older.run("project.saveAs", &json!({"path": project.display().to_string()})).unwrap();
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    let saved_kept = saved["maps"][0]["layers"].as_array().unwrap().iter().find(|l| l["name"] == "Kept").unwrap();
+    let ring = &saved_kept["dataset"]["features"][0]["geometry"]["Polygon"][0][0][0];
+    let x = ring["x"].as_f64().unwrap();
+    assert!((11.0..12.0).contains(&x), "saved in longitude/latitude: {ring}");
+
+    let mut s = Session::new(Project::default());
+    s.run("project.open", &json!({"path": project.display().to_string()})).unwrap();
+    s.wait_in_place_reads();
+    let kept = s.map().layer_by_name("Kept").unwrap().id;
+    let streamed = s.map().layer_by_name("Streamed").unwrap().id;
+    // Kept: as saved, in longitude/latitude, its system remembered for exports.
+    let k = &s.map().layer(kept).unwrap().dataset;
+    assert_eq!(k.coord_crs(), Crs::LonLat);
+    assert_eq!(k.crs, Some(UTM));
+    assert_eq!(numbers(k), numbers(&lonlat));
+    // Read in place: the file's own numbers, at the same places.
+    let whole = s.map().layer(streamed).unwrap().load_all().unwrap();
+    assert_eq!(whole.coord_crs(), UTM);
+    assert_eq!(numbers(&whole), in_file);
+    assert_close(&numbers(&whole.in_lonlat().unwrap()), &numbers(&lonlat), "read in place");
+    let (ek, es) = (k.lonlat_extent(), whole.lonlat_extent());
+    for (a, b) in [(ek.min_x, es.min_x), (ek.min_y, es.min_y), (ek.max_x, es.max_x), (ek.max_y, es.max_y)] {
+        assert!((a - b).abs() < CLOSE, "extents {ek:?} {es:?}");
+    }
+
+    // Both export the file's numbers.
+    for name in ["Kept", "Streamed"] {
+        let out = dir.path().join(format!("{name}.shp"));
+        s.run("share.exportLayer", &json!({"layer": name, "path": out.display().to_string(), "crs": "EPSG:32632"})).unwrap();
+        let back = rustgis_data::io::read_path(&out).unwrap().0;
+        assert_eq!(back.coord_crs(), UTM, "{name}");
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        numbers(&back).iter().flatten().for_each(|g| g.for_each_coord(|c| a.push(c)));
+        in_file.iter().flatten().for_each(|g| g.for_each_coord(|c| b.push(c)));
+        assert_eq!(a.len(), b.len(), "{name}");
+        for (p, q) in a.iter().zip(&b) {
+            assert!((p.x - q.x).hypot(p.y - q.y) < 1e-6, "{name}: {p:?} {q:?}");
+        }
+    }
+
+    // Both draw alike, on Web Mercator and on a map in the file's system.
+    for (k, projection) in ["mercator", "EPSG:32632"].into_iter().enumerate() {
+        s.run("map.projection", &json!({"type": projection})).unwrap();
+        s.run("layer.zoomTo", &json!({"layer": "Kept"})).unwrap();
+        let paths = [0, 1].map(|i| dir.path().join(format!("{k}-{i}.png")));
+        for (shown, path) in [(kept, &paths[0]), (streamed, &paths[1])] {
+            let hidden = if shown == kept { streamed } else { kept };
+            s.run("layer.visibility", &json!({"layer": hidden, "visible": false})).unwrap();
+            s.run("layer.visibility", &json!({"layer": shown, "visible": true})).unwrap();
+            s.run("share.exportMap", &json!({"path": path.display().to_string(), "width": 320, "height": 200})).unwrap();
+        }
+        // Where each draws (the two layers have colours of their own).
+        let [a, b] = paths.map(|p| image::open(p).unwrap().to_rgba8());
+        let (bg_a, bg_b) = (*a.get_pixel(0, 0), *b.get_pixel(0, 0));
+        let drawn = a.pixels().filter(|p| **p != bg_a).count();
+        let differ = a.pixels().zip(b.pixels()).filter(|(p, q)| (**p != bg_a) != (**q != bg_b)).count();
+        assert!(drawn > 1000, "{projection}: little drawn ({drawn} pixels)");
+        assert!(differ * 100 < drawn, "{projection}: {differ} of {drawn} drawn pixels differ");
+    }
+
+    // Saved again, the kept layer's features are written as they were saved.
+    let again = dir.path().join("again.rgis");
+    s.run("project.saveAs", &json!({"path": again.display().to_string()})).unwrap();
+    let saved_again: Value = serde_json::from_str(&std::fs::read_to_string(&again).unwrap()).unwrap();
+    let again_kept = saved_again["maps"][0]["layers"].as_array().unwrap().iter().find(|l| l["name"] == "Kept").unwrap();
+    assert_eq!(again_kept["dataset"]["features"], saved_kept["dataset"]["features"]);
 }

@@ -211,6 +211,7 @@ fn layer_geojson(inputs: &dyn Inputs, name: &str) -> Result<Value, String> {
         zm_dropped: false,
         windowed: false,
         held_in: ds.held_in,
+        shown_in: None,
     };
     Ok(rustgis_data::io::to_geojson(&*sub.in_lonlat()?))
 }

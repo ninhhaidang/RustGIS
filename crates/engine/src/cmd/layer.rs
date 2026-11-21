@@ -1831,10 +1831,17 @@ pub(crate) fn add_photos_to(s: &mut Session, name: &str, zoom: Option<bool>, fee
     let id = match existing {
         Some(id) => {
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
-            // Read in longitude/latitude, held in the layer's system.
+            // Read in longitude/latitude, held in the layer's system: through WGS 84, as a photo's
+            // position is data, not a place on the map.
             let mut photos = Vec::new();
+            let to = rustgis_data::raster::Crs::LonLat.to(l.dataset.coord_crs()).map_err(|e| format!("{}: {e}", l.name))?;
+            let none = rustgis_data::HeldPlaces::default();
             for f in ds.features.into_iter().take(added) {
-                let g = f.geometry.map(|g| l.dataset.geometry_from_lonlat(g)).transpose().map_err(|e| format!("{}: {e}", l.name))?;
+                let g = f
+                    .geometry
+                    .map(|g| rustgis_data::Dataset::edit_from_lonlat_by(&to, g, &none))
+                    .transpose()
+                    .map_err(|e| format!("{}: {e}", l.name))?;
                 photos.push((g, f.attrs));
             }
             for (g, attrs) in photos {

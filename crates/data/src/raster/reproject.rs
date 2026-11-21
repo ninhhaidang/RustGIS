@@ -31,6 +31,9 @@ pub struct Reprojection {
     /// The direct operation between the two, when neither is longitude/latitude or Web Mercator
     /// and terrio-crs has one.
     direct: Option<std::sync::Arc<DirectPair>>,
+    /// Two conversions one after the other, through a system between ([`Crs::to_via`]); the
+    /// fields above are then unused.
+    through: Option<std::sync::Arc<(Reprojection, Reprojection)>>,
 }
 
 impl Crs {
@@ -51,7 +54,28 @@ impl Crs {
             (Some(a), Some(b)) => DirectPair::new(self, other, a, b).map(std::sync::Arc::new),
             _ => None,
         };
-        Ok(Reprojection { source: self, target: other, unproject, project, direct })
+        Ok(Reprojection { source: self, target: other, unproject, project, direct, through: None })
+    }
+
+    /// The conversion of coordinates in this system to `other`'s through `via`: this system's to
+    /// `via` ([`Crs::to`], the direct operation where there is one), then `via`'s to `other`. A
+    /// map in `via` shows a layer in this system by the first, and gives its places in
+    /// longitude/latitude by the second, so a place converted this way and drawn on that map
+    /// lands where the layer's own place is drawn. Where `via` is either end, or the two ends are
+    /// the same system, it is [`Crs::to`].
+    pub fn to_via(self, via: Crs, other: Crs) -> Result<Reprojection, String> {
+        if via == self || via == other || self == other {
+            return self.to(other);
+        }
+        let (first, second) = (self.to(via)?, via.to(other)?);
+        Ok(Reprojection {
+            source: self,
+            target: other,
+            unproject: None,
+            project: None,
+            direct: None,
+            through: Some(std::sync::Arc::new((first, second))),
+        })
     }
 }
 
@@ -71,6 +95,12 @@ impl Reprojection {
         self.source == self.target
     }
 
+    /// Whether it takes the direct operation between its two systems where it can (see the
+    /// module's notes), not only the way through WGS 84.
+    pub fn is_direct(&self) -> bool {
+        self.direct.is_some()
+    }
+
     /// A place in the target system, or `None` where the source system has no such place or the
     /// target can't hold it. Each system's transformer judges what it is given, as a call of its
     /// own did: Web Mercator takes a latitude past 85.05° (an infinite one too) as 85.05°, where
@@ -78,6 +108,9 @@ impl Reprojection {
     /// is finite. Between two other systems, the direct operation's coordinates of a place the way
     /// through WGS 84 converts, else those through WGS 84 (see the module's notes).
     pub fn point(&self, c: Coord) -> Option<Coord> {
+        if let Some(through) = &self.through {
+            return through.1.point(through.0.point(c)?);
+        }
         let lonlat = match &self.unproject {
             Some(t) => t.to_lonlat(c)?,
             None => c,
@@ -90,6 +123,13 @@ impl Reprojection {
             return None;
         }
         Some(self.direct.as_ref().and_then(|d| d.point(c, out)).unwrap_or(out))
+    }
+
+    /// The place `c` in the target system when `via` is where the way through WGS 84 puts it in
+    /// the target, as a caller with its own checks there found it (the map's projection): the
+    /// direct operation's coordinates where it has one that lands near `via`, else `via`.
+    pub fn point_near(&self, c: Coord, via: Coord) -> Coord {
+        self.direct.as_ref().and_then(|d| d.point(c, via)).unwrap_or(via)
     }
 
     /// A copy of `g` in the target system, its places that can't be converted NaN (which drawing
@@ -125,7 +165,33 @@ impl Reprojection {
         }
         out
     }
+
+    /// [`Reprojection::extent`] for a feature's box, as a frame tests each feature's against the
+    /// view distance: a point's box by its one place, a small box by its corners and edges'
+    /// middles (3 by 3 places, not 17 by 17). A box whose converted size is more than
+    /// [`FEATURE_EXTENT_FINE`] in either axis (about 10 km in degrees), where edges bend enough to
+    /// matter, is converted as [`Reprojection::extent`] converts it. Empty where none of the
+    /// places converts.
+    pub fn feature_extent(&self, e: &Extent) -> Extent {
+        if self.is_identity() || e.is_empty() {
+            return *e;
+        }
+        let corner = Coord::new(e.min_x, e.min_y);
+        if e.max_x == e.min_x && e.max_y == e.min_y {
+            return self.point(corner).map_or(Extent::EMPTY, |m| Extent::from_points(m, m));
+        }
+        let mut out = Extent::EMPTY;
+        for m in e.samples(2).filter_map(|c| self.point(c)) {
+            out.expand(m);
+        }
+        if out.width() > FEATURE_EXTENT_FINE || out.height() > FEATURE_EXTENT_FINE { self.extent(e) } else { out }
+    }
 }
+
+/// The converted size above which [`Reprojection::feature_extent`] samples a box as finely as
+/// [`Reprojection::extent`]: 0.1, about 10 km in degrees. Below it, a box's edges bend by well
+/// under a millimetre between 3 places a side (a 10 km box in UTM: within 1e-8°).
+pub const FEATURE_EXTENT_FINE: f64 = 0.1;
 
 #[cfg(test)]
 mod tests {
@@ -149,11 +215,30 @@ mod tests {
         assert!((back.x - bern.x).abs() < 1e-7 && (back.y - bern.y).abs() < 1e-7, "{back:?}");
     }
 
-    /// Every dataset is held in longitude/latitude, whatever system it was read in, so the map's
-    /// conversion of its geometry is the identity and can't fail (the map draws none of a layer
-    /// whose conversion fails: [`crate::Dataset::coord_crs`]).
+    /// A feature's box converted from 3 by 3 places is the 17 by 17 one's within a millimetre for
+    /// a 10 km box in UTM 32N (in degrees, about 1e-8); a point's is its one place.
     #[test]
-    fn every_dataset_is_held_in_lonlat() {
+    fn a_features_box_converts_from_few_places() {
+        let to = Crs::Epsg(32632).to(Crs::LonLat).unwrap();
+        let e = Extent::new(690_000.0, 5_390_000.0, 700_000.0, 5_400_000.0);
+        let (fine, rough) = (to.extent(&e), to.feature_extent(&e));
+        for (a, b) in [(fine.min_x, rough.min_x), (fine.min_y, rough.min_y), (fine.max_x, rough.max_x), (fine.max_y, rough.max_y)] {
+            assert!((a - b).abs() < 1e-8, "{fine:?} vs {rough:?}");
+        }
+        // A 500 km box is sampled finely.
+        let large = Extent::new(300_000.0, 5_000_000.0, 800_000.0, 5_500_000.0);
+        assert_eq!(to.feature_extent(&large), to.extent(&large));
+        let p = Coord::new(695_000.0, 5_395_000.0);
+        let at = to.point(p).unwrap();
+        assert_eq!(to.feature_extent(&Extent::from_points(p, p)), Extent::from_points(at, at));
+        assert!(to.feature_extent(&Extent::EMPTY).is_empty());
+    }
+
+    /// A dataset made in code is held in longitude/latitude, whatever system it says it was read
+    /// in, until held in another ([`crate::Dataset::hold_in`]), so the map's conversion of its
+    /// geometry is the identity and can't fail.
+    #[test]
+    fn a_dataset_made_in_code_is_held_in_lonlat() {
         let mut ds = crate::Dataset::new("lv95", crate::GeometryType::Point, vec![]);
         ds.crs = Some(Crs::Epsg(2056));
         assert_eq!(ds.coord_crs(), Crs::LonLat);
@@ -163,7 +248,8 @@ mod tests {
         let g = Geometry::Line(vec![vec![Coord::new(7.0, 46.0), Coord::new(f64::NAN, 47.0)]]);
         let read = ds.geometry_to_lonlat(&g).unwrap();
         assert!(matches!(read, std::borrow::Cow::Borrowed(_)));
-        assert_eq!(format!("{:?}", ds.geometry_from_lonlat(read.into_owned()).unwrap()), format!("{g:?}"));
+        let held = crate::HeldPlaces::default();
+        assert_eq!(format!("{:?}", ds.edit_from_lonlat(read.into_owned(), &held).unwrap()), format!("{g:?}"));
         // So its longitude/latitude box is its geometry's.
         ds.push(Some(Geometry::Point(Coord::new(2_600_000.0, 1_200_000.0))), vec![]);
         ds.push(Some(Geometry::Point(Coord::new(7.0, 46.0))), vec![]);

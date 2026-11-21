@@ -2291,7 +2291,7 @@ pub(crate) fn text_graphic_at(app: &RustGisApp, ctx: &egui::Context, rect: Rect,
     let tokens = graphics::TokenValues::of(map, scale);
     // Only what is drawn, as render_frame draws it: the first layer on top, and in a layer the
     // last row. Fully transparent layers and rows beyond the view clipping distance are not drawn.
-    let clip = map.view.clip_distance.map(|d| (map.camera.center_lonlat(), d));
+    let clip = map.view.clip_distance.and_then(|d| Some((map.to_lonlat(map.camera.center)?, d)));
     map.layers.iter().filter(|l| l.graphics && l.selectable && map.draws_at(l, scale) && map.layer_opacity(l) > 0.0).find_map(|l| {
         let drawn = l.drawn_rows(scale);
         // Boxes in longitude/latitude, as the view distance is measured there: none when the
@@ -2302,7 +2302,7 @@ pub(crate) fn text_graphic_at(app: &RustGisApp, ctx: &egui::Context, rect: Rect,
             if let Some((centre, d)) = clip {
                 // No extent (an empty geometry, or one whose conversion isn't a number): nothing
                 // of it is drawn, and clamping to its extent would panic.
-                let e = to_lonlat.extent(&g.extent());
+                let e = to_lonlat.feature_extent(&g.extent());
                 if e.is_empty() {
                     return None;
                 }
@@ -2330,9 +2330,9 @@ fn text_shown(
     use rustgis_engine::map::graphics;
     let ds = &l.dataset;
     let text = graphics::expand(graphics::label(ds, row)?, tokens);
-    // Its place in longitude/latitude, from the layer's own coordinates (the identity today).
+    // Its place in longitude/latitude, from the layer's own coordinates, as the map shows them.
     let place = ds.features.get(row)?.geometry.as_ref()?.label_point()?;
-    let to_lonlat = ds.lonlat_conversion().ok()?;
+    let to_lonlat = ds.shown_conversion().ok()?;
     let place = if to_lonlat.is_identity() { place } else { to_lonlat.point(place)? };
     let at = lonlat_to_screen(app, rect, place)?;
     let job = label_job(

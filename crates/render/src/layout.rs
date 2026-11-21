@@ -2255,6 +2255,8 @@ fn complete_shown_legends(
         let mut no_data = None;
         let mut chunk = layer.clone();
         chunk.source = None;
+        // Its chunks come in the source's own system.
+        chunk.dataset.held_in = source.coord_crs();
         chunk.clear_cache();
         let result = crate::visit_complete(source.as_ref(), &mut |features| {
             chunk.dataset.features = features.into();

@@ -6968,7 +6968,28 @@ fn save_history_script(app: &mut RustGisApp) {
 /// What the Layer Properties pane's Source tab (#1803) shows of a layer: its geometry, counts,
 /// source, coordinate system, extent and fields, or a raster's own details.
 pub(crate) fn source_details(ui: &mut Ui, l: &Layer, t: &Tokens) {
-    let e = l.extent();
+    // A layer held in a projected system shows its extent there, as its coordinates are: no
+    // conversion of every place on the interface thread, which this pane is drawn on each frame.
+    // One held in a geographic system (NAD83, ETRS89, or one in grads or latitude first) shows
+    // its own box converted to longitude/latitude (its edges' places, not every place), in
+    // degrees. A streamed layer's is its source's whole extent, in longitude/latitude, read once.
+    // A box with no place that converts shows none.
+    use rustgis_engine::data::raster::Crs;
+    let held = l.dataset.coord_crs();
+    let degrees = held.is_geographic() || l.source.is_some();
+    let e = if l.source.is_some() || held == Crs::LonLat {
+        l.extent()
+    } else if degrees {
+        l.dataset.lonlat_conversion().map_or(rustgis_engine::geom::Extent::EMPTY, |to| to.extent(&l.dataset.extent()))
+    } else {
+        l.dataset.extent()
+    };
+    let extent_in = if degrees { Crs::LonLat } else { held };
+    let edge = |v: f64| match (v.is_finite(), degrees) {
+        (false, _) => "—".to_string(),
+        (true, true) => format!("{v:.4}°"),
+        (true, false) => format!("{v:.2}"),
+    };
     if let Some(rl) = &l.raster {
         raster_details(ui, rl, t);
         return;
@@ -6983,10 +7004,12 @@ pub(crate) fn source_details(ui: &mut Ui, l: &Layer, t: &Tokens) {
             // A web or database address without its keys, tokens or password.
             ("Source", l.dataset.source.as_deref().map_or_else(|| tl!("In project").into(), rustgis_engine::sources::redact)),
             ("Source coordinate system", l.dataset.crs.map(|c| c.label()).unwrap_or_else(|| "EPSG:4326".into())),
-            ("West", format!("{:.4}°", e.min_x)),
-            ("East", format!("{:.4}°", e.max_x)),
-            ("South", format!("{:.4}°", e.min_y)),
-            ("North", format!("{:.4}°", e.max_y)),
+            ("Held in", held.label()),
+            ("Extent in", extent_in.label()),
+            (if degrees { "West" } else { "Min X" }, edge(e.min_x)),
+            (if degrees { "East" } else { "Max X" }, edge(e.max_x)),
+            (if degrees { "South" } else { "Min Y" }, edge(e.min_y)),
+            (if degrees { "North" } else { "Max Y" }, edge(e.max_y)),
             ("Definition query", l.definition_query.clone().unwrap_or_else(|| "—".into())),
         ];
         for (k, v) in rows {

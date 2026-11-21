@@ -938,7 +938,7 @@ impl MysqlSource {
             mysql::Value::Bytes(b) => wkb::decode(b),
             _ => None,
         }?;
-        let geometry: Geometry = self.reproject.geometry(geometry)?;
+        let geometry: Geometry = self.reproject.to_lonlat_geometry(geometry)?;
         let attrs = self
             .info
             .fields

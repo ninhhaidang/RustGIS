@@ -3,7 +3,7 @@
 //! SQLite (`gpkg`), which uses the R-tree index; here a read scans the table, testing the envelope
 //! in each geometry's header before decoding it.
 
-use super::{Batch, FeatureSource, Reproject, Request, Sampler, Shared, SourceInfo, clamp_limit, in_request};
+use super::{Batch, FeatureSource, Reproject, Request, Sampler, Shared, SourceInfo, clamp_limit};
 use crate::sqlite::{Db, Table, Val};
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use rustgis_geom::Extent;
@@ -335,6 +335,11 @@ impl FeatureSource for GpkgMemSource {
         &self.info
     }
 
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
+    }
+
     /// Keeps rows without geometry in whole reads; they have no location to match an extent.
     /// Counts scanned records and checks Cancel between them.
     fn read(&self, req: &Request) -> Result<Batch> {
@@ -389,13 +394,14 @@ impl FeatureSource for GpkgMemSource {
                 if known && !sample.wants() {
                     return ControlFlow::Continue(());
                 }
-                let Some(geometry) = wkb::decode(body).and_then(|g| self.reproject.geometry(g)) else {
+                let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else {
                     skipped += 1;
                     return ControlFlow::Continue(());
                 };
-                if !in_request(&geometry, req) || (!known && !sample.wants()) {
+                if !placed.in_request(req) || (!known && !sample.wants()) {
                     return ControlFlow::Continue(());
                 }
+                let geometry = placed.geometry;
                 // Integer keys, negative ones too, map to distinct ids.
                 sample.keep(Feature {
                     id: rowid as u64,
@@ -452,14 +458,14 @@ impl FeatureSource for GpkgMemSource {
                         {
                             return ControlFlow::Continue(());
                         }
-                        let Some(geometry) = wkb::decode(body).and_then(|g| self.reproject.geometry(g)) else {
+                        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else {
                             out.skipped += 1;
                             return ControlFlow::Continue(());
                         };
-                        if !in_request(&geometry, &req) {
+                        if !placed.in_request(&req) {
                             return ControlFlow::Continue(());
                         }
-                        Some(geometry)
+                        Some(placed.geometry)
                     }
                     // Without geometry (NULL, or an empty one): kept unless an extent is asked for.
                     Some(Val::Null | Val::Blob(_)) | None if req.extent.is_none() => None,

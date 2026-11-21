@@ -1718,10 +1718,12 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
         rustgis_map::rows::Rows::Subset(rows) => rows,
     };
     // The network in longitude/latitude, as `from` and `to` are, whatever system the layer holds
-    // its coordinates in.
-    let lines = l.dataset.in_lonlat()?;
-    let r = network::shortest_route(
-        &lines,
+    // its coordinates in: converted only when its graph is built, which is kept for the layer's
+    // rows, so routes over a held network reuse it as they do over one in longitude/latitude.
+    let system = (l.dataset.coord_crs(), l.dataset.crs);
+    let r = network::shortest_route_held(
+        &l.dataset,
+        || l.dataset.in_lonlat(),
         &rows,
         point(p, "from")?,
         point(p, "to")?,
@@ -1732,6 +1734,7 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
     let mut ds =
         Dataset::new(name, GeometryType::Polyline, vec![Field::new("length_km", FieldType::Double), Field::new("cost", FieldType::Double)]);
     ds.push(Some(Geometry::Line(vec![r.path.clone()])), vec![Attr::Float(r.length_m / 1000.0), Attr::Float(r.cost)]);
+    hold_as(s, &mut ds, system)?;
     let nid = super::layer::add_dataset(s, ds);
     if let Some(notice) = query_notice {
         s.notify_text(notice, false);
@@ -1846,9 +1849,10 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
         rustgis_map::rows::Rows::All => (0..l.dataset.features.len()).collect(),
         rustgis_map::rows::Rows::Subset(rows) => rows,
     };
-    // Placed in longitude/latitude, as the points' layer holds them, whatever system the polygons'
-    // layer holds its coordinates in.
+    // Placed in longitude/latitude, whatever system the polygons' layer holds its coordinates in,
+    // then held in that system, as the polygons are.
     let polygons = l.dataset.in_lonlat()?;
+    let system = (l.dataset.coord_crs(), l.dataset.crs);
     let seed = f(p, "seed").map_or(42, |v| v.max(0.0) as u64);
     let pts: Vec<(usize, Coord)> = match ps(p, "field") {
         Some(fname) => {
@@ -1878,11 +1882,31 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
         ds.push(Some(Geometry::Point(*c)), vec![Attr::Int(*r as i64)]);
     }
     let n = ds.features.len();
+    hold_as(s, &mut ds, system)?;
     if let Some(notice) = query_notice {
         s.notify_text(notice, false);
     }
     let nid = super::layer::add_dataset(s, ds);
     Ok(json!({"layer": nid, "points": n}))
+}
+
+/// Holds `ds`, a layer made in longitude/latitude from another, as that layer is
+/// ([`Dataset::hold_as`]; `system` is its [`Dataset::coord_crs`] and [`Dataset::crs`]), and says
+/// so when it can't be: it stays in longitude/latitude then, as it was made. A cancel stops the
+/// command, which adds nothing.
+pub(crate) fn hold_as(
+    s: &mut Session,
+    ds: &mut Dataset,
+    (held, crs): (rustgis_data::raster::Crs, Option<rustgis_data::raster::Crs>),
+) -> Result<(), String> {
+    match ds.hold_as(held, crs) {
+        Err(e) if matches!(rustgis_data::DataError::of_conversion(e.clone()), rustgis_data::DataError::Cancelled) => Err(e),
+        Err(e) => {
+            s.notify(format!("{}: kept in longitude/latitude, as it was made, not in {}: {e}", ds.name, held.label()), false);
+            Ok(())
+        }
+        Ok(()) => Ok(()),
+    }
 }
 
 fn numeric_fields(ds: &Dataset, p: &Value) -> Result<Vec<usize>, String> {

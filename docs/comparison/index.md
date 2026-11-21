@@ -141,7 +141,9 @@ Stated plainly, so the tables above are worth trusting:
   The native File Geodatabase reader is 2D and does not read compressed tables,
   raster fields or sparse row layouts; GDAL can fill these gaps on desktop. DWG and rasters
   such as JPEG 2000, NetCDF and HDF also need GDAL. SQL queries need DuckDB; both are external programs.
-- **Coordinate systems.** Vector data is stored in longitude/latitude; there is no full PROJ.
+- **Coordinate systems.** A file's vector data keeps the file's own coordinates and is drawn
+  in the map's projection on the fly; databases and point clouds are read in longitude/latitude,
+  and analysis tools still work there. There is no full PROJ.
 - **Editing depth.** Vertex move, insert and delete are supported, but not versioned multi-user
   database editing. Desktop GeoPackage and PostGIS layers loaded for editing
   can save back to their source tables with row-conflict checks; other edits stay in the project

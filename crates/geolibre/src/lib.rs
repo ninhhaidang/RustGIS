@@ -771,15 +771,30 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
             match read {
                 Ok((mut ds, _)) => {
                     ds.name = layer_name.to_string();
-                    if job.crs != Crs::LonLat
-                        && looks_projected(&ds)
-                        && let Ok(tf) = job.crs.transformer()
-                    {
-                        let lost = convert_features(&mut ds, |c| tf.to_lonlat(c));
-                        if lost > 0 {
-                            messages.push(format!(
-                                "{layer_name}: {lost} features couldn't be converted to longitude/latitude and have no geometry"
-                            ));
+                    // An output that says its system (a .prj, a GeoJSON `crs`) is held in it as
+                    // read; one in the working system that doesn't is relabelled to it.
+                    if job.crs != Crs::LonLat && ds.coord_crs() == Crs::LonLat && looks_projected(&ds) {
+                        match job.crs.to(Crs::LonLat) {
+                            Ok(to) => {
+                                ds.held_in = job.crs;
+                                ds.crs = Some(job.crs);
+                                // Every place the layer keeps has one in longitude/latitude, as when
+                                // it was converted there: a feature with one that hasn't is kept
+                                // without geometry. Each place is converted to be checked; the layer
+                                // keeps its own.
+                                let lost = convert_features(&mut ds, |c| to.point(c).filter(|l| l.is_finite()).map(|_| c));
+                                if lost > 0 {
+                                    messages.push(format!(
+                                        "{layer_name}: {lost} features couldn't be converted to longitude/latitude and have no geometry"
+                                    ));
+                                }
+                            }
+                            // Not held in a system it can't be converted from: kept as read, and said.
+                            Err(e) => messages.push(format!(
+                                "{layer_name}: its {} features are in {}, which can't be converted to longitude/latitude ({e}); they are kept as read and draw off the map",
+                                ds.features.len(),
+                                job.crs.label()
+                            )),
                         }
                     }
                     Some(if ds.features.iter().all(|f| f.geometry.is_none()) { OutputLayer::Table(ds) } else { OutputLayer::Vector(ds) })

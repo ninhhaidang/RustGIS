@@ -1397,7 +1397,7 @@ fn streamed_inputs(
 /// The layers a tool reads, in longitude/latitude, the space analysis tools work in
 /// ([`Inputs::dataset`]): those read whole (streamed layers, files) converted where they are, and
 /// a converted copy of each other layer it names whose coordinates are in another system. Nothing
-/// is copied while every dataset is in longitude/latitude, as every one is today.
+/// is copied for a layer held in longitude/latitude.
 fn lonlat_inputs(
     map: &rustgis_map::Map,
     spec: Option<&rustgis_analysis::ToolSpec>,

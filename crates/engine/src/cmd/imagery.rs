@@ -1054,7 +1054,12 @@ fn zone_rings(s: &Session, z: &str) -> Result<Vec<Vec<Coord>>, String> {
         return Err("the zone has no polygon".into());
     };
     // In longitude/latitude, whatever system the layer holds its coordinates in.
-    let Geometry::Polygon(polys) = &*l.dataset.geometry_to_lonlat(g).map_err(|e| format!("{z}: {e}"))? else {
+    let Geometry::Polygon(polys) = &*l
+        .dataset
+        .lonlat_conversion()
+        .and_then(|to| rustgis_data::Dataset::geometry_to_lonlat_by(&to, g))
+        .map_err(|e| format!("{z}: {e}"))?
+    else {
         return Err("the zone has no polygon".into());
     };
     polys.first().cloned().ok_or_else(|| "the zone has no polygon".into())

@@ -81,11 +81,33 @@ impl<'a> Chunker<'a> {
     }
 }
 
-/// A streamed row kept for a copy clipped to `extent`: `None` when it has no shape or its shape's
-/// extent misses `extent`, else the row with exactly `width` values (cut, or padded with nulls)
-/// and the heap bytes it holds. Fails, rather than aborting, when the values can't be allocated.
-pub fn clip_row(mut row: Feature, extent: &Extent, width: usize) -> Result<Option<(Feature, usize)>, DataError> {
-    if row.geometry.as_ref().is_none_or(|g| !g.extent().intersects(extent)) {
+/// A streamed row kept for a copy clipped to `extent` (in longitude/latitude): `None` when it has
+/// no shape or its shape's extent there misses `extent`, else the row with exactly `width` values
+/// (cut, or padded with nulls) and the heap bytes it holds. `to_lonlat` takes the row's shape from
+/// the system its source gives it in ([`super::FeatureSource::coord_crs`]) to longitude/latitude,
+/// where its extent is compared; the row is kept in its own. Fails, rather than aborting, when the
+/// values can't be allocated.
+pub fn clip_row(
+    mut row: Feature,
+    extent: &Extent,
+    width: usize,
+    to_lonlat: &crate::raster::Reprojection,
+) -> Result<Option<(Feature, usize)>, DataError> {
+    // A place at a time, without a converted copy of the shape; one that can't be converted is
+    // left out of the extent, as a converted copy's missing place is.
+    let lonlat = |g: &crate::Geometry| {
+        if to_lonlat.is_identity() {
+            return g.extent();
+        }
+        let mut e = Extent::EMPTY;
+        g.for_each_coord(|c| {
+            if let Some(m) = to_lonlat.point(c) {
+                e.expand(m);
+            }
+        });
+        e
+    };
+    if row.geometry.as_ref().is_none_or(|g| !lonlat(g).intersects(extent)) {
         return Ok(None);
     }
     row.attrs.truncate(width);

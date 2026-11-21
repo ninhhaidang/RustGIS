@@ -98,6 +98,8 @@ fn bare(layer: &Layer) -> Layer {
         projected_crs,
         lonlat,
         unplaced: _,
+        flat_unplaced: _,
+        extent_cache: _,
         drawn: _,
         view_memory: _,
         geometry_kinds: _,
@@ -172,7 +174,9 @@ fn bare(layer: &Layer) -> Layer {
         projected_crs: *projected_crs,
         lonlat: lonlat.clone(),
         unplaced: Default::default(),
-        drawn: false,
+        flat_unplaced: Default::default(),
+        extent_cache: Default::default(),
+        drawn: Default::default(),
         view_memory: Default::default(),
         geometry_kinds: Default::default(),
         geometry_rev: *geometry_rev,
@@ -268,6 +272,8 @@ impl LayerLook {
             lonlat: _,
             // What the last drawing counted and whether it drew the layer; neither is the look.
             unplaced: _,
+            flat_unplaced: _,
+            extent_cache: _,
             drawn: _,
             view_memory: _,
             geometry_kinds: _,
@@ -329,7 +335,7 @@ fn same_time(a: Option<&crate::time::TimeBinding>, b: Option<&crate::time::TimeB
 
 /// Whether two datasets hold what a frame draws alike, their rows aside (compared by allocation).
 fn same_dataset(a: &Dataset, b: &Dataset) -> bool {
-    let Dataset { name, geometry_type, fields, features: _, source, crs, crs_incomplete, zm_dropped, windowed, held_in } = a;
+    let Dataset { name, geometry_type, fields, features: _, source, crs, crs_incomplete, zm_dropped, windowed, held_in, shown_in } = a;
     *name == b.name
         && *geometry_type == b.geometry_type
         && *fields == b.fields
@@ -339,6 +345,8 @@ fn same_dataset(a: &Dataset, b: &Dataset) -> bool {
         && *zm_dropped == b.zm_dropped
         && *windowed == b.windowed
         && *held_in == b.held_in
+        // Labels' lines, terrain water and block walls read its places as its map shows them.
+        && *shown_in == b.shown_in
 }
 
 /// Whether two layer groups apply alike to their layers: whether the Layers pane shows a group

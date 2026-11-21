@@ -971,7 +971,7 @@ impl SqlServerSource {
     /// RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
     fn row_feature(&self, r: &Row, unread: &mut Vec<usize>) -> Option<Feature> {
         let id = id_of(at(r, 0))?;
-        let geometry: Geometry = self.reproject.geometry(wkb::decode(bytes_of(at(r, 1))?)?)?;
+        let geometry: Geometry = self.reproject.to_lonlat_geometry(wkb::decode(bytes_of(at(r, 1))?)?)?;
         let attrs = self.info.fields.iter().enumerate().map(|(k, f)| attr_of(f.ty, at(r, k + 2), unread, k)).collect();
         Some(Feature { id, geometry: Some(geometry), attrs })
     }

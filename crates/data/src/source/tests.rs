@@ -1,4 +1,5 @@
 use super::*;
+use crate::raster::Crs;
 use crate::raster::wkt::tests::{PlacementCase, metres_apart, placement_cases};
 use crate::{Dataset, Field, FieldType, Geometry, Value, wkb};
 use rustgis_geom::{Coord, lonlat_to_merc};
@@ -75,7 +76,7 @@ fn explicit_method_1028_warns_for_known_geopackage_authorities() {
                 "{notes:?}"
             );
             let point = Geometry::Point(Coord::new(0.0, 4_984_944.377_977_743));
-            let Geometry::Point(at) = read.geometry(point).unwrap() else { panic!("not a point") };
+            let Geometry::Point(at) = read.to_lonlat_geometry(point).unwrap() else { panic!("not a point") };
             assert!(at.x.abs() < 1e-9 && (at.y - 45.0).abs() < 1e-9, "{at:?}");
         }
     }
@@ -132,7 +133,7 @@ fn a_geopackage_row_read_by_its_code_says_its_definitions_grid() {
         };
         let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
         assert_eq!(notes, if notice { vec![said] } else { vec![] }, "{definition}");
-        let Geometry::Point(at) = read.geometry(Geometry::Point(xy)).unwrap() else { panic!("not a point") };
+        let Geometry::Point(at) = read.to_lonlat_geometry(Geometry::Point(xy)).unwrap() else { panic!("not a point") };
         assert!((at.x - by_code.x).abs() < 1e-9 && (at.y - by_code.y).abs() < 1e-9, "{at:?} {by_code:?}");
     }
 }
@@ -162,7 +163,7 @@ fn a_geopackage_rows_code_gives_way_to_its_definitions_shift() {
         (read, notes)
     };
     // Where a reading puts `xy`, and where a `.prj` of `wkt` would.
-    let at = |r: &Reproject, xy: Coord| match r.geometry(Geometry::Point(xy)) {
+    let at = |r: &Reproject, xy: Coord| match r.to_lonlat_geometry(Geometry::Point(xy)) {
         Some(Geometry::Point(c)) => c,
         g => panic!("{g:?}"),
     };
@@ -590,6 +591,21 @@ fn write_gpkg(path: &Path, rtree: bool) {
     tx.commit().unwrap();
 }
 
+/// A read's features in longitude/latitude, from the system the source gives them in
+/// ([`FeatureSource::coord_crs`]), for a test to say where they are.
+fn in_lonlat(src: &dyn FeatureSource, mut batch: Batch) -> Batch {
+    for f in &mut batch.features {
+        f.geometry = lonlat_of(src, f.geometry.take());
+    }
+    batch
+}
+
+/// A geometry a source gave, in longitude/latitude ([`in_lonlat`]).
+fn lonlat_of(src: &dyn FeatureSource, g: Option<Geometry>) -> Option<Geometry> {
+    let to = src.coord_crs().to(Crs::LonLat).unwrap();
+    g.map(|g| to.geometry(&g))
+}
+
 /// The same checks for every provider.
 fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     let info = src.info();
@@ -601,7 +617,7 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     assert_eq!(info.fields[vi].ty, FieldType::Integer);
 
     // Everything.
-    let all = src.read(&Request::all()).unwrap();
+    let all = in_lonlat(src, src.read(&Request::all()).unwrap());
     assert_eq!(all.features.len(), 600, "{}", info.format);
     assert!(all.complete);
     let f = all.features.iter().find(|f| f.attrs.contains(&Value::Text("p3_4".into()))).unwrap();
@@ -612,13 +628,13 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     assert!((c.x - (-138.0)).abs() < 1e-4 && (c.y - (-44.0)).abs() < 1e-4, "{c:?} in {}", info.format);
     assert_eq!(f.attrs[vi], Value::Int(64));
     // Ids stay put between reads.
-    let near = src.read(&Request { extent: Some(Extent::new(-140.0, -46.0, -130.0, -40.0)), limit: 100 }).unwrap();
+    let near = in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-140.0, -46.0, -130.0, -40.0)), limit: 100 }).unwrap());
     let g = near.features.iter().find(|g| g.attrs.contains(&Value::Text("p3_4".into()))).unwrap();
     assert_eq!(g.id, f.id, "{}", info.format);
 
     // An extent: exactly the points in it.
     let e = Extent::new(-60.0, -10.0, 40.0, 50.0);
-    let got = src.read(&Request { extent: Some(e), limit: 10_000 }).unwrap();
+    let got = in_lonlat(src, src.read(&Request { extent: Some(e), limit: 10_000 }).unwrap());
     assert_eq!(got.features.len(), in_box(&e), "{}", info.format);
     assert!(got.complete);
     assert!(got.features.iter().all(|f| f.geometry.as_ref().is_some_and(|g| e.contains(g.extent().center()))));
@@ -630,7 +646,7 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     }
 
     // A limit: a sample spread over the whole extent, not the first rows.
-    let s = src.read(&Request { extent: None, limit: 60 }).unwrap();
+    let s = in_lonlat(src, src.read(&Request { extent: None, limit: 60 }).unwrap());
     assert!(!s.complete);
     assert!(s.features.len() <= 60 && s.features.len() >= 50, "{} of {}", s.features.len(), info.format);
     let xs: Vec<f64> = s.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.extent().min_x).collect();
@@ -638,7 +654,7 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     assert!(s.matched >= 600);
 
     // An extent outside the data.
-    let none = src.read(&Request { extent: Some(Extent::new(-179.9, 80.0, -179.0, 84.0)), limit: 100 }).unwrap();
+    let none = in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-179.9, 80.0, -179.0, 84.0)), limit: 100 }).unwrap());
     assert!(none.features.is_empty());
 
     // A whole read into a dataset.
@@ -1140,7 +1156,7 @@ fn custom_srs_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
         .into_iter()
         .map(|src| {
             let batch = src.read(&Request::all()).unwrap();
-            (batch.features.first().and_then(|f| f.geometry.clone()), src.info().notes.clone())
+            (lonlat_of(src, batch.features.first().and_then(|f| f.geometry.clone())), src.info().notes.clone())
         })
         .collect()
 }
@@ -1315,10 +1331,12 @@ fn placement_cases_are_placed_from_a_prj_a_geopackage_and_a_flatgeobuf() {
         write_shapefile(&ds, &p);
         std::fs::write(p.with_extension("prj"), &wkt).unwrap();
         let src = open_path(&p, None).unwrap();
-        let read = src.read(&Request::all()).unwrap();
+        let read = in_lonlat(src.as_ref(), src.read(&Request::all()).unwrap());
         assert_placed(what, read.features.first().and_then(|f| f.geometry.as_ref()), lonlat);
         assert!(src.info().notes.is_empty(), "{what}: {:?}", src.info().notes);
         let (whole, report) = crate::io::read_path(&p).unwrap();
+        // Held as the file holds it, in the system its `.prj` gives.
+        let whole = whole.in_lonlat().unwrap();
         assert_placed(what, whole.features.first().and_then(|f| f.geometry.as_ref()), lonlat);
         assert!(report.messages.is_empty(), "{what}: {:?}", report.messages);
 
@@ -1361,7 +1379,7 @@ fn fgb_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
         .into_iter()
         .map(|src| {
             let batch = src.read(&Request::all()).unwrap();
-            (batch.features.first().and_then(|f| f.geometry.clone()), src.info().notes.clone())
+            (lonlat_of(src.as_ref(), batch.features.first().and_then(|f| f.geometry.clone())), src.info().notes.clone())
         })
         .collect()
 }
@@ -1530,7 +1548,7 @@ fn a_geopackage_definitions_shift_places_points_as_a_prj_does() {
         std::fs::write(p.with_extension("prj"), prj).unwrap();
         let src = open_path(&p, None).unwrap();
         assert!(src.info().notes.is_empty(), "{name}: {:?}", src.info().notes);
-        match src.read(&Request::all()).unwrap().features.first().and_then(|f| f.geometry.clone()) {
+        match lonlat_of(src.as_ref(), src.read(&Request::all()).unwrap().features.first().and_then(|f| f.geometry.clone())) {
             Some(Geometry::Point(c)) => c,
             g => panic!("{name}: {g:?}"),
         }
@@ -2442,7 +2460,7 @@ fn shapefile_in_place_reprojects_from_its_prj() {
     assert!((e.min_x - 2.335).abs() < 1e-6 && (e.min_y - 48.855).abs() < 1e-6, "{e:?}");
     assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
     // A longitude/latitude extent finds it; one beside it doesn't.
-    let near = src.read(&Request { extent: Some(Extent::new(2.0, 48.5, 2.5, 49.0)), limit: 10 }).unwrap();
+    let near = in_lonlat(src.as_ref(), src.read(&Request { extent: Some(Extent::new(2.0, 48.5, 2.5, 49.0)), limit: 10 }).unwrap());
     let c = near.features.first().and_then(|f| f.geometry.as_ref()).and_then(Geometry::label_point).unwrap();
     assert!((c.x - 2.335).abs() < 1e-6 && (c.y - 48.855).abs() < 1e-6, "{c:?}");
     assert!(src.read(&Request { extent: Some(Extent::new(3.0, 48.5, 3.5, 49.0)), limit: 10 }).unwrap().features.is_empty());
@@ -2696,12 +2714,15 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
         let strip = |m: &Vec<String>| m.iter().map(|m| m.trim_start_matches("x: ").to_string()).collect::<Vec<_>>();
         assert_eq!(strip(&report.messages), strip(&in_report.messages), "{file}");
         // The extent a source says is that of the features it reads (those that convert).
-        assert_eq!(src.info().extent, whole.extent(), "{file}");
+        assert_eq!(src.info().extent, whole.lonlat_extent(), "{file}");
+        assert_eq!(inplace.held_in, whole.held_in, "{file}");
         assert_eq!(src.info().count, Some(whole.features.len() as u64), "{file}");
         assert_eq!(src.info().coordinate_system(), whole.crs, "{file}");
     }
     let src = geojson::GeoJsonSource::open_with(&p, "x", crate::io::BYTES_FLOOR).unwrap();
-    (whole, report.messages, src.info().crs.clone())
+    // In longitude/latitude, for the tests to say where its features are: it holds them in its
+    // declared system, as the file does.
+    (whole.in_lonlat().unwrap().into_owned(), report.messages, src.info().crs.clone())
 }
 
 fn in_arnhem(e: &Extent) -> bool {
@@ -4478,7 +4499,7 @@ fn a_view_its_system_cant_bound_reads_what_is_in_view() {
                 assert_eq!(probe.done.load(std::sync::atomic::Ordering::Relaxed), 0, "{ext}");
             }
             for limit in [10, 2201] {
-                let read = source.read(&Request { extent: Some(view), limit }).unwrap();
+                let read = in_lonlat(source, source.read(&Request { extent: Some(view), limit }).unwrap());
                 assert_eq!(read.matched, 200, "{ext}: count only view matches before sampling");
                 if limit == 10 {
                     // Adaptive sampling keeps between half the limit and the limit.

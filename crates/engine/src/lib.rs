@@ -852,10 +852,10 @@ pub struct Session {
     pub(crate) crs_used_elsewhere: Vec<(String, String)>,
     /// When the frame path last looked for missing datum grids ([`Session::say_grid_notes`]).
     grid_notes_checked: Option<web_time::Instant>,
-    /// Each layer held in another system (by instance) and the geometry revision and system whose
-    /// places were last counted for [`Session::say_unplaced`], so a version of a layer is looked at
-    /// once.
-    unplaced_checked: std::collections::HashMap<u64, (u64, rustgis_data::raster::Crs)>,
+    /// Each layer held in another system (by instance): the geometry revision and system whose
+    /// places were last counted for [`Session::say_unplaced`], and the most it said of them, so a
+    /// version of a layer is said once, and again only for a count above it.
+    unplaced_checked: std::collections::HashMap<u64, (u64, rustgis_data::raster::Crs, Result<usize, String>)>,
     /// The datum grids the map's layers were last projected with
     /// ([`rustgis_data::raster::crs::grid_generation`]).
     grid_generation: u64,
@@ -1705,7 +1705,14 @@ impl Session {
     pub fn run(&mut self, id: &str, params: &Value) -> CmdResult {
         self.command_epilogue(id, params, |s| {
             let native_maintenance = s.depth == 0 && s.policy_ingress_idle();
+            // Before every command, a script's or task's too: one before it in the same script may
+            // have changed a map's projection.
+            s.note_shown_systems();
             let result = s.run_command(id, params);
+            // A command may change a map's projection, or add layers to it.
+            if s.depth == 0 {
+                s.note_shown_systems();
+            }
             // Native sessions without a drawing loop recover their own failed overviews.
             // Named callers and sealed completions do not initiate unrelated maintenance.
             if native_maintenance && s.read_in_place_again() {
@@ -3070,14 +3077,24 @@ impl Session {
         }
     }
 
-    /// Says, once for each version of a layer's geometry, that a layer held in another system
-    /// has features with a place that can't be given in longitude/latitude, which the map and
-    /// the globe draw from: they draw such a feature without that place (a line broken there, a
-    /// point not at all), and labels' lines, block diagrams and terrain water leave it out. Or
-    /// that none of the layer is drawn, when its system can't be converted. The map counts them
-    /// as it converts the layer for drawing ([`rustgis_map::Layer::unplaced`]), so it costs
-    /// nothing more, and it is said once the layer was drawn. Layers in longitude/latitude, every
-    /// layer read today, have nothing to say.
+    /// Tells every map's layers the system their map draws them straight into
+    /// ([`rustgis_map::Map::note_shown_system`]): before and after each command, and each frame
+    /// of the app, which also covers layers landing from a background read.
+    pub fn note_shown_systems(&mut self) {
+        for m in &mut self.project.maps {
+            m.note_shown_system();
+        }
+    }
+
+    /// Says, once for each version of a layer's geometry (and again for a larger count, as when the
+    /// globe leaves out what a map in the layer's own system drew), that a layer held in another
+    /// system has features with a place that can't be given in longitude/latitude, which the map
+    /// and the globe draw from: they draw such a feature without that place (a line broken there, a
+    /// point not at all), and labels' lines, block diagrams and terrain water leave it out. Or that
+    /// none of the layer is drawn, when its system can't be converted. The map counts them as it
+    /// converts the layer for drawing ([`rustgis_map::Layer::unplaced`]), so it costs nothing more,
+    /// and it is said once the layer was drawn. Layers in longitude/latitude, every layer read
+    /// today, have nothing to say.
     fn say_unplaced(&mut self) {
         // One notice per kind, with the count and the layers it is about.
         let (mut features, mut partly, mut undrawn) = (0usize, Vec::new(), Vec::new());
@@ -3086,9 +3103,20 @@ impl Session {
             for l in map.layers.iter().filter(|l| !l.is_raster() && l.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat) {
                 seen.insert(l.instance_id());
                 let Some(count) = l.unplaced() else { continue };
-                let version = (l.geometry_rev(), l.dataset.coord_crs());
-                if self.unplaced_checked.insert(l.instance_id(), version) == Some(version) {
-                    continue;
+                // Said again at the same version only for a larger count: a drawing that leaves out
+                // what an earlier one drew (the globe after the layer's own system), not each time
+                // a map's projection goes back to one already said.
+                let (rev, crs) = (l.geometry_rev(), l.dataset.coord_crs());
+                let above = |said: &Result<usize, String>| match (count, said) {
+                    (Err(_), Ok(_)) => true,
+                    (Ok(n), Ok(m)) => n > m,
+                    _ => false,
+                };
+                match self.unplaced_checked.get(&l.instance_id()) {
+                    Some((r, c, said)) if (*r, *c) == (rev, crs) && !above(said) => continue,
+                    _ => {
+                        self.unplaced_checked.insert(l.instance_id(), (rev, crs, count.clone()));
+                    }
                 }
                 let named = format!("map '{}', layer '{}'", map.name, l.name);
                 match count {

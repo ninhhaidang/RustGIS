@@ -127,6 +127,10 @@ const GRAPH_CACHE_BYTES: usize = 256 << 20;
 
 struct CachedNetwork {
     features: Weak<Vec<Feature>>,
+    /// The system the rows held their coordinates in, and the datum grids there were, when the
+    /// graph was built: a relabel (Define Projection keeps the rows) or a grid downloaded since
+    /// gives another graph from the same rows.
+    held: (rustgis_data::raster::Crs, u64),
     rows: Vec<usize>,
     cost_field: Option<usize>,
     graph: Arc<Network>,
@@ -142,20 +146,36 @@ fn network_for(
     rows: &[usize],
     cost_field: Option<usize>,
 ) -> Result<Arc<Network>, String> {
+    network_keyed(cache, ds, rows, cost_field, || Network::build(ds, rows, cost_field))
+}
+
+/// [`network_for`] kept under `ds`'s rows as it holds them (its system, and the datum grids
+/// there are), the rows the graph stands for, and built by `build` only when the one kept isn't
+/// theirs.
+fn network_keyed(
+    cache: &Mutex<Option<CachedNetwork>>,
+    ds: &Dataset,
+    rows: &[usize],
+    cost_field: Option<usize>,
+    build: impl FnOnce() -> Result<Network, String>,
+) -> Result<Arc<Network>, String> {
     crate::control::check()?;
     let features = ds.features.allocation_key();
+    let held = (ds.coord_crs(), rustgis_data::raster::crs::grid_generation());
     {
         let cached = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cached) = cached.as_ref().filter(|c| c.features.ptr_eq(&features) && c.rows == rows && c.cost_field == cost_field) {
+        if let Some(cached) =
+            cached.as_ref().filter(|c| c.features.ptr_eq(&features) && c.held == held && c.rows == rows && c.cost_field == cost_field)
+        {
             return Ok(cached.graph.clone());
         }
     }
     // Build outside the lock: another run can check Cancel while this one builds its graph.
-    let graph = Arc::new(Network::build(ds, rows, cost_field)?);
+    let graph = Arc::new(build()?);
     let bytes = graph.bytes().saturating_add(rows.len().saturating_mul(size_of::<usize>()));
     crate::control::check()?;
     let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
-    *cached = (bytes <= GRAPH_CACHE_BYTES).then(|| CachedNetwork { features, rows: rows.to_vec(), cost_field, graph: graph.clone() });
+    *cached = (bytes <= GRAPH_CACHE_BYTES).then(|| CachedNetwork { features, held, rows: rows.to_vec(), cost_field, graph: graph.clone() });
     Ok(graph)
 }
 
@@ -185,6 +205,35 @@ pub fn shortest_route(
     shortest_route_with(&NETWORK, ds, rows, from, to, cost_field, snap_m)
 }
 
+/// [`shortest_route`] over `held`, a layer held in another system than longitude/latitude: the
+/// graph is built from `lonlat`, the layer in longitude/latitude, only when the one kept isn't
+/// for `held`'s rows as they are, and is kept under them. Later routes over the same layer then
+/// reuse it without converting the layer again; the converted copy isn't kept.
+pub fn shortest_route_held<'a>(
+    held: &Dataset,
+    lonlat: impl FnOnce() -> Result<std::borrow::Cow<'a, Dataset>, String>,
+    rows: &[usize],
+    from: Coord,
+    to: Coord,
+    cost_field: Option<usize>,
+    snap_m: f64,
+) -> Result<Route, String> {
+    check_route_ends(from, to, snap_m)?;
+    let graph = network_keyed(&NETWORK, held, rows, cost_field, || Network::build(&*lonlat()?, rows, cost_field))?;
+    route_on(&graph, held, from, to, snap_m)
+}
+
+/// Refuses a snap distance or route end a route can't be found from.
+fn check_route_ends(from: Coord, to: Coord, snap_m: f64) -> Result<(), String> {
+    if !snap_m.is_finite() {
+        return Err("the snap distance must be finite".into());
+    }
+    if [from, to].iter().any(|c| !c.is_finite() || c.y.abs() > 90.0) {
+        return Err("a route end has invalid coordinates".into());
+    }
+    Ok(())
+}
+
 /// Keeps endpoint validation, graph reuse and search on the same path for any cache owner.
 fn shortest_route_with(
     cache: &Mutex<Option<CachedNetwork>>,
@@ -195,12 +244,7 @@ fn shortest_route_with(
     cost_field: Option<usize>,
     snap_m: f64,
 ) -> Result<Route, String> {
-    if !snap_m.is_finite() {
-        return Err("the snap distance must be finite".into());
-    }
-    if [from, to].iter().any(|c| !c.is_finite() || c.y.abs() > 90.0) {
-        return Err("a route end has invalid coordinates".into());
-    }
+    check_route_ends(from, to, snap_m)?;
     let graph = network_for(cache, ds, rows, cost_field)?;
     route_on(&graph, ds, from, to, snap_m)
 }

@@ -500,7 +500,7 @@ fn units(layer: &rustgis_map::Layer, b: &Block, water: bool, env: &rustgis_data:
     let (mut parts, mut ids): (Vec<Part>, Vec<(usize, usize)>) = (Vec::new(), Vec::new());
     // Its conversion to longitude/latitude, made once for its polygons (none: a system that can't
     // be converted, of which the map draws nothing either).
-    let to = layer.dataset.lonlat_conversion().ok();
+    let to = layer.dataset.shown_conversion().ok();
     for (row, ft) in layer.dataset.features.iter().enumerate() {
         if keep.as_ref().is_some_and(|k| !k.get(row).copied().unwrap_or(false)) {
             continue;
@@ -642,7 +642,7 @@ pub(crate) fn water_runs(map: &Map, b: &Block, ground: &Ground, res: f64, scale:
     // each crossing few of them).
     let mut near_box: std::collections::HashMap<usize, Vec<(Coord, Coord)>> = std::collections::HashMap::new();
     // The layer's conversion to longitude/latitude, as the cut's parts were read (`units`).
-    let to = layer.dataset.lonlat_conversion().ok();
+    let to = layer.dataset.shown_conversion().ok();
     for (i, runs) in out.iter_mut().enumerate() {
         let (side, _, _) = b.side(i);
         let Some(units) = cut.units.get(i) else { continue };

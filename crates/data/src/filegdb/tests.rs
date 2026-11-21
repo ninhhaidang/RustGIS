@@ -895,6 +895,7 @@ fn placement_cases_are_placed() {
         let layers = read_files(&files).unwrap();
         let (ds, report) = &layers[0];
         assert!(report.messages.is_empty(), "{what}: {:?}", report.messages);
+        let ds = ds.in_lonlat().unwrap().into_owned();
         let Some(Geometry::Polygon(p)) = &ds.features[0].geometry else { panic!("{what}: {:?}", ds.features[0].geometry) };
         // The corner at the point (stored to the millimetre) is within a centimetre of it.
         let off = p[0][0].iter().map(|c| metres_apart(*c, lonlat)).fold(f64::INFINITY, f64::min);

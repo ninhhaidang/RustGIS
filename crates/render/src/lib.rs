@@ -2314,6 +2314,8 @@ fn render_pass(
             layer.selection = features.iter().enumerate().filter_map(|(r, f)| ids.contains(&f.id).then_some(r)).collect();
             layer.source = None;
             layer.dataset.features = features.into();
+            // Held as the source gives them, in its own system.
+            layer.dataset.held_in = source.coord_crs();
             layer.clear_cache();
             layer.touch_geometry();
         }
@@ -3681,7 +3683,9 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
     let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
     let (flat, key) = (map.flat(), map.projection.code());
     let cull = view.camera.extent(view.width, view.height).padded(margin.clamp(CULL_MARGIN, 4.0), 0.0);
-    let clip = map.view.clip_distance.map(|d| (view.camera.center_lonlat(), d));
+    // The view's centre in longitude/latitude from the map's own coordinates (Web Mercator or
+    // the map's system); none, so nothing is clipped, where the projection has no place there.
+    let clip = map.view.clip_distance.and_then(|d| Some((map.to_lonlat(view.camera.center)?, d)));
     let held = map.held_by_group(scale);
     let group_opacity = map.group_opacities();
     let upright: std::collections::HashSet<u32> = map.layers.iter().filter(|l| stands_up(map, l)).map(|l| l.id).collect();
@@ -3718,7 +3722,7 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
             };
             let lonlat = clip.and_then(|_| {
                 let own = layer.dataset.features.get(row).and_then(|f| f.geometry.as_ref())?.extent();
-                Some(to_lonlat.as_ref().map_or(rustgis_geom::Extent::EMPTY, |t| t.extent(&own)))
+                Some(to_lonlat.as_ref().map_or(rustgis_geom::Extent::EMPTY, |t| t.feature_extent(&own)))
             });
             if let (Some((centre, d)), Some(e)) = (clip, lonlat) {
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
@@ -4093,7 +4097,7 @@ pub(crate) fn within_view_distance(rows: &mut [bool], dataset: &rustgis_data::Da
                 .features
                 .get(r)
                 .and_then(|f| f.geometry.as_ref())
-                .and_then(|g| to.as_ref().map(|t| t.extent(&g.extent())))
+                .and_then(|g| to.as_ref().map(|t| t.feature_extent(&g.extent())))
                 .filter(|e| !e.is_empty());
             *keep = e.is_some_and(|e| {
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
@@ -4532,7 +4536,9 @@ fn render_frame(
     // Of those held in another system, the ids, noted read once a label is squared to them.
     let mut square_held = std::collections::HashMap::new();
     let square_lines = square_lines(map, &ctx, &flat, &mut square_held);
-    let clip = map.view.clip_distance.map(|d| (view.camera.center_lonlat(), d));
+    // The view's centre in longitude/latitude from the map's own coordinates (Web Mercator or
+    // the map's system); none, so nothing is clipped, where the projection has no place there.
+    let clip = map.view.clip_distance.and_then(|d| Some((map.to_lonlat(view.camera.center)?, d)));
     // Each layer group's visibility, scale range and transparency apply to its layers, its
     // subgroups' too (#413, #836).
     let held = map.held_by_group(scale);
@@ -4747,11 +4753,20 @@ fn render_frame(
         {
             let result = owner.cached_thinning(&key, level, || {
                 let (mut eligible, mut all, mut kept) = (0usize, 0usize, 0usize);
+                // Its features come in the source's own system: drawn as the map draws a layer
+                // held there.
+                let crs = source.coord_crs();
+                let held = (crs != rustgis_data::raster::Crs::LonLat).then(|| flat.held(crs).ok()).flatten();
                 visit_complete(source.as_ref(), &mut |features| {
                     for feature in features {
                         if let Some(g) = feature.geometry {
                             let tolerance = rustgis_map::lod::tolerance(level);
-                            let (counted, thinned) = if matches!(flat, rustgis_map::projection::Flat::Mercator) {
+                            let (counted, thinned) = if crs != rustgis_data::raster::Crs::LonLat {
+                                let Some(held) = &held else { continue };
+                                let projected = held.geometry(&g).0;
+                                let thinned = rustgis_map::lod::thin(&projected, tolerance);
+                                (projected, thinned)
+                            } else if matches!(flat, rustgis_map::projection::Flat::Mercator) {
                                 let thinned = rustgis_map::lod::project_thinned(&g, &flat, tolerance);
                                 (g, thinned)
                             } else {
@@ -4899,7 +4914,9 @@ fn render_frame(
             // extrusion keep `geoms`, the full geometry, for their exact positions.
             let chunk_thinned: Vec<Option<Geometry>> = if thin_complete && !display_only {
                 let tolerance = rustgis_map::lod::level(thin_tol).map_or(thin_tol, rustgis_map::lod::tolerance);
-                if matches!(flat, rustgis_map::projection::Flat::Mercator) {
+                // Projected and thinned at once from longitude/latitude rows; from any other
+                // system, the projected geometry is thinned.
+                if matches!(flat, rustgis_map::projection::Flat::Mercator) && ds_ptr.coord_crs() == rustgis_data::raster::Crs::LonLat {
                     ds_ptr
                         .features
                         .iter()
@@ -5835,6 +5852,8 @@ fn render_frame(
         if let Some(source) = source {
             let mut chunk = layer.clone();
             chunk.source = None;
+            // Its chunks come in the source's own system.
+            chunk.dataset.held_in = source.coord_crs();
             chunk.clear_cache();
             chunk.dataset.features = Vec::new().into();
             // All coordinates are read here: filtering only to the viewport can change labels,
@@ -6159,10 +6178,26 @@ fn layer_masks(
                         }
                     };
                     if let Some(source) = map.layers.get(mi).and_then(|l| l.source.as_ref()).and_then(|s| s.chunk_source()) {
+                        // Its features come in the source's own system: in longitude/latitude for
+                        // the globe, as the map draws them on a flat map.
+                        let crs = source.coord_crs();
+                        let to_lonlat = crs.to(rustgis_data::raster::Crs::LonLat).ok();
+                        let held = flat.held(crs).ok();
                         let result = visit_complete(source.as_ref(), &mut |features| {
                             for feature in features {
                                 if let Some(g) = feature.geometry {
-                                    let g = if ctx.globe.is_some() { g } else { flat.project(&g) };
+                                    let g = match (ctx.globe.is_some(), crs == rustgis_data::raster::Crs::LonLat) {
+                                        (true, true) => g,
+                                        (true, false) => match &to_lonlat {
+                                            Some(to) => to.geometry(&g),
+                                            None => continue,
+                                        },
+                                        (false, true) => flat.project(&g),
+                                        (false, false) => match &held {
+                                            Some(held) => held.geometry(&g).0,
+                                            None => continue,
+                                        },
+                                    };
                                     add(&g);
                                 }
                             }
@@ -6495,6 +6530,8 @@ fn render_globe_drape_drawn(map: &mut Map, view: &View, boxes: &[Extent], max_si
     }
     let max_side = f64::from(max_side.clamp(64, 8192));
     let projection = std::mem::replace(&mut map.projection, rustgis_map::Projection::WebMercator);
+    // Edits' and labels' places shown as these patches draw them, through longitude/latitude.
+    map.note_shown_system();
     let (display, lock) = (map.label_display, map.label_lock.take());
     let anchors = std::mem::take(&mut map.label_lock_line_anchors);
     map.label_display.paused = true;
@@ -6522,6 +6559,7 @@ fn render_globe_drape_drawn(map: &mut Map, view: &View, boxes: &[Extent], max_si
         }
     }
     map.projection = projection;
+    map.note_shown_system();
     map.label_display = display;
     map.label_lock = lock;
     map.label_lock_line_anchors = anchors;
@@ -6696,7 +6734,7 @@ fn square_lines(
         // Read in longitude/latitude, whatever system the layer holds its coordinates in; a
         // feature that can't be given there squares nothing (nor any, in a system that can't be
         // converted), as the map draws none of it.
-        let Ok(to) = layer.dataset.lonlat_conversion() else { continue };
+        let Ok(to) = layer.dataset.shown_conversion() else { continue };
         for g in layer.dataset.features.iter().filter_map(|f| rustgis_data::Dataset::converted_to_lonlat(&to, f.geometry.as_ref()?)) {
             let (parts, rings): (Vec<&Vec<Coord>>, bool) = match &*g {
                 Geometry::Line(parts) => (parts.iter().collect(), false),

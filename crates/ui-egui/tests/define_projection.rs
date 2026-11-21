@@ -52,7 +52,12 @@ fn dialog_applies_to_captured_layer_and_undo_restores_native_coordinates() {
     h.step();
     assert!(h.state().dialogs.open.is_none());
     let point = |app: &RustGisApp, name: &str| {
-        app.session.map().layer_by_name(name).unwrap().dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap()
+        app.session.map().layer_by_name(name).unwrap().dataset.in_lonlat().unwrap().features[0]
+            .geometry
+            .as_ref()
+            .unwrap()
+            .label_point()
+            .unwrap()
     };
     assert!((point(h.state(), "Parcels").x - 2.335).abs() < 1e-6);
     assert_eq!(point(h.state(), "Other").x, 451_219.33);
@@ -83,12 +88,23 @@ fn import_dialog_passes_crs_to_browser_upload_before_wrong_prj_is_read() {
     let ordinary = h.state_mut().open_picked("ordinary.zip", &bytes).unwrap();
     let ordinary_id = ordinary["layer"].as_u64().unwrap() as u32;
     assert_eq!(
-        h.state().session.map().layer(ordinary_id).unwrap().dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap().x,
+        h.state().session.map().layer(ordinary_id).unwrap().dataset.in_lonlat().unwrap().features[0]
+            .geometry
+            .as_ref()
+            .unwrap()
+            .label_point()
+            .unwrap()
+            .x,
         451_219.33
     );
     let result = h.state_mut().open_picked(&format!("{}parcels.zip", rustgis_ui_egui::SHAPEFILE_PICK), &bytes).unwrap();
     let id = result["layer"].as_u64().unwrap() as u32;
-    let point = h.state().session.map().layer(id).unwrap().dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap();
+    let point = h.state().session.map().layer(id).unwrap().dataset.in_lonlat().unwrap().features[0]
+        .geometry
+        .as_ref()
+        .unwrap()
+        .label_point()
+        .unwrap();
     assert!((point.x - 2.335).abs() < 1e-6, "{point:?}");
     // The browser can return several grouped Shapefiles from one pick.
     let second = h.state_mut().open_picked(&format!("{}another.zip", rustgis_ui_egui::SHAPEFILE_PICK), &bytes).unwrap();
@@ -193,7 +209,7 @@ fn downloaded_shapefile_keeps_the_requested_source_crs() {
         std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the downloaded layer
     }
     let layer = h.state().session.map().layer_by_name("Downloaded").unwrap();
-    let point = layer.dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap();
+    let point = layer.dataset.in_lonlat().unwrap().features[0].geometry.as_ref().unwrap().label_point().unwrap();
     assert!((point.x - 2.335).abs() < 1e-6 && (point.y - 48.855).abs() < 1e-6, "{point:?}");
     assert_eq!(layer.dataset.crs, Some(rustgis_engine::data::raster::Crs::parse("EPSG:32631").unwrap()));
 }

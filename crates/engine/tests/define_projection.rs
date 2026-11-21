@@ -36,7 +36,9 @@ fn upload(s: &mut Session, bytes: &[u8], crs: Option<&str>) -> u32 {
 
 /// Reads the first fixture point without deriving an expected result through a transformer.
 fn point(ds: &Dataset) -> Coord {
-    ds.features[0].geometry.as_ref().unwrap().label_point().unwrap()
+    // In longitude/latitude, from the system the layer holds its coordinates in (the file's own
+    // as it is read, the numbers as they are until a system is defined).
+    ds.in_lonlat().unwrap().features[0].geometry.as_ref().unwrap().label_point().unwrap()
 }
 
 /// Checks the known surveyed coordinate and its attribute survived the public workflow.
@@ -60,7 +62,8 @@ fn missing_prj_layer_command_preserves_native_numbers_and_undoes_as_one_step() {
     assert!(layer.dataset.features[1].geometry.is_none());
     assert!(layer.geometry_rev > before.geometry_rev);
     let exported = io::project(&layer.dataset, Crs::parse("EPSG:32631").unwrap()).unwrap();
-    let c = point(&exported);
+    // The numbers written: the layer's own, held in the system defined.
+    let c = exported.features[0].geometry.as_ref().unwrap().label_point().unwrap();
     assert!((c.x - 451_219.33).abs() < 1e-5 && (c.y - 5_411_550.20).abs() < 1e-5, "{c:?}");
     assert_eq!(io::default_export_crs(&layer.dataset, "shp"), Crs::parse("EPSG:32631").unwrap());
     let saved = s.project.saved_text(None).unwrap().0;

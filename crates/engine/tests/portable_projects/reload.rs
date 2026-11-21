@@ -37,6 +37,8 @@ fn loaded(s: &Session, id: u32) -> Dataset {
 }
 
 fn first_point(ds: &Dataset) -> Coord {
+    // In longitude/latitude, from the system the layer holds its coordinates in.
+    let ds = ds.in_lonlat().unwrap();
     match ds.features[0].geometry.as_ref().unwrap() {
         Geometry::Point(at) => *at,
         other => panic!("expected fixture point, got {other:?}"),

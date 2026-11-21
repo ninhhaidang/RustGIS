@@ -3,6 +3,7 @@
 //! Copied features are held by the session (with their schema) and also returned as GeoJSON, which
 //! the app puts on the system clipboard; paste takes either.
 
+use rustgis_data::raster::Crs;
 use rustgis_data::{Dataset, Feature, FieldType, GeometryType, Value as Attr};
 use serde_json::{Value, json};
 
@@ -66,16 +67,15 @@ fn copy(s: &mut Session) -> CmdResult {
     let id = source(s).ok_or("nothing is selected")?;
     let l = s.map().layer(id).ok_or("no such layer")?;
     let mut data = Dataset::new(l.name.clone(), l.geometry_type(), l.dataset.fields.clone());
-    // In longitude/latitude, from the layer's own coordinates: the clipboard's, and its GeoJSON's.
-    let mut features = Vec::with_capacity(l.selection.len());
-    for r in &l.selection {
-        let Some(f) = l.dataset.features.get(*r) else { continue };
-        let geometry = f.geometry.as_ref().map(|g| l.dataset.geometry_to_lonlat(g).map(std::borrow::Cow::into_owned)).transpose()?;
-        features.push(rustgis_data::Feature { id: f.id, geometry, attrs: f.attrs.clone() });
-    }
-    data.features = features.into();
+    // The clipboard holds them as the layer does, in its system; its GeoJSON is in
+    // longitude/latitude, converted exactly through WGS 84, whatever map they were copied from.
+    data.held_in = l.dataset.coord_crs();
+    data.crs = l.dataset.crs;
+    // What the import lost, Define Projection can't recover in a layer pasted from it either.
+    data.crs_incomplete = l.dataset.crs_incomplete;
+    data.features = l.selection.iter().filter_map(|r| l.dataset.features.get(*r).cloned()).collect::<Vec<_>>().into();
     let n = data.features.len();
-    let text = rustgis_data::io::to_geojson(&data).to_string();
+    let text = rustgis_data::io::to_geojson(&*data.in_lonlat()?).to_string();
     let layer = l.name.clone();
     s.clipboard = Some(Clipboard { data });
     s.notify(format!("Copied {n} features from {layer}"), false);
@@ -98,23 +98,27 @@ fn cut(s: &mut Session, _: &Value) -> CmdResult {
     }
     l.touch_geometry();
     // The archive gets the removed features in the order they were copied, as stored, in the
-    // layer's own coordinates (the clipboard holds them in longitude/latitude).
+    // layer's own coordinates, as the clipboard holds them.
     let removed: Vec<super::design::Change> =
         copied.iter().filter_map(|r| gone.get(r)).map(|f| super::design::Change { before: Some(f.clone()), row: None }).collect();
     super::design::apply(s, id, removed)?;
     Ok(out)
 }
 
-/// The features to paste: GeoJSON text when given, else the clipboard.
-fn clip(s: &Session, p: &Value) -> Result<Dataset, String> {
+/// The features to paste: GeoJSON text when given, with what its reader says it left out, else
+/// the clipboard.
+fn clip(s: &Session, p: &Value) -> Result<(Dataset, Vec<String>), String> {
     match ps(p, "text").map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) if t.len() > MAX_TEXT => Err("the pasted text is too large".into()),
         Some(t) => {
-            let (ds, _) =
+            // Held as the text gives them: in the system a legacy `crs` member names, else in
+            // longitude/latitude.
+            let (ds, report) =
                 rustgis_data::io::read_geojson(t, "Pasted").map_err(|e| format!("the pasted text isn't GeoJSON features: {e}"))?;
-            if ds.features.is_empty() { Err("the pasted text has no features".into()) } else { Ok(ds) }
+            let said = report.into_messages().map(|m| format!("Pasted text: {m}")).collect();
+            if ds.features.is_empty() { Err("the pasted text has no features".into()) } else { Ok((ds, said)) }
         }
-        None => s.clipboard.as_ref().map(|c| c.data.clone()).ok_or_else(|| "nothing has been copied".to_string()),
+        None => s.clipboard.as_ref().map(|c| (c.data.clone(), Vec::new())).ok_or_else(|| "nothing has been copied".to_string()),
     }
 }
 
@@ -130,11 +134,8 @@ fn coerce(v: &Attr, ty: FieldType) -> (Attr, Cut) {
 }
 
 fn paste(s: &mut Session, p: &Value) -> CmdResult {
-    let src = clip(s, p)?;
+    let (src, said) = clip(s, p)?;
     let id = s.layer_id(p)?;
-    // Pasted where they were copied from, in a layer of the same system, their places stay as
-    // stored there.
-    let held = super::design::held_places(s, id, &[], &src.features.iter().filter_map(|f| f.geometry.as_ref()).collect::<Vec<_>>());
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     if l.is_raster() {
         return Err("features can't be pasted into a raster layer".into());
@@ -167,15 +168,29 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     // Per field, what converting the pasted values cut, and the values that aren't null but that
     // the field can't hold.
     let mut unfit = vec![(Cuts::default(), 0usize); l.dataset.fields.len()];
-    // The features the layer takes, their shapes in longitude/latitude written in its own
-    // coordinates: all converted before any is added.
+    // The features the layer takes, their shapes written in its own coordinates from the system
+    // the clipboard holds them in: as they are in a layer of that system (pasted where they were
+    // copied from, nothing moves), else converted by the operation between the two, which
+    // doesn't depend on the map. All converted before any is added.
+    let (from, own) = (src.coord_crs(), l.dataset.coord_crs());
     let mut taken: Vec<Feature> = src
         .features
         .into_iter()
         .filter(|ft| !ft.geometry.as_ref().is_some_and(|g| want != GeometryType::None && g.kind() != want))
         .collect();
+    // Into Web Mercator by way of longitude/latitude, where the latitudes it can't hold are found.
+    let steps = if from == own {
+        vec![]
+    } else if own == Crs::WebMercator && from != Crs::LonLat {
+        vec![from.to(Crs::LonLat)?, Crs::LonLat.to(own)?]
+    } else {
+        vec![from.to(own)?]
+    };
+    let none = rustgis_data::HeldPlaces::default();
     for ft in &mut taken {
-        ft.geometry = ft.geometry.take().map(|g| l.dataset.edit_from_lonlat(g, &held)).transpose()?;
+        for to in &steps {
+            ft.geometry = ft.geometry.take().map(|g| Dataset::edit_from_lonlat_by(to, g, &none)).transpose()?;
+        }
     }
     for ft in taken {
         next = next.saturating_add(1);
@@ -212,7 +227,7 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     super::design::apply(s, id, (first..first + n).map(|r| super::design::Change { before: None, row: Some(r) }).collect())?;
     s.map_mut().layers.iter_mut().filter(|o| o.id != id).for_each(|o| o.selection.clear());
     s.notify(format!("Pasted {n} features into {name}"), false);
-    for notice in notices {
+    for notice in said.into_iter().chain(notices) {
         s.notify(notice, false);
     }
     Ok(json!({"pasted": n, "layer": id}))
@@ -221,11 +236,14 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
 fn paste_special(s: &mut Session, p: &Value) -> CmdResult {
     // The name given, checked before the clipboard is read.
     let name = super::name_given(p, "a layer's name", 200)?;
-    let mut ds = clip(s, p)?;
+    let (mut ds, said) = clip(s, p)?;
     ds.name = name.unwrap_or_else(|| format!("{} (pasted)", ds.name));
     ds.source = None;
     let n = ds.features.len();
     let id = super::layer::add_dataset(s, ds);
+    for m in said {
+        s.notify(m, false);
+    }
     Ok(json!({"pasted": n, "layer": id}))
 }
 

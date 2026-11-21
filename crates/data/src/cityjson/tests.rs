@@ -311,7 +311,8 @@ fn a_compound_system_is_read_by_its_horizontal_part() {
     for urn in ["https://www.opengis.net/def/crs/EPSG/0/7415", "urn:ogc:def:crs:EPSG::7415"] {
         v["metadata"]["referenceSystem"] = json!(urn);
         let out = read("m.city.json", v.to_string().as_bytes(), None).unwrap();
-        let ds = &out[0].0;
+        // Held in its horizontal system; placed in longitude/latitude.
+        let ds = &out[0].0.in_lonlat().unwrap().into_owned();
         let Some(Geometry::Polygon(p)) = geometry(ds, 0) else { panic!("{:?}", geometry(ds, 0)) };
         let c = p[0][0][0];
         assert!((c.x - 4.32).abs() < 0.05 && (c.y - 52.0).abs() < 0.05, "{urn}: {c:?}");

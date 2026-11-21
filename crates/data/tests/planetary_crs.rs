@@ -54,6 +54,8 @@ fn craters(points: [(f64, f64); 2]) -> Dataset {
 const LONLAT: [(f64, f64); 2] = [(-133.8, 18.65), (77.45, 18.44)];
 
 fn points(ds: &Dataset) -> Vec<Coord> {
+    // Held in the file's system; placed in longitude/latitude (the body's).
+    let ds = ds.in_lonlat().unwrap();
     ds.features.iter().filter_map(|f| f.geometry.as_ref()?.label_point()).collect()
 }
 
@@ -1099,7 +1101,7 @@ fn exports_say_what_they_write_instead_of_another_body_s_system() {
     assert!(rustgis_data::export_error(&craters(LONLAT), eqc).is_none());
     // Written to a Mars projection, the numbers are Mars metres.
     let projected = io::project(&layer, eqc).unwrap();
-    let x = points(&projected)[0].x;
+    let x = projected.features[0].geometry.as_ref().and_then(|g| g.label_point()).unwrap().x;
     assert!((x - 3_396_190.0 * (-133.8f64).to_radians()).abs() < 1e-3, "{x}");
 }
 

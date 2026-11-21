@@ -227,14 +227,14 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         // What the file as a whole said goes with its first layer only.
         let mut rep = if out.is_empty() { report.clone() } else { ReadReport::default() };
         if let Some((t, c)) = &transformer {
+            // Kept as the file holds them, in its system, where they have a place in
+            // longitude/latitude.
+            ds.held_in = *c;
             let mut lost = 0usize;
             for f in &mut ds.features {
                 if let Some(g) = f.geometry.take() {
-                    let out = g.map_coords(&|p| t.to_lonlat(p).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
-                    let mut ok = true;
-                    out.for_each_coord(|p| ok &= p.is_finite());
-                    if ok {
-                        f.geometry = Some(out);
+                    if crate::io::places_in_lonlat(&g, t) {
+                        f.geometry = Some(g);
                     } else {
                         lost += 1;
                     }
@@ -287,6 +287,8 @@ mod tests {
         assert_eq!(names, ["site points", "site parcels", "site alignments", "site surfaces"]);
         let pts = &layers[0].0;
         assert_eq!(pts.features.len(), 3);
+        // Held in its own system; placed in longitude/latitude.
+        let pts = pts.in_lonlat().unwrap().into_owned();
         let Some(Geometry::Point(c)) = &pts.features[0].geometry else { panic!() };
         assert!((c.x - 15.0).abs() < 1e-6 && (c.y - 42.0).abs() < 0.01, "UTM 33N from the file: {c:?}");
         assert_eq!(pts.features[0].attrs[3], Value::Float(100.5));
@@ -310,7 +312,7 @@ mod tests {
         assert_eq!((c.x, c.y), (500000.0, 4649776.0));
         assert!(layers[0].1.messages.iter().any(|m| m.contains("\"crs\"")));
         let layers = read("site.xml", plain.as_bytes(), Crs::from_epsg(32633)).unwrap();
-        let Some(Geometry::Point(c)) = &layers[0].0.features[0].geometry else { panic!() };
+        let Some(Geometry::Point(c)) = &layers[0].0.in_lonlat().unwrap().features[0].geometry else { panic!() };
         assert!((c.x - 15.0).abs() < 1e-6);
     }
 

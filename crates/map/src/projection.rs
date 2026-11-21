@@ -498,6 +498,10 @@ pub struct Projector {
     lon0: f64,
     /// Where the map's edge runs in WGS84 longitudes, worked out on first use (see [`Projector::edge`]).
     edge: std::sync::OnceLock<Edge>,
+    /// The system it projects to as data names it, when that system's transformer is the one it
+    /// projects with: an EPSG or ESRI code. `None` for a preset, a `local:` view or a PROJ
+    /// definition.
+    crs: Option<Crs>,
 }
 
 /// The edge is sampled every `EDGE_STEP`° of latitude from 90°S to 90°N: `EDGE_SAMPLES` latitudes,
@@ -604,6 +608,13 @@ impl Projector {
         // Noted as used, so a background export of a map drawn in it says its missing grid: under
         // the key its transformer is kept by ([`transformer_key`]).
         rustgis_data::raster::crs::note_used(&transformer_key(&def, &label), || label.to_string());
+        let crs = match (epsg, esri) {
+            (Some(c), _) => Some(Crs::Epsg(c)),
+            (None, Some(_)) => {
+                label.strip_prefix("ESRI:").and_then(|n| n.parse::<u32>().ok()).and_then(rustgis_data::raster::crs::esri_crs)
+            }
+            (None, None) => None,
+        };
         let t = match (epsg, esri) {
             // Without the code its error already starts with.
             (Some(c), _) => rustgis_data::raster::Crs::Epsg(c)
@@ -624,7 +635,7 @@ impl Projector {
         let domain = Domain::of(preset, &def, (lon0, lat0), pm);
         let engine = t;
         let to_meter = if to_meter.is_finite() && to_meter > 0.0 { to_meter } else { 1.0 };
-        Ok(Projector { engine, to_meter, domain, lon0, edge: std::sync::OnceLock::new() })
+        Ok(Projector { engine, to_meter, domain, lon0, edge: std::sync::OnceLock::new(), crs })
     }
 
     /// The central meridian, in WGS84 longitudes, of a projection that shows the whole world: the
@@ -746,6 +757,12 @@ impl Projector {
     pub fn domain(&self) -> Domain {
         self.domain
     }
+
+    /// The system it projects to, as data in it names it: an EPSG or ESRI code; `None` for a
+    /// preset, a `local:` view or a PROJ definition.
+    pub fn crs(&self) -> Option<Crs> {
+        self.crs
+    }
 }
 
 /// The flat map's projection, ready to convert coordinates.
@@ -845,6 +862,35 @@ impl Flat {
         Some(if to_lonlat.is_identity() { self.project(g) } else { self.project(&to_lonlat.geometry(g)) })
     }
 
+    /// The map's own coordinate system, when geometry in another can be drawn straight into it
+    /// ([`Flat::held`]): an EPSG or ESRI code whose map has no edge to cut along (a system limited
+    /// to an area of use; a world projection's cut needs longitude/latitude). `None` for Web
+    /// Mercator, which draws from longitude/latitude as before, and every other map.
+    pub fn direct_system(&self) -> Option<Crs> {
+        match self {
+            Flat::Custom(p) if p.edge().is_none() => p.crs(),
+            _ => None,
+        }
+    }
+
+    /// How geometry in `crs` (a layer's own system) is drawn on this map: as it is on a map in that
+    /// system (Web Mercator's too, whose map coordinates are its metres); on another a
+    /// [`Flat::direct_system`] names, by the direct operation between the two ([`Crs::to`]: the
+    /// datum transformation PROJ picks for the pair) where its place through longitude/latitude is
+    /// one the map shows, so what the map leaves out (a place past its area of use, or one it
+    /// folds) stays left out; on every other map, through longitude/latitude ([`Flat::project`]).
+    /// An error when `crs` can't be converted to longitude/latitude, when none of it can be drawn.
+    pub fn held(&self, crs: Crs) -> Result<HeldDrawing<'_>, String> {
+        let map = self.direct_system();
+        if map == Some(crs) || (matches!(self, Flat::Mercator) && crs == Crs::WebMercator) {
+            return Ok(HeldDrawing { flat: self, to_lonlat: None, to_map: None });
+        }
+        let to_lonlat = crs.to(Crs::LonLat)?;
+        // A pair with no conversion between them is drawn through longitude/latitude.
+        let to_map = map.and_then(|m| crs.to(m).ok());
+        Ok(HeldDrawing { flat: self, to_lonlat: Some(to_lonlat), to_map })
+    }
+
     /// Map coordinates to longitude/latitude.
     pub fn inverse(&self, m: Coord) -> Option<Coord> {
         match self {
@@ -873,6 +919,55 @@ impl Flat {
         }
         out
     }
+}
+
+/// Geometry in a layer's own system drawn on a map ([`Flat::held`]).
+pub struct HeldDrawing<'a> {
+    flat: &'a Flat,
+    /// `None` on a map in the layer's own system, which draws it as it is.
+    to_lonlat: Option<Reprojection>,
+    /// The direct operation to the map's system, when the map has one ([`Flat::direct_system`]).
+    to_map: Option<Reprojection>,
+}
+
+impl HeldDrawing<'_> {
+    /// Whether it draws geometry as it is (a map in the layer's own system).
+    pub fn is_identity(&self) -> bool {
+        self.to_lonlat.is_none()
+    }
+
+    /// `g` in map coordinates, and whether a place of it that is a number couldn't be given in
+    /// longitude/latitude (what [`crate::Layer::unplaced`] counts: such a place isn't drawn).
+    /// Places the map can't show are NaN, which drawing skips. On a map in its own system, `g`
+    /// exactly as it is, with nothing lost.
+    pub fn geometry(&self, g: &rustgis_data::Geometry) -> (rustgis_data::Geometry, bool) {
+        let Some(to_lonlat) = &self.to_lonlat else { return (g.clone(), false) };
+        let Some(to_map) = &self.to_map else {
+            let lonlat = to_lonlat.geometry(g);
+            let lost = missing(&lonlat) > missing(g);
+            return (self.flat.project(&lonlat), lost);
+        };
+        let lost = std::cell::Cell::new(false);
+        let nan = Coord::new(f64::NAN, f64::NAN);
+        let out = g.map_coords(&|c| {
+            if !c.is_finite() {
+                return nan;
+            }
+            let Some(lonlat) = to_lonlat.point(c) else {
+                lost.set(true);
+                return nan;
+            };
+            self.flat.forward_checked(lonlat).map_or(nan, |m| to_map.point_near(c, m))
+        });
+        (out, lost.get())
+    }
+}
+
+/// How many of a geometry's coordinates aren't numbers.
+fn missing(g: &rustgis_data::Geometry) -> usize {
+    let mut n = 0usize;
+    g.for_each_coord(|c| n += usize::from(!c.is_finite()));
+    n
 }
 
 thread_local! {

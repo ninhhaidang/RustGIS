@@ -460,7 +460,14 @@ fn add_layer(
             let mut ds = rustgis_data::Dataset::new(name, *geometry, fields.clone());
             if let Some(c) = layer.crs.as_deref().or(crs.as_deref()) {
                 match rustgis_data::raster::crs::Crs::parse(c) {
-                    Ok(c) => ds.crs = Some(c),
+                    // Empty, so held in its system at no cost: features drawn into it are kept
+                    // there, as in a layer read from a file in it.
+                    Ok(c) => {
+                        // Refused, it stays in longitude/latitude with no system of its own.
+                        if let Err(e) = ds.hold_as(c, Some(c)) {
+                            report.approximated(name, format!("held in longitude/latitude, not in {} ({e})", c.label()));
+                        }
+                    }
                     Err(e) => report.skipped(name, format!("its coordinate system {c}, which RustGIS can't read ({e})")),
                 }
             }

@@ -45,6 +45,8 @@ fn read_geometries(path: &str) -> Result<(Vec<Geometry>, Vec<String>), String> {
         return Err(format!("{path} has more than {} features: simplify it or use a bounding box", area::MAX_FEATURES));
     }
     let mut messages: Vec<String> = report.into_messages().map(|m| format!("{path}: {m}")).collect();
+    // The search area is in longitude/latitude; a file in another system is read in its own.
+    let ds = ds.in_lonlat().map_err(|e| format!("{path}: {e}"))?;
     let geometries: Vec<Geometry> = ds.features.iter().filter_map(|f| f.geometry.clone()).collect();
     if geometries.len() < ds.features.len() {
         messages.push(format!(

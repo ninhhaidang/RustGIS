@@ -75,8 +75,11 @@ pub fn commands() -> Vec<C> {
                 return Err("nothing is selected in this layer".into());
             }
             let mut ds = rustgis_data::Dataset::new(format!("{} selection", l.name), l.geometry_type(), l.dataset.fields.clone());
-            // Its coordinates as they are, held in the layer's system.
+            // Its coordinates as they are, held in the layer's system, which it exports in.
             ds.held_in = l.dataset.held_in;
+            ds.crs = l.dataset.crs;
+            // What the import lost, Define Projection can't recover in the copy either.
+            ds.crs_incomplete = l.dataset.crs_incomplete;
             for r in &l.selection {
                 if let Some(f) = l.dataset.features.get(*r) {
                     ds.push(f.geometry.clone(), f.attrs.clone());

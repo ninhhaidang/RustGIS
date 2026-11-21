@@ -487,7 +487,7 @@ fn polygons(layer: &rustgis_map::Layer, level: Option<&str>, drawn: Option<&[boo
     let mut polygons = Vec::new();
     // Its conversion to longitude/latitude, made once for its polygons (none: a system that can't
     // be converted, of which the map draws nothing either).
-    let to = layer.dataset.lonlat_conversion().ok();
+    let to = layer.dataset.shown_conversion().ok();
     for (row, ft) in layer.dataset.features.iter().enumerate() {
         if drawn.is_some_and(|d| !d.get(row).copied().unwrap_or(false)) {
             continue;

@@ -12,7 +12,7 @@
 //! downloaded whole instead.
 
 use super::remote::{self, Remote};
-use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, in_request};
+use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit};
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use bytes::Bytes;
 use parquet::basic::{ConvertedType, Encoding, LogicalType, Type as Physical};
@@ -470,6 +470,11 @@ impl FeatureSource for ParquetSource {
         &self.info
     }
 
+    /// Its own system, in which it gives its features as the file holds them.
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
+    }
+
     /// Keeps rows with null geometry in whole reads; they have no location to match an extent.
     /// Unbounded spatial scans bound retained row masks and refuse groups over the decoded-column
     /// budget before decoding, count rows and check Cancel between them. They decode every selected group's geometry
@@ -646,7 +651,7 @@ impl FeatureSource for ParquetSource {
                 // Null geometry is valid; malformed non-null WKB is skipped and counted.
                 let geometry = match geoms.get(k).and_then(|b| b.as_deref()) {
                     Some(bytes) => {
-                        let Some(geometry) = wkb::decode(bytes).and_then(|g| self.reproject.geometry(g)) else {
+                        let Some(geometry) = wkb::decode(bytes).and_then(|g| self.reproject.read(g)) else {
                             skipped += 1;
                             continue;
                         };
@@ -654,10 +659,11 @@ impl FeatureSource for ParquetSource {
                     }
                     None => None,
                 };
-                let matches_extent = geometry.as_ref().map_or(req.extent.is_none(), |g| in_request(g, req));
+                let matches_extent = geometry.as_ref().map_or(req.extent.is_none(), |g| g.in_request(req));
                 if !matches_extent || (late && !sample.wants()) {
                     continue;
                 }
+                let geometry = geometry.map(|p| p.geometry);
                 let values =
                     attrs.iter().enumerate().map(|(field, col)| col.value(k, field, &mut unread_dates, &mut rounded_dates)).collect();
                 sample.keep(Feature { id: base.saturating_add(r as u64 + 1), geometry, attrs: values });
@@ -755,7 +761,7 @@ impl FeatureSource for ParquetSource {
                 crate::progress::step(1)?;
                 let geometry = match geoms.get(k).and_then(|b| b.as_deref()) {
                     Some(bytes) => {
-                        let Some(geometry) = wkb::decode(bytes).and_then(|geom| self.reproject.geometry(geom)) else {
+                        let Some(geometry) = wkb::decode(bytes).and_then(|geom| self.reproject.read(geom)) else {
                             out.skipped += 1;
                             continue;
                         };
@@ -763,9 +769,10 @@ impl FeatureSource for ParquetSource {
                     }
                     None => None,
                 };
-                if !geometry.as_ref().map_or(req.extent.is_none(), |g| in_request(g, &req)) {
+                if !geometry.as_ref().map_or(req.extent.is_none(), |g| g.in_request(&req)) {
                     continue;
                 }
+                let geometry = geometry.map(|p| p.geometry);
                 let values = attrs
                     .iter()
                     .enumerate()

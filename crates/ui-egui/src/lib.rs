@@ -6413,6 +6413,8 @@ impl RustGisApp {
         // never waits for cast shadows still being worked out: it says they were (Never hold the
         // window). Exports drawn off it wait for them.
         rustgis_engine::render::on_the_interface_thread();
+        // Layers landed from a background read meanwhile learn their map's system too.
+        self.session.note_shown_systems();
         // A pass egui asks to repeat is the same frame: `ui` sets the delay once, from the first pass.
         if ctx.current_pass_index() == 0 {
             self.frame_start = Some(web_time::Instant::now());

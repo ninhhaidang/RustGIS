@@ -382,15 +382,18 @@ pub fn read(mif: &str, mid: Option<&str>, name: &str) -> Result<(Dataset, ReadRe
             }
         },
     };
+    // Held as the file holds its coordinates, in its own system, when RustGIS converts it.
+    if let (Some(_), Some(c)) = (&t, crs) {
+        ds.held_in = c;
+    }
     let (mut lost, mut null_text) = (0usize, Vec::new());
     for (k, g) in geoms.into_iter().enumerate() {
+        // Kept as the file holds it when it has a place in longitude/latitude.
         let g = match (&t, g) {
             (Some(t), Some(g)) => {
-                let out = g.map_coords(&|c| t.to_lonlat(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
-                let mut ok = true;
-                out.for_each_coord(|c| ok &= c.is_finite());
+                let ok = crate::io::places_in_lonlat(&g, t);
                 lost += usize::from(!ok);
-                ok.then_some(out)
+                ok.then_some(g)
             }
             (_, g) => g,
         };
@@ -504,6 +507,8 @@ mod tests {
     fn projected_and_broken() {
         let utm = "Version 300\nCoordSys Earth Projection 8, 104, \"m\", 15, 0, 0.9996, 500000, 0\nColumns 1\n  id Integer\nData\nPoint 500000 4649776\nPoint 500100 x\n";
         let (ds, rep) = read(utm, None, "u").unwrap();
+        // Held in its own system; placed in longitude/latitude.
+        let ds = ds.in_lonlat().unwrap().into_owned();
         let Some(Geometry::Point(c)) = &ds.features[0].geometry else { panic!() };
         assert!((c.x - 15.0).abs() < 1e-6 && (c.y - 42.0).abs() < 0.01, "{c:?}");
         assert_eq!(ds.features.len(), 1);
@@ -524,6 +529,7 @@ mod tests {
         // The same point in feet: the false easting is in feet too, and PROJ wants metres.
         let ft = "CoordSys Earth Projection 8, 104, \"ft\", 15, 0, 0.9996, 1640416.6667, 0\nData\nPoint 1640416.6667 15255170.6\n";
         let (ds, rep) = read(ft, None, "f").unwrap();
+        let ds = ds.in_lonlat().unwrap().into_owned();
         let Some(Geometry::Point(c)) = &ds.features[0].geometry else { panic!("{rep:?}") };
         assert!((c.x - 15.0).abs() < 1e-6 && (c.y - 42.0).abs() < 0.01, "{c:?}");
         // A datum not read keeps the coordinates as they are, and says so.
