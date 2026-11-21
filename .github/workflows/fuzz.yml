@@ -41,7 +41,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cargo-deny
       # fuzz/deny.toml: the workspace's source policy and licences plus NCSA, for libFuzzer.
@@ -74,7 +74,7 @@ jobs:
           workspaces: fuzz
           shared-key: fuzz
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.target == 'read_layers' }}
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cargo-fuzz
       # The corpus each target has grown, kept between nights. Restored and saved as separate steps:
