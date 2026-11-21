@@ -87,16 +87,16 @@ fn ask(t: &rustgis_map::tiles::TileLayer, fi: &FeatureInfo, at: Coord, m_per_px:
         .map(|url| json!({"tileLayer": t.name, "url": url}))
 }
 
-/// The WMS tile layers drawn at a point to ask what is there, topmost first (only the topmost
-/// when `first_layer`), each with what to fetch.
+/// The WMS tile layers drawn at a point to ask what is there, topmost first as drawn (a higher
+/// depth priority on top, #2488; only the topmost when `first_layer`), each with what to fetch.
 pub(super) fn requests(s: &Session, lon: f64, lat: f64, first_layer: bool, picked: Option<usize>) -> Vec<Value> {
     let Some((at, m_per_px)) = merc_at(s, lon, lat) else { return Vec::new() };
     let wanted = if first_layer { 1 } else { MAX_ASKED };
-    let mut asks: Vec<Value> = s
-        .map()
-        .tiles
-        .iter()
-        .enumerate()
+    let map = s.map();
+    let mut asks: Vec<Value> = map
+        .tiles_in_draw_order()
+        .into_iter()
+        .filter_map(|i| Some((i, map.tiles.get(i)?)))
         .filter(|(i, t)| picked.is_none_or(|p| p == *i) && askable(t, picked.is_some()))
         .filter_map(|(_, t)| next_fetch(t, lon, lat, at, m_per_px))
         .take(wanted)
@@ -109,10 +109,14 @@ pub(super) fn requests(s: &Session, lon: f64, lat: f64, first_layer: bool, picke
     asks
 }
 
-/// The index of the topmost WMS tile layer that can be asked what is at a point (it covers it).
+/// The index of the topmost WMS tile layer, as drawn, that can be asked what is at a point (it
+/// covers it).
 pub(super) fn topmost(s: &Session, lon: f64, lat: f64) -> Option<usize> {
     let (at, m_per_px) = merc_at(s, lon, lat)?;
-    s.map().tiles.iter().position(|t| askable(t, false) && next_fetch(t, lon, lat, at, m_per_px).is_some())
+    let map = s.map();
+    map.tiles_in_draw_order()
+        .into_iter()
+        .find(|i| map.tiles.get(*i).is_some_and(|t| askable(t, false) && next_fetch(t, lon, lat, at, m_per_px).is_some()))
 }
 
 /// The answer's features as identify's results.

@@ -5173,6 +5173,109 @@ fn with_raster() -> Session {
     s
 }
 
+/// The pixel identify gives with no feature under the click (Selectable's fallback, and what the
+/// spectral profile reads) is the one of the raster drawn on top: a higher depth priority above
+/// whatever the order, as the renderer draws them (#2488).
+#[test]
+fn identify_takes_the_pixel_of_the_raster_drawn_on_top_by_priority() {
+    let mut s = with_raster();
+    s.run("layer.addDataBytes", &json!({"fileName": "upper.tif", "data": utm_tiff_b64()})).unwrap();
+    for l in ["Cities", "Rivers", "Lakes", "Countries"] {
+        s.run("layer.visibility", &json!({"layer": l, "visible": false})).unwrap();
+    }
+    let top = |s: &Session| crate::cmd::raster::identify(s, -81.0, 42.0).map(|v| v["layer"].clone());
+    let layers =
+        |v: &Value| -> Vec<String> { v["results"].as_array().unwrap().iter().map(|r| r["layer"].as_str().unwrap().to_string()).collect() };
+    // Added last, upper is drawn on top.
+    assert_eq!(top(&s), Some(json!("upper")));
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "visible"})).unwrap();
+    assert_eq!(layers(&v), ["upper", "scene"], "{v}");
+    // A higher priority draws scene over it whatever the order.
+    s.run("layer.priority", &json!({"layer": "scene", "value": 1})).unwrap();
+    assert_eq!(top(&s), Some(json!("scene")));
+    for mode in ["topmost", "selectable"] {
+        let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": mode})).unwrap();
+        assert_eq!(v["layer"], "scene", "{mode}: {v}");
+    }
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "visible"})).unwrap();
+    assert_eq!(layers(&v), ["scene", "upper"], "{v}");
+}
+
+/// A raster's pixel answers a topmost click like a feature does (#2488): a WMS layer drawn over the
+/// raster is asked, one under it isn't (as under a feature, #808); visible asks it either way.
+#[test]
+fn identify_asks_a_wms_layer_under_a_raster_only_in_visible_mode() {
+    const WMS: &str = r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Title>Test WMS</Title></Service>
+<Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/wms?"/></Get></HTTP></DCPType></GetMap>
+<GetFeatureInfo><Format>application/geo+json</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/info?"/></Get></HTTP></DCPType></GetFeatureInfo></Request>
+<Layer queryable="1"><Title>Root</Title><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title></Layer></Layer></Capability></WMS_Capabilities>"#;
+    let mut s = with_raster();
+    for l in ["Cities", "Rivers", "Lakes", "Countries"] {
+        s.run("layer.visibility", &json!({"layer": l, "visible": false})).unwrap();
+    }
+    s.run("service.add", &json!({"url": "https://maps.example.com/wms", "layer": "roads", "text": WMS})).unwrap();
+    let identify = |s: &mut Session, mode: &str| s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": mode})).unwrap();
+    let asked = |v: &Value| -> Vec<String> {
+        v["featureInfo"].as_array().into_iter().flatten().map(|a| a["tileLayer"].as_str().unwrap_or_default().to_string()).collect()
+    };
+    // Added last, the WMS layer is drawn over the raster: topmost shows the pixel and asks it.
+    let v = identify(&mut s, "topmost");
+    assert_eq!((v["layer"].clone(), asked(&v)), (json!("scene"), vec!["Roads".to_string()]), "{v}");
+    // Under all the map's layers, the raster is drawn over it: only visible asks it.
+    s.run("map.setTiles", &json!({"name": "Roads", "move": "bottom"})).unwrap();
+    let v = identify(&mut s, "topmost");
+    assert_eq!(v["layer"], "scene", "{v}");
+    assert!(asked(&v).is_empty(), "{v}");
+    let v = identify(&mut s, "visible");
+    assert_eq!((v["layer"].clone(), asked(&v)), (json!("scene"), vec!["Roads".to_string()]), "{v}");
+}
+
+/// Identify asks and reads the tile layers in the drawing order, a higher depth priority on top
+/// (#2488): a WMS layer drawn over the feature found is asked even when another, earlier in the
+/// tile list, is drawn under it.
+#[test]
+fn identify_asks_the_wms_layer_drawn_over_a_layer_of_higher_priority() {
+    const WMS: &str = r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Title>Test WMS</Title></Service>
+<Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/wms?"/></Get></HTTP></DCPType></GetMap>
+<GetFeatureInfo><Format>application/geo+json</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/info?"/></Get></HTTP></DCPType></GetFeatureInfo></Request>
+<Layer queryable="1"><Title>Root</Title><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title></Layer><Layer><Name>rails</Name><Title>Rails</Title></Layer></Layer></Capability></WMS_Capabilities>"#;
+    let square = |x: f64| {
+        format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[{x},46],[{e},46],[{e},47],[{x},47],[{x},46]]]}}}}]}}"#,
+            e = x + 1.0
+        )
+    };
+    let mut s = Session::new(Project::default());
+    // Area holds the click; Empty, added last and so first in the list, doesn't.
+    s.run("layer.addDataText", &json!({"fileName": "area.geojson", "text": square(8.0), "name": "Area"})).unwrap();
+    s.run("layer.addDataText", &json!({"fileName": "empty.geojson", "text": square(20.0), "name": "Empty"})).unwrap();
+    for layer in ["roads", "rails"] {
+        s.run("service.add", &json!({"url": "https://maps.example.com/wms", "layer": layer, "text": WMS})).unwrap();
+    }
+    let id = |s: &Session, name: &str| s.map().layer_by_name(name).map(|l| l.id);
+    let (area, empty) = (id(&s, "Area"), id(&s, "Empty"));
+    // Roads, first in the tile list, over Empty; Rails over Area.
+    let m = s.map_mut();
+    m.tiles.sort_by_key(|t| t.name != "Roads");
+    m.tiles.iter_mut().for_each(|t| t.over = if t.name == "Roads" { empty } else { area });
+    s.run("map.goToXY", &json!({"lon": 8.5, "lat": 46.5, "scale": 10000})).unwrap();
+    let identify = |s: &mut Session, mode: &str| s.run("identify", &json!({"lon": 8.5, "lat": 46.5, "mode": mode})).unwrap();
+    let asked = |v: &Value| -> Vec<String> {
+        v["featureInfo"].as_array().into_iter().flatten().map(|a| a["tileLayer"].as_str().unwrap_or_default().to_string()).collect()
+    };
+    // As listed, Empty and Roads are drawn over Area: topmost finds Area and asks Roads.
+    let v = identify(&mut s, "topmost");
+    assert_eq!((v["layer"].clone(), asked(&v)), (json!("Area"), vec!["Roads".to_string()]), "{v}");
+    assert_eq!(asked(&identify(&mut s, "visible")), ["Roads", "Rails"]);
+    // A higher priority draws Area, and Rails over it, on top: Rails is the one asked.
+    s.run("layer.priority", &json!({"layer": "Area", "value": 1})).unwrap();
+    let v = identify(&mut s, "topmost");
+    assert_eq!((v["layer"].clone(), asked(&v)), (json!("Area"), vec!["Rails".to_string()]), "{v}");
+    assert_eq!(asked(&identify(&mut s, "visible")), ["Rails", "Roads"]);
+}
+
 /// A box whose corners the raster's system refuses (#1925) is placed by its part over the raster:
 /// a UTM zone 17 scene near 42°N clipped to a box holding it, whose corners on the equator are
 /// 91° and 89° from the zone's meridian, is the whole scene, not a window from the north corners
@@ -6126,9 +6229,42 @@ fn raster_layers_open_style_identify_and_round_trip() {
     s.active_layer = s.map().layer_by_name("Countries").map(|l| l.id);
     s.run("raster.info", &json!({"layer": "scene"})).unwrap();
     s.active_layer = s.map().layer_by_name("scene").map(|l| l.id);
-    // Identify reports features first (Lake Erie is here), then pixel values.
-    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0})).unwrap();
+    // Identify ranks a raster's pixel with the features by the drawing order (#2488): the scene,
+    // added last, is drawn over Lake Erie, so topmost reports its pixel, alone, as before.
+    let erie = json!({"lon": -81.0, "lat": 42.0});
+    let v = s.run("identify", &erie).unwrap();
+    assert_eq!(v["raster"], true, "{v}");
+    assert_eq!(v["layer"], "scene", "{v}");
+    assert!(v.get("results").is_none(), "a pixel alone answers without a list: {v}");
+    // Visible lists the pixel first, then the features drawn under it.
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "visible"})).unwrap();
+    let found: Vec<&str> = v["results"].as_array().unwrap().iter().map(|r| r["layer"].as_str().unwrap()).collect();
+    assert_eq!(found.first(), Some(&"scene"), "{v}");
+    assert!(found.contains(&"Lakes"), "{v}");
+    assert_eq!(v["raster"], true, "the first result's fields stay at the top: {v}");
+    // Selectable picks layers by another rule: the lake, the raster's pixel only with no feature.
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "selectable"})).unwrap();
     assert_eq!(v["layer"], "Lakes", "{v}");
+    // Moved to the bottom, the scene gives way: Lake Erie is drawn over it.
+    s.run("layer.move", &json!({"layer": "scene", "to": 99})).unwrap();
+    let v = s.run("identify", &erie).unwrap();
+    assert_eq!(v["layer"], "Lakes", "{v}");
+    assert!(v["results"].as_array().unwrap().iter().all(|r| r["raster"] != true), "{v}");
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "visible"})).unwrap();
+    let found: Vec<&str> = v["results"].as_array().unwrap().iter().map(|r| r["layer"].as_str().unwrap()).collect();
+    assert_eq!(found.last(), Some(&"scene"), "the pixel comes after the features drawn over it: {v}");
+    // A higher depth priority draws the scene over Lake Erie whatever the order, as the renderer
+    // and the features' hits do: its pixel answers again.
+    s.run("layer.priority", &json!({"layer": "scene", "value": 1})).unwrap();
+    let v = s.run("identify", &erie).unwrap();
+    assert_eq!(v["layer"], "scene", "{v}");
+    assert_eq!(v["raster"], true, "{v}");
+    let v = s.run("identify", &json!({"lon": -81.0, "lat": 42.0, "mode": "visible"})).unwrap();
+    let found: Vec<&str> = v["results"].as_array().unwrap().iter().map(|r| r["layer"].as_str().unwrap()).collect();
+    assert_eq!(found.first(), Some(&"scene"), "a higher priority comes first: {v}");
+    assert!(found.contains(&"Lakes"), "{v}");
+    s.run("layer.priority", &json!({"layer": "scene", "value": 0})).unwrap();
+    s.run("layer.move", &json!({"layer": "scene", "to": 0})).unwrap();
     for l in ["Cities", "Rivers", "Lakes", "Countries"] {
         s.run("layer.visibility", &json!({"layer": l, "visible": false})).unwrap();
     }

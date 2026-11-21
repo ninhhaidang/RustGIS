@@ -355,7 +355,12 @@ moving layers between maps.
 Pop-ups (Home › Navigate) choose which layers a click with Explore identifies: the topmost layer
 under the click, every visible layer, only selectable layers, only the layer selected in Layers, or
 nothing. The pop-up lists every feature under the click in those layers, overlapping ones included
-(up to 100): step through them with ‹ ›. The feature shown is the one selected. The magnifier in
+(up to 100): step through them with ‹ ›. The feature shown is the one selected; when the pop-up
+shows a raster's pixel or a web tile layer's feature, nothing is selected. The topmost and
+visible modes take a raster's pixel values too, placed among the features by the drawing order: a
+raster drawn over a polygon (rain clipped to an area whose outline stays on the map, say) shows its
+pixel, and a polygon drawn over a raster shows its feature. The other two modes show the topmost
+raster's pixel only when no feature is under the click. The magnifier in
 the pop-up's header zooms to it. Long feature titles and layer names are shortened with an
 ellipsis to leave room for the header controls; hover over either name to read it in full.
 

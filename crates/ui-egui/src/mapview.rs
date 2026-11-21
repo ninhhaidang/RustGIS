@@ -186,7 +186,8 @@ fn with_answers(map: &rustgis_engine::map::Map, info: &Value, found: Vec<Value>)
     // identify.featureInfo tells its answer to the first of them, drawn or not).
     let drawn = |name: &str| map.tiles.iter().position(|t| t.name == name && t.draws());
     all.retain(|v| v["tileLayer"].as_str().is_none_or(|name| drawn(name).is_some()));
-    let stack = map.stack();
+    // As identify ranks them: the drawing order, a higher depth priority on top (#2488).
+    let stack = map.draw_order();
     // A tile layer's feature by its layer's name (two of one name drawn take the higher one's
     // place, as their answers are told apart by name too), a map layer's (or raster's pixel) by
     // its id; anything else after them all.
@@ -3302,13 +3303,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
                 let r = app.session.run("identify", &json!({"lon": c.x, "lat": c.y, "tolerancePx": 5}));
                 app.map.popup = match r {
                     Ok(v) if !v.is_null() => {
-                        if let (Some(id), Some(row)) = (v["layerId"].as_u64(), v["row"].as_u64()) {
-                            let _ = app.session.run("select.rows", &json!({"layer": id, "rows": [row]}));
-                        } else if !is_found(&v) {
-                            // Only WMS layers being asked: the click found nothing yet, so it clears
-                            // the selection as an empty click does.
-                            clear_selection_quietly(app);
-                        }
+                        select_first_found(app, &v);
                         Some(Popup::new(v, c, app.session.project.active_map, app.session.opened))
                     }
                     _ => {
@@ -4410,6 +4405,18 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
     }
 }
 
+/// Selects the feature a click's identify shows first. One that isn't a map layer's row (a
+/// raster's pixel drawn over a polygon (#2488), a tile layer's feature, or nothing yet while WMS
+/// layers are asked) clears the selection, as an empty click does and as browsing the pop-up to it
+/// does ([`select_shown`]): the selection is what the pop-up shows.
+fn select_first_found(app: &mut RustGisApp, v: &Value) {
+    if let (Some(id), Some(row)) = (v["layerId"].as_u64(), v["row"].as_u64()) {
+        let _ = app.session.run("select.rows", &json!({"layer": id, "rows": [row]}));
+    } else {
+        clear_selection_quietly(app);
+    }
+}
+
 /// Selects the feature the pop-up shows, as after the click. Not through `select.rows`: browsing
 /// a pop-up mustn't fill the undo history; the new revision redraws the map. Found again by its
 /// feature id: a streamed layer may have read another window since the click, moving the feature
@@ -5465,6 +5472,49 @@ mod tests {
         follow_popup(&mut app);
         let popup = app.map.popup.as_ref().unwrap();
         assert_eq!((shown(&popup.info), popup.index), (vec!["Countries".to_string()], 0), "hidden, in the pop-up");
+    }
+
+    /// A click whose pop-up shows a raster's pixel first, drawn over a polygon, or a tile layer's
+    /// feature first, selects nothing (#2488): an earlier selection doesn't stay under it, as
+    /// browsing the pop-up to either clears it; a feature shown first is selected.
+    #[test]
+    fn a_click_showing_a_pixel_or_tile_feature_first_leaves_nothing_selected() {
+        let s = rustgis_engine::Session::new(rustgis_engine::sample::world_project());
+        let mut app = RustGisApp::new(s);
+        let countries = app.session.map().layer_by_name("Countries").map(|l| l.id).unwrap();
+        let feature = json!({"layer": "Countries", "layerId": countries, "row": 3, "fid": 3, "attributes": {}});
+        select_first_found(&mut app, &feature);
+        assert_eq!(app.session.map().selection_count(), 1);
+        let pixel = json!({"layer": "scene", "layerId": 999, "raster": true, "attributes": {"Band 1": "7"},
+            "results": [{"layer": "scene", "layerId": 999, "raster": true, "attributes": {"Band 1": "7"}}, feature]});
+        select_first_found(&mut app, &pixel);
+        assert_eq!(app.session.map().selection_count(), 0);
+        // A vector tile layer's feature shown first (it has no row in a map layer) clears it too.
+        select_first_found(&mut app, &feature);
+        assert_eq!(app.session.map().selection_count(), 1);
+        let tile = json!({"layer": "Roads", "tileLayer": "Roads", "sourceLayer": "roads", "attributes": {"name": "Main"},
+            "results": [{"layer": "Roads", "tileLayer": "Roads", "sourceLayer": "roads", "attributes": {"name": "Main"}}, feature]});
+        select_first_found(&mut app, &tile);
+        assert_eq!(app.session.map().selection_count(), 0);
+    }
+
+    /// A WMS layer's answer takes its place by the depth priority too, as identify ranks the
+    /// features (#2488): Countries, with a higher priority, is drawn over the WMS layer and stays
+    /// first.
+    #[test]
+    fn a_wms_answer_goes_under_a_layer_of_higher_priority() {
+        let mut s = rustgis_engine::Session::new(rustgis_engine::sample::world_project());
+        s.run("map.addTiles", &json!({"url": "https://wms.example.org/{z}/{x}/{y}.png", "name": "Over", "overlay": true})).unwrap();
+        s.run("layer.priority", &json!({"layer": "Countries", "value": 1})).unwrap();
+        let answer = json!({"layer": "Over", "tileLayer": "Over", "sourceLayer": null, "attributes": {"name": "Bern"}});
+        s.run("map.popupMode", &json!({"mode": "visible"})).unwrap();
+        let info = s.run("identify", &json!({"lon": 8.6, "lat": 46.65, "tolerancePx": 0})).unwrap();
+        assert_eq!(info["layer"], "Countries");
+        let v = with_answers(s.map(), &info, vec![answer]).unwrap();
+        let shown: Vec<&str> =
+            v["results"].as_array().unwrap().iter().map(|r| r["tileLayer"].as_str().or(r["layer"].as_str()).unwrap()).collect();
+        assert_eq!(shown, ["Countries", "Over"]);
+        assert_eq!(v["layer"], "Countries");
     }
 
     fn selection_harness() -> egui_kittest::Harness<'static, RustGisApp> {
