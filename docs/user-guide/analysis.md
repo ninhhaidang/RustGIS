@@ -2083,9 +2083,34 @@ rustgis-cli run --cmd 'cube.trend={"url":"https://data.inpe.br/bdc/stac/v1","col
 
 **Summarise a Data Cube over Time** (`cube.reduce`) makes rasters of one statistic of each cell
 over the dates of any of the series Trend Analysis takes (layers, a raster's bands, a Zarr
-variable, a STAC collection's band): **mean**, **min**, **max**, **sum**, **std** (the population
-standard deviation), **count** of values, or **countAbove** a threshold (`"above"`), as Summarise
-over time does for a Zarr variable (see [Data](data.md)).
+variable, a STAC collection's band): **mean**, **median** (the mean of the two middle values for
+an even count), **min**, **max**, **sum**, **std** (the population standard deviation), **count**
+of values, or **countAbove** a threshold (`"above"`), as Summarise over time does for a Zarr
+variable (see [Data](data.md)); or **first**, each cell's value at its first date with one, in the
+order `"order"` gives: `"date"` (the earliest first, the default without a mask), `"-date"` (the
+latest first) or `"clear"` (below). The median holds every date's value of the cells being read,
+within the run's 64 million values on the desktop and 16 million in the web app (cells × dates,
+4 bytes each: up to 256 MB; a STAC collection is read in pieces that keep to it), and like first
+is the data cube summary's only.
+
+- **Cloud-free composites:** a STAC collection's dates can be masked by each item's own quality band
+  with `"mask"`: `{"asset": "SCL", "keep": [4, 5, 6]}` takes a cell at a date only where the same
+  item's SCL has one of those classes, `"drop": [0, 1, 3, 8, 9, 10]` every class but those, and
+  `"bits": {"set": [6], "unset": [1, 3, 4]}` the cells of a bit mask (Landsat's `qa_pixel`) with
+  every bit of `set` on and every bit of `unset` off. Classes are whole numbers. A cell with no-data
+  in the mask (its header's, or the value its STAC metadata names) is never taken, nor one outside
+  the mask's file (said, with how many). The mask is read onto the band's grid by nearest neighbour
+  (SCL at 20 m under a 10 m band), at its overview nearest the band's cells, and an item without the
+  mask's asset is left out and said. With a mask, **first** takes the dates by their clear share of
+  the area by default (`"order": "clear"`): each date's masks are read over the area first,
+  overlapping tiles counted once (at an overview of about a million pixels for a large area), and
+  the clearest date gives each cell its value, the next clearest the cells still empty, and so on
+  (the best pixel). A tile's `eo:cloud_cover` says little about a small area, so it isn't used.
+  **median** of the masked dates gives a smoother composite, with no seams between dates, where
+  several dates are clear. Any statistic takes a mask, and so does a trend (`cube.trend`). With
+  first and median, a cell no date has clear is left empty; the counts give 0 there (see Missing
+  values below). The example below keeps SCL's dark areas (2) and unclassified pixels (7), which a
+  hilly area needs (they can hold shadows or low cloud): drop them for a stricter mask.
 
 - **Classes:** a series of categorical rasters, such as yearly land-cover maps (MapBiomas, ESA
   WorldCover), is summarised as classes with eight more statistics:
@@ -2138,6 +2163,7 @@ over time does for a Zarr variable (see [Data](data.md)).
 rustgis-cli run --cmd 'cube.reduce={"layers":["ndvi_2015","ndvi_2016","ndvi_2017","ndvi_2018"],"stat":"max"}'
 rustgis-cli run --data cobertura_1985.tif --data cobertura_1986.tif --data cobertura_1987.tif --cmd 'cube.reduce={"layers":["cobertura_1985","cobertura_1986","cobertura_1987"],"stat":"changes"}'
 rustgis-cli run --cmd 'cube.reduce={"url":"https://data.inpe.br/bdc/stac/v1","collection":"mod13q1-6.1","asset":"NDVI","bbox":[-44.8,-7.5,-44.3,-7.0],"start":"2001","end":"2025","cellSize":1000,"stat":"mean","by":"year","minValid":0.5,"name":"NDVI"}' --save urucui.rgis
+rustgis-cli run --cmd 'cube.reduce={"url":"https://data.inpe.br/bdc/stac/v1","collection":"S2-16D-2","asset":"B04","mask":{"asset":"SCL","keep":[2,4,5,6,7]},"bbox":[-43.003,-20.838,-42.754,-20.655],"start":"2025-06-01","end":"2025-08-31","stat":"first","name":"B04 cloud-free"}' --save vicosa.rgis
 ```
 
 ## Categorical raster area by zone

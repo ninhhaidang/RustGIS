@@ -10,6 +10,10 @@ mod scene_losses;
 #[path = "tests/cancellation.rs"]
 mod cancellation;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "tests/cube_mask.rs"]
+mod cube_mask;
+
 #[path = "tests/permission_policy.rs"]
 mod permission_policy;
 
@@ -32057,7 +32061,7 @@ fn a_data_cube_summarised_over_time() {
     let before = s.map().layers.len();
     for bad in [
         json!({"layers": names}),
-        json!({"layers": names, "stat": "median"}),
+        json!({"layers": names, "stat": "percentile"}),
         json!({"layers": names, "stat": "countAbove"}),
         json!({"layers": names, "stat": "mean", "by": "week"}),
         json!({"layers": names, "stat": "mean", "minValid": 1.5}),
@@ -54116,7 +54120,9 @@ fn serve_ranged_files(files: Vec<(String, Vec<u8>)>) -> (String, std::sync::Arc<
                 };
                 let (status, part) = match range.as_deref().and_then(|r| r.split_once('-')) {
                     Some(("", n)) => ("206 Partial Content", &body[body.len() - n.parse::<usize>().unwrap().min(body.len())..]),
-                    Some((a, b)) => ("206 Partial Content", &body[a.parse::<usize>().unwrap()..=b.parse::<usize>().unwrap()]),
+                    Some((a, b)) => {
+                        ("206 Partial Content", &body[a.parse::<usize>().unwrap()..=b.parse::<usize>().unwrap().min(body.len() - 1)])
+                    }
                     None => ("200 OK", &body[..]),
                 };
                 let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len());

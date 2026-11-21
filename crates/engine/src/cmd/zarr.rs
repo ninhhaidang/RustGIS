@@ -1801,7 +1801,7 @@ impl ReduceRun {
         use std::sync::atomic::Ordering;
         // The first slice's grid (its size, place and coordinate system), all the run keeps of it.
         let mut first: Option<(u32, u32, raster::GeoTransform, Crs)> = None;
-        let mut totals = super::cube::Totals::new(self.stat, 0)?;
+        let mut totals = super::cube::Totals::new(self.stat, 0, 0)?;
         // Steps never written (no chunk at all), read as having no value.
         let mut unwritten = 0usize;
         // What reading the slices said (a shift the store's system doesn't apply, …), once each:
@@ -1839,7 +1839,7 @@ impl ReduceRun {
                     if len > MAX_REDUCE_CELLS {
                         return Err(format!("{len} cells, more than a summary takes ({MAX_REDUCE_CELLS})"));
                     }
-                    totals = super::cube::Totals::new(self.stat, len)?;
+                    totals = super::cube::Totals::new(self.stat, len, 0)?;
                     first = Some((r.width, r.height, r.transform, r.crs));
                 }
                 // One grid for every step: the same size and coordinate system, its place within a
@@ -1885,8 +1885,9 @@ impl ReduceRun {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reduce_start(s: &Session, p: &Value) -> Result<ReduceRun, String> {
     let stat = Stat::parse(p)?;
-    // A variable of classes is summarised by cube.reduce, which reads its dates in order.
-    if stat.categorical() {
+    // A variable of classes is summarised by cube.reduce, which reads its dates in order; so is a
+    // median, which holds every date's value, and first, which ranks them.
+    if stat.categorical() || matches!(stat, Stat::Median | Stat::First) {
         return Err(format!(
             "zarr.reduce takes mean, min, max, sum, std, count or countAbove: {} is cube.reduce's (give it this layer or store)",
             stat.code()

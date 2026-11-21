@@ -446,6 +446,10 @@ pub struct CubeFiles {
     pub scales_differ: bool,
     /// Files whose metadata names codes for a failed retrieval (JAXA Earth's `dn.error`).
     pub coded: usize,
+    /// Each file's mask, the same item's quality asset, with the values its metadata says aren't
+    /// values, by the file's tile and day (one item each): only when a mask is asked for
+    /// (`cube.reduce`'s `"mask"`).
+    pub masks: std::collections::HashMap<(String, i64), (String, Vec<f64>)>,
     pub collection: String,
     pub asset: String,
 }
@@ -469,9 +473,10 @@ pub(crate) fn period_after(v: &Value) -> Option<f64> {
 
 /// Searches a collection over an area and period, every page up to `max_items`, and
 /// groups the items' asset by tile and day: `{"url"?, "collection", "asset", "bbox"? | "view",
-/// "start", "end", "maxCloud"?}`.
+/// "start", "end", "maxCloud"?}`. With `mask`, an asset key, each file's mask is the same item's
+/// asset of that key, and an item without one is left out (and said).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFiles, String> {
+pub fn cube_files(s: &mut Session, p: &Value, max_items: usize, mask: Option<&str>) -> Result<CubeFiles, String> {
     let api = request_api(s, p)?;
     let collection = ps(p, "collection").map(str::trim).filter(|c| !c.is_empty()).ok_or("collection is required")?;
     let asset = ps(p, "asset").map(str::trim).filter(|a| !a.is_empty()).ok_or("asset is required (a band, such as NDVI)")?;
@@ -571,6 +576,8 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
     let mut codes_unread = 0usize;
     let mut duplicates = 0usize;
     let mut without = 0usize;
+    let mut masks: std::collections::HashMap<(String, i64), (String, Vec<f64>)> = Default::default();
+    let mut unmasked = 0usize;
     // Each public bucket's region, found once ([`public_web`]).
     let mut regions: std::collections::HashMap<String, Option<String>> = Default::default();
     for i in &items {
@@ -581,6 +588,24 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
         let Some(a) = i.assets.iter().find(|a| a.key.eq_ignore_ascii_case(asset)) else {
             without += 1;
             continue;
+        };
+        // Its mask, the same item's quality asset: an item without one can't be masked.
+        let masked_by = match mask {
+            None => None,
+            Some(key) => match i.assets.iter().find(|m| m.key.eq_ignore_ascii_case(key)) {
+                // Its codes for a failed retrieval not read whole: they could pass for classes.
+                Some(m) if m.codes_unread => {
+                    codes_unread += 1;
+                    without += 1;
+                    continue;
+                }
+                Some(m) => Some(m),
+                None => {
+                    unmasked += 1;
+                    without += 1;
+                    continue;
+                }
+            },
         };
         // Its codes for a failed retrieval not read whole: its values can't be told from them.
         if a.codes_unread {
@@ -593,7 +618,7 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
             None => i.id.clone(),
         });
         let d = (ms / 86_400_000.0).floor() as i64;
-        let by_day = tiles.entry(key).or_default();
+        let by_day = tiles.entry(key.clone()).or_default();
         if by_day.contains_key(&d) {
             // A tile and day already have a file; this one is left out (and counted), its scale too.
             duplicates += 1;
@@ -604,6 +629,12 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
         // A public bucket's `s3://` file (Digital Earth Australia's, the Copernicus DEM's) is read
         // anonymously at its web address, as a cube's files are kept.
         let href = if s3::is_s3(&href) { public_web(&href, &mut regions)? } else { href };
+        if let Some(m) = masked_by {
+            let mh = crate::render::rustgis_tiles::logins::inherit(&api, m.href.split('#').next().unwrap_or(&m.href));
+            let mh = if s3::is_s3(&mh) { public_web(&mh, &mut regions)? } else { mh };
+            let stored = m.nodata.iter().chain(&m.invalid).copied().collect();
+            masks.insert((key, d), (mh, stored));
+        }
         // No scale or offset in the metadata reads as 1 and 0, the values as stored.
         let this = (a.scale.unwrap_or(1.0), a.offset.unwrap_or(0.0));
         scales.insert(href.clone(), this);
@@ -623,13 +654,16 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
             stac::MAX_INVALID
         )
     });
+    let no_mask =
+        mask.filter(|_| unmasked > 0).map(|key| format!("{unmasked} item(s) left out, as they have no asset {key} to mask them by"));
     if tiles.is_empty() {
-        return Err(match unread_codes {
-            Some(why) => format!("{collection}: {why}"),
-            None => format!("no item of {collection} has an asset {asset}"),
+        return Err(match (unread_codes, no_mask) {
+            (Some(why), _) => format!("{collection}: {why}"),
+            (None, Some(_)) => format!("no item of {collection} has both an asset {asset} and the mask's {}", mask.unwrap_or_default()),
+            (None, None) => format!("no item of {collection} has an asset {asset}"),
         });
     }
-    if let Some(why) = unread_codes {
+    for why in unread_codes.into_iter().chain(no_mask) {
         s.warn(format!("{collection}: {why}"));
     }
     // Files reached through signed addresses (Planetary Computer's) expire within hours, so a
@@ -637,14 +671,11 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
     // The files' addresses come from the API's answer: each is checked as one that answer points
     // to (http or https, never a forbidden address, and not into the local network from a public
     // API), before a cube on the map or a trend reads it.
-    if let Some(e) = tiles
-        .values()
-        .flat_map(|by_day| by_day.values())
-        .find_map(|href| crate::render::rustgis_tiles::address::check(href, Some(&api)).err())
-    {
+    let all = || tiles.values().flat_map(|by_day| by_day.values()).chain(masks.values().map(|(m, _)| m));
+    if let Some(e) = all().find_map(|href| crate::render::rustgis_tiles::address::check(href, Some(&api)).err()) {
         return Err(e);
     }
-    if tiles.values().flat_map(|by_day| by_day.values()).any(|href| stac::needs_signing(href)) {
+    if all().any(|href| stac::needs_signing(href)) {
         return Err(format!(
             "{collection}'s files are reached through signed addresses that expire within hours, which neither a data cube on the map nor a trend reads: use an API with public files (Earth Search, the Brazil Data Cube)"
         ));
@@ -660,6 +691,7 @@ pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFi
         duplicates,
         scales_differ,
         coded,
+        masks,
         collection: collection.to_string(),
         asset: asset.to_string(),
     })
@@ -721,9 +753,15 @@ thread_local! {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct StacCube {
     dates: Vec<f64>,
-    /// Each date's files, with their (scale, offset) and the stored values their metadata says
-    /// aren't values.
-    files: Vec<Vec<(String, (f64, f64), Vec<f64>)>>,
+    /// Each date's files, with their (scale, offset), the stored values their metadata says
+    /// aren't values, and when masked their mask (the same item's quality asset): its address and
+    /// the stored values its metadata says aren't values.
+    files: Vec<Vec<(String, (f64, f64), Vec<f64>, Option<Mask>)>>,
+    /// The quality values that let a cell through, for a cube masked by its items' quality band.
+    mask: Option<super::cube_mask::Test>,
+    /// Band pixels read that their item's mask file doesn't cover, left out as not clear, and the
+    /// first such mask's address: said once the run has read its slices.
+    uncovered: std::sync::Mutex<(u64, Option<String>)>,
     /// The level read (0: the full images), and how many of its pixels a cell's side takes: 1
     /// when the cells are that level's own pixels (`"resampling": "nearest"`, an overview as the
     /// file stores it), more when a cell is the mean of the full images' pixels in it.
@@ -785,6 +823,7 @@ pub fn piece_rows(width: u32, height: u32, dates: usize, tile_height: u32, max: 
 pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
     use crate::render::rustgis_tiles::cog;
     // The parameters read here, before the search and the first header are waited for.
+    let mask = super::cube_mask::parse(p)?;
     let size = match p.get("cellSize").filter(|v| !v.is_null()) {
         None => None,
         Some(v) => {
@@ -824,13 +863,16 @@ pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
         o.insert("bbox".into(), json!(bbox));
     }
     let max_items = if s.long_runs.is_some() { MAX_SERIES_ITEMS } else { MAX_CUBE_ITEMS };
-    let CubeFiles { tiles, scales, nodata, collection, asset, .. } = cube_files(s, &searched, max_items)?;
+    let CubeFiles { tiles, scales, nodata, masks, collection, asset, .. } =
+        cube_files(s, &searched, max_items, mask.as_ref().map(|m| m.asset.as_str()))?;
     // Every tile's file for a date, by day.
-    let mut by_day: std::collections::BTreeMap<i64, Vec<(String, (f64, f64), Vec<f64>)>> = Default::default();
-    for days in tiles.values() {
+    let mut by_day: std::collections::BTreeMap<i64, Vec<(String, (f64, f64), Vec<f64>, Option<Mask>)>> = Default::default();
+    for (tile, days) in &tiles {
         for (d, href) in days {
             let scale = scales.get(href).copied().unwrap_or((1.0, 0.0));
-            by_day.entry(*d).or_default().push((href.clone(), scale, nodata.get(href).cloned().unwrap_or_default()));
+            let mask = masks.get(&(tile.clone(), *d)).map(|(m, stored)| (m.clone(), stored.iter().map(|v| *v as f32).collect()));
+            let file = (href.clone(), scale, nodata.get(href).cloned().unwrap_or_default(), mask);
+            by_day.entry(*d).or_default().push(file);
         }
     }
     if by_day.len() > super::cube::MAX_DATES {
@@ -845,13 +887,7 @@ pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
     }
     // The level whose cells are nearest the size asked, by ratio (`1000` takes MODIS's 926.6 m
     // overview, not its 463 m one); the full images by default.
-    let level = match size {
-        None => 0,
-        Some(size) => {
-            let off = |l: &rustgis_data::raster::cog::Level| (layout.transform_of(l).pixel_width.abs() / size).ln().abs();
-            (0..layout.levels.len()).min_by(|a, b| off(&layout.levels[*a]).total_cmp(&off(&layout.levels[*b]))).unwrap_or(0)
-        }
-    };
+    let level = size.map_or(0, |size| level_near(layout, size));
     let lv = layout.levels.get(level).ok_or("the file has no image")?;
     let lt = layout.transform_of(lv);
     let full = layout.levels.first().ok_or("the file has no image")?;
@@ -958,7 +994,95 @@ pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
         rows,
         met: Default::default(),
         label: format!("{collection} {asset}"),
+        mask: mask.map(|m| m.test),
+        uncovered: Default::default(),
     })
+}
+
+/// The pixels of a clear share's mask read at once, and about the most over an area: its
+/// overview level is the one nearest that many pixels over the area.
+#[cfg(not(target_arch = "wasm32"))]
+const SHARE_PIXELS: f64 = 1_000_000.0;
+
+/// A file's mask: its address, and the stored values its metadata says aren't values (SCL's 0 at
+/// the Brazil Data Cube), never let through whatever the test says.
+#[cfg(not(target_arch = "wasm32"))]
+type Mask = (String, Vec<f32>);
+
+/// A window of a mask's values (band 1), as [`read_values_counted_blocking`] reads them: refused
+/// when `f32` rounded any (whole numbers past 2^24, in a 32- or 64-bit band), whose classes or
+/// bits can't then be told; `stop` heard within the read.
+///
+/// [`read_values_counted_blocking`]: crate::render::rustgis_tiles::cog::read_values_counted_blocking
+#[cfg(not(target_arch = "wasm32"))]
+fn mask_values(
+    info: &std::sync::Arc<crate::render::rustgis_tiles::cog::Info>,
+    href: &str,
+    level: usize,
+    cols: (u32, u32),
+    rows: (u32, u32),
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<f32>, String> {
+    let (values, rounded, lost) = crate::render::rustgis_tiles::cog::read_values_counted_blocking(info, href, level, 0, cols, rows, stop)?;
+    if rounded > 0 || lost > 0 {
+        return Err(crate::sources::message_with_address(
+            href,
+            &format!(
+                "a mask with {} value(s) past 2^24, which can't be read exactly, so its classes or bits can't be tested",
+                rounded + lost
+            ),
+        ));
+    }
+    Ok(values)
+}
+
+/// The level of a file whose pixels are nearest `size` across, by ratio.
+#[cfg(not(target_arch = "wasm32"))]
+fn level_near(layout: &rustgis_data::raster::cog::Layout, size: f64) -> usize {
+    let off = |l: &rustgis_data::raster::cog::Level| (layout.transform_of(l).pixel_width.abs() / size).ln().abs();
+    (0..layout.levels.len()).min_by(|a, b| off(&layout.levels[*a]).total_cmp(&off(&layout.levels[*b]))).unwrap_or(0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StacCube {
+    /// The mask's say over a window of a band file's level (`lt` its grid; columns `cols`, rows
+    /// `rows`), pixel by pixel in the window's order: the mask file `href` read at its level
+    /// nearest the band's pixels, each band pixel taking the mask pixel holding its centre;
+    /// `None` for a pixel the mask file doesn't cover.
+    fn mask_window(
+        &self,
+        (href, stored): &Mask,
+        test: &super::cube_mask::Test,
+        lt: &rustgis_data::raster::GeoTransform,
+        cols: (u32, u32),
+        rows: (u32, u32),
+    ) -> Result<Vec<Option<bool>>, String> {
+        use super::cube_mask::{nearest, span};
+        use crate::render::rustgis_tiles::cog;
+        let info = cog::info_blocking(href)?;
+        if info.layout.crs != self.crs {
+            return Err(crate::sources::message_with_address(href, "a mask in another coordinate system than its band"));
+        }
+        let level = level_near(&info.layout, lt.pixel_width.abs());
+        let lv = info.layout.levels.get(level).ok_or_else(|| crate::sources::message_with_address(href, "a mask with no image"))?;
+        let mt = info.layout.transform_of(lv);
+        let xs = nearest(lt.origin_x, lt.pixel_width, cols, mt.origin_x, mt.pixel_width, lv.width);
+        let ys = nearest(lt.origin_y, lt.pixel_height, rows, mt.origin_y, mt.pixel_height, lv.height);
+        let (Some(mc), Some(mr)) = (span(&xs), span(&ys)) else { return Ok(vec![None; xs.len() * ys.len()]) };
+        let m = mask_values(&info, href, level, mc, mr, &std::sync::atomic::AtomicBool::new(false))?;
+        let across = (mc.1 - mc.0) as usize;
+        let mut out = Vec::with_capacity(xs.len() * ys.len());
+        for y in &ys {
+            for x in &xs {
+                let v = match (x, y) {
+                    (Some(x), Some(y)) => m.get((y - mr.0) as usize * across + (x - mc.0) as usize),
+                    _ => None,
+                };
+                out.push(v.map(|v| !stored.contains(v) && test.accepts(*v)));
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -990,6 +1114,88 @@ impl super::cube::TimeCube for StacCube {
         let met = self.met.load(std::sync::atomic::Ordering::Relaxed);
         (!met).then(|| format!("no file of {} covers the area, only comes near it: take another bbox", self.label))
     }
+    fn masked(&self) -> bool {
+        self.mask.is_some()
+    }
+    /// Band pixels their item's mask file doesn't cover: left out as not clear, and said with
+    /// their count and the first such mask.
+    fn lost(&self) -> Vec<String> {
+        match self.uncovered.lock().map(|u| u.clone()) {
+            Ok((n, Some(href))) if n > 0 => vec![crate::sources::message_with_address(
+                &href,
+                &format!(
+                    "{n} band pixel(s) with a value lie outside their item's mask file (this one the first), so they were left out as not clear"
+                ),
+            )],
+            _ => Vec::new(),
+        }
+    }
+    /// The part of the area date `i`'s masks let through: a grid over the area of about
+    /// [`SHARE_PIXELS`] cells (coarser than the band's for a large area), each cell clear when a
+    /// mask lets its centre through, so tiles that overlap count it once. Each mask is read at its
+    /// level nearest the grid's cells, in bands of rows of about that many pixels, `cancel`
+    /// checked between them and heard within each read; the area's cells no file covers count
+    /// as not clear.
+    fn clear_share(&self, i: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<Option<f64>, String> {
+        use super::cube_mask::{nearest, span};
+        use crate::render::rustgis_tiles::cog;
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(test) = &self.mask else { return Ok(None) };
+        let files = self.files.get(i).ok_or_else(|| format!("no date {i}"))?;
+        let t = &self.transform;
+        let (x0, x1) = (t.origin_x, t.origin_x + f64::from(self.width) * t.pixel_width);
+        let (y1, y0) = (t.origin_y, t.origin_y + f64::from(self.height) * t.pixel_height);
+        let size = (((x1 - x0) * (y1 - y0)).abs() / SHARE_PIXELS).sqrt().max(t.pixel_width.abs());
+        let cells = |a: f64, b: f64| ((b - a).abs() / size).ceil().clamp(1.0, 1e5) as u32;
+        let (gw, gh) = (cells(x0, x1), cells(y0, y1));
+        // The grid fitted to the area, so every sample's centre is inside it.
+        let (sx, sy) = ((x1 - x0) / f64::from(gw), (y1 - y0).abs() / f64::from(gh));
+        let mut clear = vec![false; gw as usize * gh as usize];
+        for (href, stored) in files.iter().filter_map(|f| f.3.as_ref()) {
+            let info = cog::info_blocking(href)?;
+            if info.layout.crs != self.crs {
+                return Err(crate::sources::message_with_address(href, "a mask in another coordinate system than its band"));
+            }
+            let level = level_near(&info.layout, size);
+            let Some(lv) = info.layout.levels.get(level) else { continue };
+            let mt = info.layout.transform_of(lv);
+            let xs = nearest(x0, sx, (0, gw), mt.origin_x, mt.pixel_width, lv.width);
+            let Some(mc) = span(&xs) else { continue };
+            // A band of grid rows reads about SHARE_PIXELS of the mask's pixels.
+            let per_row = f64::from(mc.1 - mc.0) * (sy / mt.pixel_height.abs()).max(1.0);
+            let band = (SHARE_PIXELS / per_row).floor().clamp(1.0, f64::from(gh)) as u32;
+            let mut r = 0;
+            while r < gh {
+                if cancel.load(Relaxed) {
+                    return Err("cancelled".into());
+                }
+                let next = r.saturating_add(band).min(gh);
+                let ys = nearest(y1, -sy, (r, next), mt.origin_y, mt.pixel_height, lv.height);
+                if let Some(mr) = span(&ys) {
+                    let m = match mask_values(&info, href, level, mc, mr, cancel) {
+                        Ok(m) => m,
+                        Err(_) if cancel.load(Relaxed) => return Err("cancelled".into()),
+                        Err(e) => return Err(e),
+                    };
+                    let across = (mc.1 - mc.0) as usize;
+                    for (j, y) in ys.iter().enumerate() {
+                        let Some(y) = y else { continue };
+                        for (k, x) in xs.iter().enumerate() {
+                            let Some(x) = x else { continue };
+                            let v = m.get((y - mr.0) as usize * across + (x - mc.0) as usize);
+                            if v.is_some_and(|v| !stored.contains(v) && test.accepts(*v))
+                                && let Some(c) = clear.get_mut((r as usize + j) * gw as usize + k)
+                            {
+                                *c = true;
+                            }
+                        }
+                    }
+                }
+                r = next;
+            }
+        }
+        Ok(Some(clear.iter().filter(|c| **c).count() as f64 / clear.len().max(1) as f64))
+    }
     /// Rows `piece × rows` on of the area at date `i`: each file's part of them, its values
     /// scaled as its metadata says, a cell the mean of the pixels read in it (one, or a block of
     /// the full images'); a cell no file covers (or none has a value for) is NaN.
@@ -1010,7 +1216,7 @@ impl super::cube::TimeCube for StacCube {
             ..self.transform
         };
         let (wf, top_f, hf) = (i64::from(w) * i64::from(f), i64::from(top) * i64::from(f), i64::from(h) * i64::from(f));
-        for (href, (k, o), fill) in files {
+        for (href, (k, o), fill, mask) in files {
             let fill: Vec<f32> = fill.iter().map(|v| *v as f32).collect();
             // Cached per address for the process (`with_info`, a failure too, for a while), so a
             // file's header is fetched once however many pieces and dates read it.
@@ -1044,20 +1250,46 @@ impl super::cube::TimeCube for StacCube {
             let cols = (fc0 as u32, fc1 as u32);
             let rows = (fr0 as u32, fr1 as u32);
             let read = cog::read_values_blocking(&info, href, self.level, 0, cols, rows)?;
+            // A masked cube's pixels go in only where the same item's mask lets them through.
+            let keep = match (&self.mask, mask) {
+                (Some(test), Some(m)) => Some(self.mask_window(m, test, &lt, cols, rows)?),
+                // Every file of a masked cube has its item's mask (cube_files leaves out the items
+                // without one): one that doesn't would let clouds through unsaid.
+                (Some(_), None) => return Err(crate::sources::message_with_address(href, "has no quality band to mask its cells by")),
+                _ => None,
+            };
+            // The band pixels with a value that the mask file doesn't cover.
+            let mut outside = 0u64;
             let across = (fc1 - fc0) as usize;
             for (r, line) in read.chunks(across).enumerate() {
                 let row = ((fr0 - dy - top_f) as usize + r) / f as usize;
                 for (c, v) in line.iter().enumerate() {
                     let col = ((fc0 - dx) as usize + c) / f as usize;
                     let cell = row * w as usize + col;
-                    if v.is_finite()
-                        && !fill.contains(v)
-                        && let (Some(s), Some(n)) = (sum.get_mut(cell), count.get_mut(cell))
-                    {
+                    if !v.is_finite() || fill.contains(v) {
+                        continue;
+                    }
+                    let clear = match &keep {
+                        None => true,
+                        Some(kept) => match kept.get(r * across + c).copied().flatten() {
+                            Some(clear) => clear,
+                            None => {
+                                outside += 1;
+                                false
+                            }
+                        },
+                    };
+                    if clear && let (Some(s), Some(n)) = (sum.get_mut(cell), count.get_mut(cell)) {
                         *s += f64::from(*v) * k + o;
                         *n += 1;
                     }
                 }
+            }
+            if outside > 0
+                && let (Ok(mut u), Some((m, _))) = (self.uncovered.lock(), mask)
+            {
+                u.0 += outside;
+                u.1.get_or_insert_with(|| m.clone());
             }
         }
         let vals: Vec<f32> = sum.iter().zip(&count).map(|(s, n)| if *n > 0 { (s / f64::from(*n)) as f32 } else { f32::NAN }).collect();
@@ -1121,8 +1353,21 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
         if let Some(n) = attribution.as_ref().map(|a| a.chars().count()).filter(|n| *n > 500) {
             return Err(format!("attribution is {n} characters; a tile layer's credit is at most 500"));
         }
-        let CubeFiles { tiles, scale, scales, nodata, items, named_tiles, without, duplicates, scales_differ, coded, collection, asset } =
-            cube_files(s, p, MAX_CUBE_ITEMS)?;
+        let CubeFiles {
+            tiles,
+            scale,
+            scales,
+            nodata,
+            items,
+            named_tiles,
+            without,
+            duplicates,
+            scales_differ,
+            coded,
+            collection,
+            asset,
+            ..
+        } = cube_files(s, p, MAX_CUBE_ITEMS, None)?;
         // A tile layer's look has no way to name them, so on the map they are values.
         if coded > 0 {
             s.warn(format!(

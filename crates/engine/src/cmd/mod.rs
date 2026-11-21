@@ -8,6 +8,7 @@ pub mod connections;
 pub mod copernicus;
 pub mod cube;
 pub mod cube_catalog;
+pub mod cube_mask;
 pub mod deeplearning;
 pub mod design;
 pub mod diagram;
