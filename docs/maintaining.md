@@ -104,7 +104,8 @@ in the fixtures' README and in the test's `SKIPS` when a release has no such fil
 
 New project saves and map/layer exports write format 2. Their `requires` header names only
 features present in the saved payload: `terrain-block`, `terrain-block-shape` (a block
-diagram cut to a circle), `terrain-water`,
+diagram cut to a circle or to polygons), `terrain-block-polygon` (one cut to polygons),
+`terrain-water`,
 `terrain-water-shore` (a terrain water's shore band other than the default),
 `terrain-block-water` (water in a block diagram's walls),
 `shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour),

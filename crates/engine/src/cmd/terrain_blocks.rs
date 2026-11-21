@@ -13,6 +13,17 @@ use crate::notice_text::NoticeText;
 
 const CHECK_CELLS: usize = 64;
 
+/// The box `b` is cut to when it has one of its own: its extent, or the box round the polygons it
+/// is cut to (#2318) when they can be read. None: the DEM's.
+pub(crate) fn own_box(map: &rustgis_map::Map, b: &rustgis_map::view::TerrainBlock) -> Option<[f64; 4]> {
+    b.extent.or_else(|| match &b.shape {
+        rustgis_map::view::BlockShape::Polygon { layer, filter } => {
+            rustgis_render::terrain::Outline::of(map, layer, filter.as_deref()).map(|o| o.extent())
+        }
+        _ => None,
+    })
+}
+
 pub(crate) struct Checked {
     layer: u64,
     pixels: Weak<Raster>,
@@ -61,6 +72,41 @@ pub(super) fn check(name: &str, raster: &Raster, extent: Option<[f64; 4]>) -> Re
     Ok(Coverage { extent, missing, total })
 }
 
+/// Blocks cut to polygons that can't be read, said as the project opened: remembered as checked,
+/// so the landing check doesn't say them again, now or when the DEM's pixels land (an edit that
+/// changes their box checks again).
+pub(crate) fn told_uncut(session: &mut Session) {
+    for map in &session.project.maps {
+        let Some(terrain) = &map.view.terrain else { continue };
+        let (TerrainSource::Layer(name), Some(block)) = (&terrain.source, &terrain.block) else { continue };
+        if !matches!(block.shape, rustgis_map::view::BlockShape::Polygon { .. }) || own_box(map, block).is_some() {
+            continue;
+        }
+        let Some(layer) = map.layer_by_name(name) else { continue };
+        let pixels = layer.raster.as_ref().and_then(|raster| raster.data.as_ref()).map(Arc::downgrade).unwrap_or_default();
+        let checked = Checked { layer: layer.instance_id(), pixels, extent: None };
+        session.terrain_blocks_checked.insert(map.instance_id(), checked);
+    }
+}
+
+/// Blocks cut to polygons of layer `cut`, which was just removed: said by that removal
+/// (`terrain_follows_removal`), so remembered as said here. Otherwise the landing check would say
+/// them again as blocks whose polygons can't be read (#2318).
+pub(crate) fn said_removed(session: &mut Session, cut: &str) {
+    for map in &session.project.maps {
+        let Some(terrain) = &map.view.terrain else { continue };
+        let (TerrainSource::Layer(name), Some(block)) = (&terrain.source, &terrain.block) else { continue };
+        let rustgis_map::view::BlockShape::Polygon { layer: shape, .. } = &block.shape else { continue };
+        if !shape.eq_ignore_ascii_case(cut) || map.layer_by_name(cut).is_some() {
+            continue;
+        }
+        let Some(dem) = map.layer_by_name(name) else { continue };
+        let pixels = dem.raster.as_ref().and_then(|raster| raster.data.as_ref()).map(Arc::downgrade).unwrap_or_default();
+        let checked = Checked { layer: dem.instance_id(), pixels, extent: None };
+        session.terrain_blocks_checked.insert(map.instance_id(), checked);
+    }
+}
+
 /// Called after a command commits and when the frame reports newly landed raster pixels.
 /// A Weak retains allocation identity without retaining the DEM's pixel buffers.
 pub(crate) fn landed(session: &mut Session) {
@@ -85,6 +131,9 @@ fn landed_impl(session: &mut Session, restoring: bool) {
     let mut dropped = Vec::new();
     let mut restored = Vec::new();
     let mut partial = Vec::new();
+    // Blocks cut to polygons (#2318) that can't be read, and those off their DEM: said, and kept,
+    // so an edit of the polygons brings them back.
+    let (mut uncut, mut off) = (Vec::new(), Vec::new());
     for map in &session.project.maps {
         let map_id = map.instance_id();
         maps.insert(map_id);
@@ -100,23 +149,35 @@ fn landed_impl(session: &mut Session, restoring: bool) {
             checked.remove(&map_id);
             continue;
         };
+        let polygons = matches!(block.shape, rustgis_map::view::BlockShape::Polygon { .. });
         let Some(raster) = layer.raster.as_ref().and_then(|raster| raster.data.as_ref()) else {
-            checked.remove(&map_id);
+            // A block cut to polygons that can't be read keeps its mark while its pixels are on
+            // their way: it was said as the project opened (`told_uncut`).
+            if !(polygons && checked.get(&map_id).is_some_and(|old| old.extent.is_none())) {
+                checked.remove(&map_id);
+            }
             continue;
         };
         let pixels = Arc::downgrade(raster);
-        if checked
-            .get(&map_id)
-            .is_some_and(|old: &Checked| old.layer == layer.instance_id() && old.pixels.ptr_eq(&pixels) && old.extent == block.extent)
-        {
+        let extent = own_box(map, block);
+        // One that still can't be read was said already, whatever pixels have landed.
+        if checked.get(&map_id).is_some_and(|old: &Checked| {
+            old.layer == layer.instance_id() && old.extent == extent && (old.pixels.ptr_eq(&pixels) || (polygons && extent.is_none()))
+        }) {
             continue;
         }
-        checked.insert(map_id, Checked { layer: layer.instance_id(), pixels, extent: block.extent });
+        checked.insert(map_id, Checked { layer: layer.instance_id(), pixels, extent });
+        if polygons && extent.is_none() {
+            uncut.push(crate::project::short_name(&map.name));
+            continue;
+        }
         let name = crate::project::short_name(name);
-        match check(&name, raster, block.extent) {
+        match check(&name, raster, extent) {
             Err(reason) => {
                 let detail = format!("{} ({reason})", crate::project::short_name(&map.name));
-                if restoring {
+                if polygons {
+                    off.push(detail);
+                } else if restoring {
                     restored.push(detail);
                 } else {
                     dropped.push((map_id, detail));
@@ -164,6 +225,25 @@ fn landed_impl(session: &mut Session, restoring: bool) {
                 false,
             );
         }
+    }
+    if !uncut.is_empty() {
+        session.notify(
+            format!(
+                "Terrain: the polygons a block diagram is cut to can't be read (none with an area) on {}: no block is drawn until they can",
+                uncut.join(", ")
+            ),
+            false,
+        );
+    }
+    if !off.is_empty() {
+        session.notify(
+            format!(
+                "Terrain: {} block diagram(s) cut to polygons lie off their DEM, kept for when the polygons change: {}",
+                off.len(),
+                details(off.iter().take(3).cloned().collect(), off.len())
+            ),
+            false,
+        );
     }
     if !restored.is_empty() {
         session.notify_text(NoticeText::format(

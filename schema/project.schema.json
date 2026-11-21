@@ -1081,6 +1081,7 @@
         "enum": [
           "terrain-block",
           "terrain-block-shape",
+          "terrain-block-polygon",
           "terrain-water",
           "terrain-water-shore",
           "terrain-block-water",
@@ -1177,6 +1178,7 @@
   "x-rustgis-capabilities": [
     "terrain-block",
     "terrain-block-shape",
+    "terrain-block-polygon",
     "terrain-water",
     "terrain-water-shore",
     "terrain-block-water",

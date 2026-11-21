@@ -13968,6 +13968,163 @@ fn terrain_block_is_read_back_from_a_saved_project() {
     assert_eq!(block.water, Some(rustgis_map::view::BlockWater { depth: Some(8.0), field: Some("prof".into()) }));
     let again = serde_json::to_value(&saved).unwrap();
     assert_eq!(again["requires"], json!(["terrain-block", "terrain-water", "terrain-block-water"]));
+    // One cut to polygons (`terrain_block_polygon.rgis`), its layer and query kept by name.
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_block_polygon.rgis")).unwrap();
+    let block = saved.maps[0].view.terrain.as_ref().and_then(|t| t.block.clone()).unwrap();
+    let shape = rustgis_map::view::BlockShape::Polygon { layer: "bacia".into(), filter: Some("nome = 'Rio Doce'".into()) };
+    assert_eq!(block.shape, shape);
+    assert_eq!(serde_json::to_value(&saved).unwrap()["requires"], json!(["terrain-block", "terrain-block-shape", "terrain-block-polygon"]));
+}
+
+/// A block cut to polygons (#2318): `map.terrain` takes a polygon layer and a `where`, reports the
+/// box round the polygons it picks, follows the layer's renames, and refuses a `where` picking
+/// none, a layer of no polygons, an extent and a radius with them.
+#[test]
+fn terrain_block_cut_to_polygons() {
+    use base64::Engine;
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let square = |x: f64, y: f64| json!([[[x, y], [x + 0.01, y], [x + 0.01, y + 0.01], [x, y + 0.01], [x, y]]]);
+    let areas = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"nome": "a"}, "geometry": {"type": "Polygon", "coordinates": square(10.005, 45.005)}},
+        {"type": "Feature", "properties": {"nome": "b"}, "geometry": {"type": "Polygon", "coordinates": square(10.02, 45.02)}},
+        {"type": "Feature", "properties": {"nome": "c"}, "geometry": {"type": "Polygon", "coordinates": square(20.0, 45.0)}},
+        {"type": "Feature", "properties": {"nome": "d"}, "geometry": {"type": "Polygon", "coordinates": [
+            [[10.005, 45.005], [10.015, 45.005], [10.015, 45.015], [10.005, 45.015], [10.005, 45.005]],
+            [[10.008, 45.008], [10.012, 45.008], [10.012, 45.012], [10.008, 45.012], [10.008, 45.008]],
+        ]}},
+    ]});
+    let data = base64::engine::general_purpose::STANDARD.encode(areas.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "areas.geojson", "data": data})).unwrap();
+    let geo = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap();
+    for (block, said) in [
+        (json!({"shape": {"layer": geo, "where": "nome = 'z'"}}), "no polygon of"),
+        (json!({"shape": {"layer": dem}}), "isn't a polygon layer"),
+        (json!({"shape": {"layer": geo, "where": "nome ="}}), "where"),
+        (json!({"shape": {"layer": geo, "x": 1}}), "has no 'x'"),
+        (json!({"shape": {"layer": geo}, "extent": [1113194.0, 5621521.0, 1114307.0, 5622000.0]}), "give no extent"),
+        (json!({"shape": {"layer": geo}, "radius": 100.0}), "radius is a circle's"),
+        (json!({"shape": {"layer": geo}, "extent": "layer"}), "give no extent"),
+    ] {
+        let e = s.run("map.terrain", &json!({"layer": dem, "block": block})).unwrap_err();
+        assert!(e.contains(said), "{block}: {e}");
+    }
+    assert!(s.map().view.terrain.is_none());
+    let v = s.run("map.terrain", &json!({"layer": dem, "block": {"shape": {"layer": geo, "where": "nome = 'a'"}}})).unwrap();
+    assert_eq!(v["block"]["shape"], json!({"layer": geo, "where": "nome = 'a'"}));
+    assert_eq!(v["block"]["extent_from"], json!("shape"));
+    let (lo, hi) = (
+        rustgis_geom::lonlat_to_merc(rustgis_geom::Coord::new(10.005, 45.005)),
+        rustgis_geom::lonlat_to_merc(rustgis_geom::Coord::new(10.015, 45.015)),
+    );
+    let e: Vec<Option<f64>> = v["block"]["extent"].as_array().unwrap().iter().map(Value::as_f64).collect();
+    assert_eq!(e.len(), 4, "{e:?}");
+    assert!(e.iter().zip([lo.x, lo.y, hi.x, hi.y]).all(|(a, b)| a.is_some_and(|a| (a - b).abs() < 1e-3)), "{e:?}");
+    assert_eq!(v["block"]["outline"]["sides"], json!(4));
+    // The block follows its layer's renames.
+    let id = s.map().layer_by_name(&geo).map(|l| l.id).unwrap();
+    s.run("layer.rename", &json!({"layer": id, "name": "bacias"})).unwrap();
+    let shape = s.map().view.terrain.as_ref().and_then(|t| t.block.as_ref()).map(|b| b.shape.clone());
+    assert_eq!(shape, Some(rustgis_map::view::BlockShape::Polygon { layer: "bacias".into(), filter: Some("nome = 'a'".into()) }));
+    // Its four sides aren't simplified: nothing said, set or opened.
+    let simplified = |s: &Session| s.notices.iter().any(|n| n.text.contains("too many corners"));
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, s.project.clone());
+    assert!(!simplified(&s) && !simplified(&opened), "{:?}", opened.notices);
+    // Nor holes, which a polygon with one gives: said once as it is set and as it opens.
+    let holes = |s: &Session| s.notices.iter().filter(|n| n.text.contains("hole(s) in the polygons")).count();
+    assert_eq!((holes(&s), holes(&opened)), (0, 0), "{:?}", opened.notices);
+    let mut holed = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut holed, s.project.clone());
+    let v = holed.run("map.terrain", &json!({"layer": dem, "block": {"shape": {"layer": "bacias", "where": "nome = 'd'"}}})).unwrap();
+    assert_eq!(v["block"]["outline"]["holes"], json!(1));
+    assert_eq!(holes(&holed), 1, "{:?}", holed.notices);
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, holed.project.clone());
+    assert_eq!(holes(&opened), 1, "{:?}", opened.notices);
+    assert!(opened.notices.iter().any(|n| n.text.contains("1 hole(s) in the polygons of 'bacias'")), "{:?}", opened.notices);
+    // A saved block cut to a polygon off the DEM is kept as the project opens, and said.
+    let mut far = s.project.clone();
+    if let Some(b) = far.maps[0].view.terrain.as_mut().and_then(|t| t.block.as_mut()) {
+        b.shape = rustgis_map::view::BlockShape::Polygon { layer: "bacias".into(), filter: Some("nome = 'c'".into()) };
+    }
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, far);
+    crate::cmd::terrain_blocks::landed(&mut opened);
+    assert!(opened.map().view.terrain.as_ref().is_some_and(|t| t.block.is_some()), "{:?}", opened.notices);
+    assert!(opened.notices.iter().any(|n| n.text.contains("lie off their DEM")), "{:?}", opened.notices);
+    assert!(!opened.notices.iter().any(|n| n.text.contains("was dropped")), "{:?}", opened.notices);
+    // One that picks no polygon is said once as the project opens, not again by the landing check.
+    let mut none = s.project.clone();
+    if let Some(b) = none.maps[0].view.terrain.as_mut().and_then(|t| t.block.as_mut()) {
+        b.shape = rustgis_map::view::BlockShape::Polygon { layer: "bacias".into(), filter: Some("nome = 'z'".into()) };
+    }
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, none.clone());
+    crate::cmd::terrain_blocks::landed(&mut opened);
+    let uncut = |s: &Session| s.notices.iter().filter(|n| n.text.contains("no block is drawn")).count();
+    assert_eq!(uncut(&opened), 1, "{:?}", opened.notices);
+    // Also when the DEM's pixels land after the project opens.
+    let mut late = none;
+    fn dem_of(p: &mut Project) -> Option<&mut rustgis_map::raster::RasterLayer> {
+        p.maps[0].layers.iter_mut().find(|l| l.is_raster()).and_then(|l| l.raster.as_mut())
+    }
+    let pixels = dem_of(&mut late).and_then(|r| r.data.take()).unwrap();
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, late);
+    crate::cmd::terrain_blocks::landed(&mut opened);
+    if let Some(r) = dem_of(&mut opened.project) {
+        r.data = Some(pixels);
+    }
+    crate::cmd::terrain_blocks::landed(&mut opened);
+    assert_eq!(uncut(&opened), 1, "{:?}", opened.notices);
+    // A toothed ring of 70 000 corners is, to stay under 65 535 sides: said when it is set and when the
+    // project opens again.
+    let star: Vec<Value> = (0..=70_000)
+        .map(|i| {
+            let (sin, cos) = (i as f64 * std::f64::consts::TAU / 70_000.0).sin_cos();
+            let r = if i % 2 == 0 { 0.004 } else { 0.0039 };
+            json!([10.01 + r * cos, 45.01 + r * sin])
+        })
+        .collect();
+    let star = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [star]}},
+    ]});
+    let data = base64::engine::general_purpose::STANDARD.encode(star.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "estrela.geojson", "data": data})).unwrap();
+    let v = s.run("map.terrain", &json!({"block": {"shape": {"layer": "estrela"}}})).unwrap();
+    assert_eq!(v["block"]["outline"]["coarsened"], json!(true), "{v}");
+    assert!(simplified(&s), "{:?}", s.notices);
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, s.project.clone());
+    assert!(simplified(&opened), "{:?}", opened.notices);
+}
+
+/// Removing the layer a block is cut to, with its DEM's pixels in, says it once: the removal says
+/// it, and the landing check after it doesn't say the block can't be read again (#2318).
+#[test]
+fn removing_a_layer_a_block_is_cut_to_says_it_once() {
+    use base64::Engine;
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let square = |x: f64, y: f64| json!([[[x, y], [x + 0.01, y], [x + 0.01, y + 0.01], [x, y + 0.01], [x, y]]]);
+    let areas = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"nome": "a"}, "geometry": {"type": "Polygon", "coordinates": square(10.005, 45.005)}},
+    ]});
+    let data = base64::engine::general_purpose::STANDARD.encode(areas.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "areas.geojson", "data": data})).unwrap();
+    let geo = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap();
+    s.run("map.terrain", &json!({"layer": dem, "block": {"shape": {"layer": geo}}})).unwrap();
+    s.notices.clear();
+    let id = s.map().layer_by_name(&geo).map(|l| l.id).unwrap();
+    s.run("layer.remove", &json!({"layer": id})).unwrap();
+    let said = |s: &Session| s.notices.iter().filter(|n| n.text.contains("no block is drawn")).count();
+    assert_eq!(said(&s), 1, "{:?}", s.notices);
+    s.notice_landed_rasters();
+    assert_eq!(said(&s), 1, "{:?}", s.notices);
+    assert!(s.map().view.terrain.as_ref().is_some_and(|t| t.block.is_some()));
 }
 
 /// A block's walls coloured by a polygon layer (#1914): the layer checked before anything changes,

@@ -364,9 +364,14 @@ fn reset(s: &mut Session, p: Project) {
         };
         let Some(e) = t.block.as_ref().and_then(|b| {
             b.check().err().or_else(|| {
-                (over_tiles && b.extent.is_none())
+                (over_tiles && !b.own_box())
                     .then(|| "over elevation tiles a block needs an extent box [xmin, ymin, xmax, ymax]".to_string())
-                    .or_else(|| off_dem(b.extent, dem.as_ref()))
+                    // A block cut to polygons off its DEM is kept, for when they change: the
+                    // landing check after the project opens says it (`terrain_blocks`).
+                    .or_else(|| {
+                        let polygons = matches!(b.shape, rustgis_map::view::BlockShape::Polygon { .. });
+                        (!polygons).then(|| off_dem(super::terrain_blocks::own_box(m, b), dem.as_ref())).flatten()
+                    })
             })
         }) else {
             continue;
@@ -404,6 +409,45 @@ fn reset(s: &mut Session, p: Project) {
             rustgis_render::terrain::walls_layer(m, l).is_none().then(|| format!("{} ('{l}')", m.name))
         })
         .collect();
+    // A block cut to polygons (#2318) whose layer is missing or picks no polygon with an area
+    // isn't drawn: said, and kept, so a polygon layer of that name, or an edit, brings it back.
+    // One whose outline was simplified to stay under 65 535 sides, or whose polygons have holes
+    // (not cut), is said as `map.terrain` says it. Each outline is read once.
+    let (mut uncut, mut simplified, mut holed) = (Vec::new(), Vec::new(), Vec::new());
+    for m in &s.project.maps {
+        let Some(rustgis_map::view::BlockShape::Polygon { layer, filter }) =
+            m.view.terrain.as_ref().and_then(|t| t.block.as_ref()).map(|b| &b.shape)
+        else {
+            continue;
+        };
+        let Some(o) = rustgis_render::terrain::Outline::of(m, layer, filter.as_deref()) else {
+            uncut.push(format!("{} ('{layer}')", m.name));
+            continue;
+        };
+        simplified.extend(super::view::outline_simplified(layer, &o).map(|said| format!("{}: {said}", m.name)));
+        holed.extend(super::view::outline_holes(layer, &o).map(|said| format!("{}: {said}", m.name)));
+    }
+    match simplified.as_slice() {
+        [] => {}
+        [one] => s.notify(one.clone(), false),
+        _ => s.notify(
+            format!("{} block diagrams cut to polygons have simplified outlines: {}", simplified.len(), simplified.join("; ")),
+            false,
+        ),
+    }
+    if !holed.is_empty() {
+        s.notify(holed.join("; "), false);
+    }
+    if !uncut.is_empty() {
+        s.notify(
+            format!(
+                "{}: the layer a block diagram is cut to is missing, isn't a polygon layer, is read a view at a time, shares its name with another layer or picks no polygon with an area, so no block is drawn",
+                uncut.join(", ")
+            ),
+            false,
+        );
+        super::terrain_blocks::told_uncut(s);
+    }
     match plain.as_slice() {
         [] => {}
         [one] => s.notify(

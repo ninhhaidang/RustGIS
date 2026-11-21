@@ -82,6 +82,11 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
     };
     let walls_layer = b.walls_layer.is_some();
     let round = !b.shape.is_box();
+    let (cut, kind) = if matches!(b.shape, rustgis_map::view::BlockShape::Polygon { .. }) {
+        ("cut to polygons", "blocks cut to polygons")
+    } else {
+        ("round", "round blocks")
+    };
     let exaggeration = t.exaggeration;
     Ok(Box::new(move || {
         let mut notes = Vec::new();
@@ -139,7 +144,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             if round {
                 notes.push((
                     warn,
-                    format!("{path}: the block is round on the map but the box round its circle in the model, based below all its ground: round blocks aren't in the model yet"),
+                    format!("{path}: the block is {cut} on the map but the box round it in the model, based below all its ground: {kind} aren't in the model yet"),
                 ));
             }
             notes.push((info, format!("{path}: the ground with the map as its texture, the walls and the base; the view's sky, fog, light and shadows are left to the 3D viewer")));
@@ -162,9 +167,9 @@ struct Model {
     pending: bool,
 }
 
-/// Turns `map`'s round block into the box round its circle, as the model has it (round blocks
-/// aren't in it yet): its base then goes below the lowest ground of all of that box, which the
-/// model's walls go down from, not of the circle's only.
+/// Turns `map`'s round block (or one cut to polygons) into the box round its circle (or them), as
+/// the model has it (neither is in it yet): its base then goes below the lowest ground of all of
+/// that box, which the model's walls go down from, not of the circle's only.
 fn as_box(map: &mut rustgis_map::Map) -> Result<(), String> {
     let ground = Ground::of(map, &map.camera)
         .ok_or("the map's terrain shows on a Web Mercator map with its DEM layer, so the block can't be read")?;

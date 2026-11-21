@@ -140,6 +140,19 @@ runs round its near half, with everything a box's walls have: colour, a walls la
 their patterns (which run on round the wall), light and fog. `"shape": "box"` (the default)
 takes it back to the box.
 
+`"shape": {"layer": "Bacias", "where": "nome = 'Rio Doce'"}` cuts the block to a study area: the
+polygons of a polygon layer that the expression picks (written as a definition query, among the
+rows the layer's own definition query keeps; all of them without `"where"`). Only the ground
+inside their outer rings is drawn and sets the base, the block's box is the one round them (so
+no `"extent"`), and it works over elevation tiles too. The walls stand along the outline where
+it faces you, a concave outline's hidden where nearer ground or walls stand in front of them,
+with everything a box's walls have; a wall's corner is outlined where the outline turns by more
+than 45°. A `"where"` that picks no polygon is refused. Holes are not cut: the ground inside
+them is drawn, and a notice says how many. Several polygons each stand as their own block on the
+same base (dissolve touching ones first for one outline). The outline follows the polygons to about a third of the
+finest mesh cell (a ring narrower than that is left out, and said), and is read again when the
+layer is edited.
+
 With water on the terrain (below), `"block": {"water": {"depth": 12}}` shows it in the walls'
 section: where the block's edge (a round block's circle too) runs inside a water polygon (the first in the layer's rows where
 they overlap, among the features its definition query keeps), the wall shows a band of water from

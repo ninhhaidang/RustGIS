@@ -236,7 +236,7 @@ pub struct TerrainBlock {
 }
 
 /// The outline a block diagram's ground is cut to (#2318).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockShape {
     /// The box itself.
@@ -248,11 +248,27 @@ pub enum BlockShape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         radius: Option<f64>,
     },
+    /// The polygons of `layer` (by name, as the terrain's DEM) that `filter` picks among the rows
+    /// its definition query keeps (all of them without one): the ground inside their outer rings,
+    /// their holes not cut, the box being the one round them.
+    Polygon {
+        layer: String,
+        #[serde(rename = "where", default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
 }
 
 impl BlockShape {
     pub fn is_box(&self) -> bool {
         *self == BlockShape::Box
+    }
+}
+
+impl TerrainBlock {
+    /// Whether the block has a box of its own, not the DEM's: an extent, or polygons (#2318),
+    /// whose box it takes.
+    pub fn own_box(&self) -> bool {
+        self.extent.is_some() || matches!(self.shape, BlockShape::Polygon { .. })
     }
 }
 
@@ -283,7 +299,8 @@ pub const BLOCK_MAX_DEPTH: f64 = 20_000.0;
 impl TerrainBlock {
     /// Why this block can't be drawn, when it can't: its box (ordered, within the Web Mercator
     /// world, at least [`BLOCK_MIN_SIDE`] a side and not in degrees), its depth (0 to
-    /// [`BLOCK_MAX_DEPTH`]), a circle's radius (at least half that side) and opaque walls.
+    /// [`BLOCK_MAX_DEPTH`]), a circle's radius (at least half that side), a polygon shape's layer
+    /// (and no extent: it takes its polygons' box) and opaque walls.
     /// Checked where a block is set and where a project is read, so a saved block that fails it
     /// is never drawn.
     pub fn check(&self) -> Result<(), String> {
@@ -313,6 +330,14 @@ impl TerrainBlock {
             && !(r.is_finite() && r >= BLOCK_MIN_SIDE / 2.0)
         {
             return Err(format!("block's radius is in Web Mercator metres, at least {}", BLOCK_MIN_SIDE / 2.0));
+        }
+        if let BlockShape::Polygon { layer, .. } = &self.shape {
+            if layer.trim().is_empty() {
+                return Err("block's shape needs a layer: a polygon layer of the outline".into());
+            }
+            if self.extent.is_some() {
+                return Err("a block cut to polygons takes their box: give no extent".into());
+            }
         }
         if self.walls.a() != 255 {
             return Err("block's walls is an opaque colour, #RRGGBB".into());

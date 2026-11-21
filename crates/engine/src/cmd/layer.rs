@@ -6751,6 +6751,12 @@ fn references_follow_layer(s: &mut Session, old: &str, new: &str) {
     if let Some(walls) = s.map_mut().view.terrain.as_mut().and_then(|t| t.block.as_mut()).and_then(|b| b.walls_layer.as_mut()) {
         replace(walls);
     }
+    // And the polygons it is cut to (#2318).
+    if let Some(rustgis_map::view::BlockShape::Polygon { layer, .. }) =
+        s.map_mut().view.terrain.as_mut().and_then(|t| t.block.as_mut()).map(|b| &mut b.shape)
+    {
+        replace(layer);
+    }
     // And the lines point labels are turned square to (#2263).
     for layer in &mut s.map_mut().layers {
         for class in std::iter::once(&mut layer.labels.default).chain(layer.labels.classes.iter_mut()) {
@@ -6947,6 +6953,18 @@ fn terrain_follows_removal(s: &mut Session, names: &[String]) {
             ),
             false,
         );
+    }
+    // And the layer of the polygons it is cut to (#2318): no block is drawn meanwhile.
+    let cut = s.map().view.terrain.as_ref().and_then(|t| t.block.as_ref()).and_then(|b| match &b.shape {
+        rustgis_map::view::BlockShape::Polygon { layer, .. } => Some(layer.clone()),
+        _ => None,
+    });
+    if let Some(c) = cut.filter(|c| dem.is_none() && names.iter().any(|n| n.eq_ignore_ascii_case(c)) && named_layers(s, c) == 0) {
+        s.notify(
+            format!("Terrain: the layer '{c}' the block is cut to was removed, so no block is drawn until a layer of that name comes back"),
+            false,
+        );
+        super::terrain_blocks::said_removed(s, &c);
     }
     let Some(dem) = dem else { return };
     s.map_mut().view.terrain = None;
