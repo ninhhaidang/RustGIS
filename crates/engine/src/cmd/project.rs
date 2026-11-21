@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use super::ps;
+use crate::notice_text::NoticeText;
 use crate::{CmdResult, CommandSpec as C, Project, Session, Tool};
 
 pub fn commands() -> Vec<C> {
@@ -444,6 +445,101 @@ fn reset(s: &mut Session, p: Project) {
                     "{} maps have a terrain water layer read a view at a time, so their water was dropped: {}; load all their features and set the water again",
                     streamed_water.len(),
                     maps.join(", ")
+                ),
+                false,
+            );
+        }
+    }
+    // The water's level field (#1915) and the block's water depth field (#2317) are numeric fields
+    // of the water layer, as `map.terrain` checks them: one the layer lost, or holds as text, since
+    // the project was saved (its data replaced outside RustGIS) is cleared and said, as
+    // `edit.deleteField` does. A field matching but for case is kept; a water layer that isn't
+    // there is left alone (the water keeps its name for a layer of that name).
+    let (mut levels, mut depths) = (Vec::new(), Vec::new());
+    for m in s.project.maps.iter_mut() {
+        let Some(t) = m.view.terrain.as_ref() else { continue };
+        let Some(w) = t.water.as_ref() else { continue };
+        let Some(l) = m.layer_by_name(&w.layer) else { continue };
+        let numeric = |f: &str| l.dataset.field_index(f).and_then(|i| l.dataset.fields.get(i)).is_some_and(|f| f.ty.is_numeric());
+        let level = w.level.clone().filter(|f| !numeric(f));
+        let depth =
+            t.block.as_ref().and_then(|b| b.water.as_ref()).and_then(|bw| bw.field.clone().filter(|f| !numeric(f)).map(|f| (f, bw.depth)));
+        let layer = l.name.clone();
+        let Some(t) = m.view.terrain.as_mut() else { continue };
+        if let Some(field) = level {
+            if let Some(w) = t.water.as_mut() {
+                w.level = None;
+            }
+            levels.push((m.name.clone(), field, layer.clone()));
+        }
+        if let Some((field, d)) = depth {
+            if let Some(b) = t.block.as_mut() {
+                match d {
+                    Some(_) => {
+                        if let Some(bw) = b.water.as_mut() {
+                            bw.field = None;
+                        }
+                    }
+                    None => b.water = None,
+                }
+            }
+            depths.push((m.name.clone(), field, layer, d));
+        }
+    }
+    let lit = |s: &String| -> NoticeText { s.clone().into() };
+    match levels.as_slice() {
+        [] => {}
+        [(map, field, layer)] => s.notify_text(
+            NoticeText::format(
+                "{map}: the terrain's water level field '{field}' isn't a numeric field of '{layer}', so its lakes lie at their shores' lowest heights",
+                [("map", lit(map)), ("field", lit(field)), ("layer", lit(layer))],
+            ),
+            false,
+        ),
+        _ => {
+            let maps = NoticeText::list(levels.iter().map(|(map, field, layer)| {
+                NoticeText::format("{map} ('{field}' of '{layer}')", [("map", lit(map)), ("field", lit(field)), ("layer", lit(layer))])
+            }));
+            s.notify_text(
+                NoticeText::format(
+                    "{count} maps have a terrain water level field that isn't a numeric field of their water layer, so their lakes lie at their shores' lowest heights: {maps}",
+                    [("count", levels.len().to_string().into()), ("maps", maps)],
+                ),
+                false,
+            );
+        }
+    }
+    match depths.as_slice() {
+        [] => {}
+        [(map, field, layer, d)] => {
+            let (key, mut args) = match d {
+                Some(d) => (
+                    "{map}: the block's water depth field '{field}' isn't a numeric field of '{layer}', so its walls show all the water {depth} m deep",
+                    vec![("depth", d.to_string().into())],
+                ),
+                None => (
+                    "{map}: the block's water depth field '{field}' isn't a numeric field of '{layer}', so its walls show no water",
+                    vec![],
+                ),
+            };
+            args.extend([("map", lit(map)), ("field", lit(field)), ("layer", lit(layer))]);
+            s.notify_text(NoticeText::format(key, args), false);
+        }
+        _ => {
+            let maps = NoticeText::list(depths.iter().map(|(map, field, layer, d)| {
+                let args = [("map", lit(map)), ("field", lit(field)), ("layer", lit(layer))];
+                match d {
+                    Some(d) => NoticeText::format(
+                        "{map} ('{field}' of '{layer}', its walls showing all the water {depth} m deep)",
+                        args.into_iter().chain([("depth", d.to_string().into())]),
+                    ),
+                    None => NoticeText::format("{map} ('{field}' of '{layer}', its walls showing no water)", args),
+                }
+            }));
+            s.notify_text(
+                NoticeText::format(
+                    "{count} maps have a block water depth field that isn't a numeric field of their water layer: {maps}",
+                    [("count", depths.len().to_string().into()), ("maps", maps)],
                 ),
                 false,
             );

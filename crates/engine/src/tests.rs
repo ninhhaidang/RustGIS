@@ -14034,6 +14034,84 @@ fn a_projects_water_on_a_streamed_layer_is_dropped_as_it_opens() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn a_projects_water_fields_its_layer_lost_are_cleared_as_it_opens() {
+    use rustgis_data::FieldType;
+    use rustgis_map::view::BlockWater;
+    let said = |s: &Session, t: &str| s.notices.iter().filter(|n| n.text.contains(t)).count();
+    // The fixture: its water layer lost the level field and holds the depth field as text.
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water_fields_lost.rgis")).unwrap();
+    let mut opened = Session::new(Project::default());
+    crate::cmd::project::reset_to(&mut opened, saved);
+    let t = opened.map().view.terrain.clone().unwrap();
+    assert!(t.water.as_ref().is_some_and(|w| w.level.is_none()), "{t:?}");
+    assert_eq!(t.block.and_then(|b| b.water), Some(BlockWater { depth: Some(8.0), field: None }));
+    assert_eq!(said(&opened, "Map: the terrain's water level field 'nivel' isn't a numeric field of 'lagos'"), 1, "{:?}", opened.notices);
+    let depth = "the block's water depth field 'prof' isn't a numeric field of 'lagos', so its walls show all the water 8 m deep";
+    assert_eq!(said(&opened, depth), 1, "{:?}", opened.notices);
+    // A project whose water layer holds them.
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let gj = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"nome": "a", "nivel": 500.0, "prof": 5.0},
+        "geometry": {"type": "Polygon", "coordinates": [[[10.01, 45.01], [10.02, 45.01], [10.02, 45.02], [10.01, 45.02], [10.01, 45.01]]]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "lagos.geojson", "text": gj.to_string()})).unwrap();
+    let lagos = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap();
+    s.run("map.terrain", &json!({"layer": dem, "water": {"layer": lagos, "level": "nivel"}, "block": {"water": {"field": "prof"}}}))
+        .unwrap();
+    let open = |p: &Project| {
+        let mut o = Session::new(Project::default());
+        crate::cmd::project::reset_to(&mut o, p.clone());
+        o
+    };
+    let edit = |p: &mut Project, from: &str, f: &dyn Fn(&mut rustgis_data::Field)| {
+        let l = p.maps.first_mut().and_then(|m| m.layers.iter_mut().find(|l| l.name == lagos)).unwrap();
+        f(l.dataset.fields.iter_mut().find(|x| x.name == from).unwrap());
+    };
+    let clean = open(&s.project);
+    assert_eq!(clean.map().view.terrain, s.map().view.terrain);
+    assert_eq!(said(&clean, "isn't a numeric field"), 0, "{:?}", clean.notices);
+    // Case only.
+    let mut p = s.project.clone();
+    edit(&mut p, "nivel", &|f| f.name = "NIVEL".into());
+    let o = open(&p);
+    assert_eq!(o.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).and_then(|w| w.level.clone()), Some("nivel".into()));
+    assert_eq!(said(&o, "isn't a numeric field"), 0, "{:?}", o.notices);
+    // Text, no depth.
+    let mut p = s.project.clone();
+    edit(&mut p, "prof", &|f| f.ty = FieldType::Text);
+    let o = open(&p);
+    assert_eq!(o.map().view.terrain.as_ref().and_then(|t| t.block.as_ref()).map(|b| b.water.clone()), Some(None));
+    assert_eq!(said(&o, "so its walls show no water"), 1, "{:?}", o.notices);
+    // Several maps.
+    let mut p = s.project.clone();
+    let mut second = p.maps[0].clone();
+    second.name = "Map 2".into();
+    p.maps.push(second);
+    for m in p.maps.iter_mut() {
+        if let Some(f) = m.layers.iter_mut().find(|l| l.name == lagos).and_then(|l| l.dataset.fields.iter_mut().find(|x| x.name == "nivel"))
+        {
+            f.name = "cota".into();
+        }
+    }
+    for m in p.maps.iter_mut() {
+        if let Some(f) = m.layers.iter_mut().find(|l| l.name == lagos).and_then(|l| l.dataset.fields.iter_mut().find(|x| x.name == "prof"))
+        {
+            f.ty = FieldType::Text;
+        }
+    }
+    let o = open(&p);
+    assert_eq!(said(&o, "2 maps have a terrain water level field"), 1, "{:?}", o.notices);
+    let list = "2 maps have a block water depth field that isn't a numeric field of their water layer: Map ('prof' of 'lagos', its walls showing no water), Map 2 ('prof' of 'lagos', its walls showing no water)";
+    assert_eq!(said(&o, list), 1, "{:?}", o.notices);
+    // Water layer missing: left alone.
+    let mut p = s.project.clone();
+    p.maps[0].layers.retain(|l| l.name != lagos);
+    let o = open(&p);
+    assert_eq!(o.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).and_then(|w| w.level.clone()), Some("nivel".into()));
+    assert_eq!(said(&o, "isn't a numeric field"), 0, "{:?}", o.notices);
+}
+
 /// A 40×40 lon/lat DEM near (10°E, 45°N): a hill in the middle, with a wall to its east.
 fn dem_b64() -> String {
     use base64::Engine;

@@ -171,7 +171,12 @@ to about 4 million heights in all (and one a ring); when the water layer's shore
 longer, all of them are read at one wider step, and a notice says how
 many polygons were. A layer read a view at a time (in chunks, by range) can't be the water. `{"water": false}` takes the water off;
 left out (or `null`), it stays as it was. The water layer is kept by name, follows its renames, and can stay
-hidden; its own symbology still draws it. Rivers stay lines. Over elevation tiles, the levels are
+hidden; its own symbology still draws it. A project that opens with a water layer that no longer holds
+its `"level"` field as a number (the layer's data replaced outside RustGIS, a field renamed other than
+only in case, or turned to text) clears it, as deleting the field does, and says so: its lakes lie at
+their shores' lowest heights.
+So does the block's water `"field"`: its walls show all the water at the block water's `"depth"`, or no
+water without one. Rivers stay lines. Over elevation tiles, the levels are
 read again until the tiles along the shores have come. A Shaded Relief layer draws the water's
 cells at their level with the even light of flat ground, flat or tilted: no hillshade, cast
 shadow, sky, fill light or rock on the water, so a semi-transparent water fill over it shows one
