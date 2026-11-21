@@ -22964,6 +22964,42 @@ fn a_service_download_is_added_with_the_drawing_info_given() {
     assert!(sym.default_seed(other.geometry_type()).is_some(), "RustGIS's own symbol: {sym:?}");
 }
 
+/// An ArcGIS service's picture markers draw their images, checked as `layer.marker` checks one:
+/// a PNG class draws it and the project then asks for picture markers; a GIF class, which the
+/// renderer refuses, is a circle in a ramp's colour, said (#2266 part C).
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn an_arcgis_services_picture_markers_draw_their_images() {
+    use base64::Engine;
+    use rustgis_map::symbology::Marker;
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(6, 4, image::Rgba([0, 120, 200, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let (png, gif) = (base64::engine::general_purpose::STANDARD.encode(&png), gif_base64());
+    let picture = |b64: &str| json!({"type": "esriPMS", "imageData": b64, "contentType": "image/png", "width": 12, "height": 8});
+    let drawing = json!({"renderer": {"type": "uniqueValue", "field1": "KIND", "uniqueValueInfos": [
+        {"value": "school", "symbol": picture(&png)}, {"value": "stop", "symbol": picture(&gif)}]}});
+    let answer = r#"{"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"KIND": "school"}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        {"type": "Feature", "properties": {"KIND": "stop"}, "geometry": {"type": "Point", "coordinates": [1, 1]}}]}"#;
+    let mut s = Session::new(Project::default());
+    let id = s.download_started();
+    assert!(s.download_landed(id, answer.as_bytes().to_vec()));
+    let url = "https://x.org/arcgis/rest/services/P/FeatureServer/0/query?f=geojson";
+    s.run("layer.addDownload", &json!({"id": id, "url": url, "name": "Places", "service": true, "drawingInfo": drawing})).unwrap();
+    let places = s.map().layer_by_name("Places").unwrap();
+    let rustgis_map::Renderer::Unique { classes, .. } = &places.renderer else { panic!("{:?}", places.renderer) };
+    let [(_, school), (_, stop)] = classes.as_slice() else { panic!("{classes:?}") };
+    assert!(matches!(school.marker, Marker::Picture(p) if p.base64() == png), "{school:?}");
+    assert_eq!((school.size, stop.marker), (12.0, Marker::Circle));
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
+    let said =
+        "Places: the service's symbology came in, except: picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles";
+    assert!(texts.contains(&said), "{texts:?}");
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers"]));
+}
+
 /// An ArcGIS layer's description, read before its features, doesn't count against their budget:
 /// features that fit it alone are read whole (#1326).
 #[test]

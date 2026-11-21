@@ -2,9 +2,9 @@
 //! it) translated onto a feature layer just added from its service (#2080).
 use serde_json::Value;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::symbology::{ClassMethod, Dash, LineStroke, MAX_STROKE_WIDTH, Marker, OTHER_FILL, normalize_label};
+use crate::symbology::{ClassMethod, Dash, LineStroke, MAX_PICTURE_BYTES, MAX_STROKE_WIDTH, Marker, OTHER_FILL, Picture, normalize_label};
 use crate::{Layer, Ramp, Renderer, Rgba, Symbol};
 use rustgis_data::{FieldType, GeometryType};
 
@@ -14,7 +14,7 @@ const MAX_MARKER_SIZE: f32 = 80.0;
 /// The most classes a service's renderer brings, as many as a QGIS style's.
 const MAX_CLASSES: usize = 4096;
 
-/// The colour a picture marker is drawn in, which RustGIS can't draw yet.
+/// The colour of a circle drawn for a picture marker whose image RustGIS can't draw.
 const PICTURE_FILL: Rgba = Rgba::rgb(0x80, 0x80, 0x80);
 
 /// What of a service's symbology was drawn differently or left out, each with how many symbols it
@@ -40,12 +40,53 @@ impl Notes {
     }
 }
 
+/// Picture markers' images (`imageData`) as a service gives them, each checked and kept once,
+/// however many classes show it.
+struct Pictures<'r> {
+    /// Whether an image decodes as a picture marker's must (a PNG or JPEG): the check
+    /// `layer.marker` makes, which is the renderer's, so that what draws here draws there.
+    readable: &'r dyn Fn(&str) -> bool,
+    /// Each image met, with its picture or why it isn't drawn.
+    met: HashMap<String, Result<Picture, &'static str>>,
+}
+
+impl Pictures<'_> {
+    /// A picture marker's image as a picture, or the note saying why it is drawn as a circle.
+    fn of(&mut self, s: &Value) -> Result<Picture, &'static str> {
+        let Some(b64) = s.get("imageData").and_then(Value::as_str).map(str::trim).filter(|b| !b.is_empty()) else {
+            // RustGIS doesn't fetch a marker's image from its `url`.
+            return Err(if s.get("url").and_then(Value::as_str).is_some_and(|u| !u.trim().is_empty()) {
+                "picture markers whose image is only at a URL, drawn as circles"
+            } else {
+                "picture markers with no image, drawn as circles"
+            });
+        };
+        // Looked up first, so that classes sharing an image don't each copy it.
+        if let Some(met) = self.met.get(b64) {
+            return *met;
+        }
+        *self.met.entry(b64.to_owned()).or_insert_with(|| {
+            // Too long to keep is said before decoding it. What is decoded is bounded by the
+            // description's own cap (`DESCRIPTION_MAX`, 4 MiB), as `layer.marker` decodes one.
+            if b64.len() > MAX_PICTURE_BYTES {
+                return Err("picture markers past 2 MiB of base64, drawn as circles");
+            }
+            if !(self.readable)(b64) {
+                return Err("picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles");
+            }
+            // Past the images a run keeps (from a crafted service), it isn't kept.
+            Some(Picture::new(b64)).filter(|p| !p.is_default()).ok_or("picture markers past the images RustGIS keeps, drawn as circles")
+        })
+    }
+}
+
 /// Gives `layer`, a feature layer just added from an ArcGIS service, the symbology its
 /// description's `drawingInfo` sets: its renderer, when RustGIS draws its kind (a simple one, by
-/// unique values of a field or by class breaks), and its transparency. What can't be drawn as the
+/// unique values of a field or by class breaks), and its transparency. A picture marker draws its
+/// image when `readable` (the renderer's check) says it decodes. What can't be drawn as the
 /// service draws it is noted, its labels too; a renderer RustGIS doesn't read leaves the layer's
 /// own. Anything but an object changes nothing.
-pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
+pub fn apply(layer: &mut Layer, drawing_info: &Value, readable: &dyn Fn(&str) -> bool, notes: &mut Notes) {
     if !drawing_info.is_object() || layer.is_raster() {
         return;
     }
@@ -76,18 +117,19 @@ pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
     if g == GeometryType::None {
         return;
     }
+    let pictures = &mut Pictures { readable, met: HashMap::new() };
     match renderer.get("type").and_then(Value::as_str) {
         Some("simple") if renderer.get("symbol").is_none_or(Value::is_null) => {
             notes.add("its renderer names no symbol, drawn with RustGIS's single symbol");
         }
         Some("simple") => {
-            if let Some((symbol, dash)) = symbol(renderer.get("symbol").unwrap_or(&Value::Null), g, None, notes) {
+            if let Some((symbol, dash)) = symbol(renderer.get("symbol").unwrap_or(&Value::Null), g, None, pictures, notes) {
                 layer.renderer = Renderer::Single(symbol);
                 layer.line_strokes = dash.map(strokes).unwrap_or_default();
             }
         }
-        Some("uniqueValue") => unique(layer, renderer, g, notes),
-        Some("classBreaks") => class_breaks(layer, renderer, g, notes),
+        Some("uniqueValue") => unique(layer, renderer, g, pictures, notes),
+        Some("classBreaks") => class_breaks(layer, renderer, g, pictures, notes),
         _ => notes.add("its renderer, of a kind RustGIS doesn't read, drawn with RustGIS's single symbol"),
     }
     if renderer.get("visualVariables").and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
@@ -102,7 +144,7 @@ pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
 /// for each value it lists, with its label, and its default symbol (`defaultSymbol`, with
 /// `defaultLabel`) for the rest, which draw nothing without one, as ArcGIS draws them. One by
 /// several fields or by an expression leaves the layer's own renderer, noted.
-fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
+fn unique(layer: &mut Layer, r: &Value, g: GeometryType, pictures: &mut Pictures, notes: &mut Notes) {
     let Some((fi, field)) = class_field(layer, r, "field1", notes) else { return };
     if ["field2", "field3"].iter().any(|k| r.get(k).and_then(Value::as_str).is_some_and(|f| !f.trim().is_empty())) {
         notes.add("its renderer by the values of several fields, drawn with RustGIS's single symbol");
@@ -130,7 +172,7 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
         }
         seen.insert(value.clone());
         let color = ramp.pick(classes.len(), n);
-        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, notes);
+        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, pictures, notes);
         if let Some(label) = label(info, "label", notes).filter(|l| *l != value) {
             class_labels.insert(value.clone(), label);
         }
@@ -145,9 +187,10 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
     }
     // Its label only with a symbol to show it by.
     let (other, other_strokes, other_label) = match r.get("defaultSymbol").filter(|s| !s.is_null()) {
-        // A picture marker of its own is grey, as a simple renderer's: there is no ramp to take.
+        // A picture marker of its own that can't be drawn is grey, as a simple renderer's: there
+        // is no ramp to take.
         Some(s) => {
-            let (symbol, dash) = class_symbol(Some(s), g, None, OTHER_FILL, notes);
+            let (symbol, dash) = class_symbol(Some(s), g, None, OTHER_FILL, pictures, notes);
             (symbol, dash.map(strokes).unwrap_or_default(), label(r, "defaultLabel", notes))
         }
         None => {
@@ -189,7 +232,7 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
 /// outside every class or none (ArcGIS draws them with its default symbol, or not at all), gaps
 /// between classes, a background fill. One by a normalised value or an expression leaves the
 /// layer's own renderer, noted.
-fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
+fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, pictures: &mut Pictures, notes: &mut Notes) {
     if r.get("normalizationType").and_then(Value::as_str).is_some_and(|t| t != "esriNormalizeByNone") {
         notes.add("its renderer by class breaks of a normalised value, drawn with RustGIS's single symbol");
         return;
@@ -259,7 +302,7 @@ fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes
     let (mut symbols, mut class_labels, mut class_strokes) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
     for (i, (_, info)) in infos.iter().enumerate() {
         let color = ramp.pick(i, n);
-        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, notes);
+        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, pictures, notes);
         if let Some(label) = label(info, "label", notes) {
             class_labels.insert(i, label);
         }
@@ -335,10 +378,17 @@ fn label(v: &Value, key: &str, notes: &mut Notes) -> Option<String> {
     Some(label).filter(|l| !l.is_empty())
 }
 
-/// A class's symbol for a `g` layer and its line's dash pattern: its own; a picture marker as a
-/// circle in `picture`, a ramp's colour so that its classes tell apart (grey without one); one
-/// RustGIS can't draw, or none, as its own symbol in `color` (noted).
-fn class_symbol(s: Option<&Value>, g: GeometryType, picture: Option<Rgba>, color: Rgba, notes: &mut Notes) -> (Symbol, Option<Dash>) {
+/// A class's symbol for a `g` layer and its line's dash pattern: its own; a picture marker whose
+/// image can't be drawn as a circle in `picture`, a ramp's colour so that its classes tell apart
+/// (grey without one); one RustGIS can't draw, or none, as its own symbol in `color` (noted).
+fn class_symbol(
+    s: Option<&Value>,
+    g: GeometryType,
+    picture: Option<Rgba>,
+    color: Rgba,
+    pictures: &mut Pictures,
+    notes: &mut Notes,
+) -> (Symbol, Option<Dash>) {
     let own = || {
         let base = Symbol::default_for(g, 0);
         let symbol = match g {
@@ -352,7 +402,7 @@ fn class_symbol(s: Option<&Value>, g: GeometryType, picture: Option<Rgba>, color
         notes.add("classes with no symbol, drawn in a ramp's colours");
         return own();
     };
-    symbol(s, g, picture, notes).unwrap_or_else(own)
+    symbol(s, g, picture, pictures, notes).unwrap_or_else(own)
 }
 
 /// A dashed line's stacked stroke, which takes its colour and width from the renderer.
@@ -361,9 +411,10 @@ fn strokes(dash: Dash) -> Vec<LineStroke> {
 }
 
 /// An ArcGIS symbol as a RustGIS symbol for a `g` layer, with a line's dash pattern; `None` (noted)
-/// for a symbol that isn't for that geometry or that RustGIS can't draw. A picture marker is a
-/// circle in `picture`, a ramp's colour, or grey without one.
-fn symbol(s: &Value, g: GeometryType, picture: Option<Rgba>, notes: &mut Notes) -> Option<(Symbol, Option<Dash>)> {
+/// for a symbol that isn't for that geometry or that RustGIS can't draw. A picture marker draws
+/// its image at its width; one whose image can't be drawn is a circle in `picture`, a ramp's
+/// colour, or grey without one.
+fn symbol(s: &Value, g: GeometryType, picture: Option<Rgba>, pictures: &mut Pictures, notes: &mut Notes) -> Option<(Symbol, Option<Dash>)> {
     let kind = s.get("type").and_then(Value::as_str).unwrap_or_default();
     let base = Symbol::default_for(g, 0);
     match (kind, g) {
@@ -425,17 +476,32 @@ fn symbol(s: &Value, g: GeometryType, picture: Option<Rgba>, notes: &mut Notes) 
             Some((Symbol { fill, stroke, stroke_width, size: size(s.get("size"), base.size, notes), marker }, None))
         }
         ("esriPMS", GeometryType::Point) => {
-            let fill = match picture {
-                Some(c) => {
-                    notes.add("picture markers, drawn as circles in a ramp's colours");
-                    c
+            if offset_or_angle(s) {
+                notes.add("markers' angles and offsets, left out");
+            }
+            // The fill is the circle drawn should the image not decode after all.
+            let fill = picture.unwrap_or(PICTURE_FILL);
+            match pictures.of(s) {
+                // Sized by its width, as a picture marker is: its height follows the image's own
+                // proportion, which a service draws its symbol at. Without a width above 0, its
+                // height stands in as its width, said, since an image that isn't square is then
+                // drawn that wide, not that tall; with neither, RustGIS's size does.
+                Ok(p) => {
+                    let wide = s.get("width").and_then(Value::as_f64).is_some_and(|w| w.is_finite() && w > 0.0);
+                    if !wide {
+                        notes.add(if s.get("height").is_some_and(|h| !h.is_null()) {
+                            "picture markers with no width, drawn with their height as their width"
+                        } else {
+                            "picture markers with no size, drawn at RustGIS's"
+                        });
+                    }
+                    let size = size(s.get(if wide { "width" } else { "height" }), base.size, notes);
+                    return Some((Symbol { fill, size, marker: Marker::Picture(p), ..base }, None));
                 }
-                None => {
-                    notes.add("picture markers, drawn as grey circles");
-                    PICTURE_FILL
-                }
-            };
-            // The larger of its width and height, so that one past the largest is said once.
+                Err(why) => notes.add(why),
+            }
+            // As a circle, the larger of its width and height, so that one past the largest is
+            // said once.
             let points = |k: &str| s.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(f64::NEG_INFINITY);
             let larger = if points("height") > points("width") { s.get("height") } else { s.get("width") };
             let size = size(larger, base.size, notes);
@@ -586,10 +652,15 @@ mod tests {
         Layer::new(1, Dataset::new("l", g, vec![Field::new("NAME", FieldType::Text)]))
     }
 
+    /// The renderer's check stood in for (`map` doesn't decode images): a PNG's base64 begins so.
+    fn png(b64: &str) -> bool {
+        b64.starts_with("iVBORw0KGgo")
+    }
+
     fn styled(g: GeometryType, info: Value) -> (Layer, Notes) {
         let mut l = layer(g);
         let mut notes = Notes::default();
-        apply(&mut l, &info, &mut notes);
+        apply(&mut l, &info, &png, &mut notes);
         (l, notes)
     }
 
@@ -674,13 +745,60 @@ mod tests {
     }
 
     #[test]
-    fn a_picture_marker_is_a_grey_circle_of_its_size_and_said() {
-        let info =
-            json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": "iVBORw0KGgo=", "width": 15, "height": 18}}});
+    fn a_picture_marker_draws_its_image_at_its_width() {
+        let image = "iVBORw0KGgoSIMPLE=";
+        let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image, "contentType": "image/png",
+            "width": 15, "height": 18}}});
         let (l, notes) = styled(GeometryType::Point, info);
         let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
-        assert_eq!((s.marker, s.fill, s.size), (Marker::Circle, PICTURE_FILL, 18.0));
-        assert_eq!(notes.text(), "picture markers, drawn as grey circles");
+        assert_eq!((s.marker, s.fill, s.size), (Marker::Picture(Picture::new(image)), PICTURE_FILL, 15.0));
+        assert!(notes.is_empty(), "{}", notes.text());
+        // Without a width above 0, its height sizes it.
+        for width in [json!(null), json!(0)] {
+            let info =
+                json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image, "width": width, "height": 18}}});
+            let (l, notes) = styled(GeometryType::Point, info);
+            let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+            assert_eq!(s.size, 18.0, "width {width}");
+            assert_eq!(notes.text(), "picture markers with no width, drawn with their height as their width");
+        }
+        // With neither, RustGIS's size.
+        let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image}}});
+        let (l, notes) = styled(GeometryType::Point, info);
+        let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+        let Renderer::Single(base) = layer(GeometryType::Point).renderer else { panic!("a single symbol") };
+        assert_eq!(s.size, base.size);
+        assert_eq!(notes.text(), "picture markers with no size, drawn at RustGIS's");
+        // Turned or shifted, it is drawn upright on its point, said.
+        let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image, "width": 15, "angle": 30}}});
+        let (l, notes) = styled(GeometryType::Point, info);
+        assert!(matches!(l.renderer, Renderer::Single(Symbol { marker: Marker::Picture(_), .. })));
+        assert_eq!(notes.text(), "markers' angles and offsets, left out");
+    }
+
+    #[test]
+    fn a_picture_marker_rustgis_cant_draw_is_a_grey_circle_of_its_size_and_said_why() {
+        let circle = |symbol: Value| {
+            let (l, notes) = styled(GeometryType::Point, json!({"renderer": {"type": "simple", "symbol": symbol}}));
+            let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+            assert_eq!((s.marker, s.fill, s.size), (Marker::Circle, PICTURE_FILL, 18.0));
+            notes.text()
+        };
+        let gif = "R0lGODlhAQABAIAAAP///wAAACw=";
+        let long = format!("iVBORw0KGgo{}", "A".repeat(MAX_PICTURE_BYTES));
+        for (image, why) in [
+            (json!(null), "picture markers with no image, drawn as circles"),
+            (json!(""), "picture markers with no image, drawn as circles"),
+            (json!(12), "picture markers with no image, drawn as circles"),
+            (json!(gif), "picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"),
+            (json!(long), "picture markers past 2 MiB of base64, drawn as circles"),
+        ] {
+            assert_eq!(circle(json!({"type": "esriPMS", "imageData": image, "width": 15, "height": 18})), why);
+        }
+        // Its image only at its `url`, which RustGIS doesn't fetch.
+        let url = json!({"type": "esriPMS", "url": "4d1f6b3c", "width": 15, "height": 18});
+        assert_eq!(circle(url), "picture markers whose image is only at a URL, drawn as circles");
+        assert_eq!(Picture::kept(gif), None, "an image that isn't drawn isn't kept");
     }
 
     #[test]
@@ -823,12 +941,15 @@ mod tests {
         let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriSMS", "color": [255, 0, 0, 0], "size": 0,
             "outline": {"color": [0, 0, 0], "width": 0}}}, "transparency": 100});
         assert!(styled(GeometryType::Point, info).1.is_empty());
-        // A picture marker larger than the largest both ways is said once.
-        let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "width": 100, "height": 120}}});
-        let (l, notes) = styled(GeometryType::Point, info);
-        let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
-        assert_eq!(s.size, MAX_MARKER_SIZE);
-        assert_eq!(notes.text(), "picture markers, drawn as grey circles; marker sizes past RustGIS's largest (80 points), drawn at it");
+        // A picture marker larger than the largest both ways is said once, drawn as its image or not.
+        for (image, why) in [(json!("iVBORw0KGgoLARGE="), ""), (json!(null), "picture markers with no image, drawn as circles; ")] {
+            let info =
+                json!({"renderer": {"type": "simple", "symbol": {"type": "esriPMS", "imageData": image, "width": 100, "height": 120}}});
+            let (l, notes) = styled(GeometryType::Point, info);
+            let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+            assert_eq!(s.size, MAX_MARKER_SIZE);
+            assert_eq!(notes.text(), format!("{why}marker sizes past RustGIS's largest (80 points), drawn at it"));
+        }
         // Not an object: nothing changes.
         for info in [json!(null), json!([]), json!("simple"), json!({"renderer": null})] {
             let (l, notes) = styled(GeometryType::Point, info);
@@ -855,7 +976,7 @@ mod tests {
 
     fn styled_rows(mut l: Layer, info: Value) -> (Layer, Notes) {
         let mut notes = Notes::default();
-        apply(&mut l, &info, &mut notes);
+        apply(&mut l, &info, &png, &mut notes);
         (l, notes)
     }
 
@@ -905,18 +1026,42 @@ mod tests {
         assert_eq!(class_value(&json!("1.0"), FieldType::Text).as_deref(), Some("1.0"));
     }
 
+    /// Each class draws its own image, each image checked once however many classes show it.
     #[test]
-    fn picture_marker_classes_are_circles_in_a_ramps_colours() {
-        let picture = json!({"type": "esriPMS", "imageData": "iVBORw0KGgo=", "width": 11, "height": 12});
+    fn picture_marker_classes_draw_their_own_images() {
+        let (school, hospital) = ("iVBORw0KGgoSCHOOL=", "iVBORw0KGgoHOSPITAL=");
+        let picture = |image: &str| json!({"type": "esriPMS", "imageData": image, "width": 11, "height": 12});
         let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": [
-            {"value": "1", "label": "Distrital", "symbol": picture.clone()}, {"value": "2", "label": "Privado", "symbol": picture}]}});
-        let (l, notes) = styled(GeometryType::Point, info);
+            {"value": "1", "label": "Escuela", "symbol": picture(school)}, {"value": "2", "label": "Hospital", "symbol": picture(hospital)},
+            {"value": "3", "label": "Otra escuela", "symbol": picture(school)}]}});
+        let checked = std::cell::Cell::new(0);
+        let counted = |b64: &str| {
+            checked.set(checked.get() + 1);
+            png(b64)
+        };
+        let (mut l, mut notes) = (layer(GeometryType::Point), Notes::default());
+        apply(&mut l, &info, &counted, &mut notes);
+        assert_eq!(checked.get(), 2, "the school's image once");
         let Renderer::Unique { classes, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
-        let fills: Vec<Rgba> = classes.iter().map(|c| c.1.fill).collect();
+        let markers: Vec<Marker> = classes.iter().map(|c| c.1.marker).collect();
+        let (school, hospital) = (Marker::Picture(Picture::new(school)), Marker::Picture(Picture::new(hospital)));
+        assert_eq!(markers, [school, hospital, school]);
+        assert!(classes.iter().all(|c| c.1.size == 11.0));
+        assert!(notes.is_empty(), "{}", notes.text());
+    }
+
+    #[test]
+    fn picture_marker_classes_rustgis_cant_draw_are_circles_in_a_ramps_colours() {
+        let picture = json!({"type": "esriPMS", "url": "4d1f6b3c", "width": 11, "height": 12});
+        let info = json!({"renderer": {"type": "classBreaks", "field": "CODE", "classBreakInfos": [
+            {"classMaxValue": 1, "symbol": picture.clone()}, {"classMaxValue": 2, "symbol": picture}]}});
+        let (l, notes) = styled_rows(with_rows(GeometryType::Point, FieldType::Integer, &[]), info);
+        let Renderer::Graduated { symbols, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        let fills: Vec<Rgba> = symbols.iter().map(|s| s.fill).collect();
         assert_eq!(fills, [Ramp::default().pick(0, 2), Ramp::default().pick(1, 2)]);
         assert_ne!(fills.first(), fills.get(1), "the classes tell apart");
-        assert!(classes.iter().all(|c| c.1.marker == Marker::Circle && c.1.size == 12.0));
-        assert_eq!(notes.text(), "picture markers, drawn as circles in a ramp's colours (2 symbols)");
+        assert!(symbols.iter().all(|s| s.marker == Marker::Circle && s.size == 12.0));
+        assert_eq!(notes.text(), "picture markers whose image is only at a URL, drawn as circles (2 symbols)");
     }
 
     #[test]
@@ -1109,8 +1254,16 @@ mod tests {
             "uniqueValueInfos": [{"value": "a", "symbol": {"type": "esriSMS", "color": [1, 2, 3, 255]}}], "defaultSymbol": picture}});
         let (l, notes) = styled(GeometryType::Point, info);
         let Renderer::Unique { other, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
-        assert_eq!(other.fill, PICTURE_FILL);
-        assert_eq!(notes.text(), "picture markers, drawn as grey circles");
+        assert_eq!((other.marker, other.fill), (Marker::Circle, PICTURE_FILL));
+        assert_eq!(notes.text(), "picture markers with no image, drawn as circles");
+        // With its image, it draws it.
+        let picture = json!({"type": "esriPMS", "imageData": "iVBORw0KGgoOTHER=", "width": 10});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME",
+            "uniqueValueInfos": [{"value": "a", "symbol": {"type": "esriSMS", "color": [1, 2, 3, 255]}}], "defaultSymbol": picture}});
+        let (l, notes) = styled(GeometryType::Point, info);
+        let Renderer::Unique { other, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!(other.marker, Marker::Picture(Picture::new("iVBORw0KGgoOTHER=")));
+        assert!(notes.is_empty(), "{}", notes.text());
     }
 
     #[test]
