@@ -98,9 +98,30 @@ struct Scan {
     swapped: usize,
     /// The places of features whose heights reading drops.
     zm: Vec<u32>,
+    /// Features [`paced`](Scan::pace) so far, and the byte the progress was counted to.
+    paced: usize,
+    paced_to: u64,
+    /// Cancel was pressed: the scan stops.
+    stopped: bool,
 }
 
+/// Features between looks at Cancel (and progress counts) while a file is scanned or converted.
+const PACE: usize = 4096;
+
 impl Scan {
+    /// Says the scan has come `at` bytes into the file, and looks at Cancel: at the first feature
+    /// and every [`PACE`] after it (#2446).
+    fn pace(&mut self, at: u64) -> Result<()> {
+        let n = self.paced;
+        self.paced += 1;
+        if !n.is_multiple_of(PACE) {
+            return Ok(());
+        }
+        let done = at.saturating_sub(self.paced_to);
+        self.paced_to = self.paced_to.max(at);
+        crate::progress::step(usize::try_from(done).unwrap_or(usize::MAX))
+    }
+
     /// One element of `"features"`, read from `len` bytes at `offset` (with the comma and
     /// whitespace before it).
     fn feature(&mut self, f: &Json, offset: u64, len: u64) {
@@ -180,6 +201,10 @@ impl GeoJsonSource {
         let mut file = crate::provenance::open(path)?;
         let version = FileVersion::of(&file.metadata()?);
         let mut scan = Scan::default();
+        // How far the scan has come, in bytes of the file; Cancel stops it, said as such rather than
+        // as the JSON error it ends with.
+        crate::progress::begin(usize::try_from(version.len).unwrap_or(usize::MAX));
+        let failed = |e: serde_json::Error| if crate::progress::check().is_err() { DataError::Cancelled } else { bad(e) };
         let rest = if version.len <= in_memory {
             let mut text = String::new();
             file.read_to_string(&mut text)?;
@@ -188,14 +213,14 @@ impl GeoJsonSource {
             if crate::cityjson::looks_like_cityjson(&text) {
                 return Err(DataError::Unsupported("only GeoJSON FeatureCollections are read in place".into()));
             }
-            crate::io::stream_features(&text, &mut InText { scan: &mut scan, start: text.as_ptr() as usize }).map_err(bad)?
+            crate::io::stream_features(&text, &mut InText { scan: &mut scan, start: text.as_ptr() as usize }).map_err(failed)?
         } else {
             let read = std::rc::Rc::new(std::cell::Cell::new(0u64));
             let input = Counting { inner: BufReader::with_capacity(BUFFER, &mut file), read: read.clone() };
             let mut de = serde_json::Deserializer::from_reader(input);
-            let rest = Top { scan: &mut scan, read }.deserialize(&mut de).map_err(bad)?;
+            let rest = Top { scan: &mut scan, read }.deserialize(&mut de).map_err(failed)?;
             // Only whitespace may follow, as when read whole.
-            de.end().map_err(bad)?;
+            de.end().map_err(failed)?;
             rest
         };
         if rest.get("type").and_then(Json::as_str) != Some("FeatureCollection") {
@@ -213,7 +238,7 @@ impl GeoJsonSource {
         let mut extent = scan.extent;
         if let Some(t) = reproject.transformer() {
             file.rewind()?;
-            let pass = convert_pass(&mut file, &scan.places, t);
+            let pass = convert_pass(&mut file, &scan.places, t)?;
             extent = pass.extent;
             for (kept, lost) in scan.kinds.iter_mut().zip(pass.dropped) {
                 *kept = kept.saturating_sub(lost);
@@ -336,7 +361,9 @@ impl FeatureSource for GeoJsonSource {
     }
 
     /// Reads a bounded sample; when native bounds are refused, filters geometry before sampling,
-    /// counting records and checking Cancel between them.
+    /// counting records and checking Cancel between them. A whole read (no extent, every match:
+    /// Add Data loading the file) counts and looks at Cancel likewise; other reads look at Cancel
+    /// every [`PACE`] features.
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
         // Counted first, then sampled, unless the native box is refused: no list of every match.
@@ -355,12 +382,16 @@ impl FeatureSource for GeoJsonSource {
         let mut buf = Vec::new();
         let mut features = Vec::with_capacity(matched.div_ceil(step).min(limit));
         let mut skipped = 0;
-        if late {
-            crate::progress::begin(matched);
+        // A whole read counts its features as a refused box does; a view's sample only looks.
+        let counted = late || (req.extent.is_none() && step == 1);
+        if counted {
+            crate::progress::begin(if late { matched } else { matched.min(limit) });
         }
-        for i in self.matches(extent).step_by(step).take(if late { usize::MAX } else { limit }) {
-            if late {
+        for (n, i) in self.matches(extent).step_by(step).take(if late { usize::MAX } else { limit }).enumerate() {
+            if counted {
                 crate::progress::step(1)?;
+            } else if n.is_multiple_of(PACE) {
+                crate::progress::check()?;
             }
             let feature = match self.read_feature((&mut f, &mut pos, &mut buf), i, req, || !late || sample.wants()) {
                 Ok(Some(feature)) => feature,
@@ -456,11 +487,16 @@ struct Pass {
 }
 
 /// A second pass over the file, made only for a declared coordinate system.
-fn convert_pass(file: &mut File, places: &[Place], t: &crate::raster::Transformer) -> Pass {
+fn convert_pass(file: &mut File, places: &[Place], t: &crate::raster::Transformer) -> Result<Pass> {
     let mut f = BufReader::with_capacity(BUFFER, file);
     let (mut pos, mut buf) = (0u64, Vec::new());
     let mut pass = Pass { failed: Vec::new(), dropped: [0; 3], extent: Extent::EMPTY };
+    // Counted as a step of its own, a feature at a time every so many.
+    crate::progress::begin(places.len());
     for (i, place) in places.iter().enumerate() {
+        if i.is_multiple_of(PACE) {
+            crate::progress::step(if i == 0 { 0 } else { PACE })?;
+        }
         // A feature that can't be read now is left to the reads, which skip it.
         if let Some(json) = read_place(&mut f, &mut pos, &mut buf, place)
             && let Ok(Some(g)) = geojson_geometry(&json)
@@ -476,7 +512,7 @@ fn convert_pass(file: &mut File, places: &[Place], t: &crate::raster::Transforme
             }
         }
     }
-    pass
+    Ok(pass)
 }
 
 /// A reader counting the bytes read through it, for features' places in the file. The JSON reader
@@ -557,11 +593,13 @@ impl<'de> serde::de::Visitor<'de> for Elements<'_> {
         f.write_str("an array of features")
     }
 
+    /// Scans each feature with its place in the file, ending with an error once Cancel is pressed.
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
         loop {
             let start = self.read.get();
             let Some(f) = seq.next_element::<Json>()? else { break };
             self.scan.feature(&f, start, self.read.get().saturating_sub(start));
+            self.scan.pace(self.read.get()).map_err(|_| serde::de::Error::custom("cancelled"))?;
         }
         Ok(())
     }
@@ -579,6 +617,7 @@ impl FeatureSink for InText<'_> {
         *self.scan = Scan::default();
     }
 
+    /// Scans one feature, its place where its text is in the file's; Cancel pressed stops the read.
     fn feature(&mut self, raw: &str) {
         let offset = (raw.as_ptr() as usize).saturating_sub(self.start) as u64;
         match serde_json::from_str::<Json>(raw) {
@@ -586,5 +625,12 @@ impl FeatureSink for InText<'_> {
             // Valid JSON, but with a number that doesn't fit.
             Err(_) => self.scan.skipped += 1,
         }
+        if self.scan.pace(offset + raw.len() as u64).is_err() {
+            self.scan.stopped = true;
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.scan.stopped
     }
 }

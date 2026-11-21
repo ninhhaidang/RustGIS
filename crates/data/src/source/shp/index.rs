@@ -30,9 +30,17 @@ fn connect(path: &Path, write: bool) -> Result<Connection> {
 }
 
 impl DiskIndex {
+    /// The `.shp`'s index from the cache when one was built for this file as it is now, else built
+    /// there by scanning its records (looking at Cancel and counting progress as it goes).
+    /// [`DataError::Cancelled`](crate::DataError::Cancelled) when Cancel was pressed, which
+    /// [`Index::open`] passes on; any other error when neither can be had, for it to scan the
+    /// records instead.
     pub fn open(path: &Path, len: u64, notes: &mut Vec<String>) -> Result<Self> {
         use super::cache;
         use crate::source::external::{fnv1a, stamp};
+        // Cancel is looked at once even when the index is reused, so an opening can always be
+        // stopped before the layer is added (#2446).
+        crate::progress::check()?;
         let canonical = path.canonicalize()?;
         let signature = format!("shp-index-v7:{canonical:?}:{:?}", stamp(path)?);
         let mut dir = cache::index_dir();
@@ -94,7 +102,9 @@ impl DiskIndex {
         let (count, note) = {
             let mut record = tx.prepare("INSERT INTO records VALUES(?1,?2,?3)").map_err(sql)?;
             let mut bounds = tx.prepare("INSERT INTO bounds VALUES(?1,?2,?3,?4,?5)").map_err(sql)?;
+            let mut paced = Paced::begin(len);
             scan_boxed(path, len, |id, place, b| {
+                paced.at(id, place)?;
                 record.execute(params![id, place.offset, place.len]).map_err(sql)?;
                 if union(&mut all_bounds, b) {
                     let [x0, y0, x1, y1] = b;
@@ -242,6 +252,31 @@ fn union(all: &mut Option<[f32; 4]>, b: [f32; 4]) -> bool {
     true
 }
 
+/// The progress of a scan made as a Shapefile is opened (an index built, or the records counted
+/// when none can be), in bytes of the `.shp` (#2446).
+struct Paced {
+    to: u32,
+}
+
+impl Paced {
+    /// Starts counting a scan of a `.shp` of `len` bytes.
+    fn begin(len: u64) -> Self {
+        crate::progress::begin(usize::try_from(len).unwrap_or(usize::MAX));
+        Self { to: 0 }
+    }
+
+    /// Counts the bytes up to record `id`, at `place`, every so many records; stops once Cancel
+    /// was pressed.
+    fn at(&mut self, id: u32, place: Place) -> Result<()> {
+        if !id.is_multiple_of(4096) {
+            return Ok(());
+        }
+        let done = place.offset.saturating_sub(self.to);
+        self.to = self.to.max(place.offset);
+        crate::progress::step(usize::try_from(done).unwrap_or(usize::MAX))
+    }
+}
+
 /// What scanning the records' headers gathers, as a disk index holds it, for when none can be
 /// written.
 pub(super) struct Scanned {
@@ -256,7 +291,9 @@ pub(super) struct Scanned {
 /// isn't one.
 pub(super) fn scanned(path: &Path, len: u64) -> Result<Scanned> {
     let (mut bounds, mut unboxed) = (None, 0u32);
-    let (count, note) = scan_boxed(path, len, |_, _, b| {
+    let mut paced = Paced::begin(len);
+    let (count, note) = scan_boxed(path, len, |id, place, b| {
+        paced.at(id, place)?;
         if !union(&mut bounds, b) && not_a_box(b) {
             unboxed += 1;
         }

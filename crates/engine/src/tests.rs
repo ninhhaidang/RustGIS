@@ -48644,6 +48644,80 @@ fn ortho_mosaic_is_made_in_its_images_projected_system() {
     assert_eq!((w.crs, w.projected_cell_size, w.cell_size), (Some(Crs::WebMercator), Some(30.0), Some(0.0005)));
 }
 
+/// A file read in place that changes between its opening ahead and the command landing it is
+/// opened again, so the layer's places, boxes and fields are those of what the files hold now: a
+/// GeoJSON file rewritten, and a Shapefile's `.dbf` replaced (#2446).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_opening_made_ahead_of_a_file_changed_since_is_made_again() {
+    use rustgis_analysis::control::Control;
+    let dir = std::env::temp_dir().join(format!("rustgis-changed-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // The file's length changes too, so the change is seen whatever the clock's resolution.
+    let path = dir.join("changing.geojson");
+    let point = |x: f64| json!({"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [x, 2.0]}});
+    std::fs::write(&path, json!({"type": "FeatureCollection", "features": [point(1.0)]}).to_string()).unwrap();
+    let mut s = Session::new(Project::default());
+    let p = json!({"path": path.display().to_string(), "stream": true});
+    let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &p).unwrap();
+    assert!(ahead.reads());
+    let read = ahead.run(&Control::new()).unwrap();
+    std::fs::write(&path, json!({"type": "FeatureCollection", "features": [point(8.0), point(9.0)]}).to_string()).unwrap();
+    let r = crate::cmd::reads::read_land(&mut s, read).unwrap();
+    assert_eq!(r["features"], 2, "{r}");
+    assert!(s.read_ahead.is_none(), "the stale opening was set aside");
+    // A Shapefile whose .dbf is replaced (other fields) after its opening ahead.
+    let mut w = world();
+    let shp = dir.join("towns.shp").display().to_string();
+    w.run("share.exportLayer", &json!({"layer": "Cities", "path": shp})).unwrap();
+    w.run("share.exportLayer", &json!({"layer": "Countries", "path": dir.join("other.shp").display().to_string()})).unwrap();
+    let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &json!({"path": shp, "stream": true})).unwrap();
+    let read = ahead.run(&Control::new()).unwrap();
+    std::fs::copy(dir.join("other.dbf"), dir.join("towns.dbf")).unwrap();
+    let id = crate::cmd::reads::read_land(&mut s, read).unwrap()["layer"].as_u64().unwrap() as u32;
+    let fields = |l: &rustgis_map::Layer| l.dataset.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    let mut other = Session::new(Project::default());
+    let other_id =
+        other.run("layer.addData", &json!({"path": dir.join("other.shp").display().to_string(), "stream": true})).unwrap()["layer"]
+            .as_u64()
+            .unwrap() as u32;
+    let replaced = fields(other.map().layer(other_id).unwrap());
+    assert_eq!(fields(s.map().layer(id).unwrap()), replaced, "the replaced .dbf's fields");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A GeoJSON file past the size read whole, but of few enough features that Add Data loads it
+/// rather than keeping it in place, is read whole on the read thread too (#2446): the command
+/// lands a loaded layer of all its features.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_large_file_of_few_features_is_loaded_ahead() {
+    use rustgis_analysis::control::Control;
+    let dir = std::env::temp_dir().join(format!("rustgis-loaded-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("padded.geojson");
+    // A thousand points, each with a long note: past `IN_PLACE_ABOVE` in all.
+    let note = "x".repeat(usize::try_from(rustgis_data::source::geojson::IN_PLACE_ABOVE / 1000).unwrap() + 100);
+    let features: Vec<Value> = (0..1000)
+        .map(|i| json!({"type": "Feature", "properties": {"n": i, "note": note}, "geometry": {"type": "Point", "coordinates": [f64::from(i) * 0.01, 1.0]}}))
+        .collect();
+    std::fs::write(&path, json!({"type": "FeatureCollection", "features": features}).to_string()).unwrap();
+    let mut s = Session::new(Project::default());
+    let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    assert!(ahead.reads(), "opened ahead");
+    let read = ahead.run(&Control::new()).unwrap();
+    // Read whole on the read thread, before the command lands it.
+    let opened = crate::cmd::reads::prepared::<crate::cmd::layer::Opened>(&read).expect("an opening made ahead");
+    let whole = opened.whole.as_ref().expect("read whole ahead").as_ref().unwrap();
+    assert_eq!(whole.0.features.len(), 1000);
+    let id = crate::cmd::reads::read_land(&mut s, read).unwrap()["layer"].as_u64().unwrap() as u32;
+    assert!(s.read_ahead.is_none(), "the read was taken");
+    let layer = s.map().layer(id).unwrap();
+    assert!(!layer.is_streamed(), "loaded, not kept in place");
+    assert_eq!(layer.dataset.features.len(), 1000);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Add Data's and Load All's reads made before the command runs (the desktop app's, on a thread
 /// of their own) are the ones the command takes: it adds what they read, without reading again.
 #[cfg(not(target_arch = "wasm32"))]
@@ -48678,17 +48752,19 @@ fn reads_made_ahead_are_taken_by_the_command() {
         assert!(r.get("layer").is_some() || r.get("layers").is_some(), "{name}: {r}");
     }
     assert_eq!(s.map().layers.len(), 4, "{:?}", s.map().layers.iter().map(|l| &l.name).collect::<Vec<_>>());
-    // A file read in place (and any the command reads differently) reads as it runs.
+    // A GeoPackage, which opens without reading it whole (and any file the command reads
+    // differently), reads as it runs.
     let gpkg = json!({"path": dir.join("table.gpkg").display().to_string()});
     assert!(!crate::cmd::reads::read_ahead(&mut s, "layer.addData", &gpkg).unwrap().reads());
 
     // Load All's read, on a copy of the streamed layer.
     let path = dir.join("streamed.geojson");
     std::fs::write(&path, points).unwrap();
-    let inline =
+    let opening =
         crate::cmd::reads::read_ahead(&mut s, "layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap();
-    assert!(!inline.reads(), "an in-place opening still owns its original inline command");
-    let id = crate::cmd::reads::read_land(&mut s, inline.run(&Control::new()).unwrap()).unwrap()["layer"].as_u64().unwrap();
+    assert!(opening.reads(), "a file read in place is opened ahead too (#2446)");
+    let id = crate::cmd::reads::read_land(&mut s, opening.run(&Control::new()).unwrap()).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.read_ahead.is_none(), "the opening was taken");
     assert!(s.map().layer(id as u32).unwrap().is_streamed());
     let p = json!({"layer": id});
     let read = crate::cmd::reads::read_ahead(&mut s, "layer.loadAll", &p).unwrap().run(&Control::new()).unwrap();
@@ -54830,12 +54906,13 @@ fn standalone_dbf_add_data_uses_tables_and_companion_shapefile() {
         )
         .unwrap();
     }
-    // Read-ahead and dispatch must agree on the SHP path, including the streamed route.
+    // Read-ahead and dispatch must agree on the SHP path, including the streamed route, which is
+    // opened ahead too (#2446).
     for stream in [false, true] {
         let mut paired = Session::new(Project::default());
         let p = json!({"path": path, "stream": stream});
         let ahead = crate::cmd::reads::read_ahead(&mut paired, "layer.addData", &p).unwrap();
-        assert_eq!(ahead.reads(), !stream);
+        assert!(ahead.reads(), "stream {stream}: the companion Shapefile is read ahead");
         let read = ahead.run(&rustgis_analysis::control::Control::new()).unwrap();
         if !stream {
             std::fs::remove_file(&shp).unwrap();
