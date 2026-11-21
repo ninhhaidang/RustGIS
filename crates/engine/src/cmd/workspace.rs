@@ -846,6 +846,12 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
     sync_area(s, ai, &edited)
 }
 
+/// A layer's conversion error in a sync, named by the layer; a cancel stays a cancel, as the
+/// command's other cancels read.
+fn sync_error(layer: &str, e: String) -> String {
+    if e == rustgis_data::DataError::Cancelled.to_string() { e } else { format!("cannot sync layer '{layer}': {e}") }
+}
+
 /// Copies the edits `edited` holds of offline area `ai` (its offline map, here or from a field
 /// package) back to the area's source map, as [`offline_sync`] describes, and refreshes the area.
 ///
@@ -886,9 +892,9 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
             // Compared and merged in longitude/latitude, as a package returns its features, whatever
             // system the source, its last synced copy or the package hold them in; the source is
             // written back in its own, its unchanged places as stored (`results_from_lonlat`).
-            let ol_ds = ol.dataset.in_lonlat().map_err(|e| format!("cannot sync layer '{}': {e}", ol.name))?;
+            let ol_ds = ol.dataset.in_lonlat().map_err(|e| sync_error(&ol.name, e))?;
             let last_synced = area.data.layers.iter().find(|l| l.id == ol.id).map(|l| &l.dataset);
-            let baseline = last_synced.map(|d| d.in_lonlat()).transpose().map_err(|e| format!("cannot sync layer '{}': {e}", ol.name))?;
+            let baseline = last_synced.map(|d| d.in_lonlat()).transpose().map_err(|e| sync_error(&ol.name, e))?;
             // Whether a feature was edited offline: the returned copy against the last synced one,
             // as they are when both are held in the same system (as an offline map in the project
             // and its area are), so a conversion that changed meanwhile (a datum grid downloaded)
@@ -919,7 +925,7 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
             }
             let held = (sl.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat).then(|| sl.dataset.clone());
             if held.is_some() {
-                sl.dataset = sl.dataset.in_lonlat().map_err(|e| format!("cannot sync layer '{}': {e}", ol.name))?.into_owned();
+                sl.dataset = sl.dataset.in_lonlat().map_err(|e| sync_error(&ol.name, e))?.into_owned();
             }
             // The ids the area held when it was last synced.
             let had: std::collections::HashSet<u64> =
@@ -983,8 +989,7 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
                 // Its own coordinates back while the merge is converted (and kept, should that fail):
                 // the features it left as they were stay as stored, only those it wrote are converted.
                 let merged = std::mem::replace(&mut sl.dataset, own);
-                sl.dataset =
-                    sl.dataset.merged_from_lonlat(merged, &written).map_err(|e| format!("cannot sync layer '{}': {e}", ol.name))?;
+                sl.dataset = sl.dataset.merged_from_lonlat(merged, &written).map_err(|e| sync_error(&ol.name, e))?;
             }
             sl.selection.clear();
             sl.touch_geometry();

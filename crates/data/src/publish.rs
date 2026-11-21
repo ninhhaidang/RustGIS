@@ -302,7 +302,10 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
     let (read_back, _) = crate::io::read_shapefile_parts(back, &name, crs)?;
     // Read back in longitude/latitude, so compared with the layer in it, whatever system the
     // layer holds its coordinates in.
-    let in_lonlat = ds.in_lonlat().map_err(|e| refused(path, e))?;
+    let in_lonlat = ds.in_lonlat().map_err(|e| match DataError::of_conversion(e) {
+        DataError::Format(e) => refused(path, e),
+        cancelled => cancelled,
+    })?;
     if let Some(why) = same_rows(&in_lonlat, &read_back, if crs.is_some() { PROJECTED_TOLERANCE } else { 0.0 }) {
         return Err(refused(path, format!("the file couldn't hold the layer as it is: {why}")));
     }

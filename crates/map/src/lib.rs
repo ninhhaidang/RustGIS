@@ -356,6 +356,16 @@ pub struct Layer {
     /// snapping) don't evict each other.
     #[serde(skip)]
     lonlat: LonLatCopy,
+    /// How many of a held layer's features have a place that can't be given in
+    /// longitude/latitude, found as it was last converted for drawing ([`Layer::unplaced`]).
+    #[serde(skip)]
+    unplaced: Unplaced,
+    /// Whether its projected or longitude/latitude copy was used since the map was detached for a
+    /// drawing ([`Map::detach_reads`]): what an export drew, and so can say of itself.
+    /// Hit-testing and snapping use them too, but on the live map, which no export reads this
+    /// from.
+    #[serde(skip)]
+    drawn: bool,
     /// Allocation identities and byte totals, shared with render snapshots without retaining rows.
     #[serde(skip)]
     view_memory: view_memory::Cache,
@@ -562,6 +572,8 @@ impl Layer {
             projected_for: String::new(),
             projected_crs: None,
             lonlat: LonLatCopy::default(),
+            unplaced: Unplaced::default(),
+            drawn: false,
             geometry_rev: 0,
             view_memory: Default::default(),
             geometry_kinds: Default::default(),
@@ -1108,8 +1120,9 @@ impl Layer {
             if !matches!(flat, projection::Flat::Mercator) {
                 self.display_levels.clear();
             }
-            self.fill_projected(key, |to_lonlat, g| flat.project_from(to_lonlat, g));
+            self.fill_projected(key, |g| flat.project(g));
         }
+        self.drawn = true;
         &self.projected
     }
 
@@ -1124,13 +1137,11 @@ impl Layer {
             return &[];
         }
         if !self.lonlat.fits(self) {
-            // A system that can't be converted draws nothing, as on a flat map.
-            let to_lonlat = crs.to(Crs::LonLat).ok();
-            let geoms: Vec<Option<Geometry>> =
-                self.dataset.features.rows().map(|r| Some(to_lonlat.as_ref()?.geometry(r.geometry()?))).collect();
+            let geoms = self.convert_counting_unplaced(|g| g);
             let bytes = lod::cache_bytes(&geoms);
             self.lonlat = LonLatCopy { geoms: std::sync::Arc::new(geoms), bytes, rev: self.geometry_rev, crs: Some(crs) };
         }
+        self.drawn = true;
         &self.lonlat.geoms
     }
 
@@ -1139,16 +1150,87 @@ impl Layer {
         if self.lonlat.fits(self) { &self.lonlat.geoms } else { &[] }
     }
 
-    /// Fills the projected geometry cache for `key` with `project` of each geometry, given the
-    /// conversion of the layer's own coordinate system to longitude/latitude. Longitude/latitude,
-    /// every layer's unless held in another, can't fail; a system that can't be converted draws
-    /// nothing (a layer read in one is converted as it is read, which says why it can't be).
-    fn fill_projected(&mut self, key: &str, project: impl Fn(&rustgis_data::raster::Reprojection, &Geometry) -> Option<Geometry>) {
+    /// Every geometry of a layer held in another system, in longitude/latitude as the map and
+    /// the globe draw it, passed through `then` one at a time: a place that can't be given there
+    /// is left out (NaN, which drawing skips), and how many features have one is kept
+    /// ([`Layer::unplaced`]), counted in the same pass: no second conversion, only a look over
+    /// each converted geometry and its source for places that are numbers in one and not the
+    /// other. None of it when its system can't be converted. It doesn't look at Cancel: it
+    /// converts the whole layer, as drawing always has (about a quarter of a second a million
+    /// vertices), once per version of its geometry.
+    fn convert_counting_unplaced<T>(&mut self, then: impl Fn(Geometry) -> T) -> Vec<Option<T>> {
+        let crs = self.dataset.coord_crs();
+        let (geoms, count) = match crs.to(Crs::LonLat) {
+            Ok(to) => {
+                let mut lost = 0usize;
+                let geoms = self
+                    .dataset
+                    .features
+                    .rows()
+                    .map(|r| {
+                        let g = r.geometry()?;
+                        let lonlat = to.geometry(g);
+                        // A place that is a number but isn't once converted couldn't be.
+                        let missing = |g: &Geometry| {
+                            let mut n = 0usize;
+                            g.for_each_coord(|c| n += usize::from(!c.is_finite()));
+                            n
+                        };
+                        lost += usize::from(missing(&lonlat) > missing(g));
+                        Some(then(lonlat))
+                    })
+                    .collect();
+                (geoms, Ok(lost))
+            }
+            Err(e) => ((0..self.dataset.features.len()).map(|_| None).collect(), Err(e)),
+        };
+        self.unplaced = Unplaced { rev: self.geometry_rev, crs: Some(crs), count };
+        geoms
+    }
+
+    /// How many of its features have a place that can't be given in longitude/latitude, which the
+    /// map and the globe draw without it, as found the last time it was drawn from its current
+    /// geometry ([`Layer::projected_in`], [`Layer::lonlat_in`]): `None` until then, and for a
+    /// layer in longitude/latitude, which has none. An error when its system can't be converted,
+    /// when none of it is drawn.
+    pub fn unplaced(&self) -> Option<&Result<usize, String>> {
+        self.unplaced.fits(self).then_some(&self.unplaced.count)
+    }
+
+    /// Counts its places that can't be given in longitude/latitude ([`Layer::unplaced`]) without
+    /// keeping a converted copy, unless counted for its geometry as it is, and marks it used by
+    /// this drawing ([`Layer::unplaced_drawn`]): for a held layer a frame reads beside drawing it
+    /// (terrain water, block walls, the lines labels square to), so an export that read it says
+    /// what it left out. Nothing is counted for a layer in longitude/latitude. The count converts
+    /// the whole layer on the drawing thread without looking at Cancel, once per version of its
+    /// geometry, as drawing does ([`Layer::projected_in`]).
+    pub fn count_unplaced(&mut self) {
+        if self.dataset.coord_crs() != Crs::LonLat && !self.unplaced.fits(self) {
+            self.convert_counting_unplaced(|_| ());
+        }
+        self.drawn = true;
+    }
+
+    /// [`Layer::unplaced`] of a layer a drawing used since its map was detached for it
+    /// ([`Map::detach_reads`]): what an export drawn on a copy can say of itself. `None` for a
+    /// layer it didn't draw (hidden, out of its scale range, on a map the layout doesn't show).
+    pub fn unplaced_drawn(&self) -> Option<&Result<usize, String>> {
+        if self.drawn { self.unplaced() } else { None }
+    }
+
+    /// Fills the projected geometry cache for `key` with `project` of each geometry in
+    /// longitude/latitude: a layer's own, or a held layer's converted ([`Layer::convert_counting_unplaced`],
+    /// which counts what can't be). A system that can't be converted draws nothing.
+    fn fill_projected(&mut self, key: &str, project: impl Fn(&Geometry) -> Geometry) {
         self.display = None;
         let crs = self.dataset.coord_crs();
-        let to_lonlat = crs.to(Crs::LonLat).ok();
-        let projected: Vec<Option<Geometry>> =
-            self.dataset.features.iter().map(|ft| project(to_lonlat.as_ref()?, ft.geometry.as_ref()?)).collect();
+        let projected: Vec<Option<Geometry>> = if crs == Crs::LonLat {
+            self.dataset.features.rows().map(|r| r.geometry().map(&project)).collect()
+        } else {
+            // Each converted geometry projected as it comes, so no whole copy in
+            // longitude/latitude is made.
+            self.convert_counting_unplaced(|g| project(&g))
+        };
         self.projected_extents =
             std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
         self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
@@ -1336,8 +1418,15 @@ impl Layer {
     pub fn adopt_cache(&mut self, other: &Layer) -> bool {
         // The globe's copy goes with the rows and geometry alone: a frame drawn only on the globe
         // has no flat projection to share.
-        if other.dataset.features.shares(&self.dataset.features) && other.geometry_rev == self.geometry_rev && other.lonlat.fits(other) {
-            self.lonlat = other.lonlat.clone();
+        if other.dataset.features.shares(&self.dataset.features) && other.geometry_rev == self.geometry_rev {
+            if other.lonlat.fits(other) {
+                self.lonlat = other.lonlat.clone();
+            }
+            // What a frame drawn on the copy found it can't draw, and that it drew it.
+            if other.unplaced.fits(other) {
+                self.unplaced = other.unplaced.clone();
+            }
+            self.drawn |= other.drawn;
         }
         let fits = other.dataset.features.shares(&self.dataset.features)
             && other.geometry_rev == self.geometry_rev
@@ -1866,6 +1955,10 @@ impl Map {
     pub fn detach_reads(&mut self) {
         for source in self.layers.iter_mut().filter_map(|l| l.source.as_mut()) {
             source.detach_read();
+        }
+        // What the copy draws is marked anew ([`Layer::unplaced_drawn`]).
+        for l in &mut self.layers {
+            l.drawn = false;
         }
     }
 
@@ -3380,6 +3473,8 @@ impl Layer {
             projected_for: _,
             projected_crs: _,
             lonlat: _,
+            unplaced: _,
+            drawn: _,
             view_memory: _,
             geometry_kinds: _,
             geometry_rev: _,
@@ -3432,6 +3527,28 @@ impl Layer {
             LayerRole::GpkgPath => Some(&mut self.gpkg.as_mut()?.path),
             LayerRole::PostgisEditDatabase => Some(&mut self.postgis.as_mut()?.origin.database),
         }
+    }
+}
+
+/// A held layer's count of features with a place that can't be given in longitude/latitude, at
+/// a geometry revision in a coordinate system ([`Layer::unplaced`]).
+#[derive(Clone, Debug)]
+struct Unplaced {
+    rev: u64,
+    crs: Option<Crs>,
+    count: Result<usize, String>,
+}
+
+impl Default for Unplaced {
+    fn default() -> Self {
+        Unplaced { rev: u64::MAX, crs: None, count: Ok(0) }
+    }
+}
+
+impl Unplaced {
+    /// Whether it is of `layer`'s geometry as it is now.
+    fn fits(&self, layer: &Layer) -> bool {
+        self.crs == Some(layer.dataset.coord_crs()) && self.rev == layer.geometry_rev
     }
 }
 

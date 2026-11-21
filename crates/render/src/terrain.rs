@@ -167,6 +167,12 @@ impl Ground {
         Ground::heights_of(map, camera).map_or(0, |g| water::coarse_shores(map, camera, &g))
     }
 
+    /// Whether a view of `camera` has terrain on `map` ([`Ground::of`] is `Some`), without reading
+    /// its water.
+    pub(crate) fn has_heights(map: &Map, camera: &Camera) -> bool {
+        Ground::heights_of(map, camera).is_some()
+    }
+
     /// [`Ground::of`] without its water.
     fn heights_of(map: &Map, camera: &Camera) -> Option<Ground> {
         let t = map.view.terrain.as_ref()?;

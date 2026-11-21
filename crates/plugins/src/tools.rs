@@ -432,3 +432,41 @@ fn output(reply: &Value, tool: &str) -> Result<ToolResult, String> {
     }
     Ok(ToolResult { losses: Vec::new(), output: Output::Layers(outs), messages })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustgis_data::raster::Crs;
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+
+    /// A plugin tool is given a layer held in another system in longitude/latitude, as GeoJSON is,
+    /// whole or as its selection.
+    #[test]
+    fn a_held_layer_reaches_a_tool_in_longitude_latitude() {
+        struct Held(Dataset, Vec<usize>);
+        impl Inputs for Held {
+            fn dataset(&self, l: &str) -> Option<&Dataset> {
+                (l == "Wells").then_some(&self.0)
+            }
+            fn selection(&self, _: &str) -> &[usize] {
+                &self.1
+            }
+        }
+        let mut ds = Dataset::new("Wells", GeometryType::Point, vec![]);
+        ds.push(Some(Geometry::Point(Coord::new(11.5, 48.7))), vec![]);
+        ds.push(Some(Geometry::Point(Coord::new(11.6, 48.8))), vec![]);
+        ds.hold_in(Crs::Epsg(32632)).unwrap();
+        let near = |v: &Value, lon: f64, lat: f64| {
+            let c = &v["geometry"]["coordinates"];
+            (c[0].as_f64().unwrap() - lon).abs() < 1e-9 && (c[1].as_f64().unwrap() - lat).abs() < 1e-9
+        };
+        let whole = layer_geojson(&Held(ds.clone(), vec![]), "Wells").unwrap();
+        let f = whole["features"].as_array().unwrap();
+        assert_eq!(f.len(), 2);
+        assert!(near(&f[0], 11.5, 48.7) && near(&f[1], 11.6, 48.8), "{whole}");
+        let picked = layer_geojson(&Held(ds, vec![1]), "Wells").unwrap();
+        let f = picked["features"].as_array().unwrap();
+        assert_eq!(f.len(), 1);
+        assert!(near(&f[0], 11.6, 48.8), "{picked}");
+    }
+}

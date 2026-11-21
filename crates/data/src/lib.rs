@@ -110,6 +110,14 @@ pub enum DataError {
 
 pub type Result<T> = std::result::Result<T, DataError>;
 
+impl DataError {
+    /// A coordinate conversion's error ([`Dataset::in_lonlat`], [`Dataset::hold_in`], …, which
+    /// say it in words): [`DataError::Cancelled`] when it stopped for Cancel, else a format error.
+    pub fn of_conversion(e: String) -> Self {
+        if e == DataError::Cancelled.to_string() { DataError::Cancelled } else { DataError::Format(e) }
+    }
+}
+
 /// An I/O error, or [`DataError::Cancelled`] when it carries one: a write that only returns I/O
 /// errors stops with it for a cancelled run ([`progress`]).
 impl From<std::io::Error> for DataError {
@@ -448,8 +456,8 @@ impl Dataset {
     /// Drawing converts geometry from it ([`raster::Crs::to`]), so a dataset that keeps the
     /// coordinates it was read in can say so here without the map changing. Longitude/latitude
     /// never fails to convert, and [`Dataset::hold_in`] only holds a dataset where every place
-    /// converts. A place that can't be converted isn't drawn, and the session says so
-    /// ([`Dataset::unplaced_in_lonlat`]).
+    /// converts. A place that can't be converted isn't drawn, and the session says so (the map
+    /// counts them as it draws, `Layer::unplaced`).
     pub fn coord_crs(&self) -> raster::Crs {
         self.held_in
     }
@@ -466,8 +474,11 @@ impl Dataset {
         let to = self.held_in.to(crs)?;
         if !to.is_identity() {
             let lonlat = self.lonlat_conversion()?;
+            // Before the rows are copied (by the first change), which a cancelled command needn't.
+            stop_when_asked(0)?;
             let mut features = self.features.clone();
-            for f in &mut features {
+            for (i, f) in features.iter_mut().enumerate() {
+                stop_when_asked(i)?;
                 if let Some(g) = &f.geometry {
                     let mut past = false;
                     if crs == raster::Crs::WebMercator {
@@ -978,30 +989,6 @@ impl Dataset {
         }
     }
 
-    /// How many of its features have a place that can't be given in longitude/latitude, which
-    /// the map, the globe and the drawings made from either leave out: none while its coordinates
-    /// are longitude/latitude, as every dataset's are today. Refused, naming its system, when the
-    /// system can't be converted at all (then none of it is drawn). It reads every place through
-    /// the conversion, on the calling thread, with no Cancel: as long as converting the layer
-    /// takes.
-    pub fn unplaced_in_lonlat(&self) -> std::result::Result<usize, String> {
-        let to = self.lonlat_conversion()?;
-        if to.is_identity() {
-            return Ok(0);
-        }
-        // Counted, not converted: a place that isn't a number is kept, as a conversion keeps it.
-        let unplaced = |g: &Geometry| {
-            let lost = std::cell::Cell::new(false);
-            g.for_each_coord(|c| {
-                if !lost.get() && c.is_finite() && to.point(c).is_none() {
-                    lost.set(true);
-                }
-            });
-            lost.get()
-        };
-        Ok(self.features.rows().filter_map(|r| r.geometry()).filter(|g| unplaced(g)).count())
-    }
-
     /// The dataset in longitude/latitude, the space analysis tools work in: borrowed while its
     /// coordinates are longitude/latitude ([`Dataset::coord_crs`]), as every dataset's are today;
     /// otherwise a copy with every geometry converted, missing coordinates kept. Refused, naming
@@ -1012,9 +999,11 @@ impl Dataset {
         if to.is_identity() {
             return Ok(Cow::Borrowed(self));
         }
+        stop_when_asked(0)?;
         let mut out = self.clone();
         out.held_in = raster::Crs::LonLat;
-        for f in &mut out.features {
+        for (i, f) in out.features.iter_mut().enumerate() {
+            stop_when_asked(i)?;
             if let Some(g) = &mut f.geometry {
                 *g = convert_keeping_missing(&to, g, &HeldPlaces::default()).ok_or_else(|| {
                     format!(
@@ -1056,12 +1045,16 @@ impl Dataset {
         let mut held = HeldPlaces::default();
         let edits: Vec<&Geometry> = results.features.rows().filter_map(|r| r.geometry()).collect();
         if !edits.is_empty() {
-            held.want_only(&edits);
-            for g in self.features.rows().filter_map(|r| r.geometry()) {
+            held.want_only_checking(&edits, stop_when_asked)?;
+            for (i, g) in self.features.rows().filter_map(|r| r.geometry()).enumerate() {
+                stop_when_asked(i)?;
                 self.hold_places(g, None, &mut held);
             }
         }
-        for f in &mut results.features {
+        // Before the rows are copied out of what shares them.
+        stop_when_asked(0)?;
+        for (i, f) in results.features.iter_mut().enumerate() {
+            stop_when_asked(i)?;
             if let Some(g) = f.geometry.take() {
                 f.geometry = Some(self.edit_from_lonlat(g, &held).map_err(|e| format!("{}: feature {}: {e}", self.name, f.id))?);
             }
@@ -1093,12 +1086,16 @@ impl Dataset {
         // edits would bound.
         let mut held = HeldPlaces::default();
         if !edits.is_empty() {
-            held.want_only(&edits);
-            for g in self.features.iter().filter_map(|f| f.geometry.as_ref()) {
+            held.want_only_checking(&edits, stop_when_asked)?;
+            for (i, g) in self.features.iter().filter_map(|f| f.geometry.as_ref()).enumerate() {
+                stop_when_asked(i)?;
                 self.hold_places(g, None, &mut held);
             }
         }
-        for f in &mut merged.features {
+        // Before the rows are copied out of what shares them.
+        stop_when_asked(0)?;
+        for (i, f) in merged.features.iter_mut().enumerate() {
+            stop_when_asked(i)?;
             if is_changed(f.id) {
                 if let Some(g) = f.geometry.take() {
                     f.geometry = Some(self.edit_from_lonlat(g, &held).map_err(|e| format!("{}: feature {}: {e}", self.name, f.id))?);
@@ -1218,8 +1215,19 @@ impl HeldPlaces {
     /// From now on, holds only places that one of `edited`'s (in longitude/latitude) reads as and
     /// that isn't held yet: a search of many stored places keeps only those an edit asks for.
     pub fn want_only(&mut self, edited: &[&Geometry]) {
+        self.want_only_checking(edited, |_| Ok(())).unwrap_or_default();
+    }
+
+    /// [`HeldPlaces::want_only`], stopping when `check` (given each edit's index) says so, the
+    /// places wanted left as they were.
+    fn want_only_checking(
+        &mut self,
+        edited: &[&Geometry],
+        mut check: impl FnMut(usize) -> std::result::Result<(), String>,
+    ) -> std::result::Result<(), String> {
         let mut wanted = std::collections::HashSet::new();
-        for g in edited {
+        for (i, g) in edited.iter().enumerate() {
+            check(i)?;
             g.for_each_coord(|c| {
                 if c.is_finite() && self.get(c).is_none() {
                     wanted.insert(Self::key(c));
@@ -1227,6 +1235,7 @@ impl HeldPlaces {
             });
         }
         self.wanted = Some(wanted);
+        Ok(())
     }
 
     /// The held place that reads exactly as `c` in longitude/latitude.
@@ -1241,6 +1250,17 @@ impl HeldPlaces {
     pub fn is_empty(&self) -> bool {
         self.places.is_empty()
     }
+}
+
+/// Stops a conversion of a whole layer once the command running it was asked to (looked at every
+/// 256 features): a layer's conversion takes as long as the layer is large. A single feature
+/// converts whole between looks, however many vertices it has (a long coastline is not stopped
+/// partway).
+fn stop_when_asked(i: usize) -> std::result::Result<(), String> {
+    if i.is_multiple_of(256) {
+        progress::check().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// An edit `g` in longitude/latitude in the target system, as [`convert_keeping_missing`], a held
@@ -1307,6 +1327,66 @@ mod tests {
         window.windowed = true;
         assert!(window.hold_in(utm).is_err());
         assert_eq!(window.coord_crs(), raster::Crs::LonLat);
+    }
+
+    /// A whole layer's conversion stops once its command is cancelled, part-way through as well as
+    /// before it starts, leaving the dataset as it was; without a cancel it runs to the end.
+    #[test]
+    fn a_whole_layer_conversion_stops_when_cancelled() {
+        use std::sync::atomic::Ordering;
+        let utm = raster::Crs::Epsg(32632);
+        let mut ds = Dataset::new("held", GeometryType::Point, vec![]);
+        for i in 0..600 {
+            ds.push(Some(Geometry::Point(Coord::new(11.0 + f64::from(i) * 1e-4, 48.7))), vec![]);
+        }
+        let plain = ds.clone();
+        // Cancelled before it starts, or once asked `n` times.
+        let before = || {
+            let probe = std::sync::Arc::new(progress::tests::Counted::default());
+            probe.cancel.store(true, Ordering::Relaxed);
+            progress::install(Some(probe))
+        };
+        let at =
+            |n: u64| progress::install(Some(std::sync::Arc::new(progress::tests::Counted { after_checks: Some(n), ..Default::default() })));
+        // A conversion checks before its loop, then at features 0, 256 and 512: the third check
+        // stops it at feature 256, part-way.
+        let midway = || at(2);
+        // A write-back first looks over its edits (checks at edits 0, 256 and 512 of 600; at the
+        // one edit of a merge changing one feature), reads the held places (checks at features
+        // 0, 256 and 512), then checks before its copy and at features 0 and 256 of it: the copy
+        // stops at feature 256, part-way.
+        let results_midway = || at(8);
+        let merge_midway = || at(6);
+        for cancel in [&before as &dyn Fn() -> progress::Installed, &midway] {
+            let _cancelled = cancel();
+            assert!(ds.hold_in(utm).is_err());
+            assert_eq!(ds, plain, "a cancelled hold leaves the dataset as it was");
+        }
+        ds.hold_in(utm).unwrap();
+        let held = ds.clone();
+        let merged = ds.in_lonlat().unwrap().into_owned();
+        type Cancel<'a> = &'a dyn Fn() -> progress::Installed;
+        for (cancel, results, merge) in
+            [(&before as Cancel, &before as Cancel, &before as Cancel), (&midway, &results_midway, &merge_midway)]
+        {
+            {
+                let _cancelled = cancel();
+                assert!(ds.in_lonlat().is_err());
+            }
+            {
+                let _cancelled = results();
+                assert!(ds.results_from_lonlat(merged.clone()).is_err());
+            }
+            {
+                let _cancelled = merge();
+                assert!(ds.merged_from_lonlat(merged.clone(), &std::collections::HashSet::from([1])).is_err());
+            }
+            assert_eq!(ds, held);
+        }
+        let _cancelled = before();
+        // Said in words, read back as a cancel by those that wrap it.
+        assert!(matches!(ds.in_lonlat().map_err(DataError::of_conversion), Err(DataError::Cancelled)));
+        assert!(matches!(DataError::of_conversion("no such system".into()), DataError::Format(_)));
     }
 
     /// A merge in longitude/latitude written back to a held dataset: what it left as it was stays

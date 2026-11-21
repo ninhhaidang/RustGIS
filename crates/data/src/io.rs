@@ -4367,7 +4367,7 @@ pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, t
     Ok(match ext {
         "csv" => {
             // Of the longitude/latitude the file is written in.
-            let ds = ds.in_lonlat().map_err(DataError::Format)?;
+            let ds = ds.in_lonlat().map_err(DataError::of_conversion)?;
             let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?;
             let mut notes = losses.notes(&ds.fields, target);
             notes.extend(losses.coordinates_note(&ds.fields, target));

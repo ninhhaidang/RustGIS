@@ -101,14 +101,17 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    /// A probe that counts, and is cancelled when told or (with `after`) once that many items
-    /// were counted.
+    /// A probe that counts, and is cancelled when told, (with `after`) once that many items
+    /// were counted, or (with `after_checks`) once asked that many times, for a loop that only
+    /// checks.
     #[derive(Default)]
     pub(crate) struct Counted {
         pub(crate) cancel: AtomicBool,
         pub(crate) done: AtomicU64,
         pub(crate) total: AtomicU64,
         pub(crate) after: Option<u64>,
+        pub(crate) after_checks: Option<u64>,
+        pub(crate) checks: AtomicU64,
     }
 
     impl Counted {
@@ -120,7 +123,10 @@ pub(crate) mod tests {
 
     impl Probe for Counted {
         fn cancelled(&self) -> bool {
-            self.cancel.load(Ordering::Relaxed) || self.after.is_some_and(|n| self.done.load(Ordering::Relaxed) >= n)
+            let asked = self.checks.fetch_add(1, Ordering::Relaxed);
+            self.cancel.load(Ordering::Relaxed)
+                || self.after.is_some_and(|n| self.done.load(Ordering::Relaxed) >= n)
+                || self.after_checks.is_some_and(|n| asked >= n)
         }
         fn begin(&self, total: u64) {
             self.total.store(total, Ordering::Relaxed);

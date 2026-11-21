@@ -136,6 +136,9 @@ impl LayerLook {
             projected_for: _,
             projected_crs: _,
             lonlat: _,
+            // What the last drawing counted and whether it drew the layer; neither is the look.
+            unplaced: _,
+            drawn: _,
             view_memory: _,
             geometry_kinds: _,
             geometry_rev,

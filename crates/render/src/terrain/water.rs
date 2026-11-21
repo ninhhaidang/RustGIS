@@ -610,6 +610,7 @@ fn shores(polygons: &[(Vec<Vec<Coord>>, Option<f64>)]) -> (f64, usize) {
 /// of `camera`, when it names a polygon layer there: the polygons that view draws.
 pub(super) fn of(map: &Map, camera: &Camera, ground: &Ground) -> Option<Arc<Water>> {
     let (layer, level) = water_layer(map)?;
+    crate::note_held_read(layer);
     let key = Key {
         rows: layer.dataset.features.allocation_key(),
         drawn: drawn_rows(map, layer, camera),
@@ -824,6 +825,30 @@ pub(crate) fn paint_shore(pm: &mut crate::Canvas, water: &Water, frame: &crate::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A water layer held in another system holds its water where the same layer held in
+    /// longitude/latitude does (#2032 C2).
+    #[test]
+    fn a_held_water_layer_gives_the_same_polygons() {
+        use rustgis_data::{Dataset, GeometryType};
+        let ring = |x: f64, y: f64| {
+            vec![Coord::new(x, y), Coord::new(x + 0.01, y), Coord::new(x + 0.01, y + 0.01), Coord::new(x, y + 0.01), Coord::new(x, y)]
+        };
+        let mut d = Dataset::new("lake", GeometryType::Polygon, vec![]);
+        d.push(Some(Geometry::Polygon(vec![vec![ring(11.5, 48.7)], vec![ring(11.52, 48.71)]])), vec![]);
+        let plain = rustgis_map::Layer::new(1, d.clone());
+        d.hold_in(rustgis_data::raster::Crs::Epsg(32632)).unwrap();
+        let held = rustgis_map::Layer::new(2, d);
+        let (a, b) = (polygons(&plain, None, None), polygons(&held, None, None));
+        assert_eq!(a.len(), 2);
+        assert_eq!(a.len(), b.len());
+        for ((ra, _), (rb, _)) in a.iter().zip(&b) {
+            assert_eq!(ra.len(), rb.len());
+            for (x, y) in ra.iter().flatten().zip(rb.iter().flatten()) {
+                assert!((x.x - y.x).abs() < 1e-3 && (x.y - y.y).abs() < 1e-3, "{x:?} vs {y:?}");
+            }
+        }
+    }
 
     fn square(x0: f64, y0: f64, side: f64) -> Vec<Coord> {
         vec![Coord::new(x0, y0), Coord::new(x0 + side, y0), Coord::new(x0 + side, y0 + side), Coord::new(x0, y0 + side)]

@@ -415,6 +415,7 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
         .and_then(|t| t.walls_layer.as_deref())
         .and_then(|n| crate::terrain::walls_layer(map, n));
     let Some(layer) = layer else { return (0..b.sides()).map(whole).collect() };
+    crate::note_held_read(layer);
     let cut = layer_cut(layer, b, false, env);
     let styler = layer.styler_with(env.clone());
     let grow = layer.size_factor(scale);
@@ -620,6 +621,7 @@ pub(crate) fn water_runs(map: &Map, b: &Block, ground: &Ground, res: f64, scale:
         return out;
     };
     let Some(layer) = crate::terrain::walls_layer(map, &tw.layer) else { return out };
+    crate::note_held_read(layer);
     let field = bw.field.as_deref().and_then(|f| layer.dataset.field_index(f));
     let cut = layer_cut(layer, b, true, env);
     // Styled at the view centre's drawing scale, as the water layer is drawn on the surface.
@@ -1450,6 +1452,25 @@ mod tests {
             circle: None,
         };
         (m, b)
+    }
+
+    /// A walls layer held in another system cuts the block's sides where the same layer held in
+    /// longitude/latitude does (#2032 C2).
+    #[test]
+    fn a_held_walls_layer_cuts_the_sides_alike() {
+        let (mut m, b) = walls_by_units();
+        let cuts = |m: &Map| {
+            let u = units(m.layer_by_name("geo").unwrap(), &b, false, &Default::default()).units;
+            u.iter()
+                .map(|side| side.iter().map(|&(lo, hi, row)| ((lo * 1e3).round(), (hi * 1e3).round(), row)).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        let plain = cuts(&m);
+        let l = m.layers.iter_mut().find(|l| l.name == "geo").unwrap();
+        l.dataset.hold_in(rustgis_data::raster::Crs::Epsg(32631)).unwrap();
+        l.touch_geometry();
+        assert_eq!(cuts(&m), plain);
+        assert!(plain.iter().flatten().any(|c| c.2.is_some()), "the layer cuts the sides");
     }
 
     #[test]

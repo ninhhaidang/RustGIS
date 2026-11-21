@@ -634,21 +634,32 @@ fn a_web_scene_leaves_out_what_it_cannot_place() {
 }
 
 /// A held layer's feature with a place that can't be given in longitude/latitude is drawn without
-/// it, and that is said in one notice for every such layer, once for each version of a layer's
-/// geometry; layers whose places all convert say nothing.
+/// it, and that is said: of the map, once it was drawn, in one notice for every such layer, once
+/// for each version of a layer's geometry; and of an export that drew it. Layers whose places
+/// all convert say nothing.
 #[test]
 fn a_held_layers_undrawable_features_are_said_once() {
     let mut s = session(UTM);
-    let said_of = |s: &Session, mark| -> Vec<String> {
-        s.notices_since(mark)
-            .iter()
-            .map(|n| n.text.clone())
-            .filter(|t| t.contains("can't be given in longitude/latitude: the map"))
-            .collect()
+    let dir = Dir::new("undrawable");
+    let said_of = |s: &Session, mark, what: &str| -> Vec<String> {
+        s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains(what)).collect()
+    };
+    let of_map = "can't be given in longitude/latitude: the map";
+    let of_export = "can't be given in longitude/latitude, drawn without it";
+    // The screen's frame: drawn on the session's map, then looked at after a command.
+    let frame = |s: &mut Session| {
+        let view = crate::render::View { width: 160.0, height: 100.0, pixels_per_point: 1.0, camera: s.map().camera, sky: false };
+        crate::render::render(s.map_mut(), &view);
+        let _ = s.run("select.clear", &Value::Null);
+    };
+    let export = |s: &mut Session| {
+        let path = dir.path().join("map.png");
+        s.run("share.exportMap", &json!({"path": path.display().to_string(), "width": 160, "height": 100})).unwrap();
     };
     let mark = s.notice_mark();
-    let _ = s.run("select.clear", &Value::Null);
-    assert!(said_of(&s, mark).is_empty(), "{:?}", said_of(&s, mark));
+    frame(&mut s);
+    export(&mut s);
+    assert!(said_of(&s, mark, "longitude/latitude").is_empty(), "{:?}", said_of(&s, mark, "longitude/latitude"));
     // Far beyond any place UTM 32N holds.
     for name in ["Wells", "Roads"] {
         let l = s.map_mut().layers.iter_mut().find(|l| l.name == name).unwrap();
@@ -657,14 +668,269 @@ fn a_held_layers_undrawable_features_are_said_once() {
         l.dataset.push(Some(g), vec![]);
         l.touch_geometry();
     }
+    // Not drawn yet: nothing found, nothing said.
     let mark = s.notice_mark();
     let _ = s.run("select.clear", &Value::Null);
-    let _ = s.run("select.clear", &Value::Null);
-    let said = said_of(&s, mark);
+    assert!(said_of(&s, mark, of_map).is_empty());
+    // An export says what it drew without, of itself.
+    export(&mut s);
+    let said = said_of(&s, mark, of_export);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains(": 2 feature(s)") && said[0].ends_with("(map 'Map', layer 'Roads' (1); map 'Map', layer 'Wells' (1))"),
+        "{said:?}"
+    );
+    // The map: said after the frame that drew it, once, however often it is drawn again.
+    frame(&mut s);
     assert_eq!(
-        said,
+        said_of(&s, mark, of_map),
         [
             "2 feature(s) have a place that can't be given in longitude/latitude: the map and the globe draw them without it, and labels' lines, block diagrams and terrain water leave them out (map 'Map', layer 'Roads' (1); map 'Map', layer 'Wells' (1))"
         ]
     );
+    frame(&mut s);
+    assert_eq!(said_of(&s, mark, of_map).len(), 1);
+    // A layer the export doesn't draw (hidden) isn't said of it, though the map's frame counted it and the copy keeps that.
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Roads").unwrap().visible = false;
+    let hidden = s.notice_mark();
+    export(&mut s);
+    let said = said_of(&s, hidden, of_export);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains(": 1 feature(s)") && said[0].ends_with("(map 'Map', layer 'Wells' (1))"), "{said:?}");
+    s.map_mut().layers.iter_mut().find(|l| l.name == "Roads").unwrap().visible = true;
+    // An edit makes another version: said again once it is drawn, with its own count.
+    let wells = s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap();
+    wells.dataset.push(Some(Geometry::Point(Coord::new(2e12, 2e12))), vec![]);
+    wells.touch_geometry();
+    let mark = s.notice_mark();
+    frame(&mut s);
+    let said = said_of(&s, mark, of_map);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("2 feature(s)") && said[0].ends_with("(map 'Map', layer 'Wells' (2))"), "{said:?}");
+}
+
+/// Every cell of a raster layer named in a command's answer.
+fn raster_cells(s: &Session, answer: &Value) -> (u32, u32, Vec<Option<f32>>) {
+    let id = answer["layer"].as_u64().unwrap_or_else(|| panic!("no layer in {answer}")) as u32;
+    let g = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
+    let cells =
+        (0..g.height).flat_map(|y| (0..g.width).map(move |x| (x, y))).map(|(x, y)| g.value(0, i64::from(x), i64::from(y))).collect();
+    (g.width, g.height, cells)
+}
+
+/// Rasters read through a held polygon layer read the same pixels: a spectral zone, a clip, and
+/// training polygons for a classification.
+#[test]
+fn a_held_polygon_layer_reads_rasters_alike() {
+    let mut ss = both();
+    run_both(&mut ss, "raster.rasterize", &json!({"layer": "Parcels", "field": "n", "cellSize": 0.0007, "nodata": -1}));
+    let raster = "Parcels raster";
+    let [a, b] = run_both(&mut ss, "raster.spectral", &json!({"layer": raster, "zone": "Parcels"}));
+    assert_eq!(a["pixels"], b["pixels"], "spectral zone");
+    assert!(a["pixels"].as_u64().unwrap() > 0);
+    assert_numbers_close(&numbers(&a["values"].to_string()), &numbers(&b["values"].to_string()), 1e-6, "spectral zone means");
+    let [a, b] =
+        run_both(&mut ss, "raster.process", &json!({"layer": raster, "operation": "clip", "polygon": "Parcels", "name": "clipped"}));
+    let (ra, rb) = (raster_cells(&ss[0], &a), raster_cells(&ss[1], &b));
+    assert!(ra.2.iter().any(Option::is_some), "the clip keeps cells");
+    assert_eq!(ra, rb, "clip");
+    let [a, b] = run_both(
+        &mut ss,
+        "raster.classifySupervised",
+        &json!({"layer": raster, "training": "Parcels", "classField": "n", "name": "classes"}),
+    );
+    let (ra, rb) = (raster_cells(&ss[0], &a), raster_cells(&ss[1], &b));
+    assert!(ra.2.iter().any(Option::is_some), "the classification fills cells");
+    assert_eq!(ra, rb, "supervised classification");
+}
+
+/// A photo added to a photo layer held in another system is placed there: it reads back at the
+/// photo's position, as in a photo layer held in longitude/latitude.
+#[test]
+fn a_photo_joins_a_held_photo_layer_at_its_place() {
+    let mut ss = both();
+    let photo = |lat: f64, lon: f64| rustgis_data::photo::example(true, (lat, "N"), (lon, "E"));
+    for s in &mut ss {
+        let first = photo(48.71, 11.51);
+        crate::cmd::layer::add_photos_to(s, "Photos", Some(false), |r| r.add("a.jpg", &first)).unwrap();
+    }
+    // The held session's photo layer is held in UTM from here on, as a file's would be.
+    let held = ss[1].map_mut().layers.iter_mut().find(|l| l.name == "Photos").unwrap();
+    held.dataset.hold_in(UTM).unwrap();
+    held.touch_geometry();
+    for s in &mut ss {
+        let second = photo(48.72, 11.52);
+        crate::cmd::layer::add_photos_to(s, "Photos", Some(false), |r| r.add("b.jpg", &second)).unwrap();
+    }
+    assert_eq!(ss[1].map().layer_by_name("Photos").unwrap().dataset.coord_crs(), UTM);
+    let (a, b) = (lonlat(&ss[0], "Photos"), lonlat(&ss[1], "Photos"));
+    assert_eq!(a.len(), 2);
+    assert_close(&a, &b, "photos");
+}
+
+/// Pixels of two PNGs that differ, and those the first draws (unlike its corner).
+fn png_difference(a: &std::path::Path, b: &std::path::Path) -> (usize, usize) {
+    let (a, b) = (image::open(a).unwrap().to_rgba8(), image::open(b).unwrap().to_rgba8());
+    assert_eq!(a.dimensions(), b.dimensions());
+    let differ = a.pixels().zip(b.pixels()).filter(|(x, y)| x != y).count();
+    let drawn = a.pixels().filter(|p| p.0 != a.get_pixel(0, 0).0).count();
+    (differ, drawn)
+}
+
+/// A layer masked by a held polygon layer is drawn alike, on Web Mercator and on the globe.
+#[test]
+fn a_held_mask_is_drawn_alike() {
+    let mut ss = both();
+    let dir = Dir::new("mask");
+    run_both(&mut ss, "layer.mask", &json!({"layer": "Roads", "mask": "Parcels"}));
+    for (k, projection) in ["mercator", "globe"].into_iter().enumerate() {
+        let camera = camera_over_parcels(projection);
+        for s in &mut ss {
+            s.run("map.projection", &json!({"type": projection})).unwrap();
+            s.map_mut().camera = camera;
+        }
+        let paths = [0, 1].map(|i| dir.path().join(format!("{k}-{i}.png")));
+        for (s, path) in ss.iter_mut().zip(&paths) {
+            s.run("share.exportMap", &json!({"path": path.display().to_string(), "width": 320, "height": 200})).unwrap();
+        }
+        let (differ, drawn) = png_difference(&paths[0], &paths[1]);
+        assert!(drawn > 1000, "{projection}: little drawn ({drawn} pixels)");
+        assert!(differ * 100 < drawn, "{projection}: {differ} of {drawn} drawn pixels differ");
+    }
+}
+
+/// A publication layout's globe locator sketches held polygon layers alike.
+#[test]
+fn a_held_layers_layout_locator_is_drawn_alike() {
+    let mut ss = both();
+    let dir = Dir::new("locator");
+    let camera = camera_over_parcels("mercator");
+    for s in &mut ss {
+        s.map_mut().camera = camera;
+    }
+    run_both(&mut ss, "layout.publication", &json!({"profile": "a5", "locator": "globe", "title": "Held"}));
+    let paths = [0, 1].map(|i| dir.path().join(format!("page-{i}.png")));
+    for (s, path) in ss.iter_mut().zip(&paths) {
+        s.run("layout.export", &json!({"layout": 0, "path": path.display().to_string(), "dpi": 36})).unwrap();
+    }
+    let (differ, drawn) = png_difference(&paths[0], &paths[1]);
+    assert!(drawn > 1000, "little drawn ({drawn} pixels)");
+    assert!(differ * 100 < drawn, "{differ} of {drawn} drawn pixels differ");
+    // The locator's map keeps a sketch of the polygons, in longitude/latitude: too small on the
+    // globe to tell apart in the picture, so compared as places.
+    let sketch = |s: &Session| -> Vec<Option<Geometry>> {
+        let m = s.project.maps.iter().find(|m| m.name == "Map Locator").expect("the locator's map");
+        let l = m.layers.iter().find(|l| l.name == "Parcels").expect("the parcels' sketch");
+        assert_eq!(l.dataset.coord_crs(), Crs::LonLat);
+        l.dataset.features.iter().map(|f| f.geometry.clone()).collect()
+    };
+    let (a, b) = (sketch(&ss[0]), sketch(&ss[1]));
+    assert!(!a.is_empty());
+    assert_close(&a, &b, "locator sketch");
+}
+
+/// A layout's export says the undrawable places of the maps it shows only: a map it doesn't show
+/// keeps its count from the screen's frame, which the export doesn't say.
+#[test]
+fn a_layout_says_only_the_undrawable_places_of_its_maps() {
+    let mut s = session(UTM);
+    let dir = Dir::new("layout");
+    let wells = s.map_mut().layers.iter_mut().find(|l| l.name == "Wells").unwrap();
+    wells.dataset.push(Some(Geometry::Point(Coord::new(1e12, 1e12))), vec![]);
+    wells.touch_geometry();
+    // The screen's frame counts the first map's place.
+    let view = crate::render::View { width: 160.0, height: 100.0, pixels_per_point: 1.0, camera: s.map().camera, sky: false };
+    crate::render::render(s.map_mut(), &view);
+    let said = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("drawn without it")).collect()
+    };
+    let export = |s: &mut Session, name: &str| {
+        let path = dir.path().join(name);
+        s.run("layout.export", &json!({"path": path.display().to_string(), "dpi": 36})).unwrap();
+    };
+    // A layout of another map: nothing said.
+    s.run("map.new", &json!({"name": "Second"})).unwrap();
+    s.run("map.activate", &json!({"name": "Second"})).unwrap();
+    s.run("layout.new", &json!({"page": "a5", "template": "map"})).unwrap();
+    let mark = s.notice_mark();
+    export(&mut s, "second.png");
+    assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
+    // A layout of the first map: said.
+    s.run("map.activate", &json!({"name": "Map"})).unwrap();
+    s.run("layout.new", &json!({"page": "a5", "template": "map"})).unwrap();
+    let mark = s.notice_mark();
+    export(&mut s, "first.png");
+    let first = said(&s, mark);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].ends_with("(map 'Map', layer 'Wells' (1))"), "{first:?}");
+}
+
+/// A held layer a frame reads without drawing it (here the terrain's water, hidden, read by a
+/// tilted view) has its undrawable places counted and said, as a drawn layer's are: by an export
+/// that read it, and of the map after the screen's frame. A frame that doesn't read it (on a
+/// globe, or flat and north up with no shaded relief) says nothing of it.
+#[test]
+fn a_hidden_held_water_layers_undrawable_places_are_said() {
+    let mut s = session(UTM);
+    let dir = Dir::new("water");
+    let parcels = s.map_mut().layers.iter_mut().find(|l| l.name == "Parcels").unwrap();
+    let far = |x: f64| Coord::new(1e12 + x, 1e12);
+    parcels.dataset.push(Some(Geometry::Polygon(vec![vec![vec![far(0.0), far(1.0), far(2.0), far(0.0)]]])), vec![]);
+    parcels.touch_geometry();
+    parcels.visible = false;
+    // Heights in Web Mercator round the parcels, without which terrain water isn't read.
+    let gt = rustgis_data::raster::GeoTransform { origin_x: 1.2e6, origin_y: 6.2e6, pixel_width: 1e4, pixel_height: -1e4 };
+    let dem = rustgis_data::raster::Raster::new(
+        "dem",
+        4,
+        4,
+        vec![vec![10.0; 16]],
+        gt,
+        Crs::WebMercator,
+        None,
+        rustgis_data::raster::ColorHint::Gray,
+        "Float32",
+    )
+    .unwrap();
+    s.map_mut().add_raster("dem", rustgis_map::raster::RasterLayer::from_path(dem, "dem.tif"));
+    s.map_mut().view.terrain = Some(rustgis_map::view::Terrain {
+        source: rustgis_map::view::TerrainSource::Layer("dem".into()),
+        exaggeration: 1.0,
+        block: None,
+        water: Some(rustgis_map::view::TerrainWater { layer: "Parcels".into(), level: None, glint: 0.0, shore: 0.0 }),
+    });
+    let said = |s: &Session, mark, what: &str| -> Vec<String> {
+        s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains(what)).collect()
+    };
+    let export = |s: &mut Session, name: &str| {
+        let path = dir.path().join(name);
+        s.run("share.exportMap", &json!({"path": path.display().to_string(), "width": 160, "height": 100})).unwrap();
+    };
+    let frame = |s: &mut Session| {
+        let view = crate::render::View { width: 160.0, height: 100.0, pixels_per_point: 1.0, camera: s.map().camera, sky: false };
+        crate::render::render(s.map_mut(), &view);
+        let _ = s.run("select.clear", &Value::Null);
+    };
+    // Flat and north up, then on a globe: no terrain water is read, so nothing is said of it.
+    let mark = s.notice_mark();
+    export(&mut s, "flat.png");
+    frame(&mut s);
+    s.map_mut().projection = rustgis_map::Projection::Globe;
+    export(&mut s, "globe.png");
+    frame(&mut s);
+    assert!(said(&s, mark, "Parcels").is_empty(), "{:?}", said(&s, mark, "Parcels"));
+    s.map_mut().projection = rustgis_map::Projection::WebMercator;
+    // Tilted, the ground reads the water: the export says what it left out.
+    s.map_mut().camera.pitch = 40.0;
+    let mark = s.notice_mark();
+    export(&mut s, "tilted.png");
+    let drawn = said(&s, mark, "drawn without it");
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert!(drawn[0].ends_with("(map 'Map', layer 'Parcels' (1))"), "{drawn:?}");
+    // The screen's frame, then a command: the map's notice names the water layer.
+    let mark = s.notice_mark();
+    frame(&mut s);
+    let of_map = said(&s, mark, "can't be given in longitude/latitude: the map");
+    assert_eq!(of_map.len(), 1, "{of_map:?}");
+    assert!(of_map[0].ends_with("(map 'Map', layer 'Parcels' (1))"), "{of_map:?}");
 }

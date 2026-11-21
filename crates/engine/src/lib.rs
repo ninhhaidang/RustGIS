@@ -3074,10 +3074,10 @@ impl Session {
     /// has features with a place that can't be given in longitude/latitude, which the map and
     /// the globe draw from: they draw such a feature without that place (a line broken there, a
     /// point not at all), and labels' lines, block diagrams and terrain water leave it out. Or
-    /// that none of the layer is drawn, when its system can't be converted.
-    /// Layers in longitude/latitude, every layer read today, are passed over at no cost. A held
-    /// layer's count reads each of its places through the conversion, on the UI thread with no
-    /// Cancel, once per version of its geometry: as long as converting it for the map takes.
+    /// that none of the layer is drawn, when its system can't be converted. The map counts them
+    /// as it converts the layer for drawing ([`rustgis_map::Layer::unplaced`]), so it costs
+    /// nothing more, and it is said once the layer was drawn. Layers in longitude/latitude, every
+    /// layer read today, have nothing to say.
     fn say_unplaced(&mut self) {
         // One notice per kind, with the count and the layers it is about.
         let (mut features, mut partly, mut undrawn) = (0usize, Vec::new(), Vec::new());
@@ -3085,17 +3085,19 @@ impl Session {
         for map in &self.project.maps {
             for l in map.layers.iter().filter(|l| !l.is_raster() && l.dataset.coord_crs() != rustgis_data::raster::Crs::LonLat) {
                 seen.insert(l.instance_id());
+                let Some(count) = l.unplaced() else { continue };
                 let version = (l.geometry_rev(), l.dataset.coord_crs());
                 if self.unplaced_checked.insert(l.instance_id(), version) == Some(version) {
                     continue;
                 }
-                match l.dataset.unplaced_in_lonlat() {
+                let named = format!("map '{}', layer '{}'", map.name, l.name);
+                match count {
                     Ok(0) => {}
                     Ok(n) => {
                         features += n;
-                        partly.push(format!("map '{}', layer '{}' ({n})", map.name, l.name));
+                        partly.push(format!("{named} ({n})"));
                     }
-                    Err(e) => undrawn.push(format!("map '{}', layer '{}': {e}", map.name, l.name)),
+                    Err(e) => undrawn.push(format!("{named}: {e}")),
                 }
             }
         }

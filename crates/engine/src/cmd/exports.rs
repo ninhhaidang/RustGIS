@@ -153,12 +153,57 @@ fn said(s: &mut Session, wrote: Wrote) -> CmdResult {
 /// then that it was written to `path`, or why not. A cancelled one says only that it was cancelled.
 pub(crate) fn drawn(
     maps: &[rustgis_map::Map],
-    notices: Vec<(rustgis_data::diagnostics::Severity, String)>,
+    mut notices: Vec<(rustgis_data::diagnostics::Severity, String)>,
     written: Result<Value, String>,
     path: String,
 ) -> Result<Wrote, String> {
     if let (Err(e), Err(_)) = (&written, rustgis_data::progress::check()) {
         return Err(e.clone());
+    }
+    // Held layers' places the drawing couldn't give in longitude/latitude ([`rustgis_map::Layer::unplaced`]):
+    // drawn without them, and said of this export, as the screen says them of the map.
+    let (mut unplaced, mut partly, mut undrawn) = (0usize, Vec::new(), Vec::new());
+    for m in maps {
+        for l in &m.layers {
+            let named = format!("map '{}', layer '{}'", m.name, l.name);
+            // Only the layers this export drew: a hidden one, or a map the layout doesn't
+            // show, keeps a count from an earlier drawing.
+            match l.unplaced_drawn() {
+                Some(Ok(n)) if *n > 0 => {
+                    unplaced += n;
+                    partly.push(format!("{named} ({n})"));
+                }
+                Some(Err(e)) => undrawn.push(format!("{named}: {e}")),
+                _ => {}
+            }
+        }
+    }
+    if written.is_ok() {
+        let listed = |v: &[String]| {
+            let more = v.len().saturating_sub(10);
+            let shown = v.iter().take(10).cloned().collect::<Vec<_>>().join("; ");
+            if more > 0 { format!("{shown}; and {more} more") } else { shown }
+        };
+        let warn = rustgis_data::diagnostics::Severity::Warning;
+        if unplaced > 0 {
+            notices.push((
+                warn,
+                format!(
+                    "{path}: {unplaced} feature(s) have a place that can't be given in longitude/latitude, drawn without it ({})",
+                    listed(&partly)
+                ),
+            ));
+        }
+        if !undrawn.is_empty() {
+            notices.push((
+                warn,
+                format!(
+                    "{path}: {} layer(s) aren't drawn, as their system can't be given in longitude/latitude: {}",
+                    undrawn.len(),
+                    listed(&undrawn)
+                ),
+            ));
+        }
     }
     // Each by its live layer, with the source it failed on: one the user removed, or opened
     // afresh meanwhile (`SourceLayer::same_opening`), is left as it is.
