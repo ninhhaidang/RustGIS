@@ -208,7 +208,7 @@ pub fn parse(bytes: &[u8]) -> Result<Answer, String> {
                     continue;
                 }
                 let closed = pts.len() >= 4 && pts.first() == pts.last();
-                if closed && is_area(&tags) {
+                if closed && rustgis_data::osm::closed_way_is_area(&tags) {
                     polygons.push(("way", id, tags, json!({"type": "Polygon", "coordinates": [pts]})));
                 } else {
                     lines.push(("way", id, tags, json!({"type": "LineString", "coordinates": pts})));
@@ -248,43 +248,6 @@ pub fn parse(bytes: &[u8]) -> Result<Answer, String> {
         notes.push(format!("{stray_inner} inner rings (holes) outside every outer ring of their relation were left out"));
     }
     Ok(Answer { points: collection(points), lines: collection(lines), polygons: collection(polygons), notes })
-}
-
-/// Whether a closed way is an area (OSM's usual reading of its tags).
-fn is_area(tags: &[(String, String)]) -> bool {
-    let get = |k: &str| tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.as_str());
-    match get("area") {
-        Some("yes") => return true,
-        Some("no") => return false,
-        _ => {}
-    }
-    if get("highway").is_some() || get("barrier").is_some() || matches!(get("natural"), Some("coastline" | "tree_row" | "cliff")) {
-        return false;
-    }
-    if get("waterway").is_some() {
-        return matches!(get("waterway"), Some("riverbank" | "dock" | "boatyard"));
-    }
-    const AREA_KEYS: &[&str] = &[
-        "building",
-        "landuse",
-        "natural",
-        "leisure",
-        "amenity",
-        "water",
-        "man_made",
-        "place",
-        "tourism",
-        "shop",
-        "aeroway",
-        "historic",
-        "military",
-        "boundary",
-        "office",
-        "public_transport",
-        "landcover",
-        "parking",
-    ];
-    tags.iter().any(|(k, _)| AREA_KEYS.contains(&k.as_str()))
 }
 
 fn num(v: Option<&Value>) -> Option<f64> {
@@ -463,6 +426,7 @@ mod tests {
             {"type": "way", "id": 3, "tags": {"building": "yes"}, "geometry": [{"lat": 0, "lon": 0}, {"lat": 0, "lon": 1}, {"lat": 1, "lon": 1}, {"lat": 0, "lon": 0}]},
             {"type": "way", "id": 4, "tags": {"highway": "residential"}, "geometry": [{"lat": 0, "lon": 0}, {"lat": 0, "lon": 1}, {"lat": 1, "lon": 1}, {"lat": 0, "lon": 0}]},
             {"type": "way", "id": 5, "tags": {"highway": "path"}, "geometry": [{"lat": 0, "lon": 0}]},
+            {"type": "way", "id": 8, "tags": {"destroyed:building": "house"}, "geometry": [{"lat": 0, "lon": 0}, {"lat": 0, "lon": 1}, {"lat": 1, "lon": 1}, {"lat": 0, "lon": 0}]},
             {"type": "relation", "id": 6, "tags": {"type": "multipolygon", "landuse": "forest"}, "members": [
                 {"type": "way", "role": "outer", "geometry": [{"lat": 0, "lon": 0}, {"lat": 0, "lon": 10}]},
                 {"type": "way", "role": "outer", "geometry": [{"lat": 10, "lon": 10}, {"lat": 0, "lon": 10}]},
@@ -472,9 +436,9 @@ mod tests {
         ]}"#;
         let r = parse(a).unwrap();
         let n = |fc: &Value| fc["features"].as_array().map(Vec::len).unwrap_or(0);
-        assert_eq!((n(&r.points), n(&r.lines), n(&r.polygons)), (1, 1, 2));
+        assert_eq!((n(&r.points), n(&r.lines), n(&r.polygons)), (1, 1, 3), "a destroyed building is a polygon");
         assert_eq!(r.points["features"][0]["properties"]["name"], "Kaffee");
-        let mp = &r.polygons["features"][1]["geometry"];
+        let mp = &r.polygons["features"][2]["geometry"];
         assert_eq!(mp["type"], "MultiPolygon");
         assert_eq!(mp["coordinates"][0].as_array().map(Vec::len), Some(2), "the inner ring is in the outer polygon");
         assert!(r.notes.iter().any(|m| m.contains("1 relations other")) && r.notes.iter().any(|m| m.contains("1 ways or relations")));

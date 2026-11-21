@@ -483,8 +483,11 @@ The look is the tile layer's own style layers (`map.addTiles` takes MapLibre sty
 is from an [Overpass](https://overpass-api.de) server: a preset (buildings, roads, railways, water,
 land use, parks, points of interest or administrative boundaries) or tag filters such as
 `amenity=cafe, shop`. The answer becomes up to three layers, points, lines and polygons: closed
-ways that are areas (buildings, land use and the like, as OSM reads their tags) are polygons, and
-multipolygon and boundary relations are assembled from their members. A layer's fields are its 25
+ways that are areas (buildings, land use and the like, as OSM reads their tags, also behind a
+lifecycle prefix such as `destroyed:building`; the same reading as an `.osm.pbf` file) are
+polygons, and multipolygon and boundary relations are assembled from their members. The
+buildings preset asks for `building` only: the tag filter `destroyed:building` brings the
+buildings an earthquake or a fire took. A layer's fields are its 25
 most common tags, the rest in `other_tags` as GDAL writes them. The area can be up to 0.25 square
 degrees (about 50 × 50 km), and an answer up to 50,000 elements: the public servers are shared, so
 a larger area is better read from an extract (`.osm.pbf`). `"url"` names another Overpass server
