@@ -481,9 +481,9 @@ fn grown(pattern: FillPattern, k: f32) -> FillPattern {
     }
 }
 
-/// How close (metres along a side) two places where polygons cross a block's side are taken as
-/// one: far below anything drawn, far above the rounding of a coordinate's conversion.
-const SEAM: f64 = 1e-6;
+/// How close (metres along a side, a millimetre) two places where polygons cross a block's side are
+/// taken as one: far below anything drawn, far above the rounding of any conversion.
+const SEAM: f64 = 1e-3;
 
 /// Each side of block `b`'s outline cut where `layer`'s polygons cross it, with the row of the
 /// topmost polygon over each piece, found at its middle: the contacts go straight down. For the
@@ -1483,25 +1483,38 @@ mod tests {
         assert!(plain.iter().flatten().any(|c| c.2.is_some()), "the layer cuts the sides");
     }
 
-    /// Neighbours whose shared edge crosses a side a few rounding steps apart (as converting
-    /// their coordinates leaves them) meet there, with no sliver of bare wall between.
-    #[test]
-    fn neighbours_a_rounding_apart_meet_on_the_side() {
+    /// The north side's stretches when unit A's east edge lies `gap` west of x 0 and unit B's
+    /// (without its hole) `gap` east of it.
+    fn north_with_a_gap(gap: f64) -> Vec<(f64, f64, Option<usize>)> {
         let (mut m, b) = walls_by_units();
         let l = m.layers.iter_mut().find(|l| l.name == "geo").unwrap();
         let deg = |x: f64, y: f64| rustgis_geom::merc_to_lonlat(Coord::new(x, y));
-        // A's east edge a nanometre west of x 0, B's (without its hole) a nanometre east of it.
-        let gap = 1e-9;
         let a = vec![deg(-5000.0, -5000.0), deg(-gap, -5000.0), deg(-gap, 5000.0), deg(-5000.0, 5000.0), deg(-5000.0, -5000.0)];
         let bb = vec![deg(gap, 0.0), deg(5000.0, 0.0), deg(5000.0, 5000.0), deg(gap, 5000.0), deg(gap, 0.0)];
         l.dataset.features[0].geometry = Some(Geometry::Polygon(vec![vec![a]]));
         l.dataset.features[1].geometry = Some(Geometry::Polygon(vec![vec![bb]]));
         l.touch_geometry();
         let u = units(m.layer_by_name("geo").unwrap(), &b, false, &Default::default()).units;
-        let north: Vec<_> = u[2].iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect();
-        assert_eq!(north.first(), Some(&(-1000.0, 0.0, Some(0))));
-        assert_eq!(north.get(1), Some(&(0.0, 500.0, Some(1))));
-        assert!(u.iter().flatten().all(|&(lo, hi, _)| hi - lo > SEAM), "no sliver: {u:?}");
+        u.get(2).cloned().unwrap_or_default()
+    }
+
+    /// Neighbours whose shared edge crosses a side a few rounding steps apart (as converting
+    /// their coordinates leaves them), or up to `SEAM` apart (a polar system's round trip), meet
+    /// there, with no sliver of bare wall between; a wider gap keeps its own bare stretch.
+    #[test]
+    fn neighbours_a_rounding_apart_meet_on_the_side() {
+        // 2 nm and 0.5 mm apart: one seam at x 0.
+        for gap in [1e-9, 2.5e-4] {
+            let north = north_with_a_gap(gap);
+            let rounded: Vec<_> = north.iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect();
+            assert_eq!(rounded.first(), Some(&(-1000.0, 0.0, Some(0))), "gap {gap}");
+            assert_eq!(rounded.get(1), Some(&(0.0, 500.0, Some(1))), "gap {gap}");
+            assert!(north.iter().all(|&(lo, hi, _)| hi - lo > SEAM), "no sliver at gap {gap}: {north:?}");
+        }
+        // 5 mm apart: a real gap, bare wall between A and B.
+        let north = north_with_a_gap(2.5e-3);
+        let bare = north.get(1).copied();
+        assert!(bare.is_some_and(|(lo, hi, row)| row.is_none() && (hi - lo - 5e-3).abs() < 1e-6), "{north:?}");
     }
 
     #[test]
