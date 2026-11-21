@@ -6270,18 +6270,34 @@ fn drawable_globe_center(map: &Map, view: Coord, scale: f64) -> Coord {
     Coord::new(view.x, fit.copysign(view.y))
 }
 
-/// Where a globe locator `side_mm` across at 1:`scale` centres the globe, and whether it shows it
-/// whole: as near `area` as the camera draws a globe that small ([`drawable_globe_center`], the
-/// equator when it draws it that small nowhere), the disc within the circle and the area on it.
-/// A locator too small for the globe even on the equator (under about 20 mm), or one whose nearest
-/// centre leaves the area behind the globe's rim, keeps the area in the middle, its circle
-/// clipping the globe (#2348). Whether it is whole is measured on the disc drawn, not on the
-/// camera's limit: a circle a little over the smallest globe holds it at that limit.
+/// Centres the globe locator as close to the area as its circle can hold the rendered disc.
+/// If even the equator does not fit, or the area would be behind the rim, keep the locator
+/// centred on the area and let its circle clip the globe (#2394).
 pub(crate) fn globe_locator_center(map: &Map, area: Coord, scale: f64, side_mm: f64) -> (Coord, bool) {
     let side = side_mm * rustgis_map::layout::PT_PER_MM;
-    let at = drawable_globe_center(map, area, scale);
-    let g = rustgis_map::globe::Globe::new(&rustgis_map::layout::frame_camera(map, at, scale, 0.0, 0.0), side, side);
-    if 2.0 * g.disc_radius() <= side && g.forward(area).is_some() { (at, true) } else { (area, false) }
+    let globe = |at| {
+        let camera = rustgis_map::layout::frame_camera(map, at, scale, 0.0, 0.0);
+        rustgis_map::globe::Globe::new(&camera, side, side)
+    };
+    let fits = |at| 2.0 * globe(at).disc_radius() <= side;
+    if fits(area) {
+        return (area, true);
+    }
+    let equator = Coord::new(area.x, 0.0);
+    if !fits(equator) {
+        return (area, false);
+    }
+    // At a fixed scale the disc only grows towards the pole, even after resolution is clamped.
+    let (mut inside, mut outside) = (equator, area);
+    for _ in 0..40 {
+        let mid = Coord::new(area.x, (inside.y + outside.y) / 2.0);
+        if fits(mid) {
+            inside = mid;
+        } else {
+            outside = mid;
+        }
+    }
+    if globe(inside).forward(area).is_some() { (inside, true) } else { (area, false) }
 }
 
 /// Parses the publication's locator choice with its default: a globe on a sheet, none on a figure
