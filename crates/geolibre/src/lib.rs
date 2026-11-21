@@ -148,6 +148,12 @@ const OUTPUT_HELP: &str = "Name of the new layer. Empty: the tool's name. With s
 /// The longest layer name [`OUTPUT`] keeps (the engine's longest name).
 const MAX_OUTPUT_NAME: usize = 200;
 
+/// The Raster Calculator's tool id: its inputs are bound to the names its expression quotes
+/// ([`calculator_order`]).
+const CALCULATOR: &str = "raster_calculator";
+/// How the Raster Calculator's inputs meet its expression, added to the `inputs` field's help.
+const CALCULATOR_INPUTS_HELP: &str = "Each name quoted in the expression is the name of one of these layers (or a file's path, file name or name without extension), and is read from that input whatever the order here. With only files listed and no quoted name matching any of them, the k-th quoted name is the k-th file.";
+
 /// `p` is the [`OUTPUT`] field RustGIS adds, not one of the manifest's parameters.
 pub fn is_output_name(p: &ParamSpec) -> bool {
     p.name == OUTPUT && p.label == OUTPUT_LABEL && p.kind == ParamKind::Text
@@ -257,6 +263,8 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
             && p.get("io_role").is_none()
             && p.get("data_kind").and_then(Value::as_str) == Some("string")
             && schema.and_then(|s| s.get("kind")).and_then(Value::as_str) == Some("string");
+        // Raster Calculator takes several rasters, though GeoLibre 1.8.1 calls the input single.
+        let calculator_inputs = id == CALCULATOR && pname == "inputs";
         let data = if composite_inputs { Data::Raster } else { Data::of(p.get("data_kind").and_then(Value::as_str).unwrap_or("")) };
         let role = match p.get("io_role").and_then(Value::as_str) {
             None if composite_inputs => Role::Input,
@@ -264,7 +272,9 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
             Some("output") => Role::Output,
             _ => Role::Option,
         };
-        let many = composite_inputs || schema.and_then(|s| s.get("cardinality")).and_then(Value::as_str).is_some_and(|c| c != "single");
+        let many = composite_inputs
+            || (calculator_inputs && role == Role::Input && data == Data::Raster)
+            || schema.and_then(|s| s.get("cardinality")).and_then(Value::as_str).is_some_and(|c| c != "single");
         let optional = !p.get("required").and_then(Value::as_bool).unwrap_or(false);
         let default = defaults.and_then(|d| d.get(pname)).filter(|v| optional && !v.is_null()).cloned();
         meta.push(MetaParam { name: pname.to_string(), role, data, default });
@@ -313,6 +323,10 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
         let mut help = p.get("description").and_then(Value::as_str).unwrap_or("").to_string();
         if many {
             help.push_str(" (layer names or file paths, separated by ;)");
+        }
+        if calculator_inputs && many {
+            help.push(' ');
+            help.push_str(CALCULATOR_INPUTS_HELP);
         }
         params.push(ParamSpec {
             name: leak(pname),
@@ -531,6 +545,94 @@ fn stage(inputs: &dyn Inputs, value: &str, data: Data, tf: &Transformer, job: &m
     Err(format!("there is no layer or file named '{value}'"))
 }
 
+/// The names a Raster Calculator expression quotes, each once, in the order they first appear,
+/// read as the runner reads them: between `"` when the expression has one, else between `'`.
+fn quoted_names(expression: &str) -> Vec<&str> {
+    let delimiter = if expression.contains('"') { '"' } else { '\'' };
+    let mut names: Vec<&str> = Vec::new();
+    for name in expression.split(delimiter).skip(1).step_by(2).map(str::trim) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The Raster Calculator's `list` of inputs in the order its `expression` first quotes them,
+/// and a notice when they keep their order instead. The runner binds the k-th quoted name to the
+/// k-th input whatever that input is called, and RustGIS stages a layer under a file name of its
+/// own, so without this a layer's name in the expression reads another layer's cells, silently.
+/// A quoted name matches an input by layer name, or, for a file, by its path, file name or name
+/// without extension; ASCII case aside, as layers are found by name, with an exact match first.
+/// A name that matches none, or an input the expression doesn't use, is refused, unless only
+/// files are listed and no name matches any: the runner's own contract (the k-th quoted name is
+/// the k-th file) then holds as before, and the notice says which name reads which file.
+fn calculator_order<'a>(expression: &str, list: Vec<&'a str>, inputs: &dyn Inputs) -> Result<(Vec<&'a str>, Option<String>), String> {
+    let quoted = quoted_names(expression);
+    if quoted.is_empty() {
+        // The runner says an expression needs a quoted name.
+        return Ok((list, None));
+    }
+    let layer: Vec<bool> = list.iter().map(|n| inputs.raster(n).is_some() || inputs.dataset(n).is_some()).collect();
+    let file_parts = |n: &'a str| {
+        let p = Path::new(n);
+        [p.file_name(), p.file_stem()].into_iter().flatten().filter_map(|part| part.to_str())
+    };
+    // `whole`: the input's whole name (a layer's, or a file's path); else a file's name or stem.
+    let matches = |q: &str, i: usize, same: fn(&str, &str) -> bool, whole: bool| {
+        if whole { same(q, list[i]) } else { !layer[i] && file_parts(list[i]).any(|part| same(q, part)) }
+    };
+    let exact: fn(&str, &str) -> bool = |a, b| a == b;
+    let any_case: fn(&str, &str) -> bool = |a, b| a.eq_ignore_ascii_case(b);
+    // Exact before any case, and a whole name before a file's name, each pass over every name
+    // before the next: a layer `A` isn't taken by `/x/A.tif` listed before it, nor `nir.tif` by
+    // `'NIR'` before `'nir'` matches it exactly.
+    let passes = [(exact, true), (exact, false), (any_case, true), (any_case, false)];
+    // Each quoted name takes the first input it matches that no other name took, so one layer
+    // listed twice can be quoted under two names (a path and a file name, say).
+    let mut taken = vec![false; list.len()];
+    let mut bound: Vec<Option<usize>> = vec![None; quoted.len()];
+    for (same, whole) in passes {
+        for (k, q) in quoted.iter().enumerate() {
+            if bound[k].is_none()
+                && let Some(i) = (0..list.len()).find(|&i| !taken[i] && matches(q, i, same, whole))
+            {
+                taken[i] = true;
+                bound[k] = Some(i);
+            }
+        }
+    }
+    let order: Vec<&'a str> = bound.iter().flatten().map(|&i| list[i]).collect();
+    let missing: Vec<String> = quoted.iter().zip(&bound).filter(|(_, b)| b.is_none()).map(|(q, _)| format!("\"{q}\"")).collect();
+    if order.is_empty() && !layer.contains(&true) {
+        // By position, one file per name: a file left over, or a name without a file, is refused
+        // here, so the notice below names every pair.
+        if quoted.len() != list.len() {
+            return Err(format!(
+                "the expression quotes {} name(s) but {} file(s) are listed: list one file per quoted name, in the order they first appear",
+                quoted.len(),
+                list.len()
+            ));
+        }
+        let pairs: Vec<String> = quoted.iter().zip(&list).map(|(q, n)| format!("\"{q}\" from {n}")).collect();
+        let note =
+            format!("no quoted name matches an input file's path or name, so they are read in the order listed: {}", pairs.join(", "));
+        return Ok((list, Some(note)));
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "the expression quotes {} but the inputs are {}: quote each input layer's name, or a file's path or name, as it is listed",
+            missing.join(", "),
+            list.join("; ")
+        ));
+    }
+    let unused: Vec<&str> = list.iter().zip(&taken).filter(|(_, t)| !**t).map(|(n, _)| *n).collect();
+    if !unused.is_empty() {
+        return Err(format!("the expression doesn't quote the input(s) {}: list only the layers it uses", unused.join("; ")));
+    }
+    Ok((order, None))
+}
+
 /// Whether `p` names something on disk (never in the browser, which has no file system).
 fn on_disk(p: &str) -> bool {
     !cfg!(target_arch = "wasm32") && Path::new(p).exists()
@@ -663,7 +765,16 @@ fn prepare_with(spec: &ToolSpec, meta: &Meta, inputs: &dyn Inputs, params: &Valu
         match p.role {
             Role::Input => {
                 let Some(v) = value_of(&p.name) else { continue };
-                let files = names(v)?.into_iter().map(|n| stage(inputs, n, p.data, &tf, &mut job)).collect::<Result<Vec<_>, _>>()?;
+                let mut list = names(v)?;
+                if id == CALCULATOR
+                    && p.name == "inputs"
+                    && let Some(expression) = params.get("expression").and_then(Value::as_str)
+                {
+                    let (order, note) = calculator_order(expression, list, inputs).map_err(|e| format!("{}: {e}", spec.name))?;
+                    list = order;
+                    job.notes.extend(note.map(|n| format!("{}: {n}", spec.name)));
+                }
+                let files = list.into_iter().map(|n| stage(inputs, n, p.data, &tf, &mut job)).collect::<Result<Vec<_>, _>>()?;
                 if !files.is_empty() {
                     job.args.push((p.name.clone(), Arg::Files(files)));
                 }
