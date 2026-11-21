@@ -304,6 +304,8 @@ fn is_gpkg_target_error(error: &str) -> bool {
 
 /// Draws the active dialog and leaves it open on validation failure or a newly opened dialog.
 pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
+    // From the app's first frame, so a dialog's first frame has the focus it began with.
+    record_focus_at_pass_start(ctx);
     let Some(which) = app.dialogs.open else { return };
     if which == "calculateGeometry" {
         crate::geometrycalc::show(app, ctx);
@@ -375,6 +377,13 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         state.set_open(true);
         state.store(ctx);
         app.dialogs.reset_collapse = false;
+        // Opened, it starts with nothing focused (#2599): the ribbon button or another pane's box
+        // that had the focus would otherwise keep Enter from running it, and take that Enter too.
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
     }
 
     let preferred_width = match which {
@@ -2425,10 +2434,10 @@ pub(crate) fn buttons_enabled(
     f: impl FnOnce(&mut RustGisApp) -> Result<(), String>,
 ) -> bool {
     let mut close = false;
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) && enter_is_the_dialogs(ui);
     ui.add_space(4.0);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         let t = Tokens::get(ui.ctx());
-        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
         let submit = ui.add_enabled_ui(enabled, |ui| crate::widgets::dialog_button(ui, tl!(ok), Some(t.accent), vec2(84.0, 28.0))).inner;
         if enabled && (submit.clicked() || enter) {
             match f(app) {
@@ -2441,6 +2450,53 @@ pub(crate) fn buttons_enabled(
         }
     });
     close
+}
+
+/// Whether an Enter pressed this frame is the dialog's (drawn in `ui`) to run it: nothing had the
+/// keyboard focus as the frame began, or one of the dialog's own text boxes had it (#2599). Enter
+/// on a focused button, drop-down or check box is that widget's click (egui takes it so), so
+/// Cancel cancels and a field button adds its field without the dialog running too; nor does a
+/// box in another pane (dialogs aren't modal) run it. The focus as the frame began, not now: a
+/// one-line box gives it up in the frame it takes Enter, before this runs, and a Shift+Tab into a
+/// box moves it only as the next frame begins.
+fn enter_is_the_dialogs(ui: &egui::Ui) -> bool {
+    let ctx = ui.ctx();
+    // None only before the recorder's first pass (the app's first frame): no Enter of the dialog's
+    // then, as the focus it began with isn't known.
+    let Some(FocusAtStart(start)) = ctx.data(|d| d.get_temp::<FocusAtStart>(focus_at_start_key())) else { return false };
+    let Some(id) = start else { return true };
+    egui::text_edit::TextEditState::load(ctx, id).is_some() && ctx.read_response(id).is_some_and(|r| r.layer_id == ui.layer_id())
+}
+
+/// The widget that had the keyboard focus as the pass began, before any widget took its keys.
+#[derive(Clone, Copy)]
+struct FocusAtStart(Option<egui::Id>);
+
+fn focus_at_start_key() -> egui::Id {
+    egui::Id::unique("dialog_focus_at_pass_start")
+}
+
+/// Sets up [`FocusAtPassStart`], once (until its first pass records, egui adding a plugin type
+/// once); it records from the next pass on, as egui takes a pass's plugins as it begins.
+fn record_focus_at_pass_start(ctx: &egui::Context) {
+    if ctx.data(|d| d.get_temp::<FocusAtStart>(focus_at_start_key())).is_none() {
+        ctx.add_plugin(FocusAtPassStart);
+    }
+}
+
+/// Records [`FocusAtStart`] as every pass begins: egui runs a plugin's `on_begin_pass` after its
+/// own focus bookkeeping (a Shift+Tab's move applied), before the pass's widgets.
+struct FocusAtPassStart;
+
+impl egui::plugin::Plugin for FocusAtPassStart {
+    fn debug_name(&self) -> &'static str {
+        "FocusAtPassStart"
+    }
+
+    fn on_begin_pass(&mut self, ui: &mut egui::Ui) {
+        let focused = ui.ctx().memory(|m| m.focused());
+        ui.ctx().data_mut(|d| d.insert_temp(focus_at_start_key(), FocusAtStart(focused)));
+    }
 }
 
 /// Adds `word` to the end of the clause `text`, set apart from what the clause ends with, so a
@@ -3195,6 +3251,246 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Button, &first).is_some(), "the list opened");
         assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "the dialog is still open");
         assert_eq!(h.state().dialogs.error, None, "and didn't run");
+    }
+
+    /// Select By Attributes on Countries with a clause that matches, in the app harness.
+    fn sba_ready() -> egui_kittest::Harness<'static, RustGisApp> {
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "selectByAttributes"})).unwrap();
+        app.dialogs.layer = "Countries".into();
+        app.dialogs.text = "pop_est > 100000000".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h
+    }
+
+    fn selected(app: &RustGisApp) -> usize {
+        app.session.map().layer_by_name("Countries").map_or(0, |l| l.selection.len())
+    }
+
+    /// Enter on a focused Cancel cancels: the dialog closes and selects nothing (#2599).
+    #[test]
+    fn enter_on_cancel_cancels() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sba_ready();
+        h.get_by_role_and_label(Role::Button, "Cancel").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "Cancel closed it");
+        assert_eq!(selected(h.state()), 0, "and nothing was selected");
+    }
+
+    /// Enter on a focused field button adds the field, and the clause isn't run with it (#2599).
+    #[test]
+    fn enter_on_a_field_button_adds_it_only() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sba_ready();
+        h.state_mut().dialogs.text = "pop_est > 1 AND".into();
+        h.run();
+        h.get_by_role_and_label(Role::Button, "continent").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.text, "pop_est > 1 AND continent ", "the field added");
+        assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "the dialog is still open");
+        assert_eq!(h.state().dialogs.error, None, "and didn't run");
+        assert_eq!(selected(h.state()), 0);
+    }
+
+    /// Enter in the dialog's own box runs it (Shift+Enter breaks the line there, #419), and so
+    /// does Enter on its focused Apply, or with nothing focused.
+    #[test]
+    fn enter_in_the_box_or_on_apply_runs_the_dialog() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sba_ready();
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("sba_where")));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "the box's Enter applied");
+        let n = selected(h.state());
+        assert!(n > 0, "and selected");
+        let mut h = sba_ready();
+        h.get_by_role_and_label(Role::Button, "Apply").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "Apply's Enter applied");
+        assert_eq!(h.state().dialogs.error, None);
+        assert_eq!(selected(h.state()), n);
+        let mut h = sba_ready();
+        assert_eq!(h.ctx.memory(|m| m.focused()), None, "nothing focused");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "Enter with nothing focused applied");
+        assert_eq!(selected(h.state()), n);
+    }
+
+    /// A one-line box gives the focus up in the frame it takes Enter: the dialog's own (Rename)
+    /// still runs it; one in another pane drawn before the dialog doesn't (#2599).
+    #[test]
+    fn enter_in_a_one_line_box_runs_only_its_own_dialog() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        let id = app.session.map().layers.first().map(|l| l.id).unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        app.run("ui.dialog", json!({"name": "renameLayer"})).unwrap();
+        app.dialogs.text = "Renamed".into();
+        let (mut fonts, mut other) = (false, String::new());
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                // Another pane's box, drawn before the dialog as the app's panes are.
+                egui::Area::new(egui::Id::unique("other_pane")).fixed_pos(egui::pos2(10.0, 850.0)).show(&ctx, |ui| {
+                    let label = ui.label("Other");
+                    ui.add(egui::TextEdit::singleline(&mut other).id(egui::Id::unique("other_box"))).labelled_by(label.id);
+                });
+                super::show(app, &ctx);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("other_box")));
+        h.run();
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(egui::Id::unique("other_box")), "the other box focused");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, Some("renameLayer"), "the other pane's Enter didn't run it");
+        assert_ne!(h.state().session.map().layer(id).unwrap().name, "Renamed");
+        h.get_by_role_and_label(Role::TextInput, "Name").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "its own box's Enter ran it");
+        assert_eq!(h.state().session.map().layer(id).unwrap().name, "Renamed");
+    }
+
+    /// A dialog opened from the keyboard (Enter on a focused ribbon button) starts with nothing
+    /// focused: the next Enter runs it, rather than pressing the button again (#2599).
+    #[test]
+    fn a_dialog_opened_from_the_keyboard_takes_the_next_enter() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        let id = app.session.map().layers.first().map(|l| l.id).unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        let old = app.session.map().layer(id).unwrap().name.clone();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                // The ribbon's button, drawn before the dialog as the ribbon is.
+                egui::Area::new(egui::Id::unique("ribbon")).fixed_pos(egui::pos2(10.0, 850.0)).show(&ctx, |ui| {
+                    if ui.button("Rename…").clicked() {
+                        app.run("ui.dialog", json!({"name": "renameLayer"})).unwrap();
+                        app.dialogs.text = "Renamed".into();
+                    }
+                });
+                super::show(app, &ctx);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "Rename…").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, Some("renameLayer"), "Enter on the button opened it");
+        assert_eq!(h.state().session.map().layer(id).unwrap().name, old, "and didn't run it");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().dialogs.open, None, "the next Enter ran it");
+        assert_eq!(h.state().session.map().layer(id).unwrap().name, "Renamed");
+    }
+
+    /// Enter that another pane's one-line box takes in the very first frame drawing a dialog,
+    /// before the focus recorder has run once, doesn't run the dialog (#2599).
+    #[test]
+    fn enter_before_the_focus_is_recorded_does_not_run_the_dialog() {
+        let mut app = RustGisApp::with_sample();
+        let id = app.session.map().layers.first().map(|l| l.id).unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        let old = app.session.map().layer(id).unwrap().name.clone();
+        app.run("ui.dialog", json!({"name": "renameLayer"})).unwrap();
+        app.dialogs.text = "Renamed".into();
+        let ctx = egui::Context::default();
+        let (mut other, other_id) = (String::new(), egui::Id::unique("cold_other_box"));
+        ctx.memory_mut(|m| m.request_focus(other_id));
+        let enter =
+            egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 900.0)));
+        let input = egui::RawInput { screen_rect, events: vec![enter], ..Default::default() };
+        ctx.run_ui(input, |ui| {
+            egui::Area::new(egui::Id::unique("cold_other_pane")).show(ui.ctx(), |ui| {
+                ui.add(egui::TextEdit::singleline(&mut other).id(other_id));
+            });
+            super::show(&mut app, ui.ctx());
+        })
+        // Nothing renders this pass: its textures are dropped.
+        .textures_delta
+        .clear();
+        assert_eq!(ctx.memory(|m| m.focused()), None, "the box took the Enter");
+        assert_eq!(app.dialogs.open, Some("renameLayer"), "the dialog didn't run");
+        assert_eq!(app.session.map().layer(id).unwrap().name, old);
+    }
+
+    /// Enter on a focused drop-down opens it, and the dialog doesn't run (#2599).
+    #[test]
+    fn enter_on_a_drop_down_opens_it_only() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = sba_ready();
+        h.get_by_role_and_label(Role::ComboBox, "Selection Type").focus();
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert!(h.query_by_label("Add To Current Selection").is_some(), "the drop-down opened");
+        assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "the dialog is still open");
+        assert_eq!(selected(h.state()), 0, "and didn't run");
+    }
+
+    /// Shift+Tab from Rename's button into its box moves the focus as the next frame begins; Enter
+    /// in that very frame, the box taking it, runs the dialog.
+    #[test]
+    fn enter_right_after_shift_tab_into_the_box_runs_the_dialog() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        let id = app.session.map().layers.first().map(|l| l.id).unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        app.run("ui.dialog", json!({"name": "renameLayer"})).unwrap();
+        app.dialogs.text = "Renamed".into();
+        let mut h = app_harness(app);
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "Rename").focus();
+        h.run();
+        // Two passes in a row, by hand: the harness runs one more between its steps, by which the
+        // focus has moved already.
+        let ctx = h.ctx.clone();
+        let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 900.0)));
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        for event in [key(egui::Key::Tab, egui::Modifiers::SHIFT), key(egui::Key::Enter, egui::Modifiers::NONE)] {
+            let input = egui::RawInput { screen_rect, events: vec![event], ..Default::default() };
+            // Nothing renders these passes: their textures are dropped.
+            ctx.run_ui(input, |ui| super::show(h.state_mut(), ui.ctx())).textures_delta.clear();
+        }
+        assert_eq!(h.state().dialogs.open, None, "the box's Enter ran it");
+        assert_eq!(h.state().session.map().layer(id).unwrap().name, "Renamed");
     }
 
     /// In the app (its whole frame, shortcuts included), Escape closes a clause's Functions list:
