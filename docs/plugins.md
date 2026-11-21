@@ -227,6 +227,26 @@ cargo build --release --target wasm32-unknown-unknown
   dialogs ignore `form` and run the command when its button is clicked, without these parameters:
   set `minRustgisVersion` to the first version with them, or have the command answer what it needs
   then.
+- `"tabs": true` on a `choice` field of `commands[].form` draws it as a row of tabs at the top of
+  the dialog instead of a drop-down, for a dialog that shows a few parts of something, such as an
+  About window's authors, data sources and how to contribute. The field's label isn't shown (its
+  `help` is each tab's hover text), and one tab is always selected: the one kept from the last
+  opening, else the `default`, else the first choice. Clicking a tab, the selected one too, runs
+  the command with the dialog's values and shows its answer, so such a dialog has no **Run**;
+  while required fields are empty, a click only selects the tab and the dialog says what to fill
+  in, and a tab clicked while a run is going runs once that run has answered. On opening, a
+  dialog with tabs runs once when its required fields have values (a dialog without tabs runs
+  only from **Run**), so give tabs only to a command that shows something, not one that changes
+  the project or writes files. A form has at most one field with tabs, and only a `choice` may
+  have them; tool parameters can't, or the plugin is refused.
+  RustGIS versions before tabs ignore the key and show the drop-down and **Run**.
+
+  ```json
+  {"id": "about", "label": "About", "form": [
+    {"name": "part", "label": "Part", "kind": "choice", "tabs": true,
+     "choices": ["Authors", "Data sources", "How to contribute"]}
+  ]}
+  ```
 - `commands[].timeout`: seconds the command may run, from 1 to 86400; unset is 120. It holds on
   the command line, in Python and in scripts. The desktop app runs commands on its window's own
   thread, which can't draw or cancel until a command answers, so there a command still stops

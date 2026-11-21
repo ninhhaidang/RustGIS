@@ -3,6 +3,10 @@
 //! what it answers (its `report` text) under them, so each step of a plugin has its own
 //! parameters and result instead of sharing one panel.
 //!
+//! A `choice` field with `tabs` is a row of tabs at the top instead: clicking one runs the command
+//! with the dialog's values, without **Run**, and such a dialog runs once on opening when its
+//! required fields have values, so its first tab comes with its content.
+//!
 //! **Run** asks for the command as a ribbon button does ([`crate::pluginstart`]): it starts once
 //! the window has shown it running, clicks held meanwhile are dropped, and a command waiting for
 //! the web answers the dialog when it runs again.
@@ -35,6 +39,13 @@ struct Dialog {
     /// What Run, the reasons it waits and the result took last frame. The fields leave that
     /// much room, so they don't push them out of a window too short for both (#1964).
     footer: f32,
+    /// Just opened: a dialog with tabs runs once, when its required fields have values.
+    opening: bool,
+    /// A tab clicked while a run was going: it runs once that run has answered.
+    again: bool,
+    /// The run going is for a tab left by a click that couldn't run (a field to fill in): its
+    /// answer isn't shown under the tab now selected.
+    stale: bool,
 }
 
 /// `ui.pluginForm`: `{"plugin": id, "command": id}` opens that plugin command's dialog.
@@ -74,7 +85,18 @@ pub fn open(app: &mut RustGisApp, p: &Value) -> Result<Value, String> {
             .collect(),
         None => defaults,
     };
-    state.open = Some(Dialog { plugin: key.0, command: key.1, values, texts: HashMap::new(), asked: None, result: None, footer: 0.0 });
+    state.open = Some(Dialog {
+        plugin: key.0,
+        command: key.1,
+        values,
+        texts: HashMap::new(),
+        asked: None,
+        result: None,
+        footer: 0.0,
+        opening: true,
+        again: false,
+        stale: false,
+    });
     Ok(Value::Null)
 }
 
@@ -98,6 +120,9 @@ pub(crate) fn answered(app: &mut RustGisApp, id: &str, answer: &Result<Value, St
     }
     let Some(d) = app.ui.plugin_dialog.open.as_mut() else { return };
     d.asked = None;
+    if std::mem::take(&mut d.stale) {
+        return;
+    }
     d.result = Some(answer.as_ref().map(|a| shown(report(a))).map_err(|e| error_shown(e)));
 }
 
@@ -174,6 +199,12 @@ fn fits(f: &ParamDecl, v: &Value) -> bool {
     }
 }
 
+/// Whether field `f` is drawn as a row of tabs (only a `choice` can be: the manifest refuses
+/// `tabs` on the others).
+fn is_tabs(f: &ParamDecl) -> bool {
+    f.tabs && f.kind == "choice"
+}
+
 /// What a command answered, as the dialog shows it: its `report` text, or the answer itself
 /// (without the panel state it may carry).
 fn report(answer: &Value) -> String {
@@ -204,13 +235,32 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         && !crate::pluginstart::waits(app, &id, params)
     {
         d.asked = None;
+        // A tab clicked meanwhile doesn't run then either: it was left to the run that stopped.
+        d.again = false;
+        d.stale = false;
         d.result = Some(Err(tl!("It stopped without an answer: see the notices.").to_string()));
+    }
+    // The field drawn as tabs, if the form has one: its clicks run the command, and no Run shows.
+    let tabbed = c.form.iter().find(|f| is_tabs(f));
+    // A tab clicked while the last run was going: its run starts this frame, so that run's
+    // answer, for the tab left, isn't shown meanwhile.
+    let again = tabbed.is_some() && d.again && d.asked.is_none();
+    if again {
+        d.result = None;
+    }
+    // The tab selected before anything reads the values, so the fields to fill in below don't
+    // list a tabs field this frame then selects.
+    if let Some(f) = tabbed {
+        select_tab(f, &mut d.values);
     }
     // Fields to fill in before it can run.
     let (missing, bad) = held(&c.form, &d.values, &d.texts);
     let missing: Vec<&str> = missing.iter().map(|f| m.translate(&lang, &f.label)).collect();
     let bad: Vec<&str> = bad.iter().map(|f| m.translate(&lang, &f.label)).collect();
     let mut run = false;
+    let mut tab_clicked = false;
+    // Whether the form has fields besides its tabs.
+    let fields = c.form.iter().any(|f| !is_tabs(f));
 
     let mut open = true;
     let title = format!("{} › {}", m.translate(&lang, &m.name), m.translate(&lang, &c.label).replace('\n', " "));
@@ -223,6 +273,10 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
+            if let Some(f) = tabbed {
+                tab_clicked = tab_row(ui, f, &mut d.values, m, &lang);
+                ui.separator();
+            }
             if !c.help.is_empty() {
                 ui.label(RichText::new(m.translate(&lang, &c.help)).weak());
                 ui.separator();
@@ -233,49 +287,65 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
             let row = ui.spacing().interact_size.y;
             let footer = if d.footer > 0.0 { d.footer } else { row + 2.0 * ui.spacing().item_spacing.y + 6.0 };
             let room = (ui.available_height() - footer).max(row).min(460.0);
-            egui::ScrollArea::vertical().id_salt("plugin_form_fields").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
-                egui::Grid::new(("plugin_form_grid", &d.plugin, &d.command)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    // A field lists the fields of the layer chosen above it.
-                    let mut layer: Option<String> = None;
-                    for f in &c.form {
-                        let text = m.translate(&lang, &f.label);
-                        let mut label = ui.label(if f.required { format!("{text} *") } else { text.to_string() });
-                        if !f.help.is_empty() {
-                            label = label.on_hover_text(m.translate(&lang, &f.help));
+            // A dialog of tabs alone has no other fields to show.
+            if fields {
+                egui::ScrollArea::vertical().id_salt("plugin_form_fields").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new(("plugin_form_grid", &d.plugin, &d.command)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                        // A field lists the fields of the layer chosen above it.
+                        let mut layer: Option<String> = None;
+                        for f in c.form.iter().filter(|f| !is_tabs(f)) {
+                            let text = m.translate(&lang, &f.label);
+                            let mut label = ui.label(if f.required { format!("{text} *") } else { text.to_string() });
+                            if !f.help.is_empty() {
+                                label = label.on_hover_text(m.translate(&lang, &f.help));
+                            }
+                            field(app, ui, f, &mut d.values, &mut d.texts, layer.as_deref(), m, &lang).labelled_by(label.id);
+                            if layer_kind(&f.kind).is_some() {
+                                layer = d.values.get(&f.name).and_then(Value::as_str).map(str::to_string);
+                            }
+                            ui.end_row();
                         }
-                        field(app, ui, f, &mut d.values, &mut d.texts, layer.as_deref(), m, &lang).labelled_by(label.id);
-                        if layer_kind(&f.kind).is_some() {
-                            layer = d.values.get(&f.name).and_then(Value::as_str).map(str::to_string);
-                        }
-                        ui.end_row();
-                    }
+                    });
                 });
-            });
+            }
             let footer_top = ui.cursor().top();
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let running = d.asked.is_some();
-                let ready = missing.is_empty() && bad.is_empty();
-                let button = ui.add_enabled(!running && ready, egui::Button::new(RichText::new(tl!("Run")).strong()));
-                // Each reason it waits, on its own line.
-                let mut why = Vec::new();
-                if !missing.is_empty() {
-                    why.push(crate::i18n::fmt("Fill in: {fields}", &[("fields", &missing.join(", "))]));
-                }
-                if !bad.is_empty() {
-                    why.push(crate::i18n::fmt("Not a number: {fields}", &[("fields", &bad.join(", "))]));
-                }
-                let button = if why.is_empty() { button } else { button.on_disabled_hover_text(why.join("\n")) };
-                if button.clicked() {
-                    run = true;
-                }
-                if running {
+            let running = d.asked.is_some();
+            // Each reason it waits, on its own line.
+            let mut why = Vec::new();
+            if !missing.is_empty() {
+                why.push(crate::i18n::fmt("Fill in: {fields}", &[("fields", &missing.join(", "))]));
+            }
+            if !bad.is_empty() {
+                why.push(crate::i18n::fmt("Not a number: {fields}", &[("fields", &bad.join(", "))]));
+            }
+            if tabbed.is_none() {
+                ui.horizontal(|ui| {
+                    let ready = missing.is_empty() && bad.is_empty();
+                    let button = ui.add_enabled(!running && ready, egui::Button::new(RichText::new(tl!("Run")).strong()));
+                    let button = if why.is_empty() { button } else { button.on_disabled_hover_text(why.join("\n")) };
+                    if button.clicked() {
+                        run = true;
+                    }
+                    if running {
+                        ui.spinner();
+                        ui.label(tl!("Running…"));
+                    }
+                });
+            } else if running || (again && why.is_empty()) {
+                ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(tl!("Running…"));
-                }
-            });
+                });
+            } else if !why.is_empty() {
+                // No Run to hover: the reasons a tab doesn't run are said outright.
+                ui.label(RichText::new(why.join("\n")).weak());
+            }
             if let Some(r) = &d.result {
-                ui.separator();
+                // Under tabs alone, the tabs' own line already sets it apart.
+                if fields || tabbed.is_none() {
+                    ui.separator();
+                }
                 ui.label(RichText::new(tl!("Result")).strong());
                 egui::ScrollArea::vertical().min_scrolled_height(260.0).max_height(420.0).auto_shrink([false, true]).show(
                     ui,
@@ -291,6 +361,30 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
             }
             d.footer = ui.cursor().top() - footer_top;
         });
+    if tabbed.is_some() {
+        // With the values as drawn this frame: a required layer is picked, and the tab set, on
+        // the first.
+        let (missing, bad) = held(&c.form, &d.values, &d.texts);
+        let ready = missing.is_empty() && bad.is_empty();
+        if tab_clicked && d.asked.is_some() {
+            // Only a click that could run now is left to run after: one with a field to fill
+            // in only selects its tab, even if the field is filled in before the run answers,
+            // and the answer of the run going, for the tab left, isn't shown under it.
+            d.again = ready;
+            d.stale = !ready;
+            if !ready {
+                d.result = None;
+            }
+        } else if tab_clicked || again || d.opening {
+            run = ready;
+            d.again = false;
+            // A tab that can't run yet doesn't show the last one's answer.
+            if !ready && tab_clicked {
+                d.result = None;
+            }
+        }
+    }
+    d.opening = false;
     if run {
         let params = form_params(&c.form, &d.values);
         d.result = None;
@@ -306,6 +400,39 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     } else {
         app.ui.plugin_dialog.kept.insert((d.plugin, d.command), keep(&d.values, &c.form));
     }
+}
+
+/// Keeps one of a tabs field's choices selected: the one held, else the field's default, else its
+/// first choice.
+fn select_tab(f: &ParamDecl, values: &mut Map<String, Value>) {
+    let known = |v: &str| f.choices.iter().any(|c| c == v);
+    if !values.get(&f.name).and_then(Value::as_str).is_some_and(known) {
+        let start = f.default.as_ref().and_then(Value::as_str).filter(|d| known(d)).or(f.choices.first().map(String::as_str));
+        if let Some(s) = start {
+            values.insert(f.name.clone(), json!(s));
+        }
+    }
+}
+
+/// A `choice` field's row of tabs, drawn as the app's other tabs are, with the tab
+/// [`select_tab`] keeps selected; whether one was clicked, the selected one too.
+fn tab_row(ui: &mut Ui, f: &ParamDecl, values: &mut Map<String, Value>, m: &rustgis_engine::plugins::Manifest, lang: &str) -> bool {
+    select_tab(f, values);
+    let cur = values.get(&f.name).and_then(Value::as_str).map(str::to_string);
+    let mut clicked = false;
+    ui.horizontal_wrapped(|ui| {
+        for c in &f.choices {
+            let mut tab = ui.selectable_label(cur.as_deref() == Some(c.as_str()), m.translate(lang, c));
+            if !f.help.is_empty() {
+                tab = tab.on_hover_text(m.translate(lang, &f.help));
+            }
+            if tab.clicked() {
+                values.insert(f.name.clone(), json!(c));
+                clicked = true;
+            }
+        }
+    });
+    clicked
 }
 
 /// The layer kind a field kind picks, if it picks a layer. A `table` takes the layers a
@@ -498,6 +625,13 @@ mod tests {
             {"name": "count", "label": "Count", "kind": "number"},
             {"name": "flag", "label": "Flag", "kind": "bool"},
             {"name": "agree", "label": "Agree", "kind": "bool", "required": true}
+        ]}));
+        // Tabs, alone or with a required field (both echo).
+        let parts = json!({"name": "part", "label": "Part", "kind": "choice", "tabs": true,
+            "choices": ["Authors", "Sources", "Contributing"], "default": "Sources"});
+        commands.push(json!({"id": "qt", "label": "Echo Tabs", "form": [parts.clone()]}));
+        commands.push(json!({"id": "qr", "label": "Echo Tabs Required", "form": [
+            {"name": "note", "label": "Note", "kind": "text", "required": true}, parts
         ]}));
         for c in commands.iter_mut().filter(|c| c["id"] == "e") {
             c["form"] = json!([{"name": "trees", "label": "Trees", "kind": "number"}]);
@@ -738,6 +872,134 @@ mod tests {
         let texts = HashMap::from([("method".to_string(), "2,5".to_string())]);
         let (missing, bad) = held(std::slice::from_ref(&method), &Map::new(), &texts);
         assert!(missing.is_empty() && bad.len() == 1);
+    }
+
+    /// The parameters the dialog's last answer echoed.
+    fn echoed(h: &egui_kittest::Harness<'static, RustGisApp>) -> Value {
+        let Some(Ok(answer)) = &dialog(h).result else { panic!("{:?}", dialog(h).result) };
+        serde_json::from_str::<Value>(answer).unwrap()["params"].clone()
+    }
+
+    /// A dialog of tabs runs on opening, with its default tab, and again with each tab clicked,
+    /// the selected one too; it has no Run.
+    #[test]
+    fn a_tab_runs_the_command_when_clicked_and_on_opening() {
+        let mut h = launch("ui-dialog-tabs");
+        h.state_mut().run_by_user("plugin:ui-dialog-tabs/qt", Value::Null).unwrap();
+        h.run();
+        assert_eq!(echoed(&h), json!({"part": "Sources"}), "the default tab ran on opening");
+        assert!(h.query_by_label("Run").is_none(), "no Run beside tabs");
+        assert!(h.query_by_label("Part").is_none(), "the field's label isn't shown");
+        h.get_by_label("Contributing").click();
+        h.run();
+        assert_eq!(echoed(&h), json!({"part": "Contributing"}));
+        // Clicked again, the selected tab runs again.
+        h.state_mut().ui.plugin_dialog.open.as_mut().unwrap().result = None;
+        h.get_by_label("Contributing").click();
+        h.run();
+        assert_eq!(echoed(&h), json!({"part": "Contributing"}));
+        // Opened again, it starts at the tab it was left on, and runs once.
+        h.get_by_label("Authors").click();
+        h.run();
+        h.state_mut().run("ui.pluginForm", json!({"plugin": "ui-dialog-tabs", "command": "qt"})).unwrap();
+        assert!(dialog(&h).result.is_none() && dialog(&h).opening);
+        assert_eq!(dialog(&h).values["part"], json!("Authors"));
+        h.run();
+        assert_eq!(echoed(&h), json!({"part": "Authors"}));
+        plugins::unload("ui-dialog-tabs");
+    }
+
+    /// With a required field empty, the dialog doesn't run on opening, and a tab clicked only
+    /// selects it, saying what to fill in; filled in, a click runs it.
+    #[test]
+    fn a_tab_waits_for_the_required_fields() {
+        let mut h = launch("ui-dialog-tabs-required");
+        h.state_mut().run_by_user("plugin:ui-dialog-tabs-required/qr", Value::Null).unwrap();
+        h.run();
+        assert!(dialog(&h).asked.is_none() && dialog(&h).result.is_none(), "{:?}", dialog(&h).result);
+        assert!(h.query_by_label_contains("Fill in: Note").is_some(), "the reason is said outright");
+        h.get_by_label("Authors").click();
+        h.run();
+        assert!(dialog(&h).asked.is_none() && dialog(&h).result.is_none(), "{:?}", dialog(&h).result);
+        assert_eq!(dialog(&h).values["part"], json!("Authors"), "selected all the same");
+        h.state_mut().ui.plugin_dialog.open.as_mut().unwrap().values.insert("note".into(), json!("hi"));
+        h.run();
+        assert!(dialog(&h).result.is_none(), "filling a field in doesn't run it");
+        h.get_by_label("Sources").click();
+        h.run();
+        assert_eq!(echoed(&h), json!({"note": "hi", "part": "Sources"}));
+        plugins::unload("ui-dialog-tabs-required");
+    }
+
+    /// A tab clicked while a run is going runs once that run has answered; the dialog then
+    /// shows the answer for the tab clicked.
+    #[test]
+    fn a_tab_clicked_while_running_runs_after() {
+        let mut h = launch("ui-dialog-tabs-again");
+        h.state_mut().run_by_user("plugin:ui-dialog-tabs-again/qt", Value::Null).unwrap();
+        h.run();
+        h.get_by_label("Contributing").click();
+        h.step();
+        assert!(dialog(&h).asked.is_some(), "waits to start");
+        h.get_by_label("Authors").click();
+        h.step();
+        assert!(dialog(&h).again, "{:?}", dialog(&h).asked);
+        h.run();
+        assert!(!dialog(&h).again && dialog(&h).asked.is_none());
+        assert_eq!(echoed(&h), json!({"part": "Authors"}));
+        plugins::unload("ui-dialog-tabs-again");
+    }
+
+    /// A tab clicked during a run while a required field is empty only selects it: filling the
+    /// field in before that run answers doesn't run it then, and that run's answer, for the tab
+    /// left, isn't shown under it.
+    #[test]
+    fn a_tab_clicked_while_running_and_not_ready_is_not_run_after() {
+        let mut h = launch("ui-dialog-tabs-not-ready");
+        h.state_mut().run_by_user("plugin:ui-dialog-tabs-not-ready/qr", Value::Null).unwrap();
+        h.run();
+        h.state_mut().ui.plugin_dialog.open.as_mut().unwrap().values.insert("note".into(), json!("hi"));
+        h.get_by_label("Sources").click();
+        h.step();
+        assert!(dialog(&h).asked.is_some(), "waits to start");
+        h.state_mut().ui.plugin_dialog.open.as_mut().unwrap().values.remove("note");
+        h.get_by_label("Authors").click();
+        h.step();
+        assert!(!dialog(&h).again, "not ready, so nothing is left to run");
+        h.state_mut().ui.plugin_dialog.open.as_mut().unwrap().values.insert("note".into(), json!("hi"));
+        h.run();
+        assert!(!dialog(&h).again && dialog(&h).asked.is_none());
+        // The Sources run answered, but under Authors it isn't shown: only a click runs Authors.
+        assert!(dialog(&h).result.is_none(), "{:?}", dialog(&h).result);
+        h.get_by_label("Authors").click();
+        h.run();
+        assert_eq!(echoed(&h), json!({"note": "hi", "part": "Authors"}));
+        plugins::unload("ui-dialog-tabs-not-ready");
+    }
+
+    /// A tab clicked during a run that then stops without an answer (another project opened
+    /// before it started) isn't run after it: the dialog says it stopped.
+    #[test]
+    fn a_tab_clicked_while_running_is_dropped_with_a_run_that_stopped() {
+        let mut h = launch("ui-dialog-tabs-stopped");
+        h.state_mut().run_by_user("plugin:ui-dialog-tabs-stopped/qt", Value::Null).unwrap();
+        h.run();
+        h.get_by_label("Contributing").click();
+        h.step();
+        assert!(dialog(&h).asked.is_some(), "waits to start");
+        h.get_by_label("Authors").click();
+        h.step();
+        assert!(dialog(&h).again);
+        // Another project opened: the run waiting is dropped (`pluginstart::drop_replaced`).
+        h.state_mut().session.run("project.new", &Value::Null).unwrap();
+        h.run();
+        assert!(!dialog(&h).again && dialog(&h).asked.is_none());
+        assert_eq!(
+            dialog(&h).result,
+            Some(Err(tl!("It stopped without an answer: see the notices.").to_string())),
+            "the queued tab didn't run"
+        );
+        plugins::unload("ui-dialog-tabs-stopped");
     }
 
     /// A `report` text is shown as it is; any other answer as JSON, without its panel state; a

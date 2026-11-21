@@ -250,6 +250,11 @@ pub struct ParamDecl {
     pub mode: FileMode,
     #[serde(default)]
     pub help: String,
+    /// For a `choice` in a command's dialog (`commands[].form`): drawn as a row of tabs, each of
+    /// which runs the command when clicked, instead of a drop-down and **Run**. Older RustGIS
+    /// versions ignore it and show the drop-down.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tabs: bool,
 }
 
 /// A ribbon tab of the plugin's own, beside RustGIS's tabs.
@@ -595,11 +600,26 @@ pub fn form_number_value(v: &serde_json::Value) -> Option<serde_json::Value> {
 /// a default the field can show and send (a number, or a number written as text, for `number`;
 /// `true` or `false` for `bool`; one of its choices for `choice`; text for the other kinds), and
 /// a vector layer or table field (`vectorLayer`, `polygonLayer`, `pointLayer` or `table`) above
-/// each `field` or `numericField`, whose fields it lists, and required when the field is.
+/// each `field` or `numericField`, whose fields it lists, and required when the field is. A field
+/// drawn as tabs is a `choice`, and the only one of the form: each row of tabs would run the
+/// command.
 fn check_form(owner: &str, form: &[ParamDecl]) -> Result<(), String> {
     // The nearest layer field above: its kind, and whether it is required.
     let mut layer: Option<(&str, bool)> = None;
+    let mut tabs: Option<&str> = None;
     for p in form {
+        if p.tabs {
+            if p.kind != "choice" {
+                return Err(format!("plugin.json: {owner}: '{}' has tabs, which only a choice field can have", p.name));
+            }
+            if let Some(first) = tabs {
+                return Err(format!(
+                    "plugin.json: {owner}: '{}' has tabs, but '{first}' already has; a dialog has one row of tabs",
+                    p.name
+                ));
+            }
+            tabs = Some(&p.name);
+        }
         if let Some(d) = &p.default {
             let fits = match p.kind.as_str() {
                 "number" => form_number_value(d).is_some(),
@@ -774,6 +794,10 @@ impl Manifest {
             check_text("tool summary", &t.summary, false)?;
             check_text("toolbox", &t.toolbox, false)?;
             self.check_params(&t.name, &t.params, PARAM_KINDS)?;
+            // The Tools pane runs a tool from its own Run, in the background: no tabs there.
+            if let Some(p) = t.params.iter().find(|p| p.tabs) {
+                return Err(format!("plugin.json: {}: '{}' has tabs, which only a command's dialog field can have", t.name, p.name));
+            }
         }
         // Before the tab, which may name it.
         if let Some(panel) = &self.panel {

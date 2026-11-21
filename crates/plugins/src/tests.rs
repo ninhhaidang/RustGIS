@@ -321,6 +321,29 @@ fn command_dialog_fields_are_checked() {
     assert!(Manifest::parse(&c.to_string()).is_ok());
 }
 
+/// A dialog's `choice` field may be drawn as tabs; `tabs` on another kind, on a second field of
+/// the form or on a tool parameter is refused, naming the field.
+#[test]
+fn dialog_tabs_are_one_choice_field() {
+    let tabs = json!({"name": "part", "label": "Part", "kind": "choice", "tabs": true, "choices": ["Authors", "Sources"]});
+    let mut m = json!({"id": "about", "name": "About", "version": "1.0.0",
+        "commands": [{"id": "about", "label": "About", "form": [tabs.clone(), {"name": "lang", "label": "Language", "kind": "text"}]}]});
+    let parsed = Manifest::parse(&m.to_string()).unwrap();
+    assert!(parsed.commands[0].form[0].tabs && !parsed.commands[0].form[1].tabs);
+    // Written back only where it is set, so a manifest without it reads as before.
+    assert_eq!(serde_json::to_value(&parsed.commands[0].form[1]).unwrap().get("tabs"), None);
+    let mut other = m.clone();
+    other["commands"][0]["form"][1]["tabs"] = json!(true);
+    let e = Manifest::parse(&other.to_string()).unwrap_err();
+    assert!(e.contains("About: 'lang' has tabs, which only a choice field can have"), "{e}");
+    other["commands"][0]["form"][1] = json!({"name": "more", "label": "More", "kind": "choice", "tabs": true, "choices": ["A"]});
+    let e = Manifest::parse(&other.to_string()).unwrap_err();
+    assert!(e.contains("'more' has tabs, but 'part' already has"), "{e}");
+    m["tools"] = json!([{"id": "t", "name": "Tool", "params": [tabs]}]);
+    let e = Manifest::parse(&m.to_string()).unwrap_err();
+    assert!(e.contains("Tool: 'part' has tabs, which only a command's dialog field can have"), "{e}");
+}
+
 /// A command may ask for more time than the two minutes a command normally gets.
 #[test]
 fn command_timeouts_are_bounded() {
