@@ -42,6 +42,22 @@ pub fn series_env(layout: &Layout, maps: &[Map]) -> Env {
     Env { page: page(), ..Env::default() }
 }
 
+/// The environment a map frame's features are styled in on the page: `env` (the series page) at
+/// the scale the frame draws at, its map's ground resolution in screen pixels.
+pub fn frame_style_env(map: &Map, camera: &rustgis_map::Camera, env: &Env) -> Env {
+    env.at_scale(Some(map.ground_res_at(camera) / rustgis_geom::PIXEL_M))
+}
+
+/// Map frame `frame`'s map and the environment its features are styled in on `layout`'s current
+/// page ([`series_env`] at [`frame_style_env`]'s scale): what a chart coloured by classes reads its
+/// bars' colours in, so what is said of them matches what is drawn.
+pub fn frame_page_env<'a>(layout: &Layout, maps: &'a [Map], frame: u32) -> Option<(&'a Map, Env)> {
+    let ElementKind::MapFrame { map, center, scale, bearing, pitch, .. } = &layout.element(frame)?.kind else { return None };
+    let m = maps.get(map_index(maps, map)?)?;
+    let camera = frame_camera(m, *center, *scale, *bearing, *pitch);
+    Some((m, frame_style_env(m, &camera, &series_env(layout, maps))))
+}
+
 /// Largest page drawn, in pixels per side and in all (less in the browser, where memory is
 /// tighter): a larger page is drawn at a lower resolution.
 pub const MAX_SIDE: f64 = 12_000.0;
@@ -681,8 +697,13 @@ fn draw_page(
                 }
             }
             ElementKind::Chart { frame: f, layer, color, .. } => {
-                let ds = frame(*f).and_then(|fr| maps.get(fr.1)).and_then(|m| m.layer_by_name(layer)).map(|l| &l.dataset);
-                match ds.and_then(|ds| e.kind.chart_data(ds)) {
+                // Coloured by classes, its bars read their features' colours at the frame's scale
+                // and on this page, as the frame draws them.
+                let data = frame(*f).and_then(|&(_, mi, cam, _, _)| {
+                    let m = maps.get(mi)?;
+                    e.kind.chart_data_of(m.layer_by_name(layer)?, &frame_style_env(m, &cam, env))
+                });
+                match data {
                     Some(data) => {
                         let look = e.kind.chart_look().unwrap_or_default();
                         chart(&mut pm, r, &data, &look, color.unwrap_or(INK), ppp, layout.decimal_comma)
@@ -3681,7 +3702,7 @@ fn chart(pm: &mut Canvas, r: Rect, data: &rustgis_map::layout::ChartData, look: 
     } else {
         Vec::new()
     };
-    let bars = ChartBars { r, title_h, vals, values: &values, min, max, px, ppp, dark, look };
+    let bars = ChartBars { r, title_h, vals, values: &values, colors: &data.colors, min, max, px, ppp, dark, look };
     match look.orientation {
         Orientation::Horizontal => bars.across(pm, data.labelled),
         Orientation::Vertical => bars.columns(pm, data.labelled),
@@ -3698,13 +3719,14 @@ fn fit_label(name: &str, too_wide: impl Fn(&str) -> bool) -> String {
 }
 
 /// What [`chart`] draws its bars from: its box, the height of its title over the bars, the bars
-/// and their values written out (none without), the least and greatest value (0 among them), its
-/// text size and pixels per point.
+/// and their values written out (none without), each bar's own colour (none: the look's bar
+/// colour), the least and greatest value (0 among them), its text size and pixels per point.
 struct ChartBars<'a> {
     r: Rect,
     title_h: f32,
     vals: &'a [(f64, String)],
     values: &'a [String],
+    colors: &'a [Option<Rgba>],
     min: f64,
     max: f64,
     px: f32,
@@ -3714,9 +3736,11 @@ struct ChartBars<'a> {
 }
 
 impl ChartBars<'_> {
-    fn bar(&self, pm: &mut Canvas, x: f32, y: f32, w: f32, h: f32) {
+    /// Bar `i`, in its own colour or the look's.
+    fn bar(&self, pm: &mut Canvas, i: usize, x: f32, y: f32, w: f32, h: f32) {
+        let colour = self.colors.get(i).copied().flatten().unwrap_or(self.look.bar_color);
         if let Some(b) = Rect::from_xywh(x, y, w, h) {
-            pm.fill_rect(b, &paint(self.look.bar_color, 1.0), Transform::identity(), None);
+            pm.fill_rect(b, &paint(colour, 1.0), Transform::identity(), None);
         }
     }
 
@@ -3769,7 +3793,7 @@ impl ChartBars<'_> {
             let y = r.y() + self.title_h + bh * i as f32;
             let w = (bar_area * self.share(v.abs())).max(1.0);
             let x = if *v < 0.0 { zero - w } else { zero };
-            self.bar(pm, x, y + bh * 0.15, w, bh * 0.7);
+            self.bar(pm, i, x, y + bh * 0.15, w, bh * 0.7);
             if labelled {
                 let t = fit_label(name, |t| text::measure(t, 7.5, false) * ppp > label_w - 4.0 * ppp);
                 // At the column's right, the label ends where the bars' side begins.
@@ -3811,7 +3835,7 @@ impl ChartBars<'_> {
             let cx = r.x() + slot * (i as f32 + 0.5);
             let h = (plot_h * self.share(v.abs())).max(1.0);
             let y = if *v < 0.0 { zero } else { zero - h };
-            self.bar(pm, cx - slot * 0.35, y, slot * 0.7, h);
+            self.bar(pm, i, cx - slot * 0.35, y, slot * 0.7, h);
             if let Some(t) = self.values.get(i) {
                 let vy = if *v < 0.0 { zero + h + value_h / 2.0 } else { zero - h - value_h / 2.0 };
                 text::text_at(pm, t, cx, vy, value_px, self.dark, false, text::Align::Center, false);
@@ -3965,6 +3989,37 @@ mod tests {
         let r = Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap();
         chart(&mut c, r, &data, &kind.chart_look().unwrap(), INK, 1.0, false);
         c
+    }
+
+    /// Each bar in its own colour (#2487 part 3), a bar without one in the look's: across and as
+    /// columns.
+    #[test]
+    fn chart_bars_take_their_own_colours() {
+        let red = Rgba::rgb(0xD0, 0x10, 0x10);
+        let data = rustgis_map::layout::ChartData {
+            bars: vec![(10.0, String::new()), (10.0, String::new())],
+            labelled: false,
+            left_out: 0,
+            out_of_range: 0,
+            no_number: 0,
+            title: String::new(),
+            colors: vec![Some(red), None],
+            mixed: 0,
+            unshown: 0,
+        };
+        let is_red = |c: &Canvas, x: u32, y: u32| c.pixmap().pixel(x, y).is_some_and(|p| p.red() > 150 && p.blue() < 60);
+        for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+            let look = ChartLook { orientation, ..ChartLook::default() };
+            let mut c = Canvas::new(200, 120).unwrap();
+            chart(&mut c, Rect::from_xywh(0.0, 0.0, 200.0, 120.0).unwrap(), &data, &look, INK, 1.0, false);
+            // Across, two rows 18 px high from the top; as columns, two slots 100 px wide.
+            let ((x0, y0), (x1, y1)) = match orientation {
+                Orientation::Horizontal => ((20, 9), (20, 27)),
+                Orientation::Vertical => ((50, 100), (150, 100)),
+            };
+            assert!(is_red(&c, x0, y0), "{orientation:?}: the first bar in its own colour");
+            assert!(bar_blue(&c, x1, y1) && !is_red(&c, x1, y1), "{orientation:?}: the second in the look's");
+        }
     }
 
     fn bar_blue(c: &Canvas, x: u32, y: u32) -> bool {

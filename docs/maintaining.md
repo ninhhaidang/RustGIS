@@ -183,6 +183,13 @@ a colorbar's, which the command alone doesn't tell, and the project the update r
 for its chart anyway. Giving the defaults needs nothing. A saved `layout.import` whose `text` has
 such a chart requires it as well. Layout files are not covered, as for backgrounds (#2277).
 
+Projects with a layout chart coloured by its layer's classes (`classes` on a chart element)
+require `layout-chart-classes`, so an older reader refuses them instead of drawing every bar in
+the chart's bar colour and saving it again without. Saved `layout.addElement` commands for a
+chart and `layout.update` commands that set `"classes": true` require it too (only a chart takes
+the key); `false` needs nothing. A saved `layout.import` whose `text` has such a chart requires it
+as well. Layout files are not covered, as for backgrounds (#2277).
+
 Projects with a map frame whose border isn't the default dark grey 0.8 pt line (`border_color`,
 `border_width` on a map frame, a width of 0 drawing none) require `layout-frame-border`, so an
 older reader refuses them instead of drawing the default border and saving the frame again

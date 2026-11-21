@@ -79,6 +79,9 @@ impl Project {
         if !required.contains(&"layout-chart-look") && self.layouts.iter().any(|l| l.elements.iter().any(charts_look)) {
             required.push("layout-chart-look");
         }
+        if !required.contains(&"layout-chart-classes") && self.layouts.iter().any(|l| l.elements.iter().any(charts_classes)) {
+            required.push("layout-chart-classes");
+        }
         if !required.contains(&"layout-frame-border") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.has_custom_border()))
         {
             required.push("layout-frame-border");
@@ -124,6 +127,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-element-wrap", command_uses_element_wrap),
     ("layout-chart-data", command_uses_chart_data),
     ("layout-chart-look", command_uses_chart_look),
+    ("layout-chart-classes", command_uses_chart_classes),
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
 ];
@@ -254,6 +258,27 @@ fn command_uses_chart_look(id: &str, params: &Value) -> bool {
             .iter()
             .any(|key| imported_layout_uses(params, key, charts_look)),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_look)),
+        _ => false,
+    }
+}
+
+fn charts_classes(e: &rustgis_map::layout::Element) -> bool {
+    e.kind.chart_uses_classes()
+}
+
+/// A layout command that colours a chart's bars by its layer's classes (#2487 part 3): an older
+/// reader ignores the key and draws every bar in the chart's bar colour. `false` keeps a chart
+/// as an older reader draws it; only a chart takes the key, so a `layout.update` is read by it
+/// alone.
+fn command_uses_chart_classes(id: &str, params: &Value) -> bool {
+    let classes = || params.get("classes").and_then(crate::cmd::bool_value) == Some(true);
+    match id {
+        "layout.addElement" => {
+            params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("chart")) && classes()
+        }
+        "layout.update" => classes(),
+        "layout.import" => imported_layout_uses(params, "\"classes\"", charts_classes),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_classes)),
         _ => false,
     }
 }
@@ -969,6 +994,52 @@ mod tests {
                 document["tasks"] = value;
                 let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
                 let expected = if required { json!(["layout-chart-look"]) } else { Value::Null };
+                assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
+            }
+        }
+    }
+
+    /// A chart coloured by its layer's classes (#2487 part 3) is required where it is saved, so an
+    /// older reader refuses the project instead of drawing every bar in the chart's colour; so is
+    /// a saved command that colours one. `false` needs nothing, nor is it written.
+    #[test]
+    fn chart_classes_capability_follows_saved_layouts_and_commands() {
+        use rustgis_map::layout::ElementKind;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_chart_classes.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-chart-classes"]));
+        let reread = Project::from_json(&saved.to_string()).unwrap();
+        assert!(matches!(&reread.layouts[0].elements[1].kind, ElementKind::Chart { classes: true, .. }));
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let ElementKind::Chart { classes, .. } = &mut e.kind {
+                *classes = false;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "a chart in one colour needs nothing");
+        assert!(!base["layouts"].to_string().contains("\"classes\""), "nor writes classes");
+        let mut document = base.clone();
+        document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Chart", "command": "layout.import", "params": {"text": saved["layouts"][0].to_string()}}]}]);
+        let imported = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+        assert_eq!(imported["requires"], json!(["layout-chart-classes"]));
+        for (id, params, required) in [
+            ("layout.addElement", json!({"kind": "chart", "classes": true}), true),
+            ("layout.addElement", json!({"kind": "chart", "classes": false}), false),
+            ("layout.addElement", json!({"kind": "legend", "classes": true}), false),
+            ("layout.update", json!({"element": 2, "classes": true}), true),
+            ("layout.update", json!({"element": 2, "classes": false}), false),
+            ("layout.import", json!({"text": base["layouts"][0].to_string()}), false),
+        ] {
+            let script = format!("{id}= {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Chart", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Chart", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                let expected = if required { json!(["layout-chart-classes"]) } else { Value::Null };
                 assert_eq!(saved.get("requires").cloned().unwrap_or(Value::Null), expected, "{id} {params}");
             }
         }
