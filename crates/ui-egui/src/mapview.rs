@@ -5738,6 +5738,18 @@ mod tests {
     #[test]
     fn explore_click_asking_only_wms_clears_without_a_notice() {
         let _turn = crate::fetching::turn();
+        use rustgis_engine::render::rustgis_tiles::cache;
+        let (send, requests) = std::sync::mpsc::channel();
+        // Hold only identify requests: a fast network failure used to close the popup in the
+        // release frame, before the assertion. Tile fetches never reach a real server either.
+        cache::set_fetcher(move |url, done| {
+            let lower = url.to_ascii_lowercase();
+            if lower.contains("request=getcapabilities") || lower.contains("request=getfeatureinfo") {
+                send.send((url, done)).unwrap();
+            } else {
+                done(Err("tile fixture failure".into()));
+            }
+        });
         let mut h = selection_harness();
         let url = "https://wms.example.org/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=over&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image%2Fpng";
         h.state_mut().run("map.addTiles", json!({"url": url, "name": "Over", "overlay": true})).unwrap();
@@ -5747,10 +5759,22 @@ mod tests {
         selection_click(&mut h, [3.5, 1.5]);
         assert!(h.state().map.popup.is_some(), "the click asks the WMS layer");
         assert!(selection_rows(&h).is_empty());
+        let (asked, done) = requests.try_recv().unwrap();
+        assert!(asked.to_ascii_lowercase().contains("request=getcapabilities"));
+        done(Err("WMS fixture failure".into()));
+        h.step();
+        assert!(h.state().map.popup.is_none(), "the completed failure closes the empty popup");
         h.state_mut().run("select.rows", json!({"layer": "Points", "rows": [1]})).unwrap();
         selection_click(&mut h, [1.0, 3.5]);
         assert!(selection_rows(&h).is_empty(), "the click clears the selection");
-        // The made-up WMS server's own failure may land too: only the refusal is checked.
+        assert!(h.state().map.popup.is_some(), "the second click asks the WMS layer");
+        let (_, done) = requests.try_recv().unwrap();
+        done(Err("WMS fixture failure".into()));
+        h.step();
+        assert!(h.state().map.popup.is_none());
+        assert!(selection_rows(&h).is_empty());
+        let failures = h.state().session.notices_since(mark).iter().filter(|n| n.error && n.text.contains("WMS fixture failure")).count();
+        assert_eq!(failures, 2, "both WMS failures completed before checking notices");
         let refused = h.state().session.notices_since(mark).iter().any(|n| n.error && n.text.contains("nothing is selected"));
         assert!(!refused, "no \"nothing is selected\" notice");
     }
