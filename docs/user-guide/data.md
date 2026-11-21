@@ -738,6 +738,84 @@ requires that same address to have been added this session: opening a project do
 authorize Windows identity. Reconnect with **Home › Add › Add Data › Database…** when needed. SQL queries
 (`layer.addSql`, the SQL pane) do not run on SQL Server connections.
 
+### Enterprise geodatabases (SDE)
+
+A SQL Server database that holds an Esri enterprise geodatabase is read through the same SQL
+Server connection, and browsed the way ArcGIS Pro's Catalog shows it. There is no separate kind
+of connection: RustGIS looks for the geodatabase's catalog tables when the connection is browsed
+or a table is opened. A database without them browses and reads exactly as described above. Only
+SQL Server geodatabases are read; PostgreSQL and Oracle ones are not, yet. Geodatabase layers and
+tables are read-only, versioned or not: nothing is edited or written back.
+
+`connection.readSde` reads a connection file saved by ArcGIS Pro and answers with its server,
+database, user, sign-in method and version, and the `mssql://` address they make, which
+`connection.new` takes. The server comes with its instance or port when the file gives them.
+**The password is never read from the file**, and nothing is saved by reading it. A file for
+another platform is refused with its platform named.
+
+```sh
+rustgis-cli run --cmd 'connection.readSde={"path":"utility.sde"}'
+```
+
+A saved connection's **Test** result names the geodatabase's release. When the account can't
+read the geodatabase's catalog, the result says why, and the database browses as plain SQL
+Server, with a note.
+
+The connection's tree shows what ArcGIS Pro shows, and none of the geodatabase's machinery:
+
+- **Feature datasets**, each with its feature classes.
+- **Feature classes** that aren't in a dataset, at the top.
+- **Tables**: the registered tables without geometry.
+- **Other spatial tables**: spatial tables and views the geodatabase doesn't register, left out
+  when there are none.
+
+A class is listed by its alias (else its name, without owner or database) and added as a layer
+of that name; field aliases come through as the layer's field aliases. A versioned class says
+"feature class · traditional" or "feature class · branch". The geodatabase's own tables (`GDB_*`
+and `SDE_*`, the delta tables, `_evw` views and archive tables) are hidden. A geodatabase with
+more than 10,000 items lists the first 10,000 and says so.
+
+`layer.addDatabase` takes a class as its name (`Mains`), `schema.table` or the name Pro writes,
+`db.schema.table`, and a registered table by its name:
+
+```sh
+rustgis-cli run --cmd 'layer.addDatabase={"database":"mssql://gis@gis-db/utility","password":"…","layer":"Mains"}'
+```
+
+Without `layer`, every feature class and other spatial table is added, and a notice counts the
+registered tables left for you to add by name. A class stored in a format RustGIS doesn't read
+(SDEBINARY: its table has no geometry or geography column) is left out. A class whose registered
+shape column isn't such a column, but whose table has another, is added and read from that
+column. One notice for each kind counts the classes and names the first few; when nothing can
+be added, the error says the same. A table with several spatial columns is named with its
+column (`Mains:SHAPE`).
+
+`info.databaseTables` lists a geodatabase's tables as `items`: each has `item` (`featureClass`,
+`table` or `other`), `dataset`, `alias`, `versioning` (`none`, `traditional` or `branch`) and
+`display`, the name the tree shows; an `other` table, which the geodatabase doesn't register, has
+`dataset`, `alias` and `versioning` as `null` and its name with its schema as `display`. A database
+with 10,000 spatial columns or more has only the first 10,000 read, and the listing says so. `connection.browse` lists the tree level by level.
+
+**Versions.** A feature class shows the current rows of the **Default** version. When a `.sde`
+file names any other version, `connection.readSde` says so in a notice naming it: the layers
+show Default. A traditionally versioned class is read through its versioned view, so edits not
+yet compressed into the base table are included; if the view is missing, the class is refused
+with "ask the geodatabase administrator to enable SQL access for it", rather than showing the
+base table's stale rows. A branch-versioned class is read at the default branch: the latest row
+of each feature there, without the deleted ones (a class whose ObjectID column isn't registered
+is refused). A class that isn't versioned is read from its table, or through its versioned view
+when it has one. A class whose geodatabase definition can't be read is refused ("how it is
+versioned is unknown") rather than guessed at.
+
+**Tables** without geometry add as standalone tables: the whole table is loaded, up to 100,000
+rows (fewer when memory is short), with a notice when there may be more. A versioned table is read through its versioned
+view. A standalone table's rows are saved with the project, so it reopens as it was added; it
+isn't read from the database again, so add it again for the rows as they are now.
+
+**What isn't read.** Named versions other than Default; feature classes in Esri's older SDEBINARY
+storage (refused, naming the storage); subtype and domain descriptions (the codes are read as
+stored); relationship classes, topologies and attachments; PostgreSQL and Oracle geodatabases.
+
 ## Web Data
 
 **Home › Add › Web Data** gathers public web services and catalogs: STAC imagery catalogs, Overture

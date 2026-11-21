@@ -23,6 +23,15 @@ and its limits are listed in `user-guide/data-formats.md`.
   geometry of a PostgreSQL/PostGIS connection (`postgres:host=… dbname=…`), a MySQL or MariaDB
   address (`mysql://user@host:3306/database`) or a `.duckdb` file; `info.databaseTables` lists
   them first. Desktop only.
+  A SQL Server database that is an Esri enterprise geodatabase (SDE) is read-only. For it
+  `info.databaseTables` returns `items`, each with `item` (`featureClass`, `table` or `other`),
+  `dataset` (its feature dataset, if any), `alias`, `versioning` (`none`, `traditional` or
+  `branch`) and `display` (what to call it); `dataset`, `alias` and `versioning` are `null` for
+  `other`. Add a feature class with `layer.addDatabase`
+  `{"database": D, "layer": L}`, where L is its name, its schema-qualified name or Pro's
+  database-qualified name; a registered
+  non-spatial table added the same way becomes a standalone table (loaded whole, up to 100,000
+  rows, fewer when memory is short). A versioned class is read at the Default version.
 - **Catalogs:** STAC, Overture Maps, Source Cooperative, OpenStreetMap and open-data portals are
   described in `user-guide/data.md`; find their commands with `search_commands` ("stac", "overture",
   "openstreetmap").

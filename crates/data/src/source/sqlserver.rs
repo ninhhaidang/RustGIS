@@ -573,7 +573,21 @@ fn bytes_of<'a>(v: &'a ColumnData<'static>) -> Option<&'a [u8]> {
     if let ColumnData::Binary(Some(v)) = v { Some(v) } else { None }
 }
 
-/// Lists spatial columns in the selected database, including views.
+/// Whether a list [`tables`] gave was cut at its limit: the statement asks for no more rows than
+/// that, so a full answer means the database has more spatial columns.
+pub fn tables_cut(tables: &[Table]) -> bool {
+    tables.len() >= LIST_LIMIT
+}
+
+/// What to say of a list of spatial columns cut at its limit ([`tables_cut`]).
+pub fn tables_cut_note() -> String {
+    format!(
+        "the database has {LIST_LIMIT} spatial columns or more: only the first {LIST_LIMIT} were read, so a class or table past them is missing or listed without its column"
+    )
+}
+
+/// Lists spatial columns in the selected database, including views, at most [`LIST_LIMIT`]
+/// ([`tables_cut`] says whether there are more).
 pub fn tables(conn: &Conn) -> Result<Vec<Table>> {
     let sql = format!(
         "SELECT TOP ({LIST_LIMIT}) TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, LOWER(DATA_TYPE), CASE WHEN TABLE_SCHEMA = SCHEMA_NAME() THEN 1 ELSE 0 END FROM INFORMATION_SCHEMA.COLUMNS WHERE DATA_TYPE IN ('geometry', 'geography') ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"

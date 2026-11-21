@@ -24,15 +24,38 @@ const MAX_NODE: usize = 4096;
 /// What a node of a connection stands for.
 enum Level {
     Database,
-    DatabaseSchema { schema: String },
-    Service { url: String, kind: Option<String> },
+    DatabaseSchema {
+        schema: String,
+    },
+    /// A geodatabase's feature dataset.
+    DatabaseDataset {
+        dataset: String,
+    },
+    Service {
+        url: String,
+        kind: Option<String>,
+    },
     Catalogue,
-    StacRoot { api: String },
-    StacCollection { api: String, id: String },
-    StacCatalog { url: String, origin: address::Origin },
-    StacItem { url: String, origin: address::Origin },
+    StacRoot {
+        api: String,
+    },
+    StacCollection {
+        api: String,
+        id: String,
+    },
+    StacCatalog {
+        url: String,
+        origin: address::Origin,
+    },
+    StacItem {
+        url: String,
+        origin: address::Origin,
+    },
     S3Root,
-    S3Prefix { bucket: String, prefix: String },
+    S3Prefix {
+        bucket: String,
+        prefix: String,
+    },
 }
 
 /// The types a `service:<type>:<url>` node names (`auto` leaves the type to be guessed).
@@ -67,17 +90,26 @@ fn level(c: &Connection, node: &str, observed: Option<&address::Origin>) -> Resu
         address::check(url, Some(&c.address))?;
         return Ok(Level::Service { url: url.to_string(), kind: (t != "auto").then(|| t.to_string()) });
     }
-    if let Some(schema) = node.strip_prefix("schema:") {
-        if !matches!(kind, "postgres" | "mysql" | "sqlserver") || schema.is_empty() {
+    // A schema's or a geodatabase dataset's name, as `schemas` and `geodatabase_tree` encode it.
+    let named = |encoded: &str| {
+        if !matches!(kind, "postgres" | "mysql" | "sqlserver") || encoded.is_empty() {
             return Err(not_a_node());
         }
-        let schema = URL_SAFE_NO_PAD
-            .decode(schema)
+        URL_SAFE_NO_PAD
+            .decode(encoded)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|name| !name.is_empty())
-            .ok_or_else(not_a_node)?;
-        return Ok(Level::DatabaseSchema { schema });
+            .ok_or_else(not_a_node)
+    };
+    if let Some(schema) = node.strip_prefix("schema:") {
+        return Ok(Level::DatabaseSchema { schema: named(schema)? });
+    }
+    if let Some(dataset) = node.strip_prefix("dataset:") {
+        if kind != "sqlserver" {
+            return Err(not_a_node());
+        }
+        return Ok(Level::DatabaseDataset { dataset: named(dataset)? });
     }
     if let Some(id) = node.strip_prefix("collection:") {
         if kind != "stac" || id.is_empty() {
@@ -136,7 +168,7 @@ fn s3_login(s: &mut Session, c: &Connection, level: &Level) -> Result<Option<s3:
 /// The address a level reads (`None`: nothing is fetched, or the database driver reads it).
 fn fetch_url(s: &Session, c: &Connection, level: &Level, conn: Option<&s3::Connection>) -> Result<Option<String>, String> {
     Ok(match level {
-        Level::Database | Level::DatabaseSchema { .. } => None,
+        Level::Database | Level::DatabaseSchema { .. } | Level::DatabaseDataset { .. } => None,
         Level::Service { url, kind } => Some(rustgis_data::ogc::capabilities_url(url, kind.as_deref())),
         Level::Catalogue => Some(super::super::service::records_request(s, &json!({"url": c.address}))?),
         Level::StacRoot { api } => Some(if stac::catalog::is_static(api) { api.clone() } else { stac::collections_url(api) }),
@@ -232,8 +264,9 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
         return Ok(out);
     }
     let found = match &level {
-        Level::Database => database_schemas(s, &c)?,
-        Level::DatabaseSchema { schema } => database_schema(s, &c, schema)?,
+        Level::Database => database_schemas(s, &c, &mut out)?,
+        Level::DatabaseSchema { schema } => database_schema(s, &c, schema, &mut out)?,
+        Level::DatabaseDataset { dataset } => database_dataset(s, &c, dataset, &mut out)?,
         Level::Service { url, kind } => service(s, p, &mut out, &c, url, kind.as_deref())?,
         Level::S3Root if url.is_none() => {
             buckets(c.options.get("buckets").map(String::as_str).unwrap_or("").split(',').map(str::to_string))
@@ -266,7 +299,7 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
                     let binding = conn.as_ref().and_then(|conn| super::saved_binding(s, &c, conn));
                     objects(bytes, bucket, prefix, binding.as_deref())?
                 }
-                Level::Database | Level::DatabaseSchema { .. } | Level::Service { .. } => Found::default(),
+                Level::Database | Level::DatabaseSchema { .. } | Level::DatabaseDataset { .. } | Level::Service { .. } => Found::default(),
             };
             if matches!(&level, Level::StacCatalog { .. }) || matches!(&level, Level::StacRoot { api } if stac::catalog::is_static(api)) {
                 remember_node_origins(s, &c, &found.children, &origin, node.is_empty())?;
@@ -405,10 +438,116 @@ fn name_connection(child: &mut Value, id: &str, depth: usize) {
     }
 }
 
-/// A live database's schemas, each browsed separately so one large schema cannot hide later ones.
-fn database_schemas(s: &mut Session, c: &Connection) -> Result<Found, String> {
-    let tables = super::connection_use::tables(s, c, None)?;
-    Ok(schemas(&tables))
+/// A live database's rows, with a note when it is a geodatabase whose catalog couldn't be read
+/// (it then browses as plain SQL Server).
+fn database_rows(s: &mut Session, c: &Connection, out: &mut Value) -> Result<Vec<Value>, String> {
+    let (rows, geodatabase, problem) = super::connection_use::tables_and_geodatabase(s, c, None)?;
+    if let Some(note) = listing_note(geodatabase.as_ref(), problem.as_deref()) {
+        out["notes"] = json!([note]);
+    }
+    Ok(rows)
+}
+
+/// What a listing says beside its rows: that the catalog couldn't be read, or was cut short.
+fn listing_note(geodatabase: Option<&Value>, problem: Option<&str>) -> Option<String> {
+    match problem {
+        Some(why) => Some(format!("the geodatabase catalog couldn't be read: {why}")),
+        None => geodatabase.and_then(|g| g.get("note")).and_then(Value::as_str).map(str::to_string),
+    }
+}
+
+/// A live database's schemas, each browsed separately so one large schema cannot hide later ones;
+/// a geodatabase's feature datasets, classes and tables instead.
+fn database_schemas(s: &mut Session, c: &Connection, out: &mut Value) -> Result<Found, String> {
+    let rows = database_rows(s, c, out)?;
+    Ok(if is_geodatabase(&rows) { geodatabase_tree(&rows, &c.address, None) } else { schemas(&rows) })
+}
+
+/// Whether a database's rows are an Esri geodatabase's: each says what item it is.
+fn is_geodatabase(rows: &[Value]) -> bool {
+    rows.iter().any(|r| r.get("item").is_some())
+}
+
+/// A geodatabase's classes and tables as `connection.browse` lists them: the root has the
+/// `Feature datasets` folder, the classes outside any dataset, a `Tables` folder of the
+/// registered tables and an `Other spatial tables` folder (the empty ones left out); the node
+/// of a feature dataset (`Some(its name)`) lists its classes.
+fn geodatabase_tree(rows: &[Value], address: &str, node: Option<&str>) -> Found {
+    let text = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let item = |r: &Value| r.get("item").and_then(Value::as_str).unwrap_or("").to_string();
+    let child = |r: &Value, name: String, detail: String| {
+        let label = text(r, "label");
+        json!({
+            "key": label,
+            "name": name,
+            "what": "table",
+            "detail": detail,
+            "add": {"command": "layer.addDatabase", "params": {"database": address, "layer": label}},
+            "options": true,
+        })
+    };
+    let shown = |r: &Value| match text(r, "display") {
+        d if d.is_empty() => text(r, "name"),
+        d => d,
+    };
+    // Alphabetical by what is shown (the alias, else the name).
+    let by_name = |r: &Value| (shown(r).to_lowercase(), text(r, "label"));
+    fn sorted<'a>(mut rows: Vec<&'a Value>, key: &impl Fn(&Value) -> (String, String)) -> Vec<&'a Value> {
+        rows.sort_by_cached_key(|r| key(r));
+        rows
+    }
+    let class_child = |r: &Value| {
+        let detail = match text(r, "versioning").as_str() {
+            v @ ("traditional" | "branch") => format!("feature class · {v}"),
+            _ => "feature class".to_string(),
+        };
+        child(r, shown(r), detail)
+    };
+    let dataset_of = |r: &Value| r.get("dataset").and_then(Value::as_str).filter(|d| !d.is_empty()).map(str::to_string);
+    let classes = || rows.iter().filter(|r| item(r) == "featureClass");
+
+    if let Some(dataset) = node {
+        let inside = classes().filter(|r| dataset_of(r).as_deref() == Some(dataset)).collect();
+        return Found { children: sorted(inside, &by_name).into_iter().map(class_child).collect(), ..Found::default() };
+    }
+
+    let mut children = Vec::new();
+    let datasets: std::collections::BTreeSet<String> = classes().filter_map(dataset_of).collect();
+    if !datasets.is_empty() {
+        let listed: Vec<Value> = datasets
+            .iter()
+            .map(|name| {
+                let mut node = String::with_capacity(8 + name.len().div_ceil(3) * 4);
+                node.push_str("dataset:");
+                URL_SAFE_NO_PAD.encode_string(name, &mut node);
+                json!({"key": node, "node": node, "name": name, "what": "dataset"})
+            })
+            .collect();
+        children.push(json!({"key": "datasets", "name": "Feature datasets", "what": "folder", "children": listed}));
+    }
+    children.extend(sorted(classes().filter(|r| dataset_of(r).is_none()).collect(), &by_name).into_iter().map(class_child));
+    let tables: Vec<Value> = sorted(rows.iter().filter(|r| item(r) == "table").collect(), &by_name)
+        .into_iter()
+        .map(|r| child(r, shown(r), "table".into()))
+        .collect();
+    if !tables.is_empty() {
+        children.push(json!({"key": "tables", "name": "Tables", "what": "folder", "children": tables}));
+    }
+    // Several geometry columns of one table are told apart by the label (`name:column`).
+    let other: Vec<Value> = rows.iter().filter(|r| item(r) == "other").map(|r| child(r, text(r, "label"), text(r, "kind"))).collect();
+    if !other.is_empty() {
+        children.push(json!({"key": "other", "name": "Other spatial tables", "what": "folder", "children": other}));
+    }
+    Found { children, ..Found::default() }
+}
+
+/// A geodatabase feature dataset's classes.
+fn database_dataset(s: &mut Session, c: &Connection, dataset: &str, out: &mut Value) -> Result<Found, String> {
+    let rows = database_rows(s, c, out)?;
+    if !is_geodatabase(&rows) {
+        return Err(format!("that isn't a node of {}", c.name));
+    }
+    Ok(geodatabase_tree(&rows, &c.address, Some(dataset)))
 }
 
 /// The names of every schema represented by the database's geometry tables.
@@ -434,8 +573,8 @@ fn schemas(tables: &[Value]) -> Found {
 }
 
 /// A live database schema's geometry tables.
-fn database_schema(s: &mut Session, c: &Connection, schema: &str) -> Result<Found, String> {
-    let tables = super::connection_use::tables(s, c, None)?;
+fn database_schema(s: &mut Session, c: &Connection, schema: &str, out: &mut Value) -> Result<Found, String> {
+    let tables = database_rows(s, c, out)?;
     Ok(schema_tables(&tables, schema, &c.address))
 }
 
@@ -790,6 +929,7 @@ fn objects(bytes: &[u8], bucket: &str, prefix: &str, binding: Option<&str>) -> R
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use serde_json::{Value, json};
 
     #[test]
@@ -1144,5 +1284,197 @@ mod tests {
         assert_eq!(unlisted["fromDocument"], true);
         assert_eq!(probe["fromDocument"], true);
         assert_eq!(crate::render::rustgis_tiles::cache::ceiling_for(url), Reach::Public);
+    }
+
+    /// The rows `connection_use::tables` gives for a geodatabase (a class in a dataset, a class
+    /// at the root, a registered table, a spatial table the catalog doesn't register).
+    fn geodatabase_rows() -> Vec<Value> {
+        vec![
+            json!({"label": "sde.Mains", "schema": "sde", "name": "Mains", "column": "Shape", "kind": "MultiLineString", "item": "featureClass",
+                   "dataset": "Water", "alias": "Water mains", "versioning": "traditional", "display": "Water mains"}),
+            json!({"label": "sde.Valves", "schema": "sde", "name": "Valves", "column": "Shape", "kind": "Point", "item": "featureClass",
+                   "dataset": null, "alias": null, "versioning": "none", "display": "Valves"}),
+            json!({"label": "sde.Readings", "schema": "sde", "name": "Readings", "item": "table", "dataset": null, "alias": null, "display": "Readings"}),
+            json!({"label": "dbo.Parcels", "schema": "dbo", "name": "Parcels", "column": "geom", "kind": "MultiPolygon", "item": "other"}),
+        ]
+    }
+
+    fn names(found: &super::Found) -> Vec<&str> {
+        found.children.iter().map(|c| c["name"].as_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn a_geodatabase_browses_by_dataset_class_and_table() {
+        let rows = geodatabase_rows();
+        let root = super::geodatabase_tree(&rows, "mssql://gis-db/utility", None);
+        assert_eq!(names(&root), ["Feature datasets", "Valves", "Tables", "Other spatial tables"]);
+        assert_eq!(root.children[0]["what"], "folder");
+        let datasets = root.children[0]["children"].as_array().unwrap();
+        assert_eq!(datasets.len(), 1);
+        assert_eq!(datasets[0]["name"], "Water");
+        assert_eq!(datasets[0]["what"], "dataset");
+        let node = datasets[0]["node"].as_str().unwrap();
+        assert_eq!(node, format!("dataset:{}", super::URL_SAFE_NO_PAD.encode("Water")));
+        let valves = &root.children[1];
+        assert_eq!(valves["what"], "table");
+        assert_eq!(valves["detail"], "feature class");
+        assert_eq!(valves["add"]["command"], "layer.addDatabase");
+        assert_eq!(valves["add"]["params"]["layer"], "sde.Valves");
+        assert_eq!(valves["add"]["params"]["database"], "mssql://gis-db/utility");
+        let tables = root.children[2]["children"].as_array().unwrap();
+        assert_eq!(tables[0]["name"], "Readings");
+        assert_eq!(tables[0]["detail"], "table");
+        assert_eq!(tables[0]["add"]["params"]["layer"], "sde.Readings");
+        let other = root.children[3]["children"].as_array().unwrap();
+        assert_eq!(other[0]["add"]["params"]["layer"], "dbo.Parcels");
+
+        // The dataset's node lists its classes, by their aliases, and says how they are versioned.
+        let connection = crate::connections::Connection { kind: "sqlserver".into(), ..Default::default() };
+        let super::Level::DatabaseDataset { dataset } = super::level(&connection, node, None).unwrap() else {
+            panic!("a dataset node selects a dataset");
+        };
+        assert_eq!(dataset, "Water");
+        let water = super::geodatabase_tree(&rows, "mssql://gis-db/utility", Some(&dataset));
+        assert_eq!(names(&water), ["Water mains"]);
+        assert!(water.children[0]["detail"].as_str().unwrap().contains("traditional"));
+        assert_eq!(water.children[0]["add"]["params"]["layer"], "sde.Mains");
+        assert!(super::geodatabase_tree(&rows, "mssql://gis-db/utility", Some("Elsewhere")).children.is_empty());
+    }
+
+    #[test]
+    fn a_geodatabase_leaves_out_empty_folders() {
+        let rows: Vec<Value> = geodatabase_rows().into_iter().filter(|r| r["item"] == "featureClass" && r["dataset"].is_null()).collect();
+        assert_eq!(names(&super::geodatabase_tree(&rows, "mssql://gis-db/utility", None)), ["Valves"]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_geodatabase_lists_layers_without_its_registered_tables() {
+        let mut rows = geodatabase_rows();
+        rows.push(
+            json!({"label": "sde.Orphans", "schema": "sde", "name": "Orphans", "column": null, "kind": null, "item": "featureClass"}),
+        );
+        let result = super::super::connection_use::listing_result(&rows, Some(json!({"owner": "sde", "release": "11.3.0"})), None);
+        assert_eq!(result["layers"], json!(["sde.Mains", "sde.Valves", "dbo.Parcels"]));
+        assert_eq!(result["count"], 3);
+        assert_eq!(result["geodatabase"]["owner"], "sde");
+        assert!(result.get("geodatabaseProblem").is_none());
+        let plain = super::super::connection_use::listing_result(&[table("public", "roads")], None, Some("no permission".into()));
+        assert_eq!(plain["layers"], json!(["public.roads"]));
+        assert_eq!(plain["geodatabaseProblem"], "no permission");
+    }
+
+    /// A listing that fails for any reason but a refused login is kept as the problem, so the
+    /// database browses as plain SQL Server and says why.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_listing_that_fails_is_kept_as_the_problem_and_a_refused_login_ends_it() {
+        use super::super::connection_use::listing_or_problem;
+        use rustgis_data::DataError;
+        assert_eq!(listing_or_problem(Ok(Some(1))).unwrap(), (Some(1), None));
+        assert_eq!(listing_or_problem::<u8>(Ok(None)).unwrap(), (None, None));
+        let (listing, problem) = listing_or_problem::<u8>(Err(DataError::Format("the server took longer than 120 s".into()))).unwrap();
+        assert!(listing.is_none());
+        assert!(problem.is_some_and(|why| why.contains("took longer than 120 s")));
+        assert!(matches!(listing_or_problem::<u8>(Err(DataError::Login("refused".into()))), Err(DataError::Login(_))));
+    }
+
+    /// A spatial table the catalog doesn't register carries every field the others do.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_unregistered_spatial_table_has_every_item_field() {
+        use rustgis_data::source::sqlserver::{GdbListing, Table};
+        let parcels = Table {
+            schema: "dbo".into(),
+            name: "Parcels".into(),
+            column: "geom".into(),
+            kind: "geometry".into(),
+            current: false,
+            several: false,
+            alias: None,
+            dataset: None,
+            short: None,
+        };
+        let listing = GdbListing { datasets: Vec::new(), classes: Vec::new(), tables: Vec::new(), other: vec![parcels], cut: false };
+        let rows = super::super::connection_use::geodatabase_rows(listing);
+        let row = rows.first().and_then(Value::as_object).unwrap();
+        assert_eq!(row["item"], "other");
+        for field in ["dataset", "alias", "versioning"] {
+            assert!(row.get(field).is_some_and(Value::is_null), "{field}: {row:?}");
+        }
+        // Its display is what the tree shows: the name with its schema, as two schemas may hold
+        // a table of one name.
+        assert_eq!(row["display"], "dbo.Parcels");
+        assert_eq!(row["label"], "dbo.Parcels");
+        let tree = super::geodatabase_tree(&rows, "mssql://gis-db/utility", None);
+        assert_eq!(tree.children[0]["children"][0]["name"], row["display"]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_class_without_a_spatial_table_is_listed_but_is_not_a_layer() {
+        use rustgis_data::source::geodatabase::{Item, ItemKind, Versioning};
+        use rustgis_data::source::sqlserver::{GdbListing, Table};
+        let item = |name: &str, kind| Item {
+            name: format!("utility.sde.{name}"),
+            schema: "sde".into(),
+            table: name.to_uppercase(),
+            kind,
+            dataset: None,
+            alias: None,
+            shape_column: Some("Shape".into()),
+            field_aliases: Vec::new(),
+            versioning: Versioning::Unversioned,
+            definition_ok: true,
+            family: None,
+            archived: false,
+            rowid_column: None,
+            srid: None,
+        };
+        let valves = Table {
+            schema: "sde".into(),
+            name: "VALVES".into(),
+            column: "Shape".into(),
+            kind: "geometry".into(),
+            current: false,
+            several: false,
+            alias: None,
+            dataset: None,
+            short: Some("Valves".into()),
+        };
+        let listing = GdbListing {
+            datasets: Vec::new(),
+            classes: vec![(item("Valves", ItemKind::FeatureClass), Some(valves)), (item("Orphans", ItemKind::FeatureClass), None)],
+            tables: vec![item("Readings", ItemKind::Table)],
+            other: Vec::new(),
+            cut: false,
+        };
+        let rows = super::super::connection_use::geodatabase_rows(listing);
+        let orphans = rows.iter().find(|r| r["name"] == "ORPHANS").unwrap();
+        assert!(orphans["column"].is_null() && orphans["kind"].is_null());
+        assert_eq!(orphans["label"], "sde.ORPHANS");
+        let result = super::super::connection_use::listing_result(&rows, None, None);
+        assert_eq!(result["layers"], json!(["sde.VALVES"]));
+        assert_eq!(result["count"], 1);
+        // Even a hand-built row that names a shape column isn't a layer without a geometry kind.
+        let named = [json!({"label": "sde.Orphans", "column": "Shape", "kind": null, "item": "featureClass"})];
+        assert!(super::super::connection_use::listing_result(&named, None, None)["layers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cut_or_unread_catalog_is_noted() {
+        let cut = json!({"owner": "sde", "release": "11.3.0", "note": "only the first 10000 are shown"});
+        assert_eq!(super::listing_note(Some(&cut), None).as_deref(), Some("only the first 10000 are shown"));
+        assert_eq!(super::listing_note(Some(&json!({"owner": "sde"})), None), None);
+        let unread = super::listing_note(None, Some("no permission")).unwrap();
+        assert!(unread.contains("couldn't be read") && unread.contains("no permission"), "{unread}");
+    }
+
+    #[test]
+    fn a_plain_database_still_browses_schemas() {
+        let tables = vec![table("tiger", "addr"), table("public", "roads")];
+        assert!(!super::is_geodatabase(&tables));
+        assert!(super::is_geodatabase(&geodatabase_rows()));
+        assert_eq!(names(&super::schemas(&tables)), ["public", "tiger"]);
     }
 }

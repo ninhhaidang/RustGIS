@@ -25,6 +25,8 @@ use logins::request_password;
 pub(crate) use logins::{clear_active, resolve_keys, resolve_project, restore_active};
 #[path = "connection_use.rs"]
 mod connection_use;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::cmd) use connection_use::{listing_result, sqlserver_listing};
 
 pub fn commands() -> Vec<C> {
     vec![
@@ -65,10 +67,13 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("connection.forgetPassword", "Forget Saved Password", "Home › Add › Data Sources", forget_password).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a database connection's id or name"}"#),
         C::new("connection.test", "Test Connection", "Home › Add › Data Sources", test).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id"?: "a connection's id or name", "kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "name"?: text, "group"?: text, "address"?: text, "options"?: "an unsaved connection, as connection.new (when no id)", "auth"?: text, "user"?: text, "keyName"?: "as connection.new (when no id)", "password"?: "for a named database, authentication refusal restores prior session credentials; a later listing failure keeps the new password; never persisted. A saved web service's: as connection.login (logs in first)", "apiKey"?: "a saved web service's, as connection.login (logs in first)", "allowInsecure"?: "as connection.login", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "as connection.login (logs in first)", "probe"?: "true: only the address the test reads, {fetch} (null for databases, which their driver tests)", "answer"?: "non-database kinds only: what that address returned, when the app fetched it (no network request then); databases ignore answer and test through their driver"}"#,
+            r#"{"id"?: "a connection's id or name", "kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "name"?: text, "group"?: text, "address"?: text, "options"?: "an unsaved connection, as connection.new (when no id)", "auth"?: text, "user"?: text, "keyName"?: "as connection.new (when no id)", "password"?: "for a named database, authentication refusal restores prior session credentials; a later listing failure keeps the new password; never persisted. A saved web service's: as connection.login (logs in first)", "apiKey"?: "a saved web service's, as connection.login (logs in first)", "allowInsecure"?: "as connection.login", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "as connection.login (logs in first)", "probe"?: "true: only the address the test reads, {fetch} (null for databases, which their driver tests)", "answer"?: "non-database kinds only: what that address returned, when the app fetched it (no network request then); databases ignore answer and test through their driver"} → a database's result has {count, layers}, and for an Esri enterprise geodatabase on SQL Server geodatabase: {owner, release, note? (when its catalog or its list of spatial columns was cut short)}, or geodatabaseProblem: why its catalog couldn't be read"#,
         ),
         C::new("connection.browse", "Browse Connection", "Home › Add › Data Sources", browse::browse).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).view().params(
-            r#"{"id": "a connection's id or name", "node"?: "a child's node, as a listing gives it (the connection's top level when absent)", "probe"?: "true: only the address this level reads, {fetch} (null: read without a fetch, or by the database driver); an S3 connection logs in first, as connection.test does", "answer"?: "what that address returned, when the app fetched it", "documents"?: [{"url": "a further document a listing asked for (next)", "text": "its answer"}]} → {connection, node, children: [{key, name, what, detail?, node? (browse it), children? (listed already), add? {command, params}: the command that adds it}], truncated?, matched?, notes?, service? {url, type}, next? (fetch it, then ask again with answer and documents)}. Database roots list schemas; open a schema node to list its tables."#,
+            r#"{"id": "a connection's id or name", "node"?: "a child's node, as a listing gives it (the connection's top level when absent)", "probe"?: "true: only the address this level reads, {fetch} (null: read without a fetch, or by the database driver); an S3 connection logs in first, as connection.test does", "answer"?: "what that address returned, when the app fetched it", "documents"?: [{"url": "a further document a listing asked for (next)", "text": "its answer"}]} → {connection, node, children: [{key, name, what, detail?, node? (browse it), children? (listed already), add? {command, params}: the command that adds it}], truncated?, matched?, notes?, service? {url, type}, next? (fetch it, then ask again with answer and documents)}. Database roots list schemas; open a schema node to list its tables. A geodatabase's root lists feature datasets, feature classes, tables and other spatial tables (open a feature dataset node to list its classes); if its catalog couldn't be read, the database browses as plain SQL Server, with a note."#,
+        ),
+        C::new("connection.readSde", "Read Connection File", "Home › Add › Data Sources", read_sde).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
+            r#"{"path"?: "*.sde, an ArcGIS Pro connection file", "data"?: "a .sde file, base64"} → {kind: "sqlserver", server, database, user (null with operating-system authentication), authentication: "database"|"os", version (null when the file names none), address: "the mssql:// address connection.new takes"}. Nothing is saved and the file's password is never read. A file for another database platform is refused, naming it. A version other than Default is named in a notice: layers show the Default version"#,
         ),
     ]
 }
@@ -229,6 +234,44 @@ fn new(s: &mut Session, p: &Value) -> CmdResult {
     resolve_keys(s, &address_keys(&c.address));
     resolve_origins(s, &[&c]);
     Ok(shown_stripped(s, &c, stripped, ps(p, "address").unwrap_or(""), key_hint.as_deref()))
+}
+
+/// What an ArcGIS Pro `.sde` connection file says: where to connect and as whom, never the
+/// password. Nothing is saved; `connection.new` takes the address.
+fn read_sde(s: &mut Session, p: &Value) -> CmdResult {
+    use rustgis_data::source::sdefile::{self, SdeError};
+
+    let (bytes, shown) = match (ps(p, "data"), ps(p, "path")) {
+        (Some(data), _) => {
+            // Base64 is 4 characters for 3 bytes: a payload past the file limit isn't decoded.
+            if data.len() > sdefile::MAX_BYTES / 3 * 4 + 4 {
+                return Err(SdeError::TooLarge.to_string());
+            }
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|_| "data must be base64".to_string())?;
+            (bytes, "the connection file".to_string())
+        }
+        (None, Some(path)) => {
+            let path = std::path::Path::new(path.trim());
+            let shown = path.file_name().map_or_else(|| "the connection file".into(), |n| n.to_string_lossy().into_owned());
+            (crate::project::read_file(path, sdefile::MAX_BYTES as u64)?, shown)
+        }
+        (None, None) => return Err("path or data is required".into()),
+    };
+    let file = sdefile::parse(&bytes).map_err(|e| format!("{shown}: {e}"))?;
+    let address = sdefile::mssql_address(&file).map_err(|e| format!("{shown}: {e}"))?;
+    if let Some(version) = file.named_version() {
+        s.notify(format!("{shown} names the version {version}: layers from this connection show the Default version"), false);
+    }
+    Ok(json!({
+        "kind": "sqlserver",
+        "server": file.server,
+        "database": file.database,
+        "user": file.user,
+        "authentication": if file.os_auth { "os" } else { "database" },
+        "version": file.version,
+        "address": address,
+    }))
 }
 
 /// A connection as `shown` gives it, and what was left out of its address: `stripped`, and the
@@ -1285,9 +1328,9 @@ fn test_connection(s: &mut Session, p: &Value, c: Connection) -> CmdResult {
                 if c.id.is_empty() {
                     super::layer::database_tables(s, &json!({"database":c.address,"password":ps(p,"password")}))?
                 } else {
-                    let tables = connection_use::tables(s, &c, ps(p, "password").filter(|pw| !pw.is_empty()))?;
-                    let layers: Vec<_> = tables.iter().filter_map(|v| v["label"].as_str()).collect();
-                    json!({"count":layers.len(),"layers":layers})
+                    let (rows, geodatabase, problem) =
+                        connection_use::tables_and_geodatabase(s, &c, ps(p, "password").filter(|pw| !pw.is_empty()))?;
+                    listing_result(&rows, geodatabase, problem)
                 }
             }
         }
