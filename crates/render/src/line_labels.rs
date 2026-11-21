@@ -235,6 +235,13 @@ pub(super) struct Line {
 }
 
 impl Line {
+    /// About how many bytes its paths take, for a budget: what they hold room for, since a candidate
+    /// kept shares the line rather than copying it.
+    pub(super) fn bytes(&self) -> usize {
+        let path = |p: &Path| p.pts.capacity() * size_of::<(f32, f32)>() + p.along.capacity() * size_of::<f32>();
+        size_of::<Line>() + path(&self.fwd) + path(&self.rev)
+    }
+
     /// `None` for a line of fewer than two distinct points.
     pub(super) fn new(line: &[(f32, f32)]) -> Option<Line> {
         Some(Line { fwd: Path::new(line, false)?, rev: Path::new(line, true)? })

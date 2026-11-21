@@ -23,6 +23,11 @@
 //! labels turned square to another layer's lines, terrain water). A layer read in place from its
 //! source or a raster has no look ([`LayerLook::of`]): it counts as changed in every frame, so a
 //! picture is kept only from below it.
+//!
+//! Each layer's label candidates are kept beside the picture too ([`LayerLabels`]): a layer drawn
+//! again over a restored picture, or in a frame of the same view drawn whole, that looks the same
+//! or only its transparency changed takes the candidates it gave last time instead of working them
+//! out again. Labels are still placed over all layers, since one layer's labels can hide another's.
 
 use rustgis_data::query::Env;
 use rustgis_map::look::{Change, LayerLook, MapLook};
@@ -41,6 +46,13 @@ const MAX_PIXELS: u64 = 2 * 3840 * 2160;
 /// may hold that beside its pictures, so the sprites never cost a view its layer alone: with them
 /// the kept pictures stay within about 86 MB.
 const SPRITE_PIXELS: u64 = crate::MAX_SPRITES as u64 * (2 * crate::MAX_SPRITE_REACH as u64 + 1).pow(2);
+
+/// The most bytes of label candidates a view keeps for its layers together, by
+/// [`Candidate::bytes`], what they hold beside them included (text, glyphs curved along a line,
+/// places to try): about 20,000 point labels, each of 464 bytes and the places around it. A
+/// layer whose candidates would go past it works them out in every frame. A frame copies no more
+/// than this either, its layers bottom first.
+pub(crate) const MAX_LABEL_BYTES: usize = 16 << 20;
 
 /// Pictures kept, one per view drawn (a map and its draft, two maps on screen).
 const KEPT: usize = 2;
@@ -130,10 +142,16 @@ pub(crate) struct Alone {
 /// (which labels take their priority from); `None` for one with no look.
 pub(crate) type Looks = Vec<((u32, usize), Option<LayerLook>)>;
 
+/// The label candidates each layer gave a frame, by the layer's id and place in the map's list,
+/// before any were placed.
+pub(crate) type LayerLabels = Vec<((u32, usize), Vec<Candidate>)>;
+
 /// A kept picture and what it was drawn from.
 struct Kept {
     frame: Frame,
     looks: Looks,
+    /// The candidates of the layers that look as in `looks`.
+    labels: LayerLabels,
     /// The place in the drawing order the checkpoint stands before.
     at: usize,
     checkpoint: Checkpoint,
@@ -178,6 +196,8 @@ thread_local! {
     static STARTED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     /// Whether the last frame planned had a layer alone to composite.
     static RECOMBINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The layers whose label candidates frames took from a kept frame.
+    static REUSED: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -199,8 +219,40 @@ pub(crate) struct Plan {
     pub recombine: Option<Alone>,
     /// The place in the drawing order of the layer to keep alone, when it is drawn so.
     pub alone_at: Option<usize>,
+    /// Whether a frame of the same view was kept: only then does it keep its label candidates,
+    /// which a frame of another view, as while panning, has no use for.
+    pub same_view: bool,
+    /// The candidates of the layers that look the same or differ only in transparency, which
+    /// labels don't take: each is the same as working them out again in this frame.
+    labels: LayerLabels,
     frame: Frame,
     looks: Looks,
+}
+
+impl Plan {
+    /// The label candidates the layer at place `place` in the map's list gave the frame kept, when
+    /// they still stand. [`keep`] keeps them again for the frames after this one.
+    pub(crate) fn take_labels(&mut self, id: u32, place: usize) -> Option<Vec<Candidate>> {
+        let i = self.labels.iter().position(|(k, _)| *k == (id, place))?;
+        #[cfg(test)]
+        REUSED.with_borrow_mut(|r| r.push(id));
+        Some(self.labels.swap_remove(i).1)
+    }
+}
+
+/// The candidates in `labels` of the layers that look in `now` as in `then`, or differ only in
+/// their transparency.
+fn standing_labels(labels: LayerLabels, then: &Looks, now: &Looks) -> LayerLabels {
+    fn look(looks: &Looks, key: (u32, usize)) -> Option<&LayerLook> {
+        looks.iter().find(|(k, _)| *k == key).and_then(|(_, l)| l.as_ref())
+    }
+    labels
+        .into_iter()
+        .filter(|(key, _)| match (look(then, *key), look(now, *key)) {
+            (Some(a), Some(b)) => matches!(a.change(b), Change::Same | Change::Transparency),
+            _ => false,
+        })
+        .collect()
 }
 
 /// The first place in the drawing order where `now` doesn't look as `then` did.
@@ -246,13 +298,25 @@ pub(crate) fn plan(frame: Frame, looks: Looks, pixels: u64) -> Plan {
     STARTED.set(Some(plan.start));
     #[cfg(test)]
     RECOMBINED.set(plan.recombine.is_some());
+    #[cfg(test)]
+    REUSED.take();
     plan
 }
 
 /// [`plan`].
 fn plan_with(frame: Frame, looks: Looks, pixels: u64) -> Plan {
     if pixels.saturating_mul(KEPT as u64) > MAX_PIXELS {
-        return Plan { start: 0, restored: None, capture_at: None, recombine: None, alone_at: None, frame, looks };
+        return Plan {
+            start: 0,
+            restored: None,
+            capture_at: None,
+            recombine: None,
+            alone_at: None,
+            same_view: false,
+            labels: Vec::new(),
+            frame,
+            looks,
+        };
     }
     // A picture over tile layers lasts until a tile that failed in it may be asked for again: a
     // server that gave no time to come back is asked by the next draw after a minute.
@@ -265,36 +329,62 @@ fn plan_with(frame: Frame, looks: Looks, pixels: u64) -> Plan {
         // Nothing to start from: keep what lies under the first layer (the basemap, the tile
         // layers below every layer), or the frame under its first changed layer next time.
         let alone_at = alone_at(&looks, 0, pixels);
-        return Plan { start: 0, restored: None, capture_at: Some(0), recombine: None, alone_at, frame, looks };
+        return Plan {
+            start: 0,
+            restored: None,
+            capture_at: Some(0),
+            recombine: None,
+            alone_at,
+            same_view: false,
+            labels: Vec::new(),
+            frame,
+            looks,
+        };
     };
     let changed = first_change(&k.looks, &looks);
+    let labels = standing_labels(k.labels, &k.looks, &looks);
     if k.at <= changed {
         let capture_at = (changed > k.at && changed < looks.len()).then_some(changed);
         let recombine = k.alone.filter(|_| matches!(change_at(&k.looks, &looks, k.at), Change::Same | Change::Transparency));
         let alone_at = alone_at(&looks, capture_at.unwrap_or(k.at), pixels);
-        Plan { start: k.at, restored: Some(k.checkpoint), capture_at, recombine, alone_at, frame, looks }
+        Plan { start: k.at, restored: Some(k.checkpoint), capture_at, recombine, alone_at, same_view: true, labels, frame, looks }
     } else {
         let alone_at = alone_at(&looks, changed, pixels);
-        Plan { start: 0, restored: None, capture_at: Some(changed), recombine: None, alone_at, frame, looks }
+        Plan { start: 0, restored: None, capture_at: Some(changed), recombine: None, alone_at, same_view: true, labels, frame, looks }
     }
 }
 
 /// Keeps the picture a frame drawn by `plan` ends with: `captured` when it took one, else the one
 /// it started from, with the layer over it alone: `alone` when the frame drew it so, else the one
-/// it was composited from. Called only for a frame drawn to the end.
-pub(crate) fn keep(plan: Plan, captured: Option<(usize, Checkpoint)>, alone: Option<(usize, Alone)>) {
-    let Plan { start, restored, recombine, frame, looks, .. } = plan;
+/// it was composited from. `drawn` holds the label candidates of the layers the frame worked them
+/// out for or took ([`Plan::take_labels`]), the others' are kept as they were. Called only for a
+/// frame drawn to the end.
+pub(crate) fn keep(plan: Plan, captured: Option<(usize, Checkpoint)>, alone: Option<(usize, Alone)>, drawn: LayerLabels) {
+    let Plan { start, restored, recombine, labels: standing, frame, looks, .. } = plan;
     let Some((at, checkpoint)) = captured.or(restored.map(|c| (start, c))) else { return };
     let alone = match alone {
         Some((a, alone)) if a == at => Some(alone),
         _ => recombine.filter(|_| at == start),
     };
+    // Bottom first in drawing order, as many as fit.
+    let mut given: LayerLabels = drawn.into_iter().chain(standing).collect();
+    let mut labels: LayerLabels = Vec::new();
+    let mut bytes = 0;
+    for (key, _) in &looks {
+        if let Some((i, b)) = given.iter().position(|(k, _)| k == key).and_then(|i| {
+            let b = Candidate::bytes(&given.get(i)?.1);
+            (bytes + b <= MAX_LABEL_BYTES).then_some((i, b))
+        }) {
+            bytes += b;
+            labels.push(given.swap_remove(i));
+        }
+    }
     with_pictures(|kept| {
         kept.retain(|k| !k.frame.same(&frame));
         if kept.len() >= KEPT {
             kept.remove(0);
         }
-        kept.push(Kept { frame, looks, at, checkpoint, alone });
+        kept.push(Kept { frame, looks, labels, at, checkpoint, alone });
         // Within the budget: the older views' layers alone go first, then the older views, then
         // this view's layer alone.
         while kept.iter().map(Kept::pixels).sum::<u64>() > MAX_PIXELS + KEPT as u64 * SPRITE_PIXELS {
@@ -361,11 +451,12 @@ mod tests {
     /// must be the same frame; gives where the first started drawing its layers.
     fn draw(map: &mut Map, view: &View) -> Option<usize> {
         let kept = render(map, view).expect("drawn");
-        let (started, recombined) = (STARTED.get(), RECOMBINED.get());
+        let (started, recombined, reused) = (STARTED.get(), RECOMBINED.get(), REUSED.take());
         let pictures = PICTURES.take();
         let fresh = render(map, view).expect("drawn");
         PICTURES.set(pictures);
         RECOMBINED.set(recombined);
+        REUSED.set(reused);
         assert!(kept.pixmap.data() == fresh.pixmap.data(), "a frame from a kept picture differs from one drawn whole");
         let texts = |r: &crate::Rendered| r.labels.iter().map(|l| (l.text.clone(), l.x.to_bits(), l.y.to_bits())).collect::<Vec<_>>();
         assert_eq!(texts(&kept), texts(&fresh), "its labels differ");
@@ -403,6 +494,59 @@ mod tests {
         let mut moved = view;
         moved.camera.center.x += 50.0;
         assert_eq!(draw(&mut map, &moved), Some(0));
+    }
+
+    #[test]
+    fn a_layer_drawn_again_takes_its_label_candidates_while_it_looks_the_same() {
+        let (mut map, view, below, above) = map();
+        if let Some(l) = map.layer_mut(above) {
+            l.labels.enabled = true;
+            l.labels.default.field = "name".into();
+        }
+        let restyle = |map: &mut Map, id: u32, rgb: (u8, u8, u8)| {
+            if let Some(l) = map.layer_mut(id) {
+                l.renderer = Renderer::Single(rustgis_map::Symbol { fill: Rgba::rgb(rgb.0, rgb.1, rgb.2), ..l.symbol(0) });
+            }
+        };
+        let reused = |map: &mut Map| {
+            draw(map, &view);
+            REUSED.take()
+        };
+        assert_eq!(reused(&mut map), Vec::<u32>::new(), "the first frame works them all out");
+        // A view's first frame keeps none (another view's, as while panning, would have no use for
+        // them); its second keeps them.
+        assert!(PICTURES.with_borrow(|k| k.iter().all(|k| k.labels.is_empty())));
+        assert_eq!(reused(&mut map), Vec::<u32>::new());
+        assert!(PICTURES.with_borrow(|k| k.iter().any(|k| !k.labels.is_empty())));
+        // The layer below restyled: the one above is drawn again over it, with its candidates.
+        restyle(&mut map, below, (10, 10, 120));
+        assert_eq!(reused(&mut map), vec![above]);
+        // The layer above restyled: drawn from the picture under it, its candidates worked out.
+        restyle(&mut map, above, (200, 30, 30));
+        assert_eq!(reused(&mut map), vec![below], "the frame was drawn whole, the layer below again");
+        restyle(&mut map, above, (30, 200, 30));
+        assert_eq!(reused(&mut map), Vec::<u32>::new());
+        // Those of the layer below, not drawn in that frame, were kept from the one before.
+        restyle(&mut map, below, (120, 10, 10));
+        assert_eq!(reused(&mut map), vec![above]);
+        // Only its transparency changed: still its candidates, which take no transparency.
+        if let Some(l) = map.layer_mut(above) {
+            l.transparency = 40.0;
+        }
+        restyle(&mut map, below, (10, 120, 10));
+        assert_eq!(reused(&mut map), vec![above]);
+        // Labelled by another field, or a moved view: worked out again.
+        if let Some(l) = map.layer_mut(above) {
+            l.labels.default.field = "missing".into();
+        }
+        restyle(&mut map, below, (10, 10, 10));
+        assert_eq!(reused(&mut map), Vec::<u32>::new());
+        restyle(&mut map, below, (20, 20, 20));
+        assert_eq!(reused(&mut map), vec![above]);
+        let mut moved = view;
+        moved.camera.center.x += 50.0;
+        draw(&mut map, &moved);
+        assert_eq!(REUSED.take(), Vec::<u32>::new(), "another view's");
     }
 
     #[test]
