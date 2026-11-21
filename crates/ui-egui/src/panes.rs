@@ -4698,7 +4698,11 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         ui.add_space(6.0);
     }
     match &l.renderer {
-        Renderer::Single(s) => symbol_editor(app, ui, *s, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t),
+        Renderer::Single(s) => {
+            if symbol_editor(app, ui, *s, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t) {
+                crate::markerpick::pick(app, crate::MarkerImage::symbol(l.id));
+            }
+        }
         Renderer::Unique { field, classes, ramp, expression, .. } => {
             field_combo(app, ui, "Field", if expression.is_some() { tl!("(expression)") } else { field.as_str() }, &all, "unique");
             // Or by an expression's values: blank goes back to the field.
@@ -4750,7 +4754,9 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         }
         Renderer::Proportional { field, base, .. } => {
             field_combo(app, ui, "Field", field, &numeric, "proportional");
-            symbol_editor(app, ui, *base, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t);
+            if symbol_editor(app, ui, *base, hidden_fill_opacity(&l, None), Stack::of(&l, &[], &[]), g, t) {
+                crate::markerpick::pick(app, crate::MarkerImage::symbol(l.id));
+            }
             legend_list(app, ui, &l, t);
         }
     }
@@ -5557,7 +5563,9 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
 }
 
 /// `hidden`: the opacity of a fill No Fill hides, which its swatch shows ([`hidden_fill_opacity`]).
-fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8>, stack: Stack, g: GeometryType, t: &Tokens) {
+/// Whether Shape's «Image…» was clicked, for the caller to pick the image for its layer.
+fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8>, stack: Stack, g: GeometryType, t: &Tokens) -> bool {
+    let mut image = false;
     egui::Frame::NONE.fill(t.pane_header).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -5620,6 +5628,7 @@ fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8
                         if ui.selectable_label(on, tl!("Character")).clicked() && !on {
                             let _ = app.run("layer.marker", json!({"char": DEFAULT_CHAR.to_string()}));
                         }
+                        image |= crate::markerpick::entry(ui, matches!(s.marker, Marker::Picture(_)));
                     })
                     .response
                     .labelled_by(input_label.id);
@@ -5632,6 +5641,7 @@ fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, hidden: Option<u8
             }
         });
     });
+    image
 }
 
 /// The dash patterns the stroke editor offers, in stroke widths (dash, gap, …).
@@ -5765,6 +5775,15 @@ fn marker_places() -> [(&'static str, Placements); 7] {
 
 /// Sets the layer's stacked strokes, or `class`'s own.
 fn set_strokes(app: &mut RustGisApp, class: Option<&ClassRef>, strokes: &[LineStroke]) {
+    let (p, replaced) = strokes_params(class, strokes);
+    if app.run("layer.lineStrokes", p).is_ok() {
+        notify_image_replaced(app, replaced);
+    }
+}
+
+/// `layer.lineStrokes`' parameters for `strokes`, the layer's or `class`'s own, with images that
+/// can't be drawn sent as circles ([`drawn_marker`]), and how many were.
+fn strokes_params(class: Option<&ClassRef>, strokes: &[LineStroke]) -> (Value, usize) {
     let mut replaced = 0;
     let strokes: Vec<LineStroke> = strokes
         .iter()
@@ -5787,9 +5806,19 @@ fn set_strokes(app: &mut RustGisApp, class: Option<&ClassRef>, strokes: &[LineSt
         Some(ClassRef::Other) => p["other"] = json!(true),
         None => {}
     }
-    if app.run("layer.lineStrokes", p).is_ok() {
-        notify_image_replaced(app, replaced);
+    (p, replaced)
+}
+
+/// Stroke `i`'s markers as an image, waiting for its file: the strokes as they are, the layer's
+/// (`layer`) or `class`'s own, for `layer.lineStrokes`.
+pub(crate) fn stroke_image(layer: u32, class: Option<&ClassRef>, strokes: &[LineStroke], i: usize) -> crate::MarkerImage {
+    let mut strokes = strokes.to_vec();
+    // The mark the image replaces isn't counted as an image replaced by a circle.
+    if let Some(m) = strokes.get_mut(i).and_then(|st| st.markers.as_mut()) {
+        m.mark = LineMark::Marker(Marker::Circle);
     }
+    let (p, replaced) = strokes_params(class, &strokes);
+    crate::MarkerImage::in_list("layer.lineStrokes", p, layer, "strokes", i, replaced)
 }
 
 /// A marker as an editor sends it back: an image that can't be drawn (one a file gave that wasn't
@@ -5941,7 +5970,8 @@ fn marker_preview(p: &egui::Painter, m: &LineMarkers, x: (f32, f32), y: f32, k: 
 }
 
 /// The stroke editor's rows for a stroke of markers or hash marks (`st`, its markers `m`): the
-/// shape, its size, where it goes and how far apart, and whether it turns with the line.
+/// shape, its size, where it goes and how far apart, and whether it turns with the line. Whether
+/// Shape's «Image…» was clicked, for the caller to pick the image for that stroke.
 fn marker_rows(
     app: &mut RustGisApp,
     ui: &mut Ui,
@@ -5950,7 +5980,8 @@ fn marker_rows(
     m: LineMarkers,
     points: bool,
     set: &impl Fn(&mut RustGisApp, LineStroke),
-) {
+) -> bool {
+    let mut image = false;
     let with = |m: LineMarkers| LineStroke { markers: Some(m), ..st };
     if let LineMark::Marker(shape) = m.mark {
         let input_label = ui.label(tl!("Shape"));
@@ -5966,6 +5997,7 @@ fn marker_rows(
                 if ui.selectable_label(on, tl!("Character")).clicked() && !on {
                     set(app, with(LineMarkers { mark: LineMark::Marker(Marker::Char(Glyph::new(DEFAULT_CHAR, ""))), ..m }));
                 }
+                image |= crate::markerpick::entry(ui, matches!(shape, Marker::Picture(_)));
             })
             .response
             .labelled_by(input_label.id);
@@ -6056,6 +6088,7 @@ fn marker_rows(
         }
     });
     ui.end_row();
+    image
 }
 
 /// A point symbol's marker as a mark (the first of a point layer's marks): its shape, size, fill and
@@ -6693,7 +6726,9 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
                 }
                 ui.end_row();
                 if let Some(m) = st.markers {
-                    marker_rows(app, ui, i, st, m, points, &set);
+                    if marker_rows(app, ui, i, st, m, points, &set) {
+                        crate::markerpick::pick(app, stroke_image(l.id, class, &strokes, i));
+                    }
                 } else {
                     let input_label = ui.label(tl!("Cap"));
                     egui::ComboBox::from_id_salt(("stroke_cap", i))

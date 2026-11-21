@@ -53,6 +53,9 @@ fn mark(purpose: &str) -> String {
     if let Some(id) = purpose.strip_prefix("dxf:") {
         return format!("{}{id}:", rustgis_ui_egui::DXF_PICK);
     }
+    if let Some(id) = purpose.strip_prefix("marker:") {
+        return format!("{}{id}:", rustgis_ui_egui::MARKER_PICK);
+    }
     match purpose {
         "shortcuts" => rustgis_ui_egui::SHORTCUT_PICK,
         "script" => rustgis_ui_egui::SCRIPT_PICK,
@@ -242,6 +245,7 @@ mod tests {
         assert_eq!(super::mark("dxf:7"), format!("{}7:", rustgis_ui_egui::DXF_PICK));
         assert_eq!(super::mark("shapefile"), rustgis_ui_egui::SHAPEFILE_PICK);
         assert_eq!(super::mark("script"), rustgis_ui_egui::SCRIPT_PICK);
+        assert_eq!(super::mark("marker:4"), format!("{}4:", rustgis_ui_egui::MARKER_PICK));
         assert_eq!(super::mark("data"), "");
     }
 

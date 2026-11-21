@@ -68,6 +68,8 @@ mod mapgpu;
 mod mapmenu;
 mod mapview;
 mod markerimages;
+mod markerpick;
+pub use markerpick::{MarkerImage, marker_file_too_large};
 mod measure_units;
 mod modelbuilder;
 mod navui;
@@ -200,6 +202,16 @@ pub const SHORTCUT_PICK: &str = "\u{1}shortcuts:";
 /// Starts the name of a script file the shell's `"script"` picker put in the inbox, for the
 /// Script pane's Load….
 pub const SCRIPT_PICK: &str = "\u{1}script:";
+
+/// Starts the name of an image the shell's `"marker:<id>"` picker put in the inbox, followed by
+/// `<id>:`: it goes to the marker whose «Image…» asked for it, and only a file so marked, for the
+/// request still waiting, does.
+pub const MARKER_PICK: &str = "\u{1}marker:";
+
+/// The largest image file a marker takes: one whose base64 fits the engine's limit
+/// ([`rustgis_engine::map::symbology::MAX_PICTURE_BYTES`]). The browser's and the phone's shells
+/// refuse a larger one before reading it.
+pub const MARKER_FILE_MAX_BYTES: usize = rustgis_engine::map::symbology::MAX_PICTURE_BYTES / 4 * 3;
 
 /// The largest script file the Script pane's Load… reads, as the assistant's command file; the
 /// browser's shell refuses a larger one before reading it.
@@ -993,6 +1005,9 @@ pub struct UiState {
     pub pending_layout_picture: bool,
     /// The corners of a picture graphic waiting for its image file.
     pub pending_picture: Option<Vec<rustgis_engine::geom::Coord>>,
+    /// A marker whose «Image…» waits for its file (web and phone), which comes back marked
+    /// ([`MARKER_PICK`]).
+    pub pending_marker_image: Option<MarkerImage>,
     /// The value picked under Edit › Dynamic Text (a token such as `{scale}`): the text tool's
     /// dialog starts with it. Cleared when the tool changes.
     pub dynamic_text: Option<&'static str>,
@@ -1091,6 +1106,7 @@ impl Default for UiState {
             open_url: None,
             copy_image: None,
             pending_picture: None,
+            pending_marker_image: None,
             pending_layout_picture: false,
             pending_open: None,
             web_file: None,
@@ -2094,8 +2110,8 @@ impl RustGisApp {
     /// Delimited Text for it, or is read with a script's options; one the tool file picker marked
     /// ([`TOOL_FILE_PICK`]) goes to the Tools pane. Source-CRS picks carry [`SHAPEFILE_PICK`];
     /// shortcut picks carry [`SHORTCUT_PICK`] and open the validated merge preview; script picks
-    /// carry [`SCRIPT_PICK`] and open in the Script pane; DXF picks
-    /// carry [`DXF_PICK`] and open Import DXF.
+    /// carry [`SCRIPT_PICK`] and open in the Script pane; marker picks carry [`MARKER_PICK`] and
+    /// become the waiting marker's image; DXF picks carry [`DXF_PICK`] and open Import DXF.
     pub fn open_picked(&mut self, name: &str, bytes: &[u8]) -> Result<Value, String> {
         if name.starts_with(SHORTCUT_PICK) {
             return shortcutfile::picked(self, bytes);
@@ -2103,6 +2119,22 @@ impl RustGisApp {
         if let Some(name) = name.strip_prefix(SCRIPT_PICK) {
             // An answer with no name is a cancelled picker.
             return if name.is_empty() { Ok(Value::Null) } else { analysispane::script_picked(self, name, bytes) };
+        }
+        if let Some(picked) = name.strip_prefix(MARKER_PICK) {
+            // Only the request still waiting takes its answer: an earlier one's file, still on its
+            // way when another «Image…» was clicked, is dropped, and said. An answer with no name
+            // is a cancelled picker, which ends the wait.
+            let (id, name) = picked.split_once(':').unwrap_or_default();
+            if self.ui.pending_marker_image.as_ref().is_none_or(|m| m.request.to_string() != id) {
+                if !name.is_empty() {
+                    self.session.notify(tl!("An image picked for an earlier Image… was dropped: pick it again for that marker"), true);
+                }
+                return Ok(Value::Null);
+            }
+            return match self.ui.pending_marker_image.take() {
+                Some(marker) if !name.is_empty() => marker.apply(self, bytes),
+                _ => Ok(Value::Null),
+            };
         }
         if let Some(name) = name.strip_prefix(TOOL_FILE_PICK) {
             panes::received_file(self, name, bytes);

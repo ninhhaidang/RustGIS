@@ -84,6 +84,15 @@ fn spread_name(s: Spread) -> &'static str {
 
 /// Runs `layer.fillLayers` with `fills` for the class picked (`None`: the layer's).
 pub(crate) fn set_fills(app: &mut RustGisApp, class: Option<&ClassRef>, fills: &[FillLayer]) {
+    let (p, replaced) = fills_params(class, fills);
+    if app.run("layer.fillLayers", p).is_ok() {
+        crate::panes::notify_image_replaced(app, replaced);
+    }
+}
+
+/// `layer.fillLayers`' parameters for `fills`, the layer's or `class`'s own, with images that
+/// can't be drawn sent as circles, and how many were.
+fn fills_params(class: Option<&ClassRef>, fills: &[FillLayer]) -> (Value, usize) {
     let mut replaced = 0;
     let fills: Vec<FillLayer> = fills
         .iter()
@@ -103,9 +112,19 @@ pub(crate) fn set_fills(app: &mut RustGisApp, class: Option<&ClassRef>, fills: &
         Some(ClassRef::Other) => p["other"] = json!(true),
         None => {}
     }
-    if app.run("layer.fillLayers", p).is_ok() {
-        crate::panes::notify_image_replaced(app, replaced);
+    (p, replaced)
+}
+
+/// Fill `i`'s markers as an image, waiting for its file: the fills as they are, the layer's
+/// (`layer`) or `class`'s own, for `layer.fillLayers`.
+pub(crate) fn fill_image(layer: u32, class: Option<&ClassRef>, fills: &[FillLayer], i: usize) -> crate::MarkerImage {
+    let mut fills = fills.to_vec();
+    // The marker the image replaces isn't counted as an image replaced by a circle.
+    if let Some(FillLayer { pattern: FillPattern::Dots { marker, .. }, .. }) = fills.get_mut(i) {
+        *marker = Marker::Circle;
     }
+    let (p, replaced) = fills_params(class, &fills);
+    crate::MarkerImage::in_list("layer.fillLayers", p, layer, "fills", i, replaced)
 }
 
 /// A fill's kind, as the Draw list names it.
@@ -442,6 +461,9 @@ pub(crate) fn fills_editor(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tok
                                     if ui.selectable_label(m == marker, tl!(m.label())).clicked() && m != marker {
                                         set(app, dots(m, size, spacing, displacement));
                                     }
+                                }
+                                if crate::markerpick::entry(ui, matches!(marker, Marker::Picture(_))) {
+                                    crate::markerpick::pick(app, fill_image(l.id, class, &fills, i));
                                 }
                             })
                             .response
