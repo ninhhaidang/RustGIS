@@ -13,7 +13,7 @@
 
 # The app is WebAssembly, the same on every platform, so it is built once on the build machine's
 # own platform, also when the image is for another (`--platform linux/amd64,linux/arm64`).
-FROM --platform=$BUILDPLATFORM rust:1.99.1-slim@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS build
+FROM --platform=$BUILDPLATFORM rust:1.100.0-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS build
 
 # clang compiles the Zstandard decoder in rustgis-data to WebAssembly; curl downloads Trunk, and
 # crates/render/build.rs uses curl to fetch the Natural Earth sample data it embeds.
