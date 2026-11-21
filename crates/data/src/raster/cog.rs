@@ -26,8 +26,9 @@ const MAX_TILES: usize = 4 << 20;
 /// How many tiles all the levels hold together (their offsets and lengths are kept, 16 bytes a
 /// tile): about 128 MB at most.
 const MAX_TOTAL_TILES: usize = 8 << 20;
-/// The largest tile, in samples.
-const MAX_TILE_SAMPLES: usize = 4 << 20;
+/// The largest tile, in bytes once read: each value as the `f32` it is kept as, a 64-bit one as
+/// the 8 bytes it is decoded to before that.
+const MAX_TILE_BYTES: usize = 32 << 20;
 /// The most bytes held from a file's header (its IFDs and their tag arrays).
 pub const MAX_HEADER: u64 = 32 << 20;
 
@@ -294,7 +295,7 @@ fn err(e: impl std::fmt::Display) -> DataError {
 
 fn limits() -> Limits {
     let mut l = Limits::default();
-    l.decoding_buffer_size = MAX_TILE_SAMPLES * 8;
+    l.decoding_buffer_size = MAX_TILE_BYTES;
     l.intermediate_buffer_size = 64 << 20;
     l.ifd_value_size = 16 << 20;
     l
@@ -305,7 +306,13 @@ pub fn is_tiff(bytes: &[u8]) -> bool {
     matches!(bytes.get(..4), Some([b'I', b'I', 42 | 43, 0] | [b'M', b'M', 0, 42 | 43]))
 }
 
-/// The layout of a tiled GeoTIFF, from the bytes read so far.
+/// The bytes a tile of `tw × th` pixels and `per_chunk` bands takes once read (see
+/// [`MAX_TILE_BYTES`]).
+fn tile_bytes(tw: u32, th: u32, per_chunk: usize, bits: u16) -> u64 {
+    let width = if bits > 32 { 8 } else { 4 };
+    u64::from(tw).saturating_mul(u64::from(th)).saturating_mul(per_chunk as u64).saturating_mul(width)
+}
+
 /// Takes a level's `n` tiles from what all the levels may hold together.
 fn take_tiles(allowance: &mut usize, n: usize) -> Result<()> {
     if n > MAX_TILES || n > *allowance {
@@ -315,6 +322,7 @@ fn take_tiles(allowance: &mut usize, n: usize) -> Result<()> {
     Ok(())
 }
 
+/// The layout of a tiled GeoTIFF, from the bytes read so far.
 pub fn layout(bytes: &Sparse) -> Result<Parse> {
     let r = bytes.reader();
     let watch = r.clone();
@@ -515,8 +523,25 @@ fn read_layout(r: Sparse) -> Result<Parse> {
                 index += 1;
                 continue;
             }
-            if tw == 0 || th == 0 || (tw as usize).saturating_mul(th as usize).saturating_mul(per_chunk) > MAX_TILE_SAMPLES {
+            if tw == 0 || th == 0 {
                 return Err(err(format!("tiles of {tw} × {th} pixels")));
+            }
+            let level_bits =
+                dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).ok().flatten().and_then(|v| v.first().copied()).unwrap_or(bits);
+            let bytes = tile_bytes(tw, th, per_chunk, level_bits);
+            if bytes > MAX_TILE_BYTES as u64 {
+                let (mib, max) = (bytes.div_ceil(1 << 20), MAX_TILE_BYTES >> 20);
+                // Bands stored apart help only when one band's tile then fits.
+                let apart = per_chunk > 1 && tile_bytes(tw, th, 1, level_bits) <= MAX_TILE_BYTES as u64;
+                let of_bands = if per_chunk > 1 { format!(" of {per_chunk} interleaved bands") } else { String::new() };
+                let fix = if apart {
+                    "smaller tiles or its bands stored apart (GDAL's BLOCKSIZE or INTERLEAVE=BAND creation options)"
+                } else {
+                    "smaller tiles (GDAL's BLOCKSIZE creation option)"
+                };
+                return Err(err(format!(
+                    "tiles of {tw} × {th} pixels{of_bands} take {mib} MiB each once read, more than the {max} MiB one tile may take: write the file with {fix}"
+                )));
             }
             // Every band plane's tiles, when the bands are stored apart.
             let n = (w.div_ceil(tw) as usize).saturating_mul(h.div_ceil(th) as usize).saturating_mul(planes);
@@ -709,9 +734,9 @@ pub fn example(size: u32, tile: u32) -> Vec<u8> {
 pub struct Example {
     /// Pixels a side (at most 4096).
     pub size: u32,
-    /// Pixels a tile side (16 to 1024).
+    /// Pixels a tile side (16 to 4096).
     pub tile: u32,
-    /// Bands (1 to 16): band `b` of pixel (x, y) is `(x + y + 10 b) % 256` (`% 100 − 50` in
+    /// Bands (1 to 64): band `b` of pixel (x, y) is `(x + y + 10 b) % 256` (`% 100 − 50` in
     /// signed bytes).
     pub bands: u16,
     /// Bands stored apart (planar configuration 2).
@@ -735,6 +760,8 @@ pub struct Example {
     pub wide: bool,
     /// 64-bit float samples of the byte value, but 1e39 (past `f32`'s range) for 255.
     pub huge: bool,
+    /// The overviews' samples tagged 64-bit floats (their tags only: the tiles stay bytes).
+    pub huge_overviews: bool,
     /// With `classes`: the full image grey (PhotometricInterpretation 1) with the colour table
     /// anyway, which isn't a palette; its overviews stay palette images.
     pub stray: bool,
@@ -768,6 +795,7 @@ impl Default for Example {
             lossy: false,
             wide: false,
             huge: false,
+            huge_overviews: false,
             stray: false,
             no_table: false,
             sparse: false,
@@ -781,8 +809,8 @@ impl Default for Example {
 /// A small cloud-optimised GeoTIFF as [`Example`] says, laid out as [`example`] lays it out.
 #[doc(hidden)]
 pub fn example_with(e: &Example) -> Vec<u8> {
-    let (size, tile) = (e.size.clamp(1, 4096), e.tile.clamp(16, 1024));
-    let nb = u32::from(e.bands.clamp(1, 16));
+    let (size, tile) = (e.size.clamp(1, 4096), e.tile.clamp(16, 4096));
+    let nb = u32::from(e.bands.clamp(1, 64));
     let planes = if e.planar { nb } else { 1 };
     let per_chunk = nb / planes;
     let mut sizes = vec![size];
@@ -855,6 +883,7 @@ pub fn example_with(e: &Example) -> Vec<u8> {
     let mut ifds: Vec<Vec<(u16, V)>> = Vec::new();
     for (i, &s) in sizes.iter().enumerate() {
         let n = (s.div_ceil(tile) * s.div_ceil(tile) * planes) as usize;
+        let tagged_huge = e.huge || (e.huge_overviews && i > 0);
         let mut t = vec![
             (254u16, V::L(vec![if i == 0 { 0 } else { 1 }])),
             (256, V::L(vec![s])),
@@ -862,7 +891,7 @@ pub fn example_with(e: &Example) -> Vec<u8> {
             (
                 258,
                 V::S(vec![
-                    if e.huge {
+                    if tagged_huge {
                         64
                     } else if e.wide {
                         32
@@ -894,7 +923,7 @@ pub fn example_with(e: &Example) -> Vec<u8> {
         if e.int8 || e.wide {
             t.push((339, V::S(vec![2; nb as usize])));
         }
-        if e.huge {
+        if tagged_huge {
             t.push((339, V::S(vec![3; nb as usize])));
         }
         if i == 0 {
@@ -1008,6 +1037,53 @@ pub fn example_with(e: &Example) -> Vec<u8> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    /// ESA CCI Biomass's 1 km map (#2496): 18 bands interleaved in 512-pixel tiles, 4.7 million values
+    /// a tile, open; a tile past the limit says what it takes, the limit and what to do.
+    #[test]
+    fn many_interleaved_bands_open_and_too_large_tiles_say_why() {
+        let file = example_with(&Example { size: 512, tile: 512, bands: 18, no_overviews: true, ..Example::default() });
+        let (s, l) = layout_of(&file);
+        assert_eq!((l.bands, l.chunk_bands(), l.planar), (18, 18, false));
+        assert!(l.lost.is_empty(), "{:?}", l.lost);
+        let lv = &l.levels[0];
+        let (at, n) = (lv.offsets[0] as usize, lv.counts[0] as usize);
+        let bands = decode_tile(&s, &l, 0, 0, file[at..at + n].to_vec()).unwrap();
+        assert_eq!(bands.len(), 18);
+        // Band 17 of pixel (2, 3): (2 + 3 + 170) % 256.
+        assert_eq!(bands[17][3 * 512 + 2], 175.0);
+        let big = example_with(&Example { size: 1024, tile: 1024, bands: 9, no_overviews: true, ..Example::default() });
+        let e = layout(&Sparse::default().with(0, big)).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "GeoTIFF: tiles of 1024 × 1024 pixels of 9 interleaved bands take 36 MiB each once read, more than the 32 MiB one tile may take: write the file with smaller tiles or its bands stored apart (GDAL's BLOCKSIZE or INTERLEAVE=BAND creation options)"
+        );
+        // One band's tile is too large alone: storing the bands apart wouldn't help.
+        let huge = example_with(&Example { size: 4096, tile: 4096, bands: 2, no_overviews: true, ..Example::default() });
+        let e = layout(&Sparse::default().with(0, huge)).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "GeoTIFF: tiles of 4096 × 4096 pixels of 2 interleaved bands take 128 MiB each once read, more than the 32 MiB one tile may take: write the file with smaller tiles (GDAL's BLOCKSIZE creation option)"
+        );
+    }
+
+    /// Each level's tiles count at its own bit depth: a 64-bit overview of a byte image is refused.
+    #[test]
+    fn an_overview_counts_its_own_bit_depth() {
+        let base = Example { size: 1024, tile: 512, bands: 18, ..Example::default() };
+        let (_, l) = layout_of(&example_with(&base));
+        assert_eq!(l.levels.len(), 2);
+        let e = layout(&Sparse::default().with(0, example_with(&Example { huge_overviews: true, ..base }))).unwrap_err().to_string();
+        assert!(e.contains("tiles of 512 × 512 pixels of 18 interleaved bands take 36 MiB each once read"), "{e}");
+    }
+
+    /// A tile's bytes once read: values as `f32`, 64-bit ones as 8 bytes; a hostile header saturates.
+    #[test]
+    fn tile_bytes_count_values_as_read() {
+        assert_eq!(tile_bytes(512, 512, 18, 16), 18 << 20);
+        assert_eq!(tile_bytes(512, 512, 32, 8), MAX_TILE_BYTES as u64, "at the limit, which passes");
+        assert!(tile_bytes(512, 512, 17, 64) > MAX_TILE_BYTES as u64, "64-bit values count 8 bytes");
+        assert_eq!(tile_bytes(u32::MAX, u32::MAX, usize::MAX, 64), u64::MAX);
+    }
 
     #[test]
     fn tile_budget_across_levels() {
