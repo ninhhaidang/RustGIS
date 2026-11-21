@@ -4832,6 +4832,7 @@ fn shown_layers(session: &rustgis_engine::Session) -> u64 {
         &map.graticule_crs,
     )
         .hash(&mut h);
+    (map.graticule_on_top, map.graticule_color).hash(&mut h);
     for l in &map.layers {
         (l.id, l.visible).hash(&mut h);
     }

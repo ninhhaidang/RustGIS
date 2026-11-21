@@ -127,6 +127,9 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("tabulate-intersection-empty-zones", command_uses_tabulate_empty_zones),
     ("layout-element-background", command_uses_element_background),
     ("picture-markers", command_uses_picture_marker),
+    ("graticule-mgrs", command_draws_mgrs_graticule),
+    ("graticule-on-top", command_puts_graticule_on_top),
+    ("graticule-color", command_colors_graticule),
     ("layout-element-ink", command_uses_element_ink),
     ("layout-element-wrap", command_uses_element_wrap),
     ("layout-chart-data", command_uses_chart_data),
@@ -135,6 +138,42 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
 ];
+
+/// A saved `map.graticule` that switches to the MGRS grid, its type read as the command reads it:
+/// an older reader refuses the type, so the command would fail there.
+fn command_draws_mgrs_graticule(id: &str, params: &Value) -> bool {
+    match id {
+        "map.graticule" => params
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(rustgis_map::graticule::GraticuleType::from_name)
+            .is_some_and(|t| t == rustgis_map::graticule::GraticuleType::Mgrs),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_draws_mgrs_graticule)),
+        _ => false,
+    }
+}
+
+/// A saved `map.graticule` that sets whether the grid draws over the layers, or puts the default
+/// back with `null`: an older reader ignores the key, and without `on`, `type` or `crs` it toggles
+/// the grid where this one keeps it as it is, so any value needs it.
+fn command_puts_graticule_on_top(id: &str, params: &Value) -> bool {
+    match id {
+        "map.graticule" => params.get("onTop").is_some(),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_puts_graticule_on_top)),
+        _ => false,
+    }
+}
+
+/// A saved `map.graticule` that sets the grid's color, or puts the palette's back with `null` or
+/// `""`: an older reader ignores the key, and without `on`, `type` or `crs` it toggles the grid
+/// where this one keeps it as it is, so any value needs it.
+fn command_colors_graticule(id: &str, params: &Value) -> bool {
+    match id {
+        "map.graticule" => params.get("color").is_some(),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_colors_graticule)),
+        _ => false,
+    }
+}
 
 /// A layout command that changes a map frame's border (#2557): an older reader warns that it
 /// ignores `border` and draws the default one. `null` only gives the default back, which an older
@@ -441,12 +480,21 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         mut sized,
         mut pictures,
         mut zarr,
-    ) = (false, false, false, false, false, false, false, false, false, false, false);
+        mut mgrs,
+        mut on_top,
+        mut grid_color,
+    ) = (false, false, false, false, false, false, false, false, false, false, false, false, false, false);
     let (mut offline_area_id, mut paper, mut native) = (false, false, false);
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
         paper |= map.paper.is_some();
+        // An older reader doesn't know the MGRS graticule (#1042 piece 8): it refuses the
+        // project by name rather than failing to read the type.
+        mgrs |= map.graticule_type == rustgis_map::graticule::GraticuleType::Mgrs;
+        // Nor the graticule drawn over the layers or in a color of its own: it would save them away.
+        on_top |= map.graticule_on_top;
+        grid_color |= map.graticule_color.is_some();
         if let Some(t) = &map.view.terrain {
             block |= t.block.is_some();
             // A round block (#2318), which an older reader would draw and save as a box.
@@ -482,6 +530,9 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
         (native, super::NATIVE_COORDINATES),
+        (mgrs, "graticule-mgrs"),
+        (on_top, "graticule-on-top"),
+        (grid_color, "graticule-color"),
     ]
     .into_iter()
     .filter_map(|(used, name)| used.then_some(name))
@@ -562,6 +613,28 @@ mod tests {
 
     fn json_bytes(bytes: &[u8]) -> Value {
         serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// A saved MGRS graticule drawn on top in a color of its own (#1042 piece 8) reads back as it
+    /// was, and saving names all three again; a map without them names none.
+    #[test]
+    fn graticule_mgrs_fixture_reads_its_grid() {
+        use rustgis_map::graticule::GraticuleType;
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/graticule_mgrs.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["graticule-mgrs", "graticule-on-top", "graticule-color"]));
+        let map = &fixture.maps[0];
+        assert_eq!(map.graticule_type, GraticuleType::Mgrs);
+        assert!(map.graticule && map.graticule_on_top);
+        assert_eq!(map.graticule_color.map(|c| (c.r(), c.g(), c.b(), c.a())), Some((48, 48, 48, 153)));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(&reopened).unwrap(), saved);
+        let mut plain = fixture;
+        let map = &mut plain.maps[0];
+        map.graticule_type = GraticuleType::Utm;
+        map.graticule_on_top = false;
+        map.graticule_color = None;
+        assert!(serde_json::to_value(&plain).unwrap().get("requires").is_none());
     }
 
     /// A saved image marker reads back as the image it was, and saving names it again.

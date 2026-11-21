@@ -79,7 +79,7 @@ pub fn commands() -> Vec<C> {
         C::new("map.basemap", "Basemap", "Home › Add", basemap).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r##"{"name": "paper"|"midnight"|"ocean"|"atlas"|"blank", "keepTiles"?: bool (keeps the web tile basemaps over it), "color"?: "#RRGGBB" (blank: the paper's colour, drawn where a blank map draws white, the tilted view's sky included; null or #FFFFFF: white; default: as it was. Another basemap takes the paper off and keeps its own colours; a color given with it is said as a warning)}"##),
         C::new("map.graticule", "Graticule", "View › Display", graticule).roles(&[]).effects(crate::policy::Effects::NONE)
-        .params(r#"{"on"?: bool (toggles when omitted, on when a type or crs is given), "type"?: "degrees"|"measured"|"utm", "crs"?: a projected system for the measured grid (EPSG:2056, WKT or a PROJ string; "" or null: the map's own when projected, else the UTM zone at the view's centre)}"#),
+        .params(r##"{"on"?: bool (toggles when omitted, on when a type or crs is given, kept as it is when only onTop or color is given), "type"?: "degrees"|"measured"|"utm"|"mgrs", "crs"?: a projected system for the measured grid (EPSG:2056, WKT or a PROJ string; "" or null: the map's own when projected, else the UTM zone at the view's centre), "onTop"?: bool (the lines over the layers, under the labels; false or null: with the basemap, under the layers), "color"?: "#RRGGBB"|"#RRGGBBAA" ("" or null: the basemap's)}"##),
         C::new("map.reloadWebLayers", "Reload Web Layers", "View › Display", |_, _| {
             // The map view draws again when the tile cache's generation moves.
             crate::render::rustgis_tiles::cache::clear();
@@ -868,9 +868,26 @@ fn set_bearing(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Shows or hides the map's graticule, and sets what it draws: a type or a coordinate system
 /// given shows it too. A coordinate system is for the measured grid, and refused (naming it) when
-/// it can't be read or isn't projected.
+/// it can't be read or isn't projected. Whether its lines go over the layers, and their color,
+/// are set without showing or hiding it.
 fn graticule(s: &mut Session, p: &Value) -> CmdResult {
     use rustgis_map::graticule::GraticuleType;
+    let on_top = match p.get("onTop") {
+        None => None,
+        // As for the color: null puts the default back (under the layers).
+        Some(Value::Null) => Some(false),
+        Some(v) => Some(super::bool_value(v).ok_or_else(|| format!("onTop must be true or false, not {v}"))?),
+    };
+    let color = match p.get("color") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(c)) if c.trim().is_empty() => Some(None),
+        Some(v) => Some(Some(
+            v.as_str()
+                .and_then(rustgis_map::Rgba::from_hex)
+                .ok_or_else(|| format!("color must be #RRGGBB or #RRGGBBAA (\"\" or null for the basemap's), not {v}"))?,
+        )),
+    };
     let kind = match p.get("type") {
         None | Some(Value::Null) => None,
         Some(Value::String(t)) => Some(GraticuleType::from_name(t).ok_or_else(|| {
@@ -914,12 +931,32 @@ fn graticule(s: &mut Session, p: &Value) -> CmdResult {
         return Err(format!("crs is the measured grid's; the graticule is \"{}\" (give \"type\": \"measured\")", kind_after.code()));
     }
     let set = kind.is_some() || crs.is_some();
-    m.graticule = super::b(p, "on").unwrap_or(if set { true } else { !m.graticule });
+    // Only the lines' place or color given: shown or hidden as it was.
+    let styled = on_top.is_some() || color.is_some();
+    m.graticule = super::b(p, "on").unwrap_or(if set {
+        true
+    } else if styled {
+        m.graticule
+    } else {
+        !m.graticule
+    });
     m.graticule_type = kind_after;
     if let Some(c) = crs {
         m.graticule_crs = c;
     }
-    Ok(json!({"on": m.graticule, "type": m.graticule_type.code(), "crs": m.graticule_crs}))
+    if let Some(t) = on_top {
+        m.graticule_on_top = t;
+    }
+    if let Some(c) = color {
+        m.graticule_color = c;
+    }
+    Ok(json!({
+        "on": m.graticule,
+        "type": m.graticule_type.code(),
+        "crs": m.graticule_crs,
+        "onTop": m.graticule_on_top,
+        "color": m.graticule_color.map(rustgis_map::Rgba::hex),
+    }))
 }
 
 fn basemap(s: &mut Session, p: &Value) -> CmdResult {

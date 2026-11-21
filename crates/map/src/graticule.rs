@@ -1,5 +1,6 @@
 //! What the map's graticule draws (#1042): latitudes and longitudes, a measured grid of eastings
-//! and northings in one projected system, or the UTM zones with each zone's own grid.
+//! and northings in one projected system, the UTM zones with each zone's own grid, or the MGRS
+//! grid with its grid zone designations and 100 km squares named.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,10 +17,15 @@ pub enum GraticuleType {
     /// The UTM zones (WGS 84) and their latitude bands, with the Norway and Svalbard exceptions,
     /// and in each zone its own eastings and northings once few zones are in view.
     Utm,
+    /// The MGRS grid (NGA.STND.0037): the UTM zones and bands as grid zone designations, and in
+    /// each of a few in view its own grid at a power of ten that suits the scale (100 km to
+    /// 100 m), the 100 km lines heavier, named by grid zone designation or 100 km square. Nothing
+    /// is drawn in the polar areas (UPS) yet.
+    Mgrs,
 }
 
 impl GraticuleType {
-    pub const ALL: [GraticuleType; 3] = [GraticuleType::Degrees, GraticuleType::Measured, GraticuleType::Utm];
+    pub const ALL: [GraticuleType; 4] = [GraticuleType::Degrees, GraticuleType::Measured, GraticuleType::Utm, GraticuleType::Mgrs];
 
     /// The name a command takes.
     pub fn code(self) -> &'static str {
@@ -27,6 +33,7 @@ impl GraticuleType {
             GraticuleType::Degrees => "degrees",
             GraticuleType::Measured => "measured",
             GraticuleType::Utm => "utm",
+            GraticuleType::Mgrs => "mgrs",
         }
     }
 
@@ -36,6 +43,7 @@ impl GraticuleType {
             GraticuleType::Degrees => "Latitude and Longitude",
             GraticuleType::Measured => "Measured Grid",
             GraticuleType::Utm => "UTM Zones",
+            GraticuleType::Mgrs => "MGRS",
         }
     }
 
@@ -67,7 +75,8 @@ mod tests {
             assert_eq!(GraticuleType::from_name(&t.code().to_uppercase()), Some(t));
         }
         assert_eq!(GraticuleType::from_name(" utm "), Some(GraticuleType::Utm));
-        assert_eq!(GraticuleType::from_name("mgrs"), None);
+        assert_eq!(GraticuleType::from_name("Mgrs"), Some(GraticuleType::Mgrs));
+        assert_eq!(GraticuleType::from_name("ups"), None);
     }
 
     #[test]

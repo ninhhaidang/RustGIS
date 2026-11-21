@@ -880,12 +880,39 @@ picking one shows it:
   southern Norway's and Svalbard's wider zones. Once no more than eight zone-and-band areas are in
   view, each also gets its own eastings and northings, at the same interval in all of them and
   cut at the zone's edges.
+- **MGRS**: the Military Grid Reference System's grid (`"mgrs"` in the command): the same zones
+  and bands as grid zone designations, drawn heavier. Once no more than eight are in view, each gets
+  its own grid at a power of ten that suits the scale, between three and thirty lines across the
+  view: 100 km, then 10 km, 1 km and, zoomed in closest, 100 m (100 km while more than four grid
+  zone designations show). The 100 km lines, the edges of the 100 km squares, stay heavier than the
+  finer ones. Zoomed out, each grid zone designation is named (`33U`); once the 100 km squares are
+  large enough on the screen, each is named by its letters (`VP`), with its grid zone designation
+  (`33U VP`) when more than one is in view. A zone or square cut too small for its name isn't
+  named, and the names aren't drawn on a tilted view. Nothing is drawn yet north of 84° N or south
+  of 80° S, where MGRS uses UPS.
 
-The grids have no labels on the map; the status bar reads coordinates in UTM or MGRS. Like the
+Only the MGRS grid is labeled on the map; the status bar reads coordinates in UTM or MGRS. Like the
 latitudes and longitudes, they aren't drawn on the copies of the world a flat map shows past
 ±180°. The type and system are saved with the map; a project whose measured grid names a system
 this version can't use (one in degrees, or a PROJ string the web app can't read) opens without it,
 and says so.
+
+Two more settings in the same menu apply to every type, and are saved with the map:
+
+- **Draw on top of layers** (`"onTop"` in the command; off by default, and `null` goes back to
+  it): by default the grid lines are drawn with the basemap, under the map's layers and web tile
+  layers, so a filled layer hides them. With it on, they are drawn over every layer and tile
+  layer, still under the labels. They then also draw over the highlights of selected features.
+  The MGRS names are labels, so they're drawn over the layers either way, as the layers' own
+  labels are: a filled layer can hide the lines under a name but not the name. They go with the
+  lines when the grid's opacity is 0, and pause with the labels.
+- **Grid color** (`"color"`: `"#RRGGBB"` or `"#RRGGBBAA"`, with its opacity): the lines' color. By
+  default it is the basemap's own grid color, which is faint; **Default** (`null` or `""` in the
+  command) goes back to it. The MGRS names take the same color, fully opaque. Major and minor
+  lines keep their widths.
+
+Neither setting shows or hides the grid. A project that uses either needs a RustGIS that knows
+it: an older one refuses to open it rather than drop the setting.
 
 **Global** shows a globe; **Local** a flat view centred where you are (azimuthal equidistant;
 not in the web app, which doesn't include that projection).

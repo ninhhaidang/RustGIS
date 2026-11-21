@@ -560,18 +560,19 @@ pub(crate) fn collect_basemap(
     Ok(())
 }
 
-/// The graticule lines (already in map units).
+/// The graticule lines (already in map units), `width` points wide.
 pub(crate) fn collect_graticule(
     cmds: &mut Vec<DrawCmd>,
     lines: &[Vec<Coord>],
     ext: &Extent,
     grat: Rgba,
+    width: f32,
     ppp: f32,
     map_per_px: f64,
 ) -> Result<(), TessError> {
     let origin = origin_for(ext, map_per_px)?;
     let (mut v, mut i) = (Vec::new(), Vec::new());
-    extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), 0.6 * ppp, map_per_px, NO_LIMIT))?;
+    extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), width * ppp, map_per_px, NO_LIMIT))?;
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
     }

@@ -126,7 +126,12 @@ fn step() -> impl Strategy<Value = (&'static str, Value)> {
         prop::sample::select(vec!["Albers Equal Area Conic +lat_1=29.5 +lat_2=45.5", "EPSG:3857", "EPSG:4326"])
             .prop_map(|t| ("map.projection", json!({"type": t}))),
         (-180.0..180.0f64).prop_map(|b| ("map.setBearing", json!({"bearing": b}))),
-        prop::sample::select(vec!["degrees", "measured", "utm"]).prop_map(|t| ("map.graticule", json!({"on": true, "type": t}))),
+        (
+            prop::sample::select(vec!["degrees", "measured", "utm", "mgrs"]),
+            any::<bool>(),
+            prop::sample::select(vec![Value::Null, json!("#FF0000"), json!("#00FF0080")]),
+        )
+            .prop_map(|(t, top, c)| ("map.graticule", json!({"on": true, "type": t, "onTop": top, "color": c}))),
         (-180.0..180.0f64, -85.0..85.0f64, number())
             .prop_map(|(x, y, s)| ("map.camera", json!({"lon": x, "lat": y, "scale": s * 1e5 + 1.0}))),
         name().prop_map(|n| ("map.new", json!({"name": n}))),

@@ -1881,8 +1881,8 @@ fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
     });
 }
 
-/// View › Display › Graticule's menu: the graticule's type (choosing one shows it), and the
-/// measured grid's coordinate system.
+/// View › Display › Graticule's menu: the graticule's type (choosing one shows it), whether its
+/// lines go over the layers, their color, and the measured grid's coordinate system.
 fn graticule_menu(ui: &mut Ui, app: &mut RustGisApp) {
     use rustgis_engine::map::graticule::GraticuleType;
     let (on, kind) = (app.session.map().graticule, app.session.map().graticule_type);
@@ -1894,6 +1894,41 @@ fn graticule_menu(ui: &mut Ui, app: &mut RustGisApp) {
             ui.close();
         }
     }
+    ui.separator();
+    // Under the layers, filled ones hide the lines; over them, only the labels are on top.
+    let mut on_top = app.session.map().graticule_on_top;
+    if ui
+        .checkbox(&mut on_top, tl!("Draw on top of layers"))
+        .on_hover_text(tl!("Draw the grid lines over the map's layers, under the labels; off: under the layers"))
+        .changed()
+        && let Err(e) = app.run("map.graticule", json!({"onTop": on_top}))
+    {
+        app.session.notify(e, true);
+    }
+    let set = app.session.map().graticule_color.is_some();
+    let current = app.session.map().graticule_rgba();
+    ui.horizontal(|ui| {
+        let name = ui.label(tl!("Grid color"));
+        // Named by its label, for a screen reader. The saved color's RGB is kept at no opacity
+        // (`rgba_button`), so raising only the opacity keeps the color.
+        let (resp, picked) = crate::widgets::rgba_button(ui, current);
+        let resp = resp.on_hover_text(tl!("The grid's color and opacity")).labelled_by(name.id);
+        if let Some(picked) = picked {
+            crate::widgets::one_step_per_press(app, &resp);
+            if let Err(e) = app.run("map.graticule", json!({"color": picked.hex8()})) {
+                app.session.notify(e, true);
+            }
+        }
+        if ui
+            .add_enabled(set, egui::Button::new(tl!("Default")))
+            .on_hover_text(tl!("The basemap's grid color"))
+            .on_disabled_hover_text(tl!("The grid already has the basemap's color"))
+            .clicked()
+            && let Err(e) = app.run("map.graticule", json!({"color": null}))
+        {
+            app.session.notify(e, true);
+        }
+    });
     ui.separator();
     let name = ui.label(tl!("Measured grid's coordinate system"));
     ui.vertical(|ui| {
@@ -1960,12 +1995,12 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
             app,
             "graticule",
             "Graticule",
-            "Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.",
+            "Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.",
             "map.graticule",
             Value::Null,
             g,
             "Graticule options",
-            "What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.",
+            "What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.",
             true,
             graticule_menu,
         );
@@ -5712,6 +5747,11 @@ mod tests {
         h.get_by_label("UTM Zones").click();
         h.run();
         assert!(h.state().session.map().graticule && h.state().session.map().graticule_type == GraticuleType::Utm);
+        h.get_by_label("Graticule options").click();
+        h.run();
+        h.get_by_label("MGRS").click();
+        h.run();
+        assert!(h.state().session.map().graticule && h.state().session.map().graticule_type == GraticuleType::Mgrs);
         // A system typed as an EPSG code: clicking into the field keeps the menu open.
         h.get_by_label("Graticule options").click();
         h.run();
@@ -5750,6 +5790,69 @@ mod tests {
         h.run();
         assert_eq!(h.state().session.map().graticule_crs.as_deref(), Some("EPSG:32633"));
         assert_eq!(h.state().ui.recent_crs.first().map(String::as_str), Some("EPSG:32633"));
+    }
+
+    /// View › Display › Graticule's menu: "Draw on top of layers" puts the lines over the layers
+    /// and back, without showing or hiding the grid; "Default" is offered only once a color is set,
+    /// and takes the grid back to the basemap's.
+    #[test]
+    fn the_graticule_menu_draws_it_on_top_and_resets_its_color() {
+        use egui_kittest::kittest::NodeT;
+        let mut h = tab_harness(RustGisApp::with_sample(), view_tab);
+        let on = h.state().session.map().graticule;
+        assert!(!h.state().session.map().graticule_on_top);
+        h.get_by_label("Graticule options").click();
+        h.run();
+        assert!(h.get_by_label("Default").accesskit_node().is_disabled(), "no color set yet");
+        // The color button, named by its label.
+        h.get_by_role_and_label(egui::accesskit::Role::ColorWell, "Grid color");
+        h.get_by_label("Draw on top of layers").click();
+        h.run();
+        assert!(h.state().session.map().graticule_on_top);
+        assert_eq!(h.state().session.map().graticule, on);
+        // Still open: unticked again.
+        h.get_by_label("Draw on top of layers").click();
+        h.run();
+        assert!(!h.state().session.map().graticule_on_top);
+        h.state_mut().session.run("map.graticule", &json!({"color": "#FF000080"})).unwrap();
+        h.run();
+        h.get_by_label("Default").click();
+        h.run();
+        assert_eq!(h.state().session.map().graticule_color, None);
+    }
+
+    /// The graticule menu's color picker keeps a saved color's RGB at no opacity: raising only the
+    /// opacity of `#33669900` saves `#33669980`, not black at that opacity. Drives the same
+    /// `rgba_button` the menu calls, fed the color the menu feeds it (`graticule_rgba`), typing the
+    /// opacity into the picker's A number, then saves what it picked through `map.graticule` as the
+    /// menu does. (The picker is driven on its own: kittest closes the menu on the click that opens
+    /// the picker's popup.)
+    #[test]
+    fn the_graticule_color_keeps_its_rgb_when_only_the_opacity_is_raised() {
+        let mut app = RustGisApp::with_sample();
+        app.session.run("map.graticule", &json!({"color": "#33669900"})).unwrap();
+        let current = app.session.map().graticule_rgba();
+        assert_eq!(current.hex8(), "#33669900");
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            |ui, picked: &mut Option<rustgis_engine::map::Rgba>| {
+                if let (_, Some(c)) = crate::widgets::rgba_button(ui, current) {
+                    *picked = Some(c);
+                }
+            },
+            None,
+        );
+        h.get_by_role(egui::accesskit::Role::ColorWell).click();
+        h.run();
+        // A transparent picker edits linear values; the picker's numbers are R, G, B, A.
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(3).unwrap().focus();
+        h.run();
+        h.event(egui::Event::Text("0.5".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let picked = h.state().expect("the picker gave a color");
+        app.session.run("map.graticule", &json!({"color": picked.hex8()})).unwrap();
+        assert_eq!(app.session.map().graticule_rgba().hex8(), "#33669980");
     }
 
     /// The language list names every language in English while the interface is English, with the

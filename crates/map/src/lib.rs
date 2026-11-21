@@ -1837,13 +1837,20 @@ pub struct Map {
     pub bookmarks: Vec<Bookmark>,
     #[serde(default = "yes")]
     pub graticule: bool,
-    /// What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.
+    /// What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or MGRS.
     #[serde(default, skip_serializing_if = "graticule::GraticuleType::is_degrees")]
     pub graticule_type: graticule::GraticuleType,
     /// A measured graticule's coordinate system (`EPSG:2056`, WKT or a PROJ string): none is the
     /// map's own when it is projected, else the UTM zone (WGS 84) at the view's centre.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graticule_crs: Option<String>,
+    /// The graticule's lines drawn over the map's layers and web tile layers (just under the
+    /// labels), rather than with the basemap under them, where filled layers hide them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub graticule_on_top: bool,
+    /// The graticule's color (with its opacity): none is the basemap palette's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graticule_color: Option<Rgba>,
     /// Flat map or 3D globe.
     #[serde(default)]
     pub projection: Projection,
@@ -1985,6 +1992,8 @@ impl Map {
             graticule: true,
             graticule_type: graticule::GraticuleType::Degrees,
             graticule_crs: None,
+            graticule_on_top: false,
+            graticule_color: None,
             projection: Projection::WebMercator,
             popup_mode: PopupMode::Topmost,
             label_display: LabelDisplay::default(),
@@ -3193,6 +3202,11 @@ impl Map {
         (grey, grey, Rgba::new(0, 0, 0, 0), grat)
     }
 
+    /// The graticule's color: the one set for it, else the basemap palette's.
+    pub fn graticule_rgba(&self) -> Rgba {
+        self.graticule_color.unwrap_or(self.palette().3)
+    }
+
     /// The blank basemap's paper colour, when the map is on the blank basemap and has one: always
     /// opaque, a file's translucent one included (the paper is the backdrop: nothing shows through).
     pub fn blank_paper(&self) -> Option<Rgba> {
@@ -3433,6 +3447,8 @@ impl Map {
             graticule: _,
             graticule_type: _,
             graticule_crs: _,
+            graticule_on_top: _,
+            graticule_color: _,
             projection: _,
             popup_mode: _,
             label_display: _,
