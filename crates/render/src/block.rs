@@ -481,6 +481,10 @@ fn grown(pattern: FillPattern, k: f32) -> FillPattern {
     }
 }
 
+/// How close (metres along a side) two places where polygons cross a block's side are taken as
+/// one: far below anything drawn, far above the rounding of a coordinate's conversion.
+const SEAM: f64 = 1e-6;
+
 /// Each side of block `b`'s outline cut where `layer`'s polygons cross it, with the row of the
 /// topmost polygon over each piece, found at its middle: the contacts go straight down. For the
 /// water (`water`), the first polygon in row order instead, as the ground's level takes it, given
@@ -530,21 +534,27 @@ fn units(layer: &rustgis_map::Layer, b: &Block, water: bool, env: &rustgis_data:
         reach.expand(p);
         reach.expand(z);
         let near = |e: &Extent| e.max_x >= reach.min_x && e.min_x <= reach.max_x && e.max_y >= reach.min_y && e.min_y <= reach.max_y;
-        let mut cuts = vec![lo, hi];
+        // Where the polygons cross the side, away from its ends.
+        let mut cuts = Vec::new();
         for r in parts.iter().filter(|(_, _, e)| near(e)).flat_map(|(_, rings, _)| rings) {
             for (j, a) in r.iter().enumerate() {
                 let Some(&q) = r.get((j + 1) % r.len()) else { continue };
                 let (da, dq) = (b.beyond(side, *a), b.beyond(side, q));
                 if (da > 0.0) != (dq > 0.0) {
                     let t = b.along(side, *a) + da / (da - dq) * (b.along(side, q) - b.along(side, *a));
-                    if t > lo && t < hi {
+                    if t > lo + SEAM && t < hi - SEAM {
                         cuts.push(t);
                     }
                 }
             }
         }
         cuts.sort_by(f64::total_cmp);
-        cuts.dedup();
+        // Neighbours sharing an edge cross the side at one place, give or take the rounding of
+        // their coordinates (a layer held in another system), so cuts closer than `SEAM` are
+        // one: no sliver of bare wall between them.
+        cuts.dedup_by(|a, b| *a - *b < SEAM);
+        cuts.insert(0, lo);
+        cuts.push(hi);
         let mut out: Vec<(f64, f64, Option<usize>)> = Vec::new();
         for w in cuts.windows(2) {
             let mid = b.point(side, (w[0] + w[1]) / 2.0);
@@ -1471,6 +1481,27 @@ mod tests {
         l.touch_geometry();
         assert_eq!(cuts(&m), plain);
         assert!(plain.iter().flatten().any(|c| c.2.is_some()), "the layer cuts the sides");
+    }
+
+    /// Neighbours whose shared edge crosses a side a few rounding steps apart (as converting
+    /// their coordinates leaves them) meet there, with no sliver of bare wall between.
+    #[test]
+    fn neighbours_a_rounding_apart_meet_on_the_side() {
+        let (mut m, b) = walls_by_units();
+        let l = m.layers.iter_mut().find(|l| l.name == "geo").unwrap();
+        let deg = |x: f64, y: f64| rustgis_geom::merc_to_lonlat(Coord::new(x, y));
+        // A's east edge a nanometre west of x 0, B's (without its hole) a nanometre east of it.
+        let gap = 1e-9;
+        let a = vec![deg(-5000.0, -5000.0), deg(-gap, -5000.0), deg(-gap, 5000.0), deg(-5000.0, 5000.0), deg(-5000.0, -5000.0)];
+        let bb = vec![deg(gap, 0.0), deg(5000.0, 0.0), deg(5000.0, 5000.0), deg(gap, 5000.0), deg(gap, 0.0)];
+        l.dataset.features[0].geometry = Some(Geometry::Polygon(vec![vec![a]]));
+        l.dataset.features[1].geometry = Some(Geometry::Polygon(vec![vec![bb]]));
+        l.touch_geometry();
+        let u = units(m.layer_by_name("geo").unwrap(), &b, false, &Default::default()).units;
+        let north: Vec<_> = u[2].iter().map(|&(lo, hi, row)| (lo.round(), hi.round(), row)).collect();
+        assert_eq!(north.first(), Some(&(-1000.0, 0.0, Some(0))));
+        assert_eq!(north.get(1), Some(&(0.0, 500.0, Some(1))));
+        assert!(u.iter().flatten().all(|&(lo, hi, _)| hi - lo > SEAM), "no sliver: {u:?}");
     }
 
     #[test]
