@@ -308,11 +308,12 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
-/// The layer kind a field kind picks, if it picks a layer.
+/// The layer kind a field kind picks, if it picks a layer. A `table` takes the layers a
+/// `vectorLayer` does, and the standalone tables ([`field`]).
 fn layer_kind(kind: &str) -> Option<ParamKind> {
     Some(match kind {
         "layer" => ParamKind::Layer,
-        "vectorLayer" => ParamKind::VectorLayer,
+        "vectorLayer" | "table" => ParamKind::VectorLayer,
         "polygonLayer" => ParamKind::PolygonLayer,
         "pointLayer" => ParamKind::PointLayer,
         "rasterLayer" => ParamKind::RasterLayer,
@@ -381,7 +382,7 @@ fn field(
 ) -> egui::Response {
     let id = ("plugin_form_field", f.name.as_str());
     if let Some(kind) = layer_kind(&f.kind) {
-        let options: Vec<(String, String)> = app
+        let mut options: Vec<(String, String)> = app
             .session
             .map()
             .layers
@@ -389,6 +390,17 @@ fn field(
             .filter(|l| crate::panes::takes_layer(kind, l))
             .map(|l| (l.name.clone(), l.name.clone()))
             .collect();
+        // A `table` offers the standalone tables too, after the layers (#2334). It is sent by
+        // name, which finds a layer before a table: a table named like a layer, or like a table
+        // above it, would be found as that one, so it isn't offered.
+        if f.kind == "table" {
+            let tables = &app.session.project.tables;
+            for (i, t) in tables.iter().enumerate() {
+                if app.session.map().layer_by_name(&t.name).is_none() && rustgis_engine::project::find_table(tables, &t.name) == Some(i) {
+                    options.push((t.name.clone(), t.name.clone()));
+                }
+            }
+        }
         // A required layer starts at the active one, when it is of the kind.
         let active = app.session.active_layer.and_then(|a| app.session.map().layers.iter().find(|l| l.id == a)).map(|l| l.name.as_str());
         return combo(ui, id, values, &f.name, &options, f.required, active);
@@ -654,6 +666,56 @@ mod tests {
         assert!(!values.contains_key("other"), "left empty: {values:?}");
         assert!(!values.contains_key("note") && !values.contains_key("gone"), "{values:?}");
         plugins::unload("ui-dialog-stale");
+    }
+
+    /// #2334: a `table` field offers standalone tables (a CSV without coordinates comes in as
+    /// one, not as a layer), and a `field` below it lists the table's columns: an event table and
+    /// its route field, as the issue's form declares them, run with the table and that column. A
+    /// `vectorLayer` still offers layers only.
+    #[test]
+    fn a_table_field_offers_tables_and_lists_their_columns() {
+        let mut m: Value = serde_json::from_str(&plugins::testing::manifest("ui-dialog-table", &["edit"])).unwrap();
+        m["commands"].as_array_mut().unwrap().push(json!({"id": "qt", "label": "Echo Table", "form": [
+            {"kind": "table", "name": "events", "label": "Event table (layer, CSV, Excel)", "required": true},
+            {"kind": "field", "name": "ev_route", "label": "Events: route ID field", "required": true},
+            {"kind": "vectorLayer", "name": "routes", "label": "Routes", "required": true}
+        ]}));
+        let manifest = m.to_string();
+        let zip = plugins::testing::zip_of(&[("plugin.json", manifest.as_bytes()), ("plugin.wasm", &plugins::testing::wasm())]);
+        plugins::load(plugins::Package::from_zip(&zip).unwrap(), "test").unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 860.0)).with_max_steps(64).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            RustGisApp::with_sample(),
+        );
+        h.run();
+        // Rows without coordinates: a standalone table, not a layer. Its route field isn't its
+        // first column, which a value not offered would go back to.
+        h.state_mut().run("layer.addDataText", json!({"fileName": "events.csv", "text": "km,route_id\n1.5,A12\n2.25,B7\n"})).unwrap();
+        let table = h.state().session.project.tables.last().map(|t| t.name.clone()).expect("the events table");
+        assert!(h.state().session.map().layer_by_name(&table).is_none(), "not a layer");
+        h.state_mut().run_by_user("plugin:ui-dialog-table/qt", Value::Null).unwrap();
+        h.run();
+        let d = h.state_mut().ui.plugin_dialog.open.as_mut().unwrap();
+        d.values.insert("events".into(), json!(table));
+        d.values.insert("ev_route".into(), json!("route_id"));
+        d.values.insert("routes".into(), json!(table));
+        h.run();
+        // The table and route_id stay, as offered (a value that isn't goes back to the first one
+        // that is); the `vectorLayer` goes back to a layer.
+        let values = &dialog(&h).values;
+        assert_eq!((&values["events"], &values["ev_route"]), (&json!(table), &json!("route_id")), "{values:?}");
+        let routes = values["routes"].as_str().unwrap_or_default().to_string();
+        assert!(h.state().session.map().layer_by_name(&routes).is_some_and(|l| !l.is_raster()), "{values:?}");
+        h.get_by_label("Run").click();
+        h.run();
+        let Some(Ok(answer)) = &dialog(&h).result else { panic!("{:?}", dialog(&h).result) };
+        let echoed: Value = serde_json::from_str(answer).unwrap();
+        assert_eq!(echoed["params"], json!({"events": table, "ev_route": "route_id", "routes": routes}));
+        plugins::unload("ui-dialog-table");
     }
 
     /// Run sends only the values the form has now, of its fields' kinds: a plugin replaced

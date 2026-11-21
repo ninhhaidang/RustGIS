@@ -203,11 +203,16 @@ cargo build --release --target wasm32-unknown-unknown
 - `commands[].form` (optional) gives the command a dialog of its own: its ribbon button (tab
   entry, panel button, Command Search entry, shortcut) opens a window with these fields instead of
   running it, and **Run** runs the command with their values as its parameters, by their `name`s.
-  Fields are declared like tool parameters (below), with `rasterLayer` added and `file` left out
-  (a command that reads a file asks for it with host calls, behind the `files` permission); a
-  `field` or `numericField` lists the fields of the nearest layer field above it, which must be a
-  vector one (`vectorLayer`, `polygonLayer` or `pointLayer`), and required when the field is. A
-  required layer starts at the active layer when it is of the kind, an optional one offers `—` to
+  Fields are declared like tool parameters (below), with `rasterLayer` and `table` added and
+  `file` left out (a command that reads a file asks for it with host calls, behind the `files`
+  permission). A `table` offers the standalone tables (a CSV or a spreadsheet without
+  coordinates comes in as one, not as a layer) after the layers a `vectorLayer` offers, and sends
+  the name picked; a table named like a layer, which the name would find instead, isn't offered.
+  `host.features` reads layers only. RustGIS versions before `table` refuse a plugin with one, so
+  set `minRustgisVersion` to the first version with it. A `field` or `numericField` lists the
+  fields of the nearest layer or table field above it, which must be a `vectorLayer`,
+  `polygonLayer`, `pointLayer` or `table`, and required when the field is. A required layer
+  starts at the active layer when it is of the kind, an optional one offers `—` to
   leave it out (a `choice` with a `default` counts as required and offers no `—`), and **Run**
   waits until the required fields are filled in. An optional number left empty, or an optional
   checkbox without a `default` never ticked, is left out of the parameters; a required checkbox is

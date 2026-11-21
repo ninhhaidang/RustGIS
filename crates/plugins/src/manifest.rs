@@ -316,11 +316,24 @@ pub enum Entry<'a> {
 pub const PARAM_KINDS: &[&str] =
     &["layer", "vectorLayer", "polygonLayer", "pointLayer", "field", "numericField", "number", "text", "choice", "bool", "file"];
 
-/// The field kinds a command's dialog may use: a tool's, and raster layers (a command reads
-/// layers itself, by name, so a dialog can offer rasters too), but no `file` (a command that
-/// wants a file has host calls for it, behind the `files` permission).
-pub const FORM_KINDS: &[&str] =
-    &["layer", "vectorLayer", "polygonLayer", "pointLayer", "rasterLayer", "field", "numericField", "number", "text", "choice", "bool"];
+/// The field kinds a command's dialog may use: a tool's, raster layers (a command reads layers
+/// itself, by name, so a dialog can offer rasters too) and tables (`table`: a standalone table, or
+/// a layer that isn't a raster, by its name; #2334), but no `file` (a command that wants a file
+/// has host calls for it, behind the `files` permission).
+pub const FORM_KINDS: &[&str] = &[
+    "layer",
+    "vectorLayer",
+    "polygonLayer",
+    "pointLayer",
+    "rasterLayer",
+    "table",
+    "field",
+    "numericField",
+    "number",
+    "text",
+    "choice",
+    "bool",
+];
 
 /// The most extensions a `file` parameter may list.
 const MAX_EXTENSIONS: usize = 16;
@@ -581,8 +594,8 @@ pub fn form_number_value(v: &serde_json::Value) -> Option<serde_json::Value> {
 /// Checks what a dialog's fields need beyond a tool parameter's, so that nothing is lost unseen:
 /// a default the field can show and send (a number, or a number written as text, for `number`;
 /// `true` or `false` for `bool`; one of its choices for `choice`; text for the other kinds), and
-/// a vector layer field (`vectorLayer`, `polygonLayer` or `pointLayer`) above each `field` or
-/// `numericField`, whose fields it lists, and required when the field is.
+/// a vector layer or table field (`vectorLayer`, `polygonLayer`, `pointLayer` or `table`) above
+/// each `field` or `numericField`, whose fields it lists, and required when the field is.
 fn check_form(owner: &str, form: &[ParamDecl]) -> Result<(), String> {
     // The nearest layer field above: its kind, and whether it is required.
     let mut layer: Option<(&str, bool)> = None;
@@ -599,11 +612,14 @@ fn check_form(owner: &str, form: &[ParamDecl]) -> Result<(), String> {
             }
         }
         match p.kind.as_str() {
-            "layer" | "vectorLayer" | "polygonLayer" | "pointLayer" | "rasterLayer" => layer = Some((p.kind.as_str(), p.required)),
+            "layer" | "vectorLayer" | "polygonLayer" | "pointLayer" | "rasterLayer" | "table" => {
+                layer = Some((p.kind.as_str(), p.required))
+            }
             // `layer` may pick a raster too, which has no fields.
-            "field" | "numericField" if !matches!(layer, Some(("vectorLayer" | "polygonLayer" | "pointLayer", _))) => {
+            "field" | "numericField" if !matches!(layer, Some(("vectorLayer" | "polygonLayer" | "pointLayer" | "table", _))) => {
                 return Err(format!(
-                    "plugin.json: {owner}: '{}' lists the fields of a layer, so it needs a vector layer field above it",
+                    "plugin.json: {owner}: '{}' lists the fields of a layer or table, so it needs a vectorLayer, \
+                     polygonLayer, pointLayer or table field above it",
                     p.name
                 ));
             }

@@ -226,8 +226,8 @@ fn plugin_tool_and_parameter_limits_stay_bounded() {
     assert!(e.contains("more than 64 parameters"), "{e}");
 }
 
-/// A command's dialog fields are checked like a tool's parameters, take raster layers, and
-/// refuse files; a command without one still parses.
+/// A command's dialog fields are checked like a tool's parameters, take raster layers and
+/// tables, and refuse files; a command without one still parses.
 #[test]
 fn command_dialog_fields_are_checked() {
     let mut m = json!({"id": "dialogs", "name": "Dialogs", "version": "1.0.0", "permissions": ["files"],
@@ -293,7 +293,22 @@ fn command_dialog_fields_are_checked() {
         c["commands"][0]["form"] = form;
         let e = Manifest::parse(&c.to_string()).unwrap_err();
         assert!(e.contains("'col' lists the fields of a layer"), "{e}");
+        // It names the kinds that fit, `table` among them (#2334).
+        assert!(e.contains("needs a vectorLayer, polygonLayer, pointLayer or table field above it"), "{e}");
     }
+    // A `table` picks a standalone table or a layer that isn't a raster, so a field below it
+    // lists a table's columns (#2334): the issue's event table and its route field.
+    let mut c = m.clone();
+    c["commands"][0]["form"] = json!([
+        {"kind": "table", "name": "events", "label": "Event table (layer, CSV, Excel)", "required": true},
+        {"kind": "field", "name": "ev_route", "label": "Events: route ID field"}
+    ]);
+    assert!(Manifest::parse(&c.to_string()).is_ok());
+    // A tool's parameters are features handed over, which a table has none of.
+    let mut t = tool.clone();
+    t["tools"][0]["params"][0]["kind"] = json!("table");
+    let e = Manifest::parse(&t.to_string()).unwrap_err();
+    assert!(e.contains("unknown parameter kind 'table'"), "{e}");
     // A required field lists those of a layer that must be picked too.
     let mut c = m.clone();
     c["commands"][0]["form"] = json!([
