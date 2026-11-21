@@ -350,9 +350,9 @@ fn audit_two_packages_same_feature_last_back_wins_and_is_said() {
     assert!(said.iter().any(|t| t.contains("Cities #")), "the overwritten edit should be named: {said:?}");
 }
 
-/// The office adds a column to the layer while the crew is out. The crew's edits come back.
+/// The office adds a column to the layer while the crew is out. The crew's edits come back, and
+/// the office's values in its new column stay.
 #[test]
-#[ignore = "repro of a known field-sync bug (mobile offline audit); run with --ignored"]
 fn audit_office_adds_a_field_while_crew_is_out() {
     let temp = Temp::new("schema");
     let mut home = home(&temp);
@@ -360,15 +360,19 @@ fn audit_office_adds_a_field_while_crew_is_out() {
     let mut a = phone(&temp, &out, "a");
     let cities = layer(&a, "Cities");
     let name = text_field(&a, cities);
+    let id = a.map().layer(cities).unwrap().dataset.features[0].id;
+    a.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": name, "value": "Crew edit"})).unwrap();
     add_point(&mut a, cities, &name, "Captured", [10.0, 5.0]);
     let hc = layer(&home, "Cities");
     home.run("edit.addField", &json!({"layer": hc, "name": "inspected", "type": "text"})).unwrap();
-    let (_, back) = package(&mut a, &Value::Null).unwrap();
-    let path = temp.0.join("back.rgisfield");
-    std::fs::write(&path, &back).unwrap();
-    let r = home.run("offline.bringBack", &json!({"path": path.display().to_string()}));
-    eprintln!("bring back after office schema change: {r:?}");
-    assert!(r.is_ok(), "the whole day's edits were refused: {r:?}");
+    let row = home.map().layer(hc).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+    home.run("edit.setValue", &json!({"layer": hc, "row": row, "field": "inspected", "value": "yes"})).unwrap();
+    let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
+    assert_eq!((done["updated"].as_u64(), done["added"].as_u64(), done["conflicts"].as_u64()), (Some(1), Some(1), Some(0)), "{done}");
+    assert_eq!(value_of(&home, hc, id, &name).as_deref(), Some("Crew edit"));
+    assert_eq!(value_of(&home, hc, id, "inspected").as_deref(), Some("yes"));
+    assert_eq!(with_label(&home, hc, &name, "Captured"), 1);
+    assert!(!said.iter().any(|t| t.contains("replaced the map's changes")), "{said:?}");
 }
 
 /// The crew deletes a point on the phone that the office edited meanwhile, and the office
@@ -401,6 +405,53 @@ fn audit_delete_vs_edit_both_ways() {
     // Both losses are said, by feature.
     assert!(said.iter().any(|t| t.contains("replaced the map's changes") && t.contains(&format!("Cities #{f0}"))), "{said:?}");
     assert!(said.iter().any(|t| t.contains("edits were dropped") && t.contains(&format!("Cities #{f1}"))), "{said:?}");
+}
+
+/// The crew deletes a feature the office has since given a value in a field it added: the
+/// office's value is lost with the feature, so it is reported as a conflict.
+#[test]
+fn deleted_in_the_field_after_the_office_filled_its_new_field() {
+    let temp = Temp::new("delete-new-field");
+    let mut home = home(&temp);
+    let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
+    let mut a = phone(&temp, &out, "a");
+    let cities = layer(&a, "Cities");
+    let id = a.map().layer(cities).unwrap().dataset.features[0].id;
+    a.run("select.rows", &json!({"layer": cities, "rows": [0]})).unwrap();
+    a.run("edit.delete", &Value::Null).unwrap();
+    let hc = layer(&home, "Cities");
+    home.run("edit.addField", &json!({"layer": hc, "name": "inspected", "type": "text"})).unwrap();
+    let row = home.map().layer(hc).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+    home.run("edit.setValue", &json!({"layer": hc, "row": row, "field": "inspected", "value": "flagged"})).unwrap();
+    let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
+    assert_eq!((done["deleted"].as_u64(), done["conflicts"].as_u64()), (Some(1), Some(1)), "{done}");
+    assert!(said.iter().any(|t| t.contains("replaced the map's changes") && t.contains(&format!("Cities #{id}"))), "{said:?}");
+}
+
+/// A layer added in the field, whose id a layer added at home has taken meanwhile: it isn't the
+/// area's, so none of its fields or features reach the home layer of that id, and it is said.
+#[test]
+fn a_layer_added_in_the_field_stays_out_of_home_layers() {
+    use base64::Engine;
+    let point = |label: &str| {
+        let text = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"crew_only":"{label}"}},"geometry":{{"type":"Point","coordinates":[10,5]}}}}]}}"#
+        );
+        base64::engine::general_purpose::STANDARD.encode(text)
+    };
+    let temp = Temp::new("field-layer");
+    let mut home = home(&temp);
+    let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
+    let mut a = phone(&temp, &out, "a");
+    a.run("layer.addDataBytes", &json!({"fileName": "crew.geojson", "data": point("crew"), "name": "Crew layer"})).unwrap();
+    home.run("layer.addDataBytes", &json!({"fileName": "office.geojson", "data": point("office"), "name": "Office layer"})).unwrap();
+    let (crew, office) = (layer(&a, "Crew layer"), layer(&home, "Office layer"));
+    assert_eq!(crew, office, "both sides give their new layer the next id");
+    let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
+    let ds = &home.map().layer(office).unwrap().dataset;
+    assert_eq!(ds.features.len(), 1, "ids {crew} / {office}: {done}");
+    assert_eq!(ds.fields.len(), 1, "ids {crew} / {office}");
+    assert!(said.iter().any(|t| t.contains("skipped 1 layer(s) that aren't in offline area") && t.contains("Crew layer")), "{said:?}");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
