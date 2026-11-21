@@ -4,6 +4,16 @@ use super::*;
 use crate::layout::TextAlign;
 use crate::symbology::{Glyph, LabelPlacement, LineCap, LineMark, Marker, Placements};
 
+/// [`super::read_project`] given no image file (the tests of raster image markers give theirs).
+fn read_project(text: &str, dir: &str, report: &mut Report) -> Result<Project, String> {
+    super::read_project(text, dir, &mut |_| Err("whose image file doesn't open"), report)
+}
+
+/// [`super::read_style`] given no image file and no folder.
+fn read_style(text: &str, layer: &str, report: &mut Report) -> Result<Style, String> {
+    super::read_style(text, layer, "", &mut |_| Err("whose image file doesn't open"), report)
+}
+
 const PROJECT: &str = r#"<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis projectname="Towns" version="3.42.0-Münster">
   <title>Towns</title>
@@ -1078,14 +1088,32 @@ fn every_corpus_file_reads() {
     };
     // Pin the corpus sizes so a regeneration cannot silently drop fixtures.
     let styles = files("generated/qml", &["qml"]);
-    assert_eq!(styles.len(), 97, "style corpus changed: {styles:?}");
+    assert_eq!(styles.len(), 110, "style corpus changed: {styles:?}");
+    // Raster image markers' files are found from the style's folder and the project's.
+    let mut read = |source: &str| {
+        use base64::Engine;
+        let b64 = match source.strip_prefix("base64:") {
+            Some(b64) => b64.to_string(),
+            None => base64::engine::general_purpose::STANDARD.encode(std::fs::read(source).map_err(|_| "whose image file doesn't open")?),
+        };
+        Ok((b64, 0.5))
+    };
     for path in &styles {
         let text = std::fs::read_to_string(path).unwrap();
+        let dir = path.parent().unwrap().to_string_lossy().to_string();
         let mut report = Report::default();
-        read_style(&text, "layer", &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        super::read_style(&text, "layer", &dir, &mut read, &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        if path.to_string_lossy().contains("symbol-raster-marker-") {
+            assert!(
+                !report.notes.iter().any(|n| n.text.starts_with("raster image markers whose")),
+                "{}: {:?}",
+                path.display(),
+                report.notes
+            );
+        }
     }
     let projects = files("generated/qgs", &["qgs", "qgz"]);
-    assert_eq!(projects.len(), 36, "project corpus changed: {projects:?}");
+    assert_eq!(projects.len(), 37, "project corpus changed: {projects:?}");
     for path in &projects {
         let bytes = std::fs::read(path).unwrap();
         let text = if path.extension().is_some_and(|e| e == "qgz") {
@@ -1098,7 +1126,8 @@ fn every_corpus_file_reads() {
         let text = text.replace("password='secret'", &format!("password='{PASSWORD}'"));
         let dir = path.parent().unwrap().to_string_lossy().to_string();
         let mut report = Report::default();
-        let project = read_project(&text, &dir, &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let project = super::read_project(&text, &dir, &mut read, &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert!(!report.notes.iter().any(|n| n.text.starts_with("raster image markers whose")), "{}: {:?}", path.display(), report.notes);
         assert!(!project.layers.is_empty(), "{}: no layers", path.display());
         // The PostGIS and SQL Server projects' made-up password reaches neither the layers nor the notes.
         assert!(!format!("{project:?} {report:?}").contains(PASSWORD), "{}: the password came through", path.display());
@@ -1329,6 +1358,158 @@ fn marker_symbols_of_several_layers_carry_over_as_marks_turned_by_their_field() 
     let mut report = Report::default();
     read_style(old, "Signs", &mut report).unwrap();
     assert!(report.notes.iter().any(|n| n.text.contains("data-defined")), "{:?}", report.notes);
+}
+
+/// A raster image marker layer showing `file`, 4 mm wide, with `extra` settings.
+fn raster_marker(file: &str, extra: &str) -> String {
+    format!(
+        r#"<layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="{file}"/><Option name="size" value="4"/>
+        <Option name="size_unit" value="MM"/>{extra}</Option></layer>"#
+    )
+}
+
+/// A style of one marker symbol of `layers`, at `alpha`.
+fn marker_qml(alpha: &str, layers: &str) -> String {
+    format!(
+        r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="{alpha}">{layers}</symbol></symbols></renderer-v2></qgis>"#
+    )
+}
+
+#[test]
+fn raster_image_markers_draw_their_image_read_once_from_the_style_folder() {
+    use crate::symbology::Picture;
+    let mm = 96.0 / 25.4;
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+    // A file relative to the style's folder; the reader gives the image and its height over width.
+    let mut asked = Vec::new();
+    let mut read = |source: &str| {
+        asked.push(source.to_string());
+        Ok((format!("image of {source}"), 0.5))
+    };
+    let mut report = Report::default();
+    let s = super::read_style(&marker_qml("1", &raster_marker("./pins/a.png", "")), "Pins", "/styles", &mut read, &mut report).unwrap();
+    assert_eq!(asked, ["/styles/pins/a.png"]);
+    let Some(Renderer::Single(sym)) = &s.renderer else { panic!("{:?}", s.renderer) };
+    assert_eq!(sym.marker, Marker::Picture(Picture::new("image of /styles/pins/a.png")));
+    assert!(near(sym.size, 4.0 * mm), "its width: {}", sym.size);
+    assert_eq!(s.line_strokes, Some(Vec::new()), "centred and upright, it is the symbol itself");
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+
+    // One file, however its path is written, is read once.
+    asked.clear();
+    let mut read = |source: &str| {
+        asked.push(source.to_string());
+        Ok((format!("image of {source}"), 0.5))
+    };
+    let twice = format!("{}{}", raster_marker("./pins/a.png", ""), raster_marker("pins/a.png", ""));
+    super::read_style(&marker_qml("1", &twice), "Pins", "/styles", &mut read, &mut Report::default()).unwrap();
+    assert_eq!(asked, ["/styles/pins/a.png"]);
+
+    // Two layers of one image read it once, and anchored at their top left they sit half their
+    // width right of the point and half their height (the image's, not their width) below it.
+    asked.clear();
+    let mut read = |source: &str| {
+        asked.push(source.to_string());
+        Ok((format!("image of {source}"), 0.5))
+    };
+    let anchored = r#"<Option name="horizontal_anchor_point" value="0"/><Option name="vertical_anchor_point" value="0"/>"#;
+    let qml = marker_qml("1", &format!("{}{}", raster_marker("base64:QUJD", ""), raster_marker("base64:QUJD", anchored)));
+    let mut report = Report::default();
+    let s = super::read_style(&qml, "Pins", "", &mut read, &mut report).unwrap();
+    assert_eq!(asked, ["base64:QUJD"], "read once, a folder or none");
+    let marks = s.line_strokes.unwrap();
+    let picture = LineMark::Marker(Marker::Picture(Picture::new("image of base64:QUJD")));
+    assert!(marks.iter().all(|m| m.markers.is_some_and(|k| k.mark == picture)), "{marks:?}");
+    let top = marks.iter().find(|m| m.offset != 0.0).unwrap();
+    assert!(near(top.offset, mm) && near(top.markers.unwrap().offset_along, 2.0 * mm), "{top:?}");
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+
+    // Along a line, the image is the mark.
+    let line = format!(
+        r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="line" name="0" alpha="1">
+        <layer class="MarkerLine" enabled="1"><Option type="Map"><Option name="placements" value="Interval"/><Option name="interval" value="5"/></Option>
+        <symbol type="marker" name="@0@0" alpha="1">{}</symbol></layer></symbol></symbols></renderer-v2></qgis>"#,
+        raster_marker("base64:QUJD", "")
+    );
+    let mut read = |source: &str| Ok((format!("image of {source}"), 0.5));
+    let mut report = Report::default();
+    let s = super::read_style(&line, "Road", "", &mut read, &mut report).unwrap();
+    assert_eq!(s.line_strokes.unwrap()[0].markers.map(|m| m.mark), Some(picture));
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    // Its marker symbol see-through: drawn opaque, noted.
+    let mut report = Report::default();
+    let faded = line.replace(r#"name="@0@0" alpha="1""#, r#"name="@0@0" alpha="0.5""#);
+    super::read_style(&faded, "Road", "", &mut read, &mut report).unwrap();
+    assert_eq!(report.notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["see-through raster image markers, drawn opaque"]);
+    // The line see-through as well: one symbol, one note.
+    let mut report = Report::default();
+    let both = faded.replace(r#"type="line" name="0" alpha="1""#, r#"type="line" name="0" alpha="0.5""#);
+    assert_ne!(both, faded);
+    super::read_style(&both, "Road", "", &mut read, &mut report).unwrap();
+    let notes: Vec<_> = report.notes.iter().map(|n| (n.text.as_str(), n.count)).collect();
+    assert_eq!(notes, [("see-through raster image markers, drawn opaque", 1)]);
+}
+
+#[test]
+fn raster_image_markers_that_cant_be_drawn_are_circles_saying_why() {
+    // Each kind of image the reader isn't asked for, or can't give, with what the note says.
+    let mut asked = Vec::new();
+    let mut read = |source: &str| {
+        asked.push(source.to_string());
+        if source.ends_with("gone.png") { Err("whose image file doesn't open") } else { Ok(("QUJD".to_string(), 1.0)) }
+    };
+    let cases = [
+        ("", "raster image markers with no image, drawn as circles"),
+        (
+            "https://example.invalid/pin.png",
+            "raster image markers whose image is at a web address, which RustGIS doesn't fetch, drawn as circles",
+        ),
+        ("pins/a.png", "raster image markers whose image file is relative to a folder the import wasn't given, drawn as circles"),
+        (
+            "C:pins\\a.png",
+            "raster image markers whose image file is relative to a drive's working folder, which no project folder tells, drawn as circles",
+        ),
+        (
+            "attachment:///abc_a.png",
+            "raster image markers whose image is kept inside the .qgz project, which RustGIS doesn't read it from, drawn as circles",
+        ),
+        ("\\\\host\\share\\a.png", "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"),
+        ("//host/share/a.png", "raster image markers whose image is on a network share, which RustGIS doesn't open, drawn as circles"),
+        ("/data/gone.png", "raster image markers whose image file doesn't open, drawn as circles"),
+    ];
+    for (file, note) in cases {
+        let mut report = Report::default();
+        let s = super::read_style(&marker_qml("1", &raster_marker(file, "")), "Pins", "", &mut read, &mut report).unwrap();
+        let Some(Renderer::Single(sym)) = &s.renderer else { panic!() };
+        assert_eq!(sym.marker, Marker::Circle, "{file}");
+        assert_eq!(report.notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), [note], "{file}");
+    }
+    assert_eq!(asked, ["/data/gone.png"], "neither a web address, a network share nor a relative path without a folder is looked for");
+
+    // Drawn, but not as QGIS draws it: a ratio of its own, see-through (the layer's or the symbol's).
+    let mut read = |_: &str| Ok(("QUJD".to_string(), 0.5));
+    let own = r#"<Option name="fixedAspectRatio" value="1"/><Option name="alpha" value="0.5"/>"#;
+    let mut report = Report::default();
+    super::read_style(&marker_qml("0.5", &raster_marker("base64:QUJD", own)), "Pins", "", &mut read, &mut report).unwrap();
+    let notes: Vec<_> = report.notes.iter().map(|n| (n.text.as_str(), n.count)).collect();
+    assert_eq!(
+        notes,
+        [
+            ("raster image markers of a fixed aspect ratio, drawn in their image's own", 1),
+            ("see-through raster image markers, drawn opaque", 1)
+        ]
+    );
+    // A ratio that is the image's own is no change; a switched-off layer's image isn't read.
+    let mut asked = 0;
+    let mut read = |_: &str| {
+        asked += 1;
+        Ok(("QUJD".to_string(), 0.5))
+    };
+    let off = raster_marker("/data/off.png", "").replace(r#"enabled="1""#, r#"enabled="0""#);
+    let qml = marker_qml("1", &format!("{off}{}", raster_marker("base64:QUJD", r#"<Option name="fixedAspectRatio" value="0.5"/>"#)));
+    let mut report = Report::default();
+    super::read_style(&qml, "Pins", "", &mut read, &mut report).unwrap();
+    assert_eq!((asked, report.notes.len()), (1, 0), "{:?}", report.notes);
 }
 
 /// Gradient and shapeburst fills carry over: their two colours (or their ramp's, with its stops,

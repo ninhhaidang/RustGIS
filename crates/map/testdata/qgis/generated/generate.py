@@ -583,6 +583,112 @@ def save_project(p, name):
         raise RuntimeError(p.error())
 
 
+# Raster image markers (#2266): a PNG and a JPEG, in a file and embedded; sizes in each unit,
+# rotation, an offset, anchor points, a fixed aspect ratio, opacity, and markers along a line.
+# Each style also has a layer in `raster-markers.qgs`, which names the image files relative to it.
+def marker_images():
+    from qgis.PyQt.QtGui import QImage
+    png = QImage(32, 16, QImage.Format.Format_ARGB32)
+    png.fill(QColor(0, 0, 0, 0))
+    paint = QPainter(png)
+    paint.fillRect(0, 0, 16, 16, QColor(200, 30, 30))
+    paint.fillRect(16, 0, 16, 8, QColor(30, 90, 200))
+    paint.end()
+    png.save(os.path.join(OUT, "data", "marker.png"))
+    jpg = QImage(24, 24, QImage.Format.Format_RGB32)
+    jpg.fill(QColor(30, 150, 60))
+    paint = QPainter(jpg)
+    paint.fillRect(0, 0, 12, 12, QColor(240, 200, 0))
+    paint.end()
+    jpg.save(os.path.join(OUT, "data", "marker.jpg"), "JPG", 90)
+
+
+attempt("marker images", marker_images)
+
+
+def raster_marker_layer(path, size=6, unit=Qgis.RenderUnit.Millimeters, angle=0, offset=None, anchor=None, ratio=0, opacity=1):
+    from qgis.core import QgsRasterMarkerSymbolLayer
+    from qgis.PyQt.QtCore import QPointF
+    sl = QgsRasterMarkerSymbolLayer(path)
+    sl.setSize(size)
+    sl.setSizeUnit(unit)
+    sl.setAngle(angle)
+    if offset:
+        sl.setOffset(QPointF(*offset))
+        sl.setOffsetUnit(Qgis.RenderUnit.Millimeters)
+    if anchor:
+        sl.setHorizontalAnchorPoint(getattr(Qgis.HorizontalAnchorPoint, anchor[0]))
+        sl.setVerticalAnchorPoint(getattr(Qgis.VerticalAnchorPoint, anchor[1]))
+    sl.setFixedAspectRatio(ratio)
+    sl.setOpacity(opacity)
+    return sl
+
+
+def raster_marker_styles():
+    import base64
+    png = os.path.join(OUT, "data", "marker.png")
+    jpg = os.path.join(OUT, "data", "marker.jpg")
+    with open(png, "rb") as fh:
+        embedded = "base64:" + base64.b64encode(fh.read()).decode("ascii")
+    return {
+        "png": lambda: raster_marker_layer(png),
+        "jpeg": lambda: raster_marker_layer(jpg),
+        "embedded": lambda: raster_marker_layer(embedded),
+        "size-points": lambda: raster_marker_layer(png, 18, Qgis.RenderUnit.Points),
+        "size-pixels": lambda: raster_marker_layer(png, 24, Qgis.RenderUnit.Pixels),
+        "size-map-units": lambda: raster_marker_layer(png, 60, Qgis.RenderUnit.MapUnits),
+        "rotated": lambda: raster_marker_layer(png, angle=30),
+        "offset": lambda: raster_marker_layer(png, offset=(3, -2)),
+        "anchor-top-left": lambda: raster_marker_layer(png, anchor=("Left", "Top")),
+        "anchor-bottom-right": lambda: raster_marker_layer(png, anchor=("Right", "Bottom")),
+        "fixed-aspect-ratio": lambda: raster_marker_layer(png, ratio=1.0),
+        "opacity": lambda: raster_marker_layer(png, opacity=0.5),
+    }
+
+
+def raster_marker_symbol(make):
+    from qgis.core import QgsMarkerSymbol
+    return QgsMarkerSymbol([make()])
+
+
+def raster_markers_along_a_line(make):
+    from qgis.core import QgsLineSymbol, QgsMarkerLineSymbolLayer
+    ml = QgsMarkerLineSymbolLayer(True, 8)
+    ml.setSubSymbol(raster_marker_symbol(make))
+    return QgsLineSymbol([ml])
+
+
+def scrub_qml(name):
+    # Image files relative to the style's folder, as in the projects (scrub.py).
+    path = os.path.join(OUT, "qml", f"{name}.qml")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text.replace(os.path.join(OUT, "data") + "/", "../data/"))
+
+
+def raster_markers():
+    styles = raster_marker_styles()
+    p = new_project()
+    for name, make in styles.items():
+        vl = layer("points")
+        vl.setRenderer(QgsSingleSymbolRenderer(raster_marker_symbol(make)))
+        save_qml(vl, f"symbol-raster-marker-{name}")
+        scrub_qml(f"symbol-raster-marker-{name}")
+        vl.setName(f"raster marker {name}")
+        p.addMapLayer(vl)
+    vl = layer("lines")
+    vl.setRenderer(QgsSingleSymbolRenderer(raster_markers_along_a_line(styles["png"])))
+    save_qml(vl, "symbol-raster-marker-along-a-line")
+    scrub_qml("symbol-raster-marker-along-a-line")
+    vl.setName("raster markers along a line")
+    p.addMapLayer(vl)
+    save_project(p, "raster-markers")
+
+
+attempt("raster markers", raster_markers)
+
+
 # Each provider: one layer (offline ones valid, services and databases written as configured).
 PROVIDERS = [
     ("ogr-gpkg", lambda: QgsVectorLayer(f"{GPKG}|layername=points", "ogr gpkg", "ogr")),

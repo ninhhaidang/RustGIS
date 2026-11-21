@@ -5,13 +5,13 @@
 
 use roxmltree::Node;
 
-use super::{Report, color, data_defined_on, has_effect, points, prop, props, signed_points};
+use super::{NoteKind, ReadImage, Report, color, data_defined_on, has_effect, points, prop, props, signed_points};
 use crate::Rgba;
 use crate::fills::{FillLayer, FillPattern, GradientPoint, GradientShape, Spread, Stop, Stops};
 use crate::symbol_by::SymbolBy;
 use crate::symbology::{
-    Dash, Glyph, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_DASH_STEPS, MAX_STROKES, Marker, MarkerRotation, Placements,
-    Symbol,
+    Dash, Glyph, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_DASH_STEPS, MAX_PICTURES, MAX_PICTURES_BYTES, MAX_STROKES,
+    Marker, MarkerRotation, Picture, Placements, Symbol,
 };
 
 /// A symbol layer's settings by name.
@@ -62,6 +62,9 @@ pub(super) fn turns_by_field(sym: Node) -> bool {
 /// they are in map units. `turned`: the layer's markers turn by a field, so a marker symbol that
 /// doesn't is drawn as a mark that keeps still.
 pub(super) fn read(sym: Node, reference: Option<f64>, turned: bool, layer: &str, report: &mut Report) -> Converted {
+    // Noted once for the symbol, whichever of its opacities (its own, an image layer's, a marker
+    // line's) is see-through.
+    let seen = report.noted(layer, NoteKind::Approximated, SEE_THROUGH_IMAGES);
     let alpha = sym.attribute("alpha").and_then(|a| a.trim().parse::<f32>().ok()).filter(|a| a.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0);
     let fade = |c: Rgba| c.with_alpha((f32::from(c.a()) * alpha).round() as u8);
     let unit = sym.attribute("outputUnit");
@@ -155,6 +158,19 @@ pub(super) fn read(sym: Node, reference: Option<f64>, turned: bool, layer: &str,
     // (An expression's colour is drawn as it is: the symbol's opacity doesn't fade it.)
     if alpha < 1.0 && (by.fill.is_some() || by.stroke.is_some()) {
         report.approximated(layer, "data-defined colours of a see-through symbol, drawn opaque");
+    }
+    // An image marker is drawn at the layer's opacity alone.
+    let picture = |m: Marker| matches!(m, Marker::Picture(_));
+    let faded = alpha < 1.0
+        && (picture(out.symbol.marker)
+            || out.strokes.iter().any(|s| s.markers.is_some_and(|m| matches!(m.mark, LineMark::Marker(k) if picture(k)))));
+    let now = report.noted(layer, NoteKind::Approximated, SEE_THROUGH_IMAGES);
+    if now > seen + 1 {
+        for _ in seen + 1..now {
+            report.forget(layer, NoteKind::Approximated, SEE_THROUGH_IMAGES);
+        }
+    } else if now == seen && faded {
+        report.approximated(layer, SEE_THROUGH_IMAGES);
     }
     out.by = by;
     out.symbol.fill = fade(out.symbol.fill);
@@ -650,6 +666,10 @@ fn along(l: Node, p: &[(String, String)], hash: bool, reference: Option<f64>, la
             marker_mark(class, &sp, base, reference, layer, report)
         };
         if let Some(mut st) = stroke {
+            // An image mark is drawn at the layer's opacity alone.
+            if alpha < 1.0 && st.markers.is_some_and(|m| matches!(m.mark, LineMark::Marker(Marker::Picture(_)))) {
+                report.approximated(layer, SEE_THROUGH_IMAGES);
+            }
             st.offset += across;
             st.level = pass;
             st.color = st.color.map(fade);
@@ -708,7 +728,8 @@ fn marker_mark(
             })
         }
         "FontMarker" => font_char(p, layer, report)?,
-        "SvgMarker" | "RasterMarker" | "EllipseMarker" | "FilledMarker" => {
+        "RasterMarker" => raster_image(p, layer, report).map_or(Marker::Circle, |(picture, _)| Marker::Picture(picture)),
+        "SvgMarker" | "EllipseMarker" | "FilledMarker" => {
             report.approximated(layer, format!("{} markers, drawn as circles in their colour", marker_name(class)));
             Marker::Circle
         }
@@ -719,6 +740,9 @@ fn marker_mark(
     };
     if class == "FontMarker" && anchored(p) {
         report.approximated(layer, "font markers anchored off their centre, drawn centred");
+    }
+    if matches!(shape, Marker::Picture(_)) && anchored(p) {
+        report.approximated(layer, "raster image markers along lines anchored off their centre, drawn centred");
     }
     let fill = prop(p, "color").and_then(color).unwrap_or(Rgba::new(0, 0, 0, 0));
     let outline = if prop(p, "outline_style") == Some("no") { None } else { prop(p, "outline_color").and_then(color) };
@@ -795,6 +819,8 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
         let fill = prop(p, "color").and_then(color);
         let outline = prop(p, "outline_color").and_then(color);
         let sz = size(p, "size", reference, layer, report).unwrap_or(2.0 * 96.0 / 25.4);
+        // Its height over its width: an image's own, else a shape's square.
+        let mut aspect = 1.0;
         let shape = match class {
             "SimpleMarker" => {
                 let name = prop(p, "name").unwrap_or("circle");
@@ -807,7 +833,14 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
                 Some(m) => m,
                 None => continue,
             },
-            "SvgMarker" | "RasterMarker" | "EllipseMarker" | "FilledMarker" => {
+            "RasterMarker" => match raster_image(p, layer, report) {
+                Some((picture, a)) => {
+                    aspect = a;
+                    Marker::Picture(picture)
+                }
+                None => Marker::Circle,
+            },
+            "SvgMarker" | "EllipseMarker" | "FilledMarker" => {
                 report.approximated(layer, format!("{} markers, drawn as circles in their colour", marker_name(class)));
                 Marker::Circle
             }
@@ -819,7 +852,7 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
         let fill = fill.unwrap_or(Rgba::new(0, 0, 0, 0));
         let width = size(p, "outline_width", reference, layer, report).unwrap_or(0.0);
         let angle = prop(p, "angle").and_then(|a| a.trim().parse::<f32>().ok()).filter(|a| a.is_finite()).unwrap_or(0.0);
-        let (x, y) = point_offset(p, sz, reference, layer, report);
+        let (x, y) = point_offset(p, (sz, sz * aspect), reference, layer, report);
         let drawn_outline = outline.filter(|_| prop(p, "outline_style") != Some("no") && width > 0.0);
         marks.push(LineStroke {
             color: Some(fill),
@@ -856,11 +889,116 @@ fn marker(layers: &[(Node, Props)], reference: Option<f64>, still: bool, layer: 
     Converted { symbol, strokes, rotation: None, by: SymbolBy::default(), fills: Vec::new() }
 }
 
+/// Reads the images of the raster image markers under `root` (a project or a style), each
+/// `imageFile` once (a file once for each spelling of its path from the folder: a leading `./` is
+/// dropped, so `./a.png` and `a.png` are one), into the report for [`raster_image`]: a `base64:`
+/// one as it is, a file's through `read` (relative to `dir`). One at a web address isn't fetched,
+/// nor one on a network share (`\\host\share`, `//host/share`), nor one kept inside a `.qgz`
+/// (`attachment:`); one relative to no folder (or to a drive's working folder) isn't looked
+/// for, and those past the pictures a run keeps ([`MAX_PICTURES`],
+/// [`MAX_PICTURES_BYTES`]) aren't read. An image is kept when read, before its symbol is: one
+/// in a part of the project the import then leaves out stays kept for the run, within those
+/// bounds.
+pub(super) fn read_images(root: Node, dir: &str, read: &mut ReadImage, report: &mut Report) {
+    let (mut bytes, mut reads) = (0, 0);
+    // A file's image by its path from the folder (`./a.png` and `a.png` are one).
+    let mut files = std::collections::HashMap::<String, Result<(Picture, f32), String>>::new();
+    let rasters = root.descendants().filter(|n| n.has_tag_name("layer") && n.attribute("class") == Some("RasterMarker"));
+    for l in rasters.filter(|l| l.attribute("enabled") != Some("0")) {
+        let p = props(l);
+        let Some(file) = prop(&p, "imageFile").map(str::trim).filter(|f| !f.is_empty()) else { continue };
+        if report.images.contains_key(file) {
+            continue;
+        }
+        let source = if file.starts_with("base64:") {
+            Ok(None)
+        } else if file.starts_with("attachment:") {
+            Err("whose image is kept inside the .qgz project, which RustGIS doesn't read it from")
+        } else if file.contains("://") {
+            Err("whose image is at a web address, which RustGIS doesn't fetch")
+        } else if file.len() > 1 && file.chars().take(2).all(|c| c == '\\' || c == '/') {
+            // Looking a share up can sign in to the host the file names, which a style or
+            // project chose (as an archive on one isn't opened either).
+            Err("whose image is on a network share, which RustGIS doesn't open")
+        } else if super::is_drive_relative(file) {
+            Err("whose image file is relative to a drive's working folder, which no project folder tells")
+        } else if super::is_relative(file) && dir.is_empty() {
+            Err("whose image file is relative to a folder the import wasn't given")
+        } else {
+            Ok(Some(super::source::absolute(file, dir)))
+        };
+        if let Ok(Some(path)) = &source
+            && let Some(got) = files.get(path)
+        {
+            report.images.insert(file.to_string(), got.clone());
+            continue;
+        }
+        if source.is_ok() && (reads >= MAX_PICTURES || bytes >= MAX_PICTURES_BYTES) {
+            continue;
+        }
+        let got = match &source {
+            Ok(Some(path)) => read(path),
+            Ok(None) => read(file),
+            Err(why) => Err(*why),
+        };
+        reads += usize::from(source.is_ok());
+        let kept = got.map_err(str::to_string).and_then(|(b64, aspect)| {
+            // Past what a run keeps, it isn't (`Picture::new` gives the default then).
+            let picture = Picture::new(&b64);
+            if picture.is_default() || !(aspect.is_finite() && aspect > 0.0) {
+                return Err("past the images RustGIS keeps".to_string());
+            }
+            bytes += b64.len();
+            Ok((picture, aspect))
+        });
+        if let Ok(Some(path)) = source {
+            files.insert(path, kept.clone());
+        }
+        report.images.insert(file.to_string(), kept);
+    }
+}
+
+/// The note for image markers drawn opaque where QGIS draws them see-through: once per symbol
+/// ([`read`]).
+const SEE_THROUGH_IMAGES: &str = "see-through raster image markers, drawn opaque";
+
+/// A raster image marker's image (read before the symbols: [`read_images`]) and its height over
+/// its width, or `None` (noted, with why) for it to be drawn as a circle. What QGIS draws
+/// otherwise than RustGIS is noted: a ratio of its own, see-through.
+fn raster_image(p: &[(String, String)], layer: &str, report: &mut Report) -> Option<(Picture, f32)> {
+    let file = prop(p, "imageFile").map(str::trim).unwrap_or_default();
+    let why = match report.images.get(file) {
+        _ if file.is_empty() => "with no image".to_string(),
+        Some(Ok(got)) => {
+            let got = *got;
+            // QGIS's `fixedAspectRatio`: 0 keeps the image's own.
+            let ratio = prop(p, "fixedAspectRatio").and_then(|r| r.trim().parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0);
+            if ratio.is_some_and(|r| (r - got.1).abs() > 1e-3 * got.1) {
+                report.approximated(layer, "raster image markers of a fixed aspect ratio, drawn in their image's own");
+            }
+            if prop(p, "alpha").and_then(|a| a.trim().parse::<f32>().ok()).is_some_and(|a| a < 1.0) {
+                report.approximated(layer, SEE_THROUGH_IMAGES);
+            }
+            return Some(got);
+        }
+        Some(Err(why)) => why.clone(),
+        None => "past the images an import reads".to_string(),
+    };
+    report.approximated(layer, format!("raster image markers {why}, drawn as circles"));
+    None
+}
+
 /// A point marker layer's offset (`offset`, "x,y" in its unit: right and down) in points, its
-/// anchor point added: anchored at its left or top edge, a marker of size `size` sits half its
-/// size right of or below the point, as QGIS draws it. A font marker's baseline anchor is drawn
-/// centred (noted).
-fn point_offset(p: &[(String, String)], size: f32, reference: Option<f64>, layer: &str, report: &mut Report) -> (f32, f32) {
+/// anchor point added: anchored at its left or top edge, a marker `width` wide and `height` tall
+/// sits half its width right of or half its height below the point, as QGIS draws it. A font
+/// marker's baseline anchor is drawn centred (noted).
+fn point_offset(
+    p: &[(String, String)],
+    (width, height): (f32, f32),
+    reference: Option<f64>,
+    layer: &str,
+    report: &mut Report,
+) -> (f32, f32) {
     let parse = |v: &str| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
     let (x, y) = prop(p, "offset").and_then(|o| o.split_once(',')).map_or((0.0, 0.0), |(x, y)| (parse(x), parse(y)));
     let unit = prop(p, "offset_unit").or(prop(p, SYMBOL_UNIT));
@@ -869,15 +1007,14 @@ fn point_offset(p: &[(String, String)], size: f32, reference: Option<f64>, layer
     } else {
         (signed_points(x, unit, reference, layer, report), signed_points(y, unit, reference, layer, report))
     };
-    let half = size / 2.0;
     match prop(p, "horizontal_anchor_point").map(str::trim) {
-        Some("0") => x += half,
-        Some("2") => x -= half,
+        Some("0") => x += width / 2.0,
+        Some("2") => x -= width / 2.0,
         _ => {}
     }
     match prop(p, "vertical_anchor_point").map(str::trim) {
-        Some("0") => y += half,
-        Some("2") => y -= half,
+        Some("0") => y += height / 2.0,
+        Some("2") => y -= height / 2.0,
         Some("3") => report.approximated(layer, "markers anchored at their baseline, drawn centred"),
         _ => {}
     }
@@ -1062,7 +1199,6 @@ fn pattern_name(class: &str) -> &'static str {
 fn marker_name(class: &str) -> &'static str {
     match class {
         "SvgMarker" => "SVG",
-        "RasterMarker" => "raster image",
         "EllipseMarker" => "ellipse",
         _ => "filled",
     }

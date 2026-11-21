@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::Rgba;
 use crate::effects::Blend;
-use crate::symbology::{Labeling, LineStroke, MarkerRotation, Renderer};
+use crate::symbology::{Labeling, LineStroke, MarkerRotation, Picture, Renderer};
 pub use annotation::{Annotation, MAX_ITEMS as MAX_ANNOTATIONS};
 pub use expr::{reads_measure, to_sql};
 pub use source::{MAX_MEMORY_FIELDS, Source, VirtualFrom, WebOptions, is_drive_relative, is_relative};
@@ -56,7 +56,19 @@ pub struct Report {
     /// thousands of different notes, and a repeat is found without going through them all.
     #[serde(skip)]
     index: HashMap<(String, NoteKind, String), usize>,
+    /// Raster image markers' images by their `imageFile`, read before the symbols showing them
+    /// (`symbol::read_images`): each kept picture with its height over its width, or why it isn't
+    /// drawn. Carried here because every symbol reader already takes the report; passing them
+    /// beside it would add a parameter to each reader and to each of their callers.
+    #[serde(skip)]
+    images: HashMap<String, Result<(Picture, f32), String>>,
 }
+
+/// Reads a raster image marker's image for the importer, which opens no file itself: given its
+/// `base64:` text or its file's path (made absolute from the project's folder), the image as
+/// base64 and its height over its width, or why it isn't drawn, as the end of a note's
+/// "raster image markers …, drawn as circles" (such as "whose file doesn't open").
+pub type ReadImage<'a> = dyn FnMut(&str) -> Result<(String, f32), &'static str> + 'a;
 
 /// One thing an import couldn't carry over as QGIS has it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -97,6 +109,12 @@ impl Report {
 
     pub fn skipped(&mut self, layer: &str, text: impl Into<String>) {
         self.note(layer, NoteKind::Skipped, text);
+    }
+
+    /// How many times `text` was noted for `layer`.
+    fn noted(&self, layer: &str, kind: NoteKind, text: &str) -> usize {
+        let key = (layer.to_string(), kind, text.to_string());
+        self.index.get(&key).and_then(|&i| self.notes.get(i)).map_or(0, |n| n.count)
     }
 
     /// Withdraws a provisional note once checking against the destination fields disproves it.
@@ -493,13 +511,15 @@ pub struct ProjectLayer {
 }
 
 /// Reads a QGIS project. `dir` is the folder the project is in, which its relative paths start
-/// from. Notes on what can't be carried over go to `report`.
-pub fn read_project(text: &str, dir: &str, report: &mut Report) -> Result<Project, String> {
+/// from; `images` reads its raster image markers' images. Notes on what can't be carried over go
+/// to `report`.
+pub fn read_project(text: &str, dir: &str, images: &mut ReadImage, report: &mut Report) -> Result<Project, String> {
     let doc = parse(text, "a QGIS project")?;
     let root = doc.root_element();
     if !root.has_tag_name("qgis") {
         return Err("not a QGIS project (.qgs): its root element isn't <qgis>".into());
     }
+    symbol::read_images(root, dir, images, report);
     // The main map canvas: its view, and (before QGIS 3) the project's coordinate system.
     let canvas = root.children().find(|c| c.has_tag_name("mapcanvas") && c.attribute("name").is_none_or(|n| n == "theMapCanvas"));
     let crs = child(root, "projectCrs")
@@ -798,12 +818,15 @@ fn resolve_virtual_layers(layers: &mut [ProjectLayer], report: &mut Report) {
 const MAX_VIRTUAL_CHAIN: usize = 8;
 
 /// Reads a QGIS layer style (a `.qml` file's text) for the layer named `layer` (for the notes).
-pub fn read_style(text: &str, layer: &str, report: &mut Report) -> Result<Style, String> {
+/// `dir` is the folder relative image paths start from (empty: none); `images` reads its raster
+/// image markers' images.
+pub fn read_style(text: &str, layer: &str, dir: &str, images: &mut ReadImage, report: &mut Report) -> Result<Style, String> {
     let doc = parse(text, "a QGIS layer style")?;
     let root = doc.root_element();
     if !root.has_tag_name("qgis") {
         return Err("not a QGIS layer style (.qml): its root element isn't <qgis>".into());
     }
+    symbol::read_images(root, dir, images, report);
     Ok(read_style_node(root, layer, report))
 }
 

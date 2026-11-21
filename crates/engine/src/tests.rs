@@ -3052,6 +3052,164 @@ fn qgis_annotation_layers_import_as_graphics_layers() {
     assert_eq!(texts, 8, "the texts come in all the same");
 }
 
+/// A QGIS style's raster image markers draw their PNG or JPEG file, read from the style's folder;
+/// one that isn't a PNG or JPEG, doesn't open or is past what a marker keeps is a circle, noted.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
+    use base64::Engine;
+    use rustgis_map::{Marker, Picture};
+    // Removed however the test ends.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let guard = Dir(std::env::temp_dir().join(format!("rustgis-qgis-raster-markers-{}", std::process::id())));
+    let dir = guard.0.clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pins")).unwrap();
+    let image = image::RgbImage::from_pixel(8, 4, image::Rgb([200, 30, 30]));
+    image.save(dir.join("pins/pin.png")).unwrap();
+    image.save(dir.join("pins/pin.jpg")).unwrap();
+    image.save(dir.join("pins/pin.gif")).unwrap();
+    // Past the 2 MiB of base64 a marker keeps (1.5 MiB of file); its start a PNG's.
+    let mut big = std::fs::read(dir.join("pins/pin.png")).unwrap();
+    big.resize(1600 << 10, 0);
+    std::fs::write(dir.join("pins/big.png"), big).unwrap();
+    let qml = |file: &str| {
+        format!(
+            r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">
+            <layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="{file}"/><Option name="size" value="6"/>
+            <Option name="size_unit" value="Point"/></Option></layer></symbol></symbols></renderer-v2></qgis>"#
+        )
+    };
+    let notes =
+        |r: &serde_json::Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let mut s = world();
+    let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
+    for file in ["./pins/pin.png", "pins/pin.jpg"] {
+        let path = dir.join("pins.qml");
+        std::fs::write(&path, qml(file)).unwrap();
+        let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(std::fs::read(dir.join(file)).unwrap());
+        assert_eq!(marker(&s), Marker::Picture(Picture::new(&b64)), "{file}");
+        assert!(notes(&r).is_empty(), "{file}: {:?}", notes(&r));
+    }
+    for (file, note) in [
+        ("pins/pin.gif", "raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"),
+        ("pins/gone.png", "raster image markers whose image file doesn't open, drawn as circles"),
+        ("pins/big.png", "raster image markers whose image is past 2 MiB of base64, drawn as circles"),
+    ] {
+        let path = dir.join("pins.qml");
+        std::fs::write(&path, qml(file)).unwrap();
+        let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+        assert_eq!(marker(&s), Marker::Circle, "{file}");
+        assert_eq!(notes(&r), [note], "{file}");
+    }
+    // An empty file isn't an image.
+    std::fs::write(dir.join("pins/empty.png"), b"").unwrap();
+    let path = dir.join("pins.qml");
+    std::fs::write(&path, qml("pins/empty.png")).unwrap();
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+    assert_eq!(notes(&r), ["raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"]);
+    // A named pipe isn't opened: opening one waits for a writer, which would hold the import.
+    #[cfg(unix)]
+    if std::process::Command::new("mkfifo").arg(dir.join("pins/pipe.png")).status().is_ok_and(|s| s.success()) {
+        let path = dir.join("pins.qml");
+        std::fs::write(&path, qml("pins/pipe.png")).unwrap();
+        let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+        assert_eq!(notes(&r), ["raster image markers whose image file doesn't open, drawn as circles"]);
+    } else {
+        eprintln!("skipped the named pipe: no mkfifo");
+    }
+    // Embedded in the style, it needs no folder.
+    let b64 = base64::engine::general_purpose::STANDARD.encode(std::fs::read(dir.join("pins/pin.png")).unwrap());
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(&format!("base64:{b64}"))})).unwrap();
+    assert_eq!(marker(&s), Marker::Picture(Picture::new(&b64)));
+    assert!(notes(&r).is_empty(), "{:?}", notes(&r));
+    // An import reads at most so many bytes of images (1 KiB in tests), those that don't draw too:
+    // of three of 600 characters that aren't images, the third isn't read.
+    let junk = |c: char| {
+        format!(
+            r#"<layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="base64:{}"/></Option></layer>"#,
+            c.to_string().repeat(600)
+        )
+    };
+    let three = format!(
+        r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">{}{}{}</symbol></symbols></renderer-v2></qgis>"#,
+        junk('A'),
+        junk('B'),
+        junk('C')
+    );
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "text": three})).unwrap();
+    let mut said: Vec<(String, u64)> =
+        r["notes"].as_array().unwrap().iter().map(|n| (n["text"].as_str().unwrap().to_string(), n["count"].as_u64().unwrap())).collect();
+    said.sort();
+    assert_eq!(
+        said,
+        [
+            ("raster image markers past the bytes of images an import reads, drawn as circles".to_string(), 1),
+            ("raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles".to_string(), 2),
+        ]
+    );
+    // A file past what a marker keeps is charged for what was read of it: two take the budget.
+    for name in ["big2.png", "big3.png"] {
+        std::fs::copy(dir.join("pins/big.png"), dir.join("pins").join(name)).unwrap();
+    }
+    let file = |f: &str| {
+        format!(
+            r#"<layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="pins/{f}"/></Option></layer>"#
+        )
+    };
+    let path = dir.join("pins.qml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">{}{}{}</symbol></symbols></renderer-v2></qgis>"#,
+            file("big.png"),
+            file("big2.png"),
+            file("big3.png")
+        ),
+    )
+    .unwrap();
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+    let mut said = notes(&r);
+    said.sort();
+    assert_eq!(
+        said,
+        [
+            "raster image markers past the bytes of images an import reads, drawn as circles",
+            "raster image markers whose image is past 2 MiB of base64, drawn as circles",
+        ]
+    );
+    // A file that doesn't open is charged nothing: an image after it still reads.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = dir.join("pins/locked.png");
+        std::fs::copy(dir.join("pins/big.png"), &locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Run as root, it opens anyway.
+        if std::fs::File::open(&locked).is_err() {
+            std::fs::write(
+                &path,
+                format!(
+                    r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">{}{}</symbol></symbols></renderer-v2></qgis>"#,
+                    file("locked.png"),
+                    file("pin.png")
+                ),
+            )
+            .unwrap();
+            let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
+            assert_eq!(notes(&r), ["raster image markers whose image file doesn't open, drawn as circles"]);
+        } else {
+            eprintln!("skipped the unopenable file: it opens as this user");
+        }
+    }
+}
+
 /// Pictures are charged to an import's budget (1 KiB in tests) only once placed: pictures that
 /// don't take to longitude and latitude leave it whole, and those past it are left out, noted.
 #[test]
@@ -4920,7 +5078,7 @@ fn a_qgis_project_opens_as_a_map_and_a_qgis_style_styles_a_layer() {
         <maplayer type="raster" hasScaleBasedVisibilityFlag="1" minScale="100000" maxScale="1000"><id>w</id><datasource>url=https://wms.example/wms&amp;layers=a</datasource><layername>Web</layername><provider>wms</provider>
         <pipe><rasterrenderer opacity="0.5" type="singlebandcolordata"/></pipe><blendMode>6</blendMode></maplayer></projectlayers></qgis>"#;
     let mut report = rustgis_map::qgis::Report::default();
-    let project = rustgis_map::qgis::read_project(web, "", &mut report).unwrap();
+    let project = rustgis_map::qgis::read_project(web, "", &mut |_| Err("whose image file doesn't open"), &mut report).unwrap();
     let mut w = world();
     let before = w.active_layer;
     w.active_layer = w.map().layers.iter().map(|l| l.id).find(|id| Some(*id) != before);

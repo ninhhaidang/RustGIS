@@ -331,7 +331,10 @@ Each layer keeps its look:
   rendering passes as their levels when the renderer draws in symbol levels; marker and hashed
   lines as strokes of markers or hash marks, at their places (intervals, vertices, the ends, the
   middle), turned with the line, their markers' offsets and angles kept; font markers as
-  characters of their font, on points and along lines; a marker symbol of several layers, or one
+  characters of their font, on points and along lines; raster image markers as
+  [image markers](cartography.md#symbology) of their PNG or JPEG (embedded in the file, or a file
+  of their own, relative to the project's folder or, in a style, to the style's), on points
+  (anchored where QGIS anchors them) and along lines; a marker symbol of several layers, or one
   shifted, turned or anchored off its centre, as a point's marks; a marker angle taken from a
   field (`"field"` or `- "field"`) as the layer's rotation field; a fill symbol of several layers
   as stacked fills, its brush patterns (horizontal, vertical, diagonal, cross) and line pattern
@@ -408,6 +411,10 @@ lacks, a field the layer hasn't) is noted and left out, as is one measuring with
 `$perimeter` or `$length`, which QGIS gives in the project's units. What RustGIS doesn't draw as QGIS does is drawn as
 near as it can, or left out, and said: the import's notes list, layer by layer, what was
 approximated (vector tile styles, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
+raster image markers whose image RustGIS can't use as circles (one at a web address, which it
+doesn't fetch, or kept inside a `.qgz`; a file that doesn't open or isn't a PNG or JPEG; one past
+2 MiB of base64 or the images it keeps), those of a fixed aspect ratio in their image's own,
+see-through ones opaque and those anchored off their centre along lines centred,
 dashed polygon outlines solid, label halos with sharp corners drawn round and blended ones drawn
 over the map, label backgrounds of other shapes drawn as rectangles, label distances from lines
 and polygons, a distance around points moved straight up, labels wrapped at a shortest line

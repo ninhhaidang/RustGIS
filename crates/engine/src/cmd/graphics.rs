@@ -268,16 +268,7 @@ pub(crate) fn picture(p: &Value) -> Result<String, String> {
     let b64 = match (ps(p, "image"), ps(p, "path")) {
         (Some(b), _) => b.trim().to_string(),
         (None, Some(path)) => {
-            use std::io::Read;
-            // Read at most one byte past the limit, so a huge or endless file is refused.
-            let mut bytes = Vec::new();
-            let file = rustgis_data::provenance::open(path).map_err(|e| format!("{path}: {e}"))?;
-            (&file).take(MAX_PICTURE as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
-            if bytes.len() > MAX_PICTURE {
-                return Err("the picture is too large".into());
-            }
-            rustgis_data::provenance::buffer(std::path::Path::new(path), &file, &bytes);
-            base64::engine::general_purpose::STANDARD.encode(bytes)
+            base64::engine::general_purpose::STANDARD.encode(read_picture_file(path, MAX_PICTURE).map_err(PictureFileError::message)?)
         }
         (None, None) => return Err("a picture needs an image or a path".into()),
     };
@@ -288,6 +279,65 @@ pub(crate) fn picture(p: &Value) -> Result<String, String> {
         return Err("the picture isn't a PNG or JPEG image".into());
     }
     Ok(b64)
+}
+
+/// Why [`read_picture_file`] gave no picture, with how many of its bytes were read.
+pub(crate) enum PictureFileError {
+    /// It isn't a regular file, or doesn't open: none read.
+    Unopened(String),
+    /// Past the limit: one byte more than it was read.
+    TooLarge(usize),
+    /// Its read failed after these bytes.
+    Unread(String, usize),
+}
+
+impl PictureFileError {
+    /// The bytes read before it failed.
+    pub(crate) fn read(&self) -> usize {
+        match self {
+            Self::Unopened(_) => 0,
+            Self::TooLarge(n) | Self::Unread(_, n) => *n,
+        }
+    }
+
+    /// What a command says of it.
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Unopened(why) | Self::Unread(why, _) => why,
+            Self::TooLarge(_) => "the picture is too large".into(),
+        }
+    }
+}
+
+/// A picture file's bytes, at most `max` (refused past it: read at most one byte more, so a huge
+/// or endless file is too), its provenance kept. Only a regular file is opened: opening a named
+/// pipe or a device (`/dev/stdin`) waits for a writer, and this runs on the command's thread.
+pub(crate) fn read_picture_file(path: &str, max: usize) -> Result<Vec<u8>, PictureFileError> {
+    let unopened = |e: std::io::Error| PictureFileError::Unopened(format!("{path}: {e}"));
+    if !std::fs::metadata(path).map_err(unopened)?.is_file() {
+        return Err(PictureFileError::Unopened(format!("{path}: not a regular file")));
+    }
+    let file = rustgis_data::provenance::open(path).map_err(unopened)?;
+    let bytes = read_within(&file, max).map_err(|(e, n)| match e {
+        Some(e) => PictureFileError::Unread(format!("{path}: {e}"), n),
+        None => PictureFileError::TooLarge(n),
+    })?;
+    rustgis_data::provenance::buffer(std::path::Path::new(path), &file, &bytes);
+    Ok(bytes)
+}
+
+/// At most `max` bytes of `from`; past them (`None`) or on a read error, with how many were read.
+fn read_within(from: impl std::io::Read, max: usize) -> Result<Vec<u8>, (Option<std::io::Error>, usize)> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    // Bytes read before an error are kept in `bytes`.
+    if let Err(e) = from.take(max as u64 + 1).read_to_end(&mut bytes) {
+        return Err((Some(e), bytes.len()));
+    }
+    if bytes.len() > max {
+        return Err((None, bytes.len()));
+    }
+    Ok(bytes)
 }
 
 fn add(s: &mut Session, p: &Value) -> CmdResult {
@@ -457,4 +507,32 @@ fn restyle(s: &mut Session, p: &Value, one: Option<(u32, usize)>) -> CmdResult {
         return Err("select graphics first".into());
     }
     Ok(json!({"styled": n}))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Gives `good` bytes, then fails.
+    struct Failing(usize);
+
+    impl std::io::Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("the disk failed"));
+            }
+            let n = self.0.min(buf.len());
+            buf[..n].fill(7);
+            self.0 -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_picture_read_that_fails_says_how_much_it_read() {
+        let (e, n) = super::read_within(Failing(10), 100).unwrap_err();
+        assert_eq!((e.map(|e| e.to_string()), n), (Some("the disk failed".to_string()), 10));
+        // Past the most it takes: one byte more read, no error.
+        let (e, n) = super::read_within(&[7u8; 20][..], 10).unwrap_err();
+        assert_eq!((e.is_none(), n), (true, 11));
+        assert_eq!(super::read_within(&[7u8; 10][..], 10).unwrap().len(), 10);
+    }
 }
