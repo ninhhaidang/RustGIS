@@ -2807,10 +2807,22 @@ fn compaction_trims_then_summarises_the_finished_part() {
                 json!([{"type": "reasoning", "encrypted_content": "x"}, {"type": "function_call", "call_id": "c"}]),
             )),
         },
-        Turn::Results(vec![ToolResult { id: "c".into(), name: "read_features".into(), content: long.clone(), error: false }]),
+        Turn::Results(vec![ToolResult {
+            id: "c".into(),
+            name: "read_features".into(),
+            content: long.clone(),
+            error: false,
+            images: vec![],
+        }]),
         Turn::Assistant { text: "Done.".into(), calls: vec![], native: None },
         Turn::User("second".into()),
-        Turn::Results(vec![ToolResult { id: "d".into(), name: "read_features".into(), content: long.clone(), error: false }]),
+        Turn::Results(vec![ToolResult {
+            id: "d".into(),
+            name: "read_features".into(),
+            content: long.clone(),
+            error: false,
+            images: vec![],
+        }]),
     ];
     assert_eq!(compact::boundary(&turns), 4);
     let before = compact::size(&turns);
@@ -3899,7 +3911,8 @@ fn stopping_a_summary_retry_clears_its_state() {
 fn compaction_trims_unicode_results_once_by_bytes() {
     for content in ["漢字🙂".repeat(500), "é".repeat(751), "ascii".repeat(1000)] {
         let original = content.len();
-        let mut turns = vec![Turn::Results(vec![ToolResult { id: "c".into(), name: "read_features".into(), content, error: false }])];
+        let mut turns =
+            vec![Turn::Results(vec![ToolResult { id: "c".into(), name: "read_features".into(), content, error: false, images: vec![] }])];
         assert!(crate::compact::trim_results(&mut turns));
         let Turn::Results(results) = &turns[0] else { panic!("expected results") };
         let trimmed = results[0].content.clone();
@@ -4810,4 +4823,219 @@ fn permission_policy_pending_effective_share_and_nested_sql() {
         }
         a.decide(false, false, &mut s);
     }
+}
+
+/// A conversation in which the model called `view_map` and got a picture back.
+fn viewed() -> Vec<Turn> {
+    let image = ToolImage { png: b"\x89PNG".to_vec(), width: 64, height: 40 };
+    vec![
+        Turn::User("look".into()),
+        Turn::Assistant {
+            text: String::new(),
+            calls: vec![ToolCall { id: "v1".into(), name: "view_map".into(), args: json!({}) }],
+            native: None,
+        },
+        Turn::Results(vec![ToolResult {
+            id: "v1".into(),
+            name: "view_map".into(),
+            content: "Map".into(),
+            error: false,
+            images: vec![image],
+        }]),
+    ]
+}
+
+#[test]
+fn tool_images_go_each_provider_its_own_way() {
+    let data = "iVBORw=="; // b"\x89PNG"
+    let req = |p: &str| body(&chat_request(&cfg(p), "sys", &viewed(), &[]));
+    // Claude: the result's content becomes its text, then the image.
+    let b = req("anthropic");
+    let content = &b["messages"][2]["content"][0]["content"];
+    assert_eq!(content[0], json!({"type": "text", "text": "Map"}));
+    assert_eq!(content[1]["source"], json!({"type": "base64", "media_type": "image/png", "data": data}));
+    // Gemini: inline data after the function response, in the same content.
+    let b = req("gemini");
+    let parts = &b["contents"][2]["parts"];
+    assert!(parts[0]["functionResponse"].is_object());
+    assert_eq!(parts[1]["inlineData"], json!({"mimeType": "image/png", "data": data}));
+    // Chat Completions: the tool message keeps its text; a user message carries the image.
+    let b = req("openai");
+    let m = b["messages"].as_array().unwrap();
+    assert_eq!(m[3]["role"], "tool");
+    assert_eq!(m[3]["content"], "Map");
+    assert_eq!(m[4]["role"], "user");
+    assert_eq!(m[4]["content"][1]["image_url"]["url"], format!("data:image/png;base64,{data}"));
+    // Responses: the call's output keeps its text, followed by a user message with the image.
+    let b = req("chatgpt");
+    let input = b["input"].as_array().unwrap();
+    assert_eq!(input[2]["type"], "function_call_output");
+    assert_eq!(input[3]["type"], "message");
+    assert_eq!(input[3]["role"], "user");
+    assert_eq!(input[3]["content"][1], json!({"type": "input_image", "image_url": format!("data:image/png;base64,{data}")}));
+    // A result without images is sent as before.
+    let mut turns = viewed();
+    assert!(crate::compact::keep_images(&mut turns, 0));
+    let b = body(&chat_request(&cfg("anthropic"), "sys", &turns, &[]));
+    assert_eq!(b["messages"][2]["content"][0]["content"], "Map (map image, 64 × 40, no longer attached)");
+    let b = body(&chat_request(&cfg("openai"), "sys", &turns, &[]));
+    assert_eq!(b["messages"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn view_map_shows_the_assistant_the_map_and_only_the_last_two_pictures_are_sent() {
+    let mut s = sample();
+    let mut a = Agent::new(cfg("openai"), &s);
+    assert!(matches!(a.ask("look at the map", &s), Step::Send(_)));
+    let images = |req: &HttpRequest| {
+        let b = body(req);
+        let m = b["messages"].as_array().cloned().unwrap_or_default();
+        m.iter().filter(|m| m["role"] == "user" && m["content"][1]["type"] == "image_url").count()
+    };
+    let mut last = None;
+    for i in 1..=3 {
+        let reply = call(&format!("v{i}"), "view_map", json!({"width": 80, "height": 64}));
+        let Step::Send(req) = a.receive(a.generation(), ok(reply), &mut s) else { panic!("expected a request") };
+        assert_eq!(images(&req), i.min(2), "call {i}");
+        last = Some(req);
+    }
+    let b = body(&last.unwrap());
+    let tool = |id: &str| b["messages"].as_array().unwrap().iter().find(|m| m["tool_call_id"] == id).cloned().unwrap();
+    assert!(tool("v1")["content"].as_str().unwrap().ends_with("(map image, 80 × 64, no longer attached)"), "{}", tool("v1"));
+    assert!(tool("v3")["content"].as_str().unwrap().starts_with("Map \""), "{}", tool("v3"));
+    let url = b["messages"].as_array().unwrap().last().unwrap()["content"][1]["image_url"]["url"].as_str().unwrap().to_string();
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD.decode(url.trim_start_matches("data:image/png;base64,")).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+}
+
+#[test]
+fn a_heavy_map_picture_is_drawn_again_smaller() {
+    // A satellite basemap weighs about 1.55 bytes a pixel: 3.9 MB at 2048 × 1229, 6.5 MB at
+    // 2048 × 2048, over the 5 MB Anthropic takes once base64-encoded.
+    let mut sizes = vec![];
+    let (png, w, h) = crate::tools::draw_within(2048.0, 2048.0, crate::tools::MAX_PNG_BYTES, |w, h| {
+        sizes.push((w, h));
+        Ok(vec![0; (w * h * 1.55) as usize])
+    })
+    .unwrap();
+    assert!(png.len() <= crate::tools::MAX_PNG_BYTES, "{}", png.len());
+    assert!(png.len().div_ceil(3) * 4 <= 5 * 1024 * 1024);
+    assert_eq!(w, h, "the shape is kept");
+    assert_eq!(sizes.len(), 2, "{sizes:?}");
+    // A light picture is drawn once, at the size asked.
+    let mut calls = 0;
+    let (_, w, h) = crate::tools::draw_within(2048.0, 1280.0, crate::tools::MAX_PNG_BYTES, |w, h| {
+        calls += 1;
+        Ok(vec![0; (w * h * 0.2) as usize])
+    })
+    .unwrap();
+    assert_eq!((calls, w, h), (1, 2048.0, 1280.0));
+}
+
+#[test]
+fn a_map_picture_drawn_smaller_than_asked_says_so() {
+    let mut s = sample();
+    let args = json!({"width": 512, "height": 512});
+    let (caption, image) = crate::tools::draw_view(&mut s, &args, 2_000).unwrap();
+    assert!(image.width < 512 && image.width == image.height, "{}", image.width);
+    let drawn = format!("{0} x {0} px, smaller than the 512 x 512 asked, to fit the 0.00 MB a picture may weigh.", image.width);
+    assert!(caption.ends_with(&drawn), "{caption}");
+    // A picture under the limit is drawn at the size asked, and its caption says nothing more.
+    let (caption, image) = crate::tools::draw_view(&mut s, &args, crate::tools::MAX_PNG_BYTES).unwrap();
+    assert_eq!((image.width, image.height), (512, 512));
+    assert!(caption.ends_with(", 512 x 512 px."), "{caption}");
+}
+
+#[test]
+fn a_model_that_refuses_images_is_asked_again_with_captions() {
+    let mut s = sample();
+    let mut a = Agent::new(cfg("ollama"), &s);
+    assert!(matches!(a.ask("look", &s), Step::Send(_)));
+    let reply = call("v1", "view_map", json!({"width": 64, "height": 64}));
+    assert!(matches!(a.receive(a.generation(), ok(reply), &mut s), Step::Send(_)));
+    let refused = json!({"error": {"message": "this model is missing data required for image input"}});
+    let resp = Ok(HttpResponse { status: 500, body: refused.to_string().into_bytes(), headers: vec![] });
+    let Step::Send(req) = a.receive(a.generation(), resp, &mut s) else { panic!("asked again") };
+    let b = body(&req);
+    let m = b["messages"].as_array().unwrap();
+    assert!(m.last().unwrap()["content"].as_str().unwrap().contains("no longer attached"), "{}", m.last().unwrap());
+    assert!(a.transcript.iter().any(|e| matches!(e, Entry::Note(n) if n.to_string().contains("doesn't read images"))));
+    // From then on, view_map says why it can't help.
+    let reply = call("v2", "view_map", json!({}));
+    let Step::Send(req) = a.receive(a.generation(), ok(reply), &mut s) else { panic!("expected a request") };
+    let b = body(&req);
+    let last = b["messages"].as_array().unwrap().last().cloned().unwrap();
+    assert_eq!(last["tool_call_id"], "v2");
+    assert!(last["content"].as_str().unwrap().contains("doesn't read images"), "{last}");
+    // Another error, or one about something else, isn't taken for a refusal.
+    let other = |status: u16, message: &str| {
+        let body = json!({"error": {"message": message}}).to_string().into_bytes();
+        parse_reply(Api::OpenAi, &HttpResponse { status, body, headers: vec![] }).unwrap_err()
+    };
+    assert!(refuses_images(&other(400, "Invalid content type. image_url is only supported by certain models.")));
+    assert!(!refuses_images(&other(400, "max_tokens is too large")));
+    assert!(!refuses_images(&other(429, "too many images today")));
+    assert!(!refuses_images(&other(500, "failed to pull image registry.local/runner:3")));
+    assert!(!refuses_images(&other(500, "Error processing image; please retry.")));
+    assert!(!refuses_images(&other(404, "model revision not found; check the supported models")));
+    assert!(!refuses_images(&other(400, "Invalid image: format is not in a supported format")));
+    assert!(!refuses_images(&other(500, "Error processing image_url; please retry.")));
+    assert!(!refuses_images(&other(500, "image decoder does not support WebP")));
+    assert!(!refuses_images(&other(400, "image format is only supported by PNG and JPEG")));
+    assert!(!refuses_images(&other(400, "image is too large: 30 MB, the most is 20 MB; not supported")));
+    assert!(refuses_images(&other(400, "Images are not supported by this model.")));
+    assert!(refuses_images(&other(400, "image input is not supported - hint: you may need to provide the mmproj")));
+    // vLLM serving a multimodal model for text only (`--limit-mm-per-prompt '{"image": 0}'`).
+    assert!(refuses_images(&other(
+        400,
+        "At most 0 image(s) may be provided in one prompt. Set `--limit-mm-per-prompt` to increase this limit."
+    )));
+    assert!(refuses_images(&other(422, "Failed to deserialize: unknown variant `image_url`, expected `text`")));
+    assert!(refuses_images(&other(400, "Model does not support images. Please use a model that does.")));
+    assert!(refuses_images(&other(500, "model does not support vision")));
+    assert!(refuses_images(&other(400, "Qwen/Qwen3-8B is not a multimodal model")));
+}
+
+#[test]
+fn a_subagent_s_refusal_of_images_reaches_the_main_assistant() {
+    let mut s = sample();
+    let mut a = Agent::new(cfg("ollama"), &s);
+    assert!(matches!(a.ask("look", &s), Step::Send(_)));
+    assert!(matches!(a.receive(a.generation(), ok(calls("delegate", json!({"task": "look at the map"}))), &mut s), Step::Send(_)));
+    let look = call("v1", "view_map", json!({"width": 64, "height": 64}));
+    assert!(matches!(a.receive(a.generation(), ok(look), &mut s), Step::Send(_)));
+    let refused = json!({"error": {"message": "this model is missing data required for image input"}});
+    let resp = Ok(HttpResponse { status: 500, body: refused.to_string().into_bytes(), headers: vec![] });
+    assert!(matches!(a.receive(a.generation(), resp, &mut s), Step::Send(_)));
+    // The subagent reports; the main assistant's own view_map knows the model doesn't read images.
+    assert!(matches!(a.receive(a.generation(), ok(say("It shows a map.")), &mut s), Step::Send(_)));
+    let Step::Send(req) = a.receive(a.generation(), ok(call("v2", "view_map", json!({}))), &mut s) else { panic!("expected a request") };
+    let last = body(&req)["messages"].as_array().unwrap().last().cloned().unwrap();
+    assert!(last["content"].as_str().unwrap().contains("doesn't read images"), "{last}");
+}
+
+#[test]
+fn a_refusal_of_images_is_the_model_s_it_was_sent_to() {
+    let mut s = sample();
+    let mut a = Agent::new(cfg("ollama"), &s);
+    assert!(matches!(a.ask("look", &s), Step::Send(_)));
+    let reply = call("v1", "view_map", json!({"width": 64, "height": 64}));
+    assert!(matches!(a.receive(a.generation(), ok(reply), &mut s), Step::Send(_)));
+    // The user picks another model while the request with the picture is out.
+    let sent = a.config.model.clone();
+    a.config.model = "llava".into();
+    let refused = json!({"error": {"message": "this model is missing data required for image input"}});
+    let resp = Ok(HttpResponse { status: 500, body: refused.to_string().into_bytes(), headers: vec![] });
+    // The new model never refused: it gets the picture.
+    let Step::Send(req) = a.receive(a.generation(), resp, &mut s) else { panic!("asked again") };
+    assert!(body(&req).to_string().contains("data:image/png;base64,"));
+    // Back on the model that refused, the picture goes as its caption.
+    a.config.model = sent;
+    let reply = call("v2", "view_map", json!({}));
+    let Step::Send(req) = a.receive(a.generation(), ok(reply), &mut s) else { panic!("expected a request") };
+    let b = body(&req);
+    assert!(!b.to_string().contains("data:image/png;base64,"), "{b}");
+    let last = b["messages"].as_array().unwrap().last().cloned().unwrap();
+    assert!(last["content"].as_str().unwrap().contains("doesn't read images"), "{last}");
 }

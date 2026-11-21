@@ -10,7 +10,7 @@ use rustgis_engine::policy::{Call, Outcome, Permit, Scope};
 use rustgis_engine::{Session, analysis, project};
 use serde_json::{Value, json};
 
-use crate::provider::{ToolCall, ToolDef};
+use crate::provider::{ToolCall, ToolDef, ToolImage};
 
 /// Default per-tool token estimate, matching Codex's default output budget.
 pub const DEFAULT_OUTPUT_TOKENS: usize = 10_000;
@@ -35,6 +35,17 @@ pub fn defs() -> Vec<ToolDef> {
                 "properties": {
                     "name_filter": {"type": "string", "description": "Only the layers and tables whose name holds this (ignoring case)"},
                     "include_fields": {"type": "boolean", "description": "List each layer's fields (default true); false keeps a large project short"}
+                }
+            }),
+        },
+        ToolDef {
+            name: "view_map",
+            description: "The map as it looks now, as a PNG image: look after changing it. The current view, at a size of your choosing (default 1024 x 640).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "width": {"type": "integer", "description": "Pixels (64 to 2048)"},
+                    "height": {"type": "integer", "description": "Pixels (64 to 2048)"}
                 }
             }),
         },
@@ -226,6 +237,75 @@ pub fn summary(call: &ToolCall) -> String {
         "delegate" => format!("Delegated: {}", str_arg(&call.args, "task").unwrap_or_default().chars().take(300).collect::<String>()),
         other => format!("{other} {}", short(call.args.clone())),
     }
+}
+
+/// The largest map image `view_map` draws (pixels a side).
+pub(crate) const MAX_VIEW: f64 = 2048.0;
+
+/// The most a `view_map` picture may weigh: 3.75 MiB of PNG, 5 MiB once base64-encoded, half the
+/// 10 MB an image may be on Anthropic's API (5 MB through Amazon Bedrock) and under OpenAI's and
+/// Gemini's limits. A satellite basemap weighs about 3.9 MB at 2048 × 1229, some 6.5 MB at 2048 × 2048.
+pub(crate) const MAX_PNG_BYTES: usize = 5 * 1024 * 1024 / 4 * 3;
+
+/// Draws at `w` × `h` and, while the picture weighs more than `max` bytes, again smaller (both
+/// sides by the square root of the ratio, with a margin), down to 64 pixels a side. A picture a
+/// provider refuses for its size would otherwise stay among the newest two and fail every later
+/// request. Returns the picture and the size it was drawn at.
+pub(crate) fn draw_within(
+    mut w: f64,
+    mut h: f64,
+    max: usize,
+    mut draw: impl FnMut(f64, f64) -> Result<Vec<u8>, String>,
+) -> Result<(Vec<u8>, f64, f64), String> {
+    loop {
+        let png = draw(w, h)?;
+        if png.len() <= max || w.min(h) <= 64.0 {
+            return Ok((png, w, h));
+        }
+        let k = (max as f64 / png.len() as f64).sqrt() * 0.9;
+        (w, h) = ((w * k).round().max(64.0), (h * k).round().max(64.0));
+    }
+}
+
+/// `view_map`: the current view drawn offscreen at the size asked (default 1024 × 640), and a
+/// caption naming it. It goes through its adapter, so the policy sees what the picture draws.
+///
+/// It draws on the thread that runs the assistant's calls, which on the desktop is the window's:
+/// the agent runs every call there (`run_command` and `run_tool` too, through
+/// `Session::run_scoped`), and a call's result must be in the conversation before the next
+/// request goes out. The drawing is one pass over the features in view, capped at 2048 pixels a
+/// side, with no Cancel; a layer of about 476,000 polygons read in place takes some 12 s at the
+/// default size, one of 120,000 some 2 s. Moving the assistant's calls off the window is a change
+/// to the agent's loop of its own.
+pub fn view_map(s: &mut Session, call: &ToolCall, scope: Scope, permit: Option<Permit>) -> Result<(String, ToolImage), String> {
+    let engine = policy_call(call)?.ok_or("missing view adapter")?;
+    let owned = s.defer(scope, &engine, permit)?;
+    s.finish_deferred(owned, |s| draw_view(s, &call.args, MAX_PNG_BYTES))?
+}
+
+/// Draws the view for `view_map`, in a picture of at most `max` bytes. A picture drawn smaller
+/// than asked says so in its caption.
+pub(crate) fn draw_view(s: &mut Session, a: &Value, max: usize) -> Result<(String, ToolImage), String> {
+    let size =
+        |k: &str, default: f64| a.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(default).clamp(64.0, MAX_VIEW).round();
+    let (asked_w, asked_h) = (size("width", 1024.0), size("height", 640.0));
+    let (png, w, h) = draw_within(asked_w, asked_h, max, |w, h| rustgis_engine::cmd::share::map_png(s, Some(w), Some(h), None))?;
+    let m = s.map();
+    let c = m.center_lonlat();
+    let smaller = if (w, h) != (asked_w, asked_h) {
+        format!(", smaller than the {asked_w:.0} x {asked_h:.0} asked, to fit the {:.2} MB a picture may weigh", max as f64 / 1e6)
+    } else {
+        String::new()
+    };
+    let caption = format!(
+        "Map \"{}\", {} layers, centre {:.4}, {:.4} (lon, lat), scale 1:{:.0}, {w:.0} x {h:.0} px{smaller}.",
+        m.name,
+        m.layers.len(),
+        c.x,
+        c.y,
+        m.scale()
+    );
+    Ok((caption, ToolImage { png, width: w as u32, height: h as u32 }))
 }
 
 /// Runs a call; `Err` is a result the model is told failed.

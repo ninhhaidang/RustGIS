@@ -116,6 +116,15 @@ Team/Business, Enterprise and Edu workspace policy may block plan usage.
 Weekly usage opens ChatGPT's settings page. RustGIS does not show a live percentage: there is
 no documented usage endpoint, and the tested live responses supplied no rate-limit headers.
 
+## Looking at the map
+
+The assistant can call `view_map` to see the map as a picture: the current view drawn offscreen,
+1024 × 640 pixels unless it asks for another size, as the MCP server's tool of the same name
+draws it. It changes nothing. Each request carries the two latest pictures; older ones are
+replaced by a line saying they're no longer attached. When the provider refuses images (an
+Ollama model without vision, say), the request is sent again without them, and from then on
+`view_map` tells that model it doesn't read images.
+
 ## Tool output limits
 
 The assistant can `search_docs` and `read_doc` to look up RustGIS features and commands.
@@ -298,8 +307,9 @@ fetch the USGS stream gauges in Texas and add them to the map."
 ## Privacy
 
 Assistant requests go directly to the provider and address you chose, using your API key or
-ChatGPT sign-in. They carry your messages, the map's layer names, fields and extent, and tool
-results such as rows the assistant reads. Local agents use their own providers and tools,
+ChatGPT sign-in. They carry your messages, the map's layer names, fields and extent, tool
+results such as rows the assistant reads, and, when the assistant calls `view_map`, a picture of
+the map, basemap tiles included. Local agents use their own providers and tools,
 with their own data handling. A key typed in the settings is used for the session only unless
 you tick **Remember the key on this computer**. On the desktop, this saves it in the system
 keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux). Clearing

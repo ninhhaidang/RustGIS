@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::provider::{Api, ToolResult, Turn};
+use crate::provider::{Api, ToolImage, ToolResult, Turn};
 
 /// UTF-8 bytes past which the conversation is compacted. This conservative heuristic is about
 /// 100,000 tokens for typical English; it can compact non-Latin text earlier. Provider overflow
@@ -39,9 +39,45 @@ pub fn size(turns: &[Turn]) -> usize {
                     + calls.iter().map(|c| c.name.len() + json_size(&c.args)).sum::<usize>()
                     + native.as_ref().map_or(0, |(_, v)| json_size(v))
             }
-            Turn::Results(rs) => rs.iter().map(|r| r.content.len()).sum(),
+            Turn::Results(rs) => rs.iter().map(|r| r.content.len() + r.images.iter().map(image_size).sum::<usize>()).sum(),
         })
         .sum()
+}
+
+/// What an image costs, in the bytes of text of as many tokens: about width × height / 750
+/// tokens on Claude, four bytes each.
+fn image_size(i: &ToolImage) -> usize {
+    (i.width as usize).saturating_mul(i.height as usize) / 750 * 4
+}
+
+/// The images the conversation keeps sending ([`keep_images`]).
+pub const KEPT_IMAGES: usize = 2;
+
+/// Keeps the newest `keep` images of tool results; each older one is dropped and its caption
+/// added to its result's text, so a long conversation doesn't send old pictures again. Says
+/// whether any was dropped. A dropped image is gone from the conversation for good: with `keep`
+/// 0 (a model that refused images), a model picked afterwards sees the captions, and calls
+/// `view_map` again for a picture.
+pub fn keep_images(turns: &mut [Turn], keep: usize) -> bool {
+    let (mut seen, mut changed) = (0, false);
+    for t in turns.iter_mut().rev() {
+        let Turn::Results(rs) = t else { continue };
+        for r in rs.iter_mut().rev() {
+            let n = r.images.len();
+            let kept = keep.saturating_sub(seen).min(n);
+            seen += n;
+            for i in r.images.drain(..n - kept) {
+                r.content.push_str(&format!(" ({})", i.caption()));
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Whether any tool result in the turns still carries an image.
+pub fn has_images(turns: &[Turn]) -> bool {
+    turns.iter().any(|t| matches!(t, Turn::Results(rs) if rs.iter().any(|r| !r.images.is_empty())))
 }
 
 /// Count the serialized JSON bytes without allocating another copy of native reasoning or args.
