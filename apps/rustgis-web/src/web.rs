@@ -57,6 +57,10 @@ const DATA_EXTS: &[&str] = &[
     "tif",
     "tiff",
     "asc",
+    "grb",
+    "grib",
+    "grb2",
+    "grib2",
 ];
 const CANVAS_ID: &str = "rustgis_canvas";
 const LOADING_ID: &str = "rustgis_loading";

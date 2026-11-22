@@ -48,8 +48,9 @@ impl Drop for Job {
     }
 }
 
-/// The hash thread's Cancel, as `rows_digest` looks at it.
-struct Stop(Arc<AtomicBool>);
+/// A thread's Cancel, as the readers' progress checks look at it: the hash thread's
+/// (`rows_digest`), a download's read ([`crate::read_download`]).
+pub(crate) struct Stop(pub(crate) Arc<AtomicBool>);
 
 impl rustgis_engine::data::progress::Probe for Stop {
     fn cancelled(&self) -> bool {

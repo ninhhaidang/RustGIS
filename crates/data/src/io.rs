@@ -360,7 +360,7 @@ pub fn read_layers(file_name: &str, bytes: &[u8]) -> Result<Vec<LayerRead>> {
 
 /// The extension of a file from its first bytes, for a download whose address doesn't say:
 /// GeoParquet, FlatGeobuf, GeoTIFF, a zip, a GeoPackage, an ArcGIS feature service's protocol
-/// buffer answer (`pbf`), KML, GPX, GeoJSON, delimited text, JPEG 2000 or a PDF (`None` for
+/// buffer answer (`pbf`), KML, GPX, GeoJSON, delimited text, JPEG 2000, a PDF or GRIB (`None` for
 /// anything else, such as a web page).
 pub fn sniff_extension(bytes: &[u8]) -> Option<&'static str> {
     if let Some(ext) = crate::raster::jpeg2000_extension(bytes) {
@@ -386,6 +386,8 @@ pub fn sniff_extension(bytes: &[u8]) -> Option<&'static str> {
         [b'P', b'K', 3, 4, ..] => "zip",
         _ if bytes.starts_with(b"SQLite format 3\0") => "gpkg",
         _ if bytes.starts_with(b"%PDF-") => "pdf",
+        // A GRIB message of edition 1 or 2 (a byte range of a model's file starts with one).
+        [b'G', b'R', b'I', b'B', _, _, _, 1 | 2, ..] => "grb",
         // LiDAR: LAZ marks its point format's top bits.
         _ if crate::lidar::looks_like_las(bytes) => {
             if bytes.get(104).is_some_and(|f| f & 0xC0 != 0) {

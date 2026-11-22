@@ -1,6 +1,6 @@
 ---
 name: add-data
-description: Add data to the map — files (GeoJSON, CSV with coordinates, Shapefile, GeoPackage, GeoParquet, FlatGeobuf, KML, GPX, GeoTIFF, LiDAR), web addresses, DuckDB SQL queries, STAC catalogs and Overture Maps — with the right coordinate system. Use for "open", "load", "add", "import", "show this file/URL".
+description: Add data to the map — files (GeoJSON, CSV with coordinates, Shapefile, GeoPackage, GeoParquet, FlatGeobuf, KML, GPX, GeoTIFF, GRIB, LiDAR), web addresses, DuckDB SQL queries, STAC catalogs and Overture Maps — with the right coordinate system. Use for "open", "load", "add", "import", "show this file/URL".
 ---
 
 # Adding data
@@ -14,7 +14,7 @@ and its limits are listed in `user-guide/data-formats.md`.
   coordinates aren't longitude/latitude, give their `"crs"` (`"EPSG:2271"`). Without it, projected
   coordinates land in the wrong place. Use `"delimiter"` when it isn't a comma.
 - **A web address:** `layer.addUrl` `{"url": U}` for GeoJSON, CSV, GeoParquet, FlatGeobuf,
-  GeoPackage, zipped Shapefiles, KML/KMZ, GPX, GeoTIFF or a PMTiles archive. This uses the
+  GeoPackage, zipped Shapefiles, KML/KMZ, GPX, GeoTIFF, GRIB or a PMTiles archive. This uses the
   network, so the user is asked first.
 - **SQL:** `layer.addSql` `{"sql": "SELECT … FROM read_parquet('…')"}` runs one DuckDB query
   (DuckDB Spatial's `ST_` functions; PostgreSQL through `"database"`). It needs DuckDB installed on
