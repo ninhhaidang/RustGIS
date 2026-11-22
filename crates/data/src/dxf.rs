@@ -1873,6 +1873,8 @@ mod tests {
             let maxx = parts[0].iter().map(|c| c.x).fold(f64::MIN, f64::max);
             assert!((maxx - 3.0).abs() < 1e-6, "{maxx}");
             assert_eq!(parts[0].first(), parts[0].last(), "closed");
+        } else {
+            panic!("a polyline is a line");
         }
         // Text, cleaned of its codes.
         let texts: Vec<Value> = points.features.iter().map(|f| f.attrs[4].clone()).filter(|v| !v.is_null()).collect();
@@ -1885,6 +1887,8 @@ mod tests {
                 p[0][0],
                 vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(0.0, 1.0), Coord::new(0.0, 0.0)]
             );
+        } else {
+            panic!("a solid is a polygon");
         }
         if let Some(Geometry::Polygon(p)) = &polys.features[1].geometry {
             assert_eq!((p.len(), p[0].len()), (1, 2), "one polygon with a hole");
@@ -1909,6 +1913,8 @@ mod tests {
         assert_eq!(l[0].0.held_in, crs, "held in the drawing's system");
         if let Some(Geometry::Point(c)) = &l[0].0.in_lonlat().unwrap().features[0].geometry {
             assert!((c.x - 15.0).abs() < 1e-6 && (c.y - 42.0).abs() < 0.01, "{c:?}");
+        } else {
+            panic!("a point is a point");
         }
     }
 
@@ -2016,6 +2022,8 @@ mod tests {
         assert_eq!(l[1].0.geometry_type, GeometryType::Polygon);
         if let Some(Geometry::Polygon(p)) = &l[1].0.features[0].geometry {
             assert_eq!(p.len(), 1, "the face with an index past the vertices is left out");
+        } else {
+            panic!("a face is a polygon");
         }
     }
 

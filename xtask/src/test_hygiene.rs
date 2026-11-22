@@ -3,6 +3,9 @@
 //! This is a spelling check, not Rust name resolution: timer calls (including imported names)
 //! need `// test-wait: <reason>` on the call's line. Signal waits with a deadline, such as
 //! `recv_timeout` and `Condvar::wait_timeout`, are encouraged and are not timer waits.
+//!
+//! An `assert_eq!` or `assert_ne!` whose two sides are the same tokens is refused too: it holds
+//! (or fails) whatever the expression returns, so it checks nothing about the code under test.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -10,6 +13,8 @@ use std::path::{Path, PathBuf};
 const TIMERS: &[&str] = &["sleep", "sleep_until", "park_timeout", "park_timeout_ms", "interval", "interval_at"];
 /// Timer types constructed with `::new(..)`.
 const TIMER_TYPES: &[&str] = &["Delay", "TimeoutFuture"];
+/// Assertions that compare their first two arguments.
+const COMPARISONS: &[&str] = &["assert_eq", "assert_ne", "debug_assert_eq", "debug_assert_ne"];
 
 /// A token retains its byte offset so diagnostics and exceptions refer to the original line.
 #[derive(Clone, Copy)]
@@ -21,6 +26,50 @@ struct Token<'a> {
 /// The 1-based line of a byte offset, from the file's newline offsets.
 fn line_of(newlines: &[usize], at: usize) -> usize {
     newlines.partition_point(|&n| n < at) + 1
+}
+
+/// The first two top-level arguments of a macro call, from the token after its opening delimiter
+/// (`index`) to the comma or closing delimiter that ends each. `None` when it has fewer than two.
+/// The commas of a turbofish (`get::<u8, u8>()`) don't split an argument. Each delimiter pair
+/// keeps its own count of open `<`, so a comparison inside a const block (`::<{ 1 < 2 }>`)
+/// doesn't disturb the turbofish around it.
+fn first_two_arguments<'a, 'b>(tokens: &'b [Token<'a>], index: usize) -> Option<(&'b [Token<'a>], &'b [Token<'a>])> {
+    // Open `<` of a turbofish, for the macro's own arguments and each delimiter pair inside them.
+    let mut angles = vec![0usize];
+    let mut starts = vec![index];
+    let mut end = None;
+    for (at, t) in tokens.iter().enumerate().skip(index) {
+        let before = |n: usize| at.checked_sub(n).and_then(|i| tokens.get(i)).map_or("", |t| t.text);
+        let open = angles.last().copied().unwrap_or(0);
+        match t.text {
+            "<" if open > 0 || (before(1) == ":" && before(2) == ":") => {
+                if let Some(a) = angles.last_mut() {
+                    *a += 1;
+                }
+            }
+            ">" if open > 0 && !matches!(before(1), "-" | "=") => {
+                if let Some(a) = angles.last_mut() {
+                    *a -= 1;
+                }
+            }
+            "(" | "[" | "{" => angles.push(0),
+            ")" | "]" | "}" if angles.len() == 1 => {
+                end = Some(at);
+                break;
+            }
+            ")" | "]" | "}" => {
+                angles.pop();
+            }
+            "," if angles.len() == 1 && open == 0 => starts.push(at + 1),
+            _ => {}
+        }
+        if starts.len() > 2 {
+            break;
+        }
+    }
+    let first = tokens.get(*starts.first()?..starts.get(1)?.checked_sub(1)?)?;
+    let second_end = starts.get(2).map(|n| n - 1).or(end)?;
+    Some((first, tokens.get(*starts.get(1)?..second_end)?))
 }
 
 /// Skip comments and keep literals whole: examples, URLs, braces and embedded scripts are data.
@@ -253,6 +302,21 @@ fn scan(path: &Path, source: &str, whole_test: bool) -> (Vec<String>, Vec<PathBu
         if in_test && timer && !reasons.contains(&line()) {
             errors.push(format!("{}:{}: timer wait in test: wait on the job's completion or progress signal, not on time; if time is essential, add // test-wait: <reason> on this line", path.display(), line()));
         }
+        if in_test
+            && COMPARISONS.contains(&t.text)
+            && next(1) == "!"
+            && matches!(next(2), "(" | "[" | "{")
+            && let Some((left, right)) = first_two_arguments(&tokens, i + 3)
+            && !left.is_empty()
+            && left.iter().map(|t| t.text).eq(right.iter().map(|t| t.text))
+        {
+            errors.push(format!(
+                "{}:{}: {}! compares an expression with itself, which says nothing about the code: compare with a fixed expected value, or a different input",
+                path.display(),
+                line(),
+                t.text
+            ));
+        }
         if t.text == "mod" {
             pending_module = Some(next(1).to_string());
             if in_test && next(2) == ";" {
@@ -384,6 +448,53 @@ mod tests {
         let text = "use futures_timer::Delay as Pause; #[test] fn check() { Pause::new(d); }";
         assert_eq!(scan(Path::new("src/lib.rs"), text, false).0.len(), 1);
         assert!(scan(Path::new("tests/helper.rs"), "rx.recv_timeout(d); cv.wait_timeout(lock, d);", true).0.is_empty());
+    }
+
+    #[test]
+    fn an_assertion_comparing_an_expression_with_itself_is_refused() {
+        for text in [
+            "#[test] fn t() { assert_eq!(f(b\"a\"), f(b\"a\")); }",
+            "#[test] fn t() { assert_ne!(x, x, \"{x}\"); }",
+            "#[test] fn t() { debug_assert_eq!(a.b[0].c(1, 2), a.b[0].c(1, 2),); }",
+            "#[test] fn t() { assert_eq!(\n  add(f64::MAX, Unit::Year, 1),\n  add(f64::MAX, Unit::Year, 1)\n); }",
+            "#[test] fn t() { assert_eq![x, x]; }",
+            "#[test] fn t() { assert_eq!(get::<u8, Vec<u8>>(1), get::<u8, Vec<u8>>(1)); }",
+            "#[test] fn t() { assert_eq!(f::<(u8, u8)>(), f::<(u8, u8)>(), \"m\"); }",
+            "#[test] fn t() { assert_eq!(f::<u8, u16>(), f::<u8, u16>()); }",
+            "#[test] fn t() { assert_eq!(flag::<{ 1 < 2 }>(), flag::<{ 1 < 2 }>()); }",
+            "#[test] fn t() { assert_eq!(1, 1); }",
+        ] {
+            let errors = scan(Path::new("src/lib.rs"), text, false).0;
+            assert_eq!(errors.len(), 1, "{text}: {errors:?}");
+            assert!(errors[0].contains("compares an expression with itself"), "{errors:?}");
+        }
+        let text = "#[test] fn t() {\n\n  assert_eq!(a, a);\n}";
+        assert!(scan(Path::new("src/lib.rs"), text, false).0[0].starts_with("src/lib.rs:3:"));
+        for text in [
+            "#[test] fn t() { assert_eq!(f(a), f(b)); }",
+            "#[test] fn t() { assert_eq!(x, x + 1); }",
+            "#[test] fn t() { assert_eq!(x, expected, \"{x}\"); }",
+            // The first argument is the whole left side, however many commas it holds inside.
+            "#[test] fn t() { assert_eq!(get::<u8, Vec<u8>>(), get::<u8, Vec<i8>>()); }",
+            "#[test] fn t() { assert_eq!(g(1, 2), g(1, 3)); }",
+            "#[test] fn t() { assert_eq!(v[0], v[1]); assert_ne!(\"a\", \"b\"); }",
+            // Commas inside nested generic arguments don't end a side.
+            "#[test] fn t() { assert_eq!(HashMap::<u8, HashMap::<u8, u16>>::new(), expected); }",
+            "#[test] fn t() { assert_eq!(f::<u8, u16>(), f::<u8, i16>()); }",
+            // A comparison inside a const block is not a generic delimiter.
+            "#[test] fn t() { assert_eq!(Flag::<{ 2 > 1 }, Flag::<{ 2 > 1 }, u8>>(Flag(0)), expected); }",
+            "#[test] fn t() { assert_eq!(flag::<{ 1 < 2 }>(), flag::<{ 1 < 3 }>()); }",
+            // A message that repeats the first side is not a second side.
+            "#[test] fn t() { assert_eq!(a, b, a); }",
+            "#[test] fn t() { assert!(a == a); assert_eq!(a); }",
+        ] {
+            assert!(scan(Path::new("src/lib.rs"), text, false).0.is_empty(), "{text}");
+        }
+        // Only tests are checked; a string or comment can't trigger it.
+        assert!(scan(Path::new("src/lib.rs"), "fn production() { assert_eq!(a, a); }", false).0.is_empty());
+        assert!(
+            scan(Path::new("src/lib.rs"), "#[test] fn t() { let _ = \"assert_eq!(a, a)\"; // assert_eq!(a, a)\n }", false).0.is_empty()
+        );
     }
 
     #[test]

@@ -17,9 +17,14 @@ use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
 use rustgis_data::{Coord, Dataset, Extent, Field, FieldType, Geometry, GeometryType, Value, threads};
 use serde_json::{Value as Json, json};
 
-/// A number from the environment, else `default`.
+/// A number from the environment, else `default`; one set that isn't a whole number (or isn't
+/// text) fails, so a typo doesn't run the defaults without a word (#2639).
 fn env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("{name}: {e}"),
+    }
 }
 
 /// The layers and the raster a case runs the tools on.
@@ -257,7 +262,8 @@ fn several_threads_give_what_one_thread_gives() {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
     // About two seconds a case.
-    let cases = u32::try_from(env("PROPERTY_CASES", 6)).unwrap_or(6);
+    let cases = env("PROPERTY_CASES", 6);
+    let cases = u32::try_from(cases).unwrap_or_else(|_| panic!("PROPERTY_CASES={cases} is past {}", u32::MAX));
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
     let result = runner.run(&scene(), |s| {

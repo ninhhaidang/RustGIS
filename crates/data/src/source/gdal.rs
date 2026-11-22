@@ -897,8 +897,9 @@ mod tests {
         assert!(ours("0123456789abcdef.fgb") && ours("0123456789abcdef.key") && ours("0123456789abcdef.empty"));
         assert!(ours("0123456789abcdef.4242.tmp.fgb"));
         assert!(!ours("notes.fgb") && !ours("0123456789abcdef.txt") && !ours("photo.jpg") && !ours("0123456789abcdef.x.tmp.fgb"));
-        // The cache key's hash is stable.
-        assert_eq!(fnv1a(b"rustgis"), fnv1a(b"rustgis"));
+        // The cache key's hash is stable: a cached file is found again by its name, so a changed
+        // hash orphans every cache already on disk. FNV-1a (64-bit) of "rustgis".
+        assert_eq!(fnv1a(b"rustgis"), 0xde69_1e62_2dd6_7b88);
         assert_ne!(fnv1a(b"a"), fnv1a(b"b"));
     }
 

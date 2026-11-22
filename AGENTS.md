@@ -151,7 +151,8 @@ the pull request which of these it reaches and why the rest don't apply:
 ## Quality gates
 `cargo xtask ci` (fmt, clippy -D warnings, tests, layers) before every commit.
 `cargo xtask test-hygiene` (also in CI) requires `// test-wait: reason` on timer waits in tests and
-`#[ignore = "reason"]` on ignored tests; prefer completion or progress signals.
+`#[ignore = "reason"]` on ignored tests, and refuses an `assert_eq!` or `assert_ne!` (or `debug_assert_*`)
+whose two sides are the same tokens; prefer completion or progress signals, and a fixed expected value.
 `cargo xtask memory` (in CI on Linux) fails when a command line workflow's peak memory grows past
 its limit in `xtask/memory-limits.txt`; a change that lowers one commits the lower limit with it.
 `cargo xtask rows` (also in CI) fails when code outside `rustgis-data` uses a layer's rows directly

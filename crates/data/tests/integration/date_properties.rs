@@ -16,9 +16,14 @@ const MINUTE_US: i64 = 60_000_000;
 /// The largest offset the data model accepts, in minutes (documented in `date.rs`).
 const MAX_OFFSET: i64 = 18 * 60;
 
-/// A number from the environment, else `default`.
+/// A number from the environment, else `default`; one set that isn't a whole number (or isn't
+/// text) fails, so a typo doesn't run the defaults without a word (#2639).
 fn env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("{name}: {e}"),
+    }
 }
 
 /// Runs `test` over `strategy` with the convention's seeded runner.
@@ -26,7 +31,8 @@ fn check<S: Strategy>(strategy: S, default_cases: u32, test: impl Fn(S::Value) -
     let seed = env("PROPERTY_SEED", 1);
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
-    let cases = u32::try_from(env("PROPERTY_CASES", u64::from(default_cases))).unwrap_or(default_cases);
+    let cases = env("PROPERTY_CASES", u64::from(default_cases));
+    let cases = u32::try_from(cases).unwrap_or_else(|_| panic!("PROPERTY_CASES={cases} is past {}", u32::MAX));
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
     if let Err(e) = runner.run(&strategy, test) {

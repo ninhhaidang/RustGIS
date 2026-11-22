@@ -27,9 +27,14 @@ fn declared(ext: &str, difference: &str) -> bool {
     LIMITS.iter().any(|(f, start, _)| *f == ext && difference.starts_with(start))
 }
 
-/// A number from the environment, else `default`.
+/// A number from the environment, else `default`; one set that isn't a whole number (or isn't
+/// text) fails, so a typo doesn't run the defaults without a word (#2639).
 fn env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("{name}: {e}"),
+    }
 }
 
 /// Values that extents and geometries share, so boxes touch: whole degrees, the edges of the
@@ -173,7 +178,8 @@ fn an_extent_read_gives_the_features_a_whole_read_filters_to() {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
     // About 20 ms a case.
-    let cases = u32::try_from(env("PROPERTY_CASES", 128)).unwrap_or(128);
+    let cases = env("PROPERTY_CASES", 128);
+    let cases = u32::try_from(cases).unwrap_or_else(|_| panic!("PROPERTY_CASES={cases} is past {}", u32::MAX));
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
     // Layers each format wrote, by kind (points, lines, polygons): one that refuses every layer

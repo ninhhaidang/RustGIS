@@ -41,7 +41,8 @@ fn declared(c: &str) -> bool {
 fn env(name: &str, default: u64) -> u64 {
     match std::env::var(name) {
         Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
-        Err(_) => default,
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("{name}: {e}"),
     }
 }
 

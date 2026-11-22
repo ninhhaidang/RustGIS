@@ -540,7 +540,9 @@ mod tests {
         assert_eq!(steps(d("2015-01-01"), d("2015-12-31"), Unit::Month, 3, 1000).len(), 4);
         assert_eq!(steps(0.0, 1e15, Unit::Hour, 1, 50).len(), 50);
         assert!(steps(f64::NAN, 1.0, Unit::Day, 1, 50).is_empty());
-        assert_eq!(add(f64::MAX, Unit::Year, i64::MAX), add(f64::MAX, Unit::Year, i64::MAX));
+        // A step that overflows the calendar stops at its last year instead of wrapping.
+        assert_eq!(Civil::of(add(f64::MAX, Unit::Year, i64::MAX)).year, MAX_YEAR);
+        assert_eq!(Civil::of(add(0.0, Unit::Year, i64::MIN)).year, -MAX_YEAR);
         assert_eq!(Unit::for_span(365.0 * DAY_MS), Unit::Month);
         assert_eq!(Unit::from_code("Months"), Some(Unit::Month));
         assert_eq!(Unit::from_code("dayss"), None);
