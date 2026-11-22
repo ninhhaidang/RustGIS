@@ -49,6 +49,15 @@ collaborator, and the pull request's author may be that maintainer. Comments fro
 other reviewers carry no category, so the check lets them through: those reviewers answer the
 reply themselves.
 
+The limits in `xtask/row-uses.txt` and `xtask/memory-limits.txt` only go down. CI's **Limits only go
+down** check, which runs on each push and again in the merge queue, fails when a pull request raises
+or removes one against the base commit; a new memory scenario is fine. A maintainer
+approves a deliberate raise (or a removed scenario) by commenting on the pull request, or reviewing
+it, with the line the failure prints for it on a line of its own, such as
+`<!-- ratchet-raise-approved: xtask/row-uses.txt count=790 -->` (a maintainer as for the deferral
+override above), and the check is run again. The line names the limit and its value, so a later
+push that raises it further needs a new approval.
+
 Changes to saved or generated output must classify each new owning field: address, executable
 parameters, generated text or user data. Use the shared durable-output transaction and keep
 credential removal separate from execution and approval identity. Review every writer that
