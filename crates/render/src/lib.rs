@@ -5831,6 +5831,16 @@ fn render_frame(
                         let font = class_fonts.get(ci).copied().flatten();
                         let face = text::Face { bold: class.bold, italic: class.italic, serif: false, family: font };
                         let spacing = class.spacing * label_factor;
+                        // Its `stretch` on a curved label that isn't fitted (#2262), within the
+                        // spacing's range at this size.
+                        let stretched = class.stretch.map(|share| {
+                            let range = |s: f64| s as f32 * 1.33 * label_factor;
+                            line_labels::Stretch {
+                                share,
+                                lo: range(rustgis_map::layout::MIN_LETTER_SPACING),
+                                hi: range(rustgis_map::layout::MAX_LETTER_SPACING),
+                            }
+                        });
                         let (bw, bh) = (text::spaced_block_width(&text, csize, face, class.spacing), text::block_height(&text, csize));
                         // Where a placement puts it, moved as its class says (points, as the
                         // text's size), unless along a line.
@@ -5973,6 +5983,18 @@ fn render_frame(
                                     }
                                     // (A locked label keeps its own place; only its text is fitted.)
                                     fitted = Some(at).filter(|at| !at.is_empty() && locked_at.is_none());
+                                } else if let Some(s) = stretched
+                                    // Not fitted, with a `stretch` (#2262): spaced to cover that
+                                    // share of the line, a repeated one of the room between its
+                                    // repeats; at each place where that can't follow the line, at
+                                    // its own spacing (below, and `Curves::place`).
+                                    && let room = match line_labels::repeats(line.length(), repeat).len() {
+                                        1 => line.length(),
+                                        _ => repeat.unwrap_or(f32::INFINITY).min(line.length()),
+                                    }
+                                    && let Some(wide) = s.gap(&advances, room)
+                                {
+                                    gap = wide;
                                 }
                                 let first = locked_at.or_else(|| fitted.as_ref().and_then(|f| f.first().copied()));
                                 if try_others {
@@ -6003,6 +6025,7 @@ fn render_frame(
                                             chars,
                                             advances,
                                             gap,
+                                            own_gap: (gap != close_gap).then_some(close_gap),
                                             size,
                                             overrun,
                                             off,
@@ -6029,9 +6052,14 @@ fn render_frame(
                                         _ => line_labels::repeats(line.length(), repeat).into_iter().map(|(i, d)| (i, d, gap)).collect(),
                                     };
                                     for (i, at, gap) in along {
-                                        let Some(((cx, cy), turns)) = line
-                                            .curved(&advances, gap, size, overrun, Some(at))
-                                            .and_then(|c| line_labels::curved_off(c, off))
+                                        let curve = |gap| {
+                                            line.curved(&advances, gap, size, overrun, Some(at))
+                                                .and_then(|c| line_labels::curved_off(c, off))
+                                        };
+                                        // Stretched (#2262) where that can't follow the line
+                                        // here: at its own spacing.
+                                        let Some(((cx, cy), turns)) =
+                                            curve(gap).or_else(|| (gap != close_gap).then(|| curve(close_gap)).flatten())
                                         else {
                                             continue;
                                         };
@@ -6129,6 +6157,7 @@ fn render_frame(
                                     line_text,
                                     |c| text::measure_in(c, size, face),
                                     spacing * 1.33,
+                                    stretched,
                                     size,
                                 )
                             }
@@ -6139,8 +6168,15 @@ fn render_frame(
                             text = unwrapped.take().unwrap_or_default();
                         } else if let (Some(line_text), Geometry::Polygon(polys)) = (unwrapped.as_deref(), g)
                             && class.placement == LabelPlacement::Curved
-                            && let Some(((cx, cy), glyphs)) =
-                                area_labels::glyphs(ctx, polys, line_text, |c| text::measure_in(c, size, face), spacing * 1.33, size)
+                            && let Some(((cx, cy), glyphs)) = area_labels::glyphs(
+                                ctx,
+                                polys,
+                                line_text,
+                                |c| text::measure_in(c, size, face),
+                                spacing * 1.33,
+                                stretched,
+                                size,
+                            )
                         {
                             places.push((0, cx, cy, None, glyphs));
                             text = unwrapped.take().unwrap_or_default();
@@ -14411,6 +14447,72 @@ mod tests {
         m.layer_mut(id).unwrap().labels.default.fit = rustgis_map::symbology::LabelFit::Off;
         let r = render(&mut m, &view).unwrap();
         assert_eq!(r.labels.iter().filter(|l| l.text == name).count(), fitted.len());
+        // Not fitted, with a `stretch` (#2262): a name covers that share of its line, its spacing
+        // held at 50 points; with a repeat (300 points), that share of the room between its repeats.
+        let l = m.layer_mut(id).unwrap();
+        (l.labels.default.repeat, l.labels.default.stretch) = (None, Some(0.7));
+        let r = render(&mut m, &view).unwrap();
+        let covered = |l: &PlacedLabel| span(l) + ends(&l.text);
+        let stretched = r.labels.iter().find(|l| l.text == name).expect("placed");
+        assert!((covered(stretched) / room - 0.7).abs() < 0.05, "{} of {room}", covered(stretched));
+        let doce = r.labels.iter().find(|l| l.text == "Rio Doce").expect("placed");
+        assert!((covered(doce) - line_labels::curved_len(&advances("Rio Doce"), 50.0 * 1.33)).abs() < 1.0, "{}", covered(doce));
+        m.layer_mut(id).unwrap().labels.default.repeat = Some(300.0);
+        let r = render(&mut m, &view).unwrap();
+        let doce: Vec<&PlacedLabel> = r.labels.iter().filter(|l| l.text == "Rio Doce").collect();
+        assert!(doce.len() > 1 && doce.iter().all(|l| (covered(l) / (300.0 * 1.33) - 0.7).abs() < 0.05), "{doce:?}");
+    }
+
+    /// `stretch` without `fit` (#2262) on bent lines: a repeat that can follow its arm is
+    /// stretched though the middle one, on the corner, can't; a name too long when stretched to
+    /// follow its line goes at its own spacing.
+    #[test]
+    fn a_stretched_name_falls_back_to_its_own_spacing_place_by_place() {
+        let face = text::Face { bold: false, italic: false, serif: false, family: None };
+        let advances = |t: &str| t.graphemes(true).map(|c| text::measure_in(c, 12.0, face)).collect::<Vec<f32>>();
+        // From the first character's start to the last one's end, along a straight arm.
+        let covered = |l: &PlacedLabel| {
+            let (a, b) = (l.glyphs.first().unwrap(), l.glyphs.last().unwrap());
+            let ends = advances(&l.text).first().unwrap() / 2.0 + advances(&l.text).last().unwrap() / 2.0;
+            (b.dx - a.dx).hypot(b.dy - a.dy) + ends
+        };
+        let deg = |points: f64| points / (111_320.0 / 1500.0);
+        let line = |pts: &[(f64, f64)]| Geometry::Line(vec![pts.iter().map(|(x, y)| Coord::new(deg(*x), deg(*y))).collect()]);
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        // Two arms 600 points long at a right angle, the middle on the corner; and a line whose
+        // middle is 300 points short of its corner.
+        let mut ids = Vec::new();
+        for (name, pts) in [
+            ("Rio Doce", vec![(-600.0, 0.0), (0.0, 0.0), (0.0, 600.0)]),
+            ("Rio Torto", vec![(20.0, -100.0), (920.0, -100.0), (920.0, -400.0)]),
+        ] {
+            let mut d = Dataset::new(name, GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+            d.push(Some(line(&pts)), vec![Value::Text(name.into())]);
+            let id = m.add_dataset(d);
+            let l = m.layer_mut(id).unwrap();
+            l.labels.enabled = true;
+            l.labels.default.field = "name".into();
+            l.labels.default.size = 12.0;
+            l.labels.default.placement = rustgis_map::LabelPlacement::Curved;
+            ids.push(id);
+        }
+        let l = m.layer_mut(ids[0]).unwrap();
+        (l.labels.default.repeat, l.labels.default.stretch) = (Some(250.0), Some(0.7));
+        m.layer_mut(ids[1]).unwrap().labels.default.stretch = Some(1.0);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(deg(160.0), deg(100.0))), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 2200.0, height: 1400.0, pixels_per_point: 1.0, camera, sky: false };
+        let r = render(&mut m, &view).unwrap();
+        // The repeats 332.5 points either side of the corner, each over 70 % of that.
+        let doce: Vec<&PlacedLabel> = r.labels.iter().filter(|l| l.text == "Rio Doce").collect();
+        assert_eq!(doce.len(), 2, "{doce:?}");
+        assert!(
+            doce.iter().all(|l| (covered(l) / (250.0 * 1.33) - 0.7).abs() < 0.05),
+            "{:?}",
+            doce.iter().map(|l| covered(l)).collect::<Vec<_>>()
+        );
+        let torto = r.labels.iter().find(|l| l.text == "Rio Torto").expect("placed at its own spacing");
+        assert!((covered(torto) - line_labels::curved_len(&advances("Rio Torto"), 0.0)).abs() < 1.0, "{}", covered(torto));
     }
 
     #[test]

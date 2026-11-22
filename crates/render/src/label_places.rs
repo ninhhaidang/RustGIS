@@ -16,6 +16,9 @@ pub(super) struct CurveSpec {
     pub chars: Vec<String>,
     pub advances: Vec<f32>,
     pub gap: f32,
+    /// The class's own spacing, tried at a place where a stretched `gap` (#2262) can't follow
+    /// the line; `None` when `gap` is already its own.
+    pub own_gap: Option<f32>,
     /// The text's size: with the letter spacing, how far the line is smoothed either side of the
     /// text when its course is read ([`line_labels::Line::curved`]).
     pub size: f32,
@@ -115,11 +118,13 @@ impl Curves {
         let at = *self.positions.get(i)?;
         #[cfg(test)]
         LAYOUTS.with(|n| n.set(n.get() + 1));
-        let ((x, y), turns) = self
-            .spec
-            .line
-            .curved(&self.spec.advances, self.spec.gap, self.spec.size, self.spec.overrun, Some(at))
-            .and_then(|c| line_labels::curved_off(c, self.spec.off))?;
+        let curve = |gap| {
+            self.spec
+                .line
+                .curved(&self.spec.advances, gap, self.spec.size, self.spec.overrun, Some(at))
+                .and_then(|c| line_labels::curved_off(c, self.spec.off))
+        };
+        let ((x, y), turns) = curve(self.spec.gap).or_else(|| self.spec.own_gap.and_then(curve))?;
         // Reuse the preceding rejected place's vector and String capacities. The accepted
         // middle preview retains its own glyphs; later failed attempts can share this pool.
         let mut glyphs = std::mem::take(&mut template.glyphs);

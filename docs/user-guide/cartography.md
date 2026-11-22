@@ -740,6 +740,14 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   Text size by a stream's importance (a Strahler order or a class field) comes from label classes
   or `labels.by` `"size"` (`labels.placement={"layer": "Rivers", "position": "curved", "fit":
   "auto", "abbreviations": {"Creek": "Ck"}}`).
+- **Stretched names**: `"stretch"` on `labels.style` (0.1 to 1) letter-spaces any other Curved
+  label, along a line, a polygon's centre line or a guide line, so it covers that share of the
+  line it follows, as a range's name is spread over its ridge: 0.7 covers 70 % of it. The spacing
+  stays within `spacing`'s range (−5 to 50 points), so a short name on a long line covers less.
+  A repeated line label covers that share of the room between its repeats. Where the stretched
+  name can't follow its line (too bent for its wider letters, or outside its polygon), it is set
+  at the class's spacing, as without `stretch`; with none set, spacing is as before
+  (`labels.style={"layer": "Serras", "italic": true, "stretch": 0.7}`).
 - **Lock** keeps the labelled features fixed while you pan and zoom; **Pause** stops drawing
   labels for faster navigation; **View Unplaced** draws the labels that didn't fit in red. They
   apply to the whole map, so they are on the ribbon (Labeling › Map Labeling), not in the pane.

@@ -295,7 +295,8 @@ pub(super) fn centre_line(rings: &[Vec<(f32, f32)>], w: f32, h: f32, half_width:
 /// middle, then at places either side of it ([`line_labels::positions`]); the text must fit on the
 /// line, with the polygon at least half its height either side of it. `None` when it fits nowhere,
 /// or a part of the polygon near the view doesn't project (behind the globe): the label is then
-/// placed as `Auto`.
+/// placed as `Auto`. With a `stretch`, the letters are first spaced to cover its share of the centre
+/// line, then (where that text can't follow it) `gap` apart.
 ///
 /// It works per frame, for each polygon labelled this way with its label point in view, and looks at
 /// no Cancel: a step bounded by the outline's points near the view (each read once or a few times
@@ -306,11 +307,12 @@ pub(super) fn glyphs(
     text: &str,
     measure: impl Fn(&str) -> f32,
     gap: f32,
+    stretch: Option<line_labels::Stretch>,
     size: f32,
 ) -> Option<((f32, f32), Vec<super::LabelGlyph>)> {
     let chars: Vec<String> = text.graphemes(true).map(String::from).collect();
     let advances: Vec<f32> = chars.iter().map(|c| measure(c)).collect();
-    let (centre, turns) = curved(ctx, polys, &advances, gap, size, super::text::block_height(text, size))?;
+    let (centre, turns) = curved(ctx, polys, &advances, (gap, stretch), size, super::text::block_height(text, size))?;
     let glyphs = chars.into_iter().zip(turns).map(|(text, (dx, dy, angle))| super::LabelGlyph { text, dx, dy, angle }).collect();
     Some((centre, glyphs))
 }
@@ -340,12 +342,13 @@ fn curved(
     ctx: &super::Ctx<'_>,
     polys: &[Vec<Vec<Coord>>],
     advances: &[f32],
-    gap: f32,
+    (gap, stretch): (f32, Option<line_labels::Stretch>),
     size: f32,
     height: f32,
 ) -> Option<((f32, f32), Vec<(f32, f32, f32)>)> {
     let rings = screen_rings(ctx, polys)?;
-    let len = line_labels::curved_len(advances, gap);
+    // The shortest the text can be set: a stretch may set it tighter than its own spacing.
+    let len = line_labels::curved_len(advances, stretch.map_or(gap, |s| s.lo.min(gap)));
     // Too small on the screen for the text: no grid worked out.
     let (mut lo, mut hi) = ((f32::INFINITY, f32::INFINITY), (f32::NEG_INFINITY, f32::NEG_INFINITY));
     for p in rings.iter().flatten() {
@@ -356,7 +359,11 @@ fn curved(
     }
     let (w, h) = (ctx.view.width as f32, ctx.view.height as f32);
     let line = Line::new(&centre_line(&rings, w, h, height / 2.0)?)?;
-    line_labels::positions(line.length(), len, 0.0).into_iter().find_map(|at| line.curved(advances, gap, size, 0.0, Some(at)))
+    let wide = stretch.and_then(|s| s.gap(advances, line.length()));
+    wide.into_iter().chain([gap]).find_map(|g| {
+        let len = line_labels::curved_len(advances, g);
+        line_labels::positions(line.length(), len, 0.0).into_iter().find_map(|at| line.curved(advances, g, size, 0.0, Some(at)))
+    })
 }
 
 #[cfg(test)]
@@ -447,6 +454,21 @@ mod tests {
         let before = level.iter().find(|l| l.text == "Lagoa Redonda").expect("placed");
         assert!(small.glyphs.is_empty() && (small.x, small.y, small.angle) == (before.x, before.y, before.angle));
         assert!(level.iter().all(|l| l.glyphs.is_empty()), "Auto stays level");
+        // With `stretch` 0.9 (#2262): spread along the lake, still inside it, over no more than 0.9
+        // of its middle (the centre line stops short of the tips).
+        let span = |l: &crate::PlacedLabel| {
+            let t = |g: &crate::LabelGlyph| ((l.x + g.dx) - cx as f32).atan2(cy as f32 - (l.y + g.dy));
+            (t(l.glyphs.last().unwrap()) - t(&l.glyphs[0])).abs() * r as f32 * per_degree
+        };
+        m.layer_mut(id).unwrap().labels.default.stretch = Some(0.9);
+        let wide = crate::render(&mut m, &view).unwrap().labels;
+        let wide = wide.iter().find(|l| l.text == "Lago Comprido").expect("placed");
+        let middle = r as f32 * per_degree * std::f32::consts::FRAC_PI_2;
+        assert!(span(wide) > 1.5 * span(long) && span(wide) < 0.9 * middle, "{} of {middle}, close {}", span(wide), span(long));
+        for g in &wide.glyphs {
+            let off = ((wide.x + g.dx) - cx as f32).hypot((wide.y + g.dy) - cy as f32) / per_degree - r as f32;
+            assert!(off.abs() < 0.2 - 6.0 / per_degree, "{} off the middle by {off}°", g.text);
+        }
     }
 
     /// An outline thinned to its [`MAX_VERTICES`] keeps a small hole: the line still goes round it.

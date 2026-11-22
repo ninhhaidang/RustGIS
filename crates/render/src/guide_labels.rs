@@ -101,12 +101,14 @@ pub(crate) enum Near<'a> {
 /// such that fits, those inside it. A point's takes the nearest line within the text's width, one holding
 /// its value before the others there: a line of its value farther off isn't its own.
 /// Along each line its middle is tried, then places either side ([`line_labels::positions`]).
-/// `None` when the text follows none of them: the label is placed as without a guide.
+/// `None` when the text follows none of them: the label is placed as without a guide. With a
+/// `stretch`, on each line the letters are first spaced to cover its share of that line, then
+/// (where that text can't follow it there) `gap` apart; a point's reach is its text `gap` apart.
 ///
 /// Per frame, for each label with a guide and its label point in view; it looks at no Cancel: it
 /// reads the stretches listed in the grid cells round its point or polygon, and tries at most
 /// [`MOST_TRIED`] lines, a polygon's inside tested against its outline thinned as for its centre
-/// line (#2295): at most 3 points a position tried, each against every edge of the outline.
+/// line (#2295): its characters and middle (at most [`line_labels::MAX_CURVED_CHARS`] + 1 points) a position tried, each against every edge of the outline.
 pub(super) fn glyphs(
     guides: &Guides,
     value: Option<&str>,
@@ -114,20 +116,27 @@ pub(super) fn glyphs(
     text: &str,
     measure: impl Fn(&str) -> f32,
     gap: f32,
+    stretch: Option<line_labels::Stretch>,
     size: f32,
 ) -> Option<((f32, f32), Vec<super::LabelGlyph>)> {
     let chars: Vec<String> = text.graphemes(true).map(String::from).collect();
     let advances: Vec<f32> = chars.iter().map(|c| measure(c)).collect();
-    let (centre, turns) = curved(guides, value, near, &advances, gap, size)?;
+    let (centre, turns) = curved(guides, value, near, &advances, (gap, stretch), size)?;
     let glyphs = chars.into_iter().zip(turns).map(|(text, (dx, dy, angle))| super::LabelGlyph { text, dx, dy, angle }).collect();
     Some((centre, glyphs))
 }
 
 type Curved = ((f32, f32), Vec<(f32, f32, f32)>);
 
+/// A label's letter spacing and its class's stretch ([`glyphs`]).
+type Spacing = (f32, Option<line_labels::Stretch>);
+
 /// [`glyphs`]' characters `advances` wide, as [`Line::curved`] takes them.
-fn curved(guides: &Guides, value: Option<&str>, near: Near<'_>, advances: &[f32], gap: f32, size: f32) -> Option<Curved> {
+fn curved(guides: &Guides, value: Option<&str>, near: Near<'_>, advances: &[f32], spacing: Spacing, size: f32) -> Option<Curved> {
+    let (gap, stretch) = spacing;
     let len = line_labels::curved_len(advances, gap);
+    // The spacings tried on a line: stretched over it first, then its own.
+    let gaps = |l: &Line| stretch.and_then(|s| s.gap(advances, l.length())).into_iter().chain([gap]);
     let line = |i: &usize| guides.lines.get(*i).map(|g| &g.line);
     let longest_first = |mut ids: Vec<usize>| {
         ids.sort_by(|a, b| line(b).map_or(0.0, Line::length).total_cmp(&line(a).map_or(0.0, Line::length)));
@@ -135,10 +144,12 @@ fn curved(guides: &Guides, value: Option<&str>, near: Near<'_>, advances: &[f32]
         ids
     };
     let along = |line: &Line, fits: &dyn Fn(&Curved) -> bool| {
-        line_labels::positions(line.length(), len, 0.0)
-            .into_iter()
-            .filter_map(|at| line.curved(advances, gap, size, 0.0, Some(at)))
-            .find(|c| fits(c))
+        gaps(line).find_map(|g| {
+            line_labels::positions(line.length(), line_labels::curved_len(advances, g), 0.0)
+                .into_iter()
+                .filter_map(|at| line.curved(advances, g, size, 0.0, Some(at)))
+                .find(|c| fits(c))
+        })
     };
     let matched = value.and_then(|v| guides.by_value.get(&v.trim().to_lowercase()));
     match near {
@@ -155,8 +166,14 @@ fn curved(guides: &Guides, value: Option<&str>, near: Near<'_>, advances: &[f32]
                 .collect();
             nearest.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
             nearest.into_iter().take(MOST_TRIED).find_map(|(_, _, i, at)| {
-                let l = line(&i).filter(|l| l.length() >= len)?;
-                l.curved(advances, gap, size, 0.0, Some(at.clamp(len / 2.0, l.length() - len / 2.0)))
+                let l = line(&i)?;
+                gaps(l).find_map(|g| {
+                    let len = line_labels::curved_len(advances, g);
+                    if l.length() < len {
+                        return None;
+                    }
+                    l.curved(advances, g, size, 0.0, Some(at.clamp(len / 2.0, l.length() - len / 2.0)))
+                })
             })
         }
         Near::Polygon(within, rings) => {
@@ -173,10 +190,9 @@ fn curved(guides: &Guides, value: Option<&str>, near: Near<'_>, advances: &[f32]
                 .iter()
                 .flatten()
                 .fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, p| [b[0].min(p.0), b[1].min(p.1), b[2].max(p.0), b[3].max(p.1)]);
-            // Its middle and both ends inside the polygon.
-            let inside = |(c, turns): &Curved| {
-                [turns.first(), turns.last()].into_iter().flatten().map(|t| (c.0 + t.0, c.1 + t.1)).chain([*c]).all(|p| inside(&rings, p))
-            };
+            // Its middle and every character inside the polygon (a stretched one's may straddle a
+            // hole its ends and middle miss).
+            let inside = |(c, turns): &Curved| turns.iter().map(|t| (c.0 + t.0, c.1 + t.1)).chain([*c]).all(|p| inside(&rings, p));
             longest_first(guides.meeting(b)).iter().filter_map(line).find_map(|l| along(l, &inside))
         }
     }
@@ -218,16 +234,16 @@ mod tests {
         // A polygon's by value, ignoring case and spaces round it, wherever its line runs: along the
         // arc, every character on it (its outline isn't needed).
         let unread = || Near::Polygon(None, Box::new(|| None));
-        let (_, turns) = curved(&guides, Some(" serra curva"), unread(), &advances(), 1.0, 10.0).expect("on its line");
-        let (c, _) = curved(&guides, Some("SERRA CURVA"), unread(), &advances(), 1.0, 10.0).expect("on its line");
+        let (_, turns) = curved(&guides, Some(" serra curva"), unread(), &advances(), (1.0, None), 10.0).expect("on its line");
+        let (c, _) = curved(&guides, Some("SERRA CURVA"), unread(), &advances(), (1.0, None), 10.0).expect("on its line");
         assert!(turns.iter().all(|t| ((c.0 + t.0).hypot(c.1 + t.1 - 400.0) - 300.0).abs() < 6.0), "{c:?} {turns:?}");
         // No value: the line inside the polygon, here a box round the straight line.
         let rings = vec![vec![(480.0, 560.0), (920.0, 560.0), (920.0, 640.0), (480.0, 640.0)]];
-        let (c, _) = curved(&guides, None, Near::Polygon(None, Box::new(|| Some(rings))), &advances(), 1.0, 10.0).expect("inside");
+        let (c, _) = curved(&guides, None, Near::Polygon(None, Box::new(|| Some(rings))), &advances(), (1.0, None), 10.0).expect("inside");
         assert!((c.1 - 600.0).abs() < 1.0 && (600.0..800.0).contains(&c.0), "{c:?}");
         // A polygon that neither line runs inside: none.
         let away = vec![vec![(0.0, 900.0), (100.0, 900.0), (100.0, 990.0), (0.0, 990.0)]];
-        assert!(curved(&guides, None, Near::Polygon(None, Box::new(|| Some(away))), &advances(), 1.0, 10.0).is_none());
+        assert!(curved(&guides, None, Near::Polygon(None, Box::new(|| Some(away))), &advances(), (1.0, None), 10.0).is_none());
         // A polygon whose box meets no guide line: its outline isn't worked out.
         let asked = std::cell::Cell::new(false);
         let far = Near::Polygon(
@@ -237,8 +253,39 @@ mod tests {
                 None
             }),
         );
-        assert!(curved(&guides, None, far, &advances(), 1.0, 10.0).is_none());
+        assert!(curved(&guides, None, far, &advances(), (1.0, None), 10.0).is_none());
         assert!(!asked.get(), "its outline isn't worked out");
+    }
+
+    /// With a `stretch` (#2262), a label covers that share of its guide line: a polygon's named
+    /// line and a point's nearest alike.
+    #[test]
+    fn a_stretched_label_covers_its_share_of_its_guide_line() {
+        let mut guides = Guides::default();
+        let straight: Vec<(f32, f32)> = (0..=10).map(|i| (500.0 + 40.0 * i as f32, 600.0)).collect();
+        guides.push(&straight, Some("Serra Reta"));
+        let stretch = Some(line_labels::Stretch { share: 0.7, lo: -6.65, hi: 66.5 });
+        // From the first character's start to the last one's end (each 8 wide).
+        let covered = |(_, turns): &Curved| turns.last().unwrap().0 - turns[0].0 + 8.0;
+        let named = curved(&guides, Some("serra reta"), Near::Polygon(None, Box::new(|| None)), &advances(), (1.0, stretch), 10.0);
+        assert!((covered(&named.expect("on its line")) / 400.0 - 0.7).abs() < 0.05);
+        let near = curved(&guides, None, Near::Point((700.0, 590.0)), &advances(), (1.0, stretch), 10.0).expect("nearest");
+        assert!((covered(&near) / 400.0 - 0.7).abs() < 0.05);
+        // Without one, at its own spacing.
+        let own = curved(&guides, None, Near::Point((700.0, 590.0)), &advances(), (1.0, None), 10.0).expect("nearest");
+        assert!((covered(&own) - line_labels::curved_len(&advances(), 1.0)).abs() < 0.5);
+        // Inside a polygon with a hole the stretched text would straddle: every character is
+        // checked, so it falls back to its own spacing, clear of the hole.
+        let mut unnamed = Guides::default();
+        unnamed.push(&straight, None);
+        let rings = vec![
+            vec![(480.0, 560.0), (920.0, 560.0), (920.0, 640.0), (480.0, 640.0)],
+            vec![(600.0, 580.0), (625.0, 580.0), (625.0, 620.0), (600.0, 620.0)],
+        ];
+        let holed = Near::Polygon(None, Box::new(|| Some(rings)));
+        let (c, turns) = curved(&unnamed, None, holed, &advances(), (1.0, stretch), 10.0).expect("beside the hole");
+        assert!(turns.iter().all(|t| !(596.0..629.0).contains(&(c.0 + t.0))), "{c:?} {turns:?}");
+        assert!((covered(&(c, turns)) - line_labels::curved_len(&advances(), 1.0)).abs() < 0.5, "at its own spacing");
     }
 
     /// A polygon's value's line too short for its text falls to the line inside it, not to none.
@@ -251,7 +298,7 @@ mod tests {
         let rings = vec![vec![(480.0, 560.0), (920.0, 560.0), (920.0, 640.0), (480.0, 640.0)]];
         let named = Near::Polygon(None, Box::new(|| Some(rings)));
         let (c, turns) =
-            curved(&guides, Some("serra grande"), named, &advances(), 1.0, 10.0).expect("inside, its named line being too short");
+            curved(&guides, Some("serra grande"), named, &advances(), (1.0, None), 10.0).expect("inside, its named line being too short");
         assert!((c.1 - 600.0).abs() < 1.0 && !turns.is_empty(), "{c:?}");
     }
 
@@ -276,25 +323,25 @@ mod tests {
         let text = line_labels::curved_len(&advances(), 1.0);
         // 60 points off the arc's middle, nearer than the text is long: on the arc, near the point.
         let p = (300.0f32 * 0.707 + 42.0, 400.0 - 300.0 * 0.707 - 42.0);
-        let (c, _) = curved(&guides, None, Near::Point(p), &advances(), 1.0, 10.0).expect("nearest");
+        let (c, _) = curved(&guides, None, Near::Point(p), &advances(), (1.0, None), 10.0).expect("nearest");
         assert!((c.0.hypot(c.1 - 400.0) - 300.0).abs() < 6.0 && (c.0 - p.0).hypot(c.1 - p.1) < text, "{c:?}");
         // Farther than the text's width: none.
-        assert!(curved(&guides, None, Near::Point((p.0 + text, p.1 - text)), &advances(), 1.0, 10.0).is_none());
+        assert!(curved(&guides, None, Near::Point((p.0 + text, p.1 - text)), &advances(), (1.0, None), 10.0).is_none());
         // A line shorter than the text: none.
         let mut short = Guides::default();
         short.push(&[(0.0, 0.0), (20.0, 0.0)], None);
-        assert!(curved(&short, None, Near::Point((10.0, 5.0)), &advances(), 1.0, 10.0).is_none());
+        assert!(curved(&short, None, Near::Point((10.0, 5.0)), &advances(), (1.0, None), 10.0).is_none());
         // A line of its value far off isn't its own: the nearest within the text's width is, and
         // one of its value there before a nearer one.
         let mut named = Guides::default();
         named.push(&arc(), None);
         let far: Vec<(f32, f32)> = (0..=10).map(|i| (2000.0 + 40.0 * i as f32, 2000.0)).collect();
         named.push(&far, Some("Pico"));
-        let (c, _) = curved(&named, Some("Pico"), Near::Point(p), &advances(), 1.0, 10.0).expect("the arc beside it");
+        let (c, _) = curved(&named, Some("Pico"), Near::Point(p), &advances(), (1.0, None), 10.0).expect("the arc beside it");
         assert!((c.0 - p.0).hypot(c.1 - p.1) < text, "{c:?}");
         let beside: Vec<(f32, f32)> = (0..=10).map(|i| (p.0 - 200.0 + 40.0 * i as f32, p.1 + 90.0)).collect();
         named.push(&beside, Some("pico"));
-        let (c, _) = curved(&named, Some("Pico"), Near::Point(p), &advances(), 1.0, 10.0).expect("its own beside it");
+        let (c, _) = curved(&named, Some("Pico"), Near::Point(p), &advances(), (1.0, None), 10.0).expect("its own beside it");
         assert!((c.1 - (p.1 + 90.0)).abs() < 1.0, "{c:?}");
     }
 

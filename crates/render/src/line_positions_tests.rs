@@ -21,6 +21,7 @@ fn curved(line: &[(f32, f32)]) -> Candidate {
                 chars: "road".chars().map(|c| c.to_string()).collect(),
                 advances: vec![10.0; 4],
                 gap: 0.0,
+                own_gap: None,
                 size: 10.0,
                 overrun: 10.0,
                 off: 0.0,
@@ -45,6 +46,30 @@ fn curves_are_laid_out_only_until_a_place_fits() {
     assert!(won > 0 && won < 8);
     label_places::LAYOUTS.with(|n| assert_eq!(n.get(), usize::from(won) + 1));
     assert_eq!(p.labels[1].glyphs.len(), 4);
+}
+
+/// A stretched place (#2262) its wider text can't follow is laid out at the class's own spacing,
+/// so Try Other Places doesn't drop it.
+#[test]
+fn a_stretched_place_too_bent_for_it_falls_back_to_the_own_spacing() {
+    let line = Arc::new(line_labels::Line::new(&[(0.0, 100.0), (300.0, 100.0), (300.0, 200.0)]).unwrap());
+    let spec = |own_gap| label_places::CurveSpec {
+        line: line.clone(),
+        chars: "road".chars().map(|c| c.to_string()).collect(),
+        advances: vec![10.0; 4],
+        gap: 60.0,
+        own_gap,
+        size: 10.0,
+        overrun: 0.0,
+        off: 0.0,
+    };
+    // 220 points wide at 200 along: across the corner at 300; set close, 40 wide, it isn't.
+    let curves = |own_gap| label_places::Curves::new(Arc::new(spec(own_gap)), vec![200.0], None);
+    let template = label("road", 0.0, None, 0.0);
+    assert!(curves(None).place(0, &mut template.clone()).is_none());
+    let p = curves(Some(0.0)).place(0, &mut template.clone()).expect("at its own spacing");
+    let span = p.glyphs.last().unwrap().dx - p.glyphs[0].dx;
+    assert!((span - 30.0).abs() < 1.0, "{span}");
 }
 
 #[test]

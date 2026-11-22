@@ -52,6 +52,41 @@ pub(super) fn spread_gap(advances: &[f32], gap: f32, room: f32, stretch: f32) ->
     (wide - gap > 0.01).then_some(wide)
 }
 
+/// A class's `stretch` on a curved label that isn't fitted (#2262: along a line, a polygon's
+/// centre line or a guide line): its letters are spaced so it covers `share` of the line it
+/// follows, the spacing held within `lo`..=`hi` (letter spacing's range, in the advances' units).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Stretch {
+    pub share: f32,
+    pub lo: f32,
+    pub hi: f32,
+}
+
+impl Stretch {
+    /// The letter spacing at which `advances` covers `share` of `room`, or as near as the range
+    /// lets it; `None` for fewer than two characters or a room or share that isn't a positive
+    /// number (the label keeps its own spacing).
+    pub(super) fn gap(&self, advances: &[f32], room: f32) -> Option<f32> {
+        let target = self.share * room;
+        if advances.len() < 2 || !(target.is_finite() && target > 0.0 && self.lo <= self.hi) {
+            return None;
+        }
+        let (mut lo, mut hi) = (self.lo, self.hi);
+        if curved_len(advances, hi) <= target {
+            return Some(hi);
+        }
+        if curved_len(advances, lo) >= target {
+            return Some(lo);
+        }
+        // `curved_len` never shrinks as the spacing grows.
+        for _ in 0..40 {
+            let g = (lo + hi) / 2.0;
+            if curved_len(advances, g) < target { lo = g } else { hi = g }
+        }
+        Some(hi)
+    }
+}
+
 /// A line in screen points, with how far along it each vertex is.
 #[derive(Debug)]
 struct Path {
@@ -963,6 +998,23 @@ mod tests {
         let tight = [1.0, 10.0, 1.0];
         let wide = spread_gap(&tight, -5.0, 36.0, 0.6).unwrap();
         assert!((curved_len(&tight, wide) - 0.6 * 36.0).abs() < 0.01, "{wide}");
+    }
+
+    /// `stretch` without `fit` (#2262): the text covers that share of its line, within letter
+    /// spacing's range, wider or tighter than its own; none for one character.
+    #[test]
+    fn a_stretched_label_covers_its_share_of_the_line_within_the_spacing_range() {
+        let advances = [10.0; 5];
+        let s = |share: f32| Stretch { share, lo: -6.65, hi: 66.5 };
+        for (share, room) in [(0.7, 400.0), (0.5, 120.0), (0.9, 60.0)] {
+            let gap = s(share).gap(&advances, room).unwrap();
+            assert!((curved_len(&advances, gap) - share * room).abs() < 0.01, "{share} of {room}: {gap}");
+        }
+        // Past the range: held at its ends.
+        assert_eq!(s(1.0).gap(&advances, 10_000.0), Some(66.5));
+        assert_eq!(s(0.1).gap(&advances, 100.0), Some(-6.65));
+        assert_eq!(s(0.7).gap(&[10.0], 400.0), None);
+        assert_eq!(s(0.7).gap(&advances, f32::NAN), None);
     }
 
     /// The repeats clear of a spread label (#2265): as [`repeats`] beyond it, the nearer ones
