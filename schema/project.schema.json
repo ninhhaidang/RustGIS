@@ -1166,7 +1166,7 @@
           "blank-paper",
           "layout-frame-border",
           "native-coordinates",
-          "layout-legend-text",
+          "layout-text-size",
           "label-guide",
           "project-crs"
         ],
@@ -1268,7 +1268,7 @@
     "blank-paper",
     "layout-frame-border",
     "native-coordinates",
-    "layout-legend-text",
+    "layout-text-size",
     "label-guide",
     "project-crs"
   ],

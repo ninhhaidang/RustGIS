@@ -12048,6 +12048,8 @@ fn publication_layouts_fit_their_pages() {
     for change in [
         json!({"element": frame, "scale": 20_000_000.0}),
         json!({"element": bar, "units": "miles"}),
+        json!({"element": bar, "textSize": 40}),
+        json!({"element": bar, "textSize": null}),
         json!({"element": frame, "scale": 7_000_000.0}),
     ] {
         let mut change = change;
@@ -12058,6 +12060,8 @@ fn publication_layouts_fit_their_pages() {
         widths.push(width(&s));
     }
     assert!(widths.iter().any(|w| (w - first).abs() > 0.5), "the box changed: {first} mm, then {widths:?}");
+    // Its bar's labels at 40 points need a wider box for the last one, and 8 gives the width back.
+    assert!(widths[2] > widths[1] + 0.5 && (widths[3] - widths[1]).abs() < 1e-9, "{widths:?}");
     // A long title wraps within the frame, and pushes the map down; the result names every
     // element for layout.update.
     let r = s.run("layout.publication", &json!({"extent": piaui, "title": long})).unwrap();
@@ -14176,6 +14180,138 @@ fn a_legend_takes_columns_from_one_to_three() {
     }
 }
 
+/// A scale bar's `textSize` and a grid's `labelSize` (#2581): 8 points unless given, the edges 4
+/// and 100 taken, `null` giving 8 back, refused out of range or as anything but a number with the
+/// element keeping its own, refused on other elements (where `null` is let through), undone as any
+/// change; other options leave them as they are.
+#[test]
+fn scale_bars_and_grids_take_a_label_size() {
+    use rustgis_map::layout::{ElementKind, GRID_LABEL_PT, SCALE_BAR_TEXT_PT};
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "map"})).unwrap();
+    let frame = s.project.layouts[0].first_frame().unwrap();
+    let bar_size = |s: &Session, id: u64| match s.project.layouts[0].element(id as u32).map(|e| &e.kind) {
+        Some(ElementKind::ScaleBar { text_size, .. }) => *text_size,
+        other => panic!("{other:?}"),
+    };
+    let grid_size = |s: &Session| match s.project.layouts[0].element(frame).map(|e| &e.kind) {
+        Some(ElementKind::MapFrame { grid: Some(g), .. }) => g.label_size,
+        other => panic!("{other:?}"),
+    };
+    let bar = s.run("layout.addElement", &json!({"kind": "scaleBar"})).unwrap()["element"].as_u64().unwrap();
+    assert_eq!(bar_size(&s, bar), SCALE_BAR_TEXT_PT);
+    let big = s.run("layout.addElement", &json!({"kind": "scaleBar", "textSize": 16})).unwrap()["element"].as_u64().unwrap();
+    assert_eq!(bar_size(&s, big), 16.0);
+    s.run("layout.update", &json!({"element": bar, "textSize": 12.5})).unwrap();
+    assert_eq!(bar_size(&s, bar), 12.5);
+    s.run("layout.update", &json!({"element": bar, "divisions": 2, "units": "miles"})).unwrap();
+    assert_eq!(bar_size(&s, bar), 12.5, "other options leave it");
+    for edge in [4.0, 100.0] {
+        s.run("layout.update", &json!({"element": bar, "textSize": edge})).unwrap();
+        assert_eq!(bar_size(&s, bar), edge);
+    }
+    s.run("layout.update", &json!({"element": bar, "textSize": null})).unwrap();
+    assert_eq!(bar_size(&s, bar), SCALE_BAR_TEXT_PT, "null gives the default back");
+    // Its labels' room (#2581): a box too short for them at 40 points is said, on the size and on
+    // a resize; one that holds them, or the default, says nothing.
+    let said = |s: &Session, mark: u64| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>().join(" | ");
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "textSize": 14})).unwrap();
+    assert_eq!(said(&s, mark), "", "14 points fit its 12 mm box");
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "textSize": 40})).unwrap();
+    assert!(said(&s, mark).contains("its box is too small for its labels"), "{}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "h": 60, "w": 150, "y": 20})).unwrap();
+    assert_eq!(said(&s, mark), "", "a larger box holds them");
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "h": 12})).unwrap();
+    assert!(said(&s, mark).contains("its box is too small"), "{}", said(&s, mark));
+    // Its frame drawn at another scale or zoomed changes its labels: a bar that doesn't fit is told
+    // then too, and one that fits isn't.
+    for change in
+        [("layout.update", json!({"element": frame, "scale": 25_000_000.0})), ("layout.frameZoom", json!({"element": frame, "to": "view"}))]
+    {
+        let mark = s.notice_mark();
+        s.run(change.0, &change.1).unwrap();
+        assert!(said(&s, mark).contains("its box is too small"), "{change:?}: {}", said(&s, mark));
+    }
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "textSize": null})).unwrap();
+    assert_eq!(said(&s, mark), "", "the default fits");
+    for change in
+        [("layout.update", json!({"element": frame, "scale": 30_000_000.0})), ("layout.frameZoom", json!({"element": frame, "to": "view"}))]
+    {
+        let mark = s.notice_mark();
+        s.run(change.0, &change.1).unwrap();
+        assert_eq!(said(&s, mark), "", "{change:?}");
+    }
+    // Two bars that don't fit are told in one notice, with their count and names.
+    s.run("layout.update", &json!({"element": big, "textSize": 40, "h": 12})).unwrap();
+    s.run("layout.update", &json!({"element": bar, "textSize": 40})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": frame, "scale": 25_000_000.0})).unwrap();
+    assert!(said(&s, mark).starts_with("2 scale bars (") && !said(&s, mark).contains(" | "), "{}", said(&s, mark));
+    // A bar without ink draws no labels and isn't measured; a colour that shows it is told.
+    s.run("layout.update", &json!({"element": big, "textSize": 16})).unwrap();
+    s.run("layout.update", &json!({"element": bar, "color": "#22222200"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": frame, "scale": 30_000_000.0})).unwrap();
+    assert_eq!(said(&s, mark), "", "a bar without ink");
+    s.run("layout.update", &json!({"element": bar, "color": "#222222"})).unwrap();
+    assert!(said(&s, mark).contains("its box is too small"), "{}", said(&s, mark));
+    s.run("layout.update", &json!({"element": bar, "textSize": null})).unwrap();
+
+    s.run("layout.addElement", &json!({"kind": "grid", "frame": frame, "step": 10})).unwrap();
+    assert_eq!(grid_size(&s), GRID_LABEL_PT);
+    s.run("layout.addElement", &json!({"kind": "grid", "frame": frame, "labelSize": 14})).unwrap();
+    assert_eq!(grid_size(&s), 14.0);
+    s.run("layout.addElement", &json!({"kind": "grid", "frame": frame, "style": "ticks"})).unwrap();
+    assert_eq!(grid_size(&s), 14.0, "options not given keep the grid's");
+    s.run("layout.update", &json!({"element": frame, "grid": {"labelSize": 4}})).unwrap();
+    assert_eq!(grid_size(&s), 4.0);
+    s.run("layout.update", &json!({"element": frame, "grid": {"labelSize": 100}})).unwrap();
+    assert_eq!(grid_size(&s), 100.0);
+    s.run("layout.update", &json!({"element": frame, "grid": {"labelSize": null}})).unwrap();
+    assert_eq!(grid_size(&s), GRID_LABEL_PT, "null gives the default back");
+
+    for bad in [json!(3.9), json!(100.5), json!(1e6), json!("12"), json!(true), json!([8])] {
+        let err = s.run("layout.update", &json!({"element": big, "textSize": bad})).unwrap_err();
+        assert!(err.contains("textSize is a number of points, 4 to 100"), "{bad}: {err}");
+        assert_eq!(bar_size(&s, big), 16.0, "{bad}");
+        let err = s.run("layout.addElement", &json!({"kind": "scaleBar", "textSize": bad})).unwrap_err();
+        assert!(err.contains("textSize is a number of points, 4 to 100"), "{bad}: {err}");
+        let err = s.run("layout.update", &json!({"element": frame, "grid": {"labelSize": bad}})).unwrap_err();
+        assert!(err.contains("labelSize is a number of points, 4 to 100"), "{bad}: {err}");
+        let err = s.run("layout.addElement", &json!({"kind": "grid", "frame": frame, "labelSize": bad})).unwrap_err();
+        assert!(err.contains("labelSize is a number of points, 4 to 100"), "{bad}: {err}");
+        assert_eq!(grid_size(&s), GRID_LABEL_PT, "{bad}");
+    }
+
+    s.run("layout.update", &json!({"element": bar, "textSize": 20})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(bar_size(&s, bar), SCALE_BAR_TEXT_PT, "undone");
+    s.run("layout.update", &json!({"element": frame, "grid": {"labelSize": 20}})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(grid_size(&s), GRID_LABEL_PT, "undone");
+
+    // labelSize belongs to a grid's options: refused elsewhere unless null.
+    let arrow = s.run("layout.addElement", &json!({"kind": "northArrow"})).unwrap();
+    for (cmd, p) in [
+        ("layout.addElement", json!({"kind": "scaleBar", "labelSize": 12})),
+        ("layout.addElement", json!({"kind": "northArrow", "textSize": 12})),
+        ("layout.update", json!({"element": arrow["element"], "textSize": 12})),
+        ("layout.update", json!({"element": bar, "labelSize": 12})),
+        ("layout.update", json!({"element": frame, "labelSize": 12})),
+    ] {
+        let err = s.run(cmd, &p).unwrap_err();
+        assert!(err.contains("only legends and scale bars take textSize") || err.contains("only grids take labelSize"), "{p}: {err}");
+    }
+    s.run("layout.addElement", &json!({"kind": "northArrow", "textSize": null, "labelSize": null})).unwrap();
+    s.run("layout.update", &json!({"element": bar, "labelSize": null})).unwrap();
+    assert_eq!(bar_size(&s, bar), SCALE_BAR_TEXT_PT);
+}
+
 /// `"textSize"` on a legend (#2581): given and changed, 4 to 100 points, null giving the default
 /// back, refused out of that range, as anything but a number and on any other element (where
 /// null is let through, as for `showNoData`); undone as any change; a size its box no longer
@@ -14232,9 +14368,9 @@ fn a_legend_takes_a_text_size() {
     assert_eq!(size(&s, id), LEGEND_TEXT_PT, "undone");
     let arrow = s.run("layout.addElement", &json!({"kind": "northArrow"})).unwrap();
     let err = s.run("layout.addElement", &json!({"kind": "northArrow", "textSize": 12})).unwrap_err();
-    assert!(err.contains("only legends take textSize"), "{err}");
+    assert!(err.contains("only legends and scale bars take textSize"), "{err}");
     let err = s.run("layout.update", &json!({"element": arrow["element"], "textSize": 12})).unwrap_err();
-    assert!(err.contains("only legends take textSize"), "{err}");
+    assert!(err.contains("only legends and scale bars take textSize"), "{err}");
     // A null there is let through, as for showNoData: it asks for nothing.
     s.run("layout.addElement", &json!({"kind": "northArrow", "textSize": null})).unwrap();
     s.run("layout.update", &json!({"element": arrow["element"], "textSize": null})).unwrap();

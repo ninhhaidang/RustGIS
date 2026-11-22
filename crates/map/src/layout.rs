@@ -126,6 +126,11 @@ pub struct Grid {
     /// zone: the one named, else the map's own when it is one, else the zone at the frame's centre.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mgrs: bool,
+    /// The size of its labels, in points, within [`LAYOUT_TEXT_SIZE`] (#2581): their room from
+    /// the frame's edge and MGRS squares' names follow in proportion. [`GRID_LABEL_PT`] unless
+    /// set, and left out then, so layouts saved before keep their bytes.
+    #[serde(default = "grid_label_pt", skip_serializing_if = "is_grid_label_pt")]
+    pub label_size: f64,
 }
 
 /// What a grid's lines are.
@@ -219,6 +224,7 @@ impl Default for Grid {
             crs: None,
             short: false,
             mgrs: false,
+            label_size: GRID_LABEL_PT,
         }
     }
 }
@@ -845,13 +851,26 @@ fn is_one_column(columns: &usize) -> bool {
 /// A legend's text size until it is set (#2581), in points: its layers' names and classes'
 /// labels, as legends have always drawn them.
 pub const LEGEND_TEXT_PT: f64 = 9.0;
-/// The sizes a legend's text takes, in points.
-pub const LEGEND_TEXT_SIZE: std::ops::RangeInclusive<f64> = 4.0..=100.0;
+/// A scale bar's labels' size until it is set (#2581), in points, as scale bars have always
+/// drawn them.
+pub const SCALE_BAR_TEXT_PT: f64 = 8.0;
+/// A grid's labels' size until it is set (#2581), in points, as grids have always drawn them.
+pub const GRID_LABEL_PT: f64 = 8.0;
+/// The sizes a legend's, a scale bar's or a grid's text takes, in points (#2581).
+pub const LAYOUT_TEXT_SIZE: std::ops::RangeInclusive<f64> = 4.0..=100.0;
 
-/// A legend's text size kept within [`LEGEND_TEXT_SIZE`], [`LEGEND_TEXT_PT`] when it is no number:
-/// what a layout opened and the drawing take, so they agree (a command refuses one out of range).
-pub fn legend_text_in_range(pt: f64) -> f64 {
-    finite_or(pt, LEGEND_TEXT_PT).clamp(*LEGEND_TEXT_SIZE.start(), *LEGEND_TEXT_SIZE.end())
+/// A legend's, scale bar's or grid's text size kept within [`LAYOUT_TEXT_SIZE`], its `default`
+/// when it is no number: what a layout opened and the drawing take, so they agree (a command
+/// refuses one out of range).
+pub fn layout_text_in_range(pt: f64, default: f64) -> f64 {
+    finite_or(pt, default).clamp(*LAYOUT_TEXT_SIZE.start(), *LAYOUT_TEXT_SIZE.end())
+}
+
+/// How many times its `default` a text of `pt` points is drawn, `pt` brought into range as
+/// [`layout_text_in_range`] does: what a legend's rows, a scale bar's or a grid's labels and
+/// their room are scaled by (#2581).
+pub fn layout_text_scale(pt: f64, default: f64) -> f64 {
+    layout_text_in_range(pt, default) / default
 }
 
 fn legend_text_pt() -> f64 {
@@ -860,6 +879,22 @@ fn legend_text_pt() -> f64 {
 
 fn is_legend_text_pt(size: &f64) -> bool {
     *size == LEGEND_TEXT_PT
+}
+
+fn scale_bar_text_pt() -> f64 {
+    SCALE_BAR_TEXT_PT
+}
+
+fn is_scale_bar_text_pt(size: &f64) -> bool {
+    *size == SCALE_BAR_TEXT_PT
+}
+
+fn grid_label_pt() -> f64 {
+    GRID_LABEL_PT
+}
+
+fn is_grid_label_pt(size: &f64) -> bool {
+    *size == GRID_LABEL_PT
 }
 
 /// The dark grey a scale bar draws in by default, and a legend, colorbar, table or chart without
@@ -975,6 +1010,12 @@ pub enum ElementKind {
         /// The alternating bar's light divisions.
         #[serde(default = "white")]
         fill: Rgba,
+        /// The size of its labels, in points, within [`LAYOUT_TEXT_SIZE`] (#2581): the room over
+        /// the bar and between labels follows in proportion, the bar keeping its size.
+        /// [`SCALE_BAR_TEXT_PT`] unless set, and left out then, so layouts saved before keep their
+        /// bytes.
+        #[serde(default = "scale_bar_text_pt", skip_serializing_if = "is_scale_bar_text_pt")]
+        text_size: f64,
     },
     Legend {
         frame: u32,
@@ -1010,7 +1051,7 @@ pub enum ElementKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<Rgba>,
         /// The size of its layers' names and its classes' labels, in points, within
-        /// [`LEGEND_TEXT_SIZE`] (#2581): its title, rows, swatches and gaps follow in proportion,
+        /// [`LAYOUT_TEXT_SIZE`] (#2581): its title, rows, swatches and gaps follow in proportion,
         /// a point symbol keeping the size the map draws it at. [`LEGEND_TEXT_PT`] unless set,
         /// and left out then, so layouts saved before keep their bytes.
         #[serde(default = "legend_text_pt", skip_serializing_if = "is_legend_text_pt")]
@@ -1395,6 +1436,7 @@ impl ElementKind {
             style: ScaleBarStyle::default(),
             color: ink(),
             fill: white(),
+            text_size: SCALE_BAR_TEXT_PT,
         }
     }
 
@@ -1473,9 +1515,15 @@ impl ElementKind {
         }
     }
 
-    /// Whether it is a legend whose text isn't the default size (#2581).
-    pub fn has_custom_legend_text(&self) -> bool {
-        matches!(self, ElementKind::Legend { text_size, .. } if !is_legend_text_pt(text_size))
+    /// Whether it is a legend whose text, a scale bar whose labels or a map frame whose grid's
+    /// labels aren't their default size (#2581).
+    pub fn has_custom_text_size(&self) -> bool {
+        match self {
+            ElementKind::Legend { text_size, .. } => !is_legend_text_pt(text_size),
+            ElementKind::ScaleBar { text_size, .. } => !is_scale_bar_text_pt(text_size),
+            ElementKind::MapFrame { grid: Some(g), .. } => !is_grid_label_pt(&g.label_size),
+            _ => false,
+        }
     }
 
     /// Whether it is a map frame whose border isn't the default one (#2557).
@@ -2513,10 +2561,11 @@ impl Layout {
                             }
                         }
                         g.width = finite_or(g.width, grid_width()).clamp(0.0, MAX_GRID_WIDTH);
+                        g.label_size = layout_text_in_range(g.label_size, GRID_LABEL_PT);
                     }
                 }
                 ElementKind::Legend { exclude, columns, labels, text_size, .. } => {
-                    *text_size = legend_text_in_range(*text_size);
+                    *text_size = layout_text_in_range(*text_size, LEGEND_TEXT_PT);
                     // Names stay whole: a layer's own name isn't cut, and a cut one would no
                     // longer match it.
                     cut |= exclude.len() > MAX_LEGEND_EXCLUDED;
@@ -2549,7 +2598,10 @@ impl Layout {
                     text.truncate(end);
                 }
                 ElementKind::Table { rows, .. } => *rows = (*rows).clamp(1, 500),
-                ElementKind::ScaleBar { divisions, .. } => *divisions = (*divisions).clamp(1, MAX_SCALE_DIVISIONS),
+                ElementKind::ScaleBar { divisions, text_size, .. } => {
+                    *divisions = (*divisions).clamp(1, MAX_SCALE_DIVISIONS);
+                    *text_size = layout_text_in_range(*text_size, SCALE_BAR_TEXT_PT);
+                }
                 ElementKind::Rectangle { width, .. } | ElementKind::Ellipse { width, .. } => {
                     *width = finite_or(*width, 1.0).clamp(0.0, 50.0)
                 }
@@ -3597,15 +3649,58 @@ mod tests {
         };
         let old: Layout = serde_json::from_str(&page(r#"{"frame":1,"title":"L"}"#)).unwrap();
         assert_eq!(size(&old), LEGEND_TEXT_PT);
-        assert!(!old.elements[1].kind.has_custom_legend_text());
+        assert!(!old.elements[1].kind.has_custom_text_size());
         assert!(!serde_json::to_string(&old).unwrap().contains("text_size"), "the default isn't written");
         let mut big: Layout = serde_json::from_str(&page(r#"{"frame":1,"title":"L","text_size":1e9}"#)).unwrap();
         assert_eq!(big.clamp().elements_adjusted, 1);
-        assert_eq!(size(&big), *LEGEND_TEXT_SIZE.end());
-        assert!(big.elements[1].kind.has_custom_legend_text());
+        assert_eq!(size(&big), *LAYOUT_TEXT_SIZE.end());
+        assert!(big.elements[1].kind.has_custom_text_size());
         let saved = serde_json::to_string(&big).unwrap();
         assert!(saved.contains(r#""text_size":100.0"#), "{saved}");
         assert_eq!(serde_json::from_str::<Layout>(&saved).unwrap(), big);
+    }
+
+    #[test]
+    fn scale_bar_and_grid_label_sizes_default_and_are_kept_in_range() {
+        let page = |grid: &str, bar: &str| {
+            format!(
+                r#"{{"name":"x","width":297,"height":210,"elements":[
+                {{"id":1,"name":"f","x":0,"y":0,"w":100,"h":100,"kind":{{"MapFrame":{{"map":"M","center":{{"x":0,"y":0}},"scale":1e6,"grid":{grid}}}}}}},
+                {{"id":2,"name":"s","x":0,"y":0,"w":50,"h":10,"kind":{{"ScaleBar":{bar}}}}}]}}"#
+            )
+        };
+        let sizes = |l: &Layout| match (&l.elements[0].kind, &l.elements[1].kind) {
+            (ElementKind::MapFrame { grid: Some(g), .. }, ElementKind::ScaleBar { text_size, .. }) => (g.label_size, *text_size),
+            _ => panic!("a frame with a grid and a scale bar expected"),
+        };
+        let old: Layout = serde_json::from_str(&page(r#"{"step":10,"color":[0,0,0,255]}"#, r#"{"frame":1}"#)).unwrap();
+        assert_eq!(sizes(&old), (GRID_LABEL_PT, SCALE_BAR_TEXT_PT));
+        assert!(old.elements.iter().all(|e| !e.kind.has_custom_text_size()));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("text_size") && !text.contains("label_size"), "the defaults aren't written: {text}");
+        assert_eq!(ElementKind::scale_bar(1), old.elements[1].kind, "a new bar is the default one");
+        // Out of range, or not a number a reader can draw at, each is brought in and counted.
+        for (bad, (grid, bar)) in [("1e9", (100.0, 100.0)), ("-3", (4.0, 4.0)), ("0.5", (4.0, 4.0))] {
+            let mut l: Layout = serde_json::from_str(&page(
+                &format!(r#"{{"step":10,"color":[0,0,0,255],"label_size":{bad}}}"#),
+                &format!(r#"{{"frame":1,"text_size":{bad}}}"#),
+            ))
+            .unwrap();
+            assert_eq!(l.clamp().elements_adjusted, 2, "{bad}");
+            assert_eq!(sizes(&l), (grid, bar), "{bad}");
+            assert!(l.elements.iter().all(|e| e.kind.has_custom_text_size()), "{bad}");
+            assert!(l.clamp().is_empty(), "{bad}: a repaired layout needs nothing more");
+        }
+        let mut sized: Layout =
+            serde_json::from_str(&page(r#"{"step":10,"color":[0,0,0,255],"label_size":14}"#, r#"{"frame":1,"text_size":16}"#)).unwrap();
+        assert!(sized.clamp().is_empty(), "sizes in range are left as they are");
+        assert_eq!(sizes(&sized), (14.0, 16.0));
+        let saved = serde_json::to_string(&sized).unwrap();
+        assert!(saved.contains(r#""label_size":14.0"#) && saved.contains(r#""text_size":16.0"#), "{saved}");
+        assert_eq!(serde_json::from_str::<Layout>(&saved).unwrap(), sized);
+        // A non-finite size, as a program may hand it, falls back to the default.
+        assert_eq!(layout_text_in_range(f64::NAN, SCALE_BAR_TEXT_PT), SCALE_BAR_TEXT_PT);
+        assert_eq!(layout_text_in_range(f64::INFINITY, GRID_LABEL_PT), GRID_LABEL_PT);
     }
 
     #[test]

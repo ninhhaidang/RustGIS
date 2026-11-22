@@ -1,7 +1,7 @@
 {
   "format": 2,
   "name": "Legend text sizes",
-  "requires": ["layout-legend-text"],
+  "requires": ["layout-text-size"],
   "active_map": 0,
   "maps": [
     {

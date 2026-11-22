@@ -106,7 +106,7 @@ pub const CAPABILITIES: &[&str] = &[
     "blank-paper",
     "layout-frame-border",
     NATIVE_COORDINATES,
-    "layout-legend-text",
+    "layout-text-size",
     "label-guide",
     PROJECT_CRS,
 ];

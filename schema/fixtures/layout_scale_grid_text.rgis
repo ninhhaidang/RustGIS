@@ -1,0 +1,87 @@
+{
+  "format": 2,
+  "name": "Scale bar and grid text sizes",
+  "requires": [
+    "layout-text-size"
+  ],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {
+        "center": {
+          "x": 0,
+          "y": 0
+        },
+        "res": 30000
+      }
+    }
+  ],
+  "layouts": [
+    {
+      "name": "Sizes",
+      "width": 200,
+      "height": 100,
+      "elements": [
+        {
+          "id": 1,
+          "name": "Map Frame",
+          "x": 5,
+          "y": 5,
+          "w": 90,
+          "h": 90,
+          "kind": {
+            "MapFrame": {
+              "map": "Map",
+              "center": {
+                "x": 0,
+                "y": 0
+              },
+              "scale": 1000000,
+              "grid": {
+                "step": 10,
+                "color": [
+                  64,
+                  72,
+                  85,
+                  150
+                ],
+                "labels": true,
+                "label_size": 14
+              }
+            }
+          }
+        },
+        {
+          "id": 2,
+          "name": "Default",
+          "x": 100,
+          "y": 5,
+          "w": 70,
+          "h": 12,
+          "kind": {
+            "ScaleBar": {
+              "frame": 1
+            }
+          }
+        },
+        {
+          "id": 3,
+          "name": "Poster",
+          "x": 100,
+          "y": 30,
+          "w": 90,
+          "h": 20,
+          "kind": {
+            "ScaleBar": {
+              "frame": 1,
+              "text_size": 16
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
