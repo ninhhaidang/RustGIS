@@ -155,6 +155,11 @@ pub struct SourceLayer {
     null_text: Option<Vec<usize>>,
     #[serde(skip)]
     null_text_said: bool,
+    /// Text values a view read found weren't UTF-8 ([`Batch::not_utf8`]), likewise.
+    #[serde(skip)]
+    not_utf8: Option<Vec<usize>>,
+    #[serde(skip)]
+    not_utf8_said: bool,
     /// What else view reads lost or assumed ([`Batch::notes`]), until said by
     /// [`SourceLayer::take_read_notes`].
     #[serde(skip)]
@@ -822,6 +827,25 @@ impl SourceLayer {
         let counts = self.null_text.take()?;
         self.null_text_said = true;
         rustgis_data::source::null_text_note(&fields, &counts)
+    }
+
+    /// Keeps what view reads found of text values that aren't UTF-8, until
+    /// [`SourceLayer::take_not_utf8`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
+    pub fn saw_not_utf8(&mut self, counts: &[usize]) {
+        if !self.not_utf8_said && counts.iter().any(|n| *n > 0) {
+            rustgis_data::source::add_unread_dates(self.not_utf8.get_or_insert_with(Vec::new), counts);
+        }
+    }
+
+    /// What view reads found of text values that aren't UTF-8
+    /// ([`rustgis_data::source::not_utf8_note`]), once for the source.
+    pub fn take_not_utf8(&mut self) -> Option<String> {
+        // Checked first: this runs every frame for each layer with a source, and most have nothing pending.
+        self.not_utf8.as_ref()?;
+        let fields = self.info().map(|i| i.fields.clone())?;
+        let counts = self.not_utf8.take()?;
+        self.not_utf8_said = true;
+        rustgis_data::source::not_utf8_note(&fields, &counts)
     }
 
     /// Keeps what view reads said they lost or assumed ([`Batch::notes`]) until
@@ -1622,6 +1646,8 @@ impl SourceLayer {
         self.rounded_dates_said = false;
         self.null_text = None;
         self.null_text_said = false;
+        self.not_utf8 = None;
+        self.not_utf8_said = false;
         self.forget_read_notes();
         self.reset();
         self.open()
@@ -1951,6 +1977,8 @@ impl SourceLayer {
             rounded_dates_said: _,
             null_text: _,
             null_text_said: _,
+            not_utf8: _,
+            not_utf8_said: _,
             read_notes: _,
             read_note_kinds: _,
             gdal,

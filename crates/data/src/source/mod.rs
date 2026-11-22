@@ -258,6 +258,9 @@ pub struct Batch {
     /// What else the read lost or assumed, one note per kind with its count (values that don't fit
     /// their field, rings without area): said as they are.
     pub notes: Vec<String>,
+    /// Text values of a Shapefile read as UTF-8 that aren't UTF-8, so hold U+FFFD in place of
+    /// those bytes, counted for each field by its position. Said by [`not_utf8_note`].
+    pub not_utf8: Vec<usize>,
 }
 
 /// Counts one more value of the field at `k` that wasn't a date, or one date-time rounded to the
@@ -268,6 +271,12 @@ pub(crate) fn unread_date(counts: &mut Vec<usize>, k: usize) {
 
 /// Counts one more text value `<Null>` read as null in the field at `k` ([`Batch::null_text`]).
 pub(crate) fn null_text_at(counts: &mut Vec<usize>, k: usize) {
+    unread_dates_by(counts, k, 1);
+}
+
+/// Counts one more text value that isn't UTF-8 in the field at `k` ([`Batch::not_utf8`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn not_utf8_at(counts: &mut Vec<usize>, k: usize) {
     unread_dates_by(counts, k, 1);
 }
 
@@ -325,6 +334,26 @@ pub fn null_text_note(fields: &[crate::Field], counts: &[usize]) -> Option<Strin
     }
     let what = if total == 1 { "1 value written as Null was".to_string() } else { format!("{total} values written as Null were") };
     Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
+}
+
+/// What a read says of a `.dbf`'s text values read as UTF-8 that aren't UTF-8
+/// ([`Batch::not_utf8`]): how many, in which fields (the first five named), and why they were read
+/// as UTF-8. `None` when there were none.
+pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let what = if total == 1 {
+        "1 text value isn't valid UTF-8 and was".to_string()
+    } else {
+        format!("{total} text values aren't valid UTF-8 and were")
+    };
+    Some(format!(
+        "{what} read with U+FFFD in place of the bytes that can't be read, in {}; {}",
+        crate::io::named_fields(fields, counts),
+        crate::dbf::NO_OTHER_ENCODING
+    ))
 }
 
 /// What a read says of date-times it rounded to the microsecond ([`Batch::rounded_dates`]), naming
@@ -670,7 +699,7 @@ pub fn materialize(src: &dyn FeatureSource) -> Result<(Dataset, ReadReport)> {
 fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, ReadReport)> {
     let info = src.info();
     let batch = if src.visits_chunks() { read_chunks(src, budget)? } else { read_at_once(src)? };
-    let Batch { features, skipped, unread_dates, rounded_dates, null_text, notes, .. } = batch;
+    let Batch { features, skipped, unread_dates, rounded_dates, null_text, notes, not_utf8, .. } = batch;
     let mut ds = Dataset::new(info.name.clone(), info.geometry_type, info.fields.clone());
     ds.crs = info.coordinate_system();
     // A streamed Shapefile skips unconvertible shapes rather than retaining empty geometry.
@@ -692,7 +721,10 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         losses: Vec::new(),
     };
     let null_text = null_text_note(&info.fields, &null_text);
-    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).chain(notes).map(|n| format!("{}: {n}", info.name)));
+    let not_utf8 = not_utf8_note(&info.fields, &not_utf8);
+    report.messages.extend(
+        unread_dates.into_iter().chain(rounded).chain(null_text).chain(notes).chain(not_utf8).map(|n| format!("{}: {n}", info.name)),
+    );
     if ds.geometry_type == GeometryType::None
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {

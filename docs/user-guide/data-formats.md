@@ -63,7 +63,9 @@ and common East Asian encodings are supported. The Esri `0x57` DBF marker
 is read as Windows-1252. An unreadable, empty, invalid, oversized or unsupported `.cpg` gives a notice and
 falls back to the DBF code page; an unsupported DBF code page gives a notice and falls back to
 UTF-8. Files without encoding metadata keep the UTF-8 default. Unsupported characters become
-replacement characters. This applies to zipped files and large files read in place too.
+replacement characters, and when text read as UTF-8 isn't valid UTF-8 (Big5 text with no `.cpg`,
+say) a notice counts those values and names their fields. This applies to zipped files and large
+files read in place too.
 See the [DBF language-driver support inventory](shapefile-encoding.md) for every recognized
 marker and the legacy code pages that still use the UTF-8 fallback.
 

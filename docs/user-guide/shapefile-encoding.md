@@ -59,6 +59,10 @@ bytes become replacement characters, and the records remain available. An unusab
 adds its own diagnostic before falling back to the LDID. Supplying a valid `.cpg` bypasses
 the LDID and its unsupported-code-page diagnostic.
 
+Whenever text is read as UTF-8 (the markers in this section, unknown markers, `00`, `F0` or a
+UTF-8 `.cpg`), a notice counts the text values whose bytes aren't valid UTF-8 and names their
+fields, and another counts such field names. A file whose text is all valid UTF-8 gives neither.
+
 The existing transitive `yore` 1.4.0 package has CP737, CP857, CP860 and CP863 decoders,
 but RustGIS's current `dbase` adapter does not expose them. Making these available would
 require decoder integration and a coordinated direct dependency declaration; their presence
@@ -82,6 +86,6 @@ tables or system programs are needed for the supported decoders above.
 `crates/data/tests/shapefile_encoding.rs` specifies fixed bytes and Unicode expectations
 independently of RustGIS's mapping. Its matrix covers every marker above, names and values,
 ZIP and loose-file imports, a genuinely sampled streamed read, a complete read, and ordered
-chunk traversal. It also checks `.cpg` precedence, fallback diagnostics, and malformed
-multibyte text without discarding records. Test files are generated locally; the tests do
-not download data or call external converters.
+chunk traversal. It also checks `.cpg` precedence, fallback diagnostics, the notices for text
+that isn't valid UTF-8, and malformed multibyte text without discarding records. Test files are
+generated locally; the tests do not download data or call external converters.

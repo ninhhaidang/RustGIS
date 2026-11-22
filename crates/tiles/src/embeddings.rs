@@ -928,6 +928,7 @@ mod tests {
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
             notes: Vec::new(),
+            not_utf8: Vec::new(),
         };
         let t = aef_tiles(&fields, &batch, 2021, [-123.0, 40.0, -122.0, 41.0]);
         assert_eq!(t.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["near", "far"]);
@@ -994,6 +995,7 @@ mod tests {
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
             notes: Vec::new(),
+            not_utf8: Vec::new(),
         };
         let f = aef_series(&fields, &batch, (2017, 2025), [-43.0, -20.9, -42.9, -20.8]);
         assert_eq!((f.series.len(), f.duplicates, f.dropped, f.complete), (2, 1, 0, false));

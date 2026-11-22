@@ -82,8 +82,9 @@ A result is right, or RustGIS says what it lost or assumed
   [coverage inventory](crates/engine/testdata/reading-losses/README.md#coverage-boundaries)). It covers GeoJSON, TopoJSON, CSV,
   KML, KMZ, GPX, GML, GeoRSS,
   DXF, LandXML and MapInfo, with height-loss cases for CityJSON, CityGML, GeoPackage,
-  FlatGeobuf, GeoParquet and FileGDB, Z/M-loss cases for Shapefile, and ring-loss cases for
-  OSM PBF, WKT height/member losses for XLSX, ODS, XLS and XLSB, and error-cell losses for XLSX; other loss kinds remain.
+  FlatGeobuf, GeoParquet and FileGDB, Z/M-loss and non-UTF-8 text cases for Shapefile, and
+  ring-loss cases for OSM PBF, WKT height/member losses for XLSX, ODS, XLS and XLSB, and
+  error-cell losses for XLSX; other loss kinds remain.
   XLSM shares the XLSX parser; macros are untested.
   Exports are checked by `never_silent_roundtrip.rs` _(open)_.
 - Classify existing loss notices so scheduled jobs can detect them by code. Then add

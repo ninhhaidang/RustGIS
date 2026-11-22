@@ -100,6 +100,29 @@ fn landxml(content: &str) -> String {
     format!(r#"<?xml version="1.0"?><LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2">{content}</LandXML>"#)
 }
 
+/// A zipped Shapefile of one point whose text field `NAME` holds these bytes. It names no
+/// encoding: it has no `.cpg`, and its `.dbf` no language driver.
+fn shapefile_zip(name: &[u8]) -> Vec<u8> {
+    use rustgis_engine::data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value, io};
+    // Written as a placeholder of the same length, which the bytes then replace in the `.dbf`.
+    let holder = "A".repeat(name.len());
+    let mut ds = Dataset::new("a", GeometryType::Point, vec![Field::new("NAME", FieldType::Text)]);
+    ds.push(Some(Geometry::Point(Coord::new(121.5, 25.0))), vec![Value::Text(holder.clone())]);
+    let mut entries = Vec::new();
+    for (ext, mut bytes) in io::shapefile_parts(&ds).unwrap().0 {
+        if ext == "cpg" {
+            continue;
+        }
+        if ext == "dbf" {
+            bytes[29] = 0;
+            let at = bytes.windows(holder.len()).position(|w| w == holder.as_bytes()).unwrap();
+            bytes[at..at + name.len()].copy_from_slice(name);
+        }
+        entries.push((format!("a.{ext}"), bytes));
+    }
+    rustgis_engine::data::zip::write(&entries).unwrap()
+}
+
 /// Builds paired inputs, keeping sidecars specific to each input when their binary layout differs.
 fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     let point = r#"{"type":"Point","coordinates":[1,2]}"#;
@@ -355,6 +378,14 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             landxml(&format!("{}{parcel}", cg_points("1 1"))),
             landxml(&format!(r#"{}<Parcels><Parcel name="Lot"/></Parcels>"#, cg_points("1 1"))),
             Silent("the parcel is left out"),
+        ),
+        // Shapefile. 臺北101 as UTF-8, and in Big5, which isn't UTF-8.
+        case(
+            "Shapefile: text in a code page it doesn't name",
+            "a.zip",
+            shapefile_zip("臺北101".as_bytes()),
+            shapefile_zip(b"\xbb\x4f\xa5\x5f101"),
+            Imported("text value isn't valid UTF-8"),
         ),
     ];
 

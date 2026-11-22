@@ -65,6 +65,134 @@ fn named_parts(field: &[u8], text: &[u8], ldid: u8, cpg: Option<&[u8]>, rows: us
         .collect()
 }
 
+/// Why text was read as UTF-8, as the notes of text that isn't UTF-8 end.
+const NO_OTHER_ENCODING: &str = "no .cpg file names another encoding RustGIS reads (a .cpg file containing 950 names Big5)";
+
+/// What a read of `places` says of `values` text values of its field `field` that aren't UTF-8.
+fn not_utf8_note(values: usize, field: &str) -> String {
+    let what = match values {
+        1 => "1 text value isn't valid UTF-8 and was".to_string(),
+        n => format!("{n} text values aren't valid UTF-8 and were"),
+    };
+    format!("places: {what} read with U+FFFD in place of the bytes that can't be read, in '{field}'; {NO_OTHER_ENCODING}")
+}
+
+/// What opening a `.dbf` says of its one field name that isn't UTF-8, the first column.
+fn name_not_utf8_note() -> String {
+    format!(
+        "Shapefile: 1 field name isn't valid UTF-8 and was read with U+FFFD in place of the bytes that can't be read, in field 1; {NO_OTHER_ENCODING}"
+    )
+}
+
+/// Three points with two text fields: `name`, holding `first`, `second` and `Tainan` as these
+/// bytes, and `note`, plain ASCII.
+fn two_field_parts(first: &[u8], second: &[u8], ldid: u8, cpg: Option<&[u8]>) -> Vec<(String, Vec<u8>)> {
+    let fields = vec![Field::new("name", FieldType::Text), Field::new("note", FieldType::Text)];
+    let mut ds = Dataset::new("places", GeometryType::Point, fields);
+    // Written as placeholders of the same lengths, which the bytes then replace in the `.dbf`.
+    let holders = ["A".repeat(first.len()), "B".repeat(second.len())];
+    for (i, name) in [holders[0].as_str(), holders[1].as_str(), "Tainan"].into_iter().enumerate() {
+        let point = Geometry::Point(rustgis_data::Coord::new(120.0 + i as f64, 23.0));
+        ds.push(Some(point), vec![Value::Text(name.into()), Value::Text("plain".into())]);
+    }
+    io::shapefile_parts(&ds)
+        .unwrap()
+        .0
+        .into_iter()
+        .filter_map(|(ext, mut bytes)| {
+            if ext == "cpg" {
+                return cpg.map(|value| ("places.cpg".into(), value.to_vec()));
+            }
+            if ext == "dbf" {
+                bytes[29] = ldid;
+                for (holder, text) in holders.iter().zip([first, second]) {
+                    let at = bytes.windows(holder.len()).position(|w| w == holder.as_bytes()).unwrap();
+                    bytes[at..at + text.len()].copy_from_slice(text);
+                }
+            }
+            Some((format!("places.{ext}"), bytes))
+        })
+        .collect()
+}
+
+/// The `name` column of a read of [`two_field_parts`].
+fn names(ds: &Dataset) -> Vec<Value> {
+    (0..ds.features.len()).map(|row| ds.value(row, 0).clone()).collect()
+}
+
+/// Text in a code page the file doesn't name (Big5 here) is read as UTF-8: the bytes that aren't
+/// UTF-8 become U+FFFD, and every read says how many values that is and in which field.
+#[test]
+fn text_that_isnt_utf8_is_counted_by_field_when_no_encoding_is_named() {
+    let (taipei, _, _) = encoding_rs::BIG5.encode("臺北101");
+    let (kaohsiung, _, _) = encoding_rs::BIG5.encode("高雄車站");
+    let files = two_field_parts(&taipei, &kaohsiung, 0, None);
+    let read = [Value::Text("\u{fffd}O\u{fffd}_101".into()), Value::Text("\u{fffd}".repeat(8)), Value::Text("Tainan".into())];
+    let said = [not_utf8_note(2, "name")];
+    let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
+    assert_eq!(names(&layers[0].0), read);
+    assert_eq!(layers[0].1.messages, said, "zipped");
+    // The `.dbf` on its own, a table.
+    let dbf = &files.iter().find(|(n, _)| n.ends_with(".dbf")).unwrap().1;
+    let (table, report) = io::read_bytes("places.dbf", dbf).unwrap();
+    assert_eq!(names(&table), read);
+    assert_eq!(report.messages, said, "the .dbf alone");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rustgis_data::source::FeatureSource;
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let path = dir.path().join("places.shp");
+        let (ds, report) = io::read_path(&path).unwrap();
+        assert_eq!(names(&ds), read);
+        assert_eq!(report.messages, said, "loose files");
+        // Read in place: the field names are fine, so opening says nothing; a whole read counts.
+        let src = open_shp(&path, "places").unwrap();
+        assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
+        let (ds, report) = rustgis_data::source::materialize(&src).unwrap();
+        assert_eq!(names(&ds), read);
+        assert_eq!(report.messages, said, "read in place");
+    }
+}
+
+/// The same bytes with a `.cpg` naming their code page are read as written, and nothing is said.
+/// Nor is it of UTF-8 text, which can hold U+FFFD itself.
+#[test]
+fn text_in_a_named_code_page_and_utf8_text_say_nothing_of_utf8() {
+    let (taipei, _, _) = encoding_rs::BIG5.encode("臺北101");
+    let (kaohsiung, _, _) = encoding_rs::BIG5.encode("高雄車站");
+    for (first, second, cpg, expected) in [
+        (&taipei[..], &kaohsiung[..], Some(b"950".as_slice()), ["臺北101", "高雄車站"]),
+        ("臺北101".as_bytes(), "高雄車站".as_bytes(), None, ["臺北101", "高雄車站"]),
+        ("Caf\u{fffd}".as_bytes(), "\u{fffd}".as_bytes(), None, ["Caf\u{fffd}", "\u{fffd}"]),
+    ] {
+        let files = two_field_parts(first, second, 0, cpg);
+        let read = [Value::Text(expected[0].into()), Value::Text(expected[1].into()), Value::Text("Tainan".into())];
+        let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
+        assert_eq!(names(&layers[0].0), read);
+        assert!(layers[0].1.messages.is_empty(), "{expected:?} zipped: {:?}", layers[0].1.messages);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rustgis_data::source::FeatureSource;
+            let dir = tempfile::tempdir().unwrap();
+            for (name, bytes) in files {
+                std::fs::write(dir.path().join(name), bytes).unwrap();
+            }
+            let path = dir.path().join("places.shp");
+            let (ds, report) = io::read_path(&path).unwrap();
+            assert_eq!(names(&ds), read);
+            assert!(report.messages.is_empty(), "{expected:?} loose files: {:?}", report.messages);
+            let src = open_shp(&path, "places").unwrap();
+            assert!(src.info().notes.is_empty(), "{expected:?}: {:?}", src.info().notes);
+            let (ds, report) = rustgis_data::source::materialize(&src).unwrap();
+            assert_eq!(names(&ds), read);
+            assert!(report.messages.is_empty(), "{expected:?} read in place: {:?}", report.messages);
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn loose_shapefile_honors_cpg_before_dbf_code_page() {
@@ -352,18 +480,19 @@ fn dos_dbf_markers_decode_text_without_cpg_in_all_readers() {
 
 #[test]
 fn dos_support_preserves_other_encodings_and_lossy_utf8_fallback() {
-    for (cpg, ldid, text, expected) in [
-        (Some(b"ISO-8859-2".as_slice()), 0xf0, b"\xa1".as_slice(), "Ą"),
-        (Some(b"CP932".as_slice()), 0xf0, b"\x93\x8c\x8b\x9e".as_slice(), "東京"),
-        (Some(b"UTF-8".as_slice()), 0xf0, b"Caf\xff".as_slice(), "Caf�"),
+    for (cpg, ldid, text, expected, replaced) in [
+        (Some(b"ISO-8859-2".as_slice()), 0xf0, b"\xa1".as_slice(), "Ą", false),
+        (Some(b"CP932".as_slice()), 0xf0, b"\x93\x8c\x8b\x9e".as_slice(), "東京", false),
+        (Some(b"UTF-8".as_slice()), 0xf0, b"Caf\xff".as_slice(), "Caf�", true),
         // With no encoding metadata, preserve the old UTF-8 fallback's treatment of
         // field content: a leading U+FEFF is data, and invalid bytes are replaced.
-        (None, 0, b"\xef\xbb\xbfCaf\xff".as_slice(), "\u{feff}Caf�"),
+        (None, 0, b"\xef\xbb\xbfCaf\xff".as_slice(), "\u{feff}Caf�", true),
     ] {
         let files = parts(text, ldid, cpg);
         let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
         assert_eq!(layers[0].0.value(0, 0), &Value::Text(expected.into()));
-        assert!(layers[0].1.messages.is_empty(), "{:?}", layers[0].1.messages);
+        let said = if replaced { vec![not_utf8_note(1, "name")] } else { Vec::new() };
+        assert_eq!(layers[0].1.messages, said, "{expected}");
     }
 }
 
@@ -377,10 +506,12 @@ fn utf8_metadata_preserves_leading_bom_in_fields_and_values() {
         let dbf = &mut files.iter_mut().find(|(n, _)| n.ends_with(".dbf")).unwrap().1;
         dbf[32..43].fill(0);
         dbf[32..39].copy_from_slice(b"\xef\xbb\xbfname");
+        // The value's last byte isn't UTF-8: it is replaced, and the value counted.
+        let said = [not_utf8_note(1, "\u{feff}name")];
         let layers = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap();
         assert_eq!(layers[0].0.fields[0].name, "\u{feff}name");
         assert_eq!(layers[0].0.value(0, 0), &Value::Text("\u{feff}Caf�".into()));
-        assert!(layers[0].1.messages.is_empty(), "{:?}", layers[0].1.messages);
+        assert_eq!(layers[0].1.messages, said);
         let dir = tempfile::tempdir().unwrap();
         for (name, bytes) in files {
             std::fs::write(dir.path().join(name), bytes).unwrap();
@@ -389,7 +520,7 @@ fn utf8_metadata_preserves_leading_bom_in_fields_and_values() {
         let (ds, report) = io::read_path(&path).unwrap();
         assert_eq!(ds.fields[0].name, "\u{feff}name");
         assert_eq!(ds.value(0, 0), &Value::Text("\u{feff}Caf�".into()));
-        assert!(report.messages.is_empty(), "{:?}", report.messages);
+        assert_eq!(report.messages, said);
         let src = open_shp(&path, "places").unwrap();
         assert_eq!(src.info().fields[0].name, "\u{feff}name");
         assert_eq!(src.read(&Request::all()).unwrap().features[0].attrs, [Value::Text("\u{feff}Caf�".into())]);
@@ -467,6 +598,8 @@ const UNSUPPORTED_LDIDS: &[(u8, &str)] = &[
 ];
 
 /// Three records make a limit-one read genuinely sampled; names and values use the same bytes.
+/// `notes` is what a read of the whole file says. A source read in place says those of opening
+/// when it opens, and the count of values (`places: …`) with them once it is read whole.
 fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>, notes: &[&str]) {
     let files = named_parts(text, text, ldid, cpg, 3);
     let check = |ds: &Dataset, rows: usize| {
@@ -496,7 +629,11 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
         assert_eq!(report.messages, notes, "LDID {ldid:02X} loose-file notes");
         let src = open_shp(&path, "places").unwrap();
         assert_eq!(src.info().fields[0].name, expected, "LDID {ldid:02X} streamed field name");
-        assert_eq!(src.info().notes, notes, "LDID {ldid:02X} streamed notes");
+        let opening: Vec<&str> = notes.iter().copied().filter(|n| !n.starts_with("places: ")).collect();
+        assert_eq!(src.info().notes, opening, "LDID {ldid:02X} streamed notes");
+        let whole: Vec<String> =
+            notes.iter().map(|n| if n.starts_with("places: ") { n.to_string() } else { format!("places: {n}") }).collect();
+        assert_eq!(rustgis_data::source::materialize(&src).unwrap().1.messages, whole, "LDID {ldid:02X} whole read in place");
         for (request, rows, complete) in [(Request { extent: None, limit: 1 }, 1, false), (Request::all(), 3, true)] {
             let batch = src.read(&request).unwrap();
             assert_eq!(batch.matched, 3);
@@ -532,11 +669,13 @@ fn every_supported_ldid_decodes_names_and_values_in_all_readers() {
 
 #[test]
 fn documented_unsupported_ldids_and_unknown_markers_keep_lossy_utf8_with_a_diagnostic() {
+    // The last byte isn't UTF-8: the name and the three values it is replaced in are counted.
+    let (name, values) = (name_not_utf8_note(), not_utf8_note(3, "é�"));
     for &(ldid, page) in UNSUPPORTED_LDIDS {
         let note = format!("Shapefile: unsupported .dbf code page 0x{ldid:02X} (code page {page}); using UTF-8");
-        check_ldid_readers(ldid, b"\xc3\xa9\xff", "é�", None, &[&note]);
+        check_ldid_readers(ldid, b"\xc3\xa9\xff", "é�", None, &[&note, &name, &values]);
     }
-    check_ldid_readers(0xFF, b"\xc3\xa9\xff", "é�", None, &["Shapefile: unsupported .dbf code page 0xFF; using UTF-8"]);
+    check_ldid_readers(0xFF, b"\xc3\xa9\xff", "é�", None, &["Shapefile: unsupported .dbf code page 0xFF; using UTF-8", &name, &values]);
 }
 
 #[test]
@@ -554,7 +693,13 @@ fn unusable_cpg_falls_back_to_each_supported_decoder() {
     for &(markers, text, expected) in SUPPORTED_LDIDS {
         check_ldid_readers(markers[0], text, expected, Some(b"not-an-encoding"), &[note]);
     }
-    check_ldid_readers(0xFF, b"\xc3\xa9\xff", "é�", Some(b""), &[note, "Shapefile: unsupported .dbf code page 0xFF; using UTF-8"]);
+    check_ldid_readers(
+        0xFF,
+        b"\xc3\xa9\xff",
+        "é�",
+        Some(b""),
+        &[note, "Shapefile: unsupported .dbf code page 0xFF; using UTF-8", &name_not_utf8_note(), &not_utf8_note(3, "é�")],
+    );
 }
 
 #[test]
@@ -562,9 +707,14 @@ fn esri_57_remains_windows_1252_rather_than_iso_8859_1() {
     check_ldid_readers(0x57, b"\x80\x96\x9f", "€–Ÿ", None, &[]);
 }
 
+/// Malformed bytes in a declared multibyte code page are replaced with no notice yet (#2614).
 #[test]
 fn malformed_multibyte_fields_replace_bytes_without_dropping_records() {
-    for (ldid, text) in [(0x13, b"X\x82".as_slice()), (0x4D, b"X\x81"), (0x4E, b"X\x81"), (0x4F, b"X\xa4"), (0xF0, b"X\xff")] {
+    // Known gap (#2614): these four code pages' malformed bytes are replaced with no notice yet, so
+    // the empty notes below pin that behaviour rather than endorse it.
+    for (ldid, text) in [(0x13, b"X\x82".as_slice()), (0x4D, b"X\x81"), (0x4E, b"X\x81"), (0x4F, b"X\xa4")] {
         check_ldid_readers(ldid, text, "X�", None, &[]);
     }
+    // Read as UTF-8, the name and the values with a byte replaced are counted.
+    check_ldid_readers(0xF0, b"X\xff", "X�", None, &[&name_not_utf8_note(), &not_utf8_note(3, "X�")]);
 }

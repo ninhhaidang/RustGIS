@@ -679,6 +679,7 @@ impl FeatureSource for ParquetSource {
             rounded_dates,
             null_text: Vec::new(),
             notes: Vec::new(),
+            not_utf8: Vec::new(),
         })
     }
 

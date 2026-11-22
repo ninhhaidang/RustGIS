@@ -56,6 +56,9 @@ pub struct Exported {
     /// Per field of the layer, text values `<Null>` the source read as null
     /// ([`crate::source::Batch::null_text`], said by [`crate::source::null_text_note`]).
     pub null_text: Vec<usize>,
+    /// Per field of the layer, text values the source read as UTF-8 that aren't UTF-8
+    /// ([`crate::source::Batch::not_utf8`], said by [`crate::source::not_utf8_note`]).
+    pub not_utf8: Vec<usize>,
     /// Per field of the layer, date-times a GeoPackage holds in UTC rather than at their own
     /// offset ([`crate::io::offset_dates`]; empty for the other formats).
     pub utc_dates: Vec<usize>,
@@ -254,6 +257,7 @@ fn write_chunks_as(
     let mut rounded_dates = Vec::new();
     let mut null_text = Vec::new();
     let mut read_notes = Vec::new();
+    let mut not_utf8 = Vec::new();
     let mut utc_dates = Vec::new();
     let mut fine_dates = Vec::new();
     let mut written_values = Vec::new();
@@ -318,6 +322,7 @@ fn write_chunks_as(
         rounded_dates = batch.rounded_dates;
         null_text = batch.null_text;
         read_notes = batch.notes;
+        not_utf8 = batch.not_utf8;
         Ok(())
     };
     let mut table = None;
@@ -371,6 +376,7 @@ fn write_chunks_as(
             unread_dates,
             rounded_dates,
             null_text,
+            not_utf8,
             utc_dates,
             fine_dates,
             written_values,

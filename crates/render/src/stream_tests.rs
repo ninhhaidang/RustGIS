@@ -28,6 +28,7 @@ impl FeatureSource for Chunks {
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
             notes: Vec::new(),
+            not_utf8: Vec::new(),
         })
     }
     fn streams_chunks(&self) -> bool {
@@ -111,6 +112,7 @@ fn complete_chunks_preserve_painter_order_filters_transparency_labels_and_select
                 rounded_dates: Vec::new(),
                 null_text: Vec::new(),
                 notes: Vec::new(),
+                not_utf8: Vec::new(),
             })
         }
         fn streams_chunks(&self) -> bool {
@@ -865,6 +867,7 @@ fn pitched_mixed_sources_keep_windows_and_pending_on_the_owner() {
                 rounded_dates: Vec::new(),
                 null_text: Vec::new(),
                 notes: Vec::new(),
+                not_utf8: Vec::new(),
             })
         }
     }

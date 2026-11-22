@@ -427,6 +427,7 @@ impl FeatureSource for GeoJsonSource {
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
             notes: Vec::new(),
+            not_utf8: Vec::new(),
         })
     }
 }

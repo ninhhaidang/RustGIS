@@ -27,6 +27,16 @@ impl DbfEncoding {
         }
     }
 
+    /// Whether text is read as UTF-8, whose decoder puts U+FFFD in place of bytes that aren't
+    /// UTF-8 without a word: the read counts them itself ([`not_utf8`]).
+    pub(crate) fn is_utf8(&self) -> bool {
+        match self {
+            Self::Standard(encoding) => *encoding == rs::UTF_8,
+            Self::Oem(_) => false,
+            Self::Utf8 => true,
+        }
+    }
+
     fn from_number(number: u16) -> Option<Self> {
         // DOS 437, 850, 852, 861 and 865 go to dbase's OEM adapter; DOS 866 and the other pages
         // decoded here keep encoding_rs, because dbase's yore adapter is strict for those and can
@@ -157,6 +167,66 @@ fn page_name(page: u16) -> Option<&'static str> {
         10029 => "Mac Central European",
         _ => return None,
     })
+}
+
+/// The end of each note of text that isn't UTF-8: why a `.dbf`'s text was read as UTF-8, and what
+/// names another encoding. A `.cpg` comes before the code page, so text is read as UTF-8 only when
+/// no `.cpg` names another encoding RustGIS reads: the file names none, names UTF-8, or names a
+/// code page RustGIS can't decode.
+pub(crate) const NO_OTHER_ENCODING: &str = "no .cpg file names another encoding RustGIS reads (a .cpg file containing 950 names Big5)";
+
+/// What opening a `.dbf` read as UTF-8 says of its field names that aren't UTF-8 ([`not_utf8`]),
+/// naming the first five by their column (from 1). `None` when there are none.
+pub(crate) fn not_utf8_names_note(columns: &[usize]) -> Option<String> {
+    let (what, label) = match columns.len() {
+        0 => return None,
+        1 => ("1 field name isn't valid UTF-8 and was".to_string(), "field"),
+        n => (format!("{n} field names aren't valid UTF-8 and were"), "fields"),
+    };
+    let named: Vec<String> = columns.iter().take(5).map(usize::to_string).collect();
+    let more = if columns.len() > 5 { format!(" and {} more", columns.len() - 5) } else { String::new() };
+    Some(format!(
+        "Shapefile: {what} read with U+FFFD in place of the bytes that can't be read, in {label} {}{more}; {NO_OTHER_ENCODING}",
+        named.join(", ")
+    ))
+}
+
+/// What a `.dbf` read as UTF-8 holds that isn't UTF-8: which of its field names (by column, from 1),
+/// and for each column by its position how many of its text values. `dbase` reads them with U+FFFD
+/// in place of those bytes and doesn't say so. They are counted on the bytes, since U+FFFD in the
+/// text read can also be what the file holds. The values are the ones `dbase` decodes as text: a
+/// character (`C`) column's, up to a NUL, in the rows the header counts that aren't marked deleted
+/// (a row the read then leaves out as unreadable is counted too). It doesn't look at Cancel: it is
+/// one pass over a file that is read whole, so of at most [`crate::io::max_bytes`].
+pub(crate) fn not_utf8(dbf: &[u8]) -> (Vec<usize>, Vec<usize>) {
+    let lossy = |text: &[u8]| std::str::from_utf8(text.split(|b| *b == 0).next().unwrap_or(&[])).is_err();
+    let header_len = usize::from(u16::from_le_bytes([dbf.get(8).copied().unwrap_or(0), dbf.get(9).copied().unwrap_or(0)]));
+    let rows = dbf.get(4..8).and_then(|b| <[u8; 4]>::try_from(b).ok()).map_or(0, |b| u32::from_le_bytes(b) as usize);
+    let mut names = Vec::new();
+    // Each column's width, and whether its values are text.
+    let mut columns = Vec::new();
+    for start in (32..header_len.min(dbf.len())).step_by(32) {
+        let Some(d) = dbf.get(start..start + 32).filter(|d| d.first() != Some(&0x0D)) else { break };
+        if d.get(..11).is_some_and(lossy) {
+            names.push(columns.len() + 1);
+        }
+        columns.push((usize::from(d.get(16).copied().unwrap_or(0)), d.get(11) == Some(&b'C')));
+    }
+    let mut values = vec![0; columns.len()];
+    let row_len = 1 + columns.iter().map(|(len, _)| len).sum::<usize>();
+    for row in dbf.get(header_len..).unwrap_or(&[]).chunks_exact(row_len).take(rows) {
+        if row.first() == Some(&b'*') {
+            continue;
+        }
+        let mut at = 1;
+        for ((len, text), count) in columns.iter().zip(&mut values) {
+            if *text && row.get(at..at + len).is_some_and(lossy) {
+                *count += 1;
+            }
+            at += len;
+        }
+    }
+    (names, values)
 }
 
 /// Makes a `.dbf` header's last-update date (bytes 1–3: years since 1900, month, day) one `dbase`
@@ -478,5 +548,72 @@ mod tests {
         let mut notes = Vec::new();
         encoding(None, 0xFF, &mut notes);
         assert_eq!(notes, ["Shapefile: unsupported .dbf code page 0xFF; using UTF-8"]);
+    }
+
+    /// Text is read as UTF-8, so counted when it isn't, with no encoding named, with UTF-8 named
+    /// and with a code page that can't be decoded; a code page that is decoded isn't UTF-8.
+    #[test]
+    fn utf8_is_what_text_is_read_as_unless_another_encoding_is_named() {
+        let read = |cpg: Option<&[u8]>, ldid| encoding(cpg, ldid, &mut Vec::new()).is_utf8();
+        assert!(read(None, 0) && read(None, 0xF0) && read(Some(b"UTF-8"), 0x03) && read(Some(b"65001"), 0) && read(None, 0x6C));
+        assert!(!read(Some(b"950"), 0) && !read(None, 0x4F) && !read(None, 0x01) && !read(Some(b"1252"), 0xF0));
+    }
+
+    /// A `.dbf` of these columns (name, type, width) and rows (the deletion flag, then the values).
+    fn table(columns: &[(&[u8], u8, u8)], rows: &[&[u8]]) -> Vec<u8> {
+        let header_len = 32 + 32 * columns.len() + 1;
+        let row_len = 1 + columns.iter().map(|c| usize::from(c.2)).sum::<usize>();
+        assert!(rows.iter().all(|row| row.len() == row_len), "rows of {row_len} bytes");
+        let mut dbf = vec![0u8; header_len];
+        dbf[4..8].copy_from_slice(&(rows.len() as u32).to_le_bytes());
+        dbf[8..10].copy_from_slice(&(header_len as u16).to_le_bytes());
+        for (k, (name, ty, len)) in columns.iter().enumerate() {
+            let at = 32 + 32 * k;
+            dbf[at..at + name.len()].copy_from_slice(name);
+            (dbf[at + 11], dbf[at + 16]) = (*ty, *len);
+        }
+        dbf[header_len - 1] = 0x0D;
+        rows.iter().for_each(|row| dbf.extend_from_slice(row));
+        dbf
+    }
+
+    /// Text that isn't UTF-8 is counted where `dbase` decodes text: the field names, and the
+    /// character values up to a NUL of the rows the header counts that aren't deleted.
+    #[test]
+    fn text_that_isnt_utf8_is_counted_in_names_and_character_values() {
+        let columns: &[(&[u8], u8, u8)] = &[(b"caf\xe9", b'C', 4), (b"day", b'D', 8), (b"n", b'N', 2), ("né".as_bytes(), b'C', 3)];
+        let rows: &[&[u8]] = &[
+            b" \xe9t\xe9 20260305 1abc",
+            // A date or a number that isn't one is said by its own notice.
+            b" abc \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xe9  ",
+            b"*\xe9t\xe9 20260305 1\xe9bc",
+            // Bytes past a NUL aren't read; UTF-8 is.
+            b" a\0\xe9\xe9          \xc3\xa9 ",
+        ];
+        let mut dbf = table(columns, rows);
+        assert_eq!(not_utf8(&dbf), (vec![1], vec![1, 0, 0, 1]));
+        // A row past the header's count isn't read.
+        dbf.extend_from_slice(b" \xe9t\xe9 20260305 1\xe9bc");
+        assert_eq!(not_utf8(&dbf), (vec![1], vec![1, 0, 0, 1]));
+        // A file cut short counts the rows that are whole, and one without a header nothing.
+        let cut = dbf.len() - 2 * 18 - 1;
+        assert_eq!(not_utf8(&dbf[..cut]), (vec![1], vec![1, 0, 0, 1]));
+        assert_eq!(not_utf8(&dbf[..cut - 18]), (vec![1], vec![1, 0, 0, 0]));
+        assert_eq!(not_utf8(&dbf[..40]), (Vec::new(), Vec::new()));
+        assert_eq!(not_utf8(&[]), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn field_names_that_arent_utf8_are_said_with_their_columns() {
+        assert_eq!(not_utf8_names_note(&[]), None);
+        let one = not_utf8_names_note(&[3]).unwrap();
+        assert!(one.starts_with("Shapefile: 1 field name isn't valid UTF-8 and was read with U+FFFD"), "{one}");
+        assert!(one.contains("in field 3;"), "{one}");
+        let two = not_utf8_names_note(&[3, 7]).unwrap();
+        assert!(two.starts_with("Shapefile: 2 field names aren't valid UTF-8 and were read with U+FFFD"), "{two}");
+        assert!(two.contains("in fields 3, 7;"), "{two}");
+        assert!(two.ends_with(NO_OTHER_ENCODING), "{two}");
+        let many = not_utf8_names_note(&[1, 2, 3, 4, 5, 6, 7]).unwrap();
+        assert!(many.contains("in fields 1, 2, 3, 4, 5 and 2 more;"), "{many}");
     }
 }

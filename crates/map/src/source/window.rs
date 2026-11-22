@@ -202,6 +202,7 @@ fn read_filtered(
             rounded_dates: summary.rounded_dates,
             null_text: summary.null_text,
             notes: summary.notes,
+            not_utf8: summary.not_utf8,
         },
         areas,
     ))
