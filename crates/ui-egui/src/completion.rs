@@ -18,6 +18,8 @@ const MIN_WIDTH: f32 = 220.0;
 pub(crate) const MAX_ROWS: usize = 10;
 /// The fewest rows' height the help's box takes, beside a short list (`rows`).
 const HELP_MIN_ROWS: usize = 6;
+/// The help's scroll area's salt: the id of the state `rows` drops is worked out from it.
+const HELP_SCROLL: &str = "help";
 /// The side of a row's icon.
 const ICON: f32 = 16.0;
 /// The help's widest line, so a long signature or parameter wraps rather than widen the list
@@ -703,12 +705,16 @@ fn rows(
             // Set first, so it counts from the box's corner: set after, a minimum counts from
             // where the content ended.
             ui.set_min_size(size);
-            // Its own ID per item: a new help starts with no fling left from the last one's scroll.
-            let mut area = egui::ScrollArea::vertical().id_salt(("help", shown)).max_height(size.y).auto_shrink([false, false]);
+            // Another item's help starts afresh: all of the scroll's state dropped, not only its
+            // offset (a fling on a touchscreen leaves a velocity that would scroll the next help).
+            // Its id worked out here as `ScrollArea::begin` does: egui keeps that state after the
+            // list closes, and a list opened again starts with no `Scroll`, so it drops it too.
+            let id = ui.make_persistent_id(egui::IdSalt::new(HELP_SCROLL));
             if scroll.help_for != Some(shown) {
-                area = area.vertical_scroll_offset(0.0);
+                ui.data_mut(|d| d.remove::<egui::scroll_area::State>(id));
                 scroll.help_for = Some(shown);
             }
+            let area = egui::ScrollArea::vertical().id_salt(HELP_SCROLL).max_height(size.y).auto_shrink([false, false]);
             area.show(ui, |ui| {
                 if let Some(item) = items.get(shown) {
                     help(ui, item, help_width);
@@ -1123,42 +1129,101 @@ mod tests {
     /// starts from the top of the box again.
     #[test]
     fn a_long_help_scrolls_in_its_box_and_the_next_starts_at_its_top() {
+        // With the help beside the list, and under it.
+        for width in [1000.0, 380.0] {
+            long_help_scrolls_in_its_box(width);
+        }
+    }
+
+    fn long_help_scrolls_in_its_box(width: f32) {
         use egui_kittest::kittest::Queryable;
-        let long = format!("first line {}", "a long help that wraps over several lines ".repeat(40));
         let items: Vec<String> = vec!["item00".into(), "item01".into()];
         let next = format!("next help {}", "another long help over several lines ".repeat(40));
-        let helps = [long.clone(), next.clone()];
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
-            move |ui, _: &mut ()| {
-                let help = |ui: &mut egui::Ui, item: &str, width: f32| {
-                    let Some(text) = items.iter().position(|i| i == item).map(|i| &helps[i]) else { return };
-                    ui.set_max_width(width);
-                    ui.label(text);
-                };
-                let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, true, help);
-            },
-            (),
-        );
+        let shown = next.clone();
+        // Frames a 60th of a second apart, as a fling's speed is measured over the last moments.
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(width, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(30)
+            .build_ui_state(
+                move |ui, _: &mut ()| {
+                    // The first help: a line, then a long blank stretch, as between a help's
+                    // blocks (a label takes a drag to select its text: a drag on the blank scrolls).
+                    let help = |ui: &mut egui::Ui, item: &str, room: f32| {
+                        ui.set_max_width(room);
+                        if item == "item00" {
+                            ui.label("first help");
+                            ui.add_space(2000.0);
+                        } else {
+                            ui.label(&shown);
+                        }
+                    };
+                    let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, true, help);
+                },
+                (),
+            );
+        let wheel = |h: &mut egui_kittest::Harness<'_, ()>| {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+            });
+            h.run();
+        };
+        // A fling on a touchscreen (egui drags a scroll only there): a drag on the blank let go
+        // while moving; the help coasts on.
+        let fling = |h: &mut egui_kittest::Harness<'_, ()>, at: egui::Pos2| {
+            let touch =
+                |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: None };
+            h.event(touch(egui::TouchPhase::Start, at));
+            h.drag_at(at);
+            h.step();
+            for step in 1..=5 {
+                h.hover_at(at - egui::vec2(0.0, 15.0 * step as f32));
+                h.step();
+            }
+            let end = at - egui::vec2(0.0, 75.0);
+            h.drop_at(end);
+            h.event(touch(egui::TouchPhase::End, end));
+            h.step();
+            let before = h.get_by_label("first help").rect().top();
+            h.step();
+            assert!(h.get_by_label("first help").rect().top() < before - 1.0, "{width}: coasting");
+        };
+        // The help starts from the top and stays there, frame after frame.
+        let still = |h: &mut egui_kittest::Harness<'_, ()>, label: &str, top: f32, what: &str| {
+            for _ in 0..5 {
+                h.step();
+                let at = h.get_by_label(label).rect().top();
+                assert!((at - top).abs() < 0.5, "{width}: {what}: {at} for {top}");
+            }
+        };
         h.run();
         h.get_by_label("Open").click();
         h.run();
-        let top = h.get_by_label(&long).rect().top();
-        // Over the help's first lines: the label runs on far below the box.
-        h.hover_at(h.get_by_label(&long).rect().left_top() + egui::vec2(40.0, 10.0));
-        h.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: egui::vec2(0.0, -200.0),
-            modifiers: egui::Modifiers::NONE,
-            phase: egui::TouchPhase::Move,
-            source: egui::MouseWheelSource::Wheel,
-        });
-        h.run();
-        assert!(h.get_by_label(&long).rect().top() < top - 50.0, "scrolled in its box");
+        let first = h.get_by_label("first help").rect();
+        let top = first.top();
+        let blank = first.left_bottom() + egui::vec2(40.0, 60.0);
+        h.hover_at(blank);
+        wheel(&mut h);
+        assert!(h.get_by_label("first help").rect().top() < top - 20.0, "{width}: scrolled in its box");
+        // Another item while it coasts: with the first help's scroll kept (its offset, or the
+        // fling's velocity), the next would start scrolled, or scroll on by itself.
+        fling(&mut h, blank);
         h.key_press(egui::Key::ArrowDown);
-        h.run();
-        // A long one too: with the first help's scroll kept, it would start scrolled.
-        let next = h.get_by_label(&next).rect().top();
-        assert!((next - top).abs() < 0.5, "the next help from the top: {next} for {top}");
+        still(&mut h, &next, top, "the next help");
+        // Back to the first item: its help from the top and still, not its fling coming back
+        // with it.
+        h.key_press(egui::Key::ArrowUp);
+        still(&mut h, "first help", top, "back to the first help");
+        // Closed while it coasts and opened again: the list's own state is new, egui's kept.
+        fling(&mut h, blank);
+        h.key_press(egui::Key::Escape);
+        h.step();
+        h.get_by_label("Open").click();
+        still(&mut h, "first help", top, "opened again");
     }
 
     /// The pointer gone from a row to the help (to read or scroll it) keeps that row's help, not
