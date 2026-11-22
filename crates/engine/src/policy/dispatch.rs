@@ -517,11 +517,18 @@ impl Session {
                 }
                 let node = self.admit(node)?;
                 // Its lines run nested: what they couldn't read as true or false is said here (#1600).
-                self.with_unread_bools(Some("script.run"), |s| {
+                let result = self.with_unread_bools(Some("script.run"), |s| {
                     s.with_node(node, |s| {
                         s.guarded("Run Script", true, |s| crate::cmd::workflows::run_script(s, &json!({"script":script})))
                     })
-                })
+                });
+                // Not a command, so no `command_epilogue`: its lines' declaration check is raised here.
+                #[cfg(any(test, feature = "declaration-check"))]
+                if self.depth == 0 {
+                    let broken = self.declaration_broken.take();
+                    assert!(broken.is_none(), "{}", broken.unwrap_or_default());
+                }
+                result
             }
             CallKind::Adapter { .. } => {
                 let node = self.call_node(&self.scope(), call)?;
@@ -1010,8 +1017,10 @@ impl Session {
                     crate::cmd::project::take_first_layer_system(self, &before);
                 }
                 #[cfg(any(test, feature = "declaration-check"))]
-                if let Some(before) = declared {
-                    assert!(self.restored().layers == before, "{} doesn't mutate but changed the layers", spec.id);
+                if let Some(before) = declared
+                    && self.restored().layers != before
+                {
+                    self.declaration_broken.get_or_insert_with(|| format!("{} doesn't mutate but changed the layers", spec.id));
                 }
                 self.url_completion_landed(spec.id, &params, &result);
                 if result.is_ok() && (spec.mutates || spec.effects.contains(crate::policy::Effect::History)) && spec.id != "data.similar" {

@@ -1381,6 +1381,28 @@ mod tests {
         assert_ne!(edited.layers, undone.layers);
     }
 
+    /// The declaration check sees a plugin's host call too (#2696): a command declared as not
+    /// mutating that adds a layer is noted, and fails the command the user ran when it returns.
+    #[test]
+    fn a_host_call_that_changes_layers_is_noted() {
+        let pkg = rustgis_plugins::Package::from_zip(&rustgis_plugins::testing::package("eng-declared", &["edit"])).unwrap();
+        rustgis_plugins::load(pkg, "test").unwrap();
+        let plugin = rustgis_plugins::get("eng-declared").unwrap();
+        let mut s = Session::new(crate::Project::default());
+        s.registry.commands.push(
+            crate::CommandSpec::new("test.quietMap", "Quiet map", "Test", |s, _| {
+                crate::cmd::layer::add_dataset(s, rustgis_data::Dataset::new("Quiet", rustgis_data::GeometryType::Point, vec![]));
+                Ok(Value::Null)
+            })
+            .view(),
+        );
+        let fetches = fetch::Calls::for_plugin("eng-declared");
+        let mut bridge = Bridge { s: &mut s, plugin, fetches };
+        let _ = bridge.call("test.quietMap", &json!({}));
+        assert!(bridge.s.declaration_broken.as_deref().is_some_and(|e| e.contains("test.quietMap")));
+        rustgis_plugins::unload("eng-declared");
+    }
+
     /// A command that only left a download for the front end changed nothing, and a later one
     /// doesn't hide an earlier edit: the plugin's command keeps its undo step.
     #[test]

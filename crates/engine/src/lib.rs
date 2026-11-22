@@ -972,6 +972,11 @@ pub struct Session {
     /// A task is executing: its steps may not start another task, even through scripts.
     /// Kept across project replacement until the active call returns; never part of undo.
     pub(crate) task_running: bool,
+    /// A command declared as not mutating changed the layers (AGENTS.md): raised when the top-level
+    /// command returns ([`Session::command_epilogue`], every entry), past any step's catch (a
+    /// task's), so the tests fail on it.
+    #[cfg(any(test, feature = "declaration-check"))]
+    pub(crate) declaration_broken: Option<String>,
     /// Models made in this session (lower-cased names); the steps of others may not touch files.
     trusted_models: policy::Trust,
     /// What the last model run did, node by node (`model::RunReport`), kept even when the run
@@ -1481,6 +1486,8 @@ impl Session {
             browse_response: None,
             trusted_tasks: Default::default(),
             task_running: false,
+            #[cfg(any(test, feature = "declaration-check"))]
+            declaration_broken: None,
             trusted_models: Default::default(),
             model_run: None,
             project_starts: 0,
@@ -1949,8 +1956,15 @@ impl Session {
             self.merge = None;
             self.beyond_said = None;
         }
+        // Taken on every top-level return, a panic's too, so it never reaches the next command.
+        #[cfg(any(test, feature = "declaration-check"))]
+        let broken = outermost.then(|| self.declaration_broken.take()).flatten();
         match result {
-            Ok(result) => result,
+            Ok(result) => {
+                #[cfg(any(test, feature = "declaration-check"))]
+                assert!(broken.is_none(), "{}", broken.unwrap_or_default());
+                result
+            }
             Err(payload) => std::panic::resume_unwind(payload),
         }
     }

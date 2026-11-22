@@ -422,36 +422,76 @@ fn shared_step_measures_the_layers_a_step_changes() {
     let mut s = world();
     let spec = *s.registry.get("map.zoomFull").unwrap();
     let (count, ds) = (s.map().layers.len(), s.map().layers[0].dataset.clone());
-    let quiet_layer = |s: &mut Session| -> crate::CmdResult {
+    let add_layer = |s: &mut Session| -> crate::CmdResult {
         crate::cmd::layer::add_dataset(s, ds);
         Ok(Value::Null)
     };
-    s.shared_step(&spec, quiet_layer).unwrap();
+    s.shared_step(&spec, add_layer).unwrap();
     assert_eq!((s.shared_steps.edited, s.map().layers.len()), (true, count + 1));
 }
 
+/// A command declared as not mutating that adds a layer, marks the project unsaved, makes an edit
+/// on the way and then fails: none of it excuses the layer it added.
+fn quiet_layer() -> crate::CommandSpec {
+    crate::CommandSpec::new("test.quietLayer", "Quiet layer", "Test", |s, _| {
+        let ds = s.map().layers[0].dataset.clone();
+        crate::cmd::layer::add_dataset(s, ds);
+        s.mark_unsaved();
+        s.guarded("Rename", true, |s| {
+            s.map_mut().name = "Renamed on the way".into();
+            Ok(Value::Null)
+        })?;
+        Err("failed after adding it".into())
+    })
+    .view()
+}
+
 /// A command declared as not mutating that adds, removes or reorders layers fails the tests
-/// (#2645), by itself or as a script's line; an edit it makes on the way, marking the project
-/// unsaved or failing afterwards doesn't excuse it. A layer's name, look or features aren't
-/// measured.
+/// (#2645). A layer's name, look or features aren't measured.
 #[test]
 #[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
 fn a_command_that_changes_layers_must_say_it_mutates() {
     let mut s = world();
-    s.registry.commands.push(
-        crate::CommandSpec::new("test.quietLayer", "Quiet layer", "Test", |s, _| {
-            let ds = s.map().layers[0].dataset.clone();
-            crate::cmd::layer::add_dataset(s, ds);
-            s.mark_unsaved();
-            s.guarded("Rename", true, |s| {
-                s.map_mut().name = "Renamed on the way".into();
-                Ok(Value::Null)
-            })?;
-            Err("failed after adding it".into())
-        })
-        .view(),
-    );
+    s.registry.commands.push(quiet_layer());
     let _ = s.run("test.quietLayer", &Value::Null);
+}
+
+/// The same as a task's step, whose panics the task catches: the check is raised when the command
+/// the user ran returns, not inside the step (#2696).
+#[test]
+#[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
+fn a_task_step_that_changes_layers_must_say_it_mutates() {
+    let mut s = world();
+    s.registry.commands.push(quiet_layer());
+    let steps = json!([{"title": "Quiet", "command": "test.quietLayer", "params": {}}]);
+    s.run("task.new", &json!({"name": "Quiet", "steps": steps})).unwrap();
+    let _ = s.run("task.run", &json!({"task": "Quiet"}));
+}
+
+/// And as a script's line (#2696).
+#[test]
+#[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
+fn a_script_line_that_changes_layers_must_say_it_mutates() {
+    let mut s = world();
+    s.registry.commands.push(quiet_layer());
+    let _ = s.run("script.run", &json!({"script": "test.quietLayer {}"}));
+}
+
+/// And as a line of a script an agent or the assistant runs, which doesn't go through
+/// `command_epilogue` (#2696).
+#[test]
+#[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
+fn a_scoped_script_line_that_changes_layers_must_say_it_mutates() {
+    struct Live;
+    impl crate::policy::Revocation for Live {
+        fn allows(&self, _: crate::policy::Effects) -> bool {
+            true
+        }
+    }
+    let mut s = world();
+    s.registry.commands.push(quiet_layer());
+    let scope = crate::policy::Scope::agent(crate::policy::AgentAccess::Full, true, "declared", None, std::sync::Arc::new(Live));
+    let _ = s.run_scoped(scope, &crate::policy::Call::script("test.quietLayer {}"));
 }
 
 /// A task's steps are counted as a script's lines: an undo step only when one edited (#2621).
