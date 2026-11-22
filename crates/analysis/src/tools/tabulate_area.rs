@@ -52,9 +52,10 @@ pub(super) fn run_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Resu
     }
     let index: HashMap<u32, usize> = classes.iter().enumerate().map(|(i, &v)| (class_key(v), i)).collect();
     let areas = CellAreas::new(r, count);
-    // The largest grouped geometry's copies in lon/lat and on the grid, the largest raster
-    // mask and its trimmed copy, plus each zone's dense class totals. Conservatively include
-    // the shared row cache in each worker's estimate so it stays within the scratch allowance.
+    // The largest grouped geometry's copies (taken as four, in any system) and on the grid, the
+    // largest raster mask and its trimmed copy, plus each zone's dense class totals.
+    // Conservatively include the shared row cache in each worker's estimate so it stays within
+    // the scratch allowance.
     let geometry_bytes = groups
         .iter()
         .map(|group| {
@@ -74,8 +75,12 @@ pub(super) fn run_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Resu
         .saturating_add(areas.cache_bytes)
         .saturating_add(geometry_bytes);
     let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_scratch(groups.len(), PARALLEL_FEATURES, scratch));
+    // The zones are in the run's system: their own projected one, converted to the raster's
+    // (none of it when that is the raster's too), else longitude/latitude.
+    let own = (inp.work_crs() != Crs::LonLat).then(|| crate::tools::ToGrid::new(inp.work_crs(), r.crs)).transpose()?;
+    let to = own.as_ref().map_or(crate::rasterops::ToWorld::LonLat(r.transformer()), crate::rasterops::ToWorld::Own);
     let totals =
-        crate::parallel::try_map_on(&groups, threads, || (), |_, _, group| summarize(r, *band, zones, &group.rows, &index, &areas))?;
+        crate::parallel::try_map_on(&groups, threads, || (), |_, _, group| summarize(r, to, *band, zones, &group.rows, &index, &areas))?;
     let zone_field = keys.first().and_then(|&i| zones.fields.get(i)).cloned().unwrap_or_else(|| Field::new("zone_id", FieldType::Text));
     let mut out = Dataset::new(out_name(p, format!("{}_TabulateArea", zones.name)), GeometryType::None, vec![zone_field]);
     for &class in &classes {
@@ -157,9 +162,10 @@ struct Totals {
 }
 
 /// Masks a whole group together: a cell in overlapping features or parts of the same zone
-/// counts once. Dataset geometry is stored in WGS 84 regardless of its source CRS metadata.
+/// counts once. The zones' places reach the raster's system by `to`.
 fn summarize(
     r: &Raster,
+    to: crate::rasterops::ToWorld<'_>,
     band: usize,
     zones: &Dataset,
     rows: &[usize],
@@ -181,7 +187,7 @@ fn summarize(
         }
     }
     let mut failures = Vec::new();
-    let mask = crate::rasterops::polygon_mask_with_failures(r, &polygons, &mut failures)?;
+    let mask = crate::rasterops::polygon_mask_on(to, &r.transform, (r.width, r.height), &polygons, &mut failures)?;
     total.parts = failures.len();
     crate::control::check()?;
     let Some((cols, rows, mask)) = mask else { return Ok(total) };

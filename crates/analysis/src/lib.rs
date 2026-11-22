@@ -277,6 +277,12 @@ const OWN_SYSTEM_TOOLS: &[&str] = &[
     "simplify",
     "pointsAlongLines",
     "near",
+    // Grids and zones on rasters, from the system's own coordinates (#2032 C2e-4).
+    "idwInterpolation",
+    "kriging",
+    "kernelDensity",
+    "zonalStats",
+    "tabulateArea",
 ];
 
 impl ToolSpec {

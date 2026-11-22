@@ -901,7 +901,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent and pixel size; when empty, the one the layer was read in if projected, else degrees; EPSG:4326 for degrees.",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent and pixel size; when empty, the projected one the layer is held in, or else was read in, else degrees; EPSG:4326 for degrees.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -1067,7 +1067,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent, pixel size and range; when empty, the one the layer was read in if projected, else degrees; EPSG:4326 for degrees.",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent, pixel size and range; when empty, the projected one the layer is held in, or else was read in, else degrees; EPSG:4326 for degrees.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -1317,7 +1317,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "Projected coordinate system (e.g. EPSG:32618); defaults to the layer's CRS when projected, or required when the layer has none or is in degrees.",
+                help: "Projected coordinate system (e.g. EPSG:32618); defaults to the projected system the layer is held in, or else was read in; required when the layer has none or is in degrees.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "Output raster layer name." },
         ],
@@ -4761,8 +4761,8 @@ fn idw_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
             }
         });
     }
-    let (crs, crs_note) = raster_crs(ds, p, "IDW Interpolation")?;
-    let (pts, beyond_note) = points_in(crs, pts)?;
+    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), p, "IDW Interpolation")?;
+    let (pts, beyond_note) = points_from(inp.work_crs(), crs, pts)?;
     let extent = match s(p, "extent").trim() {
         "" => {
             let mut e = Extent::EMPTY;
@@ -4854,8 +4854,8 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
             }
         }
     }
-    let (crs, crs_note) = raster_crs(ds, p, "Ordinary Kriging")?;
-    let (raw_pts, beyond_note) = points_in(crs, raw_pts)?;
+    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), p, "Ordinary Kriging")?;
+    let (raw_pts, beyond_note) = points_from(inp.work_crs(), crs, raw_pts)?;
     // Points at the same place as one, so the kriging matrix isn't singular.
     let pts = merge_coincident(raw_pts)?;
     if pts.len() < 2 {
@@ -5051,26 +5051,39 @@ pub fn layer_raster_crs(crs: Option<Crs>) -> Option<Result<Crs, String>> {
 /// run used where that could surprise: the system it took from the layer, or the compatibility note
 /// on the one given.
 pub fn raster_crs(ds: &Dataset, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
+    raster_crs_of(ds.crs, "was read in", &ds.name, p, tool)
+}
+
+/// [`raster_crs`] for a run in `work` ([`Inputs::work_crs`]): a layer held in its own projected
+/// system makes its grid there unless `p` names another.
+fn raster_crs_in(ds: &Dataset, work: Crs, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
+    if work == Crs::LonLat {
+        raster_crs_of(ds.crs, "was read in", &ds.name, p, tool)
+    } else {
+        raster_crs_of(Some(work), "is held in", &ds.name, p, tool)
+    }
+}
+
+/// [`raster_crs`] for a layer named `name` that `how` ("was read in", "is held in") `layer_crs`.
+fn raster_crs_of(layer_crs: Option<Crs>, how: &str, name: &str, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
     if p.get("crs").is_some_and(|v| !v.is_null() && !v.is_string()) {
         return Err("crs must be text".into());
     }
     match s(p, "crs").trim() {
-        "" => Ok(match layer_raster_crs(ds.crs) {
+        "" => Ok(match layer_raster_crs(layer_crs) {
             // A system that can't hold a raster's cells (geocentric), or one this version can't
             // project to: degrees, as before, and said why.
             Some(Err(why)) => (
                 Crs::LonLat,
                 Some(format!(
-                    "{tool}: made in degrees of longitude and latitude, though {} was read in {why}; give a projected crs to make it in metres or feet",
-                    ds.name
+                    "{tool}: made in degrees of longitude and latitude, though {name} {how} {why}; give a projected crs to make it in metres or feet"
                 )),
             ),
             Some(Ok(c)) => (
                 c,
                 Some(format!(
-                    "{tool}: made in {}, the coordinate system {} was read in, with its units for the extent and sizes; set crs to EPSG:4326 to make it in degrees",
-                    c.label(),
-                    ds.name
+                    "{tool}: made in {}, the coordinate system {name} {how}, with its units for the extent and sizes; set crs to EPSG:4326 to make it in degrees",
+                    c.label()
                 )),
             ),
             None => (Crs::LonLat, None),
@@ -5104,10 +5117,16 @@ pub fn projected_crs(text: &str) -> Result<(Crs, Option<String>), String> {
 /// can't hold them (see [`in_projected`]). A point costs a projection and its round trip: Cancel is
 /// looked at every [`LOOK_EVERY`] points.
 pub fn points_in(crs: Crs, pts: Vec<(Coord, f64)>) -> Result<(Vec<(Coord, f64)>, Option<String>), String> {
-    if crs == Crs::LonLat {
+    points_from(Crs::LonLat, crs, pts)
+}
+
+/// [`points_in`] for points in `from`, a run's own system ([`Inputs::work_crs`]): as they are
+/// when the grid is in it too, else through [`ToGrid`].
+fn points_from(from: Crs, crs: Crs, pts: Vec<(Coord, f64)>) -> Result<(Vec<(Coord, f64)>, Option<String>), String> {
+    if from == crs {
         return Ok((pts, None));
     }
-    let to = crs.transformer()?;
+    let to = ToGrid::new(from, crs)?;
     let n = pts.len();
     // (In the points' own storage, as a filtered collect of the same kind reuses it.)
     let kept: Vec<(Coord, f64)> = pts
@@ -5119,7 +5138,7 @@ pub fn points_in(crs: Crs, pts: Vec<(Coord, f64)>) -> Result<(Vec<(Coord, f64)>,
             {
                 return Some(Err(cancelled));
             }
-            in_projected(crs, &to, c).map(|c| Ok((c, v)))
+            to.place(c).map(|c| Ok((c, v)))
         })
         .collect::<Result<_, crate::control::Cancelled>>()?;
     let beyond = n - kept.len();
@@ -5147,6 +5166,59 @@ fn in_projected(crs: Crs, to: &Transformer, c: Coord) -> Option<Coord> {
     // past it through, onto the edge.
     let held = crs != Crs::WebMercator || c.y.abs() <= rustgis_geom::MAX_LAT;
     held.then(|| to.from_lonlat(c)).flatten().filter(|p| p.is_finite() && to.to_lonlat(*p).is_some_and(|back| (back.y - c.y).abs() < 1e-4))
+}
+
+/// Places in a run's own system converted to a grid's system `crs`, as [`in_projected`] takes
+/// them from longitude/latitude: a place `crs` can't hold is `None`. From longitude/latitude, that
+/// conversion; from the grid's own system, the place as it is; from another, through
+/// longitude/latitude for the check, then the direct operation between the two where it lands
+/// near that ([`Reprojection::point_near`]), so a datum pair takes its best operation.
+///
+/// [`Reprojection::point_near`]: rustgis_data::raster::Reprojection::point_near
+pub(crate) struct ToGrid {
+    crs: Crs,
+    same: bool,
+    /// The run's system's transformer, `None` from longitude/latitude.
+    from: Option<Transformer>,
+    to: Transformer,
+    direct: Option<rustgis_data::raster::Reprojection>,
+}
+
+impl ToGrid {
+    pub(crate) fn new(from: Crs, crs: Crs) -> Result<Self, String> {
+        let same = from == crs;
+        let unproject = if same || from == Crs::LonLat { None } else { Some(from.transformer()?) };
+        let direct = if unproject.is_some() { Some(from.to(crs)?) } else { None };
+        Ok(Self { crs, same, from: unproject, to: crs.transformer()?, direct })
+    }
+
+    pub(crate) fn place(&self, c: Coord) -> Option<Coord> {
+        if self.same {
+            return c.is_finite().then_some(c);
+        }
+        let lonlat = match &self.from {
+            Some(t) => t.to_lonlat(c)?,
+            None => c,
+        };
+        let via = in_projected(self.crs, &self.to, lonlat)?;
+        Some(self.direct.as_ref().map_or(via, |d| d.point_near(c, via)))
+    }
+
+    /// A polygon's vertex in the grid's system, as the grid's transformer takes a place in
+    /// longitude/latitude, with no check: Web Mercator takes a latitude past 85.05° as 85.05°, so a
+    /// zone reaching past it keeps its part below, as zones in longitude/latitude always did. Then
+    /// the direct operation's coordinates where it lands near that, as [`ToGrid::place`].
+    pub(crate) fn vertex(&self, c: Coord) -> Option<Coord> {
+        if self.same {
+            return c.is_finite().then_some(c);
+        }
+        let lonlat = match &self.from {
+            Some(t) => t.to_lonlat(c)?,
+            None => c,
+        };
+        let via = self.to.from_lonlat(lonlat).filter(|p| p.is_finite())?;
+        Some(self.direct.as_ref().map_or(via, |d| d.point_near(c, via)))
+    }
 }
 
 /// The note on a system an interpolation took from the layer (`p`'s `crs` empty), naming the values
@@ -5236,9 +5308,11 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     }
 
     let crs_text = s(p, "crs").trim();
+    // The system the layer is held in, in a run in its own; else the one it was read in.
+    let layer_crs = if inp.work_crs() == Crs::LonLat { ds.crs } else { Some(inp.work_crs()) };
     let (crs, crs_note) = if !crs_text.is_empty() {
         crs_with_compatibility_note(crs_text)?
-    } else if let Some(c) = ds.crs {
+    } else if let Some(c) = layer_crs {
         (c, None)
     } else {
         return Err(format!(
@@ -5260,7 +5334,9 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
         ));
     }
 
-    let transformer = crs.transformer()?;
+    // From the layer's own system when it is held in one (straight through when that is the
+    // grid's), else from longitude/latitude.
+    let to_grid = ToGrid::new(inp.work_crs(), crs)?;
 
     if p.get("field").is_some_and(|v| !v.is_null() && !v.is_string()) {
         return Err("field must be text".into());
@@ -5288,7 +5364,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     // feature with none is counted in `skipped`).
     let (mut non_finite, mut non_finite_features) = (0usize, 0usize);
     let project = |c: Coord, beyond: &mut usize| {
-        let p = in_projected(crs, &transformer, c);
+        let p = to_grid.place(c);
         *beyond += usize::from(p.is_none());
         p
     };
@@ -8011,6 +8087,10 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
     // bounds the threads too.
     let mask_bytes = (r.width as usize).saturating_mul(r.height as usize).saturating_mul(2);
     let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_scratch(target_rows.len(), PARALLEL_FEATURES, mask_bytes));
+    // The polygons are in the run's system: their own projected one, converted to the raster's
+    // (none of it when that is the raster's too), else longitude/latitude.
+    let own = (inp.work_crs() != Crs::LonLat).then(|| ToGrid::new(inp.work_crs(), r.crs)).transpose()?;
+    let to = own.as_ref().map_or(crate::rasterops::ToWorld::LonLat(r.transformer()), crate::rasterops::ToWorld::Own);
     crate::control::begin(target_rows.len());
     // A feature's statistics by band, whether its geometry was read, its parts that couldn't be
     // projected and what went wrong.
@@ -8023,11 +8103,11 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
             let Some(f) = poly_ds.features.get(r_idx) else { return Ok((none(), false, 0, None)) };
             Ok::<_, String>(match &f.geometry {
                 Some(Geometry::Polygon(polys)) if !polys.is_empty() => {
-                    // Dataset geometry is already lon/lat; crs records the source system.
+                    // Checked and taken apart into rings, in the run's system as they are.
                     match crate::rasterops::transform_feature_polygons_to_lonlat(polys, None) {
-                        Ok(polys_lonlat) => {
+                        Ok(rings) => {
                             let mut failed_parts = Vec::new();
-                            let st = crate::rasterops::zonal_statistics_with_failures(r, &bands, &polys_lonlat, &mut failed_parts)?;
+                            let st = crate::rasterops::zonal_statistics_from(r, to, &bands, &rings, &mut failed_parts)?;
                             let detail = (!failed_parts.is_empty())
                                 .then(|| format!("feature {}: raster projection failed for polygon part(s) {failed_parts:?}", f.id));
                             (st, true, failed_parts.len(), detail)

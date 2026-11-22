@@ -545,7 +545,7 @@ pub fn rasterize(g: &Grid, shapes: &[Shape], nodata: f32) -> Result<Burned, Stri
         crate::control::check()?;
         crate::control::reached(i);
         failed.clear();
-        let placed = crate::rasterops::Placed::new(&tr, &t, size, &shape.parts, &mut failed);
+        let placed = crate::rasterops::Placed::new(crate::rasterops::ToWorld::LonLat(&tr), &t, size, &shape.parts, &mut failed);
         if !failed.is_empty() {
             unplaced.push(i);
         }

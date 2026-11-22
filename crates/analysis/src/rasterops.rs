@@ -1290,6 +1290,8 @@ pub fn transform_polygon_to_lonlat(rings: &[Vec<Coord>], tr: Option<&Transformer
 }
 
 /// Transforms and validates all polygon parts of a (multi-)polygon feature to WGS 84 lon/lat coordinates.
+/// With no transformer (`tr` `None`), it only checks the parts and takes them apart into rings,
+/// in whatever system they are in.
 pub fn transform_feature_polygons_to_lonlat(
     polys: &[Vec<Vec<Coord>>],
     tr: Option<&Transformer>,
@@ -1389,8 +1391,26 @@ pub fn parse_bands_str(s: &str, total_bands: usize) -> Result<Vec<usize>, String
     Ok(out)
 }
 
+/// How polygons' places reach a grid's coordinate system: from longitude/latitude through its
+/// transformer, or from a run's own system ([`crate::tools::ToGrid`]: as they are when the grid is
+/// in it too).
+#[derive(Clone, Copy)]
+pub(crate) enum ToWorld<'a> {
+    LonLat(&'a Transformer),
+    Own(&'a crate::tools::ToGrid),
+}
+
+impl ToWorld<'_> {
+    fn world(&self, c: Coord) -> Option<Coord> {
+        match self {
+            Self::LonLat(tr) => tr.from_lonlat(c),
+            Self::Own(to) => to.vertex(c),
+        }
+    }
+}
+
 /// Projects a complete ring to the raster grid without dropping failed vertices.
-fn project_ring(tr: &Transformer, t: &GeoTransform, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
+fn project_ring(tr: ToWorld<'_>, t: &GeoTransform, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
     if ring.len() < 3 {
         return None;
     }
@@ -1399,7 +1419,7 @@ fn project_ring(tr: &Transformer, t: &GeoTransform, ring: &[Coord]) -> Option<Ve
             if !c.is_finite() {
                 return None;
             }
-            let pt = t.to_pixel(tr.from_lonlat(c)?);
+            let pt = t.to_pixel(tr.world(c)?);
             (pt.0.is_finite() && pt.1.is_finite()).then_some(pt)
         })
         .collect()
@@ -1424,13 +1444,13 @@ pub fn polygon_mask_with_failures(
     polygons: &[Vec<Vec<Coord>>],
     failed_parts: &mut Vec<usize>,
 ) -> Result<Option<(Range<u32>, Range<u32>, Vec<bool>)>, String> {
-    polygon_mask_on(r.transformer(), &r.transform, (r.width, r.height), polygons, failed_parts)
+    polygon_mask_on(ToWorld::LonLat(r.transformer()), &r.transform, (r.width, r.height), polygons, failed_parts)
 }
 
 /// [`polygon_mask_with_failures`] on a grid of `size` (columns, rows) cells placed by `t` in the
 /// coordinate system of `tr`, with no raster on it yet.
 pub(crate) fn polygon_mask_on(
-    tr: &Transformer,
+    tr: ToWorld<'_>,
     t: &GeoTransform,
     size: (u32, u32),
     polygons: &[Vec<Vec<Coord>>],
@@ -1465,8 +1485,8 @@ pub(crate) fn polygon_mask_on(
     Ok(Some((cols, rows, trimmed)))
 }
 
-/// Polygons (each an exterior ring and its holes, in longitude/latitude) projected to a grid's
-/// pixels, with the window of the grid around them.
+/// Polygons (each an exterior ring and its holes, their places reaching the grid's system by a
+/// [`ToWorld`]) projected to a grid's pixels, with the window of the grid around them.
 pub(crate) struct Placed {
     parts: Vec<Vec<Vec<(f64, f64)>>>,
     width: u32,
@@ -1487,7 +1507,7 @@ impl Placed {
     /// `None` when no polygon can be placed or none reaches the grid of `size` (columns, rows).
     /// The zero-based indices of the rejected parts are appended to `failed_parts`.
     pub(crate) fn new(
-        tr: &Transformer,
+        tr: ToWorld<'_>,
         t: &GeoTransform,
         size: (u32, u32),
         polygons: &[Vec<Vec<Coord>>],
@@ -1683,6 +1703,17 @@ pub(crate) fn zonal_statistics_with_failures(
     polygons: &[Vec<Vec<Coord>>],
     failed_parts: &mut Vec<usize>,
 ) -> Result<Vec<ZoneStats>, String> {
+    zonal_statistics_from(r, ToWorld::LonLat(r.transformer()), bands, polygons, failed_parts)
+}
+
+/// [`zonal_statistics_with_failures`] for polygons whose places reach the raster's system by `to`.
+pub(crate) fn zonal_statistics_from(
+    r: &Raster,
+    to: ToWorld<'_>,
+    bands: &[usize],
+    polygons: &[Vec<Vec<Coord>>],
+    failed_parts: &mut Vec<usize>,
+) -> Result<Vec<ZoneStats>, String> {
     r.require_coordinates()?;
     for &b in bands {
         if b >= r.band_count() {
@@ -1693,7 +1724,7 @@ pub(crate) fn zonal_statistics_with_failures(
         return Ok(Vec::new());
     }
 
-    let Some((cols, rows, mask)) = polygon_mask_with_failures(r, polygons, failed_parts)? else {
+    let Some((cols, rows, mask)) = polygon_mask_on(to, &r.transform, (r.width, r.height), polygons, failed_parts)? else {
         return Ok(vec![ZoneStats::default(); bands.len()]);
     };
 
@@ -2586,9 +2617,11 @@ mod tests {
                 }
                 polygons.push(rings);
             }
-            let found = polygon_mask_on(&tr, &t, (width, height), &polygons, &mut Vec::new()).unwrap();
-            let parts: Vec<Vec<Vec<(f64, f64)>>> =
-                polygons.iter().map(|rings| rings.iter().map(|ring| project_ring(&tr, &t, ring).unwrap()).collect()).collect();
+            let found = polygon_mask_on(ToWorld::LonLat(&tr), &t, (width, height), &polygons, &mut Vec::new()).unwrap();
+            let parts: Vec<Vec<Vec<(f64, f64)>>> = polygons
+                .iter()
+                .map(|rings| rings.iter().map(|ring| project_ring(ToWorld::LonLat(&tr), &t, ring).unwrap()).collect())
+                .collect();
             let want = plain(&parts, width, height);
             let mut got = vec![false; want.len()];
             if let Some((cols, rows, mask)) = found {

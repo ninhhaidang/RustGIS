@@ -2045,3 +2045,203 @@ fn distance_tools_take_junk_in_the_held_system() {
         }
     }
 }
+
+/// Adds a layer of `geoms`, in `crs`'s own coordinates as they are, held and read in it, with a
+/// number `v` per feature (1, 2, 3…).
+fn add_in(s: &mut Session, name: &str, kind: GeometryType, geoms: Vec<Geometry>, crs: Crs) {
+    let mut d = Dataset::new(name, kind, vec![Field::new("v", FieldType::Double)]);
+    for (i, g) in geoms.into_iter().enumerate() {
+        d.push(Some(g), vec![Cell::Float(i as f64 + 1.0)]);
+    }
+    d.held_in = crs;
+    d.crs = Some(crs);
+    s.map_mut().add_dataset(d);
+}
+
+/// A raster layer's grid.
+fn grid_of(s: &Session, layer: &str) -> std::sync::Arc<rustgis_data::raster::Raster> {
+    let l = s.map().layer_by_name(layer).unwrap_or_else(|| panic!("no layer {layer}"));
+    l.raster.as_ref().and_then(|r| r.data.clone()).unwrap_or_else(|| panic!("{layer} is no raster"))
+}
+
+/// IDW, Kriging and Kernel Density make their grid in the system a layer is held in from its own
+/// coordinates, as they are: the grid's corner is the points' own westmost and northmost
+/// coordinates, exactly, where a run in longitude/latitude converted them there and back. The
+/// points lie 1500 km east of the zone's central meridian, where that round trip doesn't come back
+/// to the same bits.
+#[test]
+fn a_grid_is_made_from_the_held_systems_own_coordinates() {
+    let (x0, y0) = (2_000_000.25, 5_401_300.75);
+    let at = [(0.0, 0.0), (1234.5, 310.25), (410.125, 2045.5), (2500.75, 1800.0)];
+    let mut s = session(UTM);
+    add_in(&mut s, "Samples", GeometryType::Point, at.iter().map(|(x, y)| Geometry::Point(Coord::new(x0 + x, y0 + y))).collect(), UTM);
+    let (west, north) = (x0, y0 + 2045.5);
+    for (tool, out) in [("idwInterpolation", "Idw"), ("kriging", "Krig")] {
+        s.run("gp.run", &json!({"tool": tool, "params": {"input": "Samples", "field": "v", "pixelSize": 100, "output": out}})).unwrap();
+        let g = grid_of(&s, out);
+        assert_eq!(g.crs, UTM, "{tool}");
+        assert_eq!(
+            (g.transform.origin_x.to_bits(), g.transform.origin_y.to_bits()),
+            (west.to_bits(), north.to_bits()),
+            "{tool}: {:?}",
+            g.transform
+        );
+    }
+    s.run("gp.run", &json!({"tool": "kernelDensity", "params": {"input": "Samples", "radius": 500, "pixelSize": 50, "output": "Kde"}}))
+        .unwrap();
+    let g = grid_of(&s, "Kde");
+    assert_eq!(g.crs, UTM);
+    // Its grid reaches the radius past the points, on whole cells from the westmost point.
+    let (dx, dy) = (west - g.transform.origin_x, g.transform.origin_y - north);
+    assert!(dx > 0.0 && dy > 0.0 && (dx / 50.0).fract() == 0.0 && (dy / 50.0).fract() == 0.0, "{:?}", g.transform);
+}
+
+/// Gauss-Krüger zone 3 on DHDN (EPSG:31467) to UTM 32N on ETRS89 (EPSG:25832).
+const GK3: Crs = Crs::Epsg(31467);
+const ETRS_UTM: Crs = Crs::Epsg(25832);
+
+/// A grid in another system than the points' own takes the direct operation between the two, as
+/// [`Crs::to`] converts: between DHDN and ETRS89, 0.44 m from the way through WGS 84 a run in
+/// longitude/latitude took (`a_conversion_between_two_datums_takes_their_transformation`).
+#[test]
+fn a_grid_in_another_system_takes_the_direct_operation() {
+    let mut s = Session::new(Project::default());
+    let at = [Coord::new(3_500_000.0, 5_400_000.0), Coord::new(3_501_200.0, 5_400_900.0), Coord::new(3_500_700.0, 5_401_500.0)];
+    add_in(&mut s, "Samples", GeometryType::Point, at.iter().map(|c| Geometry::Point(*c)).collect(), GK3);
+    s.run(
+        "gp.run",
+        &json!({"tool": "idwInterpolation", "params": {"input": "Samples", "field": "v", "pixelSize": 10, "crs": "EPSG:25832", "output": "Idw"}}),
+    )
+    .unwrap();
+    let to = GK3.to(ETRS_UTM).unwrap();
+    let placed: Vec<Coord> = at.iter().map(|c| to.point(*c).unwrap()).collect();
+    let west = placed.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
+    let north = placed.iter().map(|c| c.y).fold(f64::NEG_INFINITY, f64::max);
+    let g = grid_of(&s, "Idw");
+    assert_eq!(g.crs, ETRS_UTM);
+    assert_eq!((g.transform.origin_x, g.transform.origin_y), (west, north));
+}
+
+/// Zonal Statistics and Tabulate Area place zones held in another system than the raster's by the
+/// direct operation between the two: a square held in Gauss-Krüger zone 3 on DHDN covers the cells
+/// of a raster in UTM 32N on ETRS89 that the same square converted there by [`Crs::to`] covers,
+/// on cells of 10 cm (and in their metre-square classes), where the way through WGS 84 is 0.44 m
+/// off.
+#[test]
+fn zones_reach_a_raster_by_the_direct_operation() {
+    use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+    let mut s = Session::new(Project::default());
+    // 10 m by 10 m of 10 cm cells, each holding its column and row (col + 1000 × row).
+    let (w, h) = (100u32, 100u32);
+    let values: Vec<f32> = (0..w * h).map(|i| (i % w + 1000 * (i / w)) as f32).collect();
+    let gt = GeoTransform { origin_x: 499_920.0, origin_y: 5_398_285.0, pixel_width: 0.1, pixel_height: -0.1 };
+    let r = Raster::new("grid", w, h, vec![values], gt, ETRS_UTM, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("grid", rustgis_map::raster::RasterLayer::from_path(r, "grid.tif"));
+    // The same cells in 100 classes of a metre square, for Tabulate Area.
+    let classes: Vec<f32> = (0..w * h).map(|i| (i % w / 10 + 10 * (i / w / 10)) as f32).collect();
+    let r = Raster::new("blocks", w, h, vec![classes], gt, ETRS_UTM, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("blocks", rustgis_map::raster::RasterLayer::from_path(r, "blocks.tif"));
+    // A 6 m square round (3,500,000, 5,400,000) in GK3, 499,924.54, 5,398,279.54 in UTM.
+    let (cx, cy) = (3_500_000.0, 5_400_000.0);
+    let ring: Vec<Coord> =
+        [(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0), (-3.0, -3.0)].iter().map(|(dx, dy)| Coord::new(cx + dx, cy + dy)).collect();
+    let to = GK3.to(ETRS_UTM).unwrap();
+    let there: Vec<Coord> = ring.iter().map(|c| to.point(*c).unwrap()).collect();
+    add_in(&mut s, "Zone", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![ring]])], GK3);
+    add_in(&mut s, "Converted", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![there]])], ETRS_UTM);
+    let mut stats = Vec::new();
+    let mut tables = Vec::new();
+    for zone in ["Zone", "Converted"] {
+        let out = format!("{zone}Stats");
+        s.run("gp.run", &json!({"tool": "zonalStats", "params": {"raster": "grid", "polygons": zone, "output": out}})).unwrap();
+        stats.push((field_numbers(&s, &out, "grid_count"), field_numbers(&s, &out, "grid_mean")));
+        let table = format!("{zone}Classes");
+        s.run(
+            "gp.run",
+            &json!({"tool": "tabulateArea", "params": {"raster": "blocks", "zones": zone, "measure": "Count", "output": table}}),
+        )
+        .unwrap();
+        let t = s.project.tables.iter().find(|t| t.name == table).unwrap_or_else(|| panic!("no table {table}"));
+        let row: Vec<f64> = (1..t.fields.len()).filter_map(|f| t.value(0, f).as_f64()).collect();
+        tables.push((t.fields.iter().skip(1).map(|f| f.name.clone()).collect::<Vec<_>>(), row));
+    }
+    // About 60 × 60 cells.
+    assert!(stats[0].0[0] > 3000.0, "{stats:?}");
+    assert_eq!(stats[0], stats[1]);
+    assert_eq!(tables[0], tables[1]);
+}
+
+/// NSIDC Sea Ice Polar Stereographic North, a projected system that holds the pole.
+const POLAR: Crs = Crs::Epsg(3413);
+
+/// The places a layer's points or zones are taken to in another system are said when that system
+/// can't hold them: IDW from points held in a polar system, on a grid in Web Mercator, leaves out
+/// the one at the pole and counts it. A zone held there that reaches past Web Mercator's 85.05°
+/// keeps its part below the limit on a Web Mercator raster, as a zone in longitude/latitude
+/// always did (its vertices beyond are taken as on the limit): Zonal Statistics counts its cells
+/// and says no part was left out. A part that reaches a place the raster's system can't hold at
+/// all is left out and said, by Zonal Statistics and Tabulate Area, its other parts counted.
+#[test]
+fn a_held_layers_places_another_system_cant_hold_are_said() {
+    use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+    let to = Crs::LonLat.to(POLAR).unwrap();
+    let mut s = Session::new(Project::default());
+    let pts = [Coord::new(0.0, 90.0), Coord::new(5.0, 70.0), Coord::new(8.0, 72.0)];
+    add_in(&mut s, "Ice", GeometryType::Point, pts.iter().map(|c| Geometry::Point(to.point(*c).unwrap())).collect(), POLAR);
+    let mark = s.notice_mark();
+    let answer = s
+        .run(
+            "gp.run",
+            &json!({"tool": "idwInterpolation", "params": {"input": "Ice", "field": "v", "pixelSize": 10000, "crs": "EPSG:3857", "output": "Idw"}}),
+        )
+        .unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).chain([answer.to_string()]).collect();
+    assert!(said.iter().any(|t| t.contains("1 point(s) beyond what") && t.contains("85.05")), "{said:?}");
+    assert!(said.iter().any(|t| t.contains("from 2 points")), "{said:?}");
+
+    // Web Mercator from 0° to 10°E, 80°N to its limit, in cells of 10 km, all 1.
+    let (top, bottom): (f64, f64) = (20_037_508.342_789_244, 15_538_711.096_309_224);
+    let (w, h) = (112u32, ((top - bottom) / 10_000.0).ceil() as u32);
+    let gt = GeoTransform { origin_x: 0.0, origin_y: top, pixel_width: 10_000.0, pixel_height: -10_000.0 };
+    let r = Raster::new("merc", w, h, vec![vec![1.0; (w * h) as usize]], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("merc", rustgis_map::raster::RasterLayer::from_path(r, "merc.tif"));
+    // From 2°E to 8°E, 83°N to 87°N, its edges followed in steps of a degree.
+    let mut ring: Vec<Coord> = (2..=8).map(|x| Coord::new(f64::from(x), 83.0)).collect();
+    ring.extend((84..=87).map(|y| Coord::new(8.0, f64::from(y))));
+    ring.extend((2..8).rev().map(|x| Coord::new(f64::from(x), 87.0)));
+    ring.extend((83..87).rev().map(|y| Coord::new(2.0, f64::from(y))));
+    let ring: Vec<Coord> = ring.iter().map(|c| to.point(*c).unwrap()).collect();
+    add_in(&mut s, "Cap", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![ring]])], POLAR);
+    let mark = s.notice_mark();
+    let answer =
+        s.run("gp.run", &json!({"tool": "zonalStats", "params": {"raster": "merc", "polygons": "Cap", "output": "CapStats"}})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).chain([answer.to_string()]).collect();
+    assert!(!said.iter().any(|t| t.contains("could not be projected") || t.contains("invalid geometry")), "{said:?}");
+    assert!(field_numbers(&s, "CapStats", "merc_count")[0] > 100.0, "{:?}", field_numbers(&s, "CapStats", "merc_count"));
+
+    // A zone of two parts on a raster in Antarctic Polar Stereographic (EPSG:3031), which can't
+    // hold the North Pole: the part reaching it is left out and said, the other one counted.
+    let south = Crs::Epsg(3031);
+    let into = Crs::LonLat.to(south).unwrap();
+    let near: Vec<Coord> =
+        [(10.0, 0.0), (11.0, 0.0), (11.0, 1.0), (10.0, 1.0), (10.0, 0.0)].iter().map(|(x, y)| Coord::new(*x, *y)).collect();
+    let mut bounds = rustgis_geom::Extent::EMPTY;
+    near.iter().for_each(|c| bounds.expand(into.point(*c).unwrap()));
+    let (w, h) = (((bounds.max_x - bounds.min_x) / 1000.0).ceil() as u32 + 2, ((bounds.max_y - bounds.min_y) / 1000.0).ceil() as u32 + 2);
+    let gt = GeoTransform { origin_x: bounds.min_x - 1000.0, origin_y: bounds.max_y + 1000.0, pixel_width: 1000.0, pixel_height: -1000.0 };
+    let r = Raster::new("south", w, h, vec![vec![1.0; (w * h) as usize]], gt, south, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("south", rustgis_map::raster::RasterLayer::from_path(r, "south.tif"));
+    let pole: Vec<Coord> = [(0.0, 89.0), (90.0, 89.0), (0.0, 90.0), (0.0, 89.0)].iter().map(|(x, y)| Coord::new(*x, *y)).collect();
+    let parts = [near, pole].map(|ring| vec![ring.iter().map(|c| to.point(*c).unwrap()).collect::<Vec<_>>()]);
+    add_in(&mut s, "Split", GeometryType::Polygon, vec![Geometry::Polygon(parts.to_vec())], POLAR);
+    for (tool, params) in [
+        ("zonalStats", json!({"raster": "south", "polygons": "Split", "output": "SplitStats"})),
+        ("tabulateArea", json!({"raster": "south", "zones": "Split", "measure": "Count", "output": "SplitClasses"})),
+    ] {
+        let mark = s.notice_mark();
+        let answer = s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap();
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).chain([answer.to_string()]).collect();
+        assert!(said.iter().any(|t| t.contains("1 polygon part(s) could not be projected onto the raster grid")), "{tool}: {said:?}");
+    }
+    assert!(field_numbers(&s, "SplitStats", "south_count")[0] > 100.0, "{:?}", field_numbers(&s, "SplitStats", "south_count"));
+}
