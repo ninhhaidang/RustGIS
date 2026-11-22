@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Μια γραμμή ή δείκτες ή σημάδια διαγράμμισης κατά μήκος της
 A magnifying lens that follows the pointer.	Ένας μεγεθυντικός φακός που ακολουθεί τον δείκτη.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Η διεύθυνση μιας υπηρεσίας χαρτών, οντοτήτων ή καλύψεων: WMS, WMTS, WFS, WCS, OGC API Features ή Tiles, ή ενός ArcGIS FeatureServer, MapServer, ImageServer ή VectorTileServer (ή ενός καταλόγου υπηρεσιών, για περιήγηση).
+A message takes at most {n} pictures	Ένα μήνυμα δέχεται έως {n} εικόνες
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Ένα όνομα ή κωδικός EPSG, WKT ή συμβολοσειρά PROJ· κενό: του ίδιου του χάρτη όταν είναι προβολικός, αλλιώς η ζώνη UTM στο κέντρο της προβολής
 a name, or owner/name such as giswqs/geospatial	ένα όνομα ή κάτοχος/όνομα, όπως giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Ένα επώνυμο τελικό σημείο που μπορείτε να επαναχρησιμοποιήσετε. Τα κλειδιά διατηρούνται μέχρι να κλείσει το RustGIS, εκτός αν επιλέξετε να απομνημονευτούν σε αυτόν τον υπολογιστή· η ίδια η σύνδεση δεν τα διατηρεί ποτέ.
@@ -443,6 +444,7 @@ Asking the map service…	Ερώτημα στην υπηρεσία χάρτη…
 Asking the NLDI…	Ερώτημα στο NLDI…
 Asset	Asset
 Assign Escape	Ανάθεση Escape
+assistant picture	εικόνα βοηθού
 Assistant settings	Ρυθμίσεις βοηθού
 At both ends	Και στα δύο άκρα
 At inner vertices	Στις εσωτερικές κορυφές
@@ -452,6 +454,7 @@ At the end	Στο τέλος
 At the start	Στην αρχή
 At vertices	Στις κορυφές
 Atlas	Άτλας
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Επισυνάψτε μια εικόνα (PNG, JPEG ή WebP) ή επικολλήστε μία στο πλαίσιο μηνύματος
 Attachments	Συνημμένα
 Attribute\nTable	Πίνακας\nγνωρισμάτων
 Attribute Rules	Κανόνες γνωρισμάτων
@@ -2244,6 +2247,7 @@ Letter spacing	Απόσταση χαρακτήρων
 Level	Στάθμη
 Library	Βιβλιοθήκη
 Licence	Άδεια χρήσης
+Licence…	Άδεια χρήσης…
 Light	Φωτεινό
 Light and Shadow	Φως και σκιά
 Light the extruded shapes from the north-west.	Φωτισμός των εξωθημένων σχημάτων από τα βορειοδυτικά.
@@ -2258,6 +2262,7 @@ Limits	Όρια
 Line	Γραμμή
 Line alignment	Στοίχιση γραμμών
 Line color	Χρώμα γραμμής
+Line layer	Επίπεδο γραμμών
 Line Of Sight	Γραμμή ορατότητας
 Line of sight between two points	Γραμμή ορατότητας μεταξύ δύο σημείων
 Line Of Sight From Here	Γραμμή ορατότητας από εδώ
@@ -2620,6 +2625,8 @@ New Group	Νέα ομάδα
 New job name	Όνομα νέας διεργασίας
 New Layout	Νέα διάταξη
 New Map	Νέος χάρτης
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Οι νέοι χάρτες σχεδιάζονται στο σύστημα συντεταγμένων του έργου και τα νέα κενά επίπεδα κρατούν τις συντεταγμένες τους σε αυτό. Οι χάρτες και τα επίπεδα που υπάρχουν ήδη στο έργο κρατούν τα δικά τους.
+New maps stay in Web Mercator: {why}	Οι νέοι χάρτες μένουν σε Web Mercator: {why}
 New Model From History	Νέο μοντέλο από το ιστορικό
 New Notebook	Νέο σημειωματάριο
 New Presentation	Νέα παρουσίαση
@@ -2733,6 +2740,7 @@ None of these layers are polygon layers.	Κανένα από αυτά τα επ�
 none, a .duckdb file, or host=… dbname=… user=…	κανένα, ένα αρχείο .duckdb ή host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	κανένας ή από PGPASSWORD, MYSQL_PWD ή SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Κανένα. Προσθέστε ένα μέσω διεύθυνσης ή από ένα πρόσθετο basemap.
+None: new maps in Web Mercator	Κανένα: νέοι χάρτες σε Web Mercator
 North	Βορράς
 North\nArrow	Βέλος\nβορρά
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	βόρεια των 84° Β και νότια των 80° Ν το πλέγμα είναι UPS, που δεν έχει αριθμό ζώνης: γράψτε north 2000000 2444268, south 2000000 1555732 ή πολικό MGRS όπως Z AM 00000 44268
@@ -3005,6 +3013,7 @@ Paste Special	Ειδική επικόλληση
 Paste Special (as a new layer)	Ειδική επικόλληση (ως νέο επίπεδο)
 Paste token	Επικόλληση token
 paste your key	επικολλήστε το κλειδί σας
+pasted picture	επικολλημένη εικόνα
 path is required	απαιτείται το path
 Pause	Παύση
 Pause.	Παύση.
@@ -3161,8 +3170,11 @@ Profile Viewing	Προβολή προφίλ
 PROJ definition	Ορισμός PROJ
 Project	Έργο
 Project\nPackage	Πακέτο\nέργου
+Project Coordinate System	Σύστημα συντεταγμένων έργου
 Project Info	Πληροφορίες έργου
 project is "sample", "blank", "last" or {"path": a project file}	το project είναι "sample", "blank", "last" ή {"path": a project file}
+Project Properties	Ιδιότητες έργου
+Project Properties…	Ιδιότητες έργου…
 Project Raster	Προβολή raster
 Project Template	Πρότυπο έργου
 project's path is required	απαιτείται το path του project
@@ -3852,7 +3864,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Εμφάνιση ή απ
 Show or hide the Browser pane.	Εμφάνιση ή απόκρυψη του περιηγητή.
 Show or hide the Data Sources pane.	Εμφάνιση ή απόκρυψη του πλαισίου πηγών δεδομένων.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Εμφάνιση ή απόκρυψη του πλαισίου Πηγές δεδομένων: αγαπημένα, πρόσφατα δεδομένα, αποθηκευμένες υπηρεσίες, βάσεις δεδομένων και STAC APIs, καθώς και βιβλιοθήκη δημόσιων πηγών.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Εμφάνιση ή απόκρυψη του καννάβου πάνω από το basemap: γεωγραφικά πλάτη και μήκη, ένα μετρικό πλέγμα, οι ζώνες UTM ή το πλέγμα MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Εμφάνιση ή απόκρυψη του καννάβου πάνω από το basemap ή πάνω από τα επίπεδα όταν σχεδιάζεται από πάνω: γεωγραφικά πλάτη και μήκη, ένα μετρικό πλέγμα, οι ζώνες UTM ή το πλέγμα MGRS.
 Show or hide the group's layers	Εμφάνιση ή απόκρυψη των επιπέδων της ομάδας
 Show or hide the layer.	Εμφάνιση ή απόκρυψη του επιπέδου.
 Show or hide the Layers pane.	Εμφάνιση ή απόκρυψη του πλαισίου Επίπεδα.
@@ -4001,6 +4013,7 @@ SQL Query	Ερώτημα SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL που πρέπει να ισχύει, π.χ. pop > 0
 Square	Τετράγωνο
+Square to a line	Κάθετα σε γραμμή
 Squares	Τετράγωνα
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4164,6 +4177,7 @@ Tags	Λέξεις-κλειδιά
 Taiwan	Ταϊβάν
 Take the data in view offline, to edit and sync back later.	Λήψη των δεδομένων της προβολής για χρήση εκτός σύνδεσης, με επεξεργασία και συγχρονισμό αργότερα.
 Take this bound out	Αφαίρεση αυτού του ορίου
+Take this picture off the message	Αφαίρεση αυτής της εικόνας από το μήνυμα
 Take this point off	Αφαίρεση αυτού του σημείου
 Target details ({operation}): {targets}	Λεπτομέρειες προορισμού ({operation}): {targets}
 Target Features	Οντότητες-στόχοι
@@ -4189,6 +4203,7 @@ Test	Έλεγχος
 Test Connection	Δοκιμή σύνδεσης
 Testing…	Δοκιμή…
 Text	Κείμενο
+Text size	Μέγεθος κειμένου
 Text Symbol	Σύμβολο κειμένου
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Κείμενο, π.χ. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', στη θέση του πεδίου· μέγεθος σε στιγμές (pt), χρώμα ως '#RRGGBB', γωνία σε μοίρες δεξιόστροφα. Κενό: του πεδίου ή της κλάσης.
 Th	Πε
@@ -4262,6 +4277,7 @@ the keychain backend stopped unexpectedly	η υπηρεσία της κλειδ�
 the keychain worker stopped	η εργασία παρασκηνίου της κλειδοθήκης σταμάτησε
 The keys saved on this computer were forgotten; a login in this session keeps working.	Τα κλειδιά που ήταν αποθηκευμένα σε αυτόν τον υπολογιστή διαγράφηκαν. Μια σύνδεση σε αυτήν την περίοδο λειτουργίας εξακολουθεί να λειτουργεί.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Τα δύο τελευταία ψηφία των χιλιομέτρων, όπως τα τυπώνουν οι τοπογραφικοί χάρτες: 43 για 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Η ετικέτα ξεκινά από το σημείο και εκτείνεται κάθετα προς την πλησιέστερη γραμμή του επιπέδου που επιλέγεται παρακάτω.
 the latitude band must be a letter from C to X (not I or O)	η ζώνη πλάτους πρέπει να είναι γράμμα από C έως X (όχι I ή O)
 the layer Export Features was opened on is gone	το επίπεδο στο οποίο άνοιξε η Εξαγωγή οντοτήτων δεν υπάρχει πια
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Το επίπεδο δείχνει το βήμα στο οποίο βρίσκεται το ρυθμιστικό χρόνου και ενεργοποιεί το ρυθμιστικό για τις ημερομηνίες της μεταβλητής.
@@ -4278,6 +4294,7 @@ The longest a callout's line may be.	Το μέγιστο μήκος της γρ�
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Ο χάρτης αριστερά· ο τίτλος, ο εντοπιστής, το υπόμνημα, οι πηγές και η αναφορά σε πάνελ στα δεξιά.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	ο χάρτης δεν έχει επίπεδο GeoPackage φορτωμένο για επεξεργασία (Αρχική › Προσθήκη δεδομένων › Επεξεργασία πίνακα GeoPackage…)
 the map has no layers	ο χάρτης δεν έχει επίπεδα
+The map has no line or polygon layer to be square to.	Ο χάρτης δεν έχει επίπεδο γραμμών ή πολυγώνων ως προς το οποίο να είναι κάθετη.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	ο χάρτης δεν έχει επίπεδο PostGIS φορτωμένο για επεξεργασία (Αρχική › Προσθήκη δεδομένων › Βάση δεδομένων…, Φόρτωση για επεξεργασία)
 The map has no tile archive read from a file.	Ο χάρτης δεν έχει αρχείο tiles που διαβάστηκε από αρχείο.
 The map is drawn in this coordinate system; layers are projected on the fly.	Ο χάρτης σχεδιάζεται σε αυτό το σύστημα συντεταγμένων. Τα επίπεδα προβάλλονται δυναμικά.
@@ -4482,7 +4499,9 @@ This connection has no user: set user (connection.edit) to generate a token.	Α�
 This connection is logged out. Log in explicitly to use it again.	Αυτή η σύνδεση είναι αποσυνδεδεμένη. Συνδεθείτε ρητά για να τη χρησιμοποιήσετε ξανά.
 This font isn't installed here, so the text is drawn in the sans-serif	Αυτή η γραμματοσειρά δεν είναι εγκατεστημένη εδώ, οπότε το κείμενο σχεδιάζεται με sans-serif
 This font isn't installed here, so the text is drawn in the serif	Αυτή η γραμματοσειρά δεν είναι εγκατεστημένη εδώ, οπότε το κείμενο σχεδιάζεται με serif
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Αυτή η εικόνα δεν μπορεί να γίνει δείκτης: δεν είναι αναγνώσιμο PNG ή JPEG έως 20.000 px ανά πλευρά
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Αυτή η εικόνα δεν μπορεί να γίνει δείκτης: έχει περισσότερα pixel από {side} × {side}· κάντε την μικρότερη
+This image can't be a marker: it isn't a readable PNG or JPEG	Αυτή η εικόνα δεν μπορεί να γίνει δείκτης: δεν είναι αναγνώσιμο PNG ή JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Αυτή η εικόνα δεν μπορεί να γίνει δείκτης: το RustGIS έχει αποκωδικοποιήσει όσες εικόνες δεικτών επιτρέπεται μέχρι την επανεκκίνησή του· επανεκκινήστε το για να χρησιμοποιήσετε άλλη
 This image is too large for a marker: at most about 1.5 MiB	Αυτή η εικόνα είναι πολύ μεγάλη για δείκτη: το πολύ περίπου 1,5 MiB
 This image is unavailable. Choose another image or No image.	Αυτή η εικόνα δεν είναι διαθέσιμη. Επιλέξτε άλλη εικόνα ή Χωρίς εικόνα.
 This item is from a local or private network, whose files Bands and Index don't read yet	Αυτό το στοιχείο προέρχεται από τοπικό ή ιδιωτικό δίκτυο, τα αρχεία του οποίου τα Κανάλια και ο Δείκτης δεν διαβάζουν ακόμη
@@ -4872,6 +4891,7 @@ Whether the service is asked for one picture of the view or for tiles.	Αν η �
 Which 5 countries have the largest GDP?	Ποιες 5 χώρες έχουν το μεγαλύτερο ΑΕΠ;
 While drawing, click two points on a feature's edge to follow the edge between them	Κατά τη σχεδίαση, κάντε κλικ σε δύο σημεία στο όριο μιας οντότητας για να ακολουθήσετε το όριο ανάμεσά τους
 While drawing, click two points on a feature's edge to follow the edge between them.	Κατά τη σχεδίαση, κάντε κλικ σε δύο σημεία στο όριο μιας οντότητας για να ακολουθήσετε το όριο ανάμεσά τους.
+While it has none, take it from the first layer added	Όσο δεν έχει, να λαμβάνεται από το πρώτο επίπεδο που προστίθεται
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Κατά την πληκτρολόγηση, οι συντομεύσεις χωρίς Ctrl/⌘ τίθενται σε παύση. Η πλοήγηση πρώτου προσώπου διατηρεί τα Escape, Home και Delete.
 White behind dark text, dark behind light.	Λευκό πίσω από σκούρο κείμενο, σκούρο πίσω από ανοιχτόχρωμο.
 Whitebox and GeoLibre tools	Εργαλεία Whitebox και GeoLibre
@@ -4928,7 +4948,7 @@ Write a plugin	Συγγραφή πρόσθετου
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Εγγραφή μιας περιστροφής της προβολής γύρω από το κέντρο της ως κινούμενου GIF ή καρέ PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Γράφει ξεχωριστή γραμμή δύο κορυφών για κάθε ζεύγος διαδοχικών κορυφών.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Γράφει κάθε οντότητα με τη γεωμετρία της διορθωμένη όπου είναι δυνατό: οι δακτύλιοι κλείνουν, οι επαναλαμβανόμενες κορυφές και τα εκφυλισμένα τμήματα αφαιρούνται, οι αυτοτομές, τα επικαλυπτόμενα τμήματα και οι οπές εκτός του κελύφους τους επιλύονται με τον επιλεγμένο κανόνα (το Shells Minus Holes συγχωνεύει τα επικαλυπτόμενα τμήματα· το Even-Odd κρατά ό,τι βρίσκεται μέσα σε περιττό αριθμό δακτυλίων). Οι οντότητες με συντεταγμένη που λείπει ή δεν είναι πεπερασμένη οπουδήποτε, ακόμη και σε οπή, ή που μένουν χωρίς χρήσιμα σημεία ή, για πολύγωνα, χωρίς εμβαδόν μετά τη διόρθωση, γράφονται χωρίς γεωμετρία. Άλλες οντότητες πολύ σύνθετες για έλεγχο, ή των οποίων η διόρθωση αποτυγχάνει, γράφονται αμετάβλητες. Αναφέρει τι διορθώθηκε σε καθεμία.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Γράφει ένα ορθογώνιο οριοθέτησης ευθυγραμμισμένο με τους άξονες ανά οντότητα σε αποθηκευμένες συντεταγμένες γεωγραφικού μήκους/πλάτους. Τα περιβάλλοντα μηδενικού εμβαδού παραλείπονται.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Γράφει ένα ορθογώνιο οριοθέτησης ευθυγραμμισμένο με τους άξονες ανά οντότητα στις συντεταγμένες του ίδιου του επιπέδου, όταν αυτό είναι σε προβολικό σύστημα εκτός του Web Mercator και των άλλων παγκόσμιων προβολών (Robinson, Plate Carrée και παρόμοιες), αλλιώς σε γεωγραφικό μήκος/πλάτος. Τα περιβάλλοντα μηδενικού εμβαδού παραλείπονται.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Γράφει την κλίση Sen, το Z και την τιμή p του ελέγχου, και την κλίση όπου η τάση είναι στατιστικά σημαντική.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Γράφει τις οντότητες με μη έγκυρη γεωμετρία, όπως αυτοτεμνόμενους ή μη κλειστούς δακτυλίους, οπές εκτός του κελύφους τους ή επικαλυπτόμενα τμήματα, και αναφέρει τι είναι λάθος σε καθεμία.
 writing the copy failed unexpectedly	η εγγραφή του αντιγράφου απέτυχε απροσδόκητα
@@ -4999,7 +5019,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	Το {name} δεν έχει πακέτο για {platform}. Είναι διαθέσιμο για: {platforms}.
 {name} is larger than {mb} MB	Το {name} είναι μεγαλύτερο από {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	Το {name} εκτελείται ως πρόγραμμα στον υπολογιστή σας: χρειάζεται την εφαρμογή για υπολογιστή ή το rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	Το {name} αποσύρθηκε από το μητρώο πρόσθετων και απενεργοποιήθηκε.
 {name} was withdrawn from the plugin registry: {reason}	Το {name} αποσύρθηκε από το μητρώο πρόσθετων: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: η λήψη δεν ταιριάζει με το μητρώο, οπότε δεν εγκαταστάθηκε.
 {name}: the download is a different plugin; it wasn't installed.	{name}: η λήψη είναι διαφορετικό πρόσθετο, οπότε δεν εγκαταστάθηκε.

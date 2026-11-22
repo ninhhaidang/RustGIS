@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	ເສັ້ນ, ຫຼື ຈຸດໝາຍ ຫຼື ຂີດໝາຍຕາມເສັ້ນ
 A magnifying lens that follows the pointer.	ແວ່ນຂະຫຍາຍທີ່ຍ້າຍຕາມຕົວຊີ້ເມົາສ໌.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	ທີ່ຢູ່ບໍລິການແຜນທີ່, ຟີເຈີ ຫຼື ພື້ນຜິວ: WMS, WMTS, WFS, WCS, OGC API Features ຫຼື Tiles, ຫຼື ArcGIS FeatureServer, MapServer, ImageServer ຫຼື VectorTileServer (ຫຼື ໄດເຣັກໂທຣີບໍລິການ ເພື່ອເລືອກເບິ່ງ).
+A message takes at most {n} pictures	ຂໍ້ຄວາມໜຶ່ງມີຮູບໄດ້ບໍ່ເກີນ {n} ຮູບ
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	ຊື່ ຫຼື ລະຫັດ EPSG, WKT ຫຼື ສະຕຣິງ PROJ; ຫວ່າງ: ລະບົບຂອງແຜນທີ່ເອງເມື່ອມັນຖືກສາຍແສງ, ບໍ່ດັ່ງນັ້ນແມ່ນເຂດ UTM ທີ່ຈຸດກາງຂອງມຸມມອງ
 a name, or owner/name such as giswqs/geospatial	ຊື່, ຫຼື ເຈົ້າຂອງ/ຊື່ ເຊັ່ນ giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	ຈຸດເຊື່ອມຕໍ່ທີ່ມີຊື່ເຊິ່ງນຳໃຊ້ຄືນໄດ້. ຄີຈະຖືກເກັບໄວ້ຈົນກວ່າ RustGIS ຈະປິດ ເວັ້ນເສຍແຕ່ທ່ານເລືອກໃຫ້ຈື່ໄວ້ໃນຄອມພິວເຕີນີ້; ຕົວເຊື່ອມຕໍ່ເອງຈະບໍ່ເກັບຄີໄວ້ເລີຍ.
@@ -443,6 +444,7 @@ Asking the map service…	ກຳລັງສອບຖາມບໍລິການ
 Asking the NLDI…	ກຳລັງສອບຖາມ NLDI…
 Asset	ແຫຼ່ງຂໍ້ມູນ
 Assign Escape	ກຳນົດປຸ່ມ Escape
+assistant picture	ຮູບຂອງຜູ້ຊ່ວຍ
 Assistant settings	ການຕັ້ງຄ່າຜູ້ຊ່ວຍ
 At both ends	ຢູ່ທັງສອງສົ້ນ
 At inner vertices	ຢູ່ຈຸດຈອດທາງໃນ
@@ -452,6 +454,7 @@ At the end	ຢູ່ສົ້ນສຸດ
 At the start	ຢູ່ຈຸດເລີ່ມຕົ້ນ
 At vertices	ຢູ່ຈຸດຈອດ
 Atlas	ແອັດລັສ
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	ຄັດຕິດຮູບ (PNG, JPEG ຫຼື WebP), ຫຼື ວາງຮູບລົງໃນກ່ອງຂໍ້ຄວາມ
 Attachments	ໄຟລ໌ຄັດຕິດ
 Attribute\nTable	ຕາຕະລາງ\nຄຸນລັກສະນະ
 Attribute Rules	ກົດລະບຽບຄຸນລັກສະນະ
@@ -2245,6 +2248,7 @@ Letter spacing	ໄລຍະຫ່າງຕົວອັກສອນ
 Level	ລະດັບ
 Library	ຄັງເກັບ
 Licence	ໃບອະນຸຍາດ
+Licence…	ໃບອະນຸຍາດ…
 Light	ແຈ້ງ
 Light and Shadow	ແສງ ແລະ ເງົາ
 Light the extruded shapes from the north-west.	ສ່ອງແສງໃສ່ຮູບຊົງທີ່ດຶງຍື່ນຈາກທິດພາຍັບ (ທິດຕາເວັນຕົກສ່ຽງເໜືອ).
@@ -2259,6 +2263,7 @@ Limits	ຂີດຈຳກັດ
 Line	ເສັ້ນ
 Line alignment	ການຈັດລຽງເສັ້ນ
 Line color	ສີເສັ້ນ
+Line layer	ຊັ້ນຂໍ້ມູນເສັ້ນ
 Line Of Sight	ເສັ້ນສາຍຕາ
 Line of sight between two points	ເສັ້ນສາຍຕາລະຫວ່າງສອງຈຸດ
 Line Of Sight From Here	ເສັ້ນສາຍຕາຈາກບ່ອນນີ້
@@ -2621,6 +2626,8 @@ New Group	ກຸ່ມໃໝ່
 New job name	ຊື່ໜ້າວຽກລະບົບໃໝ່
 New Layout	ໜ້າຈັດວາງໃໝ່
 New Map	ແຜນທີ່ໃໝ່
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	ແຜນທີ່ໃໝ່ຖືກແຕ້ມໃນລະບົບພິກັດຂອງໂຄງການ, ແລະ ຊັ້ນຂໍ້ມູນຫວ່າງໃໝ່ເກັບພິກັດຂອງມັນໃນລະບົບນັ້ນ. ແຜນທີ່ ແລະ ຊັ້ນຂໍ້ມູນທີ່ມີຢູ່ໃນໂຄງການແລ້ວຮັກສາລະບົບຂອງມັນໄວ້.
+New maps stay in Web Mercator: {why}	ແຜນທີ່ໃໝ່ຍັງຢູ່ໃນ Web Mercator: {why}
 New Model From History	ສ້າງຕົວແບບໃໝ່ຈາກປະຫວັດ
 New Notebook	ໂນ້ດບຸກໃໝ່
 New Presentation	ການນຳສະເໜີໃໝ່
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	ບໍ່ມີຊັ້ນຂໍ້ມ
 none, a .duckdb file, or host=… dbname=… user=…	ບໍ່ມີ, ໄຟລ໌ .duckdb, ຫຼື host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	ບໍ່ມີ, ຫຼື ດຶງມາຈາກ PGPASSWORD, MYSQL_PWD ຫຼື SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	ບໍ່ມີ. ເພີ່ມດ້ວຍທີ່ຢູ່, ຫຼື ຈາກປລັກອິນແຜນທີ່ພື້ນຖານ.
+None: new maps in Web Mercator	ບໍ່ມີ: ແຜນທີ່ໃໝ່ໃນ Web Mercator
 North	ເໜືອ
 North\nArrow	ລູກສອນ\nທິດເໜືອ
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	ທາງເໜືອຂອງ 84° N ແລະ ທາງໃຕ້ຂອງ 80° S ຕາໜ່າງແມ່ນ UPS ເຊິ່ງບໍ່ມີເລກເຂດ: ຂຽນ north 2000000 2444268, south 2000000 1555732, ຫຼື MGRS ຂົ້ວໂລກ ເຊັ່ນ Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	ວາງແບບພິເສດ
 Paste Special (as a new layer)	ວາງແບບພິເສດ (ເປັນຊັ້ນຂໍ້ມູນໃໝ່)
 Paste token	ວາງໂທເຄັນ
 paste your key	ວາງຄີຂອງທ່ານ
+pasted picture	ຮູບທີ່ວາງ
 path is required	ຈຳເປັນຕ້ອງມີ path
 Pause	ພັກໄວ້ຊົ່ວຄາວ
 Pause.	ພັກໄວ້ຊົ່ວຄາວ.
@@ -3162,8 +3171,11 @@ Profile Viewing	ການເບິ່ງຮູບຕັດຕາມລວງຍ�
 PROJ definition	ຄຳນິຍາມ PROJ
 Project	ໂຄງການ
 Project\nPackage	ແພັກເກດ\nໂຄງການ
+Project Coordinate System	ລະບົບພິກັດຂອງໂຄງການ
 Project Info	ຂໍ້ມູນໂຄງການ
 project is "sample", "blank", "last" or {"path": a project file}	project ຕ້ອງເປັນ "sample", "blank", "last" ຫຼື {"path": a project file}
+Project Properties	ຄຸນສົມບັດໂຄງການ
+Project Properties…	ຄຸນສົມບັດໂຄງການ…
 Project Raster	ສາຍແຜນທີ່ແຣັສເຕີໃໝ່
 Project Template	ແມ່ແບບໂຄງການ
 project's path is required	ຈຳເປັນຕ້ອງມີເສັ້ນທາງໄຟລ໌ໂຄງການ
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	ສະແດງ ຫຼ�
 Show or hide the Browser pane.	ສະແດງ ຫຼື ເຊື່ອງ ໜ້າຕ່າງບຣາວເຊີ.
 Show or hide the Data Sources pane.	ສະແດງ ຫຼື ເຊື່ອງ ໜ້າຕ່າງແຫຼ່ງຂໍ້ມູນ.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	ສະແດງ ຫຼື ເຊື່ອງ ໜ້າຕ່າງແຫຼ່ງຂໍ້ມູນ: ລາຍການທີ່ມັກ, ຂໍ້ມູນຫຼ້າສຸດ, ການບໍລິການທີ່ບັນທຶກໄວ້, ຖານຂໍ້ມູນ ແລະ STAC API ລວມທັງຄັງແຫຼ່ງຂໍ້ມູນສາທາລະນະ.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	ສະແດງ ຫຼື ເຊື່ອງເສັ້ນຕາໜ່າງພິກັດທັບແຜນທີ່ພື້ນຖານ: ເສັ້ນຂະໜານ ແລະ ເສັ້ນແວງ, ເສັ້ນຕາໜ່າງວັດແທກ, ເຂດ UTM ຫຼື ຕາໜ່າງ MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	ສະແດງ ຫຼື ເຊື່ອງເສັ້ນຕາໜ່າງພິກັດທັບແຜນທີ່ພື້ນຖານ, ຫຼື ທັບຊັ້ນຂໍ້ມູນເມື່ອແຕ້ມຢູ່ເທິງສຸດ: ເສັ້ນຂະໜານ ແລະ ເສັ້ນແວງ, ເສັ້ນຕາໜ່າງວັດແທກ, ເຂດ UTM ຫຼື ຕາໜ່າງ MGRS.
 Show or hide the group's layers	ສະແດງ ຫຼື ເຊື່ອງ ຊັ້ນຂໍ້ມູນຂອງກຸ່ມ
 Show or hide the layer.	ສະແດງ ຫຼື ເຊື່ອງ ຊັ້ນຂໍ້ມູນ.
 Show or hide the Layers pane.	ສະແດງ ຫຼື ເຊື່ອງ ໜ້າຕ່າງຊັ້ນຂໍ້ມູນ.
@@ -4002,6 +4014,7 @@ SQL Query	ຄຳສັ່ງສອບຖາມ SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL ທີ່ຕ້ອງເປັນຈິງ ເຊັ່ນ pop > 0
 Square	ສີ່ຫຼ່ຽມຈັດຕຸລັດ
+Square to a line	ຕັ້ງສາກກັບເສັ້ນ
 Squares	ຮູບສີ່ຫຼ່ຽມຈັດຕຸລັດຕ່າງໆ
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	ແທັກ
 Taiwan	ໄຕ້ຫວັນ
 Take the data in view offline, to edit and sync back later.	ນຳຂໍ້ມູນໃນມຸມມອງໄປໃຊ້ອອບໄລນ໌ ເພື່ອດັດແກ້ ແລະ ຊິ້ງຄ໌ກັບຄືນພາຍຫຼັງ.
 Take this bound out	ເອົາຂອບເຂດນີ້ອອກ
+Take this picture off the message	ເອົາຮູບນີ້ອອກຈາກຂໍ້ຄວາມ
 Take this point off	ເອົາຈຸດນີ້ອອກ
 Target details ({operation}): {targets}	ລາຍລະອຽດເປົ້າໝາຍ ({operation}): {targets}
 Target Features	ຟີເຈີເປົ້າໝາຍ
@@ -4190,6 +4204,7 @@ Test	ທົດສອບ
 Test Connection	ທົດສອບການເຊື່ອມຕໍ່
 Testing…	ກຳລັງທົດສອບ…
 Text	ຂໍ້ຄວາມ
+Text size	ຂະໜາດຂໍ້ຄວາມ
 Text Symbol	ສັນຍະລັກຂໍ້ຄວາມ
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	ຂໍ້ຄວາມ, ເຊັ່ນ "name" || ' (' || round("pop" / 1e6, 1) || ' M)', ແທນຟິວ; ຂະໜາດເປັນພອຍ, ສີເປັນ '#RRGGBB', ມຸມເປັນອົງສາຕາມເຂັມໂມງ. ປະວ່າງ: ໃຊ້ຂອງຟິວ ຫຼື ຂອງຄລາສເອງ.
 Th	ພຫ
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	ລະບົບເບື້ອງຫ�
 the keychain worker stopped	ຕົວປະມວນຜົນ keychain ຢຸດເຮັດວຽກ
 The keys saved on this computer were forgotten; a login in this session keeps working.	ຄີທີ່ບັນທຶກໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້ຖືກລຶບການຈື່ຈຳແລ້ວ; ແຕ່ການເຂົ້າສູ່ລະບົບໃນວາລະນີ້ຍັງຄົງໃຊ້ງານໄດ້ຕໍ່ໄປ.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	ສອງໂຕເລກທ້າຍຂອງກິໂລແມັດ ຕາມທີ່ພິມໃນແຜນທີ່ພູມສັນຖານ: 43 ແທນໃຫ້ 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	ປ້າຍກຳກັບເລີ່ມທີ່ຈຸດ ແລະ ແລ່ນຕັ້ງສາກກັບເສັ້ນທີ່ໃກ້ທີ່ສຸດຂອງຊັ້ນຂໍ້ມູນທີ່ເລືອກຂ້າງລຸ່ມ.
 the latitude band must be a letter from C to X (not I or O)	ແຖບເສັ້ນຂະໜານຕ້ອງເປັນຕົວອັກສອນຈາກ C ຫາ X (ບໍ່ແມ່ນ I ຫຼື O)
 the layer Export Features was opened on is gone	ຊັ້ນຂໍ້ມູນທີ່ ສົ່ງອອກຟີເຈີ ເປີດໃຊ້ນັ້ນບໍ່ມີແລ້ວ
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	ຊັ້ນຂໍ້ມູນຈະສະແດງຂັ້ນຕອນທີ່ແຖບເລື່ອນເວລາຢູ່ ແລະ ເປີດໃຊ້ແຖບເລື່ອນຕາມຊ່ວງວັນທີຂອງຕົວປ່ຽນ.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	ຄວາມຍາວສູງສຸດຂ�
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	ແຜນທີ່ຢູ່ເບື້ອງຊ້າຍ; ຫົວຂໍ້, ແຜນທີ່ດັດຊະນີ, ຄຳອະທິບາຍສັນຍະລັກ, ແຫຼ່ງຂໍ້ມູນ ແລະ ອ້າງອີງ ຢູ່ໃນແຜງເບື້ອງຂວາ.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນ GeoPackage ທີ່ໂຫຼດມາເພື່ອດັດແກ້ (ໜ້າຫຼັກ › ເພີ່ມຂໍ້ມູນ › ດັດແກ້ຕາຕະລາງ GeoPackage…)
 the map has no layers	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນ
+The map has no line or polygon layer to be square to.	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນເສັ້ນ ຫຼື ຮູບຫຼາຍແຈໃຫ້ຕັ້ງສາກນຳ.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນ PostGIS ທີ່ໂຫຼດມາເພື່ອດັດແກ້ (ໜ້າຫຼັກ › ເພີ່ມຂໍ້ມູນ › ຖານຂໍ້ມູນ…, ໂຫຼດເພື່ອດັດແກ້)
 The map has no tile archive read from a file.	ແຜນທີ່ບໍ່ມີຄັງເກັບໄທລ໌ທີ່ອ່ານຈາກໄຟລ໌.
 The map is drawn in this coordinate system; layers are projected on the fly.	ແຜນທີ່ຖືກແຕ້ມໃນລະບົບພິກັດນີ້; ຊັ້ນຂໍ້ມູນຈະຖືກແປງເສັ້ນໂຄງໃນທັນທີ.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	ກ
 This connection is logged out. Log in explicitly to use it again.	ການເຊື່ອມຕໍ່ນີ້ອອກຈາກລະບົບແລ້ວ. ເຂົ້າສູ່ລະບົບຢ່າງຊັດເຈນເພື່ອໃຊ້ມັນອີກຄັ້ງ.
 This font isn't installed here, so the text is drawn in the sans-serif	ຟອນນີ້ບໍ່ໄດ້ຕິດຕັ້ງຢູ່ນີ້ ດັ່ງນັ້ນຂໍ້ຄວາມຈຶ່ງຖືກແຕ້ມດ້ວຍຕົວອັກສອນແບບບໍ່ມີຫາງ (sans-serif)
 This font isn't installed here, so the text is drawn in the serif	ຟອນນີ້ບໍ່ໄດ້ຕິດຕັ້ງຢູ່ນີ້ ດັ່ງນັ້ນຂໍ້ຄວາມຈຶ່ງຖືກແຕ້ມດ້ວຍຕົວອັກສອນແບບມີຫາງ (serif)
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	ຮູບພາບນີ້ເປັນສັນຍະລັກຈຸດບໍ່ໄດ້: ມັນບໍ່ແມ່ນ PNG ຫຼື JPEG ທີ່ອ່ານໄດ້ ຂະໜາດບໍ່ເກີນ 20,000 px ຕໍ່ດ້ານ
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	ຮູບພາບນີ້ເປັນສັນຍະລັກຈຸດບໍ່ໄດ້: ມັນມີພິກເຊວຫຼາຍກວ່າ {side} × {side}; ກະລຸນາເຮັດໃຫ້ນ້ອຍລົງ
+This image can't be a marker: it isn't a readable PNG or JPEG	ຮູບພາບນີ້ເປັນສັນຍະລັກຈຸດບໍ່ໄດ້: ມັນບໍ່ແມ່ນ PNG ຫຼື JPEG ທີ່ອ່ານໄດ້
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	ຮູບພາບນີ້ເປັນສັນຍະລັກຈຸດບໍ່ໄດ້: RustGIS ຖອດລະຫັດຮູບສັນຍະລັກຈຸດຄົບຈຳນວນທີ່ມັນເຮັດໄດ້ຈົນກວ່າຈະເປີດໃໝ່ແລ້ວ; ເປີດມັນໃໝ່ເພື່ອໃຊ້ຮູບອື່ນ
 This image is too large for a marker: at most about 1.5 MiB	ຮູບພາບນີ້ໃຫຍ່ເກີນໄປສຳລັບສັນຍະລັກຈຸດ: ສູງສຸດປະມານ 1.5 MiB
 This image is unavailable. Choose another image or No image.	ຮູບພາບນີ້ບໍ່ມີ. ເລືອກຮູບພາບອື່ນ ຫຼື ບໍ່ມີຮູບພາບ.
 This item is from a local or private network, whose files Bands and Index don't read yet	ລາຍການນີ້ມາຈາກເຄືອຂ່າຍໃນເຄື່ອງ ຫຼື ສ່ວນຕົວ, ເຊິ່ງ ແຖບຄື້ນ ແລະ ດັດຊະນີ ຍັງອ່ານໄຟລ໌ບໍ່ໄດ້
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	ການ
 Which 5 countries have the largest GDP?	5 ປະເທດໃດທີ່ມີ GDP ຫຼາຍທີ່ສຸດ?
 While drawing, click two points on a feature's edge to follow the edge between them	ຂະນະແຕ້ມ, ກົດສອງຈຸດເທິງຂອບຂອງຟີເຈີເພື່ອຕິດຕາມຂອບລະຫວ່າງພວກມັນ
 While drawing, click two points on a feature's edge to follow the edge between them.	ຂະນະແຕ້ມ, ກົດສອງຈຸດເທິງຂອບຂອງຟີເຈີເພື່ອຕິດຕາມຂອບລະຫວ່າງພວກມັນ.
+While it has none, take it from the first layer added	ໃນຂະນະທີ່ຍັງບໍ່ມີ, ເອົາມາຈາກຊັ້ນຂໍ້ມູນທຳອິດທີ່ເພີ່ມ
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	ໃນຂະນະທີ່ກຳລັງພິມ, ປຸ່ມລັດທີ່ບໍ່ມີ Ctrl/⌘ ຈະຖືກພັກໄວ້ຊົ່ວຄາວ. ການນຳທາງມຸມມອງບຸກຄົນທີໜຶ່ງຈະຮັກສາປຸ່ມ Escape, Home ແລະ Delete ໄວ້.
 White behind dark text, dark behind light.	ສີຂາວຢູ່ຫຼັງຂໍ້ຄວາມສີມືດ, ສີມືດຢູ່ຫຼັງຂໍ້ຄວາມສີສະຫວ່າງ.
 Whitebox and GeoLibre tools	ເຄື່ອງມື Whitebox ແລະ GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	ຂຽນປລັກອິນ
 Write a turn of the view about its centre as an animated GIF or PNG frames.	ຂຽນການໝູນມຸມມອງອ້ອມຈຸດກາງຂອງມັນເປັນ GIF ເຄື່ອນໄຫວ ຫຼື ເຟຣມ PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	ສ້າງເສັ້ນສອງຈຸດຈອດແຍກຕ່າງຫາກສຳລັບແຕ່ລະຄູ່ຈຸດຈອດທີ່ຕິດກັນ.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	ຂຽນທຸກຟີເຈີໂດຍເຮັດໃຫ້ຮູບຊົງເລຂາຄະນິດຖືກຕ້ອງເທົ່າທີ່ເຮັດໄດ້: ປິດວົງແຫວນ, ລຶບຈຸດຍອດທີ່ຊ້ຳ ແລະ ສ່ວນທີ່ເສື່ອມ, ແກ້ໄຂການຕັດກັນເອງ, ສ່ວນທີ່ຊ້ອນທັບ ແລະ ຮູທີ່ຢູ່ນອກເປືອກດ້ວຍກົດທີ່ເລືອກ (Shells Minus Holes ລວມສ່ວນທີ່ຊ້ອນທັບ; Even-Odd ຮັກສາສິ່ງທີ່ຢູ່ພາຍໃນວົງແຫວນຈຳນວນຄີກ). ຟີເຈີທີ່ມີພິກັດຂາດຫາຍ ຫຼື ບໍ່ຈຳກັດຢູ່ບ່ອນໃດກໍຕາມ, ແມ່ນແຕ່ໃນຮູ, ຫຼື ບໍ່ເຫຼືອຈຸດທີ່ໃຊ້ໄດ້ ຫຼື, ສຳລັບຮູບຫຼາຍແຈ, ບໍ່ມີເນື້ອທີ່ຫຼັງການສ້ອມແປງ, ຈະຖືກຂຽນໂດຍບໍ່ມີຮູບຊົງເລຂາຄະນິດ. ຟີເຈີອື່ນທີ່ຊັບຊ້ອນເກີນກວ່າຈະກວດ, ຫຼື ສ້ອມແປງບໍ່ສຳເລັດ, ຈະຖືກຂຽນໂດຍບໍ່ປ່ຽນແປງ. ບອກວ່າແຕ່ລະອັນໄດ້ສ້ອມແປງຫຍັງ.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	ຂຽນສີ່ຫຼ່ຽມຂອບເຂດທີ່ຂະໜານກັບແກນໜຶ່ງອັນຕໍ່ຟີເຈີ ໃນພິກັດ longitude/latitude ທີ່ເກັບໄວ້. ຂອບເຂດທີ່ມີພື້ນທີ່ສູນຈະຖືກຂ້າມ.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	ຂຽນສີ່ຫຼ່ຽມຂອບເຂດທີ່ຂະໜານກັບແກນໜຶ່ງອັນຕໍ່ຟີເຈີ ໃນພິກັດຂອງຊັ້ນຂໍ້ມູນເອງ ເມື່ອມັນຢູ່ໃນລະບົບທີ່ສາຍແລ້ວທີ່ບໍ່ແມ່ນ Web Mercator ແລະ ການສາຍແຜນທີ່ໂລກອື່ນໆ (Robinson, Plate Carrée ແລະ ອື່ນໆ), ບໍ່ດັ່ງນັ້ນໃນ longitude/latitude. ຂອບເຂດທີ່ມີພື້ນທີ່ສູນຈະຖືກຂ້າມ.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	ບັນທຶກຄວາມຊັນຂອງ Sen, ຄ່າ Z ແລະ p-value ຂອງການທົດສອບ ລວມທັງຄວາມຊັນໃນສ່ວນທີ່ທ່າອ່ຽງມີໄນສຳຄັນ.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	ຂຽນຟີເຈີທີ່ມີເລຂາຄະນິດບໍ່ຖືກຕ້ອງ, ເຊັ່ນ ວົງທີ່ຕັດກັນເອງ ຫຼື ບໍ່ປິດ, ຮູທີ່ຢູ່ນອກເປືອກ ຫຼື ສ່ວນທີ່ຊ້ອນກັນ, ແລະ ບອກວ່າແຕ່ລະອັນຜິດຫຍັງ.
 writing the copy failed unexpectedly	ການຂຽນສຳເນົາລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} ບໍ່ມີແພັກເກັດສຳລັບ {platform}. ມີສຳລັບ: {platforms}.
 {name} is larger than {mb} MB	{name} ໃຫຍ່ກວ່າ {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} ເຮັດວຽກເປັນໂປຣແກຣມໃນຄອມພິວເຕີຂອງທ່ານ: ມັນຕ້ອງການແອັບເດັສທັອບ ຫຼື rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} ຖືກຖອນອອກຈາກຄັງລົງທະບຽນປລັກອິນ ແລະ ຖືກປິດການໃຊ້ງານແລ້ວ.
 {name} was withdrawn from the plugin registry: {reason}	{name} ຖືກຖອນອອກຈາກຄັງລົງທະບຽນປລັກອິນ: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: ໄຟລ໌ດາວໂຫຼດບໍ່ກົງກັບຄັງລົງທະບຽນ; ຈຶ່ງບໍ່ໄດ້ຮັບການຕິດຕັ້ງ.
 {name}: the download is a different plugin; it wasn't installed.	{name}: ໄຟລ໌ດາວໂຫຼດເປັນປລັກອິນຄົນລະອັນ; ຈຶ່ງບໍ່ໄດ້ຮັບການຕິດຕັ້ງ.

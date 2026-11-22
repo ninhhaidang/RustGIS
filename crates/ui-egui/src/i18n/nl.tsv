@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Een lijn, of markeringen of dwarsstreepjes erlangs
 A magnifying lens that follows the pointer.	Een vergrootglas dat de aanwijzer volgt.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Het adres van een kaart-, object- of coveragedienst: WMS, WMTS, WFS, WCS, OGC API Features of Tiles, of een ArcGIS FeatureServer, MapServer, ImageServer of VectorTileServer (of een dienstenmap, om te bladeren).
+A message takes at most {n} pictures	Een bericht kan hoogstens {n} afbeeldingen bevatten
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Een naam of EPSG-code, WKT of een PROJ-string; leeg: dat van de kaart als die geprojecteerd is, anders de UTM-zone in het midden van de weergave
 a name, or owner/name such as giswqs/geospatial	een naam, of eigenaar/naam zoals giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Een benoemd eindpunt dat je opnieuw kunt gebruiken. Sleutels worden bewaard tot RustGIS sluit, tenzij je ze op deze computer laat onthouden; de verbinding zelf bewaart ze nooit.
@@ -443,6 +444,7 @@ Asking the map service…	Kaartdienst bevragen…
 Asking the NLDI…	De NLDI raadplegen…
 Asset	Asset
 Assign Escape	Escape toewijzen
+assistant picture	afbeelding van de assistent
 Assistant settings	Instellingen van de assistent
 At both ends	Aan beide uiteinden
 At inner vertices	Op binnenste hoekpunten
@@ -452,6 +454,7 @@ At the end	Aan het einde
 At the start	Aan het begin
 At vertices	Op hoekpunten
 Atlas	Atlas
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Een afbeelding (PNG, JPEG of WebP) bijvoegen, of er een in het berichtvak plakken
 Attachments	Bijlagen
 Attribute\nTable	Attributen-\ntabel
 Attribute Rules	Attribuutregels
@@ -2245,6 +2248,7 @@ Letter spacing	Letterafstand
 Level	Niveau
 Library	Bibliotheek
 Licence	Licentie
+Licence…	Licentie…
 Light	Licht
 Light and Shadow	Licht en schaduw
 Light the extruded shapes from the north-west.	De geëxtrudeerde vormen vanuit het noordwesten belichten.
@@ -2259,6 +2263,7 @@ Limits	Limieten
 Line	Lijn
 Line alignment	Regeluitlijning
 Line color	Lijnkleur
+Line layer	Lijnlaag
 Line Of Sight	Zichtlijn
 Line of sight between two points	Zichtlijn tussen twee punten
 Line Of Sight From Here	Zichtlijn vanaf hier
@@ -2621,6 +2626,8 @@ New Group	Nieuwe groep
 New job name	Naam van nieuwe job
 New Layout	Nieuwe lay-out
 New Map	Nieuwe kaart
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Nieuwe kaarten worden in het coördinatenstelsel van het project getekend, en nieuwe lege lagen bewaren hun coördinaten erin. Kaarten en lagen die al in het project staan, houden het hunne.
+New maps stay in Web Mercator: {why}	Nieuwe kaarten blijven in Web Mercator: {why}
 New Model From History	Nieuw model uit geschiedenis
 New Notebook	Nieuw notebook
 New Presentation	Nieuwe presentatie
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Geen van deze lagen is een polygoonlaag
 none, a .duckdb file, or host=… dbname=… user=…	geen, een .duckdb-bestand, of host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	geen, of uit PGPASSWORD, MYSQL_PWD of SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Geen. Voeg er een toe via een adres of vanuit een basiskaartplugin.
+None: new maps in Web Mercator	Geen: nieuwe kaarten in Web Mercator
 North	Noord
 North\nArrow	Noord-\npijl
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	ten noorden van 84° N en ten zuiden van 80° Z is het raster UPS, dat geen zonenummer heeft: schrijf north 2000000 2444268, south 2000000 1555732, of polair MGRS zoals Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	Plakken speciaal
 Paste Special (as a new layer)	Plakken speciaal (als nieuwe laag)
 Paste token	Token plakken
 paste your key	plak je sleutel
+pasted picture	geplakte afbeelding
 path is required	path is vereist
 Pause	Pauzeren
 Pause.	Pauzeren.
@@ -3162,8 +3171,11 @@ Profile Viewing	Profielweergave
 PROJ definition	PROJ-definitie
 Project	Project
 Project\nPackage	Project-\npakket
+Project Coordinate System	Coördinatenstelsel van het project
 Project Info	Projectinfo
 project is "sample", "blank", "last" or {"path": a project file}	project is "sample", "blank", "last" of {"path": a project file}
+Project Properties	Projecteigenschappen
+Project Properties…	Projecteigenschappen…
 Project Raster	Raster projecteren
 Project Template	Projectsjabloon
 project's path is required	het pad van project is verplicht
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Het bladwijzervenster to
 Show or hide the Browser pane.	Het browservenster tonen of verbergen.
 Show or hide the Data Sources pane.	Het gegevensbronnenvenster tonen of verbergen.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Het gegevensbronnenvenster tonen of verbergen: favorieten, recente gegevens, opgeslagen diensten, databases en STAC-API's, en een bibliotheek met openbare bronnen.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	De graticule boven de basiskaart tonen of verbergen: breedte- en lengtegraden, een metrisch raster, de UTM-zones of het MGRS-raster.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	De graticule boven de basiskaart tonen of verbergen, of boven de lagen als die bovenop wordt getekend: breedte- en lengtegraden, een metrisch raster, de UTM-zones of het MGRS-raster.
 Show or hide the group's layers	De lagen van de groep tonen of verbergen
 Show or hide the layer.	De laag tonen of verbergen.
 Show or hide the Layers pane.	Het venster Lagen tonen of verbergen.
@@ -4002,6 +4014,7 @@ SQL Query	SQL-query
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL die waar moet zijn, bijv. pop > 0
 Square	Vierkant
+Square to a line	Loodrecht op een lijn
 Squares	Vierkanten
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Tags
 Taiwan	Taiwan
 Take the data in view offline, to edit and sync back later.	De gegevens in beeld offline nemen, om te bewerken en later terug te synchroniseren.
 Take this bound out	Deze grens verwijderen
+Take this picture off the message	Deze afbeelding uit het bericht halen
 Take this point off	Haal dit punt weg
 Target details ({operation}): {targets}	Doeldetails ({operation}): {targets}
 Target Features	Doelobjecten
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	Verbinding testen
 Testing…	Bezig met testen…
 Text	Tekst
+Text size	Tekstgrootte
 Text Symbol	Tekstsymbool
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Tekst, bijv. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in plaats van het veld; grootte in punten, kleur als '#RRGGBB', hoek in graden met de klok mee. Leeg: die van het veld of de klasse zelf.
 Th	Do
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	de sleutelhanger-backend is onverwacht
 the keychain worker stopped	de sleutelhanger-worker is gestopt
 The keys saved on this computer were forgotten; a login in this session keeps working.	De sleutels die op deze computer waren opgeslagen, zijn vergeten; een aanmelding in deze sessie blijft werken.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	De laatste twee cijfers van de kilometers, zoals topografische kaarten ze drukken: 43 voor 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Het label begint bij het punt en loopt loodrecht op de dichtstbijzijnde lijn van de hieronder gekozen laag.
 the latitude band must be a letter from C to X (not I or O)	de breedteband moet een letter van C tot X zijn (niet I of O)
 the layer Export Features was opened on is gone	de laag waarvoor Objecten exporteren werd geopend, bestaat niet meer
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	De laag toont de stap waarop de tijdschuifregelaar staat, en zet de regelaar aan over de datums van de variabele.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	De maximale lengte van de verwijslijn.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	De kaart links; de titel, locator, legenda, bronnen en referentie in een paneel rechts.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	de kaart heeft geen voor bewerken geladen GeoPackage-laag (Start › Gegevens toevoegen › GeoPackage-tabel bewerken…)
 the map has no layers	de kaart heeft geen lagen
+The map has no line or polygon layer to be square to.	De kaart heeft geen lijn- of polygoonlaag om loodrecht op te staan.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	de kaart heeft geen voor bewerken geladen PostGIS-laag (Start › Gegevens toevoegen › Database…, Laden voor bewerken)
 The map has no tile archive read from a file.	De kaart heeft geen uit een bestand gelezen tegelarchief.
 The map is drawn in this coordinate system; layers are projected on the fly.	De kaart wordt in dit coördinatenstelsel getekend; lagen worden direct geprojecteerd.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	Dez
 This connection is logged out. Log in explicitly to use it again.	Deze verbinding is afgemeld. Meld je expliciet aan om haar weer te gebruiken.
 This font isn't installed here, so the text is drawn in the sans-serif	Dit lettertype is hier niet geïnstalleerd, dus de tekst wordt schreefloos getekend
 This font isn't installed here, so the text is drawn in the serif	Dit lettertype is hier niet geïnstalleerd, dus de tekst wordt met schreven getekend
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Deze afbeelding kan geen markering zijn: het is geen leesbare PNG of JPEG van hoogstens 20.000 px per zijde
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Deze afbeelding kan geen markering zijn: ze heeft meer pixels dan {side} × {side}; maak haar kleiner
+This image can't be a marker: it isn't a readable PNG or JPEG	Deze afbeelding kan geen markering zijn: het is geen leesbare PNG of JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Deze afbeelding kan geen markering zijn: RustGIS heeft al zoveel markeringsafbeeldingen gedecodeerd als het tot een herstart doet; herstart het om een andere te gebruiken
 This image is too large for a marker: at most about 1.5 MiB	Deze afbeelding is te groot voor een markering: hoogstens ongeveer 1,5 MiB
 This image is unavailable. Choose another image or No image.	Deze afbeelding is niet beschikbaar. Kies een andere afbeelding of Geen afbeelding.
 This item is from a local or private network, whose files Bands and Index don't read yet	Dit item komt van een lokaal of privénetwerk, waarvan Banden en Index de bestanden nog niet lezen
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Of de die
 Which 5 countries have the largest GDP?	Welke 5 landen hebben het hoogste bbp?
 While drawing, click two points on a feature's edge to follow the edge between them	Klik tijdens het tekenen op twee punten op de rand van een object om de rand ertussen te volgen
 While drawing, click two points on a feature's edge to follow the edge between them.	Klik tijdens het tekenen op twee punten op de rand van een object om de rand ertussen te volgen.
+While it has none, take it from the first layer added	Zolang het er geen heeft, het overnemen van de eerste toegevoegde laag
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Tijdens het typen zijn sneltoetsen zonder Ctrl/⌘ gepauzeerd. Navigatie in eerste persoon behoudt Escape, Home en Delete.
 White behind dark text, dark behind light.	Wit achter donkere tekst, donker achter lichte tekst.
 Whitebox and GeoLibre tools	Whitebox- en GeoLibre-gereedschappen
@@ -4929,7 +4949,7 @@ Write a plugin	Een plugin schrijven
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Een draaiing van het beeld om het midden schrijven als geanimeerde GIF of PNG-frames.
 Writes a separate two-vertex line for each consecutive vertex pair.	Schrijft een aparte lijn met twee hoekpunten voor elk opeenvolgend paar hoekpunten.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Schrijft elk object met een waar mogelijk geldig gemaakte geometrie: ringen gesloten, herhaalde hoekpunten en ontaarde delen verwijderd, zelfdoorsnijdingen, overlappende delen en gaten buiten hun schil opgelost volgens de gekozen regel (‘Shells Minus Holes’ voegt overlappende delen samen; ‘Even-Odd’ behoudt wat binnen een oneven aantal ringen ligt). Objecten met ergens een ontbrekende of niet-eindige coördinaat, zelfs in een gat, of die na reparatie geen bruikbare punten of, voor polygonen, geen oppervlakte meer hebben, worden zonder geometrie geschreven. Andere objecten die te complex zijn om te controleren of waarvan de reparatie mislukt, worden ongewijzigd geschreven. Meldt wat er bij elk is gerepareerd.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Schrijft per object één asparallelle begrenzende rechthoek in opgeslagen lengte-/breedtecoördinaten. Omhullenden zonder oppervlakte worden overgeslagen.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Schrijft per object één asparallelle begrenzende rechthoek in de eigen coördinaten van de laag als die in een geprojecteerd stelsel staat anders dan Web Mercator en de andere wereldprojecties (Robinson, Plate Carrée en dergelijke), anders in lengte-/breedtegraad. Omhullenden zonder oppervlakte worden overgeslagen.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Schrijft de Sen-helling, de Z en p-waarde van de test, en de helling waar de trend significant is.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Schrijft de objecten met ongeldige geometrie, zoals zichzelf snijdende of niet-gesloten ringen, gaten buiten hun buitenring of overlappende delen, en vermeldt wat er met elk mis is.
 writing the copy failed unexpectedly	het schrijven van de kopie is onverwacht mislukt
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} heeft geen pakket voor {platform}. Beschikbaar voor: {platforms}.
 {name} is larger than {mb} MB	{name} is groter dan {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} draait als programma op je computer: daarvoor is de desktopapp of rustgis-cli nodig.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} is uit het pluginregister teruggetrokken en is uitgeschakeld.
 {name} was withdrawn from the plugin registry: {reason}	{name} is uit het pluginregister teruggetrokken: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: de download komt niet overeen met het register; de plugin is niet geïnstalleerd.
 {name}: the download is a different plugin; it wasn't installed.	{name}: de download is een andere plugin; de plugin is niet geïnstalleerd.

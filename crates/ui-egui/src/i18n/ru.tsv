@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Линия либо маркеры или штрихи вдоль неё
 A magnifying lens that follows the pointer.	Увеличительная лупа, следующая за указателем.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Адрес сервиса карт, объектов или покрытий: WMS, WMTS, WFS, WCS, OGC API Features или Tiles либо ArcGIS FeatureServer, MapServer, ImageServer или VectorTileServer (или каталог сервисов для просмотра).
+A message takes at most {n} pictures	В сообщении не более {n} изображений
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Имя или код EPSG, WKT или строка PROJ; пусто: система самой карты, если она в проекции, иначе зона UTM в центре вида
 a name, or owner/name such as giswqs/geospatial	имя или владелец/имя, например giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Именованная конечная точка для повторного использования. Ключи хранятся до закрытия RustGIS, если вы не решите запомнить их на этом компьютере; само подключение их никогда не хранит.
@@ -443,6 +444,7 @@ Asking the map service…	Запрос к картографическому с�
 Asking the NLDI…	Запрос к NLDI…
 Asset	Ресурс
 Assign Escape	Назначить Escape
+assistant picture	изображение помощника
 Assistant settings	Настройки помощника
 At both ends	На обоих концах
 At inner vertices	На внутренних вершинах
@@ -452,6 +454,7 @@ At the end	В конце
 At the start	В начале
 At vertices	На вершинах
 Atlas	Атлас
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Прикрепите изображение (PNG, JPEG или WebP) или вставьте его в поле сообщения
 Attachments	Вложения
 Attribute\nTable	Таблица\nатрибутов
 Attribute Rules	Правила атрибутов
@@ -2245,6 +2248,7 @@ Letter spacing	Межбуквенный интервал
 Level	Уровень
 Library	Библиотека
 Licence	Лицензия
+Licence…	Лицензия…
 Light	Светлая
 Light and Shadow	Свет и тень
 Light the extruded shapes from the north-west.	Освещать выдавленные фигуры с северо-запада.
@@ -2259,6 +2263,7 @@ Limits	Ограничения
 Line	Линия
 Line alignment	Выравнивание линии
 Line color	Цвет линии
+Line layer	Линейный слой
 Line Of Sight	Линия видимости
 Line of sight between two points	Линия видимости между двумя точками
 Line Of Sight From Here	Линия видимости отсюда
@@ -2621,6 +2626,8 @@ New Group	Новая группа
 New job name	Имя нового задания
 New Layout	Новый макет
 New Map	Новая карта
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Новые карты отрисовываются в системе координат проекта, а новые пустые слои хранят в ней свои координаты. Карты и слои, уже входящие в проект, сохраняют свою.
+New maps stay in Web Mercator: {why}	Новые карты остаются в Web Mercator: {why}
 New Model From History	Новая модель из истории
 New Notebook	Новый блокнот
 New Presentation	Новая презентация
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Ни один из этих слоёв 
 none, a .duckdb file, or host=… dbname=… user=…	нет, файл .duckdb или host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	нет или из PGPASSWORD, MYSQL_PWD или SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Нет. Добавьте слой по адресу или из плагина базовых карт.
+None: new maps in Web Mercator	Нет: новые карты в Web Mercator
 North	Север
 North\nArrow	Стрелка\nсевера
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	севернее 84° с. ш. и южнее 80° ю. ш. сетка — UPS, у которой нет номера зоны: пишите north 2000000 2444268, south 2000000 1555732 или полярный MGRS, например Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	Специальная вставка
 Paste Special (as a new layer)	Специальная вставка (как новый слой)
 Paste token	Вставить токен
 paste your key	вставьте ключ
+pasted picture	вставленное изображение
 path is required	требуется path
 Pause	Приостановить
 Pause.	Пауза.
@@ -3162,8 +3171,11 @@ Profile Viewing	Просмотр профиля
 PROJ definition	Определение PROJ
 Project	Проект
 Project\nPackage	Пакет\nпроекта
+Project Coordinate System	Система координат проекта
 Project Info	Сведения о проекте
 project is "sample", "blank", "last" or {"path": a project file}	project должен быть "sample", "blank", "last" или {"path": a project file}
+Project Properties	Свойства проекта
+Project Properties…	Свойства проекта…
 Project Raster	Проецировать растр
 Project Template	Шаблон проекта
 project's path is required	требуется путь к проекту
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Показать или 
 Show or hide the Browser pane.	Показать или скрыть панель «Браузер».
 Show or hide the Data Sources pane.	Показать или скрыть панель «Источники данных».
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Показать или скрыть панель «Источники данных»: избранное, недавние данные, сохранённые сервисы, базы данных и STAC API, а также библиотеку публичных источников.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Показать или скрыть сетку координат поверх базовой карты: широты и долготы, метрическую сетку, зоны UTM или сетку MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Показать или скрыть сетку координат поверх базовой карты или поверх слоёв, если она рисуется сверху: широты и долготы, метрическую сетку, зоны UTM или сетку MGRS.
 Show or hide the group's layers	Показать или скрыть слои группы
 Show or hide the layer.	Показать или скрыть слой.
 Show or hide the Layers pane.	Показать или скрыть панель «Слои».
@@ -4002,6 +4014,7 @@ SQL Query	SQL-запрос
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL-условие, которое должно быть истинным, напр. pop > 0
 Square	Квадрат
+Square to a line	Перпендикулярно линии
 Squares	Квадраты
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Теги
 Taiwan	Тайвань
 Take the data in view offline, to edit and sync back later.	Перевести данные в пределах вида в автономный режим, чтобы редактировать и затем синхронизировать.
 Take this bound out	Убрать эту границу
+Take this picture off the message	Убрать это изображение из сообщения
 Take this point off	Убрать эту точку
 Target details ({operation}): {targets}	Сведения о целях ({operation}): {targets}
 Target Features	Целевые объекты
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	Проверить подключение
 Testing…	Проверка…
 Text	Текст
+Text size	Размер текста
 Text Symbol	Текстовый символ
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Текст, например "name" || ' (' || round("pop" / 1e6, 1) || ' M)', вместо поля; размер в пунктах, цвет как '#RRGGBB', угол в градусах по часовой стрелке. Пусто: значение поля или класса.
 Th	Чт
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	серверная часть связ
 the keychain worker stopped	обработчик связки ключей остановился
 The keys saved on this computer were forgotten; a login in this session keeps working.	Ключи, сохранённые на этом компьютере, забыты; вход в этом сеансе продолжает действовать.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Последние две цифры километров, как на топографических картах: 43 для 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Подпись начинается в точке и идёт перпендикулярно ближайшей линии слоя, выбранного ниже.
 the latitude band must be a letter from C to X (not I or O)	широтный пояс должен быть буквой от C до X (кроме I и O)
 the layer Export Features was opened on is gone	слой, для которого был открыт «Экспорт объектов», больше не существует
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Слой показывает шаг, на котором стоит ползунок времени, и включает ползунок по датам переменной.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	Наибольшая допустимая �
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Карта слева; заголовок, локатор, легенда, источники и справка на панели справа.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	на карте нет слоя GeoPackage, загруженного для редактирования (Главная › Добавить данные › Редактировать таблицу GeoPackage…)
 the map has no layers	на карте нет слоёв
+The map has no line or polygon layer to be square to.	На карте нет линейного или полигонального слоя, к которому можно быть перпендикулярным.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	на карте нет слоя PostGIS, загруженного для редактирования (Главная › Добавить данные › База данных…, Загрузить для редактирования)
 The map has no tile archive read from a file.	На карте нет архива тайлов, прочитанного из файла.
 The map is drawn in this coordinate system; layers are projected on the fly.	Карта рисуется в этой системе координат; слои проецируются на лету.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	У 
 This connection is logged out. Log in explicitly to use it again.	Из этого подключения выполнен выход. Войдите явно, чтобы снова его использовать.
 This font isn't installed here, so the text is drawn in the sans-serif	Этот шрифт здесь не установлен, поэтому текст отрисован шрифтом без засечек
 This font isn't installed here, so the text is drawn in the serif	Этот шрифт здесь не установлен, поэтому текст отрисован шрифтом с засечками
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Это изображение не может быть маркером: это не читаемый PNG или JPEG размером не более 20 000 px по стороне
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Это изображение не может быть маркером: в нём больше пикселей, чем {side} × {side}; уменьшите его
+This image can't be a marker: it isn't a readable PNG or JPEG	Это изображение не может быть маркером: это не читаемый PNG или JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Это изображение не может быть маркером: RustGIS уже декодировал максимум изображений маркеров до перезапуска; перезапустите его, чтобы использовать другое
 This image is too large for a marker: at most about 1.5 MiB	Это изображение слишком велико для маркера: не более примерно 1,5 MiB
 This image is unavailable. Choose another image or No image.	Это изображение недоступно. Выберите другое изображение или «Без изображения».
 This item is from a local or private network, whose files Bands and Index don't read yet	Этот элемент из локальной или частной сети, файлы которой «Каналы» и «Индекс» пока не читают
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Запр�
 Which 5 countries have the largest GDP?	У каких 5 стран самый большой ВВП?
 While drawing, click two points on a feature's edge to follow the edge between them	При рисовании щёлкните две точки на границе объекта, чтобы пройти по границе между ними
 While drawing, click two points on a feature's edge to follow the edge between them.	При рисовании щёлкните две точки на границе объекта, чтобы пройти по границе между ними.
+While it has none, take it from the first layer added	Пока её нет, брать из первого добавленного слоя
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Во время ввода сочетания без Ctrl/⌘ приостановлены. Навигация от первого лица сохраняет Escape, Home и Delete.
 White behind dark text, dark behind light.	Белый за тёмным текстом, тёмный за светлым.
 Whitebox and GeoLibre tools	Инструменты Whitebox и GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	Написать модуль
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Записать поворот вида вокруг центра как анимированный GIF или кадры PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Записывает отдельную линию из двух вершин для каждой пары последовательных вершин.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Записывает каждый объект с геометрией, исправленной, где это возможно: кольца замыкаются, повторяющиеся вершины и вырожденные части удаляются, самопересечения, перекрывающиеся части и дыры вне своей оболочки разрешаются по выбранному правилу (Shells Minus Holes объединяет перекрывающиеся части; Even-Odd оставляет то, что лежит внутри нечётного числа колец). Объекты с отсутствующей или нечисловой координатой где угодно, даже в дыре, а также оставшиеся без пригодных точек или, для полигонов, без площади после исправления, записываются без геометрии. Другие объекты, слишком сложные для проверки или исправление которых не удалось, записываются без изменений. Сообщает, что исправлено в каждом.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Записывает по одному ограничивающему прямоугольнику, выровненному по осям, на каждый объект в сохранённых координатах долготы/широты. Охваты нулевой площади пропускаются.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Записывает по одному ограничивающему прямоугольнику, выровненному по осям, на каждый объект в собственных координатах слоя, если он хранится в проецированной системе, отличной от Web Mercator и других мировых проекций (Робинсон, Plate Carrée и т. п.), иначе в долготе/широте. Охваты нулевой площади пропускаются.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Записывает наклон Сена, Z и p-значение теста, а также наклон там, где тренд значим.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Записывает объекты с недопустимой геометрией, например самопересекающимися или незамкнутыми кольцами, дырками вне внешней границы или перекрывающимися частями, и сообщает, что не так с каждым.
 writing the copy failed unexpectedly	запись копии неожиданно завершилась ошибкой
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	У {name} нет пакета для {platform}. Доступно для: {platforms}.
 {name} is larger than {mb} MB	{name} больше {mb} МБ
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} работает как программа на вашем компьютере: нужно настольное приложение или rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	Модуль {name} отозван из каталога модулей и отключён.
 {name} was withdrawn from the plugin registry: {reason}	Модуль {name} отозван из каталога модулей: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: загруженный файл не совпадает с данными каталога; модуль не установлен.
 {name}: the download is a different plugin; it wasn't installed.	{name}: загружен другой модуль; модуль не установлен.

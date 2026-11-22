@@ -85,6 +85,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	一條線，或沿線的標記或短線標記
 A magnifying lens that follows the pointer.	跟隨指標的放大鏡。
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	地圖、圖徵或覆蓋服務的網址：WMS、WMTS、WFS、WCS、OGC API Features 或 Tiles，或者 ArcGIS FeatureServer、MapServer、ImageServer 或 VectorTileServer（也可以是服務目錄，以便瀏覽）。
+A message takes at most {n} pictures	一則訊息最多可附 {n} 張圖片
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	名稱或 EPSG 代碼、WKT 或 PROJ 字串；留空：已投影時使用地圖本身的坐標系統，否則使用檢視中心的 UTM 分帶
 a name, or owner/name such as giswqs/geospatial	名稱，或 owner/name 形式，例如 giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	可重複使用的命名端點。除非選擇在此電腦上記住，否則金鑰保留到 RustGIS 關閉為止；連線本身從不儲存金鑰。
@@ -451,6 +452,7 @@ Asking the NLDI…	正在查詢 NLDI…
 Asset	資產
 asset	資產
 Assign Escape	指派 Escape
+assistant picture	助理圖片
 Assistant settings	助理設定
 At both ends	兩端
 At inner vertices	內部頂點
@@ -460,6 +462,7 @@ At the end	在終點
 At the start	在起點
 At vertices	頂點處
 Atlas	地圖集
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	附加圖片（PNG、JPEG 或 WebP），或將圖片貼到訊息方塊中
 Attachments	附件
 Attribute\nTable	屬性\n表
 Attribute Rules	屬性規則
@@ -2281,6 +2284,7 @@ Letter spacing	字間距
 Level	層級
 Library	資源庫
 Licence	授權
+Licence…	授權…
 Light	淺色
 Light and Shadow	光照和陰影
 Light the extruded shapes from the north-west.	從西北方向照亮拉伸形狀。
@@ -2295,6 +2299,7 @@ Limits	限制
 Line	線
 Line alignment	線對齊
 Line color	線顏色
+Line layer	線圖層
 Line Of Sight	通視
 Line of sight between two points	兩點之間的通視
 Line Of Sight From Here	從此處的通視
@@ -2659,6 +2664,8 @@ New Group	新增群組
 New job name	新作業名稱
 New Layout	新增圖面配置
 New Map	新增地圖
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	新地圖會以專案的坐標系統繪製，新的空白圖層也以此坐標系統儲存坐標。專案中已有的地圖和圖層保留各自的坐標系統。
+New maps stay in Web Mercator: {why}	新地圖維持 Web Mercator：{why}
 New Model From History	從歷史記錄新增模型
 New Notebook	新增筆記本
 New Presentation	新增簡報
@@ -2775,6 +2782,7 @@ None of these layers are polygon layers.	這些圖層都不是多邊形圖層。
 none, a .duckdb file, or host=… dbname=… user=…	無、.duckdb 檔案，或 host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	無，或來自 PGPASSWORD、MYSQL_PWD 或 SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	無。可透過網址新增，或從底圖外掛新增。
+None: new maps in Web Mercator	無：新地圖使用 Web Mercator
 North	北
 north	北
 North\nArrow	指北\n標
@@ -3049,6 +3057,7 @@ Paste Special	選擇性貼上
 Paste Special (as a new layer)	選擇性貼上（作為新圖層）
 Paste token	貼上權杖
 paste your key	貼上您的金鑰
+pasted picture	貼上的圖片
 path is required	需要提供 path
 Pause	暫停
 Pause.	暫停。
@@ -3205,8 +3214,11 @@ Profile Viewing	剖面檢視
 PROJ definition	PROJ 定義
 Project	專案
 Project\nPackage	專案\n套件
+Project Coordinate System	專案坐標系統
 Project Info	專案資訊
 project is "sample", "blank", "last" or {"path": a project file}	project 為 "sample"、"blank"、"last" 或 {"path": a project file}
+Project Properties	專案屬性
+Project Properties…	專案屬性…
 Project Raster	投影網格
 Project Template	專案範本
 project's path is required	需要提供專案的路徑
@@ -3901,7 +3913,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	顯示或隱藏書籤窗
 Show or hide the Browser pane.	顯示或隱藏瀏覽器窗格。
 Show or hide the Data Sources pane.	顯示或隱藏資料來源窗格。
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	顯示或隱藏資料來源窗格：我的最愛、最近使用的資料、已儲存的服務、資料庫和 STAC API，以及公開資料來源資源庫。
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	在底圖上顯示或隱藏地理網格：經緯線、量測網格、UTM 分帶或 MGRS 網格。
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	在底圖上，或繪製於最上層時在圖層上，顯示或隱藏地理網格：經緯線、量測網格、UTM 分帶或 MGRS 網格。
 Show or hide the group's layers	顯示或隱藏群組中的圖層
 Show or hide the layer.	顯示或隱藏圖層。
 Show or hide the Layers pane.	顯示或隱藏圖層窗格。
@@ -4051,6 +4063,7 @@ SQL Query	SQL 查詢
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	必須為真的 SQL，例如 pop > 0
 Square	正方形
+Square to a line	垂直於線
 Squares	正方形
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4216,6 +4229,7 @@ Tags	標籤
 Taiwan	臺灣
 Take the data in view offline, to edit and sync back later.	將檢視中的資料設為離線，以便編輯並於稍後同步回傳。
 Take this bound out	移除此分界值
+Take this picture off the message	從訊息中移除此圖片
 Take this point off	取消此點
 Target details ({operation}): {targets}	目標詳細資訊（{operation}）：{targets}
 Target Features	目標圖徵
@@ -4241,6 +4255,7 @@ Test	測試
 Test Connection	測試連線
 Testing…	正在測試…
 Text	文字
+Text size	文字大小
 Text Symbol	文字符號
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	文字，例如 "name" || ' (' || round("pop" / 1e6, 1) || ' M)'，用於替代欄位；大小以點（pt）為單位，顏色為 '#RRGGBB'，角度以順時針度數表示。留空：使用欄位或類別自身的設定。
 Th	四
@@ -4315,6 +4330,7 @@ the keychain backend stopped unexpectedly	鑰匙圈後端意外停止
 the keychain worker stopped	鑰匙圈工作程序已停止
 The keys saved on this computer were forgotten; a login in this session keeps working.	已清除此電腦上儲存的金鑰；本次工作階段中的登入仍然有效。
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	公里數的後兩位，如地形圖所印：543000 顯示為 43。
+The label starts at the point and runs square to the nearest line of the layer chosen below.	標註從點開始，垂直延伸至下方所選圖層中最近的線。
 the latitude band must be a letter from C to X (not I or O)	緯度帶必須是 C 到 X 之間的字母（不含 I 和 O）
 the layer Export Features was opened on is gone	開啟「匯出圖徵」時所在的圖層已不存在
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	圖層顯示時間滑桿目前所在的時間步驟，並在變數的日期範圍內開啟滑桿。
@@ -4331,6 +4347,7 @@ The longest a callout's line may be.	引線的最大長度。
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	地圖在左側；標題、定位器、圖例、來源和參考資訊在右側面板中。
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	地圖中沒有已載入以供編輯的 GeoPackage 圖層（常用 › 新增資料 › 編輯 GeoPackage 表…）
 the map has no layers	地圖中沒有圖層
+The map has no line or polygon layer to be square to.	地圖中沒有可供垂直對齊的線或多邊形圖層。
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	地圖中沒有已載入以供編輯的 PostGIS 圖層（常用 › 新增資料 › 資料庫…，載入以供編輯）
 The map has no tile archive read from a file.	地圖中沒有從檔案讀取的圖磚封存檔。
 The map is drawn in this coordinate system; layers are projected on the fly.	地圖以此坐標系統繪製；圖層將即時投影。
@@ -4537,7 +4554,9 @@ This connection is logged out. Log in explicitly to use it again.	此連線已�
 This connection uses unencrypted http://. Tick the confirmation before sending its password or key.	此連線使用未加密的 http://。傳送密碼或金鑰前，請先勾選確認。
 This font isn't installed here, so the text is drawn in the sans-serif	此處未安裝該字型，因此文字以無襯線字型繪製
 This font isn't installed here, so the text is drawn in the serif	此處未安裝該字型，因此文字以襯線字型繪製
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	此影像無法作為標記：它不是可讀取、每邊最多 20,000 px 的 PNG 或 JPEG
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	此影像無法作為標記：像素超過 {side} × {side}，請將其縮小
+This image can't be a marker: it isn't a readable PNG or JPEG	此影像無法作為標記：它不是可讀取的 PNG 或 JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	此影像無法作為標記：RustGIS 已解碼重新啟動前可解碼的標記影像上限，請重新啟動以使用其他影像
 This image is too large for a marker: at most about 1.5 MiB	此影像過大，無法作為標記：最多約 1.5 MiB
 This image is unavailable. Choose another image or No image.	此影像無法使用。請選擇其他影像或「無影像」。
 this is not a file	這不是檔案
@@ -4937,6 +4956,7 @@ Whether the service is asked for one picture of the view or for tiles.	向服務
 Which 5 countries have the largest GDP?	哪 5 個國家的 GDP 最高？
 While drawing, click two points on a feature's edge to follow the edge between them	繪製時，在圖徵邊上點選兩個點，即可沿兩點之間的邊追蹤
 While drawing, click two points on a feature's edge to follow the edge between them.	繪製時，在圖徵邊上點選兩個點，即可沿兩點之間的邊追蹤。
+While it has none, take it from the first layer added	專案尚無坐標系統時，取用第一個加入的圖層的坐標系統
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	輸入時，不含 Ctrl/⌘ 的快速鍵會暫停。第一人稱導覽保留 Escape、Home 和 Delete。
 White behind dark text, dark behind light.	深色文字後為白色，淺色文字後為深色。
 Whitebox and GeoLibre tools	Whitebox 和 GeoLibre 工具
@@ -4993,7 +5013,7 @@ Write a plugin	編寫外掛
 Write a turn of the view about its centre as an animated GIF or PNG frames.	將檢視圍繞其中心的旋轉寫為 GIF 動畫或 PNG 影格。
 Writes a separate two-vertex line for each consecutive vertex pair.	為每對相鄰頂點分別寫出一條兩點線。
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	寫出每個圖徵，並盡可能使其幾何有效：封閉環、移除重複頂點和退化部分，並依所選規則解決自相交、重疊部分以及位於外環之外的內環（「Shells Minus Holes」會合併重疊部分；「Even-Odd」保留位於奇數個環內的部分）。任何位置（即使在內環中）有缺失或非有限坐標的圖徵，或修復後沒有可用點、或多邊形沒有面積的圖徵，會以無幾何寫出。其他過於複雜而無法檢查、或修復失敗的圖徵會原樣寫出。並說明每個圖徵修復了什麼。
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	依儲存的經緯度坐標為每個圖徵寫出一個與坐標軸對齊的外包矩形。跳過面積為零的包絡矩形。
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	為每個圖徵寫出一個與坐標軸對齊的外包矩形：圖層儲存在 Web Mercator 及其他世界投影（Robinson、Plate Carrée 等）以外的投影坐標系統時，使用圖層本身的坐標，否則使用經緯度。跳過面積為零的包絡矩形。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	輸出 Sen 斜率、檢定的 Z 值和 p 值，以及趨勢顯著處的斜率。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	寫出幾何無效的圖徵，例如自相交或未閉合的環、位於外殼之外的孔洞或重疊部分，並說明每個圖徵的問題。
 writing the copy failed unexpectedly	寫入副本意外失敗
@@ -5118,7 +5138,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} now reads {n} project sources; {reading} still being read	{name} 現在讀取 {n} 個專案來源；{reading} 個仍在讀取
 {name} now reads {n} project sources; {reading} still being read and {failed} could not be read	{name} 現在讀取 {n} 個專案來源；{reading} 個仍在讀取，{failed} 個無法讀取
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} 作為程式在您的電腦上執行：需要桌面應用程式或 rustgis-cli。
-{name} was withdrawn from the plugin registry and has been turned off.	{name} 已從外掛庫下架，並已被停用。
 {name} was withdrawn from the plugin registry: {reason}	{name} 已從外掛庫下架：{reason}
 {name} {version} needs RustGIS {min} or newer; this is {this}.	{name} {version} 需要 RustGIS {min} 或更新版本；目前版本為 {this}。
 {name}: 1 control character at an end of the name was removed	{name}：已移除名稱開頭或結尾的 1 個控制字元

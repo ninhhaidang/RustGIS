@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Một đường, hoặc điểm đánh dấu hay vạch gạch dọc theo nó
 A magnifying lens that follows the pointer.	Kính lúp di chuyển theo con trỏ.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Địa chỉ của một dịch vụ bản đồ, đối tượng hoặc coverage: WMS, WMTS, WFS, WCS, OGC API Features hoặc Tiles, hoặc ArcGIS FeatureServer, MapServer, ImageServer hoặc VectorTileServer (hoặc một thư mục dịch vụ để duyệt).
+A message takes at most {n} pictures	Một tin nhắn có tối đa {n} ảnh
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Tên hoặc mã EPSG, WKT hoặc chuỗi PROJ; để trống: hệ của bản đồ nếu đã chiếu, nếu không là múi UTM tại tâm khung nhìn
 a name, or owner/name such as giswqs/geospatial	một tên, hoặc chủ sở hữu/tên như giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Một điểm cuối có tên mà bạn có thể dùng lại. Khóa được giữ cho đến khi RustGIS đóng, trừ khi bạn chọn ghi nhớ chúng trên máy tính này; bản thân kết nối không bao giờ giữ chúng.
@@ -443,6 +444,7 @@ Asking the map service…	Đang hỏi dịch vụ bản đồ…
 Asking the NLDI…	Đang hỏi NLDI…
 Asset	Tài nguyên
 Assign Escape	Gán Escape
+assistant picture	ảnh của trợ lý
 Assistant settings	Cài đặt trợ lý
 At both ends	Ở cả hai đầu
 At inner vertices	Tại các đỉnh trong
@@ -452,6 +454,7 @@ At the end	Ở cuối
 At the start	Ở đầu
 At vertices	Tại các đỉnh
 Atlas	Atlas
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Đính kèm ảnh (PNG, JPEG hoặc WebP), hoặc dán ảnh vào hộp tin nhắn
 Attachments	Tệp đính kèm
 Attribute\nTable	Bảng\nthuộc tính
 Attribute Rules	Quy tắc thuộc tính
@@ -2245,6 +2248,7 @@ Letter spacing	Khoảng cách chữ
 Level	Cấp
 Library	Thư viện
 Licence	Giấy phép
+Licence…	Giấy phép…
 Light	Sáng
 Light and Shadow	Ánh sáng và bóng
 Light the extruded shapes from the north-west.	Chiếu sáng các khối đùn từ hướng tây bắc.
@@ -2259,6 +2263,7 @@ Limits	Giới hạn
 Line	Đường
 Line alignment	Căn chỉnh đường
 Line color	Màu đường
+Line layer	Lớp đường
 Line Of Sight	Đường ngắm
 Line of sight between two points	Đường ngắm giữa hai điểm
 Line Of Sight From Here	Đường ngắm từ đây
@@ -2621,6 +2626,8 @@ New Group	Nhóm mới
 New job name	Tên tác vụ mới
 New Layout	Bố cục mới
 New Map	Bản đồ mới
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Bản đồ mới được vẽ theo hệ tọa độ của dự án, và các lớp trống mới lưu tọa độ theo hệ này. Bản đồ và lớp đã có trong dự án giữ nguyên hệ của chúng.
+New maps stay in Web Mercator: {why}	Bản đồ mới vẫn dùng Web Mercator: {why}
 New Model From History	Mô hình mới từ lịch sử
 New Notebook	Sổ tay mới
 New Presentation	Bản trình bày mới
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Không lớp nào trong các lớp này
 none, a .duckdb file, or host=… dbname=… user=…	không có, một tệp .duckdb, hoặc host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	không có, hoặc lấy từ PGPASSWORD, MYSQL_PWD hoặc SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Không có. Thêm bằng địa chỉ, hoặc từ một plugin bản đồ nền.
+None: new maps in Web Mercator	Không có: bản đồ mới dùng Web Mercator
 North	Bắc
 North\nArrow	Mũi tên\nchỉ bắc
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	phía bắc 84° N và phía nam 80° S, lưới là UPS, không có số múi: hãy viết north 2000000 2444268, south 2000000 1555732, hoặc MGRS vùng cực như Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	Dán đặc biệt
 Paste Special (as a new layer)	Dán đặc biệt (thành lớp mới)
 Paste token	Dán token
 paste your key	dán khóa của bạn
+pasted picture	ảnh đã dán
 path is required	path là bắt buộc
 Pause	Tạm dừng
 Pause.	Tạm dừng.
@@ -3162,8 +3171,11 @@ Profile Viewing	Xem mặt cắt
 PROJ definition	Định nghĩa PROJ
 Project	Dự án
 Project\nPackage	Gói\ndự án
+Project Coordinate System	Hệ tọa độ dự án
 Project Info	Thông tin dự án
 project is "sample", "blank", "last" or {"path": a project file}	project là "sample", "blank", "last" hoặc {"path": a project file}
+Project Properties	Thuộc tính dự án
+Project Properties…	Thuộc tính dự án…
 Project Raster	Chiếu raster
 Project Template	Mẫu dự án
 project's path is required	cần có path của project
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Hiện hoặc ẩn ngăn
 Show or hide the Browser pane.	Hiện hoặc ẩn ngăn Trình duyệt.
 Show or hide the Data Sources pane.	Hiện hoặc ẩn ngăn Nguồn dữ liệu.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Hiện hoặc ẩn ngăn Nguồn dữ liệu: mục yêu thích, dữ liệu gần đây, dịch vụ đã lưu, cơ sở dữ liệu và STAC API, cùng thư viện các nguồn công khai.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Hiện hoặc ẩn lưới kinh vĩ trên bản đồ nền: vĩ độ và kinh độ, lưới đo, các múi UTM hoặc lưới MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Hiện hoặc ẩn lưới kinh vĩ trên bản đồ nền, hoặc trên các lớp khi được vẽ lên trên cùng: vĩ độ và kinh độ, lưới đo, các múi UTM hoặc lưới MGRS.
 Show or hide the group's layers	Hiện hoặc ẩn các lớp của nhóm
 Show or hide the layer.	Hiện hoặc ẩn lớp.
 Show or hide the Layers pane.	Hiện hoặc ẩn ngăn Lớp.
@@ -4002,6 +4014,7 @@ SQL Query	Truy vấn SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL phải đúng, ví dụ pop > 0
 Square	Hình vuông
+Square to a line	Vuông góc với đường
 Squares	Hình vuông
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Thẻ
 Taiwan	Đài Loan
 Take the data in view offline, to edit and sync back later.	Lấy dữ liệu trong khung nhìn để dùng ngoại tuyến, chỉnh sửa và đồng bộ lại sau.
 Take this bound out	Bỏ ngưỡng này
+Take this picture off the message	Gỡ ảnh này khỏi tin nhắn
 Take this point off	Bỏ điểm này
 Target details ({operation}): {targets}	Chi tiết đích ({operation}): {targets}
 Target Features	Đối tượng đích
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	Kiểm tra kết nối
 Testing…	Đang kiểm tra…
 Text	Văn bản
+Text size	Cỡ chữ
 Text Symbol	Ký hiệu văn bản
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Văn bản, ví dụ "name" || ' (' || round("pop" / 1e6, 1) || ' M)', thay cho trường; cỡ tính bằng point, màu dạng '#RRGGBB', góc tính bằng độ theo chiều kim đồng hồ. Để trống: dùng của trường hoặc của lớp nhãn.
 Th	T5
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	phần phụ trợ chuỗi khóa dừn
 the keychain worker stopped	tiến trình chuỗi khóa đã dừng
 The keys saved on this computer were forgotten; a login in this session keeps working.	Đã quên các khóa lưu trên máy tính này; phiên đăng nhập hiện tại vẫn tiếp tục hoạt động.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Hai chữ số cuối của kilômét, như bản đồ địa hình in: 43 cho 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Nhãn bắt đầu tại điểm và chạy vuông góc với đường gần nhất của lớp được chọn bên dưới.
 the latitude band must be a letter from C to X (not I or O)	đai vĩ độ phải là một chữ cái từ C đến X (không phải I hoặc O)
 the layer Export Features was opened on is gone	lớp mà Xuất đối tượng được mở trên đó không còn nữa
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Lớp hiển thị bước mà thanh trượt thời gian đang ở, và bật thanh trượt trên các ngày của biến.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	Độ dài tối đa của đường dẫn 
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Bản đồ bên trái; tiêu đề, bộ định vị, chú giải, nguồn và tham chiếu trong một bảng bên phải.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	bản đồ không có lớp GeoPackage nào được tải để chỉnh sửa (Trang chủ › Thêm dữ liệu › Chỉnh sửa bảng GeoPackage…)
 the map has no layers	bản đồ không có lớp nào
+The map has no line or polygon layer to be square to.	Bản đồ không có lớp đường hoặc lớp vùng để vuông góc theo.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	bản đồ không có lớp PostGIS nào được tải để chỉnh sửa (Trang chủ › Thêm dữ liệu › Cơ sở dữ liệu…, Tải để chỉnh sửa)
 The map has no tile archive read from a file.	Bản đồ không có kho ô bản đồ đọc từ tệp.
 The map is drawn in this coordinate system; layers are projected on the fly.	Bản đồ được vẽ trong hệ tọa độ này; các lớp được chiếu tức thời.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	K�
 This connection is logged out. Log in explicitly to use it again.	Kết nối này đã đăng xuất. Hãy đăng nhập rõ ràng để dùng lại.
 This font isn't installed here, so the text is drawn in the sans-serif	Phông chữ này chưa được cài ở đây, nên văn bản được vẽ bằng phông không chân
 This font isn't installed here, so the text is drawn in the serif	Phông chữ này chưa được cài ở đây, nên văn bản được vẽ bằng phông có chân
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Ảnh này không thể làm điểm đánh dấu: nó không phải PNG hoặc JPEG đọc được với tối đa 20.000 px mỗi cạnh
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Ảnh này không thể làm điểm đánh dấu: nó có nhiều điểm ảnh hơn {side} × {side}; hãy thu nhỏ ảnh
+This image can't be a marker: it isn't a readable PNG or JPEG	Ảnh này không thể làm điểm đánh dấu: nó không phải PNG hoặc JPEG đọc được
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Ảnh này không thể làm điểm đánh dấu: RustGIS đã giải mã số ảnh điểm đánh dấu tối đa cho đến khi khởi động lại; hãy khởi động lại để dùng ảnh khác
 This image is too large for a marker: at most about 1.5 MiB	Ảnh này quá lớn để làm điểm đánh dấu: tối đa khoảng 1,5 MiB
 This image is unavailable. Choose another image or No image.	Ảnh này không khả dụng. Hãy chọn ảnh khác hoặc Không có ảnh.
 This item is from a local or private network, whose files Bands and Index don't read yet	Mục này đến từ mạng cục bộ hoặc mạng riêng, mà Kênh và Chỉ số chưa đọc được tệp của nó
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Hỏi d�
 Which 5 countries have the largest GDP?	5 quốc gia nào có GDP lớn nhất?
 While drawing, click two points on a feature's edge to follow the edge between them	Khi vẽ, nhấp hai điểm trên cạnh của một đối tượng để đi theo cạnh giữa chúng
 While drawing, click two points on a feature's edge to follow the edge between them.	Khi vẽ, nhấp hai điểm trên cạnh của một đối tượng để đi theo cạnh giữa chúng.
+While it has none, take it from the first layer added	Khi chưa có, lấy từ lớp đầu tiên được thêm
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Khi đang gõ, các phím tắt không có Ctrl/⌘ tạm dừng. Điều hướng góc nhìn thứ nhất giữ Escape, Home và Delete.
 White behind dark text, dark behind light.	Trắng phía sau chữ tối, tối phía sau chữ sáng.
 Whitebox and GeoLibre tools	Công cụ Whitebox và GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	Viết plugin
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Ghi một vòng xoay của khung nhìn quanh tâm thành GIF động hoặc các khung hình PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Ghi một đường hai đỉnh riêng cho mỗi cặp đỉnh liên tiếp.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Ghi mọi đối tượng với hình học được làm hợp lệ khi có thể: đóng vòng, bỏ các đỉnh lặp và các phần suy biến, giải quyết tự cắt, các phần chồng lấn và lỗ nằm ngoài vỏ của nó theo quy tắc đã chọn (Shells Minus Holes gộp các phần chồng lấn; Even-Odd giữ phần nằm trong một số lẻ vòng). Các đối tượng có tọa độ thiếu hoặc không hữu hạn ở bất kỳ đâu, kể cả trong lỗ, hoặc không còn điểm dùng được hay, với vùng, không còn diện tích sau khi sửa, được ghi không có hình học. Các đối tượng khác quá phức tạp để kiểm tra, hoặc sửa thất bại, được ghi nguyên vẹn. Cho biết những gì đã được sửa trong từng đối tượng.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Ghi một hình chữ nhật bao song song trục cho mỗi đối tượng theo tọa độ kinh độ/vĩ độ đã lưu. Bỏ qua khung bao có diện tích bằng không.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Ghi một hình chữ nhật bao song song trục cho mỗi đối tượng theo tọa độ riêng của lớp khi lớp được lưu trong hệ phép chiếu khác Web Mercator và các phép chiếu thế giới khác (Robinson, Plate Carrée và tương tự), nếu không thì theo kinh độ/vĩ độ. Bỏ qua khung bao có diện tích bằng không.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Ghi độ dốc Sen, giá trị Z và p của kiểm định, và độ dốc tại nơi xu hướng có ý nghĩa.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Ghi các đối tượng có hình học không hợp lệ, như vòng tự giao cắt hoặc không khép kín, lỗ nằm ngoài vỏ hoặc phần chồng lấn, và cho biết lỗi của từng đối tượng.
 writing the copy failed unexpectedly	ghi bản sao thất bại ngoài dự kiến
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} không có gói cho {platform}. Có sẵn cho: {platforms}.
 {name} is larger than {mb} MB	{name} lớn hơn {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} chạy như một chương trình trên máy tính của bạn: cần ứng dụng máy tính hoặc rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} đã bị gỡ khỏi kho plugin và đã bị tắt.
 {name} was withdrawn from the plugin registry: {reason}	{name} đã bị gỡ khỏi kho plugin: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: bản tải xuống không khớp với kho plugin; chưa được cài đặt.
 {name}: the download is a different plugin; it wasn't installed.	{name}: bản tải xuống là một plugin khác; chưa được cài đặt.

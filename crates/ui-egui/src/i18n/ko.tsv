@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	라인 또는 라인을 따르는 마커나 해시 마크
 A magnifying lens that follows the pointer.	포인터를 따라 움직이는 돋보기.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	지도, 피처 또는 커버리지 서비스 주소: WMS, WMTS, WFS, WCS, OGC API Features 또는 Tiles, 또는 ArcGIS FeatureServer, MapServer, ImageServer 또는 VectorTileServer(찾아보려면 서비스 디렉터리).
+A message takes at most {n} pictures	메시지에는 그림을 최대 {n}개까지 넣을 수 있습니다
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	이름 또는 EPSG 코드, WKT 또는 PROJ 문자열. 비워 두면: 지도가 투영되어 있으면 지도 자체의 좌표계, 아니면 보기 중심의 UTM 존
 a name, or owner/name such as giswqs/geospatial	이름 또는 giswqs/geospatial 같은 소유자/이름
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	재사용할 수 있는 이름 있는 엔드포인트입니다. 이 컴퓨터에 기억하도록 선택하지 않으면 키는 RustGIS를 닫을 때까지 유지됩니다. 연결 자체는 키를 보관하지 않습니다.
@@ -443,6 +444,7 @@ Asking the map service…	지도 서비스에 묻는 중…
 Asking the NLDI…	NLDI에 문의하는 중…
 Asset	에셋
 Assign Escape	Escape 지정
+assistant picture	어시스턴트 그림
 Assistant settings	어시스턴트 설정
 At both ends	양쪽 끝
 At inner vertices	내부 버텍스
@@ -452,6 +454,7 @@ At the end	끝
 At the start	시작
 At vertices	버텍스
 Atlas	아틀라스
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	그림(PNG, JPEG 또는 WebP)을 첨부하거나 메시지 상자에 붙여 넣으세요
 Attachments	첨부 파일
 Attribute\nTable	속성\n테이블
 Attribute Rules	속성 규칙
@@ -2245,6 +2248,7 @@ Letter spacing	자간
 Level	수준
 Library	라이브러리
 Licence	라이선스
+Licence…	라이선스…
 Light	라이트
 Light and Shadow	빛과 그림자
 Light the extruded shapes from the north-west.	돌출된 도형을 북서쪽에서 비춥니다.
@@ -2259,6 +2263,7 @@ Limits	제한
 Line	라인
 Line alignment	선 정렬
 Line color	선 색상
+Line layer	라인 레이어
 Line Of Sight	가시선
 Line of sight between two points	두 지점 간 가시선
 Line Of Sight From Here	여기에서 가시선
@@ -2621,6 +2626,8 @@ New Group	새 그룹
 New job name	새 작업 이름
 New Layout	새 레이아웃
 New Map	새 지도
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	새 맵은 프로젝트 좌표계로 그려지고, 새 빈 레이어는 좌표를 이 좌표계로 저장합니다. 프로젝트에 이미 있는 맵과 레이어는 자체 좌표계를 유지합니다.
+New maps stay in Web Mercator: {why}	새 맵은 Web Mercator로 유지됩니다: {why}
 New Model From History	기록에서 새 모델 만들기
 New Notebook	새 노트북
 New Presentation	새 프레젠테이션
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	이 레이어들 중 폴리곤 레이�
 none, a .duckdb file, or host=… dbname=… user=…	없음, .duckdb 파일 또는 host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	없음 또는 PGPASSWORD, MYSQL_PWD, SQLCMDPASSWORD에서 가져옴
 None. Add one by address, or from a basemap plugin.	없음. 주소로 추가하거나 배경지도 플러그인에서 추가하세요.
+None: new maps in Web Mercator	없음: 새 맵은 Web Mercator
 North	북
 North\nArrow	방위\n표
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	북위 84° 이북과 남위 80° 이남은 존 번호가 없는 UPS 격자입니다: north 2000000 2444268, south 2000000 1555732 또는 Z AM 00000 44268 같은 극지 MGRS로 쓰세요
@@ -3006,6 +3014,7 @@ Paste Special	선택하여 붙여넣기
 Paste Special (as a new layer)	선택하여 붙여넣기(새 레이어로)
 Paste token	토큰 붙여 넣기
 paste your key	키를 붙여넣으세요
+pasted picture	붙여 넣은 그림
 path is required	path가 필요합니다
 Pause	일시 중지
 Pause.	일시 중지합니다.
@@ -3162,8 +3171,11 @@ Profile Viewing	단면도 보기
 PROJ definition	PROJ 정의
 Project	프로젝트
 Project\nPackage	프로젝트\n패키지
+Project Coordinate System	프로젝트 좌표계
 Project Info	프로젝트 정보
 project is "sample", "blank", "last" or {"path": a project file}	project는 "sample", "blank", "last" 또는 {"path": a project file}입니다
+Project Properties	프로젝트 속성
+Project Properties…	프로젝트 속성…
 Project Raster	래스터 투영
 Project Template	프로젝트 템플릿
 project's path is required	프로젝트 경로가 필요합니다
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	북마크 창을 표시�
 Show or hide the Browser pane.	브라우저 창을 표시하거나 숨깁니다.
 Show or hide the Data Sources pane.	데이터 원본 창을 표시하거나 숨깁니다.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	데이터 원본 창을 표시하거나 숨깁니다: 즐겨찾기, 최근 데이터, 저장된 서비스, 데이터베이스와 STAC API, 공개 원본 라이브러리.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	배경지도 위 경위선망을 표시하거나 숨깁니다: 위도와 경도, 측정 격자, UTM 존 또는 MGRS 격자.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	배경지도 위, 또는 맨 위에 그릴 때는 레이어 위의 경위선망을 표시하거나 숨깁니다: 위도와 경도, 측정 격자, UTM 존 또는 MGRS 격자.
 Show or hide the group's layers	그룹 레이어 표시 또는 숨기기
 Show or hide the layer.	레이어를 표시하거나 숨깁니다.
 Show or hide the Layers pane.	레이어 창을 표시하거나 숨깁니다.
@@ -4002,6 +4014,7 @@ SQL Query	SQL 쿼리
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	참이어야 하는 SQL, 예: pop > 0
 Square	정사각형
+Square to a line	라인에 수직
 Squares	정사각형
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	태그
 Taiwan	대만
 Take the data in view offline, to edit and sync back later.	보기 내 데이터를 오프라인으로 가져가 편집하고 나중에 다시 동기화합니다.
 Take this bound out	이 경계 제거
+Take this picture off the message	메시지에서 이 그림 빼기
 Take this point off	이 포인트 빼기
 Target details ({operation}): {targets}	대상 세부 정보({operation}): {targets}
 Target Features	대상 피처
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	연결 테스트
 Testing…	테스트하는 중…
 Text	텍스트
+Text size	텍스트 크기
 Text Symbol	텍스트 심볼
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	필드 대신 사용할 텍스트(예: "name" || ' (' || round("pop" / 1e6, 1) || ' M)'). 크기는 포인트, 색상은 '#RRGGBB', 각도는 시계 방향 도 단위입니다. 비어 있으면: 필드 또는 클래스 자체의 값.
 Th	목
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	키체인 백엔드가 예기치 않�
 the keychain worker stopped	키체인 작업자가 중지됨
 The keys saved on this computer were forgotten; a login in this session keeps working.	이 컴퓨터에 저장된 키를 삭제했습니다. 이 세션의 로그인은 계속 유지됩니다.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	킬로미터의 마지막 두 자리. 지형도 표기와 같습니다: 543000은 43.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	라벨이 점에서 시작해 아래에서 선택한 레이어의 가장 가까운 라인에 수직으로 이어집니다.
 the latitude band must be a letter from C to X (not I or O)	위도대는 C부터 X까지의 문자여야 합니다(I와 O 제외)
 the layer Export Features was opened on is gone	피처 내보내기를 연 레이어가 없어졌습니다
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	레이어에는 시간 슬라이더의 현재 단계가 표시되며, 변수의 날짜 범위로 슬라이더가 켜집니다.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	지시선의 최대 길이입니다.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	왼쪽에 지도, 오른쪽 패널에 제목, 로케이터, 범례, 출처, 참조 정보를 배치합니다.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	지도에 편집용으로 불러온 GeoPackage 레이어가 없습니다(홈 › 데이터 추가 › GeoPackage 테이블 편집…)
 the map has no layers	지도에 레이어가 없습니다
+The map has no line or polygon layer to be square to.	맵에 수직 기준으로 삼을 라인 또는 폴리곤 레이어가 없습니다.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	지도에 편집용으로 불러온 PostGIS 레이어가 없습니다(홈 › 데이터 추가 › 데이터베이스…, 편집용으로 불러오기)
 The map has no tile archive read from a file.	지도에 파일에서 읽은 타일 아카이브가 없습니다.
 The map is drawn in this coordinate system; layers are projected on the fly.	지도는 이 좌표계로 그려지며 레이어는 즉석에서 투영됩니다.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	이
 This connection is logged out. Log in explicitly to use it again.	이 연결은 로그아웃되었습니다. 다시 사용하려면 명시적으로 로그인하세요.
 This font isn't installed here, so the text is drawn in the sans-serif	이 글꼴이 이곳에 설치되어 있지 않아 텍스트는 산세리프로 그려집니다
 This font isn't installed here, so the text is drawn in the serif	이 글꼴이 이곳에 설치되어 있지 않아 텍스트는 세리프로 그려집니다
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	이 이미지는 마커가 될 수 없습니다. 한 변이 최대 20,000 px인 읽을 수 있는 PNG 또는 JPEG가 아닙니다
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	이 이미지는 마커가 될 수 없습니다. 픽셀이 {side} × {side}보다 많습니다. 더 작게 만드세요
+This image can't be a marker: it isn't a readable PNG or JPEG	이 이미지는 마커가 될 수 없습니다. 읽을 수 있는 PNG 또는 JPEG가 아닙니다
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	이 이미지는 마커가 될 수 없습니다. RustGIS가 다시 시작하기 전까지 디코딩할 수 있는 마커 이미지 수에 도달했습니다. 다른 이미지를 사용하려면 다시 시작하세요
 This image is too large for a marker: at most about 1.5 MiB	이 이미지는 마커로 쓰기에 너무 큽니다: 최대 약 1.5 MiB
 This image is unavailable. Choose another image or No image.	이 이미지를 사용할 수 없습니다. 다른 이미지나 이미지 없음을 선택하세요.
 This item is from a local or private network, whose files Bands and Index don't read yet	이 항목은 로컬 또는 사설 네트워크에 있으며, 밴드와 지수는 아직 그 파일을 읽지 못합니다
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	서비스
 Which 5 countries have the largest GDP?	GDP가 가장 큰 5개 국가는 어디인가요?
 While drawing, click two points on a feature's edge to follow the edge between them	그리는 동안 피처 가장자리의 두 점을 클릭하면 그 사이의 가장자리를 따라갑니다
 While drawing, click two points on a feature's edge to follow the edge between them.	그리는 동안 피처 가장자리의 두 점을 클릭하면 그 사이의 가장자리를 따라갑니다.
+While it has none, take it from the first layer added	좌표계가 없는 동안 처음 추가한 레이어에서 가져오기
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	입력하는 동안 Ctrl/⌘ 없는 단축키는 일시 중지됩니다. 1인칭 탐색은 Escape, Home, Delete를 유지합니다.
 White behind dark text, dark behind light.	어두운 텍스트 뒤에는 흰색, 밝은 텍스트 뒤에는 어두운색.
 Whitebox and GeoLibre tools	Whitebox 및 GeoLibre 도구
@@ -4929,7 +4949,7 @@ Write a plugin	플러그인 만들기
 Write a turn of the view about its centre as an animated GIF or PNG frames.	뷰를 중심 기준으로 한 바퀴 돌린 모습을 애니메이션 GIF 또는 PNG 프레임으로 씁니다.
 Writes a separate two-vertex line for each consecutive vertex pair.	연속된 버텍스 쌍마다 버텍스 두 개짜리 라인을 따로 씁니다.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	각 피처를 가능한 경우 지오메트리를 유효하게 만들어 씁니다. 링을 닫고, 반복된 버텍스와 퇴화된 부분을 버리며, 자기 교차, 겹치는 부분, 외곽 밖의 구멍을 선택한 규칙으로 해결합니다(Shells Minus Holes은(는) 겹치는 부분을 병합하고, Even-Odd은(는) 홀수 개의 링 안에 있는 부분을 유지). 구멍을 포함해 어디든 누락되거나 유한하지 않은 좌표가 있는 피처, 또는 복구 후 사용할 수 있는 포인트가 없거나 폴리곤의 경우 면적이 없는 피처는 지오메트리 없이 씁니다. 확인하기에 너무 복잡하거나 복구에 실패한 다른 피처는 변경하지 않고 씁니다. 각 피처에서 무엇을 복구했는지 알려줍니다.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	저장된 경도/위도 좌표로 피처마다 축에 정렬된 경계 사각형을 하나씩 씁니다. 면적이 0인 엔벨로프는 건너뜁니다.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	레이어가 Web Mercator 및 기타 세계 투영(Robinson, Plate Carrée 등) 이외의 투영 좌표계로 저장된 경우 레이어 자체 좌표로, 그렇지 않으면 경도/위도로 피처마다 축에 정렬된 경계 사각형을 하나씩 씁니다. 면적이 0인 엔벨로프는 건너뜁니다.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen 기울기, 검정의 Z 값과 p 값, 그리고 추세가 유의한 곳의 기울기를 기록합니다.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	자체 교차하거나 닫히지 않은 링, 외곽 밖의 구멍, 겹치는 부분 등 잘못된 지오메트리를 가진 피처를 쓰고, 각각 무엇이 잘못되었는지 알려 줍니다.
 writing the copy failed unexpectedly	사본 쓰기가 예기치 않게 실패했습니다
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name}에는 {platform}용 패키지가 없습니다. 사용 가능한 플랫폼: {platforms}.
 {name} is larger than {mb} MB	{name}의 크기가 {mb}MB를 초과합니다
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name}은(는) 컴퓨터의 프로그램으로 실행됩니다. 데스크톱 앱이나 rustgis-cli가 필요합니다.
-{name} was withdrawn from the plugin registry and has been turned off.	{name}이(가) 플러그인 레지스트리에서 철회되어 비활성화되었습니다.
 {name} was withdrawn from the plugin registry: {reason}	{name}이(가) 플러그인 레지스트리에서 철회되었습니다: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: 다운로드한 파일이 레지스트리와 일치하지 않아 설치하지 않았습니다.
 {name}: the download is a different plugin; it wasn't installed.	{name}: 다운로드한 파일이 다른 플러그인이어서 설치하지 않았습니다.

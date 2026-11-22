@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Garis, atau marker atau tanda garis di sepanjangnya
 A magnifying lens that follows the pointer.	Lensa pembesar yang mengikuti penunjuk.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Alamat layanan peta, fitur, atau coverage: WMS, WMTS, WFS, WCS, OGC API Features atau Tiles, atau ArcGIS FeatureServer, MapServer, ImageServer, atau VectorTileServer (atau direktori layanan, untuk dijelajahi).
+A message takes at most {n} pictures	Satu pesan memuat paling banyak {n} gambar
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Nama atau kode EPSG, WKT, atau string PROJ; kosong: milik peta jika terproyeksi, jika tidak zona UTM di pusat tampilan
 a name, or owner/name such as giswqs/geospatial	nama, atau pemilik/nama seperti giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Endpoint bernama yang dapat Anda gunakan kembali. Kunci disimpan sampai RustGIS ditutup kecuali Anda memilih untuk mengingatnya di komputer ini; koneksi itu sendiri tidak pernah menyimpannya.
@@ -443,6 +444,7 @@ Asking the map service…	Menanyakan layanan peta…
 Asking the NLDI…	Menanyakan ke NLDI…
 Asset	Aset
 Assign Escape	Tetapkan Escape
+assistant picture	gambar asisten
 Assistant settings	Pengaturan asisten
 At both ends	Di kedua ujung
 At inner vertices	Di verteks dalam
@@ -452,6 +454,7 @@ At the end	Di akhir
 At the start	Di awal
 At vertices	Di verteks
 Atlas	Atlas
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Lampirkan gambar (PNG, JPEG, atau WebP), atau tempel ke kotak pesan
 Attachments	Lampiran
 Attribute\nTable	Tabel\nAtribut
 Attribute Rules	Aturan Atribut
@@ -2245,6 +2248,7 @@ Letter spacing	Spasi huruf
 Level	Tingkat
 Library	Pustaka
 Licence	Lisensi
+Licence…	Lisensi…
 Light	Terang
 Light and Shadow	Cahaya dan Bayangan
 Light the extruded shapes from the north-west.	Terangi bentuk yang diekstrusi dari arah barat laut.
@@ -2259,6 +2263,7 @@ Limits	Batasan
 Line	Garis
 Line alignment	Perataan garis
 Line color	Warna garis
+Line layer	Layer garis
 Line Of Sight	Garis Pandang
 Line of sight between two points	Garis pandang antara dua titik
 Line Of Sight From Here	Garis Pandang dari Sini
@@ -2621,6 +2626,8 @@ New Group	Grup Baru
 New job name	Nama pekerjaan baru
 New Layout	Tata Letak Baru
 New Map	Peta Baru
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Peta baru digambar dalam sistem koordinat proyek, dan layer kosong baru menyimpan koordinatnya dalam sistem itu. Peta dan layer yang sudah ada di proyek tetap memakai sistemnya sendiri.
+New maps stay in Web Mercator: {why}	Peta baru tetap dalam Web Mercator: {why}
 New Model From History	Model Baru dari Riwayat
 New Notebook	Notebook Baru
 New Presentation	Presentasi Baru
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Tidak satu pun layer ini merupakan laye
 none, a .duckdb file, or host=… dbname=… user=…	tidak ada, file .duckdb, atau host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	tidak ada, atau dari PGPASSWORD, MYSQL_PWD, atau SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Tidak ada. Tambahkan melalui alamat, atau dari plugin peta dasar.
+None: new maps in Web Mercator	Tidak ada: peta baru dalam Web Mercator
 North	Utara
 North\nArrow	Panah\nUtara
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	di utara 84° LU dan di selatan 80° LS gridnya adalah UPS, yang tidak memiliki nomor zona: tulis north 2000000 2444268, south 2000000 1555732, atau MGRS kutub seperti Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	Tempel Khusus
 Paste Special (as a new layer)	Tempel Khusus (sebagai layer baru)
 Paste token	Tempel token
 paste your key	tempel kunci Anda
+pasted picture	gambar yang ditempel
 path is required	path wajib diisi
 Pause	Jeda
 Pause.	Jeda.
@@ -3162,8 +3171,11 @@ Profile Viewing	Tampilan Profil
 PROJ definition	Definisi PROJ
 Project	Proyek
 Project\nPackage	Paket\nProyek
+Project Coordinate System	Sistem Koordinat Proyek
 Project Info	Info Proyek
 project is "sample", "blank", "last" or {"path": a project file}	project berupa "sample", "blank", "last" atau {"path": a project file}
+Project Properties	Properti Proyek
+Project Properties…	Properti Proyek…
 Project Raster	Proyeksikan Raster
 Project Template	Templat Proyek
 project's path is required	path project wajib diisi
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Tampilkan atau sembunyik
 Show or hide the Browser pane.	Tampilkan atau sembunyikan panel Peramban.
 Show or hide the Data Sources pane.	Tampilkan atau sembunyikan panel Sumber Data.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Tampilkan atau sembunyikan panel Sumber Data: favorit, data terbaru, layanan tersimpan, basis data dan STAC API, serta pustaka sumber publik.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Tampilkan atau sembunyikan gratikul di atas peta dasar: lintang dan bujur, grid terukur, zona UTM, atau grid MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Tampilkan atau sembunyikan gratikul di atas peta dasar, atau di atas layer bila digambar paling atas: lintang dan bujur, grid terukur, zona UTM, atau grid MGRS.
 Show or hide the group's layers	Tampilkan atau sembunyikan layer grup
 Show or hide the layer.	Tampilkan atau sembunyikan layer.
 Show or hide the Layers pane.	Tampilkan atau sembunyikan panel Layer.
@@ -4002,6 +4014,7 @@ SQL Query	Kueri SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL yang harus bernilai benar, mis. pop > 0
 Square	Persegi
+Square to a line	Tegak lurus garis
 Squares	Persegi
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Tag
 Taiwan	Taiwan
 Take the data in view offline, to edit and sync back later.	Bawa data yang terlihat ke mode offline, untuk disunting dan disinkronkan kembali nanti.
 Take this bound out	Hapus batas ini
+Take this picture off the message	Lepaskan gambar ini dari pesan
 Take this point off	Lepaskan titik ini
 Target details ({operation}): {targets}	Detail target ({operation}): {targets}
 Target Features	Fitur Target
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	Uji Koneksi
 Testing…	Menguji…
 Text	Teks
+Text size	Ukuran teks
 Text Symbol	Simbol Teks
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Teks, mis. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', sebagai pengganti kolom; ukuran dalam poin, warna sebagai '#RRGGBB', sudut dalam derajat searah jarum jam. Kosong: milik kolom atau kelas itu sendiri.
 Th	Km
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	backend keychain berhenti secara tak t
 the keychain worker stopped	worker keychain berhenti
 The keys saved on this computer were forgotten; a login in this session keeps working.	Kunci yang disimpan di komputer ini telah dilupakan; login di sesi ini tetap berfungsi.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Dua digit terakhir kilometer, seperti dicetak peta topografi: 43 untuk 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Label dimulai dari titik dan berjalan tegak lurus ke garis terdekat dari layer yang dipilih di bawah.
 the latitude band must be a letter from C to X (not I or O)	pita lintang harus berupa huruf dari C hingga X (bukan I atau O)
 the layer Export Features was opened on is gone	layer tempat Ekspor Fitur dibuka sudah tidak ada
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Layer menampilkan langkah tempat penggeser waktu berada, dan mengaktifkan penggeser di rentang tanggal variabel.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	Panjang maksimum garis callout.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Peta di kiri; judul, lokator, legenda, sumber, dan referensi dalam panel di kanan.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	peta tidak memiliki layer GeoPackage yang dimuat untuk penyuntingan (Beranda › Tambah Data › Edit Tabel GeoPackage…)
 the map has no layers	peta tidak memiliki layer
+The map has no line or polygon layer to be square to.	Peta tidak memiliki layer garis atau poligon untuk dijadikan acuan tegak lurus.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	peta tidak memiliki layer PostGIS yang dimuat untuk penyuntingan (Beranda › Tambah Data › Basis Data…, Muat untuk penyuntingan)
 The map has no tile archive read from a file.	Peta tidak memiliki arsip ubin yang dibaca dari file.
 The map is drawn in this coordinate system; layers are projected on the fly.	Peta digambar dalam sistem koordinat ini; lapisan diproyeksikan secara langsung.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	Kon
 This connection is logged out. Log in explicitly to use it again.	Koneksi ini sudah keluar. Masuk secara eksplisit untuk menggunakannya lagi.
 This font isn't installed here, so the text is drawn in the sans-serif	Fon ini tidak terpasang di sini, jadi teks digambar dengan sans-serif
 This font isn't installed here, so the text is drawn in the serif	Fon ini tidak terpasang di sini, jadi teks digambar dengan serif
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Gambar ini tidak dapat menjadi marker: bukan PNG atau JPEG yang dapat dibaca dengan paling banyak 20.000 px per sisi
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Gambar ini tidak dapat menjadi marker: pikselnya lebih dari {side} × {side}; perkecil gambarnya
+This image can't be a marker: it isn't a readable PNG or JPEG	Gambar ini tidak dapat menjadi marker: bukan PNG atau JPEG yang dapat dibaca
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Gambar ini tidak dapat menjadi marker: RustGIS sudah mendekode gambar marker sebanyak batasnya hingga dimulai ulang; mulai ulang RustGIS untuk memakai gambar lain
 This image is too large for a marker: at most about 1.5 MiB	Gambar ini terlalu besar untuk marker: paling banyak sekitar 1,5 MiB
 This image is unavailable. Choose another image or No image.	Gambar ini tidak tersedia. Pilih gambar lain atau Tanpa gambar.
 This item is from a local or private network, whose files Bands and Index don't read yet	Item ini berasal dari jaringan lokal atau privat, yang file-filenya belum dapat dibaca oleh Band dan Indeks
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Apakah la
 Which 5 countries have the largest GDP?	5 negara mana yang memiliki PDB terbesar?
 While drawing, click two points on a feature's edge to follow the edge between them	Saat menggambar, klik dua titik pada tepi fitur untuk mengikuti tepi di antaranya
 While drawing, click two points on a feature's edge to follow the edge between them.	Saat menggambar, klik dua titik pada tepi fitur untuk mengikuti tepi di antaranya.
+While it has none, take it from the first layer added	Selama belum ada, ambil dari layer pertama yang ditambahkan
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Saat mengetik, pintasan tanpa Ctrl/⌘ dijeda. Navigasi orang pertama tetap memakai Escape, Home, dan Delete.
 White behind dark text, dark behind light.	Putih di belakang teks gelap, gelap di belakang teks terang.
 Whitebox and GeoLibre tools	Alat Whitebox dan GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	Tulis plugin
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Tulis putaran tampilan pada pusatnya sebagai GIF animasi atau bingkai PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Menulis garis dua verteks terpisah untuk setiap pasangan verteks berurutan.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Menulis setiap fitur dengan geometri yang divalidkan sebisa mungkin: ring ditutup, verteks berulang dan bagian degeneratif dibuang, perpotongan diri, bagian yang tumpang tindih, dan lubang di luar cangkangnya diselesaikan dengan aturan yang dipilih (Shells Minus Holes menggabungkan bagian yang tumpang tindih; Even-Odd mempertahankan bagian yang berada di dalam jumlah ring ganjil). Fitur dengan koordinat yang hilang atau tidak berhingga di mana pun, bahkan di dalam lubang, atau yang tidak tersisa titik yang dapat digunakan atau, untuk poligon, tidak memiliki luas setelah diperbaiki, ditulis tanpa geometri. Fitur lain yang terlalu rumit untuk diperiksa, atau yang perbaikannya gagal, ditulis tanpa perubahan. Menyebutkan apa yang diperbaiki pada masing-masing.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Menulis satu persegi panjang pembatas sejajar sumbu per fitur dalam koordinat bujur/lintang tersimpan. Amplop berluas nol dilewati.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Menulis satu persegi panjang pembatas sejajar sumbu per fitur dalam koordinat layer itu sendiri bila disimpan dalam sistem terproyeksi selain Web Mercator dan proyeksi dunia lainnya (Robinson, Plate Carrée, dan sejenisnya), jika tidak dalam bujur/lintang. Amplop berluas nol dilewati.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Menulis kemiringan Sen, nilai Z dan p-value uji, serta kemiringan di tempat tren signifikan.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Menulis fitur dengan geometri tidak valid, seperti cincin yang berpotongan sendiri atau tidak tertutup, lubang di luar cangkangnya, atau bagian yang tumpang tindih, dan menyebutkan apa yang salah pada masing-masing.
 writing the copy failed unexpectedly	penulisan salinan gagal secara tak terduga
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} tidak memiliki paket untuk {platform}. Tersedia untuk: {platforms}.
 {name} is larger than {mb} MB	{name} lebih besar dari {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} berjalan sebagai program di komputer Anda: memerlukan aplikasi desktop atau rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} ditarik dari registri plugin dan telah dinonaktifkan.
 {name} was withdrawn from the plugin registry: {reason}	{name} ditarik dari registri plugin: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: unduhan tidak cocok dengan registri; plugin tidak dipasang.
 {name}: the download is a different plugin; it wasn't installed.	{name}: unduhan adalah plugin yang berbeda; plugin tidak dipasang.

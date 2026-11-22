@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Xətt və ya onun boyunca markerlər ya da ştrix işarələri
 A magnifying lens that follows the pointer.	Göstəricini izləyən böyüdücü linza.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Xəritə, obyekt və ya örtük xidmətinin ünvanı: WMS, WMTS, WFS, WCS, OGC API Features və ya Tiles, yaxud ArcGIS FeatureServer, MapServer, ImageServer və ya VectorTileServer (və ya baxmaq üçün xidmətlər kataloqu).
+A message takes at most {n} pictures	Bir mesajda ən çoxu {n} şəkil ola bilər
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Ad və ya EPSG kodu, WKT və ya PROJ sətri; boş olduqda: proyeksiyalıdırsa xəritənin öz sistemi, əks halda görünüşün mərkəzindəki UTM zonası
 a name, or owner/name such as giswqs/geospatial	ad və ya sahib/ad, məsələn giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Təkrar istifadə edə biləcəyiniz adlı son nöqtə. Açarlar, onları bu kompüterdə yadda saxlamağı seçməsəniz, RustGIS bağlanana qədər saxlanılır; bağlantının özü onları heç vaxt saxlamır.
@@ -443,6 +444,7 @@ Asking the map service…	Xəritə xidmətindən soruşulur…
 Asking the NLDI…	NLDI-yə sorğu…
 Asset	Resurs
 Assign Escape	Escape təyin et
+assistant picture	köməkçinin şəkli
 Assistant settings	Köməkçi parametrləri
 At both ends	Hər iki ucda
 At inner vertices	Daxili təpələrdə
@@ -452,6 +454,7 @@ At the end	Sonda
 At the start	Əvvəldə
 At vertices	Təpələrdə
 Atlas	Atlas
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Şəkil (PNG, JPEG və ya WebP) qoşun və ya onu mesaj qutusuna yapışdırın
 Attachments	Qoşmalar
 Attribute\nTable	Atribut\ncədvəli
 Attribute Rules	Atribut qaydaları
@@ -2245,6 +2248,7 @@ Letter spacing	Hərflərarası məsafə
 Level	Səviyyə
 Library	Kitabxana
 Licence	Lisenziya
+Licence…	Lisenziya…
 Light	İşıqlı
 Light and Shadow	İşıq və kölgə
 Light the extruded shapes from the north-west.	Qaldırılmış formaları şimal-qərbdən işıqlandırın.
@@ -2259,6 +2263,7 @@ Limits	Limitlər
 Line	Xətt
 Line alignment	Xətt düzləndirməsi
 Line color	Xətt rəngi
+Line layer	Xətt layı
 Line Of Sight	Görmə xətti
 Line of sight between two points	İki nöqtə arasında görmə xətti
 Line Of Sight From Here	Buradan görmə xətti
@@ -2621,6 +2626,8 @@ New Group	Yeni qrup
 New job name	Yeni işin adı
 New Layout	Yeni tərtibat
 New Map	Yeni xəritə
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Yeni xəritələr layihənin koordinat sistemində çəkilir, yeni boş laylar da koordinatlarını onda saxlayır. Layihədə artıq olan xəritələr və laylar özlərininkini saxlayır.
+New maps stay in Web Mercator: {why}	Yeni xəritələr Web Mercator-da qalır: {why}
 New Model From History	Tarixçədən yeni model
 New Notebook	Yeni bloknot
 New Presentation	Yeni təqdimat
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Bu layların heç biri poliqon layı de
 none, a .duckdb file, or host=… dbname=… user=…	yoxdur, .duckdb faylı və ya host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	yoxdur və ya PGPASSWORD, MYSQL_PWD ya da SQLCMDPASSWORD-dən
 None. Add one by address, or from a basemap plugin.	Heç biri. Ünvanla və ya əsas xəritə plaginindən əlavə edin.
+None: new maps in Web Mercator	Yoxdur: yeni xəritələr Web Mercator-da
 North	Şimal
 North\nArrow	Şimal\noxu
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	84° Ş-dən şimalda və 80° C-dən cənubda tor UPS-dir və zona nömrəsi yoxdur: north 2000000 2444268, south 2000000 1555732 və ya Z AM 00000 44268 kimi qütb MGRS yazın
@@ -3006,6 +3014,7 @@ Paste Special	Xüsusi yapışdır
 Paste Special (as a new layer)	Xüsusi yapışdır (yeni lay kimi)
 Paste token	Tokeni yapışdır
 paste your key	açarınızı yapışdırın
+pasted picture	yapışdırılmış şəkil
 path is required	path tələb olunur
 Pause	Dayandır
 Pause.	Fasilə.
@@ -3162,8 +3171,11 @@ Profile Viewing	Profilə baxış
 PROJ definition	PROJ tərifi
 Project	Layihə
 Project\nPackage	Layihə\npaketi
+Project Coordinate System	Layihənin koordinat sistemi
 Project Info	Layihə məlumatı
 project is "sample", "blank", "last" or {"path": a project file}	project "sample", "blank", "last" və ya {"path": a project file} olmalıdır
+Project Properties	Layihə xüsusiyyətləri
+Project Properties…	Layihə xüsusiyyətləri…
 Project Raster	Rastrı proyeksiyala
 Project Template	Layihə şablonu
 project's path is required	layihənin yolu tələb olunur
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Əlfəcinlər panelini g
 Show or hide the Browser pane.	Brauzer panelini göstərin və ya gizlədin.
 Show or hide the Data Sources pane.	Məlumat mənbələri panelini göstərin və ya gizlədin.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Məlumat mənbələri panelini göstərin və ya gizlədin: seçilmişlər, son məlumatlar, saxlanmış xidmətlər, verilənlər bazaları və STAC API-lər, həmçinin ictimai mənbələr kitabxanası.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Əsas xəritənin üzərində koordinat şəbəkəsini göstər və ya gizlət: enliklər və uzunluqlar, ölçülü tor, UTM zonaları və ya MGRS toru.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Əsas xəritənin və ya üstdə çəkildikdə layların üzərində koordinat şəbəkəsini göstər və ya gizlət: enliklər və uzunluqlar, ölçülü tor, UTM zonaları və ya MGRS toru.
 Show or hide the group's layers	Qrupun laylarını göstər və ya gizlət
 Show or hide the layer.	Layı göstərin və ya gizlədin.
 Show or hide the Layers pane.	Laylar panelini göstərin və ya gizlədin.
@@ -4002,6 +4014,7 @@ SQL Query	SQL sorğusu
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	Doğru olmalı olan SQL, məs. pop > 0
 Square	Kvadrat
+Square to a line	Xəttə perpendikulyar
 Squares	Kvadratlar
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Teqlər
 Taiwan	Tayvan
 Take the data in view offline, to edit and sync back later.	Görünüşdəki məlumatları sonra redaktə edib sinxronlaşdırmaq üçün oflayn götürün.
 Take this bound out	Bu həddi çıxar
+Take this picture off the message	Bu şəkli mesajdan çıxar
 Take this point off	Bu nöqtəni götür
 Target details ({operation}): {targets}	Hədəf təfərrüatları ({operation}): {targets}
 Target Features	Hədəf obyektlər
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	Bağlantını yoxla
 Testing…	Yoxlanılır…
 Text	Mətn
+Text size	Mətn ölçüsü
 Text Symbol	Mətn simvolu
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Mətn, məs. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', sahənin əvəzinə; ölçü punktla, rəng '#RRGGBB' kimi, bucaq saat əqrəbi istiqamətində dərəcə ilə. Boş: sahənin və ya sinfin özününkü.
 Th	Ça
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	açar dəsti arxa hissəsi gözlənilm
 the keychain worker stopped	açar dəsti işçisi dayandı
 The keys saved on this computer were forgotten; a login in this session keeps working.	Bu kompüterdə saxlanmış açarlar unuduldu; bu sessiyadakı giriş işləməyə davam edir.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Topoqrafik xəritələrdə çap olunduğu kimi kilometrlərin son iki rəqəmi: 543000 üçün 43.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Etiket nöqtədən başlayır və aşağıda seçilmiş layın ən yaxın xəttinə perpendikulyar uzanır.
 the latitude band must be a letter from C to X (not I or O)	en qurşağı C-dən X-ə qədər hərf olmalıdır (I və O deyil)
 the layer Export Features was opened on is gone	«Obyektləri ixrac et» pəncərəsinin açıldığı lay artıq yoxdur
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Lay zaman sürgüsünün olduğu addımı göstərir və sürgünü dəyişənin tarixləri üzrə yandırır.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	İstinad xəttinin ola biləcəyi ən böy�
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Xəritə solda; başlıq, lokator, legenda, mənbələr və istinad sağda paneldə.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	xəritədə redaktə üçün yüklənmiş GeoPackage layı yoxdur (Əsas › Məlumat əlavə et › GeoPackage cədvəlini redaktə et…)
 the map has no layers	xəritədə lay yoxdur
+The map has no line or polygon layer to be square to.	Xəritədə perpendikulyar olmaq üçün xətt və ya poliqon layı yoxdur.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	xəritədə redaktə üçün yüklənmiş PostGIS layı yoxdur (Əsas › Məlumat əlavə et › Verilənlər bazası…, Redaktə üçün yüklə)
 The map has no tile archive read from a file.	Xəritədə fayldan oxunan kafel arxivi yoxdur.
 The map is drawn in this coordinate system; layers are projected on the fly.	Xəritə bu koordinat sistemində çəkilir; laylar dərhal proyeksiya olunur.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	Bu 
 This connection is logged out. Log in explicitly to use it again.	Bu bağlantıdan çıxış edilib. Yenidən istifadə etmək üçün açıq şəkildə daxil olun.
 This font isn't installed here, so the text is drawn in the sans-serif	Bu şrift burada quraşdırılmayıb, ona görə mətn sans-serif şriftlə çəkilir
 This font isn't installed here, so the text is drawn in the serif	Bu şrift burada quraşdırılmayıb, ona görə mətn serif şriftlə çəkilir
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Bu təsvir marker ola bilməz: o, hər tərəfi ən çoxu 20 000 px olan oxuna bilən PNG və ya JPEG deyil
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Bu təsvir marker ola bilməz: onun pikselləri {side} × {side}-dən çoxdur; onu kiçildin
+This image can't be a marker: it isn't a readable PNG or JPEG	Bu təsvir marker ola bilməz: o, oxuna bilən PNG və ya JPEG deyil
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Bu təsvir marker ola bilməz: RustGIS yenidən başlayana qədər deşifrə etdiyi qədər marker təsvirini artıq deşifrə edib; başqasından istifadə etmək üçün onu yenidən başladın
 This image is too large for a marker: at most about 1.5 MiB	Bu təsvir marker üçün çox böyükdür: ən çoxu təxminən 1,5 MiB
 This image is unavailable. Choose another image or No image.	Bu təsvir əlçatan deyil. Başqa təsvir və ya «Təsvir yoxdur» seçin.
 This item is from a local or private network, whose files Bands and Index don't read yet	Bu element lokal və ya özəl şəbəkədəndir; Kanallar və İndeks onun fayllarını hələ oxumur
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Xidmətd�
 Which 5 countries have the largest GDP?	Hansı 5 ölkənin ÜDM-i ən böyükdür?
 While drawing, click two points on a feature's edge to follow the edge between them	Çəkərkən, aralarındakı kənarı izləmək üçün obyektin kənarında iki nöqtəyə klikləyin
 While drawing, click two points on a feature's edge to follow the edge between them.	Çəkərkən, aralarındakı kənarı izləmək üçün obyektin kənarında iki nöqtəyə klikləyin.
+While it has none, take it from the first layer added	Layihənin koordinat sistemi olmadıqca, onu əlavə edilən ilk laydan götür
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Yazarkən Ctrl/⌘ olmayan qısayollar dayandırılır. Birinci şəxs naviqasiyası Escape, Home və Delete düymələrini saxlayır.
 White behind dark text, dark behind light.	Tünd mətnin arxasında ağ, açıq mətnin arxasında tünd.
 Whitebox and GeoLibre tools	Whitebox və GeoLibre alətləri
@@ -4929,7 +4949,7 @@ Write a plugin	Plagin yaz
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Görünüşün mərkəzi ətrafında dönməsini animasiyalı GIF və ya PNG kadrları kimi yaz.
 Writes a separate two-vertex line for each consecutive vertex pair.	Hər ardıcıl təpə cütü üçün ayrıca iki təpəli xətt yazır.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Hər obyekti həndəsəsi mümkün olduqca etibarlı edilmiş şəkildə yazır: halqalar qapanır, təkrarlanan təpələr və cırlaşmış hissələr atılır, öz-özünü kəsişmələr, üst-üstə düşən hissələr və qabıqdan kənar dəliklər seçilmiş qaydaya görə həll edilir (Shells Minus Holes üst-üstə düşən hissələri birləşdirir; Even-Odd tək sayda halqanın içində qalanı saxlayır). Hər hansı yerində, hətta dəlikdə belə, çatışmayan və ya sonlu olmayan koordinatı olan, yaxud düzəldildikdən sonra istifadəyə yararlı nöqtəsi və ya poliqonlar üçün sahəsi qalmayan obyektlər həndəsəsiz yazılır. Yoxlanmaq üçün çox mürəkkəb olan və ya düzəldilməsi alınmayan digər obyektlər dəyişdirilmədən yazılır. Hər birində nəyin düzəldildiyini bildirir.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Saxlanmış uzunluq/en koordinatlarında hər obyekt üçün oxlara paralel bir əhatə düzbucaqlısı yazır. Sıfır sahəli çərçivələr buraxılır.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Lay Web Mercator və digər dünya proyeksiyalarından (Robinson, Plate Carrée və s.) fərqli proyeksiyalı sistemdə saxlanırsa, layın öz koordinatlarında, əks halda uzunluq/en koordinatlarında hər obyekt üçün oxlara paralel bir əhatə düzbucaqlısı yazır. Sıfır sahəli çərçivələr buraxılır.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen meylini, testin Z və p-qiymətini, həmçinin trendin əhəmiyyətli olduğu yerlərdə meyli yazır.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Etibarsız həndəsəli obyektləri, məsələn, öz-özünü kəsən və ya qapanmamış halqaları, qabıqdan kənar dəlikləri və ya üst-üstə düşən hissələri olanları yazır və hər birində nəyin səhv olduğunu bildirir.
 writing the copy failed unexpectedly	surətin yazılması gözlənilmədən uğursuz oldu
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} üçün {platform} paketi yoxdur. Bunlar üçün mövcuddur: {platforms}.
 {name} is larger than {mb} MB	{name} {mb} MB-dan böyükdür
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} kompüterinizdə proqram kimi işləyir: masaüstü tətbiq və ya rustgis-cli tələb edir.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} plagin reyestrindən geri çəkilib və söndürülüb.
 {name} was withdrawn from the plugin registry: {reason}	{name} plagin reyestrindən geri çəkilib: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: endirilən fayl reyestrə uyğun gəlmir; quraşdırılmadı.
 {name}: the download is a different plugin; it wasn't installed.	{name}: endirilən fayl başqa plagindir; quraşdırılmadı.

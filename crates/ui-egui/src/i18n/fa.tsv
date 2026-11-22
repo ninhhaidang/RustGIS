@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	یک خط، یا نشانه‌ها یا خط‌های نشان در امتداد آن
 A magnifying lens that follows the pointer.	یک لنز بزرگنمایی که نشانگر را دنبال می‌کند.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	آدرس یک سرویس نقشه، عنصر یا پوشش: WMS، WMTS، WFS، WCS، OGC API Features or Tiles، یا یک FeatureServer، MapServer، ImageServer یا VectorTileServer ArcGIS (یا یک فهرست سرویس، برای مرور).
+A message takes at most {n} pictures	هر پیام حداکثر {n} تصویر می‌پذیرد
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	یک نام یا کد EPSG، WKT یا رشته PROJ؛ خالی: سیستم خود نقشه وقتی تصویرشده است، وگرنه ناحیه UTM در مرکز نما
 a name, or owner/name such as giswqs/geospatial	یک نام، یا مالک/نامی مانند giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	یک نقطه پایانی نام‌دار که می‌توانید دوباره استفاده کنید. کلیدها تا بسته‌شدن RustGIS نگه داشته می‌شوند، مگر اینکه به خاطر سپردنشان روی این رایانه را انتخاب کنید؛ خود اتصال هرگز آن‌ها را نگه نمی‌دارد.
@@ -443,6 +444,7 @@ Asking the map service…	در حال پرسش از سرویس نقشه…
 Asking the NLDI…	در حال پرسیدن از NLDI…
 Asset	دارایی
 Assign Escape	اختصاص Escape
+assistant picture	تصویر دستیار
 Assistant settings	تنظیمات دستیار
 At both ends	در هر دو سر
 At inner vertices	در رأس‌های میانی
@@ -452,6 +454,7 @@ At the end	در انتها
 At the start	در ابتدا
 At vertices	در رأس‌ها
 Atlas	اطلس
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	یک تصویر (PNG، JPEG یا WebP) پیوست کنید، یا آن را در کادر پیام بچسبانید
 Attachments	پیوست‌ها
 Attribute\nTable	جدول\nویژگی‌ها
 Attribute Rules	قوانین ویژگی
@@ -2245,6 +2248,7 @@ Letter spacing	فاصله حروف
 Level	سطح
 Library	کتابخانه
 Licence	مجوز
+Licence…	مجوز…
 Light	روشن
 Light and Shadow	نور و سایه
 Light the extruded shapes from the north-west.	شکل‌های برجسته از شمال‌غربی روشن می‌شوند.
@@ -2259,6 +2263,7 @@ Limits	محدودیت‌ها
 Line	خط
 Line alignment	چینش خط
 Line color	رنگ خط
+Line layer	لایه خطی
 Line Of Sight	خط دید
 Line of sight between two points	خط دید بین دو نقطه
 Line Of Sight From Here	خط دید از این‌جا
@@ -2621,6 +2626,8 @@ New Group	گروه جدید
 New job name	نام کار جدید
 New Layout	صفحه‌آرایی جدید
 New Map	نقشه جدید
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	نقشه‌های جدید در سیستم مختصات پروژه کشیده می‌شوند و لایه‌های خالی جدید مختصات خود را در آن نگه می‌دارند. نقشه‌ها و لایه‌هایی که از قبل در پروژه هستند، سیستم خود را حفظ می‌کنند.
+New maps stay in Web Mercator: {why}	نقشه‌های جدید در Web Mercator می‌مانند: {why}
 New Model From History	مدل جدید از تاریخچه
 New Notebook	نوت‌بوک جدید
 New Presentation	ارائهٔ جدید
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	هیچ‌یک از این لایه‌ه
 none, a .duckdb file, or host=… dbname=… user=…	هیچ، یک فایل .duckdb، یا host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	هیچ، یا از PGPASSWORD، MYSQL_PWD یا SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	هیچ. یکی با نشانی اضافه کنید، یا از افزونه نقشه پایه.
+None: new maps in Web Mercator	هیچ: نقشه‌های جدید در Web Mercator
 North	شمال
 North\nArrow	فلش\nشمال
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	در شمال 84° N و جنوب 80° S شبکه UPS است که شماره ناحیه ندارد: بنویسید north 2000000 2444268، south 2000000 1555732، یا MGRS قطبی مانند Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	چسباندن ویژه
 Paste Special (as a new layer)	چسباندن ویژه (به‌عنوان لایه جدید)
 Paste token	چسباندن توکن
 paste your key	کلید خود را بچسبانید
+pasted picture	تصویر چسبانده‌شده
 path is required	فیلد path الزامی است
 Pause	توقف موقت
 Pause.	توقف موقت.
@@ -3162,8 +3171,11 @@ Profile Viewing	نمایش نیم‌رخ
 PROJ definition	تعریف PROJ
 Project	پروژه
 Project\nPackage	بسته\nپروژه
+Project Coordinate System	سیستم مختصات پروژه
 Project Info	اطلاعات پروژه
 project is "sample", "blank", "last" or {"path": a project file}	پروژه "sample"، "blank"، "last" یا {"path": a project file} است
+Project Properties	ویژگی‌های پروژه
+Project Properties…	ویژگی‌های پروژه…
 Project Raster	تصویرکردن رستر
 Project Template	قالب پروژه
 project's path is required	مسیر پروژه الزامی است
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	نمایش یا پنها
 Show or hide the Browser pane.	نمایش یا پنهان‌کردن پنل Browser.
 Show or hide the Data Sources pane.	نمایش یا پنهان‌کردن پنل منابع داده.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	نمایش یا پنهان‌کردن پنل Data Sources: علاقه‌مندی‌ها، داده‌های اخیر، سرویس‌های ذخیره‌شده، پایگاه‌های داده و APIهای STAC، و کتابخانه منابع عمومی.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	نمایش یا پنهان‌کردن شبکه جغرافیایی روی نقشه‌ی پایه: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده، ناحیه‌های UTM یا شبکه MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	نمایش یا پنهان‌کردن شبکه جغرافیایی روی نقشه‌ی پایه، یا روی لایه‌ها وقتی در بالا کشیده می‌شود: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده، ناحیه‌های UTM یا شبکه MGRS.
 Show or hide the group's layers	نمایش یا پنهان‌کردن لایه‌های گروه
 Show or hide the layer.	نمایش یا پنهان‌کردن لایه.
 Show or hide the Layers pane.	نمایش یا پنهان‌کردن پنل Layers.
@@ -4002,6 +4014,7 @@ SQL Query	پرس‌وجوی SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	عبارت SQL که باید درست باشد، مثلاً pop > 0
 Square	مربعی
+Square to a line	عمود بر خط
 Squares	مربع‌ها
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	تگ‌ها
 Taiwan	تایوان
 Take the data in view offline, to edit and sync back later.	آفلاین‌کردن داده داخل نما، برای ویرایش و همگام‌سازی بعدی.
 Take this bound out	حذف این مرز
+Take this picture off the message	این تصویر را از پیام بردارید
 Take this point off	این نقطه را بردارید
 Target details ({operation}): {targets}	جزئیات هدف ({operation}): {targets}
 Target Features	عناصر هدف
@@ -4190,6 +4204,7 @@ Test	آزمون
 Test Connection	آزمودن اتصال
 Testing…	در حال آزمودن…
 Text	متن
+Text size	اندازه متن
 Text Symbol	نماد متن
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	متن، مثلاً "name" || ' (' || round("pop" / 1e6, 1) || ' M)'، به‌جای فیلد؛ اندازه به پوینت، رنگ به‌صورت '#RRGGBB'، زاویه به درجه در جهت ساعتگرد. خالی: مقدار خود فیلد یا کلاس.
 Th	پن
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	پشتیبان جاکلیدی به‌�
 the keychain worker stopped	کارگر جاکلیدی متوقف شد
 The keys saved on this computer were forgotten; a login in this session keeps working.	کلیدهای ذخیره‌شده روی این رایانه فراموش شدند؛ ورود در این نشست همچنان کار می‌کند.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	دو رقم آخر کیلومترها، همان‌طور که نقشه‌های توپوگرافی چاپ می‌کنند: ۴۳ برای ۵۴۳۰۰۰.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	برچسب از نقطه شروع می‌شود و عمود بر نزدیک‌ترین خطِ لایه‌ای که در زیر انتخاب می‌شود امتداد می‌یابد.
 the latitude band must be a letter from C to X (not I or O)	کمربند عرض جغرافیایی باید حرفی از C تا X باشد (نه I یا O)
 the layer Export Features was opened on is gone	لایه‌ای که «برون‌بری عناصر» روی آن باز شده بود دیگر وجود ندارد
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	لایه گامی را نشان می‌دهد که لغزنده زمان روی آن است، و لغزنده را روی تاریخ‌های متغیر روشن می‌کند.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	بیشترین طول ممکن برای خ�
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	نقشه در چپ؛ عنوان، مکان‌یاب، شرح، منابع و مرجع در پنلی در راست.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	نقشه هیچ لایه GeoPackage بارگذاری‌شده برای ویرایش ندارد (خانه › افزودن داده › ویرایش جدول GeoPackage…)
 the map has no layers	نقشه لایه‌ای ندارد
+The map has no line or polygon layer to be square to.	نقشه هیچ لایه خطی یا چندضلعی ندارد که بر آن عمود شود.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	نقشه هیچ لایه PostGIS بارگذاری‌شده برای ویرایش ندارد (خانه › افزودن داده › پایگاه داده…، بارگذاری برای ویرایش)
 The map has no tile archive read from a file.	نقشه هیچ بایگانی کاشی خوانده‌شده از فایل ندارد.
 The map is drawn in this coordinate system; layers are projected on the fly.	نقشه در این سیستم مختصات ترسیم می‌شود؛ لایه‌ها به‌صورت لحظه‌ای تصویر می‌شوند.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	ا�
 This connection is logged out. Log in explicitly to use it again.	این اتصال خارج شده است. برای استفاده دوباره، صریحاً وارد شوید.
 This font isn't installed here, so the text is drawn in the sans-serif	این فونت اینجا نصب نیست، پس متن با فونت بدون سریف ترسیم می‌شود
 This font isn't installed here, so the text is drawn in the serif	این فونت اینجا نصب نیست، پس متن با فونت سریف‌دار ترسیم می‌شود
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	این تصویر نمی‌تواند نشانه باشد: یک PNG یا JPEG خوانا با حداکثر 20,000 px در هر ضلع نیست
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	این تصویر نمی‌تواند نشانه باشد: بیش از {side} × {side} پیکسل دارد؛ آن را کوچک‌تر کنید
+This image can't be a marker: it isn't a readable PNG or JPEG	این تصویر نمی‌تواند نشانه باشد: یک PNG یا JPEG خوانا نیست
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	این تصویر نمی‌تواند نشانه باشد: RustGIS به حداکثر تعداد تصویر نشانه‌ای که تا راه‌اندازی دوباره رمزگشایی می‌کند رسیده است؛ برای استفاده از تصویر دیگر، آن را دوباره راه‌اندازی کنید
 This image is too large for a marker: at most about 1.5 MiB	این تصویر برای نشانه بیش از حد بزرگ است: حداکثر حدود 1.5 MiB
 This image is unavailable. Choose another image or No image.	این تصویر در دسترس نیست. تصویر دیگری یا «بدون تصویر» را انتخاب کنید.
 This item is from a local or private network, whose files Bands and Index don't read yet	این آیتم از یک شبکه محلی یا خصوصی است که «باندها» و «شاخص» هنوز فایل‌هایش را نمی‌خوانند
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	اینک�
 Which 5 countries have the largest GDP?	کدام 5 کشور بیشترین GDP را دارند؟
 While drawing, click two points on a feature's edge to follow the edge between them	هنگام ترسیم، روی دو نقطه از لبه یک عنصر کلیک کنید تا لبه میان آن‌ها دنبال شود
 While drawing, click two points on a feature's edge to follow the edge between them.	هنگام ترسیم، روی دو نقطه از لبه یک عنصر کلیک کنید تا لبه میان آن‌ها دنبال شود.
+While it has none, take it from the first layer added	تا وقتی سیستمی ندارد، آن را از نخستین لایه افزوده‌شده بگیر
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	هنگام تایپ، میان‌برهای بدون Ctrl/⌘ متوقف می‌شوند. ناوبری اول‌شخص Escape، Home و Delete را نگه می‌دارد.
 White behind dark text, dark behind light.	سفید پشت متن تیره، تیره پشت متن روشن.
 Whitebox and GeoLibre tools	ابزارهای Whitebox و GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	نوشتن افزونه
 Write a turn of the view about its centre as an animated GIF or PNG frames.	یک دور چرخش نما حول مرکزش را به صورت GIF متحرک یا فریم‌های PNG بنویسید.
 Writes a separate two-vertex line for each consecutive vertex pair.	برای هر جفت رأس پیاپی، یک خط دورأسی جداگانه می‌نویسد.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	هر عنصر را با هندسه‌ای که تا جای ممکن معتبر شده می‌نویسد: حلقه‌ها بسته می‌شوند، رأس‌های تکراری و بخش‌های تبهگن حذف می‌شوند، خودبرخوردها، بخش‌های هم‌پوشان و حفره‌های بیرون از پوسته با قاعده انتخاب‌شده حل می‌شوند (Shells Minus Holes بخش‌های هم‌پوشان را ادغام می‌کند؛ Even-Odd آنچه را درون تعداد فردی حلقه است نگه می‌دارد). عناصری که در هر جا، حتی در یک حفره، مختصات گم‌شده یا نامتناهی دارند، یا پس از ترمیم هیچ نقطه قابل استفاده‌ای یا، برای چندضلعی‌ها، هیچ مساحتی ندارند، بدون هندسه نوشته می‌شوند. عناصر دیگری که برای بررسی بیش از حد پیچیده‌اند، یا ترمیمشان ناموفق است، بدون تغییر نوشته می‌شوند. در هر یک می‌گوید چه چیزی ترمیم شد.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	برای هر عنصر یک مستطیل محدودکننده هم‌راستا با محورها در مختصات طول/عرض جغرافیایی ذخیره‌شده می‌نویسد. پوش‌های با مساحت صفر نادیده گرفته می‌شوند.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	برای هر عنصر یک مستطیل محدودکننده هم‌راستا با محورها می‌نویسد: در مختصات خودِ لایه وقتی در یک سیستم تصویر شده غیر از Web Mercator و دیگر تصویرهای جهانی (Robinson، Plate Carrée و مانند آن‌ها) نگه داشته می‌شود، وگرنه در طول/عرض جغرافیایی. پوش‌های با مساحت صفر نادیده گرفته می‌شوند.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	شیب Sen، مقدار Z و p-value آزمون، و شیب در جاهایی که روند معنادار است را می‌نویسد.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	عناصری با هندسه نامعتبر، مانند حلقه‌های خودمتقاطع یا بسته‌نشده، حفره‌های بیرون از حلقه بیرونی یا بخش‌های هم‌پوشان، را می‌نویسد و می‌گوید هر کدام چه مشکلی دارد.
 writing the copy failed unexpectedly	نوشتن نسخه به‌طور غیرمنتظره‌ای ناموفق شد
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} بسته‌ای برای {platform} ندارد. برای این‌ها در دسترس است: {platforms}.
 {name} is larger than {mb} MB	حجم {name} از {mb} MB بزرگ‌تر است
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	افزونهٔ {name} مثل یک برنامهٔ مستقل روی رایانهٔ شما اجرا می‌شود: به برنامهٔ دسکتاپ یا rustgis-cli نیاز دارد.
-{name} was withdrawn from the plugin registry and has been turned off.	افزونهٔ {name} از فهرست افزونه‌ها پس گرفته شده و خاموش شده است.
 {name} was withdrawn from the plugin registry: {reason}	افزونهٔ {name} از فهرست افزونه‌ها پس گرفته شد: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	نصب {name} انجام نشد؛ دانلود با فهرست مطابقت ندارد.
 {name}: the download is a different plugin; it wasn't installed.	نصب {name} انجام نشد؛ دانلود افزونهٔ دیگری است.

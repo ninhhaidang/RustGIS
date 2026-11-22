@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	ライン、またはそれに沿ったマーカーやハッシュ マーク
 A magnifying lens that follows the pointer.	ポインターに追従する拡大鏡。
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	マップ、フィーチャ、またはカバレッジ サービスのアドレス: WMS、WMTS、WFS、WCS、OGC API Features または Tiles、あるいは ArcGIS FeatureServer、MapServer、ImageServer または VectorTileServer (参照する場合はサービス ディレクトリ)。
+A message takes at most {n} pictures	1 つのメッセージに添付できる画像は {n} 枚までです
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	名前、EPSG コード、WKT または PROJ 文字列。空の場合: マップが投影されていればマップ自身の座標系、そうでなければビュー中心の UTM ゾーン
 a name, or owner/name such as giswqs/geospatial	名前、または giswqs/geospatial のような所有者/名前
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	再利用できる名前付きエンドポイントです。このコンピューターに保存することを選ばない限り、キーは RustGIS を閉じるまで保持されます。接続自体がキーを保持することはありません。
@@ -443,6 +444,7 @@ Asking the map service…	マップ サービスに問い合わせています�
 Asking the NLDI…	NLDI に問い合わせています…
 Asset	アセット
 Assign Escape	Escape を割り当て
+assistant picture	アシスタントの画像
 Assistant settings	アシスタントの設定
 At both ends	両端
 At inner vertices	内側の頂点
@@ -452,6 +454,7 @@ At the end	終点
 At the start	始点
 At vertices	頂点
 Atlas	アトラス
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	画像 (PNG、JPEG、WebP) を添付するか、メッセージ ボックスに貼り付けます
 Attachments	添付ファイル
 Attribute\nTable	属性\nテーブル
 Attribute Rules	属性ルール
@@ -2245,6 +2248,7 @@ Letter spacing	文字間隔
 Level	レベル
 Library	ライブラリ
 Licence	ライセンス
+Licence…	ライセンス…
 Light	ライト
 Light and Shadow	光と影
 Light the extruded shapes from the north-west.	押し出した形状を北西から照らします。
@@ -2259,6 +2263,7 @@ Limits	制限
 Line	ライン
 Line alignment	ラインの配置
 Line color	ラインの色
+Line layer	ライン レイヤー
 Line Of Sight	見通し線
 Line of sight between two points	2 点間の見通し線
 Line Of Sight From Here	ここからの見通し線
@@ -2621,6 +2626,8 @@ New Group	新しいグループ
 New job name	新しいジョブ名
 New Layout	新しいレイアウト
 New Map	新しいマップ
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	新しいマップはプロジェクトの座標系で描画され、新しい空のレイヤーはその座標系で座標を保持します。プロジェクトに既にあるマップとレイヤーは元の座標系のままです。
+New maps stay in Web Mercator: {why}	新しいマップは Web Mercator のままです: {why}
 New Model From History	履歴から新しいモデルを作成
 New Notebook	新しいノートブック
 New Presentation	新しいプレゼンテーション
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	これらのレイヤーにポリゴン
 none, a .duckdb file, or host=… dbname=… user=…	なし、.duckdb ファイル、または host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	なし、または PGPASSWORD、MYSQL_PWD、SQLCMDPASSWORD から取得
 None. Add one by address, or from a basemap plugin.	なし。アドレスで、またはベースマップ プラグインから追加します。
+None: new maps in Web Mercator	なし: 新しいマップは Web Mercator
 North	北
 North\nArrow	方位\n記号
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	北緯 84° より北と南緯 80° より南のグリッドは UPS で、ゾーン番号がありません: north 2000000 2444268、south 2000000 1555732、または Z AM 00000 44268 のような極域の MGRS で入力してください
@@ -3006,6 +3014,7 @@ Paste Special	形式を選択して貼り付け
 Paste Special (as a new layer)	形式を選択して貼り付け（新しいレイヤーとして）
 Paste token	トークンを貼り付け
 paste your key	キーを貼り付け
+pasted picture	貼り付けた画像
 path is required	path は必須です
 Pause	一時停止
 Pause.	一時停止します。
@@ -3162,8 +3171,11 @@ Profile Viewing	プロファイル表示
 PROJ definition	PROJ 定義
 Project	プロジェクト
 Project\nPackage	プロジェクト\nパッケージ
+Project Coordinate System	プロジェクトの座標系
 Project Info	プロジェクト情報
 project is "sample", "blank", "last" or {"path": a project file}	project は "sample"、"blank"、"last"、または {"path": a project file} です
+Project Properties	プロジェクト プロパティ
+Project Properties…	プロジェクト プロパティ…
 Project Raster	ラスターの投影変換
 Project Template	プロジェクト テンプレート
 project's path is required	プロジェクトのパスが必要です
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	[ブックマーク] ウ
 Show or hide the Browser pane.	ブラウザー ウィンドウの表示/非表示を切り替えます。
 Show or hide the Data Sources pane.	データ ソース ウィンドウの表示/非表示を切り替えます。
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	データ ソース ウィンドウの表示/非表示を切り替えます: お気に入り、最近使用したデータ、保存したサービス、データベースと STAC API、公開ソースのライブラリ。
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	ベースマップ上の経緯線の表示/非表示を切り替えます: 緯線と経線、計測グリッド、UTM ゾーンまたは MGRS グリッド。
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	ベースマップ上、または上に描画する場合はレイヤー上の経緯線の表示/非表示を切り替えます: 緯線と経線、計測グリッド、UTM ゾーンまたは MGRS グリッド。
 Show or hide the group's layers	グループのレイヤーの表示/非表示
 Show or hide the layer.	レイヤーの表示/非表示を切り替えます。
 Show or hide the Layers pane.	レイヤー ウィンドウの表示/非表示を切り替えます。
@@ -4002,6 +4014,7 @@ SQL Query	SQL クエリ
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	真でなければならない SQL (例: pop > 0)
 Square	正方形
+Square to a line	ラインに垂直
 Squares	正方形
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	タグ
 Taiwan	台湾
 Take the data in view offline, to edit and sync back later.	表示中のデータをオフラインにして編集し、後で同期します。
 Take this bound out	この境界を削除
+Take this picture off the message	この画像をメッセージから外す
 Take this point off	この地点を外す
 Target details ({operation}): {targets}	対象の詳細 ({operation}): {targets}
 Target Features	ターゲット フィーチャ
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	接続のテスト
 Testing…	テストしています…
 Text	テキスト
+Text size	テキスト サイズ
 Text Symbol	テキスト シンボル
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	テキスト。例: "name" || ' (' || round("pop" / 1e6, 1) || ' M)'。フィールドの代わりに使用します。サイズはポイント、色は '#RRGGBB'、角度は時計回りの度で指定します。空の場合: フィールドまたはクラス自身の値。
 Th	木
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	キーチェーン バックエンド�
 the keychain worker stopped	キーチェーン ワーカーが停止しました
 The keys saved on this computer were forgotten; a login in this session keeps working.	このコンピューターに保存されたキーを削除しました。このセッションでのログインは引き続き有効です。
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	キロメートルの下 2 桁。地形図の表記と同様です: 543000 は 43。
+The label starts at the point and runs square to the nearest line of the layer chosen below.	ラベルはポイントから始まり、下で選択したレイヤーの最も近いラインに垂直に伸びます。
 the latitude band must be a letter from C to X (not I or O)	緯度帯は C から X までの文字 (I と O を除く) である必要があります
 the layer Export Features was opened on is gone	「フィーチャのエクスポート」を開いたレイヤーがなくなりました
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	レイヤーにはタイム スライダーの現在のステップが表示され、変数の日付範囲でスライダーがオンになります。
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	引き出し線の最大の長さ。
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	左にマップ。タイトル、ロケーター、凡例、ソース、参照情報は右のパネルに配置します。
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	マップに編集用に読み込まれた GeoPackage レイヤーがありません (ホーム › データの追加 › GeoPackage テーブルの編集…)
 the map has no layers	マップにレイヤーがありません
+The map has no line or polygon layer to be square to.	マップに、垂直にする対象のラインまたはポリゴン レイヤーがありません。
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	マップに編集用に読み込まれた PostGIS レイヤーがありません (ホーム › データの追加 › データベース…、編集用に読み込む)
 The map has no tile archive read from a file.	マップにファイルから読み込んだタイル アーカイブがありません。
 The map is drawn in this coordinate system; layers are projected on the fly.	マップはこの座標系で描画され、レイヤーはその場で投影されます。
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	こ
 This connection is logged out. Log in explicitly to use it again.	この接続はログアウトしています。再び使用するには、明示的にログインしてください。
 This font isn't installed here, so the text is drawn in the sans-serif	このフォントはここにインストールされていないため、テキストはサンセリフで描画されます
 This font isn't installed here, so the text is drawn in the serif	このフォントはここにインストールされていないため、テキストはセリフで描画されます
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	この画像はマーカーにできません: 読み取り可能な、1 辺 20,000 px 以下の PNG または JPEG ではありません
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	この画像はマーカーにできません: ピクセル数が {side} × {side} を超えています。小さくしてください
+This image can't be a marker: it isn't a readable PNG or JPEG	この画像はマーカーにできません: 読み取り可能な PNG または JPEG ではありません
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	この画像はマーカーにできません: RustGIS は再起動までにデコードできる上限数のマーカー画像をデコード済みです。別の画像を使うには再起動してください
 This image is too large for a marker: at most about 1.5 MiB	この画像はマーカーには大きすぎます: 最大約 1.5 MiB
 This image is unavailable. Choose another image or No image.	この画像は使用できません。別の画像または [画像なし] を選択してください。
 This item is from a local or private network, whose files Bands and Index don't read yet	このアイテムはローカルまたはプライベート ネットワークのもので、そのファイルはまだ [バンド] と [指数] で読み込めません
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	ビュー
 Which 5 countries have the largest GDP?	GDP が最も大きい 5 か国はどこですか？
 While drawing, click two points on a feature's edge to follow the edge between them	描画中にフィーチャのエッジ上の 2 点をクリックすると、その間のエッジをたどります
 While drawing, click two points on a feature's edge to follow the edge between them.	描画中にフィーチャのエッジ上の 2 点をクリックすると、その間のエッジをたどります。
+While it has none, take it from the first layer added	未設定の間は、最初に追加したレイヤーから取得する
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	入力中は Ctrl/⌘ なしのショートカットは一時停止します。一人称ナビゲーションでは Escape、Home、Delete が維持されます。
 White behind dark text, dark behind light.	暗いテキストの背後は白、明るいテキストの背後は暗色。
 Whitebox and GeoLibre tools	Whitebox と GeoLibre のツール
@@ -4929,7 +4949,7 @@ Write a plugin	プラグインを作成
 Write a turn of the view about its centre as an animated GIF or PNG frames.	ビューの中心周りの回転をアニメーション GIF または PNG フレームとして書き出します。
 Writes a separate two-vertex line for each consecutive vertex pair.	連続する頂点のペアごとに、2 頂点の個別のラインを書き出します。
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	各フィーチャを、可能な範囲でジオメトリを有効にして書き込みます: リングを閉じ、重複する頂点や縮退した部分を削除し、自己交差、重なり合うパート、シェルの外側にあるホールを選択したルールで解決します ([Shells Minus Holes] は重なり合うパートを結合し、[Even-Odd] は奇数個のリングの内側にある部分を残します)。ホールも含めどこかに欠落した座標や有限でない座標があるフィーチャ、または修復後に使用可能なポイントが残らない、ポリゴンでは面積が残らないフィーチャは、ジオメトリなしで書き込まれます。チェックするには複雑すぎるその他のフィーチャや修復に失敗したフィーチャは、変更せずに書き込まれます。各フィーチャで修復した内容を報告します。
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	保存されている経度/緯度座標で、フィーチャごとに軸に平行な外接矩形を 1 つ書き出します。面積がゼロのエンベロープはスキップされます。
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	レイヤーが Web Mercator やその他の世界図法 (Robinson、Plate Carrée など) 以外の投影座標系で保持されている場合はレイヤー自身の座標で、それ以外は経度/緯度で、フィーチャごとに軸に平行な外接矩形を 1 つ書き出します。面積がゼロのエンベロープはスキップされます。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen の傾き、検定の Z 値と p 値、およびトレンドが有意な箇所の傾きを出力します。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	自己交差するリングや閉じていないリング、外殻の外にある穴、重なる部分など、無効なジオメトリを持つフィーチャを書き出し、それぞれの問題点を報告します。
 writing the copy failed unexpectedly	コピーの書き込みが予期せず失敗しました
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} には {platform} 用のパッケージがありません。利用できるプラットフォーム: {platforms}。
 {name} is larger than {mb} MB	{name} は {mb} MB を超えています
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} はコンピューター上のプログラムとして実行されます。デスクトップ アプリまたは rustgis-cli が必要です。
-{name} was withdrawn from the plugin registry and has been turned off.	{name} はプラグイン レジストリから取り下げられたため、無効にしました。
 {name} was withdrawn from the plugin registry: {reason}	{name} はプラグイン レジストリから取り下げられました: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: ダウンロードした内容がレジストリと一致しないため、インストールしませんでした。
 {name}: the download is a different plugin; it wasn't installed.	{name}: ダウンロードしたのは別のプラグインのため、インストールしませんでした。

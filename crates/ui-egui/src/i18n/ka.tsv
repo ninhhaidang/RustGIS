@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	ხაზი, ან მარკერები თუ ნიშნულები მის გასწვრივ
 A magnifying lens that follows the pointer.	გამადიდებელი შუშა, რომელიც კურსორს მიჰყვება.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	რუკის, ობიექტების ან დაფარვის სერვისის მისამართი: WMS, WMTS, WFS, WCS, OGC API Features ან Tiles, ან ArcGIS FeatureServer, MapServer, ImageServer ან VectorTileServer (ან სერვისების კატალოგი დასათვალიერებლად).
+A message takes at most {n} pictures	შეტყობინებაში მაქსიმუმ {n} სურათია დასაშვები
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	სახელი ან EPSG კოდი, WKT ან PROJ სტრიქონი; ცარიელი: რუკის საკუთარი, თუ ის დაპროექტებულია, სხვა შემთხვევაში UTM ზონა ხედის ცენტრში
 a name, or owner/name such as giswqs/geospatial	სახელი ან მფლობელი/სახელი, მაგალითად giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	სახელიანი ბოლო წერტილი, რომლის ხელახლა გამოყენებაც შეგიძლიათ. გასაღებები ინახება RustGIS-ის დახურვამდე, თუ არ აირჩევთ მათ დამახსოვრებას ამ კომპიუტერში; თავად კავშირი მათ არასდროს ინახავს.
@@ -443,6 +444,7 @@ Asking the map service…	რუკის სერვისთან მოთ�
 Asking the NLDI…	NLDI-სთან მიმართვა…
 Asset	აქტივი
 Assign Escape	Escape-ის მინიჭება
+assistant picture	ასისტენტის სურათი
 Assistant settings	ასისტენტის პარამეტრები
 At both ends	ორივე ბოლოში
 At inner vertices	შიდა წვეროებზე
@@ -452,6 +454,7 @@ At the end	ბოლოში
 At the start	დასაწყისში
 At vertices	წვეროებზე
 Atlas	ატლასი
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	სურათის (PNG, JPEG ან WebP) მიმაგრება ან შეტყობინების ველში ჩასმა
 Attachments	დანართები
 Attribute\nTable	ატრიბუტების\nცხრილი
 Attribute Rules	ატრიბუტის წესები
@@ -2245,6 +2248,7 @@ Letter spacing	ასოებს შორის ინტერვალი
 Level	დონე
 Library	ბიბლიოთეკა
 Licence	ლიცენზია
+Licence…	ლიცენზია…
 Light	ღია
 Light and Shadow	სინათლე და ჩრდილი
 Light the extruded shapes from the north-west.	ამოზნექილი ფორმების განათება ჩრდილო-დასავლეთიდან.
@@ -2259,6 +2263,7 @@ Limits	შეზღუდვები
 Line	ხაზი
 Line alignment	ხაზის განლაგება
 Line color	ხაზის ფერი
+Line layer	ხაზოვანი ფენა
 Line Of Sight	ხედვის ხაზი
 Line of sight between two points	ხედვის ხაზი ორ წერტილს შორის
 Line Of Sight From Here	ხედვის ხაზი აქედან
@@ -2621,6 +2626,8 @@ New Group	ახალი ჯგუფი
 New job name	ახალი სამუშაოს სახელი
 New Layout	ახალი განლაგება
 New Map	ახალი რუკა
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	ახალი რუკები პროექტის კოორდინატთა სისტემაში იხატება და ახალი ცარიელი ფენები მასში ინახავს კოორდინატებს. პროექტში უკვე არსებული რუკები და ფენები თავისას ინარჩუნებს.
+New maps stay in Web Mercator: {why}	ახალი რუკები Web Mercator-ში რჩება: {why}
 New Model From History	ახალი მოდელი ისტორიიდან
 New Notebook	ახალი რვეული
 New Presentation	ახალი პრეზენტაცია
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	ამ ფენებიდან ა�
 none, a .duckdb file, or host=… dbname=… user=…	არცერთი, .duckdb ფაილი ან host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	არცერთი, ან PGPASSWORD-დან, MYSQL_PWD-დან ან SQLCMDPASSWORD-დან
 None. Add one by address, or from a basemap plugin.	არცერთი. დაამატეთ მისამართით ან საბაზისო რუკის დანამატიდან.
+None: new maps in Web Mercator	არცერთი: ახალი რუკები Web Mercator-ში
 North	ჩრდილოეთი
 North\nArrow	ჩრდილოეთის\nისარი
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	84° ჩ-ის ჩრდილოეთით და 80° სამხ-ის სამხრეთით ბადე UPS-ია, რომელსაც ზონის ნომერი არ აქვს: დაწერეთ north 2000000 2444268, south 2000000 1555732 ან პოლარული MGRS, მაგალითად Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	სპეციალური ჩასმა
 Paste Special (as a new layer)	სპეციალური ჩასმა (ახალ ფენად)
 Paste token	ტოკენის ჩასმა
 paste your key	ჩასვით თქვენი გასაღები
+pasted picture	ჩასმული სურათი
 path is required	path სავალდებულოა
 Pause	პაუზა
 Pause.	პაუზა.
@@ -3162,8 +3171,11 @@ Profile Viewing	პროფილის ნახვა
 PROJ definition	PROJ განსაზღვრება
 Project	პროექტი
 Project\nPackage	პროექტის\nპაკეტი
+Project Coordinate System	პროექტის კოორდინატთა სისტემა
 Project Info	პროექტის ინფორმაცია
 project is "sample", "blank", "last" or {"path": a project file}	project არის "sample", "blank", "last" ან {"path": a project file}
+Project Properties	პროექტის თვისებები
+Project Properties…	პროექტის თვისებები…
 Project Raster	რასტრის პროეცირება
 Project Template	პროექტის შაბლონი
 project's path is required	საჭიროა project-ის path
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	სანიშნეე
 Show or hide the Browser pane.	ბრაუზერის პანელის ჩვენება ან დამალვა.
 Show or hide the Data Sources pane.	მონაცემთა წყაროების პანელის ჩვენება ან დამალვა.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	მონაცემთა წყაროების პანელის ჩვენება ან დამალვა: რჩეულები, ბოლოდროინდელი მონაცემები, შენახული სერვისები, მონაცემთა ბაზები და STAC API-ები და საჯარო წყაროების ბიბლიოთეკა.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	გრატიკულის ჩვენება ან დამალვა საბაზისო რუკის თავზე: განედები და გრძედები, გაზომილი ბადე, UTM ზონები ან MGRS ბადე.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	გრატიკულის ჩვენება ან დამალვა საბაზისო რუკის თავზე, ან ფენების თავზე, როცა ზემოდან იხატება: განედები და გრძედები, გაზომილი ბადე, UTM ზონები ან MGRS ბადე.
 Show or hide the group's layers	ჯგუფის ფენების ჩვენება ან დამალვა
 Show or hide the layer.	ფენის ჩვენება ან დამალვა.
 Show or hide the Layers pane.	ფენების პანელის ჩვენება ან დამალვა.
@@ -4002,6 +4014,7 @@ SQL Query	SQL მოთხოვნა
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL, რომელიც ჭეშმარიტი უნდა იყოს, მაგ. pop > 0
 Square	კვადრატი
+Square to a line	ხაზის პერპენდიკულარულად
 Squares	კვადრატები
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	ტეგები
 Taiwan	ტაივანი
 Take the data in view offline, to edit and sync back later.	ხედში მოხვედრილი მონაცემების ოფლაინ წაღება რედაქტირებისთვის და მოგვიანებით უკან სინქრონიზაციისთვის.
 Take this bound out	ამ საზღვრის ამოღება
+Take this picture off the message	ამ სურათის მოხსნა შეტყობინებიდან
 Take this point off	ამ წერტილის მოხსნა
 Target details ({operation}): {targets}	სამიზნის დეტალები ({operation}): {targets}
 Target Features	სამიზნე ობიექტები
@@ -4190,6 +4204,7 @@ Test	Test
 Test Connection	კავშირის შემოწმება
 Testing…	მოწმდება…
 Text	ტექსტი
+Text size	ტექსტის ზომა
 Text Symbol	ტექსტის სიმბოლო
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	ტექსტი, მაგ. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', ველის ნაცვლად; ზომა პუნქტებში, ფერი '#RRGGBB' სახით, კუთხე გრადუსებში საათის ისრის მიმართულებით. ცარიელი: ველის ან კლასის საკუთარი.
 Th	ხუ
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	გასაღებების ს�
 the keychain worker stopped	გასაღებების საცავის დამმუშავებელი გაჩერდა
 The keys saved on this computer were forgotten; a login in this session keeps working.	ამ კომპიუტერში შენახული გასაღებები დავიწყებულია; ამ სესიაში შესვლა კვლავ მუშაობს.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	კილომეტრების ბოლო ორი ციფრი, როგორც ტოპოგრაფიულ რუკებზეა: 43 543000-ისთვის.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	წარწერა იწყება წერტილიდან და მიემართება ქვემოთ არჩეული ფენის უახლოესი ხაზის პერპენდიკულარულად.
 the latitude band must be a letter from C to X (not I or O)	განედური სარტყელი უნდა იყოს ასო C-დან X-მდე (არა I ან O)
 the layer Export Features was opened on is gone	ფენა, რომელზეც „ობიექტების ექსპორტი“ გაიხსნა, აღარ არსებობს
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	ფენა აჩვენებს ბიჯს, რომელზეც დროის სლაიდერი დგას, და რთავს სლაიდერს ცვლადის თარიღებზე.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	მიმთითებელი ხაზ
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	რუკა მარცხნივ; სათაური, ლოკატორი, ლეგენდა, წყაროები და მითითება მარჯვენა პანელში.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	რუკას არ აქვს რედაქტირებისთვის ჩატვირთული GeoPackage ფენა (საწყისი › მონაცემების დამატება › GeoPackage-ის ცხრილის რედაქტირება…)
 the map has no layers	რუკას ფენები არ აქვს
+The map has no line or polygon layer to be square to.	რუკას არ აქვს ხაზოვანი ან პოლიგონური ფენა, რომლის პერპენდიკულარულადაც იქნება.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	რუკას არ აქვს რედაქტირებისთვის ჩატვირთული PostGIS ფენა (საწყისი › მონაცემების დამატება › მონაცემთა ბაზა…, ჩატვირთვა რედაქტირებისთვის)
 The map has no tile archive read from a file.	რუკას არ აქვს ფაილიდან წაკითხული ფილების არქივი.
 The map is drawn in this coordinate system; layers are projected on the fly.	რუკა ამ კოორდინატთა სისტემაშია დახატული; ფენები პროექცირდება ფრენისას.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	ა
 This connection is logged out. Log in explicitly to use it again.	ამ კავშირიდან გამოსულია. ხელახლა გამოსაყენებლად ცალსახად შედით.
 This font isn't installed here, so the text is drawn in the sans-serif	ეს შრიფტი აქ დაყენებული არ არის, ამიტომ ტექსტი უსერიფო შრიფტით იხატება
 This font isn't installed here, so the text is drawn in the serif	ეს შრიფტი აქ დაყენებული არ არის, ამიტომ ტექსტი სერიფიანი შრიფტით იხატება
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	ეს გამოსახულება ვერ იქნება მარკერი: ის არ არის წაკითხვადი PNG ან JPEG, თითო მხარეს მაქსიმუმ 20 000 px
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	ეს გამოსახულება ვერ იქნება მარკერი: მას {side} × {side}-ზე მეტი პიქსელი აქვს; შეამცირეთ ის
+This image can't be a marker: it isn't a readable PNG or JPEG	ეს გამოსახულება ვერ იქნება მარკერი: ის არ არის წაკითხვადი PNG ან JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	ეს გამოსახულება ვერ იქნება მარკერი: RustGIS-მა გადატვირთვამდე იმდენი მარკერის გამოსახულება გაშიფრა, რამდენიც შეუძლია; გადატვირთეთ, რომ სხვა გამოიყენოთ
 This image is too large for a marker: at most about 1.5 MiB	ეს გამოსახულება მარკერისთვის ზედმეტად დიდია: მაქსიმუმ დაახლოებით 1,5 MiB
 This image is unavailable. Choose another image or No image.	ეს გამოსახულება მიუწვდომელია. აირჩიეთ სხვა გამოსახულება ან „გამოსახულების გარეშე“.
 This item is from a local or private network, whose files Bands and Index don't read yet	ეს ელემენტი ლოკალური ან კერძო ქსელიდანაა, რომლის ფაილებსაც „არხები“ და „ინდექსი“ ჯერ ვერ კითხულობს
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	სთხ
 Which 5 countries have the largest GDP?	რომელ 5 ქვეყანას აქვს ყველაზე დიდი მშპ?
 While drawing, click two points on a feature's edge to follow the edge between them	ხატვისას დააწკაპუნეთ ორ წერტილზე ობიექტის წიბოზე, რომ მათ შორის წიბოს გაჰყვეთ
 While drawing, click two points on a feature's edge to follow the edge between them.	ხატვისას დააწკაპუნეთ ორ წერტილზე ობიექტის წიბოზე, რომ მათ შორის წიბოს გაჰყვეთ.
+While it has none, take it from the first layer added	სანამ არ აქვს, აიღოს პირველი დამატებული ფენიდან
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	აკრეფისას Ctrl/⌘-ის გარეშე მალსახმობები შეჩერებულია. პირველი პირის ნავიგაცია ინარჩუნებს Escape-ს, Home-სა და Delete-ს.
 White behind dark text, dark behind light.	თეთრი მუქი ტექსტის უკან, მუქი ღია ტექსტის უკან.
 Whitebox and GeoLibre tools	Whitebox-ისა და GeoLibre-ის ხელსაწყოები
@@ -4929,7 +4949,7 @@ Write a plugin	დანამატის დაწერა
 Write a turn of the view about its centre as an animated GIF or PNG frames.	ხედის მისი ცენტრის გარშემო შემობრუნების ჩაწერა ანიმირებულ GIF-ად ან PNG კადრებად.
 Writes a separate two-vertex line for each consecutive vertex pair.	წერს ცალკე ორწვეროიან ხაზს წვეროების თითოეული მიმდევრობითი წყვილისთვის.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	წერს ყველა ობიექტს ვალიდური გეომეტრიით, სადაც ეს შესაძლებელია: რგოლები იკვრება, განმეორებადი წვეროები და გადაგვარებული ნაწილები ცილდება, თვითგადაკვეთები, გადაფარული ნაწილები და გარსის გარეთ მდებარე ხვრელები სწორდება არჩეული წესით („Shells Minus Holes“ აერთიანებს გადაფარულ ნაწილებს; „Even-Odd“ ინარჩუნებს იმას, რაც კენტი რაოდენობის რგოლის შიგნითაა). ობიექტები, რომელთაც სადმე, თუნდაც ხვრელში, აკლიათ კოორდინატი ან აქვთ არასასრული კოორდინატი, ან შეკეთების შემდეგ არ რჩებათ გამოსადეგი წერტილები ან, პოლიგონების შემთხვევაში, ფართობი, ჩაიწერება გეომეტრიის გარეშე. სხვა ობიექტები, რომლებიც შესამოწმებლად ზედმეტად რთულია ან რომელთა შეკეთებაც ვერ ხერხდება, ჩაიწერება უცვლელად. თითოეულში აღნიშნავს, რა შეკეთდა.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	წერს ღერძების პარალელურ ერთ მომცველ მართკუთხედს თითოეული ობიექტისთვის შენახულ გრძედ/განედ კოორდინატებში. ნულოვანი ფართობის მომცველები გამოტოვებულია.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	წერს ღერძების პარალელურ ერთ მომცველ მართკუთხედს თითოეული ობიექტისთვის ფენის საკუთარ კოორდინატებში, როცა ის ინახება დაპროექტებულ სისტემაში, გარდა Web Mercator-ისა და სხვა მსოფლიო პროექციებისა (რობინსონი, Plate Carrée და მსგავსი), სხვა შემთხვევაში გრძედ/განედში. ნულოვანი ფართობის მომცველები გამოტოვებულია.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	ჩაწერს სენის დახრილობას, ტესტის Z-სა და p-მნიშვნელობას, და დახრილობას იქ, სადაც ტრენდი მნიშვნელოვანია.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	წერს არავალიდური გეომეტრიის მქონე ობიექტებს, მაგალითად თვითგადამკვეთი ან შეუკრავი რგოლებით, გარსის გარეთ ხვრელებით ან გადაფარული ნაწილებით, და აღნიშნავს, რა არის თითოეულში არასწორი.
 writing the copy failed unexpectedly	ასლის ჩაწერა მოულოდნელად ჩავარდა
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name}-ს არ აქვს პაკეტი {platform}-ისთვის. ხელმისაწვდომია: {platforms}.
 {name} is larger than {mb} MB	{name} {mb} მბ-ზე დიდია
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} მუშაობს როგორც პროგრამა თქვენს კომპიუტერზე: საჭიროა დესკტოპ აპლიკაცია ან rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	{name} დანამატების რეესტრიდან გაუქმდა და გამორთულია.
 {name} was withdrawn from the plugin registry: {reason}	{name} დანამატების რეესტრიდან გაუქმდა: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: ჩამოტვირთული რეესტრს არ ემთხვევა; არ დაყენებულა.
 {name}: the download is a different plugin; it wasn't installed.	{name}: ჩამოტვირთული სხვა დანამატია; არ დაყენებულა.

@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	একটি রেখা, অথবা তার বরাবর মার্কার বা হ্যাশ চিহ্ন
 A magnifying lens that follows the pointer.	পয়েন্টারকে অনুসরণ করে এমন একটি বিবর্ধক কাচ।
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	মানচিত্র, feature বা coverage সার্ভিসের ঠিকানা: WMS, WMTS, WFS, WCS, OGC API Features বা Tiles; অথবা ArcGIS FeatureServer, MapServer, ImageServer কিংবা VectorTileServer (ব্রাউজ করার জন্য service directory-ও হতে পারে)।
+A message takes at most {n} pictures	একটি বার্তায় সর্বোচ্চ {n}টি ছবি রাখা যায়
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	একটি নাম বা EPSG কোড, WKT বা একটি PROJ স্ট্রিং; খালি রাখলে: মানচিত্র প্রক্ষিপ্ত হলে তার নিজস্বটি, নইলে দৃশ্যের কেন্দ্রের UTM জোন
 a name, or owner/name such as giswqs/geospatial	একটি নাম, অথবা giswqs/geospatial-এর মতো owner/name
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	পুনরায় ব্যবহারযোগ্য একটি নামযুক্ত endpoint। এই কম্পিউটারে মনে রাখতে না বললে key RustGIS বন্ধ হওয়া পর্যন্ত রাখা হয়; সংযোগ নিজে কখনো সেগুলো রাখে না।
@@ -443,6 +444,7 @@ Asking the map service…	Map service-কে জিজ্ঞাসা করা 
 Asking the NLDI…	NLDI-কে জিজ্ঞেস করা হচ্ছে…
 Asset	Asset
 Assign Escape	Escape নির্ধারণ করুন
+assistant picture	সহকারীর ছবি
 Assistant settings	Assistant-এর সেটিংস
 At both ends	দুই প্রান্তে
 At inner vertices	ভেতরের ভার্টেক্সে
@@ -452,6 +454,7 @@ At the end	শেষে
 At the start	শুরুতে
 At vertices	ভার্টেক্সে
 Atlas	অ্যাটলাস
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	একটি ছবি (PNG, JPEG বা WebP) সংযুক্ত করুন, অথবা বার্তার বক্সে পেস্ট করুন
 Attachments	সংযুক্তি
 Attribute\nTable	অ্যাট্রিবিউট\nটেবিল
 Attribute Rules	অ্যাট্রিবিউট নিয়মাবলি
@@ -2245,6 +2248,7 @@ Letter spacing	অক্ষরের মধ্যবর্তী ফাঁক
 Level	স্তর
 Library	লাইব্রেরি
 Licence	লাইসেন্স
+Licence…	লাইসেন্স…
 Light	হালকা
 Light and Shadow	আলো ও ছায়া
 Light the extruded shapes from the north-west.	উত্তর-পশ্চিম থেকে extrude করা আকারগুলো আলোকিত করুন।
@@ -2259,6 +2263,7 @@ Limits	সীমা
 Line	রেখা
 Line alignment	রেখা সারিবদ্ধকরণ
 Line color	Line-এর রং
+Line layer	রেখা লেয়ার
 Line Of Sight	দৃষ্টিরেখা
 Line of sight between two points	দুটি বিন্দুর মধ্যকার দৃষ্টিরেখা
 Line Of Sight From Here	এখান থেকে দৃষ্টিরেখা
@@ -2621,6 +2626,8 @@ New Group	নতুন Group
 New job name	নতুন job-এর নাম
 New Layout	নতুন Layout
 New Map	নতুন মানচিত্র
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	নতুন ম্যাপ প্রজেক্টের স্থানাঙ্ক ব্যবস্থায় আঁকা হয়, আর নতুন খালি লেয়ার তাদের স্থানাঙ্ক এতেই রাখে। প্রজেক্টে আগে থেকে থাকা ম্যাপ ও লেয়ার নিজেদেরটাই রাখে।
+New maps stay in Web Mercator: {why}	নতুন ম্যাপ Web Mercator-এ থাকবে: {why}
 New Model From History	ইতিহাস থেকে নতুন Model
 New Notebook	নতুন Notebook
 New Presentation	নতুন Presentation
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	এই লেয়ারগুলো�
 none, a .duckdb file, or host=… dbname=… user=…	কিছুই নয়, একটি .duckdb file, অথবা host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	কিছুই নয়, অথবা PGPASSWORD, MYSQL_PWD বা SQLCMDPASSWORD থেকে
 None. Add one by address, or from a basemap plugin.	কিছুই নয়। ঠিকানা দিয়ে অথবা basemap plugin থেকে একটি যোগ করুন।
+None: new maps in Web Mercator	কোনোটিই নয়: নতুন ম্যাপ Web Mercator-এ
 North	উত্তর
 North\nArrow	উত্তর\nতীর
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	84° N-এর উত্তরে ও 80° S-এর দক্ষিণে গ্রিডটি UPS, যার কোনো জোন নম্বর নেই: লিখুন north 2000000 2444268, south 2000000 1555732, বা Z AM 00000 44268-এর মতো মেরু MGRS
@@ -3006,6 +3014,7 @@ Paste Special	বিশেষভাবে পেস্ট
 Paste Special (as a new layer)	বিশেষভাবে পেস্ট (নতুন layer হিসেবে)
 Paste token	টোকেন পেস্ট করুন
 paste your key	আপনার key পেস্ট করুন
+pasted picture	পেস্ট করা ছবি
 path is required	path আবশ্যক
 Pause	বিরতি
 Pause.	বিরতি।
@@ -3162,8 +3171,11 @@ Profile Viewing	Profile দেখা
 PROJ definition	PROJ সংজ্ঞা
 Project	প্রজেক্ট
 Project\nPackage	প্রজেক্ট\nপ্যাকেজ
+Project Coordinate System	প্রজেক্টের স্থানাঙ্ক ব্যবস্থা
 Project Info	প্রজেক্টের তথ্য
 project is "sample", "blank", "last" or {"path": a project file}	project হলো "sample", "blank", "last" অথবা {"path": a project file}
+Project Properties	প্রজেক্টের বৈশিষ্ট্য
+Project Properties…	প্রজেক্টের বৈশিষ্ট্য…
 Project Raster	রাস্টার প্রজেক্ট করুন
 Project Template	প্রজেক্ট টেমপ্লেট
 project's path is required	project-এর path আবশ্যক
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Bookmark pane দেখ�
 Show or hide the Browser pane.	Browser pane দেখান বা লুকান।
 Show or hide the Data Sources pane.	ডেটা সোর্স প্যান দেখান বা লুকান।
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Data Sources pane দেখান বা লুকান: পছন্দের উৎস, সাম্প্রতিক ডেটা, সংরক্ষিত service, database, STAC API এবং public source-এর library।
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	বেসম্যাপের ওপর গ্র্যাটিকিউল দেখান বা লুকান: অক্ষাংশ ও দ্রাঘিমাংশ, একটি পরিমাপকৃত গ্রিড, UTM জোন বা MGRS গ্রিড।
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	বেসম্যাপের ওপর, অথবা ওপরে আঁকা হলে লেয়ারগুলোর ওপর, গ্র্যাটিকিউল দেখান বা লুকান: অক্ষাংশ ও দ্রাঘিমাংশ, একটি পরিমাপকৃত গ্রিড, UTM জোন বা MGRS গ্রিড।
 Show or hide the group's layers	Group-এর layer দেখান বা লুকান
 Show or hide the layer.	Layer দেখান বা লুকান।
 Show or hide the Layers pane.	Layer pane দেখান বা লুকান।
@@ -4002,6 +4014,7 @@ SQL Query	SQL কোয়েরি
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	সত্য হতে হবে এমন SQL, যেমন pop > 0
 Square	বর্গ
+Square to a line	রেখার সঙ্গে লম্ব
 Squares	বর্গসমূহ
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	ট্যাগসমূহ
 Taiwan	তাইওয়ান
 Take the data in view offline, to edit and sync back later.	দৃশ্যমান ডেটা offline-এ নিন, পরে সম্পাদনা ও sync back করার জন্য।
 Take this bound out	এই সীমা সরিয়ে দিন
+Take this picture off the message	বার্তা থেকে এই ছবিটি সরান
 Take this point off	এই বিন্দুটি সরিয়ে দিন
 Target details ({operation}): {targets}	লক্ষ্যের বিবরণ ({operation}): {targets}
 Target Features	গন্তব্য feature
@@ -4190,6 +4204,7 @@ Test	পরীক্ষা
 Test Connection	Connection পরীক্ষা করুন
 Testing…	পরীক্ষা করা হচ্ছে…
 Text	টেক্সট
+Text size	টেক্সটের আকার
 Text Symbol	Text symbol
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	টেক্সট, যেমন "name" || ' (' || round("pop" / 1e6, 1) || ' M)', ফিল্ডের বদলে; আকার পয়েন্টে, রং '#RRGGBB' হিসেবে, কোণ ঘড়ির কাঁটার দিকে ডিগ্রিতে। ফাঁকা: ফিল্ডের বা শ্রেণির নিজস্ব মান।
 Th	বৃ
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	keychain backend অপ্রত্য
 the keychain worker stopped	keychain worker বন্ধ হয়ে গেছে
 The keys saved on this computer were forgotten; a login in this session keeps working.	এই কম্পিউটারে সংরক্ষিত key ভুলে যাওয়া হয়েছে; এই সেশনের লগ ইন কাজ করতে থাকবে।
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	কিলোমিটারের শেষ দুই অঙ্ক, যেমন টপোগ্রাফিক মানচিত্রে ছাপা হয়: 543000-এর জন্য 43।
+The label starts at the point and runs square to the nearest line of the layer chosen below.	লেবেলটি বিন্দু থেকে শুরু হয় এবং নিচে বেছে নেওয়া লেয়ারের নিকটতম রেখার সঙ্গে লম্বভাবে যায়।
 the latitude band must be a letter from C to X (not I or O)	অক্ষাংশ ব্যান্ড অবশ্যই C থেকে X-এর মধ্যে একটি অক্ষর হতে হবে (I বা O নয়)
 the layer Export Features was opened on is gone	যে লেয়ারে ফিচার রপ্তানি খোলা হয়েছিল সেটি আর নেই
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	layer সময়ের slider যে ধাপে আছে তা দেখায় এবং variable-এর তারিখজুড়ে slider চালু করে।
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	কলআউট রেখার সর্�
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	বামে মানচিত্র; শিরোনাম, লোকেটর, লেজেন্ড, উৎস ও রেফারেন্স ডানের একটি প্যানেলে।
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	মানচিত্রে সম্পাদনার জন্য লোড করা কোনো GeoPackage layer নেই (হোম › ডেটা যোগ করুন › GeoPackage টেবিল সম্পাদনা…)
 the map has no layers	মানচিত্রে কোনো layer নেই
+The map has no line or polygon layer to be square to.	ম্যাপে লম্ব হওয়ার মতো কোনো রেখা বা বহুভুজ লেয়ার নেই।
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	মানচিত্রে সম্পাদনার জন্য লোড করা কোনো PostGIS layer নেই (হোম › ডেটা যোগ করুন › ডেটাবেস…, সম্পাদনার জন্য লোড করুন)
 The map has no tile archive read from a file.	মানচিত্রে ফাইল থেকে পড়া কোনো tile archive নেই।
 The map is drawn in this coordinate system; layers are projected on the fly.	মানচিত্র এই coordinate system-এ আঁকা হয়; layer-গুলো তাৎক্ষণিকভাবে project করা হয়।
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	এ
 This connection is logged out. Log in explicitly to use it again.	এই সংযোগ লগ আউট অবস্থায় আছে। আবার ব্যবহার করতে স্পষ্টভাবে লগ ইন করুন।
 This font isn't installed here, so the text is drawn in the sans-serif	এই font এখানে ইনস্টল নেই, তাই টেক্সট sans-serif font-এ আঁকা হচ্ছে
 This font isn't installed here, so the text is drawn in the serif	এই font এখানে ইনস্টল নেই, তাই টেক্সট serif font-এ আঁকা হচ্ছে
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	এই ছবি মার্কার হতে পারে না: এটি প্রতি পাশে সর্বোচ্চ 20,000 px-এর পাঠযোগ্য PNG বা JPEG নয়
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	এই ছবি মার্কার হতে পারে না: এতে {side} × {side}-এর চেয়ে বেশি পিক্সেল আছে; ছোট করুন
+This image can't be a marker: it isn't a readable PNG or JPEG	এই ছবি মার্কার হতে পারে না: এটি পাঠযোগ্য PNG বা JPEG নয়
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	এই ছবি মার্কার হতে পারে না: পুনরায় চালু না হওয়া পর্যন্ত RustGIS যত মার্কার ছবি ডিকোড করে, তত ইতিমধ্যে করেছে; অন্য ছবি ব্যবহার করতে এটি পুনরায় চালু করুন
 This image is too large for a marker: at most about 1.5 MiB	এই ছবি মার্কারের জন্য খুব বড়: সর্বোচ্চ প্রায় 1.5 MiB
 This image is unavailable. Choose another image or No image.	এই ছবি পাওয়া যাচ্ছে না। অন্য একটি ছবি বা কোনো ছবি নেই বেছে নিন।
 This item is from a local or private network, whose files Bands and Index don't read yet	এই আইটেম একটি লোকাল বা প্রাইভেট নেটওয়ার্কের, যার ফাইল ব্যান্ড ও ইনডেক্স এখনো পড়ে না
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Service-�
 Which 5 countries have the largest GDP?	কোন ৫টি দেশের GDP সবচেয়ে বড়?
 While drawing, click two points on a feature's edge to follow the edge between them	আঁকার সময়, ফিচারের প্রান্তে দুটি বিন্দুতে ক্লিক করুন, তাদের মাঝের প্রান্ত অনুসরণ করতে
 While drawing, click two points on a feature's edge to follow the edge between them.	আঁকার সময়, ফিচারের প্রান্তে দুটি বিন্দুতে ক্লিক করুন, তাদের মাঝের প্রান্ত অনুসরণ করতে।
+While it has none, take it from the first layer added	যতক্ষণ কোনোটি নেই, প্রথম যোগ করা লেয়ার থেকে নিন
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	টাইপ করার সময় Ctrl/⌘ ছাড়া শর্টকাট থেমে থাকে। প্রথম-ব্যক্তি নেভিগেশনে Escape, Home ও Delete থাকে।
 White behind dark text, dark behind light.	গাঢ় টেক্সটের পেছনে সাদা, হালকা টেক্সটের পেছনে গাঢ়।
 Whitebox and GeoLibre tools	Whitebox ও GeoLibre tool
@@ -4929,7 +4949,7 @@ Write a plugin	Plugin লিখুন
 Write a turn of the view about its centre as an animated GIF or PNG frames.	view-এর তার কেন্দ্রের চারপাশে এক ঘূর্ণন অ্যানিমেটেড GIF বা PNG ফ্রেম হিসেবে লিখুন।
 Writes a separate two-vertex line for each consecutive vertex pair.	প্রতিটি পরপর ভার্টেক্স জোড়ার জন্য আলাদা দুই-ভার্টেক্সের রেখা লেখে।
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	প্রতিটি ফিচার লেখে, যেখানে সম্ভব তার জ্যামিতি বৈধ করে: রিং বন্ধ করা হয়, পুনরাবৃত্ত ভার্টেক্স ও অবক্ষয়িত অংশ বাদ দেওয়া হয়, স্ব-ছেদ, পরস্পরকে ঢেকে রাখা অংশ ও খোলের বাইরের গর্ত বেছে নেওয়া নিয়মে সমাধান করা হয় (Shells Minus Holes পরস্পরকে ঢেকে রাখা অংশ একত্র করে; Even-Odd বিজোড় সংখ্যক রিংয়ের ভেতরের অংশ রাখে)। যে ফিচারের কোথাও, এমনকি কোনো গর্তেও, অনুপস্থিত বা অসীম স্থানাঙ্ক আছে, অথবা মেরামতের পর কোনো ব্যবহারযোগ্য বিন্দু থাকে না বা বহুভুজের ক্ষেত্রে কোনো ক্ষেত্রফল থাকে না, সেগুলো জ্যামিতি ছাড়া লেখা হয়। পরীক্ষা করার পক্ষে খুব জটিল বা যাদের মেরামত ব্যর্থ হয় এমন অন্য ফিচার অপরিবর্তিত লেখা হয়। প্রতিটিতে কী মেরামত হয়েছে তা জানায়।
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	সংরক্ষিত দ্রাঘিমাংশ/অক্ষাংশ স্থানাঙ্কে প্রতিটি ফিচারের জন্য একটি অক্ষ-সমান্তরাল সীমানা আয়তক্ষেত্র লেখে। শূন্য ক্ষেত্রফলের এনভেলপ বাদ দেওয়া হয়।
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	লেয়ারটি Web Mercator ও অন্যান্য বিশ্ব প্রক্ষেপণ (Robinson, Plate Carrée ইত্যাদি) ছাড়া অন্য কোনো প্রক্ষিপ্ত ব্যবস্থায় রাখা থাকলে তার নিজস্ব স্থানাঙ্কে, নইলে দ্রাঘিমাংশ/অক্ষাংশে, প্রতিটি ফিচারের জন্য একটি অক্ষ-সমান্তরাল সীমানা আয়তক্ষেত্র লেখে। শূন্য ক্ষেত্রফলের এনভেলপ বাদ দেওয়া হয়।
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen-এর ঢাল, পরীক্ষার Z ও p-value, এবং trend তাৎপর্যপূর্ণ হলে সেই ঢাল লেখে।
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	অবৈধ জ্যামিতির ফিচার লেখে, যেমন স্ব-ছেদী বা খোলা রিং, বাইরের রিংয়ের বাইরে থাকা গর্ত বা পরস্পর-আবৃত অংশ, এবং প্রতিটিতে কী ভুল তা জানায়।
 writing the copy failed unexpectedly	কপি লেখা অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name}-এর {platform}-এর জন্য কোনো package নেই। এটি এগুলোর জন্য উপলব্ধ: {platforms}।
 {name} is larger than {mb} MB	{name} {mb} MB-এর চেয়ে বড়
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} আপনার কম্পিউটারে program হিসেবে চলে: এর জন্য desktop app বা rustgis-cli দরকার।
-{name} was withdrawn from the plugin registry and has been turned off.	{name} plugin registry থেকে প্রত্যাহার করা হয়েছে এবং বন্ধ করা হয়েছে।
 {name} was withdrawn from the plugin registry: {reason}	{name} plugin registry থেকে প্রত্যাহার করা হয়েছে: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: download registry-র সঙ্গে মেলে না; ইনস্টল করা হয়নি।
 {name}: the download is a different plugin; it wasn't installed.	{name}: download-টি অন্য plugin; ইনস্টল করা হয়নি।

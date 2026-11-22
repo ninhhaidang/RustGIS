@@ -82,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Linia albo znaczniki lub kreski wzdłuż niej
 A magnifying lens that follows the pointer.	Lupa, która podąża za wskaźnikiem.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Adres usługi map, obiektów lub pokrycia: WMS, WMTS, WFS, WCS, OGC API Features lub Tiles, albo ArcGIS FeatureServer, MapServer, ImageServer lub VectorTileServer (także katalog usług do przeglądania).
+A message takes at most {n} pictures	Wiadomość może zawierać najwyżej {n} obrazów
 A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Nazwa lub kod EPSG, WKT albo ciąg PROJ; puste: układ mapy, gdy jest odwzorowana, w przeciwnym razie strefa UTM w środku widoku
 a name, or owner/name such as giswqs/geospatial	nazwa lub właściciel/nazwa, np. giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Nazwany punkt końcowy do wielokrotnego użytku. Klucze są trzymane do zamknięcia RustGIS, chyba że wybierzesz zapamiętanie ich na tym komputerze. Samo połączenie nigdy ich nie przechowuje.
@@ -443,6 +444,7 @@ Asking the map service…	Odpytywanie usługi map…
 Asking the NLDI…	Zapytanie do NLDI…
 Asset	Zasób
 Assign Escape	Przypisz Escape
+assistant picture	obraz asystenta
 Assistant settings	Ustawienia asystenta
 At both ends	Na obu końcach
 At inner vertices	Na wierzchołkach wewnętrznych
@@ -452,6 +454,7 @@ At the end	Na końcu
 At the start	Na początku
 At vertices	Na wierzchołkach
 Atlas	Atlas
+Attach a picture (PNG, JPEG or WebP), or paste one into the message box	Dołącz obraz (PNG, JPEG lub WebP) albo wklej go do pola wiadomości
 Attachments	Załączniki
 Attribute\nTable	Tabela\natrybutów
 Attribute Rules	Reguły atrybutów
@@ -2245,6 +2248,7 @@ Letter spacing	Odstępy między literami
 Level	Poziom
 Library	Biblioteka
 Licence	Licencja
+Licence…	Licencja…
 Light	Jasny
 Light and Shadow	Światło i cień
 Light the extruded shapes from the north-west.	Oświetl wyniesione kształty z północnego zachodu.
@@ -2259,6 +2263,7 @@ Limits	Granice
 Line	Linia
 Line alignment	Wyrównanie wiersza
 Line color	Kolor linii
+Line layer	Warstwa liniowa
 Line Of Sight	Linia widzenia
 Line of sight between two points	Linia widzenia między dwoma punktami
 Line Of Sight From Here	Linia widzenia z tego miejsca
@@ -2621,6 +2626,8 @@ New Group	Nowa grupa
 New job name	Nazwa nowego zadania
 New Layout	Nowy układ
 New Map	Nowa mapa
+New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs.	Nowe mapy są rysowane w układzie współrzędnych projektu, a nowe puste warstwy zapisują w nim swoje współrzędne. Mapy i warstwy już obecne w projekcie zachowują swoje.
+New maps stay in Web Mercator: {why}	Nowe mapy pozostają w Web Mercator: {why}
 New Model From History	Nowy model z historii
 New Notebook	Nowy notatnik
 New Presentation	Nowa prezentacja
@@ -2734,6 +2741,7 @@ None of these layers are polygon layers.	Żadna z tych warstw nie jest warstwą 
 none, a .duckdb file, or host=… dbname=… user=…	brak, plik .duckdb albo host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	brak albo z PGPASSWORD, MYSQL_PWD lub SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Brak. Dodaj mapę bazową przez adres albo z wtyczki map bazowych.
+None: new maps in Web Mercator	Brak: nowe mapy w Web Mercator
 North	Północ
 North\nArrow	Strzałka\npółnocy
 north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	na północ od 84° N i na południe od 80° S siatką jest UPS, który nie ma numeru strefy: wpisz north 2000000 2444268, south 2000000 1555732 albo polarne MGRS, np. Z AM 00000 44268
@@ -3006,6 +3014,7 @@ Paste Special	Wklej specjalnie
 Paste Special (as a new layer)	Wklej specjalnie (jako nowa warstwa)
 Paste token	Wklej token
 paste your key	wklej swój klucz
+pasted picture	wklejony obraz
 path is required	path jest wymagany
 Pause	Pauza
 Pause.	Pauza.
@@ -3162,8 +3171,11 @@ Profile Viewing	Przeglądanie profilu
 PROJ definition	Definicja PROJ
 Project	Projekt
 Project\nPackage	Pakiet\nprojektu
+Project Coordinate System	Układ współrzędnych projektu
 Project Info	Informacje o projekcie
 project is "sample", "blank", "last" or {"path": a project file}	projekt to "sample", "blank", "last" lub {"path": a project file}
+Project Properties	Właściwości projektu
+Project Properties…	Właściwości projektu…
 Project Raster	Odwzoruj raster
 Project Template	Szablon projektu
 project's path is required	ścieżka projektu jest wymagana
@@ -3853,7 +3865,7 @@ Show or hide the Bookmarks pane: every map's bookmarks.	Pokaż lub ukryj panel Z
 Show or hide the Browser pane.	Pokaż lub ukryj panel Przeglądarka.
 Show or hide the Data Sources pane.	Pokaż lub ukryj panel Źródła danych.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Pokaż lub ukryj panel Źródła danych: ulubione, ostatnie dane, zapisane usługi, bazy danych i interfejsy API STAC oraz bibliotekę źródeł publicznych.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Pokaż lub ukryj siatkę kartograficzną nad mapą bazową: szerokości i długości geograficzne, siatkę metryczną, strefy UTM lub siatkę MGRS.
+Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Pokaż lub ukryj siatkę kartograficzną nad mapą bazową albo nad warstwami, gdy jest rysowana na wierzchu: szerokości i długości geograficzne, siatkę metryczną, strefy UTM lub siatkę MGRS.
 Show or hide the group's layers	Pokaż lub ukryj warstwy grupy
 Show or hide the layer.	Pokaż lub ukryj warstwę.
 Show or hide the Layers pane.	Pokaż lub ukryj panel Warstwy.
@@ -4002,6 +4014,7 @@ SQL Query	Zapytanie SQL
 SQL Server	SQL Server
 SQL that must be true, e.g. pop > 0	SQL, który musi być prawdziwy, np. pop > 0
 Square	Kwadrat
+Square to a line	Prostopadle do linii
 Squares	Kwadraty
 ST_Area	ST_Area
 ST_AsGeoJSON	ST_AsGeoJSON
@@ -4165,6 +4178,7 @@ Tags	Tagi
 Taiwan	Tajwan
 Take the data in view offline, to edit and sync back later.	Zabierz dane z widoku offline, aby je edytować i później zsynchronizować.
 Take this bound out	Usuń tę granicę
+Take this picture off the message	Usuń ten obraz z wiadomości
 Take this point off	Zdejmij ten punkt
 Target details ({operation}): {targets}	Szczegóły celów ({operation}): {targets}
 Target Features	Obiekty docelowe
@@ -4190,6 +4204,7 @@ Test	Testuj
 Test Connection	Testuj połączenie
 Testing…	Testowanie…
 Text	Tekst
+Text size	Rozmiar tekstu
 Text Symbol	Symbol tekstu
 Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	Tekst, np. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', zamiast pola; rozmiar w punktach, kolor jako '#RRGGBB', kąt w stopniach zgodnie z ruchem wskazówek zegara. Puste: wartość własna pola lub klasy.
 Th	Cz
@@ -4263,6 +4278,7 @@ the keychain backend stopped unexpectedly	usługa magazynu kluczy nieoczekiwanie
 the keychain worker stopped	proces magazynu kluczy się zatrzymał
 The keys saved on this computer were forgotten; a login in this session keeps working.	Zapisane na tym komputerze klucze zostały zapomniane. Zalogowanie w tej sesji nadal działa.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	Dwie ostatnie cyfry kilometrów, jak na mapach topograficznych: 43 dla 543000.
+The label starts at the point and runs square to the nearest line of the layer chosen below.	Etykieta zaczyna się w punkcie i biegnie prostopadle do najbliższej linii warstwy wybranej poniżej.
 the latitude band must be a letter from C to X (not I or O)	pas szerokości musi być literą od C do X (bez I i O)
 the layer Export Features was opened on is gone	warstwa, dla której otwarto Eksportuj obiekty, już nie istnieje
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	Warstwa pokazuje krok, na którym jest suwak czasu, i włącza suwak na datach zmiennej.
@@ -4279,6 +4295,7 @@ The longest a callout's line may be.	Maksymalna długość linii odnośnika.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Mapa po lewej; tytuł, mapka lokalizacyjna, legenda, źródła i odniesienie w panelu po prawej.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	mapa nie ma warstwy GeoPackage wczytanej do edycji (Start › Dodaj dane › Edytuj tabelę GeoPackage…)
 the map has no layers	mapa nie ma warstw
+The map has no line or polygon layer to be square to.	Mapa nie ma warstwy liniowej ani poligonowej, do której można ustawić prostopadle.
 the map has no PostGIS layer loaded for editing (Home › Add Data › Database…, Load for editing)	mapa nie ma warstwy PostGIS wczytanej do edycji (Start › Dodaj dane › Baza danych…, Wczytaj do edycji)
 The map has no tile archive read from a file.	Mapa nie ma archiwum kafli odczytanego z pliku.
 The map is drawn in this coordinate system; layers are projected on the fly.	Mapa jest rysowana w tym układzie współrzędnych, a warstwy są odwzorowywane na bieżąco.
@@ -4483,7 +4500,9 @@ This connection has no user: set user (connection.edit) to generate a token.	To 
 This connection is logged out. Log in explicitly to use it again.	To połączenie jest wylogowane. Zaloguj się jawnie, aby użyć go ponownie.
 This font isn't installed here, so the text is drawn in the sans-serif	Ta czcionka nie jest tu zainstalowana, więc tekst jest rysowany czcionką bezszeryfową
 This font isn't installed here, so the text is drawn in the serif	Ta czcionka nie jest tu zainstalowana, więc tekst jest rysowany czcionką szeryfową
-This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Ten obraz nie może być znacznikiem: nie jest czytelnym plikiem PNG ani JPEG o boku najwyżej 20 000 px
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Ten obraz nie może być znacznikiem: ma więcej pikseli niż {side} × {side}; zmniejsz go
+This image can't be a marker: it isn't a readable PNG or JPEG	Ten obraz nie może być znacznikiem: nie jest czytelnym plikiem PNG ani JPEG
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Ten obraz nie może być znacznikiem: RustGIS zdekodował już tyle obrazów znaczników, ile może do ponownego uruchomienia; uruchom go ponownie, aby użyć innego
 This image is too large for a marker: at most about 1.5 MiB	Ten obraz jest za duży na znacznik: najwyżej około 1,5 MiB
 This image is unavailable. Choose another image or No image.	Ten obraz jest niedostępny. Wybierz inny obraz lub Brak obrazu.
 This item is from a local or private network, whose files Bands and Index don't read yet	Ten element pochodzi z sieci lokalnej lub prywatnej, której plików Kanały i Wskaźnik jeszcze nie odczytują
@@ -4873,6 +4892,7 @@ Whether the service is asked for one picture of the view or for tiles.	Czy usłu
 Which 5 countries have the largest GDP?	Które 5 krajów ma największe PKB?
 While drawing, click two points on a feature's edge to follow the edge between them	Podczas rysowania kliknij dwa punkty na krawędzi obiektu, aby poprowadzić linię wzdłuż krawędzi między nimi
 While drawing, click two points on a feature's edge to follow the edge between them.	Podczas rysowania kliknij dwa punkty na krawędzi obiektu, aby poprowadzić linię wzdłuż krawędzi między nimi.
+While it has none, take it from the first layer added	Dopóki go nie ma, przejmij go z pierwszej dodanej warstwy
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	Podczas pisania skróty bez Ctrl/⌘ są wstrzymane. Nawigacja w pierwszej osobie zachowuje Escape, Home i Delete.
 White behind dark text, dark behind light.	Biały za ciemnym tekstem, ciemny za jasnym.
 Whitebox and GeoLibre tools	Narzędzia Whitebox i GeoLibre
@@ -4929,7 +4949,7 @@ Write a plugin	Napisz wtyczkę
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Zapisz obrót widoku wokół jego środka jako animowany GIF lub klatki PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Zapisuje osobną linię z dwoma wierzchołkami dla każdej kolejnej pary wierzchołków.
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Zapisuje każdy obiekt z geometrią poprawioną tam, gdzie to możliwe: pierścienie zamknięte, powtórzone wierzchołki i zdegenerowane części usunięte, samoprzecięcia, nakładające się części i otwory poza obrysem rozwiązane według wybranej reguły („Shells Minus Holes” scala nakładające się części; „Even-Odd” zachowuje to, co leży wewnątrz nieparzystej liczby pierścieni). Obiekty z brakującą lub nieskończoną albo nieokreśloną współrzędną gdziekolwiek, nawet w otworze, albo bez użytecznych punktów lub, w przypadku poligonów, bez powierzchni po naprawie, są zapisywane bez geometrii. Inne obiekty zbyt złożone do sprawdzenia lub których naprawa się nie powiodła są zapisywane bez zmian. Podaje, co naprawiono w każdym z nich.
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Zapisuje dla każdego obiektu jeden prostokąt otaczający równoległy do osi w zapisanych współrzędnych długości/szerokości geograficznej. Obwiednie o zerowej powierzchni są pomijane.
+Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.	Zapisuje dla każdego obiektu jeden prostokąt otaczający równoległy do osi we własnych współrzędnych warstwy, gdy jest ona przechowywana w układzie płaskim innym niż Web Mercator i pozostałe odwzorowania świata (Robinsona, Plate Carrée i podobne), w przeciwnym razie w długości/szerokości geograficznej. Obwiednie o zerowej powierzchni są pomijane.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Zapisuje nachylenie Sena, statystykę Z i wartość p testu oraz nachylenie tam, gdzie trend jest istotny.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Zapisuje obiekty z nieprawidłową geometrią, np. samoprzecinającymi się lub niezamkniętymi pierścieniami, otworami poza obrysem zewnętrznym albo nakładającymi się częściami, i podaje, co jest nie tak z każdym z nich.
 writing the copy failed unexpectedly	zapis kopii nieoczekiwanie się nie powiódł
@@ -5000,7 +5020,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} has no package for {platform}. It is available for: {platforms}.	{name} nie ma pakietu dla {platform}. Dostępne dla: {platforms}.
 {name} is larger than {mb} MB	{name} jest większy niż {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} działa jako program na Twoim komputerze: wymaga aplikacji desktopowej albo rustgis-cli.
-{name} was withdrawn from the plugin registry and has been turned off.	Wtyczkę {name} wycofano z rejestru wtyczek i została wyłączona.
 {name} was withdrawn from the plugin registry: {reason}	Wtyczkę {name} wycofano z rejestru wtyczek: {reason}
 {name}: the download doesn't match the registry; it wasn't installed.	{name}: pobrany plik nie zgadza się z rejestrem, więc nie został zainstalowany.
 {name}: the download is a different plugin; it wasn't installed.	{name}: pobrany plik to inna wtyczka, więc nie został zainstalowany.
