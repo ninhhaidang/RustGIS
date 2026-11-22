@@ -1856,11 +1856,13 @@ pub(crate) fn say_tile_error(said: &mut std::collections::HashSet<String>, sessi
 }
 
 /// Tile error reason `e` without its counts of tiles ("12 tiles left out", "3 tiles are partial",
-/// "2 warped tile components left out" each become `#`): what it says beside them, the layer and
-/// the reason, is its kind.
+/// "2 warped tile components left out" each become `#`) or what follows the host in the
+/// addresses it names (each tile's differs, by its z/x/y): what it says beside them, the layer,
+/// the server and the reason, is its kind.
 fn tile_error_kind(e: &str) -> String {
-    let mut out = String::with_capacity(e.len());
-    let mut rest = e;
+    let unaddressed = without_urls(e);
+    let mut out = String::with_capacity(unaddressed.len());
+    let mut rest = unaddressed.as_str();
     while let Some(i) = rest.find(|c: char| c.is_ascii_digit()) {
         let (head, tail) = rest.split_at(i);
         out.push_str(head);
@@ -1871,6 +1873,32 @@ fn tile_error_kind(e: &str) -> String {
             out.push('#');
         } else {
             out.push_str(digits);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `e` with the rest of each web address in it after its host (`http://` or `https://`, any case,
+/// up to the next space or its end) replaced by `/…`: the path and query, which name the tile,
+/// go; the server stays, so another server's failure is a kind of its own.
+fn without_urls(e: &str) -> String {
+    let mut out = String::with_capacity(e.len());
+    let mut rest = e;
+    loop {
+        // ASCII lower case keeps each byte where it is.
+        let lower = rest.to_ascii_lowercase();
+        let Some(i) = lower.find("http://").into_iter().chain(lower.find("https://")).min() else { break };
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let (url, after) = tail.split_at(end);
+        let host_from = url.find("://").map_or(0, |n| n + 3);
+        let host_end = url[host_from..].find(['/', '?', '#']).map_or(url.len(), |n| host_from + n);
+        out.push_str(&url[..host_end]);
+        if host_end < url.len() {
+            out.push_str("/…");
         }
         rest = after;
     }
@@ -4991,6 +5019,19 @@ mod tile_redraw_tests {
         assert_eq!(tile_error_kind("Tiles: 3 tiles are partial (first: HTTP 404)"), "Tiles: # tiles are partial (first: HTTP 404)");
         assert_eq!(tile_error_kind("Layer 12: 2 warped tile components left out: x"), "Layer 12: # warped tile components left out: x");
         assert_eq!(tile_error_kind("Tiles: missing source"), "Tiles: missing source");
+        // An address names its tile (z/x/y): two tiles' are one kind (#2657).
+        let a = tile_error_kind("1 tiles left out: https://b.s3.example/t/3/4/5.png?X-Sig=1 answered with a redirect");
+        let b = tile_error_kind("7 tiles left out: https://b.s3.example/t/9/8/7.png?X-Sig=2 answered with a redirect");
+        assert_eq!(a, b);
+        assert_eq!(a, "# tiles left out: https://b.s3.example/… answered with a redirect");
+        // Another server is another kind.
+        assert_ne!(a, tile_error_kind("1 tiles left out: https://a.s3.example/t/3/4/5.png answered with a redirect"));
+        // Two addresses, one at the end, any case.
+        assert_eq!(
+            tile_error_kind("from HTTPS://x.example/1/2/3.png to http://y.example/4/5/6.png?k=1"),
+            "from HTTPS://x.example/… to http://y.example/…"
+        );
+        assert_eq!(tile_error_kind("refused by https://x.example"), "refused by https://x.example");
         let mut app = crate::RustGisApp::with_sample();
         let said = |app: &crate::RustGisApp, mark| app.session.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
         let mark = app.session.notice_mark();

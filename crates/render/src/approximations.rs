@@ -107,6 +107,7 @@ pub(crate) fn take() -> Vec<String> {
 /// What frames drawn on this thread approximated so far, with their kinds, and how many kinds were
 /// turned away; forgotten here, for [`restore`] or to say.
 pub(crate) fn keep() -> (Vec<Entry>, usize) {
+    flush_stray_dashes();
     (SAID.with(|s| std::mem::take(&mut *s.borrow_mut())), TURNED_AWAY.with(|c| c.replace(0)))
 }
 
@@ -153,10 +154,13 @@ pub(crate) fn layer(name: Option<&str>) {
     let solid = SOLID_DASHES.with(|c| c.replace(0));
     LAYER.with(|l| {
         let mut l = l.borrow_mut();
-        if solid > 0
-            && let Some(was) = l.as_deref()
-        {
-            note(format!("{was}\0dashes"), solid_dashes_text(was, solid));
+        if solid > 0 {
+            match l.as_deref() {
+                Some(was) => note(format!("{was}\0dashes"), solid_dashes_text(was, solid)),
+                // Counted outside any layer (a legend's swatch, say): said for the map, under a
+                // key no layer's name can take.
+                None => note_stray_dashes(solid),
+            }
         }
         match name {
             Some(n) if l.as_deref() != Some(n) => *l = Some(n.to_string()),
@@ -164,6 +168,23 @@ pub(crate) fn layer(name: Option<&str>) {
             None => *l = None,
         }
     });
+}
+
+/// Notes `n` lines drawn solid outside any layer, for the map.
+fn note_stray_dashes(n: u32) {
+    note("\0dashes".to_string(), solid_dashes_text("Map", n));
+}
+
+/// Notes lines drawn solid outside any layer since the last layer ended: whoever reads
+/// ([`keep`]) reads them too, though no later [`layer`] call would say them. A layer still being
+/// drawn keeps its count for [`layer`] to say.
+fn flush_stray_dashes() {
+    if LAYER.with(|l| l.borrow().is_none()) {
+        let n = SOLID_DASHES.with(|c| c.replace(0));
+        if n > 0 {
+            note_stray_dashes(n);
+        }
+    }
 }
 
 /// Forgets the layer being drawn and what it approximated so far, unsaid: a frame stopped
@@ -293,6 +314,31 @@ mod tests {
         dashes_drawn_solid();
         layer(None);
         assert!(!HIGHLIGHTING.with(Cell::get));
+    }
+
+    #[test]
+    fn lines_counted_outside_a_layer_are_said_for_the_map() {
+        take();
+        layer(None);
+        dashes_drawn_solid();
+        layer(None);
+        assert_eq!(take(), vec![solid_dashes_text("Map", 1)]);
+        // Counted after the last layer, with no layer call after it (a legend's swatch): read all
+        // the same.
+        dashes_drawn_solid();
+        assert_eq!(take(), vec![solid_dashes_text("Map", 1)]);
+        // A layer named "Map" is a kind of its own.
+        layer(Some("Map"));
+        dashes_drawn_solid();
+        layer(None);
+        dashes_drawn_solid();
+        assert_eq!(take().len(), 2);
+        // A layer being drawn keeps its count for itself.
+        layer(Some("Roads"));
+        dashes_drawn_solid();
+        assert!(take().is_empty());
+        layer(None);
+        assert_eq!(take(), vec![solid_dashes_text("Roads", 1)]);
     }
 
     #[test]
