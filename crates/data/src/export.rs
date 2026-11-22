@@ -6,7 +6,7 @@
 
 use std::{borrow::Cow, path::Path};
 
-use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, PROJECTED_FORMATS, check_projected, project_each, write_atomic_with};
+use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, check_projected, project_each, write_atomic_with};
 use crate::raster::Crs;
 use crate::rows::Query;
 use crate::source::FeatureSource;
@@ -225,7 +225,7 @@ fn write_chunks_as(
         return Err(DataError::Unsupported("a source that can't be read a chunk at a time".into()));
     }
     if crs != Crs::LonLat {
-        if !PROJECTED_FORMATS.contains(&ext) {
+        if !crate::io::holds_a_system(ext) {
             return Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())));
         }
         check_projected(ext, crs)?;
@@ -344,7 +344,7 @@ fn write_chunks_as(
             Ok::<_, DataError>(0)
         })?,
         "csv" => write_atomic_with(path, |out| {
-            let mut w = CsvWriter::new(out, &layer.fields, geometry_type)?;
+            let mut w = CsvWriter::new(out, &layer.fields, geometry_type, crs)?;
             feed(&mut |features| w.write(features))?;
             w.finish()?;
             Ok::<_, DataError>(0)
@@ -353,7 +353,7 @@ fn write_chunks_as(
             crate::source::fgb::write_features(&layer.name, geometry_type, &layer.fields, crs, out, &mut feed)
         })?,
         _ => write_atomic_with(path, |out| {
-            let (_, counts, messages) = crate::source::parquet::write_features(geometry_type, &layer.fields, out, &mut feed)?;
+            let (_, counts, messages) = crate::source::parquet::write_features(geometry_type, &layer.fields, crs, out, &mut feed)?;
             unfit = counts;
             date_messages = messages;
             Ok::<_, DataError>(0)

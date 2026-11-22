@@ -13,6 +13,7 @@
 
 use super::remote::{self, Remote};
 use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit};
+use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use bytes::Bytes;
 use parquet::basic::{ConvertedType, Encoding, LogicalType, Type as Physical};
@@ -1594,7 +1595,35 @@ fn wkb_type_name(g: &crate::Geometry) -> &'static str {
 /// `bbox` covering column so readers can skip rows and row groups by extent. A table without
 /// geometry is written as plain Parquet.
 pub fn write(ds: &crate::Dataset) -> Result<Vec<u8>> {
-    write_features(ds.geometry_type, &ds.fields, Vec::new(), &mut |add| add(&ds.features)).map(|(bytes, _, _)| bytes)
+    write_in(ds, Crs::LonLat)
+}
+
+/// As [`write`], for a dataset whose coordinates are in `crs`, which the geometry column's `crs`
+/// says ([`projjson`]); refused for a system it can't say.
+pub fn write_in(ds: &crate::Dataset, crs: Crs) -> Result<Vec<u8>> {
+    write_features(ds.geometry_type, &ds.fields, crs, Vec::new(), &mut |add| add(&ds.features)).map(|(bytes, _, _)| bytes)
+}
+
+/// The GeoParquet `crs` (PROJJSON) of a system other than longitude/latitude, which GeoParquet
+/// takes when a column has none. Only a system with an EPSG code: its PROJJSON carries the code,
+/// which every release of RustGIS reads ([`crs_code`]), where one without would be read as
+/// longitude/latitude. `None` for one without a code, or one terrio-crs can't write.
+pub(crate) fn projjson(crs: Crs) -> Option<serde_json::Value> {
+    let code = u32::from(crs.epsg());
+    if code == 0 || crs == Crs::LonLat {
+        return None;
+    }
+    let text = terrio_crs::SpatialRef::from_epsg(code).ok()?.to_projjson().ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    (crs_code(Some(&value)) == Some(code)).then_some(value)
+}
+
+/// Why a GeoParquet can't be written in `crs` ([`projjson`] has none for it).
+pub(crate) fn projjson_refusal(crs: Crs) -> String {
+    match crs.epsg() {
+        0 => "it has no EPSG code; give the system as an EPSG code".to_string(),
+        code => format!("RustGIS can't write a PROJJSON definition of EPSG:{code}"),
+    }
 }
 
 /// An Integer column's value, `None` for one it can't hold: a whole float fits; a fraction, a
@@ -1752,6 +1781,7 @@ pub fn values_note(ds: &crate::Dataset, target: &str) -> Option<String> {
 pub(crate) fn write_features<W: std::io::Write + Send>(
     geometry_type: GeometryType,
     fields: &[Field],
+    crs: Crs,
     out: W,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<(W, Vec<usize>, Vec<String>)> {
@@ -1773,6 +1803,14 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
         })?;
     }
     let has_geom = geometry_type != GeometryType::None;
+    // Before anything is written: a system the file couldn't say would be read as degrees.
+    let crs_json = match crs {
+        Crs::LonLat => None,
+        _ if !has_geom => None,
+        other => Some(
+            projjson(other).ok_or_else(|| DataError::Unsupported(format!(".parquet in {}: {}", other.label(), projjson_refusal(other))))?,
+        ),
+    };
     let geom_name = free_name(fields, "geometry");
     let bbox_name = free_name(fields, "bbox");
     let prim = |name: &str, t: Physical, rep: Repetition, logical: Option<LogicalType>| {
@@ -1929,6 +1967,9 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
         });
         if !e.is_empty() {
             col["bbox"] = serde_json::json!([e.min_x, e.min_y, e.max_x, e.max_y]);
+        }
+        if let Some(c) = crs_json {
+            col["crs"] = c;
         }
         let geo = serde_json::json!({"version": "1.1.0", "primary_column": geom_name, "columns": {geom_name.clone(): col}});
         w.append_key_value_metadata(KeyValue::new("geo".to_string(), geo.to_string()));

@@ -591,8 +591,27 @@ pub fn write_bytes(ds: &Dataset, ext: &str) -> Result<(Vec<u8>, usize)> {
 }
 
 /// The formats that can be written in a coordinate system other than WGS 84 longitude/latitude
-/// (GeoJSON, KML and GPX are longitude/latitude by definition).
-pub const PROJECTED_FORMATS: [&str; 4] = ["gpkg", "shp", "zip", "fgb"];
+/// (GeoJSON, KML and GPX are longitude/latitude by definition). GeoParquet takes only a system with
+/// an EPSG code ([`check_projected`]).
+pub const PROJECTED_FORMATS: [&str; 6] = ["gpkg", "shp", "zip", "fgb", "parquet", "geoparquet"];
+
+/// Whether a format of extension `ext` can be written in a coordinate system other than WGS 84
+/// longitude/latitude when one is asked for: those of [`PROJECTED_FORMATS`], and CSV, whose x and
+/// y columns are then in it, though the file can't say which system that is
+/// ([`csv_system_note`]); CSV is never written in another by default.
+pub fn holds_a_system(ext: &str) -> bool {
+    let ext = ext.to_ascii_lowercase();
+    PROJECTED_FORMATS.contains(&ext.as_str()) || ext == "csv"
+}
+
+/// What is said of a CSV export of a point layer written in `crs` other than longitude/latitude:
+/// the file can't say its system, so adding it back needs it given. `None` otherwise.
+pub fn csv_system_note(path: &str, geometry_type: GeometryType, crs: Crs) -> Option<String> {
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    (ext == "csv" && geometry_type == GeometryType::Point && crs != Crs::LonLat).then(|| {
+        format!("{path}: its coordinates are in {}, which a CSV file can't say; give that system when adding it back", crs.label())
+    })
+}
 
 /// The coordinate system an export to extension `ext` is written in when none is asked for: the
 /// one the dataset was read in, for a format that can say it, else WGS 84. A system without an
@@ -611,8 +630,15 @@ pub fn default_export_note(ds: &Dataset, path: &str) -> Option<String> {
     let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let own = ds.crs.filter(|&c| c != Crs::LonLat && PROJECTED_FORMATS.contains(&ext.as_str()))?;
     (default_export_crs(ds, &ext) == Crs::LonLat).then(|| {
+        let why = if !matches!(ext.as_str(), "parquet" | "geoparquet") {
+            "has no EPSG code and no WKT definition RustGIS can write"
+        } else if own.epsg() == 0 {
+            "has no EPSG code"
+        } else {
+            "has no PROJJSON definition RustGIS can write"
+        };
         format!(
-            "{path}: the coordinate system of {} ({}) has no EPSG code and no WKT definition RustGIS can write, so it is written in WGS 84 (EPSG:4326); give a \"crs\" to write another",
+            "{path}: the coordinate system of {} ({}) {why}, so it is written in WGS 84 (EPSG:4326); give a \"crs\" to write another",
             ds.name,
             own.label()
         )
@@ -699,10 +725,15 @@ pub fn define_projection(ds: &Dataset, crs: Crs) -> Result<Dataset> {
     Ok(out)
 }
 
-/// Refuses a system for a GeoPackage or FlatGeobuf that the file couldn't declare: one without an
+/// Refuses a system for a GeoParquet that has no EPSG code ([`crate::source::parquet::projjson`]),
+/// and for a GeoPackage or FlatGeobuf that the file couldn't declare: one without an
 /// EPSG code is declared by its WKT definition, and without one (a projection WKT1 has no name
 /// for) the file would read as longitude/latitude.
 pub(crate) fn check_projected(ext: &str, crs: Crs) -> Result<()> {
+    // GeoParquet says a system by PROJJSON with its EPSG code, which every release reads.
+    if matches!(ext, "parquet" | "geoparquet") && crs != Crs::LonLat && crate::source::parquet::projjson(crs).is_none() {
+        return Err(DataError::Unsupported(format!(".{ext} in {}: {}", crs.label(), crate::source::parquet::projjson_refusal(crs))));
+    }
     if crs.epsg() == 0 && matches!(ext, "gpkg" | "fgb") && crate::raster::wkt::to_wkt(crs).is_none() {
         return Err(DataError::Unsupported(format!(
             ".{ext} in {}: it has no EPSG code or WKT definition; give the system as an EPSG code",
@@ -717,7 +748,7 @@ pub(crate) fn check_projected(ext: &str, crs: Crs) -> Result<()> {
 pub fn write_bytes_in(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usize)> {
     let ext = ext.to_ascii_lowercase();
     if crs != Crs::LonLat {
-        if !PROJECTED_FORMATS.contains(&ext.as_str()) {
+        if !holds_a_system(&ext) {
             return Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())));
         }
         check_projected(&ext, crs)?;
@@ -738,9 +769,9 @@ fn projected_bytes(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usize)
             w.write(&ds.features)?;
             (w.finish()?, 0)
         }
-        "csv" => (to_csv(ds)?.into_bytes(), 0),
+        "csv" => (to_csv_in(ds, crs)?.into_bytes(), 0),
         "fgb" => (crate::source::fgb::write_in(ds, crs)?, without_geometry(ds)),
-        "parquet" | "geoparquet" => (crate::source::parquet::write(ds)?, 0),
+        "parquet" | "geoparquet" => (crate::source::parquet::write_in(ds, crs)?, 0),
         "kml" => (crate::interop::to_kml(ds, name_field(ds))?.into_bytes(), without_geometry(ds)),
         "kmz" => {
             let kml = crate::interop::to_kml(ds, name_field(ds))?.into_bytes();
@@ -813,7 +844,7 @@ pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> R
     let projected;
     // From the system the dataset holds its coordinates in ([`project`]): as they are when that
     // is `crs`, and when `crs` is one the format can't hold, which is refused below.
-    let ds = if crs == ds.coord_crs() || (crs != Crs::LonLat && !PROJECTED_FORMATS.contains(&ext.as_str())) {
+    let ds = if crs == ds.coord_crs() || (crs != Crs::LonLat && !holds_a_system(&ext)) {
         ds
     } else {
         projected = project(ds, crs)?;
@@ -842,7 +873,7 @@ pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> R
             let kept = place_shapefile(path, &stage_shapefile(&parts)?)?;
             Ok((left_out, None, kept_backups_note(path, &kept).into_iter().collect()))
         }
-        _ if crs != Crs::LonLat && !PROJECTED_FORMATS.contains(&ext.as_str()) => {
+        _ if crs != Crs::LonLat && !holds_a_system(&ext) => {
             Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())))
         }
         _ => {
@@ -3029,9 +3060,33 @@ fn csv_coordinate_names(fields: &[Field]) -> [String; 2] {
     [pick("longitude", LON_NAMES), pick("latitude", LAT_NAMES)]
 }
 
+/// The names of a point layer's x and y columns in CSV written in a projected system: `x` and
+/// `y`, which reading takes first when given a projected system, else `easting` and `northing`,
+/// else `x_1` and `y_1` and so on, the first that no field has (ignoring case and spaces).
+fn csv_projected_names(fields: &[Field]) -> [String; 2] {
+    let taken = |name: &str| fields.iter().any(|f| f.name.trim().eq_ignore_ascii_case(name));
+    let pick = |base: &str, other: &str| {
+        let name = [base.to_string(), other.to_string()].into_iter().chain((1..).map(|i| format!("{base}_{i}"))).find(|n| !taken(n));
+        name.unwrap_or_default()
+    };
+    [pick("x", "easting"), pick("y", "northing")]
+}
+
+/// A point layer's coordinate column names in CSV written in `crs`: longitude and latitude ones
+/// for a geographic system, x and y ones for a projected one.
+fn csv_names_in(fields: &[Field], crs: Crs) -> [String; 2] {
+    if crs.is_geographic() { csv_coordinate_names(fields) } else { csv_projected_names(fields) }
+}
+
 /// A dataset as CSV text: its fields, and a point layer's longitude and latitude ([`CsvWriter`]).
 pub fn to_csv(ds: &Dataset) -> Result<String> {
-    let mut w = CsvWriter::new(Vec::new(), &ds.fields, ds.geometry_type)?;
+    to_csv_in(ds, Crs::LonLat)
+}
+
+/// As [`to_csv`], for a dataset whose coordinates are in `crs`: a projected system's go in x and y
+/// columns ([`csv_projected_names`]).
+pub fn to_csv_in(ds: &Dataset, crs: Crs) -> Result<String> {
+    let mut w = CsvWriter::new(Vec::new(), &ds.fields, ds.geometry_type, crs)?;
     w.write(&ds.features)?;
     String::from_utf8(w.finish()?).map_err(|e| DataError::Format(e.to_string()))
 }
@@ -3044,14 +3099,15 @@ pub(crate) struct CsvWriter<W: std::io::Write> {
 }
 
 impl<W: std::io::Write> CsvWriter<W> {
-    /// Writes the header for `fields`, with coordinate columns for a point layer.
-    pub(crate) fn new(out: W, fields: &[Field], geometry_type: GeometryType) -> Result<Self> {
+    /// Writes the header for `fields`, with coordinate columns for a point layer, named for
+    /// `crs`, the system its features' coordinates are in ([`csv_names_in`]).
+    pub(crate) fn new(out: W, fields: &[Field], geometry_type: GeometryType, crs: Crs) -> Result<Self> {
         let mut w = csv::Writer::from_writer(out);
         let point = geometry_type == GeometryType::Point;
         let mut head = Vec::new();
         if point {
             // The coordinate columns come first, before any attributes using recognised names.
-            head.extend(csv_coordinate_names(fields));
+            head.extend(csv_names_in(fields, crs));
         }
         head.extend(fields.iter().map(|f| f.name.clone()));
         w.write_record(&head).map_err(|e| DataError::Format(e.to_string()))?;
@@ -4581,8 +4637,26 @@ impl CsvLosses {
     /// Warns when adding the CSV back may use attributes for geometry. This can happen when the
     /// coordinate names are all taken or when unusable coordinate rows let a competing pair win.
     pub fn coordinates_note(&self, fields: &[Field], target: &str) -> Option<String> {
+        self.coordinates_note_in(fields, target, Crs::LonLat)
+    }
+
+    /// As [`CsvLosses::coordinates_note`], for a CSV written in `crs`. In a projected system, the
+    /// x and y columns come first and reading takes them first when given the system, unless the
+    /// fields hold every name they could have.
+    pub fn coordinates_note_in(&self, fields: &[Field], target: &str, crs: Crs) -> Option<String> {
         if !self.points {
             return None;
+        }
+        if !crs.is_geographic() {
+            let [x, y] = csv_projected_names(fields);
+            let target: String = target.chars().map(dbf_notice_char).collect();
+            return (x != "x" && x != "easting" || y != "y" && y != "northing").then(|| {
+                format!(
+                    "{target}: the fields have the names 'x', 'y', 'easting' and 'northing', so the coordinates are in columns '{}' and '{}'; pick those columns when adding the file back",
+                    dbf_notice_name(&x),
+                    dbf_notice_name(&y)
+                )
+            });
         }
         let header: Vec<String> = csv_coordinate_names(fields).into_iter().chain(fields.iter().map(|f| f.name.clone())).collect();
         let alternative = found_non_geographic_xy(&header);
@@ -4901,13 +4975,24 @@ impl std::ops::AddAssign for TextLosses {
 /// other values are [`shapefile_values_notes`]). A streamed export counts CSV's changes a chunk
 /// at a time instead.
 pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str) -> Result<Vec<String>> {
+    export_losses_notes_in(ds, ext, name_field, target, Crs::LonLat)
+}
+
+/// As [`export_losses_notes`], for an export written in `crs`.
+pub fn export_losses_notes_in(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str, crs: Crs) -> Result<Vec<String>> {
     let mut notes = match ext {
         "csv" => {
-            // Of the longitude/latitude the file is written in.
-            let ds = ds.in_lonlat().map_err(DataError::of_conversion)?;
+            // Of the coordinates the file is written in: longitude/latitude, or another system's.
+            let ds = if crs == Crs::LonLat {
+                ds.in_lonlat().map_err(DataError::of_conversion)?
+            } else if crs == ds.coord_crs() {
+                std::borrow::Cow::Borrowed(ds)
+            } else {
+                std::borrow::Cow::Owned(project(ds, crs)?)
+            };
             let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?;
             let mut notes = losses.notes(&ds.fields, target);
-            notes.extend(losses.coordinates_note(&ds.fields, target));
+            notes.extend(losses.coordinates_note_in(&ds.fields, target, crs));
             notes
         }
         "kml" | "kmz" => kml_empty_fields_note(ds, target)?.into_iter().collect(),

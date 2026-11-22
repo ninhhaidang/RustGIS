@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 
 use crate::{Project, Session, sample};
 
+#[path = "tests/formats_out.rs"]
+mod formats_out;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/scene_losses.rs"]
 mod scene_losses;

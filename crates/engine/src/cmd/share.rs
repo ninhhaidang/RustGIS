@@ -34,7 +34,7 @@ pub fn commands() -> Vec<C> {
         C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer")).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .when(need_layer)
-            .params(r#"{"layer"?, "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "crs"?: "EPSG:… (or WKT) for a GeoPackage, Shapefile or FlatGeobuf (default: the system the layer was read in, else EPSG:4326)", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the layer's name)"} Applies the layer's definition query and reports how many features it leaves out."#),
+            .params(r#"{"layer"?, "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "crs"?: "EPSG:… (or WKT) for a GeoPackage, Shapefile or FlatGeobuf, EPSG:… for a GeoParquet (default: the system the layer was read in, else EPSG:4326), or for a CSV's coordinate columns, x and y in a projected one (default: EPSG:4326)", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the layer's name)"} Applies the layer's definition query and reports how many features it leaves out."#),
         C::new("share.exportTable", "Export Table", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportTable")).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(
             r#"{"table": name|id (a standalone table), "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the table's name)", "sort"?: [{"field": name, "descending"?: false}], "limit"?: "nonnegative integer: keep the first N rows after sorting"}"#,
@@ -705,8 +705,8 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     };
     let unread = unreadable.rows;
     let ds = chunks.as_ref().map_or(whole.as_ref(), |(_, layer)| layer);
-    // GeoJSON, KML and GPX are longitude/latitude; the others keep the layer's own system unless
-    // told another.
+    // GeoJSON, KML, GPX and CSV are longitude/latitude (CSV takes another when asked); the others
+    // keep the layer's own system unless told another.
     let crs = asked.unwrap_or_else(|| rustgis_data::io::default_export_crs(ds, &ext));
     // Another body's layer projected onto another ellipsoid would be wrong data, not a wrong name.
     if let Some(e) = rustgis_data::export_error(ds, crs) {
@@ -745,15 +745,15 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             dates.extend(e.date_messages.iter().map(|n| format!("{path}: {n}")));
             dates.extend(e.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", layer.name)));
             let mut format_notes = e.csv.notes(&ds.fields, path);
-            format_notes.extend(e.csv.coordinates_note(&ds.fields, path));
+            format_notes.extend(e.csv.coordinates_note_in(&ds.fields, path, crs));
             // Text that reading the file back changes: CSV reads a blank cell as null; KML and GPX trim
             // their values.
             format_notes.extend(e.text.notes(&ds.fields, path));
             (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, format_notes, dates)
         }
         None => {
-            let mut format_notes =
-                rustgis_data::io::export_losses_notes(ds, &ext, rustgis_data::io::name_field(ds), path).map_err(|e| e.to_string())?;
+            let mut format_notes = rustgis_data::io::export_losses_notes_in(ds, &ext, rustgis_data::io::name_field(ds), path, crs)
+                .map_err(|e| e.to_string())?;
             let (left_out, table, placed) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
             // Old parts of a Shapefile written over that couldn't be removed.
             format_notes.extend(placed);
@@ -774,6 +774,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     if asked.is_none() {
         notes.extend(rustgis_data::io::default_export_note(ds, path));
     }
+    notes.extend(rustgis_data::io::csv_system_note(path, ds.geometry_type, crs));
     notes.extend(moved);
     // A Shapefile (`.shp`, or zipped to `.zip`) cuts field names to dBase's.
     let shapefile = matches!(ext.as_str(), "shp" | "zip");

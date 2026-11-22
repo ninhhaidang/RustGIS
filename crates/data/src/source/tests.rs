@@ -3125,6 +3125,134 @@ fn exports_are_written_in_the_system_the_layer_was_read_in() {
     assert!(crate::io::write_path_in(&ds, &d.join("squares.geojson"), Crs::from_epsg(25832).unwrap()).is_err());
 }
 
+#[test]
+fn a_geoparquet_export_keeps_a_system_with_an_epsg_code() {
+    let d = dir().join("export-parquet-crs");
+    std::fs::create_dir_all(&d).unwrap();
+    let ds = utm_squares(25832);
+    let utm = Crs::from_epsg(25832).unwrap();
+    for ext in ["parquet", "geoparquet"] {
+        assert_eq!(crate::io::default_export_crs(&ds, ext), utm, "{ext}");
+        assert_eq!(crate::io::default_export_note(&ds, &format!("a.{ext}")), None, "{ext}");
+        let p = d.join(format!("utm.{ext}"));
+        crate::io::write_path_in(&ds, &p, utm).unwrap();
+        // Read back in the same system, at the same coordinates, by its EPSG code.
+        let (back, _) = materialize(open_path(&p, None).unwrap().as_ref()).unwrap();
+        assert_eq!(back.crs, Some(utm), "{ext}");
+        assert_eq!(back.coord_crs(), utm, "{ext}");
+        let coords = |ds: &Dataset| {
+            let mut v = Vec::new();
+            for f in &ds.features {
+                f.geometry.as_ref().unwrap().for_each_coord(|c| v.push((c.x, c.y)));
+            }
+            v
+        };
+        assert_eq!(coords(&back), coords(&ds), "{ext}");
+        // The written bytes are the whole-file and the in-memory writer alike.
+        let (bytes, _) = crate::io::write_bytes_in(&ds, ext, utm).unwrap();
+        let (mem, _) = crate::io::read_bytes(&format!("m.{ext}"), &bytes).unwrap();
+        assert_eq!(mem.crs, Some(utm), "{ext}");
+    }
+    // Longitude/latitude writes the file as before: no `crs` on the geometry column.
+    let lonlat = crate::io::project(&ds, Crs::LonLat).unwrap();
+    let mut plain = lonlat.clone();
+    plain.crs = None;
+    let (a, _) = crate::io::write_bytes_in(&plain, "parquet", Crs::LonLat).unwrap();
+    assert_eq!(a, crate::source::parquet::write(&plain).unwrap());
+    let geo = |bytes: &[u8]| {
+        use ::parquet::file::reader::FileReader;
+        let r = ::parquet::file::reader::SerializedFileReader::new(bytes::Bytes::copy_from_slice(bytes)).unwrap();
+        let kv = r.metadata().file_metadata().key_value_metadata().unwrap().clone();
+        let geo = kv.into_iter().find(|k| k.key == "geo").unwrap().value.unwrap();
+        serde_json::from_str::<serde_json::Value>(&geo).unwrap()
+    };
+    assert!(geo(&a)["columns"]["geometry"].get("crs").is_none());
+    let (b, _) = crate::io::write_bytes_in(&ds, "parquet", utm).unwrap();
+    assert_eq!(geo(&b)["columns"]["geometry"]["crs"]["id"]["code"], 25832);
+    // A system without an EPSG code: written in WGS 84 by default (said), refused when asked for.
+    let wkt =
+        crate::raster::wkt::to_wkt(utm).unwrap().replace(",AUTHORITY[\"EPSG\",\"25832\"]", "").replace("ETRS89 / UTM zone 32N", "My grid");
+    let custom = crate::raster::wkt::crs_from_wkt(&wkt).unwrap();
+    let mut own = ds.clone();
+    own.crs = Some(custom);
+    assert_eq!(crate::io::default_export_crs(&own, "parquet"), Crs::LonLat);
+    let note = crate::io::default_export_note(&own, "a.parquet").unwrap();
+    assert!(note.contains("has no EPSG code,") && note.contains("WGS 84"), "{note}");
+    let e = crate::io::write_path_in(&own, &d.join("custom.parquet"), custom).unwrap_err().to_string();
+    assert!(e.contains("no EPSG code"), "{e}");
+}
+
+#[test]
+fn a_csv_export_takes_x_and_y_in_a_system_asked_for() {
+    use crate::{Field, FieldType, Value};
+    let d = dir().join("export-csv-crs");
+    std::fs::create_dir_all(&d).unwrap();
+    let lv95 = Crs::from_epsg(2056).unwrap();
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+    ds.push(Some(Geometry::Point(Coord::new(2_600_000.5, 1_200_000.25))), vec![Value::Text("Bern".into())]);
+    ds.crs = Some(lv95);
+    ds.held_in = lv95;
+    // By default it stays longitude/latitude, as before.
+    assert_eq!(crate::io::default_export_crs(&ds, "csv"), Crs::LonLat);
+    assert!(crate::io::holds_a_system("CSV") && !crate::io::holds_a_system("geojson"));
+    let lonlat = String::from_utf8(crate::io::write_bytes(&ds, "csv").unwrap().0).unwrap();
+    assert!(lonlat.starts_with("longitude,latitude,name\n7.43"), "{lonlat}");
+    assert_eq!(crate::io::csv_system_note("a.csv", ds.geometry_type, Crs::LonLat), None);
+    // Asked for, its own coordinates go in x and y, exactly.
+    let p = d.join("pts.csv");
+    crate::io::write_path_in(&ds, &p, lv95).unwrap();
+    let text = std::fs::read_to_string(&p).unwrap();
+    assert_eq!(text, "x,y,name\n2600000.5,1200000.25,Bern\n");
+    let (bytes, _) = crate::io::write_bytes_in(&ds, "csv", lv95).unwrap();
+    assert_eq!(String::from_utf8(bytes).unwrap(), text);
+    // Read back with the system given, at the same place.
+    let opts = crate::io::CsvOptions { crs: Some(lv95), ..Default::default() };
+    let (back, _) = crate::io::read_csv_with(&text, "pts", &opts).unwrap();
+    let mut at = Vec::new();
+    back.features[0].geometry.as_ref().unwrap().for_each_coord(|c| at.push((c.x, c.y)));
+    let mut want = Vec::new();
+    ds.features[0].geometry.as_ref().unwrap().for_each_coord(|c| want.push((c.x, c.y)));
+    let back_lonlat = crate::io::project(&back, Crs::LonLat).unwrap();
+    let ds_lonlat = crate::io::project(&ds, Crs::LonLat).unwrap();
+    let pt = |ds: &Dataset| match ds.features[0].geometry {
+        Some(Geometry::Point(c)) => c,
+        _ => panic!(),
+    };
+    assert!((pt(&back_lonlat).x - pt(&ds_lonlat).x).abs() < 1e-9 && (pt(&back_lonlat).y - pt(&ds_lonlat).y).abs() < 1e-9);
+    // The file can't say its system, so that is said.
+    let note = crate::io::csv_system_note("pts.csv", ds.geometry_type, lv95).unwrap();
+    assert!(note.contains("EPSG:2056") && note.contains("can't say"), "{note}");
+    assert_eq!(crate::io::csv_system_note("pts.gpkg", ds.geometry_type, lv95), None);
+    // Fields named x and y push the columns to easting and northing; every name taken is said.
+    let mut xy = Dataset::new("xy", GeometryType::Point, vec![Field::new("X", FieldType::Integer), Field::new("y", FieldType::Integer)]);
+    xy.push(Some(Geometry::Point(Coord::new(2_600_000.0, 1_200_000.0))), vec![Value::Int(1), Value::Int(2)]);
+    xy.crs = Some(lv95);
+    xy.held_in = lv95;
+    let text = crate::io::to_csv_in(&xy, lv95).unwrap();
+    assert!(text.starts_with("easting,northing,X,y\n"), "{text}");
+    assert!(crate::io::export_losses_notes_in(&xy, "csv", None, "xy.csv", lv95).unwrap().is_empty());
+    let mut every = xy.clone();
+    every.fields.push(Field::new("easting", FieldType::Integer));
+    every.fields.push(Field::new("northing", FieldType::Integer));
+    for f in &mut every.features {
+        f.attrs.extend([Value::Int(3), Value::Int(4)]);
+    }
+    assert!(crate::io::to_csv_in(&every, lv95).unwrap().starts_with("x_1,y_1,"));
+    let notes = crate::io::export_losses_notes_in(&every, "csv", None, "xy.csv", lv95).unwrap();
+    assert!(notes.iter().any(|n| n.contains("'x_1' and 'y_1'")), "{notes:?}");
+    // Into a geographic system other than WGS 84: longitude and latitude columns, and no note
+    // of unusable positions, which are counted on the coordinates written.
+    // Fields named x and y are a pair reading could take instead, which a note names when rows
+    // lack a usable longitude/latitude: counted on LV95's metres, every row would.
+    let etrs89 = Crs::from_epsg(4258).unwrap();
+    let (bytes, _) = crate::io::write_bytes_in(&ds, "csv", etrs89).unwrap();
+    assert!(String::from_utf8(bytes).unwrap().starts_with("longitude,latitude,name\n7.43"));
+    assert!(crate::io::export_losses_notes_in(&ds, "csv", None, "pts.csv", etrs89).unwrap().is_empty());
+    assert_eq!(xy.coord_crs(), lv95);
+    let notes = crate::io::export_losses_notes_in(&xy, "csv", None, "xy.csv", etrs89).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
 /// A catalog index as AlphaEarth's is (a `bbox` struct, a nested `assets.data.href`), and patch
 /// embeddings as Earth Index's are (a fixed-size list of floats a point), in row groups of 50.
 fn write_index_and_vectors() -> Vec<u8> {

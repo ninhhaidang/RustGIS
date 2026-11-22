@@ -490,9 +490,11 @@ For `.geojson`, publish also checks that the source is unchanged, that it still 
 at the last sync, and that both the original and the edited layer survive a read/write. It keeps
 the document's kind (FeatureCollection, Feature or bare geometry), a collection's name, and
 feature ids. Ordinary integer coordinate text stays integer text when the value is unchanged.
-Whitespace and member order may change.
+Whitespace and member order may change. A legacy `crs` member is kept, and the layer is written
+back in the system it names (Swiss LV95 coordinates stay LV95); a layer whose coordinate system
+was defined again since is refused.
 
-Publish refuses a rewrite that would change foreign members, a legacy `crs` member, Z values,
+Publish refuses a rewrite that would change foreign members, Z values,
 a geometry the reader simplifies, nested properties it reads as text, duplicate object keys,
 number text the writer would spell differently (such as `1.00`, `1E3`, or a decimal below
 0.00001 such as `0.000004`, which it writes `4e-6`), a property that mixes numbers and text

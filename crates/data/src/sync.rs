@@ -32,6 +32,34 @@ pub struct Synced {
     pub files: FileSync,
     /// The layer's [`rows_digest`] then: the file's as it read then too.
     pub rows: u64,
+    /// For a layer held in a system of its own, its [`native_digest`] then, which is compared
+    /// instead of [`Synced::rows`] when there is one: it hashes the coordinates as held, so it
+    /// takes no conversion of the whole layer, and it still matches once the conversion to
+    /// longitude/latitude changes (a datum grid downloaded). `rows` is kept beside it for the
+    /// releases before it, which compare that. Such a release saves the project again without
+    /// it, which loses nothing it needs: the record is then compared by `rows`, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<u64>,
+}
+
+impl Synced {
+    /// The record of `ds` as read from `files`: its [`rows_digest`], and its [`native_digest`]
+    /// when it is held in a system other than longitude/latitude (else the two are the same).
+    pub fn record(files: FileSync, ds: &crate::Dataset) -> crate::Result<Self> {
+        let (rows, native) = digests(ds)?;
+        Ok(Self { files, rows, native })
+    }
+
+    /// The digest recorded, to compare with [`Synced::digest_of`] a layer.
+    pub fn digest(&self) -> u64 {
+        self.native.unwrap_or(self.rows)
+    }
+
+    /// The digest of `ds` of the kind recorded: [`native_digest`] when the record has one, else
+    /// [`rows_digest`] (a record saved by an older release, or of a layer in longitude/latitude).
+    pub fn digest_of(&self, ds: &crate::Dataset) -> crate::Result<u64> {
+        if self.native.is_some() { native_digest(ds) } else { rows_digest(ds) }
+    }
 }
 
 /// A hash of what a dataset holds: its fields, coordinate system, and each row's geometry and
@@ -43,6 +71,32 @@ pub struct Synced {
 /// does. Its work grows with the rows: each is counted as progress ([`crate::progress`]), and it
 /// stops once the run is cancelled; the desktop app runs it off the UI thread.
 pub fn rows_digest(ds: &crate::Dataset) -> crate::Result<u64> {
+    Ok(hashes(ds, true, false)?.0.unwrap_or_default())
+}
+
+/// The digests [`Synced::record`] keeps of `ds`: its [`rows_digest`], and its [`native_digest`]
+/// when it is held in a system other than longitude/latitude.
+pub fn digests(ds: &crate::Dataset) -> crate::Result<(u64, Option<u64>)> {
+    if ds.coord_crs() == crate::raster::Crs::LonLat {
+        return Ok((rows_digest(ds)?, None));
+    }
+    let (rows, native) = hashes(ds, true, true)?;
+    Ok((rows.unwrap_or_default(), native))
+}
+
+/// [`rows_digest`] over the geometry as the dataset holds it, in its own system, without
+/// converting it to longitude/latitude; the same as [`rows_digest`] for a dataset held in
+/// longitude/latitude.
+pub fn native_digest(ds: &crate::Dataset) -> crate::Result<u64> {
+    if ds.coord_crs() == crate::raster::Crs::LonLat {
+        return rows_digest(ds);
+    }
+    Ok(hashes(ds, false, true)?.1.unwrap_or_default())
+}
+
+/// The digests of `ds`: its [`rows_digest`] (its geometry in longitude/latitude) when `lonlat`,
+/// and its [`native_digest`] (as held) when `native`, in one pass over the rows.
+fn hashes(ds: &crate::Dataset, lonlat: bool, native: bool) -> crate::Result<(Option<u64>, Option<u64>)> {
     /// FNV-1a over the bytes written to it.
     struct Fnv(u64);
     impl std::io::Write for Fnv {
@@ -60,35 +114,53 @@ pub fn rows_digest(ds: &crate::Dataset) -> crate::Result<u64> {
         let _ = serde_json::to_writer(&mut *h, value);
         h.0 = (h.0 ^ 0xff).wrapping_mul(0x0100_0000_01b3);
     }
-    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    /// The rows' values past their geometry: a number that isn't finite by its bits.
+    fn non_finite(h: &mut Fnv, attrs: &[crate::Value]) {
+        for (index, value) in attrs.iter().enumerate() {
+            if let crate::Value::Float(number) = value
+                && !number.is_finite()
+            {
+                put(h, &("non-finite", index, number.to_bits()));
+            }
+        }
+    }
     // Whole Shapefile/GeoJSON reads record fields with no aliases. Clear display-only aliases
     // when comparing a layer, keeping the serialized form and existing saved digests unchanged.
     let mut fields = ds.fields.clone();
     for field in &mut fields {
         field.alias = None;
     }
-    put(&mut h, &(&fields, &ds.crs));
+    let start = |h: &mut Fnv| put(h, &(&fields, &ds.crs));
+    let (mut a, mut b) = (Fnv(0xcbf2_9ce4_8422_2325), Fnv(0xcbf2_9ce4_8422_2325));
+    start(&mut a);
+    start(&mut b);
     // Its geometry in longitude/latitude, as every release before #2032 C2 held a file's rows
     // (converted by the same transformer the readers converted them with), so a digest saved
-    // then still matches the file read now in its own coordinates.
-    let to = ds.lonlat_conversion().map_err(crate::DataError::Format)?;
+    // then still matches the file read now in its own coordinates. Or as held, with the system
+    // it is held in (as a project saves it, not its display label), so the same numbers held in
+    // another system differ.
+    let held = ds.coord_crs();
+    if held != crate::raster::Crs::LonLat {
+        put(&mut b, &("held in", &held));
+    }
+    let to = if lonlat { Some(ds.lonlat_conversion().map_err(crate::DataError::Format)?) } else { None };
+    let converts = to.as_ref().filter(|t| !t.is_identity());
     crate::progress::begin(ds.features.len());
     for f in ds.features.iter() {
-        if to.is_identity() {
-            put(&mut h, &(&f.geometry, &f.attrs));
-        } else {
-            put(&mut h, &(&f.geometry.as_ref().map(|g| to.geometry(g)), &f.attrs));
-        }
-        for (index, value) in f.attrs.iter().enumerate() {
-            if let crate::Value::Float(number) = value
-                && !number.is_finite()
-            {
-                put(&mut h, &("non-finite", index, number.to_bits()));
+        if lonlat {
+            match converts {
+                Some(to) => put(&mut a, &(&f.geometry.as_ref().map(|g| to.geometry(g)), &f.attrs)),
+                None => put(&mut a, &(&f.geometry, &f.attrs)),
             }
+            non_finite(&mut a, &f.attrs);
+        }
+        if native {
+            put(&mut b, &(&f.geometry, &f.attrs));
+            non_finite(&mut b, &f.attrs);
         }
         crate::progress::step(1)?;
     }
-    Ok(h.0)
+    Ok((lonlat.then_some(a.0), native.then_some(b.0)))
 }
 
 /// Whether `path` names a source whose files a [`FileSync`] records: a Shapefile or a
@@ -414,6 +486,53 @@ mod tests {
         assert_eq!(rows_digest(&ds).unwrap(), 1_724_049_670_388_433_092);
         ds.fields[0].alias = Some("Street name".into());
         assert_eq!(rows_digest(&ds).unwrap(), 1_724_049_670_388_433_092, "an alias changes display, not file contents");
+    }
+
+    /// A layer held in a system of its own is recorded by its own coordinates too, compared in
+    /// their place, while the longitude/latitude digest older releases compare is kept beside
+    /// them. A layer in longitude/latitude is recorded as before, with no second digest, and a
+    /// record saved without one is compared as before.
+    #[test]
+    fn a_held_layer_is_recorded_by_its_own_coordinates_too() {
+        use crate::{Coord, Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
+        let mut lonlat = Dataset::new("a".to_string(), GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        lonlat.features =
+            vec![Feature { id: 1, geometry: Some(Geometry::Point(Coord { x: 7.4, y: 46.9 })), attrs: vec![Value::Int(4)] }].into();
+        let files = FileSync { files: Vec::new() };
+        let plain = Synced::record(files.clone(), &lonlat).unwrap();
+        assert_eq!(plain, Synced { files: files.clone(), rows: rows_digest(&lonlat).unwrap(), native: None });
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"files":{"files":[]},"rows":"#.to_string() + &plain.rows.to_string() + "}");
+        assert_eq!(native_digest(&lonlat).unwrap(), rows_digest(&lonlat).unwrap());
+
+        let lv95 = crate::raster::Crs::from_epsg(2056).unwrap();
+        let mut held = lonlat.clone();
+        held.crs = Some(lv95);
+        held.held_in = lv95;
+        held.features =
+            vec![Feature { id: 1, geometry: Some(Geometry::Point(Coord { x: 2_600_000.0, y: 1_200_000.0 })), attrs: vec![Value::Int(4)] }]
+                .into();
+        let record = Synced::record(files.clone(), &held).unwrap();
+        assert_eq!(record.rows, rows_digest(&held).unwrap());
+        assert_eq!(record.native, Some(native_digest(&held).unwrap()));
+        assert_ne!(record.native, Some(record.rows));
+        assert_eq!(record.digest_of(&held).unwrap(), record.digest());
+        // Read back, and as an older release saved it: compared by the longitude/latitude one.
+        let text = serde_json::to_string(&record).unwrap();
+        assert_eq!(serde_json::from_str::<Synced>(&text).unwrap(), record);
+        let older = Synced { native: None, ..record.clone() };
+        assert_eq!(serde_json::from_str::<Synced>(&serde_json::to_string(&older).unwrap()).unwrap(), older);
+        assert_eq!(older.digest_of(&held).unwrap(), older.digest());
+        // An edit shows by either.
+        let mut edited = held.clone();
+        let mut rows: Vec<_> = edited.features.iter().cloned().collect();
+        rows[0].attrs[0] = Value::Int(5);
+        edited.features = rows.into();
+        assert_ne!(record.digest_of(&edited).unwrap(), record.digest());
+        assert_ne!(older.digest_of(&edited).unwrap(), older.digest());
+        // The same numbers held in another system are another layer.
+        let mut other = held.clone();
+        other.held_in = crate::raster::Crs::from_epsg(21781).unwrap();
+        assert_ne!(native_digest(&other).unwrap(), native_digest(&held).unwrap());
     }
 
     #[test]

@@ -207,7 +207,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
         layer.crs = whole.crs;
         let format = src.info().format;
         for ext in STREAMED {
-            let systems: &[Crs] = if PROJECTED_FORMATS.contains(&ext) { &[Crs::LonLat, Crs::WebMercator] } else { &[Crs::LonLat] };
+            let systems: &[Crs] = if crate::io::holds_a_system(ext) { &[Crs::LonLat, Crs::WebMercator] } else { &[Crs::LonLat] };
             for &crs in systems {
                 let (a, b) =
                     (d.join(format!("{format}-streamed-{}.{ext}", crs.epsg())), d.join(format!("{format}-whole-{}.{ext}", crs.epsg())));
@@ -424,9 +424,15 @@ fn streamed_exports_refuse_what_they_cant_write() {
     let ds = squares();
     let layer = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
     let src = Runs::new(&ds, 10);
-    for (name, crs) in
-        [("out.shp", Crs::LonLat), ("out.kml", Crs::LonLat), ("out.geojson", Crs::WebMercator), ("out.parquet", Crs::WebMercator)]
-    {
+    // GeoParquet says a system by its EPSG code only: one without is refused.
+    let gnomonic = Crs::parse("+proj=gnom +lat_0=51 +lon_0=9 +datum=WGS84 +units=m +no_defs").unwrap();
+    for (name, crs) in [
+        ("out.shp", Crs::LonLat),
+        ("out.kml", Crs::LonLat),
+        ("out.geojson", Crs::WebMercator),
+        ("out.kml", Crs::WebMercator),
+        ("out.parquet", gnomonic),
+    ] {
         assert!(write_source_in(&src, &layer, &d.join(name), crs).is_err(), "{name}");
     }
     let whole_only = Runs { chunks: false, ..Runs::new(&ds, 10) };

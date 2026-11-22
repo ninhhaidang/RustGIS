@@ -62,9 +62,14 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
         let (synced, path, dataset, instance, name) =
             (synced.clone(), path.to_string(), l.dataset.clone(), l.instance_id(), l.name.clone());
         Ok(Box::new(move || {
-            let rows = rustgis_data::sync::rows_digest(&dataset).map_err(|e| e.to_string())?;
+            // Both kinds of digest, before anything is written: the record the publish makes may
+            // keep the other kind (an older release's record kept no native one), and Cancel must
+            // not leave a written file without its record.
+            let (lonlat_rows, native_rows) = rustgis_data::sync::digests(&dataset).map_err(|e| e.to_string())?;
+            let of_kind = |native: bool| if native { native_rows } else { Some(lonlat_rows) };
+            let rows = of_kind(synced.native.is_some());
             let features = dataset.features.len();
-            if rows == synced.rows {
+            if rows == Some(synced.digest()) {
                 let changed = synced.files.changed(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
                 if !changed.is_empty() {
                     return Err(format!(
@@ -105,12 +110,15 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 }
             }
             held.crs = published.read.crs;
+            // In the system the file is read in, which a layer a project saved before RustGIS
+            // kept a file's own coordinates (held in longitude/latitude) takes with them.
+            held.held_in = published.read.coord_crs();
             // Already hashed before the files were placed: Cancel must not leave a successful
             // write without its sync record. Feature ids do not contribute to the digest.
-            let read = published.rows;
-            // Unchanged when the file reads as the layer is.
-            let held = (read != rows).then_some(held);
-            let new = rustgis_data::sync::Synced { files: published.files, rows: read };
+            let new = rustgis_data::sync::Synced { files: published.files, rows: published.rows, native: published.native };
+            // Unchanged when the file reads as the layer is: compared by the digest of the kind
+            // the new record keeps, hashed above.
+            let held = (of_kind(new.native.is_some()) != Some(new.digest())).then_some(held);
             let (said, written_path) = (path.clone(), Some(path.clone()));
             let then: Then = Box::new(move |s: &mut Session, _: &mut Value| {
                 let mark = s.notice_mark();
@@ -128,10 +136,12 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                             && l.dataset.features.shares(&dataset.features)
                             && l.dataset.fields == dataset.fields
                             && l.dataset.crs == dataset.crs
+                            && l.dataset.held_in == dataset.held_in
                         {
                             l.dataset.features = held.features;
                             l.dataset.fields = held.fields;
                             l.dataset.crs = held.crs;
+                            l.dataset.held_in = held.held_in;
                             l.touch_geometry();
                             s.revision = s.revision.wrapping_add(1);
                         }
@@ -197,7 +207,7 @@ pub(crate) fn sync_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadWor
     let (synced, path, dataset) = (l.synced.clone()?, l.dataset.source.clone().filter(|p| local_file(p))?, l.dataset.clone());
     Some(super::reads::ahead("Source File State", ahead_key(id), move || {
         let changed = synced.files.changed(std::path::Path::new(&path)).map_err(|e| e.to_string());
-        let rows = rustgis_data::sync::rows_digest(&dataset).map_err(|e| e.to_string());
+        let rows = synced.digest_of(&dataset).map_err(|e| e.to_string());
         Checked { synced, path, dataset, rows, changed }
     }))
 }
@@ -227,7 +237,7 @@ fn sync_state(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let (was, files, path) = (synced.rows, synced.files.clone(), path.to_string());
+        let (was, synced, path) = (synced.digest(), synced.clone(), path.to_string());
         let ahead = super::reads::take::<Checked>(s, &ahead_key(id));
         let l = s.map().layer(id).ok_or("the layer no longer exists")?;
         let (rows, changed) = match ahead {
@@ -235,8 +245,8 @@ fn sync_state(s: &mut Session, p: &Value) -> CmdResult {
             // Checking again here would hold the window: the check made on its thread is dropped.
             Some(_) => return Err("the layer or its file's record changed while it was checked: check again".into()),
             None => (
-                rustgis_data::sync::rows_digest(&l.dataset).map_err(|e| e.to_string())?,
-                files.changed(std::path::Path::new(&path)).map_err(|e| e.to_string())?,
+                synced.digest_of(&l.dataset).map_err(|e| e.to_string())?,
+                synced.files.changed(std::path::Path::new(&path)).map_err(|e| e.to_string())?,
             ),
         };
         let edited = rows != was;

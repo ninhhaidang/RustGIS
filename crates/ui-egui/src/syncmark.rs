@@ -1,10 +1,10 @@
 //! Edits not yet published (#1385): whether a layer read whole from a Shapefile or GeoJSON file
 //! holds rows its file lacks, for the Layers pane. The layer's rows are hashed
-//! (`rustgis_data::sync::rows_digest`) on a thread of their own and compared with the record of
+//! (`rustgis_data::sync::Synced::digest_of`) on a thread of their own and compared with the record of
 //! the last sync; the answer is kept until the rows, fields, coordinate system or record change.
 //! An edit copies the rows, so a changed layer is told by their allocation without a hash. The
 //! rows hashed are held only while their hash runs. A hash whose layer changed or went away is
-//! cancelled (`rows_digest` looks at Cancel between rows), and no more hashes run at once than
+//! cancelled (the digest looks at Cancel between rows), and no more hashes run at once than
 //! the thread setting allows (`rustgis_data::threads::max`), so opening a project of many large
 //! layers doesn't start one each. Nothing is counted: the mark is a status, not a run with
 //! progress. App state alone: nothing here dirties the project or adds an undo step.
@@ -49,7 +49,7 @@ impl Drop for Job {
 }
 
 /// A thread's Cancel, as the readers' progress checks look at it: the hash thread's
-/// (`rows_digest`), a download's read ([`crate::read_download`]).
+/// (`Synced::digest_of`), a download's read ([`crate::read_download`]).
 pub(crate) struct Stop(pub(crate) Arc<AtomicBool>);
 
 impl rustgis_engine::data::progress::Probe for Stop {
@@ -79,7 +79,7 @@ impl Entry {
     /// the previous state's.
     fn answer(&self) -> Option<bool> {
         match &self.digest {
-            Some(Ok(digest)) => Some(*digest != self.synced.rows),
+            Some(Ok(digest)) => Some(*digest != self.synced.digest()),
             // This state's hash failed: unknown, not the previous state's answer.
             Some(Err(_)) => None,
             None => self.shown,
@@ -155,13 +155,13 @@ pub(crate) fn edited(app: &mut crate::RustGisApp, l: &Layer, ctx: &egui::Context
         } else {
             let (slot, stop) = (crate::Slot::default(), Arc::new(AtomicBool::new(false)));
             let (out, probe) = (slot.clone(), Stop(stop.clone()));
-            let dataset = l.dataset.clone();
+            let (dataset, synced) = (l.dataset.clone(), entry.synced.clone());
             let spawned = std::thread::Builder::new().name("Edits not published".into()).spawn(move || {
                 let _probe = rustgis_engine::data::progress::install(Some(Arc::new(probe)));
                 // A panic lands as an answer too, so it never holds the turn. Neither this nor a
-                // refused thread below can be brought about in a test: `rows_digest` has no panic
+                // refused thread below can be brought about in a test: `digest_of` has no panic
                 // path, and the OS refuses threads only under load.
-                let digest = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_engine::data::sync::rows_digest(&dataset)))
+                let digest = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| synced.digest_of(&dataset)))
                     .map_err(|_| "the hash stopped".to_string())
                     .and_then(|d| d.map_err(|e| e.to_string()));
                 *out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(digest);
@@ -192,7 +192,7 @@ pub(crate) fn hashed(app: &mut crate::RustGisApp, l: &Layer, ctx: &egui::Context
     edited(app, l, ctx);
     let e = app.syncmark.entries.get(&(app.session.map().instance_id(), l.instance_id()))?;
     match e.digest.as_ref()? {
-        Ok(digest) => Some(*digest != e.synced.rows),
+        Ok(digest) => Some(*digest != e.synced.digest()),
         Err(_) => None,
     }
 }
@@ -234,7 +234,7 @@ mod tests {
             rows: Weak::new(),
             fields: Vec::new(),
             crs: None,
-            synced: Synced { files: FileSync { files: Vec::new() }, rows: 7 },
+            synced: Synced { files: FileSync { files: Vec::new() }, rows: 7, native: None },
             digest: None,
             job: Some(Job { slot, stop: Arc::new(AtomicBool::new(false)), current }),
             retry: None,
