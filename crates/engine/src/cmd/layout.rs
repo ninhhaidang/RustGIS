@@ -785,8 +785,16 @@ pub(crate) fn veil_panel(
     ))
 }
 
-/// A publication layout's colorbar's height, in mm: its title, the bar and its labels.
+/// A publication layout's colorbar's height, in mm, with a title of one line: its title, the bar and
+/// its labels.
 const COLORBAR_MM: f64 = 15.0;
+
+/// A publication layout's colorbar's height, in mm, `width` mm wide: [`COLORBAR_MM`] and a line's
+/// pitch more for each line its title wraps to past the first (#2493).
+fn colorbar_mm(title: &str, width: f64) -> f64 {
+    let lines = crate::render::layout::colorbar_title_lines(title, width).len();
+    COLORBAR_MM + lines.saturating_sub(1) as f64 * crate::render::layout::line_pitch_mm(crate::render::layout::COLORBAR_TITLE_PT)
+}
 
 /// The share of what the map draws a surround may cover before the layout warns about it, when a
 /// corner freer by at least as much went to another surround.
@@ -2167,7 +2175,20 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     // A colour table whose values can't be known (too many to list) gives the legend no class, and
     // the sheet no key for it; classes from an overview may miss a rare one: said, not left out.
     warnings.extend(raster_key_notices(s.map(), &[], false));
-    let (bar_w, bar_h) = (if sheet { 50.0 * k } else { 40.0 }, COLORBAR_MM);
+    // A page of cards gives the locator in its column a card of the column's width, and the legend
+    // under it one as wide.
+    let card = style == Style::Modular && column.is_some();
+    let (card_r, card_pad) = (3.0 * k, 2.5 * k);
+    // The colorbar's title is the raster's name, over the bar. The box is as wide as the title, up
+    // to the legend's cap (in a side column, the column's width); a longer title wraps there, each
+    // line past the first making the colorbar taller (#2493).
+    let title_room = match column {
+        Some(c) => c.w + if card { 2.0 * card_pad } else { 0.0 } - 2.0 * pad,
+        None => fw * 0.45 - 2.0 * pad,
+    };
+    let base_w = if sheet { 50.0 * k } else { 40.0 };
+    let bar_w = base_w.max(bar.as_deref().map_or(0.0, crate::render::layout::colorbar_title_width_mm).min(title_room));
+    let bar_h = bar.as_deref().map_or(COLORBAR_MM, |title| colorbar_mm(title, bar_w.min(title_room)));
     let bar_part = if bar.is_some() { bar_h + if ch > 0.0 { 2.0 } else { 0.0 } } else { 0.0 };
     let (content_w, content_h) = (if bar.is_some() { cw.max(bar_w) } else { cw }, ch + bar_part);
     let legend_in_column = column.is_some();
@@ -2734,9 +2755,6 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         Some(c) => Some((c.x + (c.w - side) / 2.0, c.y, side, side)),
         None => spot_of(Surround::Locator).inspect(|&r| placed.push(("locator", r))),
     };
-    // A page of cards gives the locator in its column a card of the column's width.
-    let card = style == Style::Modular && column.is_some();
-    let (card_r, card_pad) = (3.0 * k, 2.5 * k);
     let surround_box = |fill: Rgba| if style.cards() { pub_card(fill, clear, 0.0, 2.0 * k) } else { pub_box(fill, clear, 0.0) };
     if let (Some((map, locator_scale, shape, locator_center)), Some(r)) = (&locator_map, locator_rect) {
         if let (true, Some(c)) = (card, column) {
@@ -2809,13 +2827,17 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         );
         // The colorbar at the bottom of the box, as tall as the box allows; the legend's rows in
         // what is left above it. Each says when it doesn't fit, rather than one blaming the other.
+        // The colorbar's title wraps to the box as it is drawn (#2493), which may be wider than
+        // the colorbar asked for (the rows in more columns): fewer lines leave the rows more room.
         let (ix, iy, iw, ih) = (r.0 + pad, r.1 + pad, lw - 2.0 * pad, lh - 2.0 * pad);
-        let bar_fit = if bar.is_some() { bar_h.min(ih) } else { 0.0 };
+        let bar_need = bar.as_deref().map_or(0.0, |title| colorbar_mm(title, iw));
+        let bar_fit = bar_need.min(ih);
         let rows_h = (ih - bar_fit - if bar.is_some() { bar_part - bar_h } else { 0.0 }).max(0.0);
         warnings.extend(legend_fit_warnings(legend_cols, (cw, ch), (iw, rows_h)).into_iter().map(String::from));
         // In a column the colorbar takes the column's width, as its rows do.
-        if bar.is_some() && ((bar_w > iw + LEGEND_FIT_MM && !legend_in_column) || bar_h > ih + LEGEND_FIT_MM) {
-            warnings.push("the legend's box is smaller than the colorbar: it is drawn narrower or shorter".into());
+        if let Some(layer) = bar.as_deref().filter(|_| (base_w > iw + LEGEND_FIT_MM && !legend_in_column) || bar_need > ih + LEGEND_FIT_MM)
+        {
+            warnings.push(format!("the legend's box is smaller than the colorbar of '{layer}': it is drawn narrower or shorter"));
         }
         if ch > 0.0 && rows_h >= 1.0 {
             l.add(

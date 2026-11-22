@@ -79,6 +79,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     filled legend and no colorbar; a colour table over more values than a legend lists (over 256, or
     not whole) has neither, and a warning says so. A raster on a ramp on top that is still reading
     gets no colorbar either, rather than the one of a raster under it, and a warning says so too.
+    The colorbar's title is the raster's name: the legend's box widens for it, up to its cap (45% of
+    the frame's width, or the side column's), and a longer name wraps there, the box taller by its lines.
     `"colorbar": "none"` leaves it out, and the legend's box is sized for the legend alone: hiding
     the colorbar afterwards would leave its room empty in the box. The legend takes the fewest columns, up to three,
     that fit the largest rectangle the map leaves free; when none fits, a long one is laid in more
@@ -362,7 +364,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   tables. Its properties pick the **Layer** (unless one is picked, the top visible raster with a
   colour scale, not drawn by classes: a legend lists a land cover's classes, and a colorbar
   added over a map with only such rasters draws an empty placeholder and says so), the
-  **Title** (the units, such as `Elevation (m)`; the layer's name to start with), the
+  **Title** (the units, such as `Elevation (m)`; the layer's name to start with; one wider than the colorbar
+  wraps at spaces onto more lines, the bar under them), the
   **Orientation**, which side the **Labels** go on, how many **Ticks** a gradient labels (2 to
   21, the ends included) and **Reverse** (high values first). An RGB raster or a hillshade
   without a tint has no colour scale and shows a placeholder, as does a picked layer that was

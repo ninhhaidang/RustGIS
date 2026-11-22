@@ -13383,6 +13383,64 @@ fn a_publication_layouts_raster_gets_a_colorbar() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A raster's long name as its colorbar's title stays in the legend's box (#2493). The box widens
+/// for the title, up to the legend's cap (45% of the frame), and a longer title wraps there; a
+/// figure's wraps within its 40 mm bar. The colorbar is taller by each line past the first. A
+/// short name keeps the one line and the height it had. Fonts differ between systems, so whether
+/// the name fits one line on A4 isn't asked: only that it wraps no sooner than at the cap.
+#[test]
+fn a_publications_colorbar_title_stays_in_the_legends_box() {
+    use rustgis_render::layout::{COLORBAR_TITLE_PT, colorbar_title_lines, colorbar_title_width_mm, line_pitch_mm};
+    let dir = std::env::temp_dir().join(format!("rustgis-2493-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tif = dir.join("chuva.tif");
+    std::fs::write(&tif, rustgis_data::raster::cog::example(256, 128)).unwrap();
+    let long = "Precipitação média mensal JAXA GSMaP (mm/mês), jan–mar 2025";
+    // The colorbar, the legend's box and the map frame of a publication on `profile` of the raster
+    // named `name`, and the command's answer.
+    let publish = |name: &str, profile: &str| {
+        let mut s = Session::new(Project::default());
+        s.run("layer.addData", &json!({"path": tif.display().to_string(), "name": name})).unwrap();
+        let p = json!({"extent": [10, 45, 11, 46], "profile": profile, "title": "Colorbar test", "author": "", "locator": "none"});
+        let r = s.run("layout.publication", &p).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        let named = |n: &str| l.elements.iter().find(|e| e.name == n).cloned().unwrap_or_else(|| panic!("{profile}: no {n}: {r}"));
+        (named("Colorbar"), named("Legend Box"), named("Map Frame"), r)
+    };
+    // Whether the name wraps whatever the font: A5's and the figure's room is well under its width.
+    for (profile, wraps) in [("a4-landscape", None), ("a5-portrait", Some(true)), ("figure-1col", Some(true))] {
+        // A short name: one line, the colorbar's height as before.
+        let (bar, short_box, _, r) = publish("chuva", profile);
+        assert_eq!((colorbar_title_lines("chuva", bar.w).len(), bar.h), (1, 15.0), "{profile}: {r}");
+        assert!(!r["warnings"].to_string().contains("colorbar"), "chuva on {profile}: {r}");
+        let (bar, then, frame, r) = publish(long, profile);
+        // The title's lines as the colorbar draws them, at its width.
+        let lines = colorbar_title_lines(long, bar.w);
+        let widest = lines.iter().map(|line| colorbar_title_width_mm(line)).fold(0.0, f64::max);
+        let tall = 15.0 + (lines.len() - 1) as f64 * line_pitch_mm(COLORBAR_TITLE_PT);
+        let inside = bar.x >= then.x - 1e-9
+            && bar.y >= then.y - 1e-9
+            && bar.x + bar.w <= then.x + then.w + 1e-9
+            && bar.y + bar.h <= then.y + then.h + 1e-9;
+        assert!(inside, "{profile}: the colorbar outside its box: {r}");
+        assert!(widest <= bar.w + 0.01, "{profile}: {lines:?} wider than the colorbar's {} mm: {r}", bar.w);
+        assert!(bar.h >= tall - 1e-9, "{profile}: {lines:?} need {tall} mm, the colorbar has {}: {r}", bar.h);
+        if let Some(wraps) = wraps {
+            assert_eq!(lines.len() > 1, wraps, "{profile}: {lines:?} in {} mm: {r}", bar.w);
+        }
+        // The title widens the box up to the legend's cap, never past it or the box a short name
+        // gets (a figure's bar alone is wider than the cap), and wraps only once the box is there.
+        let cap = frame.w * 0.45;
+        assert!(then.w <= cap.max(short_box.w) + 1e-9, "{profile}: the box past the legend's cap: {r}");
+        assert!(lines.len() == 1 || then.w >= cap - 1e-6, "{profile}: {lines:?} wrapped in a box {} mm wide, short of {cap}: {r}", then.w);
+        if profile == "figure-1col" {
+            assert!(bar.w <= 40.0 + 1e-9, "a figure's colorbar is at most 40 mm wide: {r}");
+        }
+        assert!(!r["warnings"].to_string().contains("colorbar"), "{profile}: {r}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Series page labels and dynamic text share the row-number fallback for null and blank names.
 #[test]
 fn map_series_empty_names_use_row_numbers() {
