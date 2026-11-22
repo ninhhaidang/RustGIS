@@ -484,7 +484,7 @@ fn tool_list() -> Vec<Value> {
         .into_iter()
         .map(|d| {
             let description = match d.name {
-                "run_command" => "Run a RustGIS command by id with JSON parameters (see search_commands for ids and parameters). Each run is one undo step (edit.undo undoes it). Commands that read or write files or use the network run only when the server was started with --yes.".to_string(),
+                "run_command" => "Run a RustGIS command by id with JSON parameters (see search_commands for ids and parameters). Each run that changes the project is one undo step (edit.undo undoes it). Commands that read or write files or use the network run only when the server was started with --yes.".to_string(),
                 "read_doc" => {
                     let pages: Vec<&str> = docs::PAGES.iter().map(|p| p.path).collect();
                     format!("Read a RustGIS documentation page or section as Markdown. Use next_offset to continue budgeted results. Pages: {}.", pages.join(", "))
@@ -496,7 +496,7 @@ fn tool_list() -> Vec<Value> {
         .collect();
     out.push(json!({
         "name": "run",
-        "description": "Run several RustGIS commands in one call, as one undo step: a script with one `command-id {json}` per line (# starts a comment), e.g. `map.basemap {\"name\": \"ocean\"}`. A failing line stops the script, nothing it did to the project is kept (a file an earlier line wrote stays written), and the error names the line. Returns {success, result (the last command's), lines, layersAdded, notices, error, duration_s}. Each line follows the same rules as run_command.",
+        "description": "Run several RustGIS commands in one call, as one undo step (none when its lines only read the project, moved the view, exported, left a request, or ran a command that reports it changed nothing, such as a move to where the layers already are; a line that sets a value to the one it has still counts): a script with one `command-id {json}` per line (# starts a comment), e.g. `map.basemap {\"name\": \"ocean\"}`. A failing line stops the script, nothing it did to the project is kept (a file an earlier line wrote stays written), and the error names the line. Returns {success, result (the last command's), lines, layersAdded, notices, error, duration_s}. Each line follows the same rules as run_command.",
         "inputSchema": {
             "type": "object",
             "properties": {"script": {"type": "string", "description": "One command per line: id {json}"}},

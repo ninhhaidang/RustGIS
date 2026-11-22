@@ -1120,7 +1120,9 @@ fn wire(v: &mut Value, outputs: &[String], step: usize, depth: usize) -> Result<
 /// Runs a script of commands, one per line (`id {json}`), stopping at the first error. Scripts
 /// typed in the Script pane or passed on the command line are the user's own, so they may use
 /// any command, files included; notebooks vet cells that came from files before running them.
-/// The whole script is one undo step.
+/// The whole script is one undo step, none when no line changed what undo restores
+/// ([`Session::shared_step`]): its lines only read the project, moved the view, wrote files
+/// elsewhere, left a request, or said they changed nothing.
 pub(crate) fn run_script(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(ran) = super::reads::take::<super::gp::RanAheads>(s, SCRIPT_AHEAD) {
@@ -1178,6 +1180,9 @@ fn run_script_here(s: &mut Session, p: &Value, prepared: bool) -> CmdResult {
         let r = r.map_err(|e| format!("line {n}: {id}: {e}"))?;
         out.push(json!({"line": n, "command": id, "result": r}));
     }
+    // An undo step only when a line edited ([`Session::shared_step`]); run inside a task, the
+    // task's account, earlier steps included, decides.
+    s.request_only = !s.shared_steps.edited;
     Ok(json!({"ran": out}))
 }
 

@@ -543,10 +543,6 @@ struct Bridge<'a> {
     plugin: Arc<Plugin>,
     /// What this call fetched (`host.fetch`).
     fetches: fetch::Calls,
-    /// Whether a request could have changed the project (a command that mutates, a layer added).
-    changed: bool,
-    /// Whether a command left a request for the front end instead ([`Session::request_url`]).
-    requested: bool,
 }
 
 impl Bridge<'_> {
@@ -689,7 +685,8 @@ impl Bridge<'_> {
         let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&self.plugin.manifest.name).to_string();
         let gj = p.get("geojson").ok_or("geojson is required")?;
         let (ds, report) = rustgis_data::io::read_geojson(&gj.to_string(), &name).map_err(|e| e.to_string())?;
-        self.changed = true;
+        // Not a command: counted as the commands it runs are ([`Session::shared_step`]).
+        self.s.shared_steps.edited = true;
         let id = super::layer::add_dataset(self.s, ds);
         Ok(json!({"layer": id, "skipped": report.skipped}))
     }
@@ -712,7 +709,7 @@ impl Bridge<'_> {
             return Err(format!("plugins can't use a saved web-service connection's login ('{id}')"));
         }
         let spec = *self.s.registry.get(id).ok_or_else(|| format!("unknown command '{id}'"))?;
-        let (label, mutates) = (spec.label, spec.mutates);
+        let label = spec.label;
         let named = params.get("layer").and_then(|_| self.s.layer_id(params).ok());
         let active = self.s.active_layer;
         if named.is_some() {
@@ -732,18 +729,13 @@ impl Bridge<'_> {
         let tile_sources =
             |s: &Session| -> std::collections::HashSet<_> { s.project.maps.iter().flat_map(|m| &m.tiles).map(fetched).collect() };
         let before = (!self.plugin.manifest.has(Permission::Network)).then(|| tile_sources(self.s));
-        // The plugin command took the undo snapshot: the commands it runs are part of it. A
-        // command that only left a request for the front end ([`Session::request_url`]) changed
-        // nothing; a later one must not erase the undo step for an earlier edit.
-        self.s.request_only = false;
+        // The plugin command took the undo snapshot: the commands it runs are part of it, and say
+        // what they did in its account ([`Session::shared_step`]).
         let mut res = crate::service_logins::anonymously(self.s, true, |s| {
             let op = s.authorize(id, params)?;
             super::workflows::steps_of(s, |s| s.invoke(op, crate::policy::Txn::Shared))
         })
         .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")));
-        let requested = std::mem::take(&mut self.s.request_only);
-        self.requested |= requested;
-        self.changed |= mutates && !requested;
         if let Some(before) = before {
             let mut dropped = false;
             for m in &mut self.s.project.maps {
@@ -914,7 +906,7 @@ impl Session {
         let mark = self.notice_mark();
         let res = self.guarded(label, mutates, |s| {
             let fetches = fetch::Calls::for_plugin(&plugin.manifest.id);
-            let mut bridge = Bridge { s, plugin, fetches, changed: false, requested: false };
+            let mut bridge = Bridge { s, plugin, fetches };
             let res = rustgis_plugins::run_command_with_panel(&cmd, &mut bridge, params, request);
             #[cfg(not(target_arch = "wasm32"))]
             let res = res.map_err(|e| match capped {
@@ -936,7 +928,8 @@ impl Session {
             }
             // Nor is a command that only left downloads for the front end: they add their
             // layers, each its own undo step, when they land.
-            bridge.s.request_only = res.is_ok() && (state_command || bridge.requested) && !bridge.changed;
+            let steps = bridge.s.shared_steps;
+            bridge.s.request_only = res.is_ok() && (state_command || steps.requested) && !steps.edited;
             res
         });
         if let Some(decl) = &panel {
@@ -1052,9 +1045,9 @@ impl Host for Between<'_> {
         let plugin = self.plugin.clone();
         let bridge = |s: &mut Session| {
             let fetches = fetch::Calls::for_plugin(&plugin.manifest.id);
-            let mut bridge = Bridge { s, plugin: plugin.clone(), fetches, changed: false, requested: false };
+            let mut bridge = Bridge { s, plugin: plugin.clone(), fetches };
             let res = bridge.call(op, params);
-            (res, bridge.changed, bridge.requested)
+            (res, bridge.s.shared_steps.edited, bridge.s.shared_steps.requested)
         };
         // A fetch waits on the app's thread: between commands the program fetches for itself.
         if op == "host.fetch" {
@@ -1375,12 +1368,14 @@ mod tests {
         let mut s = Session::new(crate::Project::default());
         s.leave_downloads = true;
         let fetches = fetch::Calls::for_plugin("eng-bridge");
-        let mut bridge = Bridge { s: &mut s, plugin, fetches, changed: false, requested: false };
+        let mut bridge = Bridge { s: &mut s, plugin, fetches };
         bridge.call("layer.addUrl", &json!({"url": "https://x.org/a.geojson"})).unwrap();
-        assert!(bridge.requested && !bridge.changed, "a request alone changes nothing");
+        let steps = bridge.s.shared_steps;
+        assert!(steps.requested && !steps.edited, "a request alone changes nothing");
         bridge.call("map.new", &json!({"name": "B"})).unwrap();
         bridge.call("layer.addUrl", &json!({"url": "https://x.org/b.geojson"})).unwrap();
-        assert!(bridge.requested && bridge.changed, "the edit is still one");
+        let steps = bridge.s.shared_steps;
+        assert!(steps.requested && steps.edited, "the edit is still one");
         assert!(!bridge.s.request_only, "the bridge took the flag");
         assert_eq!(s.take_url_requests().len(), 2);
         rustgis_plugins::unload("eng-bridge");

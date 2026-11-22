@@ -5,10 +5,11 @@ use serde_json::{Value, json};
 
 use crate::{Project, Session};
 
-struct Files(std::path::PathBuf);
+/// A fresh folder for a test's files, removed when the test ends, failed or not.
+pub(super) struct Files(std::path::PathBuf);
 
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -17,7 +18,7 @@ impl Files {
         Self(path)
     }
 
-    fn path(&self) -> &std::path::Path {
+    pub(super) fn path(&self) -> &std::path::Path {
         &self.0
     }
 }

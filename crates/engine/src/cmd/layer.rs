@@ -7108,12 +7108,26 @@ fn move_layer(s: &mut Session, p: &Value, d: i32) -> CmdResult {
 }
 
 /// Moves a layer to a position in the drawing order: 0 is the top, anything past the end the
-/// bottom. One command (and one undo step) however far the layer travels.
+/// bottom. One command (and one undo step) however far the layer travels; none when the layers
+/// are already where they were asked to go, which a script setting the order can't know beforehand.
 fn move_to(s: &mut Session, p: &Value) -> CmdResult {
     let ids = layer_ids(s, p)?;
     let to = uint(p, "to").ok_or("to is required: the position in the drawing order, 0 at the top")?;
+    let before = s.map().layer_mark();
+    move_layers(s, ids, to)?;
+    // The order is compared, not each layer's index: a move within a group can end where it
+    // started, and a layer already in place leaves the order as it was.
+    if s.map().layer_mark() == before {
+        s.request_only = true;
+    }
+    Ok(Value::Null)
+}
+
+fn move_layers(s: &mut Session, ids: Vec<u32>, to: u64) -> Result<(), String> {
     if let [id] = ids[..] {
-        return move_one(s, id, to);
+        let m = s.map_mut();
+        let to = usize::try_from(to).unwrap_or(usize::MAX).min(m.layers.len().saturating_sub(1));
+        return move_to_index(m, id, to);
     }
     // Several: to the top or the bottom, keeping their order among themselves. A layer in a group
     // stays in it, going to the top or the bottom of its group.
@@ -7147,7 +7161,7 @@ fn move_to(s: &mut Session, p: &Value) -> CmdResult {
         let t = if top { lo + k } else { hi.saturating_sub(k) };
         move_to_index(m, id, t)?;
     }
-    Ok(Value::Null)
+    Ok(())
 }
 
 /// Moves a layer to index `t` of the drawing order, if it isn't there already.
@@ -7157,17 +7171,6 @@ fn move_to_index(m: &mut rustgis_map::Map, id: u32, t: usize) -> Result<(), Stri
         m.move_layer(i, t)?;
     }
     Ok(())
-}
-
-fn move_one(s: &mut Session, id: u32, to: u64) -> CmdResult {
-    let m = s.map_mut();
-    let i = m.layer_index(id).ok_or("no such layer")?;
-    let to = usize::try_from(to).unwrap_or(usize::MAX).min(m.layers.len().saturating_sub(1));
-    if to == i {
-        return Err("the layer is already there".into());
-    }
-    m.move_layer(i, to)?;
-    Ok(Value::Null)
 }
 
 fn symbology(s: &mut Session, p: &Value) -> CmdResult {

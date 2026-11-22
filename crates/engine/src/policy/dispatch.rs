@@ -980,8 +980,8 @@ impl Session {
                 };
                 let result = match txn {
                     Txn::Own => self.guarded(spec.label, spec.mutates, run),
-                    Txn::Shared if spec.id == "edit.applyShapeConversion" => self.savepoint(spec.label, run),
-                    Txn::Shared => run(self),
+                    Txn::Shared if spec.id == "edit.applyShapeConversion" => self.shared_step(&spec, |s| s.savepoint(spec.label, run)),
+                    Txn::Shared => self.shared_step(&spec, run),
                 };
                 self.url_completion_landed(spec.id, &params, &result);
                 result

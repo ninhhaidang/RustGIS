@@ -251,11 +251,9 @@ fn layer_move_reorders_in_one_undo_step() {
     // Past the end is the bottom.
     s.run("layer.move", &json!({"layer": "Rivers", "to": 1e9})).unwrap();
     assert_eq!(names(&s), ["Cities", "Lakes", "Countries", "Rivers"]);
-    // Staying put, a missing or junk position and an unknown layer fail and leave no undo step.
+    // A missing or junk position and an unknown layer fail and leave no undo step.
     let depth = s.undo_depth();
     for p in [
-        json!({"layer": "Rivers", "to": 3}),
-        json!({"layer": "Rivers", "to": 99}),
         json!({"layer": "Rivers"}),
         json!({"layer": "Rivers", "to": -1}),
         json!({"layer": "Rivers", "to": 1.5}),
@@ -267,6 +265,150 @@ fn layer_move_reorders_in_one_undo_step() {
     assert_eq!(s.undo_depth(), depth);
     s.run("edit.undo", &Value::Null).unwrap();
     assert_eq!(names(&s), ["Rivers", "Cities", "Lakes", "Countries"]);
+}
+
+/// A move to where the layers already are succeeds and changes nothing, with no undo step and
+/// nothing to save, so a script setting the drawing order runs on any map (#2621).
+#[test]
+fn layer_move_to_where_layers_are_is_a_no_op() {
+    let mut s = world();
+    let names = |s: &Session| s.map().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    s.mark_saved();
+    let (depth, order) = (s.undo_depth(), names(&s));
+    let [top, second, .., last] = &order[..] else { panic!("{order:?}") };
+    for p in [
+        json!({"layer": top, "to": 0}),
+        json!({"layer": second, "to": 1}),
+        // Past the end is the bottom, where the last layer already is.
+        json!({"layer": last, "to": 99}),
+        json!({"layer": [top, second], "to": 0}),
+        json!({"layer": [second, top], "to": 0}),
+    ] {
+        s.run("layer.move", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert_eq!(names(&s), order, "{p}");
+        assert_eq!(s.undo_depth(), depth, "{p}");
+        assert!(!s.dirty(), "{p}");
+    }
+    // A move still leaves its step after the no-ops.
+    s.run("layer.move", &json!({"layer": top, "to": 1})).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(names(&s), order);
+    // In a group: the layer's own place is a no-op, outside the group is still refused.
+    let (third, last) = (order[2].clone(), last.clone());
+    s.run("group.add", &json!({"name": "Bottom", "layers": [&third, &last]})).unwrap();
+    let (depth, order) = (s.undo_depth(), names(&s));
+    let at = order.iter().position(|n| *n == last).unwrap();
+    for p in [json!({"layer": &last, "to": at}), json!({"layer": [&third, &last], "to": 99})] {
+        s.run("layer.move", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert_eq!((names(&s), s.undo_depth()), (order.clone(), depth), "{p}");
+    }
+    assert!(s.run("layer.move", &json!({"layer": &last, "to": 0})).is_err());
+    assert_eq!((names(&s), s.undo_depth()), (order, depth));
+}
+
+/// In a script, a line that changes nothing doesn't take away the undo step of an earlier line's
+/// edit, wherever it comes; a script of such lines alone leaves none.
+#[test]
+fn script_keeps_its_undo_step_when_a_line_changes_nothing() {
+    let mut s = world();
+    let names = |s: &Session| s.map().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    s.mark_saved();
+    let (depth, order) = (s.undo_depth(), names(&s));
+    let top = &order[0];
+    let stay = format!("layer.move {}", json!({"layer": top, "to": 0}));
+    // Nor do lines that only read or move the view, before or after one that changes nothing, nor
+    // comments alone: as each run by itself.
+    let reads = "info.project {}\nmap.zoomIn {}";
+    for script in [format!("{stay}\n{stay}"), reads.into(), format!("{stay}\n{reads}"), format!("{reads}\n{stay}"), "# nothing\n\n".into()]
+    {
+        s.run("script.run", &json!({"script": script})).unwrap();
+        assert_eq!((names(&s), s.undo_depth(), s.dirty()), (order.clone(), depth, false), "{script}");
+    }
+    // Down, then down again where it already is; and the other way round.
+    let down = format!("layer.move {}", json!({"layer": top, "to": 99}));
+    for script in [format!("{down}\n{down}"), format!("{stay}\n{down}")] {
+        s.run("script.run", &json!({"script": script})).unwrap();
+        assert_eq!(names(&s).last(), Some(top), "{script}");
+        assert_eq!(s.undo_depth(), depth + 1, "{script}");
+        assert!(s.dirty(), "{script}");
+        s.run("edit.undo", &Value::Null).unwrap();
+        assert_eq!(names(&s), order, "{script}");
+    }
+    // An undo in the script is its edit, though the move after it changes nothing: the script
+    // undoes as one step, bringing back what the undo took.
+    s.run("layer.move", &json!({"layer": top, "to": 99})).unwrap();
+    s.run("script.run", &json!({"script": format!("edit.undo {{}}\n{stay}")})).unwrap();
+    assert_eq!((names(&s), s.undo_depth()), (order.clone(), depth + 1));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(names(&s).last(), Some(top));
+}
+
+/// Whether a script's line edited is measured, not inferred from what it may reach (#2621): an
+/// export writes a file, the command log reaches app state, yet neither changes what undo
+/// restores. Saving as another file does, and the script's step brings the first file back.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn script_step_follows_what_its_lines_change_not_what_they_reach() {
+    let mut s = world();
+    let files = write_notices::Files::new();
+    let dir = files.path();
+    let first = dir.join("first.rgis");
+    s.run("project.saveAs", &json!({"path": first})).unwrap();
+    let depth = s.undo_depth();
+    let top = s.map().layers[0].name.clone();
+    let export = format!("share.exportLayer {}", json!({"layer": top, "path": dir.join("out.geojson")}));
+    let log = "project.logCommands {\"on\": true}\nproject.logCommands {\"on\": false}";
+    for script in [export, log.into()] {
+        s.run("script.run", &json!({"script": script})).unwrap();
+        assert_eq!((s.undo_depth(), s.dirty()), (depth, false), "{script}");
+    }
+    assert!(dir.join("out.geojson").exists());
+    let second = dir.join("second.rgis");
+    s.run("script.run", &json!({"script": format!("project.saveAs {}", json!({"path": second}))})).unwrap();
+    assert_eq!((s.undo_depth(), s.path.as_deref()), (depth + 1, Some(second.as_path())));
+    assert!(s.undo());
+    assert_eq!(s.path.as_deref(), Some(first.as_path()));
+}
+
+/// A task's steps are counted as a script's lines: an undo step only when one edited (#2621).
+#[test]
+fn task_takes_an_undo_step_only_when_a_step_edits() {
+    let mut s = world();
+    let names = |s: &Session| s.map().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    let order = names(&s);
+    let top = order[0].clone();
+    let stay = json!({"title": "Stay", "command": "layer.move", "params": {"layer": &top, "to": 0}});
+    let down = json!({"title": "Down", "command": "layer.move", "params": {"layer": &top, "to": 99}});
+    let read = json!({"title": "Read", "command": "info.project", "params": {}});
+    for (n, (steps, edits)) in
+        [(json!([&stay, &read]), false), (json!([&read]), false), (json!([&down, &stay]), true), (json!([&stay, &down, &read]), true)]
+            .into_iter()
+            .enumerate()
+    {
+        let name = format!("Task {n}");
+        s.run("task.new", &json!({"name": &name, "steps": steps})).unwrap();
+        s.mark_saved();
+        let depth = s.undo_depth();
+        s.run("task.run", &json!({"task": &name})).unwrap();
+        assert_eq!((s.undo_depth(), s.dirty()), (depth + usize::from(edits), edits), "{steps}");
+        if edits {
+            s.run("edit.undo", &Value::Null).unwrap();
+            assert_eq!(names(&s), order, "{steps}");
+        }
+    }
+    // A task run as a script's line: a no-op task leaves the script none, an editing one its one.
+    for (task, edits) in [("Task 0", false), ("Task 2", true)] {
+        s.mark_saved();
+        let depth = s.undo_depth();
+        let script = format!("info.project {{}}\ntask.run {}", json!({"task": task}));
+        s.run("script.run", &json!({"script": script})).unwrap();
+        assert_eq!((s.undo_depth(), s.dirty()), (depth + usize::from(edits), edits), "{task}");
+        if edits {
+            s.run("edit.undo", &Value::Null).unwrap();
+            assert_eq!(names(&s), order, "{task}");
+        }
+    }
 }
 
 #[test]
