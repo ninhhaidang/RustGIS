@@ -47,9 +47,10 @@ const DIM: &str = "__rustgis_dim";
 const ZM: &str = "__rustgis_zm";
 
 /// What a converted table is written as: raised when that changes (dates as dates in 2, nanosecond
-/// timestamps as timestamps in 3, the rows that lost Z or M values counted in 4), so a table
-/// converted before is converted again rather than kept as it was.
-const CONVERSION: u32 = 4;
+/// timestamps as timestamps in 3, the rows that lost Z or M values counted in 4, kept in its own
+/// coordinate system in 5), so a table converted before is converted again rather than kept as it
+/// was.
+const CONVERSION: u32 = 5;
 
 /// A database named by commands: DuckDB files, PostgreSQL connections (also queryable through
 /// DuckDB's `postgres` extension), or live-only MySQL, MariaDB and SQL Server connections.
@@ -722,19 +723,34 @@ fn type_crs(ty: &str) -> Option<&str> {
     ty.strip_prefix("GEOMETRY('").and_then(|r| r.strip_suffix("')")).filter(|c| !c.is_empty())
 }
 
+/// The system a result's geometry is kept in rather than converted to longitude/latitude: the one
+/// given or the one its type says, when RustGIS reads its EPSG code (as the GeoParquet DuckDB
+/// writes says it, [`select`]). `None` for longitude/latitude or one it can't read.
+fn own_system(columns: &[Column], crs: Option<&str>) -> Option<crate::raster::Crs> {
+    let ty = columns.iter().find(|c| is_geometry(&c.ty)).and_then(|c| type_crs(&c.ty));
+    let code = crs.or(ty)?;
+    let (authority, number) = code.split_once(':')?;
+    let crs = crate::raster::Crs::from_epsg(number.trim().parse().ok()?)
+        .filter(|_| authority.trim().eq_ignore_ascii_case("EPSG"))
+        .filter(|c| *c != crate::raster::Crs::LonLat)?;
+    crs.transformer().is_ok().then_some(crs)
+}
+
 /// The SELECT that turns a result into what is written: the first geometry column in
-/// longitude/latitude, x and y only, other geometry columns as WKT, types the provider doesn't
-/// read as text, each row's geometry family and whether its geometry had Z or M values; and the
-/// geometry column's name.
-fn select(columns: &[Column], crs: Option<&str>, from: &str) -> Result<(String, String)> {
+/// longitude/latitude, or kept in its own system when `own` ([`own_system`]), x and y only, other
+/// geometry columns as WKT, types the provider doesn't read as text, each row's geometry family and
+/// whether its geometry had Z or M values; and the geometry column's name.
+fn select(columns: &[Column], crs: Option<&str>, from: &str, own: bool) -> Result<(String, String)> {
     let geom = columns
         .iter()
         .find(|c| is_geometry(&c.ty))
         .ok_or_else(|| DataError::Format("the query returns no geometry column: select one (such as ST_Point(lon, lat) AS geom)".into()))?;
     let g = ident(&geom.name);
     // A geometry that says no coordinate system (the usual case for longitude/latitude) is taken
-    // as it is.
+    // as it is. One kept in its own is given it, so the GeoParquet says it.
     let geom_expr = match (crs, type_crs(&geom.ty)) {
+        (Some(c), _) if own => format!("ST_SetCRS({g}::GEOMETRY, {})", literal(c)),
+        (None, Some(_)) if own => g.clone(),
         (Some(c), _) => format!("ST_Transform({g}::GEOMETRY, {}, 'EPSG:4326')", literal(c)),
         (None, Some(t)) if t.eq_ignore_ascii_case("EPSG:4326") || t.eq_ignore_ascii_case("OGC:CRS84") => g.clone(),
         (None, Some(_)) => format!("ST_Transform({g}, 'EPSG:4326')"),
@@ -904,6 +920,13 @@ fn run_in(dir: &Path, q: &Query<'_>, confined: bool) -> Result<Output> {
 /// A manual table replacement keeps only its original family and permits a zero-row geometry
 /// column. Ordinary adds retain their existing nonempty-result behavior.
 fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<Family>) -> Result<Output> {
+    run_kept_in(dir, q, confined, selected, true)
+}
+
+/// As [`run_selected_in`]; with `keep`, a result in a system RustGIS reads is kept in it, and run
+/// again in longitude/latitude, as before, when its file doesn't read back in it or the run fails
+/// on a DuckDB too old to give a geometry its system.
+fn run_kept_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<Family>, keep: bool) -> Result<Output> {
     let sql = checked(q.sql)?;
     check_crs(q.crs)?;
     if !available() {
@@ -928,7 +951,8 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
     if let Some(c) = columns.iter().find(|c| c.name.eq_ignore_ascii_case(DIM) || c.name.eq_ignore_ascii_case(ZM)) {
         return Err(DataError::Format(format!("the query returns a column named {}", c.name)));
     }
-    let (select, geom) = select(&columns, q.crs, &from)?;
+    let own = if keep { own_system(&columns, q.crs) } else { None };
+    let (select, geom) = select(&columns, q.crs, &from, own.is_some())?;
     let g = ident(&geom);
     // The bounding-box covering, unless the result already has a column of its name.
     let bbox_name = format!("{geom}_bbox");
@@ -949,20 +973,36 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
     let tmp = |f: Family| dir.join(format!("{run_tag}.{}.{n}.{}.tmp.parquet", std::process::id(), f.label()));
     let mut guards: Vec<TempFile> = Family::ALL.iter().map(|f| TempFile(Some(tmp(*f)))).collect();
     let mut script = format!("{prelude} CREATE TEMP TABLE r AS {select};");
+    // Rows in order along a curve over the world, or over the result's own extent in its system.
+    let hilbert = if own.is_some() {
+        format!("(SELECT ST_Extent(ST_Extent_Agg({g})) FROM r)")
+    } else {
+        "{'min_x': -180, 'min_y': -90, 'max_x': 180, 'max_y': 90}::BOX_2D".to_string()
+    };
     for f in Family::ALL {
         script.push_str(&format!(
-            " COPY (SELECT * EXCLUDE ({DIM}, {ZM}){bbox} FROM r WHERE {DIM} = {} ORDER BY ST_Hilbert({g}, {{'min_x': -180, 'min_y': -90, 'max_x': 180, 'max_y': 90}}::BOX_2D)) TO {} (FORMAT parquet, ROW_GROUP_SIZE 16384);",
+            " COPY (SELECT * EXCLUDE ({DIM}, {ZM}){bbox} FROM r WHERE {DIM} = {} ORDER BY ST_Hilbert({g}, {hilbert})) TO {} (FORMAT parquet, ROW_GROUP_SIZE 16384);",
             dimension(f),
             literal(&tmp(f).display().to_string())
         ));
     }
-    let counts = fetch(
+    let counts = match fetch(
         dir,
         &script,
         q.database,
         &format!("SELECT {DIM} AS dim, count(*)::BIGINT AS n, count_if({ZM})::BIGINT AS zm FROM r GROUP BY {DIM}"),
         QUERY_TIMEOUT,
-    )?;
+    ) {
+        Ok(counts) => counts,
+        // A DuckDB without `ST_SetCRS` (its error names the function): in longitude/latitude, as
+        // before. Any other failure is the query's own.
+        Err(e) if own.is_some() && q.crs.is_some() && e.to_string().to_ascii_lowercase().contains("st_setcrs") => {
+            drop(guards);
+            crate::progress::check()?;
+            return run_kept_in(dir, q, confined, selected, false);
+        }
+        Err(e) => return Err(e),
+    };
 
     let mut out = Output::default();
     for row in counts.as_array().into_iter().flatten() {
@@ -998,6 +1038,18 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
         } else {
             NO_ROWS.into()
         }));
+    }
+    // Kept in its own system only when each part reads back in it: else in longitude/latitude.
+    if let Some(crs) = own {
+        let read_back = |p: &Part| {
+            crate::provenance::without(|| super::parquet::ParquetSource::open_path(&tmp(p.family), "check"))
+                .is_ok_and(|s| super::FeatureSource::coord_crs(&s) == crs)
+        };
+        if !out.parts.iter().filter(|p| p.count > 0).all(read_back) {
+            drop(guards);
+            crate::progress::check()?;
+            return run_kept_in(dir, q, confined, selected, false);
+        }
     }
     // The parts take their final names; the families not in the result are removed with their
     // guards.
@@ -1489,7 +1541,7 @@ mod tests {
     fn select_list() {
         let cols = |v: &[(&str, &str)]| v.iter().map(|(n, t)| Column { name: n.to_string(), ty: t.to_string() }).collect::<Vec<_>>();
         // No geometry column.
-        let e = select(&cols(&[("a", "INTEGER")]), None, "x").unwrap_err();
+        let e = select(&cols(&[("a", "INTEGER")]), None, "x", false).unwrap_err();
         assert!(e.to_string().contains("no geometry column"), "{e}");
         // Types the provider doesn't read become text; dates stay dates; a second geometry, WKT.
         let (s, g) = select(
@@ -1505,6 +1557,7 @@ mod tests {
             ]),
             None,
             "x",
+            false,
         )
         .unwrap();
         assert_eq!(g, "geom");
@@ -1514,13 +1567,26 @@ mod tests {
         assert!(s.contains("CAST(\"s\" AS TIMESTAMP) AS \"s\""), "{s}");
         assert!(s.contains(", \"n\",") && s.contains("ST_AsText(\"g2\")"), "{s}");
         assert!(s.contains(&format!("(ST_HasZ(\"geom\"::GEOMETRY) OR ST_HasM(\"geom\"::GEOMETRY)) AS {ZM}")), "{s}");
-        // A geometry that says its coordinate system is converted; one given is used.
-        let (s, _) = select(&cols(&[("g", "GEOMETRY('EPSG:3857')")]), None, "x").unwrap();
+        // A geometry that says its coordinate system is kept in it when RustGIS reads it, and
+        // converted when not; one given is given to it, or converted from.
+        let typed = cols(&[("g", "GEOMETRY('EPSG:3857')")]);
+        assert_eq!(own_system(&typed, None), Some(crate::raster::Crs::WebMercator));
+        let (s, _) = select(&typed, None, "x", true).unwrap();
+        assert!(!s.contains("ST_Transform") && s.contains("ST_Force2D(\"g\")"), "{s}");
+        let (s, _) = select(&typed, None, "x", false).unwrap();
         assert!(s.contains("ST_Transform(\"g\", 'EPSG:4326')"), "{s}");
-        let (s, _) = select(&cols(&[("g", "GEOMETRY('OGC:CRS84')")]), None, "x").unwrap();
+        let (s, _) = select(&cols(&[("g", "GEOMETRY('OGC:CRS84')")]), None, "x", false).unwrap();
         assert!(!s.contains("ST_Transform"), "{s}");
-        let (s, _) = select(&cols(&[("g", "GEOMETRY")]), Some("EPSG:2263"), "x").unwrap();
+        let plain = cols(&[("g", "GEOMETRY")]);
+        assert_eq!(own_system(&plain, Some("EPSG:2263")), crate::raster::Crs::from_epsg(2263));
+        let (s, _) = select(&plain, Some("EPSG:2263"), "x", true).unwrap();
+        assert!(s.contains("ST_SetCRS(\"g\"::GEOMETRY, 'EPSG:2263')") && !s.contains("ST_Transform"), "{s}");
+        let (s, _) = select(&plain, Some("EPSG:2263"), "x", false).unwrap();
         assert!(s.contains("ST_Transform(\"g\"::GEOMETRY, 'EPSG:2263', 'EPSG:4326')"), "{s}");
+        // Longitude/latitude, no system, or one that isn't an EPSG code: converted as before.
+        assert_eq!(own_system(&plain, None), None);
+        assert_eq!(own_system(&cols(&[("g", "GEOMETRY('EPSG:4326')")]), None), None);
+        assert_eq!(own_system(&cols(&[("g", "GEOMETRY('ESRI:54008')")]), None), None);
     }
 
     #[test]
@@ -1653,15 +1719,31 @@ mod tests {
             std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert!(names.iter().all(|n| !n.contains(".tmp.")), "{names:?}");
 
-        // A projected geometry that says its coordinate system comes out in longitude/latitude.
+        // A projected geometry that says its coordinate system is kept in it, as stored, and
+        // placed where it is in longitude/latitude…
+        let first = |path: &Path| {
+            let source = open(path);
+            let batch = source.read(&crate::source::Request { extent: None, limit: 1 }).unwrap();
+            let Some(crate::Geometry::Point(c)) = batch.features.into_iter().next().unwrap().geometry else { panic!() };
+            (source.coord_crs(), c, source.info().extent)
+        };
         let out =
             run_in(&cache, &Query { sql: "SELECT ST_Point(1113194.9, 0)::GEOMETRY('EPSG:3857') AS g", ..Query::default() }, false).unwrap();
-        let e = open(&out.parts[0].path).info().extent;
+        let (crs, c, e) = first(&out.parts[0].path);
+        assert_eq!((crs, c), (crate::raster::Crs::WebMercator, rustgis_geom::Coord::new(1113194.9, 0.0)));
         assert!((e.min_x - 10.0).abs() < 1e-3 && e.min_y.abs() < 1e-6, "{e:?}");
-        // …and so does one given with "crs".
-        let q = Query { sql: "SELECT ST_Point(1113194.9, 0) AS g", crs: Some("EPSG:3857"), ..Query::default() };
-        let e = open(&run_in(&cache, &q, false).unwrap().parts[0].path).info().extent;
-        assert!((e.min_x - 10.0).abs() < 1e-3, "{e:?}");
+        // …and so is one given with "crs".
+        let q = Query { sql: "SELECT ST_Point(2600000, 1200000) AS g", crs: Some("EPSG:2056"), ..Query::default() };
+        let (crs, c, e) = first(&run_in(&cache, &q, false).unwrap().parts[0].path);
+        assert_eq!((crs, c), (crate::raster::Crs::from_epsg(2056).unwrap(), rustgis_geom::Coord::new(2_600_000.0, 1_200_000.0)));
+        assert!((e.min_x - 7.4386).abs() < 1e-3 && (e.min_y - 46.9511).abs() < 1e-3, "{e:?}");
+        // One given in longitude/latitude, or by a code RustGIS doesn't read, comes out in
+        // longitude/latitude, as before.
+        let q = Query { sql: "SELECT ST_Point(10, 20) AS g", crs: Some("EPSG:4326"), ..Query::default() };
+        assert_eq!(first(&run_in(&cache, &q, false).unwrap().parts[0].path).0, crate::raster::Crs::LonLat);
+        let q = Query { sql: "SELECT ST_Point(1000000, 2000000) AS g", crs: Some("ESRI:54008"), ..Query::default() };
+        let (crs, c, _) = first(&run_in(&cache, &q, false).unwrap().parts[0].path);
+        assert!(crs == crate::raster::Crs::LonLat && c.x.abs() <= 180.0 && c.y.abs() <= 90.0, "{crs:?} {c:?}");
 
         // Invalid SQL, empty query results and non-spatial results are errors. DuckDB versions
         // format their diagnostics differently; their prose is not the command contract.

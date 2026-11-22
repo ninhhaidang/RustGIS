@@ -79,7 +79,8 @@ identify and run through tools like any layer; **Load All Features** loads one t
 
 With [GDAL](https://gdal.org) installed (its `ogr2ogr` and `ogrinfo` on the `PATH`, GDAL 3.8 or
 later), the desktop app also reads the vector formats below. Each layer is converted once into a
-cached, indexed FlatGeobuf, so large ones stream too: see [Formats through
+cached, indexed FlatGeobuf in its own coordinate system (or WGS 84, with a notice, when RustGIS
+can't read that system), so large ones stream too: see [Formats through
 GDAL](data.md#formats-through-gdal).
 
 | Format | Extensions or source | Notes |
@@ -647,7 +648,7 @@ databases](data.md#sql-queries-and-duckdb-databases).
 
 | Source | How to add it | Notes |
 | --- | --- | --- |
-| SQL query | `layer.addSql` with `"sql"` | One DuckDB `SELECT` with DuckDB Spatial: Parquet, CSV, GeoParquet and `ST_Read` files, web addresses (`https://`, `s3://`). Give `"crs"` for a geometry that doesn't say its coordinate system. |
+| SQL query | `layer.addSql` with `"sql"` | One DuckDB `SELECT` with DuckDB Spatial: Parquet, CSV, GeoParquet and `ST_Read` files, web addresses (`https://`, `s3://`). Give `"crs"` for a geometry that doesn't say its coordinate system. A geometry that says its system, or is given one by its EPSG code, is kept in it; others come in WGS 84. |
 | DuckDB database | `.duckdb`, `.ddb`: Add Data | Every table with a geometry column becomes a layer (`"layer"` picks one). Converted once, until the file changes. |
 
 ## Rasters

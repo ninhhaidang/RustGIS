@@ -56,6 +56,15 @@ struct Opts {
     over: usize,
     /// An answer of no features is no bytes at all.
     empty_body: bool,
+    /// Its layer is in Web Mercator (its description says so), and it answers in the system
+    /// asked for (`outSR`), Web Mercator or longitude/latitude.
+    mercator: bool,
+    /// With `mercator`, its first feature asked for in Web Mercator is an answer too large to
+    /// take.
+    probe_too_large: bool,
+    /// With `mercator`, it answers the first feature asked for in Web Mercator with an empty page
+    /// in longitude/latitude.
+    probe_empty_lonlat: bool,
 }
 
 impl Default for Opts {
@@ -75,6 +84,9 @@ impl Default for Opts {
             hidden: 0,
             over: 0,
             empty_body: false,
+            mercator: false,
+            probe_too_large: false,
+            probe_empty_lonlat: false,
         }
     }
 }
@@ -104,6 +116,9 @@ fn service_with(host: &str, opts: Opts) -> (String, Arc<Asked>) {
         hidden,
         over,
         empty_body,
+        mercator,
+        probe_too_large,
+        probe_empty_lonlat,
     } = opts;
     let layer = format!("https://{host}/arcgis/rest/services/P/FeatureServer/0");
     let asked = Arc::new(Asked::default());
@@ -117,7 +132,8 @@ fn service_with(host: &str, opts: Opts) -> (String, Arc<Asked>) {
                 Some(d) => d.as_bytes().to_vec(),
                 None => format!(
                     r#"{{"name":"Points","objectIdField":"OBJECTID","maxRecordCount":{page},"supportedQueryFormats":"JSON, geoJSON, PBF","geometryType":"esriGeometryPoint",
-                    "useStandardizedQueries":{sql},"advancedQueryCapabilities":{{"supportsPagination":true}}}}"#
+                    "useStandardizedQueries":{sql},"advancedQueryCapabilities":{{"supportsPagination":true}}{}}}"#,
+                    if mercator { r#","extent":{"xmin":0,"ymin":0,"xmax":1,"ymax":1,"spatialReference":{"wkid":102100,"latestWkid":3857}}"# } else { "" }
                 )
                 .into_bytes(),
             });
@@ -153,7 +169,16 @@ fn service_with(host: &str, opts: Opts) -> (String, Arc<Asked>) {
             return Some(Vec::new());
         }
         let geometry_too = value("returnGeometry").as_deref() != Some("false");
-        let mut parts = vec![number(7, 0), lonlat(), transform(false, 0.01, 0.0, 0.0)];
+        let in_mercator = mercator && value("outSR").as_deref() == Some("3857");
+        let probe = in_mercator && value("resultRecordCount").as_deref() == Some("1") && value("resultOffset").is_none();
+        if probe && probe_too_large {
+            return Some(vec![0; usize::try_from(remote::MAX_ANSWER).unwrap() + 1]);
+        }
+        if probe && probe_empty_lonlat {
+            return Some(answer(&[number(7, 0), lonlat(), transform(false, 0.01, 0.0, 0.0), field("OBJECTID", 6)]));
+        }
+        let reference = if in_mercator { message(8, &number(1, 3857)) } else { lonlat() };
+        let mut parts = vec![number(7, 0), reference, transform(false, 0.01, 0.0, 0.0)];
         if !(sent.is_empty() && empty_without_fields) {
             parts.push(field("OBJECTID", 6));
             if padded {
@@ -171,6 +196,12 @@ fn service_with(host: &str, opts: Opts) -> (String, Arc<Asked>) {
         }
         for id in sent {
             let (x, y) = position(id);
+            let (x, y) = if in_mercator {
+                let m = rustgis_geom::lonlat_to_merc(rustgis_geom::Coord::new(x, y));
+                (m.x, m.y)
+            } else {
+                (x, y)
+            };
             let mut at = vec![(x * 100.0).round() as i64, (y * 100.0).round() as i64];
             if z {
                 at.push(100);
@@ -607,4 +638,55 @@ fn a_layer_matching_nothing_may_answer_with_no_bytes() {
     assert_eq!(src.info.count, Some(0));
     let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
     assert!(b.complete && b.features.is_empty());
+}
+
+/// A layer in a system RustGIS reads is asked for and held in it (`outSR` its code), each feature
+/// as the service sends it, and a view still takes the features it holds; one in a system RustGIS
+/// can't read is asked for in longitude/latitude, as before.
+#[test]
+fn a_layer_is_read_in_its_own_system() {
+    let (query, asked) = service_with("own-system.test", Opts { page: 30, mercator: true, ..Opts::default() });
+    let src = open_blocking(&query).unwrap();
+    assert_eq!((src.coord_crs(), src.info.crs.as_str()), (crate::raster::Crs::WebMercator, "EPSG:3857"));
+    let before = asked.count.load(Ordering::Relaxed);
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let want: Vec<u64> = (3..=6).flat_map(|row| (2..=5).map(move |col| row * 20 + col + 1)).collect();
+    assert_eq!(ids(&b), want);
+    let pages: Vec<String> = asked.since(before).into_iter().filter(|u| u.contains("resultOffset")).collect();
+    assert!(!pages.is_empty() && pages.iter().all(|u| u.contains("outSR=3857")), "{pages:?}");
+    for f in &b.features {
+        let (x, y) = position(f.id);
+        let m = rustgis_geom::lonlat_to_merc(rustgis_geom::Coord::new(x, y));
+        let Some(crate::Geometry::Point(c)) = &f.geometry else { panic!() };
+        assert!((c.x - m.x).abs() < 0.01 && (c.y - m.y).abs() < 0.01, "{c:?} vs {m:?}");
+    }
+    // A whole-layer read within the view takes the same features, tested in longitude/latitude.
+    let mut inside = Vec::new();
+    src.visit_chunks(Some(small_view()), 4 << 10, &mut |c| {
+        inside.extend(c.iter().map(|f| f.id));
+        Ok(())
+    })
+    .unwrap();
+    inside.sort_unstable();
+    assert_eq!(inside, want);
+    // A first page in Web Mercator too large to take, or empty and in another system: asked for
+    // in longitude/latitude, as before.
+    for (host, opts) in [
+        ("probe-large.test", Opts { page: 30, mercator: true, probe_too_large: true, ..Opts::default() }),
+        ("probe-empty.test", Opts { page: 30, mercator: true, probe_empty_lonlat: true, ..Opts::default() }),
+    ] {
+        let (query, _) = service_with(host, opts);
+        let src = open_blocking(&query).unwrap();
+        assert_eq!(src.coord_crs(), crate::raster::Crs::LonLat, "{host}");
+        assert_eq!(ids(&read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap()), want, "{host}");
+    }
+    // A code RustGIS doesn't read: longitude/latitude, as before.
+    let description = r#"{"name":"Points","objectIdField":"OBJECTID","maxRecordCount":30,"supportedQueryFormats":"PBF","geometryType":"esriGeometryPoint",
+        "useStandardizedQueries":true,"advancedQueryCapabilities":{"supportsPagination":true},"extent":{"spatialReference":{"wkid":999999}}}"#;
+    let (query, asked) = service("unknown-system.test", 30, true, Some(description));
+    let src = open_blocking(&query).unwrap();
+    assert_eq!(src.coord_crs(), crate::raster::Crs::LonLat);
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    assert_eq!(ids(&b), want);
+    assert!(asked.since(0).iter().filter(|u| u.contains("resultOffset")).all(|u| u.contains("outSR=4326")));
 }

@@ -88,6 +88,9 @@ pub struct Converted {
     /// GDAL couldn't reproject it (the file doesn't say its coordinate system): its coordinates
     /// are the file's own.
     pub unprojected: bool,
+    /// Its coordinate system is one RustGIS can't read, so GDAL converted it to longitude/latitude
+    /// (as every conversion did before layers kept their own system).
+    pub in_lonlat: bool,
 }
 
 /// A GDAL program (`ogr2ogr`, `ogrinfo`): from `RUSTGIS_GDAL_BIN` (a folder), else on the `PATH`.
@@ -314,6 +317,7 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) ->
                 Ok(Some(converted)) => out.push(Converted {
                     path: converted.path,
                     unprojected: converted.unprojected,
+                    in_lonlat: converted.in_lonlat,
                     name: match family {
                         Some(f) => format!("{} ({})", l.name, f.label()),
                         None => l.name.clone(),
@@ -402,6 +406,7 @@ pub struct FreshConverted {
 struct Conversion {
     path: PathBuf,
     unprojected: bool,
+    in_lonlat: bool,
     notes: Vec<String>,
     empty: bool,
 }
@@ -439,6 +444,9 @@ fn convert_one_fresh_in(dir: &Path, src: &Path, layer: &str, family: Option<Fami
     .ok_or_else(|| DataError::Format(format!("layer '{layer}' has no compatible declared geometry")))?;
     if converted.unprojected {
         converted.notes.push(format!("GDAL: '{layer}' has no declared coordinate system; its coordinates were left unprojected"));
+    }
+    if converted.in_lonlat {
+        converted.notes.push(in_lonlat_note(layer));
     }
     // A repair/reload reports the same conversion loss as Add. For a mixed layer, compare
     // only the selected family; the other families have their own counted notice.
@@ -524,7 +532,9 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     // can't hand back another file's layer.
     let nlt = family.or(kind).map_or("PROMOTE_TO_MULTI", Family::ogr_type);
     // The type is part of the key: conversions made before surfaces were kept are made again.
-    let key = format!("{}\n{layer}\n{:?}\n{:?}\n{nlt}\n{len}\n{modified}", full.display(), family.map(Family::label), crs);
+    // Kept in its own system since #2032: a conversion made before, in longitude/latitude, isn't
+    // reused as one in its own.
+    let key = format!("{}\n{layer}\n{:?}\n{:?}\n{nlt}\n{len}\n{modified}\nown system", full.display(), family.map(Family::label), crs);
     // Fresh replacements have their own private directory, so retained readers never share a
     // file with a later conversion, even when its source's signature hasn't changed.
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -536,9 +546,11 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     // The key file holds the key, then whether the conversion is unprojected: one file, so the two
     // can't disagree.
     const UNPROJECTED: &str = "\nunprojected";
+    const IN_LONLAT: &str = "\nin longitude/latitude";
     let stored = std::fs::read_to_string(&keyfile).unwrap_or_default();
-    let same = stored == key || stored.strip_suffix(UNPROJECTED) == Some(key.as_str());
+    let same = stored == key || [UNPROJECTED, IN_LONLAT].iter().any(|flag| stored.strip_suffix(flag) == Some(key.as_str()));
     let was_unprojected = stored.ends_with(UNPROJECTED);
+    let was_in_lonlat = stored.ends_with(IN_LONLAT);
     // A hit is touched, so pruning removes what isn't used rather than what is old.
     if !fresh && same && empty.exists() {
         touch(&empty);
@@ -548,32 +560,60 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     if !fresh && same && out.metadata().is_ok_and(|m| m.len() > 0) {
         touch(&out);
         touch(&keyfile);
-        return Ok(Some(Conversion { path: out, unprojected: was_unprojected, notes: Vec::new(), empty: false }));
+        return Ok(Some(Conversion { path: out, unprojected: was_unprojected, in_lonlat: was_in_lonlat, notes: Vec::new(), empty: false }));
     }
     // Unique to this conversion, even with others of the same layer running in this process.
     let tmp = dir.join(format!("{tag}.{}{n:04}.tmp.fgb", std::process::id()));
-    // Reprojected to WGS 84 from its own coordinate system, or from the one given; a layer with
-    // neither is taken as it is.
+    // Kept in its own coordinate system, or the one given, which the FlatGeobuf says; one RustGIS
+    // can't read is converted to WGS 84 instead, as before. A layer with neither is taken as it
+    // is.
     let unprojected = crs.is_none() && !has_srs;
-    let mut c = command(ogr2ogr, drivers(&full)?);
-    c.args(["-f", "FlatGeobuf", "-nlt", nlt, "-dim", "XY", "-lco", "SPATIAL_INDEX=YES"]);
-    // Fresh replacements must fail rather than install a partial conversion.
-    if !fresh {
-        c.arg("-skipfailures");
-    }
-    if let Some(crs) = crs {
-        c.args(["-s_srs", crs]);
-    }
-    if !unprojected {
-        c.args(["-t_srs", "EPSG:4326"]);
-    }
-    if let Some(f) = family {
-        c.args(["-where", f.filter()]);
-    }
-    c.arg(&tmp).arg(&full).arg(layer);
+    let drivers = drivers(&full)?;
+    let run = |to_lonlat: bool| -> std::io::Result<std::process::Output> {
+        let mut c = command(ogr2ogr.clone(), drivers);
+        c.args(["-f", "FlatGeobuf", "-nlt", nlt, "-dim", "XY", "-lco", "SPATIAL_INDEX=YES"]);
+        // Fresh replacements must fail rather than install a partial conversion.
+        if !fresh {
+            c.arg("-skipfailures");
+        }
+        // The system given is assigned when kept, and converted from when not.
+        match (crs, to_lonlat) {
+            (Some(crs), false) => {
+                c.args(["-a_srs", crs]);
+            }
+            (Some(crs), true) => {
+                c.args(["-s_srs", crs, "-t_srs", "EPSG:4326"]);
+            }
+            (None, true) => {
+                c.args(["-t_srs", "EPSG:4326"]);
+            }
+            (None, false) => {}
+        }
+        if let Some(f) = family {
+            c.args(["-where", f.filter()]);
+        }
+        c.arg(&tmp).arg(&full).arg(layer);
+        output(c, CONVERT_TIMEOUT, &format!("GDAL conversion of {}, layer '{layer}'", full.display()))
+    };
     // The temp file goes whatever happens, unless it becomes the conversion.
     let mut tmp_guard = TempFile(Some(tmp.clone()));
-    let res = output(c, CONVERT_TIMEOUT, &format!("GDAL conversion of {}, layer '{layer}'", full.display()))?;
+    let mut res = run(false)?;
+    let mut in_lonlat = false;
+    if res.status.success() && !unprojected && tmp.exists() {
+        let placement = placement(&tmp);
+        // Another body's system RustGIS refuses can't go to WGS 84 either (GDAL won't convert
+        // between bodies): refused, saying why, rather than left out as empty.
+        if let Placement::Refused(why) = &placement {
+            return Err(DataError::Format(format!("GDAL: '{layer}': {why}")));
+        }
+        if placement != Placement::Own {
+            crate::progress::check()?;
+            // GDAL can't write over a FlatGeobuf: the first conversion goes first.
+            std::fs::remove_file(&tmp)?;
+            res = run(true)?;
+            in_lonlat = placement == Placement::Unreadable;
+        }
+    }
     if !res.status.success() {
         let text = String::from_utf8_lossy(&res.stderr);
         // The ERROR lines say what went wrong (the rest is the usage text); else the first line.
@@ -615,7 +655,14 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     std::fs::rename(&tmp, &out)?;
     tmp_guard.0 = None;
     let _ = std::fs::remove_file(&empty);
-    std::fs::write(&keyfile, if unprojected { format!("{key}{UNPROJECTED}") } else { key.clone() })?;
+    let flag = if unprojected {
+        UNPROJECTED
+    } else if in_lonlat {
+        IN_LONLAT
+    } else {
+        ""
+    };
+    std::fs::write(&keyfile, format!("{key}{flag}"))?;
     let notes = if fresh {
         let mut counts = std::collections::BTreeMap::<String, u64>::new();
         for line in String::from_utf8_lossy(&res.stderr).lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -636,7 +683,74 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
     } else {
         Vec::new()
     };
-    Ok(Some(Conversion { path: out, unprojected, notes, empty: !any }))
+    Ok(Some(Conversion { path: out, unprojected, in_lonlat, notes, empty: !any }))
+}
+
+/// How RustGIS reads a FlatGeobuf GDAL wrote in the source's own system.
+#[derive(Clone, Debug, PartialEq)]
+enum Placement {
+    /// In that system, which it reads and converts itself (WGS 84 longitude/latitude among them).
+    Own,
+    /// A geographic system that places coordinates as WGS 84 longitude/latitude does under
+    /// another name (WGS 84 in 3D, whose heights the conversion drops): written in EPSG:4326, as
+    /// before.
+    LonLat,
+    /// A system it can't read, which it would take for longitude/latitude: converted to it.
+    Unreadable,
+    /// Another body's system it refuses, and why: not converted at all.
+    Refused(String),
+}
+
+/// How RustGIS reads `fgb` ([`Placement`]), from its header alone. One it reads as
+/// longitude/latitude must say WGS 84 (by code or definition), and is kept as GDAL wrote it; one
+/// that doesn't would have its coordinates taken for degrees. One whose header can't be read is
+/// converted as before.
+fn placement(fgb: &Path) -> Placement {
+    use crate::raster::Crs;
+    crate::provenance::without(|| {
+        // A header that can't be read says nothing of the system: converted as before, unsaid. A
+        // system it says that RustGIS refuses can't be read, and is said.
+        let crs = match super::fgb::header_coord_crs(fgb) {
+            Err(_) => return Placement::LonLat,
+            Ok(Err(e)) => return Placement::Refused(e.to_string()),
+            Ok(Ok(crs)) => crs,
+        };
+        if crs == Crs::LonLat {
+            return if super::fgb::header_says_wgs84(fgb) { Placement::Own } else { Placement::Unreadable };
+        }
+        // Longitude/latitude by another name: the same places, to a nanodegree.
+        let same = crs.is_geographic()
+            && crs.to(Crs::LonLat).is_ok_and(|t| {
+                [(12.0, 48.0), (-120.5, -33.25), (179.0, 80.0), (0.0, 0.0)]
+                    .into_iter()
+                    .all(|(x, y)| t.point(rustgis_geom::Coord::new(x, y)).is_some_and(|c| (c.x - x).abs() < 1e-9 && (c.y - y).abs() < 1e-9))
+            });
+        if same { Placement::LonLat } else { Placement::Own }
+    })
+}
+
+/// The notice for a layer converted to longitude/latitude because its system can't be read.
+pub fn in_lonlat_note(layer: &str) -> String {
+    in_lonlat_notes(&[layer])
+}
+
+/// One notice for the layers of a file converted to longitude/latitude because their systems
+/// can't be read: their count, and their names (the first ten).
+pub fn in_lonlat_notes(layers: &[&str]) -> String {
+    match layers {
+        [one] => format!("GDAL: '{one}': RustGIS can't read its coordinate system, so GDAL converted it to longitude/latitude (WGS 84)"),
+        _ => {
+            let mut named: Vec<String> = layers.iter().take(10).map(|l| format!("'{l}'")).collect();
+            if layers.len() > 10 {
+                named.push(format!("{} more", layers.len() - 10));
+            }
+            format!(
+                "GDAL: {} layers ({}): RustGIS can't read their coordinate systems, so GDAL converted them to longitude/latitude (WGS 84)",
+                layers.len(),
+                named.join(", ")
+            )
+        }
+    }
 }
 
 /// Count only the other supported geometry families, not geometry-less rows. Reuse exactly the
@@ -786,6 +900,101 @@ mod tests {
         // The cache key's hash is stable.
         assert_eq!(fnv1a(b"rustgis"), fnv1a(b"rustgis"));
         assert_ne!(fnv1a(b"a"), fnv1a(b"b"));
+    }
+
+    /// A layer in a system RustGIS reads is converted in it, its coordinates as the file holds
+    /// them; one in a system RustGIS can't read is converted to longitude/latitude, as every
+    /// layer was before, and said. A conversion made before is not reused for one in its own.
+    #[test]
+    fn layers_are_converted_in_their_own_system_when_gdal_is_installed() {
+        if !available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let made = |name: &str, (driver, ext): (&str, &str), srs: &str| {
+            let csv = dir.path().join(format!("{name}.csv"));
+            std::fs::write(&csv, "WKT,name\n\"POINT (2600000 1200000)\",Bern\n").unwrap();
+            let file = dir.path().join(format!("{name}.{ext}"));
+            let out = Command::new(program("ogr2ogr").unwrap()).args(["-f", driver, "-a_srs", srs]).arg(&file).arg(&csv).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            file
+        };
+        let first = |path: &Path| {
+            let source = super::super::open_path(path, None).unwrap();
+            let batch = source.read(&super::super::Request { extent: None, limit: 1 }).unwrap();
+            let Some(crate::Geometry::Point(c)) = batch.features.into_iter().next().unwrap().geometry else { panic!() };
+            (source.coord_crs(), c)
+        };
+        let cache = dir.path().join("cache");
+        let lv95 = made("lv95", ("MapInfo File", "tab"), "EPSG:2056");
+        // Where GDAL itself puts the point in longitude/latitude, from the file's definition (which
+        // in MapInfo leaves out LV95's datum shift).
+        let gdal_lonlat = {
+            let json = dir.path().join("lv95.geojson");
+            let out = Command::new(program("ogr2ogr").unwrap())
+                .args(["-f", "GeoJSON", "-t_srs", "EPSG:4326"])
+                .arg(&json)
+                .arg(&lv95)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+            let c = &v["features"][0]["geometry"]["coordinates"];
+            (c[0].as_f64().unwrap(), c[1].as_f64().unwrap())
+        };
+        let (converted, failed) = convert_in(&cache, &lv95, None, None).unwrap();
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(!converted[0].in_lonlat && !converted[0].unprojected);
+        // MapInfo keeps the definition, not the code: held in that system, where LV95 is.
+        let (crs, c) = first(&converted[0].path);
+        assert_ne!(crs, crate::raster::Crs::LonLat);
+        assert!((c.x - 2_600_000.0).abs() < 0.01 && (c.y - 1_200_000.0).abs() < 0.01, "{c:?}");
+        let Some(crate::Geometry::Point(ll)) = crs.to(crate::raster::Crs::LonLat).unwrap().whole_geometry(&crate::Geometry::Point(c))
+        else {
+            panic!()
+        };
+        assert!((ll.x - gdal_lonlat.0).abs() < 1e-6 && (ll.y - gdal_lonlat.1).abs() < 1e-6, "{ll:?} vs {gdal_lonlat:?}");
+        // Taken from the cache the same way.
+        let (again, _) = convert_in(&cache, &lv95, None, None).unwrap();
+        assert!(!again[0].in_lonlat);
+        assert_eq!(first(&again[0].path).0, crs);
+        // A system RustGIS can't read (Nell's projection, which a GMT file keeps): converted to
+        // longitude/latitude, as before, and said; the same from the cache.
+        let nell = made("nell", ("GMT", "gmt"), "+proj=nell +datum=WGS84 +units=m");
+        for _ in 0..2 {
+            let (converted, failed) = convert_in(&cache, &nell, None, None).unwrap();
+            assert!(failed.is_empty() && converted[0].in_lonlat, "{failed:?}");
+            let (crs, c) = first(&converted[0].path);
+            assert_eq!(crs, crate::raster::Crs::LonLat);
+            assert!(c.x.abs() <= 180.0 && c.y.abs() <= 90.0, "{c:?}");
+        }
+        assert!(in_lonlat_note("nell").contains("converted it to longitude/latitude"));
+        // A system RustGIS refuses (another body's, in a projection it doesn't convert) is refused,
+        // saying why, not converted; a header that can't be read says nothing, so is converted.
+        let mars = dir.path().join("mars.fgb");
+        let out = Command::new(program("ogr2ogr").unwrap())
+            .args(["-f", "FlatGeobuf", "-a_srs", "+proj=nell +R=3396190 +units=m +no_defs +type=crs"])
+            .arg(&mars)
+            .arg(dir.path().join("lv95.csv"))
+            .output()
+            .unwrap();
+        if out.status.success() {
+            assert!(matches!(placement(&mars), Placement::Refused(why) if why.contains("another body")));
+            let gmt = made("mars", ("GMT", "gmt"), "+proj=nell +R=3396190 +units=m +no_defs +type=crs");
+            let e = convert_in(&cache, &gmt, None, None).unwrap_err().to_string();
+            assert!(e.contains("another body") && e.contains("nell"), "{e}");
+        }
+        let broken = dir.path().join("broken.fgb");
+        std::fs::write(&broken, b"not a flatgeobuf").unwrap();
+        assert_eq!(placement(&broken), Placement::LonLat);
+        // Several layers of a file: one notice, with their count and names.
+        let many: Vec<String> = (1..=12).map(|i| format!("l{i}")).collect();
+        let names: Vec<&str> = many.iter().map(String::as_str).collect();
+        let note = in_lonlat_notes(&names);
+        assert!(
+            note.starts_with("GDAL: 12 layers ('l1', 'l2',") && note.contains("'l10', 2 more)") && note.contains("converted them"),
+            "{note}"
+        );
     }
 
     /// A VRT renamed `.tab` isn't opened as a VRT, so the file it names isn't read.

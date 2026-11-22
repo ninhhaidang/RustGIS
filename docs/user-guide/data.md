@@ -331,7 +331,8 @@ or the folder holding them in `RUSTGIS_GDAL_BIN`; GDAL 3.8 or later), the deskto
 the vector formats GDAL reads: DWG, MapInfo TAB, OpenStreetMap XML, File Geodatabases RustGIS
 can't read itself (compressed ones, or ones with raster fields)
 and more. RustGIS doesn't link to GDAL: each layer is converted once, by `ogr2ogr`, into a
-FlatGeobuf with a spatial index in WGS 84 (GDAL reprojects it), kept in the cache folder
+FlatGeobuf with a spatial index in the layer's own coordinate system (in WGS 84, with a notice,
+when RustGIS can't read that system), kept in the cache folder
 (`~/.cache/rustgis/gdal` on Linux, `~/Library/Caches/RustGIS/gdal` on macOS,
 `%LOCALAPPDATA%\RustGIS\cache\gdal` on Windows, or `RUSTGIS_GDAL_CACHE`). Adding the file again
 reuses the conversion and its layer listing until the file's path, size or modification time
