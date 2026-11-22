@@ -2166,17 +2166,50 @@ fn render_cpu(
     }
 }
 
+/// How many pictures a GPU scene would hold with its see-through layers composited into the
+/// picture being drawn rather than drawn alone ([`GPU_ALONE`]), as they were before they could
+/// be: what the CPU fallback counts, so the same scenes stay on the GPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Runs {
+    pub count: usize,
+    /// A layer drawn alone since the last flush: composited, it would have left the picture
+    /// being drawn something to flush.
+    pub pending: bool,
+}
+
 /// Flushes the GPU pass's CPU accumulator pixmap as an Image draw command and resets it to
 /// transparent. Basemap, tiles, rasters and tiny-skia-only layers draw into the accumulator
-/// between GPU mesh commands, preserving the exact painter's-algorithm order.
-pub(crate) fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bool) -> Option<()> {
+/// between GPU mesh commands, preserving the exact painter's-algorithm order. Counts in `runs`
+/// what the flush would have flushed with the layers alone composited instead.
+pub(crate) fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bool, runs: &mut Runs) -> Option<()> {
+    if *dirty || runs.pending {
+        runs.count += 1;
+        runs.pending = false;
+    }
     if *dirty {
         // Move the pixmap into the command (no full-screen copy) and start a fresh transparent
         // accumulator.
         let old = std::mem::replace(pm, Pixmap::new(pm.width(), pm.height())?);
-        cmds.push(gpu_scene::DrawCmd::Image { pixmap: old });
+        cmds.push(gpu_scene::DrawCmd::Image { pixmap: std::sync::Arc::new(old), opacity: 1.0 });
         *dirty = false;
     }
+    Some(())
+}
+
+/// Places a see-through layer's own picture over what is drawn so far, at its `opacity`
+/// ([`GPU_ALONE`]): the accumulator flushed first, which `runs` doesn't count, as the layer would
+/// have been composited into it.
+fn place_alone(
+    pm: &mut Pixmap,
+    cmds: &mut Vec<gpu_scene::DrawCmd>,
+    dirty: &mut bool,
+    runs: &mut Runs,
+    picture: std::sync::Arc<Pixmap>,
+    opacity: f32,
+) -> Option<()> {
+    flush_acc(pm, cmds, dirty, &mut Runs::default())?;
+    cmds.push(gpu_scene::DrawCmd::Image { pixmap: picture, opacity });
+    runs.pending = true;
     Some(())
 }
 
@@ -4243,6 +4276,34 @@ fn frame_water(map: &Map, view: &View, labels_to: &Labels) -> Option<(std::sync:
     ground.water().cloned().map(|w| (w, pending))
 }
 
+/// The see-through layers a GPU scene draws as pictures of their own, which the GPU places at
+/// the layer's opacity: those of normal blend and no mask, the first this many in the drawing
+/// order, on a map with no layer or tile layer of another blend (which blends with the picture
+/// being drawn under it). The others are composited into the picture being drawn, as a blended
+/// or masked layer is. A layer of its own is drawn once while only its transparency changes (`frame_cache`), but
+/// each is a picture of the whole view to upload and keep on the GPU, and it can split the
+/// picture under and over it in two; so a few, not every one.
+const GPU_ALONE: usize = 2;
+
+/// Gives the pictures among `cmds` at the places `kept` names that hold the same pixels as the
+/// picture kept for that place (a checkpoint's, drawn on by nothing since) that very picture,
+/// shared, and forgets the places `cmds` has reached: a scene started from a checkpoint draws
+/// its picture from the texture uploaded for it, and a scene kept draws the one its checkpoint
+/// holds. The pictures are compared only once each, when the scene's next picture comes.
+fn share_kept_pictures(cmds: &mut [gpu_scene::DrawCmd], kept: &mut Vec<(usize, std::sync::Arc<Pixmap>)>) {
+    kept.retain(|(at, p)| {
+        let Some(c) = cmds.get_mut(*at) else { return true };
+        if let gpu_scene::DrawCmd::Image { pixmap, opacity } = c
+            && *opacity == 1.0
+            && !std::sync::Arc::ptr_eq(pixmap, p)
+            && pixmap.data() == p.data()
+        {
+            *pixmap = std::sync::Arc::clone(p);
+        }
+        false
+    });
+}
+
 /// Whether a GPU scene's commands hold a picture drawn on the CPU.
 fn holds_picture(cmds: &[gpu_scene::DrawCmd]) -> bool {
     cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. }))
@@ -4355,16 +4416,22 @@ fn render_frame(
     // The worldview read once: the frame's key, the outline and its level must be of the same
     // one, though another thread may switch it mid-frame.
     let worldview = sample_data::view();
+    // Whether see-through layers may be drawn as pictures of their own (see `GPU_ALONE`): not on a
+    // map with a layer or tile layer of another blend, which blends with the picture under it,
+    // which must then hold what a see-through layer drew there.
+    let normal = rustgis_map::effects::Blend::Normal;
+    let alone_allowed = gpu && !map.layers.iter().any(|l| l.blend != normal) && !map.tiles.iter().any(|t| t.blend != normal);
     // A screen frame starts from the picture kept of the last one, under its first changed layer
-    // (see `frame_cache`), and keeps its own.
+    // (see `frame_cache`), and keeps its own: a GPU scene's, with its commands so far.
     let mut cached = (!pm.is_recording()
-        && !gpu
         && !full_res_rasters
         && matches!(labels_to, Labels::Own)
         && frame_cache::fits(w, h)
         && keeps_pictures(map, view))
     .then(|| {
         let frame = frame_cache::Frame {
+            backend,
+            alone: alone_allowed,
             map: rustgis_map::look::MapLook::of(map),
             view: *view,
             style_env: style_env.clone(),
@@ -4397,7 +4464,7 @@ fn render_frame(
     // The layer kept alone (`frame_cache::Alone`): its picture once composited, and the rest once
     // it is done.
     let alone_at = cached.as_ref().and_then(|p| p.alone_at);
-    let mut drawn_alone: Option<(usize, Pixmap)> = None;
+    let mut drawn_alone: Option<(usize, std::sync::Arc<Pixmap>)> = None;
     let mut captured_alone: Option<(usize, frame_cache::Alone)> = None;
     // The label candidates each layer drawn gives the frame, kept for the next (see `frame_cache`).
     let mut layer_labels: frame_cache::LayerLabels = Vec::new();
@@ -4421,6 +4488,11 @@ fn render_frame(
     }
     // Set when tiny-skia actually rasterizes into the accumulator.
     let mut cpu_dirty = false;
+    // The pictures flushed so far, as the CPU fallback counts them (see `Runs`).
+    let mut runs = Runs::default();
+    // The see-through layers drawn as pictures of their own so far (see `GPU_ALONE`); none unless
+    // `alone_allowed`.
+    let mut gpu_alone = if alone_allowed { 0 } else { GPU_ALONE };
     // A GPU frame standing in for a turned or tilted view ([`gpu_turned`]) is of no use with a
     // picture in it: that view is then drawn on the CPU whole. So it stops at the first layer
     // that would leave one, rather than draw the rest (#2540).
@@ -4454,7 +4526,7 @@ fn render_frame(
             // The GPU backend tessellates a country in view whole (its mesh moves with the camera,
             // `GPU_CULL_MARGIN`): the level's fewer vertices help it, the per-part culling doesn't.
             if gpu {
-                flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
+                flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs)?;
                 if mesh::collect_basemap(&mut cmds, polys, &c.extent, land, outline, ctx.ppp, map_per_px).is_ok() {
                     continue;
                 }
@@ -4479,7 +4551,7 @@ fn render_frame(
             {
                 let mut tessellated = false;
                 if gpu {
-                    flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
+                    flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs)?;
                     tessellated = mesh::collect_basemap(&mut cmds, polys, &g.extent(), land, outline, ctx.ppp, map_per_px).is_ok();
                 }
                 if gpu && !tessellated {
@@ -4556,7 +4628,7 @@ fn render_frame(
                                 e.expand(*c);
                             }
                         }
-                        flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
+                        flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs)?;
                         let tessellated =
                             !e.is_empty() && mesh::collect_graticule(&mut cmds, &lines, &e, grat, width, ctx.ppp, map_per_px).is_ok();
                         if !tessellated {
@@ -4599,6 +4671,7 @@ fn render_frame(
                 let tile_gpu = (gpu && shown).then_some(tiles::Gpu {
                     cmds: &mut cmds,
                     dirty: &mut cpu_dirty,
+                    runs: &mut runs,
                     // A tilted view's bands are drawn at their own densities: their tiles as pictures.
                     meshes: !matches!(labels_to, Labels::Tilted(..)),
                     // Only a frame for the view itself (not a turned or tilted view's north-up stand-in).
@@ -4655,8 +4728,24 @@ fn render_frame(
     let distance = viewing_distance(map.ground_res_at(&view.camera), view.height);
     // Graphics text: always drawn, and other labels keep clear of it.
     let mut fixed_labels: Vec<PlacedLabel> = Vec::new();
+    // The pictures a GPU scene was drawing when its checkpoints were taken, by the place among
+    // its commands the next picture comes: when that is the same picture, it is the one kept
+    // (`share_kept_pictures`), whose texture is on the GPU already.
+    let mut kept_pictures: Vec<(usize, std::sync::Arc<Pixmap>)> = Vec::new();
     if let Some(c) = cached.as_ref().and_then(|p| p.restored.as_ref()) {
-        pm = Canvas::from_pixmap(c.pixels.clone());
+        pm = match &c.pixels {
+            Some(p) => Canvas::from_pixmap(Pixmap::clone(p)),
+            None => Canvas::new(w, h)?,
+        };
+        // A GPU scene's commands so far, sharing their data (and so the GPU's textures and
+        // buffers) with the scene kept, and the picture it was drawing then.
+        if let Some(g) = &c.gpu {
+            cmds = g.cmds();
+            gpu_alone = g.alone;
+            runs = g.runs;
+            cpu_dirty = c.pixels.is_some();
+            kept_pictures.extend(c.pixels.iter().map(|p| (cmds.len(), std::sync::Arc::clone(p))));
+        }
         // What the layers below left for those above: the sprites drawn, the shapeburst budget.
         ctx.sprites.borrow_mut().clone_from(&c.sprites);
         ctx.bursts.set(c.bursts);
@@ -4727,11 +4816,26 @@ fn render_frame(
         if let Some(id) = below.take() {
             draw_tiles!(Some(id));
         }
-        if cached.as_ref().is_some_and(|p| p.capture_at == Some(at)) && complete(&tile_out) {
+        // A GPU scene's commands are kept with the picture it is drawing (none while that holds
+        // nothing), when they can all be shared.
+        if cached.as_ref().is_some_and(|p| p.capture_at == Some(at))
+            && complete(&tile_out)
+            && let Some(gpu_part) = if gpu {
+                share_kept_pictures(&mut cmds, &mut kept_pictures);
+                frame_cache::GpuPart::of(&cmds, gpu_alone, runs).map(Some)
+            } else {
+                Some(None)
+            }
+        {
+            let pixels = (!gpu || cpu_dirty).then(|| std::sync::Arc::new(pm.pixels().clone()));
+            if gpu && let Some(p) = &pixels {
+                kept_pictures.push((cmds.len(), std::sync::Arc::clone(p)));
+            }
             captured = Some((
                 at,
                 frame_cache::Checkpoint {
-                    pixels: pm.pixels().clone(),
+                    pixels,
+                    gpu: gpu_part,
                     sprites: ctx.sprites.borrow().clone(),
                     bursts: ctx.bursts.get(),
                     // Over a restored picture, its tiles are as old as that picture.
@@ -4762,6 +4866,8 @@ fn render_frame(
         let (blend, layer_blend) = (blend_mode(layer.blend), layer.blend);
         // Drawn on its own and composited when it is see-through, masked or blended.
         let offscreen = opacity < 0.999 || mask.is_some() || layer.blend != rustgis_map::effects::Blend::Normal;
+        // On the GPU, a picture of its own placed at its opacity (see `GPU_ALONE`).
+        let gpu_own = gpu && offscreen && mask.is_none() && layer.blend == rustgis_map::effects::Blend::Normal && gpu_alone < GPU_ALONE;
         let composite = |pm: &mut Canvas, target: &Pixmap| {
             // A recording keeps the masked layer as a picture cut by its mask, placed with its
             // opacity and blend over the vectors beneath.
@@ -4789,7 +4895,14 @@ fn render_frame(
             && offscreen
             && let Some(a) = cached.as_ref().and_then(|p| p.recombine.as_ref())
         {
-            composite(&mut pm, &a.pixels);
+            if gpu_own {
+                // The same picture as last time, its texture already on the GPU.
+                place_alone(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs, std::sync::Arc::clone(&a.pixels), opacity)?;
+                gpu_alone += 1;
+            } else {
+                composite(&mut pm, &a.pixels);
+                cpu_dirty = true;
+            }
             ctx.sprites.borrow_mut().clone_from(&a.sprites);
             ctx.bursts.set(a.bursts);
             label_candidates.clone_from(&a.candidates);
@@ -4868,14 +4981,21 @@ fn render_frame(
                 if offscreen {
                     let mut target = Pixmap::new(w, h)?;
                     draw_it(&mut target, 1.0);
-                    composite(&mut pm, &target);
+                    let target = std::sync::Arc::new(target);
+                    if gpu_own {
+                        place_alone(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs, std::sync::Arc::clone(&target), opacity)?;
+                        gpu_alone += 1;
+                    } else {
+                        composite(&mut pm, &target);
+                        cpu_dirty = true;
+                    }
                     if alone_at == Some(at) {
                         drawn_alone = Some((at, target));
                     }
                 } else {
                     draw_it(pm.pixels(), opacity);
+                    cpu_dirty = true;
                 }
-                cpu_dirty = true;
             }
             continue;
         }
@@ -4995,6 +5115,11 @@ fn render_frame(
         // Copied only while the frame's copies stay within what a view keeps.
         let room = frame_cache::MAX_LABEL_BYTES.saturating_sub(layer_label_bytes);
         let mut gave_labels: Option<Vec<Candidate>> = None;
+        // Whether the picture being drawn held anything before this layer: a layer drawn as a
+        // picture of its own (`gpu_own`) leaves it so.
+        let dirty_before = cpu_dirty;
+        // Whether the layer drew anything (`gpu_own`: a picture of its own only then).
+        let mut layer_drew = false;
         let mut draw_chunk = |layer: &mut rustgis_map::Layer| -> rustgis_data::Result<()> {
             // A stopped frame draws no more of a layer or a streamed chunk (see `cancel`).
             if cancel::requested() {
@@ -5116,7 +5241,7 @@ fn render_frame(
             // just itself.
             let mut gpu_done = false;
             if gpu_layer {
-                flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)
+                flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs)
                     .ok_or_else(|| rustgis_data::DataError::Format("cannot allocate render target".into()))?;
                 // Kept from the last scene of this view when the layer looks as it did (a layer read
                 // from its source has no look, and draws in batches).
@@ -5387,6 +5512,7 @@ fn render_frame(
                     dest.end_bands();
                 }
                 cpu_dirty |= drawn_here;
+                layer_drew |= drawn_here;
             }
             if !complete_source {
                 if let (Some(a), Some(base)) = (layer.aggregation, aggregate_symbol) {
@@ -5396,6 +5522,7 @@ fn render_frame(
                 if let Some((water, darkness)) = &shore {
                     terrain::paint_shore(if direct { &mut pm } else { &mut target }, water, view, *darkness);
                     cpu_dirty = true;
+                    layer_drew = true;
                 }
                 if !direct {
                     if target.is_recording() {
@@ -5403,11 +5530,26 @@ fn render_frame(
                             pm.place(std::mem::replace(&mut target, empty), Transform::identity(), opacity, layer_blend, None);
                         }
                     } else {
-                        composite(&mut pm, target.pixmap());
                         // Not with a selection or graphics text, drawn over the composite, nor
                         // with extruded charts, placed after it.
-                        if alone_at == Some(at) && layer.selection.is_empty() && !layer.graphics && layer.extrusion.is_none() {
-                            drawn_alone = Some((at, target.pixmap().clone()));
+                        let keep_alone = alone_at == Some(at) && layer.selection.is_empty() && !layer.graphics && layer.extrusion.is_none();
+                        if gpu_own && !layer_drew {
+                            // Nothing drawn: nothing to place.
+                            cpu_dirty = dirty_before;
+                        } else if gpu_own && let Some(empty) = Canvas::new(1, 1) {
+                            let picture = std::sync::Arc::new(std::mem::replace(&mut target, empty).into_pixmap());
+                            cpu_dirty = dirty_before;
+                            place_alone(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs, std::sync::Arc::clone(&picture), opacity)
+                                .ok_or_else(|| rustgis_data::DataError::Format("cannot allocate render target".into()))?;
+                            gpu_alone += 1;
+                            if keep_alone {
+                                drawn_alone = Some((at, picture));
+                            }
+                        } else {
+                            composite(&mut pm, target.pixmap());
+                            if keep_alone {
+                                drawn_alone = Some((at, std::sync::Arc::new(target.pixmap().clone())));
+                            }
                         }
                     }
                 }
@@ -6152,10 +6294,18 @@ fn render_frame(
             if let Some((water, darkness)) = &shore {
                 terrain::paint_shore(if direct { &mut pm } else { &mut target }, water, view, *darkness);
                 cpu_dirty = true;
+                layer_drew = true;
             }
             if !direct {
                 if target.is_recording() {
                     pm.place(target, Transform::identity(), opacity, layer_blend, None);
+                } else if gpu_own {
+                    // Nothing drawn (a source that gave no rows): nothing to place.
+                    cpu_dirty = dirty_before;
+                    if layer_drew {
+                        place_alone(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs, std::sync::Arc::new(target.into_pixmap()), opacity)?;
+                        gpu_alone += 1;
+                    }
                 } else {
                     composite(&mut pm, target.pixmap());
                 }
@@ -6189,9 +6339,8 @@ fn render_frame(
             return None;
         }
     }
-    if let Some(plan) = cached.take() {
-        frame_cache::keep(plan, captured, captured_alone, layer_labels);
-    }
+    // Kept once the frame is done: not a GPU scene that the CPU draws whole instead.
+    let keep = cached.take().map(|plan| move || frame_cache::keep(plan, captured, captured_alone, layer_labels));
     // A band of a tilted view: the sun's glint on the terrain's water, over the water's own fill.
     if matches!(labels_to, Labels::Tilted(..) | Labels::Shared)
         && let Some(g) = TILT_GLINT.with(|g| g.borrow().clone())
@@ -6351,6 +6500,9 @@ fn render_frame(
     let pending_in_place = tile_out.pending_in_place;
     match backend {
         Backend::Cpu => {
+            if let Some(keep) = keep {
+                keep();
+            }
             let (pixmap, recorded) = if pm.is_recording() { (Pixmap::new(1, 1)?, Some(pm)) } else { (pm.into_pixmap(), None) };
             Some(RenderOutput::Cpu(Rendered {
                 pixmap,
@@ -6367,12 +6519,18 @@ fn render_frame(
             }))
         }
         Backend::Gpu | Backend::GpuLive => {
-            flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
+            flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty, &mut runs)?;
+            share_kept_pictures(&mut cmds, &mut kept_pictures);
             // Pathological CPU/GPU alternation (rasters, masks, blends between every vector
-            // layer) costs more full-screen uploads than a plain CPU rasterization.
-            let images = cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count();
-            if images > 4 {
+            // layer) costs more full-screen uploads than a plain CPU rasterization. Counted as
+            // though the see-through layers drawn alone were composited into the pictures around
+            // them, as they were before they could be (`GPU_ALONE`), so the same scenes stay on
+            // the GPU.
+            if runs.count > 4 {
                 return render_frame(map, view, full_res_rasters, Backend::Cpu, labels_to, record, failed_source, env);
+            }
+            if let Some(keep) = keep {
+                keep();
             }
             Some(RenderOutput::Gpu(gpu_scene::GpuScene {
                 clear: mesh::premul(water),
@@ -10266,6 +10424,31 @@ mod tests {
         assert!(!scene.cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })), "hidden tiles must not emit an empty image");
     }
 
+    /// The pictures a scene would hold with its see-through layers composited into the picture
+    /// being drawn instead of drawn alone, as `Runs` counts them.
+    #[test]
+    fn runs_count_the_pictures_of_a_scene_without_layers_alone() {
+        let alone = || std::sync::Arc::new(Pixmap::new(1, 1).expect("pixmap"));
+        let (mut pm, mut cmds) = (Pixmap::new(1, 1).expect("pixmap"), Vec::new());
+        // A picture, then two layers alone over it and a picture over them: one, as composited.
+        let (mut dirty, mut runs) = (true, Runs::default());
+        place_alone(&mut pm, &mut cmds, &mut dirty, &mut runs, alone(), 0.5);
+        place_alone(&mut pm, &mut cmds, &mut dirty, &mut runs, alone(), 0.5);
+        dirty = true;
+        flush_acc(&mut pm, &mut cmds, &mut dirty, &mut runs);
+        assert_eq!((cmds.len(), runs.count), (4, 1));
+        // Ended by a layer that adds nothing (a mesh with nothing in view): a layer alone, then a
+        // picture, are two.
+        place_alone(&mut pm, &mut cmds, &mut dirty, &mut runs, alone(), 0.5);
+        flush_acc(&mut pm, &mut cmds, &mut dirty, &mut runs);
+        dirty = true;
+        flush_acc(&mut pm, &mut cmds, &mut dirty, &mut runs);
+        assert_eq!(runs.count, 3);
+        // A flush with nothing drawn since counts nothing.
+        flush_acc(&mut pm, &mut cmds, &mut dirty, &mut runs);
+        assert_eq!(runs.count, 3);
+    }
+
     #[test]
     fn gpu_backend_caps_image_commands_to_a_cpu_frame() {
         // More than four alternating CPU-only layers costs more full-screen uploads than a
@@ -10323,7 +10506,7 @@ mod tests {
         let kinds = cmd_kinds(&scene);
         assert!(!kinds.contains(&"mesh"), "no mesh f32 would misplace: {kinds:?}");
         let Some(pixmap) = scene.cmds.iter().find_map(|c| match c {
-            gpu_scene::DrawCmd::Image { pixmap } => Some(pixmap),
+            gpu_scene::DrawCmd::Image { pixmap, .. } => Some(pixmap),
             _ => None,
         }) else {
             panic!("the square is drawn on the CPU: {kinds:?}")

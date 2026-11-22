@@ -265,6 +265,8 @@ fn mesh_tiles(v: &rustgis_tiles::shapes::VectorTiles, centre: [f64; 2]) -> (Vec<
 pub(crate) struct Gpu<'a> {
     pub cmds: &'a mut Vec<DrawCmd>,
     pub dirty: &'a mut bool,
+    /// The pictures flushed so far, as the CPU fallback counts them ([`crate::Runs`]).
+    pub runs: &'a mut crate::Runs,
     /// Vector tile styles may be drawn as meshes ([`DrawCmd::TileMeshes`]).
     pub meshes: bool,
     /// Raster tile layers are left for the GPU map to place for each frame ([`DrawCmd::LiveTiles`]).
@@ -374,7 +376,7 @@ pub(crate) fn draw(
                 && t.opacity >= 0.999
                 && let Some(v) =
                     rustgis_tiles::shapes::vector_tiles(&spec(t), &frame, &fetch, Some(&reach), labels.then_some((pm.width(), pm.height())))
-                && crate::flush_acc(pm, g.cmds, g.dirty).is_some()
+                && crate::flush_acc(pm, g.cmds, g.dirty, g.runs).is_some()
             {
                 let (tiles, waiting) = mesh_tiles(&v, origin);
                 if !tiles.is_empty() {
@@ -394,7 +396,7 @@ pub(crate) fn draw(
                 && north_up
                 && t.blend == Blend::Normal
                 && let Some(p) = rustgis_tiles::place_raster(&s, t.opacity, &frame, &fetch, &reach)
-                && crate::flush_acc(pm, g.cmds, g.dirty).is_some()
+                && crate::flush_acc(pm, g.cmds, g.dirty, g.runs).is_some()
             {
                 let archive_revision = if matches!(s.kind, Kind::PmTiles | Kind::MbTiles) {
                     rustgis_tiles::cache::archive_revision([s.url.as_str()])
@@ -413,7 +415,7 @@ pub(crate) fn draw(
             {
                 // What the accumulator holds goes first, under the tiles; with no room for a new
                 // accumulator the layer is drawn into this one instead.
-                let flushed = p.tiles.is_empty() || crate::flush_acc(pm, g.cmds, g.dirty).is_some();
+                let flushed = p.tiles.is_empty() || crate::flush_acc(pm, g.cmds, g.dirty, g.runs).is_some();
                 if flushed {
                     if !p.tiles.is_empty() {
                         g.cmds.push(DrawCmd::Tiles { origin, tiles: p.tiles.iter().map(|q| quad(q, origin)).collect() });

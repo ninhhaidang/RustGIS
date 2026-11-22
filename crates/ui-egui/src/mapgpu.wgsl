@@ -246,9 +246,12 @@ fn vs_image(@builtin(vertex_index) vi: u32) -> ImgOut {
 @group(0) @binding(0) var t_img: texture_2d<f32>;
 @group(0) @binding(1) var s_img: sampler;
 
+// The picture's opacity (x): a see-through layer drawn alone is placed at its own (#1057).
+@group(1) @binding(1) var<uniform> image_opacity: vec4f;
+
 @fragment
 fn fs_image(in: ImgOut) -> @location(0) vec4f {
-    return textureSample(t_img, s_img, in.uv);
+    return textureSample(t_img, s_img, in.uv) * image_opacity.x;
 }
 
 // A cached image scene's pan/zoom changes only the sampled rectangle. The viewport stays

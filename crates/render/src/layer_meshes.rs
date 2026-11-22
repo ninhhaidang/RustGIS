@@ -132,7 +132,7 @@ fn share(cmd: &DrawCmd) -> Option<DrawCmd> {
 }
 
 /// The bytes `cmds` hold, as allocated.
-fn bytes_of(cmds: &[DrawCmd]) -> usize {
+pub(crate) fn bytes_of(cmds: &[DrawCmd]) -> usize {
     cmds.iter()
         .map(|c| match c {
             DrawCmd::Mesh { vertices, indices, .. } => {
@@ -351,8 +351,11 @@ mod tests {
         (m, a, b, View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera, sky: false })
     }
 
-    /// The GPU scene of `view`; a frame drawn on the CPU instead fails the test.
+    /// The GPU scene of `view`, drawn whole: a scene started from a kept picture
+    /// (`frame_cache`) doesn't draw the layers under it. A frame drawn on the CPU instead fails
+    /// the test.
     fn scene(m: &mut Map, view: &View) -> GpuScene {
+        crate::frame_cache::clear();
         match render_backend(m, view, Backend::Gpu) {
             Some(RenderOutput::Gpu(s)) => s,
             _ => panic!("no GPU scene"),

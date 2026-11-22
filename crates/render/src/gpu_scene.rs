@@ -101,9 +101,14 @@ impl CmdClip {
 /// that need tiny-skia: masks, blend modes, transparency, aggregation, extrusion) at its
 /// exact z-position; `Mesh`/`Points` are lyon-tessellated vector layers.
 pub enum DrawCmd {
-    /// Screen-sized premultiplied RGBA, drawn covering the whole map view. The pixmap is
-    /// moved in, not copied — flushing the CPU accumulator doesn't pay a full-screen `to_vec`.
-    Image { pixmap: tiny_skia::Pixmap },
+    /// Screen-sized premultiplied RGBA, drawn covering the whole map view at `opacity` (the
+    /// picture's every channel times it, placed over what is under it). The pixmap is moved in,
+    /// not copied — flushing the CPU accumulator doesn't pay a full-screen `to_vec`. Shared: a
+    /// picture of layers that look as they did is kept from one scene to the next
+    /// (`frame_cache`), and the GPU keeps the texture of a picture it has uploaded while the
+    /// picture lives. A see-through layer drawn alone is one at the layer's opacity, so a change
+    /// of transparency alone draws nothing again.
+    Image { pixmap: Arc<tiny_skia::Pixmap>, opacity: f32 },
     /// Tessellated polygon fills and line/ring strokes of one layer run. Shared: a layer that looks
     /// as it did keeps its mesh from one scene to the next (`layer_meshes`), and the GPU keeps the
     /// buffers of a mesh it has uploaded while the mesh lives.
@@ -128,6 +133,26 @@ pub enum DrawCmd {
     /// buffers across frames, shows the layers of its runs that show at the camera's zoom and
     /// clips each tile to its square, as MapLibre draws its tiles.
     TileMeshes { tiles: Vec<MeshTile> },
+}
+
+impl DrawCmd {
+    /// A command sharing this one's data, for a scene to draw again; `None` for an extrusion,
+    /// whose data isn't shared (only a tilted view's scenes have them, and those keep nothing).
+    pub fn share(&self) -> Option<DrawCmd> {
+        Some(match self {
+            DrawCmd::Image { pixmap, opacity } => DrawCmd::Image { pixmap: Arc::clone(pixmap), opacity: *opacity },
+            DrawCmd::Mesh { origin, vertices, indices } => {
+                DrawCmd::Mesh { origin: *origin, vertices: Arc::clone(vertices), indices: Arc::clone(indices) }
+            }
+            DrawCmd::Points { origin, instances } => DrawCmd::Points { origin: *origin, instances: Arc::clone(instances) },
+            DrawCmd::Extrusion { .. } => return None,
+            DrawCmd::Tiles { origin, tiles } => DrawCmd::Tiles { origin: *origin, tiles: tiles.clone() },
+            DrawCmd::LiveTiles { name, spec, opacity, archive_revision } => {
+                DrawCmd::LiveTiles { name: name.clone(), spec: spec.clone(), opacity: *opacity, archive_revision: *archive_revision }
+            }
+            DrawCmd::TileMeshes { tiles } => DrawCmd::TileMeshes { tiles: tiles.clone() },
+        })
+    }
 }
 
 /// One tile of a [`DrawCmd::TileMeshes`].

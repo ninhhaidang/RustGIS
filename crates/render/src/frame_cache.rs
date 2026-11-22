@@ -18,11 +18,20 @@
 //! whole takes, so again the same pixels. A layer that shows a selection or graphics text isn't
 //! kept alone: both are drawn after the composite, the text in the layer's opacity.
 //!
-//! Only flat, north-up frames for the screen keep pictures: not exports, recordings, the GPU,
-//! the globe, turned or tilted views, nor maps whose layers read others while drawing (a mask,
-//! labels turned square to another layer's lines, terrain water). A layer read in place from its
-//! source or a raster has no look ([`LayerLook::of`]): it counts as changed in every frame, so a
-//! picture is kept only from below it.
+//! Only flat, north-up frames for the screen keep pictures: not exports, recordings, the globe,
+//! turned or tilted views, nor maps whose layers read others while drawing (a mask, labels turned
+//! square to another layer's lines, terrain water). A layer read in place from its source or a
+//! raster has no look ([`LayerLook::of`]): it counts as changed in every frame, so a picture is
+//! kept only from below it.
+//!
+//! A GPU scene keeps its pictures the same way: its checkpoint holds the scene's commands so far
+//! ([`GpuPart`]), sharing their data (the pictures drawn on the CPU, the layers' meshes) with the
+//! scene that made them, and the CPU picture it was drawing then. The GPU keeps the texture of a
+//! picture it has uploaded while the picture lives, so a scene started from a checkpoint uploads
+//! none of the pictures under its first changed layer again. On the GPU a see-through layer of
+//! normal blend is a picture of its own, which the GPU places at the layer's opacity
+//! ([`crate::gpu_scene::DrawCmd::Image`]): the layer alone composited again at a new transparency
+//! is that same picture, drawn and uploaded once.
 //!
 //! Each layer's label candidates are kept beside the picture too ([`LayerLabels`]): a layer drawn
 //! again over a restored picture, or in a frame of the same view drawn whole, that looks the same
@@ -33,12 +42,15 @@ use rustgis_data::query::Env;
 use rustgis_map::look::{Change, LayerLook, MapLook};
 use tiny_skia::Pixmap;
 
+use crate::gpu_scene::DrawCmd;
 use crate::tiles::TileOutput;
-use crate::{Candidate, PlacedLabel, Sprites, View};
+use crate::{Backend, Candidate, PlacedLabel, Sprites, View};
 
 /// The most pixels the kept pictures hold together, checkpoints and layers alone, about 66 MB:
 /// two views of 3840 × 2160, or one with its layer alone; two views with their layers alone at
-/// 1920 × 1080.
+/// 1920 × 1080. A GPU checkpoint counts the pictures and raster tiles its commands hold too
+/// (each shared one once), though it shares them with the scene on screen: at 1920 × 1080,
+/// eight pictures of the view in all.
 const MAX_PIXELS: u64 = 2 * 3840 * 2160;
 
 /// The most pixels one frame's marker sprites can hold ([`crate::MAX_SPRITES`] of at most
@@ -57,9 +69,20 @@ pub(crate) const MAX_LABEL_BYTES: usize = 16 << 20;
 /// Pictures kept, one per view drawn (a map and its draft, two maps on screen).
 const KEPT: usize = 2;
 
+/// The most bytes of meshes the kept GPU checkpoints hold together ([`GpuPart`]), as
+/// [`crate::layer_meshes`] counts them: they share them with the scenes on screen and the meshes
+/// that module keeps, so what they hold beside those is at most this, the same budget again.
+const MAX_MESH_BYTES: usize = crate::layer_meshes::MAX_BYTES;
+
 /// What a frame is drawn from besides its layers.
 #[derive(Clone, Debug)]
 pub(crate) struct Frame {
+    /// A CPU frame or a GPU scene (whose raster tile layers are placed live or as tiles).
+    pub backend: Backend,
+    /// On the GPU, whether see-through layers may be pictures of their own (`GPU_ALONE`), which
+    /// a change to any layer's blend can turn: a scene kept with them or without them is no
+    /// start for one drawn the other way.
+    pub alone: bool,
     pub map: MapLook,
     pub view: View,
     pub style_env: Env,
@@ -90,7 +113,9 @@ impl Frame {
     /// Whether `other` draws everything but its layers as this frame did.
     fn same(&self, other: &Frame) -> bool {
         let (a, b) = (&self.view, &other.view);
-        a.width.to_bits() == b.width.to_bits()
+        self.backend == other.backend
+            && self.alone == other.alone
+            && a.width.to_bits() == b.width.to_bits()
             && a.height.to_bits() == b.height.to_bits()
             && a.pixels_per_point.to_bits() == b.pixels_per_point.to_bits()
             && a.camera == b.camera
@@ -110,9 +135,12 @@ impl Frame {
 }
 
 /// A frame as it stood before the layer at one place in the drawing order was drawn.
-#[derive(Clone)]
 pub(crate) struct Checkpoint {
-    pub pixels: Pixmap,
+    /// Its pixels; for a GPU scene, those of the CPU picture it was drawing, `None` when that
+    /// held nothing yet.
+    pub pixels: Option<std::sync::Arc<Pixmap>>,
+    /// A GPU scene's commands so far.
+    pub gpu: Option<GpuPart>,
     /// The marker sprites drawn so far: a layer above draws a marker from one, or straight once
     /// there are as many as a frame keeps, as it would in a frame drawn whole.
     pub sprites: Sprites,
@@ -126,11 +154,35 @@ pub(crate) struct Checkpoint {
     pub tiles: TileOutput,
 }
 
+/// What a GPU scene had made when a [`Checkpoint`] was taken.
+pub(crate) struct GpuPart {
+    /// Its commands, sharing their data with the scene's ([`DrawCmd::share`]).
+    pub cmds: Vec<DrawCmd>,
+    /// The see-through layers it had drawn as pictures of their own (`gpu_alone`).
+    pub alone: usize,
+    /// The pictures flushed so far, as the CPU fallback counts them.
+    pub runs: crate::Runs,
+}
+
+impl GpuPart {
+    /// `cmds` shared, with `alone` layers drawn as pictures of their own and `runs`; `None` when
+    /// one can't be shared (an extrusion, which only a tilted view's scenes have).
+    pub(crate) fn of(cmds: &[DrawCmd], alone: usize, runs: crate::Runs) -> Option<GpuPart> {
+        Some(GpuPart { cmds: cmds.iter().map(DrawCmd::share).collect::<Option<_>>()?, alone, runs })
+    }
+
+    /// Its commands, shared again for a scene starting from it.
+    pub(crate) fn cmds(&self) -> Vec<DrawCmd> {
+        self.cmds.iter().filter_map(DrawCmd::share).collect()
+    }
+}
+
 /// A layer's picture alone, drawn opaque, and what the frame had gathered once the layer was drawn
-/// and composited, before the tile layers over it.
+/// and composited, before the tile layers over it. Shared: on the GPU it is the picture the scene
+/// draws.
 #[derive(Clone)]
 pub(crate) struct Alone {
-    pub pixels: Pixmap,
+    pub pixels: std::sync::Arc<Pixmap>,
     pub sprites: Sprites,
     pub bursts: f32,
     pub candidates: Vec<Candidate>,
@@ -160,8 +212,9 @@ struct Kept {
 }
 
 impl Kept {
-    /// The pixels it holds: its pictures and their marker sprites, each sprite counted once
-    /// though the checkpoint and the layer alone share it.
+    /// The pixels it holds: its pictures, those of a GPU scene's commands (its pictures and
+    /// raster tiles) and their marker sprites, each shared one counted once (the checkpoint and
+    /// the layer alone share sprites; on the GPU a scene's command shares the layer alone).
     fn pixels(&self) -> u64 {
         let size = |p: &Pixmap| u64::from(p.width()) * u64::from(p.height());
         let mut seen = std::collections::HashSet::new();
@@ -169,10 +222,38 @@ impl Kept {
         let sprites = std::iter::once(&self.checkpoint.sprites)
             .chain(alone.map(|a| &a.sprites))
             .flat_map(|s| s.values().flatten())
-            .filter(|p| seen.insert(std::sync::Arc::as_ptr(p)))
+            .filter(|p| seen.insert(std::sync::Arc::as_ptr(p) as usize))
             .map(|p| size(p))
             .sum::<u64>();
-        size(&self.checkpoint.pixels) + alone.map_or(0, |a| size(&a.pixels)) + sprites
+        let own = self.checkpoint.pixels.as_ref().filter(|p| seen.insert(std::sync::Arc::as_ptr(p) as usize)).map_or(0, |p| size(p));
+        let alone_px = alone.filter(|a| seen.insert(std::sync::Arc::as_ptr(&a.pixels) as usize)).map_or(0, |a| size(&a.pixels));
+        let cmds = self.checkpoint.gpu.iter().flat_map(|g| &g.cmds);
+        let mut scene = 0u64;
+        for c in cmds {
+            match c {
+                DrawCmd::Image { pixmap, .. } if seen.insert(std::sync::Arc::as_ptr(pixmap) as usize) => scene += size(pixmap),
+                DrawCmd::Tiles { tiles, .. } => {
+                    for t in tiles {
+                        if let Some(p) = t.pixmap().filter(|_| seen.insert(std::sync::Arc::as_ptr(&t.picture) as usize)) {
+                            scene += size(p);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        own + alone_px + sprites + scene
+    }
+
+    /// The bytes of meshes a GPU scene's commands hold, as allocated.
+    fn mesh_bytes(&self) -> usize {
+        let cmds = self.checkpoint.gpu.iter().flat_map(|g| &g.cmds);
+        cmds.map(|c| match c {
+            DrawCmd::Mesh { .. } | DrawCmd::Points { .. } => crate::layer_meshes::bytes_of(std::slice::from_ref(c)),
+            DrawCmd::TileMeshes { tiles } => tiles.iter().map(|t| t.mesh.bytes()).sum(),
+            _ => 0,
+        })
+        .sum()
     }
 }
 
@@ -203,6 +284,12 @@ thread_local! {
 #[cfg(test)]
 fn with_pictures<R>(f: impl FnOnce(&mut Vec<Kept>) -> R) -> R {
     PICTURES.with_borrow_mut(f)
+}
+
+/// Forgets the pictures kept on this test thread, for a test of what else a frame keeps.
+#[cfg(test)]
+pub(crate) fn clear() {
+    PICTURES.take();
 }
 
 /// How a frame draws, from [`plan`].
@@ -385,6 +472,14 @@ pub(crate) fn keep(plan: Plan, captured: Option<(usize, Checkpoint)>, alone: Opt
             kept.remove(0);
         }
         kept.push(Kept { frame, looks, labels, at, checkpoint, alone });
+        // The meshes within theirs: the older views go first, then this one.
+        while kept.iter().map(Kept::mesh_bytes).sum::<usize>() > MAX_MESH_BYTES {
+            if kept.len() > 1 {
+                kept.remove(0);
+            } else {
+                kept.clear();
+            }
+        }
         // Within the budget: the older views' layers alone go first, then the older views, then
         // this view's layer alone.
         while kept.iter().map(Kept::pixels).sum::<u64>() > MAX_PIXELS + KEPT as u64 * SPRITE_PIXELS {
@@ -643,6 +738,177 @@ mod tests {
             draw(&mut map, &view);
         }
         assert!(RECOMBINED.get(), "the layer alone was kept");
+    }
+
+    /// `map()` over a raster read into memory, at the bottom: on the GPU a picture drawn on the
+    /// CPU, the squares and points meshes over it.
+    fn over_a_raster() -> (Map, View, u32, u32) {
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        let (mut map, view, below, above) = map();
+        let n = 32usize;
+        let values: Vec<f32> = (0..n * n).map(|i| (i % n + i / n) as f32).collect();
+        let gt = GeoTransform { origin_x: -0.1, origin_y: 0.15, pixel_width: 0.3 / n as f64, pixel_height: -0.25 / n as f64 };
+        let r = Raster::new("r", n as u32, n as u32, vec![values], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").expect("a raster");
+        map.add_raster("r", rustgis_map::RasterLayer::from_path(r, "r.tif"));
+        // Added on top; moved to the bottom.
+        let r = map.layers.remove(0);
+        map.layers.push(r);
+        (map, view, below, above)
+    }
+
+    /// A GPU scene's commands, the pictures' pixels, opacities and the meshes' data among them.
+    fn commands(scene: &crate::gpu_scene::GpuScene) -> Vec<(&'static str, Vec<u8>)> {
+        scene
+            .cmds
+            .iter()
+            .map(|c| match c {
+                DrawCmd::Image { pixmap, opacity } => ("image", [&opacity.to_bits().to_le_bytes()[..], pixmap.data()].concat()),
+                DrawCmd::Mesh { vertices, indices, .. } => {
+                    ("mesh", [bytemuck::cast_slice::<_, u8>(vertices.as_slice()), bytemuck::cast_slice(indices.as_slice())].concat())
+                }
+                DrawCmd::Points { instances, .. } => ("points", bytemuck::cast_slice(instances.as_slice()).to_vec()),
+                _ => ("other", Vec::new()),
+            })
+            .collect()
+    }
+
+    /// The pictures of a GPU scene, by address.
+    fn pictures(scene: &crate::gpu_scene::GpuScene) -> Vec<*const Pixmap> {
+        scene
+            .cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Image { pixmap, .. } => Some(std::sync::Arc::as_ptr(pixmap)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// [`draw`] for a GPU scene: it must be the same scene as one drawn from nothing, command for
+    /// command. Gives where it started drawing its layers, and the scene.
+    fn draw_gpu(map: &mut Map, view: &View) -> (Option<usize>, crate::gpu_scene::GpuScene) {
+        let Some(crate::RenderOutput::Gpu(kept)) = crate::render_backend(map, view, Backend::Gpu) else { panic!("a GPU scene") };
+        let (started, recombined) = (STARTED.get(), RECOMBINED.get());
+        let pictures = PICTURES.take();
+        let Some(crate::RenderOutput::Gpu(fresh)) = crate::render_backend(map, view, Backend::Gpu) else { panic!("a GPU scene") };
+        PICTURES.set(pictures);
+        RECOMBINED.set(recombined);
+        let (k, f) = (commands(&kept), commands(&fresh));
+        let shape = |c: &[(&'static str, Vec<u8>)]| {
+            c.iter().map(|(n, d)| (*n, d.len(), d.iter().map(|b| u64::from(*b)).sum::<u64>())).collect::<Vec<_>>()
+        };
+        assert!(k == f, "a scene from a kept picture differs from one drawn whole: {:?} vs {:?}", shape(&k), shape(&f));
+        let texts =
+            |s: &crate::gpu_scene::GpuScene| s.labels.iter().map(|l| (l.text.clone(), l.x.to_bits(), l.y.to_bits())).collect::<Vec<_>>();
+        assert_eq!(texts(&kept), texts(&fresh), "its labels differ");
+        (started, kept)
+    }
+
+    #[test]
+    fn a_gpu_scene_takes_the_pictures_under_its_first_changed_layer() {
+        let (mut map, view, below, above) = over_a_raster();
+        let (started, first) = draw_gpu(&mut map, &view);
+        assert_eq!(started, Some(0));
+        let images: Vec<bool> = first.cmds.iter().map(|c| matches!(c, DrawCmd::Image { .. })).collect();
+        assert!(images.first() == Some(&true) && images.iter().skip(1).all(|i| !i), "the raster's picture, then meshes: {images:?}");
+        let restyle = |map: &mut Map, id: u32, rgb: (u8, u8, u8)| {
+            if let Some(l) = map.layer_mut(id) {
+                l.renderer = Renderer::Single(rustgis_map::Symbol { fill: Rgba::rgb(rgb.0, rgb.1, rgb.2), ..l.symbol(0) });
+            }
+        };
+        restyle(&mut map, above, (200, 30, 30));
+        let (_, mut last) = draw_gpu(&mut map, &view);
+        for rgb in [(30, 200, 30), (30, 30, 200)] {
+            restyle(&mut map, above, rgb);
+            let (started, scene) = draw_gpu(&mut map, &view);
+            assert_eq!(started, Some(2), "from the picture under the points");
+            assert_eq!(pictures(&scene), pictures(&last), "the raster's picture is the last scene's, its texture uploaded already");
+            last = scene;
+        }
+        // The squares restyled: the first change under the kept picture draws everything again,
+        // the next from under them, the raster's picture the last scene's.
+        restyle(&mut map, below, (10, 10, 120));
+        let (started, last) = draw_gpu(&mut map, &view);
+        assert_eq!(started, Some(0));
+        restyle(&mut map, below, (10, 120, 10));
+        let (started, scene) = draw_gpu(&mut map, &view);
+        assert_eq!(started, Some(1));
+        assert_eq!(pictures(&scene), pictures(&last));
+        // A CPU frame of the same view takes nothing of the GPU's, nor a GPU scene the CPU's.
+        let _ = render(&mut map, &view);
+        assert_eq!(STARTED.get(), Some(0));
+        let _ = crate::render_backend(&mut map, &view, Backend::Gpu);
+        assert!(
+            PICTURES
+                .with_borrow(|k| k.iter().any(|k| k.frame.backend == Backend::Gpu) && k.iter().any(|k| k.frame.backend == Backend::Cpu))
+        );
+        // The raster restyled: everything again, a new picture.
+        if let Some(r) = map.layers.last_mut().and_then(|l| l.raster.as_mut()) {
+            r.style.brightness += 10.0;
+        }
+        let (started, scene) = draw_gpu(&mut map, &view);
+        assert_eq!(started, Some(0));
+        assert_ne!(pictures(&scene), pictures(&last));
+    }
+
+    #[test]
+    fn a_see_through_layer_on_the_gpu_is_placed_again_at_its_new_transparency() {
+        let (mut map, view, below, above) = over_a_raster();
+        let set = |map: &mut Map, t: f32| map.layer_mut(below).map(|l| l.transparency = t);
+        let opacities = |s: &crate::gpu_scene::GpuScene| {
+            s.cmds
+                .iter()
+                .filter_map(|c| match c {
+                    DrawCmd::Image { opacity, .. } => Some((opacity * 100.0).round() as i32),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        set(&mut map, 20.0);
+        let (_, scene) = draw_gpu(&mut map, &view);
+        // The squares, see-through, are a picture of their own over the raster's, placed at their opacity.
+        assert_eq!(opacities(&scene), vec![100, 80]);
+        set(&mut map, 30.0);
+        let (_, mut last) = draw_gpu(&mut map, &view);
+        assert!(!RECOMBINED.get());
+        for t in [40.0, 75.0, 5.0] {
+            set(&mut map, t);
+            let (started, scene) = draw_gpu(&mut map, &view);
+            assert_eq!(started, Some(1));
+            assert!(RECOMBINED.get(), "{t}");
+            assert_eq!(pictures(&scene), pictures(&last), "the same pictures, the squares' not drawn again");
+            assert_eq!(opacities(&scene), vec![100, 100 - t as i32]);
+            last = scene;
+        }
+        // Restyled: drawn again, a new picture.
+        if let Some(l) = map.layer_mut(below) {
+            l.renderer = Renderer::Single(rustgis_map::Symbol { fill: Rgba::rgb(10, 200, 90), ..l.symbol(0) });
+        }
+        let (_, scene) = draw_gpu(&mut map, &view);
+        assert!(!RECOMBINED.get());
+        let (was, now) = (pictures(&last), pictures(&scene));
+        assert!(was.first() == now.first() && was.get(1) != now.get(1), "the raster's kept, the squares' drawn again");
+        // Blended, the layer is composited into the picture under it on the CPU, as before; its
+        // transparency changed alone still composites the layer kept, not drawn again.
+        if let Some(l) = map.layer_mut(below) {
+            l.blend = rustgis_map::effects::Blend::Multiply;
+        }
+        for t in [50.0, 60.0, 70.0] {
+            set(&mut map, t);
+            let (_, scene) = draw_gpu(&mut map, &view);
+            assert_eq!(opacities(&scene), vec![100], "one picture");
+        }
+        assert!(RECOMBINED.get());
+        // Of normal blend under a blended layer, which blends with the picture under it: still
+        // composited into it, so the blended layer sees what the see-through one drew.
+        if let Some(l) = map.layer_mut(below) {
+            l.blend = rustgis_map::effects::Blend::Normal;
+        }
+        if let Some(l) = map.layer_mut(above) {
+            l.blend = rustgis_map::effects::Blend::Multiply;
+        }
+        let (_, scene) = draw_gpu(&mut map, &view);
+        assert_eq!(opacities(&scene), vec![100], "the raster, the squares and the points in one picture");
     }
 
     #[test]
