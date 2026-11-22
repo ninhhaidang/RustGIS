@@ -88,6 +88,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(clippy::disallowed_methods, reason = "another body measures on its sphere")]
     fn bodies_scale_measurements_by_their_radius() {
         assert_eq!(Body::get("earth").ratio(), 1.0);
         assert_eq!(Body::get("nope").id, "earth");

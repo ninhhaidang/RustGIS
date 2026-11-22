@@ -153,6 +153,11 @@ the pull request which of these it reaches and why the rest don't apply:
 `cargo xtask test-hygiene` (also in CI) requires `// test-wait: reason` on timer waits in tests and
 `#[ignore = "reason"]` on ignored tests, and refuses an `assert_eq!` or `assert_ne!` (or `debug_assert_*`)
 whose two sides are the same tokens; prefer completion or progress signals, and a fixed expected value.
+`clippy.toml` refuses the four sphere measures in `rustgis-geom` (`haversine_m`, `geodesic_length_m`,
+`geodesic_ring_perimeter_m`, `geodesic_ring_area_m2`): the Earth measures on the WGS 84 ellipsoid
+(`wgs84_distance_m`, `wgs84_length_m`, `wgs84_step_m`, `wgs84_ring_perimeter_area_m2`), and a call kept on
+the sphere, for another body or a comparison it can't change, says why in its
+`#[expect(clippy::disallowed_methods, reason = "…")]`.
 `cargo xtask memory` (in CI on Linux) fails when a command line workflow's peak memory grows past
 its limit in `xtask/memory-limits.txt`; a change that lowers one commits the lower limit with it.
 `cargo xtask rows` (also in CI) fails when code outside `rustgis-data` uses a layer's rows directly

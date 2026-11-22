@@ -17750,6 +17750,7 @@ fn exporting_a_raster_as_a_cog() {
 /// Mensuration measures the Earth on the WGS 84 ellipsoid, as the Measure tool does, so the same
 /// points give the same numbers in both; another body keeps its sphere (#2568).
 #[test]
+#[expect(clippy::disallowed_methods, reason = "the test tells the ellipsoid's area from the sphere's")]
 fn mensuration_measures_the_earth_on_the_ellipsoid() {
     use rustgis_geom::Coord;
     let mut s = world();
@@ -42152,6 +42153,7 @@ fn scripts_refuse_edits_to_streamed_layers() {
 /// A map on Mars (#223): the body switcher puts a Mars basemap under it, its measurements and
 /// scale are Mars', and the project keeps the body; back on the Earth the Mars basemap goes.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "another body measures on its sphere")]
 fn celestial_bodies_set_the_basemap_and_the_measurements() {
     let mut s = Session::new(Project::default());
     let earth = |s: &mut Session| {

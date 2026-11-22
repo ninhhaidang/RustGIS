@@ -295,6 +295,10 @@ fn shortest_route_with(
 /// The closest point on any of `segs` to `p`: (segment, fraction along it, the point, metres
 /// away). With `within`, only segments whose box comes within about that many metres of `p` are
 /// measured; one farther can't be within it, so a nearer one is never missed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a lower bound that skips candidates, scaled to the ellipsoid's smallest radius; the distance kept is the ellipsoid's"
+)]
 fn nearest_segment(segs: &[Segment], nodes: &[Coord], p: Coord, within: Option<f64>) -> Result<Option<(usize, f64, Coord, f64)>, String> {
     crate::control::check()?;
     let window = within.and_then(|m| snap_window(p, m));
@@ -1733,6 +1737,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::disallowed_methods, reason = "the test compares the sphere's ranking with the ellipsoid's")]
     fn snap_acceptance_uses_the_nearest_ellipsoidal_candidate() {
         let mut ds = Dataset::new("roads", GeometryType::Polyline, vec![]);
         // At the equator, 0.001 degrees east is nearer on the sphere than 0.001003

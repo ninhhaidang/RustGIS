@@ -2380,6 +2380,10 @@ pub(crate) fn text_graphic_at(app: &RustGisApp, ctx: &egui::Context, rect: Rect,
         let to_lonlat = l.dataset.lonlat_conversion().ok()?;
         (0..l.dataset.features.len()).rev().filter(|r| drawn.get(*r) == Some(&true)).find_map(|row| {
             let g = l.dataset.features.get(row)?.geometry.as_ref()?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "View Clipping's draw distance: picks only what the renderer draws, by its test (`within_view_distance`)"
+            )]
             if let Some((centre, d)) = clip {
                 // No extent (an empty geometry, or one whose conversion isn't a number): nothing
                 // of it is drawn, and clamping to its extent would panic.
@@ -3827,10 +3831,12 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
             // On the map's body: the Earth measures on the WGS 84 ellipsoid, so the panel agrees
             // with the geoprocessing tools (#939); another body measures on its sphere and scales.
             let body = app.session.map().body();
+            #[expect(clippy::disallowed_methods, reason = "another body measures on its sphere, scaled by `Body`")]
             let measure_length = |pts: &[Coord]| {
                 if body.is_earth() { wgs84_length_m(pts) } else { body.length(geodesic_length_m(pts)) }
             };
             // Perimeter and area in the map body's measurement model.
+            #[expect(clippy::disallowed_methods, reason = "another body measures on its sphere, scaled by `Body`")]
             let measure_ring = |ring: &[Coord]| {
                 if body.is_earth() {
                     wgs84_ring_perimeter_area_m2(ring)

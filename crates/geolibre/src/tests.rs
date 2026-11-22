@@ -492,6 +492,7 @@ fn slope_runs_on_a_raster_layer() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "a rough check of a buffer's area, to within 5%")]
 fn vector_tools_work_in_metres_and_return_lonlat() {
     let Some(f) = setup() else { return };
     let r = rustgis_analysis::run("geolibre:buffer_vector", &f, &json!({"input": "pts", "distance": "1000"})).unwrap();

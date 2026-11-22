@@ -451,6 +451,27 @@ pub fn wgs84_direct(c: Coord, azimuth_deg: f64, dist_m: f64) -> (Coord, f64) {
     (Coord::new(lon, lat), azi2)
 }
 
+/// The distance (metres) between two nearby lon/lat points on the WGS 84 ellipsoid, for the many
+/// short steps of a long line (a route's): from the ellipsoid's radii of curvature along and across
+/// the meridian at the two points' mean latitude, within a millionth of [`wgs84_distance_m`] for a
+/// step of up to 0.05° in latitude and in longitude below 89°, and [`wgs84_distance_m`] itself for
+/// any other. It costs a few operations, where a geodesic solve costs about 20 times a haversine.
+/// NaN for a coordinate that isn't finite.
+pub fn wgs84_step_m(a: Coord, b: Coord) -> f64 {
+    if !a.is_finite() || !b.is_finite() {
+        return f64::NAN;
+    }
+    let (dlat, dlon) = (b.y - a.y, wrap_lon(b.x - a.x));
+    if dlat.abs() > 0.05 || dlon.abs() > 0.05 || a.y.abs().max(b.y.abs()) > 89.0 {
+        return wgs84_distance_m(a, b);
+    }
+    let (s, c) = ((a.y + b.y) / 2.0).to_radians().sin_cos();
+    let w2 = 1.0 - WGS84_E2 * s * s;
+    let across = WGS84_A / w2.sqrt();
+    let along = across * (1.0 - WGS84_E2) / w2;
+    (along * dlat.to_radians()).hypot(across * c * dlon.to_radians())
+}
+
 /// Length of a lon/lat polyline along the WGS 84 ellipsoid's geodesics (metres): each segment is
 /// an inverse geodesic solve, so it is exact, unlike [`geodesic_length_m`]'s great circles. Long
 /// lines of many vertices cost a solve per segment (a few microseconds each).
@@ -735,6 +756,7 @@ fn ring_lon_steps(ring: &[Coord]) -> Vec<(f64, bool)> {
 /// [`ring_lon_steps`]), which is its whole parallel. The sphere's counterpart of
 /// [`wgs84_ring_perimeter_area_m2`]'s perimeter; [`geodesic_length_m`] of the closed ring counts
 /// a full turn as nothing, the distance between its two ends.
+#[expect(clippy::disallowed_methods, reason = "the sphere's own perimeter, for other bodies scaled by `Body`")]
 pub fn geodesic_ring_perimeter_m(ring: &[Coord]) -> f64 {
     if ring.len() < 2 {
         return 0.0;
@@ -1015,6 +1037,7 @@ pub fn format_dms(c: Coord) -> String {
     format!("{} {ew}  {} {ns}", dms(c.x), dms(c.y))
 }
 
+#[expect(clippy::disallowed_methods, reason = "tests check the sphere's formulas, against the ellipsoid's among others")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,6 +1570,29 @@ mod tests {
         assert!(geodesic_ring_area_m2(&[origin, Coord::new(1.0, 0.0), Coord::new(1.0, f64::INFINITY)]).is_nan());
         // Heading away from a broken place is no place either.
         assert!(geodesic_destination(Coord::new(10.0, 50.0), 90.0, f64::NAN).x.is_nan());
+    }
+
+    /// A short step measured from the ellipsoid's radii agrees with the geodesic solve to within a
+    /// millionth, at every latitude below 89° and across the antimeridian; a longer step, or one by
+    /// a pole, is the solve itself.
+    #[test]
+    fn wgs84_steps_agree_with_the_geodesic() {
+        let mut worst: f64 = 0.0;
+        for lat in (-89..=88).map(f64::from) {
+            for (dx, dy) in [(0.05, 0.0), (0.0, 0.05), (0.05, 0.05), (-0.03, 0.01), (1e-5, -2e-5)] {
+                for lon in [-179.98, -12.0, 0.0, 179.99] {
+                    let (a, b) = (Coord::new(lon, lat), Coord::new(lon + dx, lat + dy));
+                    let exact = wgs84_distance_m(a, b);
+                    worst = worst.max((wgs84_step_m(a, b) - exact).abs() / exact);
+                }
+            }
+        }
+        assert!(worst < 1e-6, "{worst}");
+        let far = (Coord::new(10.0, 40.0), Coord::new(10.2, 40.0));
+        assert_eq!(wgs84_step_m(far.0, far.1), wgs84_distance_m(far.0, far.1));
+        let polar = (Coord::new(10.0, 89.5), Coord::new(10.01, 89.5));
+        assert_eq!(wgs84_step_m(polar.0, polar.1), wgs84_distance_m(polar.0, polar.1));
+        assert!(wgs84_step_m(Coord::new(f64::NAN, 0.0), Coord::new(0.0, 0.0)).is_nan());
     }
 
     #[test]

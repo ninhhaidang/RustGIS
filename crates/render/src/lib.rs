@@ -3893,6 +3893,10 @@ fn upright_markers_with(map: &mut Map, view: &View, margin: f64, env: &Env) -> V
                 let own = layer.dataset.features.get(row).and_then(|f| f.geometry.as_ref())?.extent();
                 Some(to_lonlat.as_ref().map_or(rustgis_geom::Extent::EMPTY, |t| t.feature_extent(&own)))
             });
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "View Clipping's draw distance, tested for each feature every frame: a cut-off, not a measurement, within 0.6% of the ellipsoid's at its edge; the renderer and the map view test it alike"
+            )]
             if let (Some((centre, d)), Some(e)) = (clip, lonlat) {
                 let near = Coord::new(centre.x.clamp(e.min_x, e.max_x), centre.y.clamp(e.min_y, e.max_y));
                 if e.is_empty() || rustgis_geom::haversine_m(centre, near) > d {
@@ -4256,6 +4260,10 @@ impl Drop for TiltGlint {
 /// Leaves out of `rows` the features of `dataset` entirely beyond `d` metres of `centre` (the
 /// map's view distance, lon/lat): one reaching into it (its box's nearest point within the
 /// distance) is kept, one with no geometry isn't.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "View Clipping's draw distance, tested for each feature every frame: a cut-off, not a measurement, within 0.6% of the ellipsoid's at its edge; the renderer and the map view test it alike"
+)]
 pub(crate) fn within_view_distance(rows: &mut [bool], dataset: &rustgis_data::Dataset, centre: Coord, d: f64) {
     // Each box in longitude/latitude, from the dataset's own coordinates: none is drawn when they
     // can't be converted, as `Layer::projected_in` draws none.

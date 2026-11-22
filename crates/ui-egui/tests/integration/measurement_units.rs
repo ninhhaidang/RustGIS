@@ -393,6 +393,7 @@ fn measurement_unit_choice_is_saved_restored_and_available_to_scripts() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "another body measures on its sphere")]
 fn moon_measure_readout_uses_its_sphere_instead_of_wgs84() {
     let mut h = harness();
     h.state_mut().run("map.body", json!({"name": "moon", "basemap": false})).unwrap();

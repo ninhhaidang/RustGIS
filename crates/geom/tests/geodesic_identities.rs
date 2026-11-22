@@ -8,6 +8,7 @@
 //! Pull requests run a fixed seed; the nightly a new one with more cases. A failure gives its seed
 //! and the smallest input found. To run a seed again, or deeper:
 //! `PROPERTY_SEED=7 PROPERTY_CASES=50000 cargo test -p rustgis-geom --test geodesic_identities`.
+#![expect(clippy::disallowed_methods, reason = "the properties hold for the sphere's measures as for the ellipsoid's")]
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rustgis_geom::{Coord, geodesic_ring_area_m2, geodesic_ring_perimeter_m, haversine_m, wgs84_distance_m, wgs84_ring_perimeter_area_m2};

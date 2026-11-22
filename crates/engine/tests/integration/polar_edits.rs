@@ -298,6 +298,7 @@ fn points_around_a_pole_moved_keep_their_longitudes_as_written() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "the test finds the nearest point as the split does, on the sphere")]
 fn a_split_beyond_85_degrees_cuts_at_the_point_nearest_on_the_ground() {
     // From 86°N on 0° to 89°N on 60°E, straight in longitude and latitude. Its nearest point to
     // 88.5°N on 0° is near 47°E on the ground, while the plane's would be near 13°E.
@@ -389,6 +390,7 @@ fn a_split_too_long_to_search_in_full_says_so() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "the test finds the nearest point as the split does, on the sphere")]
 fn a_split_along_an_edge_going_around_a_pole_finds_its_nearest_turn() {
     // One edge from 87°N to 89°N, straight in longitude and latitude, going twice around the pole:
     // asked at 87.56°N on 144°W, it's cut where it comes nearest, as a fine sampling finds.

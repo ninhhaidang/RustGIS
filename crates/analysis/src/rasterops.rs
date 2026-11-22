@@ -411,6 +411,10 @@ pub fn weighted_overlay(criteria: &[(Vec<f32>, f64)]) -> Result<Vec<f32>, String
 }
 
 /// Metres between two longitude/latitude points.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the elevation profile's distances stay on the sphere for now: a solve per path vertex costs about 20 times as much on the ellipsoid, and the profile commands run on the command thread"
+)]
 fn dist_m(a: Coord, b: Coord) -> f64 {
     rustgis_geom::haversine_m(a, b)
 }

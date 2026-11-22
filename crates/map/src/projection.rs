@@ -474,6 +474,7 @@ impl Domain {
         }
     }
 
+    #[expect(clippy::disallowed_methods, reason = "a cap's radius is an angle on the sphere, so the sphere decides what it holds")]
     pub fn contains(&self, c: Coord) -> bool {
         match *self {
             Domain::World => true,
@@ -741,6 +742,7 @@ impl Projector {
     /// bar's direction; north-south on the projection's edge) compared with the great-circle
     /// distance it covers, on the sphere Web Mercator's scale uses so both agree. Falls back to
     /// the unit size where no step stays in the projection.
+    #[expect(clippy::disallowed_methods, reason = "Web Mercator's scale is the sphere's: with `MERCATOR_R` this matches its scale factor")]
     pub fn ground_per_unit(&self, at: Coord) -> f64 {
         let Some(c) = self.inverse(at) else { return self.to_meter };
         let step = 1000.0 / self.to_meter;

@@ -10,7 +10,9 @@
 //! they are found there and measured straight, in the system's unit times its length.
 
 use rustgis_data::{Coord, Dataset, FieldType, Geometry, Value};
-use rustgis_geom::{Aeqd, Extent, WGS84_MIN_RADIUS_M, geodesic_interpolate, geodesic_length_m, geodesic_ring_area_m2, wgs84_distance_m};
+use rustgis_geom::{
+    Aeqd, Extent, WGS84_MIN_RADIUS_M, geodesic_interpolate, wgs84_distance_m, wgs84_length_m, wgs84_ring_perimeter_area_m2,
+};
 use serde_json::Value as Json;
 
 /// Whether a coordinate is a place on the Earth in lon/lat: finite, with a latitude of ±90° at most
@@ -229,20 +231,24 @@ fn lon_gap(a: &Extent, b: &Extent) -> f64 {
     [-360.0, 0.0, 360.0].iter().map(|k| (b.min_x + k - a.max_x).max(a.min_x - (b.max_x + k)).max(0.0)).fold(f64::INFINITY, f64::min)
 }
 
-/// The ground area (square metres) of a lon/lat polygon geometry, holes taken out.
+/// The ground area (square metres) of a lon/lat polygon geometry on the WGS 84 ellipsoid, holes
+/// taken out, as the Measure tool gives it. NaN for a ring whose winding is ambiguous.
 pub fn area_m2(g: &Geometry) -> f64 {
     let Geometry::Polygon(polys) = g else { return 0.0 };
     polys
         .iter()
         .flat_map(|rings| rings.iter().enumerate())
-        .map(|(i, r)| if i == 0 { geodesic_ring_area_m2(r) } else { -geodesic_ring_area_m2(r) })
+        .map(|(i, r)| {
+            let (_, area) = wgs84_ring_perimeter_area_m2(r);
+            if i == 0 { area } else { -area }
+        })
         .sum()
 }
 
-/// The ground length (metres) of a lon/lat line geometry.
+/// The ground length (metres) of a lon/lat line geometry on the WGS 84 ellipsoid.
 pub fn length_m(g: &Geometry) -> f64 {
     let Geometry::Line(parts) = g else { return 0.0 };
-    parts.iter().map(|p| geodesic_length_m(p)).sum()
+    parts.iter().map(|p| wgs84_length_m(p)).sum()
 }
 
 /// How the values of a join field's matches become one value in a one-to-one join.
@@ -495,6 +501,7 @@ mod tests {
     /// The ground distance from `p` to a line, by sampling each edge finely along its great circle.
     /// Only the samples within 1.2% of the nearest on the sphere are measured on the ellipsoid,
     /// whose distances are within 0.6% of the sphere's.
+    #[expect(clippy::disallowed_methods, reason = "the test ranks samples on the sphere and measures the nearest on the ellipsoid")]
     fn brute(p: Coord, line: &[Coord]) -> f64 {
         let samples: Vec<(Coord, f64)> = line
             .windows(2)
@@ -506,6 +513,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::disallowed_methods, reason = "the test tells the ellipsoid's distance from the sphere's")]
     fn distances_are_on_the_wgs84_ellipsoid() {
         // 0.0904369° north of the equator is 10,000 m on WGS 84 (GeographicLib) but 10,056 m on the
         // mean sphere: within 10 km in the measure, and not ruled out before it (#888).
@@ -516,6 +524,59 @@ mod tests {
         let (ea, eb) = (Extent::new(a.x, a.y, a.x, a.y), Extent::new(b.x, b.y, b.x, b.y));
         assert!(may_be_within(&ea, &eb, 10_000.0));
         assert!(search_box(&ea, 10_000.0).is_some_and(|e| e.max_y >= b.y));
+    }
+
+    /// Spatial Join's Largest overlap ranks overlaps by their area or length on the WGS 84
+    /// ellipsoid, as the Measure tool measures them. A 1° square on the equator, listed first, and a
+    /// band at 60°N that the ellipsoid makes 0.5% larger but the sphere 0.5% smaller: the band
+    /// wins. Likewise for a line along a meridian through a 1° zone and a shorter one at 60°N.
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "the test sets the sphere's ranking against the ellipsoid's")]
+    fn largest_overlap_ranks_overlaps_on_the_ellipsoid() {
+        use crate::{Inputs, Output};
+        use rustgis_data::{Field, GeometryType};
+        use rustgis_geom::{geodesic_length_m, geodesic_ring_area_m2};
+        use std::collections::HashMap;
+        struct Layers(HashMap<String, Dataset>);
+        impl Inputs for Layers {
+            fn dataset(&self, layer: &str) -> Option<&Dataset> {
+                self.0.get(layer)
+            }
+            fn selection(&self, _: &str) -> &[usize] {
+                &[]
+            }
+        }
+        let ring = |x0: f64, x1: f64, y0: f64, y1: f64| {
+            vec![Coord::new(x0, y0), Coord::new(x1, y0), Coord::new(x1, y1), Coord::new(x0, y1), Coord::new(x0, y0)]
+        };
+        let zones = |band_top: f64| {
+            let mut ds = Dataset::new("zones", GeometryType::Polygon, vec![Field::new("zone", FieldType::Text)]);
+            for (name, r) in [("equator", ring(0.0, 1.0, 0.0, 1.0)), ("north", ring(0.0, 1.0, 60.0, band_top))] {
+                ds.push(Some(Geometry::Polygon(vec![vec![r]])), vec![Value::Text(name.into())]);
+            }
+            ds
+        };
+        let joined = |target: Dataset, zones: Dataset| {
+            let layers = Layers(HashMap::from([("t".to_string(), target), ("zones".to_string(), zones)]));
+            let r = crate::run("spatialJoin", &layers, &serde_json::json!({"target": "t", "join": "zones", "match": "Largest overlap"}));
+            let Ok(crate::ToolResult { output: Output::Layer(ds), .. }) = r else { panic!("a layer") };
+            ds.field_index("join_zone").map(|i| ds.value(0, i).clone())
+        };
+        let north = Some(Value::Text("north".into()));
+
+        let (square, band) = (ring(0.0, 1.0, 0.0, 1.0), ring(0.0, 1.0, 60.0, 62.054));
+        let area = |r: &Vec<Coord>| wgs84_ring_perimeter_area_m2(r).1;
+        assert!(area(&band) > area(&square) * 1.004 && geodesic_ring_area_m2(&band) < geodesic_ring_area_m2(&square) * 0.996);
+        let mut parcel = Dataset::new("t", GeometryType::Polygon, vec![]);
+        parcel.push(Some(Geometry::Polygon(vec![vec![ring(0.0, 1.0, -1.0, 63.0)]])), vec![]);
+        assert_eq!(joined(parcel, zones(62.054)), north);
+
+        let (near_equator, near_pole) = ([Coord::new(0.5, 0.0), Coord::new(0.5, 1.0)], [Coord::new(0.5, 60.0), Coord::new(0.5, 60.995)]);
+        assert!(wgs84_length_m(&near_pole) > wgs84_length_m(&near_equator) * 1.002);
+        assert!(geodesic_length_m(&near_pole) < geodesic_length_m(&near_equator) * 0.996);
+        let mut road = Dataset::new("t", GeometryType::Polyline, vec![]);
+        road.push(Some(Geometry::Line(vec![vec![Coord::new(0.5, -1.0), Coord::new(0.5, 63.0)]])), vec![]);
+        assert_eq!(joined(road, zones(60.995)), north);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! Answers are asked for in OSRM's form, whose steps carry a maneuver (its type and direction),
 //! an instruction, the street, and spoken announcements.
 
-use rustgis_geom::{Coord, haversine_m};
+use rustgis_geom::{Coord, wgs84_step_m};
 use serde_json::{Value, json};
 
 /// The public Valhalla server (FOSSGIS), the default.
@@ -237,7 +237,8 @@ fn route(r: &Value) -> Option<Route> {
                 match line.last() {
                     Some(last) if *last == p => {}
                     Some(last) => {
-                        let d = along.last().copied().unwrap_or(0.0) + haversine_m(*last, p);
+                        // On the ellipsoid, a few operations a step: a route can hold half a million.
+                        let d = along.last().copied().unwrap_or(0.0) + wgs84_step_m(*last, p);
                         line.push(p);
                         along.push(d);
                     }
@@ -523,6 +524,18 @@ mod tests {
         let routes = r.parse(odd.as_bytes()).unwrap();
         assert_eq!(routes[0].steps.len(), 2);
         assert!(explain("http status: 400").contains("no route"));
+    }
+
+    /// Distances along a route are on the WGS 84 ellipsoid, as the Measure tool's are, and so is
+    /// the route's length when the server doesn't give one.
+    #[test]
+    fn a_route_without_a_distance_measures_its_line_on_the_ellipsoid() {
+        let r = Router::new(None).unwrap();
+        let routes = r.parse(ANSWER.replace(r#""duration":302.776,"distance":1921.553,"#, r#""duration":302.776,"#).as_bytes()).unwrap();
+        let a = &routes[0];
+        let ellipsoid = rustgis_geom::wgs84_length_m(&a.line);
+        assert!((a.distance_m / ellipsoid - 1.0).abs() < 1e-6, "{} m, {ellipsoid} m on the ellipsoid", a.distance_m);
+        assert_eq!(a.along.last().copied(), Some(a.distance_m));
     }
 
     #[test]

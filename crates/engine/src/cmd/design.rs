@@ -819,6 +819,10 @@ fn plane_at<'a>(geoms: impl IntoIterator<Item = &'a Geometry>, steps: &mut Cente
             let mut last = a;
             for k in 1..=n as usize {
                 let q = if k as f64 >= n { b } else { at(k as f64 / n) };
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "weighs a centre by its pieces' lengths, not a measurement; polar edits wait on #2032 step C2f-6"
+                )]
                 edges.add_weighted(at((k as f64 - 0.5) / n), haversine_m(last, q));
                 last = q;
             }
@@ -1412,6 +1416,10 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
         let mut dists: Vec<f64> = Vec::new();
         if ground {
             dists.try_reserve(parts.iter().map(Vec::len).sum()).map_err(|_| "not enough memory to split the selected lines")?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "finds the point of a line nearest the cut, a comparison, not a measurement; polar edits wait on #2032 step C2f-6"
+            )]
             dists.extend(
                 parts
                     .iter()
@@ -1465,6 +1473,10 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
         // nearer than the one found.
         let unsure = d > steps.floor;
         // At a vertex (to within a millimeter), the parts meet there, without it repeated.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "finds the point of a line nearest the cut, a comparison, not a measurement; polar edits wait on #2032 step C2f-6"
+        )]
         let at_end = [part.get(si), part.get(si + 1)].into_iter().flatten().find(|v| rustgis_geom::haversine_m(**v, q) < 0.001);
         let q = at_end.copied().unwrap_or(q);
         let mut first: Vec<Coord> = part.iter().take(si + 1).copied().collect();
@@ -1474,6 +1486,10 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
         let mut second = vec![q];
         second.extend(part.iter().skip(si + 1).copied().skip_while(|c| *c == q));
         // At (or within a centimetre of) the line's ends isn't a split.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "finds the point of a line nearest the cut, a comparison, not a measurement; polar edits wait on #2032 step C2f-6"
+        )]
         let near = |a: Option<&Coord>| a.is_some_and(|a| rustgis_geom::haversine_m(*a, q) < 0.01);
         if first.len() < 2 || second.len() < 2 || near(first.first()) || near(second.last()) {
             whole += usize::from(unsure);
@@ -1545,6 +1561,10 @@ struct SplitSteps {
 /// a millimeter, nearest first, while it could hold a point nearer than the nearest found, or than
 /// `bound`. Each distance takes one of the command's `steps`; once they're spent, the nearest
 /// found (the nearer end, at first) stands, and `steps` notes how near the rest might be.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "finds the point of a line nearest the cut, a comparison, not a measurement; polar edits wait on #2032 step C2f-6"
+)]
 fn nearest_on_ground(at: Coord, (a, b): (Coord, Coord), (da, db): (f64, f64), bound: f64, steps: &mut SplitSteps) -> Option<(f64, Coord)> {
     const STEP_DEG: f64 = 22.5;
     const PIECES_MIN: usize = 8;
@@ -2891,6 +2911,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::disallowed_methods, reason = "the test checks the split's search on the sphere it uses")]
     fn a_split_searches_a_segment_within_its_budget() {
         // From 89°N on 0°, along 88°N from 30°W to 30°E: searched, its nearest point is on 0°, a
         // kilometer nearer than its ends, and the search takes a few dozen of the budget; with

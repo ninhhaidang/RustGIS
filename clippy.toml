@@ -1,3 +1,14 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# The Earth measures on the WGS 84 ellipsoid (`wgs84_distance_m`, `wgs84_length_m`,
+# `wgs84_ring_perimeter_area_m2`), as the Measure tool does (#939, #2568). These measure on a sphere:
+# a call says why with `#[expect(clippy::disallowed_methods, reason = "…")]`, for another body
+# (scaled by `Body`) or a comparison the sphere can't change.
+disallowed-methods = [
+    { path = "rustgis_geom::haversine_m", reason = "the sphere; the Earth measures with `wgs84_distance_m`" },
+    { path = "rustgis_geom::geodesic_length_m", reason = "the sphere; the Earth measures with `wgs84_length_m`" },
+    { path = "rustgis_geom::geodesic_ring_perimeter_m", reason = "the sphere; the Earth measures with `wgs84_ring_perimeter_area_m2`" },
+    { path = "rustgis_geom::geodesic_ring_area_m2", reason = "the sphere; the Earth measures with `wgs84_ring_perimeter_area_m2`" },
+]

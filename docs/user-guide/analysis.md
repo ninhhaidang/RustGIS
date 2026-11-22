@@ -602,9 +602,8 @@ and features, before changing any fields. The attribute table's Calculate Geomet
 same for its chosen rows. Spatial Join's Largest overlap refuses affected selected target or
 join features before writing output. Ordinary polar caps and whole-world rectangles remain
 measurable. Measure Area explains the ambiguity and still shows the perimeter.
-Spatial Join's **Largest overlap** still measures area on a sphere of radius 6,371 km; it can
-differ from the ellipsoid by up to about 0.9 % (a small area near a pole). The same WGS 84
-measure backs the attribute table's **Calculate Geometry** (`edit.calculateGeometry`), the
+Spatial Join's **Largest overlap** ranks overlaps by their area or length on the same ellipsoid.
+The same WGS 84 measure backs the attribute table's **Calculate Geometry** (`edit.calculateGeometry`), the
 [expressions](expressions.md#values)' `$area`, `$perimeter` and `$length`, the map's
 **Measure** tools on the Earth, and every network tool's edge and route lengths, so all of these
 read the same number for the same geometry, with one exception. A polygon ring with a full-turn

@@ -3840,6 +3840,7 @@ const ELLIPSOID_STRETCH: f64 = 1.005;
 /// (Leaving out a vertex only shortens a part.) Coordinates are folded and clamped as GeographicLib
 /// takes them, so the bound holds for any finite ones. In a projected system's own plane, the bound
 /// is the edges' flat metres, as the walk adds them up, and a hair more.
+#[expect(clippy::disallowed_methods, reason = "an upper bound, stretched by `ELLIPSOID_STRETCH` to cover the ellipsoid's longer paths")]
 fn length_bound(line: &[Vec<Coord>], ring: bool) -> f64 {
     if let Some(unit) = crate::convert::own_unit_m() {
         let mut verts = line.iter().flatten().filter(|c| c.is_finite());
@@ -11139,6 +11140,7 @@ mod tests {
     /// The distance on WGS 84 (km) from `c` to a line, sampled every `step` metres along it.
     /// Only the samples within 1.2% of the nearest on the sphere are measured on the ellipsoid,
     /// whose distances are within 0.6% of the sphere's.
+    #[expect(clippy::disallowed_methods, reason = "tests sample on the sphere and measure the nearest samples on the ellipsoid")]
     fn km_to_every(c: Coord, line: &[Coord], step: f64) -> f64 {
         let samples: Vec<(Coord, f64)> = line
             .windows(2)
@@ -11203,6 +11205,7 @@ mod tests {
     }
 
     /// Points along the geodesic from `a` to `b` on WGS 84, at most 20 m apart.
+    #[expect(clippy::disallowed_methods, reason = "tests sample on the sphere and measure the nearest samples on the ellipsoid")]
     fn geodesic_samples(a: Coord, b: Coord) -> Vec<Coord> {
         use geo::InterpolatePoint;
         let n = (rustgis_geom::haversine_m(a, b) / 20.0).ceil().max(1.0) as usize;
@@ -11216,6 +11219,7 @@ mod tests {
     /// its nearest point is strictly between the ends: the nearest sample on the sphere (among
     /// every 50th, then its neighbours), then the nearest point on the ellipsoid along the geodesic
     /// either side of it, by golden-section search to well under a millimetre.
+    #[expect(clippy::disallowed_methods, reason = "tests sample on the sphere and measure the nearest samples on the ellipsoid")]
     fn m_to_geodesic(c: Coord, samples: &[Coord]) -> (f64, bool) {
         use geo::InterpolatePoint;
         let near = |range: std::ops::Range<usize>, step: usize| {

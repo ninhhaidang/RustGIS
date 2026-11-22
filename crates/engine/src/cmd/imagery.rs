@@ -1909,6 +1909,10 @@ fn measure(s: &mut Session, p: &Value) -> CmdResult {
             }
             // On the Earth, each leg's length on the sphere (as the profile below spaces its
             // samples) and on the ellipsoid; the flat length is the ellipsoid's.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the sphere spaces the profile's samples, as `rasterops::profile` does; the lengths are the ellipsoid's"
+            )]
             let legs: Vec<(f64, f64)> = if earth {
                 pts.windows(2)
                     .map(|w| match w {
@@ -1919,6 +1923,7 @@ fn measure(s: &mut Session, p: &Value) -> CmdResult {
             } else {
                 Vec::new()
             };
+            #[expect(clippy::disallowed_methods, reason = "another body measures on its sphere, scaled by `Body`")]
             let flat = if earth { legs.iter().map(|l| l.1).sum() } else { body.length(rustgis_geom::geodesic_length_m(&pts)) };
             // Along the surface when there's an elevation raster. The profile spaces its samples
             // along the path on the sphere; on the Earth each step's ground run is taken from the
@@ -1954,6 +1959,7 @@ fn measure(s: &mut Session, p: &Value) -> CmdResult {
             if rustgis_geom::ring_area_is_ambiguous(&ring) {
                 return Err("the area is ambiguous: 1 ring winds beyond one whole surface".into());
             }
+            #[expect(clippy::disallowed_methods, reason = "another body measures on its sphere, scaled by `Body`")]
             let (perimeter, area) = if earth {
                 rustgis_geom::wgs84_ring_perimeter_area_m2(&ring)
             } else {

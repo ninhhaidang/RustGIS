@@ -322,6 +322,10 @@ impl Plane {
     /// from the same edge straight in the analysis plane ([`lonlat_to_plane`]: Web Mercator within
     /// ±85.05°, straight in lon/lat beyond) by more than `tolerance` meters at its quarter points
     /// or midpoint.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a tolerance for splitting an edge, not a measurement: ellipsoid distances are within 0.6% of the sphere's"
+    )]
     fn strays(&self, a: GC<f64>, b: GC<f64>, la: Coord, lb: Coord, tolerance: f64) -> bool {
         let at = |t: f64| self.0.inverse(Coord::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)));
         // `b` on `a`'s side of the antimeridian, so the straight edge is the short one.
@@ -495,6 +499,7 @@ fn finite(parts: &[Vec<Coord>]) -> Vec<Vec<Coord>> {
     parts.iter().map(|p| p.iter().copied().filter(|c| c.is_finite()).collect::<Vec<_>>()).filter(|p| !p.is_empty()).collect()
 }
 
+#[expect(clippy::disallowed_methods, reason = "sizes the pieces a buffer is cut into, not a measurement")]
 fn fits(pts: &[Coord], centre: Coord) -> bool {
     pts.iter().all(|c| haversine_m(centre, *c) <= ONE_PIECE_M)
 }
@@ -504,6 +509,7 @@ fn stretched(parts: &[Vec<Coord>], metres: f64) -> Vec<MultiPolygon<f64>> {
     let mut out = Vec::new();
     for part in parts {
         let d = densify(part);
+        #[expect(clippy::disallowed_methods, reason = "sizes the pieces a buffer is cut into, not a measurement")]
         let near = |a: usize, b: usize| d.get(a).zip(d.get(b)).is_some_and(|(a, b)| haversine_m(*a, *b) <= STRETCH_M);
         let mut start = 0;
         loop {
@@ -528,6 +534,7 @@ fn stretched(parts: &[Vec<Coord>], metres: f64) -> Vec<MultiPolygon<f64>> {
 
 /// A line with every edge split along its geodesic on WGS 84 into pieces of at most [`DENSIFY_M`], or
 /// longer ones for a line so long it would gain more than [`MAX_ADDED`] vertices.
+#[expect(clippy::disallowed_methods, reason = "the densify step: it sets how many vertices an edge gains, not a measurement")]
 fn densify(pts: &[Coord]) -> Vec<Coord> {
     let step = DENSIFY_M.max(rustgis_geom::geodesic_length_m(pts) / MAX_ADDED);
     let mut out: Vec<Coord> = pts.first().copied().into_iter().collect();
