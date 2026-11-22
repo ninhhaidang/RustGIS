@@ -32,21 +32,22 @@ Map operations are commands you can script from the command line, Python or the 
 
     GeoJSON, Shapefile, GeoPackage, GeoParquet, GeoTIFF, LiDAR and Zarr; on the desktop, File
     Geodatabases and live PostGIS, MySQL, MariaDB and SQL Server; STAC catalogs, Overture Maps and
-    open-data portals; saved connections and QGIS projects.
+    open-data portals; saved connections and QGIS projects. Each layer keeps its own coordinate
+    system.
     [Data](user-guide/data.md) · [Web Data](user-guide/web-data.md) · [Formats](user-guide/data-formats.md)
 
 -   **Cartography and 3D**
 
-    Graduated colours, symbols and labels by expression, diagrams, curved labels, layouts as
-    vector PDF and SVG, and map series; a 3D globe, terrain and extrusions, and maps of the Moon,
-    Mars and other worlds.
+    Graduated colours, symbols and labels by expression, picture markers, diagrams, curved labels,
+    layouts with charts as vector PDF and SVG, and map series; a 3D globe, terrain and extrusions,
+    and maps of the Moon, Mars and other worlds.
     [Cartography](user-guide/cartography.md) · [Maps](user-guide/maps.md) · [Layouts](user-guide/layouts.md)
 
 -   **Analysis**
 
-    Overlay and proximity tools, run in the background on several cores on the desktop; batch
-    runs, ModelBuilder, SQL selection, imagery tools, kriging, zonal statistics, data-cube trends,
-    and over 1,000 tools through the optional GeoLibre/Whitebox suite.
+    Overlay and proximity tools, run in the background on several cores on the desktop; batch runs,
+    ModelBuilder, SQL selection, network service areas, imagery tools, kriging, zonal statistics,
+    data-cube trends, and over 1,000 tools through the optional GeoLibre/Whitebox suite.
     [Analysis](user-guide/analysis.md) · [Expressions](user-guide/expressions.md)
 
 -   **Editing**
@@ -65,9 +66,9 @@ Map operations are commands you can script from the command line, Python or the 
 
 -   **AI Assistant**
 
-    Ask about your data or tell the map what to do. Choose a model provider or sign in with
-    ChatGPT; add skills, or hand tasks to a coding agent on the desktop. File, network and
-    plugin operations wait for your approval.
+    Ask about your data or tell the map what to do; it can look at the map and the pictures you
+    attach. Choose a model provider or sign in with ChatGPT; add skills, or hand tasks to a coding
+    agent on the desktop. File, network and plugin operations wait for your approval.
     [AI Assistant](user-guide/assistant.md) · [Skills](user-guide/assistant.md#skills)
 
 -   **Scriptable and extensible**
