@@ -174,16 +174,30 @@ which searches every tool) or Command Search. Fill in its parameters and click *
 layers or tables are added to the project; selection tools select existing rows and Calculate
 Geometry Attributes updates the input layer. Each run is listed under **Analyze › History**.
 
-**Which coordinate system a tool works in.** Most tools work in longitude/latitude, with
-geodesic distances and areas, whatever system their layers are in. Some work in their first
-input's own coordinate system when it is a projected one, such as a UTM zone or a national grid:
-Summary Statistics, Pivot Table, Join Field, Select Layer By Attribute, Export Features, Merge,
-Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon, Unsplit Line, Feature
-Vertices To Points, Check Geometry and Repair Geometry. Their other inputs are converted into that
-system for the run, and their new layers are kept in it, so the coordinates of what they copy stay
-exactly as they were. If another input has a place that system can't hold, the tool works in
-longitude/latitude instead, and its message says so. A layer in longitude/latitude, Web Mercator or
-another geographic system is worked on in longitude/latitude, as before.
+**Which coordinate system a tool works in.** Most tools work in longitude/latitude, with geodesic
+distances and areas, whatever system their layers are in. Some work in their first input's own
+coordinate system when it is a projected one, such as a UTM zone or a national grid: Summary
+Statistics, Pivot Table, Join Field, Select Layer By Attribute, Export Features, Merge, Polygon To
+Line, Split Line At Vertices, Feature Envelope To Polygon, Unsplit Line, Feature Vertices To
+Points, Check Geometry and Repair Geometry; the overlays Clip, Erase, Intersect, Identity, Union,
+Symmetrical Difference, Update, Split and Dissolve; Minimum Bounding Geometry (convex hull),
+Feature To Point and Summarize Within; and Select Layer By Location and Spatial Join when they
+measure no distance (no search distance, a match other than Closest or Within a distance). Their
+other inputs are converted into that system for the run, and their new layers are kept in it, so
+the coordinates of what they copy stay exactly as they were. An overlay there takes each edge as
+straight in that system, not in Web Mercator as it does in longitude/latitude, so where an edge
+crosses another can differ from the same tool's result in longitude/latitude, by up to about L² tan
+φ / 8R for an edge L long at latitude φ: some 20 cm for a 3 km edge at 48°N, 2 m for a 10 km one,
+220 m for a 100 km one. An input in another system is converted vertex by vertex, as the map draws
+it in that system, and its long edges can run much farther from where they run in
+longitude/latitude: a degree-wide box's east-west edges, which follow their parallels there, are
+chords in UTM up to 120 m away. The tool then says how many edges of which layer run more than a
+metre away, and how far the farthest does. A world projection (World Mercator, Plate Carrée,
+Robinson, Equal Earth and the like), whose plane has the antimeridian as a seam and the poles as
+lines, is worked on in longitude/latitude, as Web Mercator is. If another input has a place that
+system can't hold, the tool works in longitude/latitude instead, and its message says so. A layer
+in longitude/latitude, Web Mercator or another geographic system is worked on in
+longitude/latitude, as before.
 
 In the desktop app a tool runs in the background, so the map and the rest of the window stay in
 use. While it runs, the Tools pane shows its name, a **Cancel** button and, for the tools that
@@ -1228,8 +1242,8 @@ CRS metadata. Coordinates are used directly, without projection or snapping.
   memory returns an error.
 - **Feature Envelope To Polygon** (`featureEnvelopeToPolygon`) writes one axis-aligned rectangle
   around all coordinates of each feature, along the axes of the layer's own system when it is a
-  projected one, and of longitude/latitude otherwise. Point features and
-  horizontal or vertical lines have zero-area envelopes and are skipped with a count. Longitude
+  projected one other than a world projection (see above), and of longitude/latitude otherwise.
+  Point features and horizontal or vertical lines have zero-area envelopes and are skipped with a count. Longitude
   bounds are literal, including for features spanning the antimeridian.
 - **Unsplit Line** (`unsplitLine`) joins line parts at exactly equal endpoints where precisely
   two part ends meet and all attribute values agree. Reversed parts and closed cycles are

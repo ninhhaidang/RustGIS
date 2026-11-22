@@ -65,7 +65,7 @@ pub static TOOLS: &[ToolSpec] = &[
         id: "featureEnvelopeToPolygon",
         name: "Feature Envelope To Polygon",
         toolbox: "Data Management › Features",
-        summary: "Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator, else in longitude/latitude. Zero-area envelopes are skipped.",
+        summary: "Writes one axis-aligned bounding rectangle per feature in the layer's own coordinates when it is held in a projected system other than Web Mercator and the other world projections (Robinson, Plate Carrée and the like), else in longitude/latitude. Zero-area envelopes are skipped.",
         params: &[
             P { name: "input", label: "Input Features", kind: K::Layer, required: true, default: "", help: "" },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
@@ -1784,10 +1784,10 @@ fn dissolved(g: &Geometry) -> std::borrow::Cow<'_, Geometry> {
 /// overlap with it, a line's stretches in it, the points in it or on its edge; outside, the rest.
 /// `None` when nothing is left, or only a shared edge or corner.
 ///
-/// The mask's polygons are in the analysis plane, oriented as `union_all` leaves them. The
-/// feature's may wind either way (the reference corpus has a clockwise parcel), but must not
-/// overlap each other: pass a feature of several polygons through [`dissolved`] first, once for all
-/// its masks.
+/// The mask's polygons are in the run's plane ([`crate::convert::plane`]), oriented as `union_all`
+/// leaves them. The feature's may wind either way (the reference corpus has a clockwise parcel),
+/// but must not overlap each other: pass a feature of several polygons through [`dissolved`] first,
+/// once for all its masks.
 fn part(g: &Geometry, mask: &MultiPolygon<f64>, inside: bool) -> Option<Geometry> {
     match g {
         Geometry::Polygon(_) => {
@@ -1806,7 +1806,7 @@ fn part(g: &Geometry, mask: &MultiPolygon<f64>, inside: bool) -> Option<Geometry
                 .iter()
                 .copied()
                 .filter(|c| {
-                    let m = rustgis_geom::lonlat_to_plane(*c);
+                    let m = crate::convert::to_plane(*c);
                     // A point at a pole touches a mask that reaches the pole, whatever its
                     // longitude.
                     let at = reaches_poles(c.y, c.y);
@@ -3088,10 +3088,11 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let points = |g: &Geometry| {
         let (mut these, mut gaps, mut poles) = (Vec::new(), 0usize, 0usize);
         g.for_each_vertex(|_, c| {
-            let m = if c.is_finite() { Some(rustgis_geom::lonlat_to_plane(c)) } else { None };
+            let m = if c.is_finite() { Some(crate::convert::to_plane(c)) } else { None };
             match m {
                 Some(m) if m.x.abs() <= HULL_LIMIT_M && m.y.abs() <= HULL_LIMIT_M => {
-                    poles += usize::from(c.y.abs() > 90.0);
+                    // (A projected system's y is no latitude.)
+                    poles += usize::from(crate::convert::plane() == crate::convert::Plane::Analysis && c.y.abs() > 90.0);
                     these.push(geo::Point::new(m.x, m.y));
                 }
                 _ => gaps += 1,
@@ -3128,7 +3129,7 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         let first = *ring.first()?;
         let (a, _) = farthest(first);
         let (b, span) = farthest(a);
-        let back = |c: geo::Coord<f64>| rustgis_geom::plane_to_lonlat(Coord::new(c.x, c.y));
+        let back = |c: geo::Coord<f64>| crate::convert::from_plane(Coord::new(c.x, c.y));
         Some(if span > 0.0 { Geometry::Line(vec![vec![back(a), back(b)]]) } else { Geometry::Point(back(a)) })
     };
     let (mut flat, mut gaps, mut poles) = (0usize, 0usize, 0usize);
@@ -3203,8 +3204,12 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         out.geometry_type = first;
     }
     let out_kind = out.geometry_type;
+    // How far out a coordinate is too far, in the units the run works in.
+    let own = crate::convert::plane() == crate::convert::Plane::Own;
+    let too_far =
+        if own { format!("past {HULL_LIMIT_M:.0e} in the layer's own units") } else { "past about 9 million degrees".to_string() };
     let gaps_note = (gaps > 0).then(|| {
-        format!("{gaps} vertex(es) passed over: a coordinate missing or infinite, or so far out that the hull can't take it (past about 9 million degrees)")
+        format!("{gaps} vertex(es) passed over: a coordinate missing or infinite, or so far out that the hull can't take it ({too_far})")
     });
     let poles_note = (poles > 0).then(|| format!("{poles} vertex(es) with a latitude past a pole found (taken as that pole)"));
     // Nothing hulled, every feature skipped: an unusable result, so an error saying why, with the
@@ -3232,8 +3237,14 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                 n.saturating_sub(flat)
             ),
         };
+        // On one straight line in the plane the run works in: in longitude/latitude, the map's.
+        let line = if own {
+            "points in one place or on one straight line in the layer's coordinate system".to_string()
+        } else {
+            "points in one place or on one straight line on the map (on one meridian or parallel, say; beyond 85.05° that includes points around a pole, which enclose a cap on the ground)".to_string()
+        };
         r.messages.push(format!(
-            "Minimum Bounding Geometry: {flat} of {n} hulls have no area, so they are written as a point or a line: a single point, or points in one place or on one straight line on the map (on one meridian or parallel, say; beyond 85.05° that includes points around a pole, which enclose a cap on the ground); {layer}"
+            "Minimum Bounding Geometry: {flat} of {n} hulls have no area, so they are written as a point or a line: a single point, or {line}; {layer}"
         ));
     }
     Ok(r)
@@ -5338,7 +5349,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
 /// same transform and non-finite-coordinate filtering as [`to_geo`] followed by [`merc_extent`].
 fn projected_extent(g: &Geometry) -> Extent {
     let mut ext = Extent::EMPTY;
-    g.for_each_coord(|c| ext.expand(rustgis_geom::lonlat_to_plane(c)));
+    g.for_each_coord(|c| ext.expand(crate::convert::to_plane(c)));
     ext
 }
 
@@ -5354,8 +5365,9 @@ fn merc_extent(g: &impl geo::CoordsIter<Scalar = f64>) -> Extent {
 /// Summarize Within: each polygon's count of the (selected) point features that meet it, inside it
 /// or on its edge; a feature of several points counts once in each polygon it meets. Each point is
 /// tested only against the polygons whose extents hold it, through an [`ExtentIndex`], and, at a
-/// pole, those reaching it, which it touches at any longitude. The extents are in the analysis
-/// plane, where the test runs, which goes on past 85.05° to the poles (#1033). The statistics
+/// pole, those reaching it, which it touches at any longitude. The extents are in the run's plane
+/// ([`crate::convert::plane`]), where the test runs: the analysis plane, which goes on past 85.05° to
+/// the poles (#1033), or a projected layer's own coordinates. The statistics
 /// asked for, of the point layer's fields, are over the same points, as `<STAT>_<field>` after
 /// `point_count`.
 fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -6731,6 +6743,17 @@ fn extent_contains(a: &Extent, b: &Extent) -> bool {
     !a.is_empty() && !b.is_empty() && a.min_x <= b.min_x && a.max_x >= b.max_x && a.min_y <= b.min_y && a.max_y >= b.max_y
 }
 
+/// Whether a run of tool `id` with `params` measures a distance on the ground: Select Layer By
+/// Location with a search distance, Spatial Join with a match that measures one. Such a run works
+/// in longitude/latitude, where its distances are geodesic ([`crate::ToolSpec::works_in_own_system`]).
+pub(crate) fn measures_distance(id: &str, params: &Json) -> bool {
+    match id {
+        "selectByLocation" => num(params, "distance").is_some_and(|d| d > 0.0),
+        "spatialJoin" => matches!(JoinMatch::parse(s(params, "match")), JoinMatch::Closest | JoinMatch::WithinDistance),
+        _ => false,
+    }
+}
+
 /// Whether a tool's parameter applies, given the values of the others (`value` gives one's
 /// value as text, empty when unset, which stands for its default). The Tools pane hides and leaves
 /// out one that doesn't. Spatial Join's search distance, units and distance field apply only to the
@@ -6851,7 +6874,8 @@ impl AtPoles {
     }
 }
 
-/// The poles polygons in the analysis plane reach, from their box there: north, then south.
+/// The poles polygons in the run's plane reach, from their box there: north, then south (none in
+/// a projected layer's own coordinates, [`crate::convert::plane`]).
 fn plane_poles(mp: &MultiPolygon<f64>) -> (bool, bool) {
     use geo::BoundingRect;
     let lat = |y: f64| rustgis_geom::plane_to_lonlat(Coord::new(0.0, y)).y;
@@ -6872,9 +6896,21 @@ fn ground_distance(t: &Geometry, t_geo: &geo::Geometry<f64>, j: &Geometry, j_geo
 }
 
 /// How much of a target lies in a join polygon: the ground area of a polygon's overlap, the ground
-/// length of a line's. The geometries are in the analysis plane, polygons oriented for the overlay;
-/// the overlap found is measured on the ground, in longitude/latitude.
+/// length of a line's. The geometries are in the run's plane ([`crate::convert::plane`]), polygons
+/// oriented for the overlay; in the analysis plane the overlap found is measured on the ground, in
+/// longitude/latitude, and in a projected system's own plane by its area or length there, which
+/// ranks overlaps of one target as the ground does.
 fn overlap(t_geo: &geo::Geometry<f64>, j_geo: &geo::Geometry<f64>) -> f64 {
+    if crate::convert::plane() == crate::convert::Plane::Own {
+        use geo::{Area, Euclidean, Length};
+        return match (t_geo, j_geo) {
+            (geo::Geometry::MultiPolygon(t), geo::Geometry::MultiPolygon(j)) => t.intersection(j).unsigned_area(),
+            (geo::Geometry::MultiLineString(t), geo::Geometry::MultiPolygon(j)) => {
+                j.clip(t, false).0.iter().map(|l| Euclidean.length(l)).sum()
+            }
+            _ => 0.0,
+        };
+    }
     match (t_geo, j_geo) {
         (geo::Geometry::MultiPolygon(t), geo::Geometry::MultiPolygon(j)) => {
             from_multipolygon(&t.intersection(j)).map_or(0.0, |g| crate::join::area_m2(&g))
@@ -6886,7 +6922,7 @@ fn overlap(t_geo: &geo::Geometry<f64>, j_geo: &geo::Geometry<f64>) -> f64 {
     }
 }
 
-/// A geometry in the analysis plane, polygons oriented as the overlay needs.
+/// A geometry in the run's plane ([`crate::convert::plane`]), polygons oriented as the overlay needs.
 fn oriented(g: &Geometry) -> geo::Geometry<f64> {
     match to_geo(g) {
         geo::Geometry::MultiPolygon(m) => geo::Geometry::MultiPolygon(m.orient(Direction::Default)),
@@ -7200,7 +7236,7 @@ impl Nearby<'_, '_> {
 /// geometries come with their forms in the analysis plane, where the test and the overlay work.
 fn shared_point(a: &Geometry, a_geo: &geo::Geometry<f64>, b: &Geometry, b_geo: &geo::Geometry<f64>) -> Option<Coord> {
     use geo::LinesIter;
-    let back = |c: geo::Coord<f64>| rustgis_geom::plane_to_lonlat(Coord::new(c.x, c.y));
+    let back = |c: geo::Coord<f64>| crate::convert::from_plane(Coord::new(c.x, c.y));
     // Points answer with their own coordinates, not ones back from the plane.
     let point_on = |pts: &Geometry, other: &geo::Geometry<f64>| -> Option<Option<Coord>> {
         let pts: &[Coord] = match pts {
@@ -7209,7 +7245,7 @@ fn shared_point(a: &Geometry, a_geo: &geo::Geometry<f64>, b: &Geometry, b_geo: &
             _ => return None,
         };
         Some(pts.iter().copied().find(|c| {
-            let m = rustgis_geom::lonlat_to_plane(*c);
+            let m = crate::convert::to_plane(*c);
             other.intersects(&geo::Point::new(m.x, m.y))
         }))
     };
@@ -7430,7 +7466,9 @@ fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
 
     let target_rows = rows(inp, p, "target", target);
     let join_rows = rows(inp, p, "join", join);
-    if mode == JoinMatch::LargestOverlap {
+    // A ring through both poles, whose area is ambiguous, is one in longitude/latitude: a projected
+    // system's own plane has none.
+    if mode == JoinMatch::LargestOverlap && crate::convert::plane() == crate::convert::Plane::Analysis {
         for (ds, selected) in [(target, &target_rows), (join, &join_rows)] {
             if let Some(message) =
                 rustgis_data::ambiguous_area_message(selected.iter().filter_map(|&r| ds.features.get(r)?.geometry.as_ref()))
@@ -8168,8 +8206,9 @@ fn split_line_at_vertices(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Stri
     geometry::split(inp, p)
 }
 
-/// Encloses each feature independently in its layer's own axes (longitude/latitude for a layer
-/// not in a projected system).
+/// Encloses each feature independently in the axes of the system the run works in: its layer's
+/// own for one held in a projected system other than Web Mercator and the other world projections,
+/// else longitude/latitude.
 fn feature_envelope_to_polygon(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     geometry::convert(inp, p, geometry::Conversion::FeatureEnvelopeToPolygon)
 }

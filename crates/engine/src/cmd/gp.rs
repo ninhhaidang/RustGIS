@@ -509,7 +509,8 @@ pub(crate) struct StartedRun {
 type FullIds = std::collections::HashMap<String, Vec<u64>>;
 
 fn full_ids(full: &std::collections::HashMap<String, Dataset>) -> FullIds {
-    full.iter().map(|(k, d)| (k.clone(), d.features.iter().map(|f| f.id).collect())).collect()
+    // (Not the standalone tables converted for a run, [`table_key`]: no layer is updated from them.)
+    full.iter().filter(|(k, _)| !k.starts_with('\0')).map(|(k, d)| (k.clone(), d.features.iter().map(|f| f.id).collect())).collect()
 }
 
 /// Checks and carries the admitted owner through every synchronous input/preparation request.
@@ -700,6 +701,10 @@ impl ToolRun {
                 full_ids: FullIds::new(),
             };
         }
+        // Reading and converting the inputs stops on Cancel too, as the tool does: the
+        // conversions look at the run's control (`rustgis_data::progress`), and a conversion's
+        // refusal isn't taken for a place that can't be held when it is a Cancel.
+        let _probe = rustgis_analysis::control::install_progress(Some(control.clone()));
         let current = continuation.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok()) as crate::render::rustgis_tiles::cache::Still;
         // A bug in reading the inputs, like one in a tool, must not take the app down.
@@ -707,6 +712,11 @@ impl ToolRun {
             crate::render::rustgis_tiles::cache::with_still(still, || {
                 let inputs = match inputs_of(snap, Some(spec), &params) {
                     Ok(inputs) => inputs,
+                    // A Cancel while the inputs are read names the tool, as one while it runs does.
+                    Err(_) if control.is_cancelled() => {
+                        let result = Err(format!("{name} was cancelled while it read its inputs"));
+                        return ToolDone { inputs: Vec::new(), result, full_ids: FullIds::new() };
+                    }
                     Err(e) => return ToolDone { inputs: Vec::new(), result: Err(e), full_ids: FullIds::new() },
                 };
                 let mut result = pin.run(&inputs, &params, control, &|| continuation.check());
@@ -1513,12 +1523,13 @@ fn streamed_inputs(
 
 /// Whether a tool that works in its first input's own system ([`ToolSpec::works_in_own_system`])
 /// works in `crs`: a projected system, whose coordinates are a plane's. Longitude/latitude, Web
-/// Mercator and other geographic or geocentric systems keep the longitude/latitude path, whose
-/// plane and geodesics their coordinates need.
+/// Mercator and the other world projections (whose plane has the antimeridian as a seam and the
+/// poles as lines, [`Crs::is_world_projection`]), and other geographic or geocentric systems, keep
+/// the longitude/latitude path, whose plane and geodesics their coordinates need.
 ///
 /// [`ToolSpec::works_in_own_system`]: rustgis_analysis::ToolSpec::works_in_own_system
 fn works_in(crs: Crs) -> bool {
-    crs != Crs::LonLat && crs != Crs::WebMercator && !crs.is_geographic() && !crs.is_geocentric()
+    crs != Crs::LonLat && !crs.is_world_projection() && !crs.is_geographic() && !crs.is_geocentric()
 }
 
 /// The system a run works in: its first input's own ([`Dataset::coord_crs`]) when the tool works
@@ -1530,7 +1541,7 @@ fn work_system(
     full: &std::collections::HashMap<String, Dataset>,
 ) -> Crs {
     use rustgis_analysis::ParamKind as K;
-    let Some(spec) = spec.filter(|t| t.works_in_own_system()) else { return Crs::LonLat };
+    let Some(spec) = spec.filter(|t| t.works_in_own_system(params)) else { return Crs::LonLat };
     // The tool's first layer parameter, under its name or one of the names it also accepts
     // (Join Field's `input`), taken as the tool takes it: the first that isn't blank. A table
     // given by its number (read unconverted, [`Inputs::table`]) or by name leaves the run in
@@ -1574,15 +1585,17 @@ fn attributes_only(spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) ->
             let aliases = rustgis_analysis::param_aliases(spec, p.name);
             if aliases.is_empty() { vec![p.name] } else { aliases.to_vec() }
         })
-        .filter_map(|k| params.get(k).and_then(Value::as_str))
-        .map(str::to_ascii_lowercase)
+        .filter_map(|k| params.get(k))
+        // A standalone table given by its number, by the key it would be converted under.
+        .filter_map(|v| v.as_str().map(str::to_ascii_lowercase).or_else(|| v.as_u64().and_then(|n| u32::try_from(n).ok()).map(table_key)))
         .collect()
 }
 
 /// The layers a tool reads, in the system it works in ([`work_system`], [`Inputs::dataset`]):
 /// its first input's own for a tool that works in it, every other input converted into it; else
 /// longitude/latitude. An input with a place that system can't hold has the run work in
-/// longitude/latitude instead, and a message says so. Returns the system.
+/// longitude/latitude instead, and a message says so (the conversions made for the first attempt
+/// are dropped then, and the inputs read again in longitude/latitude). Returns the system.
 fn work_inputs(
     map: &rustgis_map::Map,
     tables: &[crate::project::Table],
@@ -1594,8 +1607,9 @@ fn work_inputs(
     let work = work_system(map, spec, params, full);
     if work != Crs::LonLat {
         match inputs_in(map, tables, spec, params, full, work) {
-            Ok(converted) => {
+            Ok((converted, said)) => {
                 full.extend(converted);
+                messages.extend(said);
                 return Ok(work);
             }
             Err(e) => {
@@ -1606,7 +1620,7 @@ fn work_inputs(
             }
         }
     }
-    let converted = inputs_in(map, tables, spec, params, full, Crs::LonLat)?;
+    let (converted, _) = inputs_in(map, tables, spec, params, full, Crs::LonLat)?;
     full.extend(converted);
     Ok(Crs::LonLat)
 }
@@ -1621,16 +1635,29 @@ fn inputs_in(
     params: &Value,
     full: &std::collections::HashMap<String, Dataset>,
     work: Crs,
-) -> Result<std::collections::HashMap<String, Dataset>, String> {
+) -> Result<(std::collections::HashMap<String, Dataset>, Vec<String>), String> {
     let mut converted = std::collections::HashMap::new();
+    // The converted inputs with edges that bend ([`bent_edges`]): name, how many, how far.
+    let mut bent: Vec<(String, usize, f64)> = Vec::new();
+    let reads_edges = work != Crs::LonLat && spec.is_some_and(rustgis_analysis::ToolSpec::reads_edges);
+    let mut say = |original: &Dataset, c: &Dataset| -> Result<(), String> {
+        if reads_edges {
+            let (n, far) = bent_edges(original, c, work)?;
+            if n > 0 {
+                bent.push((original.name.clone(), n, far));
+            }
+        }
+        Ok(())
+    };
     // Read only for its attributes in a run in its first input's system: as it is. (The first
     // input, if it is named there too, is in that system already.)
     let unread = if work == Crs::LonLat { std::collections::HashSet::new() } else { attributes_only(spec, params) };
     for (key, ds) in full {
-        if unread.contains(key) {
+        if unread.contains(&key.to_ascii_lowercase()) {
             continue;
         }
         if let std::borrow::Cow::Owned(c) = ds.in_crs(work)? {
+            say(ds, &c)?;
             converted.insert(key.clone(), c);
         }
     }
@@ -1662,10 +1689,129 @@ fn inputs_in(
             .filter(|d| d.geometry_type != rustgis_data::GeometryType::None)
             && let std::borrow::Cow::Owned(c) = ds.in_crs(work)?
         {
+            say(ds, &c)?;
             converted.insert(key, c);
         }
     }
-    Ok(converted)
+    // A standalone table given by its number ([`Inputs::table`]), as one given by name: under a
+    // layer parameter (or a name it also accepts), the only place a number is a table's; not one
+    // the tool reads only the attributes of, in a run in its first input's system.
+    let mut ids = Vec::new();
+    if let Some(spec) = spec {
+        use rustgis_analysis::ParamKind as K;
+        let layers = spec.params.iter().filter(|p| {
+            matches!(p.kind, K::Layer | K::PolygonLayer | K::PointLayer | K::VectorLayer | K::VectorLayers)
+                && (work == Crs::LonLat || spec.reads_geometry_of(p.name))
+        });
+        for p in layers {
+            let aliases = rustgis_analysis::param_aliases(spec, p.name);
+            let keys: &[&str] = if aliases.is_empty() { std::slice::from_ref(&p.name) } else { aliases };
+            for v in keys.iter().filter_map(|k| params.get(*k)) {
+                let one = std::slice::from_ref(v);
+                ids.extend(v.as_array().map_or(one, Vec::as_slice).iter().filter_map(Value::as_u64));
+            }
+        }
+    }
+    for t in tables.iter().filter(|t| ids.contains(&u64::from(t.id))) {
+        if t.dataset.geometry_type == rustgis_data::GeometryType::None {
+            continue;
+        }
+        if let std::borrow::Cow::Owned(c) = t.dataset.in_crs(work)? {
+            say(&t.dataset, &c)?;
+            converted.insert(table_key(t.id), c);
+        }
+    }
+    // One notice for them all, naming each layer.
+    let mut said = Vec::new();
+    if !bent.is_empty() {
+        let name = spec.map_or("The tool", |t| t.name);
+        let n: usize = bent.iter().map(|(_, n, _)| n).sum();
+        let far = bent.iter().map(|(.., far)| *far).fold(0.0, f64::max);
+        let layers = bent.iter().map(|(layer, n, _)| format!("'{layer}' ({n})")).collect::<Vec<_>>().join(", ");
+        said.push(format!(
+            "{name}: {n} edge(s) of {layers}, converted into {}, are taken straight there, up to {far:.0} m from where a run in longitude/latitude takes them (straight on a Web Mercator map); their vertices are where they were",
+            work.label()
+        ));
+    }
+    Ok((converted, said))
+}
+
+/// The key a standalone table given by its number is converted under among a run's inputs
+/// ([`inputs_in`]): one no layer's name can be.
+fn table_key(id: u32) -> String {
+    format!("\u{0}table {id}")
+}
+
+/// How far, on the ground, an edge converted into another system may move from where a run in
+/// longitude/latitude takes it before a run says so: a metre.
+const BENT_M: f64 = 1.0;
+
+/// The edges of `original` that `converted`, its geometry converted vertex by vertex into `work`,
+/// takes more than [`BENT_M`] from where a run in longitude/latitude takes them: straight in the
+/// analysis plane there (Web Mercator, along a parallel for an edge running east), straight in
+/// `work` here. A polygon ring's closing edge counts too, when the ring doesn't repeat its first
+/// vertex. Their count, and how far the farthest moved, in metres: measured across the chord at a
+/// quarter, half and three quarters of the edge (an edge across a transverse Mercator's central
+/// meridian bends both ways, its middle staying on the chord), in ground metres whatever `work`'s
+/// units. An edge under a kilometre in the analysis plane is skipped: its two readings part by
+/// under a metre short of 88.9° from the equator (about L² tan φ / 8R).
+pub(crate) fn bent_edges(original: &Dataset, converted: &Dataset, work: Crs) -> Result<(usize, f64), String> {
+    use rustgis_geom::{Coord, lonlat_to_plane, plane_to_lonlat};
+    /// Its parts' vertices, each with whether it is a polygon's ring, whose closing edge counts.
+    fn parts(g: &rustgis_data::Geometry) -> Vec<(&[Coord], bool)> {
+        match g {
+            rustgis_data::Geometry::Line(parts) => parts.iter().map(|p| (p.as_slice(), false)).collect(),
+            rustgis_data::Geometry::Polygon(polys) => polys.iter().flatten().map(|r| (r.as_slice(), true)).collect(),
+            rustgis_data::Geometry::Point(_) | rustgis_data::Geometry::MultiPoint(_) => Vec::new(),
+        }
+    }
+    /// The edges of a part: each pair of neighbours, and a ring's closing pair when it isn't
+    /// closed already.
+    fn edges(part: &[Coord], ring: bool) -> impl Iterator<Item = (Coord, Coord)> + '_ {
+        let closing = ring.then(|| part.first().zip(part.last())).flatten().filter(|(a, b)| a != b).map(|(a, b)| (*b, *a));
+        part.windows(2).filter_map(|w| Some((*w.first()?, *w.get(1)?))).chain(closing)
+    }
+    let (to_lonlat, into, back) = (original.lonlat_conversion()?, Crs::LonLat.to(work)?, work.to(Crs::LonLat)?);
+    let (mut n, mut far) = (0usize, 0.0f64);
+    for (i, (f, c)) in original.features.rows().zip(converted.features.rows()).enumerate() {
+        if i.is_multiple_of(256) {
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+        }
+        let (Some(g), Some(h)) = (f.geometry(), c.geometry()) else { continue };
+        for ((part, ring), (held, _)) in parts(g).into_iter().zip(parts(h)) {
+            for ((a, b), (c0, c1)) in edges(part, ring).zip(edges(held, ring)) {
+                let (Some(a), Some(b)) = (to_lonlat.point(a), to_lonlat.point(b)) else { continue };
+                let (pa, pb) = (lonlat_to_plane(a), lonlat_to_plane(b));
+                // (Also skipped: a length that is no number, a coordinate being missing.)
+                let length = (pb.x - pa.x).hypot(pb.y - pa.y);
+                if length.is_nan() || length < 1000.0 {
+                    continue;
+                }
+                let (dx, dy) = (c1.x - c0.x, c1.y - c0.y);
+                let chord = dx.hypot(dy);
+                // In metres: the chord's ground length over its length in `work`'s units.
+                let (Some(e0), Some(e1)) = (back.point(c0), back.point(c1)) else { continue };
+                let per_unit = rustgis_geom::wgs84_inverse(e0, e1).0 / chord;
+                // (Ends that meet in `work` give no chord to measure across.)
+                if !per_unit.is_finite() {
+                    continue;
+                }
+                // How far the edge as a run in longitude/latitude takes it lies across the chord
+                // (not along it: where a point is along an edge differs between the planes, a
+                // meridian's middle by some 280 m over a degree).
+                let across = |t: f64| {
+                    let on = plane_to_lonlat(Coord::new(pa.x + t * (pb.x - pa.x), pa.y + t * (pb.y - pa.y)));
+                    into.point(on).map(|m| ((m.x - c0.x) * dy - (m.y - c0.y) * dx).abs() / chord * per_unit)
+                };
+                let d = [0.25, 0.5, 0.75].into_iter().filter_map(across).fold(0.0, f64::max);
+                if d > BENT_M {
+                    n += 1;
+                    far = far.max(d);
+                }
+            }
+        }
+    }
+    Ok((n, far))
 }
 
 /// The executor's source-read choice, shared with pure permission planning.
@@ -1714,7 +1860,7 @@ fn env_inputs(
     env: &crate::project::GpEnvironment,
     params: &Value,
 ) -> Result<std::collections::HashMap<String, Vec<usize>>, String> {
-    let rows = env_rows(map, full, env, params);
+    let rows = env_rows(map, full, env, params)?;
     if let Some((name, v)) = rows.iter().next()
         && v.is_empty()
     {
@@ -1730,10 +1876,10 @@ fn env_rows(
     full: &std::collections::HashMap<String, Dataset>,
     env: &crate::project::GpEnvironment,
     params: &Value,
-) -> std::collections::HashMap<String, Vec<usize>> {
-    let Some(e) = env.extent else { return std::collections::HashMap::new() };
+) -> Result<std::collections::HashMap<String, Vec<usize>>, String> {
+    let Some(e) = env.extent else { return Ok(std::collections::HashMap::new()) };
     let Some(input) = params.get("target").or_else(|| params.get("input")).and_then(Value::as_str) else {
-        return std::collections::HashMap::new();
+        return Ok(std::collections::HashMap::new());
     };
     // The layer the name finds (the first of that name), as the tool will.
     map.layer_by_name(input)
@@ -1741,16 +1887,32 @@ fn env_rows(
         .filter(|l| !l.is_raster() && l.selection.is_empty())
         .map(|l| {
             let ds = full.get(&l.name.to_ascii_lowercase()).unwrap_or(&l.dataset);
-            // The extent in the layer's own coordinates, as its features' boxes are.
-            let own = ds.extent_from_lonlat(&e);
-            let rows: Vec<usize> = ds
-                .features
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&own)))
-                .map(|(i, _)| i)
-                .collect();
-            (l.name.to_ascii_lowercase(), rows)
+            // A feature is admitted when its box in longitude/latitude meets the extent, as in a
+            // run in longitude/latitude (which reads the whole layer converted too): no box in the
+            // layer's own system tests that, a box there around the extent missing a feature whose
+            // box in longitude/latitude meets it. One with a place that can't be read in
+            // longitude/latitude is admitted by its own box meeting the extent's there, as before;
+            // a layer that can't be read in longitude/latitude at all admits none, as before (and
+            // the run says none is inside).
+            let own = std::cell::OnceCell::new();
+            let by_own = |g: &rustgis_data::Geometry| g.extent().intersects(own.get_or_init(|| ds.extent_from_lonlat(&e)));
+            let to_lonlat = ds.lonlat_conversion().ok();
+            let meets = |g: &rustgis_data::Geometry| match &to_lonlat {
+                Some(to) if to.is_identity() => g.extent().intersects(&e),
+                Some(to) => Dataset::geometry_to_lonlat_by(to, g).map_or_else(|_| by_own(g), |g| g.extent().intersects(&e)),
+                None => false,
+            };
+            // (Each feature converted: a Cancel is looked for every 256 of them.)
+            let mut rows = Vec::new();
+            for (i, r) in ds.features.rows().enumerate() {
+                if i.is_multiple_of(256) {
+                    rustgis_data::progress::check().map_err(|e| format!("{}: {e}", l.name))?;
+                }
+                if r.geometry().is_some_and(meets) {
+                    rows.push(i);
+                }
+            }
+            Ok((l.name.to_ascii_lowercase(), rows))
         })
         .collect()
 }
@@ -1775,6 +1937,10 @@ impl Inputs for MapInputs<'_> {
         crate::render::raster_export::export(raster, min_zoom, max_zoom, opacity)
     }
     fn dataset(&self, layer: &str) -> Option<&Dataset> {
+        // (A standalone table converted for the run is had by its number, [`table_key`].)
+        if layer.starts_with('\0') {
+            return None;
+        }
         self.loaded
             .get(layer)
             .or_else(|| self.loaded.get(&layer.to_ascii_lowercase()))
@@ -1794,7 +1960,19 @@ impl Inputs for MapInputs<'_> {
             })
     }
     fn table(&self, id: u32) -> Option<&Dataset> {
-        self.snap.tables.iter().find(|t| t.id == id).map(|t| &t.dataset)
+        // Converted before the run when the tool's parameters give its number ([`inputs_in`]);
+        // else read as it is only in the system the tool works in, as a layer is, or when the
+        // tool reads only its attributes (Join Field's join table).
+        self.loaded.get(&table_key(id)).or_else(|| {
+            self.snap.tables.iter().find(|t| t.id == id).map(|t| &t.dataset).filter(|d| {
+                d.geometry_type == rustgis_data::GeometryType::None
+                    || self.unread.contains(&table_key(id))
+                    || d.coord_crs().to(self.work).is_ok_and(|to| to.is_identity())
+            })
+        })
+    }
+    fn work_crs(&self) -> Crs {
+        self.work
     }
     fn selection(&self, layer: &str) -> &[usize] {
         let Some(l) = self.snap.map.layer_by_name(layer) else { return &[] };

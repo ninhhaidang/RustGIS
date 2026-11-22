@@ -1,25 +1,85 @@
-//! Conversions between RustGIS geometry and `geo` types, in the analysis plane
-//! ([`rustgis_geom::lonlat_to_plane`]): Web Mercator meters within ±85.05°, carried on to the poles
-//! beyond, so polar geometry isn't clamped onto 85.05° (#1033).
+//! Conversions between RustGIS geometry and `geo` types, in the plane a run works in
+//! ([`Plane`]): for a run in longitude/latitude, the analysis plane
+//! ([`rustgis_geom::lonlat_to_plane`]), Web Mercator meters within ±85.05°, carried on to the poles
+//! beyond, so polar geometry isn't clamped onto 85.05° (#1033); for a run in its first input's own
+//! projected system (#2032 C2e), that system's own coordinates, as they are.
 
 use geo::{Coord as GC, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon};
 use rustgis_data::Geometry;
 use rustgis_geom::{Coord, lonlat_to_plane, plane_to_lonlat};
 
+/// The plane a run's geometry is worked on in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Plane {
+    /// Longitude/latitude, worked on in the analysis plane ([`rustgis_geom::lonlat_to_plane`]),
+    /// with the poles and the antimeridian where they are in it.
+    #[default]
+    Analysis,
+    /// A projected system's own coordinates, worked on as they are: a plane with no poles or
+    /// antimeridian in it (#2032 C2e).
+    Own,
+}
+
+thread_local! {
+    static PLANE: std::cell::Cell<Plane> = const { std::cell::Cell::new(Plane::Analysis) };
+}
+
+/// The plane of the run on this thread ([`install_plane`]): [`Plane::Analysis`] unless a run in a
+/// projected system installed [`Plane::Own`]. The threads of [`crate::parallel`] take it over from
+/// the thread that starts them.
+pub fn plane() -> Plane {
+    PLANE.with(std::cell::Cell::get)
+}
+
+/// Puts the plane back as it was when dropped.
+pub struct PlaneInstalled(Plane);
+
+impl Drop for PlaneInstalled {
+    fn drop(&mut self) {
+        PLANE.with(|p| p.set(self.0));
+    }
+}
+
+/// Makes `plane` the plane of the work on this thread until the guard is dropped.
+pub fn install_plane(plane: Plane) -> PlaneInstalled {
+    PlaneInstalled(PLANE.with(|p| p.replace(plane)))
+}
+
+/// A place of a run's geometry in its plane ([`plane`]): in the analysis plane for
+/// longitude/latitude, as it is in a projected system's own.
+pub fn to_plane(c: Coord) -> Coord {
+    match plane() {
+        Plane::Analysis => lonlat_to_plane(c),
+        Plane::Own => c,
+    }
+}
+
+/// A place in the run's plane back in its geometry's coordinates, undoing [`to_plane`].
+pub fn from_plane(c: Coord) -> Coord {
+    match plane() {
+        Plane::Analysis => plane_to_lonlat(c),
+        Plane::Own => c,
+    }
+}
+
 /// Projects without folding the longitude: a ring kept unwrapped across the antimeridian (as a
 /// geodesic buffer is) stays one piece, rather than folding its far vertex across the world.
 fn gc(c: Coord) -> GC<f64> {
-    let m = lonlat_to_plane(c);
+    let m = to_plane(c);
     GC { x: m.x, y: m.y }
 }
 
 fn back(c: &GC<f64>) -> Coord {
-    plane_to_lonlat(Coord::new(c.x, c.y))
+    from_plane(Coord::new(c.x, c.y))
 }
 
 /// The poles something spanning latitudes `south` to `north` reaches (to within
-/// [`rustgis_geom::POLE_TOLERANCE`]): the North Pole, then the South Pole.
+/// [`rustgis_geom::POLE_TOLERANCE`]): the North Pole, then the South Pole. None in a projected
+/// system's own plane ([`Plane::Own`]), whose y is no latitude.
 pub(crate) fn reaches_poles(south: f64, north: f64) -> (bool, bool) {
+    if plane() == Plane::Own {
+        return (false, false);
+    }
     (north >= 90.0 - rustgis_geom::POLE_TOLERANCE, south <= -90.0 + rustgis_geom::POLE_TOLERANCE)
 }
 
@@ -93,6 +153,21 @@ pub fn from_point(p: &Point<f64>) -> Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In a projected system's own plane a place is worked on as it is, and nothing reaches a
+    /// pole however large its y; the analysis plane is put back after.
+    #[test]
+    fn a_projected_systems_plane_is_its_own_coordinates() {
+        let c = Coord::new(683_944.533_251, 5_397_122.834_867);
+        {
+            let _own = install_plane(Plane::Own);
+            assert_eq!((to_plane(c), from_plane(c)), (c, c));
+            assert_eq!(reaches_poles(-10_000_000.0, 10_000_000.0), (false, false));
+        }
+        assert_eq!(plane(), Plane::Analysis);
+        assert_eq!(reaches_poles(-90.0, 90.0), (true, true));
+        assert_ne!(to_plane(Coord::new(10.0, 10.0)), Coord::new(10.0, 10.0));
+    }
 
     #[test]
     fn an_antimeridian_ring_stays_a_sliver_through_geo() {

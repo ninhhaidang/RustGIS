@@ -4,4 +4,4 @@
 # down: new code reads and changes rows through the accessors on `Features`
 # (crates/data/src/row_access.rs). When a change lowers it, run `cargo xtask rows --update` and
 # commit this file with it.
-count = 794
+count = 784
