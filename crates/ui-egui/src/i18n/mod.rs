@@ -480,6 +480,13 @@ pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
     rtl::visual(&fmt_raw(template, args))
 }
 
+/// An AI Assistant note (a transcript line, a picture refused), translated and filled in as
+/// [`fmt`] does.
+pub fn note(n: &rustgis_assistant::provider::Note) -> String {
+    let args: Vec<(&str, &str)> = n.args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    fmt(n.template, &args)
+}
+
 /// [`fmt`] in logical order, without the display form: for a message shown with
 /// [`paragraph`], which fits a right-to-left message to its rows and puts each row in
 /// display form itself.

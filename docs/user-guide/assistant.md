@@ -46,6 +46,28 @@ controls.
 From the command line, `rustgis-cli ask` sends one request (see
 [Command Line](../cli.md#asking-the-ai-assistant)).
 
+## Attaching pictures
+
+A picture can go with a message: a map whose style you want, a screenshot of something that
+looks wrong, a photo of a sketch. Click the picture button beside **Send** and choose PNG, JPEG
+or WebP files, or, on a computer, paste a picture into the message box. Each shows above the box
+with its size until you send the message or take it off with **×**; a message can be pictures
+alone. A message takes up to four pictures, each a file of up to 20 MiB and 8,192 pixels a side.
+From the command line, add `--image FILE` to `rustgis-cli ask`, up to four times.
+
+Before it is sent, a picture is turned upright when the photo says it was taken on its side, drawn
+at most 1,568 pixels on its longest side, and saved again as a JPEG (a PNG when it has transparent
+parts). Saving it again leaves out what the file carried besides its pixels, such as where a photo
+was taken. The conversation says each picture attached, and the size it was sent at when that is
+smaller than the file's. The latest eight pictures go with every request; older ones are replaced
+by a line naming them, and so are those in the part of a long conversation that is summarised.
+A model that doesn't read images gets the pictures' names instead, and the conversation says so;
+switching to a model that reads images afterwards doesn't bring them back. Attach a picture again
+when the assistant needs to see it once more.
+
+A picture shows the model what you mean; it doesn't give coordinates. To place a scanned map, use
+georeferencing with control points rather than asking the model where things are.
+
 ## Choosing a model
 
 Click the model name or the gear to open the settings. The assistant works with:
@@ -308,8 +330,8 @@ fetch the USGS stream gauges in Texas and add them to the map."
 
 Assistant requests go directly to the provider and address you chose, using your API key or
 ChatGPT sign-in. They carry your messages, the map's layer names, fields and extent, tool
-results such as rows the assistant reads, and, when the assistant calls `view_map`, a picture of
-the map, basemap tiles included. Local agents use their own providers and tools,
+results such as rows the assistant reads, the pictures you attach to a message, and, when the
+assistant calls `view_map`, a picture of the map, basemap tiles included. Local agents use their own providers and tools,
 with their own data handling. A key typed in the settings is used for the session only unless
 you tick **Remember the key on this computer**. On the desktop, this saves it in the system
 keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux). Clearing

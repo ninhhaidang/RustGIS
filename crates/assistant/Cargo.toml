@@ -16,6 +16,8 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 log = { workspace = true }
 web-time = { workspace = true }
+# Pictures the user attaches to a message: read, turned upright, drawn smaller and encoded again.
+image = { workspace = true, features = ["jpeg", "webp"] }
 
 # Calling the model on the desktop and the command line. The browser calls it with its own fetch
 # (the web app's `Services::http`).

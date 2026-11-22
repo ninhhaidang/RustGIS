@@ -61,6 +61,7 @@ fn mark(purpose: &str) -> String {
         "script" => rustgis_ui_egui::SCRIPT_PICK,
         "text" => rustgis_ui_egui::DELIMITED_PICK,
         "shapefile" => rustgis_ui_egui::SHAPEFILE_PICK,
+        "assistantPicture" => rustgis_ui_egui::ASSISTANT_PICK,
         p if p.starts_with(rustgis_ui_egui::TOOL_FILE_PURPOSE) => rustgis_ui_egui::TOOL_FILE_PICK,
         _ => "",
     }
@@ -246,6 +247,7 @@ mod tests {
         assert_eq!(super::mark("shapefile"), rustgis_ui_egui::SHAPEFILE_PICK);
         assert_eq!(super::mark("script"), rustgis_ui_egui::SCRIPT_PICK);
         assert_eq!(super::mark("marker:4"), format!("{}4:", rustgis_ui_egui::MARKER_PICK));
+        assert_eq!(super::mark("assistantPicture"), rustgis_ui_egui::ASSISTANT_PICK);
         assert_eq!(super::mark("data"), "");
     }
 

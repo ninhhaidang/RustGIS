@@ -498,8 +498,21 @@ impl eframe::App for WebShell {
 
 /// Reads files picked or dropped together into the inbox, all at once, each Shapefile's loose
 /// parts zipped into one (`gather_shapefiles`) so it opens as a layer; `mark` starts each name.
-async fn read_together(files: Vec<web_sys::File>, mark: &str, inbox: &Inbox, notes: Notes) {
+async fn read_together(mut files: Vec<web_sys::File>, mark: &str, inbox: &Inbox, notes: Notes) {
     let mut read = Vec::new();
+    // The assistant's pictures: no more are read than a message takes, and those left out, or
+    // too large, are said once each kind.
+    let pictures = mark == rustgis_ui_egui::ASSISTANT_PICK;
+    let most = rustgis_ui_egui::rustgis_assistant::attach::MAX_PER_MESSAGE;
+    if pictures && files.len() > most {
+        let names: Vec<String> = files.drain(most..).map(|f| f.name()).collect();
+        let text = rustgis_ui_egui::i18n::fmt(
+            "{names} weren't attached: a message takes at most {n} pictures",
+            &[("names", &names.join(", ")), ("n", &most.to_string())],
+        );
+        notes.lock().unwrap_or_else(|e| e.into_inner()).push((text, true));
+    }
+    let mut too_large = Vec::new();
     for file in files {
         let name = file.name();
         let shortcut = mark == rustgis_ui_egui::SHORTCUT_PICK || (mark.is_empty() && name.to_ascii_lowercase().ends_with(".rgisshortcuts"));
@@ -515,6 +528,10 @@ async fn read_together(files: Vec<web_sys::File>, mark: &str, inbox: &Inbox, not
             notes.lock().unwrap_or_else(|e| e.into_inner()).push((text, true));
             continue;
         }
+        if pictures && file.size() > rustgis_ui_egui::ASSISTANT_FILE_MAX_BYTES as f64 {
+            too_large.push(name);
+            continue;
+        }
         if mark.starts_with(rustgis_ui_egui::MARKER_PICK) && file.size() > rustgis_ui_egui::MARKER_FILE_MAX_BYTES as f64 {
             notes.lock().unwrap_or_else(|e| e.into_inner()).push((rustgis_ui_egui::marker_file_too_large().into(), true));
             continue;
@@ -522,6 +539,18 @@ async fn read_together(files: Vec<web_sys::File>, mark: &str, inbox: &Inbox, not
         if let Some(bytes) = crate::parts::read_file(file, notes.clone()).await {
             read.push((name, bytes));
         }
+    }
+    if let Some(first) = too_large.first() {
+        let first = rustgis_ui_egui::i18n::note(&rustgis_ui_egui::rustgis_assistant::attach::too_large(first.clone()));
+        let text = if too_large.len() == 1 {
+            first
+        } else {
+            rustgis_ui_egui::i18n::fmt(
+                "{n} pictures weren't attached, such as {first}",
+                &[("n", &too_large.len().to_string()), ("first", &first)],
+            )
+        };
+        notes.lock().unwrap_or_else(|e| e.into_inner()).push((text, true));
     }
     // A request something waits on (Import DXF, a marker's «Image…») with nothing read, its
     // picker cancelled or its file refused or unread, is answered empty: it stops waiting.
@@ -1320,6 +1349,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
                     ("script", _) => rustgis_ui_egui::SCRIPT_PICK,
                     ("text", _) => rustgis_ui_egui::DELIMITED_PICK,
                     ("shapefile", _) => rustgis_ui_egui::SHAPEFILE_PICK,
+                    ("assistantPicture", _) => rustgis_ui_egui::ASSISTANT_PICK,
                     (_, Some(_)) => rustgis_ui_egui::TOOL_FILE_PICK,
                     _ => "",
                 }
@@ -1371,6 +1401,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
                 )
             } else if dxf.is_some() {
                 rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("DXF drawing"), &["dxf"])
+            } else if purpose == "assistantPicture" {
+                rfd::AsyncFileDialog::new()
+                    .add_filter(rustgis_ui_egui::tl!("Pictures"), rustgis_ui_egui::rustgis_assistant::attach::EXTENSIONS)
             } else if purpose == "picture" || marker.is_some() {
                 rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Pictures"), &["png", "jpg", "jpeg"])
             } else {
@@ -1379,8 +1412,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
                     &[DATA_EXTS, &rustgis_ui_egui::rustgis_engine::data::raster::ELEVATION_EXTENSIONS[..]].concat(),
                 )
             };
-            // Data may come several files at once (photos gather in one layer).
-            let many = matches!(purpose, "data" | "shapefile");
+            // Data may come several files at once (photos gather in one layer), as may the
+            // assistant's pictures.
+            let many = matches!(purpose, "data" | "shapefile" | "assistantPicture");
             wasm_bindgen_futures::spawn_local(async move {
                 let files: Vec<rfd::FileHandle> =
                     if many { dialog.pick_files().await.unwrap_or_default() } else { dialog.pick_file().await.into_iter().collect() };

@@ -12,6 +12,7 @@
 //! rustgis-cli run … --threads 4                    # the most threads one piece of work uses (default: the cores, up to 16)
 //! rustgis-cli ask [--sample | --project p.rgis | --data f.geojson …] "Which cities have over 10 million people?" \
 //!     [--provider anthropic|openai|chatgpt|gemini|openrouter|ollama|custom|requesty|trustedrouter|opper] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
+//! rustgis-cli ask --sample "Style the countries like this map" --image reference.png   # pictures go with the request (up to 4)
 //! rustgis-cli ask --models [--provider P]                # list the provider's models
 //! rustgis-cli ask --accounts | --account CLIENT_ID       # list or select a saved registration
 //! rustgis-cli ask --remove-account CLIENT_ID             # sign out and forget a saved registration
@@ -47,7 +48,7 @@ use serde_json::{Map, Value, json};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli skills [add <SKILL.md|folder|.zip> | remove <name> | enable <name> | disable <name>]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|CODE] [--worldview-detail simplified|original]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|CODE] [--worldview-detail simplified|original]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli ask --login [--another-account] [--account CLIENT_ID] | --logout\n  rustgis-cli ask --accounts | --account CLIENT_ID | --remove-account CLIENT_ID\n  common options: --use-saved-secrets (use the connections, passwords, keys, ChatGPT sign-in and Earthdata Login token the RustGIS app saved; reads the system keychain), --threads N (the most threads one piece of work uses, 1-1024; default: the cores, up to 16)\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT] [--token-file FILE] [--timeout SECONDS (5-600)]]\n  rustgis-cli mcp-register [--client claude] [--name NAME] [--port PORT]"
+        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli skills [add <SKILL.md|folder|.zip> | remove <name> | enable <name> | disable <name>]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|CODE] [--worldview-detail simplified|original]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|CODE] [--worldview-detail simplified|original]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--image PICTURE]… [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli ask --login [--another-account] [--account CLIENT_ID] | --logout\n  rustgis-cli ask --accounts | --account CLIENT_ID | --remove-account CLIENT_ID\n  common options: --use-saved-secrets (use the connections, passwords, keys, ChatGPT sign-in and Earthdata Login token the RustGIS app saved; reads the system keychain), --threads N (the most threads one piece of work uses, 1-1024; default: the cores, up to 16)\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT] [--token-file FILE] [--timeout SECONDS (5-600)]]\n  rustgis-cli mcp-register [--client claude] [--name NAME] [--port PORT]"
     );
     ExitCode::from(2)
 }
@@ -262,6 +263,7 @@ fn ask_request(args: &[String]) -> Option<String> {
         "--data",
         "--save",
         "--trace",
+        "--image",
         "--plugin",
         "--registry",
         "--worldview",
@@ -275,6 +277,27 @@ fn ask_request(args: &[String]) -> Option<String> {
         .skip(1)
         .find(|(i, a)| !a.starts_with("--") && !args.get(i - 1).is_some_and(|p| takes_value.contains(&p.as_str())))
         .map(|(_, a)| a.clone())
+}
+
+/// The pictures `--image` attaches to the request, each read and made ready to send
+/// ([`rustgis_assistant::attach::prepare`]). One that can't be is an error, so the request isn't
+/// sent without it.
+fn ask_pictures(args: &[String]) -> Result<Vec<rustgis_assistant::attach::Picture>, String> {
+    use rustgis_assistant::attach::{MAX_PER_MESSAGE, prepare, read};
+    // Refused before any is read: a request takes at most four.
+    let given = args.iter().filter(|a| *a == "--image").count();
+    if given > MAX_PER_MESSAGE {
+        return Err(format!("--image: a request takes at most {MAX_PER_MESSAGE} pictures, {given} given"));
+    }
+    let mut pictures = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a != "--image" {
+            continue;
+        }
+        let path = args.get(i + 1).filter(|p| !p.starts_with("--")).ok_or("--image needs a picture file")?;
+        pictures.push(prepare(path, &read(path)?).map_err(|e| e.to_string())?);
+    }
+    Ok(pictures)
 }
 
 /// `ask "<request>"`: one conversation turn with the AI assistant, which acts on the project.
@@ -432,6 +455,7 @@ fn ask(s: &mut Session, args: &[String], saved: Option<&Saved>, env: &Environmen
         };
         return Err(format!("{provider}: {why} ({hint})"));
     }
+    let pictures = ask_pictures(args)?;
     eprintln!("[{} · {}]", cfg.provider, cfg.model);
     let yes = args.iter().any(|a| a == "--yes");
     let mut a = Agent::new(cfg, s);
@@ -471,7 +495,7 @@ fn ask(s: &mut Session, args: &[String], saved: Option<&Saved>, env: &Environmen
     };
     // `--yes` allows file and network access; actions reserved to the user (plugins, scripts,
     // tasks, models, replacing the project) are never run from here.
-    agent::run_blocking(&mut a, &prompt, s, send, |what, why, access| {
+    agent::run_blocking_with(&mut a, &prompt, pictures, s, send, |what, why, access| {
         let allow = yes && access;
         if !allow {
             let hint = if access { "; pass --yes to allow" } else { "" };
@@ -969,6 +993,37 @@ fn cli() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_takes_up_to_four_pictures_and_says_what_it_refuses() {
+        // A 1 × 1 PNG.
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        let dir = std::env::temp_dir().join(format!("rustgis-cli-image-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("map.png");
+        std::fs::write(&png, PNG).unwrap();
+        let png = png.display().to_string();
+        let ask = |images: &[&str]| {
+            let mut args = vec!["ask".to_string(), "Style it like this".into()];
+            for i in images {
+                args.extend(["--image".to_string(), i.to_string()]);
+            }
+            ask_pictures(&args)
+        };
+        let pictures = ask(&[&png]).unwrap();
+        assert_eq!((pictures[0].name.as_str(), pictures[0].width, pictures[0].height), ("map.png", 1, 1));
+        assert_eq!(ask_request(&["ask".into(), "--image".into(), png.clone(), "Style it".into()]).as_deref(), Some("Style it"));
+        // A fifth is refused before any is read; so is a file that isn't there.
+        let five = ask(&[&png, &png, &png, &png, "missing.png"]).unwrap_err();
+        assert!(five.contains("at most 4 pictures, 5 given"), "{five}");
+        assert!(ask(&["missing.png"]).unwrap_err().starts_with("missing.png: "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use rustgis_engine::data::secrets::{MemorySecrets, Secret, SecretError};
     use std::sync::{Arc, Mutex};
 

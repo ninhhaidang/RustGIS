@@ -140,6 +140,7 @@ export ANTHROPIC_API_KEY=…            # or OPENAI_API_KEY, GEMINI_API_KEY, OPE
 rustgis-cli ask --sample "Which 5 countries have the largest GDP?"
 rustgis-cli ask --sample "Buffer the cities by 200 km and label them" --save buffered.rgis
 rustgis-cli ask --data parcels.geojson --provider ollama --model qwen3:8b "Summarise the fields"
+rustgis-cli ask --sample --image reference.png "Style the countries like this map"
 rustgis-cli ask --models --provider openai          # the provider's models
 rustgis-cli ask --login                             # sign in with ChatGPT to use your ChatGPT plan
 rustgis-cli ask --sample --provider chatgpt "Zoom to Tokyo"

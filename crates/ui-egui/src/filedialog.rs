@@ -42,6 +42,11 @@ mod phone {
             none("open a file")
         }
 
+        pub fn pick_files(self) -> Option<Vec<PathBuf>> {
+            let _ = none("open a file");
+            None
+        }
+
         pub fn pick_folder(self) -> Option<PathBuf> {
             none("choose a folder")
         }

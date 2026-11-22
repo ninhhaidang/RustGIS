@@ -16,6 +16,7 @@ mod arcgisui;
 #[cfg(not(target_arch = "wasm32"))]
 mod assistantkeys;
 mod assistantpane;
+mod assistantpictures;
 mod autosave;
 mod backstage;
 mod bookmarkpane;
@@ -208,6 +209,14 @@ pub const SCRIPT_PICK: &str = "\u{1}script:";
 /// `<id>:`: it goes to the marker whose «Image…» asked for it, and only a file so marked, for the
 /// request still waiting, does.
 pub const MARKER_PICK: &str = "\u{1}marker:";
+
+/// Starts the name of a picture the shell's `"assistantPicture"` picker put in the inbox: it is
+/// attached to the AI Assistant's next message, not opened on the map.
+pub const ASSISTANT_PICK: &str = "\u{1}assistantPicture:";
+
+/// The largest picture file the AI Assistant takes; the browser's and the phone's shells refuse a
+/// larger one before reading it.
+pub const ASSISTANT_FILE_MAX_BYTES: usize = rustgis_assistant::attach::MAX_FILE_BYTES;
 
 /// The largest image file a marker takes: one whose base64 fits the engine's limit
 /// ([`rustgis_engine::map::symbology::MAX_PICTURE_BYTES`]). The browser's and the phone's shells
@@ -2169,6 +2178,13 @@ impl RustGisApp {
         }
         if let Some(name) = name.strip_prefix(TOOL_FILE_PICK) {
             panes::received_file(self, name, bytes);
+            return Ok(Value::Null);
+        }
+        if let Some(name) = name.strip_prefix(ASSISTANT_PICK) {
+            // An answer with no name is a cancelled picker.
+            if !name.is_empty() {
+                assistantpictures::received(self, name, bytes.to_vec());
+            }
             return Ok(Value::Null);
         }
         if let Some(name) = name.strip_prefix(SHAPEFILE_PICK) {

@@ -32,6 +32,9 @@
 //! `"watchFiles": true` on the first line watches linked files for changes, as the desktop app
 //! does; `{"copy": [from, to]}` replaces `to` with a copy of `from` (written beside it, then
 //! renamed over it) and `{"remove": path}` deletes a file, as another program would.
+//! `{"picked": {"name": name, "path": path}}` gives the app the file at `path` as the browser's
+//! or the phone's picker answers, under `name` (which starts with the picker's mark, such as
+//! `ASSISTANT_PICK`).
 //! `"recovery": "/abs/dir"` on the first line gives the run that recovery folder, as the desktop
 //! app has one (Settings › Autosave; a copy left there is offered by the recovery dialog).
 //! `"touch": true` on the first line gives the run a stand-in for a phone's touch interface (the
@@ -273,6 +276,15 @@ fn main() {
             let beside = format!("{to}.ui_shot-copy");
             if let Err(e) = std::fs::copy(from, &beside).and_then(|_| std::fs::rename(&beside, to)) {
                 eprintln!("copy {from} → {to}: {e}");
+            }
+        } else if let Some(picked) = l.get("picked") {
+            // A file the browser's or the phone's picker gave, marked as its picker marks it.
+            let (name, path) = (picked["name"].as_str().unwrap_or_default(), picked["path"].as_str().unwrap_or_default());
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let _ = harness.state_mut().open_picked(name, &bytes);
+                }
+                Err(e) => eprintln!("picked {path}: {e}"),
             }
         } else if let Some(path) = l.get("remove").and_then(Value::as_str) {
             if let Err(e) = std::fs::remove_file(path) {
