@@ -104,10 +104,13 @@ pub enum DrawCmd {
     /// Screen-sized premultiplied RGBA, drawn covering the whole map view. The pixmap is
     /// moved in, not copied — flushing the CPU accumulator doesn't pay a full-screen `to_vec`.
     Image { pixmap: tiny_skia::Pixmap },
-    /// Tessellated polygon fills and line/ring strokes of one layer run.
-    Mesh { origin: [f64; 2], vertices: Vec<MeshVertex>, indices: Vec<u32> },
-    /// Point markers: instances of a small set of unit-space shape templates.
-    Points { origin: [f64; 2], instances: Vec<PointInstance> },
+    /// Tessellated polygon fills and line/ring strokes of one layer run. Shared: a layer that looks
+    /// as it did keeps its mesh from one scene to the next (`layer_meshes`), and the GPU keeps the
+    /// buffers of a mesh it has uploaded while the mesh lives.
+    Mesh { origin: [f64; 2], vertices: Arc<Vec<MeshVertex>>, indices: Arc<Vec<u32>> },
+    /// Point markers: instances of a small set of unit-space shape templates, shared as
+    /// [`DrawCmd::Mesh`] is.
+    Points { origin: [f64; 2], instances: Arc<Vec<PointInstance>> },
     /// Extruded features standing up in a tilted view: roofs and walls, lit and drawn with a
     /// depth buffer (as MapLibre's fill extrusions), or, with `shadows`, the shadows they cast
     /// on the ground, drawn under every feature.

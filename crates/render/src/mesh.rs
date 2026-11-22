@@ -5,6 +5,8 @@
 //! the camera fast path shows it at (strokes are tessellated at the widest of those, see
 //! [`tessellation_width`]).
 
+use std::sync::Arc;
+
 use lyon::path::Path;
 use lyon::tessellation::{
     BuffersBuilder, FillGeometryBuilder, FillOptions, FillRule, FillTessellator, FillVertex, GeometryBuilder, LineCap, LineJoin,
@@ -496,10 +498,10 @@ pub(crate) fn collect_layer(
     }
     let used = v.len();
     if !i.is_empty() {
-        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+        cmds.push(DrawCmd::Mesh { origin, vertices: Arc::new(v), indices: Arc::new(i) });
     }
     if !pts.is_empty() {
-        cmds.push(DrawCmd::Points { origin, instances: pts });
+        cmds.push(DrawCmd::Points { origin, instances: Arc::new(pts) });
     }
     Ok(used)
 }
@@ -509,10 +511,12 @@ pub(crate) fn collect_layer(
 pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) -> Result<(), TessError> {
     let origin = origin_for(&g.extent(), map_per_px)?;
     match g {
-        Geometry::Point(c) => cmds.push(DrawCmd::Points { origin, instances: marker_instances(*c, origin, s, ppp, Some(SELECTION)) }),
+        Geometry::Point(c) => {
+            cmds.push(DrawCmd::Points { origin, instances: Arc::new(marker_instances(*c, origin, s, ppp, Some(SELECTION))) })
+        }
         Geometry::MultiPoint(cs) => {
             let instances: Vec<PointInstance> = cs.iter().flat_map(|c| marker_instances(*c, origin, s, ppp, Some(SELECTION))).collect();
-            cmds.push(DrawCmd::Points { origin, instances });
+            cmds.push(DrawCmd::Points { origin, instances: Arc::new(instances) });
         }
         Geometry::Line(parts) => {
             let (mut v, mut i) = (Vec::new(), Vec::new());
@@ -523,7 +527,7 @@ pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbo
             )?;
             extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px, NO_LIMIT))?;
             if !i.is_empty() {
-                cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+                cmds.push(DrawCmd::Mesh { origin, vertices: Arc::new(v), indices: Arc::new(i) });
             }
         }
         Geometry::Polygon(polys) => {
@@ -531,7 +535,7 @@ pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbo
             extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(SELECTION.with_alpha(40)), map_per_px, NO_LIMIT))?;
             extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(SELECTION), 2.0 * ppp, map_per_px, NO_LIMIT))?;
             if !i.is_empty() {
-                cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+                cmds.push(DrawCmd::Mesh { origin, vertices: Arc::new(v), indices: Arc::new(i) });
             }
         }
     }
@@ -555,7 +559,7 @@ pub(crate) fn collect_basemap(
         extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(outline), 0.6 * ppp, map_per_px, NO_LIMIT))?;
     }
     if !i.is_empty() {
-        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+        cmds.push(DrawCmd::Mesh { origin, vertices: Arc::new(v), indices: Arc::new(i) });
     }
     Ok(())
 }
@@ -574,7 +578,7 @@ pub(crate) fn collect_graticule(
     let (mut v, mut i) = (Vec::new(), Vec::new());
     extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), width * ppp, map_per_px, NO_LIMIT))?;
     if !i.is_empty() {
-        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+        cmds.push(DrawCmd::Mesh { origin, vertices: Arc::new(v), indices: Arc::new(i) });
     }
     Ok(())
 }

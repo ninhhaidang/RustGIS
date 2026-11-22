@@ -325,6 +325,12 @@ impl LayerLook {
     pub fn id(&self) -> u32 {
         self.layer.id
     }
+
+    /// Whether the rows it was taken of are still held: once the layer is removed, its map or
+    /// project closed, or its rows edited, nothing can look as this look again.
+    pub fn rows_held(&self) -> bool {
+        self.rows.strong_count() > 0
+    }
 }
 
 /// Whether two time bindings show the same rows: the same field through the same window (what

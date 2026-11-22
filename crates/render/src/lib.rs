@@ -42,6 +42,7 @@ pub mod terrain;
 mod text;
 pub use text::CALLOUT_WIDTH;
 mod frame_cache;
+mod layer_meshes;
 pub mod tile_mesh;
 mod tiles;
 pub mod vector;
@@ -3210,8 +3211,8 @@ fn gpu_turned(
         if (k - 1.0).abs() > 1e-6 {
             for c in &mut scene.cmds {
                 match c {
-                    DrawCmd::Mesh { vertices, .. } => vertices.iter_mut().for_each(|v| v.stroke_px *= k),
-                    DrawCmd::Points { instances, .. } => instances.iter_mut().for_each(|p| p.radius_px *= k),
+                    DrawCmd::Mesh { vertices, .. } => std::sync::Arc::make_mut(vertices).iter_mut().for_each(|v| v.stroke_px *= k),
+                    DrawCmd::Points { instances, .. } => std::sync::Arc::make_mut(instances).iter_mut().for_each(|p| p.radius_px *= k),
                     DrawCmd::Image { .. }
                     | DrawCmd::Extrusion { .. }
                     | DrawCmd::Tiles { .. }
@@ -3274,7 +3275,7 @@ fn gpu_turned(
         .flat_map(|m| mesh::marker_instances(m.at, origin, &m.symbol, ppp, m.selected.then_some(SELECTION)))
         .collect();
     if !instances.is_empty() {
-        cmds.push(DrawCmd::Points { origin, instances });
+        cmds.push(DrawCmd::Points { origin, instances: std::sync::Arc::new(instances) });
         clips.push(CmdClip { upright: true, ..CmdClip::ALL });
     }
     let unplaced = if map.label_display.show_unplaced { placed.unplaced } else { Vec::new() };
@@ -4341,6 +4342,12 @@ fn render_frame(
         Some(g) => g.may_see(e),
         None => e.intersects(&mesh_cull),
     };
+    // A screen scene keeps each layer's mesh for the next of the same view, and takes those still
+    // standing (see `layer_meshes`): the map's projection, which the meshes are in, when it does.
+    layer_meshes::let_go();
+    let mesh_projection = (gpu && !full_res_rasters && matches!(labels_to, Labels::Own)).then(|| map.projection.clone());
+    // The meshes this scene takes and keeps stay kept while it is drawn.
+    let _mesh_scene = mesh_projection.is_some().then(layer_meshes::Scene::begin);
     // Bottom first; a higher depth priority draws later (on top) whatever the order.
     let mut order: Vec<usize> = (0..map.layers.len()).rev().collect();
     order.sort_by_key(|i| map.layers.get(*i).map_or(0, |l| l.priority));
@@ -5108,18 +5115,50 @@ fn render_frame(
             if gpu_layer {
                 flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)
                     .ok_or_else(|| rustgis_data::DataError::Format("cannot allocate render target".into()))?;
-                let collected = mesh::collect_layer(
-                    &mut cmds,
-                    layer,
-                    &drawn,
-                    extents,
-                    &rows,
-                    &mesh_visible,
-                    ctx.wireframe,
-                    ctx.ppp,
-                    map_per_px,
-                    mesh_room,
-                );
+                // Kept from the last scene of this view when the layer looks as it did (a layer read
+                // from its source has no look, and draws in batches).
+                let keeping = mesh_projection.as_ref().filter(|_| !complete_source).and_then(|projection| {
+                    let level = rustgis_map::lod::level(thin_tol);
+                    let drawn_copy = if display_only {
+                        layer_meshes::Drawn::Display(level)
+                    } else if std::ptr::eq(layer.thinned_cache(thin_tol), layer.projected_cache()) {
+                        layer_meshes::Drawn::Projected
+                    } else {
+                        layer_meshes::Drawn::Thinned(level)
+                    };
+                    let made = layer_meshes::Made {
+                        projection: projection.clone(),
+                        drawn: drawn_copy,
+                        cull: mesh_cull,
+                        map_per_px,
+                        ppp: ctx.ppp,
+                        wireframe: ctx.wireframe,
+                    };
+                    Some((rustgis_map::look::LayerLook::of(layer)?, made))
+                });
+                let before = cmds.len();
+                let collected = match keeping.as_ref().and_then(|(look, made)| layer_meshes::take(&mut cmds, look, made, &rows)) {
+                    Some(used) => Ok(used),
+                    None => {
+                        let collected = mesh::collect_layer(
+                            &mut cmds,
+                            layer,
+                            &drawn,
+                            extents,
+                            &rows,
+                            &mesh_visible,
+                            ctx.wireframe,
+                            ctx.ppp,
+                            map_per_px,
+                            mesh_room,
+                        );
+                        if let (Ok(used), Some((look, made))) = (collected, keeping) {
+                            let kept = cmds.get(before..).unwrap_or_default();
+                            layer_meshes::keep(layer.instance_id(), look, made, &rows, kept, used, layer.selection.len());
+                        }
+                        collected
+                    }
+                };
                 // Once a batch is too dense, the layer's later ones fall back too (they get no
                 // room); one lyon refused leaves the room to the batches after it.
                 mesh_room = match collected {

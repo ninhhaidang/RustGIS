@@ -264,6 +264,8 @@ pub(crate) struct GpuMapRenderer {
     tile_textures: std::sync::Mutex<TileTextures>,
     /// The vector tile meshes uploaded so far, kept across scenes.
     tile_meshes: std::sync::Mutex<TileMeshBuffers>,
+    /// The layers' meshes and markers the latest scene uploaded, for the next to share.
+    layer_buffers: std::sync::Mutex<LayerBuffers>,
     /// The live raster tile layers' pictures and per-frame instances (#635).
     pub(crate) live: std::sync::Mutex<crate::tilelayer::LiveTiles>,
     /// The last frame left live tile pictures to upload: draw again.
@@ -546,6 +548,7 @@ impl GpuMapRenderer {
             samples,
             tile_textures: Default::default(),
             tile_meshes: Default::default(),
+            layer_buffers: Default::default(),
             live: std::sync::Mutex::new(crate::tilelayer::LiveTiles::new(device, scene_format, samples, DEPTH_FORMAT)),
             live_backlog: std::sync::atomic::AtomicBool::new(false),
         }
@@ -827,6 +830,53 @@ impl TileMeshBuffers {
     }
 }
 
+/// The layers' meshes and markers on the GPU, by the address of their data, which the renderer
+/// shares from scene to scene while a layer looks as it did (`render::layer_meshes`): a scene
+/// draws those from the buffers an earlier one uploaded (the map's or a split view's). Both are
+/// held weakly: a buffer lives as long as a scene that draws it, so these cost no GPU memory
+/// beside the scenes on screen, and none once the map leaves the GPU.
+#[derive(Default)]
+struct LayerBuffers {
+    by_data: std::collections::HashMap<usize, LayerBuffer>,
+}
+
+struct LayerBuffer {
+    data: std::sync::Weak<dyn std::any::Any + Send + Sync>,
+    buffer: std::sync::Weak<Owned<wgpu::Buffer>>,
+}
+
+impl LayerBuffers {
+    /// The buffer holding `data`, uploaded the first time a scene draws it.
+    fn buffer<T: bytemuck::Pod + Send + Sync>(
+        &mut self,
+        device: &wgpu::Device,
+        data: &Arc<Vec<T>>,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+    ) -> Arc<Owned<wgpu::Buffer>> {
+        let key = Arc::as_ptr(data) as usize;
+        // While the data lives its address is its own: the weak reference keeps another from it.
+        if let Some(b) = self.by_data.get_mut(&key)
+            && b.data.upgrade().is_some_and(|d| Arc::as_ptr(&d).cast::<()>() as usize == key)
+            && let Some(buffer) = b.buffer.upgrade()
+        {
+            return buffer;
+        }
+        let buffer = Arc::new(owned_buffer(
+            device,
+            &wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytemuck::cast_slice(data.as_slice()), usage },
+        ));
+        let shared: Arc<dyn std::any::Any + Send + Sync> = data.clone();
+        self.by_data.insert(key, LayerBuffer { data: Arc::downgrade(&shared), buffer: Arc::downgrade(&buffer) });
+        buffer
+    }
+
+    /// Ends a scene: forgets the buffers no scene draws any longer, and those of data gone.
+    fn end_scene(&mut self) {
+        self.by_data.retain(|_, b| b.data.strong_count() > 0 && b.buffer.strong_count() > 0);
+    }
+}
+
 /// One tile of an uploaded vector tile layer.
 pub(crate) struct MeshTileDraw {
     mesh: Arc<TileMesh>,
@@ -961,17 +1011,19 @@ fn record_scene(r: &GpuMapRenderer, draws: &[SceneDraw], clear: [f32; 4], tgt: &
 
 /// One uploaded draw command.
 pub(crate) enum SceneDraw {
+    /// A layer's mesh, its buffers shared with the scenes before it while it looks the same.
     Mesh {
-        vertices: Owned<wgpu::Buffer>,
-        indices: Owned<wgpu::Buffer>,
+        vertices: Arc<Owned<wgpu::Buffer>>,
+        indices: Arc<Owned<wgpu::Buffer>>,
         index_count: u32,
         uniforms: Owned<wgpu::Buffer>,
         bind: wgpu::BindGroup,
         origin: [f64; 2],
         clip: CmdClip,
     },
+    /// A layer's markers, shared as a mesh's buffers are.
     Points {
-        instances: Owned<wgpu::Buffer>,
+        instances: Arc<Owned<wgpu::Buffer>>,
         count: u32,
         uniforms: Owned<wgpu::Buffer>,
         bind: wgpu::BindGroup,
@@ -1194,6 +1246,7 @@ impl SceneBuffers {
         let tilt = scene.tilt.as_ref();
         let mut tile_textures = r.tile_textures.lock().unwrap_or_else(|e| e.into_inner());
         let mut tile_meshes = r.tile_meshes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut layer_buffers = r.layer_buffers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = tilt.filter(|t| t.camera.pitch != 0.0) {
             let u = BackdropUniforms::new(&camera, size, ppp, scene.clear, t);
             let uniforms = owned_buffer(
@@ -1236,22 +1289,8 @@ impl SceneBuffers {
                         ],
                     });
                     draws.push(SceneDraw::Mesh {
-                        vertices: owned_buffer(
-                            device,
-                            &wgpu::util::BufferInitDescriptor {
-                                label: Some("mapgpu_mesh_vertices"),
-                                contents: bytemuck::cast_slice(vertices),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            },
-                        ),
-                        indices: owned_buffer(
-                            device,
-                            &wgpu::util::BufferInitDescriptor {
-                                label: Some("mapgpu_mesh_indices"),
-                                contents: bytemuck::cast_slice(indices),
-                                usage: wgpu::BufferUsages::INDEX,
-                            },
-                        ),
+                        vertices: layer_buffers.buffer(device, vertices, "mapgpu_mesh_vertices", wgpu::BufferUsages::VERTEX),
+                        indices: layer_buffers.buffer(device, indices, "mapgpu_mesh_indices", wgpu::BufferUsages::INDEX),
                         index_count: indices.len() as u32,
                         uniforms,
                         bind,
@@ -1281,14 +1320,7 @@ impl SceneBuffers {
                         ],
                     });
                     draws.push(SceneDraw::Points {
-                        instances: owned_buffer(
-                            device,
-                            &wgpu::util::BufferInitDescriptor {
-                                label: Some("mapgpu_point_instances"),
-                                contents: bytemuck::cast_slice(instances),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            },
-                        ),
+                        instances: layer_buffers.buffer(device, instances, "mapgpu_point_instances", wgpu::BufferUsages::VERTEX),
                         count: instances.len() as u32,
                         uniforms,
                         bind,
@@ -1466,6 +1498,7 @@ impl SceneBuffers {
         }
         tile_textures.end_scene();
         tile_meshes.end_scene();
+        layer_buffers.end_scene();
         let tiles_live =
             !live.is_empty() && !has_images && !has_tiles && !scene.cmds.iter().any(|c| matches!(c, DrawCmd::TileMeshes { .. }));
         let reach = gpu_scene::reach(&scene.cmds);
@@ -1775,8 +1808,11 @@ mod tests {
         let limits = wgpu::Limits { max_buffer_size: 1024, max_texture_dimension_2d: 2048, ..Default::default() };
         let mesh = |nv: usize, ni: usize| DrawCmd::Mesh {
             origin: [0.0, 0.0],
-            vertices: vec![MeshVertex { position: [0.0, 0.0], normal: [0.0, 0.0], color: [0.0; 4], stroke_px: 0.0, _pad: 0.0 }; nv],
-            indices: vec![0u32; ni],
+            vertices: Arc::new(vec![
+                MeshVertex { position: [0.0, 0.0], normal: [0.0, 0.0], color: [0.0; 4], stroke_px: 0.0, _pad: 0.0 };
+                nv
+            ]),
+            indices: Arc::new(vec![0u32; ni]),
         };
         assert!(cmd_fits(&limits, &mesh(4, 6)), "small mesh fits");
         assert!(!cmd_fits(&limits, &mesh(100, 6)), "a vertex buffer over max_buffer_size declines");
@@ -1840,10 +1876,19 @@ mod tests {
         let scene = GpuScene {
             clear: [0.0, 0.0, 0.0, 1.0],
             cmds: vec![
-                DrawCmd::Mesh { origin: [0.0, 0.0], vertices: vec![v(0.0, 0.0), v(100.0, 0.0), v(0.0, 100.0)], indices: vec![0, 1, 2] },
+                DrawCmd::Mesh {
+                    origin: [0.0, 0.0],
+                    vertices: Arc::new(vec![v(0.0, 0.0), v(100.0, 0.0), v(0.0, 100.0)]),
+                    indices: Arc::new(vec![0, 1, 2]),
+                },
                 DrawCmd::Points {
                     origin: [0.0, 0.0],
-                    instances: vec![PointInstance { position: [10.0, 10.0], color: [0.0, 1.0, 0.0, 1.0], radius_px: 4.0, shape: 0 }],
+                    instances: Arc::new(vec![PointInstance {
+                        position: [10.0, 10.0],
+                        color: [0.0, 1.0, 0.0, 1.0],
+                        radius_px: 4.0,
+                        shape: 0,
+                    }]),
                 },
                 DrawCmd::Image { pixmap: rustgis_engine::render::Pixmap::new(1, 1).expect("pixmap") },
             ],
@@ -1861,6 +1906,48 @@ mod tests {
         let sb =
             SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &scene, Camera::world(), [400.0, 300.0], 1.0).expect("fits the device");
         assert_eq!(sb.draws.len(), 3);
+        // The next scene sharing the layers' data (a layer that looks as it did) draws from the
+        // buffers this one uploaded; new data, as a restyled layer's, is uploaded again.
+        let buffers = |sb: &SceneBuffers| -> Vec<*const Owned<wgpu::Buffer>> {
+            sb.draws
+                .iter()
+                .flat_map(|d| match d {
+                    SceneDraw::Mesh { vertices, indices, .. } => vec![Arc::as_ptr(vertices), Arc::as_ptr(indices)],
+                    SceneDraw::Points { instances, .. } => vec![Arc::as_ptr(instances)],
+                    _ => vec![],
+                })
+                .collect()
+        };
+        let again = GpuScene { cmds: scene.cmds.iter().filter_map(share).collect(), ..scene };
+        let next = SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &again, Camera::world(), [400.0, 300.0], 1.0).expect("fits");
+        assert_eq!(buffers(&next), buffers(&sb), "shared");
+        let copied = GpuScene {
+            cmds: again
+                .cmds
+                .iter()
+                .filter_map(|c| match c {
+                    DrawCmd::Mesh { origin, vertices, indices } => {
+                        Some(DrawCmd::Mesh { origin: *origin, vertices: Arc::new(vertices.to_vec()), indices: Arc::new(indices.to_vec()) })
+                    }
+                    _ => share(c),
+                })
+                .collect(),
+            ..again
+        };
+        let last = SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &copied, Camera::world(), [400.0, 300.0], 1.0).expect("fits");
+        let (was, now) = (buffers(&next), buffers(&last));
+        assert!(was[0] != now[0] && was[1] != now[1] && was[2] == now[2], "only the mesh is uploaded again");
+    }
+
+    /// A command sharing `cmd`'s data, for a mesh or markers.
+    fn share(cmd: &DrawCmd) -> Option<DrawCmd> {
+        match cmd {
+            DrawCmd::Mesh { origin, vertices, indices } => {
+                Some(DrawCmd::Mesh { origin: *origin, vertices: vertices.clone(), indices: indices.clone() })
+            }
+            DrawCmd::Points { origin, instances } => Some(DrawCmd::Points { origin: *origin, instances: instances.clone() }),
+            _ => None,
+        }
     }
 
     // ---- CPU↔GPU pixel parity: render the same map through both backends and compare ----
