@@ -395,8 +395,9 @@ fn geopackage_provenance_excludes_temporary_copies() {
     write_gpkg(&path, true);
     let captured = crate::provenance::Capture::start();
     let bytes = crate::provenance::read(&path).unwrap();
-    assert!(gpkg::unsupported_table_counts_bytes(&bytes).unwrap().is_empty());
-    let source = open_bytes("upload.gpkg", bytes, None).unwrap();
+    let upload = gpkg::GpkgUpload::new(&bytes).unwrap();
+    assert!(upload.unsupported_table_counts().unwrap().is_empty());
+    let source = upload.open(None).unwrap();
     assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
     assert_eq!(captured.inputs().len(), 1);
     assert_eq!(captured.inputs()[0].path, path.display().to_string());
@@ -595,7 +596,7 @@ fn write_fgb(path: &Path) {
 }
 
 /// A GeoPackage of the points in Web Mercator, with an R-tree index (or without).
-fn write_gpkg(path: &Path, rtree: bool) {
+pub(super) fn write_gpkg(path: &Path, rtree: bool) {
     let _ = std::fs::remove_file(path);
     let c = rusqlite::Connection::open(path).unwrap();
     c.execute_batch(

@@ -26135,6 +26135,18 @@ fn geopackage_omission_counts_match_unregistered_tables_with_bounded_kinds() {
         "{}",
         notice.text
     );
+    let bytes = std::sync::Arc::new(std::fs::read(&path).unwrap());
+    for stream in [false, true] {
+        for selected in [false, true] {
+            let mut uploaded = Session::new(Project::default());
+            let params = json!({"stream": stream, "layer": selected.then_some("A")});
+            crate::cmd::layer::add_source(&mut uploaded, &params, crate::cmd::layer::Origin::Bytes("kinds.gpkg", bytes.clone()), None)
+                .unwrap();
+            assert_eq!(uploaded.map().layers.len(), 1);
+            let notes: Vec<_> = uploaded.notices.iter().filter(|n| n.text.contains("the first of 2 feature tables")).collect();
+            assert_eq!(notes.len(), usize::from(!selected), "stream={stream}, selected={selected}");
+        }
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 

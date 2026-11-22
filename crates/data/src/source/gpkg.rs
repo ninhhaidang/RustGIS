@@ -32,7 +32,7 @@ pub struct GpkgSource {
     rtree: Option<String>,
     reproject: Reproject,
     /// A copy written for a file opened from memory, removed when the source is dropped.
-    temp: Option<PathBuf>,
+    temp: Option<tempfile::NamedTempFile>,
     /// The database file and its identity when opened ([`file_identity`]), for a traversal on a
     /// connection of its own to check it reads the same file.
     file: Option<(PathBuf, Option<(u64, u64)>)>,
@@ -43,9 +43,6 @@ impl Drop for GpkgSource {
         // Closed first: Windows can't remove a file SQLite still holds open.
         if let Ok(c) = self.conn.get_mut() {
             drop(c.take());
-        }
-        if let Some(p) = &self.temp {
-            let _ = std::fs::remove_file(p);
         }
     }
 }
@@ -58,7 +55,11 @@ pub fn layers(path: &Path) -> Result<Vec<String>> {
 
 /// Unsupported contents omitted when the GeoPackage is added as feature layers, by type.
 pub fn unsupported_table_counts(path: &Path) -> Result<Vec<(String, u64)>> {
-    let conn = open_db(path)?;
+    unsupported_counts(&open_db(path)?)
+}
+
+/// Counts on the same connection used to open an uploaded feature table.
+fn unsupported_counts(conn: &Connection) -> Result<Vec<(String, u64)>> {
     let invalid: i64 = conn
         .query_row("SELECT count(*) FROM gpkg_contents WHERE typeof(table_name) <> 'text' OR typeof(data_type) <> 'text'", [], |row| {
             row.get(0)
@@ -69,7 +70,7 @@ pub fn unsupported_table_counts(path: &Path) -> Result<Vec<(String, u64)>> {
             "GeoPackage: {invalid} invalid gpkg_contents entry/entries: table_name and data_type must be text"
         )));
     }
-    let registered_filter = if has_geometry_columns(&conn)? {
+    let registered_filter = if has_geometry_columns(conn)? {
         "WHERE lower(table_name) NOT IN (SELECT lower(table_name) FROM gpkg_geometry_columns WHERE table_name IS NOT NULL)"
     } else {
         ""
@@ -89,11 +90,39 @@ pub fn unsupported_table_counts(path: &Path) -> Result<Vec<(String, u64)>> {
 
 /// Count a desktop upload with SQLite, matching the reader used to open its feature table.
 pub fn unsupported_table_counts_bytes(bytes: &[u8]) -> Result<Vec<(String, u64)>> {
-    use std::io::Write;
-    let mut copy = tempfile::NamedTempFile::new()?;
-    copy.write_all(bytes)?;
-    copy.flush()?;
-    crate::provenance::without(|| unsupported_table_counts(copy.path()))
+    GpkgUpload::new(bytes)?.unsupported_table_counts()
+}
+
+/// One private desktop copy and connection, shared by upload inspection and opening.
+/// The connection closes before the temporary file is removed, including on Windows.
+pub struct GpkgUpload {
+    conn: Connection,
+    copy: tempfile::NamedTempFile,
+}
+
+impl GpkgUpload {
+    /// Writes the upload once; inspection and the eventual source use this same database.
+    pub fn new(bytes: &[u8]) -> Result<Self> {
+        use std::io::Write;
+        let mut copy = tempfile::Builder::new().prefix("rustgis-").suffix(".gpkg").tempfile()?;
+        copy.write_all(bytes)?;
+        copy.flush()?;
+        let conn = crate::provenance::without(|| open_db(copy.path()))?;
+        Ok(Self { conn, copy })
+    }
+
+    pub fn unsupported_table_counts(&self) -> Result<Vec<(String, u64)>> {
+        unsupported_counts(&self.conn)
+    }
+
+    /// Transfers the connection and its private copy to the selected feature source.
+    pub fn open(self, layer: Option<&str>) -> Result<GpkgSource> {
+        let Self { conn, copy } = self;
+        let path = copy.path().to_path_buf();
+        let mut source = GpkgSource::open_conn(conn, &path, layer, file_identity(&path))?;
+        source.temp = Some(copy);
+        Ok(source)
+    }
 }
 
 fn open_db(path: &Path) -> Result<Connection> {
@@ -142,55 +171,22 @@ impl GpkgSource {
         // if the working directory changes in between.
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let id = file_identity(&path);
-        Self::open_conn(open_db(&path)?, &path, layer, None, id)
+        Self::open_conn(open_db(&path)?, &path, layer, id)
     }
 
     /// Opens a GeoPackage held in memory, through a temporary copy (SQLite reads files). The copy
     /// is a new file with a name no one can guess, so another user can't plant one in its place.
     pub fn open_bytes(bytes: &[u8], layer: Option<&str>) -> Result<Self> {
-        use std::io::Write;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let mut tries = 0;
-        let (p, mut f) = loop {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let salt = std::collections::hash_map::RandomState::new();
-            let tag = std::hash::BuildHasher::hash_one(&salt, (nanos, N.fetch_add(1, Ordering::Relaxed)));
-            let p = std::path::absolute(std::env::temp_dir())
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join(format!("rustgis-{}-{tag:016x}.gpkg", std::process::id()));
-            let mut o = std::fs::OpenOptions::new();
-            o.write(true).create_new(true);
-            // Readable by this user only: the copy holds their data, in a shared folder.
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-            match o.open(&p) {
-                Ok(f) => break (p, f),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 8 => tries += 1,
-                Err(e) => return Err(e.into()),
-            }
-        };
-        if let Err(e) = f.write_all(bytes).and_then(|_| f.sync_all()) {
-            let _ = std::fs::remove_file(&p);
-            return Err(e.into());
-        }
-        drop(f);
-        let id = file_identity(&p);
-        match crate::provenance::without(|| open_db(&p)).and_then(|c| Self::open_conn(c, &p, layer, Some(p.clone()), id)) {
-            Ok(s) => Ok(s),
-            Err(e) => {
-                let _ = std::fs::remove_file(&p);
-                Err(e)
-            }
-        }
+        GpkgUpload::new(bytes)?.open(layer)
     }
 
     /// Opens a feature table (`layer`, else the first) on an open database from its metadata,
     /// noting what reading changes: an unknown coordinate system, other tables, Z or M values
-    /// dropped. `id` is the file's identity taken before it was opened.
+    /// dropped. `id` identifies the file for later traversals. On-disk sources capture it before
+    /// opening; an upload identifies its private copy.
     /// `path` is the file as the caller named it, made absolute. SQLite's own name for it resolves symbolic links
     /// (macOS's temporary folder `/var` is `/private/var`), so it isn't the path to record.
-    fn open_conn(conn: Connection, path: &Path, layer: Option<&str>, temp: Option<PathBuf>, id: Option<(u64, u64)>) -> Result<Self> {
+    fn open_conn(conn: Connection, path: &Path, layer: Option<&str>, id: Option<(u64, u64)>) -> Result<Self> {
         let tables = feature_tables(&conn)?;
         let table = match layer {
             Some(l) => tables
@@ -316,7 +312,7 @@ impl GpkgSource {
             zm_dropped: false,
         };
         let file = Some((path.to_path_buf(), id));
-        let mut src = GpkgSource { info, conn: Mutex::new(Some(conn)), table, geom, pk, rtree, reproject, temp, file };
+        let mut src = GpkgSource { info, conn: Mutex::new(Some(conn)), table, geom, pk, rtree, reproject, temp: None, file };
         if src.info.geometry_type == GeometryType::None {
             src.info.geometry_type = src.peek_kind();
         }
@@ -1320,6 +1316,22 @@ fn not_gpkg(e: rusqlite::Error) -> DataError {
 mod tests {
     use super::source_date_epoch;
     use std::ffi::OsStr;
+
+    /// Inspection, opening and later traversal all retain the one uploaded database.
+    #[test]
+    fn upload_reuses_one_copy_and_removes_it_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("input.gpkg");
+        super::super::tests::write_gpkg(&original, true);
+        let upload = super::GpkgUpload::new(&std::fs::read(original).unwrap()).unwrap();
+        let path = upload.copy.path().to_path_buf();
+        assert!(upload.unsupported_table_counts().unwrap().is_empty());
+        let source = upload.open(None).unwrap();
+        assert_eq!(source.temp.as_ref().unwrap().path(), path);
+        assert!(path.is_file());
+        drop(source);
+        assert!(!path.exists());
+    }
 
     /// Whole seconds from 1970 to the end of year 9999 pin the time; unset or blank leaves it the
     /// export's; anything else, text that isn't Unicode included, refuses the export.
