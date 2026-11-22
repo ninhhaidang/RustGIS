@@ -105,7 +105,9 @@ pub(crate) fn take() -> Vec<String> {
 }
 
 /// What frames drawn on this thread approximated so far, with their kinds, and how many kinds were
-/// turned away; forgotten here, for [`restore`] or to say.
+/// turned away; forgotten here, for [`restore`] or to say. Lines drawn solid outside any layer
+/// since the last layer ended are noted first ([`flush_stray_dashes`]), as no later layer call
+/// may come to say them.
 pub(crate) fn keep() -> (Vec<Entry>, usize) {
     flush_stray_dashes();
     (SAID.with(|s| std::mem::take(&mut *s.borrow_mut())), TURNED_AWAY.with(|c| c.replace(0)))
@@ -157,8 +159,7 @@ pub(crate) fn layer(name: Option<&str>) {
         if solid > 0 {
             match l.as_deref() {
                 Some(was) => note(format!("{was}\0dashes"), solid_dashes_text(was, solid)),
-                // Counted outside any layer (a legend's swatch, say): said for the map, under a
-                // key no layer's name can take.
+                // Counted outside any layer (a legend's swatch, say): said on its own.
                 None => note_stray_dashes(solid),
             }
         }
@@ -170,9 +171,10 @@ pub(crate) fn layer(name: Option<&str>) {
     });
 }
 
-/// Notes `n` lines drawn solid outside any layer, for the map.
+/// Notes `n` lines drawn solid outside any layer (a legend's swatch, say). Its key ends where no
+/// layer's (`{layer}\0dashes`) can, whatever the layer is named, an empty name included.
 fn note_stray_dashes(n: u32) {
-    note("\0dashes".to_string(), solid_dashes_text("Map", n));
+    note("\0dashes\0outside".to_string(), solid_dashes_text("Lines outside any layer", n));
 }
 
 /// Notes lines drawn solid outside any layer since the last layer ended: whoever reads
@@ -319,20 +321,23 @@ mod tests {
     #[test]
     fn lines_counted_outside_a_layer_are_said_for_the_map() {
         take();
+        let outside = solid_dashes_text("Lines outside any layer", 1);
         layer(None);
         dashes_drawn_solid();
         layer(None);
-        assert_eq!(take(), vec![solid_dashes_text("Map", 1)]);
+        assert_eq!(take(), vec![outside.clone()]);
         // Counted after the last layer, with no layer call after it (a legend's swatch): read all
         // the same.
         dashes_drawn_solid();
-        assert_eq!(take(), vec![solid_dashes_text("Map", 1)]);
-        // A layer named "Map" is a kind of its own.
-        layer(Some("Map"));
-        dashes_drawn_solid();
-        layer(None);
-        dashes_drawn_solid();
-        assert_eq!(take().len(), 2);
+        assert_eq!(take(), vec![outside.clone()]);
+        // A layer of any name, an empty one included, is a kind of its own, said apart.
+        for name in ["", "Map", "Lines outside any layer"] {
+            layer(Some(name));
+            dashes_drawn_solid();
+            layer(None);
+            dashes_drawn_solid();
+            assert_eq!(take(), vec![solid_dashes_text(name, 1), outside.clone()], "{name:?}");
+        }
         // A layer being drawn keeps its count for itself.
         layer(Some("Roads"));
         dashes_drawn_solid();

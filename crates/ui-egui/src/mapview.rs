@@ -1884,25 +1884,23 @@ fn tile_error_kind(e: &str) -> String {
 /// up to the next space or its end) replaced by `/…`: the path and query, which name the tile,
 /// go; the server stays, so another server's failure is a kind of its own.
 fn without_urls(e: &str) -> String {
+    // ASCII lower case keeps each byte where it is, so positions in it are positions in `e`.
+    let lower = e.to_ascii_lowercase();
     let mut out = String::with_capacity(e.len());
-    let mut rest = e;
-    loop {
-        // ASCII lower case keeps each byte where it is.
-        let lower = rest.to_ascii_lowercase();
-        let Some(i) = lower.find("http://").into_iter().chain(lower.find("https://")).min() else { break };
-        let (head, tail) = rest.split_at(i);
-        out.push_str(head);
-        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
-        let (url, after) = tail.split_at(end);
+    let mut at = 0;
+    while let Some(i) = lower[at..].find("http://").into_iter().chain(lower[at..].find("https://")).min().map(|i| at + i) {
+        out.push_str(&e[at..i]);
+        let end = e[i..].find(char::is_whitespace).map_or(e.len(), |n| i + n);
+        let url = &e[i..end];
         let host_from = url.find("://").map_or(0, |n| n + 3);
         let host_end = url[host_from..].find(['/', '?', '#']).map_or(url.len(), |n| host_from + n);
         out.push_str(&url[..host_end]);
         if host_end < url.len() {
             out.push_str("/…");
         }
-        rest = after;
+        at = end;
     }
-    out.push_str(rest);
+    out.push_str(&e[at..]);
     out
 }
 
