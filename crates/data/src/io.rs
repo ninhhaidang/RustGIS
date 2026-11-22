@@ -2713,8 +2713,13 @@ pub(crate) fn read_rows(
         }
     }
     let (mut bad_wkt, mut zm_rows, mut collection_rows) = (0usize, 0usize, 0usize);
+    let (mut extra_cells, mut extra_rows) = (0usize, 0usize);
     for r in rows {
         crate::progress::step(1)?;
+        // Only header-defined columns are retained below; count actual cells, including empty ones.
+        let extra = r.len().saturating_sub(headers.len());
+        extra_cells += extra;
+        extra_rows += usize::from(extra > 0);
         let cell = |i: usize| r.get(i).map(|s| s.trim()).unwrap_or("");
         let geom = if let Some((x, y)) = xy {
             match cell(x).parse::<f64>().ok().zip(cell(y).parse::<f64>().ok()) {
@@ -2762,6 +2767,15 @@ pub(crate) fn read_rows(
             })
             .collect();
         ds.push_next(geom, attrs);
+    }
+    if extra_cells > 0 {
+        let cells = if extra_cells == 1 { "cell" } else { "cells" };
+        let was = if extra_cells == 1 { "was" } else { "were" };
+        let rows = if extra_rows == 1 { "row" } else { "rows" };
+        let columns = if headers.len() == 1 { "column" } else { "columns" };
+        report
+            .messages
+            .push(format!("{extra_cells} {cells} past the header's {} {columns} {was} omitted in {extra_rows} {rows}", headers.len()));
     }
     ds.drop_zm(&mut report, zm_rows);
     if collection_rows > 0 {
@@ -5503,6 +5517,29 @@ pub(crate) fn group_rings(rings: Vec<(Vec<Coord>, bool)>) -> Geometry {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Each extra cell is counted, including empty ones, and each affected row once, preserving named data.
+    #[test]
+    fn csv_extra_cells_are_counted() {
+        for (text, expected) in [
+            ("wkt,id,note\nPOINT(1 2),7,kept\nPOINT(3 4),8,\n", vec![]),
+            (
+                "wkt,id,note\nPOINT(1 2),7,kept,lost,\nPOINT(3 4),8,,tail\n",
+                vec!["3 cells past the header's 3 columns were omitted in 2 rows"],
+            ),
+            ("wkt,id,note\nPOINT(1 2),7,kept,\nPOINT(3 4),8,\n", vec!["1 cell past the header's 3 columns was omitted in 1 row"]),
+        ] {
+            let (ds, report) = read_csv(text, "extra").unwrap();
+            assert_eq!(ds.fields, [Field::new("id", FieldType::Integer), Field::new("note", FieldType::Text)]);
+            assert_eq!(ds.features.len(), 2);
+            assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(1.0, 2.0))));
+            assert_eq!(ds.features[1].geometry, Some(Geometry::Point(Coord::new(3.0, 4.0))));
+            assert_eq!(ds.features[0].attrs, [Value::Int(7), Value::Text("kept".into())]);
+            assert_eq!(ds.features[1].attrs, [Value::Int(8), Value::Null]);
+            assert_eq!(report.skipped, 0);
+            assert_eq!(report.messages, expected);
+        }
+    }
 
     /// A file refused because RustGIS holds much of the memory says so, with the limit when nothing
     /// is held and what to do; refused at the full limit, or where the limit doesn't follow the

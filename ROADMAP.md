@@ -85,7 +85,7 @@ A result is right, or RustGIS says what it lost or assumed
   FlatGeobuf, GeoParquet and FileGDB, Z/M-loss and non-UTF-8 text cases for Shapefile, and
   ring-loss cases for OSM PBF, separate Z- and M-loss cases for feature-service PBF, and WKT
   height/member losses for XLSX, ODS, XLS and XLSB, and
-  error-cell losses for XLSX; other loss kinds remain.
+  error-cell losses for XLSX and invalid-date losses for standalone DBF; other loss kinds remain.
   XLSM shares the XLSX parser; macros are untested.
   Exports are checked by `never_silent_roundtrip.rs` _(open)_.
 - Loss notices classified by code so scheduled jobs can detect them (the engine carries codes

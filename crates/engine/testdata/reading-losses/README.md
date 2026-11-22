@@ -154,6 +154,19 @@ The corpus checks exact geometry, feature ID, field names/types and attributes t
 messages must be exactly the one-feature Z/M drop message for XYZ/XYM and absent for XY.
 Other geometry and attribute losses and network paging are outside these fixtures.
 
+## Standalone DBF
+
+The harness independently encodes two dBASE III tables directly from the header and
+field-descriptor layout: one record, character `name` (4 bytes) and date `day` (8 bytes).
+Both keep ASCII `name=kept`; the date is `20260228` or the nonexistent `20260230`.
+The language driver is explicitly Windows-1252 and all text is ASCII, so the pair
+exercises invalid-date reporting, without an encoding assumption or decoding loss.
+No exporter or external program is used. Both imports must succeed as one standalone
+table with exactly the declared fields, one row and no geometry. Native `io::read_path`
+and `layer.addData` retain the clean date as a date and read only the invalid one as Null,
+with exactly the existing one-value notice naming `day`. This is not coverage of other
+dBASE types, names or encoding losses.
+
 ## Coverage boundaries
 
 The corpus is a list of specific losses, not a format-completeness certificate.
@@ -169,7 +182,7 @@ but not covered here, not necessarily a known bug. CRS assumptions remain separa
 | TopoJSON | Z, missing arcs, bad quantized positions, nested members | M, other parts, attributes |
 | Delimited text (CSV/TSV/TXT/DAT, gzip wrapper) | CSV WKT Z, bad WKT/XY, later WKT members, extra cells | M, holes/curves, types/names/encoding, wrapper parity |
 | Shapefile | Point Z/M, line Z/ZM | Other shapes/parts, attributes; DBF encoding tracked in #2325 |
-| Standalone DBF | None | Names/types/encoding; geometry and Z/M inapplicable |
+| Standalone DBF | Invalid date read as Null | Other types/names/encoding; geometry and Z/M inapplicable |
 | KML/KMZ | Z, missing geometry, bad coordinate/hole/part, excess point coordinates | Other parts, attributes |
 | GPX | Bad waypoint, short track segment | Elevation attributes, other parts, attributes |
 | GeoRSS (RSS/Atom/GeoRSS, sniffed XML) | Unreadable place/hole, excess coordinate pairs | GML dimensions, other members, attributes |
