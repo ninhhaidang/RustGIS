@@ -173,6 +173,22 @@ pub fn style_zoom(m_per_px: f64) -> f32 {
     if z.is_finite() { z.clamp(0.0, 24.0) as f32 } else { 0.0 }
 }
 
+/// Recognises XYZ coordinates or a quadkey in the path or query, not in the fragment.
+/// The root tile has an empty quadkey, so sample the first child for those templates.
+pub fn xyz_sample_zoom(template: &str) -> Option<u8> {
+    let template = template.split('#').next().unwrap_or_default();
+    if template.contains("{q}") || template.contains("{quadkey}") {
+        Some(1)
+    } else if (template.contains("{z}") || template.contains("{zoom}"))
+        && template.contains("{x}")
+        && (template.contains("{y}") || template.contains("{-y}"))
+    {
+        Some(0)
+    } else {
+        None
+    }
+}
+
 /// Fills in a tile address template: `{z}`, `{x}`, `{y}`, `{-y}` (rows from the south), `{s}`
 /// (one of `subdomains`, chosen by the tile), `{switch:a,b,c}`, `{q}`/`{quadkey}`,
 /// `{bbox-epsg-3857}` (a WMS box), `{width}`/`{height}`, `{r}` (dropped) and `{ratio}` (1).

@@ -2,6 +2,7 @@
 //! web probes, and explicit saved-connection choices for project sources.
 
 use egui::vec2;
+use rustgis_engine::connections::tile_test::{self, Outcome, Sample};
 use rustgis_engine::connections::{
     Connection, DATABASE_KINDS, LoginReason, LoginRequest, SERVICE_KINDS as WEB_KINDS, WEB, database_key, database_label, login_origin,
 };
@@ -50,7 +51,7 @@ pub struct State {
     pub access_key: String,
     pub secret_key: String,
     pub session_token: String,
-    pub test: Option<(Value, Slot<Result<Vec<u8>, String>>, TestContext)>,
+    pub test: Option<(Value, Slot<Result<TestAnswer, String>>, TestContext)>,
     /// The form was opened to log in (Log In…): Save logs in even with no secret typed,
     /// using the connection's existing session login (or saved DB/S3 credentials).
     pub login: bool,
@@ -60,6 +61,11 @@ pub struct State {
     /// A project's S3 source waiting for this connection (the chooser's), as (source address,
     /// connection id): its choice is made again once that connection has logged in.
     pub resolving: Option<(String, String)>,
+}
+
+pub enum TestAnswer {
+    Document(Vec<u8>),
+    Tile(Sample, Outcome),
 }
 
 /// A token generation this form started: the connection it is for, and whether the form's Test
@@ -139,9 +145,9 @@ pub(crate) fn translated(e: &str) -> String {
         web::UNSAVED => tl!("Save the connection first: a login belongs to a saved connection."),
         web::NO_ORIGIN => tl!("The connection's address has no http:// or https:// origin a login can go to."),
         web::SAVE_BEFORE_TEST => tl!("Save changes before testing this connection."),
-        rustgis_engine::connections::XYZ_TEST => {
-            tl!("This is an XYZ tile URL template, not a service endpoint. Use Add Tile Layer to add it to the map.")
-        }
+        tile_test::NOT_TILE => tl!("The server answered, but the response is not a usable tile."),
+        tile_test::UNEXPANDED => tl!("The tile URL has an unsupported placeholder."),
+        tile_test::OTHER_ORIGIN => tl!("The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login."),
         web::NOT_THIS_SESSION => tl!("This request's login does not belong to this session."),
         web::CHOOSE_CONNECTION => tl!("Several saved connections match this address. Choose a connection explicitly."),
         web::NO_SUCH_CONNECTION => tl!("No saved web-service connection with this id."),
@@ -621,9 +627,25 @@ pub fn start_test(app: &mut RustGisApp) {
     }
     let status = tl!("Testing…");
     let context = TestContext { opened: app.session.opened, form: definition(&app.ui.connection), status, _login: login };
-    let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
-    let land = slot.clone();
-    cache::download(&url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+    let slot: Slot<Result<TestAnswer, String>> = Slot::default();
+    if let Ok(sample) = serde_json::from_value::<Sample>(v["tile"].clone()) {
+        let land = std::sync::Arc::downgrade(&slot);
+        let watch = land.clone();
+        cache::with_still(std::sync::Arc::new(move || watch.strong_count() != 0), || {
+            cache::fetch_tile_sample(
+                &url,
+                Box::new(move |r| {
+                    if let Some(land) = land.upgrade() {
+                        let outcome = sample.check(r).map(|outcome| TestAnswer::Tile(sample, outcome));
+                        *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+                    }
+                }),
+            );
+        });
+    } else {
+        let land = slot.clone();
+        cache::download(&url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r.map(TestAnswer::Document))));
+    }
     app.ui.connection.test = Some((q, slot, context));
     app.dialogs.info = Some(status.into());
 }
@@ -826,7 +848,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let Some((mut q, _, _context)) = app.ui.connection.test.take() else { return };
     app.dialogs.info = None;
     match result {
-        Ok(bytes) => {
+        Ok(TestAnswer::Document(bytes)) => {
             q["answer"] = json!(String::from_utf8_lossy(&bytes));
             let kind = q["kind"].as_str().unwrap_or("").to_owned();
             match app.run("connection.test", q) {
@@ -834,7 +856,19 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 Err(e) => app.dialogs.error = Some(rustgis_engine::render::rustgis_tiles::logins::scrub(&e)),
             }
         }
-        Err(e) => app.dialogs.error = Some(rustgis_engine::render::rustgis_tiles::logins::scrub(&e)),
+        Ok(TestAnswer::Tile(sample, outcome)) => {
+            let zoom = sample.zoom.to_string();
+            match outcome {
+                Outcome::Received => app.dialogs.info = Some(i18n::fmt("Received tile {z}/0/0.", &[("z", &zoom)])),
+                Outcome::Missing => {
+                    app.dialogs.error = Some(i18n::fmt(
+                        "Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.",
+                        &[("z", &zoom)],
+                    ));
+                }
+            }
+        }
+        Err(e) => app.dialogs.error = Some(logins::scrub(&translated(&e))),
     }
 }
 
@@ -1259,6 +1293,11 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                 .changed();
             ui.end_row();
             if service {
+                if tile_test::is_template(&st.address) && tile_test::has_path_key(&st.address) {
+                    ui.label("");
+                    ui.label(egui::RichText::new(tl!("An API key in the URL path is saved as typed, not in the credential store.")).small());
+                    ui.end_row();
+                }
                 ui.label(egui::RichText::new(tl!("Login")).strong());
                 ui.label("");
                 ui.end_row();

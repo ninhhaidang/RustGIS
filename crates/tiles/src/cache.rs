@@ -1530,6 +1530,8 @@ pub fn split_tail(url: &str) -> (&str, Option<u64>) {
 /// it: those pass `address::check`, which takes only `http(s)://` ones.
 pub const DOWNLOAD: &str = "rustgis-download:";
 const LIMITED_DOWNLOAD: &str = "rustgis-download-limit:";
+// A bounded Test Connection read, not a long user download, even at local reach.
+const TILE_SAMPLE: &str = "rustgis-tile-sample:";
 
 /// The most bytes a data download may have.
 pub const MAX_DOWNLOAD: usize = if cfg!(target_arch = "wasm32") { 256 << 20 } else { 512 << 20 };
@@ -1543,6 +1545,9 @@ pub fn split_download(url: &str) -> (&str, bool) {
 /// Splits a download marker, including a caller's smaller byte budget. Fetchers must enforce
 /// this limit while reading, before allocating the whole response.
 pub fn split_download_limit(url: &str) -> (&str, Option<usize>) {
+    if let Some(url) = url.strip_prefix(TILE_SAMPLE) {
+        return (url, Some(MAX_BYTES));
+    }
     if let Some(marked) = url.strip_prefix(LIMITED_DOWNLOAD)
         && let Some((limit, url)) = marked.split_once(':')
         && let Ok(limit) = limit.parse::<usize>()
@@ -1560,7 +1565,7 @@ pub fn split_download_limit(url: &str) -> (&str, Option<usize>) {
 /// ([`download_public_limited`]): its address comes from data, like a picture for the pop-up.
 /// A download the user named is not given up.
 pub fn gives_up_when_stalled(url: &str, ceiling: crate::address::Reach) -> bool {
-    split_download_limit(url).1.is_none() || ceiling == crate::address::Reach::Public
+    url.starts_with(TILE_SAMPLE) || split_download_limit(url).1.is_none() || ceiling == crate::address::Reach::Public
 }
 
 pub(crate) fn download_address(url: &str, max: usize) -> String {
@@ -2131,6 +2136,16 @@ pub fn prepare_get(url: &str) -> Result<crate::s3::Prepared, String> {
     crate::s3::prepare(url)
 }
 
+/// Fetches one uncached test tile with the tile byte limit and browser stall timeout.
+/// The address can be local when entered by the user, like other connection tests.
+pub fn fetch_tile_sample(url: &str, done: Done) {
+    if let Err(e) = crate::address::check_reach(url, ceiling_for(url)) {
+        done(Err(e));
+        return;
+    }
+    fetch_bytes(format!("{TILE_SAMPLE}{url}"), done, &[404]);
+}
+
 /// Fetches an address's bytes, uncached (through the browser's fetcher, or the worker threads).
 /// A status in `omit` is an expected answer: its failure isn't recorded, only noted once per
 /// server (a tile past a map's edge).
@@ -2500,6 +2515,7 @@ mod native {
     /// The server an address is fetched from (`host[:port]`, lowercase), or `""` for a local
     /// read, which no server limits.
     pub(super) fn host(url: &str) -> String {
+        let (url, _) = super::split_download_limit(url);
         if crate::mbtiles::is_tile(url) || url.starts_with(LOCAL) {
             return String::new();
         }
@@ -4508,11 +4524,12 @@ mod tests {
     /// download the user named, with or without a smaller budget, is not.
     #[test]
     fn only_downloads_the_user_named_wait_out_a_stall() {
+        use crate::address::Reach;
         let _turn = turn();
         let handed = Arc::new(Mutex::new(Vec::new()));
         let sent = handed.clone();
-        set_fetcher_with_origin(move |url, ceiling, done, _| {
-            sent.lock().unwrap().push(gives_up_when_stalled(&url, ceiling));
+        set_fetcher_with_origin(move |url, ceiling, done, omit| {
+            sent.lock().unwrap().push((gives_up_when_stalled(&url, ceiling), split_download_limit(&url).1, ceiling, omit));
             done(Err("not fetched".into()));
         });
         let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -4526,10 +4543,19 @@ mod tests {
         download_public_limited(url, 1024, answered());
         download_limited(url, 1024, answered());
         download(url, answered());
-        for _ in 0..3 {
+        fetch_tile_sample(url, answered());
+        for _ in 0..4 {
             rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
         }
-        assert_eq!(*handed.lock().unwrap(), [true, false, false]);
+        assert_eq!(
+            *handed.lock().unwrap(),
+            [
+                (true, Some(1024), Reach::Public, &[][..]),
+                (false, Some(1024), Reach::Local, &[][..]),
+                (false, Some(MAX_DOWNLOAD), Reach::Local, &[][..]),
+                (true, Some(MAX_BYTES), Reach::Local, &[404][..]),
+            ]
+        );
         assert!(gives_up_when_stalled("https://tiles.example/1/2/3.png", crate::address::Reach::Local));
     }
 
@@ -6783,6 +6809,10 @@ Connection: close
         assert_eq!(native::host("http://127.0.0.1:8080/a?b#c"), "127.0.0.1:8080");
         assert_eq!(native::host("https://user:pw@example.org"), "example.org");
         assert_eq!(native::host(&format!("{DOWNLOAD}https://example.org/x")), "example.org");
+        let origin = "https://tile.openstreetmap.org";
+        let tile = format!("{origin}/0/0/0.png");
+        let bound = rustgis_data::login_address::bind("0123456789abcdef", origin, &tile).unwrap();
+        assert_eq!(native::host(&format!("{TILE_SAMPLE}{bound}")), "tile.openstreetmap.org");
         assert_eq!(native::host("https://example.org/a.pmtiles#rustgis-range=0-9"), "example.org");
         assert_eq!(native::host("mbtiles:/data/a.mbtiles/1/2/3"), "");
         assert_eq!(native::host("not an address"), "");

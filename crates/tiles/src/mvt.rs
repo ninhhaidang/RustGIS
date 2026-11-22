@@ -65,14 +65,23 @@ pub enum Value {
 
 /// Decodes a tile, inflating gzip (`1f 8b`) or zlib input first.
 pub fn decode(bytes: &[u8]) -> Result<Tile, String> {
+    decode_with::<false>(bytes)
+}
+
+/// Validates a sample with the required MVT layer fields; drawing remains tolerant.
+pub fn check_sample(bytes: &[u8]) -> Result<(), String> {
+    decode_with::<true>(bytes).map(|_| ())
+}
+
+fn decode_with<const SAMPLE: bool>(bytes: &[u8]) -> Result<Tile, String> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
-        return parse_tile(&gunzip(bytes)?);
+        return parse_tile::<SAMPLE>(&gunzip(bytes)?);
     }
     if is_zlib(bytes) {
         let raw = inflate::decompress_to_vec_zlib_with_limit(bytes, MAX_INFLATE).map_err(|e| format!("zlib: {:?}", e.status))?;
-        return parse_tile(&raw);
+        return parse_tile::<SAMPLE>(&raw);
     }
-    parse_tile(bytes)
+    parse_tile::<SAMPLE>(bytes)
 }
 
 /// Inflates gzip or zlib bytes (bounded); other bytes are returned as they are.
@@ -389,7 +398,7 @@ impl<'a> Pb<'a> {
     }
 }
 
-fn parse_tile(buf: &[u8]) -> Result<Tile, String> {
+fn parse_tile<const SAMPLE: bool>(buf: &[u8]) -> Result<Tile, String> {
     let mut pb = Pb::new(buf);
     let mut tile = Tile::default();
     let mut budget = PROP_BUDGET;
@@ -398,7 +407,7 @@ fn parse_tile(buf: &[u8]) -> Result<Tile, String> {
         if field == 3 && wire == 2 {
             let data = pb.bytes().ok_or("truncated layer")?;
             if tile.layers.len() < MAX_LAYERS {
-                tile.layers.push(parse_layer(data, &mut budget)?);
+                tile.layers.push(parse_layer::<SAMPLE>(data, &mut budget)?);
             }
         } else {
             pb.skip(wire).ok_or("malformed tile field")?;
@@ -407,9 +416,10 @@ fn parse_tile(buf: &[u8]) -> Result<Tile, String> {
     Ok(tile)
 }
 
-fn parse_layer(buf: &[u8], budget: &mut usize) -> Result<Layer, String> {
+fn parse_layer<const SAMPLE: bool>(buf: &[u8], budget: &mut usize) -> Result<Layer, String> {
     let mut pb = Pb::new(buf);
     let mut name = String::new();
+    let mut version_present = false;
     let mut extent = 4096u32;
     let mut keys: Vec<String> = Vec::new();
     let mut values: Vec<Option<Value>> = Vec::new();
@@ -440,8 +450,15 @@ fn parse_layer(buf: &[u8], budget: &mut usize) -> Result<Layer, String> {
                 let e = pb.varint().ok_or("truncated extent")?;
                 extent = u32::try_from(e).ok().filter(|e| *e > 0).unwrap_or(4096);
             }
+            (15, 0) if SAMPLE => {
+                pb.varint().ok_or("truncated layer version")?;
+                version_present = true;
+            }
             _ => pb.skip(wire).ok_or("malformed layer field")?,
         }
+    }
+    if SAMPLE && (name.is_empty() || !version_present) {
+        return Err("a vector tile layer is missing its name or version".into());
     }
     let features = raw.into_iter().filter_map(|f| parse_feature(f, &keys, &values, budget)).collect();
     Ok(Layer { name, extent, features })

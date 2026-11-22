@@ -10,6 +10,9 @@ use serde_json::{Map, Value, json};
 
 use crate::sources::{self, Sources};
 
+#[path = "connection_tile_test.rs"]
+pub mod tile_test;
+
 /// The desktop preference saved connections are kept under.
 pub const PREF: &str = "connections";
 /// The version of that preference this RustGIS reads and writes. One from a newer RustGIS isn't
@@ -58,7 +61,6 @@ pub const SERVICE_AUTH: &[&str] = &["none", "basic", "header", "query", "arcgis"
 pub const WEB: &str = "web";
 pub const S3_CREDENTIALS: &[&str] = &["keys", "profile", "environment", "none"];
 pub const DESKTOP_ONLY: &str = "database connections are used by the desktop app";
-pub const XYZ_TEST: &str = "This is an XYZ tile URL template, not a service endpoint. Use Add Tile Layer to add it to the map.";
 
 /// Whether a serialized flag is off (so it is left out).
 fn is_false(value: &bool) -> bool {
@@ -509,7 +511,20 @@ pub fn clean(mut c: Connection) -> Result<(Connection, bool), String> {
     let stripped = clean_login(&mut c)? || stripped;
     c.name = name_text(&c.name);
     if c.name.is_empty() {
-        c.name = if c.kind == "s3" && c.address.is_empty() { "AWS S3".into() } else { sources::default_name(&c.address) };
+        c.name = if c.kind == "s3" && c.address.is_empty() {
+            "AWS S3".into()
+        } else if SERVICE_KINDS.contains(&c.kind.as_str()) && tile_test::is_template(&c.address) {
+            login_origin(&c)
+                .or_else(|| {
+                    let (scheme, tail) = c.address.split_once("://")?;
+                    let host = tail.split(['/', '?', '#']).next()?.strip_prefix("{s}.")?;
+                    crate::render::rustgis_tiles::logins::origin(&format!("{scheme}://{host}"))
+                })
+                .and_then(|origin| origin.split_once("://").map(|(_, host)| host.chars().take(80).collect()))
+                .unwrap_or_else(|| "XYZ tiles".into())
+        } else {
+            sources::default_name(&c.address)
+        };
     }
     c.group = name_text(&c.group);
     if c.kind != "s3" {

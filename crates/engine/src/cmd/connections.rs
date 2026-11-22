@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{b, ps};
+use crate::connections::tile_test::{self, Sample};
 use crate::connections::{Connection, DATABASE_KINDS, DESKTOP_ONLY, KINDS};
 use crate::render::rustgis_tiles::{arcgis_token, s3, stac};
 use crate::s3_keys as keys;
@@ -67,7 +68,7 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("connection.forgetPassword", "Forget Saved Password", "Home › Add › Data Sources", forget_password).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a database connection's id or name"}"#),
         C::new("connection.test", "Test Connection", "Home › Add › Data Sources", test).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id"?: "a connection's id or name", "kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "name"?: text, "group"?: text, "address"?: text, "options"?: "an unsaved connection, as connection.new (when no id)", "auth"?: text, "user"?: text, "keyName"?: "as connection.new (when no id)", "password"?: "for a named database, authentication refusal restores prior session credentials; a later listing failure keeps the new password; never persisted. A saved web service's: as connection.login (logs in first)", "apiKey"?: "a saved web service's, as connection.login (logs in first)", "allowInsecure"?: "as connection.login", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "as connection.login (logs in first)", "probe"?: "true: only the address the test reads, {fetch} (null for databases, which their driver tests)", "answer"?: "non-database kinds only: what that address returned, when the app fetched it (no network request then); databases ignore answer and test through their driver"} → a database's result has {count, layers}, and for an Esri enterprise geodatabase on SQL Server geodatabase: {owner, release, note? (when its catalog or its list of spatial columns was cut short)}, or geodatabaseProblem: why its catalog couldn't be read"#,
+            r#"{"id"?: "a connection's id or name", "kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "name"?: text, "group"?: text, "address"?: text, "options"?: "an unsaved connection, as connection.new (when no id)", "auth"?: text, "user"?: text, "keyName"?: "as connection.new (when no id)", "password"?: "for a named database, authentication refusal restores prior session credentials; a later listing failure keeps the new password; never persisted. A saved web service's: as connection.login (logs in first)", "apiKey"?: "a saved web service's, as connection.login (logs in first)", "allowInsecure"?: "as connection.login", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "as connection.login (logs in first)", "probe"?: "true: only the address the test reads, {fetch} (null for databases, which their driver tests), with tile: {zoom, vector} for an XYZ sample", "answer"?: "non-database kinds only, not XYZ tiles: fetched text (including S3 bucket or object listing XML) that address returned, parsed without a request (no network request then); databases ignore answer and test through their driver"} (a direct XYZ test returns result: {kind: "xyz", tile: [z,x,y], status: "received" or "missing"}; missing is not a pass) → a database's result has {count, layers}, and for an Esri enterprise geodatabase on SQL Server geodatabase: {owner, release, note? (when its catalog or its list of spatial columns was cut short)}, or geodatabaseProblem: why its catalog couldn't be read"#,
         ),
         C::new("connection.browse", "Browse Connection", "Home › Add › Data Sources", browse::browse).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).view().params(
             r#"{"id": "a connection's id or name", "node"?: "a child's node, as a listing gives it (the connection's top level when absent)", "probe"?: "true: only the address this level reads, {fetch} (null: read without a fetch, or by the database driver); an S3 connection logs in first, as connection.test does", "answer"?: "what that address returned, when the app fetched it", "documents"?: [{"url": "a further document a listing asked for (next)", "text": "its answer"}]} → {connection, node, children: [{key, name, what, detail?, node? (browse it), children? (listed already), add? {command, params}: the command that adds it}], truncated?, matched?, notes?, service? {url, type}, next? (fetch it, then ask again with answer and documents)}. Database roots list schemas; open a schema node to list its tables. A geodatabase's root lists feature datasets, feature classes, tables and other spatial tables (open a feature dataset node to list its classes); if its catalog couldn't be read, the database browses as plain SQL Server, with a note."#,
@@ -313,6 +314,9 @@ fn shown_stripped(s: &mut Session, c: &Connection, stripped: bool, given: &str, 
         if !names.is_empty() {
             out["strippedParameters"] = json!(names);
         }
+    }
+    if web::is_service(c) && tile_test::is_template(&c.address) && tile_test::has_path_key(&c.address) {
+        s.notify_text(NoticeText::format(tile_test::PATH_KEY_WARNING, []), false);
     }
     out
 }
@@ -1260,19 +1264,8 @@ fn answered(s: &mut Session, c: &Connection, text: &str) -> CmdResult {
 
 fn test(s: &mut Session, p: &Value) -> CmdResult {
     let c = tested(s, p)?;
-    let service = web::is_service(&c);
-    // XYZ addresses name individual tiles, not a document the service test can read.
-    if service {
-        let address = c.address.split('#').next().unwrap_or_default();
-        if (address.contains("{z}") || address.contains("{zoom}"))
-            && address.contains("{x}")
-            && (address.contains("{y}") || address.contains("{-y}"))
-        {
-            return Err(crate::connections::XYZ_TEST.into());
-        }
-    }
     // An unsaved web service reads anonymously, whatever saved connection shares its origin.
-    let anonymous = service && c.id.is_empty();
+    let anonymous = web::is_service(&c) && c.id.is_empty();
     web::anonymously(s, anonymous, |s| test_connection(s, p, c)).unwrap_or_else(|_| Err("connection.test failed unexpectedly".into()))
 }
 
@@ -1308,6 +1301,11 @@ fn test_connection(s: &mut Session, p: &Value, c: Connection) -> CmdResult {
     let mut out = json!({});
     if !c.id.is_empty() {
         out["connection"] = json!(c.id);
+    }
+    if web::is_service(&c)
+        && let Some(sample) = Sample::for_address(&c.address)
+    {
+        return test_xyz(s, p, &c, out, sample);
     }
     if b(p, "probe").unwrap_or(false) {
         out["fetch"] = json!(probe_url(s, &c)?);
@@ -1352,4 +1350,34 @@ fn test_connection(s: &mut Session, p: &Value, c: Connection) -> CmdResult {
     };
     out["result"] = result;
     Ok(out)
+}
+
+fn test_xyz(s: &mut Session, p: &Value, c: &Connection, mut out: Value, sample: Sample) -> CmdResult {
+    use crate::render::rustgis_tiles::logins;
+    let url = sample.address(&c.address)?;
+    if !c.auth.is_empty() && logins::origin(&url) != crate::connections::login_origin(c) {
+        return Err(tile_test::OTHER_ORIGIN.into());
+    }
+    let url = web::request(s, (!c.id.is_empty()).then_some(c.id.as_str()), &url)?;
+    if b(p, "probe").unwrap_or(false) {
+        out["fetch"] = json!(url);
+        out["tile"] = json!(sample);
+        return Ok(out);
+    }
+    if p.get("answer").is_some() {
+        return Err(tile_test::TEXT_ANSWER.into());
+    }
+    #[cfg(target_arch = "wasm32")]
+    return Err("An XYZ sample tile must be fetched by the app.".into());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::render::rustgis_tiles::cache;
+        let answer = cache::download_blocking_omitting_within(&url, cache::MAX_BYTES, cache::BLOCKING_TIMEOUT, &[404]);
+        let status = match sample.check(answer)? {
+            tile_test::Outcome::Received => "received",
+            tile_test::Outcome::Missing => "missing",
+        };
+        out["result"] = json!({"kind":"xyz","tile":[sample.zoom,0,0],"status":status});
+        Ok(out)
+    }
 }

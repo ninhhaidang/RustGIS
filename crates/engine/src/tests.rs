@@ -34007,26 +34007,129 @@ fn connections_s3_rename_cannot_inherit_a_destination_session() {
 }
 
 #[test]
-fn connection_test_rejects_xyz_templates() {
+fn connection_test_expands_xyz_templates() {
     let mut s = Session::new(Project::default());
-    for (kind, address) in [
-        ("service", "http://mt0.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}"),
-        ("wmts", "https://tiles.example/{z}/{x}/{y}.png"),
-        ("wcs", "https://tiles.example/{z}/{x}/{y}.png"),
-        ("ogcapi", "https://tiles.example/tile.png?z={z}&x={x}&y={y}"),
-        ("service", "https://tiles.example/{zoom}/{x}/{-y}.png"),
+    for (kind, address, expected, zoom) in [
+        ("service", "https://tiles.example/vt/lyrs=s&x={x}&y={y}&z={z}", "https://tiles.example/vt/lyrs=s&x=0&y=0&z=0", 0),
+        ("wmts", "https://tiles.example/{z}/{x}/{y}.png", "https://tiles.example/0/0/0.png", 0),
+        ("ogcapi", "https://tiles.example/tile.png?z={z}&x={x}&y={y}", "https://tiles.example/tile.png?z=0&x=0&y=0", 0),
+        ("service", "https://{s}.tiles.example/{zoom}/{x}/{-y}.png", "https://a.tiles.example/0/0/0.png", 0),
+        ("service", "https://tiles.example/{q}.jpg", "https://tiles.example/0.jpg", 1),
+        ("service", "https://tiles.example/tile.jpg?tile={quadkey}", "https://tiles.example/tile.jpg?tile=0", 1),
     ] {
-        let error = s.run("connection.test", &json!({"kind":kind,"address":address,"probe":true})).unwrap_err();
-        assert!(error.contains("XYZ tile URL template") && error.contains("Add Tile Layer"), "{kind}: {error}");
+        let result = s.run("connection.test", &json!({"kind":kind,"address":address,"probe":true})).unwrap();
+        assert_eq!(result["fetch"], expected, "{kind}");
+        assert_eq!(result["tile"]["zoom"], zoom);
     }
-
-    let saved =
-        s.run("connection.new", &json!({"kind":"service","name":"Tiles","address":"https://tiles.example/{z}/{x}/{y}.png"})).unwrap();
-    let error = s.run("connection.test", &json!({"id":saved["id"],"answer":"{}"})).unwrap_err();
-    assert!(error.contains("Add Tile Layer"), "{error}");
-
     let ordinary = json!({"kind":"ogcapi","address":"https://tiles.example/collections#{z}/{x}/{y}","probe":true});
     assert_eq!(s.run("connection.test", &ordinary).unwrap()["fetch"], "https://tiles.example/collections?f=json");
+}
+
+#[test]
+fn connection_xyz_default_name_and_path_key_notice() {
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    let url = "https://tiles.example/{z}/{x}/{y}.png";
+    let added = s.run("connection.new", &json!({"kind":"service","address":url})).unwrap();
+    assert_eq!(added["name"], "tiles.example");
+    let subdomains = "https://{s}.basemaps.example/{z}/{x}/{y}.png";
+    let added = s.run("connection.new", &json!({"kind":"service","address":subdomains})).unwrap();
+    assert_eq!(added["name"], "basemaps.example");
+    assert_eq!(added["address"], subdomains);
+    assert!(s.notices_since(mark).is_empty());
+    let with_key = "https://tiles.example/services;key=fixture/tiles/{z}/{x}/{y}.png";
+    let added = s.run("connection.new", &json!({"kind":"service","address":with_key,"name":"Relief"})).unwrap();
+    assert_eq!(added["name"], "Relief");
+    assert_eq!(added["address"], with_key);
+    let notices = s.notices_since(mark);
+    assert!(notices.iter().any(|n| n.text.contains("URL path is saved as typed")));
+    assert!(notices.iter().all(|n| !n.text.contains("fixture")));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn connection_test_fetches_one_xyz_tile_with_the_selected_login() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let png = tiny_skia::Pixmap::new(1, 1).unwrap().encode_png().unwrap();
+    for (status, body, expected) in [
+        ("200 OK", png.as_slice(), Ok("received")),
+        ("204 No Content", &[][..], Ok("missing")),
+        ("404 Not Found", &[][..], Ok("missing")),
+        ("401 Unauthorized", &[][..], Err("http status: 401")),
+        ("200 OK", b"<html>Login required</html>", Err("not a usable tile")),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = body.to_vec();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(2)); // test-wait: pace accepts until the fixture deadline
+                    }
+                    Err(e) => panic!("sample request did not reach the fixture: {e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
+                line.clear();
+            }
+            let mut stream = reader.into_inner();
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            stream.write_all(&body).unwrap();
+            request
+        });
+        let mut s = Session::new(Project::default());
+        let url = format!("http://127.0.0.1:{port}/services;key=xyz-path-fixture/{{z}}/{{x}}/{{y}}.png");
+        let c = s.run("connection.new", &json!({"kind":"service","address":url,"auth":"query","keyName":"rg_xyz_key"})).unwrap();
+        let params = json!({"id":c["id"],"apiKey":"sample+key","allowInsecure":true});
+        let mark = s.notice_mark();
+        let result = s.run("connection.test", &params);
+        match expected {
+            Ok(expected) => assert_eq!(result.unwrap()["result"], json!({"kind":"xyz","tile":[0,0,0],"status":expected})),
+            Err(expected) => {
+                let error = result.unwrap_err();
+                assert!(error.contains(expected) && !error.contains("sample") && !error.contains("xyz-path-fixture"), "{error}");
+                let history = s.diagnostics.report(rustgis_data::diagnostics::Filter::All);
+                assert!(history.contains(expected), "{history}");
+                for key in ["xyz-path-fixture", "sample+key", "sample%2Bkey"] {
+                    assert!(!history.contains(key), "{history}");
+                }
+            }
+        }
+        for notice in s.notices_since(mark) {
+            for key in ["xyz-path-fixture", "sample+key", "sample%2Bkey"] {
+                assert!(!notice.text.contains(key), "{notice:?}");
+            }
+        }
+        assert_eq!(server.join().unwrap(), "GET /services;key=xyz-path-fixture/0/0/0.png?rg_xyz_key=sample%2Bkey HTTP/1.1\r\n");
+    }
+}
+
+#[test]
+fn connection_xyz_test_refuses_a_text_answer_and_an_unexpanded_placeholder() {
+    use crate::connections::tile_test::{TEXT_ANSWER, UNEXPANDED};
+    let mut s = Session::new(Project::default());
+    let answer = json!({"kind":"service","address":"https://tiles.example/{z}/{x}/{y}.png","answer":"<html></html>"});
+    let text = s.run("connection.test", &answer).unwrap_err();
+    assert_eq!(text, TEXT_ANSWER);
+    let unknown = json!({"kind":"service","address":"https://tiles.example/{z}/{x}/{y}/{foo}.png","probe":true});
+    let unexpanded = s.run("connection.test", &unknown).unwrap_err();
+    assert_eq!(unexpanded, UNEXPANDED);
+    // Clean input still passes: the same template without the unknown placeholder probes.
+    let clean = json!({"kind":"service","address":"https://tiles.example/{z}/{x}/{y}.png","probe":true});
+    assert_eq!(s.run("connection.test", &clean).unwrap()["tile"]["zoom"], 0);
 }
 
 #[test]
