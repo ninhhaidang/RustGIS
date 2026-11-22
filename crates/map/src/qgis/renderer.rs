@@ -415,7 +415,12 @@ fn rules(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &Sym
         return;
     }
     // Any other rules: Unique Values classed by the first rule a feature meets, each a class.
-    if by_expression(&drawn, style, report, &sym) {
+    let mut kept: Vec<&str> = Vec::new();
+    if by_expression(&drawn, style, report, &sym, &mut kept) {
+        // (Only the rules it kept, and the siblings an else rule among them takes the rest of:
+        // a rule whose symbol can't be read draws nothing itself.)
+        let f: Vec<(&str, expr::Dialect)> = kept.iter().map(|f| (*f, expr::Dialect::Qgis)).collect();
+        super::note_matching(layer, "its rules", &f, report);
         return;
     }
     report.approximated(
@@ -488,14 +493,14 @@ const MAX_RULE_CLASSES: usize = crate::symbology::MAX_EXPRESSION_CLASSES;
 /// (QGIS draws it with every rule it meets: the engine counts such features, from
 /// `style.rules`). A top-level else rule draws the rest. False when the rules don't fit in one
 /// expression.
-fn by_expression(drawn: &[&Rule], style: &mut Style, report: &mut Report, sym: &SymbolOf) -> bool {
+fn by_expression<'r>(drawn: &[&'r Rule], style: &mut Style, report: &mut Report, sym: &SymbolOf, kept: &mut Vec<&'r str>) -> bool {
     let mut rules: Vec<super::RuleFilter> = Vec::new();
     let mut classes: Vec<(String, Converted, Option<String>)> = Vec::new();
     let mut other: Option<Converted> = None;
     let mut other_label: Option<String> = None;
     let mut keys = std::collections::HashSet::new();
     let quoted = |f: &String| expr::to_sql(f).map(|e| format!("({e})"));
-    for (i, rule) in drawn.iter().enumerate() {
+    for (i, &rule) in drawn.iter().enumerate() {
         // A top-level else rule at every scale: the rest. (A later one draws nothing more, a
         // feature being drawn with the first rule it meets: its symbol isn't read.)
         let rest = rule.else_of.len() == 1 && rule.filters.is_empty() && !rule.scaled();
@@ -525,6 +530,11 @@ fn by_expression(drawn: &[&Rule], style: &mut Style, report: &mut Report, sym: &
         }
         rules.push(super::RuleFilter { key: key.clone(), when, condition: filter, out: rule.scales.0, inside: rule.scales.1 });
         classes.push((key, c, None));
+        // Its filters, and for an else rule its siblings', which pick what it doesn't take.
+        kept.extend(rule.filters.iter().map(String::as_str));
+        for siblings in &rule.else_of {
+            sibling_filters(siblings.as_ref().as_deref().unwrap_or_default(), kept);
+        }
         if rules.len() > MAX_RULE_CLASSES || super::rules_expression(&rules).chars().count() > rustgis_data::query::MAX_LEN {
             return false;
         }
@@ -535,6 +545,15 @@ fn by_expression(drawn: &[&Rule], style: &mut Style, report: &mut Report, sym: &
     unique(style, String::new(), Some(super::rules_expression(&rules)), classes, other.as_ref(), other_label);
     style.rules = rules;
     true
+}
+
+/// The filters of `siblings` and the rules under them (nested at most 32 deep, as
+/// `super::siblings` reads them).
+pub(super) fn sibling_filters<'s>(siblings: &'s [super::Sibling], out: &mut Vec<&'s str>) {
+    for s in siblings {
+        out.extend(s.filter.as_deref());
+        sibling_filters(s.under.as_deref().unwrap_or_default(), out);
+    }
 }
 
 /// The most rules read from one renderer's rules, and the most an else rule is the rest of.

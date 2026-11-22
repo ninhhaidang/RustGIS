@@ -203,6 +203,7 @@ fn a_project_reads_into_layers_in_tree_order_with_their_styles() {
     // Its second class's line pattern fill: hatch lines of its blue line, 2 mm apart, at QGIS's
     // 45°, half see-through as the symbol is; read, not noted.
     assert!(!said("Land", NoteKind::Approximated, "line pattern"));
+    assert!(said("Land", NoteKind::Approximated, "letter case"));
     let Some(Renderer::Graduated { class_fills, .. }) = &land.style.renderer else { panic!() };
     let hatch = class_fills.get(&1).and_then(|f| f.first()).copied().unwrap();
     assert_eq!(hatch.color, Some(Rgba::new(0, 0, 255, 128)));
@@ -1842,7 +1843,8 @@ fn a_rule_based_renderer_classes_each_feature_by_the_first_rule_it_meets() {
     assert!(e.starts_with("CASE WHEN (\"kind\" = 'a') THEN 'a' WHEN "), "{e}");
     assert!(e.contains("(length(\"name\") > 3) THEN 'fn'"), "kept as QGIS wrote it: {e}");
     assert!(e.contains("(\"value\" < 50) AND (\"kind\" = 'c') THEN 'inner'"), "the parent's filter too: {e}");
-    assert!(!report.notes.iter().any(|n| n.text.contains("rules")), "{:?}", report.notes);
+    assert!(!report.notes.iter().any(|n| n.text.contains("rules") && !n.text.contains("letter case")), "{:?}", report.notes);
+    assert_eq!(letter_case_notes(&report, "points"), 1, "{:?}", report.notes);
     assert_eq!(s.rules.len(), 4);
 
     let mut l = rule_points(&[("a", 10, "ab"), ("b", 60, "xy"), ("c", 20, "abcd"), ("c", 20, "ab"), ("z", 99, "ab")]);
@@ -3166,4 +3168,160 @@ fn a_hostile_project_is_refused_before_parsing() {
     let flood = format!("<qgis{declarations}/>");
     let refused = parse(&flood, "a QGIS project").unwrap_err();
     assert!(refused.contains("namespace declarations"), "{refused}");
+}
+
+fn letter_case_notes(report: &Report, layer: &str) -> usize {
+    report.notes.iter().filter(|n| n.layer == layer && n.kind == NoteKind::Approximated && n.text.contains("letter case")).count()
+}
+
+/// A filter that matches text ignoring case where QGIS (or the filter's own database) tells case
+/// apart is noted, once, under the rules of its dialect; one that doesn't differ is not.
+#[test]
+fn text_matched_ignoring_case_is_noted_where_qgis_tells_case_apart() {
+    for (file, subset, noted) in [
+        ("./a.gpkg", r#"&quot;kind&quot; = 'x'"#, true),
+        ("./a.gpkg", r#"&quot;kind&quot; IN ('a', 'B')"#, true),
+        ("./a.gpkg", r#"&quot;name&quot; &gt; 'M'"#, true),
+        ("./a.gpkg", r#"&quot;kind&quot; LIKE 'x%'"#, false),
+        ("./a.gpkg", r#"&quot;kind&quot; LIKE 'é%'"#, false),
+        ("./a.gpkg", r#"lower(&quot;kind&quot;) = 'x'"#, false),
+        ("./a.gpkg", r#"upper(&quot;kind&quot;) LIKE '%PARK%'"#, false),
+        ("./a.gpkg", r#"format_date(&quot;d&quot;, 'yyyy') IS NULL"#, false),
+        ("./a.shp", r#"&quot;kind&quot; = 'x'"#, false),
+        ("./a.shp", r#"&quot;kind&quot; LIKE 'x%'"#, true),
+        ("./a.shp", r#"&quot;kind&quot; ILIKE 'x%'"#, false),
+        ("./a.shp", r#"&quot;kind&quot; &gt; 'M'"#, false),
+        ("./a.shp", r#"&quot;kind&quot; &gt; 'É'"#, true),
+        ("./a.gpkg", r#"&quot;kind&quot; = '12' AND &quot;pop&quot; &gt; 5"#, false),
+        ("./a.gpkg", r#"&quot;kind&quot; = 'é'"#, false),
+    ] {
+        let project = format!(
+            r#"<qgis><projectlayers><maplayer type="vector"><id>a</id><datasource>{file}|layername=a|subset={subset}</datasource><layername>A</layername><provider>ogr</provider></maplayer></projectlayers></qgis>"#
+        );
+        let mut report = Report::default();
+        read_project(&project, "/maps", &mut report).unwrap();
+        assert_eq!(letter_case_notes(&report, "A"), usize::from(noted), "{file} {subset}: {:?}", report.notes);
+    }
+    for (file, subset, noted) in [
+        ("./a.gpkg", "&quot;pop&quot; NOT IN (1, NULL)", true),
+        ("./a.gpkg", "&quot;pop&quot; NOT IN (1, 2)", false),
+        ("./a.shp", "&quot;pop&quot; NOT IN (1, NULL)", true),
+    ] {
+        let project = format!(
+            r#"<qgis><projectlayers><maplayer type="vector"><id>a</id><datasource>{file}|layername=a|subset={subset}</datasource><layername>A</layername><provider>ogr</provider></maplayer></projectlayers></qgis>"#
+        );
+        let mut report = Report::default();
+        read_project(&project, "/maps", &mut report).unwrap();
+        let n = report.notes.iter().filter(|n| n.layer == "A" && n.text.contains("NOT IN list holds NULL")).count();
+        assert_eq!(n, usize::from(noted), "{subset}: {:?}", report.notes);
+    }
+}
+
+fn rules_layer(renderer_rules: &str, label_rules: &str) -> String {
+    format!(
+        r#"<qgis><projectlayers><maplayer type="vector"><id>a</id><datasource>./a.gpkg|layername=a</datasource><layername>A</layername><provider>ogr</provider>
+        <renderer-v2 type="RuleRenderer"><rules key="r">{renderer_rules}</rules>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"/></symbol><symbol type="marker" name="1"><layer class="SimpleMarker" enabled="1"/></symbol></symbols></renderer-v2>
+        <labeling type="rule-based"><rules key="l">{label_rules}</rules></labeling></maplayer></projectlayers></qgis>"#
+    )
+}
+
+#[test]
+fn rules_matching_text_ignoring_case_are_noted_and_unique_values_are_not() {
+    let label = r#"<rule key="1" filter="&quot;kind&quot; = 'x'"><settings><text-style fieldName="name"/></settings></rule>"#;
+    let mut report = Report::default();
+    let rules =
+        r#"<rule key="1" filter="&quot;kind&quot; LIKE 'x%'" symbol="0"/><rule key="2" filter="&quot;kind&quot; ILIKE 'y%'" symbol="1"/>"#;
+    read_project(&rules_layer(rules, label), "/m", &mut report).unwrap();
+    let said =
+        |part: &str| report.notes.iter().filter(|n| n.layer == "A" && n.text.contains(part) && n.text.contains("letter case")).count();
+    assert_eq!((said("its rules,"), said("its label rules,")), (1, 1), "{:?}", report.notes);
+    let mut report = Report::default();
+    let rules = r#"<rule key="1" filter="&quot;kind&quot; = 'x'" symbol="0"/><rule key="2" filter="&quot;kind&quot; = 'y'" symbol="1"/>"#;
+    read_project(&rules_layer(rules, ""), "/m", &mut report).unwrap();
+    assert!(!report.notes.iter().any(|n| n.text.contains("its rules,")), "{:?}", report.notes);
+    // Only rules the import keeps are noted: one whose symbol can't be read isn't kept.
+    let mut report = Report::default();
+    let rules = r#"<rule key="1" filter="&quot;value&quot; &gt; 1" symbol="0"/><rule key="2" filter="&quot;value&quot; &gt; 2" symbol="1"/><rule key="3" filter="&quot;kind&quot; LIKE 'x%'" symbol="9"/>"#;
+    read_project(&rules_layer(rules, ""), "/m", &mut report).unwrap();
+    assert_eq!(letter_case_notes(&report, "A"), 0, "{:?}", report.notes);
+    // But an else rule takes what its siblings don't draw, so their filters count with it.
+    let mut report = Report::default();
+    let rules = r#"<rule key="1" filter="&quot;value&quot; &gt; 1" symbol="0"/><rule key="3" filter="&quot;kind&quot; LIKE 'x%'" symbol="9"/><rule key="4" filter="ELSE" symbol="1" scalemaxdenom="50000"/>"#;
+    read_project(&rules_layer(rules, ""), "/m", &mut report).unwrap();
+    assert_eq!(letter_case_notes(&report, "A"), 1, "{:?}", report.notes);
+    // Label rules likewise: one without settings isn't imported.
+    let mut report = Report::default();
+    let bare = r#"<rule key="1" filter="&quot;kind&quot; = 'x'"/>"#;
+    read_project(&rules_layer("", bare), "/m", &mut report).unwrap();
+    assert_eq!(letter_case_notes(&report, "A"), 0, "{:?}", report.notes);
+    // Nor one past the 64 classes read.
+    let mut report = Report::default();
+    let many: String = (0..64)
+        .map(|k| format!(r#"<rule key="n{k}" filter="&quot;n&quot; = 1"><settings><text-style fieldName="name"/></settings></rule>"#))
+        .collect::<String>()
+        + label;
+    read_project(&rules_layer("", &many), "/m", &mut report).unwrap();
+    assert_eq!(letter_case_notes(&report, "A"), 0, "{:?}", report.notes);
+    // A label else rule takes what its sibling labels, and that sibling's filter counts with it
+    // even where the sibling makes no class (no text style).
+    let mut report = Report::default();
+    let siblings = r#"<rule key="1" filter="&quot;kind&quot; LIKE 'x%'"><settings/></rule><rule key="2" filter="ELSE"><settings><text-style fieldName="name"/></settings></rule>"#;
+    read_project(&rules_layer("", siblings), "/m", &mut report).unwrap();
+    assert_eq!(letter_case_notes(&report, "A"), 1, "{:?}", report.notes);
+}
+
+#[test]
+fn a_virtual_layer_filter_matching_text_ignoring_case_is_noted() {
+    let layer = |id: &str, provider: &str, source: &str| {
+        format!(
+            r#"<maplayer type="vector"><id>{id}</id><datasource>{source}</datasource><layername>{id}</layername><provider>{provider}</provider></maplayer>"#
+        )
+    };
+    for (base, query, noted) in [
+        ("./a.shp|layername=a", "SELECT%20*%20FROM%20b%20WHERE%20kind%20%3D%20'x'", true),
+        ("./a.shp|layername=a|subset=kind = 'x'", "SELECT%20*%20FROM%20b", false),
+    ] {
+        let qgs = format!(
+            "<qgis><projectlayers>{}{}</projectlayers></qgis>",
+            layer("v", "virtual", &format!("?layer_ref=base:b&amp;query={query}")),
+            layer("base", "ogr", base),
+        );
+        let mut report = Report::default();
+        read_project(&qgs, "/d", &mut report).unwrap();
+        assert_eq!(letter_case_notes(&report, "v"), usize::from(noted), "{base}: {:?}", report.notes);
+    }
+    // A virtual layer on a virtual layer reads the parts of the one below under their dialects.
+    for (base, v1, noted) in [
+        ("./a.shp|layername=a", "SELECT%20*%20FROM%20b%20WHERE%20kind%20%3D%20'x'", true),
+        ("./a.gpkg|layername=a|subset=kind LIKE 'x%'", "SELECT%20*%20FROM%20b", false),
+        ("./a.shp|layername=a|subset=kind = 'x'", "SELECT%20*%20FROM%20b", false),
+    ] {
+        let qgs = format!(
+            "<qgis><projectlayers>{}{}{}</projectlayers></qgis>",
+            layer("v2", "virtual", "?layer_ref=v1:b&amp;query=SELECT%20*%20FROM%20b"),
+            layer("v1", "virtual", &format!("?layer_ref=base:b&amp;query={v1}")),
+            layer("base", "ogr", base),
+        );
+        let mut report = Report::default();
+        read_project(&qgs, "/d", &mut report).unwrap();
+        assert_eq!(letter_case_notes(&report, "v2"), usize::from(noted), "{base}: {:?}", report.notes);
+    }
+}
+
+/// A virtual layer's filter dropped for being too long to read together with its base's isn't
+/// noted for.
+#[test]
+fn a_dropped_virtual_filter_is_not_noted_for_letter_case() {
+    let max = rustgis_data::query::MAX_LEN;
+    let base = format!("value &gt; {}", "9".repeat(max - 60));
+    let qgs = format!(
+        r#"<qgis><projectlayers><maplayer type="vector"><id>v</id><datasource>?layer_ref=base:b&amp;query=SELECT%20*%20FROM%20b%20WHERE%20kind%20%3D%20'{}x'</datasource><layername>v</layername><provider>virtual</provider></maplayer>
+        <maplayer type="vector"><id>base</id><datasource>./a.shp|subset={base}</datasource><layername>base</layername><provider>ogr</provider></maplayer></projectlayers></qgis>"#,
+        "y".repeat(100)
+    );
+    let mut report = Report::default();
+    read_project(&qgs, "/d", &mut report).unwrap();
+    assert!(report.notes.iter().any(|n| n.layer == "v" && n.text.contains("too long to read together")), "{:?}", report.notes);
+    assert_eq!(letter_case_notes(&report, "v"), 0, "{:?}", report.notes);
 }

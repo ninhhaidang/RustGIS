@@ -622,6 +622,11 @@ pub fn read_project(text: &str, dir: &str, images: &mut ReadImage, report: &mut 
         let kind = ml.attribute("type").unwrap_or_default().to_string();
         let vector = kind == "vector";
         let definition_query = definition_query(&source, &name, "subset string", report);
+        if definition_query.is_some()
+            && let Source::File { path, subset: Some(q), .. } = &source
+        {
+            note_matching(&name, "its filter (subset string)", &[(q, dialect(path, &provider))], report);
+        }
         let style = read_style_node(ml, &name, report);
         let annotations = if kind == "annotation" { annotation::read(ml, dir, &name, report) } else { Vec::new() };
         layers.push((
@@ -679,12 +684,40 @@ fn definition_query(source: &Source, name: &str, what: &str, report: &mut Report
     }
 }
 
+/// The dialect of a file's filter: SQLite's for the `spatialite` provider, a GeoPackage or a
+/// SQLite database, OGR SQL's for the rest.
+fn dialect(path: &str, provider: &str) -> expr::Dialect {
+    // An `ogr` SpatiaLite file is told by its extension; one named otherwise reads as OGR SQL's.
+    let ext = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    if provider == "spatialite" || matches!(ext.as_str(), "gpkg" | "sqlite" | "sqlite3" | "db" | "spatialite") {
+        expr::Dialect::Sqlite
+    } else {
+        expr::Dialect::Ogr
+    }
+}
+
+/// Notes, once for `layer`, where `filters` (each read under its dialect) match otherwise in
+/// RustGIS than in QGIS. `what` names them: "its filter (subset string)", "its rules".
+fn note_matching(layer: &str, what: &str, filters: &[(&str, expr::Dialect)], report: &mut Report) {
+    if filters.iter().any(|(f, d)| expr::case_differs(f, *d)) {
+        report.approximated(layer, format!("{what}, matching text ignoring letter case where QGIS tells case apart"));
+    }
+    if filters.iter().any(|(f, _)| expr::null_in_not_in(f)) {
+        report.approximated(
+            layer,
+            format!("{what}, whose NOT IN list holds NULL: RustGIS skips the NULL, so it matches the features QGIS takes as unknown"),
+        );
+    }
+}
+
 /// Virtual layers that select every column of one layer, with or without a `WHERE` clause, read
 /// as that layer's file with the clause as its filter (with the layer's own filter too, when it
 /// is another of the project's layers). A virtual layer on another such one is read once that
 /// one is, whatever their order, up to [`MAX_VIRTUAL_CHAIN`] deep. The rest are left as they are,
 /// for the import to note.
 fn resolve_virtual_layers(layers: &mut [ProjectLayer], report: &mut Report) {
+    // The parts (filter, dialect) of each virtual layer read so far, by id, for one on it to carry.
+    let mut chained: std::collections::HashMap<String, Vec<(String, expr::Dialect)>> = std::collections::HashMap::new();
     for _ in 0..MAX_VIRTUAL_CHAIN {
         let mut changed = false;
         for i in 0..layers.len() {
@@ -714,6 +747,17 @@ fn resolve_virtual_layers(layers: &mut [ProjectLayer], report: &mut Report) {
                 q => (q.clone(), false),
             };
             let filter = filter.clone();
+            // The parts of the layer below, when it is a virtual one read before; else its filter.
+            let below = match from {
+                source::VirtualFrom::Layer(id) => chained.get(id).cloned(),
+                _ => None,
+            };
+            let provider = match from {
+                source::VirtualFrom::Layer(id) => layers.iter().find(|l| &l.id == id).map(|l| l.provider.clone()),
+                _ => None,
+            }
+            .unwrap_or_default();
+            let base_parts = |a: &String| below.clone().unwrap_or_else(|| vec![(a.clone(), dialect(&path, &provider))]);
             let Some(l) = layers.get_mut(i) else { continue };
             if base_too_long {
                 report.skipped(&l.name, "the filter of the layer its virtual layer selects from, which is too long to read");
@@ -726,17 +770,36 @@ fn resolve_virtual_layers(layers: &mut [ProjectLayer], report: &mut Report) {
                 }
                 f => f,
             };
+            // What the combined filter holds, each part under its own dialect.
+            let mut parts: Vec<(String, expr::Dialect)> = Vec::new();
             let subset = match (subset, filter) {
                 (Some(a), Some(b)) if a.len() + b.len() + 11 > max => {
                     report.skipped(&l.name, "its filter (from its virtual layer's query) with that of the layer it selects from, too long to read together: the latter alone kept");
+                    parts.extend(base_parts(&a));
                     Some(a)
                 }
-                (Some(a), Some(b)) => Some(format!("({a}) AND ({b})")),
-                (a, b) => a.or(b),
+                (Some(a), Some(b)) => {
+                    parts.extend(base_parts(&a));
+                    parts.push((b.clone(), expr::Dialect::Sqlite));
+                    Some(format!("({a}) AND ({b})"))
+                }
+                (Some(a), None) => {
+                    parts.extend(base_parts(&a));
+                    Some(a)
+                }
+                (None, b) => {
+                    parts.extend(b.iter().map(|f| (f.clone(), expr::Dialect::Sqlite)));
+                    b
+                }
             };
             let resolved = Source::File { path, layer, subset, ignored };
             l.definition_query =
                 definition_query(&resolved, &l.name, "from its virtual layer's query and the layer it selects from", report);
+            if l.definition_query.is_some() {
+                let seen: Vec<(&str, expr::Dialect)> = parts.iter().map(|(q, d)| (q.as_str(), *d)).collect();
+                note_matching(&l.name, "its filter (from its virtual layer's query and the layer it selects from)", &seen, report);
+            }
+            chained.insert(l.id.clone(), parts);
             l.source = resolved;
             changed = true;
         }

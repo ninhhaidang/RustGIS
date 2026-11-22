@@ -36,6 +36,9 @@ pub(super) fn read(l: Node, geometry: Option<&str>, layer: &str, report: &mut Re
                     format!("{left} of its label rules, past the {} RustGIS reads or nested more than 32 deep", MAX_LABEL_CLASSES * 4),
                 );
             }
+            // The filters of the rules that became classes, and of the siblings an else rule takes
+            // the rest of (they shape its class too): only those are noted, one list per class.
+            let mut kept: Vec<Vec<&str>> = Vec::new();
             for (i, r) in rules.iter().enumerate() {
                 let Some(settings) = child(r.node, "settings") else { continue };
                 // Switched off: never drawn, so nothing about it is noted.
@@ -77,8 +80,18 @@ pub(super) fn read(l: Node, geometry: Option<&str>, layer: &str, report: &mut Re
                     );
                     continue;
                 };
-                classes.extend(class(settings, &name, where_, r.scales, geometry, layer, report));
+                if let Some(c) = class(settings, &name, where_, r.scales, geometry, layer, report) {
+                    classes.push(c);
+                    let mut own: Vec<&str> = r.filters.iter().map(String::as_str).collect();
+                    for siblings in &r.else_of {
+                        super::renderer::sibling_filters(siblings.as_ref().as_deref().unwrap_or_default(), &mut own);
+                    }
+                    kept.push(own);
+                }
             }
+            kept.truncate(MAX_LABEL_CLASSES);
+            let f: Vec<(&str, expr::Dialect)> = kept.iter().flatten().map(|f| (*f, expr::Dialect::Qgis)).collect();
+            super::note_matching(layer, "its label rules", &f, report);
         }
         Some(other) => {
             report.skipped(layer, format!("its {other} labels"));
