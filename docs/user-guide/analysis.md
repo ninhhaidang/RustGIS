@@ -181,23 +181,30 @@ Statistics, Pivot Table, Join Field, Select Layer By Attribute, Export Features,
 Line, Split Line At Vertices, Feature Envelope To Polygon, Unsplit Line, Feature Vertices To
 Points, Check Geometry and Repair Geometry; the overlays Clip, Erase, Intersect, Identity, Union,
 Symmetrical Difference, Update, Split and Dissolve; Minimum Bounding Geometry (convex hull),
-Feature To Point and Summarize Within; and Select Layer By Location and Spatial Join when they
-measure no distance (no search distance, a match other than Closest or Within a distance). Their
-other inputs are converted into that system for the run, and their new layers are kept in it, so
-the coordinates of what they copy stay exactly as they were. An overlay there takes each edge as
-straight in that system, not in Web Mercator as it does in longitude/latitude, so where an edge
-crosses another can differ from the same tool's result in longitude/latitude, by up to about L² tan
-φ / 8R for an edge L long at latitude φ: some 20 cm for a 3 km edge at 48°N, 2 m for a 10 km one,
-220 m for a 100 km one. An input in another system is converted vertex by vertex, as the map draws
-it in that system, and its long edges can run much farther from where they run in
-longitude/latitude: a degree-wide box's east-west edges, which follow their parallels there, are
-chords in UTM up to 120 m away. The tool then says how many edges of which layer run more than a
-metre away, and how far the farthest does. A world projection (World Mercator, Plate Carrée,
-Robinson, Equal Earth and the like), whose plane has the antimeridian as a seam and the poles as
-lines, is worked on in longitude/latitude, as Web Mercator is. If another input has a place that
-system can't hold, the tool works in longitude/latitude instead, and its message says so. A layer
-in longitude/latitude, Web Mercator or another geographic system is worked on in
-longitude/latitude, as before.
+Feature To Point and Summarize Within; Select Layer By Location and Spatial Join; and Buffer,
+Simplify, Points Along Lines and Near. Their other inputs are converted into that system for the
+run, and their new layers are kept in it, so the coordinates of what they copy stay exactly as they
+were. An overlay there takes each edge as straight in that system, not in Web Mercator as it does in
+longitude/latitude, so where an edge crosses another can differ from the same tool's result in
+longitude/latitude, by up to about L² tan φ / 8R for an edge L long at latitude φ: some 20 cm for a
+3 km edge at 48°N, 2 m for a 10 km one, 220 m for a 100 km one. An input in another system is
+converted vertex by vertex, as the map draws it in that system, and its long edges can run much
+farther from where they run in longitude/latitude: a degree-wide box's east-west edges, which follow
+their parallels there, are chords in UTM up to 120 m away. The tool then says how many edges of
+which layer run more than a metre away, and how far the farthest does. A world projection (World
+Mercator, Plate Carrée, Robinson, Equal Earth and the like), whose plane has the antimeridian as a
+seam and the poles as lines, is worked on in longitude/latitude, as Web Mercator is. If another
+input has a place that system can't hold, the tool works in longitude/latitude instead, and its
+message says so. A layer in longitude/latitude, Web Mercator or another geographic system is worked
+on in longitude/latitude, as before. In a projected system a tool works in, distances in metres
+(Buffer's, Simplify's tolerance, Points Along Lines' spacing, Near's, and the search distances of
+Select Layer By Location and Spatial Join) are measured flat there, in its unit, as distances in a
+projected system are: a kilometre is 1000 of its metres, or 3280.833 of its US survey feet. A flat
+metre is not quite a metre on the ground: in a UTM zone, from 1.0004 m on its central meridian to
+about 0.999 m at its edges on the equator (0.9998 m at 48.7°N), so a buffer of 100 km around a point
+2.5° east of the central meridian at 48.7°N reaches 100,017 m on the ground on its west side and
+99,972 m on its east side. Near's nearest point is that system's x and y, and Points Along Lines'
+angle is from grid north. Area, length and perimeter fields stay on the ellipsoid.
 
 In the desktop app a tool runs in the background, so the map and the rest of the window stay in
 use. While it runs, the Tools pane shows its name, a **Cancel** button and, for the tools that
@@ -494,10 +501,11 @@ simplified more than asked: no vertex moves farther on the ground (on the WGS 84
 the tolerance. Near a long stretch reaching toward the equator it can be simplified a little less
 than asked. The scale stops at 85°'s, so beyond 85.05°, where the ground is far narrower, less is
 simplified away than asked (a 3 km tolerance at 89.9°N takes out only what lies within about 60 m
-east–west), and the tool says how many features reach that far. A feature without geometry is
-left out, and the tool says how many. A tolerance of 0 leaves every line and polygon as it is.
-Otherwise a line or polygon with a coordinate missing, or a longitude too far out to place, is
-left as it was; a latitude past ±90° is taken as the pole; a line part of fewer than 2 vertices
+east–west), and the tool says how many features reach that far. For a layer in a projected system
+(see above), the tolerance is a length in that system, the same everywhere. A feature without
+geometry is left out, and the tool says how many. A tolerance of 0 leaves every line and polygon as
+it is. Otherwise a line or polygon with a coordinate missing, or a longitude too far out to place,
+is left as it was; a latitude past ±90° is taken as the pole; a line part of fewer than 2 vertices
 beside a longer one is left out; and, in a run that can't be canceled, a feature too intricate to
 simplify whole within the work allowed keeps more vertices than asked in part of it (a run you can
 cancel takes no limit, looking at Cancel within each feature). The tool says how many of each.
@@ -542,7 +550,9 @@ uses it as a file destination.
 
 **Buffer** distances, and the distance of **Select Layer By Location**, are measured on the Earth
 (the WGS 84 ellipsoid, as PROJ and GeographicLib measure it), not in the map's display
-projection. Each feature is buffered in an azimuthal equidistant projection on the ellipsoid
+projection, except for a layer in a projected system, which is buffered flat in it (see above); a
+buffer of hundreds of kilometres there can reach past the area the system is made for, where the map
+may not place it. Each feature is buffered in an azimuthal equidistant projection on the ellipsoid
 centred on it, so distances from a point are true; long lines and large polygon outlines are
 buffered in stretches of a few hundred kilometres to limit projection error. Up to 85° of
 latitude, a buffer's sides are within 0.012 % of the distance (or 1 cm), and within 0.05 % along
@@ -646,8 +656,9 @@ gp.run={"tool":"featureVerticesToPoints","params":{"input":"Rivers","output":"ri
 
 **Points Along Lines** (`pointsAlongLines`) writes points at a set `distance` along each part of
 the `input` layer's lines, or each ring of its polygons (holes too), measured on the WGS 84
-ellipsoid as Buffer's distances are, in `units` (Kilometers by default): a point at `startOffset`
-(0 by default), then one every `distance`, stopping `endOffset` before the part's end.
+ellipsoid as Buffer's distances are (flat, for a layer in a projected system, see above), in `units`
+(Kilometers by default): a point at `startOffset` (0 by default), then one every `distance`,
+stopping `endOffset` before the part's end.
 `includeEnd` adds a point where they stop when the distance doesn't land there (the first is
 always at the start offset). Each part and ring is walked on its own from its first vertex, so the
 gap between two parts never counts; a line's parts that cross the antimeridian, one ending on it
@@ -823,14 +834,16 @@ used once.
 **Near** (`near`) copies `input` and adds, for each feature, the nearest feature of `near`: its OID
 as the attribute table shows it (`near_fid`), the distance to it (`near_dist`, in `units`,
 Kilometers by default) and the point on it nearest the input feature (`near_x` and `near_y`, in
-longitude from −180° up to 180° and latitude). Distances are measured as Spatial Join's **Closest**
-measures them: on the ground, between the features' nearest points, and zero for features that
-intersect, whose point is one they share. The point is found as the distance is, in a plane centred
-between the features, so on a long edge it can sit off the geodesic by up to about 0.01 % of the
-distance (5 m at 50 km). A `distance` limits how far it looks; features with nothing that near, or
-without geometry, get empty values. Of equally near features, the first in the near layer wins.
-With the same layer as both, each feature's nearest is another feature, not itself. A field name
-the input already has gets a suffix (`near_dist_2`). Selections in both layers are honoured:
+longitude from −180° up to 180° and latitude; for an input in a projected system, its x and y,
+measured flat there, see above). Distances are measured as Spatial Join's **Closest** measures them:
+on the ground (flat, for an input in a projected system), between the features' nearest points, and
+zero for features that intersect, whose point is one they share. The point is found as the distance
+is, in a plane centred between the features, so on a long edge it can sit off the geodesic by up to
+about 0.01 % of the distance (5 m at 50 km). A `distance` limits how far it looks; features with
+nothing that near, or without geometry, get empty values. Of equally near features, the first in the
+near layer wins. With the same layer as both, each feature's nearest is another feature, not itself.
+A field name the input already has gets a suffix (`near_dist_2`). Selections in both layers are
+honoured:
 
 ```text
 gp.run={"tool":"near","params":{"input":"addresses","near":"hydrants","units":"Feet"}}
@@ -838,7 +851,8 @@ gp.run={"tool":"near","params":{"input":"addresses","near":"hydrants","units":"F
 
 **Spatial Join** (`spatialJoin`, also `gp.spatialJoin`) copies attributes from `join` features
 to `target` features. Layers may have different source coordinate systems: their geometry is
-converted to longitude/latitude for the join. `match` is one of:
+converted for the join into the target's system when that is a projected one (see above), else
+to longitude/latitude. `match` is one of:
 
 - **Intersects** (default), **Contains** (target contains join) or **Within** (target lies within
   join).
@@ -852,11 +866,11 @@ converted to longitude/latitude for the join. `match` is one of:
   one, every target gets its nearest feature. Ties keep the join layer's order.
 - **Within a distance**: every join feature within `distance` (required), nearest first.
 
-Distances are on the ground (the WGS 84 ellipsoid, as for Buffer), between the features' nearest
-points (edges and vertices alike), and are zero for features that intersect. `distanceField`
-names a field added for the distance to the joined feature, in `units`; it applies to
-**Closest** and **Within a distance** only, as `distance` does, and the Tools pane shows them
-only for those.
+Distances are on the ground (the WGS 84 ellipsoid, as for Buffer; flat, for a target layer in a
+projected system, see above), between the features' nearest points (edges and vertices alike), and
+are zero for features that intersect. `distanceField` names a field added for the distance to the
+joined feature, in `units`; it applies to **Closest** and **Within a distance** only, as `distance`
+does, and the Tools pane shows them only for those.
 
 **Join one to one** (the default `operation`) copies the first matching feature's attributes;
 **Join one to many** makes a row for each match. Both add `join_count`, the total matches for

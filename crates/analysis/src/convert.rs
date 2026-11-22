@@ -20,19 +20,53 @@ pub enum Plane {
     Own,
 }
 
-thread_local! {
-    static PLANE: std::cell::Cell<Plane> = const { std::cell::Cell::new(Plane::Analysis) };
+/// The plane of a run and the length of its unit on the ground: what [`install`] puts in place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunPlane {
+    pub plane: Plane,
+    /// Metres per unit of a projected system's own plane ([`Plane::Own`]): 1 for one in metres,
+    /// 0.3048 for one in feet. 1 in the analysis plane, whose metres are Web Mercator's.
+    pub unit_m: f64,
+    /// Which way a projected system's x and y point: the (east, north) of a step of one along
+    /// each ([`rustgis_data::raster::Crs::axis_directions`]); east, then north, otherwise.
+    pub axes: [(f64, f64); 2],
 }
 
-/// The plane of the run on this thread ([`install_plane`]): [`Plane::Analysis`] unless a run in a
+/// East, then north: the axes of a plane whose x points east and y north.
+pub const EAST_NORTH: [(f64, f64); 2] = [(1.0, 0.0), (0.0, 1.0)];
+
+thread_local! {
+    static PLANE: std::cell::Cell<RunPlane> =
+        const { std::cell::Cell::new(RunPlane { plane: Plane::Analysis, unit_m: 1.0, axes: EAST_NORTH }) };
+}
+
+/// The plane of the run on this thread ([`install`]): [`Plane::Analysis`] unless a run in a
 /// projected system installed [`Plane::Own`]. The threads of [`crate::parallel`] take it over from
 /// the thread that starts them.
 pub fn plane() -> Plane {
+    run_plane().plane
+}
+
+/// The plane of the run on this thread with its unit ([`install`]).
+pub fn run_plane() -> RunPlane {
     PLANE.with(std::cell::Cell::get)
 }
 
+/// A distance on the ground in metres as a length in a projected system's own plane, for a run
+/// there ([`Plane::Own`]): measured flat, as in a projected system tools measure (#2032 C2e-3).
+/// `None` in a run in longitude/latitude, which measures on the ellipsoid.
+pub fn own_length(metres: f64) -> Option<f64> {
+    own_unit_m().map(|u| metres / u)
+}
+
+/// Metres per unit of a projected system's own plane, for a run there ([`Plane::Own`]).
+pub fn own_unit_m() -> Option<f64> {
+    let r = run_plane();
+    (r.plane == Plane::Own).then_some(r.unit_m)
+}
+
 /// Puts the plane back as it was when dropped.
-pub struct PlaneInstalled(Plane);
+pub struct PlaneInstalled(RunPlane);
 
 impl Drop for PlaneInstalled {
     fn drop(&mut self) {
@@ -40,9 +74,16 @@ impl Drop for PlaneInstalled {
     }
 }
 
-/// Makes `plane` the plane of the work on this thread until the guard is dropped.
-pub fn install_plane(plane: Plane) -> PlaneInstalled {
-    PlaneInstalled(PLANE.with(|p| p.replace(plane)))
+/// Makes `run` the plane of the work on this thread until the guard is dropped.
+pub fn install(run: RunPlane) -> PlaneInstalled {
+    PlaneInstalled(PLANE.with(|p| p.replace(run)))
+}
+
+/// A step `(dx, dy)` in a projected system's own plane as (east, north), by the order and
+/// direction of its axes ([`RunPlane::axes`]): for a direction from grid north.
+pub fn own_east_north(dx: f64, dy: f64) -> (f64, f64) {
+    let [(xe, xn), (ye, yn)] = run_plane().axes;
+    (dx * xe + dy * ye, dx * xn + dy * yn)
 }
 
 /// A place of a run's geometry in its plane ([`plane`]): in the analysis plane for
@@ -83,6 +124,8 @@ pub(crate) fn reaches_poles(south: f64, north: f64) -> (bool, bool) {
     (north >= 90.0 - rustgis_geom::POLE_TOLERANCE, south <= -90.0 + rustgis_geom::POLE_TOLERANCE)
 }
 
+/// A run of coordinates as a `LineString` in the run's plane: a ring's (closed when its coordinates
+/// close it) or a line's, which it doesn't close.
 pub fn ring(r: &[Coord]) -> LineString<f64> {
     LineString::new(r.iter().map(|c| gc(*c)).collect())
 }
@@ -153,6 +196,12 @@ pub fn from_point(p: &Point<f64>) -> Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Makes `plane` the plane of the work on this thread until the guard is dropped, its unit a
+    /// metre and its axes east and north, as a run installs its own ([`install`]).
+    fn install_plane(plane: Plane) -> PlaneInstalled {
+        install(RunPlane { plane, unit_m: 1.0, axes: EAST_NORTH })
+    }
 
     /// In a projected system's own plane a place is worked on as it is, and nothing reaches a
     /// pole however large its y; the analysis plane is put back after.

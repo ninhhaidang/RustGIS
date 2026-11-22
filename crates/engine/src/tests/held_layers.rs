@@ -217,7 +217,8 @@ fn a_held_layer_is_exported_alike() {
     assert_close(&read[0], &read[1], "data.convert");
 }
 
-/// Geometry calculations and a buffer give the same measures and places.
+/// Geometry calculations give the same measures, and a buffer the same places to within UTM's
+/// scale there.
 #[test]
 fn a_held_layer_is_analysed_alike() {
     let mut ss = both();
@@ -237,8 +238,22 @@ fn a_held_layer_is_analysed_alike() {
             assert!((p - q).abs() <= 1e-6 * p.abs().max(1.0), "{layer}: {a:?} vs {b:?}");
         }
     }
+    // A buffer of 100 km: on the ground in longitude/latitude, flat in UTM (#2032 C2e-3). UTM's
+    // scale runs from 0.99969 at the buffer's west side (10.14°E) to 1.00059 at its east side
+    // (12.86°E, `proj -S`), so the flat 100 km reach 100,017 m to 99,972 m on the ground.
     run_both(&mut ss, "gp.run", &json!({"tool": "buffer", "params": {"input": "Wells", "distance": 100}}));
-    assert_close(&lonlat(&ss[0], "Wells_Buffer"), &lonlat(&ss[1], "Wells_Buffer"), "buffer");
+    let well = lonlat(&ss[0], "Wells")[0].clone();
+    let Some(Geometry::Point(well)) = well else { panic!("{well:?}") };
+    let held_well = held_coords(&ss[1], "Wells")[0][0];
+    for c in &held_coords(&ss[1], "Wells_Buffer")[0] {
+        assert!(((c.x - held_well.x).hypot(c.y - held_well.y) - 100_000.0).abs() < 1e-6, "flat: {c:?}");
+    }
+    for (session, (low, high)) in [(&ss[0], (99_999.99, 100_000.01)), (&ss[1], (99_970.0, 100_020.0))] {
+        let Some(Geometry::Polygon(rings)) = &lonlat(session, "Wells_Buffer")[0] else { panic!("no buffer") };
+        let d: Vec<f64> = rings[0][0].iter().map(|c| rustgis_geom::wgs84_distance_m(well, *c)).collect();
+        let (min, max) = (d.iter().copied().fold(f64::INFINITY, f64::min), d.iter().copied().fold(0.0, f64::max));
+        assert!(min >= low && max <= high, "{min}..{max} m on the ground");
+    }
 }
 
 /// A geometry set, a move in metres and an undo leave the same places, and a held layer keeps
@@ -1850,5 +1865,183 @@ fn a_numbered_table_is_converted_into_the_held_system() {
         let ds = &s.map().layer_by_name("Inside").unwrap().dataset;
         assert_eq!(ds.coord_crs(), if std::ptr::eq(s, &ss[0]) { Crs::LonLat } else { UTM });
         assert_eq!((0..ds.features.len()).map(|r| ds.value(r, 0).to_string()).collect::<Vec<_>>(), vec!["11.51,48.71"]);
+    }
+}
+
+/// A place given by its UTM zone 32N coordinates, in longitude/latitude.
+fn utm_place(x: f64, y: f64) -> Coord {
+    UTM.to(Crs::LonLat).unwrap().point(Coord::new(x, y)).unwrap()
+}
+
+/// Adds a layer of `geoms` (in longitude/latitude) to `s`, held in `crs`, its features named
+/// `<name>0`, `<name>1`… in their order.
+fn add_held(s: &mut Session, name: &str, kind: GeometryType, geoms: Vec<Geometry>, crs: Crs) {
+    let mut d = Dataset::new(name, kind, vec![Field::new("name", FieldType::Text)]);
+    for (i, g) in geoms.into_iter().enumerate() {
+        d.push(Some(g), vec![Cell::Text(format!("{name}{i}"))]);
+    }
+    d.hold_in(crs).unwrap();
+    s.map_mut().add_dataset(d);
+}
+
+/// A layer's numbers in field `field`, in row order (empty values as NaN).
+fn field_numbers(s: &Session, layer: &str, field: &str) -> Vec<f64> {
+    let ds = &s.map().layer_by_name(layer).unwrap_or_else(|| panic!("no layer {layer}")).dataset;
+    let f = ds.field_index(field).unwrap_or_else(|| panic!("{layer}: no field {field}"));
+    (0..ds.features.len()).map(|r| ds.value(r, f).as_f64().unwrap_or(f64::NAN)).collect()
+}
+
+/// In a run in UTM, distances in metres are measured flat there, as in a projected system tools
+/// measure them: a buffer is a circle of that radius in UTM, Select Layer By Location and Spatial
+/// Join take what lies within it there, Near measures to the nearest point there and gives it in
+/// UTM, Points Along Lines steps along the line there from grid north, and Simplify's tolerance is
+/// a length there. At the origin (12.86°E, 48.70°N, 3.86° east of the central meridian), UTM's
+/// scale is 1.00059 (`proj -S +proj=utm +zone=32 +datum=WGS84`), a UTM metre 0.99941 m on the
+/// ground: a point 1000.3 UTM metres away is 999.71 m away on the ground, within a kilometre for a
+/// run in longitude/latitude and not for one in UTM. The places and lengths checked are UTM's own.
+#[test]
+fn distances_are_measured_flat_in_the_held_system() {
+    let (x0, y0) = (784_000.0, 5_401_300.0);
+    let pt = |x: f64, y: f64| Geometry::Point(utm_place(x, y));
+    let mut s = session(UTM);
+    add_held(&mut s, "Origin", GeometryType::Point, vec![pt(x0, y0)], UTM);
+    add_held(&mut s, "Around", GeometryType::Point, vec![pt(x0 + 999.7, y0), pt(x0 + 1000.3, y0), pt(x0, y0 + 500.0)], UTM);
+    let held = held_coords(&s, "Origin")[0][0];
+    assert!((held.x - x0).abs() < 1e-6 && (held.y - y0).abs() < 1e-6, "{held:?}");
+
+    // A buffer of a kilometre: a circle of 1000 UTM metres.
+    s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Origin", "distance": 1, "units": "Kilometers", "output": "Disc"}}))
+        .unwrap();
+    assert_eq!(s.map().layer_by_name("Disc").unwrap().dataset.coord_crs(), UTM);
+    let disc = &held_coords(&s, "Disc")[0];
+    assert!(disc.len() > 100, "{}", disc.len());
+    for c in disc {
+        assert!(((c.x - x0).hypot(c.y - y0) - 1000.0).abs() < 1e-6, "{c:?}");
+    }
+
+    // Select Layer By Location within a kilometre: the points 999.7 m and 500 m away, not the one
+    // 1000.3 m away (999.71 m on the ground, which a run in longitude/latitude selects).
+    s.run(
+        "gp.run",
+        &json!({"tool": "selectByLocation", "params": {"input": "Around", "select": "Origin", "distance": 1000, "units": "Meters"}}),
+    )
+    .unwrap();
+    assert_eq!(selected(&s, "Around"), vec![0, 2]);
+
+    // Near: the point 500 m north, at 0.5 km, where it is in UTM.
+    s.run("gp.run", &json!({"tool": "near", "params": {"input": "Origin", "near": "Around", "output": "Nearest"}})).unwrap();
+    assert_eq!(s.map().layer_by_name("Nearest").unwrap().dataset.coord_crs(), UTM);
+    assert!((field_numbers(&s, "Nearest", "near_dist")[0] - 0.5).abs() < 1e-9);
+    assert!((field_numbers(&s, "Nearest", "near_x")[0] - x0).abs() < 1e-6);
+    assert!((field_numbers(&s, "Nearest", "near_y")[0] - (y0 + 500.0)).abs() < 1e-6);
+
+    // Spatial Join: the closest, and those within a kilometre, nearest first.
+    let p = json!({"tool": "spatialJoin", "params": {
+        "target": "Origin", "join": "Around", "match": "Closest", "units": "Meters", "distanceField": "dist", "output": "Closest"
+    }});
+    s.run("gp.run", &p).unwrap();
+    assert!((field_numbers(&s, "Closest", "dist")[0] - 500.0).abs() < 1e-6);
+    let p = json!({"tool": "spatialJoin", "params": {
+        "target": "Origin", "join": "Around", "match": "Within a distance", "distance": 1000, "units": "Meters",
+        "distanceField": "dist", "operation": "Join one to many", "output": "Within"
+    }});
+    s.run("gp.run", &p).unwrap();
+    let within = field_numbers(&s, "Within", "dist");
+    assert_eq!(within.len(), 2, "{within:?}");
+    assert!((within[0] - 500.0).abs() < 1e-6 && (within[1] - 999.7).abs() < 1e-6, "{within:?}");
+
+    // Points Along Lines: every kilometre along a 3 km line due east in UTM, heading 90° from grid
+    // north.
+    add_held(&mut s, "East", GeometryType::Polyline, vec![Geometry::Line(vec![vec![utm_place(x0, y0), utm_place(x0 + 3000.0, y0)]])], UTM);
+    s.run(
+        "gp.run",
+        &json!({"tool": "pointsAlongLines", "params": {"input": "East", "distance": 1, "units": "Kilometers", "output": "Steps"}}),
+    )
+    .unwrap();
+    assert_eq!(s.map().layer_by_name("Steps").unwrap().dataset.coord_crs(), UTM);
+    let steps = held_coords(&s, "Steps");
+    assert_eq!(steps.len(), 4, "{steps:?}");
+    for (k, c) in steps.iter().map(|p| p[0]).enumerate() {
+        assert!((c.x - (x0 + 1000.0 * k as f64)).abs() < 1e-6 && (c.y - y0).abs() < 1e-6, "{k}: {c:?}");
+    }
+    let along = field_numbers(&s, "Steps", "distance");
+    assert!(along.iter().zip([0.0, 1.0, 2.0, 3.0]).all(|(d, want)| (d - want).abs() < 1e-9), "{along:?}");
+    assert!(field_numbers(&s, "Steps", "angle").iter().all(|a| (a - 90.0).abs() < 1e-9));
+
+    // Simplify: a bend of 0.4 UTM metres goes at a tolerance of half a metre, and stays at 0.3 m.
+    let bend = vec![utm_place(x0, y0), utm_place(x0 + 500.0, y0 + 0.4), utm_place(x0 + 1000.0, y0)];
+    add_held(&mut s, "Bend", GeometryType::Polyline, vec![Geometry::Line(vec![bend])], UTM);
+    for (km, left, out) in [(0.0005, 2, "Plain"), (0.0003, 3, "Bent")] {
+        s.run("gp.run", &json!({"tool": "simplify", "params": {"input": "Bend", "tolerance": km, "output": out}})).unwrap();
+        assert_eq!(s.map().layer_by_name(out).unwrap().dataset.coord_crs(), UTM);
+        assert_eq!(held_coords(&s, out)[0].len(), left, "{km} km");
+    }
+}
+
+/// In a system in US survey feet, a distance in metres is that many metres' worth of its feet:
+/// a buffer of 1000 m in NAD83 / California zone 3 (ftUS, EPSG:2227) is a circle of
+/// 1000 / 0.304800609601219 = 3280.833 ft.
+#[test]
+fn a_distance_is_in_the_systems_own_unit() {
+    const FEET: Crs = Crs::Epsg(2227);
+    let mut s = Session::new(Project::default());
+    let place = FEET.to(Crs::LonLat).unwrap().point(Coord::new(6_000_000.0, 2_100_000.0)).unwrap();
+    add_held(&mut s, "Spot", GeometryType::Point, vec![Geometry::Point(place)], FEET);
+    s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Spot", "distance": 1000, "units": "Meters", "output": "Disc"}}))
+        .unwrap();
+    let centre = held_coords(&s, "Spot")[0][0];
+    let radius = 1000.0 / 0.304_800_609_601_219;
+    for c in &held_coords(&s, "Disc")[0] {
+        assert!(((c.x - centre.x).hypot(c.y - centre.y) - radius).abs() < 1e-6, "{c:?}");
+    }
+}
+
+/// Points Along Lines' angle is from grid north whichever way a system's axes point: due east is
+/// 90° in Hartebeesthoek94 / Lo27 (EPSG:22275, `+axis=wsu`), whose x grows westward and y
+/// southward.
+#[test]
+fn a_direction_is_from_grid_north_whatever_the_axes() {
+    const LO27: Crs = Crs::Epsg(22275);
+    let mut s = Session::new(Project::default());
+    let back = LO27.to(Crs::LonLat).unwrap();
+    // 1 km due east in the grid: x (westing) down by 1000.
+    let (a, b) = (back.point(Coord::new(10_000.0, 3_000_000.0)).unwrap(), back.point(Coord::new(9_000.0, 3_000_000.0)).unwrap());
+    add_held(&mut s, "East", GeometryType::Polyline, vec![Geometry::Line(vec![vec![a, b]])], LO27);
+    s.run(
+        "gp.run",
+        &json!({"tool": "pointsAlongLines", "params": {"input": "East", "distance": 500, "units": "Meters", "output": "Steps"}}),
+    )
+    .unwrap();
+    assert_eq!(s.map().layer_by_name("Steps").unwrap().dataset.coord_crs(), LO27);
+    let angles = field_numbers(&s, "Steps", "angle");
+    assert_eq!(angles.len(), 3, "{angles:?}");
+    assert!(angles.iter().all(|a| (a - 90.0).abs() < 1e-9), "{angles:?}");
+}
+
+/// The tools that measure flat in a held layer's own system take junk distances and places without
+/// a panic: they refuse, or make what they can.
+#[test]
+fn distance_tools_take_junk_in_the_held_system() {
+    let mut s = session(UTM);
+    let far = UTM.to(Crs::LonLat).unwrap().point(Coord::new(500_000.0, 5_400_000.0)).unwrap();
+    add_held(&mut s, "Junk", GeometryType::Polyline, vec![Geometry::Line(vec![vec![far, far, Coord::new(f64::NAN, 1.0)]])], UTM);
+    for d in [json!(0), json!(-1), json!(1e308), json!(-1e308), json!("x"), json!(null), json!(5e-324)] {
+        for (tool, params) in [
+            ("buffer", json!({"input": "Junk", "distance": d})),
+            ("buffer", json!({"input": "Parcels", "distance": d, "dissolve": "All"})),
+            ("simplify", json!({"input": "Roads", "tolerance": d})),
+            ("pointsAlongLines", json!({"input": "Junk", "distance": d})),
+            ("pointsAlongLines", json!({"input": "Roads", "distance": d, "startOffset": d, "endOffset": d, "includeEnd": "Yes"})),
+            ("near", json!({"input": "Wells", "near": "Junk", "distance": d})),
+            ("selectByLocation", json!({"input": "Wells", "select": "Junk", "distance": d})),
+            ("spatialJoin", json!({"target": "Wells", "join": "Roads", "match": "Closest", "distance": d})),
+            ("spatialJoin", json!({"target": "Wells", "join": "Junk", "match": "Within a distance", "distance": d})),
+        ] {
+            // Refused or done: not a panic, which a tool run gives back as "<Tool> failed
+            // unexpectedly".
+            if let Err(e) = s.run("gp.run", &json!({"tool": tool, "params": params})) {
+                assert!(!e.contains("failed unexpectedly"), "{tool} {params}: {e}");
+            }
+        }
     }
 }

@@ -1525,11 +1525,17 @@ fn streamed_inputs(
 /// works in `crs`: a projected system, whose coordinates are a plane's. Longitude/latitude, Web
 /// Mercator and the other world projections (whose plane has the antimeridian as a seam and the
 /// poles as lines, [`Crs::is_world_projection`]), and other geographic or geocentric systems, keep
-/// the longitude/latitude path, whose plane and geodesics their coordinates need.
+/// the longitude/latitude path, whose plane and geodesics their coordinates need. So does a system
+/// whose conversion can't be made or gives no parameters, whose unit and axes
+/// ([`Crs::unit_and_axes`]) aren't known.
 ///
 /// [`ToolSpec::works_in_own_system`]: rustgis_analysis::ToolSpec::works_in_own_system
 fn works_in(crs: Crs) -> bool {
-    crs != Crs::LonLat && !crs.is_world_projection() && !crs.is_geographic() && !crs.is_geocentric()
+    crs != Crs::LonLat
+        && !crs.is_world_projection()
+        && !crs.is_geographic()
+        && !crs.is_geocentric()
+        && crs.transformer().is_ok_and(|t| t.params().is_some())
 }
 
 /// The system a run works in: its first input's own ([`Dataset::coord_crs`]) when the tool works
@@ -1541,7 +1547,7 @@ fn work_system(
     full: &std::collections::HashMap<String, Dataset>,
 ) -> Crs {
     use rustgis_analysis::ParamKind as K;
-    let Some(spec) = spec.filter(|t| t.works_in_own_system(params)) else { return Crs::LonLat };
+    let Some(spec) = spec.filter(|t| t.works_in_own_system()) else { return Crs::LonLat };
     // The tool's first layer parameter, under its name or one of the names it also accepts
     // (Join Field's `input`), taken as the tool takes it: the first that isn't blank. A table
     // given by its number (read unconverted, [`Inputs::table`]) or by name leaves the run in

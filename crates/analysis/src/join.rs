@@ -3,9 +3,11 @@
 //! the overlap a feature has with a polygon, and the rules that roll the values of several matches
 //! up into one.
 //!
-//! Distances are on the WGS 84 ellipsoid, as buffers' are. The nearest points of two features are
-//! found in an azimuthal equidistant plane, centred first between the features and then between
-//! the points found, and measured along the geodesic between them.
+//! In a run in longitude/latitude, distances are on the WGS 84 ellipsoid, as buffers' are. The
+//! nearest points of two features are found in an azimuthal equidistant plane, centred first
+//! between the features and then between the points found, and measured along the geodesic between
+//! them. In a run in a projected system's own plane ([`crate::convert::Plane::Own`], #2032 C2e-3),
+//! they are found there and measured straight, in the system's unit times its length.
 
 use rustgis_data::{Coord, Dataset, FieldType, Geometry, Value};
 use rustgis_geom::{Aeqd, Extent, WGS84_MIN_RADIUS_M, geodesic_interpolate, geodesic_length_m, geodesic_ring_area_m2, wgs84_distance_m};
@@ -15,7 +17,29 @@ use serde_json::Value as Json;
 /// and a longitude within 540° of the meridian (a shape across the antimeridian goes past 180°).
 /// Distances leave other coordinates out, as places they can't measure from.
 fn on_earth(c: &Coord) -> bool {
-    c.is_finite() && c.x.abs() <= 540.0 && c.y.abs() <= 90.0
+    c.is_finite() && (crate::convert::plane() == crate::convert::Plane::Own || (c.x.abs() <= 540.0 && c.y.abs() <= 90.0))
+}
+
+/// The plane nearest points are found in: an azimuthal equidistant one, or a projected system's
+/// own as it is.
+enum Flat {
+    Aeqd(Aeqd),
+    Own,
+}
+
+impl Flat {
+    fn forward(&self, c: Coord) -> Coord {
+        match self {
+            Flat::Aeqd(p) => p.forward(c),
+            Flat::Own => c,
+        }
+    }
+    fn inverse(&self, c: Coord) -> Coord {
+        match self {
+            Flat::Aeqd(p) => p.inverse(c),
+            Flat::Own => c,
+        }
+    }
 }
 
 /// The first coordinate of a geometry that is a place on the Earth.
@@ -29,7 +53,8 @@ pub fn first_coord(g: &Geometry) -> Option<Coord> {
     first
 }
 
-/// The ground distance (metres) between two features that don't intersect: between their nearest
+/// The distance (metres) between two features that don't intersect, on the ground (flat in a
+/// projected system's own plane, see the module's docs): between their nearest
 /// points, edges and vertices alike. `None` for a geometry without a finite coordinate.
 ///
 /// The nearest pair is found in a plane centred between the features' first vertices, then again
@@ -37,7 +62,10 @@ pub fn first_coord(g: &Geometry) -> Option<Coord> {
 /// the features are.
 pub fn distance_m(a: &Geometry, b: &Geometry) -> Option<f64> {
     let (p, q) = nearest_points(a, b)?;
-    let d = wgs84_distance_m(p, q);
+    let d = match crate::convert::own_unit_m() {
+        Some(unit) => (p.x - q.x).hypot(p.y - q.y) * unit,
+        None => wgs84_distance_m(p, q),
+    };
     d.is_finite().then_some(d)
 }
 
@@ -46,13 +74,16 @@ pub fn distance_m(a: &Geometry, b: &Geometry) -> Option<f64> {
 pub fn nearest_points(a: &Geometry, b: &Geometry) -> Option<(Coord, Coord)> {
     // The features' first vertices are a pair of their points: the search starts from them.
     let (fa, fb) = (first_coord(a)?, first_coord(b)?);
-    let (p, q) = nearest_pair(a, b, &Aeqd::new(geodesic_interpolate(fa, fb, 0.5)), Some((fa, fb)))?;
-    Some(nearest_pair(a, b, &Aeqd::new(geodesic_interpolate(p, q, 0.5)), Some((p, q))).unwrap_or((p, q)))
+    if crate::convert::plane() == crate::convert::Plane::Own {
+        return nearest_pair(a, b, &Flat::Own, Some((fa, fb)));
+    }
+    let (p, q) = nearest_pair(a, b, &Flat::Aeqd(Aeqd::new(geodesic_interpolate(fa, fb, 0.5))), Some((fa, fb)))?;
+    Some(nearest_pair(a, b, &Flat::Aeqd(Aeqd::new(geodesic_interpolate(p, q, 0.5))), Some((p, q))).unwrap_or((p, q)))
 }
 
 /// The nearest points of two geometries (lon/lat) as found in `plane`: a point of `a`, one of `b`.
 /// `seed`, a pair already found, starts the search, so pairs no nearer than it are skipped.
-fn nearest_pair(a: &Geometry, b: &Geometry, plane: &Aeqd, seed: Option<(Coord, Coord)>) -> Option<(Coord, Coord)> {
+fn nearest_pair(a: &Geometry, b: &Geometry, plane: &Flat, seed: Option<(Coord, Coord)>) -> Option<(Coord, Coord)> {
     let boxed = |segs: Vec<(Coord, Coord)>| -> Vec<((Coord, Coord), [f64; 4])> {
         segs.into_iter().map(|(s, e)| ((s, e), [s.x.min(e.x), s.y.min(e.y), s.x.max(e.x), s.y.max(e.y)])).collect()
     };
@@ -94,7 +125,7 @@ fn nearest_pair(a: &Geometry, b: &Geometry, plane: &Aeqd, seed: Option<(Coord, C
 }
 
 /// A geometry's edges in the plane; a point is an edge of no length.
-fn segments(g: &Geometry, plane: &Aeqd) -> Vec<(Coord, Coord)> {
+fn segments(g: &Geometry, plane: &Flat) -> Vec<(Coord, Coord)> {
     let mut out = Vec::new();
     let mut path = |pts: &[Coord], closed: bool| {
         // A coordinate left out ends a run: no edge joins the runs on either side of it, and a
@@ -159,6 +190,11 @@ pub fn may_be_within(a: &Extent, b: &Extent, metres: f64) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
     }
+    // In a projected system's own plane, extents there: their gap measured straight.
+    if let Some(d) = crate::convert::own_length(metres) {
+        let gap = (b.min_x - a.max_x).max(a.min_x - b.max_x).max(0.0).hypot((b.min_y - a.max_y).max(a.min_y - b.max_y).max(0.0));
+        return gap <= d.max(0.0) * (1.0 + 1e-9) + 1e-9;
+    }
     let (dlat, dlon) = spread(a.min_y.abs().max(a.max_y.abs()), metres);
     let lat_gap = (b.min_y - a.max_y).max(a.min_y - b.max_y).max(0.0);
     if lat_gap > dlat {
@@ -173,6 +209,11 @@ pub fn may_be_within(a: &Extent, b: &Extent, metres: f64) -> bool {
 pub fn search_box(ext: &Extent, metres: f64) -> Option<Extent> {
     if ext.is_empty() || !metres.is_finite() {
         return None;
+    }
+    // In a projected system's own plane, the extent there widened by the distance in its unit.
+    if let Some(d) = crate::convert::own_length(metres) {
+        let d = d.max(0.0) * (1.0 + 1e-9) + 1e-9;
+        return Some(Extent::new(ext.min_x - d, ext.min_y - d, ext.max_x + d, ext.max_y + d));
     }
     let (dlat, dlon) = spread(ext.min_y.abs().max(ext.max_y.abs()), metres);
     let dlon = dlon?;

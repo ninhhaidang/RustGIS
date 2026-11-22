@@ -604,6 +604,29 @@ impl Crs {
         }
     }
 
+    /// Metres per unit of its coordinates: 1 for a system in metres, 0.3048 for one in feet,
+    /// 0.304800609601219 for one in US survey feet; 1 when its conversion gives none (longitude/
+    /// latitude, whose degrees are no length, and Web Mercator) or can't be made (a layer held in
+    /// a system has made it: [`Dataset::hold_in`] converts through it).
+    ///
+    /// [`Dataset::hold_in`]: crate::Dataset::hold_in
+    pub fn metres_per_unit(self) -> f64 {
+        self.unit_and_axes().0
+    }
+
+    /// [`Crs::metres_per_unit`] and [`Crs::axis_directions`] together, from one conversion.
+    pub fn unit_and_axes(self) -> (f64, [(f64, f64); 2]) {
+        let t = self.transformer().ok();
+        let unit = t.as_ref().and_then(|t| t.params().map(|p| p.to_meter)).filter(|m| m.is_finite() && *m > 0.0).unwrap_or(1.0);
+        (unit, t.map_or([(1.0, 0.0), (0.0, 1.0)], |t| t.axis_directions()))
+    }
+
+    /// Which way its coordinates point ([`Transformer::axis_directions`]): east, then north, for
+    /// one whose conversion can't be made (as [`Crs::metres_per_unit`], not one a layer is held in).
+    pub fn axis_directions(self) -> [(f64, f64); 2] {
+        self.unit_and_axes().1
+    }
+
     /// Whether it is a projection of the whole world whose plane has the antimeridian as a seam
     /// across it and the poles as lines (cylindrical and pseudocylindrical maps: World Mercator,
     /// Plate Carrée, Robinson, Equal Earth, Mollweide and the like), by its PROJ method. A place
@@ -1007,7 +1030,8 @@ fn build_sr(sr: &terrio_crs::SpatialRef) -> Result<Transformer, String> {
     let geographic = sr.is_geographic();
     let lat_first = !geographic && axis.starts_with(['n', 's']);
     let west = axis.chars().take(2).any(|c| c == 'w');
-    let t = Transformer::of(sr, geographic, (lat_first, west))?;
+    let south = !geographic && axis.chars().take(2).any(|c| c == 's');
+    let t = Transformer::of(sr, geographic, (lat_first, west, south))?;
     let centre = t.params().map_or(Coord::new(0.0, 0.0), |p| Coord::new(p.lon_0 + p.prime_meridian, p.lat_0.clamp(-89.0, 89.0)));
     if !t.is_geographic() && t.from_lonlat_unchecked(centre).is_none() {
         return Err("it can't place its own centre".into());
@@ -1626,7 +1650,8 @@ fn build(def: &str) -> Result<Transformer, String> {
     let axis = def.split_whitespace().find_map(|t| t.strip_prefix("+axis=")).unwrap_or("enu");
     let lat_first = axis.starts_with(['n', 's']);
     let west = axis.chars().take(2).any(|c| c == 'w');
-    let t = Transformer::of(&sr, geographic_def(def), (lat_first, west))?;
+    let south = axis.chars().take(2).any(|c| c == 's');
+    let t = Transformer::of(&sr, geographic_def(def), (lat_first, west, south))?;
     // A definition that can't place its own centre (a unit of 0 metres) is no system.
     let centre = t.params().map_or(Coord::new(0.0, 0.0), |p| Coord::new(p.lon_0 + p.prime_meridian, p.lat_0.clamp(-89.0, 89.0)));
     if !t.is_geographic() && t.from_lonlat_unchecked(centre).is_none() {
@@ -1926,6 +1951,8 @@ struct Terrio {
     lat_first: bool,
     /// Its east-west coordinate points west (`+axis=wnu`, `wsu`): -1, else 1.
     lon_sign: f64,
+    /// Its north-south coordinate points south (`+axis=wsu`, `swu`): -1, else 1.
+    lat_sign: f64,
     /// The conversion's parameters (centre, offsets, unit, prime meridian), when it has some.
     params: Option<terrio_crs::ProjParams>,
     /// A world projection whose inverse may go on past its edges ([`WRAPPING`]).
@@ -2337,7 +2364,7 @@ impl Transformer {
     /// The transformer between `sr` and WGS 84 longitude/latitude; `geographic` when its
     /// coordinates are degrees. A system on another body than the Earth goes to and from its own
     /// longitude/latitude instead, which is read as it is, on the Earth ([`Crs::is_planetary`]).
-    fn of(sr: &terrio_crs::SpatialRef, geographic: bool, (lat_first, west): (bool, bool)) -> Result<Transformer, String> {
+    fn of(sr: &terrio_crs::SpatialRef, geographic: bool, (lat_first, west, south): (bool, bool, bool)) -> Result<Transformer, String> {
         grids_set_up();
         let wgs84 = terrio_crs::SpatialRef::from_epsg(4326).map_err(|e| e.to_string())?;
         let pair = |to: &terrio_crs::SpatialRef| -> Result<_, String> {
@@ -2382,6 +2409,7 @@ impl Transformer {
             unit,
             lat_first,
             lon_sign: if west { -1.0 } else { 1.0 },
+            lat_sign: if south { -1.0 } else { 1.0 },
             params,
             wraps,
             eck4,
@@ -2522,6 +2550,20 @@ impl Transformer {
         }
     }
 
+    /// Which way its coordinates point: for x, then y, the (east, north) of a step of one along it,
+    /// by the order and direction of its axes (`+axis=wsu`: x west, y south). East, then north,
+    /// for a system without its own.
+    pub fn axis_directions(&self) -> [(f64, f64); 2] {
+        match &self.kind {
+            Kind::Terrio(live) => {
+                let t = &live.first;
+                let (east, north) = ((t.lon_sign, 0.0), (0.0, t.lat_sign));
+                if t.lat_first { [north, east] } else { [east, north] }
+            }
+            _ => [(1.0, 0.0), (0.0, 1.0)],
+        }
+    }
+
     /// The conversion's parameters (method, centre, offsets, unit, prime meridian), for a system
     /// terrio-crs computes that has some.
     pub fn params(&self) -> Option<&terrio_crs::ProjParams> {
@@ -2552,6 +2594,28 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The length of a system's unit, as PROJ 9.9.0 gives its axes' `LENGTHUNIT`
+    /// (`projinfo -o WKT2_2019 EPSG:2227`: "US survey foot",0.304800609601219; EPSG:3361: "foot",
+    /// 0.3048; EPSG:32632: "metre",1).
+    #[test]
+    fn a_systems_unit_has_its_length() {
+        assert!((Crs::Epsg(2227).metres_per_unit() - 0.304_800_609_601_219).abs() < 1e-15);
+        assert!((Crs::Epsg(3361).metres_per_unit() - 0.3048).abs() < 1e-15);
+        assert_eq!(Crs::Epsg(32632).metres_per_unit(), 1.0);
+        assert_eq!(Crs::parse("+proj=utm +zone=32 +datum=WGS84 +units=km").unwrap().metres_per_unit(), 1000.0);
+        assert_eq!(Crs::LonLat.metres_per_unit(), 1.0);
+    }
+
+    /// Which way a system's x and y point, as PROJ 9.9.0 gives its axes (`projinfo -o PROJ
+    /// EPSG:22275`: `+axis=wsu`, x west and y south; EPSG:2065: `+axis=swu`, x south and y west).
+    #[test]
+    fn a_systems_axes_have_their_directions() {
+        assert_eq!(Crs::Epsg(32632).axis_directions(), [(1.0, 0.0), (0.0, 1.0)]);
+        assert_eq!(Crs::Epsg(22275).axis_directions(), [(-1.0, 0.0), (0.0, -1.0)]);
+        assert_eq!(Crs::Epsg(2065).axis_directions(), [(0.0, -1.0), (-1.0, 0.0)]);
+        assert_eq!(Crs::parse("+proj=utm +zone=32 +datum=WGS84 +axis=neu").unwrap().axis_directions(), [(0.0, 1.0), (1.0, 0.0)]);
+    }
 
     /// World projections, whose planes have the antimeridian as a seam, are told apart from regional
     /// ones by their method.

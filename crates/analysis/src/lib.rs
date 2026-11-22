@@ -239,9 +239,10 @@ pub struct ToolSpec {
 /// The built-in tools that work in their first input's own coordinate system when it is a
 /// projected one, rather than in longitude/latitude ([`ToolSpec::works_in_own_system`]): those
 /// whose results don't depend on the system's units or shape beyond what the input's own
-/// coordinates give (attributes, vertices, envelopes, validity), and the overlays and spatial
-/// relations, worked on in its plane rather than the analysis plane. Areas they report are
-/// still measured on the ground.
+/// coordinates give (attributes, vertices, envelopes, validity), the overlays and spatial
+/// relations, worked on in its plane rather than the analysis plane, and the tools that measure
+/// distances in metres, measured flat there in its unit ([`convert::own_length`]). Areas they
+/// report are still measured on the ground.
 const OWN_SYSTEM_TOOLS: &[&str] = &[
     "summaryStatistics",
     "pivotTable",
@@ -271,6 +272,11 @@ const OWN_SYSTEM_TOOLS: &[&str] = &[
     "countPoints",
     "selectByLocation",
     "spatialJoin",
+    // Distances in metres, measured flat in the system's unit (#2032 C2e-3).
+    "buffer",
+    "simplify",
+    "pointsAlongLines",
+    "near",
 ];
 
 impl ToolSpec {
@@ -279,16 +285,16 @@ impl ToolSpec {
     /// into it, and its outputs are held there. Every other tool, and every external one, works in
     /// longitude/latitude.
     ///
-    /// For some it depends on `params`: Select Layer By Location and Spatial Join measure no
-    /// distance only without a search distance, or with a match that measures none.
-    pub fn works_in_own_system(&self, params: &Value) -> bool {
-        OWN_SYSTEM_TOOLS.contains(&self.id) && TOOLS.iter().any(|t| std::ptr::eq(t, self)) && !tools::measures_distance(self.id, params)
+    /// Distances in metres are measured flat there, in the system's unit (#2032 C2e-3).
+    pub fn works_in_own_system(&self) -> bool {
+        OWN_SYSTEM_TOOLS.contains(&self.id) && TOOLS.iter().any(|t| std::ptr::eq(t, self))
     }
 
     /// Whether the tool crosses its inputs' edges with each other's (overlays and spatial
-    /// relations), where how an edge runs between its vertices decides the result, not only where
-    /// they are: a run in its first input's own system then says when another input's edges,
-    /// converted into it, run far from where a run in longitude/latitude takes them.
+    /// relations) or measures to them (Near), where how an edge runs between its vertices decides
+    /// the result, not only where they are: a run in its first input's own system then says when
+    /// another input's edges, converted into it, run far from where a run in longitude/latitude
+    /// takes them.
     pub fn reads_edges(&self) -> bool {
         matches!(
             self.id,
@@ -303,6 +309,7 @@ impl ToolSpec {
                 | "countPoints"
                 | "selectByLocation"
                 | "spatialJoin"
+                | "near"
         )
     }
 
@@ -743,8 +750,14 @@ pub fn run(id: &str, inputs: &dyn Inputs, params: &Value) -> Result<ToolResult, 
 /// plane for longitude/latitude, a projected system's own coordinates otherwise
 /// ([`convert::Plane::Own`]).
 fn in_plane<T>(inputs: &dyn Inputs, work: impl FnOnce() -> T) -> T {
-    let plane = if inputs.work_crs() == rustgis_data::raster::Crs::LonLat { convert::Plane::Analysis } else { convert::Plane::Own };
-    let _plane = convert::install_plane(plane);
+    let crs = inputs.work_crs();
+    let run = if crs == rustgis_data::raster::Crs::LonLat {
+        convert::RunPlane { plane: convert::Plane::Analysis, unit_m: 1.0, axes: convert::EAST_NORTH }
+    } else {
+        let (unit_m, axes) = crs.unit_and_axes();
+        convert::RunPlane { plane: convert::Plane::Own, unit_m, axes }
+    };
+    let _plane = convert::install(run);
     work()
 }
 
