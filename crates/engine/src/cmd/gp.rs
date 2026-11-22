@@ -3070,7 +3070,9 @@ pub(crate) fn execute(
     #[cfg(not(target_arch = "wasm32"))]
     let control = current.as_ref().unwrap_or(control);
     let t0 = now_ms();
-    if control.is_cancelled() {
+    // A look at Cancel as the work's own are (counted for a test's control): a model's or script's
+    // tool on the copy stops here when cancelled between steps.
+    if rustgis_data::progress::Probe::cancelled(control.as_ref()) {
         let e = format!("{} was cancelled before it started", spec.name);
         return apply_with(s, run_of(t0), kept(), Err(e), 0, opts);
     }

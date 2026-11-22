@@ -212,50 +212,89 @@ pub fn read_ahead(s: &mut Session, command: &str, p: &Value) -> Result<ReadAhead
     s.start_read(command, p)
 }
 
+/// The commands whose read the desktop app makes on a thread of its own before they land
+/// ([`read_ahead`]), each with what its read is called, besides the table edits
+/// (`edit::TABLE_EDITS`). The cancel tests (`tests/cancellation.rs`) exercise every one, or name
+/// why not.
+pub(crate) const IN_BACKGROUND: &[(&str, &str)] = &[
+    ("service.layers", "List Service Layers"),
+    ("service.add", "Add Service Layer"),
+    ("layer.addData", "Add Data"),
+    ("layer.loadAll", "Load All Features"),
+    ("labels.convert", "Convert To Annotation"),
+    ("layer.repairSource", "Repair Data Source"),
+    ("layer.reloadData", "Reload Data"),
+    ("model.run", "Run Model"),
+    ("script.run", "Run Script"),
+    ("map.reloadTiles", "Reload Data"),
+    ("map.repairTiles", "Repair Data Source"),
+    ("topology.validate", "Error Inspector"),
+    ("source.syncState", "Source File State"),
+    ("raster.imageGrid", "Read Original Image Grid"),
+    ("edit.previewShapeConversion", "Preview Shape Conversion"),
+    ("table.statistics", "Column Statistics"),
+    ("data.similar", "Find Similar"),
+    ("layer.sizeBy", "Size by Field"),
+];
+
+/// What `command`'s read is called, when it is one the app makes before the command lands
+/// ([`IN_BACKGROUND`] or a table edit).
+pub(crate) fn in_background(command: &str) -> Option<&'static str> {
+    IN_BACKGROUND
+        .iter()
+        .find(|(c, _)| *c == command)
+        .map(|(_, name)| *name)
+        .or_else(|| super::edit::table_edit_in_background(command).map(|_| "Edit Table"))
+}
+
+/// Why `command` can't be read ahead.
+pub(crate) fn not_in_background(command: &str) -> String {
+    format!("{command} doesn't prepare background work")
+}
+
 /// Picks work only for an already admitted command, retaining its exact streamed-source opening.
 pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continuation) -> Result<ReadAhead, String> {
     let CommandOp::Registered { spec, params } = op.op() else { return Err("not a registered read command".into()) };
-    let (name, work, source) = match spec.id {
+    let name = in_background(spec.id).ok_or_else(|| not_in_background(spec.id))?;
+    let (work, source) = match spec.id {
         "service.layers" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = super::service::listing_ahead(s, params)?;
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("List Service Layers", work, None)
+            (work, None)
         }
         "service.add" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = super::service::adding_ahead(s, params)?;
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("Add Service Layer", work, None)
+            (work, None)
         }
-        "layer.addData" => ("Add Data", super::layer::add_data_ahead(params), None),
+        "layer.addData" => (super::layer::add_data_ahead(params), None),
         "layer.loadAll" => {
             let layer = s.map().layer(s.layer_id(params)?).ok_or("no such layer")?;
-            ("Load All Features", super::layer::load_all_ahead(s, params), layer.source.clone())
+            (super::layer::load_all_ahead(s, params), layer.source.clone())
         }
         "labels.convert" => {
             let layer = s.map().layer(s.layer_id(params)?).ok_or("no such layer")?;
             // Nothing to convert: the command says so at once, with no read.
-            let work = super::labels::has_label_text(layer, s.map().scale())
-                .then(|| super::whole::ahead(s, params, "Convert To Annotation"))
-                .flatten();
-            ("Convert To Annotation", work, layer.source.clone())
+            let work = super::labels::has_label_text(layer, s.map().scale()).then(|| super::whole::ahead(s, params, name)).flatten();
+            (work, layer.source.clone())
         }
         "layer.repairSource" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = super::repair::repair_ahead(s, params);
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("Repair Data Source", work, None)
+            (work, None)
         }
         "layer.reloadData" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = super::repair::reload_ahead(s, params);
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("Reload Data", work, None)
+            (work, None)
         }
         "model.run" => {
             // A copied session has native authority. Scoped callers keep their admitted
@@ -264,32 +303,32 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
             let work = owner.native_tool_owner().then(|| super::workflows::ahead_on_copy(s, "model.run", params));
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("Run Model", work, None)
+            (work, None)
         }
         "script.run" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = super::workflows::script_ahead(s, params, owner.native_tool_owner())?;
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            ("Run Script", work, None)
+            (work, None)
         }
         "map.reloadTiles" | "map.repairTiles" => {
             #[cfg(not(target_arch = "wasm32"))]
             let work = Some(super::repair::archive_ahead(s, spec.id, params));
             #[cfg(target_arch = "wasm32")]
             let work = None;
-            let name = if spec.id == "map.repairTiles" { "Repair Data Source" } else { "Reload Data" };
-            (name, work, None)
+            (work, None)
         }
-        id if super::edit::table_edit_in_background(id).is_some() => ("Edit Table", super::edit::table_ahead(s, spec.id, params)?, None),
-        "topology.validate" => ("Error Inspector", super::design::topology_ahead(s, params), None),
-        "source.syncState" => ("Source File State", super::publish::sync_ahead(s, params), None),
-        "raster.imageGrid" => ("Read Original Image Grid", crate::image_grid::ahead(s, params), None),
-        "edit.previewShapeConversion" => ("Preview Shape Conversion", crate::shape_conversion::ahead(s, params), None),
-        "table.statistics" => ("Column Statistics", super::table_stats::stats_ahead(s, params), None),
-        "data.similar" => ("Find Similar", super::similar::ahead(s, params), None),
-        "layer.sizeBy" => ("Size by Field", super::layer::size_by_ahead(s, params), None),
-        _ => return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service listings, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics, Similar and Size by Field prepare background work".into()),
+        id if super::edit::table_edit_in_background(id).is_some() => (super::edit::table_ahead(s, spec.id, params)?, None),
+        "topology.validate" => (super::design::topology_ahead(s, params), None),
+        "source.syncState" => (super::publish::sync_ahead(s, params), None),
+        "raster.imageGrid" => (crate::image_grid::ahead(s, params), None),
+        "edit.previewShapeConversion" => (crate::shape_conversion::ahead(s, params), None),
+        "table.statistics" => (super::table_stats::stats_ahead(s, params), None),
+        "data.similar" => (super::similar::ahead(s, params), None),
+        "layer.sizeBy" => (super::layer::size_by_ahead(s, params), None),
+        // Listed in IN_BACKGROUND without a read here.
+        id => return Err(not_in_background(id)),
     };
     let name = work.as_ref().map_or(name, |work| work.name);
     let table = super::edit::table_edit_in_background(spec.id)

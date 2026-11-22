@@ -15,6 +15,13 @@ pub(super) fn long_commands(boundaries: bool) {
     let _ = std::fs::remove_dir_all(&dir.0);
     std::fs::create_dir_all(&dir.0).unwrap();
     let out = |f: &str| dir.0.join(f).display().to_string();
+    // The reads made ahead that run here, checked at the end against every one there is
+    // (`reads::IN_BACKGROUND` and the table edits).
+    let covered = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let read = |fixture: &Session, command: &'static str, p: &Value| {
+        covered.borrow_mut().insert(command);
+        exercise(fixture, command, p, Kind::Read, &dir.0, boundaries);
+    };
     let mut s = world();
     if boundaries {
         // A few sample rows and simple shapes exercise the same commands without a world-sized
@@ -167,13 +174,14 @@ pub(super) fn long_commands(boundaries: bool) {
         // Adding a service needs a real collection and remote features to succeed. An empty
         // listing is useful only for the original first-check cancellation test.
         if !boundaries || command == "service.layers" {
-            exercise(&s, command, &params, Kind::Read, &dir.0, boundaries);
+            read(&s, command, &params);
         }
     }
     // Shape fitting uses the same cancellable read queue, without modifying its source. Its
     // fixture is an editing session of its own, which the boundary sweep's sessions don't carry,
     // so it keeps first-check coverage.
     if !boundaries {
+        covered.borrow_mut().insert("edit.previewShapeConversion");
         let mut shapes = Session::new(Project::default());
         let id = shapes.map_mut().add_dataset(rustgis_data::Dataset::new("Conversion", rustgis_data::GeometryType::Polygon, vec![]));
         shapes.active_layer = Some(id);
@@ -190,30 +198,30 @@ pub(super) fn long_commands(boundaries: bool) {
     // records indexed, the GeoJSON file's features found, Cancel looked at as they go (#2446).
     for file in ["in-place.shp", "in-place.geojson"] {
         s.run("share.exportLayer", &json!({"layer": "Cities", "path": out(file)})).unwrap();
-        exercise(&s, "layer.addData", &json!({"path": out(file), "stream": true}), Kind::Read, &dir.0, boundaries);
+        read(&s, "layer.addData", &json!({"path": out(file), "stream": true}));
     }
     // Past the first few thousand features, the GeoJSON scan looks at Cancel again.
     let many: Vec<Value> = (0..4097)
         .map(|i| json!({"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [10.0 + f64::from(i) * 1e-4, 45.0]}}))
         .collect();
     std::fs::write(out("many.geojson"), json!({"type": "FeatureCollection", "features": many}).to_string()).unwrap();
-    exercise(&s, "layer.addData", &json!({"path": out("many.geojson"), "stream": true}), Kind::Read, &dir.0, boundaries);
+    read(&s, "layer.addData", &json!({"path": out("many.geojson"), "stream": true}));
     // Original TIFF headers share the read queue and both cancellation sweeps.
-    exercise(&s, "raster.imageGrid", &json!({"layer": dem}), Kind::Read, &dir.0, boundaries);
+    read(&s, "raster.imageGrid", &json!({"layer": dem}));
     // A PDF's page is read on the same queue: the file, then its drawing, Cancel looked at between
     // (#2336).
     s.run("layout.new", &json!({"page": "a4", "template": "map"})).unwrap();
     s.run("layout.export", &json!({"path": out("page.pdf"), "dpi": 36, "allPages": false})).unwrap();
-    exercise(&s, "layer.addData", &json!({"path": out("page.pdf")}), Kind::Read, &dir.0, boundaries);
-    exercise(&s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
-    exercise(&s, "data.similar", &json!({"layer": "Cities", "row": 0, "fields": ["pop_max"], "count": 2}), Kind::Read, &dir.0, boundaries);
+    read(&s, "layer.addData", &json!({"path": out("page.pdf")}));
+    read(&s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"}));
+    read(&s, "data.similar", &json!({"layer": "Cities", "row": 0, "fields": ["pop_max"], "count": 2}));
     // The topology worker evaluates the primary query before its geometric check.
     {
         let id = s.map().layer_by_name("Cities").unwrap().id;
         let query = s.map_mut().layer_mut(id).unwrap().definition_query.replace("pop_max >= 0".into());
         let rules = s.map().editing.topology.clone();
         s.run("topology.rules", &json!({"add":{"rule":"mustNotSelfIntersect","layer":"Cities"}})).unwrap();
-        exercise(&s, "topology.validate", &json!({}), Kind::Read, &dir.0, boundaries);
+        read(&s, "topology.validate", &json!({}));
         s.map_mut().layer_mut(id).unwrap().definition_query = query;
         s.map_mut().editing.topology = rules;
     }
@@ -252,7 +260,7 @@ pub(super) fn long_commands(boundaries: bool) {
     }
     // Automatic size bounds scan the numeric field on that queue too.
     s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
-    exercise(&s, "layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
+    read(&s, "layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"}));
 
     s.run("layer.addDataText", &json!({"fileName": "calc.csv", "text": "n,day\n1,01/02/2024\n2,02/03/2024\n"})).unwrap();
     s.run("edit.enable", &json!({"on": true})).unwrap();
@@ -266,9 +274,9 @@ pub(super) fn long_commands(boundaries: bool) {
     ];
     assert_eq!(listed(&edits), crate::cmd::edit::TABLE_EDITS.iter().map(|(id, ..)| *id).collect(), "add a new table worker here");
     for (command, p) in edits {
-        exercise(&s, command, &p, Kind::Read, &dir.0, boundaries);
+        read(&s, command, &p);
         let script = json!({"script": format!("{command} {p}")});
-        exercise(&s, "script.run", &script, Kind::Read, &dir.0, boundaries);
+        read(&s, "script.run", &script);
     }
     s.run(
         "layer.addDataText",
@@ -278,7 +286,7 @@ pub(super) fn long_commands(boundaries: bool) {
     )
     .unwrap();
     let params = json!({"layer":"dated", "field":"day", "type":"date", "format":"%m/%d/%Y"});
-    exercise(&s, "edit.convertField", &params, Kind::Read, &dir.0, boundaries);
+    read(&s, "edit.convertField", &params);
 
     // Replacement validation can now scan temporal fields as well as probing geometry.
     let mut dates = rustgis_data::Dataset::new(
@@ -293,7 +301,7 @@ pub(super) fn long_commands(boundaries: bool) {
     let replacement = out("cancel-repair-source.fgb");
     std::fs::write(&replacement, rustgis_data::source::fgb::write(&dates).unwrap()).unwrap();
     let id = s.run("layer.addData", &json!({"path": replacement, "stream": true})).unwrap()["layer"].as_u64().unwrap();
-    exercise(&s, "layer.repairSource", &json!({"layer": id, "path": replacement}), Kind::Read, &dir.0, boundaries);
+    read(&s, "layer.repairSource", &json!({"layer": id, "path": replacement}));
     std::fs::remove_file(replacement).unwrap();
 
     // The tools whose work grows past a second or two on real data: buffers, overlays, joins,
@@ -326,6 +334,59 @@ pub(super) fn long_commands(boundaries: bool) {
     ];
     for (tool, params) in &tools {
         exercise(&s, tool, params, Kind::Tool, &dir.0, boundaries);
+    }
+
+    // A layer read in place, loaded whole, converted to annotation and reloaded; one read whole
+    // from its file, compared with it.
+    s.run("layer.addData", &json!({"path": out("towns.shp"), "name": "towns in place", "stream": true})).unwrap();
+    read(&s, "layer.loadAll", &json!({"layer": "towns in place"}));
+    read(&s, "labels.convert", &json!({"layer": "towns in place"}));
+    read(&s, "layer.reloadData", &json!({"layer": "towns in place"}));
+    read(&s, "source.syncState", &json!({"layer": "towns"}));
+    let graph = json!({"nodes": [
+        {"id": "squares", "kind": "input", "layer": "Squares"},
+        {"id": "ring", "kind": "tool", "tool": "buffer", "params": {"distance": 100}},
+        {"id": "output", "kind": "output", "name": "Rings"}
+    ], "edges": [
+        {"from": "squares", "fromPort": "out", "to": "ring", "toPort": "input"},
+        {"from": "ring", "fromPort": "out", "to": "output", "toPort": "in"}
+    ]});
+    read(&s, "model.run", &json!({"graph": graph}));
+    // A tile archive reloaded from its file, and repaired to a copy of it.
+    {
+        use crate::render::rustgis_tiles::pmtiles;
+        let archive = pmtiles::NewArchive {
+            tile_type: pmtiles::TileType::Png,
+            gzipped_tiles: false,
+            bounds: [-180.0, -85.0, 180.0, 85.0],
+            metadata: json!({}),
+        };
+        let mut tile = tiny_skia::Pixmap::new(1, 1).unwrap();
+        tile.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let bytes = pmtiles::write(vec![(0, 0, 0, tile.encode_png().unwrap())], &archive).unwrap();
+        std::fs::write(out("archive.pmtiles"), &bytes).unwrap();
+        std::fs::write(out("moved.pmtiles"), &bytes).unwrap();
+    }
+    s.run("map.addTiles", &json!({"url": out("archive.pmtiles"), "overlay": true})).unwrap();
+    read(&s, "map.reloadTiles", &json!({"index": 0}));
+    read(&s, "map.repairTiles", &json!({"index": 0, "path": out("moved.pmtiles")}));
+
+    // Reads made ahead that aren't run here, and why.
+    let exempt: [(&str, &str); 0] = [];
+    let covered = covered.into_inner();
+    for (command, why) in exempt {
+        assert!(!covered.contains(command), "{command} is run here: take it out of the exemptions ({why})");
+    }
+    let registered = crate::cmd::reads::IN_BACKGROUND
+        .iter()
+        .map(|(c, _)| *c)
+        .chain(crate::cmd::edit::TABLE_EDITS.iter().map(|(c, ..)| *c))
+        .collect::<std::collections::BTreeSet<_>>();
+    let known = covered.iter().copied().chain(exempt.iter().map(|(c, _)| *c)).collect::<std::collections::BTreeSet<_>>();
+    // The boundary sweep leaves out the reads that keep first-check coverage only, so the first-check
+    // run is the one that must reach every read.
+    if !boundaries {
+        assert_eq!(known, registered, "a command read ahead (reads::IN_BACKGROUND) is run here, or exempted with the reason it isn't");
     }
 }
 

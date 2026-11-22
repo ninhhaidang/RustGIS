@@ -43,8 +43,8 @@ is out of scope.
 - A new background raster command or export, or a tool whose work grows with its input, goes in
   the lists in `long_commands` (`crates/engine/src/tests/cancellation.rs`), which both cancel tests
   run; the raster and export lists must match the background registries. A read-ahead command
-  (`reads::prepare`, such as `service.layers`, `edit.previewShapeConversion` or `data.similar`)
-  has no registry: add its call to `long_commands` by hand.
+  goes in `reads::IN_BACKGROUND` (a table edit in `edit::TABLE_EDITS`), and `long_commands`
+  fails until it runs every one there or names why not in its exemptions.
   `long_commands_stop_when_cancelled_while_they_run` fails one that never looks at Cancel;
   `cancelling_at_each_check_leaves_nothing_behind` cancels at every check in turn until the command
   finishes before reaching it, on small fixtures, failing if one needs 256 or more checks. It

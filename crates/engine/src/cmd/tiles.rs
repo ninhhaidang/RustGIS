@@ -10,65 +10,6 @@ use serde_json::{Value, json};
 use super::{b, f, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
 
-/// Commands that make the map fetch from an address they're given (a plugin needs the
-/// `network` permission to run them).
-pub const NETWORK: &[&str] = &[
-    "map.route",
-    "map.addTiles",
-    "map.body",
-    "map.terrain",
-    "layer.addUrl",
-    "service.layers",
-    "service.add",
-    "identify.featureInfo",
-    "service.import",
-    "service.refresh",
-    "service.groupPlan",
-    "service.coverage",
-    "catalog.search",
-    "stac.collections",
-    "stac.search",
-    "stac.addAsset",
-    "stac.addBands",
-    "stac.addIndex",
-    "stac.addCube",
-    // From the catalog entry's address (a Zarr entry also as `layer.addZarr`: plugins.rs).
-    "cube.open",
-    "map.findPlace",
-    "layer.geocode",
-    "osm.download",
-    "boundaries.add",
-    "boundaries.countries",
-    "s3.list",
-    "overture.add",
-    "sourcecoop.products",
-    "sourcecoop.list",
-    "portal.search",
-    "portal.add",
-    "nationalMap.add",
-    "fieldsOfTheWorld.add",
-    "portal.files",
-    "embeddings.search",
-    "embeddings.add",
-    "embeddings.addCube",
-    "embeddings.similarity",
-    "embeddings.change",
-    "earthdata.collections",
-    "earthdata.granules",
-    "nldi.flowline",
-    "nldi.comid",
-    "nldi.basin",
-    "nldi.sources",
-    "nldi.navigate",
-    // A sign-in reaches the portal, and a sign-out revokes its token there; a token is sent to
-    // the server it is given for.
-    "arcgis.signIn",
-    "arcgis.signOut",
-    "arcgis.token",
-    // A sign-in reaches Copernicus Data Space's sign-in host.
-    "copernicus.login",
-];
-
 /// Registers commands for tile-layer sources, drawing properties, coverage and celestial bodies.
 pub fn commands() -> Vec<C> {
     vec![

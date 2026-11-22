@@ -154,29 +154,8 @@ impl Session {
     }
     /// Private pre-handler capture shared by native reads and the exact scoped archive entry.
     fn capture_read(&mut self, command: &str, params: &Value) -> Result<crate::cmd::reads::ReadAhead, String> {
-        if !matches!(
-            command,
-            "layer.addData"
-                | "layer.loadAll"
-                | "layer.reloadData"
-                | "layer.repairSource"
-                | "labels.convert"
-                | "model.run"
-                | "script.run"
-                | "map.reloadTiles"
-                | "map.repairTiles"
-                | "topology.validate"
-                | "service.layers"
-                | "service.add"
-                | "source.syncState"
-                | "table.statistics"
-                | "data.similar"
-                | "raster.imageGrid"
-                | "edit.previewShapeConversion"
-                | "layer.sizeBy"
-        ) && crate::cmd::edit::table_edit_in_background(command).is_none()
-        {
-            return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics, Similar and Size by Field prepare background work".into());
+        if crate::cmd::reads::in_background(command).is_none() {
+            return Err(crate::cmd::reads::not_in_background(command));
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
         // Scoped previews retain the raw invocation that was approved. Their admitted owner

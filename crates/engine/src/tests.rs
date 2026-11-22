@@ -29021,7 +29021,10 @@ fn a_stac_data_cube_on_the_time_slider() {
     );
     assert_eq!(r["duplicates"], 1, "the second item of T2 on 2024-01-01 is left out and counted");
     assert!(!s.notices.iter().any(|n| n.text.contains("failed retrievals")), "no codes, no notice of them");
-    assert!(crate::cmd::tiles::NETWORK.contains(&"stac.addCube"), "a network command: a plugin needs the network permission to run it");
+    assert!(
+        s.registry.get("stac.addCube").is_some_and(|c| c.effects.contains(crate::policy::Effect::Network)),
+        "a network command: a plugin needs the network permission to run it"
+    );
     // An end given as a year or a month takes all of it: "end": "2024-01" reaches 31 January.
     // Read as 1 January, it would be before this start and refused.
     let mut by_month = Session::new(Project::default());
@@ -29446,7 +29449,10 @@ fn a_catalog_entry_opens_as_its_command_would() {
     {
         assert!(s.run("cube.catalog", &bad).is_err(), "{bad}");
     }
-    assert!(crate::cmd::tiles::NETWORK.contains(&"cube.open"), "a plugin needs the network permission to open a cube");
+    assert!(
+        s.registry.get("cube.open").is_some_and(|c| c.effects.contains(crate::policy::Effect::Network)),
+        "a plugin needs the network permission to open a cube"
+    );
     // A Zarr entry reaches as layer.addZarr does (a plugin needs files and network); the catalog
     // itself is built in.
     use crate::cmd::plugins::{Reach, reaches};
@@ -38410,7 +38416,7 @@ fn ogc_group_supplied_responses_never_fetch_and_need_every_child() {
     assert_eq!(s.map().layers.len(), 2);
     assert_eq!(s.map().service_groups[0].children.len(), 2);
     for id in ["service.import", "service.refresh", "service.groupPlan"] {
-        assert!(crate::cmd::tiles::NETWORK.contains(&id));
+        assert!(s.registry.get(id).is_some_and(|c| c.effects.contains(crate::policy::Effect::Network)), "{id}");
     }
 }
 
