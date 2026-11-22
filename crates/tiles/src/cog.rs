@@ -38,6 +38,9 @@ const HEAD: u64 = 64 << 10;
 const STEP: u64 = 256 << 10;
 /// The most header reads before giving up.
 const MAX_ROUNDS: usize = 12;
+/// The last byte position a header read may start at: far past any real file, and far enough from
+/// `u64::MAX` that a position plus a read's length never overflows.
+const MAX_AT: u64 = u64::MAX >> 1;
 /// The most COG tiles one map tile may need (past that, a coarser overview is read).
 const MAX_PER_TILE: usize = 16;
 /// The most tiles of the coarsest overview read for the stretch.
@@ -604,14 +607,16 @@ fn step(url: String, have: Sparse, rounds: usize, ceiling: crate::address::Reach
 }
 
 /// How many bytes of the header to read next, from `a`, when the layout stopped for `a..b`
-/// after `rounds` reads; `None` past [`MAX_ROUNDS`] or [`cog::MAX_HEADER`]. The TIFF decoder
+/// after `rounds` reads; `None` past [`MAX_ROUNDS`] or [`cog::MAX_HEADER`], or for a position no
+/// range request can name ([`MAX_AT`]). Where `a` is doesn't matter: a part far from the rest (an
+/// IFD written after the image data) is a part of its own, one read. The TIFF decoder
 /// reads a tag's values 512 bytes at a time, so `a..b` is no longer than that even inside a long
 /// array (a large image's tile index, 4 MB for MapBiomas's 346,092 tiles): the step doubles each
 /// round, from [`STEP`] up to [`MAX_BYTES`], so such an index takes a few rounds, not one per
 /// 256 KB. A read never takes what is held past [`cog::MAX_HEADER`], and stops where a part
 /// already read starts, so no byte is held twice.
 fn header_read(have: &Sparse, a: u64, b: u64, rounds: usize) -> Option<u64> {
-    if rounds >= MAX_ROUNDS || have.held() >= cog::MAX_HEADER || a >= cog::MAX_HEADER.saturating_mul(64) {
+    if rounds >= MAX_ROUNDS || have.held() >= cog::MAX_HEADER || a > MAX_AT {
         return None;
     }
     let room = cog::MAX_HEADER - have.held();
@@ -2056,7 +2061,21 @@ mod tests {
     /// Reads `file`'s layout as [`load`] and [`step`] do, a range at a time: the layout, how many
     /// reads past the first it took and the bytes held, or the reads made when it gave up.
     fn layout_by_ranges(file: &[u8]) -> Result<(Box<Layout>, usize, u64), usize> {
-        let part = |a: u64, len: u64| file.get(a as usize..file.len().min((a + len) as usize)).unwrap_or_default().to_vec();
+        layout_by_parts(&[(0, file)])
+    }
+
+    /// The same for a file that is only these parts, `(where it starts, its bytes)`: the rest is
+    /// a hole no read comes back from (a server asked past the file's end), without writing it.
+    /// Positions stay `u64`, as they are on wasm32.
+    fn layout_by_parts(parts: &[(u64, &[u8])]) -> Result<(Box<Layout>, usize, u64), usize> {
+        let part = |a: u64, len: u64| -> Vec<u8> {
+            let Some((at, bytes)) = parts.iter().find(|(at, bytes)| *at <= a && a.saturating_sub(*at) < bytes.len() as u64) else {
+                return Vec::new();
+            };
+            let from = usize::try_from(a.saturating_sub(*at)).unwrap_or(usize::MAX);
+            let to = usize::try_from(a.saturating_sub(*at).saturating_add(len)).unwrap_or(usize::MAX).min(bytes.len());
+            bytes.get(from..to).unwrap_or_default().to_vec()
+        };
         let mut have = Sparse::default().with(0, part(0, HEAD));
         let mut rounds = 0;
         loop {
@@ -2095,8 +2114,14 @@ mod tests {
     /// MapBiomas's: the tiles' byte counts and offsets right after the IFD, its georeferencing
     /// after them. The tiles themselves aren't there.
     fn big_index(side: u32) -> Vec<u8> {
+        index_at(side, 8)
+    }
+
+    /// [`big_index`] with its IFD, and what follows it, meant to sit from byte `ifd_at` of the
+    /// file: the vector is the 8-byte header, then those bytes, which a test places at `ifd_at`.
+    fn index_at(side: u32, ifd_at: u32) -> Vec<u8> {
         let n = side.div_ceil(256).pow(2);
-        let counts_at = 8 + 2 + 12 * 14 + 4;
+        let counts_at = ifd_at + 2 + 12 * 14 + 4;
         let offsets_at = counts_at + 4 * n;
         let scale_at = offsets_at + 4 * n;
         let (tie_at, keys_at) = (scale_at + 24, scale_at + 72);
@@ -2118,7 +2143,7 @@ mod tests {
             (34735, 3, 12, keys_at),
         ];
         let mut out = b"II*\0".to_vec();
-        out.extend(8u32.to_le_bytes());
+        out.extend(ifd_at.to_le_bytes());
         out.extend(14u16.to_le_bytes());
         for (tag, kind, count, value) in entries {
             out.extend(tag.to_le_bytes());
@@ -2156,6 +2181,57 @@ mod tests {
         assert_eq!(header_read(&near, cog::MAX_HEADER, cog::MAX_HEADER + 512, 8), Some(1000));
         assert_eq!(header_read(&near, cog::MAX_HEADER, cog::MAX_HEADER + 1001, 8), None, "more than is left");
         assert_eq!(header_read(&near.with(cog::MAX_HEADER, vec![0; 1000]), cog::MAX_HEADER + 1000, cog::MAX_HEADER + 1512, 9), None);
+    }
+
+    /// A tiled GeoTIFF written as OpenGeoHub's GEDTM30 layers are: the IFD and its tile index after
+    /// the image data, past 2 GiB. Only its header and that part exist here, the rest is a hole.
+    #[test]
+    fn a_header_past_2_gib_is_read_as_a_part_of_its_own() {
+        let at = 3u32 << 30;
+        let file = index_at(400 * 256, at);
+        let (layout, rounds, held) =
+            layout_by_parts(&[(0, &file[..8]), (u64::from(at), &file[8..])]).unwrap_or_else(|r| panic!("gave up after {r} reads"));
+        assert_eq!(layout.levels.len(), 1);
+        assert_eq!(layout.levels[0].offsets.len(), 160_000);
+        assert_eq!(layout.levels[0].width, 102_400);
+        // The IFD and its tile index, then nothing more: 4 reads after the first measured, well under the 12 allowed.
+        assert!(rounds <= 6, "{rounds} reads");
+        // Only what the header holds is read, not the 3 GiB before it.
+        assert!(held <= file.len() as u64, "{held} bytes held of a {}-byte header", file.len());
+        // The same layout where the IFD is at the start, for the same file.
+        let near = layout_by_ranges(&big_index(400 * 256)).expect("read");
+        assert_eq!(near.0.levels[0].offsets.len(), layout.levels[0].offsets.len());
+    }
+
+    /// Where a read starts doesn't limit it (a BigTIFF's offset, 340 GB), the bytes and the rounds
+    /// do; a position no range request can name is refused, not overflowed.
+    #[test]
+    fn a_far_part_is_bounded_and_never_overflows() {
+        let have = Sparse::default().with(0, vec![0; 64]);
+        let far = 340_229_032_000;
+        assert_eq!(header_read(&have, far, far + 512, 0), Some(STEP));
+        assert_eq!(header_read(&have, MAX_AT, MAX_AT + 512, 0), Some(STEP));
+        assert_eq!(header_read(&have, MAX_AT + 1, MAX_AT + 513, 0), None);
+        assert_eq!(header_read(&have, u64::MAX - 8, u64::MAX, 0), None);
+        assert_eq!(header_read(&have, far, far + 512, MAX_ROUNDS), None, "the rounds are still counted");
+        let full = Sparse::default().with(0, vec![0; usize::try_from(cog::MAX_HEADER).unwrap_or_default()]);
+        assert_eq!(header_read(&full, far, far + 512, 0), None, "so are the bytes held");
+        // A read stops where a part already read starts.
+        assert_eq!(header_read(&have.with(far + 1000, vec![0; 8]), far, far + 512, 0), Some(1000));
+    }
+
+    /// An IFD past the end of a file whose length is known is an error after one more read, not a
+    /// loop or a panic.
+    #[test]
+    fn an_offset_past_the_end_is_an_error() {
+        let file = index_at(256, 3 << 30);
+        let have = Sparse::default().with_len(8).with(0, file[..8].to_vec());
+        assert!(cog::layout(&have).is_err());
+        // A file whose length isn't known: the first read past it finds the end, then the same.
+        let have = Sparse::default().with(0, file[..8].to_vec());
+        let Ok(Parse::Need(a, _)) = cog::layout(&have) else { panic!("asked for the IFD") };
+        assert_eq!(a, 3 << 30);
+        assert!(cog::layout(&have.with_len(a)).is_err());
     }
 
     #[test]
