@@ -300,19 +300,48 @@ impl DiagramLabel {
 /// not a diagram, as an empty one draws nothing. [`DiagramAudit`] counts what this changes, for
 /// the project reader's notices.
 pub fn de_diagram<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<DiagramSettings>, D::Error> {
+    read_diagram(d).map(|(kept, _)| kept)
+}
+
+/// A saved diagram as [`de_diagram`] keeps it, and what reading it so changed: the one place
+/// both read it, so the notices can't drift from what is read. A missing or null diagram is none
+/// and changes nothing.
+fn read_diagram<'de, D: serde::Deserializer<'de>>(d: D) -> Result<(Option<DiagramSettings>, DiagramAudit), D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Read {
         Settings(DiagramSettings),
         Other(serde::de::IgnoredAny),
     }
-    Ok(match Option::<Read>::deserialize(d)? {
-        Some(Read::Settings(s)) => {
-            let s = s.clamped();
-            (!s.categories.is_empty()).then_some(s)
+    let dropped = DiagramAudit { dropped: 1, ..DiagramAudit::default() };
+    let s = match Option::<Read>::deserialize(d)? {
+        None => return Ok((None, DiagramAudit::default())),
+        Some(Read::Other(_)) => return Ok((None, dropped)),
+        Some(Read::Settings(s)) => s,
+    };
+    let kept = s.clone().clamped();
+    if kept.categories.is_empty() {
+        return Ok((None, dropped));
+    }
+    let mut seen: Vec<&str> = Vec::with_capacity(kept.categories.len());
+    let mut repeated_fields = 0usize;
+    for c in &kept.categories {
+        if seen.iter().any(|f| f.eq_ignore_ascii_case(&c.field)) {
+            repeated_fields = repeated_fields.saturating_add(1);
+        } else {
+            seen.push(&c.field);
         }
-        _ => None,
-    })
+    }
+    // Any finite angle names the same direction after a whole number of turns: not counted.
+    let angle_adjusted = !s.start_angle.is_finite();
+    let adjusted = kept.size != s.size || angle_adjusted || kept.stroke_width != s.stroke_width;
+    let audit = DiagramAudit {
+        dropped: 0,
+        categories_removed: s.categories.len().saturating_sub(kept.categories.len()),
+        repeated_fields,
+        adjusted: usize::from(adjusted),
+    };
+    Ok((Some(kept), audit))
 }
 
 /// What reading a layer's saved diagram through [`de_diagram`] changed, counted without keeping
@@ -348,39 +377,7 @@ impl<'de> Deserialize<'de> for DiagramAudit {
     /// Reads a saved diagram as [`de_diagram`] does and counts what that changes; a missing or
     /// null diagram changes nothing.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Read {
-            Settings(DiagramSettings),
-            Other(serde::de::IgnoredAny),
-        }
-        let s = match Option::<Read>::deserialize(d)? {
-            None => return Ok(DiagramAudit::default()),
-            Some(Read::Other(_)) => return Ok(DiagramAudit { dropped: 1, ..DiagramAudit::default() }),
-            Some(Read::Settings(s)) => s,
-        };
-        let kept = s.clone().clamped();
-        if kept.categories.is_empty() {
-            return Ok(DiagramAudit { dropped: 1, ..DiagramAudit::default() });
-        }
-        let mut seen: Vec<&str> = Vec::with_capacity(kept.categories.len());
-        let mut repeated_fields = 0usize;
-        for c in &kept.categories {
-            if seen.iter().any(|f| f.eq_ignore_ascii_case(&c.field)) {
-                repeated_fields = repeated_fields.saturating_add(1);
-            } else {
-                seen.push(&c.field);
-            }
-        }
-        // Any finite angle names the same direction after a whole number of turns: not counted.
-        let angle_adjusted = !s.start_angle.is_finite();
-        let adjusted = kept.size != s.size || angle_adjusted || kept.stroke_width != s.stroke_width;
-        Ok(DiagramAudit {
-            dropped: 0,
-            categories_removed: s.categories.len().saturating_sub(kept.categories.len()),
-            repeated_fields,
-            adjusted: usize::from(adjusted),
-        })
+        read_diagram(d).map(|(_, audit)| audit)
     }
 }
 

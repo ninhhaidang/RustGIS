@@ -1102,9 +1102,9 @@ fn frame_outline_lonlat(map: &Map, cam: &rustgis_map::Camera, w: f64, h: f64) ->
         Some(g) => g.inverse(sx, sy),
         None => map.to_lonlat(cam.to_map(sx, sy, w, h)),
     };
-    // A frame on the globe's longitudes kept continuous, a turn added or taken where they cross
-    // ±180°, so on a flat frame the outline doesn't jump across the map there. A flat frame's are
-    // drawn where they are.
+    // A frame on the globe has its longitudes kept continuous, a turn added or taken where they
+    // cross ±180°, so on a flat frame the outline doesn't jump across the map there. A flat
+    // frame's are drawn where they are.
     let mut last: Option<f64> = None;
     let mut ring = Vec::with_capacity(4 * n + 8);
     let mut push = |c: Option<Coord>| {
@@ -1405,10 +1405,10 @@ fn frame_viewport(
 /// points go on the map's world, whose middle (its camera's centre) is at `mid`. `from_globe`: the
 /// ring is a frame on the globe's, its longitudes run on across ±180° rather than kept in a world.
 ///
-/// A frame on the globe's ring the whole ring a turn east or west if that brings the middle of its
-/// longitudes nearer the map's middle, as they run on from its first point (#2348), which can be on
-/// the other side of ±180° from it: one shift for all keeps it in one piece on a map that doesn't
-/// wrap. A flat frame's ring is placed where it is. Then a ring that a map can't show in one piece
+/// A frame on the globe has its whole ring shifted a turn east or west if that brings the middle
+/// of its longitudes nearer the map's middle, as they run on from its first point (#2348), which
+/// can be on the other side of ±180° from it: one shift for all keeps it in one piece on a map
+/// that doesn't wrap. A flat frame's ring is placed where it is. Then a ring that a map can't show in one piece
 /// is cut at the map's edge as the map cuts features (#209), each piece brought into the map's
 /// world and running to the edge (#2369): any ring on a world projection, which wraps at its edge
 /// (on Robinson centred on 150°E at -30°, with its datum's margin), and on Web Mercator, which
@@ -2100,8 +2100,9 @@ fn scale_number(v: f64, step: f64) -> String {
 
 /// The share of its element's width a scale bar's length may take.
 const BAR_SHARE: f64 = 0.85;
-/// A scale bar's labels' size, and how far its bar starts in from the element's left edge, in
-/// pixels: at most as many points at a pixel a point or more, which [`scale_bar_width_pt`] counts.
+/// A scale bar's labels' size, in points, and how far its bar starts in from the element's left
+/// edge, in pixels. [`scale_bar_width_pt`] counts that inset as as many points: when a point is a
+/// pixel or more, a pixel is no larger than a point, so the box is never too narrow.
 const BAR_LABEL_PT: f32 = 8.0;
 const BAR_INSET: f32 = 2.0;
 

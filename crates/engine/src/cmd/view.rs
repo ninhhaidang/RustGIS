@@ -656,19 +656,10 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         }
         _ => None,
     };
-    let refused = match (&dem_box, own) {
-        // A DEM whose corners give no box (one off the map's world, say) would draw no block.
-        (Some((n, None, _)), None) => Some(format!(
-            "no box fits inside '{n}'s extent on the map: give the block an extent [xmin, ymin, xmax, ymax]{kept} (Terrain stays as it was)"
-        )),
-        // A box off the DEM would draw nothing. A box inside its footprint but off its inner box
-        // still draws the ground it reaches (a DEM turned by its projection has corners beyond it).
-        (Some((n, _, Some(d))), Some(e)) if e[2] <= d[0] || e[0] >= d[2] || e[3] <= d[1] || e[1] >= d[3] => Some(format!(
-            "block's extent doesn't overlap '{n}' (its corners are [{:.0}, {:.0}, {:.0}, {:.0}] in Web Mercator metres{kept}; Terrain stays as it was)",
-            d[0], d[1], d[2], d[3]
-        )),
-        _ => None,
-    };
+    // A DEM whose corners give no box (one off the map's world, say) would draw no block, nor
+    // would a box off the DEM. A box inside its footprint but off its inner box still draws the
+    // ground it reaches (a DEM turned by its projection has corners beyond it).
+    let refused = super::project::off_dem(own, dem_box.as_ref()).map(|e| format!("{e}{kept} (Terrain stays as it was)"));
     if let Some(e) = refused {
         if let Some(old) = old_terrain {
             m.view.terrain = Some(old);

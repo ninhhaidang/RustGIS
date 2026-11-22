@@ -292,7 +292,7 @@ pub(super) fn off_dem(extent: Option<[f64; 4]>, dem: Option<&(String, Option<[f6
             let d = (*footprint)?;
             (e[2] <= d[0] || e[0] >= d[2] || e[3] <= d[1] || e[1] >= d[3]).then(|| {
                 format!(
-                    "block's extent doesn't overlap '{n}' (its corners are [{:.0}, {:.0}, {:.0}, {:.0}] in Web Mercator metres)",
+                    "the block's box doesn't overlap '{n}', whose footprint spans [{:.0}, {:.0}, {:.0}, {:.0}] in Web Mercator metres",
                     d[0], d[1], d[2], d[3]
                 )
             })
@@ -441,7 +441,9 @@ fn reset(s: &mut Session, p: Project) {
     if !uncut.is_empty() {
         s.notify(
             format!(
-                "{}: the layer a block diagram is cut to is missing, isn't a polygon layer, is read a view at a time, shares its name with another layer or picks no polygon with an area, so no block is drawn",
+                "{} block diagram{} cut to a layer that is missing, isn't a polygon layer, holds its features only a view at a time, shares its name with another layer or picks no polygon with an area, so no block is drawn: {}",
+                uncut.len(),
+                if uncut.len() == 1 { "" } else { "s" },
                 uncut.join(", ")
             ),
             false,
@@ -451,12 +453,12 @@ fn reset(s: &mut Session, p: Project) {
     match plain.as_slice() {
         [] => {}
         [one] => s.notify(
-            format!("{one}: the block diagram's walls layer is missing, not a polygon layer, read a view at a time or of a name another layer shares, so its walls are one colour"),
+            format!("{one}: the block diagram's walls layer is missing, isn't a polygon layer, holds its features only a view at a time, or shares its name with another layer, so its walls are one colour"),
             false,
         ),
         _ => s.notify(
             format!(
-                "{} block diagrams have a walls layer missing, not a polygon layer, read a view at a time or of a name another layer shares, so their walls are one colour: {}",
+                "{} block diagrams have a walls layer that is missing, isn't a polygon layer, holds its features only a view at a time, or shares its name with another layer, so their walls are one colour: {}",
                 plain.len(),
                 plain.join(", ")
             ),

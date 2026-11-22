@@ -1013,6 +1013,9 @@ impl SourceLayer {
                     conversion_notes.push(format!("DuckDB: {} rows of another geometry type were left out", out.other_family));
                 }
                 let part = out.parts.first().ok_or_else(|| format!("{path}: the table returns no {}", d.family.label()))?;
+                if part.zm_dropped > 0 {
+                    conversion_notes.push(rustgis_data::zm_note(Some(part.zm_dropped)));
+                }
                 declared_empty = part.count == 0;
                 new.path = Some(part.path.display().to_string());
                 let handle = rustgis_data::source::parquet::ParquetSource::open_converted_path(
@@ -1023,7 +1026,7 @@ impl SourceLayer {
                 )
                 .map_err(|e| format!("{path}: {e}"))?;
                 new.handle = Some(Arc::new(handle));
-                conversion_zm_dropped = false;
+                conversion_zm_dropped = part.zm_dropped > 0;
                 new.duckdb = Some(d);
             }
         } else {

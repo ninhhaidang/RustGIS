@@ -96,7 +96,8 @@ pub struct SizeBy {
 
 impl SizeBy {
     /// The marker size for a value: clamped to the range's ends, and with no range (`max` not
-    /// above `min`) the size halfway, as Proportional Symbols draw it.
+    /// above `min`) the size for the middle value (halfway by radius, `√0.5` of the way by area),
+    /// as Proportional Symbols draw it.
     pub fn size(&self, v: f64) -> f32 {
         scaled_size(v, self.min, self.max, self.min_size, self.max_size, self.scaling).clamp(0.0, MAX_SIZE)
     }
@@ -109,9 +110,10 @@ impl SizeBy {
             && matches!(l.renderer, crate::Renderer::Unique { .. } | crate::Renderer::Graduated { .. })
     }
 
-    /// Legend rows for the sizes: the smallest, middle and largest value, each drawn with `like`
-    /// and its mark stack at the mapped size and labelled with the field. Marks of a `like` sized 0
-    /// have nothing to scale against and stay as set.
+    /// Legend rows for the sizes: the smallest, middle and largest value, each drawn with `like`'s
+    /// marks in the grey of "all other values" (deliberately, as the rows show sizes, not
+    /// classes) and its mark stack at the mapped size and labelled with the field. Marks of a
+    /// `like` sized 0 have nothing to scale against and stay as set.
     pub fn legend(&self, like: Symbol, strokes: &[LineStroke]) -> Vec<crate::symbology::LegendEntry> {
         let like = Symbol { fill: crate::symbology::OTHER_FILL, ..like };
         let (lo, hi) = if self.max > self.min { (self.min, self.max) } else { (self.min, self.min) };
@@ -172,7 +174,7 @@ fn scaled_marks(strokes: &[LineStroke], k: f32) -> Vec<LineStroke> {
 
 /// A size for `v` between `min_size` and `max_size` as it falls between `min` and `max`, by
 /// `scaling`; values past an end take that end's size, and with no range (`max` not above `min`,
-/// or one too wide to divide) the size halfway.
+/// or one too wide to divide) the size for the middle value.
 pub fn scaled_size(v: f64, min: f64, max: f64, min_size: f32, max_size: f32, scaling: SizeScaling) -> f32 {
     let width = max - min;
     let t = if max > min && width.is_finite() { (v - min) / width } else { 0.5 };

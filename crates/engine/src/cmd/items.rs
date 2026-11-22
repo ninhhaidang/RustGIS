@@ -100,7 +100,7 @@ pub fn commands() -> Vec<C> {
                 s.notify(format!("New Style: the style takes the first {MAX_STYLE_NAME} characters of the layer's name"), false);
             }
             if left_out > 0 {
-                s.notify(format!("Style {name} from {layer}: {left_out} fill(s) No Fill hid couldn't be put back in it, as their classes have fills of their own now, are gone or their opacity wasn't kept; it draws them as the layer does now"), false);
+                s.notify(format!("Style {name} from {layer}: {left_out} fill(s) No Fill hid couldn't be put back in it, as their classes have fills of their own now, are gone or their opacity wasn't kept; the style is saved without them"), false);
             }
             Ok(json!({"style": name}))
         }).roles(&[]).effects(crate::policy::Effects::NONE)

@@ -98,7 +98,8 @@ enum Heights {
 }
 
 /// A map's block diagram as a frame draws it (#1914, `TerrainBlock`): the box the ground is cut
-/// to (Web Mercator) and the height of its base.
+/// to (Web Mercator; for a round block the square round its circle, for one cut to polygons the
+/// box round their outline) and the height of its base.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub x0: f64,

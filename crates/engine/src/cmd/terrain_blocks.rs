@@ -229,7 +229,7 @@ fn landed_impl(session: &mut Session, restoring: bool) {
     if !uncut.is_empty() {
         session.notify(
             format!(
-                "Terrain: the polygons a block diagram is cut to can't be read (none with an area) on {}: no block is drawn until they can",
+                "Terrain: the polygons a block diagram is cut to can't be read on {}: no block is drawn until they can",
                 uncut.join(", ")
             ),
             false,

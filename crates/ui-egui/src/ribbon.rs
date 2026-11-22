@@ -1995,7 +1995,7 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
             app,
             "graticule",
             "Graticule",
-            "Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.",
+            "Show or hide the graticule over the basemap, or over the layers when drawn on top: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.",
             "map.graticule",
             Value::Null,
             g,
@@ -2607,7 +2607,7 @@ fn data_source_group(app: &mut RustGisApp, ui: &mut Ui) {
         );
         #[cfg(not(target_arch = "wasm32"))]
         if active_layer(app).is_some_and(crate::reloaddata::supported) {
-            big(ui, app, "redo", "Reload\nData", crate::reloaddata::HELP, "ui.reloadData", Value::Null, false, false);
+            big(ui, app, "reload", "Reload\nData", crate::reloaddata::HELP, "ui.reloadData", Value::Null, false, false);
         }
     });
 }
@@ -4999,7 +4999,7 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
                 small(
                     ui,
                     app,
-                    if hidden { "symbology" } else { "no_fill" },
+                    if hidden { "restore_fill" } else { "no_fill" },
                     if hidden { "Restore Fill" } else { "No Fill" },
                     if hidden {
                         "Restore polygon fills hidden by No Fill, keeping their colors and outlines."

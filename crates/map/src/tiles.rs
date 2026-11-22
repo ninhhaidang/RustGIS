@@ -521,7 +521,8 @@ impl TileLayer {
     /// Applies the same checks, returning losses for a reader or command to report on success.
     pub fn repair_counted(&mut self) -> Result<TileRepairs, String> {
         let mut repairs = TileRepairs::default();
-        repairs.text += usize::from(self.url.trim().len() != self.url.len());
+        // Spaces round the address or the name are trimmed without a word: only text cut short
+        // is counted.
         let dated = self.time_urls.len() + usize::from(self.time_url.is_some());
         self.url = self.url.trim().to_string();
         // A dated address is a web address whose date is filled in after the scheme and host.
@@ -547,7 +548,7 @@ impl TileLayer {
         } else {
             check_url(&self.url)?;
         }
-        repairs.text += usize::from(self.name.trim().len() != self.name.len() || self.name.chars().nth(120).is_some());
+        repairs.text += usize::from(self.name.trim().chars().nth(120).is_some());
         self.name = self.name.trim().chars().take(120).collect();
         if self.name.is_empty() {
             let file = || {
@@ -861,6 +862,18 @@ mod tests {
         for bad in ["file:///etc/passwd", "ftp://x/{z}", "https://", "https:// x.com/{z}", "javascript:alert(1)"] {
             assert!(TileLayer::new("x", TileKind::Raster, bad).repair().is_err(), "{bad}");
         }
+    }
+
+    /// Spaces round a name or an address are trimmed without counting as text shortened; a name
+    /// cut to its limit is counted.
+    #[test]
+    fn trimming_isnt_counted_as_shortening() {
+        let mut padded = TileLayer::new("  Streets  ", TileKind::Raster, "  https://a.tile.example.com/{z}/{x}/{y}.png ");
+        assert_eq!(padded.repair_counted().map(|r| r.text), Ok(0));
+        assert_eq!((padded.name.as_str(), padded.url.as_str()), ("Streets", "https://a.tile.example.com/{z}/{x}/{y}.png"));
+        let mut long = TileLayer::new(format!(" {} ", "n".repeat(121)), TileKind::Raster, "https://a.tile.example.com/{z}/{x}/{y}.png");
+        assert_eq!(long.repair_counted().map(|r| r.text), Ok(1));
+        assert_eq!(long.name.chars().count(), 120);
     }
 
     #[test]

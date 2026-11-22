@@ -607,8 +607,12 @@ fn exercise(fixture: &Session, command: &str, p: &Value, kind: Kind, dir: &std::
         }
         assert!(s.undo(), "{what}: lost Undo");
         if added_step {
-            // Table ids are never reused: undo keeps the counter (see the standalone-table removal regression).
+            // Table ids are never reused: undo keeps the counter, which only grows
+            // (`table_remove_takes_a_standalone_table_out_of_the_project` in tests.rs). Checked so,
+            // then set back, so only the counter is excused.
             let mut undone = contents(&s.project);
+            let id = |v: &Value| v["project"]["next_table_id"].as_u64();
+            assert!(id(&undone) >= id(&before), "{what}: undo lowered next_table_id");
             undone["project"]["next_table_id"] = before["project"]["next_table_id"].clone();
             assert!(undone == before, "{what}: undo didn't restore the map");
             assert!(!s.dirty(), "{what}: undo didn't return to the saved state");

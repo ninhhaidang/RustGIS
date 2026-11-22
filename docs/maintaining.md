@@ -108,6 +108,7 @@ diagram cut to a circle or to polygons), `terrain-block-polygon` (one cut to pol
 `terrain-water`,
 `terrain-water-shore` (a terrain water's shore band other than the default),
 `terrain-block-water` (water in a block diagram's walls),
+`terrain-block-walls-layer` (the layer a block diagram's walls are coloured by),
 `shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour),
 `shaded-relief-light` (a Shaded Relief's ambient or balanced light),
 `blank-paper` (a blank basemap's paper colour) and

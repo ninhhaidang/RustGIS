@@ -80,6 +80,14 @@ fn network<'a>(inp: &'a dyn Inputs, p: &Json, tool: &str) -> Result<Network<'a>,
         }
     }
     let graph = Graph::of(ds, &rows, cost_field)?;
+    if graph.overflowing() > 0 {
+        let field = cost_field.and_then(|fi| ds.fields.get(fi)).map_or("", |f| f.name.as_str());
+        notes.push(format!(
+            "{tool}: {} line(s) of '{}' cost so much in {field} that a segment's cost is past the largest number, and are closed",
+            graph.overflowing(),
+            ds.name
+        ));
+    }
     if graph.skipped_segments() > 0 {
         notes.push(format!(
             "{tool}: {} segment(s) of '{}' with invalid coordinates were left out of the network",
@@ -88,7 +96,9 @@ fn network<'a>(inp: &'a dyn Inputs, p: &Json, tool: &str) -> Result<Network<'a>,
         ));
     }
     if graph.segments() == 0 {
-        return Err(format!("'{}' has no lines to search", ds.name));
+        // What left no lines is said with it: the notes would be lost with the run.
+        let why = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+        return Err(format!("'{}' has no lines to search{why}", ds.name));
     }
     Ok(Network { ds, graph, unit_m, snap_m, notes })
 }
@@ -699,6 +709,26 @@ mod tests {
             "{:?}",
             r.messages
         );
+        assert!(!r.messages.iter().any(|m| m.contains("past the largest number")), "{:?}", r.messages);
+        // A cost so large its segments' costs overflow closes the line too, counted apart.
+        let mut huge = roads();
+        huge.features[3].attrs[0] = Value::Float(1e306);
+        let inputs = map(vec![huge, points("shops", &[Some(c(0.005, 0.0))])]);
+        let r = service_area(&inputs, &json!({"network": "roads", "facilities": "shops", "breaks": "5", "costField": "cost"})).unwrap();
+        assert!(
+            r.messages.iter().any(|m| m
+                .contains("1 line(s) of 'roads' cost so much in cost that a segment's cost is past the largest number, and are closed")),
+            "{:?}",
+            r.messages
+        );
+        // Every line closed so: the refusal says why.
+        let mut all = roads();
+        for f in all.features.iter_mut() {
+            f.attrs[0] = Value::Float(1e306);
+        }
+        let inputs = map(vec![all, points("shops", &[Some(c(0.005, 0.0))])]);
+        let e = service_area(&inputs, &json!({"network": "roads", "facilities": "shops", "breaks": "5", "costField": "cost"})).unwrap_err();
+        assert!(e.contains("has no lines to search") && e.contains("4 line(s) of 'roads' cost so much"), "{e}");
     }
 
     /// A point just across ±180° from a line is moved onto it, about 110 m away, not left out as

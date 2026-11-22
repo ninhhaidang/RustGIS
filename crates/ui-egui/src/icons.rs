@@ -1143,6 +1143,25 @@ pub fn paint(painter: &Painter, r: Rect, name: &str, ink: Color32, accent: Color
             p.line(&[(8.0, 16.0), (7.0, 20.0), (9.0, 22.0)], 1.3, ink);
         }
         "no_fill" => p.rect(3.0, 4.0, 18.0, 16.0, None, Some((1.6, ink)), 0.0),
+        "restore_fill" => {
+            // No Fill's outline filled again, and Undo's arrow over its corner: the fill put back.
+            p.rect(3.0, 8.0, 14.0, 13.0, Some(p.tint(150)), Some((1.6, ink)), 0.0);
+            paint(painter, Rect::from_min_size(p.pt(10.0, 0.0), r.size() * 0.6), "undo", ink, accent);
+        }
+        "reload" => {
+            // Two arrows chasing round a circle: read again from the source.
+            p.arc(12.0, 12.0, 7.5, 200.0, 340.0, 1.8, ink);
+            p.arc(12.0, 12.0, 7.5, 20.0, 160.0, 1.8, ink);
+            let head = |a: f32, turn: f32| {
+                let (c, s) = (a.to_radians().cos(), a.to_radians().sin());
+                let (x, y) = (12.0 + 7.5 * c, 12.0 + 7.5 * s);
+                // Pointing along the circle, the way it turns.
+                let (tx, ty) = (-s * turn, c * turn);
+                p.fill(&[(x + tx * 3.5, y + ty * 3.5), (x + c * 2.6, y + s * 2.6), (x - c * 2.6, y - s * 2.6)], accent);
+            };
+            head(340.0, 1.0);
+            head(160.0, 1.0);
+        }
         "g_rect" => {
             p.rect(3.0, 6.0, 18.0, 12.0, Some(p.tint(70)), Some((1.4, ink)), 0.5);
         }
@@ -1349,6 +1368,8 @@ pub const ALL: &[&str] = &[
     "new",
     "undo",
     "redo",
+    "reload",
+    "restore_fill",
     "delete",
     "create",
     "edit",

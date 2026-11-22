@@ -290,8 +290,9 @@ around a pole spans their longitudes (a flat polygon with no area, for points on
 and the tool says how many hulls have no area), not the cap they
 enclose on the ground. For the same reason a polygon whose ring goes around a pole without reaching
 it (written all the way round a parallel, say, rather than cut at ±180° and closed along the pole)
-is another shape in these coordinates, a line along that parallel; the overlays, joins, containment,
-zone, buffer and distance tools say how many such rings they read, and in which layers, and leave
+is another shape in these coordinates, a line along that parallel; the tools that read areas in
+the plane (the overlays, joins, containment, zone, buffer and distance tools, Dissolve, Feature To
+Point, Count Points and Tabulate Intersection) say how many such rings they read, and in which layers, and leave
 the data as it is. The globe draws a long edge along the great circle between its ends, so near
 a pole it shows a little poleward of where the tools take it: about 850 m at the middle of a 10°
 edge along 88°N (as everywhere, the tools take an edge as straight on the map, not on the globe).
@@ -1317,8 +1318,9 @@ gp.run={"tool":"checkGeometry","params":{"input":"Parcels"}}
 ### Repairing geometry
 
 **Repair Geometry** (`repairGeometry`) writes every feature to a new layer, `<input>_repaired`
-unless you name it, with its geometry made valid by the rules Check Geometry checks. Only the
-selected features are processed when some are selected. Each output row keeps its feature id,
+unless you name it, with its geometry made valid where it can be (see the table below) by the
+rules Check Geometry checks. Only the selected features are processed when some are selected.
+Each output row keeps its feature id,
 fields, attributes and CRS, and adds a text field `repairs`: the codes of what was repaired,
 separated by `, ` and in the order of the table above, or empty for a feature that needed
 nothing. Features with nothing wrong are copied exactly as stored. If the input already has a
@@ -1393,8 +1395,8 @@ at an angle. So before the overlay takes out a part's holes or merges the parts,
 that narrow in any direction is dropped: `no_area` is added after the other codes in `repairs`, and
 the tool says how many holes and parts were dropped this way, from how many features.
 
-A feature that can't be repaired stays in the output without geometry, with its attributes, and
-`repairs` says why. One the tool couldn't repair is written unchanged, never dropped:
+A feature that can't be repaired stays in the output with its attributes, without its geometry
+or with it unchanged as the table says, and `repairs` says why; none is dropped:
 
 | Code | Written | Why |
 | --- | --- | --- |

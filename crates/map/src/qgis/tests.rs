@@ -277,13 +277,35 @@ fn hostile_files_are_refused_or_bounded() {
     for i in 0..(MAX_NOTES + 500) {
         r.approximated("a", format!("note {i}"));
     }
-    assert_eq!(r.notes.len(), MAX_NOTES);
+    // Those past it are counted in a closing note of their kind, after the kept ones.
+    assert_eq!(r.notes.len(), MAX_NOTES + 1);
+    let last = r.notes.last().unwrap();
+    assert_eq!((last.text.as_str(), last.kind, last.layer.as_str()), ("501 more note(s) not listed", NoteKind::Approximated, ""));
     r.approximated("a", "note 7");
     r.approximated("b", "note 7");
     r.skipped("a", "note 7");
     let at = r.notes.iter().position(|n| n.text == "note 7").unwrap();
     assert_eq!((r.notes[at].count, r.notes[at].kind), (2, NoteKind::Approximated));
     assert!(!r.notes.iter().any(|n| n.layer == "b"), "past the cap, a new note isn't kept");
+    // "b"'s approximation joins the approximated closing note; the skipped one has its own.
+    let closing = |kind| r.notes.iter().rev().take(2).find(|n| n.kind == kind).map(|n| (n.text.clone(), n.count));
+    assert_eq!(closing(NoteKind::Approximated), Some(("502 more note(s) not listed".to_string(), 502)));
+    assert_eq!(closing(NoteKind::Skipped), Some(("1 more note(s) not listed".to_string(), 1)));
+    assert_eq!(r.notes.len(), MAX_NOTES + 2);
+    // A note withdrawn below the cap moves the closing notes up; a later overflow still finds its
+    // kind's one closing note.
+    for i in 9..12 {
+        r.forget("a", NoteKind::Approximated, &format!("note {i}"));
+    }
+    r.approximated("a", "fresh below the cap");
+    r.approximated("a", "past the cap again");
+    let closers = r.notes.iter().filter(|n| n.text.ends_with(" more note(s) not listed")).count();
+    assert_eq!(closers, 2, "one closing note a kind");
+    let approximated = r.notes.iter().find(|n| n.kind == NoteKind::Approximated && n.text.ends_with(" more note(s) not listed"));
+    assert_eq!(approximated.map(|n| (n.text.as_str(), n.count)), Some(("503 more note(s) not listed", 503)));
+    let mut few = Report::default();
+    few.skipped("a", "one");
+    assert!(!few.notes.iter().any(|n| n.text.contains("not listed")), "under the cap, nothing is counted apart");
 }
 
 #[test]

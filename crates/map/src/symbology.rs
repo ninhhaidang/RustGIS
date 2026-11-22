@@ -1313,6 +1313,11 @@ impl Renderer {
         ramp: Ramp,
         base: Symbol,
     ) -> Result<Renderer, String> {
+        // The lowest number is how an open first class says it is open (`range_label`), so it
+        // can't be a bound of closed classes either.
+        if breaks.contains(&OPEN_BELOW) {
+            return Err(format!("manual breaks must be above {OPEN_BELOW:e}"));
+        }
         Self::graduated_by(ds, rows, field, ClassMethod::Manual, ramp, base, |vals| {
             manual_bounds(breaks, f64::is_finite, vals.last().copied())
         })
@@ -4540,6 +4545,9 @@ mod tests {
         assert_eq!(breaks(open(&b).unwrap()), b);
         // The lowest number marks the open first class, so as a bound it is refused, not dropped.
         assert_eq!(open(&[0.0, f64::MIN]).unwrap_err(), "manual breaks must be above -1.7976931348623157e308");
+        // Closed classes refuse it too: it would read as an open first class.
+        let closed = Renderer::graduated_manual(&heights(&[Some(1.0), Some(5.0)]), &[], "height", &[f64::MIN, 3.0], Ramp::Ember, base);
+        assert_eq!(closed.unwrap_err(), "manual breaks must be above -1.7976931348623157e308");
         // The open class alone stays one class of every value.
         let one = open(&[OPEN_ABOVE]).unwrap();
         assert_eq!(labels_of(&one), ["every value"]);

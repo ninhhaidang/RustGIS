@@ -1957,9 +1957,9 @@ impl MaskCache {
 /// coordinates while the masks are unioned, then twice the largest input feature's, a list of
 /// the masks (or the index's references to them), and the larger of the largest mask and the
 /// largest size of the masks one feature meets, together (found for each batch first, standing
-/// for their union); the threads are as many as half the scratch
-/// memory work may take holds of that, and their recent unions of several masks share
-/// `cache_bytes` (by default the other half of [`crate::parallel::scratch_budget`]).
+/// for their union); as many threads run as fit, at that much work each, in half the scratch
+/// budget, and their recent unions of several masks share `cache_bytes` (by default the other
+/// half of [`crate::parallel::scratch_budget`]).
 fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Option<usize>) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let clip_ds = input(inp, p, "clip")?;
@@ -4947,8 +4947,8 @@ fn merge_coincident(mut points: Vec<(Coord, f64)>) -> Result<Vec<(Coord, f64)>, 
     Ok(kept.into_iter().map(|(c, sum, count)| (c, sum / count as f64)).collect())
 }
 
-/// The cell [`merge_coincident`] files a coordinate `v` under: below 2^24, which 4e-9 of the
-/// axis, numbered from zero (under 2^53, an i64 exactly); from 2^24 on, the coordinate's own bits,
+/// The cell [`merge_coincident`] files a coordinate `v` under: below 2^24, the index of its
+/// 4e-9-wide cell, numbered from zero (under 2^53, an i64 exactly); from 2^24 on, the coordinate's own bits,
 /// whose magnitude (an exponent of 24 or more) is past 2^60, beyond every number below.
 fn coincident_cell(v: f64) -> i64 {
     const CELL: f64 = 4e-9;
@@ -6632,7 +6632,13 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
             let mut row = zone.key.clone();
             row.extend(class.key.iter().cloned());
             if let Some(message) = rustgis_data::ambiguous_area_message(std::iter::once(covered)) {
-                return Err(format!("Tabulate Intersection: {message}"));
+                let zone_key: Vec<String> = zone.key.iter().map(ToString::to_string).collect();
+                let class_key: Vec<String> = class.key.iter().map(ToString::to_string).collect();
+                return Err(format!(
+                    "Tabulate Intersection: in zone '{}' and class '{}': {message}",
+                    zone_key.join(", "),
+                    class_key.join(", ")
+                ));
             }
             row.push(Value::Float(ground_area_perimeter(covered).0 / area_divisor));
             let covered_area = map_area_m2(covered);
@@ -11566,7 +11572,7 @@ mod tests {
         let far = [16_777_216.0, -16_777_216.0, 1.0e11, -1.0e11, 1.0e300, -1.0e300, f64::MAX, -f64::MAX];
         let near = [16_777_215.999_999_998, -16_777_215.999_999_998, 0.0, -0.0];
         for f in far {
-            assert_eq!(coincident_cell(f), coincident_cell(f));
+            assert_ne!(coincident_cell(f), coincident_cell(-f), "{f}");
             for n in near {
                 assert!(coincident_cell(f).abs_diff(coincident_cell(n)) > 1, "{f} {n}");
             }

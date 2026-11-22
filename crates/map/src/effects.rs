@@ -128,24 +128,16 @@ impl Extrusion {
         }
     }
 
-    /// How high (metres) feature `row` of `ds` is extruded: its height field, else `height`, times `factor`.
-    pub fn metres(&self, ds: &rustgis_data::Dataset, row: usize) -> f64 {
-        self.metres_at(ds, row, self.columns(ds))
-    }
-
-    /// `metres` with the columns found already.
+    /// How high (metres) feature `row` of `ds` is extruded, with its columns `c` found already:
+    /// its height field, else `height`, times `factor`.
     pub fn metres_at(&self, ds: &rustgis_data::Dataset, row: usize, c: ExtrusionColumns) -> f64 {
         c.height.and_then(|i| ds.value(row, i).as_f64()).filter(|v| v.is_finite()).unwrap_or(self.height) * self.factor
     }
 
     /// How high (metres) the walls of feature `row` of `ds` start: its base field, else `base`
     /// when the value is no number (empty, or text that isn't one), like the height; times
-    /// `factor`. The result is 0 when it is no finite number or negative.
-    pub fn base_metres(&self, ds: &rustgis_data::Dataset, row: usize) -> f64 {
-        self.base_metres_at(ds, row, self.columns(ds))
-    }
-
-    /// `base_metres` with the columns found already.
+    /// `factor`, with its columns `c` found already. The result is 0 when it is no finite number
+    /// or negative.
     pub fn base_metres_at(&self, ds: &rustgis_data::Dataset, row: usize, c: ExtrusionColumns) -> f64 {
         let b = c.base.and_then(|i| ds.value(row, i).as_f64()).filter(|v| v.is_finite()).unwrap_or(self.base) * self.factor;
         if b.is_finite() && b > 0.0 { b } else { 0.0 }
@@ -177,14 +169,21 @@ mod extrusion_tests {
     fn a_base_comes_from_its_field_else_the_constant_times_the_factor() {
         let ds = rows(vec![Value::Float(10.0), Value::Null, Value::Text("4".into())]);
         let x = Extrusion { base_field: Some("b".into()), base: 3.0, factor: 2.0, ..Extrusion::default() };
-        assert_eq!(x.base_metres(&ds, 0), 20.0, "from the field, with the factor");
-        assert_eq!(x.base_metres(&ds, 1), 6.0, "no value: the constant, with the factor");
-        assert_eq!(x.base_metres(&ds, 2), 8.0, "a number in text");
+        assert_eq!(x.base_metres_at(&ds, 0, x.columns(&ds)), 20.0, "from the field, with the factor");
+        assert_eq!(x.base_metres_at(&ds, 1, x.columns(&ds)), 6.0, "no value: the constant, with the factor");
+        assert_eq!(x.base_metres_at(&ds, 2, x.columns(&ds)), 8.0, "a number in text");
         let constant = Extrusion { base: 5.0, ..Extrusion::default() };
-        assert_eq!(constant.base_metres(&ds, 0), 5.0, "no field: the constant");
+        assert_eq!(constant.base_metres_at(&ds, 0, constant.columns(&ds)), 5.0, "no field: the constant");
         let unknown = Extrusion { base_field: Some("nope".into()), base: 5.0, ..Extrusion::default() };
-        assert_eq!(unknown.base_metres(&ds, 0), 5.0, "a field the layer lacks: the constant");
-        assert_eq!(Extrusion::default().base_metres(&ds, 0), 0.0, "no base: the ground");
+        assert_eq!(unknown.base_metres_at(&ds, 0, unknown.columns(&ds)), 5.0, "a field the layer lacks: the constant");
+        assert_eq!(
+            {
+                let none = Extrusion::default();
+                none.base_metres_at(&ds, 0, none.columns(&ds))
+            },
+            0.0,
+            "no base: the ground"
+        );
     }
 
     #[test]
@@ -192,11 +191,11 @@ mod extrusion_tests {
         let ds = rows(vec![Value::Text("tall".into()), Value::Float(f64::NAN), Value::Null, Value::Float(-4.0)]);
         let x = Extrusion { base_field: Some("b".into()), ..Extrusion::default() };
         for row in 0..4 {
-            assert_eq!(x.base_metres(&ds, row), 0.0, "row {row}");
+            assert_eq!(x.base_metres_at(&ds, row, x.columns(&ds)), 0.0, "row {row}");
         }
         for (base, factor) in [(-1.0, 1.0), (f64::NAN, 1.0), (f64::INFINITY, 1.0), (5.0, -1.0), (5.0, f64::NAN)] {
             let x = Extrusion { base, factor, ..Extrusion::default() };
-            assert_eq!(x.base_metres(&ds, 0), 0.0, "base {base}, factor {factor}");
+            assert_eq!(x.base_metres_at(&ds, 0, x.columns(&ds)), 0.0, "base {base}, factor {factor}");
         }
     }
 

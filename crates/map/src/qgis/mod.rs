@@ -56,6 +56,13 @@ pub struct Report {
     /// thousands of different notes, and a repeat is found without going through them all.
     #[serde(skip)]
     index: HashMap<(String, NoteKind, String), usize>,
+    /// Different notes past [`MAX_NOTES`], not kept but counted in a closing note of their kind:
+    /// approximated, then skipped.
+    #[serde(skip)]
+    more: [usize; 2],
+    /// Where each kind's closing note is in `notes`, kept in step by [`Report::forget`].
+    #[serde(skip)]
+    closing: [Option<usize>; 2],
     /// Raster image markers' images by their `imageFile`, read before the symbols showing them
     /// (`symbol::read_images`): each kept picture with its height over its width, or why it isn't
     /// drawn. Carried here because every symbol reader already takes the report; passing them
@@ -100,6 +107,29 @@ impl Report {
             self.index.insert(key.clone(), self.notes.len());
             let (layer, kind, text) = key;
             self.notes.push(Note { layer, kind, text, count: 1 });
+        } else {
+            // Past the cap, a new note is counted in the one closing note of its kind, never
+            // listed itself.
+            let (_, kind, _) = key;
+            let k = usize::from(kind == NoteKind::Skipped);
+            let more = self.more.get(k).copied().unwrap_or(0).saturating_add(1);
+            let text = format!("{more} more note(s) not listed");
+            let at = self.closing.get(k).copied().flatten();
+            match at.and_then(|i| self.notes.get_mut(i)) {
+                Some(closing) => {
+                    closing.text = text;
+                    closing.count = closing.count.saturating_add(1);
+                }
+                None => {
+                    self.notes.push(Note { layer: String::new(), kind, text, count: 1 });
+                    if let Some(c) = self.closing.get_mut(k) {
+                        *c = Some(self.notes.len() - 1);
+                    }
+                }
+            }
+            if let Some(m) = self.more.get_mut(k) {
+                *m = more;
+            }
         }
     }
 
@@ -129,6 +159,15 @@ impl Report {
         }
         self.notes.retain(|n| n.layer != layer || n.kind != kind || n.text != text);
         self.index = self.notes.iter().enumerate().map(|(i, n)| ((n.layer.clone(), n.kind, n.text.clone()), i)).collect();
+        // The closing notes moved up with the rest.
+        for (k, kind) in [NoteKind::Approximated, NoteKind::Skipped].into_iter().enumerate() {
+            let more = self.more.get(k).copied().unwrap_or(0);
+            let text = format!("{more} more note(s) not listed");
+            let at = self.notes.iter().rposition(|n| n.kind == kind && n.layer.is_empty() && n.text == text);
+            if let Some(c) = self.closing.get_mut(k) {
+                *c = at.filter(|_| more > 0);
+            }
+        }
     }
 }
 

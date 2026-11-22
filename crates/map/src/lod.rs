@@ -407,8 +407,9 @@ fn keep_mask(run: &[Coord], tol: f64, extremes: bool) -> Vec<bool> {
 /// Marks the vertices of `run[first..=last]` (all finite) Douglas–Peucker keeps at `tol`. It works
 /// from a stack, not by recursion, so a long run can't overflow the thread's stack, and its work is
 /// bounded: Douglas–Peucker is quadratic on a shape that splits unevenly at every step (a zigzag),
-/// so past [`DP_WORK`] distances a vertex the spans still open are thinned by distance instead
-/// (a vertex every `tol` along them), which keeps every dropped vertex within `tol` too.
+/// so once it has worked out [`DP_WORK`] distances for each vertex of the run (on average), the
+/// spans still open are thinned by distance instead (a vertex every `tol` along them), which
+/// keeps every dropped vertex within `tol` too.
 fn douglas_peucker(run: &[Coord], first: usize, last: usize, tol: f64, keep: &mut [bool]) {
     for i in [first, last] {
         if let Some(k) = keep.get_mut(i) {
@@ -423,7 +424,8 @@ fn douglas_peucker(run: &[Coord], first: usize, last: usize, tol: f64, keep: &mu
         }
         let (Some(&pa), Some(&pb)) = (run.get(a), run.get(b)) else { continue };
         if budget < b - a {
-            // Out of work: keep a vertex each `tol` (|dx| + |dy|) from the last kept, as `thin` does.
+            // Out of work: keep a vertex each `tol` (|dx| + |dy|) from the last kept, the distance
+            // rule thinning used before #1750.
             let mut kept = pa;
             for i in a + 1..b {
                 let Some(&c) = run.get(i) else { break };
@@ -454,8 +456,9 @@ fn douglas_peucker(run: &[Coord], first: usize, last: usize, tol: f64, keep: &mu
     }
 }
 
-/// How many distances a vertex Douglas–Peucker may work out, on average, before it thins the rest of
-/// a run by distance: an even split takes about log2 of the run's length (under 32).
+/// How many distances Douglas–Peucker may work out for each vertex of a run, on average, before it
+/// thins the rest of the run by distance: an even split takes about log2 of the run's length
+/// (under 32).
 const DP_WORK: usize = 48;
 
 /// The distance from `p` to the segment `a`–`b` (to `a` when they are the same point, as a

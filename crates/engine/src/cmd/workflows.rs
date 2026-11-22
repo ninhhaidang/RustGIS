@@ -1802,6 +1802,15 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
             false,
         );
     }
+    if r.overflowing > 0 {
+        s.notify(
+            format!(
+                "{source_name}: {} line(s) cost so much that a segment's cost is past the largest number, and were closed in the route network",
+                r.overflowing
+            ),
+            false,
+        );
+    }
     Ok(json!({"layer": nid, "lengthKm": r.length_m / 1000.0, "cost": r.cost, "segments": r.rows.len()}))
 }
 

@@ -103,18 +103,8 @@ pub fn write_source_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, cr
 }
 
 /// As [`write_source_in`], a GeoPackage's table placed as `gpkg` says (see
-/// [`crate::io::write_path_to`]): also returns the table written.
-pub fn write_source_to(
-    src: &dyn FeatureSource,
-    layer: &Dataset,
-    path: &Path,
-    crs: Crs,
-    gpkg: &GpkgTable,
-) -> Result<(Exported, Option<GpkgWritten>)> {
-    write_chunks_to(src, layer, path, crs, gpkg, CHUNK_BYTES, None)
-}
-
-/// As [`write_source_to`], applying the layer's query before projecting or serializing each chunk.
+/// [`crate::io::write_path_to`]), applying the layer's query before projecting or serializing each
+/// chunk: also returns the table written.
 pub fn write_source_filtered(
     src: &dyn FeatureSource,
     layer: &Dataset,
@@ -134,7 +124,7 @@ fn write_chunks_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, crs: C
     write_chunks_to(src, layer, path, crs, &GpkgTable::default(), bytes, None).map(|(e, _)| e)
 }
 
-/// [`write_source_to`], `bytes` of features a chunk.
+/// [`write_source_filtered`], `bytes` of features a chunk.
 fn write_chunks_to(
     src: &dyn FeatureSource,
     layer: &Dataset,

@@ -42,11 +42,14 @@ const KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600)
 
 /// The column added to sort rows into geometry families; never in a result.
 const DIM: &str = "__rustgis_dim";
+/// The column added to count the rows whose geometry had Z or M values, which the conversion
+/// drops; never in a result.
+const ZM: &str = "__rustgis_zm";
 
 /// What a converted table is written as: raised when that changes (dates as dates in 2, nanosecond
-/// timestamps as timestamps in 3), so a table converted before is converted again rather than
-/// kept as it was.
-const CONVERSION: u32 = 3;
+/// timestamps as timestamps in 3, the rows that lost Z or M values counted in 4), so a table
+/// converted before is converted again rather than kept as it was.
+const CONVERSION: u32 = 4;
 
 /// A database named by commands: DuckDB files, PostgreSQL connections (also queryable through
 /// DuckDB's `postgres` extension), or live-only MySQL, MariaDB and SQL Server connections.
@@ -320,6 +323,8 @@ pub struct Part {
     pub path: PathBuf,
     pub family: Family,
     pub count: u64,
+    /// Its rows whose geometry had Z or M values, written with x and y only.
+    pub zm_dropped: u64,
 }
 
 /// A result: a part per geometry family it holds.
@@ -718,8 +723,9 @@ fn type_crs(ty: &str) -> Option<&str> {
 }
 
 /// The SELECT that turns a result into what is written: the first geometry column in
-/// longitude/latitude, other geometry columns as WKT, types the provider doesn't read as text, and
-/// each row's geometry family; and the geometry column's name.
+/// longitude/latitude, x and y only, other geometry columns as WKT, types the provider doesn't
+/// read as text, each row's geometry family and whether its geometry had Z or M values; and the
+/// geometry column's name.
 fn select(columns: &[Column], crs: Option<&str>, from: &str) -> Result<(String, String)> {
     let geom = columns
         .iter()
@@ -734,7 +740,7 @@ fn select(columns: &[Column], crs: Option<&str>, from: &str) -> Result<(String, 
         (None, Some(_)) => format!("ST_Transform({g}, 'EPSG:4326')"),
         (None, None) => g.clone(),
     };
-    let list: Vec<String> = columns
+    let mut list: Vec<String> = columns
         .iter()
         .map(|c| {
             let n = ident(&c.name);
@@ -752,6 +758,7 @@ fn select(columns: &[Column], crs: Option<&str>, from: &str) -> Result<(String, 
             }
         })
         .collect();
+    list.push(format!("(ST_HasZ({g}::GEOMETRY) OR ST_HasM({g}::GEOMETRY)) AS {ZM}"));
     Ok((format!("SELECT *, ST_Dimension({g}) AS {DIM} FROM (SELECT {} FROM {from})", list.join(", ")), geom.name.clone()))
 }
 
@@ -918,8 +925,8 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
         .flatten()
         .filter_map(|c| Some(Column { name: c.get("column_name")?.as_str()?.to_string(), ty: c.get("column_type")?.as_str()?.to_string() }))
         .collect();
-    if columns.iter().any(|c| c.name == DIM) {
-        return Err(DataError::Format(format!("the query returns a column named {DIM}")));
+    if let Some(c) = columns.iter().find(|c| c.name.eq_ignore_ascii_case(DIM) || c.name.eq_ignore_ascii_case(ZM)) {
+        return Err(DataError::Format(format!("the query returns a column named {}", c.name)));
     }
     let (select, geom) = select(&columns, q.crs, &from)?;
     let g = ident(&geom);
@@ -944,21 +951,27 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
     let mut script = format!("{prelude} CREATE TEMP TABLE r AS {select};");
     for f in Family::ALL {
         script.push_str(&format!(
-            " COPY (SELECT * EXCLUDE ({DIM}){bbox} FROM r WHERE {DIM} = {} ORDER BY ST_Hilbert({g}, {{'min_x': -180, 'min_y': -90, 'max_x': 180, 'max_y': 90}}::BOX_2D)) TO {} (FORMAT parquet, ROW_GROUP_SIZE 16384);",
+            " COPY (SELECT * EXCLUDE ({DIM}, {ZM}){bbox} FROM r WHERE {DIM} = {} ORDER BY ST_Hilbert({g}, {{'min_x': -180, 'min_y': -90, 'max_x': 180, 'max_y': 90}}::BOX_2D)) TO {} (FORMAT parquet, ROW_GROUP_SIZE 16384);",
             dimension(f),
             literal(&tmp(f).display().to_string())
         ));
     }
-    let counts =
-        fetch(dir, &script, q.database, &format!("SELECT {DIM} AS dim, count(*)::BIGINT AS n FROM r GROUP BY ALL"), QUERY_TIMEOUT)?;
+    let counts = fetch(
+        dir,
+        &script,
+        q.database,
+        &format!("SELECT {DIM} AS dim, count(*)::BIGINT AS n, count_if({ZM})::BIGINT AS zm FROM r GROUP BY {DIM}"),
+        QUERY_TIMEOUT,
+    )?;
 
     let mut out = Output::default();
     for row in counts.as_array().into_iter().flatten() {
         let count = row.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
+        let zm_dropped = row.get("zm").and_then(|v| v.as_u64()).unwrap_or(0);
         match row.get("dim").and_then(|v| v.as_i64()).and_then(|d| Family::ALL.into_iter().find(|f| dimension(*f) == d)) {
             Some(family) if count > 0 => {
                 let path = dir.join(format!("{run_tag}.{}.parquet", family.label()));
-                out.parts.push(Part { path, family, count });
+                out.parts.push(Part { path, family, count, zm_dropped });
             }
             Some(_) => {}
             None => out.skipped = out.skipped.saturating_add(count),
@@ -976,7 +989,7 @@ fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<F
         if out.parts.is_empty() && (out.other_family > 0 || out.skipped == 0) {
             // COPY wrote a valid empty GeoParquet for every family, even when the selected
             // family disappeared while rows of another family remain.
-            out.parts.push(Part { path: dir.join(format!("{run_tag}.{}.parquet", family.label())), family, count: 0 });
+            out.parts.push(Part { path: dir.join(format!("{run_tag}.{}.parquet", family.label())), family, count: 0, zm_dropped: 0 });
         }
     }
     if out.parts.is_empty() {
@@ -1127,11 +1140,11 @@ fn convert_table_in(dir: &Path, database: &Path, table: &Table, crs: Option<&str
     // A database is hostile input: its tables are read confined to the cache.
     let out = run_in(dir, &Query { sql: &table.sql(), database: Some(&Database::File(full.clone())), crs }, true)?;
     // The key goes last, vouching for the parts written before it: the key, then a line per part
-    // (its family, rows and file) and the rows left out.
+    // (its family, rows, file and rows that lost Z or M values) and the rows left out.
     let mut text = key.clone();
     for p in &out.parts {
         let file = p.path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
-        text.push_str(&format!("\npart {} {} {file}", p.family.label(), p.count));
+        text.push_str(&format!("\npart {} {} {file} {}", p.family.label(), p.count, p.zm_dropped));
     }
     text.push_str(&format!("\nskipped {}", out.skipped));
     std::fs::write(&keyfile, text)?;
@@ -1144,17 +1157,17 @@ fn cached(dir: &Path, key: &str, stored: &str) -> Option<Output> {
     let mut out = Output::default();
     for line in rest.lines() {
         let mut w = line.split(' ');
-        match (w.next(), w.next(), w.next(), w.next()) {
+        match (w.next(), w.next(), w.next(), w.next(), w.next(), w.next()) {
             // Only a file of this module's, in the cache folder.
-            (Some("part"), Some(f), Some(n), Some(file)) if ours(file) && file.ends_with(&format!(".{f}.parquet")) => {
+            (Some("part"), Some(f), Some(n), Some(file), Some(zm), None) if ours(file) && file.ends_with(&format!(".{f}.parquet")) => {
                 let family = Family::ALL.into_iter().find(|x| x.label() == f)?;
                 let path = dir.join(file);
                 if !path.is_file() {
                     return None;
                 }
-                out.parts.push(Part { path, family, count: n.parse().ok()? });
+                out.parts.push(Part { path, family, count: n.parse().ok()?, zm_dropped: zm.parse().ok()? });
             }
-            (Some("skipped"), Some(n), None, None) => out.skipped = n.parse().ok()?,
+            (Some("skipped"), Some(n), None, None, None, None) => out.skipped = n.parse().ok()?,
             _ => return None,
         }
     }
@@ -1500,6 +1513,7 @@ mod tests {
         assert!(s.contains("CAST(\"l\" AS VARCHAR)"), "{s}");
         assert!(s.contains("CAST(\"s\" AS TIMESTAMP) AS \"s\""), "{s}");
         assert!(s.contains(", \"n\",") && s.contains("ST_AsText(\"g2\")"), "{s}");
+        assert!(s.contains(&format!("(ST_HasZ(\"geom\"::GEOMETRY) OR ST_HasM(\"geom\"::GEOMETRY)) AS {ZM}")), "{s}");
         // A geometry that says its coordinate system is converted; one given is used.
         let (s, _) = select(&cols(&[("g", "GEOMETRY('EPSG:3857')")]), None, "x").unwrap();
         assert!(s.contains("ST_Transform(\"g\", 'EPSG:4326')"), "{s}");
@@ -1584,6 +1598,13 @@ mod tests {
         let lines = out.parts.iter().find(|p| p.family == Family::Lines).unwrap();
         assert_eq!(points.count, 2);
         assert_eq!(lines.count, 1);
+        assert_eq!((points.zm_dropped, lines.zm_dropped), (0, 0), "x and y only: nothing dropped");
+        // Rows with Z or M values are counted, as their values are dropped (#1505).
+        let sql = "SELECT ST_GeomFromText('POINT Z (1 2 3)') AS geom UNION ALL SELECT ST_GeomFromText('POINT M (1 2 4)') \
+            UNION ALL SELECT ST_Point(5, 6) UNION ALL SELECT ST_GeomFromText('LINESTRING Z (0 0 1, 1 1 2)')";
+        let zm = run_in(&cache, &Query { sql, ..Query::default() }, false).unwrap();
+        let dropped = |f: Family| zm.parts.iter().find(|p| p.family == f).map(|p| (p.count, p.zm_dropped));
+        assert_eq!((dropped(Family::Points), dropped(Family::Lines)), (Some((3, 2)), Some((1, 1))));
         let line_source = open(&lines.path);
         let line_batch = line_source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
         assert_eq!(line_batch.features.len(), 1);

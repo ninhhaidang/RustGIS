@@ -238,15 +238,13 @@ pub fn read(provider: &str, datasource: &str, dir: &str) -> Source {
             // any, runs to the end.
             let (head, sql) = datasource.rsplit_once(" sql=").unwrap_or((datasource, ""));
             let subset = Some(sql.trim().to_string()).filter(|q| !q.is_empty());
-            let kv = conninfo(head);
             // What QGIS always writes and RustGIS reads or needn't.
             const READ_OR_HARMLESS: [&str; 7] = ["dbname", "table", "key", "srid", "type", "estimatedmetadata", "checkPrimaryKeyUnicity"];
-            let ignored = kv
-                .iter()
-                .filter(|(k, _)| !READ_OR_HARMLESS.iter().any(|r| r.eq_ignore_ascii_case(k)))
-                .take(32)
-                .map(|(k, v)| noted_option(&format!("{k}={v}")))
-                .collect();
+            let harmless = |k: &str| READ_OR_HARMLESS.iter().any(|r| r.eq_ignore_ascii_case(k));
+            // Options past the 100 pairs read are counted with those not named (the table is read
+            // from the text itself).
+            let (kv, past, _) = conninfo_counted(head, |k| !harmless(k));
+            let ignored = named_options(kv.iter().filter(|(k, _)| !harmless(k)).map(|(k, v)| noted_option(&format!("{k}={v}"))), past);
             match (kv.iter().find(|(k, _)| k == "dbname"), table_of(head)) {
                 (Some((_, db)), Some(t)) => Source::File { path: absolute(db, dir), layer: Some(t), subset, ignored },
                 _ => Source::Other { provider: provider.into() },
@@ -516,22 +514,49 @@ fn file(datasource: &str, dir: &str) -> Source {
     let mut parts = datasource.split('|');
     let path = parts.next().unwrap_or_default().trim();
     let (mut layer, mut subset, mut ignored) = (None, None, Vec::new());
-    // Every part is read for the layer and the filter; at most 32 others are kept for the note.
+    // Every part is read for the layer and the filter; at most 32 others are named in the note,
+    // the rest counted.
+    // Only the named ones are kept (a project file is hostile input: the rest are only counted),
+    // the `layerid=` ones among the counted apart.
+    let (mut more, mut more_ids) = (0usize, 0usize);
     for p in parts {
         if let Some(v) = p.strip_prefix("layername=") {
             layer = Some(v.to_string());
         } else if let Some(v) = p.strip_prefix("subset=") {
             subset = Some(v.to_string()).filter(|s| !s.trim().is_empty());
-        } else if !p.trim().is_empty() && p.trim() != "layerid=0" && ignored.len() < 32 {
+        } else if !p.trim().is_empty() && p.trim() != "layerid=0" {
             // (layerid=0 is the first layer, which is what opens.)
-            ignored.push(noted_option(p.trim()));
+            if ignored.len() < 32 {
+                ignored.push(noted_option(p.trim()));
+            } else {
+                more += 1;
+                more_ids += usize::from(p.trim().starts_with("layerid="));
+            }
         }
     }
     // A layer named as well as numbered: the name is what's read.
     if layer.is_some() {
         ignored.retain(|o: &String| !o.starts_with("layerid="));
+        more = more.saturating_sub(more_ids);
     }
-    Source::File { path: absolute(path, dir), layer, subset, ignored }
+    Source::File { path: absolute(path, dir), layer, subset, ignored: named_options(ignored.into_iter(), more) }
+}
+
+/// At most 32 of a file source's unread `options`, as its note names them, and the rest, with
+/// `unread` more the source holds past what was read, counted in a last entry ("and 3 more").
+fn named_options(options: impl Iterator<Item = String>, unread: usize) -> Vec<String> {
+    let (mut named, mut more) = (Vec::new(), unread);
+    for o in options {
+        if named.len() < 32 {
+            named.push(o);
+        } else {
+            more += 1;
+        }
+    }
+    if more > 0 {
+        named.push(format!("and {more} more"));
+    }
+    named
 }
 
 /// A source option as the import notes it: with its value only for the options known to carry
@@ -901,12 +926,20 @@ fn conninfo(s: &str) -> Vec<(String, String)> {
 /// [`conninfo`], and how many pairs it doesn't keep: those past the 100 it reads, and one for text
 /// it can't read as a pair (which stops it).
 fn conninfo_rest(s: &str) -> (Vec<(String, String)>, usize) {
+    let (out, past, stopped) = conninfo_counted(s, |_| true);
+    (out, past + usize::from(stopped))
+}
+
+/// [`conninfo`], with the pairs past the 100 it reads whose name `counts`, apart from whether it
+/// stopped at text it can't read as a pair (as a SpatiaLite source's `(geom)` after its table).
+fn conninfo_counted(s: &str, counts: impl Fn(&str) -> bool) -> (Vec<(String, String)>, usize, bool) {
     let mut out = Vec::new();
     let mut unread = 0usize;
+    let mut stopped = false;
     let mut rest = s.trim();
     while !rest.is_empty() {
         let Some((k, after)) = rest.split_once('=') else {
-            unread += 1;
+            stopped = true;
             break;
         };
         let k = k.trim().to_string();
@@ -932,12 +965,12 @@ fn conninfo_rest(s: &str) -> (Vec<(String, String)>, usize) {
         };
         if out.len() < 100 {
             out.push((k, v));
-        } else {
+        } else if counts(&k) {
             unread += 1;
         }
         rest = next.trim_start();
     }
-    (out, unread)
+    (out, unread, stopped)
 }
 
 /// A connection text's `table="schema"."table" (geom)`, as `schema.table` (or `table`).
@@ -1193,7 +1226,17 @@ mod tests {
         // The layer and the filter are read past the options kept for the note.
         let many = format!("./m.gpkg|{}|layername=late|subset=a = 1", vec!["x=1"; 40].join("|"));
         let Source::File { layer, subset, ignored, .. } = read("ogr", &many, dir) else { panic!() };
-        assert_eq!((layer.as_deref(), subset.as_deref(), ignored.len()), (Some("late"), Some("a = 1"), 32));
+        assert_eq!((layer.as_deref(), subset.as_deref(), ignored.len()), (Some("late"), Some("a = 1"), 33));
+        assert_eq!(ignored.last().map(String::as_str), Some("and 8 more"), "past 32, the rest counted");
+        let many =
+            format!("dbname='/a.sqlite' {} table=\"t\" (geom) sql=", (0..40).map(|i| format!("o{i}=1")).collect::<Vec<_>>().join(" "));
+        let Source::File { ignored, .. } = read("spatialite", &many, dir) else { panic!() };
+        assert_eq!((ignored.len(), ignored.last().map(String::as_str)), (33, Some("and 8 more")), "{ignored:?}");
+        // Past the 100 pairs a connection text is read to, the rest are counted too.
+        let many =
+            format!("dbname='/a.sqlite' {} table=\"t\" (geom) sql=", (0..110).map(|i| format!("o{i}=1")).collect::<Vec<_>>().join(" "));
+        let Source::File { ignored, .. } = read("spatialite", &many, dir) else { panic!() };
+        assert_eq!(ignored.last().map(String::as_str), Some("and 78 more"), "{ignored:?}");
         assert_eq!(
             read("gdal", "GPKG:./m.gpkg:relief", dir),
             Source::File { path: "/data/project/m.gpkg".into(), layer: Some("relief".into()), subset: None, ignored: Vec::new() }

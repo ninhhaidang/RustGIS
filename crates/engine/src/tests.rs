@@ -15079,7 +15079,7 @@ fn terrain_block_walls_follow_a_polygon_layer() {
     twice.maps[0].layers.push(copy);
     let mut opened = Session::new(Project::default());
     crate::cmd::project::reset_to(&mut opened, twice);
-    assert!(opened.notices.iter().any(|n| n.text.contains("of a name another layer shares")), "{:?}", opened.notices);
+    assert!(opened.notices.iter().any(|n| n.text.contains("shares its name with another layer")), "{:?}", opened.notices);
     let mut clean = Session::new(Project::default());
     crate::cmd::project::reset_to(&mut clean, s.project.clone());
     assert!(!clean.notices.iter().any(|n| n.text.contains("walls layer")), "{:?}", clean.notices);
@@ -21258,6 +21258,39 @@ fn duckdb_queries_and_databases() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A DuckDB result whose rows had Z or M values, which its conversion drops, says how many, once,
+/// and its layer keeps the loss for an export to say; one with x and y only says nothing (#1505).
+/// DuckDB isn't needed: the part is a GeoParquet file as DuckDB writes one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_duckdb_result_says_the_z_and_m_values_it_dropped() {
+    use crate::cmd::layer::{add_converted, duckdb_parts};
+    use rustgis_data::source::{Family, duckdb};
+    let dir = std::env::temp_dir().join(format!("rustgis-duckdb-zm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let json = r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [10, 50]}}]}"#;
+    let (ds, _) = rustgis_data::io::read_bytes("part.geojson", json.as_bytes()).unwrap();
+    let origin =
+        |family| rustgis_map::source::DuckdbOrigin { sql: Some("SELECT 1".into()), database: None, table: None, crs: None, family };
+    for (zm, said) in [(2u64, true), (0, false)] {
+        let path = dir.join(format!("zm-{zm}.parquet"));
+        rustgis_data::io::write_path(&ds, &path).unwrap();
+        let mut s = Session::new(Project::default());
+        let parts = vec![duckdb::Part { path, family: Family::Points, count: 1, zm_dropped: zm }];
+        let parts = duckdb_parts(&mut s, "Trip", duckdb::Output { parts, ..Default::default() }, origin);
+        add_converted(&mut s, &json!({}), "the query", "DuckDB query", parts).unwrap();
+        let notes: Vec<_> = s.notices.iter().filter(|n| n.text.contains("Z or M")).collect();
+        if said {
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert_eq!(notes[0].text, format!("Trip: {}", rustgis_data::zm_note(Some(2))));
+        } else {
+            assert!(notes.is_empty(), "{notes:?}");
+        }
+        assert_eq!(s.map().layers.first().map(|l| l.dataset.zm_dropped), Some(said));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A source split by geometry type is added polygons first, so its points end on top and none hides
 /// under its own polygons, whether DuckDB or GDAL split it (#1488). Neither program is needed: the
 /// parts use each program's conversion format: GeoParquet for DuckDB, FlatGeobuf for GDAL.
@@ -21286,7 +21319,8 @@ fn split_sources_keep_their_points_on_top() {
 
     // A DuckDB query.
     let mut s = Session::new(Project::default());
-    let parts = Family::ALL.iter().map(|f| duckdb::Part { path: write("query", *f, "parquet"), family: *f, count: 1 }).collect();
+    let parts =
+        Family::ALL.iter().map(|f| duckdb::Part { path: write("query", *f, "parquet"), family: *f, count: 1, zm_dropped: 0 }).collect();
     let origin =
         |family| rustgis_map::source::DuckdbOrigin { sql: Some("SELECT 1".into()), database: None, table: None, crs: None, family };
     let parts = duckdb_parts(&mut s, "Trip", duckdb::Output { parts, skipped: 0, other_family: 0 }, origin);
@@ -21319,7 +21353,7 @@ fn split_sources_keep_their_points_on_top() {
     assert!(!s.notices.iter().any(|n| n.text.contains("converted layer parts keep their generated names")), "no ignored name was supplied");
     let mut single = Session::new(Project::default());
     let output = duckdb::Output {
-        parts: vec![duckdb::Part { path: write("single", Family::Points, "parquet"), family: Family::Points, count: 1 }],
+        parts: vec![duckdb::Part { path: write("single", Family::Points, "parquet"), family: Family::Points, count: 1, zm_dropped: 0 }],
         skipped: 0,
         other_family: 0,
     };
@@ -42428,7 +42462,7 @@ fn legends_label_layers() {
         assert!(s.run("layout.addElement", &json!({"kind": "scaleBar", "labels": v})).unwrap_err().contains("only legends"), "{v}");
     }
     let err = s.run("layout.addElement", &json!({"kind": "grid", "labels": "no"})).unwrap_err();
-    assert!(err.contains("a grid's labels is true or false"), "{err}");
+    assert!(err.contains("a grid's \"labels\" is true or false"), "{err}");
     assert_eq!(s.project.layouts[0].elements.len(), count);
     // A grid's own "labels" (a bool) is still its.
     let frame = s.run("layout.addElement", &json!({"kind": "grid", "labels": false})).unwrap()["element"].as_u64().unwrap() as u32;
@@ -45681,7 +45715,7 @@ fn session_log_duckdb_inputs_exclude_conversion_cache() {
     let added = s
         .command_epilogue("layer.addSql", &params, |s| {
             let out = duckdb::Output {
-                parts: vec![duckdb::Part { path: cache.clone(), family: Family::Points, count: 1 }],
+                parts: vec![duckdb::Part { path: cache.clone(), family: Family::Points, count: 1, zm_dropped: 0 }],
                 skipped: 0,
                 other_family: 0,
             };

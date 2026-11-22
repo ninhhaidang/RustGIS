@@ -1,8 +1,8 @@
 //! Saving a project and opening it again gives back the same project, as a property: a project
 //! built with commands from a few small layers (Project › Save As, then Project › Open) opens with
-//! the same layers, symbology, labels, groups, layouts, bookmarks, time and map settings, or the
-//! save or open says what changed. What a project file doesn't keep is listed in [`LIMITS`], with
-//! the reason. Projects lean on edges: unicode, long and blank names, every renderer kind, nested
+//! the same layers, symbology, labels, groups, layouts, bookmarks, time and map settings, but for
+//! what a project file doesn't keep, listed in [`LIMITS`] with the reason: any other change fails,
+//! even one the save or open says. Projects lean on edges: unicode, long and blank names, every renderer kind, nested
 //! groups, an empty layer, and values that aren't finite numbers, as a reader may leave them.
 //!
 //! A second property: a saved file with fields this version doesn't know opens as it would

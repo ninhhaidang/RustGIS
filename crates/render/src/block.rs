@@ -2123,7 +2123,7 @@ mod tests {
     #[test]
     fn a_pattern_round_a_round_blocks_wall_holds_whole_periods_so_it_meets_itself_at_the_east_point() {
         let hatch = |angle| FillPattern::Hatch { angle, spacing: 6.0, width: 1.0, offset: 0.0 };
-        // At 30° the lines repeat every 12 px across: 1000 px round holds 83 of them, stretched by 0.4%.
+        // At 30° the lines repeat every 12 px across: 1000 px round holds 83 of them, shrunk by 0.4%.
         let f = closing(hatch(30.0), 1000.0);
         assert!(((1000.0 * f / 12.0) - 83.0).abs() < 1e-9 && (f - 1.0).abs() < 0.01, "{f}");
         assert!(((1000.0 * closing(hatch(-75.0), 1000.0) / (6.0 / 75f64.to_radians().sin())).fract()).abs() < 1e-9);

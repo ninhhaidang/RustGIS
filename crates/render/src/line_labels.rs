@@ -799,21 +799,23 @@ mod tests {
         assert!(glyphs.iter().all(|g| g.1.abs() < 1e-3 && g.2.abs() < 1e-4), "{glyphs:?}");
     }
 
-    /// A bend of nearly half a turn under a label whose start-to-end direction is steep: none of
-    /// its characters stand upside down, though each is within a right angle of that direction.
+    /// A bend of nearly half a turn under a label whose start-to-end direction is steep: one whose
+    /// characters would stand upside down is refused; one that is placed has none upside down.
     #[test]
-    fn curved_text_round_a_half_turn_never_stands_upside_down() {
+    fn curved_text_past_the_turn_bound_is_refused() {
         // Its course turns from -0.5 to 2.9 radians, so the text's ends are -0.3 and 2.7 and its
-        // start-to-end direction about 1.2.
+        // start-to-end direction about 1.2: its far characters turn past the bound, so it is
+        // left out. A shorter text round the middle of the turn is placed, every character
+        // within the bound.
         let arc: Vec<(f32, f32)> = (0..=340)
             .map(|i| {
                 let t = -0.5 + i as f32 / 100.0;
                 (200.0 + 58.0 * t.sin(), 200.0 - 58.0 * t.cos())
             })
             .collect();
-        if let Some((_, glyphs)) = curved(&arc, &[7.0; 25], 0.0, 0.0, None) {
-            assert!(glyphs.iter().all(|g| g.2.abs() <= std::f32::consts::FRAC_PI_2 + MAX_TURN), "upside down: {glyphs:?}");
-        }
+        assert!(curved(&arc, &[7.0; 25], 0.0, 0.0, None).is_none());
+        let (_, glyphs) = curved(&arc, &[7.0; 8], 0.0, 0.0, None).expect("a short text round the turn is placed");
+        assert!(glyphs.iter().all(|g| g.2.abs() <= std::f32::consts::FRAC_PI_2 + MAX_TURN), "upside down: {glyphs:?}");
     }
 
     /// A hairpin tighter than the text, sharper than [`MAX_TURN`] over a text's height: still left out.

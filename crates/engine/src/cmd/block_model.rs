@@ -172,7 +172,7 @@ struct Model {
 /// that box, which the model's walls go down from, not of the circle's only.
 fn as_box(map: &mut rustgis_map::Map) -> Result<(), String> {
     let ground = Ground::of(map, &map.camera)
-        .ok_or("the map's terrain shows on a Web Mercator map with its DEM layer, so the block can't be read")?;
+        .ok_or("the block can't be read: the map's terrain needs a Web Mercator map and its DEM layer loaded")?;
     let b = ground.block(map).ok_or("the block's box can't be read (over elevation tiles it needs an extent)")?;
     if let Some(block) = map.view.terrain.as_mut().and_then(|t| t.block.as_mut()) {
         block.shape = rustgis_map::view::BlockShape::Box;
@@ -188,7 +188,7 @@ fn read_ground(map: &rustgis_map::Map, texture: f64) -> Result<(Ground, terrain:
     loop {
         let drawn_at = rustgis_render::rustgis_tiles::cache::generation();
         let ground = Ground::of(map, &map.camera)
-            .ok_or("the map's terrain shows on a Web Mercator map with its DEM layer, so the block can't be read")?;
+            .ok_or("the block can't be read: the map's terrain needs a Web Mercator map and its DEM layer loaded")?;
         let block = ground.block(map).ok_or("the block's box can't be read (over elevation tiles it needs an extent)")?;
         let model = build(&ground, &block, texture);
         let left = TILE_WAIT.saturating_sub(start.elapsed());

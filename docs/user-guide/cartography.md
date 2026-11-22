@@ -691,6 +691,15 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   A feature with no guide line its text fits along is labelled as without a guide
   (`labels.placement={"layer": "Serras", "guide": {"layer": "Cumeadas", "field": "nome"}}`;
   `"guide": null` removes it).
+- **Square to a line**: a point's label can start at the point and run square to the nearest line
+  of another layer, as the name of a bridge or a gauge reads across its river (Labeling pane ›
+  Position › Square to a line › **Perpendicular**, then the **Line layer**, a line or polygon
+  layer; the button starts on the map's first). `to` names the layer and `within` how near its
+  line must be, 1 to 500 points (20 by default); `side` runs the text `"away"` from the line, to
+  the side the point isn't on (the default), or to its `"left"` or `"right"` as the line runs. A
+  point with no line that near is labelled as automatic, and so is every point while the layer is
+  missing (`labels.placement={"layer": "Gauges", "position": "perpendicular", "to": {"layer":
+  "Rivers", "within": 30}, "side": "left"}`; another position takes it off).
 - **Other places round points**: a point's label whose place another label takes tries the
   other places round the point, corners first (above right, above left, below right, below left,
   right, left, above, below, leaving out its own), and goes to the first where
