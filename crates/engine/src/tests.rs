@@ -112,6 +112,18 @@ pub(crate) fn isolate_process_test(name: &str) -> bool {
 }
 
 #[test]
+fn cached_sample_projects_have_distinct_instance_ids() {
+    let a = world();
+    let b = world();
+    assert_ne!(a.map().instance_id(), b.map().instance_id(), "each sample session needs a fresh map instance id");
+    assert_eq!(a.map().layers.len(), b.map().layers.len());
+    for (la, lb) in a.map().layers.iter().zip(&b.map().layers) {
+        assert_eq!(la.id, lb.id);
+        assert_ne!(la.instance_id(), lb.instance_id(), "layer {} must get a fresh instance id", la.name);
+    }
+}
+
+#[test]
 fn worldview_swaps_only_untouched_sample_countries() {
     use sample::{Detail, View, Worldview, swap_countries};
     let countries = |s: &Session| s.map().layer_by_name("Countries").unwrap().dataset.features.len();
@@ -5593,12 +5605,18 @@ fn command_ids_are_unique() {
 
 /// A 3-band 8×6 UTM 17N GeoTIFF near 81°W, 42°N, as base64.
 fn utm_tiff_b64() -> String {
-    use base64::Engine;
-    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
-    let gt = GeoTransform { origin_x: 497_000.0, origin_y: 4_651_000.0, pixel_width: 500.0, pixel_height: -500.0 };
-    let bands = (0..3).map(|b| (0..48).map(|i| ((i * 5 + b * 40) % 256) as f32).collect()).collect();
-    let r = Raster::new("utm", 8, 6, bands, gt, Crs::from_epsg(32617).unwrap(), None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
-    base64::engine::general_purpose::STANDARD.encode(geotiff::write(&r, 0).unwrap())
+    static ENCODED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ENCODED
+        .get_or_init(|| {
+            use base64::Engine;
+            use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+            let gt = GeoTransform { origin_x: 497_000.0, origin_y: 4_651_000.0, pixel_width: 500.0, pixel_height: -500.0 };
+            let bands = (0..3).map(|b| (0..48).map(|i| ((i * 5 + b * 40) % 256) as f32).collect()).collect();
+            let r = Raster::new("utm", 8, 6, bands, gt, Crs::from_epsg(32617).unwrap(), None, ColorHint::Rgb { alpha: false }, "UInt8")
+                .unwrap();
+            base64::engine::general_purpose::STANDARD.encode(geotiff::write(&r, 0).unwrap())
+        })
+        .clone()
 }
 
 /// The sample world with a streamed layer active.
@@ -6961,6 +6979,39 @@ fn hostile_params_never_panic(shard: usize) {
         .collect();
     // Shards share the process under `cargo test`: each streams its own file.
     let streamed = grid_fgb(&format!("hostile-{shard}"), 20);
+    // Compare against each fixture's own initial state (`with_raster` and `with_streamed` start
+    // dirty with an undo entry from adding their layer). Captures session mutation counters,
+    // camera, and per-layer geometry/style/visibility/label state in O(layers) time so any
+    // failing payload that mutates state still triggers a full fixture rebuild.
+    let state_of = |s: &Session| {
+        let m = s.map();
+        let cam = (
+            m.camera.center.x.to_bits(),
+            m.camera.center.y.to_bits(),
+            m.camera.res.to_bits(),
+            m.camera.bearing.to_bits(),
+            m.camera.pitch.to_bits(),
+        );
+        let layers: Vec<_> = m
+            .layers
+            .iter()
+            .map(|l| {
+                (
+                    l.id,
+                    l.visible,
+                    l.transparency.to_bits(),
+                    // CoW `Features`: `PartialEq` short-circuits on `Arc::ptr_eq` in O(1) when
+                    // unchanged and catches any row, attribute or geometry mutation.
+                    l.dataset.features.clone(),
+                    l.selection.len(),
+                    l.labels.enabled,
+                    l.labels.default.field.len(),
+                    l.definition_query.as_deref().map(str::len),
+                )
+            })
+            .collect();
+        (s.states, s.unsaved_marks, s.opened, s.active_layer, s.tool, s.project.maps.len(), cam, layers)
+    };
     for id in ids {
         if matches!(
             id,
@@ -6998,6 +7049,12 @@ fn hostile_params_never_panic(shard: usize) {
         ) {
             continue;
         }
+        let mut s_world = world();
+        let mut s_raster = with_raster();
+        let mut s_streamed = with_streamed(&streamed);
+        let base_world = state_of(&s_world);
+        let base_raster = state_of(&s_raster);
+        let base_streamed = state_of(&s_streamed);
         for p in &junk {
             // Places given by name go to the public geocoder: with an answer given, the junk
             // goes through reading it and the options, and nothing is fetched.
@@ -7012,17 +7069,25 @@ fn hostile_params_never_panic(shard: usize) {
                 _ if id == "map.route" => continue,
                 p => p,
             };
-            let mut s = world();
-            let _ = s.run(id, p);
-            let _ = s.run("info.project", &Value::Null);
-            // Again with a raster layer active.
-            let mut s = with_raster();
-            let _ = s.run(id, p);
-            let _ = s.run("info.project", &Value::Null);
-            // And with a streamed layer active.
-            let mut s = with_streamed(&streamed);
-            let _ = s.run(id, p);
-            let _ = s.run("info.project", &Value::Null);
+            // Most hostile payloads return Err without modifying the session; rebuild through the
+            // full fixture constructor whenever the command succeeded or changed session/project
+            // state (`Session::run` bumps `revision` on every call, including errors, so compare
+            // `state_of` instead).
+            let changed = s_world.run(id, p).is_ok() || state_of(&s_world) != base_world;
+            let _ = s_world.run("info.project", &Value::Null);
+            if changed {
+                s_world = world();
+            }
+            let changed = s_raster.run(id, p).is_ok() || state_of(&s_raster) != base_raster;
+            let _ = s_raster.run("info.project", &Value::Null);
+            if changed {
+                s_raster = with_raster();
+            }
+            let changed = s_streamed.run(id, p).is_ok() || state_of(&s_streamed) != base_streamed;
+            let _ = s_streamed.run("info.project", &Value::Null);
+            if changed {
+                s_streamed = with_streamed(&streamed);
+            }
         }
     }
 }

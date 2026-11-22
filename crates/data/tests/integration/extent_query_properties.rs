@@ -9,7 +9,6 @@
 //! Pull requests run a fixed seed; the nightly a new one with more cases. A failure gives its seed
 //! and the smallest layer and extent found. To run a seed again, or deeper:
 //! `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-data --test extent_query_properties`.
-#![cfg(not(target_arch = "wasm32"))]
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};

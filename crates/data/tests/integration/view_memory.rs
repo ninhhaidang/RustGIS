@@ -1,5 +1,4 @@
 //! The default provider adapter bounds retained views without changing full-source reads.
-#![cfg(not(target_arch = "wasm32"))]
 
 use rustgis_data::{
     Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value,

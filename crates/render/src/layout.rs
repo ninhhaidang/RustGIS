@@ -4216,9 +4216,10 @@ mod tests {
         assert!(!chart_crowded(&short, &valued(Orientation::Horizontal), w, h));
         assert!(!chart_crowded(&stacked(vec![6.0, 4.0]), &ChartLook::default(), w, 120.0 / PT_PER_MM));
         // A box narrower than a swatch draws the placeholder too, nothing past its right.
+        // Sample above the centered "Chart" label so system font glyph shapes at y=60 don't mask the fill.
         let mut c = Canvas::new(200, 120).unwrap();
         chart(&mut c, Rect::from_xywh(0.0, 0.0, 5.0, 120.0).unwrap(), &stacked(vec![6.0, 4.0]), &ChartLook::default(), INK, 1.0, false);
-        assert!(is(&c, 2, 60, Rgba::rgb(0xF0, 0xF1, 0xF3)) && (6..20).all(|x| c.pixmap().pixel(x, 7).is_some_and(|p| p.alpha() == 0)));
+        assert!(is(&c, 2, 10, Rgba::rgb(0xF0, 0xF1, 0xF3)) && (6..20).all(|x| c.pixmap().pixel(x, 7).is_some_and(|p| p.alpha() == 0)));
     }
 
     fn bar_blue(c: &Canvas, x: u32, y: u32) -> bool {

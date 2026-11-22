@@ -320,9 +320,32 @@ fn about(root: &Path, manifest: &str, targets: &[&str]) -> Result<Value, String>
 /// `Err((1, …))` for any other failure.
 pub fn notices(root: &Path, check: bool) -> Result<(), (u8, String)> {
     let included = included(root).map_err(|e| (1, e))?;
+    // Each `cargo about generate` run takes ~50-75s independently; run them in parallel while
+    // falling back inline if the OS refuses a thread.
+    let reports: Vec<Result<Value, String>> = std::thread::scope(|scope| {
+        enum Job<'scope> {
+            Spawned(std::thread::ScopedJoinHandle<'scope, Result<Value, String>>),
+            Inline(Result<Value, String>),
+        }
+        let jobs: Vec<Job<'_>> = FILES
+            .iter()
+            .map(|&(_, manifest, _, targets)| {
+                match std::thread::Builder::new().spawn_scoped(scope, move || about(root, manifest, targets)) {
+                    Ok(handle) => Job::Spawned(handle),
+                    Err(_) => Job::Inline(about(root, manifest, targets)),
+                }
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|job| match job {
+                Job::Spawned(handle) => handle.join().unwrap_or_else(|_| Err("cargo about worker panicked".into())),
+                Job::Inline(res) => res,
+            })
+            .collect()
+    });
     let mut stale = Vec::new();
-    for (file, manifest, what, targets) in FILES {
-        let wanted = render(&about(root, manifest, targets).map_err(|e| (1, e))?, what, &notice_files, &included);
+    for ((file, _, what, _), report) in FILES.iter().zip(reports) {
+        let wanted = render(&report.map_err(|e| (1, e))?, what, &notice_files, &included);
         let path = root.join(file);
         if std::fs::read_to_string(&path).ok().as_deref() == Some(wanted.as_str()) {
             println!("notices: {file} is up to date");

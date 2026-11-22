@@ -262,29 +262,29 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "OSM PBF: a missing inner member way",
             "a.osm.pbf",
-            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
-            include_bytes!("../testdata/reading-losses/hole-missing-member.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-missing-member.osm.pbf"),
             Silent("the hole whose member way the file does not hold is left out"),
         ),
         case(
             "OSM PBF: a missing inner node",
             "a.osm.pbf",
-            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
-            include_bytes!("../testdata/reading-losses/hole-missing-node.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-missing-node.osm.pbf"),
             Silent("the hole whose member way refers to a missing node is left out"),
         ),
         case(
             "OSM PBF: an unclosed inner ring",
             "a.osm.pbf",
-            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
-            include_bytes!("../testdata/reading-losses/hole-unclosed.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-unclosed.osm.pbf"),
             Silent("the inner member way that does not close is left out"),
         ),
         case(
             "OSM PBF: an inner ring outside its outer",
             "a.osm.pbf",
-            include_bytes!("../testdata/reading-losses/hole-clean.osm.pbf"),
-            include_bytes!("../testdata/reading-losses/hole-outside.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
+            include_bytes!("../../testdata/reading-losses/hole-outside.osm.pbf"),
             Silent("the inner ring outside every outer ring is left out"),
         ),
         // GML.
@@ -362,22 +362,22 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "XLSX: a height in WKT",
             "a.xlsx",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsx"),
-            include_bytes!("../testdata/reading-losses/book-z.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-z.xlsx"),
             Imported("Z or M"),
         ),
         case(
             "XLSX: a WKT geometry collection's later members",
             "a.xlsx",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsx"),
-            include_bytes!("../testdata/reading-losses/book-collection.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-collection.xlsx"),
             Silent("only the collection's first member is kept"),
         ),
         case(
             "XLSX: an error-valued attribute cell",
             "a.xlsx",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsx"),
-            include_bytes!("../testdata/reading-losses/book-error.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsx"),
+            include_bytes!("../../testdata/reading-losses/book-error.xlsx"),
             Silent("the error-valued note cell is read as Null"),
         ),
     ]);
@@ -386,15 +386,15 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "ODS: a height in WKT",
             "a.ods",
-            include_bytes!("../testdata/reading-losses/book-clean.ods"),
-            include_bytes!("../testdata/reading-losses/book-z.ods"),
+            include_bytes!("../../testdata/reading-losses/book-clean.ods"),
+            include_bytes!("../../testdata/reading-losses/book-z.ods"),
             Imported("Z or M"),
         ),
         case(
             "ODS: a WKT geometry collection's later members",
             "a.ods",
-            include_bytes!("../testdata/reading-losses/book-clean.ods"),
-            include_bytes!("../testdata/reading-losses/book-collection.ods"),
+            include_bytes!("../../testdata/reading-losses/book-clean.ods"),
+            include_bytes!("../../testdata/reading-losses/book-collection.ods"),
             Silent("only the collection's first member is kept"),
         ),
     ]);
@@ -403,36 +403,36 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "XLS: a height in WKT",
             "a.xls",
-            include_bytes!("../testdata/reading-losses/book-clean.xls"),
-            include_bytes!("../testdata/reading-losses/book-z.xls"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xls"),
+            include_bytes!("../../testdata/reading-losses/book-z.xls"),
             Imported("Z or M"),
         ),
         case(
             "XLS: a WKT geometry collection's later members",
             "a.xls",
-            include_bytes!("../testdata/reading-losses/book-clean.xls"),
-            include_bytes!("../testdata/reading-losses/book-collection.xls"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xls"),
+            include_bytes!("../../testdata/reading-losses/book-collection.xls"),
             Silent("only the collection's first member is kept"),
         ),
         case(
             "XLSB: a height in WKT",
             "a.xlsb",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsb"),
-            include_bytes!("../testdata/reading-losses/book-z.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-z.xlsb"),
             Imported("Z or M"),
         ),
         case(
             "XLSB: short cell records lose attribute fields and values",
             "a.xlsb",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsb"),
-            include_bytes!("../testdata/reading-losses/book-short.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-short.xlsb"),
             Silent("the point remains but all attribute fields and values are lost"),
         ),
         case(
             "XLSB: a WKT geometry collection's later members",
             "a.xlsb",
-            include_bytes!("../testdata/reading-losses/book-clean.xlsb"),
-            include_bytes!("../testdata/reading-losses/book-collection.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-clean.xlsb"),
+            include_bytes!("../../testdata/reading-losses/book-collection.xlsb"),
             Silent("only the collection's first member is kept"),
         ),
     ]);
@@ -483,22 +483,22 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "FlatGeobuf: a height",
             "a.fgb",
-            include_bytes!("../testdata/reading-losses/xy.fgb"),
-            include_bytes!("../testdata/reading-losses/xyz.fgb"),
+            include_bytes!("../../testdata/reading-losses/xy.fgb"),
+            include_bytes!("../../testdata/reading-losses/xyz.fgb"),
             Imported("Z or M"),
         ),
         case(
             "GeoParquet: a height",
             "a.parquet",
-            include_bytes!("../testdata/reading-losses/xy.parquet"),
-            include_bytes!("../testdata/reading-losses/xyz.parquet"),
+            include_bytes!("../../testdata/reading-losses/xy.parquet"),
+            include_bytes!("../../testdata/reading-losses/xyz.parquet"),
             Imported("Z or M"),
         ),
         case(
             "FileGDB: a height",
             "a.gdb",
-            include_bytes!("../testdata/reading-losses/xy.gdb.zip"),
-            include_bytes!("../testdata/reading-losses/xyz.gdb.zip"),
+            include_bytes!("../../testdata/reading-losses/xy.gdb.zip"),
+            include_bytes!("../../testdata/reading-losses/xyz.gdb.zip"),
             Imported("Z or M"),
         ),
     ]);
@@ -506,38 +506,38 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
     for (name, clean, lossy, clean_index, lossy_index) in [
         (
             "Shapefile: a point height",
-            include_bytes!("../testdata/reading-losses/shp-point-xy.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-point-z.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-point-xy.shx"),
-            include_bytes!("../testdata/reading-losses/shp-point-z.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-point-xy.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-point-z.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-point-xy.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-point-z.shx"),
         ),
         (
             "Shapefile: a point measure",
-            include_bytes!("../testdata/reading-losses/shp-point-xy.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-point-m.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-point-xy.shx"),
-            include_bytes!("../testdata/reading-losses/shp-point-m.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-point-xy.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-point-m.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-point-xy.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-point-m.shx"),
         ),
         (
             "Shapefile: line heights without measures",
-            include_bytes!("../testdata/reading-losses/shp-line-xy.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-line-z.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-line-xy.shx"),
-            include_bytes!("../testdata/reading-losses/shp-line-z.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-line-xy.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-line-z.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-line-xy.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-line-z.shx"),
         ),
         (
             "Shapefile: line heights and measures",
-            include_bytes!("../testdata/reading-losses/shp-line-xy.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-line-zm.shp").as_slice(),
-            include_bytes!("../testdata/reading-losses/shp-line-xy.shx"),
-            include_bytes!("../testdata/reading-losses/shp-line-zm.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-line-xy.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-line-zm.shp").as_slice(),
+            include_bytes!("../../testdata/reading-losses/shp-line-xy.shx"),
+            include_bytes!("../../testdata/reading-losses/shp-line-zm.shx"),
         ),
     ] {
         let mut c = case(name, "a.shp", clean, lossy, Imported("Z or M"));
         for (beside, index) in c.beside.iter_mut().zip([clean_index, lossy_index]) {
             beside.extend([
                 ("a.shx", index.to_vec()),
-                ("a.dbf", include_bytes!("../testdata/reading-losses/shp-row.dbf").to_vec()),
+                ("a.dbf", include_bytes!("../../testdata/reading-losses/shp-row.dbf").to_vec()),
                 ("a.cpg", b"UTF-8\n".to_vec()),
                 ("a.prj", br#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#.to_vec()),
             ]);
@@ -656,7 +656,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         std::fs::write(dir.join(name), bytes)?;
     }
     let path = dir.join(file);
-    let short_cells = content == include_bytes!("../testdata/reading-losses/book-short.xlsb");
+    let short_cells = content == include_bytes!("../../testdata/reading-losses/book-short.xlsb");
     if file.ends_with(".gdb") {
         // The archive is fixture storage only: RustGIS opens the extracted folder. Its ZIP
         // importer deliberately refuses FileGDB folders, so do not test that refusal as a loss.
@@ -695,10 +695,10 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         let (native, report) = rustgis_engine::data::sheets::read(content, "a", None, &Default::default())
             .map_err(|e| std::io::Error::other(format!("native spreadsheet fixture: {e}")))?;
         check_workbook(&native, short_cells)?;
-        let height = content == include_bytes!("../testdata/reading-losses/book-z.xlsx")
-            || content == include_bytes!("../testdata/reading-losses/book-z.ods")
-            || content == include_bytes!("../testdata/reading-losses/book-z.xls")
-            || content == include_bytes!("../testdata/reading-losses/book-z.xlsb");
+        let height = content == include_bytes!("../../testdata/reading-losses/book-z.xlsx")
+            || content == include_bytes!("../../testdata/reading-losses/book-z.ods")
+            || content == include_bytes!("../../testdata/reading-losses/book-z.xls")
+            || content == include_bytes!("../../testdata/reading-losses/book-z.xlsb");
         if report.skipped != 0
             || native.zm_dropped != height
             || if height { report.messages.len() != 1 || !report.messages[0].contains("Z or M") } else { !report.messages.is_empty() }
@@ -725,10 +725,10 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             return Err(std::io::Error::other("spreadsheet fixture didn't add exactly one layer"));
         }
         check_workbook(&s.map().layers[0].dataset, short_cells)?;
-        if (content == include_bytes!("../testdata/reading-losses/book-clean.xlsx")
-            || content == include_bytes!("../testdata/reading-losses/book-clean.ods")
-            || content == include_bytes!("../testdata/reading-losses/book-clean.xls")
-            || content == include_bytes!("../testdata/reading-losses/book-clean.xlsb"))
+        if (content == include_bytes!("../../testdata/reading-losses/book-clean.xlsx")
+            || content == include_bytes!("../../testdata/reading-losses/book-clean.ods")
+            || content == include_bytes!("../../testdata/reading-losses/book-clean.xls")
+            || content == include_bytes!("../../testdata/reading-losses/book-clean.xlsb"))
             && !s.notices_since(mark).is_empty()
         {
             return Err(std::io::Error::other("clean spreadsheet fixture gave a notice"));

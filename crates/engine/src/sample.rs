@@ -234,12 +234,32 @@ const COUNTRY_BORDER: Rgba = Rgba::rgb(0x7D, 0x8C, 0x96);
 
 /// "World Atlas": countries by population, cities sized by population, rivers and lakes.
 pub fn world_project() -> Project {
+    // The default built-in worldview never changes, and `Features` is copy-on-write, so caching
+    // the built project avoids re-parsing the four Natural Earth GeoJSON files and recomputing
+    // Jenks breaks on every sample open and test. Renew live map and layer instance ids on each
+    // copy so a fresh sample session never shares identities with an earlier one.
+    let text = countries();
+    if view() == View::DEFAULT && std::ptr::eq(text, COUNTRIES) {
+        static DEFAULT_WORLD: std::sync::OnceLock<Project> = std::sync::OnceLock::new();
+        let mut p = DEFAULT_WORLD.get_or_init(|| build_world_project(COUNTRIES)).clone();
+        for map in &mut p.maps {
+            map.renew_instance_id();
+            for layer in &mut map.layers {
+                layer.renew_instance_id();
+            }
+        }
+        return p;
+    }
+    build_world_project(text)
+}
+
+fn build_world_project(countries_text: &str) -> Project {
     let mut p = Project::new("World Atlas");
     let map = p.map_mut();
     map.name = "World".into();
     map.basemap = rustgis_map::Basemap::Ocean;
     let mut add = |name: &str, text: &str| read_geojson(text, name).ok().map(|(ds, _)| map.add_dataset(ds));
-    let countries = add("Countries", countries());
+    let countries = add("Countries", countries_text);
     let lakes = add("Lakes", LAKES);
     let rivers = add("Rivers", RIVERS);
     let cities = add("Cities", CITIES);

@@ -51,6 +51,11 @@ fi
 selected="$(cargo xtask changed --list "$base")" || everything "cargo xtask changed --list failed"
 case "$selected" in
   all) everything "a changed file is outside every package and nothing includes it" ;;
+  none)
+    echo "packages=none"
+    report "No Rust package affected by these changes; skipping Rust tests."
+    exit 0
+    ;;
   "") everything "no changed file found against $base" ;;
 esac
 echo "packages=$(sed 's/^/-p /' <<<"$selected" | paste -sd' ' -)"

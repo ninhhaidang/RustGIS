@@ -2,7 +2,6 @@
 //! writers: their longitude/latitude are read as they are with one notice, coordinates that would
 //! be in the wrong place are refused, Earth systems say nothing new, and exports say what they
 //! write instead of the layer's system.
-#![cfg(not(target_arch = "wasm32"))]
 
 use std::path::{Path, PathBuf};
 

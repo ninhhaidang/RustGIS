@@ -1,11 +1,7 @@
 //! Recovery copies (#873) and portable projects (#886): a project saved with paths relative to its
 //! folder, then reopened, gives a recovery copy whose linked files still resolve when the copy is
 //! opened from the app's recovery folder.
-#[path = "portable_projects/common.rs"]
-#[expect(dead_code, reason = "shared with the portable project tests, which use the rest")]
-mod common;
-
-use common::{Fixture, add_stream, sample_file, session};
+use super::portable_projects::common::{Fixture, add_stream, sample_file, session};
 use serde_json::json;
 
 /// `path` as it is spelled inside project JSON.

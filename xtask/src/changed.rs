@@ -14,8 +14,7 @@
 //!   a changed package gets the features every workspace package turns on in it; a feature that a
 //!   package left out turns on in an outside crate isn't, which can make a result differ from CI's.
 //!
-//! `--list` prints the packages it would check, one a line, or `all`, and checks nothing. CI still
-//! runs the whole workspace: a pass here says nothing about the packages left out.
+//! `--list` prints the packages it would check, one a line, or `all`, or `none`, and checks nothing.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,10 +34,40 @@ pub(crate) struct Package {
 pub(crate) enum Selection {
     /// No file changed.
     Nothing,
+    /// Only non-code files changed (documentation, notes, metadata) that no package includes.
+    NoPackages,
     /// The whole workspace, because of this file.
     All(String),
     /// The packages changed, and those plus every package that depends on them.
     Packages { changed: BTreeSet<String>, checked: BTreeSet<String> },
+}
+
+/// Files outside every package that no Rust crate reads unless `compile_time_reads` says so.
+fn is_non_code(file: &str) -> bool {
+    matches!(
+        file,
+        "AGENTS.md"
+            | "ATTRIBUTION.md"
+            | "CITATION.cff"
+            | "CONTRIBUTING.md"
+            | "LICENSE"
+            | "README.md"
+            | "ROADMAP.md"
+            | "SECURITY.md"
+            | "THIRD-PARTY-LICENSES.txt"
+            | "requirements_docs.txt"
+            | "zensical.toml"
+    ) || file.starts_with("private/")
+        || file.starts_with("skills/")
+        || file.starts_with(".claude/")
+}
+
+/// Files outside every package that a package reads at run time (not via `include_str!`), so a
+/// change to them checks that package and its dependents instead of forcing the whole workspace.
+fn runtime_reads(reads: &mut BTreeMap<String, BTreeSet<String>>, packages: &[Package]) {
+    if packages.iter().any(|p| p.name == "rustgis-engine") {
+        reads.entry("schema".into()).or_default().insert("rustgis-engine".into());
+    }
 }
 
 /// The package whose directory holds `file`: the longest that does.
@@ -60,10 +89,14 @@ pub(crate) fn select(files: &[String], packages: &[Package], reads: &BTreeMap<St
             Some(p) => {
                 changed.insert(p.name.clone());
             }
+            None if readers.is_empty() && is_non_code(file) => continue,
             None if readers.is_empty() => return Selection::All(file.clone()),
             None => {}
         }
         changed.extend(readers.into_iter().cloned());
+    }
+    if changed.is_empty() {
+        return Selection::NoPackages;
     }
     let mut checked = changed.clone();
     loop {
@@ -275,7 +308,9 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
     files.sort();
     files.dedup();
     let packages = packages(root)?;
-    let selection = select(&files, &packages, &compile_time_reads(root, &packages)?);
+    let mut reads = compile_time_reads(root, &packages)?;
+    runtime_reads(&mut reads, &packages);
+    let selection = select(&files, &packages, &reads);
     let short = mb.get(..8).unwrap_or(&mb);
     if !list {
         println!("changed: {} files since {name} ({short}, {ahead} commits ahead)", files.len());
@@ -285,6 +320,14 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
             if !list {
                 println!("changed: nothing to check");
             }
+            Ok(())
+        }
+        Selection::NoPackages if list => {
+            println!("none");
+            Ok(())
+        }
+        Selection::NoPackages => {
+            println!("changed: only non-code files changed; no Rust packages need checking");
             Ok(())
         }
         Selection::All(_) if list => {
@@ -400,6 +443,21 @@ mod tests {
         for file in ["Cargo.lock", "docs/index.md", "clippy.toml"] {
             assert_eq!(select(&files(&["crates/geom/src/lib.rs", file]), &ws, &reads), Selection::All(file.into()));
         }
+        // Non-code root files don't force the whole workspace when edited alone or alongside a crate.
+        assert_eq!(select(&files(&["ROADMAP.md", "README.md"]), &ws, &reads), Selection::NoPackages);
+        assert_eq!(
+            select(&files(&["crates/ui-egui/src/lib.rs", "ROADMAP.md"]), &ws, &reads),
+            Selection::Packages { changed: names(&["rustgis-ui-egui"]), checked: names(&["rustgis", "rustgis-ui-egui", "rustgis-web"]) }
+        );
+        // Schema files map to rustgis-engine via runtime_reads instead of forcing the whole workspace.
+        let mut ws_with_engine = workspace();
+        ws_with_engine.push(Package { name: "rustgis-engine".into(), dir: "crates/engine".into(), deps: vec!["rustgis-data".into()] });
+        let mut reads_with_rt = reads.clone();
+        runtime_reads(&mut reads_with_rt, &ws_with_engine);
+        assert_eq!(
+            select(&files(&["schema/project.schema.json", "schema/fixtures/a.rgis"]), &ws_with_engine, &reads_with_rt),
+            Selection::Packages { changed: names(&["rustgis-engine"]), checked: names(&["rustgis-engine"]) }
+        );
     }
 
     #[test]

@@ -37,10 +37,11 @@ on:
 
 # A pull request's runs are grouped by its number, not by github.ref: a run GitHub creates after
 # the pull request has merged gets the base branch's ref (refs/heads/main), and would otherwise
-# join main's group and cancel main's run.
+# join main's group and cancel main's run. Never cancel in-progress `main` runs so macOS and
+# Windows finish and populate their caches instead of repeatedly timing out mid-run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -53,6 +54,8 @@ jobs:
   lint:
     name: Lint (pre-commit)
     runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -70,6 +73,9 @@ jobs:
   wasm:
     name: Web app (wasm32)
     runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_DEV_OPT_LEVEL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -140,27 +146,64 @@ jobs:
 
   # Every dependency's licence must be one the project accepts (deny.toml). The third-party
   # notices the packages ship (`cargo xtask notices`) only warn here when out of date, since
-  # Dependabot can't regenerate them; the release build requires them current.
+  # Dependabot can't regenerate them; the release build requires them current. On PRs and the merge
+  # queue, skip the slow `cargo about` checks when no dependency, licence or notice file changed.
   licenses:
     name: Licences
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - id: scope
+        name: Check if licence files changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ] && [ "$EVENT" != merge_group ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="origin/${BASE_REF:-main}"
+          if ! fork_point="$(git merge-base HEAD "$base" 2>/dev/null)"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only "$fork_point" HEAD 2>/dev/null)"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qE '^(Cargo\.lock|(.*/)?Cargo\.toml|deny\.toml|about\.toml|xtask/src/(main|notices)\.rs|(.*/)?THIRD-PARTY-LICENSES\.txt|\.github/scripts/(check-cargo-sources|test_[^/]+)\.py|\.github/workflows/ci\.yml|crates/map/src/color/(scientific|matplotlib)\.rs|crates/tiles/src/(symbols|style)\.rs|crates/data/src/(raster/crs|esripbf)\.rs)$|^(third-party/|\.cargo/)' <<<"$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No dependency, licence or notice files changed; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.scope.outputs.run == 'true'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.scope.outputs.run == 'true'
         with:
           # Only main saves the cache (see test-rust.yml).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        if: steps.scope.outputs.run == 'true'
         with:
           tool: cargo-deny,cargo-about@0.9.2
       - name: Cargo source replacements
+        if: steps.scope.outputs.run == 'true'
         run: |
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
           python3 .github/scripts/check-cargo-sources.py
       - name: Dependency licences and sources
+        if: steps.scope.outputs.run == 'true'
         run: cargo deny --locked check licenses sources
       - name: Third-party notices
+        if: steps.scope.outputs.run == 'true'
         # Exit code 2 is stale notices (a warning); anything else (cargo-about failing, a licence
         # it can't work out) fails the job.
         run: |
@@ -175,29 +218,60 @@ jobs:
   schema:
     name: Project schema
     runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - id: scope
+        name: Check if schema-related files changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ] && [ "$EVENT" != merge_group ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="origin/${BASE_REF:-main}"
+          if ! fork_point="$(git merge-base HEAD "$base" 2>/dev/null)"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only "$fork_point" HEAD 2>/dev/null)"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -qE '^(crates/(geom|data|map|analysis|tiles|render|plugins|geolibre|engine)/|schema/|Cargo\.(toml|lock)$|rust-toolchain|xtask/src/main\.rs$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No schema-related files changed; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           # `cargo xtask schema --check` lints the code behind the `schema` feature first.
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.scope.outputs.run == 'true'
         with:
           # Only main saves the cache (see test-rust.yml).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The committed schema matches the types the project is saved from, and the fixture projects
       # open. `--locked` on the outer run too, so a stale Cargo.lock is refused before xtask starts.
       - name: Check the project file's schema
+        if: steps.scope.outputs.run == 'true'
         run: cargo run --locked -q -p xtask -- schema --check
       # Every fixture, not only those the pull request changes (as pre-commit does), so a change
       # to the schema alone is checked against them too.
       - name: Validate the fixture projects against the schema
+        if: steps.scope.outputs.run == 'true'
         run: pipx run check-jsonschema==0.39.0 --schemafile schema/project.schema.json --default-filetype json schema/fixtures/*.rgis
-      # Timer waits and ignored tests carry their reasons. xtask's own test checks this too, but
-      # `test` runs only the packages a pull request changes, so a new wait elsewhere got past it
-      # and failed main (#2289). This runs on the whole workspace every time.
-      - name: Test hygiene
-        run: cargo run --locked -q -p xtask -- test-hygiene
 
   # Direct uses of a layer's rows outside rustgis-data may not rise above xtask/row-uses.txt
   # (`cargo xtask rows`, #2431). The compiler counts them as deprecation warnings, so this job
@@ -207,6 +281,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: ""
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -243,6 +318,10 @@ jobs:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PLATFORMS: ${{ inputs.platforms }}
         run: .github/scripts/test-selection.sh >> "$GITHUB_OUTPUT"
+      # Timer waits and ignored tests carry their reasons. Runs on the whole workspace every time
+      # (reuses the xtask already built above, #2289).
+      - name: Test hygiene
+        run: cargo run --locked -q -p xtask -- test-hygiene
 
   plan:
     name: Platforms

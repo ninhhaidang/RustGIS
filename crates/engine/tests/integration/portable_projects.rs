@@ -1,7 +1,7 @@
 //! Local links are relative on disk, absolute in memory, and repairable without losing configuration.
 
 #[path = "portable_projects/common.rs"]
-mod common;
+pub(super) mod common;
 #[path = "portable_projects/reload.rs"]
 mod reload;
 #[path = "portable_projects/reload_tiles.rs"]

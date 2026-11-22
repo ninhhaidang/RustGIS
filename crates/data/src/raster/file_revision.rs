@@ -88,6 +88,20 @@ mod tests {
         drop(file);
         std::fs::remove_file(&path).unwrap();
         std::fs::rename(&replacement, &path).unwrap();
+        // On Windows, coarse creation-time ticks (~15.6 ms) and NTFS file-system tunneling can
+        // preserve the deleted file's creation time on the replacement; set a distinct creation
+        // time while keeping length and modification time identical.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileTimesExt;
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_times(
+                std::fs::FileTimes::new()
+                    .set_created(metadata.created().unwrap() + std::time::Duration::from_secs(2))
+                    .set_modified(metadata.modified().unwrap()),
+            )
+            .unwrap();
+        }
         let current = std::fs::metadata(&path).unwrap();
         assert_eq!(metadata.len(), current.len());
         assert_eq!(metadata.modified().unwrap(), current.modified().unwrap());

@@ -112,7 +112,8 @@ jobs:
         if: steps.data.outputs.ok == 'true'
         env:
           RUSTGIS_WORKFLOW_DATA: ${{ github.workspace }}/workflow-data
-        run: cargo test --locked -p rustgis-engine --test workflows -- --ignored
+        run: |
+          cargo test --locked -p rustgis-engine --test integration workflows:: -- --ignored
       # The property tests (docs/contributing.md › Property tests), on a new seed each night this
       # job runs (one with new commits) and more cases than a pull request runs; a failure gives
       # the seed to run again.
@@ -122,13 +123,13 @@ jobs:
           PROPERTY_SEED: ${{ github.run_id }}
           PROPERTY_CASES: "2000"
         run: |
-          cargo test --locked -p rustgis-engine --test never_silent_roundtrip
+          cargo test --locked -p rustgis-engine --test integration never_silent_roundtrip::
           PROPERTY_CASES=200 cargo test --locked -p rustgis-analysis --test parallel_serial
-          cargo test --locked -p rustgis-engine --test project_save_roundtrip
-          PROPERTY_CASES=200000 cargo test --locked -p rustgis-data --test reprojection_round_trip
+          cargo test --locked -p rustgis-engine --test integration project_save_roundtrip::
+          PROPERTY_CASES=200000 cargo test --locked -p rustgis-data --test integration reprojection_round_trip::
           PROPERTY_CASES=100000 cargo test --locked -p rustgis-geom --test geodesic_identities
-          cargo test --locked -p rustgis-data --test extent_query_properties
-          PROPERTY_CASES=20000 cargo test --locked -p rustgis-data --test date_properties
+          cargo test --locked -p rustgis-data --test integration extent_query_properties::
+          PROPERTY_CASES=20000 cargo test --locked -p rustgis-data --test integration date_properties::
 
   # Use a fresh seed even when the commit is the same as last night.
   overlay:

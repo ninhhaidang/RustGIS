@@ -1,8 +1,7 @@
 //! Linux's platform verifier reads SSL_CERT_FILE and SSL_CERT_DIR. Each case gets its own process
 //! and ephemeral PKI, never a change to the machine's root store or the suite's process environment.
-#![cfg(target_os = "linux")]
 
-#[path = "../../../tests/support/ogc.rs"]
+#[path = "../../../../tests/support/ogc.rs"]
 mod ogc;
 
 use rustgis_engine::render::rustgis_tiles::{cache, template};
@@ -31,7 +30,7 @@ fn private_ca_platform_trust() {
         let trust = if case == "untrusted" { "unrelated.pem" } else { "ca.pem" };
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
-            .args(["--exact", "private_ca_child", "--ignored", "--nocapture"])
+            .args(["--exact", "private_ca::private_ca_child", "--ignored", "--nocapture"])
             .env(CHILD_CASE, case)
             .env(CHILD_PKI, &pki.root)
             .env("SSL_CERT_FILE", pki.root.join(trust))

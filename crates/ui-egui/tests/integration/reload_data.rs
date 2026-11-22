@@ -1,5 +1,4 @@
 //! Exercise Reload Data through the real confirmation, not source-code/wiring assertions.
-#![cfg(not(target_arch = "wasm32"))]
 use egui::{accesskit::Role, vec2};
 use egui_kittest::{
     Harness,

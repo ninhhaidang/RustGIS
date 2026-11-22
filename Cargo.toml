@@ -150,8 +150,27 @@ type_complexity = "allow"
 [profile.dev.package."*"]
 opt-level = 2
 
+# Keep dev/test compilation fast for UI, engine, CLI and test binaries while keeping the
+# compute-heavy geometry, data, analysis and rendering crates optimized so tests stay fast.
+# `rustgis-render` uses opt-level 2 to avoid the Windows ARM64 codegen bug at opt-level 1 (#1222).
 [profile.dev]
+opt-level = 0
+
+[profile.dev.package.rustgis-geom]
 opt-level = 1
+
+[profile.dev.package.rustgis-data]
+opt-level = 1
+
+[profile.dev.package.rustgis-analysis]
+opt-level = 1
+
+# `rustgis-plugins` (wasmi 2) hits `0xc0000005` access violations on x86_64-pc-windows-msvc at opt-level 0.
+[profile.dev.package.rustgis-plugins]
+opt-level = 1
+
+[profile.dev.package.rustgis-render]
+opt-level = 2
 
 [profile.release]
 opt-level = 3

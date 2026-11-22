@@ -2,7 +2,6 @@
 //! public readers: sinusoidal, Robinson, orthographic, Mercator (variant A) and the
 //! equidistant cylindrical of EPSG:4087, ellipsoidal as in PROJ 9.8. Each places a point where expected,
 //! and a method that still isn't supported keeps saying so.
-#![cfg(not(target_arch = "wasm32"))]
 
 use rustgis_data::raster::{Crs, Raster};
 use rustgis_data::{Coord, Dataset, Geometry, GeometryType, io};
