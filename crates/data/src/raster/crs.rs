@@ -330,7 +330,9 @@ impl TryFrom<SavedCrs> for Crs {
         Ok(match s {
             SavedCrs::LonLat => Crs::LonLat,
             SavedCrs::WebMercator => Crs::WebMercator,
-            SavedCrs::Epsg(e) => Crs::Epsg(e),
+            // A code another variant stands for (4326, 3857 and its aliases), as a file written
+            // by hand or by another program may give it, is that variant, as `from_epsg` gives it.
+            SavedCrs::Epsg(e) => Crs::from_epsg(u32::from(e)).unwrap_or(Crs::Epsg(e)),
             SavedCrs::Proj { proj4, label, wkt } => Crs::custom(CustomCrs { proj4, label, wkt, ..CustomCrs::default() })?,
         })
     }
@@ -2461,6 +2463,15 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved code another variant stands for reads as that variant, so Web Mercator saved as
+    /// `{"Epsg": 3857}` isn't taken for a projected system of its own.
+    #[test]
+    fn a_saved_code_another_variant_stands_for_reads_as_it() {
+        for (code, crs) in [(3857, Crs::WebMercator), (3785, Crs::WebMercator), (4326, Crs::LonLat), (32632, Crs::Epsg(32632))] {
+            assert_eq!(Crs::try_from(SavedCrs::Epsg(code)), Ok(crs), "EPSG:{code}");
+        }
+    }
 
     /// An ESRI code reads as the system the picker offers for it (`ESRI:102033`, as a `.prj` and
     /// the coordinate system boxes name it); one the catalog lacks is refused with its name.

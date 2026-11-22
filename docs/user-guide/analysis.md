@@ -174,6 +174,17 @@ which searches every tool) or Command Search. Fill in its parameters and click *
 layers or tables are added to the project; selection tools select existing rows and Calculate
 Geometry Attributes updates the input layer. Each run is listed under **Analyze › History**.
 
+**Which coordinate system a tool works in.** Most tools work in longitude/latitude, with
+geodesic distances and areas, whatever system their layers are in. Some work in their first
+input's own coordinate system when it is a projected one, such as a UTM zone or a national grid:
+Summary Statistics, Pivot Table, Join Field, Select Layer By Attribute, Export Features, Merge,
+Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon, Unsplit Line, Feature
+Vertices To Points, Check Geometry and Repair Geometry. Their other inputs are converted into that
+system for the run, and their new layers are kept in it, so the coordinates of what they copy stay
+exactly as they were. If another input has a place that system can't hold, the tool works in
+longitude/latitude instead, and its message says so. A layer in longitude/latitude, Web Mercator or
+another geographic system is worked on in longitude/latitude, as before.
+
 In the desktop app a tool runs in the background, so the map and the rest of the window stay in
 use. While it runs, the Tools pane shows its name, a **Cancel** button and, for the tools that
 count their work (Viewshed, IDW Interpolation, Kriging, Kernel Density, Buffer, Select Layer By
@@ -598,8 +609,9 @@ Matching field names (case-insensitive) and types share a column. Other fields a
 missing values are empty. Incompatible types remain separate columns with unique suffixes,
 such as `count_2`, preserving their original values and types. Turn off **Preserve Attributes**
 for geometry only. Multipart geometry and holes are kept unchanged, new feature ids are assigned,
-and export defaults to the first input's coordinate system; internal coordinates stay longitude
-and latitude. The inputs stay unchanged, and the new layer can be undone.
+and export defaults to the first input's coordinate system. The new layer is kept in the first
+input's system when it is a projected one, the other inputs' features converted into it, and in
+longitude/latitude otherwise. The inputs stay unchanged, and the new layer can be undone.
 
 **Feature Vertices To Points** (`featureVerticesToPoints`) writes a point at each vertex of the
 `input` layer's features (a point layer's points are their own vertices, and a multipoint's points
@@ -1215,8 +1227,8 @@ CRS metadata. Coordinates are used directly, without projection or snapping.
   output memory, including repeated text attributes, before building the segments; unavailable
   memory returns an error.
 - **Feature Envelope To Polygon** (`featureEnvelopeToPolygon`) writes one axis-aligned rectangle
-  around all coordinates of each feature in longitude/latitude axes (converted from the layer's
-  own system). Point features and
+  around all coordinates of each feature, along the axes of the layer's own system when it is a
+  projected one, and of longitude/latitude otherwise. Point features and
   horizontal or vertical lines have zero-area envelopes and are skipped with a count. Longitude
   bounds are literal, including for features spanning the antimeridian.
 - **Unsplit Line** (`unsplitLine`) joins line parts at exactly equal endpoints where precisely
@@ -1349,13 +1361,14 @@ finds a hole outside, merges holes or merges parts.
 
 The rebuild uses the [geo](https://github.com/georust/geo) library's boolean overlay, which works on
 an integer grid: half the larger side of the feature's extent spans about 2<sup>29</sup> steps.
-Coordinates are stored in degrees of longitude and latitude, so a step is about
-0.000 000 000 12° (0.013 mm) for a feature 10 km across, and about 0.000 000 24° (2.6 cm at the
-equator) for one spanning the world. Rebuilt coordinates may move by up to five steps from the
+For a layer in longitude/latitude, a step is about 0.000 000 000 12° (0.013 mm) for a feature
+10 km across, and about 0.000 000 24° (2.6 cm at the equator) for one spanning the world. For a
+layer held in a projected system, the grid is laid over its own coordinates: a step is about
+0.01 mm for a feature 10 km across. Rebuilt coordinates may move by up to five steps from the
 input's rings; in the tests they moved at most two thirds of a step. The overlay also leaves out
 vertices in the middle of straight edges. The tool says how many features were rebuilt and the
-farthest, in degrees, their coordinates may have moved. Every rebuilt geometry is checked again and
-written only when it is valid.
+farthest their coordinates may have moved, in the layer's units (degrees for longitude/latitude).
+Every rebuilt geometry is checked again and written only when it is valid.
 
 A hole or part narrower than one step of that grid in any direction can be rounded onto a single
 line of it and lose its area, depending on where it lies between the grid's lines. Rounding moves a

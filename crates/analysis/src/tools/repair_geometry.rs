@@ -232,7 +232,10 @@ fn run_with_room(
     }
     out.features = list.into();
 
-    let mut messages = notices(&tally, &field, rule);
+    // The units its coordinates are in, which the overlay's rounding moves them by.
+    let crs = ds.coord_crs();
+    let units = if crs.is_geographic() { "degrees of longitude or latitude".to_string() } else { format!("units of {}", crs.label()) };
+    let mut messages = notices(&tally, &field, rule, &units);
     messages.extend(notes);
     let losses = (tally.extra > 0)
         .then(|| rustgis_data::loss::LossMessage {
@@ -251,7 +254,7 @@ fn run_with_room(
 /// and per kind of change beyond the codes: pieces dropped (with too few points or no area, or
 /// narrower than a step of the overlay's grid in any direction), holes taken out, parts merged or
 /// split, coordinates moved. `field` is the output's repairs field.
-fn notices(t: &Tally, field: &str, rule: Rule) -> Vec<String> {
+fn notices(t: &Tally, field: &str, rule: Rule, units: &str) -> Vec<String> {
     let mut messages = vec![summary(t)];
     let is = |n: usize| if n == 1 { "is" } else { "are" };
     let was = |n: usize| if n == 1 { "was" } else { "were" };
@@ -343,7 +346,7 @@ fn notices(t: &Tally, field: &str, rule: Rule) -> Vec<String> {
     }
     if t.overlaid > 0 {
         messages.push(format!(
-            "{TOOL}: {} {} rebuilt by geo's boolean overlay, which rounds coordinates to a fine grid: they may have moved by up to {} degrees of longitude or latitude, and vertices in the middle of straight edges were left out",
+            "{TOOL}: {} {} rebuilt by geo's boolean overlay, which rounds coordinates to a fine grid: they may have moved by up to {} {units}, and vertices in the middle of straight edges were left out",
             features(t.overlaid),
             was(t.overlaid),
             rounded_up(t.moved)
@@ -399,6 +402,8 @@ fn summary(t: &Tally) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The units a layer in longitude/latitude has its coordinates in.
+    const DEGREES: &str = "degrees of longitude or latitude";
 
     /// The inputs: one layer, with nothing selected.
     struct One(Dataset);
@@ -456,7 +461,7 @@ mod tests {
     fn features_left_as_they_were_are_counted_by_reason() {
         let t = Tally { processed: 9, failed: 1, ..Tally::default() };
         assert_eq!(
-            notices(&t, "repairs", Rule::default()),
+            notices(&t, "repairs", Rule::default(), DEGREES),
             [
                 "Repair Geometry: repaired 0 of 9 features",
                 "Repair Geometry: 1 feature couldn't be repaired, because geo's geometry operations failed on it, and is written unchanged, with repair_failed in repairs",
@@ -464,14 +469,18 @@ mod tests {
         );
         let t = Tally { processed: 9, work: 2, memory: 3, failed: 2, ..Tally::default() };
         assert_eq!(
-            notices(&t, "repairs_2", Rule::default())[1..],
+            notices(&t, "repairs_2", Rule::default(), DEGREES)[1..],
             [
                 "Repair Geometry: 2 features were too complex to repair within the work limit and are written unchanged, with too_complex in repairs_2",
                 "Repair Geometry: 3 features couldn't be repaired, because there wasn't enough memory to repair them, and are written unchanged, with too_complex in repairs_2",
                 "Repair Geometry: 2 features couldn't be repaired, because geo's geometry operations failed on them, and are written unchanged, with repair_failed in repairs_2",
             ]
         );
-        assert_eq!(notices(&Tally::default(), "repairs", Rule::default()), ["Repair Geometry: no features to repair"]);
+        assert_eq!(notices(&Tally::default(), "repairs", Rule::default(), DEGREES), ["Repair Geometry: no features to repair"]);
+        // A layer held in a projected system is told its bound in that system's units.
+        let rebuilt = Tally { overlaid: 1, moved: 0.01, ..Tally::default() };
+        let said = notices(&rebuilt, "repairs", Rule::default(), "units of EPSG:32632").join("\n");
+        assert!(said.contains("may have moved by up to 1.0e-2 units of EPSG:32632, and vertices"), "{said}");
     }
 
     /// A cancel stops the repairs at the next feature, and the copies at the next row.

@@ -107,8 +107,8 @@ pub(crate) struct Repaired {
     /// direction, where they would have no area ([`narrower_than`]); written as `no_area` after
     /// the codes.
     pub narrow: usize,
-    /// When the overlay rebuilt it, how far its coordinates may have moved, in their units (degrees,
-    /// as coordinates are stored).
+    /// When the overlay rebuilt it, how far its coordinates may have moved, in their units (degrees
+    /// for a layer in longitude/latitude, a projected system's own units for one held in it).
     pub moved: Option<f64>,
     /// Under [`Rule::EvenOdd`], rings dropped as duplicates before the rings were combined, since a
     /// pair would cancel out: a hole repeated in its part, and every ring of a part repeated whole

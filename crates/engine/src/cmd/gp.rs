@@ -3,6 +3,7 @@
 use rustgis_analysis::{Inputs, Output, OutputLayer, RasterInput};
 use rustgis_data::Dataset;
 use rustgis_data::loss::{LossCode, LossMessage};
+use rustgis_data::raster::Crs;
 use serde_json::{Value, json};
 
 use super::{need_layers, ps};
@@ -710,6 +711,7 @@ impl ToolRun {
                 };
                 let mut result = pin.run(&inputs, &params, control, &|| continuation.check());
                 if let Ok(r) = &mut result {
+                    inputs.hold_results(r);
                     r.messages.extend(inputs.messages.iter().cloned());
                     r.losses.extend(inputs.losses.iter().cloned());
                 }
@@ -1228,8 +1230,14 @@ struct MapInputs<'a> {
     /// environment's extent.
     rows: std::collections::HashMap<String, Vec<usize>>,
     /// Streamed layers the tool reads, loaded whole, and copies of layers in another system than
-    /// longitude/latitude, converted ([`lonlat_inputs`]), by lowercase name.
+    /// the one it works in, converted ([`work_inputs`]), by lowercase name.
     loaded: std::collections::HashMap<String, Dataset>,
+    /// The system the tool works in ([`work_system`]): the one its inputs are given in and its
+    /// outputs are made in.
+    work: Crs,
+    /// The layers (by lowercase name) it reads only the attributes of, read as they are
+    /// ([`attributes_only`]); none when it works in longitude/latitude.
+    unread: std::collections::HashSet<String>,
     /// Import warnings from local file inputs, kept in the tool result and history.
     messages: Vec<String>,
     losses: Vec<LossMessage>,
@@ -1243,6 +1251,32 @@ struct MapInputs<'a> {
 }
 
 impl MapInputs<'_> {
+    /// Marks the layers a tool made as held in the system it worked in ([`MapInputs::work`]),
+    /// where their coordinates are, so they aren't taken for longitude/latitude: a layer it made
+    /// from scratch starts in longitude/latitude ([`Dataset::held_in`]). Nothing for a tool that
+    /// worked in longitude/latitude, or for a table.
+    fn hold_results(&self, result: &mut rustgis_analysis::ToolResult) {
+        if self.work == Crs::LonLat {
+            return;
+        }
+        let hold = |ds: &mut Dataset| {
+            if ds.geometry_type != rustgis_data::GeometryType::None {
+                ds.held_in = self.work;
+            }
+        };
+        match &mut result.output {
+            Output::Layer(ds) | Output::Update { dataset: ds, .. } => hold(ds),
+            Output::Layers(outputs) => {
+                for o in outputs {
+                    if let rustgis_analysis::OutputLayer::Vector(ds) = o {
+                        hold(ds);
+                    }
+                }
+            }
+            Output::Selection { .. } | Output::Table(_) | Output::File { .. } => {}
+        }
+    }
+
     /// The flat map's projection, built on first use.
     fn flat(&self) -> Option<&(String, rustgis_map::projection::Flat, f64)> {
         let map = &self.snap.map;
@@ -1290,10 +1324,21 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
     }
     #[cfg(target_arch = "wasm32")]
     let mut full = full;
-    lonlat_inputs(&snap.map, spec, params, &mut full)?;
+    let work = work_inputs(&snap.map, &snap.tables, spec, params, &mut full, &mut messages)?;
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
-    Ok(MapInputs { snap, rows, loaded: full, messages, losses, flat: std::cell::OnceCell::new(), view: std::cell::OnceCell::new() })
+    let unread = if work == Crs::LonLat { std::collections::HashSet::new() } else { attributes_only(spec, params) };
+    Ok(MapInputs {
+        snap,
+        rows,
+        loaded: full,
+        work,
+        unread,
+        messages,
+        losses,
+        flat: std::cell::OnceCell::new(),
+        view: std::cell::OnceCell::new(),
+    })
 }
 
 /// Narrows the rows a tool reads of each layer to the features its definition query keeps, as the
@@ -1408,23 +1453,132 @@ fn streamed_inputs(
     Ok((full, said))
 }
 
-/// The layers a tool reads, in longitude/latitude, the space analysis tools work in
-/// ([`Inputs::dataset`]): those read whole (streamed layers, files) converted where they are, and
-/// a converted copy of each other layer it names whose coordinates are in another system. Nothing
-/// is copied for a layer held in longitude/latitude.
-fn lonlat_inputs(
+/// Whether a tool that works in its first input's own system ([`ToolSpec::works_in_own_system`])
+/// works in `crs`: a projected system, whose coordinates are a plane's. Longitude/latitude, Web
+/// Mercator and other geographic or geocentric systems keep the longitude/latitude path, whose
+/// plane and geodesics their coordinates need.
+///
+/// [`ToolSpec::works_in_own_system`]: rustgis_analysis::ToolSpec::works_in_own_system
+fn works_in(crs: Crs) -> bool {
+    crs != Crs::LonLat && crs != Crs::WebMercator && !crs.is_geographic() && !crs.is_geocentric()
+}
+
+/// The system a run works in: its first input's own ([`Dataset::coord_crs`]) when the tool works
+/// in it and it is one tools work in ([`works_in`]), else longitude/latitude.
+fn work_system(
     map: &rustgis_map::Map,
     spec: Option<&rustgis_analysis::ToolSpec>,
     params: &Value,
+    full: &std::collections::HashMap<String, Dataset>,
+) -> Crs {
+    use rustgis_analysis::ParamKind as K;
+    let Some(spec) = spec.filter(|t| t.works_in_own_system()) else { return Crs::LonLat };
+    // The tool's first layer parameter, under its name or one of the names it also accepts
+    // (Join Field's `input`), taken as the tool takes it: the first that isn't blank. A table
+    // given by its number (read unconverted, [`Inputs::table`]) or by name leaves the run in
+    // longitude/latitude, as before: only a map layer decides the system.
+    let Some(kind) =
+        spec.params.iter().find(|p| matches!(p.kind, K::Layer | K::PolygonLayer | K::PointLayer | K::VectorLayer | K::VectorLayers))
+    else {
+        return Crs::LonLat;
+    };
+    let aliases = rustgis_analysis::param_aliases(spec, kind.name);
+    let keys: &[&str] = if aliases.is_empty() { std::slice::from_ref(&kind.name) } else { aliases };
+    let blank = |v: &&Value| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty());
+    let value = keys.iter().filter_map(|k| params.get(*k)).find(|v| !blank(v)).unwrap_or(&Value::Null);
+    let first = if kind.kind == K::VectorLayers {
+        rustgis_analysis::layer_list(value).ok().and_then(|v| v.first().copied())
+    } else {
+        value.as_str()
+    };
+    let Some(first) = first else { return Crs::LonLat };
+    // Files read whole are kept by the name they were given, streamed layers by lowercase name.
+    full.get(first)
+        .or_else(|| full.get(&first.to_ascii_lowercase()))
+        .or_else(|| map.layer_by_name(first).filter(|l| !l.is_raster()).map(|l| &l.dataset))
+        .map(Dataset::coord_crs)
+        .filter(|c| works_in(*c))
+        .unwrap_or(Crs::LonLat)
+}
+
+/// The layers (by lowercase name) whose attributes alone a tool reads, given under a parameter
+/// whose geometry it doesn't read ([`ToolSpec::reads_geometry_of`]) or one of the names it also
+/// accepts for it: they are read as they are, in whatever system, so a place of theirs the system
+/// it works in can't hold doesn't send it to longitude/latitude.
+///
+/// [`ToolSpec::reads_geometry_of`]: rustgis_analysis::ToolSpec::reads_geometry_of
+fn attributes_only(spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) -> std::collections::HashSet<String> {
+    let Some(spec) = spec else { return std::collections::HashSet::new() };
+    spec.params
+        .iter()
+        .filter(|p| !spec.reads_geometry_of(p.name))
+        .flat_map(|p| {
+            let aliases = rustgis_analysis::param_aliases(spec, p.name);
+            if aliases.is_empty() { vec![p.name] } else { aliases.to_vec() }
+        })
+        .filter_map(|k| params.get(k).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// The layers a tool reads, in the system it works in ([`work_system`], [`Inputs::dataset`]):
+/// its first input's own for a tool that works in it, every other input converted into it; else
+/// longitude/latitude. An input with a place that system can't hold has the run work in
+/// longitude/latitude instead, and a message says so. Returns the system.
+fn work_inputs(
+    map: &rustgis_map::Map,
+    tables: &[crate::project::Table],
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
     full: &mut std::collections::HashMap<String, Dataset>,
-) -> Result<(), String> {
-    for ds in full.values_mut() {
-        if let std::borrow::Cow::Owned(converted) = ds.in_lonlat()? {
-            *ds = converted;
+    messages: &mut Vec<String>,
+) -> Result<Crs, String> {
+    let work = work_system(map, spec, params, full);
+    if work != Crs::LonLat {
+        match inputs_in(map, tables, spec, params, full, work) {
+            Ok(converted) => {
+                full.extend(converted);
+                return Ok(work);
+            }
+            Err(e) => {
+                // A Cancel isn't a place that can't be held.
+                rustgis_data::progress::check().map_err(|e| e.to_string())?;
+                let name = spec.map_or("The tool", |t| t.name);
+                messages.push(format!("{name} worked in longitude/latitude, not {}: {e}", work.label()));
+            }
+        }
+    }
+    let converted = inputs_in(map, tables, spec, params, full, Crs::LonLat)?;
+    full.extend(converted);
+    Ok(Crs::LonLat)
+}
+
+/// Copies of the layers a tool reads converted into `work`, by lowercase name: those read whole
+/// (streamed layers, files) and each other layer or standalone table with geometry it names whose
+/// coordinates are in another system. Nothing is copied for a layer already in `work`.
+fn inputs_in(
+    map: &rustgis_map::Map,
+    tables: &[crate::project::Table],
+    spec: Option<&rustgis_analysis::ToolSpec>,
+    params: &Value,
+    full: &std::collections::HashMap<String, Dataset>,
+    work: Crs,
+) -> Result<std::collections::HashMap<String, Dataset>, String> {
+    let mut converted = std::collections::HashMap::new();
+    // Read only for its attributes in a run in its first input's system: as it is. (The first
+    // input, if it is named there too, is in that system already.)
+    let unread = if work == Crs::LonLat { std::collections::HashSet::new() } else { attributes_only(spec, params) };
+    for (key, ds) in full {
+        if unread.contains(key) {
+            continue;
+        }
+        if let std::borrow::Cow::Owned(c) = ds.in_crs(work)? {
+            converted.insert(key.clone(), c);
         }
     }
     // Every text the parameters hold that names a layer, not only layer parameters: a tool may
-    // name one elsewhere, and a layer it reads must be in longitude/latitude.
+    // name one elsewhere, and a layer it reads must be in the system it works in. Not the name
+    // its output is given, which it doesn't read.
     fn texts<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
         match v {
             Value::String(s) => out.push(s),
@@ -1434,19 +1588,26 @@ fn lonlat_inputs(
         }
     }
     let mut names = layer_names(spec, params);
-    texts(params, &mut names);
+    match params {
+        Value::Object(o) => o.iter().filter(|(k, _)| k.as_str() != "output").for_each(|(_, v)| texts(v, &mut names)),
+        other => texts(other, &mut names),
+    }
     for n in names {
         let key = n.to_ascii_lowercase();
-        if full.contains_key(&key) {
+        if full.contains_key(&key) || converted.contains_key(&key) || unread.contains(&key) {
             continue;
         }
-        if let Some(l) = map.layer_by_name(n).filter(|l| !l.is_raster())
-            && let std::borrow::Cow::Owned(converted) = l.dataset.in_lonlat()?
+        // A layer, or a standalone table with geometry; one without reads alike in any system.
+        if let Some(ds) = project_input(map, tables, n, false)
+            .filter(|i| !matches!(i, ProjectInput::Layer(l) if l.is_raster()))
+            .map(|i| i.dataset())
+            .filter(|d| d.geometry_type != rustgis_data::GeometryType::None)
+            && let std::borrow::Cow::Owned(c) = ds.in_crs(work)?
         {
-            full.insert(key, converted);
+            converted.insert(key, c);
         }
     }
-    Ok(())
+    Ok(converted)
 }
 
 /// The executor's source-read choice, shared with pure permission planning.
@@ -1559,10 +1720,20 @@ impl Inputs for MapInputs<'_> {
         self.loaded
             .get(layer)
             .or_else(|| self.loaded.get(&layer.to_ascii_lowercase()))
-            // A layer read as it is only in longitude/latitude: one in another system is
-            // converted before the run ([`lonlat_inputs`]) when the tool names it, and isn't read
+            // A layer read as it is only in the system the tool works in: one in another system is
+            // converted before the run ([`work_inputs`]) when the tool names it, and isn't read
             // in its own coordinates otherwise.
-            .or_else(|| project_input(&self.snap.map, &self.snap.tables, layer, false).map(|i| i.dataset()).filter(|d| d.edits_in_lonlat()))
+            .or_else(|| {
+                project_input(&self.snap.map, &self.snap.tables, layer, false)
+                    .map(|i| i.dataset())
+                    // A table without geometry reads alike in any system, and so does a layer
+                    // the tool reads only the attributes of.
+                    .filter(|d| {
+                        d.geometry_type == rustgis_data::GeometryType::None
+                            || self.unread.contains(&layer.to_ascii_lowercase())
+                            || d.coord_crs().to(self.work).is_ok_and(|to| to.is_identity())
+                    })
+            })
     }
     fn table(&self, id: u32) -> Option<&Dataset> {
         self.snap.tables.iter().find(|t| t.id == id).map(|t| &t.dataset)
@@ -2710,6 +2881,7 @@ pub(crate) fn execute(
                 pin.run(&inputs, params, control, &|| continuation.check())
             };
             if let Ok(result) = &mut res {
+                inputs.hold_results(result);
                 result.messages.extend(inputs.messages.iter().cloned());
                 result.losses.extend(inputs.losses.iter().cloned());
             }
@@ -3121,8 +3293,15 @@ fn apply_with(
         }
         Output::Update { layer, dataset } => {
             let l = s.map_mut().layers.iter_mut().find(|l| l.name.eq_ignore_ascii_case(&layer)).ok_or("the input layer disappeared")?;
-            // Made in longitude/latitude, written back in the layer's own coordinates.
-            l.dataset = l.dataset.results_from_lonlat(dataset)?;
+            // Made in the system the tool worked in ([`MapInputs::hold_results`]): taken as made
+            // when that is the layer's own, else written back in its own coordinates from
+            // longitude/latitude.
+            l.dataset = if dataset.coord_crs() == l.dataset.coord_crs() {
+                dataset
+            } else {
+                let lonlat = if dataset.coord_crs() == Crs::LonLat { dataset } else { dataset.in_lonlat()?.into_owned() };
+                l.dataset.results_from_lonlat(lonlat)?
+            };
             // Under the layer's name now: a background run's layer may have been renamed meanwhile.
             l.dataset.name.clone_from(&l.name);
             // A streamed layer updated by a tool holds the whole result in memory from now on.

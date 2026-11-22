@@ -1074,7 +1074,7 @@ impl Dataset {
         }
     }
 
-    /// The dataset in longitude/latitude, the space analysis tools work in: borrowed while its
+    /// The dataset in longitude/latitude, the space most analysis tools work in: borrowed while its
     /// coordinates are longitude/latitude ([`Dataset::coord_crs`]); otherwise a copy with every
     /// geometry converted, missing coordinates kept. Refused, naming the first feature that can't
     /// be, when one of its places can't be converted. The copy is held in longitude/latitude
@@ -1100,6 +1100,26 @@ impl Dataset {
                 })?;
             }
         }
+        Ok(Cow::Owned(out))
+    }
+
+    /// The dataset in `crs`, the system a tool works in when it works in its first input's own
+    /// ([`Dataset::in_lonlat`] for longitude/latitude): borrowed while its coordinates are already
+    /// there; otherwise a copy held there ([`Dataset::hold_in`]), missing coordinates kept.
+    /// Refused as [`Dataset::hold_in`] refuses, naming the first feature with a place `crs` can't
+    /// hold.
+    pub fn in_crs(&self, crs: raster::Crs) -> std::result::Result<Cow<'_, Dataset>, String> {
+        if crs == raster::Crs::LonLat {
+            return self.in_lonlat();
+        }
+        if self.coord_crs().to(crs)?.is_identity() {
+            return Ok(Cow::Borrowed(self));
+        }
+        let mut out = self.clone();
+        // A copy for one run, not the layer: a window's rows are converted as they are.
+        let windowed = std::mem::take(&mut out.windowed);
+        out.hold_in(crs)?;
+        out.windowed = windowed;
         Ok(Cow::Owned(out))
     }
 
