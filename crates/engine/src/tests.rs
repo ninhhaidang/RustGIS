@@ -1807,6 +1807,48 @@ fn a_streamed_shapefile_says_text_that_isnt_utf8_once_and_in_its_exports() {
     }
 }
 
+/// A window read twice before the notice pass (after a reset) counts its non-UTF-8 text once, not
+/// twice: the notice's "so far" count is what the layer holds.
+#[test]
+fn a_window_read_twice_before_the_notice_pass_counts_once() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-streamed-twice-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let mut ds = Dataset::new("big5", GeometryType::Point, vec![Field::new("NAME", FieldType::Text)]);
+    for (i, text) in ["Taipei", "AAAAAAA"].into_iter().enumerate() {
+        ds.push(Some(Geometry::Point(rustgis_geom::Coord::new(i as f64, 1.0))), vec![V::Text(text.into())]);
+    }
+    let shp = dir.0.join("big5.shp");
+    rustgis_data::io::write_path(&ds, &shp).unwrap();
+    std::fs::remove_file(shp.with_extension("cpg")).unwrap();
+    let dbf = shp.with_extension("dbf");
+    let mut table = std::fs::read(&dbf).unwrap();
+    table[29] = 0;
+    let at = table.windows(7).position(|w| w == b"AAAAAAA").unwrap();
+    table[at..at + 7].copy_from_slice(b"\xbb\x4f\xa5\x5f101");
+    std::fs::write(&dbf, table).unwrap();
+    let mut s = Session::new(Project::default());
+    let added = s.run("layer.addData", &json!({"path": shp.display().to_string(), "stream": true})).unwrap();
+    let id = added["layer"].as_u64().unwrap() as u32;
+    let mark = s.notice_mark();
+    let view = rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0);
+    s.map_mut().sync_sources(&view, 1000.0, true);
+    // The same window again, with no notice pass between the two reads.
+    s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().reset();
+    s.map_mut().sync_sources(&view, 1000.0, true);
+    s.notice_landed_rasters();
+    let notes: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("valid UTF-8")).collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("1 text value isn't valid UTF-8"), "{}", notes[0]);
+}
+
 /// What the map's reads of a layer read in place lost (`Batch::notes`, here a Shapefile line left
 /// out for a NaN point under a stored box that frames the layer) is said once for its opening, not
 /// on each read of the view, and again once after the source is opened anew; a clean file says

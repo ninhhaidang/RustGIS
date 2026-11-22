@@ -690,10 +690,10 @@ impl Layer {
         // A failed read leaves nothing drawn for it (its error shows in Layers), not the
         // previous view's features.
         match src.poll(block) {
-            source::Polled::Done(_, batch) => {
-                src.saw_unread_dates(&batch.unread_dates, &batch.rounded_dates);
-                src.saw_null_text(&batch.null_text);
-                src.saw_not_utf8(&batch.not_utf8);
+            source::Polled::Done(window, batch) => {
+                src.saw_unread_dates(&window.extent, &batch.unread_dates, &batch.rounded_dates);
+                src.saw_null_text(&window.extent, &batch.null_text);
+                src.saw_not_utf8(&window.extent, &batch.not_utf8);
                 src.saw_read_notes(&batch.notes);
                 self.install(batch.features)
             }
@@ -704,10 +704,10 @@ impl Layer {
         if let Some(e) = src.wanted(view) {
             src.start(e, block);
             match src.poll(block) {
-                source::Polled::Done(_, batch) => {
-                    src.saw_unread_dates(&batch.unread_dates, &batch.rounded_dates);
-                    src.saw_null_text(&batch.null_text);
-                    src.saw_not_utf8(&batch.not_utf8);
+                source::Polled::Done(window, batch) => {
+                    src.saw_unread_dates(&window.extent, &batch.unread_dates, &batch.rounded_dates);
+                    src.saw_null_text(&window.extent, &batch.null_text);
+                    src.saw_not_utf8(&window.extent, &batch.not_utf8);
                     src.saw_read_notes(&batch.notes);
                     self.install(batch.features)
                 }

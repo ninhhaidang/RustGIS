@@ -141,23 +141,24 @@ pub struct SourceLayer {
     conversion_notes_unsaid: Vec<String>,
     /// Values in date fields a view read found weren't dates ([`Batch::unread_dates`]), until
     /// said by [`SourceLayer::take_unread_dates`]; once said, later reads aren't counted again.
+    /// Kept for each window read ([`Tally`]): a window read again replaces its counts.
     #[serde(skip)]
-    unread_dates: Option<Vec<usize>>,
+    unread_dates: Tally,
     /// Date-times a view read rounded to the microsecond ([`Batch::rounded_dates`]), likewise.
     #[serde(skip)]
-    rounded_dates: Option<Vec<usize>>,
+    rounded_dates: Tally,
     #[serde(skip)]
     unread_dates_said: bool,
     #[serde(skip)]
     rounded_dates_said: bool,
     /// Text values `<Null>` a view read read as null ([`Batch::null_text`]), likewise.
     #[serde(skip)]
-    null_text: Option<Vec<usize>>,
+    null_text: Tally,
     #[serde(skip)]
     null_text_said: bool,
     /// Text values a view read found weren't UTF-8 ([`Batch::not_utf8`]), likewise.
     #[serde(skip)]
-    not_utf8: Option<Vec<usize>>,
+    not_utf8: Tally,
     #[serde(skip)]
     not_utf8_said: bool,
     /// What else view reads lost or assumed ([`Batch::notes`]), until said by
@@ -765,6 +766,54 @@ pub(crate) fn another_frame() {
     }
 }
 
+/// How many windows a [`Tally`] keeps apart.
+const WINDOWS_COUNTED: usize = 64;
+
+/// What view reads found, counted for each field by its position, kept for each window read: a
+/// window read again replaces its counts instead of adding to them.
+#[derive(Clone, Default)]
+struct Tally {
+    windows: Vec<(Extent, Vec<usize>)>,
+    /// Counts of windows past [`WINDOWS_COUNTED`], added up as they come.
+    // ponytail: past 64 windows between two notice passes a window read again adds up as before;
+    // keep rows' identity in `Batch` to count exactly.
+    rest: Vec<usize>,
+}
+
+impl Tally {
+    fn saw(&mut self, window: &Extent, counts: &[usize]) {
+        let at = self.windows.iter().position(|(w, _)| w == window);
+        if counts.iter().all(|n| *n == 0) {
+            if let Some(at) = at {
+                self.windows.remove(at);
+            }
+        } else if let Some((_, kept)) = at.and_then(|at| self.windows.get_mut(at)) {
+            *kept = counts.to_vec();
+        } else if self.windows.len() < WINDOWS_COUNTED {
+            self.windows.push((*window, counts.to_vec()));
+        } else {
+            rustgis_data::source::add_unread_dates(&mut self.rest, counts);
+        }
+    }
+
+    /// Nothing is pending.
+    fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.rest.iter().all(|n| *n == 0)
+    }
+
+    /// The counts of every window added up, or `None` when nothing is pending.
+    fn total(&self) -> Option<Vec<usize>> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut all = self.rest.clone();
+        for (_, counts) in &self.windows {
+            rustgis_data::source::add_unread_dates(&mut all, counts);
+        }
+        Some(all)
+    }
+}
+
 /// What [`SourceLayer::poll`] found.
 pub enum Polled {
     /// Nothing new.
@@ -786,12 +835,15 @@ impl SourceLayer {
     /// [`SourceLayer::take_unread_dates`] says it. Once said, later reads aren't counted: they
     /// read the same features again, and the notice says Load All Features counts them all.
     /// Each kind is counted until its own notice is said, so saying one doesn't silence the other.
-    pub fn saw_unread_dates(&mut self, unread: &[usize], rounded: &[usize]) {
-        if !self.unread_dates_said && unread.iter().any(|n| *n > 0) {
-            rustgis_data::source::add_unread_dates(self.unread_dates.get_or_insert_with(Vec::new), unread);
+    /// `window` is the extent the batch was read for: reading it again replaces its counts, so the
+    /// same rows aren't counted twice. Two different windows that overlap still count the rows
+    /// they share twice; the notice says "so far" and Load All Features counts them all.
+    pub fn saw_unread_dates(&mut self, window: &Extent, unread: &[usize], rounded: &[usize]) {
+        if !self.unread_dates_said {
+            self.unread_dates.saw(window, unread);
         }
-        if !self.rounded_dates_said && rounded.iter().any(|n| *n > 0) {
-            rustgis_data::source::add_unread_dates(self.rounded_dates.get_or_insert_with(Vec::new), rounded);
+        if !self.rounded_dates_said {
+            self.rounded_dates.saw(window, rounded);
         }
     }
 
@@ -800,7 +852,7 @@ impl SourceLayer {
     /// ([`rustgis_data::source::rounded_dates_note`]), once for the source.
     pub fn take_unread_dates(&mut self) -> (Option<String>, Option<String>) {
         let Some(fields) = self.info().map(|i| i.fields.clone()) else { return (None, None) };
-        let (unread, rounded) = (self.unread_dates.take(), self.rounded_dates.take());
+        let (unread, rounded) = (std::mem::take(&mut self.unread_dates).total(), std::mem::take(&mut self.rounded_dates).total());
         if unread.is_none() && rounded.is_none() {
             return (None, None);
         }
@@ -814,9 +866,9 @@ impl SourceLayer {
 
     /// Keeps what view reads found of text values `<Null>` read as null, until
     /// [`SourceLayer::take_null_text`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
-    pub fn saw_null_text(&mut self, counts: &[usize]) {
-        if !self.null_text_said && counts.iter().any(|n| *n > 0) {
-            rustgis_data::source::add_unread_dates(self.null_text.get_or_insert_with(Vec::new), counts);
+    pub fn saw_null_text(&mut self, window: &Extent, counts: &[usize]) {
+        if !self.null_text_said {
+            self.null_text.saw(window, counts);
         }
     }
 
@@ -824,16 +876,16 @@ impl SourceLayer {
     /// ([`rustgis_data::source::null_text_note`]), once for the source.
     pub fn take_null_text(&mut self) -> Option<String> {
         let fields = self.info().map(|i| i.fields.clone())?;
-        let counts = self.null_text.take()?;
+        let counts = std::mem::take(&mut self.null_text).total()?;
         self.null_text_said = true;
         rustgis_data::source::null_text_note(&fields, &counts)
     }
 
     /// Keeps what view reads found of text values that aren't UTF-8, until
     /// [`SourceLayer::take_not_utf8`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
-    pub fn saw_not_utf8(&mut self, counts: &[usize]) {
-        if !self.not_utf8_said && counts.iter().any(|n| *n > 0) {
-            rustgis_data::source::add_unread_dates(self.not_utf8.get_or_insert_with(Vec::new), counts);
+    pub fn saw_not_utf8(&mut self, window: &Extent, counts: &[usize]) {
+        if !self.not_utf8_said {
+            self.not_utf8.saw(window, counts);
         }
     }
 
@@ -841,9 +893,11 @@ impl SourceLayer {
     /// ([`rustgis_data::source::not_utf8_note`]), once for the source.
     pub fn take_not_utf8(&mut self) -> Option<String> {
         // Checked first: this runs every frame for each layer with a source, and most have nothing pending.
-        self.not_utf8.as_ref()?;
+        if self.not_utf8.is_empty() {
+            return None;
+        }
         let fields = self.info().map(|i| i.fields.clone())?;
-        let counts = self.not_utf8.take()?;
+        let counts = std::mem::take(&mut self.not_utf8).total()?;
         self.not_utf8_said = true;
         rustgis_data::source::not_utf8_note(&fields, &counts)
     }
@@ -1643,13 +1697,13 @@ impl SourceLayer {
         self.clear_error();
         self.login = false;
         // A new opening may hold other values: what was said of the last one doesn't hold.
-        self.unread_dates = None;
-        self.rounded_dates = None;
+        self.unread_dates = Tally::default();
+        self.rounded_dates = Tally::default();
         self.unread_dates_said = false;
         self.rounded_dates_said = false;
-        self.null_text = None;
+        self.null_text = Tally::default();
         self.null_text_said = false;
-        self.not_utf8 = None;
+        self.not_utf8 = Tally::default();
         self.not_utf8_said = false;
         self.forget_read_notes();
         self.reset();
@@ -2123,15 +2177,54 @@ mod tests {
             source.wait_open(std::time::Duration::from_secs(5));
             assert!(source.is_open(), "{:?}", source.error);
             let (first, second): (&[usize], &[usize]) = if unread_first { (&[1], &[]) } else { (&[], &[1]) };
-            source.saw_unread_dates(first, second);
+            let window = rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0);
+            source.saw_unread_dates(&window, first, second);
             let said = source.take_unread_dates();
             assert_eq!((said.0.is_some(), said.1.is_some()), (unread_first, !unread_first));
             // The other kind, found by a later read, is still said; the said kind isn't again.
-            source.saw_unread_dates(&[2], &[2]);
+            source.saw_unread_dates(&window, &[2], &[2]);
             let said = source.take_unread_dates();
             assert_eq!((said.0.is_some(), said.1.is_some()), (!unread_first, unread_first), "unread first: {unread_first}");
             assert_eq!(source.take_unread_dates(), (None, None));
         }
+    }
+
+    /// A window read again replaces its counts; another window adds to them; a clean re-read
+    /// clears its own; past the windows kept apart, counts add up and nothing panics.
+    #[test]
+    fn a_window_read_again_replaces_its_counts() {
+        use super::{Tally, WINDOWS_COUNTED};
+        use rustgis_geom::Extent;
+        let (a, b) = (Extent::new(0.0, 0.0, 1.0, 1.0), Extent::new(2.0, 0.0, 3.0, 1.0));
+        let mut tally = Tally::default();
+        assert_eq!(tally.total(), None);
+        tally.saw(&a, &[0, 3]);
+        tally.saw(&a, &[0, 3]);
+        assert_eq!(tally.total(), Some(vec![0, 3]));
+        tally.saw(&b, &[1]);
+        assert_eq!(tally.total(), Some(vec![1, 3]));
+        tally.saw(&a, &[]);
+        assert_eq!(tally.total(), Some(vec![1]));
+        tally.saw(&b, &[0]);
+        assert_eq!(tally.total(), None);
+        let nan = Extent::new(f64::NAN, 0.0, 1.0, 1.0);
+        for _ in 0..2 * WINDOWS_COUNTED {
+            tally.saw(&nan, &[1]);
+        }
+        assert_eq!(tally.total(), Some(vec![2 * WINDOWS_COUNTED]));
+        assert!(tally.windows.len() <= WINDOWS_COUNTED);
+        // The same through the layer: a text kind said once, a re-read of its window not counted again.
+        let mut source = super::SourceLayer::default();
+        source.saw_not_utf8(&a, &[1]);
+        source.saw_not_utf8(&a, &[1]);
+        source.saw_null_text(&a, &[2]);
+        source.saw_null_text(&a, &[2]);
+        assert_eq!(std::mem::take(&mut source.not_utf8).total(), Some(vec![1]));
+        assert_eq!(std::mem::take(&mut source.null_text).total(), Some(vec![2]));
+        source.saw_unread_dates(&a, &[1], &[1]);
+        source.saw_unread_dates(&a, &[1], &[1]);
+        assert_eq!(std::mem::take(&mut source.unread_dates).total(), Some(vec![1]));
+        assert_eq!(std::mem::take(&mut source.rounded_dates).total(), Some(vec![1]));
     }
 
     /// A view read's notes are said once for each kind, whatever count a later read of another
