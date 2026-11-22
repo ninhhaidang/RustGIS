@@ -213,9 +213,7 @@ fn command_uses_text_size(id: &str, params: &Value) -> bool {
         "layout.update" => {
             params.get("textSize").is_some_and(|v| !v.is_null()) || params.get("grid").is_some_and(|g| sized(g, "labelSize", GRID_LABEL_PT))
         }
-        "layout.import" => {
-            ["\"text_size\"", "\"label_size\""].iter().any(|key| imported_layout_uses(params, key, |e| e.kind.has_custom_text_size()))
-        }
+        "layout.import" => imported_layout_uses(params, &["\"text_size\"", "\"label_size\""], |e| e.kind.has_custom_text_size()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_text_size)),
         _ => false,
     }
@@ -227,7 +225,7 @@ fn command_uses_text_size(id: &str, params: &Value) -> bool {
 fn command_uses_frame_border(id: &str, params: &Value) -> bool {
     match id {
         "layout.update" => params.get("border").is_some_and(|b| !b.is_null()),
-        "layout.import" => imported_layout_uses(params, "\"border_", |e| e.kind.has_custom_border()),
+        "layout.import" => imported_layout_uses(params, &["\"border_"], |e| e.kind.has_custom_border()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_frame_border)),
         _ => false,
     }
@@ -252,7 +250,7 @@ fn command_uses_blank_paper(id: &str, params: &Value) -> bool {
 fn command_uses_element_background(id: &str, params: &Value) -> bool {
     match id {
         "layout.addElement" | "layout.update" => params.get("background").is_some_and(|b| !b.is_null()),
-        "layout.import" => imported_layout_uses(params, "\"background\"", |e| e.background.is_some()),
+        "layout.import" => imported_layout_uses(params, &["\"background\""], |e| e.background.is_some()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_background)),
         _ => false,
     }
@@ -263,7 +261,7 @@ fn command_uses_element_background(id: &str, params: &Value) -> bool {
 /// and `layout.update`, so such a command fails there instead of losing the ink.
 fn command_uses_element_ink(id: &str, params: &Value) -> bool {
     match id {
-        "layout.import" => imported_layout_uses(params, "\"color\"", |e| e.kind.ink().is_some()),
+        "layout.import" => imported_layout_uses(params, &["\"color\""], |e| e.kind.ink().is_some()),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_ink)),
         _ => false,
     }
@@ -280,7 +278,7 @@ fn wraps(e: &rustgis_map::layout::Element) -> bool {
 fn command_uses_element_wrap(id: &str, params: &Value) -> bool {
     match id {
         "layout.addElement" | "layout.update" => params.get("wrap").and_then(crate::cmd::bool_value) == Some(true),
-        "layout.import" => imported_layout_uses(params, "\"wrap\"", wraps),
+        "layout.import" => imported_layout_uses(params, &["\"wrap\""], wraps),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_element_wrap)),
         _ => false,
     }
@@ -310,9 +308,7 @@ fn command_uses_chart_data(id: &str, params: &Value) -> bool {
                 || params.get("bars").and_then(Value::as_u64).is_some_and(|n| n != CHART_BARS as u64)
                 || params.get("other").and_then(crate::cmd::bool_value) == Some(true)
         }
-        "layout.import" => ["\"group\"", "\"statistic\"", "\"order\"", "\"bars\"", "\"other\""]
-            .iter()
-            .any(|key| imported_layout_uses(params, key, charts_data)),
+        "layout.import" => imported_layout_uses(params, &["\"group\"", "\"statistic\"", "\"order\"", "\"bars\"", "\"other\""], charts_data),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_data)),
         _ => false,
     }
@@ -343,9 +339,11 @@ fn command_uses_chart_look(id: &str, params: &Value) -> bool {
                 && (only_chart() || text("orientation").as_deref() == Some("vertical") || params.get("title").is_some_and(|t| !t.is_null()))
         }
         "layout.update" => only_chart(),
-        "layout.import" => ["\"orientation\"", "\"values\"", "\"decimals\"", "\"title\"", "\"bar_color\"", "\"label_align\""]
-            .iter()
-            .any(|key| imported_layout_uses(params, key, charts_look)),
+        "layout.import" => imported_layout_uses(
+            params,
+            &["\"orientation\"", "\"values\"", "\"decimals\"", "\"title\"", "\"bar_color\"", "\"label_align\""],
+            charts_look,
+        ),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_look)),
         _ => false,
     }
@@ -366,7 +364,7 @@ fn command_uses_chart_classes(id: &str, params: &Value) -> bool {
             params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("chart")) && classes()
         }
         "layout.update" => classes(),
-        "layout.import" => imported_layout_uses(params, "\"classes\"", charts_classes),
+        "layout.import" => imported_layout_uses(params, &["\"classes\""], charts_classes),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_classes)),
         _ => false,
     }
@@ -386,7 +384,7 @@ fn command_uses_chart_stack(id: &str, params: &Value) -> bool {
             params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("chart")) && stack()
         }
         "layout.update" => stack(),
-        "layout.import" => imported_layout_uses(params, "\"stack\"", charts_stack),
+        "layout.import" => imported_layout_uses(params, &["\"stack\""], charts_stack),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_chart_stack)),
         _ => false,
     }
@@ -394,14 +392,15 @@ fn command_uses_chart_stack(id: &str, params: &Value) -> bool {
 
 /// Whether a `layout.import` carries its layout as `"text"` with an element `uses`: an older
 /// reader reads it without the keys it doesn't know. One read from a `"path"` is a layout file,
-/// which carries no format header yet (#2277). Every save asks, so a text without the feature's
-/// `key` (a saved layout writes it only when set) isn't read through, unless it has a backslash:
-/// JSON may spell the key with escapes (`"\u0063olor"`).
-fn imported_layout_uses(params: &Value, key: &str, uses: fn(&rustgis_map::layout::Element) -> bool) -> bool {
+/// which carries no format header yet (#2277). Every save asks, so a text with none of the
+/// feature's `keys` (a saved layout writes them only when set) isn't read through, unless it has a
+/// backslash: JSON may spell a key with escapes (`"\u0063olor"`). It is read once, whatever its
+/// keys.
+fn imported_layout_uses(params: &Value, keys: &[&str], uses: fn(&rustgis_map::layout::Element) -> bool) -> bool {
     params
         .get("text")
         .and_then(Value::as_str)
-        .filter(|t| t.contains(key) || t.contains('\\'))
+        .filter(|t| keys.iter().any(|key| t.contains(key)) || t.contains('\\'))
         .and_then(|t| serde_json::from_str::<rustgis_map::layout::Layout>(t).ok())
         .is_some_and(|l| l.elements.iter().any(uses))
 }

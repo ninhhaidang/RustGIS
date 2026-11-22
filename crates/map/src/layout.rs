@@ -1486,11 +1486,11 @@ impl ElementKind {
 
     /// Whether `key` given as null changes an element of this kind, giving it back its default:
     /// an ink's `color`, a chart's `title` (the title it is given) and `barColor`, and a legend's
-    /// `textSize` (#2581).
+    /// or scale bar's `textSize` (#2581).
     pub fn null_resets(&self, key: &str) -> bool {
         (self.takes_ink() && key == "color")
             || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor"))
-            || (matches!(self, ElementKind::Legend { .. }) && key == "textSize")
+            || (matches!(self, ElementKind::Legend { .. } | ElementKind::ScaleBar { .. }) && key == "textSize")
     }
 
     /// Its ink, when it [takes one](ElementKind::takes_ink) and has one; `None` draws in [`INK`].

@@ -272,7 +272,9 @@ pub struct TextLoss {
     /// the line past the 200 drawn ([`wrapped`]).
     pub at_least: bool,
     /// Some of them are left out below its box, among the first 200: a taller box or a smaller
-    /// text draws them.
+    /// text draws them. For a scale bar, its box is too small for its labels and bar
+    /// ([`BarLayout::cramped`]): its bar drawn below it, or its end label past its side or over
+    /// its first label.
     pub below_box: bool,
     /// Some of them come past the 200 lines a text draws, whatever its box: only splitting the
     /// text draws them.
@@ -454,8 +456,10 @@ pub fn clipped_text_notice(layout: &Layout, clipped: &[(u32, String)]) -> Option
         .collect::<Vec<_>>();
     // Scale bars alone: their labels are no text to break (#2581).
     let bars = clipped.iter().all(|(id, _)| matches!(layout.element(*id).map(|e| &e.kind), Some(ElementKind::ScaleBar { .. })));
-    let advice = if bars {
-        "make the scale bar larger or move it inside the page, or reduce its text size"
+    let advice = if bars && clipped.len() == 1 {
+        "move it inside the page or make its box larger, or reduce its text size"
+    } else if bars {
+        "move them inside the page or make their boxes larger, or reduce their text size"
     } else if wraps.contains(&Some(false)) {
         "resize or move the text, reduce its size, add line breaks, or turn on Wrap to the box"
     } else if wraps.iter().all(|w| *w == Some(true)) {
@@ -1905,8 +1909,17 @@ fn draw_grid(pm: &mut Canvas, map: &Map, view: &View, g: &Grid, comma: bool) -> 
         Edge::Left | Edge::Right if !vertical => label_px,
         _ => text::measure(s, label_px / 1.33, false),
     };
+    // How far a label reaches in from its edge: past the inset, its height, or a side's flat
+    // label its width.
+    let across = |edge: Edge, s: &str| {
+        inset
+            + match edge {
+                Edge::Left | Edge::Right if !vertical => text::measure(s, label_px / 1.33, false),
+                _ => label_px,
+            }
+    };
     let mut drawn = Vec::new();
-    for (edge, at, s) in kept_labels(labels, (pw, ph), along, label_px, unit) {
+    for (edge, at, s) in kept_labels(labels, (pw, ph), (along, across), label_px, unit) {
         let tw = text::measure(&s, label_px / 1.33, false);
         // Its centre, and half its size across and down (its halo and descenders included).
         let (flat, upright) = ((tw / 2.0, label_px * 0.6), (label_px * 0.6, tw / 2.0));
@@ -2005,18 +2018,20 @@ fn mgrs_squares(
 
 /// The graticule labels drawn, of those at each edge crossing (`labels`: edge, place along it,
 /// text, a meridian's or not) on a frame `size` pixels, `label_h` tall: away from the corners (all
-/// of a label, `along` its edge, fits, and none at a side's ends by a top or bottom label), and
-/// none over another. Meridians are labelled along the top and
-/// bottom and parallels along the sides first; a line that leaves the frame through the other
-/// edges (a slanting meridian on a projected map) is labelled there only well clear of the labels
-/// already set on that edge. Their room from the corners and between them is in `unit`s, a point
-/// at the labels' default size in pixels, so it follows their size.
+/// of a label, `along` its edge, fits, and none at a side's ends by a top or bottom label), within
+/// the frame across (how far it reaches in from its edge, `across`, at most the frame's other side:
+/// one reaching further in is left out, at any size, rather than cut by the frame), and none over
+/// another. Meridians are labelled along the top and bottom and parallels along the sides first; a
+/// line that leaves the frame through the other edges (a slanting meridian on a projected map) is
+/// labelled there only well clear of the labels already set on that edge. Their room from the
+/// corners and between them is in `unit`s, a point at the labels' default size in pixels, so it
+/// follows their size.
 /// A label left out for want of room is thinning, as on any map, not a loss to report: the grid
 /// still shows its lines, and the user guide says labels go where there is room.
 fn kept_labels(
     mut labels: Vec<(Edge, f32, String, bool)>,
     (pw, ph): (f32, f32),
-    along: impl Fn(Edge, &str) -> f32,
+    (along, across): (impl Fn(Edge, &str) -> f32, impl Fn(Edge, &str) -> f32),
     label_h: f32,
     unit: f32,
 ) -> Vec<(Edge, f32, String)> {
@@ -2027,7 +2042,10 @@ fn kept_labels(
     for (edge, at, s, lon) in labels {
         let length = along(edge, &s);
         let side = matches!(edge, Edge::Left | Edge::Right);
-        let limit = if side { ph } else { pw };
+        let (limit, room) = if side { (ph, pw) } else { (pw, ph) };
+        if across(edge, &s) > room {
+            continue;
+        }
         // A side's labels keep two label heights from the corners, below the top's labels and
         // above the bottom's, so a corner holds no two.
         let margin = (length / 2.0 + 3.0 * unit).max(12.0 * unit).max(if side { 2.0 * label_h } else { 0.0 });
@@ -2191,6 +2209,8 @@ const BAR_INSET: f32 = 2.0;
 /// How far a scale bar label's digits rise above the middle of their line, in label sizes: what
 /// the room over the bar holds.
 const BAR_LABEL_RISE: f32 = 0.5;
+/// How far the middle of a scale bar's labels' line sits over the bar's top, in label sizes.
+const BAR_LABEL_MID: f32 = 0.7;
 
 /// What a scale bar counts: its whole length in its unit, that unit in metres and its abbreviation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2241,7 +2261,8 @@ pub fn scale_bar_width_pt(ground_per_pt: f64, width_pt: f64, bar: (ScaleUnits, u
 /// How far a scale bar starts in from its box's left side, in pixels, for its first label `first`
 /// at `k` times the default size (#2581): [`BAR_INSET`] in proportion, or more, so that label
 /// reaches no further past the side than it does at the default size, as the bar moves down to
-/// keep its labels from reaching higher. At the default size, [`BAR_INSET`].
+/// keep its labels from reaching higher. At the default size, [`BAR_INSET`]: pixels, as the
+/// drawing has always placed the bar, not following `ppp`, which only the labels' widths do.
 fn bar_inset(first: &str, k: f32, ppp: f32) -> f32 {
     let half = |k: f32| text::measure(first, SCALE_BAR_TEXT_PT as f32 * k * ppp, false) / 2.0;
     (BAR_INSET * k).max(half(k) - (half(1.0) - BAR_INSET).max(0.0))
@@ -2260,7 +2281,8 @@ struct BarLayout {
     label_y: f32,
     labels: Vec<(f32, String)>,
     /// Its box is too small for its labels and bar: too short, the bar drawn below it, or too
-    /// narrow, an end label reaching past its side further than the default size's does.
+    /// narrow, an end label reaching past its side further than the default size's does or, above
+    /// the default size, over its first label.
     cramped: bool,
 }
 
@@ -2282,13 +2304,13 @@ fn bar_layout(r: Rect, ground_per_pt: f64, bar: (ScaleUnits, usize, f64), ppp: f
     // short for both has the bar below it ([`BarLayout::cramped`]). At the default size the bar is
     // where it always was.
     let px = SCALE_BAR_TEXT_PT as f32 * k * 1.33 * ppp as f32;
-    let rise = |px: f32| px * (0.7 + BAR_LABEL_RISE);
+    let rise = |px: f32| px * (BAR_LABEL_MID + BAR_LABEL_RISE);
     let at = r.y() + r.height() * 0.62 - bar_h / 2.0;
     let top = r.y().min(at - rise(SCALE_BAR_TEXT_PT as f32 * 1.33 * ppp as f32));
     let first = bar_label(total, divisions, 0, abbr, comma);
     let (x0, y0) = (r.x() + bar_inset(&first, k, ppp as f32), at.max(top + rise(px)));
     let seg = len / divisions as f32;
-    let label_y = y0 - px * 0.7;
+    let label_y = y0 - px * BAR_LABEL_MID;
     let gap = 3.0 * k * ppp as f32;
     let all: Vec<(f32, String)> = (0..=divisions).map(|i| (x0 + seg * i as f32, bar_label(total, divisions, i, abbr, comma))).collect();
     let half = |s: &str| text::measure(s, px / 1.33, false) / 2.0;
@@ -2310,7 +2332,14 @@ fn bar_layout(r: Rect, ground_per_pt: f64, bar: (ScaleUnits, usize, f64), ppp: f
     let half8 = |s: &str| text::measure(s, SCALE_BAR_TEXT_PT as f32 * ppp as f32, false) / 2.0;
     let x8 = r.x() + bar_inset(&first, 1.0, ppp as f32);
     let past_side = labels.last().is_some_and(|(x, s)| x + half(s) > r.right().max(x8 + (x - x0) + half8(s)) + 0.01);
-    let cramped = y0 + bar_h > r.bottom() + 0.01 || past_side;
+    // Its end label is drawn as its first is, whatever the room: above the default size, running
+    // into the first, the box is too narrow for them too.
+    let clash = k > 1.0
+        && match (labels.first(), labels.last()) {
+            (Some((fx, fs)), Some((ex, es))) if labels.len() > 1 => ex - half(es) < fx + half(fs),
+            _ => false,
+        };
+    let cramped = y0 + bar_h > r.bottom() + 0.01 || past_side || clash;
     Some(BarLayout { x0, y0, len, bar_h, px, label_y, labels, cramped })
 }
 
@@ -8463,9 +8492,11 @@ Elaboração: RustGIS",
         let (small, big) = (at(SCALE_BAR_TEXT_PT), at(16.0));
         assert_eq!((small.len, small.bar_h, small.y0), (big.len, big.bar_h, big.y0), "the bar keeps its size");
         assert!((big.px - 2.0 * small.px).abs() < 1e-3, "{} against {}", big.px, small.px);
-        // Its inset follows, and more: its first label reaches no further left than at 8 points.
+        // Its inset follows, and more: its first label reaches no further left than at 8 points,
+        // where its "0" pokes a little past the box's side.
         let reach = |b: &BarLayout| b.x0 - text::measure(&b.labels[0].1, b.px / 1.33, false) / 2.0;
-        assert!(big.x0 >= 2.0 * BAR_INSET - 1e-3 && (reach(&big) - reach(&small).min(0.0)).abs() < 1e-3, "{} {}", big.x0, reach(&big));
+        assert!(reach(&small) < 0.0, "{}", reach(&small));
+        assert!(big.x0 >= 2.0 * BAR_INSET - 1e-3 && (reach(&big) - reach(&small)).abs() < 1e-3, "{} {}", big.x0, reach(&big));
         let over = |b: &BarLayout| b.y0 - b.label_y;
         assert!((over(&big) - 2.0 * over(&small)).abs() < 1e-3, "its room over the bar follows");
         // The default draws the bar as before: an 8-point label 1.33 pixels a point, 2 pixels in.
@@ -8495,6 +8526,20 @@ Elaboração: RustGIS",
             |pt: f64| bar_layout(Rect::from_xywh(0.0, 0.0, 90.0, 400.0).unwrap(), 100.0, (ScaleUnits::Auto, 4, pt), 1.0, false).unwrap();
         let (n8, n40) = (narrow(8.0), narrow(40.0));
         assert!(!n8.cramped && n40.cramped && n40.y0 + n40.bar_h < 400.0 && n40.len == n8.len, "{} {}", n40.y0, n40.len);
+        // Its end label, always drawn as its first is, running into the first above the default
+        // size reaches past the box's side too: the box is too small, and said.
+        for pt in [9.0, 12.0, 20.0, 40.0, 100.0] {
+            for w in (20..400).step_by(7) {
+                let Some(b) = bar_layout(Rect::from_xywh(0.0, 0.0, w as f32, 400.0).unwrap(), 100.0, (ScaleUnits::Auto, 4, pt), 1.0, false)
+                else {
+                    continue;
+                };
+                let half = |s: &str| text::measure(s, b.px / 1.33, false) / 2.0;
+                let ((fx, fs), (ex, es)) = (&b.labels[0], &b.labels[b.labels.len() - 1]);
+                let clash = b.labels.len() > 1 && ex - half(es) < fx + half(fs);
+                assert!(!clash || b.cramped, "{pt} pt in {w} px: its end label over its first, not said");
+            }
+        }
         // A publication's short box (17 pixels): the default reaches over it, as it always did,
         // and a larger size reaches no higher.
         let (short8, short12) = (in_box(17.0, 8.0), in_box(17.0, 12.0));
@@ -8524,7 +8569,7 @@ Elaboração: RustGIS",
         }
         assert_eq!(clipped_text(&l, &maps, 96.0, &info), vec![(bar, "Scale Bar".into())]);
         let note = clipped_text_notice(&l, &clipped_text(&l, &maps, 96.0, &info)).unwrap();
-        assert!(note.contains("make the scale bar larger"), "{note}");
+        assert!(note.ends_with("move it inside the page or make its box larger, or reduce its text size"), "{note}");
         let loss = text_loss(&l, &maps, 96.0, &info, bar).unwrap();
         assert!(loss.below_box && scale_bar_fit_notices(std::slice::from_ref(&loss))[0].contains("its box is too small"), "{loss:?}");
         // A tall box holds them at 20 points; off the page's right edge, its last label is cut.
@@ -8648,8 +8693,22 @@ Elaboração: RustGIS",
             label(Edge::Top, 4.0, "44°W", true),
             label(Edge::Right, 15.0, "2°S", false),
         ];
-        let kept: Vec<String> = kept_labels(labels, (600.0, 500.0), along, 10.0, 1.0).into_iter().map(|(.., s)| s).collect();
+        let kept: Vec<String> =
+            kept_labels(labels.clone(), (600.0, 500.0), (along, |_: Edge, _: &str| 20.0), 10.0, 1.0).into_iter().map(|(.., s)| s).collect();
         assert_eq!(kept, ["6°S", "42°W", "34°W"]);
+        // Labels reaching further in than a short frame is across are left out, not cut by it:
+        // on a frame 30 pixels tall, the top's; the sides', 600 wide, keep theirs.
+        let kept: Vec<String> = kept_labels(labels, (600.0, 30.0), (along, |_: Edge, _: &str| 40.0), 10.0, 1.0)
+            .into_iter()
+            .filter(|(edge, ..)| *edge == Edge::Top)
+            .map(|(.., s)| s)
+            .collect();
+        assert!(kept.is_empty(), "{kept:?}");
+        // And on a frame 15 pixels wide, the sides' labels, whose flat labels reach their width in.
+        let across = |edge: Edge, s: &str| if matches!(edge, Edge::Left | Edge::Right) { s.len() as f32 * 5.0 + 6.0 } else { 6.0 };
+        let side = vec![label(Edge::Right, 200.0, "6°S", false), label(Edge::Left, 250.0, "8°S", false)];
+        assert_eq!(kept_labels(side.clone(), (600.0, 500.0), (along, across), 10.0, 1.0).len(), 2, "a wide frame keeps them");
+        assert!(kept_labels(side, (15.0, 500.0), (along, across), 10.0, 1.0).is_empty(), "a narrow one leaves them out");
     }
 
     /// A layout with a decimal comma swaps the marks of the numbers it prints, `{scale}` included,

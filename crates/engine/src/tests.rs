@@ -12064,6 +12064,25 @@ fn publication_layouts_fit_their_pages() {
     assert!(widths.iter().any(|w| (w - first).abs() > 0.5), "the box changed: {first} mm, then {widths:?}");
     // Its bar's labels at 40 points need a wider box for the last one, and 8 gives the width back.
     assert!(widths[2] > widths[1] + 0.5 && (widths[3] - widths[1]).abs() < 1e-9, "{widths:?}");
+    // A text naming the frame's centre and map follows them: a new centre or map, each measured
+    // from its own, leaves the box as wide as it is automatically then.
+    let scale_text = id_in(&s, "Scale");
+    s.run("map.new", &json!({"name": "The second map, longer"})).unwrap();
+    let mut followed = Vec::new();
+    for (text, change) in [
+        ("{scale} {center}", json!({"element": frame, "center": [-120.5, -45.25]})),
+        ("{scale} {map}", json!({"element": frame, "map": "The second map, longer"})),
+    ] {
+        s.run("layout.update", &json!({"layout": li, "element": scale_text, "text": text})).unwrap();
+        let mut change = change;
+        change["layout"] = json!(li);
+        let before = width(&s);
+        s.run("layout.update", &change).unwrap();
+        let auto = crate::cmd::layout::scale_box_auto(&s, li).unwrap();
+        assert!((width(&s) - auto).abs() < 1e-9, "{change}: {} mm, {auto} mm automatic", width(&s));
+        followed.push(width(&s) - before);
+    }
+    assert!(followed.iter().all(|d| d.abs() > 0.1), "each changed the box: {followed:?}");
     // A long title wraps within the frame, and pushes the map down; the result names every
     // element for layout.update.
     let r = s.run("layout.publication", &json!({"extent": piaui, "title": long})).unwrap();
@@ -14238,6 +14257,14 @@ fn scale_bars_and_grids_take_a_label_size() {
         s.run(change.0, &change.1).unwrap();
         assert!(said(&s, mark).contains("its box is too small"), "{change:?}: {}", said(&s, mark));
     }
+    // Moved off the page's edge, its labels are told too; a locked bar takes no size, null too.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": bar, "x": 250})).unwrap();
+    assert!(said(&s, mark).contains("runs off the page"), "{}", said(&s, mark));
+    s.run("layout.update", &json!({"element": bar, "x": 10, "locked": true})).unwrap();
+    assert!(s.run("layout.update", &json!({"element": bar, "textSize": null})).is_err());
+    assert_eq!(bar_size(&s, bar), 40.0, "the locked bar keeps its size");
+    s.run("layout.update", &json!({"element": bar, "locked": false})).unwrap();
     let mark = s.notice_mark();
     s.run("layout.update", &json!({"element": bar, "textSize": null})).unwrap();
     assert_eq!(said(&s, mark), "", "the default fits");
