@@ -53,7 +53,7 @@ pub fn commands() -> Vec<C> {
             r#"{"layer": raster, "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (default about the layer's pixel there), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the layer's footprint), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "resampling"?: "nearest" (default) | "bilinear" | "cubic" | "average" (the mean of the pixels whose centres fall in a cell) | "mode" (their most frequent value, the least of those tied), "name"?: new layer (default "<layer> projected"), "path"?: GeoTIFF to write it to}"#,
         ),
         C::new("raster.rasterize", "Polygons to Raster", "Analyze › Raster", rasterize).inputs(rasterize_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"layer": polygon layer (its selected or all features; a later one over an earlier), "field"?: numeric field (its values) or text field (codes 1 to n in sorted order of its values, listed in a table named after the result with classes), "value"?: number every polygon gives when there is no field (default 1), "nodata"?: number of the cells under no polygon (default 0), "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (required without grid), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view"; default the polygons' bounds, "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "name"?: new layer (default "<layer> raster"), "path"?: GeoTIFF to write it to}"#,
+            r#"{"layer": polygon layer (its selected or all features; a later one over an earlier), "field"?: numeric field (its values) or text field (codes 1 to n in sorted order of its values, listed in a table named after the result with classes), "value"?: number every polygon gives when there is no field (default 1), "nodata"?: number of the cells under no polygon (default 0), "crs"?: EPSG code or "EPSG:n" of the output (default the projected system the layer holds its coordinates in, else the one it was read in; degrees for a layer in degrees with neither), "cellSize"?: number or [x, y] in the output's units (required without grid), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view"; default the polygons' bounds, "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "name"?: new layer (default "<layer> raster"), "path"?: GeoTIFF to write it to}"#,
         ),
         // A fit is a measurement of the points, not a project change: no undo step.
         C::new("raster.gcpFit", "Control Point Fit", "Imagery › Alignment", gcp_fit).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
@@ -63,7 +63,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"before": raster, "after": raster, "band"?: 1-based, "method"?: "difference"|"ratio"|"percent", "name"?, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("raster.spectral", "Spectral Analysis", "Imagery › Image Analysis", spectral).inputs(spectral_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
-            .params(r#"{"layer": raster, "lon"?, "lat"?, "points"?: [[lon, lat], …] (up to 1000: a profile each, in "profiles"; one off the raster has a null pixel and values, and is said), "zone"?: polygon layer (the mean of its selected or first polygon's pixels)}"#),
+            .params(r#"{"layer": raster, "lon"?, "lat"?, "points"?: [[lon, lat], …] (up to 1000: a profile each, in "profiles"; one off the raster has a null pixel and values, and is said), "zone"?: polygon layer (the mean of the pixels in every part of its selected or first polygon)}"#),
         C::new("raster.classify", "Classification Wizard", "Imagery › Image Classification", |s, p| {
             super::workflows::made_or_ran(s, p, "raster.classify")
         }).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
@@ -453,23 +453,16 @@ fn report_resampled_classes(s: &mut Session, source: &Raster, out: &Raster, meth
 /// The largest whole number a raster's 32-bit float pixels hold exactly.
 const EXACT_WHOLE: f64 = 16_777_216.0;
 
-/// The conversion of a layer's own coordinates to longitude/latitude, for polygons read one by
-/// one ([`rasterops::transform_feature_polygons_to_lonlat`]): none while they are
-/// longitude/latitude, as they are unless the layer holds another system. The same operation
-/// as [`rustgis_data::Dataset::lonlat_conversion`]'s: a conversion to longitude/latitude is the
-/// system's own, never a direct one between two others.
-fn held_transformer(ds: &rustgis_data::Dataset) -> Result<Option<rustgis_data::raster::Transformer>, String> {
-    let crs = ds.coord_crs();
-    if crs == Crs::LonLat {
-        return Ok(None);
-    }
-    crs.transformer().map(Some).map_err(|e| format!("{}: {e}", ds.name))
-}
-
 /// `raster.rasterize`: a polygon layer's selected (or all) features burned onto a grid given as
 /// `raster.project`'s is, each cell whose centre falls in a polygon taking its field's value, a
 /// text field's code or one `value` (see `rustgis_analysis::warp::rasterize`). A new layer, and
 /// for a text field a table of its codes.
+///
+/// It runs on the thread that calls it, the app's own on the desktop: it isn't one of the commands
+/// that make their raster on a thread of their own (`workflows::IN_BACKGROUND`) yet, and nothing
+/// installs a probe around it, so Cancel doesn't reach it and it runs to the end. Its grid sizing
+/// and burn look at Cancel (`progress::check`, `control::check`) for when it moves there, which
+/// has to carry over the GeoTIFF it writes to `path` and the class table it adds.
 fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     let ln = rasterize_name(p)?;
     let l = s.map().layer_by_name(ln).filter(|l| l.raster.is_none()).ok_or_else(|| format!("no vector layer '{ln}'"))?;
@@ -504,12 +497,13 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     rows.dedup();
     let (mut no_value, mut no_polygon) = (0, 0);
     let mut burns: Vec<(Vec<Vec<Vec<Coord>>>, rustgis_data::Value)> = Vec::new();
-    // Burned from longitude/latitude, whatever system the layer holds its coordinates in.
-    let own = held_transformer(ds)?;
+    // Burned from the system the layer holds its coordinates in (none of it converted when the
+    // grid is in it too).
+    let held = ds.coord_crs();
     for row in rows {
         let Some(feature) = ds.features.get(row) else { continue };
         let parts = match &feature.geometry {
-            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, own.as_ref()).ok(),
+            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, None).ok(),
             _ => None,
         };
         let Some(parts) = parts else {
@@ -572,13 +566,55 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     if shapes.is_empty() {
         return Err(format!("{ln} has no polygons with a value to burn"));
     }
-    // By default, the layer's coordinate system and the polygons' bounds.
-    let lonlat = shapes.iter().flat_map(|s| s.parts.iter().flatten().flatten()).fold(Extent::EMPTY, |mut e, c| {
+    // By default, the system the layer holds its coordinates in (else the one it was read in) and
+    // the polygons' bounds.
+    let held_bounds = shapes.iter().flat_map(|s| s.parts.iter().flatten().flatten()).fold(Extent::EMPTY, |mut e, c| {
         e.expand(*c);
         e
     });
-    let crs = ds.crs.unwrap_or(Crs::LonLat);
-    let grid = grid_param(s, p, crs, |crs| Ok((warp::bounds_in([lonlat.min_x, lonlat.min_y, lonlat.max_x, lonlat.max_y], crs)?, None)))?;
+    let crs = if held == Crs::LonLat { ds.crs.unwrap_or(Crs::LonLat) } else { held };
+    let mut unsized_by = 0usize;
+    let grid = grid_param(s, p, crs, |crs| {
+        if crs == held && held != Crs::LonLat {
+            return Ok(([held_bounds.min_x, held_bounds.min_y, held_bounds.max_x, held_bounds.max_y], None));
+        }
+        // Otherwise the bounds of the polygons' box in longitude/latitude, as before. A place the
+        // layer's system can't give there (a missing one aside) doesn't size the grid, and is
+        // said when the grid takes these bounds (no extent given).
+        let to = held.to(Crs::LonLat).map_err(|e| format!("{ln}: {e}"))?;
+        let mut lonlat = Extent::EMPTY;
+        // A conversion a vertex: Cancel is looked at every few thousand (once a probe is
+        // installed, see above).
+        for (i, c) in shapes.iter().flat_map(|s| s.parts.iter().flatten().flatten()).filter(|c| c.is_finite()).enumerate() {
+            if i % 4096 == 0 {
+                rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            }
+            match to.point(*c) {
+                Some(c) => lonlat.expand(c),
+                None => unsized_by += 1,
+            }
+        }
+        let mut b = warp::bounds_in([lonlat.min_x, lonlat.min_y, lonlat.max_x, lonlat.max_y], crs).map_err(|e| format!("{ln}: {e}"))?;
+        // Taking in the vertices as the burn places them: between two datums the direct operation
+        // lands apart from the route through WGS 84 (half a metre for DHDN and ETRS89).
+        if held != Crs::LonLat
+            && let Some(q) = warp::placed_bounds(held, crs, &shapes).map_err(|e| format!("{ln}: {e}"))?
+        {
+            b = [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[2]), b[3].max(q[3])];
+        }
+        Ok((b, None))
+    })?;
+    if unsized_by > 0 && p.get("extent").is_none_or(Value::is_null) {
+        s.notify(
+            format!(
+                "{ln}: {unsized_by} {} that can't be placed in longitude/latitude {} left out of the grid's extent: check {} coordinates and the layer's coordinate system",
+                if unsized_by == 1 { "vertex" } else { "vertices" },
+                if unsized_by == 1 { "was" } else { "were" },
+                if unsized_by == 1 { "its" } else { "their" }
+            ),
+            false,
+        );
+    }
     // The smallest pixel type the GeoTIFF writer keeps that holds every value and the no-data.
     let whole = |max: f64| shapes.iter().map(|s| f64::from(s.value)).chain([nodata]).all(|v| v.fract() == 0.0 && (0.0..=max).contains(&v));
     let data_type = if whole(255.0) {
@@ -588,7 +624,7 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     } else {
         "Float32"
     };
-    let burned = warp::rasterize(&grid, &shapes, nodata as f32)?;
+    let burned = warp::rasterize_in(&grid, held, &shapes, nodata as f32).map_err(|e| format!("{ln}: {e}"))?;
     if burned.cells == 0 {
         return Err(format!("no cell centre of the grid falls inside {ln}'s polygons: give a smaller cellSize, or a grid over them"));
     }
@@ -1033,10 +1069,10 @@ fn spectral_read(s: &mut Session, p: &Value, r: &Arc<Raster>, zone: Option<&str>
         return answer(json!({"bands": names, "profiles": profiles}));
     }
     if let Some(z) = zone {
-        let rings = zone_rings(s, z)?;
+        let (crs, rings) = zone_rings(s, z)?;
         // Read on a thread of its own as the app sent the command, when still of this raster and
         // this polygon; here otherwise.
-        let (means, n) = zone_means(s, r, rings)?.ok_or("no pixels fall in the zone")?;
+        let (means, n) = zone_means(s, r, crs, rings).map_err(|e| format!("{z}: {e}"))?.ok_or("no pixels fall in the zone")?;
         return answer(json!({"bands": names, "values": means, "pixels": n}));
     }
     let c = Coord::new(f(p, "lon").ok_or("give lon and lat, points or a zone")?, f(p, "lat").ok_or("lat is required")?);
@@ -1045,34 +1081,32 @@ fn spectral_read(s: &mut Session, p: &Value, r: &Arc<Raster>, zone: Option<&str>
     answer(json!({"bands": names, "values": vals, "pixel": [col, row]}))
 }
 
-/// The polygon a spectral zone names: the polygon layer `z`'s selected feature, or its first.
-fn zone_rings(s: &Session, z: &str) -> Result<Vec<Vec<Coord>>, String> {
+/// The polygon a spectral zone names, every part of it (each its rings): the polygon layer `z`'s
+/// selected feature, or its first, in the system the layer holds its coordinates in.
+fn zone_rings(s: &Session, z: &str) -> Result<(Crs, Vec<Vec<Vec<Coord>>>), String> {
     let l =
         s.map().layer_by_name(z).filter(|l| l.geometry_type() == GeometryType::Polygon).ok_or_else(|| format!("no polygon layer '{z}'"))?;
     let row = l.selection.first().copied().unwrap_or(0);
     let Some(g) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) else {
         return Err("the zone has no polygon".into());
     };
-    // In longitude/latitude, whatever system the layer holds its coordinates in.
-    let Geometry::Polygon(polys) = &*l
-        .dataset
-        .lonlat_conversion()
-        .and_then(|to| rustgis_data::Dataset::geometry_to_lonlat_by(&to, g))
-        .map_err(|e| format!("{z}: {e}"))?
-    else {
+    let Geometry::Polygon(polys) = g else {
         return Err("the zone has no polygon".into());
     };
-    polys.first().cloned().ok_or_else(|| "the zone has no polygon".into())
+    if polys.is_empty() {
+        return Err("the zone has no polygon".into());
+    }
+    Ok((l.dataset.coord_crs(), polys.clone()))
 }
 
-/// A zone's means, every band's: those a script's copy of the session read, when of this raster
-/// and this polygon; read here otherwise (and recorded, on that copy, for the script's run here to
-/// take). A raster a tool made earlier in the script is decoded apart on each side, so its zones
-/// are read again here.
+/// A zone's means, every band's, over all its parts (a pixel in two parts counted once): those a
+/// script's copy of the session read, when of this raster and this polygon; read here otherwise
+/// (and recorded, on that copy, for the script's run here to take). A raster a tool made earlier in
+/// the script is decoded apart on each side, so its zones are read again here.
 #[cfg_attr(target_arch = "wasm32", expect(unused_variables, reason = "zones are read ahead on the desktop only"))]
-fn zone_means(s: &mut Session, r: &Arc<Raster>, rings: Vec<Vec<Coord>>) -> Result<Option<(Vec<f64>, usize)>, String> {
+fn zone_means(s: &mut Session, r: &Arc<Raster>, crs: Crs, rings: Vec<Vec<Vec<Coord>>>) -> Result<Option<(Vec<f64>, usize)>, String> {
     #[cfg(not(target_arch = "wasm32"))]
-    let same = |z: &ZoneMeans| Arc::ptr_eq(&z.raster, r) && z.rings == rings;
+    let same = |z: &ZoneMeans| Arc::ptr_eq(&z.raster, r) && z.crs == crs && z.rings == rings;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(ZonesAhead::Taking(zones)) = &mut s.zones_ahead {
         match zones.pop_front() {
@@ -1087,10 +1121,11 @@ fn zone_means(s: &mut Session, r: &Arc<Raster>, rings: Vec<Vec<Coord>>) -> Resul
         }
     }
     let all: Vec<usize> = (0..r.band_count()).collect();
-    let means = rasterops::zonal_means(r, &all, &rings).map_err(String::from);
+    // The cells are tested in the zone's own system: none of it converted when it is the raster's.
+    let means = rasterops::zonal_means_in(r, crs, &all, &rings);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(ZonesAhead::Recording(zones)) = &mut s.zones_ahead {
-        zones.push(ZoneMeans { raster: r.clone(), rings, means: means.clone() });
+        zones.push(ZoneMeans { raster: r.clone(), crs, rings, means: means.clone() });
     }
     means
 }
@@ -1108,7 +1143,8 @@ pub(crate) enum ZonesAhead {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ZoneMeans {
     raster: Arc<Raster>,
-    rings: Vec<Vec<Coord>>,
+    crs: Crs,
+    rings: Vec<Vec<Vec<Coord>>>,
     means: Result<Option<(Vec<f64>, usize)>, String>,
 }
 
@@ -1254,12 +1290,13 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             }
             let mut polygons: Vec<Vec<Vec<Coord>>> = Vec::new();
             let mut failed_features = Vec::new();
-            // In longitude/latitude, whatever system the layer holds its coordinates in.
-            let own = held_transformer(&l.dataset)?;
+            // In the system the layer holds its coordinates in, converted onto the raster's grid
+            // (none of it when it is the raster's own).
+            let held = l.dataset.coord_crs();
             for &row in &rows {
                 let Some(f) = l.dataset.features.get(row) else { continue };
                 match &f.geometry {
-                    Some(Geometry::Polygon(polys)) => match rasterops::transform_feature_polygons_to_lonlat(polys, own.as_ref()) {
+                    Some(Geometry::Polygon(polys)) => match rasterops::transform_feature_polygons_to_lonlat(polys, None) {
                         Ok(transformed) => {
                             polygons.extend(transformed);
                         }
@@ -1285,9 +1322,11 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             let (pl, skipped) = (pl.to_string(), failed_features.len());
             Ok(Box::new(move || {
                 let mut failed_parts = Vec::new();
-                let (cols, rows, mask) = rasterops::polygon_mask_with_failures(&r, &polygons, &mut failed_parts)?.ok_or_else(|| {
-                    format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
-                })?;
+                let (cols, rows, mask) = rasterops::polygon_mask_in(&r, held, &polygons, &mut failed_parts)
+                    .map_err(|e| format!("{pl}: {e}"))?
+                    .ok_or_else(|| {
+                        format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
+                    })?;
                 let clipped = clip_window(&r, cols, rows, Some(&mask), out)?;
                 let mut messages = Vec::new();
                 if skipped > 0 {

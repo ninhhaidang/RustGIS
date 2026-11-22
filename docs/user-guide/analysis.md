@@ -2056,9 +2056,12 @@ The Imagery tab's groups open their tools in the Workflows pane. The tab belongs
   is a new layer (`name`, by default the layer's name with "raster"), and with `path` a
   cloud-optimised GeoTIFF too.
   - **The grid** is given as for Project Raster: `"grid"`, another raster's grid taken exactly, or
-    `crs` (by default the layer's), `cellSize` (required), `origin` (`[0, 0]` by default, so the
-    result lines up with any raster projected with the same `crs` and `cellSize`) and `extent` (by
-    default the polygons' bounds).
+    `crs` (by default the projected system the layer holds its coordinates in, else the one it was
+    read in), `cellSize` (required), `origin` (`[0, 0]` by default, so the result lines up with any
+    raster projected with the same `crs` and `cellSize`) and `extent` (by default the polygons'
+    bounds). The polygons are burned from their own coordinates: as they are on a grid in their
+    layer's system, else converted straight into the grid's, by the transformation between the
+    two datums where they differ. Raster clip and a spectral zone take a polygon the same way.
   - **What a cell takes:** a cell takes a polygon's value when its centre falls inside it, holes
     cut out. A numeric `field` gives its values; a text `field` gives codes 1 to n, in sorted order
     of its values. A table named after the result with "classes" (`code`, `value`), numbered if
