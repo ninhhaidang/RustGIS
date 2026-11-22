@@ -301,7 +301,8 @@ pub fn read_wkt_over_code(text: &str, code: u32) -> Option<Result<(Crs, Option<S
         }
     };
     let files_shift = towgs84(geogcs(&root).and_then(|g| g.child("DATUM")));
-    if files_shift.is_none() || Crs::from_epsg(code).is_some_and(|by_code| places_as(text, by_code)) {
+    // A shift that can't be read is said, so the text is read (by the code) to say it.
+    if !unusable_towgs84(&root) && (files_shift.is_none() || Crs::from_epsg(code).is_some_and(|by_code| places_as(text, by_code))) {
         return None;
     }
     Some(read_tree(&root, Some(code), text))
@@ -370,7 +371,21 @@ fn read_tree(root: &Node, code: Option<u32>, text: &str) -> Result<(Crs, Option<
         (Some(note), Some(dropped)) => Some(format!("{note}; {dropped}")),
         (note, dropped) => note.or(dropped),
     };
+    let note = match unusable_towgs84(root) {
+        true => {
+            let said = "the file's TOWGS84 isn't 3 or 7 numbers, so it isn't applied and positions may be off by the shift it meant";
+            Some(note.map_or(said.to_owned(), |n| format!("{n}; {said}")))
+        }
+        false => note,
+    };
     Ok((crs, note))
+}
+
+/// Whether the datum of WKT1 system `root` has a `TOWGS84` that [`towgs84`] can't use (not 3 or 7
+/// finite numbers), which is then not applied.
+fn unusable_towgs84(root: &Node) -> bool {
+    let datum = geogcs(root).and_then(|g| g.child("DATUM"));
+    datum.and_then(|d| d.child("TOWGS84")).is_some() && towgs84(datum).is_none()
 }
 
 /// A WKT text as a WKT1 tree, with a grid GDAL gives in its `PROJ4` extension
@@ -2827,6 +2842,28 @@ pub(crate) mod tests {
     const GEOG_4326: &str = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
     const ESRI_3857: &str = r#"PROJCS["WGS_1984_Web_Mercator_Auxiliary_Sphere",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Auxiliary_Sphere"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",0.0],PARAMETER["Auxiliary_Sphere_Type",0.0],UNIT["Meter",1.0]]"#;
     const ESRI_32631: &str = r#"PROJCS["WGS_1984_UTM_Zone_31N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",3.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+
+    /// A `TOWGS84` that isn't 3 or 7 numbers isn't applied, which is said, also where an EPSG
+    /// code comes with the text; a usable one says nothing of it.
+    #[test]
+    fn an_unusable_towgs84_is_said() {
+        let with = |shift: &str| GEOG_4326.replace(r#"DATUM["D_WGS_1984","#, &format!(r#"DATUM["D_WGS_1984",TOWGS84[{shift}],"#));
+        let said = |note: Option<String>| note.is_some_and(|n| n.contains("TOWGS84 isn't 3 or 7 numbers"));
+        for bad in ["1,2,3,4,5", "1,2", "1,2,3,4,5,6,7,8"] {
+            let (_, note) = read_wkt(&with(bad)).unwrap();
+            assert!(said(note.clone()), "{bad}: {note:?}");
+            let over = read_wkt_over_code(&with(bad), 4326).map(|r| r.unwrap());
+            assert!(over.as_ref().is_some_and(|(crs, note)| *crs == Crs::LonLat && said(note.clone())), "{bad}: {over:?}");
+        }
+        for good in ["1,2,3", "1,2,3,0,0,0,0", "0,0,0"] {
+            let (_, note) = read_wkt(&with(good)).unwrap();
+            assert!(!said(note.clone()), "{good}: {note:?}");
+            if let Some((_, note)) = read_wkt_over_code(&with(good), 4326).map(|r| r.unwrap()) {
+                assert!(!said(note.clone()), "{good}: {note:?}");
+            }
+        }
+        assert!(read_wkt(GEOG_4326).unwrap().1.is_none());
+    }
 
     #[test]
     fn esri_names() {

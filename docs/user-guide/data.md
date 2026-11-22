@@ -15,7 +15,7 @@ Formats](data-formats.md).
 | FlatGeobuf (`.fgb`) | Yes | Yes (`share.exportLayer`) |
 | KML/KMZ (with their styles), GPX | Yes | Yes |
 | Spreadsheets (`.xlsx`, `.xls`, `.ods`), GeoRSS feeds, LandXML, encoded polylines | Yes | No |
-| GML, MapInfo MIF/MID, OpenStreetMap PBF, TopoJSON, CityJSON (footprints with heights), AutoCAD DXF (ASCII) | Yes | No |
+| GML, MapInfo MIF/MID, OpenStreetMap PBF, TopoJSON, CityJSON and CityGML (footprints with heights), AutoCAD DXF (ASCII) | Yes | No |
 | LiDAR point clouds: LAS, LAZ, COPC (an evenly spread sample) | Yes | No |
 | Geotagged photos (JPEG with EXIF GPS): points with their thumbnails | Yes | No |
 | Esri File Geodatabase (`.gdb` folder; 3D multipatches as footprints) | Yes (desktop) | No |

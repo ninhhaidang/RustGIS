@@ -636,9 +636,16 @@ fn where_clauses_compare_dates() {
         "issued >= '2026/03/05'",
         "issued >= '2026-1-1'",
         "issued = '05.03.2026'",
-        "ts >= '2026/03/05 14:30'",
     ] {
         assert!(parse(e, &d).err().unwrap_or_default().contains("write the date as YYYY-MM-DD"), "{e}");
+    }
+    // With a time part, the advice is a date-time's.
+    for e in ["ts >= '2026/03/05 14:30'", "ts >= '2026-03-05 14:30:00 +02:00'", "ts < '2026-03-05T14:30:00.1234567'"] {
+        let error = parse(e, &d).err().unwrap_or_default();
+        assert!(
+            error.contains("write the date-time as ISO 8601 ('2026-03-05T14:30:00+02:00'") && !error.contains("YYYY-MM-DD"),
+            "{e}: {error}"
+        );
     }
     for e in [
         "issued > '2026'",

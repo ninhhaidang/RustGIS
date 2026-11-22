@@ -10,8 +10,11 @@
 //!    written as the file holds them, not as an older read held them.
 //! 2. The file as it was read, written again the same way, holds what the file holds: the same
 //!    shapes (no Z or M values dropped, none left out), the same columns and the same values,
-//!    compared as the bytes the `.dbf` holds, not as read (text a read trims, a code page's
-//!    characters). Whatever a read and write of the file loses shows here, before the edits.
+//!    compared as the `.dbf` holds them, not as read: the column descriptors byte for byte, and
+//!    text cells too but for the padding after them (text a read trims, a code page's
+//!    characters); numbers by value (`003.50` is `3.5`, `-0` is `0`), logicals by meaning (`Y`,
+//!    `1` and `T` are one true, `N`, `0` and `F` one false) and a zero date as a blank one.
+//!    Whatever a read and write of the file loses shows here, before the edits.
 //! 3. The layer, written, reads back as the layer: every value and shape the edits made fits.
 //!
 //! A shape that wasn't edited is written with the coordinates the file holds, not converted to
@@ -411,7 +414,8 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
         crate::io::unstage(&staged);
         return Err(e);
     }
-    crate::io::place_shapefile(path, &staged)?;
+    let kept = crate::io::place_shapefile(path, &staged)?;
+    notes.extend(crate::io::kept_backups_note(path, &kept));
     Ok(Published { files, read: read_back, rows, features: ds.features.len(), notes })
 }
 

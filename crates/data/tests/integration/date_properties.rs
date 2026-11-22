@@ -4,7 +4,7 @@
 //!
 //! Pull requests run a fixed seed; the nightly a new one with more cases. A failure gives its seed
 //! and the smallest input found. To run a seed again, or deeper:
-//! `PROPERTY_SEED=7 PROPERTY_CASES=20000 cargo test -p rustgis-data --test date_properties`.
+//! `PROPERTY_SEED=7 PROPERTY_CASES=20000 cargo test -p rustgis-data --test integration date_properties::`.
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rustgis_data::query;

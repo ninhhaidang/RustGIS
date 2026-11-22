@@ -1135,6 +1135,11 @@ impl Parser<'_> {
         let date =
             compact(b).and_then(|t| Some((self.date_field(a)?, t))).or_else(|| compact(a).and_then(|t| Some((self.date_field(b)?, t))));
         match date {
+            // Text with a time part is a date-time, whose form is another.
+            Some((f, t)) if t.contains(':') => Err(format!(
+                "'{}' holds dates: write the date-time as ISO 8601 ('2026-03-05T14:30:00+02:00', seconds to at most 6 decimals), not '{t}'",
+                f.name
+            )),
             Some((f, t)) => Err(format!("'{}' holds dates: write the date as YYYY-MM-DD ('2026-01-01'), not '{t}'", f.name)),
             None => Ok(()),
         }

@@ -173,8 +173,10 @@ pub(in crate::cmd) fn table_work(s: &Session, p: &Value) -> Result<Work, String>
         notes.extend(super::gpkg_dates_note(&ds, &ext, &path));
         let name_field = rustgis_data::io::name_field(&ds);
         notes.extend(rustgis_data::io::export_losses_notes(&ds, &ext, name_field, &path).map_err(|e| e.to_string())?);
-        let (left_out, table) =
+        let (left_out, table, placed) =
             rustgis_data::io::write_path_to(&ds, Path::new(&path), rustgis_data::raster::Crs::LonLat, &gpkg).map_err(|e| e.to_string())?;
+        // Old parts of a Shapefile written over that couldn't be removed.
+        notes.extend(placed);
         if let Some(note) = rustgis_data::io::left_out_note(&path, &ext, left_out) {
             notes.insert(0, note);
         }

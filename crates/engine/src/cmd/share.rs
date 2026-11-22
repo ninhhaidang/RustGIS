@@ -749,9 +749,11 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, format_notes, dates)
         }
         None => {
-            let format_notes =
+            let mut format_notes =
                 rustgis_data::io::export_losses_notes(ds, &ext, rustgis_data::io::name_field(ds), path).map_err(|e| e.to_string())?;
-            let (left_out, table) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
+            let (left_out, table, placed) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
+            // Old parts of a Shapefile written over that couldn't be removed.
+            format_notes.extend(placed);
             let unfit = if parquet { rustgis_data::source::parquet::values_note(ds, path) } else { None };
             let null_numbers = rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, &ext);
             let mut dates = read_notes(path, &ds.name, &unreadable);

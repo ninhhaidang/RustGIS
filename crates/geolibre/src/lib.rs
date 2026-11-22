@@ -858,8 +858,7 @@ fn numbered(base: &str, suffix: &str, taken: impl Fn(&str) -> bool) -> String {
 
 /// Coordinates that can't be longitude/latitude (a tool kept the working coordinate system).
 fn looks_projected(ds: &Dataset) -> bool {
-    let e = ds.extent();
-    !e.is_empty() && (e.min_x < -180.5 || e.max_x > 180.5 || e.min_y < -90.5 || e.max_y > 90.5)
+    ds.extent().beyond_lonlat()
 }
 
 /// Reads one output file back as a layer, table or message. `dir` is the native working folder,

@@ -38,7 +38,16 @@ pub fn geojson(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published> 
         return Err(refused(path, "it has a legacy crs member, which a rewrite wouldn't keep"));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let (mut as_read, _) = crate::io::read_geojson(text, &name)?;
+    let (mut as_read, report) = crate::io::read_geojson(text, &name)?;
+    // What the read skipped or said can't be rewritten: refused with what it said, rather than
+    // taken for rows the layer added, removed or reordered.
+    if report.skipped > 0 || !report.messages.is_empty() {
+        let mut said = report.messages.clone();
+        if said.is_empty() {
+            said.push(format!("{} features couldn't be read", report.skipped));
+        }
+        return Err(refused(path, format!("reading it isn't lossless ({}), so a rewrite wouldn't keep the file", said.join("; "))));
+    }
     as_read.crs = ds.crs;
     if crate::sync::rows_digest(&as_read)? != synced.rows {
         return Err(refused(path, "it reads otherwise now than when the layer was read; add the file again to compare it"));
@@ -267,26 +276,53 @@ fn keep_numbers(out: &mut Json, original: &Json) -> std::result::Result<(), Stri
 }
 
 /// Names the first member or array position a rebuild would change, without printing its
-/// value. Parsed JSON is depth-limited by serde; each key in this diagnostic is bounded.
+/// value: a member whose JSON type changes says from what to what, an array whose length changes
+/// says so. Parsed JSON is depth-limited by serde; each key in this diagnostic is bounded.
 fn difference(a: &Json, b: &Json) -> Option<String> {
+    let (path, what) = differs(a, b)?;
+    let path = if path.is_empty() { "the document".to_string() } else { path.join(".") };
+    Some(match what {
+        Some(what) => format!("{path}, whose {what}"),
+        None => path,
+    })
+}
+
+/// [`difference`]: the path to the first change, and what changes there beside the value.
+fn differs(a: &Json, b: &Json) -> Option<(Vec<String>, Option<String>)> {
     if a == b {
         return None;
     }
+    let kind = |v: &Json| match v {
+        Json::Null => "null",
+        Json::Bool(_) => "true or false",
+        Json::Number(_) => "number",
+        Json::String(_) => "text",
+        Json::Array(_) => "array",
+        Json::Object(_) => "object",
+    };
+    let within = |key: String, rest: Option<(Vec<String>, Option<String>)>| {
+        rest.map(|(mut path, what)| {
+            path.insert(0, key);
+            (path, what)
+        })
+    };
     match (a, b) {
         (Json::Object(a), Json::Object(b)) => {
             for (key, value) in a {
                 let shown: String = key.chars().take(80).collect();
-                let Some(other) = b.get(key) else { return Some(shown) };
-                if let Some(rest) = difference(value, other) {
-                    return Some(format!("{shown}.{rest}"));
+                let Some(other) = b.get(key) else { return Some((vec![shown], None)) };
+                if let Some(found) = within(shown, differs(value, other)) {
+                    return Some(found);
                 }
             }
-            b.keys().find(|k| !a.contains_key(*k)).map(|k| k.chars().take(80).collect())
+            b.keys().find(|k| !a.contains_key(*k)).map(|k| (vec![k.chars().take(80).collect()], None))
         }
         (Json::Array(a), Json::Array(b)) if a.len() == b.len() => {
-            a.iter().zip(b).enumerate().find_map(|(i, (a, b))| difference(a, b).map(|p| format!("[{i}].{p}")))
+            a.iter().zip(b).enumerate().find_map(|(i, (a, b))| within(format!("[{i}]"), differs(a, b)))
         }
-        _ => Some("value or size".into()),
+        (Json::Array(_), Json::Array(_)) => Some((Vec::new(), Some("length changes".into()))),
+        _ if kind(a) != kind(b) => Some((Vec::new(), Some(format!("type changes ({} to {})", kind(a), kind(b))))),
+        _ => Some((Vec::new(), None)),
     }
 }
 
@@ -319,8 +355,10 @@ fn canonical_numbers(text: &str) -> std::result::Result<(), String> {
             }
             let raw = text.get(start..i).ok_or("a number's text isn't valid")?;
             let number: serde_json::Number = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-            if number.to_string() != raw {
-                return Err(format!("a number at byte {} would be spelled differently by a rewrite", start + 1));
+            let spelled = number.to_string();
+            if spelled != raw {
+                let clip = |t: &str| if t.len() > 40 { format!("{}…", t.chars().take(40).collect::<String>()) } else { t.to_string() };
+                return Err(format!("a number at byte {} ({}) would be spelled {} by a rewrite", start + 1, clip(raw), clip(&spelled)));
             }
             continue;
         }
@@ -498,6 +536,30 @@ mod tests {
             assert!(error.contains("nothing was written"), "{error}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         }
+    }
+
+    /// The refusals say why: a member whose type a rewrite changes says from what to what, number
+    /// text names the writer's spelling, and a file the reader can't read whole says what it said
+    /// rather than blaming rows the layer changed.
+    #[test]
+    fn refusals_give_the_reason() {
+        let mixed = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"age":4},"geometry":{"type":"Point","coordinates":[1,2]}},{"type":"Feature","properties":{"age":"old"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let (_dir, path, ds, sync) = loaded(mixed);
+        let error = geojson(&ds, &path, &sync).err().unwrap().to_string();
+        assert!(error.contains("would change features.[0].properties.age, whose type changes (number to text);"), "{error}");
+        assert!(!error.contains("value or size"), "{error}");
+
+        let small = SOURCE.replace("[1,2]", "[1,0.000004]");
+        let (_dir, path, ds, sync) = loaded(&small);
+        let error = geojson(&ds, &path, &sync).err().unwrap().to_string();
+        assert!(error.contains("(0.000004) would be spelled 4e-6 by a rewrite"), "{error}");
+
+        let unreadable = SOURCE
+            .replace("]}", r#",{"type":"Feature","properties":{"owner":"Gone"},"geometry":{"type":"Point","coordinates":"nowhere"}}]}"#);
+        let (_dir, path, ds, sync) = loaded(&unreadable);
+        let error = geojson(&ds, &path, &sync).err().unwrap().to_string();
+        assert!(error.contains("reading it isn't lossless") && !error.contains("reordered"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), unreadable);
     }
 
     #[test]

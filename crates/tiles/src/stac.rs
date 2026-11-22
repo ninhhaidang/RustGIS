@@ -1136,8 +1136,9 @@ pub fn sign_blocking(href: &str) -> Result<String, String> {
 /// `stac.addIndex`), with its date and cloud cover as its properties: small, for the command line
 /// and the AI Assistant, except that it keeps each band's description (name, scale, offset,
 /// no-data) that the last two need to find and scale the bands: without the catalog's scale and
-/// offset a Sentinel-2 band's values would come out wrong. That is about 1.5 KB more for a Sentinel-2
-/// scene (about 15 KB for `stac.search`'s default 10 items, 290 KB for its most, 200).
+/// offset a Sentinel-2 band's values would come out wrong. That is about 1.5 KB more for each
+/// Sentinel-2 scene: about 15 KB more for `stac.search`'s default of 10 items, and 290 KB for the
+/// most it returns, 200.
 pub fn item_json(i: &Item) -> Value {
     item_json_with(i, false)
 }

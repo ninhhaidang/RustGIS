@@ -726,6 +726,15 @@ mod tests {
     use super::*;
     use crate::GeometryType;
 
+    /// A GDAL program is told the drivers it may open its input with, each as `-if`: without them a
+    /// VRT renamed `.tab` would open whatever files it names. Needs no GDAL, so CI runs it.
+    #[test]
+    fn a_gdal_program_gets_its_drivers_as_if() {
+        let c = command(PathBuf::from("ogrinfo"), &["MapInfo File", "CSV"]);
+        let args: Vec<&std::ffi::OsStr> = c.get_args().collect();
+        assert_eq!(args, ["-if", "MapInfo File", "-if", "CSV"]);
+    }
+
     #[test]
     fn where_programs_cant_run_the_message_says_so_instead_of_asking_for_an_install() {
         assert!(missing_text("").contains("install it"));

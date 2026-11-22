@@ -146,6 +146,8 @@ pub(crate) struct Counts {
     pub(crate) dropped_rings: usize,
     pub(crate) instances: usize,
     pub(crate) tin_reliefs: usize,
+    /// Implicit geometries inside a prototype (CityGML), which place nothing.
+    pub(crate) nested_instances: usize,
     pub(crate) unconverted: usize,
     pub(crate) bad_heights: usize,
     /// Objects whose lowest and highest Z, or lowest Z and ground, are too far apart for their
@@ -1147,10 +1149,11 @@ pub(crate) fn messages(c: &Counts) -> Vec<String> {
     say(
         c.instances,
         format!(
-            "{} geometry instances are drawn as a point at their reference point, with no height: their shape isn't placed (it is in another file, it or its matrix can't be read, or placing every instance would cost many times the file)",
+            "{} geometry instances are drawn as a point at their reference point, with no height: their shape isn't placed (its template or prototype is missing, in another file, can't be read or draws nothing; its matrix is missing or can't be read; its placed point isn't a finite number; or placing every instance would cost many times the file)",
             c.instances
         ),
     );
+    say(c.nested_instances, format!("{} implicit geometries inside a prototype aren't placed", c.nested_instances));
     say(c.tin_reliefs, format!("{} TINRelief objects aren't drawn and are left out", c.tin_reliefs));
     say(
         c.unconverted,

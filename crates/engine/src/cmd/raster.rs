@@ -795,7 +795,7 @@ pub(crate) fn add_named_bytes_read(
     if rustgis_data::sheets::is_sheet_name(&name) {
         return super::layer::add_sheet(s, p, &name, &bytes, zoom);
     }
-    // Files of several layers: zipped Shapefiles, KML/KMZ, GPX, GeoRSS, LandXML, CityJSON.
+    // Files of several layers: zipped Shapefiles, KML/KMZ, GPX, GeoRSS, LandXML, CityJSON, CityGML.
     if rustgis_data::io::is_multi_layer_name(&name) {
         return super::layer::add_layers(s, p, &name, &bytes, zoom, false);
     }

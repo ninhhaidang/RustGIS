@@ -891,6 +891,35 @@ mod tests {
         }
     }
 
+    /// Names, field names and values are held as they are or refused with a count, like a
+    /// description: never cleaned without a word, and never written as XML that can't be read.
+    #[test]
+    fn unrepresentable_characters_elsewhere_are_refused_and_legal_ones_kept() {
+        let layer = |name: &str, value: &str| {
+            let mut ds =
+                Dataset::new("places", GeometryType::Point, vec![Field::new("name", FieldType::Text), Field::new("note", FieldType::Text)]);
+            ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Text(name.into()), Value::Text(value.into())]);
+            ds
+        };
+        let error = crate::interop::to_kml(&layer("ok", "a\u{1}b\u{ffff}c"), Some(0)).unwrap_err().to_string();
+        assert!(error.contains("field 'note': 2 character(s)") && error.contains("U+0001"), "{error}");
+        let error = crate::interop::to_kml(&layer("a\u{fffe}", "ok"), Some(0)).unwrap_err().to_string();
+        assert!(error.contains("'name': 1 character(s)") && error.contains("U+FFFE"), "{error}");
+        let error = crate::interop::to_gpx(&layer("a\u{1}", "ok"), Some(0)).unwrap_err().to_string();
+        assert!(error.starts_with("GPX: places") && error.contains("name: 1 character(s)"), "{error}");
+        let mut bad_field = layer("ok", "ok");
+        bad_field.fields[1].name = "n\u{2}".into();
+        assert!(crate::interop::to_kml(&bad_field, Some(0)).unwrap_err().to_string().contains("field name"));
+        // Characters XML 1.0 holds (DEL, C1 controls) are kept, and the file reads back.
+        let legal = "a\u{7f}b\u{85}c";
+        let xml = crate::interop::to_kml(&layer(legal, legal), Some(0)).unwrap();
+        roxmltree::Document::parse(&xml).unwrap();
+        let back = read("places.kml", xml.as_bytes()).unwrap();
+        let ds = &back[0].dataset;
+        assert_eq!(ds.value(0, ds.field_index("note").unwrap()), &Value::Text(legal.into()));
+        roxmltree::Document::parse(&crate::interop::to_gpx(&layer(legal, legal), Some(0)).unwrap()).unwrap();
+    }
+
     #[test]
     fn unrepresentable_description_characters_are_refused_with_their_count_and_location() {
         for bad in ['\0', '\u{b}', '\u{1b}', '\u{1f}', '\u{fffe}', '\u{ffff}'] {

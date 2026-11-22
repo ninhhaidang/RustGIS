@@ -80,15 +80,16 @@ mod desktop {
     /// A kilometre of a degree of latitude, in metres.
     const DEGREE_M: f64 = 111_320.0;
 
-    /// The item given and the bands its GeoTIFF files offer.
-    fn item_of(p: &Value) -> Result<(stac::Item, Vec<sb::Band>), String> {
+    /// The item given and the bands its GeoTIFF files offer; `to` says what they are read for
+    /// (`a band combination`, `an index`), for the refusal of an item with none.
+    fn item_of(p: &Value, to: &str) -> Result<(stac::Item, Vec<sb::Band>), String> {
         let item = match p.get("item").filter(|v| v.is_object()) {
             Some(v) => stac::item_from_json(v, None).ok_or("item isn't a STAC item")?,
             None => return Err("give item: a STAC item, as stac.search answers".into()),
         };
         let all = sb::bands(&item);
         if all.is_empty() {
-            return Err(format!("{}: it has no GeoTIFF asset to make a band combination from", item.id));
+            return Err(format!("{}: it has no GeoTIFF asset to make {to} from", item.id));
         }
         Ok((item, all))
     }
@@ -133,7 +134,7 @@ mod desktop {
     }
 
     pub(super) fn work(s: &Session, p: &Value) -> Result<Work, String> {
-        let (item, all) = item_of(p)?;
+        let (item, all) = item_of(p, "a band combination")?;
         // A parameter of the other command is refused, not dropped.
         if given(p, "index") {
             return Err("index is for stac.addIndex (stac.addBands takes a combination, or red, green and blue)".into());
@@ -176,7 +177,7 @@ mod desktop {
     /// Indices section's formula. The band math checks Cancel and counts its rows as it runs (see
     /// `band_math`); Cancel is also looked at before each file.
     pub(super) fn index(s: &Session, p: &Value) -> Result<Work, String> {
-        let (item, all) = item_of(p)?;
+        let (item, all) = item_of(p, "an index")?;
         if let Some(k) = ["combination", "red", "green", "blue"].into_iter().find(|k| given(p, k)) {
             return Err(format!("{k} is for stac.addBands (stac.addIndex takes an index)"));
         }
@@ -957,9 +958,11 @@ mod tests {
     #[test]
     fn the_automatic_cell_size_never_says_the_full_image_is_finer_but_the_users_does() {
         use crate::cmd::layer::finer_than_file;
-        // A 10 m file read for a box small enough that the automatic cell is 4.88 m: no level fits.
-        let auto = auto_cell([10.0, 45.0, 10.1, 45.1]) / 1000.0;
+        // A 10 m file read for a box small enough that the automatic cell is about 5 m: no level fits.
+        let auto = auto_cell([10.0, 45.0, 10.1, 45.1]);
+        assert!((4.0..10.0).contains(&auto), "finer than the file: {auto}");
         assert_eq!(finer_than_file(Some(auto), false, true), None, "the automatic size says nothing");
+        assert_eq!(finer_than_file(Some(auto), false, false), Some(auto), "the same size, the user's, is said");
         assert_eq!(finer_than_file(Some(5.0), false, false), Some(5.0), "a size the user gave, finer than the file, is said");
         assert_eq!(finer_than_file(Some(50.0), true, false), None, "a level that fits says nothing");
     }

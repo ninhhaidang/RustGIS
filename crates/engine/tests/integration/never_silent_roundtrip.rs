@@ -6,7 +6,7 @@
 //!
 //! Pull requests run a fixed seed; the nightly a new one with more cases. A failure gives its seed
 //! and the smallest layer found that changes without a notice. To run a seed again, or deeper:
-//! `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-engine --test never_silent_roundtrip`.
+//! `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-engine --test integration never_silent_roundtrip::`.
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rustgis_engine::{
@@ -23,8 +23,8 @@ const GEOMETRY_ONLY: [&str; 4] = ["fgb", "shp", "kml", "gpx"];
 
 /// Changes a format makes without a notice, as (format, the start of a change from [`changes`],
 /// why). Each is what the format can hold or how its reader works, not a loss of a value's
-/// number or text. Text a reader trims, blanks read as null and (KML, GPX) a field of nulls left
-/// out are said by the export (#1907).
+/// number or text. Text a reader trims, blanks read as null and (GPX) a field of nulls left out
+/// are said by the export (#1907).
 const LIMITS: &[(&str, &str, &str)] = &[
     // CSV holds text: reading types each column from its values (`text_type`).
     ("csv", "field type changed", "a column's type comes from its values"),
@@ -43,9 +43,8 @@ const LIMITS: &[(&str, &str, &str)] = &[
     ("geojson", "date became text", "a date is written as ISO 8601 text and stays text on read (#853)"),
     ("geojson", "datetime became text", "a date is written as ISO 8601 text and stays text on read (#853)"),
     ("geojson", "not read back: nothing", "a layer without geometry or values reads as nothing"),
-    // Reading makes a whole-number column an integer one.
+    // A column of nulls has no values to give it a type.
     ("shp", "field of nulls type changed", "a number column's type comes from its values"),
-    ("shp", "field type changed Double → Integer", "a column of whole numbers reads as integers"),
 ];
 
 /// KML and GPX hold text, read with types from the values as for CSV (`type_text_columns`); the

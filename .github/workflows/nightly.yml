@@ -60,7 +60,7 @@ jobs:
       release-build: true
 
   # Everyday jobs on real data: the Census Bureau's tracts for Shelby County, Tennessee, checked
-  # against the areas it publishes (crates/engine/tests/workflows.rs). The files are public domain
+  # against the areas it publishes (crates/engine/tests/integration/workflows.rs). The files are public domain
   # and pinned by checksum; a changed file fails the run, a download that fails skips the tests
   # (`tested` tells the report, which then neither opens nor closes an issue).
   workflows:

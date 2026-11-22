@@ -8,7 +8,7 @@
 //!
 //! Pull requests run a fixed seed; the nightly a new one with more cases. A failure gives its seed
 //! and the place found that doesn't come back. To run a seed again, or deeper:
-//! `PROPERTY_SEED=7 PROPERTY_CASES=200000 cargo test -p rustgis-data --test reprojection_round_trip`.
+//! `PROPERTY_SEED=7 PROPERTY_CASES=200000 cargo test -p rustgis-data --test integration reprojection_round_trip::`.
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rustgis_data::raster::{Crs, Transformer};

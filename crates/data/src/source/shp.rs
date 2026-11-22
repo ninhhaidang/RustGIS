@@ -181,10 +181,7 @@ impl ShpSource {
             ));
         }
         let extent = native.map_or(Extent::EMPTY, |n| reproject.extent_to_lonlat(&n));
-        if reproject.is_lonlat()
-            && !extent.is_empty()
-            && (extent.min_x < -180.5 || extent.max_x > 180.5 || extent.min_y < -90.5 || extent.max_y > 90.5)
-        {
+        if reproject.is_lonlat() && extent.beyond_lonlat() {
             notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into());
         }
         let (names, not_utf8) = read_names(&dbf, table.columns.len(), &encoding.decoder(), encoding.is_utf8())?;

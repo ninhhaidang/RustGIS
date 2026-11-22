@@ -569,6 +569,13 @@ fn written_dim(e: &BytesStart) -> Option<Box<str>> {
     Some(written_attribute("srsDimension", value).into())
 }
 
+/// Whether the `<!` markup error at `at` is the text ending at `<!` (a cut), not markup that `<!`
+/// starts and nothing knows, earlier in the text.
+fn bang_at_end(text: &str, at: u64) -> bool {
+    // The error is placed at the `<` of the markup.
+    usize::try_from(at).ok().and_then(|at| text.get(at..)).is_some_and(|rest| rest.trim_end() == "<!")
+}
+
 fn position(reader: &Reader<&[u8]>) -> usize {
     usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX)
 }
@@ -740,7 +747,10 @@ impl Index {
                 // A syntax error is the text ending inside markup (a tag, a comment): a file cut
                 // short, as one cut between tags is. But for `<!` followed by what no markup
                 // starts with, which is a file broken there.
-                Err(quick_xml::Error::Syntax(e)) if !matches!(e, SyntaxError::InvalidBangMarkup) || text.ends_with("<!") => {
+                // The `<!` must be the one the text ends at, not one earlier in it.
+                Err(quick_xml::Error::Syntax(e))
+                    if !matches!(e, SyntaxError::InvalidBangMarkup) || bang_at_end(text, reader.error_position()) =>
+                {
                     let at = usize::try_from(reader.error_position()).unwrap_or(usize::MAX);
                     in_root_end = depth == 1 && text.get(at..).is_some_and(|rest| rest.starts_with("</"));
                     break;
@@ -900,6 +910,21 @@ impl Index {
                 self.others += 1;
                 self.other.get_or_insert_with(|| cut(srs));
                 Ok(())
+            }
+            // One RustGIS doesn't know may be the same system as the other: said as unknown.
+            (a, b) if a.is_none() || b.is_none() => {
+                let (unknown, other) = if a.is_none() { (first.as_str(), srs) } else { (srs, first.as_str()) };
+                let both = if a.is_none() && b.is_none() { "two coordinate systems" } else { "a coordinate system" };
+                let then = if self.archive {
+                    "which aren't read together in a model in an archive"
+                } else {
+                    "which aren't read together; give the coordinate system (crs) to read it in one"
+                };
+                Err(DataError::Unsupported(format!(
+                    "{file_name}: it names {both} RustGIS doesn't know ({} beside {}), {then}",
+                    cut(unknown),
+                    cut(other)
+                )))
             }
             _ if self.archive => Err(DataError::Unsupported(format!(
                 "{file_name}: it names different coordinate systems ({} and {}), which aren't read together; in an archive a model keeps the systems it names, so a coordinate system given doesn't apply to it",
@@ -2599,7 +2624,7 @@ impl<'a, 'i> Walk<'_, 'a, 'i> {
     fn implicit(&mut self, g: &Node<'a, 'i>) -> Option<()> {
         if self.local {
             // A prototype's geometries are GML's: one that is an implicit geometry places nothing.
-            self.counts.unknown.insert("ImplicitGeometry in a prototype".to_string());
+            self.counts.nested_instances += 1;
             return Some(());
         }
         let at = elements(*g).find(|c| local(c) == "referencePoint")?;

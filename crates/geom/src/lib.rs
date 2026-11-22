@@ -149,6 +149,13 @@ impl Extent {
     pub fn contains(&self, c: Coord) -> bool {
         c.x >= self.min_x && c.x <= self.max_x && c.y >= self.min_y && c.y <= self.max_y
     }
+    /// Whether a box that isn't empty reaches past longitude/latitude: beyond ±180.5° in x or
+    /// ±90.5° in y, the half degree allowing for rounding, as the readers check. A hint, not proof,
+    /// that the coordinates are projected or in no known system: longitudes unwrapped across the
+    /// antimeridian (181°) reach past it too.
+    pub fn beyond_lonlat(&self) -> bool {
+        !self.is_empty() && (self.min_x < -180.5 || self.max_x > 180.5 || self.min_y < -90.5 || self.max_y > 90.5)
+    }
     /// `n + 1` by `n + 1` places evenly over the box, its edges and corners included, column by
     /// column from the west: what a box taken into another system is found from, so a box the
     /// conversion curves is followed. `n` is taken between 1 (the four corners) and 1024; no
@@ -1011,6 +1018,22 @@ pub fn format_dms(c: Coord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box past ±180.5° or ±90.5° isn't longitude/latitude; one within, or an empty one, is.
+    #[test]
+    fn a_box_beyond_lonlat_is_told() {
+        assert!(!Extent::EMPTY.beyond_lonlat());
+        assert!(!Extent::new(-180.5, -90.5, 180.5, 90.5).beyond_lonlat());
+        for e in [
+            Extent::new(-180.6, 0.0, 0.0, 1.0),
+            Extent::new(0.0, 0.0, 180.6, 1.0),
+            Extent::new(0.0, -90.6, 1.0, 1.0),
+            Extent::new(0.0, 0.0, 1.0, 90.6),
+        ] {
+            assert!(e.beyond_lonlat(), "{e:?}");
+        }
+        assert!(Extent::new(500_000.0, 4_000_000.0, 600_000.0, 4_100_000.0).beyond_lonlat());
+    }
 
     /// A box's samples cover it evenly, corners and edges included; an empty box has none.
     #[test]

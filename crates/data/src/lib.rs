@@ -839,8 +839,7 @@ pub fn export_notes<'a>(
             layer_list(&many.iter().map(|ds| ds.name.as_str()).collect::<Vec<_>>())
         )),
     }
-    let outside = |e: &rustgis_geom::Extent| !e.is_empty() && (e.min_x < -180.5 || e.max_x > 180.5 || e.min_y < -90.5 || e.max_y > 90.5);
-    let names: Vec<&str> = layers.iter().filter(|(_, e)| outside(e)).map(|(ds, _)| ds.name.as_str()).collect();
+    let names: Vec<&str> = layers.iter().filter(|(_, e)| e.beyond_lonlat()).map(|(ds, _)| ds.name.as_str()).collect();
     match names.as_slice() {
         [] => {}
         [one] => notes.push(format!(

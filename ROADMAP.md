@@ -71,7 +71,7 @@ A result is right, or RustGIS says what it lost or assumed
 ([AGENTS.md](AGENTS.md#never-silent)).
 - Known silent losses: DuckDB queries (`ST_Force2D`) drop Z without a notice; the OSM reader leaves out rings that don't close, rings and member ways with
   nodes or ways the file doesn't hold, and inner rings outside every outer one; and the text
-  readers' losses listed as `Silent` in `crates/engine/tests/never_silent_reading.rs`, among them
+  readers' losses listed as `Silent` in `crates/engine/tests/integration/never_silent_reading.rs`, among them
   each vertex's Z in DXF and unreadable coordinates, holes and parts in KML, GeoRSS, MapInfo and
   DXF, plus geometry-collection members in XLSX/ODS/XLS/XLSB, error-valued attribute cells in XLSX,
   and attribute fields/values in XLSB short-cell workbooks (the original SheetJS 0.18.5 clean

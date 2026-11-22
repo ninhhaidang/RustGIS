@@ -210,6 +210,13 @@ fn a_compound_system_is_read_by_its_horizontal_part() {
     let other = inner.replace("EPSG:25832", "EPSG:25833");
     let err = read("model.gml", &model("EPSG:25832", &building("b1", &other)), None).unwrap_err().to_string();
     assert!(err.contains("different coordinate systems (EPSG:25832 and EPSG:25833)"), "{err}");
+    // One RustGIS doesn't know beside a known one: said as unknown, not as another system.
+    let unknown = inner.replace("EPSG:25832", "EPSG:999999");
+    let err = read("model.gml", &model("EPSG:25832", &building("b1", &unknown)), None).unwrap_err().to_string();
+    assert!(err.contains("a coordinate system RustGIS doesn't know (EPSG:999999 beside EPSG:25832)"), "{err}");
+    assert!(err.contains("give the coordinate system (crs)") && !err.contains("different coordinate systems"), "{err}");
+    // Given one, it is read in it.
+    assert!(read("model.gml", &model("EPSG:25832", &building("b1", &unknown)), Some(Crs::Epsg(25832))).is_ok());
 }
 
 /// A compound system's vertical part is said when its heights aren't metres upward: another unit, a
@@ -1109,6 +1116,11 @@ fn a_file_broken_in_the_middle_is_refused() {
     // Markup that `<!` starts and nothing knows, in the middle: refused too. Ending at `<!`: cut.
     let bang = lonlat(&[building("b1", &box_surfaces("b1")), "<!x>".to_string(), building("b2", &box_surfaces("b2"))].concat());
     assert!(read("model.gml", &bang, None).is_err());
+    // Broken in the middle and ending at `<!` too: still refused, not read as cut short there.
+    let mut bang_cut = bang.clone();
+    bang_cut.extend_from_slice(b"<!");
+    let err = read("model.gml", &bang_cut, None).unwrap_err().to_string();
+    assert!(!err.contains("cut short"), "{err}");
     let whole = lonlat(&[building("b1", &box_surfaces("b1")), "<!-- n -->".to_string(), building("b2", &box_surfaces("b2"))].concat());
     let cut = whole.windows(4).position(|w| w == b"<!--").unwrap() + 2;
     let out = read("model.gml", &whole[..cut], None).unwrap();
@@ -1933,6 +1945,21 @@ fn a_prototype_that_cant_be_read_is_said_once() {
     let out = read("model.gml", &lonlat(&members), None).unwrap();
     assert!(says(&out, "1 geometries of city objects have coordinates that can't be read"), "{:?}", messages_of(&out));
     assert!(says(&out, "2 geometry instances are drawn as a point"), "{:?}", messages_of(&out));
+}
+
+/// An implicit geometry inside a prototype places nothing: said as such, not as a geometry of an
+/// unknown type.
+#[test]
+fn an_implicit_geometry_inside_a_prototype_is_said() {
+    let nested = format!(
+        "<core:relativeGMLGeometry><gml:MultiGeometry><gml:geometryMember><core:ImplicitGeometry>{}</core:ImplicitGeometry></gml:geometryMember></gml:MultiGeometry></core:relativeGMLGeometry>{}",
+        reference(1.0, 1.0, 0.0),
+        reference(5.0, 5.0, 0.0)
+    );
+    let out = read("model.gml", &lonlat(&furniture("t1", &nested)), None).unwrap();
+    assert!(says(&out, "1 implicit geometries inside a prototype aren't placed"), "{:?}", messages_of(&out));
+    assert!(!says(&out, "unknown types"), "{:?}", messages_of(&out));
+    assert!(says(&out, "its template or prototype is missing, in another file, can't be read or draws nothing"), "{:?}", messages_of(&out));
 }
 
 /// A prototype's geometry linked from outside an implicit geometry isn't read as the file's.

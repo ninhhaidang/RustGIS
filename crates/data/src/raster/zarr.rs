@@ -2879,9 +2879,11 @@ pub fn read_parts(dir: &std::path::Path, parts: &[Part], chunks: &mut HashMap<St
             Ok(f) => f,
             // Never written: only a file that isn't there. Any other failure is said.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(bad(format!("{}: {}: {e}", dir.display(), part.key))),
         };
-        let len = f.metadata()?.len();
+        // A failure names the store and the shard, as the check below does.
+        let failed = |e: std::io::Error| bad(format!("{}: {}: {e}", dir.display(), part.key));
+        let len = f.metadata().map_err(failed)?.len();
         let (first, n) = match part.span {
             Span::Bytes(a, b) => (a, b - a + 1),
             Span::Tail(n) => (len.saturating_sub(n), n.min(len)),
@@ -2890,9 +2892,9 @@ pub fn read_parts(dir: &std::path::Path, parts: &[Part], chunks: &mut HashMap<St
         if first.saturating_add(n) > len || n > MAX_CHUNK_FILE || *total > MAX_READ {
             return Err(bad(format!("{}: {} is cut, or the chunks to read are too large", dir.display(), part.key)));
         }
-        f.seek(SeekFrom::Start(first))?;
+        f.seek(SeekFrom::Start(first)).map_err(failed)?;
         let mut buf = Vec::new();
-        f.take(n).read_to_end(&mut buf)?;
+        f.take(n).read_to_end(&mut buf).map_err(failed)?;
         chunks.insert(part.id.clone(), buf);
     }
     Ok(())
@@ -4658,7 +4660,9 @@ mod tests {
         let shard = dir.join("v/c/0/0/0");
         std::fs::remove_file(&shard).unwrap();
         std::fs::create_dir(&shard).unwrap();
-        assert!(read_dir(&dir, &sel(0, w0).label(), None).is_err());
+        let e = read_dir(&dir, &sel(0, w0).label(), None).unwrap_err().to_string();
+        // The message names the store and the shard.
+        assert!(e.contains(&dir.display().to_string()) && e.contains("v/c/0/0/0"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
         // A window over more than MAX_CHUNKS of the shards' chunks reads its shards whole, as a
         // window did before, rather than being refused: 260 × 260 cells of 2 × 2 chunks in shards

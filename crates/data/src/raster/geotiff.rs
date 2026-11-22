@@ -130,7 +130,10 @@ fn image_grid_tags<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Vec<u16>> {
         if matches!(key, 2048 | 3072) && (location != 0 || count != 1) {
             return Err(err("image grid has an invalid coordinate system GeoKey"));
         }
-        if matches!(key, 1024 | 1025) && (location != 0 || count != 1 || !matches!(value, 1 | 2)) {
+        if key == 1024 && (location != 0 || count != 1 || !matches!(value, 1 | 2)) {
+            return Err(err("image grid requires a projected or geographic coordinate system (GTModelTypeGeoKey 1 or 2)"));
+        }
+        if key == 1025 && (location != 0 || count != 1 || !matches!(value, 1 | 2)) {
             return Err(err("image grid requires two-dimensional area or point GeoTIFF georeferencing"));
         }
     }

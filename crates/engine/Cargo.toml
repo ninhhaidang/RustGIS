@@ -49,7 +49,7 @@ rustgis-analysis = { workspace = true, features = ["testing"] }
 tiny-skia = { workspace = true }
 # Parsing the addresses commands ask for in tests.
 url = { workspace = true }
-# Generated layers for the never-silent round trip (tests/never_silent_roundtrip.rs).
+# Generated layers for the never-silent round trip (tests/integration/never_silent_roundtrip.rs).
 proptest = { workspace = true }
 
 # Random field-package identities; in the browser through its JavaScript crypto.

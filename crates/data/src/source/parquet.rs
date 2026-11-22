@@ -1264,10 +1264,13 @@ fn read_values(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Col
     let desc = rg.metadata().column(col).column_descr_ptr();
     let max_def = desc.max_def_level();
     let scale = decimal_scale(&desc).map(|s| 10f64.powi(-s));
+    // The column's kind, worked out once rather than for each value.
+    let clock = clock_kind(&desc);
+    let temporal = matches!(field_type(&desc), Some(FieldType::Date | FieldType::DateTime));
     let mut flags = Vec::new();
     let mut int = |v: Option<i64>| {
         flags.push(0u8);
-        if let Some(unit) = clock_kind(&desc) {
+        if let Some(unit) = clock {
             return v
                 .map(|n| {
                     let value = clock_value(n, unit);
@@ -1280,7 +1283,7 @@ fn read_values(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Col
                 })
                 .unwrap_or_default();
         }
-        if matches!(field_type(&desc), Some(FieldType::Date | FieldType::DateTime)) {
+        if temporal {
             return v
                 .map(|i| {
                     let (value, rounded) = temporal_value(&desc, i);
@@ -1622,9 +1625,11 @@ impl DateLayout {
             }
         }
     }
-    /// Counts each representation change and names its fields for the user-facing export notice.
+    /// Counts each representation change and names its fields for the user-facing export notice,
+    /// each after `target: ` (nothing before it when `target` is empty: the caller adds the path).
     fn notes(&self, fields: &[Field], target: &str) -> Vec<String> {
         let target: String = target.chars().map(crate::io::dbf_notice_char).collect();
+        let target = if target.is_empty() { String::new() } else { format!("{target}: ") };
         let mut notes = Vec::new();
         let utc: Vec<usize> = self.offsets.iter().enumerate().map(|(k, &n)| if self.modes.get(k) == Some(&2) { n } else { 0 }).collect();
         let text: Vec<usize> = self.counts.iter().enumerate().map(|(k, &n)| if self.modes.get(k) == Some(&3) { n } else { 0 }).collect();
@@ -1634,7 +1639,7 @@ impl DateLayout {
         ] {
             let n: usize = counts.iter().sum();
             if n > 0 {
-                notes.push(format!("{target}: {n} {what}, in {}", crate::io::named_fields(fields, counts)));
+                notes.push(format!("{target}{n} {what}, in {}", crate::io::named_fields(fields, counts)));
             }
         }
         notes
@@ -1725,6 +1730,8 @@ pub fn values_note(ds: &crate::Dataset, target: &str) -> Option<String> {
 /// metadata gives are gathered as the rows go and written with the footer.
 /// Timestamp columns require replaying the feed before writing, to select one Parquet timezone
 /// flag per column without buffering the source. That pass checks Cancel but counts no writes.
+/// Returns the writer, the values each field couldn't hold, and the notes on date-times, which
+/// name no file: the caller says the path.
 pub(crate) fn write_features<W: std::io::Write + Send>(
     geometry_type: GeometryType,
     fields: &[Field],
@@ -1909,5 +1916,6 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
         let geo = serde_json::json!({"version": "1.1.0", "primary_column": geom_name, "columns": {geom_name.clone(): col}});
         w.append_key_value_metadata(KeyValue::new("geo".to_string(), geo.to_string()));
     }
-    Ok((w.into_inner().map_err(err)?, unfit_counts, layout.notes(fields, "GeoParquet")))
+    // Without a target: the caller says the path the export is written to.
+    Ok((w.into_inner().map_err(err)?, unfit_counts, layout.notes(fields, "")))
 }
