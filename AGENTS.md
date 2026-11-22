@@ -174,6 +174,10 @@ immediately; label-gated build jobs in `ci.yml` start from the next push.
   wait for the **release quality pass**, where maintainers handle them together before each
   release. Reply that it's left for the release quality pass, end the reply with
   `<!-- quality-sweep -->`, and leave it out of the next push.
+- The Claude review ends each inline finding with its category (a last line such as `Category: bug`).
+  CI's `Review deferrals` job fails, on each push and in the merge queue, when the marker answers
+  a `bug`, `security` or `agents-md` finding, or one edited since it was posted. A maintainer
+  overrides it for one finding by ending a reply in its thread with `<!-- deferral-approved -->`.
 
 ## Looking at the app
 - `cargo run --release -p rustgis` (opens the World Atlas sample).

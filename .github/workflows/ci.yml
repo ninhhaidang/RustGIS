@@ -177,7 +177,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if grep -qE '^(Cargo\.lock|(.*/)?Cargo\.toml|deny\.toml|about\.toml|xtask/src/(main|notices)\.rs|(.*/)?THIRD-PARTY-LICENSES\.txt|\.github/scripts/(check-cargo-sources|test_[^/]+)\.py|\.github/workflows/ci\.yml|crates/map/src/color/(scientific|matplotlib)\.rs|crates/tiles/src/(symbols|style)\.rs|crates/data/src/(raster/crs|esripbf)\.rs)$|^(third-party/|\.cargo/)' <<<"$changed"; then
+          if grep -qE '^(Cargo\.lock|(.*/)?Cargo\.toml|deny\.toml|about\.toml|xtask/src/(main|notices)\.rs|(.*/)?THIRD-PARTY-LICENSES\.txt|\.github/scripts/(check-cargo-sources|review-deferrals|test_[^/]+)\.py|\.github/workflows/ci\.yml|crates/map/src/color/(scientific|matplotlib)\.rs|crates/tiles/src/(symbols|style)\.rs|crates/data/src/(raster/crs|esripbf)\.rs)$|^(third-party/|\.cargo/)' <<<"$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No dependency, licence or notice files changed; skipping."
@@ -292,6 +292,27 @@ jobs:
       - name: Count direct row uses
         run: cargo run --locked -q -p xtask -- rows
 
+  # A review point left for the release quality pass must be a quality point
+  # (.github/scripts/review-deferrals.py). The merge queue's run sees replies posted after the last
+  # push. It runs the checkout with a read-only token and no secrets, like every job here.
+  deferrals:
+    name: Review deferrals
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: No defect left for the release quality pass
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+        run: python3 .github/scripts/review-deferrals.py
+
   # The packages whose tests this run needs, for `test` (.github/scripts/test-selection.sh). Only
   # tests are narrowed: lint, the wasm build, licences and the schema check run whole every time.
   select:
@@ -395,7 +416,7 @@ jobs:
   # unless their conditions below hold (the same as on the jobs), and every other job always runs.
   tests_pass:
     name: Tests pass
-    needs: [lint, wasm, ios, android, licenses, schema, rows, plan, select, test]
+    needs: [lint, wasm, ios, android, licenses, schema, rows, deferrals, plan, select, test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
