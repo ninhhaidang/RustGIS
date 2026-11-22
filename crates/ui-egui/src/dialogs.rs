@@ -3274,7 +3274,7 @@ mod tests {
     #[test]
     fn the_menus_work_from_the_keyboard() {
         use egui::accesskit::Role;
-        use egui_kittest::kittest::Queryable;
+        use egui_kittest::kittest::{NodeT, Queryable};
         use rustgis_engine::data::query;
         let fs: Vec<_> = query::functions().take(2).collect();
         let (first, second) = (format!("{}()", fs[0].name), fs[1]);
@@ -3298,7 +3298,13 @@ mod tests {
         assert_eq!(*h.state(), "", "and adds nothing yet");
         h.key_press(egui::Key::ArrowDown);
         h.run();
-        assert!(on_button(&h), "the arrow moves the highlight, not the focus");
+        // The focus stays on the button; a screen reader is pointed at the highlighted row (the
+        // button's active descendant), so it reads the entry the arrow moved to.
+        let button = h.get_by_role_and_label(Role::Button, "Functions ▾");
+        let focused = h.ctx.memory(|m| m.focused()).map(|f| f.accesskit_id());
+        assert_eq!(focused, Some(button.accesskit_node().locate().0), "the arrow moves the highlight, not the focus");
+        let read = button.accesskit_node().active_descendant().and_then(|row| row.label());
+        assert_eq!(read.as_deref(), Some(format!("{}()", second.name).as_str()), "the reader's on the highlighted row");
         h.key_press(egui::Key::Enter);
         h.run();
         let added = if second.max > 0 { format!("{}(", second.name) } else { format!("{}() ", second.name) };
