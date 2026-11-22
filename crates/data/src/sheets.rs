@@ -52,9 +52,33 @@ pub fn read(bytes: &[u8], name: &str, sheet: Option<&str>, opts: &CsvOptions) ->
     let g = grid(bytes, sheet)?;
     let title = if g.names.len() > 1 { format!("{name} {}", g.pick) } else { name.to_string() };
     let (ds, mut report) = read_rows(&g.headers, &g.rows, 0, &title, opts, Some((&g.dates, &g.phantom_dates)))?;
+    let errors: usize = g.error_cells.iter().sum();
     let rounded: usize = g.rounded_dates.iter().sum();
+    let fields: Vec<Field> =
+        if errors > 0 || rounded > 0 { g.headers.iter().map(|h| Field::new(h, FieldType::Text)).collect() } else { vec![] };
+    if errors > 0 {
+        let what = if errors == 1 { "1 spreadsheet error cell was".to_string() } else { format!("{errors} spreadsheet error cells were") };
+        let mut message = format!("{what} read as empty, in {}", crate::io::named_fields(&fields, &g.error_cells));
+        let headings: usize = g.header_error_cells.iter().sum();
+        if headings > 0 {
+            let what = if headings == 1 {
+                "1 erroneous heading was named by its column letter".to_string()
+            } else {
+                format!("{headings} erroneous headings were named by their column letters")
+            };
+            message.push_str(&format!("; {what}, {}", crate::io::named_fields(&fields, &g.header_error_cells)));
+        }
+        if g.empty_error_rows > 0 {
+            let what = if g.empty_error_rows == 1 {
+                "1 otherwise empty row with error cells was omitted".to_string()
+            } else {
+                format!("{} otherwise empty rows with error cells were omitted", g.empty_error_rows)
+            };
+            message.push_str(&format!("; {what}"));
+        }
+        report.messages.push(message);
+    }
     if rounded > 0 {
-        let fields: Vec<Field> = g.headers.iter().map(|h| Field::new(h, FieldType::Text)).collect();
         report.messages.push(format!(
             "{rounded} serial date values were rounded to the nearest microsecond, in {}",
             crate::io::named_fields(&fields, &g.rounded_dates)
@@ -82,6 +106,12 @@ struct Grid {
     rows: Vec<Vec<String>>,
     dates: Vec<Option<FieldType>>,
     rounded_dates: Vec<usize>,
+    /// Source cells whose spreadsheet error value became empty text, per source column.
+    error_cells: Vec<usize>,
+    /// Error-valued headings replaced with column letters, per source column.
+    header_error_cells: Vec<usize>,
+    /// Otherwise empty rows with errors, omitted by the existing blank-row rule.
+    empty_error_rows: usize,
     /// Per column that isn't one of dates, the serial-60 cells read as empty.
     phantom_dates: Vec<usize>,
 }
@@ -173,10 +203,20 @@ fn grid_unguarded(mut wb: Sheets<Cursor<&[u8]>>, sheet: Option<&str>) -> Result<
     // as one that isn't a date (null, and counted); in a column of other things it is read as
     // empty and counted here, as it would not be text of a day.
     let mut phantom_dates = vec![0usize; w];
-    let mut rows = range.rows().map(|r| {
-        r.iter()
+    let mut error_cells = vec![0usize; w];
+    let mut rows = range.rows().enumerate().map(|(row, r)| {
+        let mut had_error = false;
+        let cells = r
+            .iter()
             .enumerate()
             .map(|(k, d)| match (d, dates.get(k)) {
+                (Data::Error(_), _) => {
+                    had_error = true;
+                    if let Some(n) = error_cells.get_mut(k) {
+                        *n += 1;
+                    }
+                    String::new()
+                }
                 (Data::DateTime(t), Some(None)) if is_phantom_day(t) => {
                     if let Some(n) = phantom_dates.get_mut(k) {
                         *n += 1;
@@ -185,23 +225,41 @@ fn grid_unguarded(mut wb: Sheets<Cursor<&[u8]>>, sheet: Option<&str>) -> Result<
                 }
                 _ => cell(d),
             })
-            .collect::<Vec<String>>()
+            .collect::<Vec<String>>();
+        (row, cells, had_error)
     });
+    let mut empty_error_rows = 0;
+    let mut keep = |(_, cells, had_error): &(usize, Vec<String>, bool)| {
+        let nonempty = cells.iter().any(|c| !c.trim().is_empty());
+        if !nonempty && *had_error {
+            empty_error_rows += 1;
+        }
+        nonempty
+    };
     // The first row with anything in it names the columns.
-    let headers: Vec<String> = rows.by_ref().find(|r| r.iter().any(|c| !c.trim().is_empty())).unwrap_or_default();
+    let (header_row, headers, _) = rows.by_ref().find(&mut keep).unwrap_or_default();
     if headers.is_empty() {
         return Err(DataError::Format(format!("sheet '{pick}' is empty")));
     }
     // Columns without a heading are named by their letter, as the spreadsheet shows them (the
     // range starts at its first column with anything in it).
     let first_col = range.start().map(|(_, c)| c as usize).unwrap_or(0);
+    let source_header = range.rows().nth(header_row);
+    let mut header_error_cells = vec![0usize; w];
     let headers: Vec<String> = headers
         .into_iter()
         .enumerate()
-        .map(|(i, h)| if h.trim().is_empty() { column_letter(first_col + i) } else { h.trim().to_string() })
+        .map(|(i, h)| {
+            if matches!(source_header.and_then(|r| r.get(i)), Some(Data::Error(_)))
+                && let Some(n) = header_error_cells.get_mut(i)
+            {
+                *n = 1;
+            }
+            if h.trim().is_empty() { column_letter(first_col + i) } else { h.trim().to_string() }
+        })
         .collect();
-    let rows: Vec<Vec<String>> = rows.filter(|r| r.iter().any(|c| !c.trim().is_empty())).collect();
-    Ok(Grid { names, pick, headers, rows, dates, rounded_dates, phantom_dates })
+    let rows = rows.filter(keep).map(|(_, cells, _)| cells).collect();
+    Ok(Grid { names, pick, headers, rows, dates, rounded_dates, error_cells, header_error_cells, empty_error_rows, phantom_dates })
 }
 
 /// Check every ZIP member before calamine opens it, without suffix or case filters. ODS
@@ -745,6 +803,57 @@ mod tests {
         );
         let (_, report) = book("POINT (3 4)");
         assert!(!report.messages.iter().any(|m| m.contains("isn't a date")), "{:?}", report.messages);
+    }
+
+    /// Multiple errors in one column and another column count once each; blank cells don't.
+    #[test]
+    fn error_cells_are_counted_without_changing_other_values() {
+        let error = r#"<c t="e"><v>#DIV/0!</v></c>"#;
+        let book = xlsx(&[("S", &[&["id", "note", "other"], &["7", error, "kept"], &["8", error, error], &["9", "", ""]])]);
+        let (ds, report) = read(&book, "book", None, &CsvOptions::default()).unwrap();
+        assert_eq!(report.messages, ["3 spreadsheet error cells were read as empty, in 'note', 'other'"]);
+        assert_eq!(report.skipped, 0);
+        let attrs: Vec<_> = ds.features.iter().map(|f| f.attrs.clone()).collect();
+        use crate::Value::{Int, Null, Text};
+        assert_eq!(attrs, [vec![Int(7), Null, Text("kept".into())], vec![Int(8), Null, Null], vec![Int(9), Null, Null]]);
+    }
+
+    /// Error headings still use column letters, with the lost heading counted separately.
+    #[test]
+    fn spreadsheet_error_headings_are_reported() {
+        let error = r#"<c t="e"><v>#REF!</v></c>"#;
+        for heading in ["", error] {
+            let book = xlsx(&[("S", &[&["id", heading], &["7", "kept"]])]);
+            let (ds, report) = read(&book, "book", None, &CsvOptions::default()).unwrap();
+            assert_eq!(ds.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["id", "B"]);
+            assert_eq!(ds.features[0].attrs, [crate::Value::Int(7), crate::Value::Text("kept".into())]);
+            let expected = if heading.is_empty() {
+                vec![]
+            } else {
+                vec!["1 spreadsheet error cell was read as empty, in 'B'; 1 erroneous heading was named by its column letter, 'B'"]
+            };
+            assert_eq!(report.messages, expected);
+        }
+    }
+
+    /// Error-only rows and genuinely blank rows keep their omission behavior, but only the
+    /// former lose source content and need a counted notice.
+    #[test]
+    fn spreadsheet_error_only_rows_are_counted_when_omitted() {
+        let error = r#"<c t="e"><v>#N/A</v></c>"#;
+        for cell in ["", error] {
+            let book = xlsx(&[("S", &[&["id", "note"], &["7", "kept"], &[cell, cell], &["", ""], &["8", ""]])]);
+            let (ds, report) = read(&book, "book", None, &CsvOptions::default()).unwrap();
+            let attrs: Vec<_> = ds.features.iter().map(|f| f.attrs.clone()).collect();
+            use crate::Value::{Int, Null, Text};
+            assert_eq!(attrs, [vec![Int(7), Text("kept".into())], vec![Int(8), Null]]);
+            let expected = if cell.is_empty() {
+                vec![]
+            } else {
+                vec!["2 spreadsheet error cells were read as empty, in 'id', 'note'; 1 otherwise empty row with error cells was omitted"]
+            };
+            assert_eq!(report.messages, expected);
+        }
     }
 
     #[test]

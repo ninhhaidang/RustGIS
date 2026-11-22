@@ -58,7 +58,7 @@ exercise coordinate-system assumptions.
 | `book-clean.xlsx` | `POINT(1 2)` | absent | None; no command notice |
 | `book-z.xlsx` | `POINT Z(1 2 3)` | absent | Imports with a Z/M-loss notice |
 | `book-collection.xlsx` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | absent | Silent: only the first member remains |
-| `book-error.xlsx` | `POINT(1 2)` | error cell (`t="e"`, value `#DIV/0!`) | Silent: the error becomes Null |
+| `book-error.xlsx` | `POINT(1 2)` | error cell (`t="e"`, value `#DIV/0!`) | Imports with a counted notice naming `note`; the error becomes Null |
 
 The clean workbook is shared by all three pairs. All four must retain exactly one point
 at (1, 2), integer `id=7` and text `note=Null`, through both `sheets::read` and

@@ -424,7 +424,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.xlsx",
             include_bytes!("../../testdata/reading-losses/book-clean.xlsx"),
             include_bytes!("../../testdata/reading-losses/book-error.xlsx"),
-            Silent("the error-valued note cell is read as Null"),
+            Imported("1 spreadsheet error cell was read as empty, in 'note'"),
         ),
     ]);
 
@@ -762,9 +762,17 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             || content == include_bytes!("../../testdata/reading-losses/book-z.ods")
             || content == include_bytes!("../../testdata/reading-losses/book-z.xls")
             || content == include_bytes!("../../testdata/reading-losses/book-z.xlsb");
+        let errors = content == include_bytes!("../../testdata/reading-losses/book-error.xlsx");
+        if errors && report.messages != ["1 spreadsheet error cell was read as empty, in 'note'"] {
+            return Err(std::io::Error::other(format!("native spreadsheet error notice: {report:?}")));
+        }
         if report.skipped != 0
             || native.zm_dropped != height
-            || if height { report.messages.len() != 1 || !report.messages[0].contains("Z or M") } else { !report.messages.is_empty() }
+            || if height {
+                report.messages.len() != 1 || !report.messages[0].contains("Z or M")
+            } else {
+                !errors && !report.messages.is_empty()
+            }
         {
             return Err(std::io::Error::other(format!("native spreadsheet fixture has the wrong loss report: {report:?}")));
         }
