@@ -121,7 +121,8 @@ pub(crate) fn open(app: &mut RustGisApp, p: &Value) -> Result<(), String> {
     if !matches!(kind, "circle" | "rotatedBox") {
         return Err(tl!("Choose Circle or Rotated Box.").into());
     }
-    app.conversion.next_request = app.conversion.next_request.checked_add(1).ok_or("conversion request limit reached")?;
+    app.conversion.next_request =
+        app.conversion.next_request.checked_add(1).ok_or_else(|| tl!("conversion request limit reached").to_string())?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(old) = &app.conversion.form {
         app.reads.cancel_shape_conversion(old.request);

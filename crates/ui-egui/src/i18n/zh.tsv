@@ -26,16 +26,19 @@
 /F	/F
 /PID	/PID
 /T	/T
+0 draws no border	0 表示不绘制边框
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	0° 与线呈直角相交
 1 entry	1 个条目
+1 line doesn't fit the box	有 1 行超出框的范围
+1 line isn't drawn: a text draws 200 at most	有 1 行未绘制：文本最多绘制 200 行
 1 more class isn't listed: the list's limit doesn't change how it's drawn	还有 1 个类未列出：列表的数量上限不影响其绘制方式
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	16 个已导入的 Zarr 存储已在队列中
 18:00 UTC	18:00 UTC
 18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
-3035, vn2000tm3	3035, vn2000tm3
+3010, lv95	3010, lv95
 3D mesh	三维网格
 40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<无>
@@ -52,6 +55,7 @@ A ChatGPT sign-in can only be used with the OpenAI API.	ChatGPT 登录只能用�
 A colour, hatch lines, markers on a grid, a gradient, or a shapeburst (shaded from the edge inwards)	颜色、阴影线、格网上的标记、渐变或形状渐变（从边缘向内着色）
 A command id is required.	需要命令 ID。
 A connection has this name: give this one another name to remember its keys.	已有同名连接：请为此连接另取名称以记住其密钥。
+a Copernicus Data Space sign-in	Copernicus Data Space 登录
 A copy of {name} with unsaved changes was kept a minute ago.	已在 1 分钟前保留了含未保存更改的 {name} 副本。
 A copy of {name} with unsaved changes was kept less than a minute ago.	已在不到 1 分钟前保留了含未保存更改的 {name} 副本。
 A copy of {name} with unsaved changes was kept {n} days ago.	已在 {n} 天前保留了含未保存更改的 {name} 副本。
@@ -64,11 +68,9 @@ A date is missing between two commas	两个逗号之间缺少日期
 A drawing never says its coordinate system: its coordinates are read in this one. Leave it blank to keep them as they are.	图纸从不说明其坐标系：其坐标按此坐标系读取。留空则保持坐标不变。
 A fast, free and open-source GIS written in pure Rust, for mapping, analyzing and sharing geospatial data on the desktop and in the browser.	一款快速、免费、开源的纯 Rust GIS，用于在桌面和浏览器中制图、分析和共享地理空间数据。
 A field (known once the model runs)	字段（模型运行后才可知）
-a field of the associated input	关联输入中的字段
-a field of the associated input holding coordinates	关联输入中存储坐标的字段
 A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	外业数据包在计算机或手机上打开，它们有存放其底图的文件夹：请在那里打开。“带回”（“数据 › 离线”）会将其编辑带入此处的工程。
 A flat scene centred on the view (azimuthal equidistant).	以视图为中心的平面场景（方位等距投影）。
-A GeoLens server's datasets, read as features (the first 1,000 of each).	GeoLens 服务器的数据集，读取为要素（每个数据集前 1,000 个）。
+A GeoLens server's datasets, read as features.	GeoLens 服务器的数据集，以要素形式读取。
 A globe scene.	地球仪场景。
 A hidden class leaves its features unlabelled.	隐藏的标注类不会为其要素添加标注。
 A label along a line isn't moved.	沿线标注不会移动。
@@ -84,6 +86,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	一条线，或沿线的标记或短线标记
 A magnifying lens that follows the pointer.	跟随指针的放大镜。
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	地图、要素或覆盖服务的地址：WMS、WMTS、WFS、WCS、OGC API Features 或 Tiles，或者 ArcGIS FeatureServer、MapServer、ImageServer 或 VectorTileServer（也可以是服务目录，以便浏览）。
+A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	名称或 EPSG 代码、WKT 或 PROJ 字符串；留空时：地图为投影坐标系则使用地图自身的坐标系，否则使用视图中心所在的 UTM 带
 a name, or owner/name such as giswqs/geospatial	名称，或 owner/name 形式，例如 giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	可重复使用的命名端点。除非选择在此计算机上记住，否则密钥保留到 RustGIS 关闭为止；连接本身从不保存密钥。
 A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	可重复使用的命名端点。密码和密钥仅在本次会话中有效，除非您选择在此计算机上记住它们；连接本身从不保存它们。
@@ -92,12 +95,13 @@ A new GeoPackage	新的 GeoPackage
 A new table in a GeoPackage	GeoPackage 中的新表
 A node cannot connect to itself.	节点不能连接到自身。
 A notebook of text and command cells.	由文本单元格和命令单元格组成的笔记本。
-a numeric field of the associated input	关联输入中的数值字段
 A password or token in the address was left out of the saved connection definition.	地址中的密码或令牌未写入保存的连接定义。
 A place or an address	地点或地址
+A PNG or JPEG file as the marker	使用 PNG 或 JPEG 文件作为标记
 A PostgreSQL/PostGIS connection (host=… port=… dbname=… user=…, or a postgresql:// address), a MySQL or MariaDB address (mysql://user@host:3306/database), a SQL Server address (mssql://user@host:1433/database) or a DuckDB file. PostGIS, MySQL, MariaDB and SQL Server tables are read live, large ones a view at a time; the password is kept until RustGIS closes, never in the project.	输入 PostgreSQL/PostGIS 连接信息（host=… port=… dbname=… user=… 或 postgresql:// 地址）、MySQL 或 MariaDB 地址（mysql://user@host:3306/database）、SQL Server 地址（mssql://user@host:1433/database），或选择 DuckDB 文件。PostGIS、MySQL、MariaDB 和 SQL Server 表会实时读取，大表按当前视图分批读取。密码仅保留至 RustGIS 关闭，不写入工程。
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	之前保存的密钥在可以移入系统钥匙串之前，仍以未加密形式保存在应用首选项中。
 A project keeps at least one map	项目至少保留一个地图
+A project save is already in progress.	工程正在保存中。
 A projected coordinate system.	投影坐标系。
 A projected system such as EPSG:32616, or EPSG:4326 for degrees	投影坐标系（如 EPSG:32616），或以度为单位的 EPSG:4326
 a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	栅格图层没有定义查询或时间绑定：“查询”和“时间”选项卡属于要素图层
@@ -123,18 +127,15 @@ A theme file was refused. Open Settings > Theme for the reason.	主题文件被�
 A tile layer per grid tile, each following the time slider through its dates.	每个格网瓦片一个瓦片图层，各自随时间滑块遍历其日期。
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	瓦片服务的地址：带 {z}/{x}/{y} 的栅格瓦片（WMS 可用 {-y}, {q}, {bbox-epsg-3857}）、矢量瓦片（.pbf）或 TileJSON、MapLibre 样式、PMTiles 归档（网址或本机文件），或本机上的 MBTiles 文件。
 A token for {server}	{server} 的令牌
+A token is already being generated for this connection. Cancel it first.	此连接的令牌正在生成。请先取消。
+A token is being generated. Cancel it before saving again.	正在生成令牌。请先取消，再重新保存。
 A token is set.	已设置令牌。
+A value of {field}	{field} 的值
 a vector a pixel	每个像素一个向量
 a vector an image patch	每个影像块一个向量
 A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	用于 MGRS 标注的 WGS 84 UTM 分带，以其 EPSG 代码表示（32632）；留空：地图坐标系为 UTM 分带时使用它，否则使用框架中心所在的分带。
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	通过网址指定的 Zarr 存储（格式 2 或 3，需含合并元数据），或本机上的文件夹。变量的地图按其他维度（如时间）中所选的步长读取。
 A Zarr variable's values through time at points clicked on the map.	在地图上单击的点处 Zarr 变量随时间变化的值。
-A2 landscape sheet	A2 横向图纸
-A2 portrait sheet	A2 纵向图纸
-A3 landscape sheet	A3 横向图纸
-A3 portrait sheet	A3 纵向图纸
-A4 landscape sheet	A4 横向图纸
-A4 portrait sheet	A4 纵向图纸
 A5 Grid	A5 格网
 A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	按指定分辨率在地图范围、某个图层或全球范围内生成 A5 等积五边形单元，以带 id 的多边形输出。
 About	关于
@@ -150,8 +151,6 @@ Accessing the system keychain…	正在访问系统钥匙串…
 Account	账户
 Activate Map	激活地图
 Add	添加
-Add a spectral index of the item's bands, for the part of the map in view	根据该条目的波段生成光谱指数，并添加到当前地图范围
-Add the item's bands as one image, for the part of the map in view	将该条目的多个波段合成为一幅影像，添加到当前地图范围
 Add\nData	添加\n数据
 Add ({n})	添加 ({n})
 Add a bar chart of a layer's numeric field.	添加图层数值字段的条形图。
@@ -179,6 +178,7 @@ Add a report file, or a report template for the selected layer.	添加报表文�
 Add a scale bar for the map frame.	为地图框添加比例尺。
 add a second map first (Data › New Map)	请先添加第二个地图（“数据 › 新建地图”）
 Add a second map frame first	请先添加第二个地图框
+Add a spectral index of the item's bands, for the part of the map in view	根据该条目的波段生成光谱指数，并添加到当前地图范围
 Add a straight line.	添加直线。
 Add a text element.	添加文本元素。
 Add a web basemap over the others instead of replacing them, to blend it with them. Click one that shows to take it off.	将 Web 底图叠加在其他底图之上而不是替换它们，以便与之混合。单击已显示的底图可将其移除。
@@ -242,6 +242,7 @@ Add Layer File	添加图层文件
 Add Mark	添加标记
 Add more with plugins:	通过插件添加更多：
 Add Open Data	添加开放数据
+Add or create a polygon feature layer using Data, then choose it here.	请使用“数据”添加或创建面要素图层，然后在此处选择。
 Add Output	添加输出
 Add Overture Maps Data	添加 Overture Maps 数据
 Add Page After	在后面添加页面
@@ -263,8 +264,10 @@ Add Selected ({n})	添加所选项（{n}）
 Add Service Layer	添加服务图层
 Add skill…	添加技能…
 Add STAC Asset	添加 STAC 资产
+Add STAC Bands	添加 STAC 波段
 Add STAC Data Cube	添加 STAC 数据立方体
 Add STAC Footprints	添加 STAC 覆盖范围
+Add STAC Index	添加 STAC 指数
 Add statistic	添加统计量
 Add Step	添加步骤
 Add Stroke	添加描边
@@ -275,6 +278,7 @@ Add Text	添加文本
 Add text that updates: page, date, scale, map and more.	添加会自动更新的文本：页码、日期、比例尺、地图等。
 Add the attribute table of a layer in the map frame.	添加地图框中某个图层的属性表。
 Add the current view as a keyframe.	将当前视图添加为关键帧。
+Add the item's bands as one image, for the part of the map in view	将该条目的多个波段合成为一幅影像，添加到当前地图范围
 Add The National Map Service	添加 The National Map 服务
 Add this GeoTIFF to the map	将此 GeoTIFF 添加到地图
 Add this MCP server to your agent:	将此 MCP 服务器添加到你的智能体：
@@ -293,7 +297,6 @@ Add {language}	添加 {language}
 Add {n}	添加 {n} 项
 Add ▾	添加 ▾
 Added	已添加
-Added Fixture	已添加的夹具
 Added from {start} to {end}: the time slider steps through it	已添加 {start} 至 {end}：时间滑块将逐步遍历
 Added Overture's {theme} as map tiles ({release}; some themes show only zoomed in): {attribution}	已将 Overture 的 {theme} 添加为地图瓦片（{release}；部分主题仅在放大后显示）：{attribution}
 Added {name}	已添加 {name}
@@ -373,18 +376,20 @@ Altitude	高度角
 Always allow	始终允许
 Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3，或通过端点指定的 S3 兼容服务（MinIO、Cloudflare R2、Wasabi…）。密钥保留到 RustGIS 关闭为止；保存的连接只保存其名称、端点和区域，从不保存私密密钥。
+Ambient	环境光
 amenity=cafe, shop	amenity=cafe, shop
 An agent on this computer asks to:	这台电脑上的一个智能体请求：
+An API key in the URL path is saved as typed, not in the credential store.	URL 路径中的 API 密钥按输入原样保存，不存入凭据存储。
 An API key sent in a header must use plain ASCII characters.	通过请求头发送的 API 密钥只能使用纯 ASCII 字符。
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	ArcGIS Online 组织或 ArcGIS Enterprise 门户的地址；留空时为 ArcGIS Online
+an ArcGIS sign-in	ArcGIS 登录
 An AWS profile	AWS 配置文件
 An earlier field has this name but for case, and edits by name reach that one: this column can't be changed here.	前面已有字段与此列同名，仅大小写不同。按名称编辑会作用于前一个字段，此处无法修改本列。
-an enqueued add is not a success	已入队的添加不算成功
-An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	EPSG 代码、WKT 或 PROJ 字符串；留空：已投影时使用地图自身的坐标系，否则使用视图中心的 UTM 分带
-An image marker takes no marks yet	图像标记暂不支持叠加装饰符号
+An image picked for an earlier Image… was dropped: pick it again for that marker	之前为“图像…”选择的图像已被丢弃：请为该标记重新选择
 Analysis	分析工具
 Analyze	分析
 Analyze › AI	分析 › AI
+Analyze › Annotate	分析 › 注记
 Analyze › Workflows	分析 › 工作流
 AND	AND
 Angle	角度
@@ -392,6 +397,8 @@ Angle (°)	角度（°）
 Animated GIF	GIF 动画
 Animated GIF or PNG frames (zip)	GIF 动画或 PNG 帧（zip）
 Animation	动画
+Annotate	注记
+Annotation export uses GeoJSON.	注记导出使用 GeoJSON。
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	另一个拖放的文件未打开：请在答复未保存更改后再次拖放。
 Another map has that name: open the map and use Reload Data from the Layers pane.	另一幅地图也使用此名称。请打开目标地图，在“图层”窗格中选择“重新加载数据”。
 Another project is open now: open the dialog again from its table.	现在打开的是另一个工程：请从其表中再次打开该对话框。
@@ -411,6 +418,7 @@ Apply a function to a raster	对栅格应用函数
 Apply Control Points	应用控制点
 Apply Conversion	应用转换
 Apply elevation	应用高程
+Apply Shape Conversion	应用形状转换
 Apply Style	应用样式
 Apply to layers	应用到图层
 Apply to the selected layer	应用于所选图层
@@ -423,6 +431,7 @@ ArcGIS Portal…	ArcGIS 门户…
 ArcGIS REST	ArcGIS REST
 ArcGIS Sign-In Status	ArcGIS 登录状态
 ArcGIS token	ArcGIS 令牌
+ArcGIS Token Status	ArcGIS 令牌状态
 Archive	存档
 Archive History	存档历史记录
 Archiving	存档
@@ -432,6 +441,7 @@ Area of use: longitude {w}° to {e}°, latitude {s}° to {n}°	使用范围: 经
 Area of use: the whole world	使用范围: 全世界
 Area of use: within {r}° of the {lon}° meridian	使用范围: 距 {lon}° 经线 {r}° 以内
 Area of use: within {r}° of {lon}°, {lat}°	使用范围: 距 {lon}°, {lat}° {r}° 以内
+Area Unit	面积单位
 Area {area}   ·   Perimeter {perimeter}	面积 {area}   ·   周长 {perimeter}
 Areas (name, land use, area)	区域（名称、土地利用、面积）
 Argentina	阿根廷
@@ -477,6 +487,7 @@ Automatic (mm to km)	自动（mm 至 km）
 Automatic (system language)	自动（系统语言）
 Automatic ({kind})	自动（{kind}）
 Automatic ({n})	自动（{n}）
+Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself.	“自动”会根据整个文件选择列。打开列表可查看预览建议，或自行选择列。
 Autosave	自动保存
 Autosave couldn't keep a recovery copy: {error}	自动保存无法保留恢复副本：{error}
 autosave failed unexpectedly; it goes on with the next copy	自动保存意外失败；将继续下一个副本
@@ -507,6 +518,8 @@ Bangladesh	孟加拉国
 Banner	横幅
 Bar	条形
 Bar Chart	条形图
+Bar color	条形颜色
+Bars	条形
 Base	底部
 Base (m)	底部（m）
 Basemap	底图
@@ -553,6 +566,8 @@ Boundaries…	边界…
 Bounding\nGeometry	边界\n几何
 Box Construction	矩形框构造
 Brazil	巴西
+Break the text into lines at spaces to fit the width of its box	在空格处将文本换行，以适应框的宽度
+Breaks	分隔值
 Brightness	亮度
 Brightness, contrast, saturation and sepia for the whole map.	整个地图的亮度、对比度、饱和度和棕褐色调。
 Bring a field package's edits and photos back to the offline area it was made from.	将外业数据包的编辑和照片带回创建它的离线区域。
@@ -590,17 +605,19 @@ Bundle the active map and its data.	打包活动地图及其数据。
 Bundle the geoprocessing history with the layers it made.	将地理处理历史记录与其生成的图层一起打包。
 Bundle the project and its data into one file to share.	将工程及其数据打包为一个文件以便共享。
 Bundle the visible layers, with simplified geometry for phones and tablets.	打包可见图层，并为手机和平板电脑简化几何。
-By area	按面积
-By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	按面积：数值加倍时，符号面积约加倍。按半径：数值加倍时，半径加倍。
-By radius	按半径
 By\nAttributes	按\n属性
 By\nLocation	按\n位置
+By area	按面积
+By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	按面积：数值加倍时，符号面积约加倍。按半径：数值加倍时，半径加倍。
 By Coordinates	按坐标
 By Coordinates…	按坐标…
 By Expression	按表达式
+By label	按标签
 By layer	按图层
 By Place or Address	按地点或地址
 By Place or Address…	按地点或地址…
+By radius	按半径
+By the bars	按条形
 by {author}	作者：{author}
 By {field}	按 {field}
 cached tiles	已缓存的瓦片
@@ -624,8 +641,11 @@ Camera Effect	相机效果
 Can't read this folder	无法读取此文件夹
 Cancel	取消
 Cancel ArcGIS Sign-In	取消 ArcGIS 登录
+Cancel ArcGIS Token	取消 ArcGIS 令牌
 Cancel Caching	取消缓存
 Cancel Fitting	取消拟合
+Cancel Grid Read	取消读取格网
+Cancel token request	取消令牌请求
 Cancelled	已取消
 cancelled	已取消
 Cap	线端
@@ -709,7 +729,9 @@ choose a folder	选择文件夹
 Choose a GeoPackage layer	选择 GeoPackage 图层
 Choose a layer	选择图层
 Choose a layer…	选择图层…
+Choose a loaded editable polygon layer.	请选择已加载的可编辑面图层。
 Choose a model.	请选择模型。
+Choose a polygon layer	选择面图层
 Choose a position within the supported map and construction grid.	请在支持的地图和构造格网范围内选择位置。
 Choose a resampling type for the raster layer.	为栅格图层选择重采样类型。
 Choose a saved S3 connection before opening this source.	打开此数据源前，请选择一个已保存的 S3 连接。
@@ -719,6 +741,9 @@ Choose a stop	选择途经点
 Choose a table to load for editing	选择要加载以进行编辑的表
 Choose a zipped Shapefile, or pick its .shp and .dbf together.	选择压缩的 Shapefile，或同时选择其 .shp 和 .dbf。
 Choose an account	选择账户
+Choose an image and target layer, then draw in the original image grid.	请选择图像和目标图层，然后在原始图像格网中绘制。
+Choose an image before using original-image pixels.	使用原始图像像素前请先选择图像。
+Choose an image or Web Mercator grid metres before drawing.	绘制前请选择图像或 Web 墨卡托格网米。
 Choose Circle or Rotated Box.	请选择“圆形”或“旋转矩形框”。
 Choose Connection	选择连接
 Choose Connection…	选择连接…
@@ -757,6 +782,7 @@ Class color	类颜色
 Class Fields	类字段
 Class Style	类样式
 Class {n}	类 {n}
+Class {n} more than {bound}	类别 {n} 大于 {bound}
 Class {n} up to	类 {n} 上限
 Classes	分类
 classes	类别数
@@ -857,6 +883,7 @@ collection	集合
 Collection {id}: choose dates and Find Items	集合 {id}：选择日期并“查找项目”
 Collections	集合
 Color	颜色
+Color by class	按类别着色
 Color infrared	彩色红外
 Color Infrared (4, 1, 2)	彩色红外 (4, 1, 2)
 Color Ramps	色带
@@ -870,7 +897,6 @@ Colors from the raster's own color table.	使用栅格自带颜色表中的颜�
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	色带（RustGIS、QGIS、GDAL、GMT）
 Column Statistics	列统计
 Columns	列
-Columns named like longitude/latitude, easting/northing or geometry are picked for you.	名为 longitude/latitude、easting/northing 或 geometry 等的列会自动选中。
 Combinations from the box above, one per line	上方框中的组合，每行一个
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	将两个多边形图层合并为任一图层覆盖的所有部分，重叠处带有两者的属性。
 COMID {comid}	COMID {comid}
@@ -921,13 +947,16 @@ Contrast	对比度
 Control Point Fit	控制点拟合
 Conversion	转换
 Conversion closed because the source, selection or tool changed.	源数据、所选要素或工具已改变，转换已关闭。
+conversion request limit reached	已达到转换请求上限
 Convert	转换
 Convert a layer to another format	将图层转换为其他格式
 Convert Field to Dates	将字段转换为日期
 Convert Now	立即转换
 Convert Now fits and applies immediately. Preview Conversion lets you review or adjust first.	“立即转换”会直接拟合并应用；“预览转换”可先查看或调整结果。
 Convert Polygon	转换多边形
+Convert Polygon to Shape…	将多边形转换为形状…
 Convert Polygon…	转换多边形…
+Convert Position	转换位置
 Convert Selected Polygon…	转换选中的多边形…
 Convert the selected layer's labels into an annotation layer.	将所选图层的标注转换为注记图层。
 Convert this layer's labels into an annotation layer.	将此图层的标注转换为注记图层。
@@ -940,8 +969,11 @@ Convert…	转换…
 Coordinate	坐标
 Coordinate System	坐标系
 Coordinate system	坐标系
+Coordinate systems	坐标系
 Coordinate System…	坐标系…
 Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	以 {format} 表示的坐标。单击可切换：十进制度、DMS、UTM、MGRS。UTM 和 MGRS 是覆盖地球的格网，在北纬 84° 以北和南纬 80° 以南以 UPS 读取。
+Copernicus Data Space	Copernicus Data Space
+Copernicus Data Space Status	Copernicus Data Space 状态
 Copernicus Data Space…	哥白尼数据空间…
 Copied the command.	已复制命令。
 Copied the layout to the clipboard	已将布局复制到剪贴板
@@ -986,6 +1018,7 @@ Copy, Cut and Paste keys cannot be reassigned.	复制、剪切和粘贴的按键
 Corner radius	圆角半径
 Corrections	校正
 Cost	成本
+Cost Field	成本字段
 could not draw the layout	无法绘制布局
 could not draw the map	无法绘制地图
 Could not read saved ChatGPT sign-ins: {reason}	无法读取已保存的 ChatGPT 登录信息：{reason}
@@ -1053,6 +1086,7 @@ Cut	剪切
 Cut a raster into web map tiles	将栅格切分为 Web 地图瓦片
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	将栅格切分为 Web 地图瓦片（XYZ PNG），并附带查看器页面。
 Cut Polygon	切割多边形
+Cutoff	中断值
 Dark	深色
 Dash	虚线
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	依次输入虚线段和间隔的长度（单位为点），如 4 2。留空则为实线。
@@ -1097,12 +1131,14 @@ Day and night shading for a time.	某一时刻的昼夜阴影。
 decade	十年
 Decimal	十进制
 decimal degrees	十进制度
+Decimals	小数位数
 Decline	拒绝
 Deep Learning	深度学习
 Deep Learning\nTools	深度学习\n工具
 Deep Learning Package	深度学习包
 Deep Learning Tools	深度学习工具
 Default	默认
+Default Border	默认边框
 Default can't be removed. You can rename or hide it.	无法移除“默认”。您可以将其重命名或隐藏。
 Define Projection	定义投影
 Define Projection…	定义投影…
@@ -1156,7 +1192,9 @@ Description	描述
 Desktop and command line only	仅限桌面应用和命令行
 Destination	目的地
 Destination key	目的地键
+Destinations	目的地
 Destinations ({operation}): {places}	目标位置（{operation}）：{places}
+Destinations to Find	要查找的目的地数
 Detail	细节
 Details	详细信息
 Details of the selected layer, on the Source tab of its properties.	所选图层的详细信息，位于其属性的“源”选项卡上。
@@ -1220,10 +1258,11 @@ Double-click	双击
 Double-click to add	双击添加
 Download	下载
 download	下载
-Download Datum Grids	下载基准转换格网
-Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	下载这些 GeoLibre 工具的{language}翻译（约 2 MB，来源：languages.geolibre.app）
 Download\nMap	下载\n地图
 Download and Install	下载并安装
+Download Datum Grids	下载基准转换格网
+Download GeoLibre Tool Translations	下载 GeoLibre 工具翻译
+Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	下载这些 GeoLibre 工具的{language}翻译（约 2 MB，来源：languages.geolibre.app）
 Download it again and load it.	请重新下载并加载。
 Download its features in the view (up to the server's limit)	下载视图中的要素（不超过服务器的上限）
 Download Map	下载地图
@@ -1301,6 +1340,7 @@ Draw labels at every scale and distance.	在所有比例尺和距离下绘制标
 Draw line	绘制线
 Draw new features in the selected layer. Double-click to finish lines and polygons.	在所选图层中绘制新要素。双击完成线和多边形。
 Draw new single-band rasters with the grey stretch again.	重新使用灰度拉伸绘制新的单波段栅格。
+Draw on top of layers	绘制在图层之上
 Draw only polygon outlines, keeping their colors and widths.	仅绘制多边形轮廓，保留其颜色和宽度。
 Draw point	绘制点
 Draw points as bins coloured by how many fall in each.	将点绘制为按落入数量着色的分箱。
@@ -1308,14 +1348,17 @@ Draw polygon	绘制多边形
 Draw polygons as outlines only.	仅以轮廓绘制多边形。
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	此后添加的单波段栅格将使用此配色方案、拉伸和重采样进行绘制。
 Draw strokes in levels	分级绘制描边
+Draw the grid lines over the map's layers, under the labels; off: under the layers	将格网线绘制在地图图层之上、标注之下；关闭时绘制在图层之下
 Draw the layer at every scale.	在所有比例尺下绘制图层。
 Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).	在 GPU 上绘制地图（测试版；地球仪、视图效果和色觉模拟仍使用 CPU 渲染器）。
 Draw the selected layer above others.	将所选图层绘制在其他图层之上。
 Draw the selected layer below others.	将所选图层绘制在其他图层之下。
 Drawing	绘制
+Drawing cancelled because the map, image or construction grid changed. Check the grid, then start a new shape.	地图、图像或构造格网已更改，绘制已取消。请检查格网，然后开始绘制新形状。
 Drawing Effects	绘制效果
 Drawing Mode	绘制模式
 Drawing Order	绘制顺序
+Drawing requires editing enabled, a loaded polygon layer and a flat Earth map with zero pitch.	绘制需要启用编辑、已加载面图层，且地图为俯仰角为零的平面地球地图。
 drawn by the server	由服务器绘制
 Drive	驾车
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	OpenAerialMap 上共享的无人机和航空影像，最新的在前，以云优化 GeoTIFF 添加。
@@ -1417,6 +1460,7 @@ Empty Cache	清空缓存
 empty for AWS; https://… for others	AWS 留空；其他服务填写 https://… 地址
 Empty Index Cache	清空索引缓存
 Empty the script and its results ({keys} brings the script back)	清空脚本及其结果（按 {keys} 可恢复脚本）
+Enable editing	启用编辑
 Enable Extension	启用扩展
 Enable Lighting	启用光照
 Enable Plugin	启用插件
@@ -1433,9 +1477,12 @@ Enter a valid query parameter name before testing this connection.	测试此连�
 Enter an API key.	请输入 API 密钥。
 Enter an EPSG code as a number, such as 32650	以数字形式输入 EPSG 代码，例如 32650
 Enter Full Screen	进入全屏幕
+Enter the expiry as a Unix time in milliseconds, or leave it blank.	请以毫秒为单位的 Unix 时间输入过期时间，或留空。
 Enter the password or key for this connection. Remember on this computer is optional.	请输入此连接的密码或密钥。“在此计算机上记住”为可选项。
+Enter the password to generate a token.	请输入密码以生成令牌。
 Enter the provider's address.	请输入提供商的地址。
-Enter this connection's password or API key to log in.	请输入此连接的密码或 API 密钥以登录。
+Enter the user to generate a token for.	请输入要为其生成令牌的用户。
+Enter this connection's password, API key or token to log in.	请输入此连接的密码、API 密钥或令牌以登录。
 Enter to send, Shift+Enter for a new line	按 Enter 发送，Shift+Enter 换行
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
@@ -1443,7 +1490,6 @@ Environments	环境
 epochs	训练轮数
 EPSG	EPSG
 EPSG code	EPSG 代码
-EPSG or ESRI code	EPSG 或 ESRI 代码
 EPSG:	EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832、WKT 或 PROJ 字符串；留空：已投影时使用地图的坐标系，否则使用框架中心的 UTM 分带。
@@ -1471,6 +1517,7 @@ Every label setting of this layer, in the Labeling pane.	此图层的所有标�
 Every layer, as FEMA draws them	所有图层，按 FEMA 的绘制方式
 Every run, in order, as a script that opens the project	按顺序将每次运行生成为打开该工程的脚本
 every Socrata site, or one such as data.cityofnewyork.us	所有 Socrata 站点，或某个站点，如 data.cityofnewyork.us
+every value	所有值
 Every {n} min	每 {n} 分钟
 Everything done in this session, from the app, scripts, the AI Assistant or plugins	本次会话中通过应用、脚本、AI 助手或插件执行的所有操作
 Everywhere	所有位置
@@ -1484,6 +1531,8 @@ Expand Group	展开分组
 Expand Legend	展开图例
 Expand the ribbon	展开功能区
 Expand Tile Legend	展开瓦片图例
+Expires at (Unix milliseconds)	过期时间（Unix 毫秒）
+expiresAt must be a Unix time in milliseconds, in the future.	expiresAt 必须是将来的 Unix 时间（毫秒）。
 Explode	分解
 Exploratory 3D Analysis	探索性三维分析
 Exploratory Analysis	探索性分析
@@ -1495,6 +1544,7 @@ Export\nMap	导出\n地图
 Export\nRaster	导出\n栅格
 Export and print the layout's map frames to PDF with their coordinates, so PDF readers can locate and measure in them.	将布局的地图框导出并打印为带坐标的 PDF，以便 PDF 阅读器可以在其中定位和测量。
 Export Animation	导出动画
+Export Block	导出块
 Export Bookmarks	导出书签
 Export Bookmarks…	导出书签…
 Export CSV…	导出 CSV…
@@ -1502,6 +1552,7 @@ Export Features	导出要素
 Export Features (tool)	导出要素（工具）
 Export Features needs a vector layer (Data › Export Raster writes a raster)	导出要素需要矢量图层（“数据 › 导出栅格”用于写出栅格）
 Export Features…	导出要素…
+Export GeoJSON…	导出 GeoJSON…
 Export Keyboard Shortcuts…	导出键盘快捷键…
 Export Layout	导出布局
 Export Map	导出地图
@@ -1540,12 +1591,14 @@ exporting animations needs the desktop app	导出动画需要桌面应用
 exporting time animations needs the desktop app	导出时间动画需要桌面应用
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	将已设置样式的栅格图层导出为 PMTiles 归档中的 Web 墨卡托 PNG 瓦片。
 Exports a vector layer as a Web Mercator vector-tile PMTiles archive.	将矢量图层导出为 Web 墨卡托矢量瓦片 PMTiles 归档。
+Exports contain ordinary polygons and feature properties. Image/grid choices and exact constructions remain session-only.	导出内容包含普通多边形和要素属性。图像/格网选择和精确构造仅保留在当前会话中。
 Export…	导出…
 Expression	表达式
 Extensions	扩展
 Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands.	扩展是 RustGIS 的可选部分：无需下载。关闭某个扩展可隐藏其选项卡和命令。
 Extensions…	扩展…
 Extent	范围
+Extent in	范围单位
 Extent Indicator	范围指示器
 extent is [minLon, minLat, maxLon, maxLat], "view" or null	范围应为 [minLon, minLat, maxLon, maxLat]、"view" 或 null
 Extent: {extent}	范围：{extent}
@@ -1558,6 +1611,7 @@ Extrusion Base	拉伸底部
 F2	F2
 Face Culling	面剔除
 Faces	面
+Facilities	设施
 Factor	因子
 factor	系数
 Failed	失败
@@ -1598,12 +1652,10 @@ Fetch the tiles and styles of the web layers again.	重新获取 Web 图层的�
 Fetches the picture from {host}, which learns your IP address and that it was viewed	从 {host} 获取图片。该网站将获知你的 IP 地址及此次查看记录
 Field	字段
 field * 2, 'text', a + b	field * 2, 'text', a + b
-field and statistic pairs	字段与统计量的配对
 Field boundaries	田块边界
 Field density	田块密度
 Field is missing from this input.	此输入中缺少字段。
 Field name	字段名称
-field names (separated by commas)	字段名称（以英文逗号分隔）
 Field Prefix	字段前缀
 Field to Sum and Average	求和与平均的字段
 Fields	字段
@@ -1650,6 +1702,7 @@ Find plugins in the RustGIS plugin registry.	在 RustGIS 插件库中查找插�
 Find Similar	查找相似
 Find Tools	查找工具
 Finding routes…	正在查找路线…
+Finds the lines reachable within one or more travel costs of points, along a line network.	沿线网络查找从点出发、在一个或多个出行成本内可到达的线。
 Finish File Export	完成文件导出
 Finish Polygon	完成多边形
 Finish Profile	完成剖面
@@ -1672,12 +1725,12 @@ Fix the problems listed below first	请先修复下面列出的问题
 Fixed	固定
 Fixed Zoom In	固定比例放大
 Fixed Zoom Out	固定比例缩小
-Fixture	夹具
 Flat	平头
 Flat ground keeps the ramp's colour and slopes facing the sun brighten	平地保留色带原色，向阳坡面变亮
 FlatGeobuf	FlatGeobuf
 Flip Line	翻转线
 Flowline	流线
+FocusAtPassStart	FocusAtPassStart
 Fog	雾
 Folder	文件夹
 folder	文件夹
@@ -1692,6 +1745,7 @@ Follow the time slider	跟随时间滑块
 Font	字体
 for a store that doesn't say	用于未注明的存储
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	对于 ArcGIS Online，客户端 ID 是 RustGIS 自带的应用。对于 ArcGIS Enterprise 门户，请在门户上注册一个 OAuth 应用（内容 › 新建项目 › 开发者凭据），其重定向 URL 为 {redirect}，并填写其客户端 ID。
+For img1.tiff, suggest img1.geojson. Choose the location in the save dialog.	对于 img1.tiff，建议使用 img1.geojson。请在保存对话框中选择位置。
 for the layers that change with time, as they list their times (2024-06-01, 1995)	用于随时间变化的图层，按其列出时间的形式（2024-06-01、1995）
 Forest	森林
 Forget Earthdata Login Token	清除 Earthdata Login 令牌
@@ -1735,6 +1789,8 @@ Gemini stopped the reply ({reason}).	Gemini 停止了回复（{reason}）。
 General	常规
 Generalization	综合
 Generate a token	生成令牌
+Generate ArcGIS Token	生成 ArcGIS 令牌
+Generating token…	正在生成令牌…
 geoBoundaries listed no countries: type a country's code	geoBoundaries 未列出任何国家：请输入国家代码
 Geocode	地理编码
 Geocode Addresses	地址地理编码
@@ -1782,6 +1838,8 @@ Give the catalogue's web address	请提供目录的网址
 Give the file's web address	请提供文件的网址
 Give the service's web address	请提供服务的网址
 give the text's layer and row, or the lon and lat to place one	请提供文本所在的图层和行，或用于放置文本的经度和纬度
+given up before it was read: it was cancelled, or its project was closed	在读取前已放弃：已被取消，或其工程已关闭
+given up before it was read: its project was closed, or more than 64 downloads started after it	在读取前已放弃：其工程已关闭，或之后又开始了超过 64 个下载
 given up before its read began: its project was closed, or more than 64 downloads started after it	在开始读取前已放弃：其工程已关闭，或在其之后启动了超过 64 个下载
 given up during its read: its project was closed, or more than 64 downloads started after it	读取过程中被放弃：其工程已关闭，或在它之后启动了超过 64 个下载
 Global	全局
@@ -1817,8 +1875,10 @@ Greece	希腊
 Green	绿
 Greys	灰度
 Grid	格网
+Grid color	格网颜色
 Grid EPSG:{epsg}	格网 EPSG:{epsg}
 Grid pixels; angle clockwise from grid right.	格网像素；角度从格网右方向起顺时针计算。
+Grid read cancelled. Reload the grid to draw in image pixels.	格网读取已取消。要按图像像素绘制，请重新加载格网。
 Grid Spacing (degrees)	格网间距（度）
 Ground	地面
 Ground\nTo Grid	地面\n转格网
@@ -1826,6 +1886,7 @@ Ground heights	地面高度
 Ground To Grid	地面转格网
 Group	分组
 GROUP BY	GROUP BY
+Group by	分组依据
 Group features by an integer code, each with default values.	按整数代码对要素分组，每组具有默认值。
 Group Option	分组选项
 Group Properties	分组属性
@@ -1849,6 +1910,7 @@ Height	高度
 Height (m)	高度（米）
 Height (mm)	高度（mm）
 Height (points)	高度（点）
+Held in	保存位置
 Help	帮助
 Help › Help	帮助 › 帮助
 Hexagons	六边形
@@ -1884,7 +1946,10 @@ HOME	HOME
 Home	主页
 Home › Add	主页 › 添加
 Home › Add › Add Data	主页 › 添加 › 添加数据
+Home › Add › Add Data › From Service	主页 › 添加 › 添加数据 › 从服务
 Home › Add › Web Data	主页 › 添加 › Web 数据
+Home › Add › Web Data › Copernicus Data Space	主页 › 添加 › Web 数据 › Copernicus Data Space
+Home › Add › Web Data › NASA Earthaccess	主页 › 添加 › Web 数据 › NASA Earthaccess
 Home › Add › Web Data › United States	主页 › 添加 › Web 数据 › 美国
 Home › Inspect › Measure	主页 › 检查 › 测量
 Home › Navigate	主页 › 导航
@@ -1925,9 +1990,14 @@ IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	IGN 的法国 LiDAR HD 点云：地图所在位置的 1 km 瓦片，以 COPC 点云添加。
 Ignore holes	忽略孔洞
 Illumination	照明
+Image	图像
 Image Analysis	影像分析
+Image annotation	图像注记
 Image Classification	影像分类
+image is required; use null for No image	image is required; use null for No image
+Image markers that can't be drawn were replaced by the circles they showed as: {count} on "{layer}"	无法绘制的图像标记已替换为其显示时的圆形：“{layer}”上 {count} 个
 Image Page	图像页面
+Image-grid request limit reached	已达到图像格网请求上限
 Imagery	影像
 Imagery Sharing	影像共享
 Imagery Tools	影像工具
@@ -1943,6 +2013,7 @@ Import Deep Learning Package	导入深度学习包
 Import DXF	导入 DXF
 Import DXF…	导入 DXF…
 Import GeoLibre Project	导入 GeoLibre 工程
+Import GeoLibre Tool Translations	导入 GeoLibre 工具翻译
 Import Keyboard Shortcuts	导入键盘快捷键
 Import Keyboard Shortcuts…	导入键盘快捷键…
 Import Layout	导入布局
@@ -1984,6 +2055,7 @@ In the middle	中间
 In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	在 Web 应用中，请提供支持 CORS 的代理服务器；直接访问 Census 需要桌面应用或 CLI。
 In the web app, give the store's web address (https://…)	在网页版中，请输入该存储的网络地址（https://…）
 In use	正在使用
+Include Empty Zones	包含空区域
 Include End Point	包含终点
 Include two-digit years	包含两位数年份
 Indent	缩进
@@ -2075,6 +2147,7 @@ It is locked, or one of its surrounds is: unlock it first	它或其某个周边�
 It is remembered on this computer.	已在此计算机上记住。
 it is reserved to you (plugins, scripts, tasks, models and the GeoLibre runner)	它仅限您本人执行（插件、脚本、任务、模型和 GeoLibre 运行器）
 it needs input: open it from its pane or button, or run it from a script or the assistant	它需要输入：请从其窗格或按钮打开，或通过脚本或助手运行
+It opens unsaved. Save to keep it.	以未保存状态打开。请保存以保留。
 It opens unsaved; saving replaces {file}.	以未保存状态打开；保存将替换 {file}。
 it reads or writes files on this computer	它会读取或写入此计算机上的文件
 it replaces the open project	它会替换当前打开的工程
@@ -2180,6 +2253,7 @@ Lambert Conformal Conic	兰伯特等角圆锥投影
 Lambert Cylindrical Equal Area	兰伯特等积圆柱投影
 Landscape	横向
 Language	语言
+Largest first	从大到小
 Lasso	套索
 Lasso (draw)	套索（绘制）
 Last agent call failed: {call} ({secs} s ago)	上次智能体调用失败：{call}（{secs} 秒前）
@@ -2200,6 +2274,7 @@ Layer Extrusion	图层拉伸
 Layer File	图层文件
 Layer From\nSelection	从所选内容\n创建图层
 Layer not found	未找到图层
+Layer order	图层顺序
 Layer Properties	图层属性
 Layer Properties Pane	图层属性窗格
 Layer Properties · {layer}	图层属性 · {layer}
@@ -2222,6 +2297,7 @@ Layouts	布局
 Learn	学习
 Learning\nResources	学习\n资源
 Least cloud first	云量最少优先
+Leave out	省略
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	将密钥留空以使用此计算机上保存的密钥登录，或输入其他密钥，然后点击“保存”。
 Left	左侧
 Legend	图例
@@ -2287,6 +2363,7 @@ List Source Cooperative Files	列出 Source Cooperative 文件
 List Source Cooperative Products	列出 Source Cooperative 产品
 List STAC Collections	列出 STAC 集合
 List Tables	列出表
+List Tables reads a file of several layers (a KML, a zip) whole, up to {limit} MiB; add it with Add Data	“列出表”会完整读取包含多个图层的文件（KML、zip），最大 {limit} MiB；请使用“添加数据”添加
 List The National Map Services	列出 The National Map 服务
 List the provider's models	列出提供商的模型
 List this layer in the legend	在图例中列出此图层
@@ -2320,6 +2397,7 @@ Loads map tiles from the web	从网络加载地图瓦片
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	加载此计算机上 GeoPackage 的一个要素表（最多 100,000 行），以便通过“编辑 › 保存到 GeoPackage”将编辑保存回该表。需要 INTEGER PRIMARY KEY。
 Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	按数据库中的当前状态重新加载图层的行。未保存的编辑将被放弃（可用“撤销”恢复）。
 Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	按文件中的当前状态重新加载图层的行。未保存的编辑将被放弃（可用“撤销”恢复）。
+Load…	加载…
 Local	本地
 Locate	定位
 Locate GeoLibre Runner	定位 GeoLibre 运行器
@@ -2368,7 +2446,6 @@ Manual	手动
 Manually reread this archive from disk without changing its presentation. Undo cannot restore overwritten file contents.	从磁盘手动重新读取此归档，不更改其呈现方式。撤销无法恢复被覆盖的文件内容。
 Map	地图
 map	地图
-Map Tiles	地图瓦片
 Map\nFrame	地图\n框
 Map (the current view)	地图（当前视图）
 map by date	按日期显示地图
@@ -2383,6 +2460,7 @@ Map Labeling	地图标注
 Map Link	地图链接
 Map name	地图名称
 Map Page	地图页面
+Map projections	地图投影
 Map scale	地图比例尺
 Map Series	地图系列
 Map Series Page	地图系列页面
@@ -2390,6 +2468,7 @@ Map series page name	地图系列页面名称
 Map style (JSON)	地图样式 (JSON)
 Map Surrounds	地图整饰要素
 Map Thumbnail	地图缩略图
+Map Tiles	地图瓦片
 Map tiles of the whole world	全球地图瓦片
 Map Tool: {tool}	地图工具：{tool}
 Map View	地图视图
@@ -2413,6 +2492,8 @@ Matplotlib	Matplotlib
 Max	最大值
 Max %	最大 %
 Max Neighbors	最大邻域数
+Max X	最大 X
+Max Y	最大 Y
 Maximum	最大值
 Maximum Zoom	最大缩放级别
 Maximum zoom	最大缩放级别
@@ -2437,6 +2518,7 @@ Measured grid's coordinate system	量测格网的坐标系
 Measurement units	测量单位
 Measurement units must be metric or imperial	测量单位必须为公制或英制
 Measurements so far.	迄今为止的测量结果。
+Measures the cost and length of the cheapest way along a line network from each origin to each destination.	沿线网络测量从每个起点到每个目的地的最低成本路径的成本和长度。
 Mensuration	量测
 Mensuration Tools	量测工具
 Merge	合并
@@ -2458,6 +2540,8 @@ Min	最小值
 Min %	最小 %
 Min must be less than Max	最小值必须小于最大值
 Min must not be more than Max	最小值不能大于最大值
+Min X	最小 X
+Min Y	最小 Y
 Minimize	最小化
 Minimum	最小值
 Minimum Bounding Geometry	最小边界几何
@@ -2506,7 +2590,9 @@ Months	月份
 Months are numbers from 1 to 12 (12, 1, 2 for December to February)	月份为 1 到 12 的数字（12、1、2 表示十二月至二月）
 More	更多
 More basemaps:	更多底图：
+More Quick Access commands	更多快速访问命令
 More than one saved connection could read these buckets. Choose the one that reads each; the project's sources that read it stay closed until you do.	有多个已保存的连接可以读取这些存储桶。请为每个存储桶选择读取它的连接；在选择之前，读取它的工程数据源将保持关闭。
+more than {bound}	大于 {bound}
 more than {n}	超过 {n}
 Morocco	摩洛哥
 Mosaic images into an orthomosaic	将影像镶嵌为正射镶嵌
@@ -2547,6 +2633,7 @@ My OGC Layer	我的 OGC 图层
 MySQL/MariaDB	MySQL/MariaDB
 N/S/E/W	N/S/E/W
 Name	名称
+name or code	名称或代码
 name the plugin whose panel to open: {"id": plugin id}	请指定要打开其面板的插件：{"id": plugin id}
 Names keep up to 200 characters.	名称最多保留 200 个字符。
 NASA Earthaccess	NASA Earthaccess
@@ -2579,15 +2666,19 @@ Near Features	邻近要素
 Nearest cell	最近像元
 Nearest Neighbor	最邻近
 Neatline	图廓线
+Needed to make a token from a password	从密码生成令牌时需要
 Needs RustGIS {min}	需要 RustGIS {min}
 Needs three or more bands.	需要三个或更多波段。
 Needs two or more numeric fields.	需要两个或以上数值字段。
+Needs {what}, which isn't given: {place}.	需要 {what}，但未提供：{place}。
+Needs {what}: kept.	需要 {what}：已保留。
 Neighborhood Explorer	邻域浏览器
 Nepal	尼泊尔
 Netherlands	荷兰
 Network	网络
 Network Analysis	网络分析
 Network failures	网络故障
+Network Lines	网络线
 New	新建
 New\nLayout	新建\n布局
 New\nMap	新建\n地图
@@ -2618,6 +2709,8 @@ New Relationship…	新建关系…
 New Report	新建报表
 New rows	新行
 New Selection	创建新选择内容
+New shape grid	新形状格网
+New shapes use the original GeoTIFF pixels, including rotation and shear. Existing objects keep their own grid.	新形状使用原始 GeoTIFF 像素，包括旋转和错切。已有对象保留各自的格网。
 New Style	新建样式
 New Style From Layer	从图层新建样式
 New Task	新建任务
@@ -2644,6 +2737,7 @@ No catalogs below this one: Find Items lists its items	此目录下没有子目�
 No COMID was returned for this point.	未返回此点的 COMID。
 no command	没有命令
 No command matches	没有匹配的命令
+No coordinate system matches; a code or PROJ string is used as typed.	没有匹配的坐标系；将按输入原样使用代码或 PROJ 字符串。
 no data	无数据
 No data at the points picked.	所选点处无数据。
 No data cube matches	没有匹配的数据立方体
@@ -2661,6 +2755,7 @@ no free file name for {name}	没有可用于 {name} 的空闲文件名
 No geometry to calculate	没有可计算的几何
 No granules in this view and date range.	此视图和日期范围内没有颗粒。
 no home folder	没有主文件夹
+No image	无图像
 No installed font draws the {language} text on the map, so it is left out of the map and its exports.	已安装的字体均无法显示地图中的{language}文字，这些文字会从地图和导出结果中省略。
 no layer	无图层
 No layer has a field of dates.	没有图层包含日期字段。
@@ -2777,6 +2872,7 @@ observer height m	观察者高度 m
 Ocean	海洋
 Ocean Data Platform	Ocean Data Platform
 Ocean Data Platform…	Ocean Data Platform…
+OD Cost Matrix	OD 成本矩阵
 of a geometry that doesn't say	用于未注明的几何
 Off	关
 Off, the commands run aren't recorded; what is in the log stays	关闭，运行的命令不会被记录；日志中的已有内容会保留
@@ -2795,6 +2891,7 @@ On	开
 On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	在高分辨率（HiDPI）显示器上，按显示器的物理像素获取栅格瓦片和 WMS 图像，细节最高可增至两倍，文字和线条更清晰、更细小。关闭后按逻辑像素获取并拉伸显示，画面较模糊，文字较大。
 On Hold	已挂起
 on hold	已挂起
+on is required	on is required
 On its own tab, {tab}.	在其自己的选项卡 {tab} 中。
 on must be true or false	on 必须为 true 或 false
 On the desktop, the key can also come from {vars}.	在桌面版中，密钥也可以来自 {vars}。
@@ -2811,7 +2908,6 @@ One per line: code=name	每行一个：代码=名称
 One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.	视图的一张图片：符号和标注不会在瓦片边缘被截断，每个视图只向服务请求一次。在地球仪、倾斜地图或服务不提供的投影上以瓦片绘制。
 One stroke, from the symbol. Add strokes for casings, parallel lines and offsets.	来自符号的一条描边。添加描边可绘制轮廓线、平行线和偏移线。
 One-time code	一次性验证码
-only a discovered list can invalidate the saved table	only a discovered list can invalidate the saved table
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	只有从文件读取的瓦片归档（PMTiles 或 MBTiles）才能修复。
 Only cubes with data where the map is	仅限地图所在范围有数据的立方体
 Only selected polygons will be included in the output.	输出中仅包含选中的多边形。
@@ -2898,8 +2994,8 @@ Or run in a POSIX shell, for Claude Code or Codex:	或在 POSIX shell 中运行�
 Or run in PowerShell, for Claude Code or Codex:	或在 PowerShell 中运行（适用于 Claude Code 或 Codex）：
 Or run, for Claude Code or Codex:	或者，对于 Claude Code 或 Codex，运行：
 Or, for agents that use MCP over HTTP (port {port}):	使用 HTTP 连接 MCP 的智能体可访问以下地址（端口 {port}）：
+Order	顺序
 ORDER BY	ORDER BY
-ordered field names	按顺序排列的字段名称
 Ordinary Kriging	普通克里金
 Orientation	方向
 Origin	起点
@@ -2907,8 +3003,13 @@ Origin key	起点键
 Original	原始
 Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.	使用原始 GeoTIFF 像素，保留旋转和错切变换。仅支持本地或嵌入的 GeoTIFF。
 Original grid pixels. A circle may appear elliptical in the map projection.	原始格网像素。在地图投影中，圆形可能显示为椭圆。
+Original Image Grid	原始图像格网
+Original image grid: {width} × {height} pixels, EPSG:{epsg}	原始图像格网：{width} × {height} 像素，EPSG:{epsg}
+Original image pixels	原始图像像素
+Origins	起点
 Ortho Mapping	正射制图
 Other	其他
+Other bar	其他条形
 Other copies of unsaved work will be offered at the next start ({n}).	其他未保存工作的副本将在下次启动时提供（{n}）。
 Other Data	其他数据
 Out Beyond	缩小超过
@@ -2938,6 +3039,7 @@ Overture Maps	Overture Maps
 Overture Maps' open data: buildings, places, transportation, administrative divisions, base layers and addresses. Where the map is, its features are read in place from Overture's GeoParquet files (zoom to a city or smaller); the whole world comes as map tiles.	Overture Maps 的开放数据：建筑物、地点、交通、行政区划、基础图层和地址。地图所在范围内的要素从 Overture 的 GeoParquet 文件就地读取（需缩放到城市或更小范围）；全球范围则以地图瓦片提供。
 Overture Maps…	Overture Maps…
 Overwrite existing values	覆盖现有值
+Own	自定义
 Package	打包
 Package a trained deep learning model.	打包已训练的深度学习模型。
 Package for\nthe Field	打包\n外业
@@ -2946,6 +3048,7 @@ Package Map	打包地图
 Package Project	打包工程
 Package Results	打包结果
 Pad	填补
+Padding	内边距
 Padding across	水平内边距
 Padding up and down	垂直内边距
 Page	页面
@@ -2978,8 +3081,11 @@ Parent folder	上级文件夹
 parks, bike lanes, flood zones…	公园、自行车道、洪水区…
 Password	密码
 Past its points: its end colors, back and forth, or over again	超出端点后：使用端点颜色、来回反射或重复
+Past the limit	超出上限
 Paste	粘贴
 Paste a token	粘贴令牌
+Paste a token for this connection, or make one from its user and password. Remember on this computer is optional.	粘贴此连接的令牌，或用其用户和密码生成令牌。“在此计算机上记住”为可选项。
+Paste a token, or type the password to make one, or leave it blank to use this connection's session or saved login, then Save.	粘贴令牌，或输入密码以生成令牌，或留空以使用此连接的会话或已保存的登录信息，然后点击“保存”。
 Paste copied features into the selected layer, or as a new layer.	将复制的要素粘贴到所选图层，或粘贴为新图层。
 Paste Group	粘贴组
 Paste Groups	粘贴组
@@ -2987,6 +3093,7 @@ Paste Layer	粘贴图层
 Paste Layers	粘贴图层
 Paste Special	选择性粘贴
 Paste Special (as a new layer)	选择性粘贴（作为新图层）
+Paste token	粘贴令牌
 paste your key	粘贴您的密钥
 path is required	需要提供 path
 Pause	暂停
@@ -2999,6 +3106,7 @@ Percent	百分比
 Percent Clip	百分比截断
 Perceptually Uniform	感知均匀
 Performance	性能
+Perpendicular	垂直
 Phase	阶段
 Photon	Photon
 Pick a date	选择日期
@@ -3015,7 +3123,6 @@ Pick the GeoPackage next. Its other tables are kept.	接下来选择 GeoPackage�
 Picture	图片
 picture	图片
 Picture unavailable: not a picture	图片不可用：不是图片
-Picture unavailable: only https:// pictures are fetched	无法显示图片：仅获取 https:// 图片
 Picture unavailable: pictures aren't fetched from this computer or the local network	图片不可用：不会从此计算机或本地网络获取图片
 Picture unavailable: that address is never fetched	图片不可用：该地址永不获取
 Picture unavailable: {format} pictures aren't supported	图片不可用：不支持 {format} 图片
@@ -3033,6 +3140,7 @@ Pixel	像素
 Pixel Editor	像素编辑器
 Pixel Size	像素大小
 Pixel type	像素类型
+pixels is required	pixels is required
 Place	位置
 Place a raster on the map	在地图上放置栅格
 Place a raster on the map from control points or the view.	根据控制点或视图在地图上放置栅格。
@@ -3070,7 +3178,6 @@ PMTiles archive	PMTiles 归档
 PNG frames (zip)	PNG 帧（zip）
 PNG image or GeoTIFF	PNG 图像或 GeoTIFF
 Point	点
-point layer	点图层
 Point the selected layer at its file after the file moved or was renamed.	在文件移动或重命名后，将所选图层重新指向其文件。
 Points	点
 Points Along Lines	沿线生成点
@@ -3120,6 +3227,7 @@ Press a key combination to assign it. Escape cancels.	按下要分配的组合�
 Press Load sources & plot first	请先按“加载来源并绘制”
 Preview and set up the report.	预览并设置报表。
 Preview Conversion	预览转换
+Preview Shape Conversion	预览形状转换
 Preview, edit and play the presentation.	预览、编辑并播放演示文稿。
 Previous	上一个
 Previous Extent	上一个范围
@@ -3150,6 +3258,7 @@ project is "sample", "blank", "last" or {"path": a project file}	project 为 "sa
 Project Raster	投影栅格
 Project Template	工程模板
 project's path is required	需要提供工程的路径
+Projected system	投影坐标系
 projected system (EPSG:32616), or degrees	投影坐标系（EPSG:32616）或度
 Projection	投影
 Projections	投影
@@ -3201,8 +3310,6 @@ Random points in polygons	多边形内随机点
 Range	范围
 range: 0, 0.9	范围：0, 0.9
 Raster	栅格
-raster layer	栅格图层
-raster layers (names separated by ;)	栅格图层（名称以英文分号 ; 分隔）
 Raster\nAnalysis	栅格\n分析
 Raster\nInformation	栅格\n信息
 Raster Data	栅格数据
@@ -3218,7 +3325,9 @@ Raster to PMTiles	栅格转 PMTiles
 Raster · {w} × {h} · {n} bands · {renderer}	栅格 · {w} × {h} · {n} 个波段 · {renderer}
 Rasters: {system}, cell size {cells}	栅格：{system}，像元大小 {cells}
 Read	读取
+Read a script from a file in place of this one ({keys} brings it back)	从文件读取脚本以替换此脚本（{keys} 可恢复）
 Read and write files on this computer	读写此计算机上的文件
+Read Connection File	读取连接文件
 Read error	读取错误
 Read the bands picked for the view (at most about 6 km a side)	读取为视图选定的波段（每边最多约 6 km）
 Read the map's layers and features	读取地图的图层和要素
@@ -3228,13 +3337,16 @@ Reading a granule's files needs an Earthdata Login token, which works for every 
 Reading dates…	正在读取日期…
 Reading in place…	正在原位读取…
 Reading JAXA Earth's catalog…	正在读取 JAXA Earth 的目录…
+Reading original image grid…	正在读取原始图像格网…
 Reading the catalog: {n} documents read, {m} items found…	正在读取目录：已读取 {n} 个文档，找到 {m} 个项目…
 Reading the catalog…	正在读取目录…
+Reading the download failed unexpectedly	读取下载内容时意外失败
 Reading the embeddings…	正在读取嵌入向量…
 Reading the file's layers…	正在读取文件的图层…
 Reading the installed fonts…	正在读取已安装的字体…
 Reading the store… ({n} files to go)	正在读取存储…（还剩 {n} 个文件）
 Reading the tileset of {name}	正在读取 {name} 的瓦片集
+Reading the time series…	正在读取时间序列…
 Reading the window failed unexpectedly	读取窗口时意外失败
 Reading {n} of Overture's {ty} files where the map is: {attribution}	正在读取地图所在范围内 Overture 的 {n} 个 {ty} 文件：{attribution}
 Reading {url}…	正在读取 {url}…
@@ -3243,7 +3355,9 @@ Reading…	正在读取…
 Reads and writes files	读写文件
 Reads the map	读取地图
 Reality Mapping	实景制图
+Received tile {z}/0/0.	已收到瓦片 {z}/0/0。
 Recent	最近使用
+Recently used	最近使用
 record	记录
 Record Task	录制任务
 Recorded Task	已录制的任务
@@ -3283,6 +3397,7 @@ Reload	重新加载
 Reload\nData	重新加载\n数据
 Reload Data	重新加载数据
 Reload Data from local files requires the desktop app.	从本地文件重新加载数据需要桌面应用。
+Reload Grid	重新加载格网
 Reload Themes	重新加载主题
 Reload Tile Archive	重新加载瓦片归档
 Reload Web Layers	重新加载 Web 图层
@@ -3303,6 +3418,7 @@ Remove Folder	移除文件夹
 Remove From Current Selection	从当前选择中移除
 Remove from Favourites	从收藏夹移除
 Remove From Group	从分组中移除
+Remove GeoLibre Tool Translations	移除 GeoLibre 工具翻译
 Remove Group	移除分组
 Remove Keyframe	移除关键帧
 Remove Label Class	移除标注类
@@ -3340,7 +3456,6 @@ Repair\nSource	修复\n数据源
 Repair Data Source	修复数据源
 Repair Data Source…	修复数据源…
 Repair Geometry	修复几何
-Repair is disabled while discovery is in flight	Repair is disabled while discovery is in flight
 Repair Tile Archive	修复瓦片归档
 Repaired {name}	已修复 {name}
 Repeat	重复
@@ -3533,6 +3648,7 @@ Save Project Template	保存工程模板
 Save Style Items	保存样式项
 Save Task Item	保存任务项
 Save the active map (with its data) as a map file.	将活动地图（及其数据）保存为地图文件。
+Save the connection before generating a token.	生成令牌前请先保存连接。
 Save the connection first: a login belongs to a saved connection.	请先保存连接：登录信息属于已保存的连接。
 Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	将视图中的数据连同地图的 MBTiles 和 PMTiles 底图保存为外业数据包，以便在手机上打开。
 Save the last task as a task file.	将上一个任务保存为任务文件。
@@ -3613,6 +3729,7 @@ Search	搜索
 Search (this portal needs words)…	搜索（此门户需要输入关键词）…
 Search area	搜索区域
 Search area: {points} point, {lines} line and {polygons} polygon part(s)	搜索区域：{points} 个点、{lines} 个线和 {polygons} 个多边形部分
+Search by name or code	按名称或代码搜索
 Search candidates not shown: {n} (limit {limit}).	未显示的搜索候选项：{n} 个（上限 {limit}）。
 Search Catalogue	搜索目录
 Search commands	搜索命令
@@ -3682,6 +3799,7 @@ Select a navigation method after tracing a point.	追踪一个点后，选择导
 Select a raster or tile layer in the Layers pane first	请先在图层窗格中选择一个栅格图层或瓦片图层
 Select All	全选
 Select an element to format it.	选择一个元素以设置其格式。
+Select an image with an available filename, or uncheck Use image filename.	请选择有可用文件名的图像，或取消勾选“使用图像文件名”。
 Select By\nAttributes	按属性\n选择
 Select By\nLocation	按位置\n选择
 Select By Attributes	按属性选择
@@ -3736,8 +3854,10 @@ Sepia	棕褐色调
 Sequential	连续
 Serif	衬线
 Server	服务器
+Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.	服务器可访问，但 {z}/0/0 处没有瓦片。请检查地址和图层的缩放范围。
 Service	服务
 service	服务
+Service Area	服务区
 Service discovery was cancelled	服务发现已取消
 Service Group	服务组
 Service group data exceeds 64 MB.	服务组数据超过 64 MB。
@@ -3763,6 +3883,8 @@ Set the pixels inside a polygon.	设置多边形内的像素。
 Settings	设置
 Settings › Customize	设置 › 自定义
 Settings › Customize › Keyboard Shortcuts	设置 › 自定义 › 键盘快捷键
+Settings › Datum Grids	设置 › 基准转换格网
+Settings › Map Tiles	设置 › 地图瓦片
 Settings › Theme	设置 › 主题
 Settings…	设置…
 Several places	多个地点
@@ -3831,11 +3953,12 @@ Show Me	显示位置
 Show no data	显示无数据
 Show or hide	显示或隐藏
 Show or hide the AI Assistant.	显示或隐藏 AI 助手。
+Show or hide the Annotate pane.	显示或隐藏注记窗格。
 Show or hide the Bookmarks pane: every map's bookmarks.	显示或隐藏书签窗格：所有地图的书签。
 Show or hide the Browser pane.	显示或隐藏浏览器窗格。
 Show or hide the Data Sources pane.	显示或隐藏数据源窗格。
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	显示或隐藏数据源窗格：收藏夹、最近使用的数据、已保存的服务、数据库和 STAC API，以及公共数据源资源库。
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	在底图上显示或隐藏经纬网：经纬线、量测格网或 UTM 分带。
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	显示或隐藏底图上的经纬网：经纬线、量测格网、UTM 带或 MGRS 格网。
 Show or hide the group's layers	显示或隐藏分组中的图层
 Show or hide the layer.	显示或隐藏图层。
 Show or hide the Layers pane.	显示或隐藏图层窗格。
@@ -3883,9 +4006,11 @@ Sign in	登录
 Sign In to ArcGIS	登录 ArcGIS
 Sign in to ArcGIS	登录 ArcGIS
 Sign in to choose a model.	登录后即可选择模型。
+Sign In to Copernicus Data Space	登录 Copernicus Data Space
 Sign in with your ChatGPT account.	请使用您的 ChatGPT 账户登录。
 Sign out	退出登录
 Sign Out of ArcGIS	退出 ArcGIS 登录
+Sign Out of Copernicus Data Space	退出 Copernicus Data Space 登录
 Sign-in	登录
 Sign-in cancelled.	登录已取消。
 Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	登录超时。请重新开始，并允许浏览器访问此计算机的回环地址。
@@ -3896,9 +4021,9 @@ Signed in to {portal} as {user}	已以 {user} 身份登录 {portal}
 Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	已在此电脑上退出，但 OpenAI 未确认。你可以在 ChatGPT 设置中断开 RustGIS。
 Signed out on this computer, but the system keychain couldn't be read, so OpenAI wasn't asked to end the session. You can disconnect RustGIS in ChatGPT's settings.	已在此电脑上退出，但无法读取系统钥匙串，因此未请求 OpenAI 结束会话。你可以在 ChatGPT 设置中断开 RustGIS。
 Significance level	显著性水平
-Signing in to Copernicus Data Space needs the desktop app for now.	目前请使用桌面版登录哥白尼数据空间。
 Signing in with ChatGPT works in the desktop app.	使用 ChatGPT 登录仅适用于桌面应用。
 Signing in with the account remembered on this computer…	正在使用此计算机上记住的账户登录…
+Signing in…	正在登录…
 Signing the asset (Planetary Computer)…	正在为资产签名（Planetary Computer）…
 Signs this account out and forgets it on this computer, with its saved sign-in.	退出此账户，并在此计算机上清除它及其保存的登录信息。
 Sill	基台
@@ -3924,13 +4049,12 @@ slight left	稍向左转
 slight right	稍向右转
 Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.	坡度（度或百分比）、坡向、山体阴影、NDVI、波段运算和阈值。
 Slope (degrees or percent), hillshade, NDVI and more.	坡度（度或百分比）、山体阴影、NDVI 等。
-Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	坡度（度）、坡向、山体阴影、NDVI、波段运算、阈值。
-Slope (degrees), hillshade, NDVI and more.	坡度（度）、山体阴影、NDVI 等。
-Slope is in degrees (0–90), not percent.	坡度以度（0–90）为单位，而非百分比。
 Slope per	斜率单位
 Slope units	坡度单位
 Small scales	小比例尺
+Smallest first	从小到大
 Snap	捕捉
+Snap Distance (m)	捕捉距离（米）
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	移动或调整元素大小时，将其捕捉到参考线、页面和其他元素。按住 Alt 可自由放置。
 Snap new vertices to nearby vertices, edges and line ends.	将新折点捕捉到附近的折点、边和线端点。
 Snap Point	捕捉点
@@ -3956,6 +4080,7 @@ Source-layer Name	源图层名称
 South	南
 South Korea	韩国
 South Polar Stereographic	南极球面投影
+Space or middle-drag pans; releasing Space returns to the active drawing tool. Undo/Redo use the existing commands.	按住 Space 或用中键拖动可平移；松开 Space 返回当前绘制工具。撤销/重做使用现有命令。
 Spacing	间距
 Spacing across	水平间距
 Spacing down	垂直间距
@@ -3964,8 +4089,8 @@ Spatial Join	空间连接
 Speaker notes	演讲者备注
 Spectral Analysis	光谱分析
 Spectral indices	光谱指数
-Spectral profile	光谱剖面
 Spectral Profile	光谱剖面
+Spectral profile	光谱剖面
 Spectral Profile: chart every band here, and compare points	光谱剖面：绘制此处所有波段的值并比较不同采样点
 Speed	速度
 Speed Display	显示速度
@@ -4032,6 +4157,7 @@ STAC Search…	STAC 搜索…
 Stack another fill on top	在上方叠加另一个填充
 Stack another marker on top	在上方叠加另一个标记
 Stack another stroke on top	在上方叠加另一条描边
+Stack by	堆叠依据
 Stack on the current basemaps	叠加在当前底图之上
 Standalone Tables	独立表
 Standard Deviation	标准差
@@ -4071,6 +4197,7 @@ Stepped line	阶梯线
 Steps needing access	需要访问权限的步骤
 STL 3D Model…	STL 三维模型…
 Stop	停止
+Stop at the state reached so far	停止在目前到达的状态
 Stop drawing labels, for faster navigation.	停止绘制标注，以加快导航。
 Stop filling the cache.	停止填充缓存。
 Stop MCP relay	停止 MCP 中继
@@ -4101,6 +4228,7 @@ Subreport	子报表
 Subreport: {name}	子报表：{name}
 Subtypes	子类型
 Subtypes, one per line: code=name	子类型，每行一个：代码=名称
+Suggested filename: {name}	建议文件名：{name}
 Suitability Modeler	适宜性建模器
 Sum	总和
 Sum Fields	求和字段
@@ -4145,7 +4273,9 @@ Table Frame	表格框
 Table or layer	表或图层
 Table · {n} rows	表 · {n} 行
 Tables	表
+Tabulate Area	面积制表
 Tabulate Intersection	交集制表
+Tabulates each raster class by polygon zone, as area or cell count in a standalone table.	按多边形区域对每个栅格类别制表，以面积或像元计数输出到独立表中。
 Tags	标签
 Taiwan	台湾
 Take the data in view offline, to edit and sync back later.	将视图中的数据离线，以便编辑并在稍后同步回来。
@@ -4154,6 +4284,7 @@ Take this point off	取消此点
 Target details ({operation}): {targets}	目标详细信息（{operation}）：{targets}
 Target Features	目标要素
 Target Key Field	目标键字段
+Target layer	目标图层
 Target Records	目标记录
 Target Table / Layer	目标表/图层
 Task	任务
@@ -4189,11 +4320,14 @@ The answer isn't UTF-8 text	响应不是 UTF-8 文本
 the answer isn't UTF-8 text	响应不是 UTF-8 文本
 The API changed while the search area was being made: press Find Items to search it	生成搜索区域时 API 已更改：请按“查找项目”进行搜索
 The API did not sort them by {sort}: they are in its own order	API 未按 {sort} 排序：结果为其自身的顺序
+The ArcGIS token has expired. Log in to this connection again.	ArcGIS 令牌已过期。请重新登录此连接。
+The ArcGIS token must be at most 4096 ASCII letters, digits or - _ . ~ + / = characters.	ArcGIS 令牌最多 4096 个字符，只能包含 ASCII 字母、数字或 - _ . ~ + / = 字符。
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	助手使用某个技能时会遵循其说明。无论说明写了什么，需要你批准的命令仍会询问。
 The assistant is busy; stop it or wait for it to finish.	助手正忙；请停止它或等待其完成。
 The assistant wants to run this, and {why}:	助手想要执行以下操作，由于{why}，需要您确认：
 The background worker could not start ({error}). Retry the command.	后台工作线程无法启动（{error}）。请重试该命令。
 The basemap now shows the {view} worldview; the project's Countries layer keeps its borders	底图现在显示{view}世界观；工程的“国家”图层保持其国界
+The basemap's grid color	底图的格网颜色
 The Basemaps plugin's tab of public basemaps.	底图插件中列出公共底图的选项卡。
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	浏览器未向 RustGIS 提供剪贴板（{why}）：请使用 {keys} 粘贴。
 the browser kept neither a copy of it nor where to download it	浏览器既未保存其副本，也未保存其下载地址
@@ -4202,6 +4336,7 @@ the capture failed unexpectedly	捕获意外失败
 The class these label groups and the Labeling pane edit.	这些标注组和标注窗格所编辑的类。
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	剪贴板在您移到其他位置后才到达，因此未粘贴任何内容：请使用 {keys} 粘贴。
 The collection's own licence wasn't read: {why}	集合自身的许可证未能读取：{why}
+The connection changed while its token was being generated. Generate it again.	生成令牌期间连接已更改。请重新生成。
 The connection failed; trying again in {seconds} s.	连接失败；将在 {seconds} 秒后重试。
 the connection has no id	连接没有 ID
 The connection's address has no http:// or https:// origin a login can go to.	连接地址中缺少可用于登录的 HTTP 或 HTTPS 源地址。
@@ -4215,6 +4350,7 @@ The desktop app adds data cubes	桌面应用可添加数据立方体
 The distance between two marks along the line	沿线两个标记之间的距离
 The distance to widen by is a number, 0 or more	扩展距离是一个数字，大于或等于 0
 The downloaded translations name none of these tools: they may be for another GeoLibre version.	下载的翻译与这些工具均不匹配，可能适用于其他 GeoLibre 版本。
+the Earthdata Login token	Earthdata Login 令牌
 The environment (AWS_ACCESS_KEY_ID…)	环境变量（AWS_ACCESS_KEY_ID…）
 The features where the map is	地图所在范围内的要素
 The file bridge couldn't start: {error}	无法启动文件桥接：{error}
@@ -4231,8 +4367,14 @@ The flowtrace didn't answer: the whole flowline nearest the point is shown.	流�
 The graphics card ran out of memory, so the map is now drawn without it (CPU), which is slower. Click CPU in the status bar to try the graphics card again, with a smaller window or fewer layers.	显存已用尽，已切换为 CPU 绘制地图，速度会变慢。可缩小窗口或减少图层，再单击 CPU 重试显卡绘制。
 The graphics card reported an error, so the map may be drawn wrongly. Clicking GPU in the status bar draws it on the CPU instead.	显卡报告错误，地图可能显示异常。单击状态栏中的 GPU 可切换为 CPU 绘制。
 The graphics card reported an error, so the window may be drawn wrongly.	显卡报告错误，窗口可能显示异常。
+The grid already has the basemap's color	格网已是底图的颜色
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	格网数字必须是 0 到 10 的偶数位，一半为东坐标，一半为北坐标
+The grid's color and opacity	格网的颜色和不透明度
 the hash stopped	哈希计算已停止
+The history jump stopped because the project changed.	工程已更改，历史跳转已停止。
+The image changed or was removed. Select it again or reload its grid.	图像已更改或已移除。请重新选择，或重新加载其格网。
+The image changed. Reload its grid before drawing.	图像已更改。绘制前请重新加载其格网。
+The image context changed. Select the image again before drawing.	图像上下文已更改。绘制前请重新选择图像。
 the images' projected system, else degrees	影像的投影坐标系，否则为度
 The installed GeoLibre runner lists no tools.	已安装的 GeoLibre 运行器未列出任何工具。
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	已下载并校验安装程序。RustGIS 将关闭、安装更新并重新打开。
@@ -4275,6 +4417,7 @@ The map's extent isn't known yet	地图范围尚未知
 The map's UTM zone, else the frame's	地图的 UTM 分带，否则为框架的
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	地图视图涉及 Overture 的 {n} 个 {ty} 文件（上限 {max}）：请放大，或将该主题添加为地图瓦片
 The map's, else its UTM zone	地图的坐标系，否则为其 UTM 分带
+The marker to change is no longer there	要更改的标记已不存在
 the MCP relay couldn't start	MCP 中继无法启动
 The MCP relay couldn't start; agents can still use the file bridge. Click to turn agents off	MCP 中继无法启动；智能体仍可使用文件桥接。单击以关闭智能体
 The menu bar keeps that key: choose another.	菜单栏保留了该按键：请选择其他按键。
@@ -4292,17 +4435,19 @@ The next page link was refused: it points where this search may not read, so onl
 the NLDI's answer isn't UTF-8 text	NLDI 的响应不是 UTF-8 文本
 the northing doesn't fall in the latitude band given	北坐标不在给定的纬度带内
 The notes are cut here: the release page has all of them.	说明在此处截断：完整内容请见发布页面。
-the old file's list must disappear immediately	the old file's list must disappear immediately
 The one waiting after it was left too	排在其后等待的那一个也已放弃
 the open project has unsaved changes: save them before recovering other work	打开的工程有未保存的更改：请在恢复其他工作前保存
 The open project has unsaved changes: save them, then recover this copy.	打开的工程有未保存的更改：请先保存，然后恢复此副本。
 The order by {sort} could not be checked: it is the API's own order	无法检查按 {sort} 的排序：结果为 API 自身的顺序
+The original image grid result could not be displayed.	无法显示原始图像格网结果。
 The page in colour, the title in light text and the map in a light card.	页面为彩色，标题为浅色文本，地图位于浅色卡片中。
 the page is too large to copy to the clipboard: export it instead	页面太大，无法复制到剪贴板：请改为导出
 the page is too large to draw	页面太大，无法绘制
 The password is sent only to Copernicus Data Space's sign-in server and never kept in the project. The token it gives is sent only to its data servers.	密码仅发送到哥白尼数据空间的登录服务器，不会保存在工程中。获取的令牌仅发送到其数据服务器。
+The password must be at most 4096 bytes, without control characters.	密码最多 4096 字节，且不能包含控制字符。
 The password or key must fit a 4096-byte HTTP header, without control characters.	密码或密钥必须能放入 4096 字节的 HTTP 请求头，且不含控制字符。
 The password was refused. Type a password to try again.	密码被拒绝。请输入密码重试。
+the phone keeps a recovery copy after edits	手机会在编辑后保留恢复副本
 the picture is too large to show	图片太大，无法显示
 the picture is too large to show, or isn't one	图片太大无法显示，或不是图片
 the place lies outside the zone given	该位置位于给定分带之外
@@ -4313,12 +4458,14 @@ The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reas
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	插件 {id} 未加载。请打开“插件 › 插件管理器”查看。
 The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	无法读取此浏览器中安装的插件，因此不会记住此更改：请在浏览器保存的首选项中修复或移除“plugins_web”。
 The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	无法读取此浏览器中安装的插件（它们不是 JSON 列表）：未加载任何插件，现在安装或移除的插件也不会被记住。
+The polygon layer doesn't draw at this scale. Zoom in or out until it draws, then draw.	面图层在此比例尺下不绘制。请放大或缩小直到其绘制后再绘制。
 The portal's OAuth app	门户的 OAuth 应用
 the presentation export failed unexpectedly	演示文稿导出意外失败
 the preview failed unexpectedly	预览意外失败
 The preview replaces the boundary; curved grid edges remain straight-edge approximations after projection. Saved/exported results are ordinary polygons.	预览将替换原有边界。投影后，弯曲的格网边缘仍用直线段近似。保存或导出的结果为普通多边形。
 The project changed while this was open: check the changes, then answer again.	此窗口打开期间工程已更改：请检查更改后再次答复。
 The project downloads as this file, to the folder your browser saves downloads in.	工程将以此文件名下载到浏览器保存下载内容的文件夹。
+The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.	工程或地图已更改。绘制前请重新选择图像或选择 Web 墨卡托格网米。
 The project's items in place of the map.	用工程的项目替代地图显示。
 The project's thumbnail, from an image.	工程的缩略图，来自图像。
 The project's thumbnail, from the map view.	工程的缩略图，来自地图视图。
@@ -4329,6 +4476,7 @@ The public server is free and shared by many: it answers light use, and may ask 
 The range is two numbers, low and high (0, 0.9)	范围为两个数字，下限和上限（0, 0.9）
 The raster's data couldn't be read.	无法读取栅格数据。
 The raster's data couldn't be read: {error}	无法读取栅格数据：{error}
+The recovery copy could not keep the opened package's path because it is not UTF-8.	所打开包的路径不是 UTF-8，恢复副本无法保留该路径。
 the recovery copy is incomplete	恢复副本不完整
 the recovery copy is too large (maximum {mib} MiB on this computer)	恢复副本过大（在此计算机上最大为 {mib} MiB）
 the recovery copy isn't text	恢复副本不是文本
@@ -4341,6 +4489,7 @@ The reply stopped early ({reason}).	回复提前停止（{reason}）。
 the report export failed unexpectedly	报表导出意外失败
 The request failed.	请求失败。
 The result wired into this output is added to the map under this name.	连接到此输出的结果将以此名称添加到地图。
+The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login.	示例瓦片会改变连接的源（origin）。要使用已保存的登录信息测试，请使用具体的主机名。
 The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	无法读取已保存的出版布局排列：它们保持原样，现在保存的排列只保留到应用关闭为止。
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	此版本无法识别已保存的坐标格式，因此显示十进制度。
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	无法使用已保存的出版布局收藏排列方式（{why}），因此改用“classic”。
@@ -4360,10 +4509,15 @@ The search area has no point, line or polygon to search with	搜索区域中没�
 The search area is still loading: search when it has finished	搜索区域仍在加载：请在加载完成后搜索
 the selected features	所选要素
 The selected GeoPackage layer is no longer available; choose a layer	所选 GeoPackage 图层已不可用；请选择图层
+The server answered, but the response is not a usable tile.	服务器有响应，但响应不是可用的瓦片。
+The server didn't answer the token request in time.	服务器未及时响应令牌请求。
+The server didn't give a token. Check the user name, password and token endpoint.	服务器未返回令牌。请检查用户名、密码和令牌端点。
 The server had a problem answering.	服务器响应时出现问题。
 The server is limiting requests.	服务器正在限制请求。
 The server refused the request.	服务器拒绝了请求。
 The server took too long to answer.	服务器响应超时。
+The server's answer to the token request was too large.	服务器对令牌请求的响应过大。
+The server's answer wasn't an ArcGIS token.	服务器的响应不是 ArcGIS 令牌。
 The service may be private or need a token.	该服务可能是私有的或需要令牌。
 The service needs a sign-in or a token.	该服务需要登录或令牌。
 The service test requires a credential-free HTTP or HTTPS address at the connection's origin.	服务测试需要连接来源处不含凭据的 HTTP 或 HTTPS 地址。
@@ -4394,13 +4548,22 @@ The system keychain is locked or access was refused.	系统钥匙串已锁定或
 The system keychain is unavailable, so this sign-in won't be remembered: it lasts until RustGIS closes.	系统钥匙串不可用，因此不会记住此登录：它在 RustGIS 关闭前有效。
 The system keychain is unavailable.	系统钥匙串不可用。
 The task's steps changed, so the step being edited was closed: edit it again.	任务的步骤已更改，因此正在编辑的步骤已关闭：请重新编辑。
+The tile URL has an unsupported placeholder.	瓦片 URL 包含不支持的占位符。
+The time series couldn't start: {error}	无法启动时间序列：{error}
+The time series failed unexpectedly	时间序列意外失败
+The time series was cancelled: nothing was added to the chart	时间序列已取消：图表中未添加任何内容
+The time series was stopped: another project was opened	时间序列已停止：打开了另一个工程
 the time slider is off	时间滑块已关闭
 The title and subtitle in a band of colour across the top.	标题和副标题位于顶部的色带中。
 The title over the map, the sources and the reference in boxes under it.	标题位于地图上方，来源和参考信息位于其下的方框中。
 The token expired and was forgotten. Paste a new one.	令牌已过期并被清除。请粘贴新令牌。
 The token expires on {date}.	令牌将于 {date} 过期。
+The token is added to each request to this address as its token parameter. With no expiry it is used until the server refuses it.	令牌会作为 token 参数添加到发往此地址的每个请求中。未设置过期时间时，将一直使用直到服务器拒绝。
 The token is renewed until you sign out.	令牌会自动续期，直至退出登录。
 The token is renewed until {date}.	令牌将自动续期至 {date}。
+The token request couldn't be started.	无法启动令牌请求。
+The token request failed.	令牌请求失败。
+The token request was cancelled.	令牌请求已取消。
 the tool's own	工具自带的
 the tool's own; {d}	工具自身的；{d}
 The tools run on this project: saved with it, and each can run again	在此工程上运行的工具：随工程保存，且每个都可以再次运行
@@ -4433,8 +4596,10 @@ Thin	抽稀
 Thinking…	思考中…
 Third-party licences	第三方许可证
 THIRD-PARTY-LICENSES.txt	THIRD-PARTY-LICENSES.txt
+This app can't request ArcGIS tokens.	此应用无法请求 ArcGIS 令牌。
 this build can't download plugins	此版本无法下载插件
 this build can't reach AI providers	此版本无法连接 AI 提供商
+This build cannot save through the native picker.	此版本无法通过系统文件选择器保存。
 this build has no download service	此版本没有下载服务
 this build saves projects with Save As	此版本通过“另存为”保存工程
 This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	此 ChatGPT 账号已保存。下次请在列表中选择它，而不是再次添加。
@@ -4445,10 +4610,15 @@ This class is hidden, so it labels nothing.	此类已隐藏，因此不标注任
 This clause no longer reads, so no feature is labelled: {error}	此子句已无法解析，因此没有要素被标注：{error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	此计算机保存了此连接的密钥：将密钥留空即可使用它们登录。
 This computer keeps this connection's keys: logging in reads them.	此计算机保存了此连接的密钥：登录时会读取它们。
+This computer's clock can't be read, so an expiring ArcGIS token can't be used.	无法读取此计算机的时钟，因此无法使用会过期的 ArcGIS 令牌。
+This connection has no user: set user (connection.edit) to generate a token.	此连接没有用户：请设置 user（connection.edit）以生成令牌。
 This connection is logged out. Log in explicitly to use it again.	此连接已退出登录。请显式登录以再次使用它。
 This connection uses unencrypted http://. Tick the confirmation before sending its password or key.	此连接使用未加密的 http://。发送密码或密钥前，请勾选确认框。
 This font isn't installed here, so the text is drawn in the sans-serif	此处未安装该字体，因此文本以无衬线字体绘制
 This font isn't installed here, so the text is drawn in the serif	此处未安装该字体，因此文本以衬线字体绘制
+This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	此图像不能用作标记：它不是可读取的、每边不超过 20,000 px 的 PNG 或 JPEG
+This image is too large for a marker: at most about 1.5 MiB	此图像过大，无法用作标记：最大约 1.5 MiB
+This image is unavailable. Choose another image or No image.	此图像不可用。请选择其他图像或“无图像”。
 this is not a file	不是文件
 This item is from a local or private network, whose files Bands and Index don't read yet	此条目来自本机或专用网络，波段与指数功能暂不读取此类文件
 This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	此图层有其文件中尚没有的编辑。“发布到源”会将它们写入文件。
@@ -4509,6 +4679,7 @@ Tint by elevation	按高程着色
 Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	在光照着色之前，按地面自身的坡度将陡峭地面染向岩石颜色
 Tissot's Indicatrix	蒂索指线
 Title	标题
+Title text	标题文本
 To	至
 to	至
 Toggle Dark Mode	切换深色模式
@@ -4516,6 +4687,9 @@ Toggle Downloading Datum Grids	开关基准转换格网下载
 Toggle GPU Rendering	切换 GPU 渲染
 Toggle Imperial Measurements	切换英制测量单位
 Toggle Sharp Tiles on HiDPI Displays	开关高分屏高清瓦片
+Token	令牌
+Token endpoint	令牌端点
+Token from	令牌来源
 Token Required	需要令牌
 Tolerance	容差
 Tolerance (km)	容差（km）
@@ -4605,8 +4779,9 @@ Type the password or key to remember it on this computer.	输入密码或密钥�
 Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	输入密码或密钥，或留空以使用此连接的会话登录或已保存的登录信息，然后单击“保存”。
 Type the password to remember it on this computer.	输入密码以便在此计算机上记住它。
 Type the password, then Save. Remember on this computer is optional.	输入密码，然后点击“保存”。“在此计算机上记住”为可选项。
+Type the token this expiry is for.	请输入此过期时间对应的令牌。
+Type the token, or the password to generate one, to remember it on this computer.	要在此计算机上记住，请输入令牌，或输入用于生成令牌的密码。
 Typed below	在下方输入
-typing must not start another lookup	typing must not start another lookup
 U.S. Census (addresses)	美国人口普查（地址）
 ui.mcpRelay: port {port} is not a port number (0 to 65535)	ui.mcpRelay：端口 {port} 无效，有效范围为 0 至 65535
 ui.scale accepts only the factor parameter	ui.scale 只接受 factor 参数
@@ -4617,6 +4792,8 @@ ui.themeFile accepts only the name parameter	ui.themeFile 只接受 name 参数
 ui.themeFile needs a name string	ui.themeFile 的 name 参数须为字符串
 Ukraine	乌克兰
 UM	UM
+Unavailable image	不可用的图像
+Unavailable image: {name}	不可用的图像：{name}
 Unavailable: {reason}	不可用：{reason}
 Unbind from Time Slider	从时间滑块解除绑定
 Undo	撤销
@@ -4654,6 +4831,7 @@ Untitled	未命名
 Untitled model	未命名模型
 Up	上一级
 Up a level	向上一级
+up to {bound}	最多 {bound}
 Up to {n} points are compared: the oldest one was taken off.	最多比较 {n} 个点：最早的一个已被取消。
 Update	更新
 Update Bookmark	更新书签
@@ -4685,12 +4863,14 @@ Use each feature's fill color	使用每个要素的填充颜色
 Use each feature's line color	使用每个要素的线颜色
 Use each feature's line width	使用每个要素的线宽
 Use field range	使用字段值域
+Use image filename	使用图像文件名
 Use layers instead	改用图层
 Use System	使用系统设置
 Use the Layer's Strokes	使用图层的描边
 Use the Touch Interface	使用触控界面
 User	用户
 Username	用户名
+Username and password	用户名和密码
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	USGS 3DEP DEM
 USGS 3DEP DEM…	USGS 3DEP DEM…
@@ -4717,6 +4897,9 @@ value (empty: no-data)	值（空：无数据）
 Value Field	值字段
 Values	值
 Values from −stretch to +stretch are shown from black to full colour	从 −stretch 到 +stretch 的值以从黑色到全彩色显示
+Values of the {of} features read for the view	为视图读取的 {of} 个要素的值
+Values of {read} of the {of} features read for the view, evenly spread	为视图读取的 {of} 个要素中均匀抽取的 {read} 个要素的值
+Values of {read} of {of} features, evenly spread	{of} 个要素中均匀抽取的 {read} 个要素的值
 Vantor Open Data	Vantor Open Data
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	Vantor 的开放灾害影像：选择一个事件和一个阶段（事件之前或之后），然后查找项目。
 Vantor…	Vantor…
@@ -4725,8 +4908,6 @@ Variables ▾	变量 ▾
 Variogram Model	变异函数模型
 Vector and raster data	矢量和栅格数据
 Vector Layer	矢量图层
-vector layer	矢量图层
-vector layers (names separated by ;)	矢量图层（名称以英文分号 ; 分隔）
 vector tiles	矢量瓦片
 Vector tiles (MVT)	矢量瓦片 (MVT)
 Vector to PMTiles	矢量转 PMTiles
@@ -4769,6 +4950,7 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3（越南）
 VN-2000 / UTM zone 48N	VN-2000 / UTM 48N 带
 VN-2000 / UTM zone 49N	VN-2000 / UTM 49N 带
 Volume	体积
+Wait for the original image grid before drawing.	绘制前请等待原始图像格网加载。
 Wait for the run to finish	等待运行完成
 Wait for the Script pane's run to finish	请等待脚本窗格的运行完成
 Waiting for the browser…	正在等待浏览器…
@@ -4785,7 +4967,6 @@ WCS Coverage Request	WCS 覆盖请求
 We	三
 Weather	天气
 Weather and climate data from dynamical.org (NOAA GFS, GEFS and HRRR, ECMWF, DWD ICON…) as Zarr stores: open a dataset, pick a variable and its time steps, and add it.	来自 dynamical.org 的天气和气候数据（NOAA GFS、GEFS 和 HRRR、ECMWF、DWD ICON…），以 Zarr 存储提供：打开数据集，选择变量及其时间步，然后添加。
-Web Mercator grid metres	Web 墨卡托格网米
 Web\nData	Web\n数据
 Web\nMap	Web\n地图
 Web Basemaps	Web 底图
@@ -4794,7 +4975,9 @@ Web Layer	Web 图层
 Web Link Chart	Web 链接图表
 Web maps	Web 地图
 Web Mercator	Web 墨卡托
+Web Mercator grid metres	Web 墨卡托格网米
 Web Mercator grid metres, not ground metres.	Web Mercator 格网米，而非地面米。
+Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected.	Web 墨卡托格网米，而非地面米。选择图像时默认使用图像像素。
 Web Scene	Web 场景
 Web service (detected)	Web 服务（已检测）
 Web Style	Web 样式
@@ -4811,7 +4994,7 @@ WGS 84 / Web Mercator	WGS 84 / Web Mercator
 What each slice or bar says beside it: its value, its share in percent, or both	在每个扇区或条形旁显示的内容：数值、百分比或两者
 What RustGIS opens with: the World Atlas sample or a blank map.	RustGIS 启动时打开的内容：World Atlas 示例或空白地图。
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	RustGIS 启动时打开的内容：World Atlas 示例、空白地图、你选择的工程，或上次打开或保存的工程。
-What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	经纬网绘制的内容：经纬线、量测格网或 UTM 分带。
+What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	经纬网绘制的内容：经纬线、量测格网、UTM 带或 MGRS 格网。
 What the walls stand on: the ground, a field or the constant Base (m).	墙体立于何处：地面、字段或常量“底部（m）”。
 What to do, where to find it and why	做什么、在哪里找到以及原因
 What's near a point	某点附近有什么
@@ -4887,10 +5070,11 @@ World, equal-area: true sizes, shapes bend towards the edges.	世界，等积: �
 Worldview	国界
 Wrap at	换行字符
 Wrap length	换行长度
+Wrap to the box	按框换行
 Write a plugin	编写插件
 Write a turn of the view about its centre as an animated GIF or PNG frames.	将视图围绕其中心的旋转写为 GIF 动画或 PNG 帧。
 Writes a separate two-vertex line for each consecutive vertex pair.	为每对相邻折点分别写出一条两点线。
-Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	写出所有要素并尽可能使其几何有效：闭合环，删除重复折点和退化部分，解决自相交、重叠部分以及位于外壳之外的孔洞。任何位置（即使在孔洞中）存在缺失或非有限坐标的要素，或修复后没有可用点、对于面而言没有面积的要素，将不带几何写出。其他过于复杂而无法检查或修复失败的要素将原样写出。并说明每个要素修复了什么。
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	写出每个要素，并尽可能使其几何有效：闭合环，删除重复折点和退化部分，按所选规则解决自相交、重叠部分以及位于外环之外的洞（“Shells Minus Holes”合并重叠部分；“Even-Odd”保留位于奇数个环内的部分）。任何位置（包括洞中）存在缺失或非有限坐标的要素，或修复后没有可用点、对多边形而言没有面积的要素，将不带几何写出。其他过于复杂而无法检查或修复失败的要素将原样写出。会说明每个要素修复了什么。
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	按存储的经纬度坐标为每个要素写出一个与坐标轴对齐的外包矩形。跳过面积为零的包络矩形。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	输出 Sen 斜率、检验的 Z 值和 p 值，以及趋势显著处的斜率。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	写出几何无效的要素，例如自相交或未闭合的环、位于外壳之外的孔洞或重叠部分，并说明每个要素的问题。
@@ -4908,7 +5092,6 @@ Year	年
 year	年
 Yes	是
 You can undo this with {shortcut}.	可以用 {shortcut} 撤销。
-You choose where the project is saved next.	下次由您选择工程的保存位置。
 You have version {version}.	你的版本是 {version}。
 You're using your ChatGPT plan	你正在使用自己的 ChatGPT 套餐
 Your account's email address	账户电子邮箱
@@ -4924,6 +5107,7 @@ Zarr URL is required	需要提供 Zarr URL
 Zarr Variables	Zarr 变量
 Zarr…	Zarr…
 Zonal Statistics	分区统计
+Zone Field	区域字段
 Zone Fields	分区字段
 Zone Polygons	分区多边形
 Zoom	缩放
@@ -5005,11 +5189,11 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {layer}: {e}	{layer}：{e}
 {layer}: {notice}	{layer}：{notice}
 {ms} ms	{ms} 毫秒
+{names}: needs Node.js (npx) for its ACP adapter.	{names}：其 ACP 适配器需要 Node.js（npx）。
 {name} (built-in fallback)	{name}（内置备用主题）
 {name} (dated tiles)	{name}（按日期组织的瓦片）
 {name} (download)	{name}（需下载）
 {name} (downloading…)	{name}（正在下载…）
-{names}: needs Node.js (npx) for its ACP adapter.	{names}：其 ACP 适配器需要 Node.js（npx）。
 {name} (not in the layer)	{name}（图层中不存在）
 {name} (not installed)	{name}（未安装）
 {name} (panel)	{name}（面板）
@@ -5017,7 +5201,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {name} ({acc}% accurate)	{name}（准确率 {acc}%）
 {name} ({lon})	{name}（{lon}）
 {name} ({n} images)	{name}（{n} 幅影像）
-{name} ({n} nodes)	{name}（{n} 个节点）
 {name} ({n} steps)	{name}（{n} 个步骤）
 {name} changed after it was checked: download it again.	验证后 {name} 已更改，请重新下载。
 {name} doesn't match the release's checksum: the download is damaged.	{name} 的校验和与发行版不符，下载的文件已损坏。
@@ -5081,7 +5264,6 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 {n} more bookmarks aren't listed. Type in the filter to narrow the list.	还有 {n} 个书签未列出。请在筛选框中输入文字以缩小范围。
 {n} more classes aren't listed: the list's limit doesn't change how they're drawn	另有 {n} 个类别未列出，列表上限不影响其绘制效果
 {n} more panes	另有 {n} 个窗格
-{n} nodes need attention (marked !).	有 {n} 个节点需要处理（以 ! 标记）。
 {n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out	地理编码结果中有 {n} 个地点缺少可用坐标（坐标缺失或无法读取），已跳过
 {n} of {count}	第 {n} 项，共 {count} 项
 {n} of {m} are listed.	已列出 {n} 项，共 {m} 项。

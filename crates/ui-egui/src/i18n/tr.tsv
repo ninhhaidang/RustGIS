@@ -22,16 +22,19 @@
 /F	/F
 /PID	/PID
 /T	/T
+0 draws no border	0 kenarlık çizmez
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	0° çizgiyi dik keser
 1 entry	1 kayıt
+1 line doesn't fit the box	1 satır kutuya sığmıyor
+1 line isn't drawn: a text draws 200 at most	1 satır çizilmiyor: bir metin en fazla 200 satır çizer
 1 more class isn't listed: the list's limit doesn't change how it's drawn	1 sınıf daha listelenmiyor: listenin sınırı nasıl çizildiğini değiştirmez
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	İçe aktarılan 16 Zarr deposu zaten kuyrukta
 18:00 UTC	18:00 UTC
 18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
-3035, vn2000tm3	3035, vn2000tm3
+3010, lv95	3010, lv95
 3D mesh	3B ağ
 40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<Yok>
@@ -40,6 +43,7 @@ A .geolibre project as a map	Harita olarak bir .geolibre projesi
 A .qgs or .qgz project as a map	Harita olarak bir .qgs veya .qgz projesi
 A 3D globe seen from space.	Uzaydan görülen 3B küre.
 A blank map with a basemap	Altlık haritalı boş bir harita
+A box behind the element, which moves with it.	Öğenin arkasında, onunla birlikte hareket eden bir kutu.
 A call for the rustgis Python package	rustgis Python paketi için bir çağrı
 A catalogue's (CSW 2.0.2) address: search its records by words and, if you like, the map's area, then add the services and files they link to.	Bir kataloğun (CSW 2.0.2) adresi: kayıtlarında sözcüklerle ve isterseniz haritanın alanıyla arama yapın, ardından bağlantı verdikleri servisleri ve dosyaları ekleyin.
 A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	ChatGPT planı veya uygulama kullanım sınırına ulaşıldı. Yeniden denemeden önce haftalık kullanımı inceleyin.
@@ -47,6 +51,7 @@ A ChatGPT sign-in can only be used with the OpenAI API.	ChatGPT oturumu yalnızc
 A colour, hatch lines, markers on a grid, a gradient, or a shapeburst (shaded from the edge inwards)	Bir renk, tarama çizgileri, ızgara üzerinde işaretçiler, bir gradyan veya kenardan gölgeleme (kenardan içe doğru gölgeli)
 A command id is required.	Bir komut kimliği gerekli.
 A connection has this name: give this one another name to remember its keys.	Bu adda bir bağlantı var: anahtarlarını hatırlamak için buna başka bir ad verin.
+a Copernicus Data Space sign-in	bir Copernicus Data Space oturumu
 A copy of {name} with unsaved changes was kept a minute ago.	{name} için kaydedilmemiş değişiklikleri içeren bir kopya bir dakika önce saklandı.
 A copy of {name} with unsaved changes was kept less than a minute ago.	{name} için kaydedilmemiş değişiklikleri içeren bir kopya bir dakikadan kısa süre önce saklandı.
 A copy of {name} with unsaved changes was kept {n} days ago.	{name} için kaydedilmemiş değişiklikleri içeren bir kopya {n} gün önce saklandı.
@@ -61,7 +66,7 @@ A fast, free and open-source GIS written in pure Rust, for mapping, analyzing an
 A field (known once the model runs)	Bir alan (model çalışınca belli olur)
 A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	Bir saha paketi, altlık haritaları için bir klasörü olan bir bilgisayarda veya telefonda açılır: orada açın. Geri Getir (Veri › Çevrimdışı) düzenlemelerini buradaki projeye alır.
 A flat scene centred on the view (azimuthal equidistant).	Görünümün ortasında düz bir sahne (azimutal eşit uzaklık).
-A GeoLens server's datasets, read as features (the first 1,000 of each).	Bir GeoLens sunucusunun veri kümeleri, detay olarak okunur (her birinin ilk 1.000'i).
+A GeoLens server's datasets, read as features.	Bir GeoLens sunucusunun veri kümeleri, detay olarak okunur.
 A globe scene.	Bir küre sahnesi.
 A hidden class leaves its features unlabelled.	Gizli bir sınıfın detayları etiketsiz kalır.
 A label along a line isn't moved.	Çizgi boyunca bir etiket taşınmaz.
@@ -77,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Bir çizgi veya çizgi boyunca işaretçiler ya da çentikler
 A magnifying lens that follows the pointer.	İşaretçiyi izleyen bir büyüteç.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Bir harita, detay veya kapsama servisinin adresi: WMS, WMTS, WFS, WCS, OGC API Features veya Tiles ya da bir ArcGIS FeatureServer, MapServer, ImageServer veya VectorTileServer (ya da göz atmak için bir servis dizini).
+A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Bir ad veya EPSG kodu, WKT veya PROJ dizesi; boşsa: projeksiyonluysa haritanın kendi sistemi, değilse görünümün merkezindeki UTM dilimi
 a name, or owner/name such as giswqs/geospatial	bir ad veya giswqs/geospatial gibi sahip/ad
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Yeniden kullanabileceğiniz adlandırılmış bir uç nokta. Anahtarlar, bu bilgisayarda hatırlamayı seçmediğiniz sürece RustGIS kapanana kadar tutulur; bağlantının kendisi onları asla tutmaz.
 A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	Yeniden kullanabileceğiniz adlandırılmış bir uç nokta. Parolalar ve anahtarlar, bu bilgisayarda hatırlamayı seçmediğiniz sürece bu oturum boyunca geçerlidir; bağlantının kendisi onları asla saklamaz.
@@ -87,8 +93,10 @@ A node cannot connect to itself.	Bir düğüm kendisine bağlanamaz.
 A notebook of text and command cells.	Metin ve komut hücrelerinden oluşan bir not defteri.
 A password or token in the address was left out of the saved connection definition.	Adresteki parola veya belirteç kaydedilen bağlantı tanımına eklenmedi.
 A place or an address	Bir yer veya adres
+A PNG or JPEG file as the marker	İşaretçi olarak bir PNG veya JPEG dosyası
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	Daha önce kaydedilmiş bir anahtar, sistem anahtarlığına taşınabilene kadar uygulamanın tercihlerinde hâlâ şifrelenmeden saklanıyor.
 A project keeps at least one map	Bir proje en az bir harita tutar
+A project save is already in progress.	Bir proje kaydı zaten sürüyor.
 A projected coordinate system.	Projeksiyonlu bir koordinat sistemi.
 A projected system such as EPSG:32616, or EPSG:4326 for degrees	EPSG:32616 gibi projeksiyonlu bir sistem veya derece için EPSG:4326
 a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	raster katmanın tanım sorgusu veya zaman bağlaması yoktur: Sorgu ve Zaman sekmeleri detay katmanlarına aittir
@@ -101,6 +109,7 @@ A saved key could not be read. A key entered now will be kept for this session o
 A search area holds at most {n} shapes: Clear it to start again	Bir arama alanı en fazla {n} şekil içerir: yeniden başlamak için Temizle'ye basın
 A service import or refresh is already running.	Bir servis içe aktarma veya yenileme işlemi zaten sürüyor.
 A service's layers stay in their service group.	Bir servisin katmanları kendi servis grubunda kalır.
+A sign-in is remembered on this computer: it signs in when a file needs it.	Bu bilgisayarda bir oturum hatırlanıyor: bir dosya gerektirdiğinde oturum açar.
 A small chart of several numeric fields, drawn on each feature over its symbol	Her detayın üzerine, sembolünün üstüne çizilen, birkaç sayısal alanın küçük bir grafiği
 A streamed layer needs Load All Features first	Akışla okunan bir katman için önce Tüm detayları yükle gerekir
 A table replaced in a GeoPackage	Bir GeoPackage içinde değiştirilen bir tablo
@@ -111,18 +120,15 @@ A theme file was refused. Open Settings > Theme for the reason.	Bir tema dosyas�
 A tile layer per grid tile, each following the time slider through its dates.	Her ızgara karosu için bir karo katmanı; her biri tarihleri boyunca zaman kaydırıcısını izler.
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	Bir karo servisinin adresi: {z}/{x}/{y} içeren raster karolar (veya WMS için {-y}, {q}, {bbox-epsg-3857}), vektör karolar (.pbf) veya TileJSON, bir MapLibre stili, bir PMTiles arşivi (bir web adresi veya bu bilgisayardaki bir dosya) ya da bu bilgisayardaki bir MBTiles dosyası.
 A token for {server}	{server} için belirteç
+A token is already being generated for this connection. Cancel it first.	Bu bağlantı için zaten bir belirteç oluşturuluyor. Önce onu iptal edin.
+A token is being generated. Cancel it before saving again.	Bir belirteç oluşturuluyor. Yeniden kaydetmeden önce onu iptal edin.
 A token is set.	Bir belirteç ayarlı.
+A value of {field}	{field} değeri
 a vector a pixel	piksel başına bir vektör
 a vector an image patch	görüntü parçası başına bir vektör
 A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	MGRS etiketleri için EPSG koduyla (32632) bir WGS 84 UTM dilimi; boşsa: haritanınki öyleyse o, değilse çerçevenin merkezindeki dilim.
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	Web adresiyle, birleştirilmiş meta verili bir Zarr deposu (biçim 2 veya 3) ya da bu bilgisayardaki bir klasör. Bir değişkenin haritası, zaman gibi diğer boyutlarının seçilen adımları için okunur.
 A Zarr variable's values through time at points clicked on the map.	Haritada tıklanan noktalarda bir Zarr değişkeninin zaman içindeki değerleri.
-A2 landscape sheet	A2 yatay sayfa
-A2 portrait sheet	A2 dikey sayfa
-A3 landscape sheet	A3 yatay sayfa
-A3 portrait sheet	A3 dikey sayfa
-A4 landscape sheet	A4 yatay sayfa
-A4 portrait sheet	A4 dikey sayfa
 A5 Grid	A5 Izgarası
 A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	Bir çözünürlükte, harita kapsamı, bir katman veya tüm dünya üzerinde A5'in eşit alanlı beşgen hücreleri, kimlikleriyle birlikte poligonlar olarak.
 About	Hakkında
@@ -165,6 +171,7 @@ Add a report file, or a report template for the selected layer.	Bir rapor dosyas
 Add a scale bar for the map frame.	Harita çerçevesi için ölçek çubuğu ekle.
 add a second map first (Data › New Map)	önce ikinci bir harita ekleyin (Veri › Yeni Harita)
 Add a second map frame first	Önce ikinci bir harita çerçevesi ekleyin
+Add a spectral index of the item's bands, for the part of the map in view	Öğenin bantlarından, haritanın görünen kısmı için bir spektral indeks ekle
 Add a straight line.	Düz bir çizgi ekle.
 Add a text element.	Bir metin öğesi ekle.
 Add a web basemap over the others instead of replacing them, to blend it with them. Click one that shows to take it off.	Bir web altlık haritasını diğerlerinin yerine koymak yerine üstlerine ekleyerek onlarla karıştır. Kaldırmak için görünen birine tıklayın.
@@ -228,6 +235,7 @@ Add Layer File	Katman Dosyası Ekle
 Add Mark	İşaret Ekle
 Add more with plugins:	Eklentilerle daha fazlasını ekleyin:
 Add Open Data	Açık Veri Ekle
+Add or create a polygon feature layer using Data, then choose it here.	Veri ile bir poligon detay katmanı ekleyin veya oluşturun, ardından burada seçin.
 Add Output	Çıktı Ekle
 Add Overture Maps Data	Overture Maps Verisi Ekle
 Add Page After	Sonrasına Sayfa Ekle
@@ -249,8 +257,10 @@ Add Selected ({n})	Seçilenleri Ekle ({n})
 Add Service Layer	Servis Katmanı Ekle
 Add skill…	Beceri ekle…
 Add STAC Asset	STAC Varlığı Ekle
+Add STAC Bands	STAC Bantları Ekle
 Add STAC Data Cube	STAC Veri Küpü Ekle
 Add STAC Footprints	STAC Kapsama Alanlarını Ekle
+Add STAC Index	STAC İndeksi Ekle
 Add statistic	İstatistik ekle
 Add Step	Adım Ekle
 Add Stroke	Kontur Ekle
@@ -261,6 +271,7 @@ Add Text	Metin Ekle
 Add text that updates: page, date, scale, map and more.	Güncellenen metin ekle: sayfa, tarih, ölçek, harita ve daha fazlası.
 Add the attribute table of a layer in the map frame.	Harita çerçevesindeki bir katmanın öznitelik tablosunu ekle.
 Add the current view as a keyframe.	Geçerli görünümü anahtar kare olarak ekle.
+Add the item's bands as one image, for the part of the map in view	Öğenin bantlarını, haritanın görünen kısmı için tek bir görüntü olarak ekle
 Add The National Map Service	The National Map Servisi Ekle
 Add this GeoTIFF to the map	Bu GeoTIFF'i haritaya ekle
 Add this MCP server to your agent:	Bu MCP sunucusunu ajanınıza ekleyin:
@@ -279,7 +290,6 @@ Add {language}	{language} ekle
 Add {n}	{n} ekle
 Add ▾	Ekle ▾
 Added	Eklendi
-Added Fixture	Eklenen Nesne
 Added from {start} to {end}: the time slider steps through it	{start} ile {end} arası eklendi: zaman kaydırıcısı bu dönemde ilerler
 Added Overture's {theme} as map tiles ({release}; some themes show only zoomed in): {attribution}	Overture'ın {theme} teması harita karoları olarak eklendi ({release}; bazı temalar yalnızca yakınlaştırınca görünür): {attribution}
 Added {name}	{name} eklendi
@@ -318,6 +328,7 @@ Agents then run commands, change files and use the web on this computer without 
 Aggregate Points to A5	Noktaları A5'te Topla
 Aggregation	Toplama
 Agricultural field boundaries the Fields of the World model found in Sentinel-2 imagery, worldwide, a year at a time (2nd Edition, CC BY 4.0). These are model predictions, not surveyed parcels.	Fields of the World modelinin Sentinel-2 görüntülerinde bulduğu tarım tarlası sınırları, dünya genelinde, yıl yıl (2. Baskı, CC BY 4.0). Bunlar ölçülmüş parseller değil, model tahminleridir.
+Agriculture	Tarım
 AI	YZ
 AI\nAssistant	YZ\nAsistanı
 AI Assistant	YZ Asistanı
@@ -352,16 +363,19 @@ Altitude	Yükseklik
 Always allow	Her zaman izin ver
 Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3 veya uç noktasıyla S3 uyumlu bir servis (MinIO, Cloudflare R2, Wasabi…). Anahtarlar RustGIS kapanana kadar tutulur; kaydedilen bir bağlantı adını, uç noktasını ve bölgesini saklar, gizli anahtarını asla saklamaz.
+Ambient	Ortam
 amenity=cafe, shop	amenity=cafe, shop
 An agent on this computer asks to:	Bu bilgisayardaki bir ajan şunu yapmak istiyor:
+An API key in the URL path is saved as typed, not in the credential store.	URL yolundaki bir API anahtarı, kimlik bilgisi deposuna değil, yazıldığı gibi kaydedilir.
 An API key sent in a header must use plain ASCII characters.	Bir başlıkta gönderilen API anahtarı yalnızca düz ASCII karakterleri kullanmalıdır.
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	Bir ArcGIS Online kuruluşunun veya ArcGIS Enterprise portalının adresi; boşsa ArcGIS Online
+an ArcGIS sign-in	bir ArcGIS oturumu
 An AWS profile	Bir AWS profili
-an enqueued add is not a success	sıraya alınmış bir ekleme başarı değildir
-An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Bir EPSG kodu, WKT veya PROJ dizesi; boşsa: projeksiyonluysa haritanın kendi sistemi, değilse görünümün merkezindeki UTM dilimi
+An image picked for an earlier Image… was dropped: pick it again for that marker	Önceki bir Resim… için seçilen resim bırakıldı: o işaretçi için yeniden seçin
 Analysis	Analiz
 Analyze	Analiz
 Analyze › AI	Analiz › YZ
+Analyze › Annotate	Analiz › Not Ekle
 Analyze › Workflows	Analiz › İş Akışları
 AND	AND
 Angle	Açı
@@ -369,6 +383,8 @@ Angle (°)	Açı (°)
 Animated GIF	Hareketli GIF
 Animated GIF or PNG frames (zip)	Hareketli GIF veya PNG kareleri (zip)
 Animation	Animasyon
+Annotate	Not Ekle
+Annotation export uses GeoJSON.	Not dışa aktarımı GeoJSON kullanır.
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	Bırakılan başka bir dosya açılmadı: kaydedilmemiş değişiklikler sorusunu yanıtladıktan sonra yeniden bırakın.
 Another project is open now: open the dialog again from its table.	Şu anda başka bir proje açık: iletişim kutusunu onun tablosundan yeniden açın.
 another project was opened	başka bir proje açıldı
@@ -384,7 +400,9 @@ Application	Uygulama
 Apply	Uygula
 Apply a function to a raster	Bir rastere fonksiyon uygula
 Apply Control Points	Kontrol Noktalarını Uygula
+Apply Conversion	Dönüştürmeyi Uygula
 Apply elevation	Yüksekliği uygula
+Apply Shape Conversion	Şekil Dönüştürmeyi Uygula
 Apply Style	Stili Uygula
 Apply to layers	Katmanlara uygula
 Apply to the selected layer	Seçili katmana uygula
@@ -397,6 +415,7 @@ ArcGIS Portal…	ArcGIS Portal…
 ArcGIS REST	ArcGIS REST
 ArcGIS Sign-In Status	ArcGIS Oturum Açma Durumu
 ArcGIS token	ArcGIS belirteci
+ArcGIS Token Status	ArcGIS Belirteci Durumu
 Archive	Arşiv
 Archive History	Arşiv Geçmişi
 Archiving	Arşivleme
@@ -405,6 +424,7 @@ Area of use: longitude {w}° to {e}°, latitude {s}° to {n}°	Kullanım alanı:
 Area of use: the whole world	Kullanım alanı: tüm dünya
 Area of use: within {r}° of the {lon}° meridian	Kullanım alanı: {lon}° meridyeninin {r}° yakını
 Area of use: within {r}° of {lon}°, {lat}°	Kullanım alanı: {lon}°, {lat}° noktasının {r}° yakını
+Area Unit	Alan Birimi
 Area {area}   ·   Perimeter {perimeter}	Alan {area}   ·   Çevre {perimeter}
 Areas (name, land use, area)	Alanlar (ad, arazi kullanımı, alan)
 Argentina	Arjantin
@@ -449,6 +469,7 @@ Automatic (mm to km)	Otomatik (mm'den km'ye)
 Automatic (system language)	Otomatik (sistem dili)
 Automatic ({kind})	Otomatik ({kind})
 Automatic ({n})	Otomatik ({n})
+Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself.	Otomatik, sütunları dosyanın tamamını kullanarak seçer. Önizleme önerilerini görmek veya sütunları kendiniz seçmek için bir liste açın.
 Autosave	Otomatik Kaydetme
 Autosave couldn't keep a recovery copy: {error}	Otomatik kaydetme kurtarma kopyası saklayamadı: {error}
 autosave failed unexpectedly; it goes on with the next copy	otomatik kaydetme beklenmedik şekilde başarısız oldu; sonraki kopyayla devam eder
@@ -462,19 +483,25 @@ Back to the map	Haritaya dön
 Back to tools	Araçlara dön
 Backdrop	Arka Plan
 Background	Arka Plan
+Balanced light	Dengeli ışık
 Band	Bant
 Band Combination	Bant Kombinasyonu
+Band combinations are made on the desktop for now	Bant kombinasyonları şimdilik masaüstünde yapılıyor
 Band must be a positive integer, list of bands, or 'all'.	Bant pozitif bir tamsayı, bant listesi veya 'all' olmalıdır.
 Band {n}	Bant {n}
 Band {n}: {name}	Bant {n}: {name}
 Band {n}: {name}, {wavelength} nm	Bant {n}: {name}, {wavelength} nm
 Bands	Bantlar
 Bands 1–{n}	Bant 1–{n}
+Bands left out	Dışarıda bırakılan bantlar
 Bands: blue green red NIR SWIR	Bantlar: mavi yeşil kırmızı NIR SWIR
+Bands: public items only	Bantlar: yalnızca herkese açık öğeler
 Bangladesh	Bangladeş
 Banner	Afiş
 Bar	Çubuk
 Bar Chart	Çubuk Grafik
+Bar color	Çubuk rengi
+Bars	Çubuklar
 Base	Taban
 Base (m)	Taban (m)
 Basemap	Altlık Harita
@@ -482,6 +509,7 @@ Basemaps	Altlık Haritalar
 Basic authentication	Temel kimlik doğrulama
 Basin from hydrolocation	Hidro-konumdan havza
 Batch Run	Toplu Çalıştır
+Bathymetric	Batimetrik
 Bearing	Yön
 Before	Önce
 Before the event	Olaydan önce
@@ -519,6 +547,8 @@ Boundaries…	Sınırlar…
 Bounding\nGeometry	Sınırlayıcı\nGeometri
 Box Construction	Kutu Oluşturma
 Brazil	Brezilya
+Break the text into lines at spaces to fit the width of its box	Metni, kutusunun genişliğine sığması için boşluklardan satırlara böl
+Breaks	Kırılmalar
 Brightness	Parlaklık
 Brightness, contrast, saturation and sepia for the whole map.	Tüm harita için parlaklık, kontrast, doygunluk ve sepya.
 Bring a field package's edits and photos back to the offline area it was made from.	Bir saha paketinin düzenlemelerini ve fotoğraflarını oluşturulduğu çevrimdışı alana geri getir.
@@ -556,12 +586,17 @@ Bundle the project and its data into one file to share.	Paylaşmak için projeyi
 Bundle the visible layers, with simplified geometry for phones and tablets.	Görünür katmanları telefonlar ve tabletler için basitleştirilmiş geometriyle paketle.
 By\nAttributes	Özniteliğe\nGöre
 By\nLocation	Konuma\nGöre
+By area	Alana göre
+By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	Alana göre: bir diğerinin iki katı olan bir değer, yaklaşık iki kat alanlı bir işaretçi çizer. Yarıçapa göre: iki kat boyut.
 By Coordinates	Koordinatlarla
 By Coordinates…	Koordinatlarla…
 By Expression	İfadeyle
+By label	Etikete göre
 By layer	Katmana göre
 By Place or Address	Yer veya Adresle
 By Place or Address…	Yer veya Adresle…
+By radius	Yarıçapa göre
+By the bars	Çubuklara göre
 by {author}	Geliştirici: {author}
 By {field}	{field} alanına göre
 cached tiles	önbellekteki karolar
@@ -585,7 +620,11 @@ Camera Effect	Kamera Efekti
 Can't read this folder	Bu klasör okunamıyor
 Cancel	İptal
 Cancel ArcGIS Sign-In	ArcGIS Oturum Açmayı İptal Et
+Cancel ArcGIS Token	ArcGIS Belirtecini İptal Et
 Cancel Caching	Önbelleğe Almayı İptal Et
+Cancel Fitting	Uydurmayı İptal Et
+Cancel Grid Read	Izgara Okumayı İptal Et
+Cancel token request	Belirteç isteğini iptal et
 Cancelled	İptal edildi
 Cap	Uç
 Capture To Clipboard	Panoya Yakala
@@ -662,7 +701,9 @@ choose a folder	bir klasör seçin
 Choose a GeoPackage layer	Bir GeoPackage katmanı seçin
 Choose a layer	Bir katman seçin
 Choose a layer…	Bir katman seçin…
+Choose a loaded editable polygon layer.	Yüklenmiş, düzenlenebilir bir poligon katmanı seçin.
 Choose a model.	Bir model seçin.
+Choose a polygon layer	Bir poligon katmanı seçin
 Choose a position within the supported map and construction grid.	Desteklenen harita ve oluşturma ızgarası içinde bir konum seçin.
 Choose a resampling type for the raster layer.	Raster katmanı için bir yeniden örnekleme türü seçin.
 Choose a saved S3 connection before opening this source.	Bu kaynağı açmadan önce kayıtlı bir S3 bağlantısı seçin.
@@ -672,6 +713,10 @@ Choose a stop	Bir durak seçin
 Choose a table to load for editing	Düzenlemek üzere yüklenecek bir tablo seçin
 Choose a zipped Shapefile, or pick its .shp and .dbf together.	ZIP'lenmiş bir Shapefile seçin veya .shp ve .dbf dosyalarını birlikte seçin.
 Choose an account	Hesap seçin
+Choose an image and target layer, then draw in the original image grid.	Bir görüntü ve hedef katman seçin, ardından özgün görüntü ızgarasında çizin.
+Choose an image before using original-image pixels.	Özgün görüntü piksellerini kullanmadan önce bir görüntü seçin.
+Choose an image or Web Mercator grid metres before drawing.	Çizmeden önce bir görüntü veya Web Mercator ızgara metresi seçin.
+Choose Circle or Rotated Box.	Daire veya Döndürülmüş Kutu seçin.
 Choose Connection	Bağlantı Seç
 Choose Connection…	Bağlantı Seç…
 Choose extra buttons for the Quick Access Toolbar.	Hızlı Erişim Araç Çubuğu için ek düğmeler seç.
@@ -708,6 +753,7 @@ Class color	Sınıf rengi
 Class Fields	Sınıf Alanları
 Class Style	Sınıf Stili
 Class {n}	Sınıf {n}
+Class {n} more than {bound}	Sınıf {n}, {bound} değerinden fazla
 Class {n} up to	Sınıf {n} üst sınırı
 Classes	Sınıflar
 Classes from training polygons.	Eğitim poligonlarından sınıflar.
@@ -795,6 +841,7 @@ Close the current dialog before reloading a layer with pending edits.	Bekleyen d
 Close the layout and show the map.	Sayfa düzenini kapat ve haritayı göster.
 Close the time slider (it stays on; Time Slider opens it again).	Zaman kaydırıcısını kapat (açık kalır; Zaman Kaydırıcısı onu yeniden açar).
 Close thread	İş parçacığını kapat
+Close without applying the preview and stop any pending fit. Use Undo after applying a conversion.	Önizlemeyi uygulamadan kapat ve bekleyen uydurmayı durdur. Bir dönüştürmeyi uyguladıktan sonra Geri Al'ı kullanın.
 Close {name}	Kapat: {name}
 Closest	En Yakın
 Coded values, one per line: code=description	Kodlu değerler, her satıra bir tane: kod=açıklama
@@ -804,6 +851,8 @@ Collection	Koleksiyon
 Collection {id}: choose dates and Find Items	Koleksiyon {id}: tarihleri seçin ve Öğeleri Bul'a tıklayın
 Collections	Koleksiyonlar
 Color	Renk
+Color by class	Sınıfa göre renklendir
+Color infrared	Renkli kızılötesi
 Color Infrared (4, 1, 2)	Renkli Kızılötesi (4, 1, 2)
 Color Ramps	Renk Rampaları
 Color Scheme	Renk Şeması
@@ -816,7 +865,6 @@ Colors from the raster's own color table.	Rasterin kendi renk tablosundaki renkl
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	Renk rampaları (RustGIS, QGIS, GDAL, GMT)
 Column Statistics	Sütun İstatistikleri
 Columns	Sütunlar
-Columns named like longitude/latitude, easting/northing or geometry are picked for you.	longitude/latitude, easting/northing veya geometry gibi adlandırılmış sütunlar sizin için seçilir.
 Combinations from the box above, one per line	Yukarıdaki kutudan kombinasyonlar, her satıra bir tane
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	İki poligon katmanını, herhangi birinin kapladığı her parçada birleştirir; örtüştükleri yerde her ikisinin öznitelikleriyle.
 COMID {comid}	COMID {comid}
@@ -858,6 +906,7 @@ Constant	Sabit
 Constant ({m} m)	Sabit ({m} m)
 Constant height	Sabit yükseklik
 Constant…	Sabit…
+Construction Grid	Yapı Izgarası
 Content	İçerik
 Contingent Values	Koşullu Değerler
 Continue	Devam
@@ -865,9 +914,18 @@ Continue with ChatGPT	ChatGPT ile devam et
 Contrast	Kontrast
 Control Point Fit	Kontrol Noktası Uyumu
 Conversion	Dönüştürme
+Conversion closed because the source, selection or tool changed.	Kaynak, seçim veya araç değiştiği için dönüştürme kapatıldı.
+conversion request limit reached	dönüştürme isteği sınırına ulaşıldı
 Convert	Dönüştür
 Convert a layer to another format	Bir katmanı başka bir biçime dönüştür
 Convert Field to Dates	Alanı Tarihlere Dönüştür
+Convert Now	Şimdi Dönüştür
+Convert Now fits and applies immediately. Preview Conversion lets you review or adjust first.	Şimdi Dönüştür hemen uydurur ve uygular. Dönüştürmeyi Önizle, önce gözden geçirmenizi veya ayarlamanızı sağlar.
+Convert Polygon	Poligonu Dönüştür
+Convert Polygon to Shape…	Poligonu Şekle Dönüştür…
+Convert Polygon…	Poligonu Dönüştür…
+Convert Position	Konumu Dönüştür
+Convert Selected Polygon…	Seçili Poligonu Dönüştür…
 Convert the selected layer's labels into an annotation layer.	Seçili katmanın etiketlerini bir not katmanına dönüştür.
 Convert this layer's labels into an annotation layer.	Bu katmanın etiketlerini bir not katmanına dönüştür.
 Convert To Annotation	Nota Dönüştür
@@ -877,8 +935,12 @@ Convert…	Dönüştür…
 Coordinate	Koordinat
 Coordinate System	Koordinat Sistemi
 Coordinate system	Koordinat sistemi
+Coordinate systems	Koordinat sistemleri
 Coordinate System…	Koordinat Sistemi…
 Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	{format} biçiminde koordinatlar. Değiştirmek için tıklayın: ondalık derece, DMS, UTM, MGRS. UTM ve MGRS Dünya'nın ızgaralarıdır; 84° K'nin kuzeyinde ve 80° G'nin güneyinde UPS olarak okunur.
+Copernicus Data Space	Copernicus Data Space
+Copernicus Data Space Status	Copernicus Data Space Durumu
+Copernicus Data Space…	Copernicus Data Space…
 Copied the command.	Komut kopyalandı.
 Copied the layout to the clipboard	Sayfa düzeni panoya kopyalandı
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Sayfa düzeni panoya {wanted} yerine {dpi} dpi ile kopyalandı: sayfa daha büyük bir görüntü için fazla büyük
@@ -921,11 +983,14 @@ Copy, Cut and Paste keys cannot be reassigned.	Kopyala, Kes ve Yapıştır tuşl
 Corner radius	Köşe yarıçapı
 Corrections	Düzeltmeler
 Cost	Maliyet
+Cost Field	Maliyet Alanı
 could not draw the layout	sayfa düzeni çizilemedi
 could not draw the map	harita çizilemedi
+Could not read saved ChatGPT sign-ins: {reason}	Kayıtlı ChatGPT oturumları okunamadı: {reason}
 Could not start service discovery: {error}	Hizmet keşfi başlatılamadı: {error}
 could not start the keychain worker	anahtarlık işçisi başlatılamadı
 Couldn't check for updates: {error}	Güncellemeler denetlenemedi: {error}
+Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	Haritadaki {language} metni için yazı tipi indirilemedi, bu yüzden metin haritadan ve dışa aktarımlarından çıkarıldı; yeniden denemek için Ayarlar › Dil bölümünden bir dil seçin.
 Couldn't download the font for {language}; pick the language again to retry.	{language} için yazı tipi indirilemedi; yeniden denemek için dili tekrar seçin.
 Couldn't download the update: {error}	Güncelleme indirilemedi: {error}
 Couldn't download the {view} worldview ({error}); the map keeps the {current} borders	{view} dünya görüşü indirilemedi ({error}); harita {current} sınırlarını koruyor
@@ -933,6 +998,7 @@ Couldn't install the update: {error}	Güncelleme yüklenemedi: {error}
 Couldn't load the plugin registry: {error}	Eklenti kayıt defteri yüklenemedi: {error}
 Couldn't start reading: {e}	Okuma başlatılamadı: {e}
 Couldn't start the search: {e}	Arama başlatılamadı: {e}
+Count	Sayı
 Counterclockwise	Saat yönünün tersine
 Countries, cities, rivers and lakes	Ülkeler, şehirler, nehirler ve göller
 Country	Ülke
@@ -942,6 +1008,7 @@ Counts, totals and top categories of what's in view.	Görünümdekilerin sayıla
 CPU	CPU
 Create	Oluştur
 Create (click points)	Oluştur (noktalara tıklayın)
+Create a free account	Ücretsiz hesap oluşturun
 Create a new project or start from the World Atlas sample.	Yeni bir proje oluşturun veya “Dünya Atlası” örneğiyle başlayın.
 Create Feature	Detay Oluştur
 Create Hosted\nImagery	Barındırılan\nGörüntü Oluştur
@@ -972,6 +1039,7 @@ Current extent	Geçerli kapsam
 Current Project	Geçerli Proje
 Current scale ({scale})	Geçerli ölçek ({scale})
 Current time	Geçerli saat
+Current: {action}	Geçerli: {action}
 Curve	Eğri
 Curved	Eğri
 Custom	Özel
@@ -982,6 +1050,7 @@ Cut	Kes
 Cut a raster into web map tiles	Bir rasteri web harita karolarına böl
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	Bir rasteri görüntüleyici sayfasıyla birlikte web harita karolarına (XYZ PNG) böl.
 Cut Polygon	Poligonu Kes
+Cutoff	Kesim değeri
 Dark	Koyu
 Dash	Kesik
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	Çizgi ve boşluk uzunlukları sırayla punto cinsinden, örneğin 4 2. Düz çizgi için boş bırakın.
@@ -1019,22 +1088,26 @@ Dates	Tarihler
 Dates a cell needs	Bir hücrenin gerektirdiği tarih sayısı
 Dates a cell needs is a whole number, or empty for half	Bir hücrenin gerektirdiği tarih sayısı bir tam sayıdır veya yarısı için boştur
 DateTime	TarihSaat
+Datum Grids	Datum Izgaraları
 Day	Gün
 Day and night shading for a time.	Bir zaman için gece ve gündüz gölgelendirmesi.
 Decimal	Ondalık
 decimal degrees	ondalık derece
+Decimals	Ondalık basamak
 Decline	Reddet
 Deep Learning	Derin Öğrenme
 Deep Learning\nTools	Derin Öğrenme\nAraçları
 Deep Learning Package	Derin Öğrenme Paketi
 Deep Learning Tools	Derin Öğrenme Araçları
 Default	Varsayılan
+Default Border	Varsayılan Kenarlık
 Default can't be removed. You can rename or hide it.	Varsayılan kaldırılamaz. Yeniden adlandırabilir veya gizleyebilirsiniz.
 Define Projection	Projeksiyon Tanımla
 Define Projection…	Projeksiyon Tanımla…
 Definition\nQuery	Tanım\nSorgusu
 Definition Query	Tanım Sorgusu
 Definition query	Tanım sorgusu
+Degrees (0–90)	Derece (0–90)
 Degrees as decimals or degrees, minutes and seconds.	Ondalık derece veya derece, dakika ve saniye.
 Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.	Ondalık derece veya derece, dakika ve saniye; ya da ikisinin yerine bir UTM veya MGRS referansı.
 degrees, as the cell size is in degrees	derece, çünkü hücre boyutu derece cinsinden
@@ -1081,7 +1154,9 @@ Description	Açıklama
 Desktop and command line only	Yalnızca masaüstü uygulaması ve komut satırı
 Destination	Varış
 Destination key	Varış anahtarı
+Destinations	Varış noktaları
 Destinations ({operation}): {places}	Hedefler ({operation}): {places}
+Destinations to Find	Bulunacak varış noktaları
 Detail	Ayrıntı
 Details	Ayrıntılar
 Details of the selected layer, on the Source tab of its properties.	Seçili katmanın ayrıntıları, özelliklerinin Kaynak sekmesinde.
@@ -1146,6 +1221,9 @@ Double-click to add	Eklemek için çift tıklayın
 Download	İndir
 Download\nMap	Haritayı\nİndir
 Download and Install	İndir ve Yükle
+Download Datum Grids	Datum Izgaralarını İndir
+Download GeoLibre Tool Translations	GeoLibre Araç Çevirilerini İndir
+Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	GeoLibre'nin bu araçlar için {language} çevirilerini indir (yaklaşık 2 MB, languages.geolibre.app adresinden)
 Download it again and load it.	Yeniden indirip yükleyin.
 Download its features in the view (up to the server's limit)	Görünümdeki detaylarını indir (sunucunun sınırına kadar)
 Download Map	Haritayı İndir
@@ -1153,6 +1231,8 @@ Download offered: {name}	İndirme sunuldu: {name}
 Download offered: {name}. The browser doesn't say whether it saved the file.	İndirme sunuldu: {name}. Tarayıcı dosyanın kaydedilip kaydedilmediğini bildirmez.
 Download OpenStreetMap Data	OpenStreetMap Verisi İndir
 Download the GeoLibre runner	GeoLibre çalıştırıcısını indir
+Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	Haritadaki {language} metni için yazı tipi indiriliyor. O gelmeden önce dışa aktarılan resimlerde bu metin yer almaz.
+Downloading the tool translations…	Araç çevirileri indiriliyor…
 Downloading {url}…	{url} indiriliyor…
 Downloading: {done} MB	İndiriliyor: {done} MB
 Downloading: {done} of {total} MB	İndiriliyor: {done} / {total} MB
@@ -1221,6 +1301,7 @@ Draw labels at every scale and distance.	Etiketleri her ölçekte ve mesafede ç
 Draw line	Çizgi çiz
 Draw new features in the selected layer. Double-click to finish lines and polygons.	Seçili katmanda yeni detaylar çizin. Çizgileri ve poligonları bitirmek için çift tıklayın.
 Draw new single-band rasters with the grey stretch again.	Yeni tek bantlı rasterları yeniden gri germe ile çiz.
+Draw on top of layers	Katmanların üstüne çiz
 Draw only polygon outlines, keeping their colors and widths.	Renklerini ve kalınlıklarını koruyarak yalnızca poligon dış çizgilerini çiz.
 Draw point	Nokta çiz
 Draw points as bins coloured by how many fall in each.	Noktaları, her birine düşen sayıya göre renklendirilen kutucuklar olarak çiz.
@@ -1228,14 +1309,17 @@ Draw polygon	Poligon çiz
 Draw polygons as outlines only.	Poligonları yalnızca dış çizgi olarak çiz.
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	Bundan sonra eklenen tek bantlı rasterları bu renk şeması, germe ve yeniden örnekleme ile çiz.
 Draw strokes in levels	Konturları düzeyler halinde çiz
+Draw the grid lines over the map's layers, under the labels; off: under the layers	Izgara çizgilerini haritanın katmanlarının üstüne, etiketlerin altına çiz; kapalıysa: katmanların altına
 Draw the layer at every scale.	Katmanı her ölçekte çiz.
 Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).	Haritayı GPU'da çiz (beta; küre, görünüm efektleri ve renk görme simülasyonu CPU çizicisinde kalır).
 Draw the selected layer above others.	Seçili katmanı diğerlerinin üstünde çiz.
 Draw the selected layer below others.	Seçili katmanı diğerlerinin altında çiz.
 Drawing	Çizim
+Drawing cancelled because the map, image or construction grid changed. Check the grid, then start a new shape.	Harita, görüntü veya yapı ızgarası değiştiği için çizim iptal edildi. Izgarayı kontrol edin, ardından yeni bir şekle başlayın.
 Drawing Effects	Çizim Efektleri
 Drawing Mode	Çizim Modu
 Drawing Order	Çizim Sırası
+Drawing requires editing enabled, a loaded polygon layer and a flat Earth map with zero pitch.	Çizim için düzenlemenin etkin olması, yüklenmiş bir poligon katmanı ve eğimi sıfır olan düz bir Dünya haritası gerekir.
 drawn by the server	sunucu tarafından çizilir
 Drive	Araç
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	OpenAerialMap'te paylaşılan drone ve hava görüntüleri, en yeniler önce, bulut için optimize edilmiş GeoTIFF olarak eklenir.
@@ -1269,6 +1353,7 @@ Each class labels the features its own clause matches, so a feature can get a la
 Each click on the map adds a point, until you click this again.	Haritadaki her tıklama bir nokta ekler; buna yeniden tıklayana kadar sürer.
 Each geoprocessing run becomes a step, chained by its outputs	Her coğrafi işleme çalıştırması, çıktılarıyla zincirlenen bir adım olur
 Each line's whole result, to read or copy	Okumak veya kopyalamak için her satırın sonucunun tamamı
+Earliest available state	Mevcut en eski durum
 Earth Index has no points in the view	Earth Index'in görünümde noktası yok
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1333,6 +1418,7 @@ Empty	Boş
 Empty Cache	Önbelleği Boşalt
 Empty Index Cache	Dizin Önbelleğini Boşalt
 Empty the script and its results ({keys} brings the script back)	Betiği ve sonuçlarını boşalt ({keys} betiği geri getirir)
+Enable editing	Düzenlemeyi etkinleştir
 Enable Extension	Uzantıyı Etkinleştir
 Enable Lighting	Aydınlatmayı Etkinleştir
 Enable Plugin	Eklentiyi Etkinleştir
@@ -1348,16 +1434,18 @@ Enter	Enter
 Enter a valid query parameter name before testing this connection.	Bu bağlantıyı test etmeden önce geçerli bir sorgu parametresi adı girin.
 Enter an API key.	Bir API anahtarı girin.
 Enter an EPSG code as a number, such as 32650	Bir EPSG kodunu 32650 gibi bir sayı olarak girin
+Enter the expiry as a Unix time in milliseconds, or leave it blank.	Son kullanma zamanını milisaniye cinsinden bir Unix zamanı olarak girin veya boş bırakın.
 Enter the password or key for this connection. Remember on this computer is optional.	Bu bağlantının parolasını veya anahtarını girin. Bu bilgisayarda hatırla isteğe bağlıdır.
+Enter the password to generate a token.	Belirteç oluşturmak için parolayı girin.
 Enter the provider's address.	Sağlayıcının adresini girin.
-Enter this connection's password or API key to log in.	Oturum açmak için bu bağlantının parolasını veya API anahtarını girin.
+Enter the user to generate a token for.	Belirtecin oluşturulacağı kullanıcıyı girin.
+Enter this connection's password, API key or token to log in.	Oturum açmak için bu bağlantının parolasını, API anahtarını veya belirtecini girin.
 Enter to send, Shift+Enter for a new line	Göndermek için Enter, yeni satır için Shift+Enter
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
 Environments	Ortamlar
 EPSG	EPSG
 EPSG code	EPSG kodu
-EPSG or ESRI code	EPSG veya ESRI kodu
 EPSG:	EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832, WKT veya bir PROJ dizesi; boşsa projeksiyonluysa haritanınki, değilse çerçevenin merkezindeki UTM dilimi.
@@ -1385,9 +1473,11 @@ Every label setting of this layer, in the Labeling pane.	Bu katmanın tüm etike
 Every layer, as FEMA draws them	FEMA'nın çizdiği şekliyle her katman
 Every run, in order, as a script that opens the project	Projeyi açan bir betik olarak, sırayla her çalıştırma
 every Socrata site, or one such as data.cityofnewyork.us	tüm Socrata siteleri veya data.cityofnewyork.us gibi tek bir site
+every value	her değer
 Every {n} min	Her {n} dakikada
 Everything done in this session, from the app, scripts, the AI Assistant or plugins	Bu oturumda uygulama, betikler, YZ Asistanı veya eklentiler tarafından yapılan her şey
 Everywhere	Her yerde
+EVI (enhanced vegetation)	EVI (geliştirilmiş bitki örtüsü)
 Exact request	Tam istek
 Existing field	Mevcut alan
 Existing Template	Mevcut Şablon
@@ -1397,6 +1487,8 @@ Expand Group	Grubu Genişlet
 Expand Legend	Lejantı Genişlet
 Expand the ribbon	Şeridi genişlet
 Expand Tile Legend	Karo Lejantını Genişlet
+Expires at (Unix milliseconds)	Son kullanma (Unix milisaniye)
+expiresAt must be a Unix time in milliseconds, in the future.	expiresAt, gelecekteki bir anı gösteren, milisaniye cinsinden bir Unix zamanı olmalıdır.
 Explode	Parçala
 Exploratory 3D Analysis	Keşifsel 3B Analiz
 Exploratory Analysis	Keşifsel Analiz
@@ -1408,6 +1500,7 @@ Export\nMap	Haritayı\nDışa Aktar
 Export\nRaster	Rasteri\nDışa Aktar
 Export and print the layout's map frames to PDF with their coordinates, so PDF readers can locate and measure in them.	Sayfa düzeninin harita çerçevelerini koordinatlarıyla birlikte PDF olarak dışa aktarın ve yazdırın; böylece PDF okuyucuları bunlarda konum bulabilir ve ölçüm yapabilir.
 Export Animation	Animasyonu Dışa Aktar
+Export Block	Bloğu Dışa Aktar
 Export Bookmarks	Yer İmlerini Dışa Aktar
 Export Bookmarks…	Yer İmlerini Dışa Aktar…
 Export CSV…	CSV Dışa Aktar…
@@ -1415,6 +1508,7 @@ Export Features	Detayları Dışa Aktar
 Export Features (tool)	Detayları Dışa Aktar (araç)
 Export Features needs a vector layer (Data › Export Raster writes a raster)	Detayları Dışa Aktar bir vektör katmanı gerektirir (Veri › Rasteri Dışa Aktar raster yazar)
 Export Features…	Detayları Dışa Aktar…
+Export GeoJSON…	GeoJSON Olarak Dışa Aktar…
 Export Keyboard Shortcuts…	Klavye Kısayollarını Dışa Aktar…
 Export Layout	Sayfa Düzenini Dışa Aktar
 Export Map	Haritayı Dışa Aktar
@@ -1453,29 +1547,34 @@ exporting animations needs the desktop app	animasyonları dışa aktarmak masaü
 exporting time animations needs the desktop app	zaman animasyonlarını dışa aktarmak için masaüstü uygulaması gerekir
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	Stillendirilmiş bir raster katmanını bir PMTiles arşivinde Web Mercator PNG karoları olarak dışa aktarır.
 Exports a vector layer as a Web Mercator vector-tile PMTiles archive.	Bir vektör katmanını Web Mercator vektör karolu bir PMTiles arşivi olarak dışa aktarır.
+Exports contain ordinary polygons and feature properties. Image/grid choices and exact constructions remain session-only.	Dışa aktarımlar sıradan poligonlar ve detay öznitelikleri içerir. Görüntü/ızgara seçimleri ve tam yapılar yalnızca bu oturumda kalır.
 Export…	Dışa Aktar…
 Expression	İfade
 Extensions	Uzantılar
 Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands.	Uzantılar RustGIS’in isteğe bağlı parçalarıdır: indirilecek bir şey yok. Sekmesini ve komutlarını gizlemek için birini kapatın.
 Extensions…	Uzantılar…
 Extent	Kapsam
+Extent in	Kapsam birimi
 Extent Indicator	Kapsam Göstergesi
 extent is [minLon, minLat, maxLon, maxLat], "view" or null	kapsam [minLon, minLat, maxLon, maxLat], "view" veya null olmalıdır
 Extent: {extent}	Kapsam: {extent}
 Extract	Çıkar
 Extracts the parts of input features that fall inside clip polygons.	Girdi detaylarının kırpma poligonları içine düşen kısımlarını çıkarır.
+Extrude them all first: the base is what their walls stand on.	Önce hepsini yükseltin: taban, duvarlarının üzerinde durduğu yerdir.
 Extruded shapes cast shadows on the map.	Yükseltilmiş şekiller haritaya gölge düşürür.
 Extrusion	Yükseltme
 Extrusion Base	Yükseltme Tabanı
 F2	F2
 Face Culling	Yüz Ayıklama
 Faces	Yüzler
+Facilities	Tesisler
 Factor	Çarpan
 Failed	Başarısız
 Failed only	Yalnızca başarısızlar
 Failed replacement export	Değiştirme amaçlı dışa aktarma başarısız
 Fallback	Yedek
 FALSE	FALSE
+False color urban	Yanlış renk kentsel
 Farthest	En Uzak
 Faster drawing: no antialiasing.	Daha hızlı çizim: kenar yumuşatma yok.
 Favourite Arrangement	Sık Kullanılan Düzen
@@ -1555,6 +1654,7 @@ Find plugins in the RustGIS plugin registry.	RustGIS eklenti kayıt defterinde e
 Find Similar	Benzerlerini Bul
 Find Tools	Araç Bul
 Finding routes…	Rotalar bulunuyor…
+Finds the lines reachable within one or more travel costs of points, along a line network.	Bir çizgi ağı boyunca, noktalardan bir veya daha fazla seyahat maliyeti içinde ulaşılabilen çizgileri bulur.
 Finish File Export	Dosya Dışa Aktarmayı Bitir
 Finish Polygon	Poligonu Bitir
 Finish Profile	Profili Bitir
@@ -1569,15 +1669,19 @@ First-Person	Birinci Şahıs
 First-Person Navigation	Birinci Şahıs Gezinme
 Fit	Sığdır
 Fit To Map View	Harita Görünümüne Sığdır
+Fit: centre of the vertex bounds, radius enclosing all vertices. This is not recovery of the original circle.	Uydurma: köşe sınırlarının merkezi, tüm köşeleri içine alan yarıçap. Bu, özgün dairenin geri kazanılması değildir.
+Fit: minimum-area enclosing rectangle of the vertices in the chosen grid.	Uydurma: seçilen ızgarada köşeleri içine alan en küçük alanlı dikdörtgen.
+Fitting in progress. Cancel is also available in the status bar.	Uydurma sürüyor. İptal, durum çubuğunda da kullanılabilir.
 Fix the problems listed below first	Önce aşağıda listelenen sorunları düzeltin
 Fixed	Sabit
 Fixed Zoom In	Sabit Yakınlaştır
 Fixed Zoom Out	Sabit Uzaklaştır
-Fixture	Test Nesnesi
 Flat	Düz
+Flat ground keeps the ramp's colour and slopes facing the sun brighten	Düz zemin rampanın rengini korur ve güneşe bakan eğimler parlaklaşır
 FlatGeobuf	FlatGeobuf
 Flip Line	Çizgiyi Ters Çevir
 Flowline	Akış çizgisi
+FocusAtPassStart	FocusAtPassStart
 Fog	Sis
 Folder	Klasör
 Folder Connections	Klasör Bağlantıları
@@ -1590,6 +1694,7 @@ Follow the time slider	Zaman kaydırıcısını izle
 Font	Yazı Tipi
 for a store that doesn't say	bunu belirtmeyen bir depo için
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	ArcGIS Online için istemci kimliği RustGIS'in kendi uygulamasıdır. Bir ArcGIS Enterprise portalı için üzerinde yönlendirme URL'si {redirect} olan bir OAuth uygulaması kaydedin (Content › New item › Developer credentials) ve istemci kimliğini girin.
+For img1.tiff, suggest img1.geojson. Choose the location in the save dialog.	img1.tiff için img1.geojson önerilir. Konumu kaydetme iletişim kutusunda seçin.
 for the layers that change with time, as they list their times (2024-06-01, 1995)	zamanla değişen katmanlar için, zamanlarını listeledikleri biçimde (2024-06-01, 1995)
 Forest	Orman
 Forget Earthdata Login Token	Earthdata Login Belirtecini Unut
@@ -1597,6 +1702,7 @@ Forget Saved Keys	Kayıtlı Anahtarları Unut
 Forget Saved Login	Kayıtlı Girişi Unut
 Forget Saved Password	Kayıtlı Parolayı Unut
 Forget this plugin: the app stops trying to load it at start.	Bu eklentiyi unut: uygulama başlangıçta onu yüklemeyi denemeyi bırakır.
+Forgets the sign-in, deletes the one remembered on this computer and empties the download cache.	Oturumu unutur, bu bilgisayarda hatırlananı siler ve indirme önbelleğini boşaltır.
 Format	Biçim
 Found: {names}. An agent works on this map through RustGIS's tools and with its own (web, scripts, files) in a folder of its own, kept in Documents › RustGIS › Agent work. It asks you before each action.	Bulunanlar: {names}. Bir ajan bu harita üzerinde RustGIS'in araçlarıyla ve kendi araçlarıyla (web, betikler, dosyalar), Belgeler › RustGIS › Agent work altında saklanan kendi klasöründe çalışır. Her işlemden önce size sorar.
 Fr	Cum
@@ -1630,6 +1736,8 @@ Gemini stopped the reply ({reason}).	Gemini yanıtı durdurdu ({reason}).
 General	Genel
 Generalization	Genelleştirme
 Generate a token	Bir belirteç oluştur
+Generate ArcGIS Token	ArcGIS Belirteci Oluştur
+Generating token…	Belirteç oluşturuluyor…
 geoBoundaries listed no countries: type a country's code	geoBoundaries hiçbir ülke listelemedi: bir ülke kodu yazın
 Geocode	Coğrafi Kodla
 Geocode Addresses	Adresleri Coğrafi Kodla
@@ -1649,6 +1757,7 @@ GeoLibre	GeoLibre
 GeoLibre project	GeoLibre projesi
 GeoLibre Project…	GeoLibre Projesi…
 GeoLibre Tools	GeoLibre araçları
+Geology	Jeoloji
 Geometric Interval	Geometrik Aralık
 Geometry	Geometri
 Geometry lost during import cannot be recovered here. Use Import Original File to choose its coordinate system before reading it. Streamed layers must first be loaded into memory.	İçe aktarma sırasında kaybolan geometri burada kurtarılamaz. Okumadan önce koordinat sistemini seçmek için Özgün Dosyayı İçe Aktar'ı kullanın. Akışla okunan katmanlar önce belleğe yüklenmelidir.
@@ -1676,12 +1785,15 @@ Give the catalogue's web address	Kataloğun web adresini verin
 Give the file's web address	Dosyanın web adresini verin
 Give the service's web address	Servisin web adresini verin
 give the text's layer and row, or the lon and lat to place one	metnin katmanını ve satırını ya da bir metin yerleştirmek için boylam ve enlemi verin
+given up before it was read: it was cancelled, or its project was closed	okunmadan önce vazgeçildi: iptal edildi veya projesi kapatıldı
+given up before it was read: its project was closed, or more than 64 downloads started after it	okunmadan önce vazgeçildi: projesi kapatıldı veya ondan sonra 64'ten fazla indirme başladı
 given up before its read began: its project was closed, or more than 64 downloads started after it	okuması başlamadan vazgeçildi: projesi kapatıldı veya ondan sonra 64'ten fazla indirme başladı
 given up during its read: its project was closed, or more than 64 downloads started after it	okuması sırasında vazgeçildi: projesi kapatıldı veya ondan sonra 64’ten fazla indirme başladı
 Global	Genel
 Globe	Küre
 Go	Git
 Go back a step.	Bir adım geri git.
+Go back to the phone's interface: the map with large buttons under it.	Telefonun arayüzüne geri dön: altında büyük düğmeler olan harita.
 Go back to the previous extent.	Önceki kapsama geri dön.
 Go forward a step.	Bir adım ileri git.
 Go forward to the next extent.	Sonraki kapsama ilerle.
@@ -1710,7 +1822,10 @@ Greece	Yunanistan
 Green	Yeşil
 Greys	Griler
 Grid	Izgara
+Grid color	Izgara rengi
+Grid EPSG:{epsg}	Izgara EPSG:{epsg}
 Grid pixels; angle clockwise from grid right.	Izgara pikselleri; açı ızgaranın sağından saat yönünde.
+Grid read cancelled. Reload the grid to draw in image pixels.	Izgara okuma iptal edildi. Görüntü piksellerinde çizmek için ızgarayı yeniden yükleyin.
 Grid Spacing (degrees)	Izgara Aralığı (derece)
 Ground	Zemin
 Ground\nTo Grid	Yerden\nIzgaraya
@@ -1718,6 +1833,7 @@ Ground heights	Zemin yükseklikleri
 Ground To Grid	Yerden Izgaraya
 Group	Grup
 GROUP BY	GROUP BY
+Group by	Grupla
 Group features by an integer code, each with default values.	Detayları, her biri varsayılan değerlere sahip bir tamsayı koduna göre grupla.
 Group Option	Gruplama Seçeneği
 Group Properties	Grup Özellikleri
@@ -1737,8 +1853,10 @@ Haze, fog, rain or snow over the map.	Harita üzerinde pus, sis, yağmur veya ka
 Head/Tail Breaks	Baş/Kuyruk Kırılımları
 Header name	Başlık adı
 Height	Yükseklik
+Height (m)	Yükseklik (m)
 Height (mm)	Yükseklik (mm)
 Height (points)	Yükseklik (punto)
+Held in	Saklandığı yer
 Help	Yardım
 Help › Help	Yardım › Yardım
 Hexagons	Altıgenler
@@ -1772,7 +1890,10 @@ HOME	HOME
 Home	Giriş
 Home › Add	Giriş › Ekle
 Home › Add › Add Data	Giriş › Ekle › Veri Ekle
+Home › Add › Add Data › From Service	Giriş › Ekle › Veri Ekle › Hizmetten
 Home › Add › Web Data	Giriş › Ekle › Web Verileri
+Home › Add › Web Data › Copernicus Data Space	Giriş › Ekle › Web Verileri › Copernicus Data Space
+Home › Add › Web Data › NASA Earthaccess	Giriş › Ekle › Web Verileri › NASA Earthaccess
 Home › Add › Web Data › United States	Giriş › Ekle › Web Verileri › Amerika Birleşik Devletleri
 Home › Inspect › Measure	Giriş › İncele › Ölç
 Home › Navigate	Giriş › Gezin
@@ -1813,9 +1934,14 @@ IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	IGN'nin Fransa için LiDAR HD nokta bulutları: haritanın olduğu yerdeki 1 km'lik karolar, COPC nokta bulutu olarak eklenir.
 Ignore holes	Delikleri yok say
 Illumination	Aydınlatma
+Image	Resim
 Image Analysis	Görüntü Analizi
+Image annotation	Görüntü notu
 Image Classification	Görüntü Sınıflandırma
+image is required; use null for No image	image gereklidir; Resim yok için null kullanın
+Image markers that can't be drawn were replaced by the circles they showed as: {count} on "{layer}"	Çizilemeyen resim işaretçileri, gösterildikleri dairelerle değiştirildi: “{layer}” üzerinde {count}
 Image Page	Resim Sayfası
+Image-grid request limit reached	Görüntü ızgarası istek sınırına ulaşıldı
 Imagery	Görüntüler
 Imagery Sharing	Görüntü Paylaşımı
 Imagery Tools	Görüntü Araçları
@@ -1831,6 +1957,7 @@ Import Deep Learning Package	Derin Öğrenme Paketini İçe Aktar
 Import DXF	DXF İçe Aktar
 Import DXF…	DXF İçe Aktar…
 Import GeoLibre Project	GeoLibre Projesini İçe Aktar
+Import GeoLibre Tool Translations	GeoLibre Araç Çevirilerini İçe Aktar
 Import Keyboard Shortcuts	Klavye Kısayollarını İçe Aktar
 Import Keyboard Shortcuts…	Klavye Kısayollarını İçe Aktar…
 Import Layout	Sayfa Düzenini İçe Aktar
@@ -1871,17 +1998,21 @@ In the coordinate system's units: metres for UTM.	Koordinat sisteminin birimleri
 In the middle	Ortada
 In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	Web uygulamasında CORS destekli bir proxy sunucusu verin; doğrudan Census erişimi masaüstü uygulamasını veya CLI'yı gerektirir.
 In use	Kullanımda
+Include Empty Zones	Boş Bölgeleri Dahil Et
 Include End Point	Bitiş Noktasını Dahil Et
 Indent	Girintile
 Indent Group	Grubu Girintile
 Indent Layer	Katmanı Girintile
+Index	İndeks
 Indexes	Dizinler
 India	Hindistan
 Indices	İndeksler
+Indices are made on the desktop for now	İndeksler şimdilik masaüstünde yapılıyor
 Indonesia	Endonezya
 Info	Bilgi
 Infographics	İnfografikler
 Information	Bilgi
+Ink	Mürekkep
 INPUT	GİRDİ
 Input	Girdi
 Input Class Features	Girdi Sınıf Detayları
@@ -1918,6 +2049,7 @@ Installed with Homebrew, winget, the AUR or COPR? Update it there.	Homebrew, win
 Installed {name} {version}. Find it on the Plugins tab; its tools are also in the Tools pane.	{name} {version} yüklendi. Eklentiler sekmesinde bulabilirsiniz; araçları Araçlar panelinde de yer alır.
 Installing it downloads Python {version} and the packages it needs from the internet.	Yüklemek, internetten Python {version} ve gereken paketleri indirir.
 Integer field: values are rounded.	Tam sayı alanı: değerler yuvarlanır.
+Interface	Arayüz
 Interface font: {font}	Arayüz yazı tipi: {font}
 Interface Scale	Arayüz Ölçeği
 Interface scale held to {percent}%	Arayüz ölçeği %{percent} ile sınırlandı
@@ -1955,6 +2087,7 @@ It is locked, or one of its surrounds is: unlock it first	Kendisi veya öğeleri
 It is remembered on this computer.	Bu bilgisayarda hatırlanır.
 it is reserved to you (plugins, scripts, tasks, models and the GeoLibre runner)	yalnızca size ayrılmıştır (eklentiler, betikler, görevler, modeller ve GeoLibre çalıştırıcısı)
 it needs input: open it from its pane or button, or run it from a script or the assistant	girdi gerektiriyor: bölmesinden veya düğmesinden açın ya da bir betikten veya asistandan çalıştırın
+It opens unsaved. Save to keep it.	Kaydedilmemiş olarak açılır. Saklamak için kaydedin.
 It opens unsaved; saving replaces {file}.	Kaydedilmemiş olarak açılır; kaydetmek {file} dosyasının yerine yazar.
 it reads or writes files on this computer	bu bilgisayardaki dosyaları okur veya yazar
 it replaces the open project	açık projeyi değiştirir
@@ -1977,6 +2110,7 @@ its default	varsayılanı
 Its default: {default}. Its times: {times}	Varsayılanı: {default}. Zamanları: {times}
 Its firewall ({firewall}) blocked RustGIS. The service may only allow some applications: contact its administrator and send them the details below.	Güvenlik duvarı ({firewall}) RustGIS'i engelledi. Servis yalnızca bazı uygulamalara izin veriyor olabilir: yöneticisiyle iletişime geçin ve aşağıdaki ayrıntıları gönderin.
 its layer was removed	katmanı kaldırıldı
+Its own colour for its text and lines; off, the default dark grey	Metni ve çizgileri için kendi rengi; kapalıysa varsayılan koyu gri
 its tile archive changed or was removed	karo arşivi değişti veya kaldırıldı
 Its tool isn't available now (a plugin's, not loaded, or a suite's, not installed)	Aracı şu anda kullanılamıyor (yüklenmemiş bir eklentinin veya kurulmamış bir paketin aracı)
 Japan	Japonya
@@ -2015,6 +2149,7 @@ Keep value	Değeri sakla
 Keeps the access key ID and secret access key in this computer's credential store, never in the connection or the project.	Erişim anahtarı kimliğini ve gizli erişim anahtarını bağlantıda veya projede değil, bu bilgisayarın kimlik bilgisi deposunda saklar.
 Keeps the parts of two polygon layers that only one of them covers, with that layer's attributes.	İki poligon katmanının yalnızca birinin kapladığı kısımlarını o katmanın öznitelikleriyle tutar.
 Keeps the token in the system's credential store, so it is there when RustGIS starts again. Unticked, a token remembered before is deleted when you save another.	Belirteci sistemin kimlik bilgisi deposunda tutar, böylece RustGIS yeniden başladığında hazır olur. İşaretli değilse, daha önce hatırlanan belirteç başka biri kaydedildiğinde silinir.
+Keeps the username and password in the system's credential store, so RustGIS signs in by itself when it starts again. Not for an account with two-factor authentication. Unticked, a sign-in remembered before is deleted when you sign in.	Kullanıcı adını ve parolayı sistemin kimlik bilgisi deposunda tutar, böylece RustGIS yeniden başladığında kendiliğinden oturum açar. İki faktörlü kimlik doğrulama kullanan hesaplar için değildir. İşaretlenmemişse, daha önce hatırlanan bir oturum, oturum açtığınızda silinir.
 Kernel Density	Çekirdek Yoğunluğu
 Kernel Type	Çekirdek Türü
 Key	Key
@@ -2056,6 +2191,7 @@ Lambert Conformal Conic	Lambert Konform Konik
 Lambert Cylindrical Equal Area	Lambert Silindirik Eşalan
 Landscape	Yatay
 Language	Dil
+Largest first	Önce en büyük
 Lasso	Kement
 Lasso (draw)	Kement (çiz)
 Last agent call failed: {call} ({secs} s ago)	Son ajan çağrısı başarısız oldu: {call} ({secs} sn önce)
@@ -2073,6 +2209,7 @@ Layer Extrusion	Katman Yükseltme
 Layer File	Katman Dosyası
 Layer From\nSelection	Seçimden\nKatman
 Layer not found	Katman bulunamadı
+Layer order	Katman sırası
 Layer Properties	Katman Özellikleri
 Layer Properties Pane	Katman Özellikleri Paneli
 Layer Properties · {layer}	Katman Özellikleri · {layer}
@@ -2095,6 +2232,7 @@ Layouts	Sayfa Düzenleri
 Learn	Öğren
 Learning\nResources	Öğrenme\nKaynakları
 Least cloud first	En az bulutlu önce
+Leave out	Dışarıda bırak
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	Bu bilgisayarda kayıtlı anahtarlarla oturum açmak için anahtarları boş bırakın veya başkalarını yazıp Kaydet'e basın.
 Left	Sol
 Legend	Lejant
@@ -2158,6 +2296,7 @@ List Source Cooperative Files	Source Cooperative Dosyalarını Listele
 List Source Cooperative Products	Source Cooperative Ürünlerini Listele
 List STAC Collections	STAC Koleksiyonlarını Listele
 List Tables	Tabloları Listele
+List Tables reads a file of several layers (a KML, a zip) whole, up to {limit} MiB; add it with Add Data	Tabloları Listele, birden çok katmanlı bir dosyayı (KML, zip) en fazla {limit} MiB'a kadar bütün olarak okur; onu Veri Ekle ile ekleyin
 List The National Map Services	The National Map Servislerini Listele
 List the provider's models	Sağlayıcının modellerini listele
 List this layer in the legend	Bu katmanı lejantta listele
@@ -2189,6 +2328,7 @@ Loads map tiles from the web	Web'den harita karoları yükler
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	Bu bilgisayardaki bir GeoPackage'ın tek bir detay tablosunu yükler (en çok 100.000 satır), böylece düzenlemeleri Düzenle › GeoPackage'a Kaydet ile o tabloya geri kaydedilebilir. INTEGER PRIMARY KEY gerekir.
 Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	Katmanın satırlarını veritabanındaki güncel haliyle yeniden yükler. Kaydedilmemiş düzenlemeleri atılır (Geri Al onları geri getirir).
 Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	Katmanın satırlarını dosyadaki güncel haliyle yeniden yükler. Kaydedilmemiş düzenlemeleri atılır (Geri Al onları geri getirir).
+Load…	Yükle…
 Local	Yerel
 Locate	Konum Bul
 Locate GeoLibre Runner	GeoLibre çalıştırıcısını bul
@@ -2249,6 +2389,7 @@ Map Labeling	Harita Etiketleme
 Map Link	Harita Bağlantısı
 Map name	Harita adı
 Map Page	Harita Sayfası
+Map projections	Harita projeksiyonları
 Map scale	Harita ölçeği
 Map Series	Harita Serisi
 Map Series Page	Harita Serisi Sayfası
@@ -2256,6 +2397,7 @@ Map series page name	Harita serisi sayfa adı
 Map style (JSON)	Harita stili (JSON)
 Map Surrounds	Harita Öğeleri
 Map Thumbnail	Harita Küçük Resmi
+Map Tiles	Harita Karoları
 Map tiles of the whole world	Tüm dünyanın harita karoları
 Map Tool: {tool}	Harita Aracı: {tool}
 Map View	Harita Görünümü
@@ -2279,6 +2421,8 @@ Matplotlib	Matplotlib
 Max	Maks
 Max %	Maks %
 Max Neighbors	En Fazla Komşu
+Max X	Maks X
+Max Y	Maks Y
 Maximum Zoom	En Büyük Yakınlaştırma
 Maximum zoom	En büyük yakınlaştırma
 MCP Relay	MCP rölesi
@@ -2299,6 +2443,7 @@ Measured grid's coordinate system	Ölçülü ızgaranın koordinat sistemi
 Measurement units	Ölçü birimleri
 Measurement units must be metric or imperial	Ölçü birimleri metrik veya İngiliz olmalıdır
 Measurements so far.	Şimdiye kadarki ölçümler.
+Measures the cost and length of the cheapest way along a line network from each origin to each destination.	Bir çizgi ağı boyunca her başlangıç noktasından her varış noktasına en ucuz yolun maliyetini ve uzunluğunu ölçer.
 Mensuration	Ölçümleme
 Mensuration Tools	Ölçümleme Araçları
 Merge	Birleştir
@@ -2320,6 +2465,8 @@ Min	Min
 Min %	Min %
 Min must be less than Max	Min, Maks'tan küçük olmalı
 Min must not be more than Max	Min, Maks'tan büyük olmamalı
+Min X	Min X
+Min Y	Min Y
 Minimum Bounding Geometry	En Küçük Sınırlayıcı Geometri
 Minimum Maximum	Minimum Maksimum
 Minimum Zoom	En Küçük Yakınlaştırma
@@ -2366,7 +2513,9 @@ Months	Aylar
 Months are numbers from 1 to 12 (12, 1, 2 for December to February)	Aylar 1 ile 12 arasında sayılardır (Aralık–Şubat için 12, 1, 2)
 More	Diğer
 More basemaps:	Daha fazla altlık harita:
+More Quick Access commands	Diğer Hızlı Erişim komutları
 More than one saved connection could read these buckets. Choose the one that reads each; the project's sources that read it stay closed until you do.	Bu bucket'ları birden fazla kayıtlı bağlantı okuyabilir. Her birini hangisinin okuyacağını seçin; projenin onu okuyan kaynakları siz seçene kadar kapalı kalır.
+more than {bound}	{bound} değerinden fazla
 Morocco	Fas
 Mosaic images into an orthomosaic	Görüntüleri bir ortomozaikte birleştir
 Mosaic Rasters	Rasterları Mozaikle
@@ -2406,6 +2555,7 @@ My OGC Layer	OGC Katmanım
 MySQL/MariaDB	MySQL/MariaDB
 N/S/E/W	N/S/E/W
 Name	Ad
+name or code	ad veya kod
 name the plugin whose panel to open: {"id": plugin id}	paneli açılacak eklentiyi belirtin: {"id": plugin id}
 Names keep up to 200 characters.	Adlar en çok 200 karakter tutar.
 NASA Earthaccess	NASA Earthaccess
@@ -2427,22 +2577,30 @@ Navigate with the mouse (planar) or walk with W A S D, Q and E (first-person).	F
 Navigation	Gezinme
 Navigation Mode	Gezinme Modu
 Navigator	Gezgin
+NBR (burn ratio)	NBR (yanık oranı)
+NDBI (built-up)	NDBI (yapılaşma)
+NDVI (vegetation)	NDVI (bitki örtüsü)
 NDVI, MODIS, rain…	NDVI, MODIS, yağmur…
 NDVI, NDWI, SAVI, NBR, NDBI, EVI.	NDVI, NDWI, SAVI, NBR, NDBI, EVI.
+NDWI (water)	NDWI (su)
 Near	En Yakın
 Near Features	En Yakın Detaylar
 Nearest cell	En yakın hücre
 Nearest Neighbor	En Yakın Komşu
 Neatline	Çerçeve Çizgisi
+Needed to make a token from a password	Paroladan belirteç oluşturmak için gerekli
 Needs RustGIS {min}	RustGIS {min} gerekir
 Needs three or more bands.	Üç veya daha fazla bant gerekir.
 Needs two or more numeric fields.	İki veya daha fazla sayısal alan gerekir.
+Needs {what}, which isn't given: {place}.	Verilmemiş olan {what} gerekiyor: {place}.
+Needs {what}: kept.	{what} gerekiyor: korundu.
 Neighborhood Explorer	Komşuluk Gezgini
 Nepal	Nepal
 Netherlands	Hollanda
 Network	Ağ
 Network Analysis	Ağ Analizi
 Network failures	Ağ hataları
+Network Lines	Ağ Çizgileri
 New	Yeni
 New\nLayout	Yeni\nSayfa Düzeni
 New\nMap	Yeni\nHarita
@@ -2473,6 +2631,8 @@ New Relationship…	Yeni İlişki…
 New Report	Yeni Rapor
 New rows	Yeni satırlar
 New Selection	Yeni Seçim
+New shape grid	Yeni şekil ızgarası
+New shapes use the original GeoTIFF pixels, including rotation and shear. Existing objects keep their own grid.	Yeni şekiller, döndürme ve kayma dahil özgün GeoTIFF piksellerini kullanır. Mevcut nesneler kendi ızgaralarını korur.
 New Style	Yeni Stil
 New Style From Layer	Katmandan Yeni Stil
 New Task	Yeni Görev
@@ -2499,6 +2659,7 @@ No catalogs below this one: Find Items lists its items	Bunun altında katalog yo
 No COMID was returned for this point.	Bu nokta için COMID döndürülmedi.
 no command	komut yok
 No command matches	Eşleşen komut yok
+No coordinate system matches; a code or PROJ string is used as typed.	Eşleşen koordinat sistemi yok; kod veya PROJ dizesi yazıldığı gibi kullanılır.
 no data	veri yok
 No data at the points picked.	Seçilen noktalarda veri yok.
 No data cube matches	Eşleşen veri küpü yok
@@ -2515,6 +2676,8 @@ No Fill	Dolgu Yok
 No geometry to calculate	Hesaplanacak geometri yok
 No granules in this view and date range.	Bu görünümde ve tarih aralığında granül yok.
 no home folder	ana klasör yok
+No image	Resim yok
+No installed font draws the {language} text on the map, so it is left out of the map and its exports.	Hiçbir yüklü yazı tipi haritadaki {language} metnini çizemiyor, bu yüzden metin haritadan ve dışa aktarımlarından çıkarıldı.
 no layer	katman yok
 No layer has a field of dates.	Hiçbir katmanda tarih alanı yok.
 no layer has a field of dates: add one that has, or a tile layer whose address has a date (map.addTiles)	hiçbir katmanda tarih alanı yok: tarih alanı olan bir katman ya da adresinde tarih bulunan bir karo katmanı ekleyin (map.addTiles)
@@ -2538,6 +2701,7 @@ No polygon layer available in the map.	Haritada poligon katmanı yok.
 No Pop-ups	Açılır Pencere Yok
 No presentations yet. Publish › New Presentation starts one.	Henüz sunum yok. Yayımla › Yeni Sunum bir tane başlatır.
 No products	Ürün yok
+No project changes to undo or redo.	Geri alınacak veya yinelenecek proje değişikliği yok.
 No project opened or saved yet	Henüz açılmış veya kaydedilmiş proje yok
 No project sources are waiting for an S3 connection.	S3 bağlantısı bekleyen proje kaynağı yok.
 No properties	Özellik yok
@@ -2566,6 +2730,7 @@ NoData	NoData
 Nominatim	Nominatim
 None	Yok
 None (public buckets)	Yok (herkese açık bucket'lar)
+None of these layers are polygon layers.	Bu katmanların hiçbiri poligon katmanı değil.
 none, a .duckdb file, or host=… dbname=… user=…	yok, bir .duckdb dosyası veya host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	yok veya PGPASSWORD, MYSQL_PWD ya da SQLCMDPASSWORD'den
 None. Add one by address, or from a basemap plugin.	Yok. Adresle veya bir altlık harita eklentisinden ekleyin.
@@ -2593,6 +2758,7 @@ Not sandboxed	Korumalı alan dışında
 Not saved yet	Henüz kaydedilmedi
 Not searched, as they didn't load: {folders}	Yüklenemedikleri için aranmadı: {folders}
 Not Selectable	Seçilemez
+Not signed in.	Oturum açılmadı.
 Not traced: a drawn line holds at most 10,000 points	İzlenmedi: çizilen bir çizgi en fazla 10.000 nokta içerebilir
 Notebook	Not Defteri
 Notebook Pane	Not Defteri Paneli
@@ -2618,6 +2784,7 @@ observer height m	gözlemci yüksekliği m
 Ocean	Okyanus
 Ocean Data Platform	Ocean Data Platform
 Ocean Data Platform…	Ocean Data Platform…
+OD Cost Matrix	Başlangıç-Varış Maliyet Matrisi
 of a geometry that doesn't say	bunu belirtmeyen bir geometrinin
 Off	Kapalı
 Off, the commands run aren't recorded; what is in the log stays	Kapalı, çalıştırılan komutlar kaydedilmez; günlükte olanlar kalır
@@ -2633,8 +2800,10 @@ Older copies waiting: {n}.	Bekleyen eski kopyalar: {n}.
 Oldest first	En eski önce
 Ollama (local)	Ollama (yerel)
 On	Açık
+On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	Yüksek çözünürlüklü (HiDPI) bir ekranda raster karoları ve WMS resimlerini ekranın kendi piksellerine göre, iki kata kadar ayrıntıyla getir: içlerindeki metin ve çizgiler keskin ve daha küçük çıkar. Kapalıysa mantıksal piksellerine göre getirilip gerilir: daha yumuşak, daha büyük metinle.
 On Hold	Beklemede
 on hold	beklemede
+on is required	on gereklidir
 On its own tab, {tab}.	Kendi sekmesinde, {tab}.
 on must be true or false	on true veya false olmalıdır
 On the desktop, the key can also come from {vars}.	Masaüstünde anahtar {vars} değişkenlerinden de alınabilir.
@@ -2650,7 +2819,7 @@ One page per feature of an index layer.	Bir indeks katmanının her detayı içi
 One per line: code=name	Her satıra bir tane: kod=ad
 One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.	Görünümün tek resmi: semboller ve etiketler karo kenarlarında kesilmez ve servis görünüm başına bir kez sorgulanır. Kürede, eğik haritada veya servisin sunmadığı bir projeksiyonda karolarla çizilir.
 One stroke, from the symbol. Add strokes for casings, parallel lines and offsets.	Sembolden tek kontur. Kaplamalar, paralel çizgiler ve ötelemeler için kontur ekleyin.
-only a discovered list can invalidate the saved table	only a discovered list can invalidate the saved table
+One-time code	Tek kullanımlık kod
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Yalnızca dosyadan okunan bir karo arşivi (PMTiles veya MBTiles) onarılabilir.
 Only cubes with data where the map is	Yalnızca haritanın olduğu yerde verisi olan küpler
 Only selected polygons will be included in the output.	Çıktıya yalnızca seçili poligonlar dahil edilecek.
@@ -2660,6 +2829,7 @@ Only the features whose date falls in the slider's window draw	Yalnızca tarihi 
 Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.	Eklentinin verdiği {given} düğümün yalnızca ilk {kept} tanesi gösteriliyor: bir ağaç en çok {kept} düğüm tutar.
 Only the map's area	Yalnızca haritanın alanı
 Only where the map is	Yalnızca haritanın olduğu yerde
+Only with two-factor authentication	Yalnızca iki faktörlü kimlik doğrulamayla
 Opacity	Opaklık
 Open	Aç
 Open a .rgis project	Bir .rgis projesi aç
@@ -2735,15 +2905,22 @@ Or grid reference	Veya ızgara referansı
 Or run in a POSIX shell, for Claude Code or Codex:	Ya da Claude Code veya Codex için bir POSIX kabuğunda çalıştırın:
 Or run in PowerShell, for Claude Code or Codex:	Ya da Claude Code veya Codex için PowerShell'de çalıştırın:
 Or run, for Claude Code or Codex:	Veya Claude Code ya da Codex için şunu çalıştırın:
+Order	Sıra
 ORDER BY	ORDER BY
 Ordinary Kriging	Sıradan Kriging
 Orientation	Yönlendirme
 Origin	Başlangıç
 Origin key	Başlangıç anahtarı
 Original	Özgün
+Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.	Döndürme ve kayma dahil özgün GeoTIFF pikselleri. Yalnızca yerel veya gömülü GeoTIFF'ler desteklenir.
 Original grid pixels. A circle may appear elliptical in the map projection.	Özgün ızgara pikselleri. Bir daire harita projeksiyonunda elips gibi görünebilir.
+Original Image Grid	Özgün Görüntü Izgarası
+Original image grid: {width} × {height} pixels, EPSG:{epsg}	Özgün görüntü ızgarası: {width} × {height} piksel, EPSG:{epsg}
+Original image pixels	Özgün görüntü pikselleri
+Origins	Başlangıç noktaları
 Ortho Mapping	Orto Haritalama
 Other	Diğer
+Other bar	Diğer çubuk
 Other copies of unsaved work will be offered at the next start ({n}).	Kaydedilmemiş çalışmanın diğer kopyaları sonraki başlangıçta sunulacak ({n}).
 Other Data	Diğer Veriler
 Out Beyond	Ötesinde Kapalı
@@ -2773,6 +2950,7 @@ Overture Maps	Overture Maps
 Overture Maps' open data: buildings, places, transportation, administrative divisions, base layers and addresses. Where the map is, its features are read in place from Overture's GeoParquet files (zoom to a city or smaller); the whole world comes as map tiles.	Overture Maps'in açık verileri: binalar, yerler, ulaşım, idari bölümler, temel katmanlar ve adresler. Haritanın olduğu yerde detayları Overture'ın GeoParquet dosyalarından yerinde okunur (bir şehre veya daha küçüğüne yakınlaştırın); tüm dünya harita karoları olarak gelir.
 Overture Maps…	Overture Maps…
 Overwrite existing values	Mevcut değerlerin üzerine yaz
+Own	Kendi
 Package	Paket
 Package a trained deep learning model.	Eğitilmiş bir derin öğrenme modelini paketle.
 Package for\nthe Field	Saha İçin\nPaketle
@@ -2781,6 +2959,7 @@ Package Map	Haritayı Paketle
 Package Project	Projeyi Paketle
 Package Results	Sonuçları Paketle
 Pad	Uzatma
+Padding	İç boşluk
 Padding across	Yatay iç boşluk
 Padding up and down	Dikey iç boşluk
 Page	Sayfa
@@ -2813,8 +2992,11 @@ Parent folder	Üst klasör
 parks, bike lanes, flood zones…	parklar, bisiklet yolları, taşkın alanları…
 Password	Parola
 Past its points: its end colors, back and forth, or over again	Noktalarının ötesinde: uç renkleri, ileri geri veya baştan
+Past the limit	Sınırın ötesinde
 Paste	Yapıştır
 Paste a token	Bir belirteç yapıştırın
+Paste a token for this connection, or make one from its user and password. Remember on this computer is optional.	Bu bağlantı için bir belirteç yapıştırın veya kullanıcısı ve parolasından bir tane oluşturun. Bu bilgisayarda hatırla isteğe bağlıdır.
+Paste a token, or type the password to make one, or leave it blank to use this connection's session or saved login, then Save.	Bir belirteç yapıştırın, bir tane oluşturmak için parolayı yazın ya da bu bağlantının oturumunu veya kayıtlı girişini kullanmak için boş bırakın, ardından Kaydet'e basın.
 Paste copied features into the selected layer, or as a new layer.	Kopyalanan detayları seçili katmana veya yeni bir katman olarak yapıştır.
 Paste Group	Grubu Yapıştır
 Paste Groups	Grupları Yapıştır
@@ -2822,6 +3004,7 @@ Paste Layer	Katmanı Yapıştır
 Paste Layers	Katmanları Yapıştır
 Paste Special	Özel Yapıştır
 Paste Special (as a new layer)	Özel Yapıştır (yeni katman olarak)
+Paste token	Belirteci yapıştır
 paste your key	anahtarınızı yapıştırın
 path is required	path gerekli
 Pause	Duraklat
@@ -2830,9 +3013,11 @@ PDF	PDF
 PDF or PNG	PDF veya PNG
 PDF, PNG or SVG	PDF, PNG veya SVG
 PDOK's public server	PDOK'un herkese açık sunucusu
+Percent	Yüzde
 Percent Clip	Yüzde Kırpma
 Perceptually Uniform	Algısal Olarak Tekdüze
 Performance	Performans
+Perpendicular	Dik
 Phase	Evre
 Photon	Photon
 Pick a date	Tarih seçin
@@ -2865,6 +3050,7 @@ Pixel	Piksel
 Pixel Editor	Piksel Düzenleyici
 Pixel Size	Piksel Boyutu
 Pixel type	Piksel türü
+pixels is required	pixels gereklidir
 Place	Yer
 Place a raster on the map	Bir rasteri haritaya yerleştir
 Place a raster on the map from control points or the view.	Bir rasteri kontrol noktalarından veya görünümden haritaya yerleştir.
@@ -2912,6 +3098,7 @@ Polar, conformal: the Arctic and the northern lands.	Kutupsal, konform: Arktik v
 Polygon	Poligon
 Polygon (draw)	Poligon (çiz)
 Polygon layer	Poligon katmanı
+Polygon layers only: {n} of the {all} selected	Yalnızca poligon katmanları: seçili {all} katmandan {n} tanesi
 Polygon To Line	Poligondan Çizgiye
 Polygons	Poligonlar
 Polygons to Raster	Poligonlardan Rastere
@@ -2948,6 +3135,8 @@ Preset	Hazır ayar
 Press a key combination to assign it. Escape cancels.	Atamak için bir tuş kombinasyonuna basın. Escape iptal eder.
 Press Load sources & plot first	Önce Kaynakları yükle ve çiz'e basın
 Preview and set up the report.	Raporu önizle ve ayarla.
+Preview Conversion	Dönüştürmeyi Önizle
+Preview Shape Conversion	Şekil Dönüştürmeyi Önizle
 Preview, edit and play the presentation.	Sunumu önizle, düzenle ve oynat.
 Previous	Önceki
 Previous Extent	Önceki Kapsam
@@ -2978,6 +3167,7 @@ project is "sample", "blank", "last" or {"path": a project file}	project "sample
 Project Raster	Rasteri Projelendir
 Project Template	Proje Şablonu
 project's path is required	projenin yolu gerekli
+Projected system	Projeksiyonlu sistem
 projected system (EPSG:32616), or degrees	projeksiyonlu sistem (EPSG:32616) veya derece
 Projection	Projeksiyon
 Projections	Projeksiyonlar
@@ -3043,7 +3233,9 @@ Raster to PMTiles	Rasterden PMTiles'a
 Raster · {w} × {h} · {n} bands · {renderer}	Raster · {w} × {h} · {n} bant · {renderer}
 Rasters: {system}, cell size {cells}	Rasterler: {system}, hücre boyutu {cells}
 Read	Okuma
+Read a script from a file in place of this one ({keys} brings it back)	Bunun yerine bir dosyadan betik oku ({keys} onu geri getirir)
 Read and write files on this computer	Bu bilgisayardaki dosyaları okuma ve yazma
+Read Connection File	Bağlantı Dosyasını Oku
 Read error	Okuma hatası
 Read the bands picked for the view (at most about 6 km a side)	Görünüm için seçilen bantları oku (en fazla kenarı yaklaşık 6 km)
 Read the map's layers and features	Haritanın katmanlarını ve detaylarını okuma
@@ -3053,13 +3245,16 @@ Reading a granule's files needs an Earthdata Login token, which works for every 
 Reading dates…	Tarihler okunuyor…
 Reading in place…	Yerinde okunuyor…
 Reading JAXA Earth's catalog…	JAXA Earth kataloğu okunuyor…
+Reading original image grid…	Özgün görüntü ızgarası okunuyor…
 Reading the catalog: {n} documents read, {m} items found…	Katalog okunuyor: {n} belge okundu, {m} öğe bulundu…
 Reading the catalog…	Katalog okunuyor…
+Reading the download failed unexpectedly	İndirme okunurken beklenmedik bir hata oluştu
 Reading the embeddings…	Gömmeler okunuyor…
 Reading the file's layers…	Dosyanın katmanları okunuyor…
 Reading the installed fonts…	Yüklü yazı tipleri okunuyor…
 Reading the store… ({n} files to go)	Depo okunuyor… ({n} dosya kaldı)
 Reading the tileset of {name}	{name} karo kümesi okunuyor
+Reading the time series…	Zaman serisi okunuyor…
 Reading the window failed unexpectedly	Pencere okunurken beklenmedik bir hata oluştu
 Reading {n} of Overture's {ty} files where the map is: {attribution}	Haritanın olduğu yerde Overture'ın {n} {ty} dosyası okunuyor: {attribution}
 Reading {url}…	{url} okunuyor…
@@ -3068,7 +3263,9 @@ Reading…	Okunuyor…
 Reads and writes files	Dosyaları okur ve yazar
 Reads the map	Haritayı okur
 Reality Mapping	Gerçeklik Haritalama
+Received tile {z}/0/0.	{z}/0/0 karosu alındı.
 Recent	Son Kullanılanlar
+Recently used	Son kullanılanlar
 Record Task	Görev Kaydet
 Recorded Task	Kaydedilen Görev
 Recording stopped: another project opened, and its {n} steps were for the previous one.	Kayıt durduruldu: başka bir proje açıldı ve kaydın {n} adımı önceki projeye aitti.
@@ -3107,6 +3304,7 @@ Reload	Yeniden Yükle
 Reload\nData	Verileri\nYeniden Yükle
 Reload Data	Verileri Yeniden Yükle
 Reload Data from local files requires the desktop app.	Yerel dosyalardan veri yeniden yüklemek için masaüstü uygulaması gerekir.
+Reload Grid	Izgarayı Yeniden Yükle
 Reload Themes	Temaları Yeniden Yükle
 Reload Tile Archive	Karo Arşivini Yeniden Yükle
 Reload Web Layers	Web Katmanlarını Yeniden Yükle
@@ -3127,6 +3325,7 @@ Remove Folder	Klasörü Kaldır
 Remove From Current Selection	Geçerli Seçimden Kaldır
 Remove from Favourites	Sık Kullanılanlardan Kaldır
 Remove From Group	Gruptan Kaldır
+Remove GeoLibre Tool Translations	GeoLibre Araç Çevirilerini Kaldır
 Remove Group	Grubu Kaldır
 Remove Keyframe	Anahtar Kareyi Kaldır
 Remove Label Class	Etiket Sınıfını Kaldır
@@ -3141,6 +3340,7 @@ Remove this class's own strokes and draw it with the layer's	Bu sınıfın kendi
 Remove this stop	Bu durağı kaldır
 Remove Tile Layer	Karo Katmanını Kaldır
 Remove token	Belirteci kaldır
+Remove translations	Çevirileri kaldır
 Remove {name}	{name} öğesini kaldır
 Removed {id}.	{id} kaldırıldı.
 Removed {name}	{name} kaldırıldı
@@ -3163,13 +3363,13 @@ Repair\nSource	Kaynağı\nOnar
 Repair Data Source	Veri Kaynağını Onar
 Repair Data Source…	Veri Kaynağını Onar…
 Repair Geometry	Geometriyi Onar
-Repair is disabled while discovery is in flight	Repair is disabled while discovery is in flight
 Repair Tile Archive	Karo Arşivini Onar
 Repaired {name}	{name} onarıldı
 Repeat	Yineleme
 Replace	Değiştir
 Replace Web Layer	Web Katmanını Değiştir
 Replacement	Yeni yol
+Replaces only this polygon. Its ID and attributes are preserved. Apply is undoable.	Yalnızca bu poligonu değiştirir. Kimliği ve öznitelikleri korunur. Uygulama geri alınabilir.
 Replaces the parts of input polygons that update polygons cover with the update polygons themselves.	Girdi poligonlarının güncelleme poligonlarının kapladığı kısımlarını güncelleme poligonlarının kendileriyle değiştirir.
 Replay the route as a drive the map follows	Rotayı, haritanın takip ettiği bir sürüş olarak oynat
 Report	Rapor
@@ -3350,6 +3550,7 @@ Save Project Template	Proje Şablonunu Kaydet
 Save Style Items	Stil Öğelerini Kaydet
 Save Task Item	Görev Öğesini Kaydet
 Save the active map (with its data) as a map file.	Etkin haritayı (verileriyle birlikte) harita dosyası olarak kaydet.
+Save the connection before generating a token.	Belirteç oluşturmadan önce bağlantıyı kaydedin.
 Save the connection first: a login belongs to a saved connection.	Önce bağlantıyı kaydedin: oturum açma bilgisi kayıtlı bir bağlantıya aittir.
 Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	Görünümdeki verileri, haritanın MBTiles ve PMTiles altlık haritalarıyla birlikte telefonda açılacak bir saha paketi olarak kaydet.
 Save the last task as a task file.	Son görevi görev dosyası olarak kaydet.
@@ -3402,6 +3603,7 @@ Saved {name}.	{name} kaydedildi.
 Saved {path}	Kaydedildi: {path}
 Saves the layer's edits to its table in one transaction. When a row you changed or deleted was changed or deleted in the database since it was loaded, or a new row's key is taken, nothing is saved and the rows are listed.	Katmanın düzenlemelerini tablosuna tek işlemde kaydeder. Değiştirdiğiniz veya sildiğiniz bir satır yüklendikten sonra veritabanında değiştirilmiş ya da silinmişse veya yeni bir satırın anahtarı alınmışsa hiçbir şey kaydedilmez ve satırlar listelenir.
 Saves the layer's edits to its table in the GeoPackage file in one transaction. When a row you changed or deleted was changed or deleted in the file since it was loaded, nothing is saved and the rows are listed. Saving the project keeps edits in the project only; exporting writes a new file.	Katmanın düzenlemelerini GeoPackage dosyasındaki tablosuna tek işlemde kaydeder. Değiştirdiğiniz veya sildiğiniz bir satır yüklendikten sonra dosyada değiştirilmiş ya da silinmişse hiçbir şey kaydedilmez ve satırlar listelenir. Projeyi kaydetmek düzenlemeleri yalnızca projede tutar; dışa aktarma yeni bir dosya yazar.
+SAVI (vegetation over soil)	SAVI (toprak üzerindeki bitki örtüsü)
 saving failed unexpectedly	kaydetme beklenmedik şekilde başarısız oldu
 Saving to a file of your choice isn't available here on Android yet.	Seçtiğiniz bir dosyaya kaydetme burada Android'de henüz kullanılamıyor.
 Saving to a file of your choice isn't available here on iOS yet.	Seçtiğiniz bir dosyaya kaydetme burada iOS'ta henüz kullanılamıyor.
@@ -3414,6 +3616,7 @@ Scale and rotate entered distances and directions to the grid.	Girilen mesafeler
 Scale ×2	Ölçek ×2
 Scale ×½	Ölçek ×½
 Scaled by sum	Toplama göre ölçekli
+Scaling	Ölçekleme
 Scene	Sahne
 Score threshold	Puan eşiği
 Score two rasters 1–10 and weight them	İki rasteri 1–10 arasında puanla ve ağırlıklandır
@@ -3427,6 +3630,7 @@ Search	Ara
 Search (this portal needs words)…	Ara (bu portal sözcük gerektirir)…
 Search area	Arama alanı
 Search area: {points} point, {lines} line and {polygons} polygon part(s)	Arama alanı: {points} nokta, {lines} çizgi ve {polygons} poligon parçası
+Search by name or code	Ada veya koda göre ara
 Search candidates not shown: {n} (limit {limit}).	Gösterilmeyen arama adayları: {n} (sınır {limit}).
 Search Catalogue	Katalogda Ara
 Search commands	Komut ara
@@ -3495,6 +3699,7 @@ Select a navigation method after tracing a point.	Bir nokta izledikten sonra bir
 Select a raster or tile layer in the Layers pane first	Önce Katmanlar panelinde bir raster veya karo katmanı seçin
 Select All	Tümünü Seç
 Select an element to format it.	Biçimlendirmek için bir öğe seçin.
+Select an image with an available filename, or uncheck Use image filename.	Kullanılabilir dosya adı olan bir görüntü seçin veya Görüntü dosya adını kullan seçeneğinin işaretini kaldırın.
 Select By\nAttributes	Özniteliğe\nGöre Seç
 Select By\nLocation	Konuma\nGöre Seç
 Select By Attributes	Özniteliğe Göre Seç
@@ -3509,6 +3714,7 @@ Select Layer	Katman Seç
 Select Layer By Attribute	Katmanı Özniteliğe Göre Seç
 Select Layer By Location	Katmanı Konuma Göre Seç
 Select None	Hiçbirini Seçme
+Select one polygon to convert.	Dönüştürülecek bir poligon seçin.
 Select one text on the map, or a layout element, to format it.	Biçimlendirmek için haritada bir metin veya bir sayfa düzeni öğesi seçin.
 Select options	Seçim seçenekleri
 Select Related	İlişkilileri Seç
@@ -3547,7 +3753,9 @@ Sepia	Sepya
 Sequential	Sıralı
 Serif	Tırnaklı
 Server	Sunucu
+Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.	Sunucuya ulaşılabiliyor ancak {z}/0/0 konumunda karo yok. Adresi ve katmanın yakınlaştırma aralığını kontrol edin.
 Service	Servis
+Service Area	Hizmet Alanı
 Service discovery was cancelled	Hizmet keşfi iptal edildi
 Service Group	Servis grubu
 Service group data exceeds 64 MB.	Servis grubu verileri 64 MB sınırını aşıyor.
@@ -3572,6 +3780,8 @@ Set the pixels inside a polygon.	Bir poligonun içindeki pikselleri ayarla.
 Settings	Ayarlar
 Settings › Customize	Ayarlar › Özelleştir
 Settings › Customize › Keyboard Shortcuts	Ayarlar › Özelleştir › Klavye Kısayolları
+Settings › Datum Grids	Ayarlar › Datum Izgaraları
+Settings › Map Tiles	Ayarlar › Harita Karoları
 Settings › Theme	Ayarlar › Tema
 Several places	Birkaç yer
 Several saved connections match this address. Choose a connection explicitly.	Bu adresle birden fazla kayıtlı bağlantı eşleşiyor. Açıkça bir bağlantı seçin.
@@ -3581,6 +3791,7 @@ Shade walls by the way they face the light.	Duvarları ışığa baktıkları y�
 Shaded	Gölgeli
 Shaded Relief	Gölgeli Rölyef
 Shape	Şekil
+Shape conversion isn't recorded: its preview belongs to this session. Convert the polygon explicitly after reopening the project.	Şekil dönüştürme kaydedilmez: önizlemesi bu oturuma aittir. Projeyi yeniden açtıktan sonra poligonu açıkça dönüştürün.
 Shapeburst	Kenardan Gölgeleme
 Shapefile	Shapefile
 Shapefile Index Cache	Shapefile Dizin Önbelleği
@@ -3602,6 +3813,7 @@ Shared vertices must be on or off	Paylaşılan köşeler açık veya kapalı olm
 Shares made, with Manage tools to update them.	Yapılan paylaşımlar, güncellemek için Yönet araçlarıyla.
 sharp left	keskin sola dönün
 sharp right	keskin sağa dönün
+Sharp Tiles on HiDPI Displays	HiDPI Ekranlarda Keskin Karolar
 Shift+	Shift+
 Shift+drag	Shift+sürükleme
 Shift+Enter starts a new line.	Shift+Enter yeni satır başlatır.
@@ -3615,6 +3827,7 @@ Shortcut file exceeds the size limit.	Kısayol dosyası boyut sınırını aşı
 Shortcut keys are required.	Kısayol tuşları gerekli.
 Shortcuts	Kısayollar
 Shortest route over a line network	Bir çizgi ağı üzerinde en kısa rota
+Shortwave infrared	Kısa dalga kızılötesi
 Show	Göster
 Show a second map beside this one.	Bunun yanında ikinci bir harita göster.
 Show All Columns	Tüm Sütunları Göster
@@ -3635,11 +3848,12 @@ Show Me	Bana Göster
 Show no data	Veri yok değerini göster
 Show or hide	Göster veya gizle
 Show or hide the AI Assistant.	YZ Asistanını göster veya gizle.
+Show or hide the Annotate pane.	Not Ekle panelini göster veya gizle.
 Show or hide the Bookmarks pane: every map's bookmarks.	Yer İmleri panelini göster veya gizle: tüm haritaların yer imleri.
 Show or hide the Browser pane.	Tarayıcı panelini göster veya gizle.
 Show or hide the Data Sources pane.	Veri Kaynakları panelini göster veya gizle.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Veri Kaynakları panelini göster veya gizle: sık kullanılanlar, son kullanılan veriler, kayıtlı servisler, veritabanları ve STAC API'leri ve herkese açık kaynaklardan oluşan bir kitaplık.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	Altlık haritanın üzerinde koordinat ağını göster veya gizle: enlemler ve boylamlar, ölçülü bir ızgara veya UTM dilimleri.
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Altlık haritanın üzerinde koordinat ağını göster veya gizle: enlemler ve boylamlar, ölçülü bir ızgara, UTM dilimleri veya MGRS ızgarası.
 Show or hide the group's layers	Grubun katmanlarını göster veya gizle
 Show or hide the layer.	Katmanı göster veya gizle.
 Show or hide the Layers pane.	Katmanlar panelini göster veya gizle.
@@ -3661,6 +3875,7 @@ Show the selected layer's settings in one place.	Seçili katmanın ayarlarını 
 Show the Symbology pane for the selected layer.	Seçili katman için Semboloji panelini göster.
 Show the whole model	Modelin tamamını göster
 Show these bands and stretch on the AlphaEarth layers on the map	Bu bantları ve germeyi haritadaki AlphaEarth katmanlarında göster
+Show these tools in English again	Bu araçları yeniden İngilizce göster
 Show vertices	Köşeleri göster
 Show where this step's command is, to do it yourself	Kendiniz yapabilmeniz için bu adımın komutunun nerede olduğunu göster
 Show {n} Steps	{n} Adımı Göster
@@ -3684,19 +3899,24 @@ Side labels	Kenar etiketleri
 Sign in	Oturum aç
 Sign In to ArcGIS	ArcGIS'te Oturum Aç
 Sign in to choose a model.	Model seçmek için oturum açın.
+Sign In to Copernicus Data Space	Copernicus Data Space'te Oturum Aç
 Sign in with your ChatGPT account.	ChatGPT hesabınızla oturum açın.
 Sign out	Oturumu kapat
 Sign Out of ArcGIS	ArcGIS Oturumunu Kapat
+Sign Out of Copernicus Data Space	Copernicus Data Space Oturumunu Kapat
 Sign-in	Oturum açma
 Sign-in cancelled.	Oturum açma iptal edildi.
 Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Oturum açma zaman aşımına uğradı. Yeniden başlayın ve tarayıcının bu bilgisayarın geri döngü adresine erişmesine izin verin.
 signed in	oturum açık
+Signed in as {name}.	{name} olarak oturum açıldı.
 Signed in to {portal}	{portal} oturumu açık
 Signed in to {portal} as {user}	{portal} oturumu {user} olarak açık
 Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Bu bilgisayarda oturum kapatıldı, ancak OpenAI bunu onaylamadı. RustGIS'in bağlantısını ChatGPT ayarlarından kesebilirsiniz.
 Signed out on this computer, but the system keychain couldn't be read, so OpenAI wasn't asked to end the session. You can disconnect RustGIS in ChatGPT's settings.	Bu bilgisayarda oturum kapatıldı, ancak sistem anahtarlığı okunamadığından OpenAI'dan oturumu sonlandırması istenmedi. RustGIS'in bağlantısını ChatGPT ayarlarından kesebilirsiniz.
 Significance level	Anlamlılık düzeyi
 Signing in with ChatGPT works in the desktop app.	ChatGPT ile oturum açma masaüstü uygulamasında çalışır.
+Signing in with the account remembered on this computer…	Bu bilgisayarda hatırlanan hesapla oturum açılıyor…
+Signing in…	Oturum açılıyor…
 Signing the asset (Planetary Computer)…	Varlık imzalanıyor (Planetary Computer)…
 Signs this account out and forgets it on this computer, with its saved sign-in.	Bu hesabın oturumunu kapatır ve kayıtlı oturum bilgisiyle birlikte bu bilgisayarda unutur.
 Sill	Eşik
@@ -3708,7 +3928,11 @@ Single image	Tek görüntü
 Single line	Tek çizgi
 Single Symbol	Tek Sembol
 Size	Boyut
+Size by	Boyutlandırma ölçütü
+Size by Field	Alana Göre Boyutlandır
+Size each point by a number field, keeping its class's colours	Her noktayı, sınıfının renklerini koruyarak sayısal bir alana göre boyutlandır
 Size, bands, statistics and coordinate system, on the Source tab of the raster's properties.	Boyut, bantlar, istatistikler ve koordinat sistemi, rasterın özelliklerinin Kaynak sekmesinde.
+Sizes	Boyutlar
 Skill (SKILL.md or .zip)	Beceri (SKILL.md veya .zip)
 Skills	Beceriler
 Skills for the AI Assistant: {names}	YZ Asistanı için beceriler: {names}
@@ -3716,12 +3940,14 @@ Sky visibility	Gökyüzü görünürlüğü
 Slideshow, PDF or PNG	Slayt gösterisi, PDF veya PNG
 slight left	hafif sola dönün
 slight right	hafif sağa dönün
-Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	Eğim (derece), bakı, tepe gölgeleme, NDVI, bant matematiği, eşikler.
-Slope (degrees), hillshade, NDVI and more.	Eğim (derece), tepe gölgeleme, NDVI ve daha fazlası.
-Slope is in degrees (0–90), not percent.	Eğim yüzde değil, derece cinsindendir (0–90).
+Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.	Eğim (derece veya yüzde), bakı, tepe gölgeleme, NDVI, bant matematiği, eşikler.
+Slope (degrees or percent), hillshade, NDVI and more.	Eğim (derece veya yüzde), tepe gölgeleme, NDVI ve daha fazlası.
 Slope per	Eğim birimi
+Slope units	Eğim birimi
 Small scales	Küçük ölçekler
+Smallest first	Önce en küçük
 Snap	Yakala
+Snap Distance (m)	Yakalama Mesafesi (m)
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	Öğeleri taşırken veya yeniden boyutlandırırken kılavuzlara, sayfaya ve birbirlerine yakala. Serbestçe yerleştirmek için Alt'ı basılı tutun.
 Snap new vertices to nearby vertices, edges and line ends.	Yeni köşeleri yakındaki köşelere, kenarlara ve çizgi uçlarına yakala.
 Snap Point	Yakalama Noktası
@@ -3729,6 +3955,7 @@ Snapping	Yakalama
 Snow	Kar
 Socrata	Socrata
 Solid	Düz
+Some characters of the {language} text on the map aren't in its downloaded font, so they are left out.	Haritadaki {language} metninin bazı karakterleri indirilen yazı tipinde yok, bu yüzden çıkarıldılar.
 Some images aren't shown: the notebook's images use all the memory set aside for them.	Bazı görüntüler gösterilmiyor: not defterinin görüntüleri onlara ayrılan belleğin tamamını kullanıyor.
 Some of the project's S3 sources wait for you to choose the saved connection that reads them	Projenin bazı S3 kaynakları, onları okuyan kayıtlı bağlantıyı seçmenizi bekliyor
 Sort	Sırala
@@ -3746,6 +3973,7 @@ Source-layer Name	Kaynak Katman Adı
 South	Güney
 South Korea	Güney Kore
 South Polar Stereographic	Güney Kutup Stereografik
+Space or middle-drag pans; releasing Space returns to the active drawing tool. Undo/Redo use the existing commands.	Space veya orta tuşla sürükleme kaydırır; Space bırakılınca etkin çizim aracına dönülür. Geri Al/Yinele mevcut komutları kullanır.
 Spacing	Aralık
 Spacing across	Yatay aralık
 Spacing down	Dikey aralık
@@ -3820,6 +4048,7 @@ STAC Search…	STAC Araması…
 Stack another fill on top	Üste bir dolgu daha ekle
 Stack another marker on top	Üste bir işaretçi daha ekle
 Stack another stroke on top	Üste bir kontur daha ekle
+Stack by	Yığınlama ölçütü
 Stack on the current basemaps	Geçerli altlık haritaların üstüne ekle
 Standalone Tables	Bağımsız Tablolar
 Standard Deviation	Standart Sapma
@@ -3857,6 +4086,7 @@ Stepped line	Basamaklı çizgi
 Steps needing access	Erişim gerektiren adımlar
 STL 3D Model…	STL 3B Model…
 Stop	Durdur
+Stop at the state reached so far	Şimdiye kadar ulaşılan durumda dur
 Stop drawing labels, for faster navigation.	Daha hızlı gezinme için etiket çizmeyi durdur.
 Stop filling the cache.	Önbelleği doldurmayı durdur.
 Stop MCP relay	MCP rölesini durdur
@@ -3886,6 +4116,7 @@ Subreport	Alt Rapor
 Subreport: {name}	Alt rapor: {name}
 Subtypes	Alt Türler
 Subtypes, one per line: code=name	Alt türler, her satıra bir tane: kod=ad
+Suggested filename: {name}	Önerilen dosya adı: {name}
 Suitability Modeler	Uygunluk Modelleyici
 Sum Fields	Toplam Alanları
 Summarise	Özetle
@@ -3927,7 +4158,9 @@ Table	Tablo
 Table Frame	Tablo Çerçevesi
 Table or layer	Tablo veya katman
 Tables	Tablolar
+Tabulate Area	Alanı Tablola
 Tabulate Intersection	Kesişimi Tablola
+Tabulates each raster class by polygon zone, as area or cell count in a standalone table.	Her raster sınıfını poligon bölgesine göre, bağımsız bir tabloda alan veya hücre sayısı olarak tablolar.
 Tags	Etiketler
 Taiwan	Tayvan
 Take the data in view offline, to edit and sync back later.	Görünümdeki verileri düzenlemek ve sonra eşitlemek için çevrimdışına al.
@@ -3936,6 +4169,7 @@ Take this point off	Bu noktayı kaldır
 Target details ({operation}): {targets}	Hedef ayrıntıları ({operation}): {targets}
 Target Features	Hedef Detaylar
 Target Key Field	Hedef Anahtar Alanı
+Target layer	Hedef katman
 Target Records	Hedef Kayıtlar
 Target Table / Layer	Hedef Tablo / Katman
 Task	Görev
@@ -3969,11 +4203,14 @@ The answer isn't UTF-8 text	Yanıt UTF-8 metni değil
 the answer isn't UTF-8 text	yanıt UTF-8 metin değil
 The API changed while the search area was being made: press Find Items to search it	Arama alanı oluşturulurken API değişti: aramak için Öğeleri Bul'a basın
 The API did not sort them by {sort}: they are in its own order	API bunları {sort} ölçütüne göre sıralamadı: kendi sırasındalar
+The ArcGIS token has expired. Log in to this connection again.	ArcGIS belirtecinin süresi doldu. Bu bağlantıda yeniden oturum açın.
+The ArcGIS token must be at most 4096 ASCII letters, digits or - _ . ~ + / = characters.	ArcGIS belirteci en fazla 4096 ASCII harf, rakam veya - _ . ~ + / = karakterinden oluşmalıdır.
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	Asistan bir beceriyi kullanırken onun talimatlarına uyar. Talimatlar ne derse desin, onayınızı gerektiren komutlar yine de sorar.
 The assistant is busy; stop it or wait for it to finish.	Asistan meşgul; durdurun veya bitirmesini bekleyin.
 The assistant wants to run this, and {why}:	Asistan şunu çalıştırmak istiyor; bu işlem {why}:
 The background worker could not start ({error}). Retry the command.	Arka plan çalışanı başlatılamadı ({error}). Komutu yeniden deneyin.
 The basemap now shows the {view} worldview; the project's Countries layer keeps its borders	Altlık harita artık {view} dünya görüşünü gösteriyor; projenin Ülkeler katmanı kendi sınırlarını koruyor
+The basemap's grid color	Altlık haritanın ızgara rengi
 The Basemaps plugin's tab of public basemaps.	Altlık Haritalar eklentisinin herkese açık altlık haritalar sekmesi.
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	Tarayıcı RustGIS'e panoyu vermedi ({why}): {keys} ile yapıştırın.
 the browser kept neither a copy of it nor where to download it	tarayıcı ne bir kopyasını ne de nereden indirileceğini sakladı
@@ -3982,16 +4219,20 @@ the capture failed unexpectedly	yakalama beklenmedik şekilde başarısız oldu
 The class these label groups and the Labeling pane edit.	Bu etiket gruplarının ve Etiketleme panelinin düzenlediği sınıf.
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	Pano siz ilerledikten sonra geldi, bu yüzden hiçbir şey yapıştırılmadı: {keys} ile yapıştırın.
 The collection's own licence wasn't read: {why}	Koleksiyonun kendi lisansı okunamadı: {why}
+The connection changed while its token was being generated. Generate it again.	Belirteci oluşturulurken bağlantı değişti. Yeniden oluşturun.
 The connection failed; trying again in {seconds} s.	Bağlantı başarısız oldu; {seconds} sn sonra yeniden denenecek.
 the connection has no id	bağlantının kimliği yok
 The constant base: used where no field is chosen, or the field holds no number.	Sabit taban: alan seçilmediğinde veya alan sayı içermediğinde kullanılır.
 The coordinate format must be decimal, dms, utm or mgrs	Koordinat biçimi decimal, dms, utm veya mgrs olmalıdır
+The Copernicus Data Space Ecosystem publishes the Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land Cover…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its STAC catalog is open, but reading its files needs a sign-in with a free account.	Copernicus Data Space Ecosystem, Copernicus Kara İzleme Hizmeti'nin küresel ürünlerini (NDVI, LAI, Yanmış Alan, Su Kütleleri, Arazi Örtüsü…) ve Sentinel-1 ile Sentinel-2 mozaiklerini COG olarak yayımlar. STAC kataloğu açıktır, ancak dosyalarını okumak için ücretsiz bir hesapla oturum açmak gerekir.
 The country list couldn't be read ({e}): type a country's code	Ülke listesi okunamadı ({e}): bir ülke kodu yazın
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	Girdileri düzenlerken geçerli yükseklik etkin kalır. Değeri ve birimleri uygulamak için Yüksekliği uygula'ya tıklayın.
 The dataset has nothing RustGIS can add	Veri kümesinde RustGIS'in ekleyebileceği bir şey yok
 The desktop app adds data cubes	Veri küplerini masaüstü uygulaması ekler
 The distance between two marks along the line	Çizgi boyunca iki işaret arasındaki mesafe
 The distance to widen by is a number, 0 or more	Genişletme mesafesi 0 veya daha büyük bir sayıdır
+The downloaded translations name none of these tools: they may be for another GeoLibre version.	İndirilen çeviriler bu araçların hiçbirini adlandırmıyor: başka bir GeoLibre sürümü için olabilirler.
+the Earthdata Login token	Earthdata Login belirteci
 The environment (AWS_ACCESS_KEY_ID…)	Ortam (AWS_ACCESS_KEY_ID…)
 The features where the map is	Haritanın olduğu yerdeki detaylar
 The first 1,000 entries; narrow it down a folder at a time.	İlk 1.000 girdi; her seferinde bir klasör daraltın.
@@ -4000,13 +4241,20 @@ The first {n} are shown: search to narrow them.	İlk {n} tanesi gösteriliyor: d
 The first {n} of them are listed; the filter searches all of them.	Bunların ilk {n} tanesi listelendi; filtre hepsinde arar.
 The first {n} rows	İlk {n} satır
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	Akış izleme yanıt vermedi: noktaya en yakın akış çizgisinin tamamı gösteriliyor.
+The grid already has the basemap's color	Izgara zaten altlık haritanın rengine sahip
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	ızgara rakamları 0 ile 10 arasında çift sayıda olmalı; yarısı doğu, yarısı kuzey değeri için
+The grid's color and opacity	Izgaranın rengi ve opaklığı
 the hash stopped	karma hesaplama durdu
+The history jump stopped because the project changed.	Proje değiştiği için geçmişte atlama durdu.
+The image changed or was removed. Select it again or reload its grid.	Görüntü değişti veya kaldırıldı. Onu yeniden seçin veya ızgarasını yeniden yükleyin.
+The image changed. Reload its grid before drawing.	Görüntü değişti. Çizmeden önce ızgarasını yeniden yükleyin.
+The image context changed. Select the image again before drawing.	Görüntü bağlamı değişti. Çizmeden önce görüntüyü yeniden seçin.
 the images' projected system, else degrees	görüntülerin projeksiyonlu sistemi, değilse derece
 The installed GeoLibre runner lists no tools.	Yüklü GeoLibre çalıştırıcısı hiçbir araç listelemiyor.
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	Yükleyici indirilir ve denetlenir. RustGIS kapanır, güncellemeyi yükler ve yeniden açılır.
 The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	Arayüz renkleri, boşlukları ve metin boyutları: yerleşik bir tema veya temalar klasöründen bir dosya.
 The job covers the map view	İş harita görünümünü kapsar
+The kept tool translations can't be read: {error}	Saklanan araç çevirileri okunamıyor: {error}
 The key is added to each request to this address as this parameter. It is never saved in the connection or project.	Anahtar, bu adrese yapılan her isteğe bu parametre olarak eklenir. Bağlantıda veya projede asla kaydedilmez.
 The key is kept for this session only.	Anahtar yalnızca bu oturum için saklanır.
 The key is kept for this session only; it has not been remembered.	Anahtar yalnızca bu oturum için saklanır; hatırlanmadı.
@@ -4041,6 +4289,7 @@ The map's extent isn't known yet	Haritanın kapsamı henüz bilinmiyor
 The map's UTM zone, else the frame's	Haritanın UTM dilimi, değilse çerçevenin
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	Harita görünümü Overture'ın {n} {ty} dosyasını kapsıyor (en fazla {max}): yakınlaştırın veya temayı harita karoları olarak ekleyin
 The map's, else its UTM zone	Haritanınki, değilse UTM dilimi
+The marker to change is no longer there	Değiştirilecek işaretçi artık yok
 the MCP relay couldn't start	MCP rölesi başlatılamadı
 The MCP relay couldn't start; agents can still use the file bridge. Click to turn agents off	MCP rölesi başlatılamadı; ajanlar yine de dosya köprüsünü kullanabilir. Ajanları kapatmak için tıklayın
 The menu bar keeps that key: choose another.	Menü çubuğu bu tuşu kullanıyor: başka birini seçin.
@@ -4058,16 +4307,19 @@ The next page link was refused: it points where this search may not read, so onl
 the NLDI's answer isn't UTF-8 text	NLDI'nin yanıtı UTF-8 metin değil
 the northing doesn't fall in the latitude band given	kuzey değeri verilen enlem kuşağına düşmüyor
 The notes are cut here: the release page has all of them.	Notlar burada kesildi: tamamı sürüm sayfasında.
-the old file's list must disappear immediately	the old file's list must disappear immediately
 The one waiting after it was left too	Ondan sonra bekleyen de bırakıldı
 the open project has unsaved changes: save them before recovering other work	açık projede kaydedilmemiş değişiklikler var: başka bir çalışmayı kurtarmadan önce kaydedin
 The open project has unsaved changes: save them, then recover this copy.	Açık projede kaydedilmemiş değişiklikler var: kaydedin, sonra bu kopyayı kurtarın.
 The order by {sort} could not be checked: it is the API's own order	{sort} ölçütüne göre sıralama denetlenemedi: API'nin kendi sırasıdır
+The original image grid result could not be displayed.	Özgün görüntü ızgarası sonucu görüntülenemedi.
 The page in colour, the title in light text and the map in a light card.	Sayfa renkli, başlık açık renk metinle ve harita açık bir kartta.
 the page is too large to copy to the clipboard: export it instead	sayfa panoya kopyalanamayacak kadar büyük: bunun yerine dışa aktarın
 the page is too large to draw	sayfa çizilemeyecek kadar büyük
+The password is sent only to Copernicus Data Space's sign-in server and never kept in the project. The token it gives is sent only to its data servers.	Parola yalnızca Copernicus Data Space'in oturum açma sunucusuna gönderilir ve asla projede tutulmaz. Verdiği belirteç yalnızca veri sunucularına gönderilir.
+The password must be at most 4096 bytes, without control characters.	Parola, denetim karakteri içermeden en fazla 4096 bayt olmalıdır.
 The password or key must fit a 4096-byte HTTP header, without control characters.	Parola veya anahtar, denetim karakteri içermeden 4096 baytlık bir HTTP başlığına sığmalıdır.
 The password was refused. Type a password to try again.	Parola reddedildi. Yeniden denemek için bir parola yazın.
+the phone keeps a recovery copy after edits	telefon düzenlemelerden sonra bir kurtarma kopyası tutar
 the picture is too large to show	resim gösterilemeyecek kadar büyük
 the picture is too large to show, or isn't one	resim gösterilemeyecek kadar büyük veya resim değil
 the place lies outside the zone given	yer verilen dilimin dışında
@@ -4078,11 +4330,14 @@ The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reas
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	{id} eklentisi yüklenmedi. Görmek için Eklentiler › Eklenti Yöneticisi'ni açın.
 The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	Bu tarayıcıda yüklü eklentiler okunamıyor, bu yüzden bu değişiklik hatırlanmıyor: tarayıcının kayıtlı tercihlerindeki "plugins_web" öğesini düzeltin veya kaldırın.
 The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	Bu tarayıcıda yüklü eklentiler okunamadı (bir JSON listesi değiller): hiçbiri yüklenmedi ve şimdi yüklenen veya kaldırılan eklentiler hatırlanmaz.
+The polygon layer doesn't draw at this scale. Zoom in or out until it draws, then draw.	Poligon katmanı bu ölçekte çizilmiyor. Çizilene kadar yakınlaştırın veya uzaklaştırın, ardından çizin.
 The portal's OAuth app	Portalın OAuth uygulaması
 the presentation export failed unexpectedly	sunum dışa aktarımı beklenmedik şekilde başarısız oldu
 the preview failed unexpectedly	önizleme beklenmedik şekilde başarısız oldu
+The preview replaces the boundary; curved grid edges remain straight-edge approximations after projection. Saved/exported results are ordinary polygons.	Önizleme sınırı değiştirir; eğri ızgara kenarları, projeksiyondan sonra düz kenarlı yaklaşımlar olarak kalır. Kaydedilen/dışa aktarılan sonuçlar sıradan poligonlardır.
 The project changed while this was open: check the changes, then answer again.	Bu açıkken proje değişti: değişiklikleri denetleyin, sonra yeniden yanıtlayın.
 The project downloads as this file, to the folder your browser saves downloads in.	Proje, tarayıcınızın indirmeleri kaydettiği klasöre bu dosya olarak indirilir.
+The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.	Proje veya harita değişti. Çizmeden önce yeniden bir görüntü seçin veya Web Mercator ızgara metresini seçin.
 The project's items in place of the map.	Harita yerine projenin öğeleri.
 The project's thumbnail, from an image.	Bir görüntüden projenin küçük resmi.
 The project's thumbnail, from the map view.	Harita görünümünden projenin küçük resmi.
@@ -4093,6 +4348,7 @@ The public server is free and shared by many: it answers light use, and may ask 
 The range is two numbers, low and high (0, 0.9)	Aralık, alt ve üst olmak üzere iki sayıdır (0, 0.9)
 The raster's data couldn't be read.	Rasterin verisi okunamadı.
 The raster's data couldn't be read: {error}	Rasterın verisi okunamadı: {error}
+The recovery copy could not keep the opened package's path because it is not UTF-8.	Kurtarma kopyası, açılan paketin yolunu UTF-8 olmadığı için tutamadı.
 the recovery copy is incomplete	kurtarma kopyası eksik
 the recovery copy is too large (maximum {mib} MiB on this computer)	kurtarma kopyası çok büyük (bu bilgisayarda en fazla {mib} MiB)
 the recovery copy isn't text	kurtarma kopyası metin değil
@@ -4103,6 +4359,7 @@ The reply stopped early ({reason}).	Yanıt erken durdu ({reason}).
 the report export failed unexpectedly	rapor dışa aktarımı beklenmedik şekilde başarısız oldu
 The request failed.	İstek başarısız oldu.
 The result wired into this output is added to the map under this name.	Bu çıktıya bağlanan sonuç haritaya bu adla eklenir.
+The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login.	Örnek karo, bağlantının kaynağını değiştiriyor. Kayıtlı bir girişle test etmek için somut bir ana makine adı kullanın.
 The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	Kayıtlı yayın sayfa düzeni yerleşimleri okunamıyor: oldukları gibi bırakıldılar ve şimdi kaydedilen yerleşimler yalnızca uygulama kapanana kadar sürer.
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	Kayıtlı koordinat biçimi bu sürüm tarafından bilinmiyor, bu yüzden ondalık derece gösteriliyor.
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	Yayın sayfa düzenlerinin kayıtlı sık kullanılan düzeni kullanılamıyor ({why}), bu yüzden “classic” kullanılıyor.
@@ -4122,10 +4379,15 @@ The search area has no point, line or polygon to search with	Arama alanında ara
 The search area is still loading: search when it has finished	Arama alanı hâlâ yükleniyor: bittiğinde arayın
 the selected features	seçili detaylar
 The selected GeoPackage layer is no longer available; choose a layer	Seçili GeoPackage katmanı artık kullanılamıyor; bir katman seçin
+The server answered, but the response is not a usable tile.	Sunucu yanıt verdi, ancak yanıt kullanılabilir bir karo değil.
+The server didn't answer the token request in time.	Sunucu belirteç isteğine zamanında yanıt vermedi.
+The server didn't give a token. Check the user name, password and token endpoint.	Sunucu belirteç vermedi. Kullanıcı adını, parolayı ve belirteç uç noktasını kontrol edin.
 The server had a problem answering.	Sunucu yanıt verirken bir sorun yaşadı.
 The server is limiting requests.	Sunucu istekleri sınırlıyor.
 The server refused the request.	Sunucu isteği reddetti.
 The server took too long to answer.	Sunucunun yanıt vermesi çok uzun sürdü.
+The server's answer to the token request was too large.	Sunucunun belirteç isteğine verdiği yanıt çok büyüktü.
+The server's answer wasn't an ArcGIS token.	Sunucunun yanıtı bir ArcGIS belirteci değildi.
 The service may be private or need a token.	Servis özel olabilir veya bir belirteç gerektirebilir.
 The service needs a sign-in or a token.	Servis oturum açma veya belirteç gerektiriyor.
 The service test requires a credential-free HTTP or HTTPS address at the connection's origin.	Hizmet testi, bağlantının kaynağında kimlik bilgisi içermeyen bir HTTP veya HTTPS adresi gerektirir.
@@ -4134,12 +4396,15 @@ The service's answer isn't UTF-8 text	Servisin yanıtı UTF-8 metni değil
 The session login could not be used. Enter it again.	Oturum açma bilgisi kullanılamadı. Yeniden girin.
 The Shapefile's files download as one zip.	Shapefile dosyaları tek bir zip olarak indirilir.
 The share of each cell covered by fields, for the zoomed-out view	Uzaklaştırılmış görünüm için her hücrenin tarlalarla kaplı oranı
+The share of the colour a slope turned fully from the sun keeps, from 0 to 1	Güneşten tamamen dönük bir eğimin koruduğu renk payı, 0 ile 1 arasında
 The sign-in expired or was revoked. Sign in again.	Oturumun süresi doldu veya erişim iptal edildi. Yeniden oturum açın.
+The sign-in expired. Sign in again.	Oturumun süresi doldu. Yeniden oturum açın.
 The sign-in is kept in the system keychain, never in the app's settings or a project file.	Oturum bilgisi sistem anahtarlığında saklanır, asla uygulamanın ayarlarında veya bir proje dosyasında saklanmaz.
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	Oturum bilgisi hâlâ uygulamanın ayarlar klasöründe saklanıyor ve kullanıcı hesabınızca okunabilir: sistem anahtarlığı kullanılamadığından henüz oraya taşınmadı.
 The significance level is a number, such as 0.05	Anlamlılık düzeyi 0.05 gibi bir sayıdır
 The size of the menu, the panes and the text drawn in them.	Menünün, bölmelerin ve içlerinde çizilen metnin boyutu.
 The slider's span, step and playback are on View › Time.	Kaydırıcının aralığı, adımı ve oynatma ayarları Görünüm › Zaman'dadır.
+The source changed. Preview the conversion again.	Kaynak değişti. Dönüştürmeyi yeniden önizleyin.
 The start-up project {path} didn't open: {error}	Başlangıç projesi {path} açılamadı: {error}
 The start-up project {path} isn't a RustGIS project file.	Başlangıç projesi {path} bir RustGIS proje dosyası değil.
 The step's layer {name} isn't in the map.	Adımın katmanı {name} haritada değil.
@@ -4153,11 +4418,22 @@ The system keychain is locked or access was refused.	Sistem anahtarlığı kilit
 The system keychain is unavailable, so this sign-in won't be remembered: it lasts until RustGIS closes.	Sistem anahtarlığı kullanılamıyor, bu nedenle bu oturum hatırlanmayacak: RustGIS kapanana kadar geçerlidir.
 The system keychain is unavailable.	Sistem anahtarlığı kullanılamıyor.
 The task's steps changed, so the step being edited was closed: edit it again.	Görevin adımları değişti, bu yüzden düzenlenen adım kapatıldı: yeniden düzenleyin.
+The tile URL has an unsupported placeholder.	Karo URL'sinde desteklenmeyen bir yer tutucu var.
+The time series couldn't start: {error}	Zaman serisi başlatılamadı: {error}
+The time series failed unexpectedly	Zaman serisi beklenmedik şekilde başarısız oldu
+The time series was cancelled: nothing was added to the chart	Zaman serisi iptal edildi: grafiğe hiçbir şey eklenmedi
+The time series was stopped: another project was opened	Zaman serisi durduruldu: başka bir proje açıldı
 the time slider is off	zaman kaydırıcısı kapalı
 The title and subtitle in a band of colour across the top.	Üstte renkli bir bantta başlık ve alt başlık.
 The title over the map, the sources and the reference in boxes under it.	Başlık haritanın üzerinde, kaynaklar ve referans altında kutularda.
 The token expired and was forgotten. Paste a new one.	Belirtecin süresi doldu ve unutuldu. Yenisini yapıştırın.
 The token expires on {date}.	Belirtecin süresi {date} tarihinde doluyor.
+The token is added to each request to this address as its token parameter. With no expiry it is used until the server refuses it.	Belirteç, bu adrese yapılan her isteğe token parametresi olarak eklenir. Son kullanma süresi yoksa sunucu reddedene kadar kullanılır.
+The token is renewed until you sign out.	Belirteç, oturumu kapatana kadar yenilenir.
+The token is renewed until {date}.	Belirteç {date} tarihine kadar yenilenir.
+The token request couldn't be started.	Belirteç isteği başlatılamadı.
+The token request failed.	Belirteç isteği başarısız oldu.
+The token request was cancelled.	Belirteç isteği iptal edildi.
 the tool's own	aracın kendisine ait
 the tool's own; {d}	aracın kendisi; {d}
 The tools run on this project: saved with it, and each can run again	Bu projede çalıştırılan araçlar: projeyle birlikte kaydedilir ve her biri yeniden çalıştırılabilir
@@ -4178,16 +4454,20 @@ The {n} waiting after it were left too	Ondan sonra bekleyen {n} iş de bırakıl
 Theme	Tema
 Theme {name} loaded and kept at {path}	{name} teması yüklendi ve {path} konumunda saklandı
 There is no expression defined.	Tanımlı bir ifade yok.
+There is no touch interface to go back to: it is on phones.	Geri dönülecek dokunmatik arayüz yok: o telefonlarda bulunur.
 there is no unsaved work to recover	kurtarılacak kaydedilmemiş çalışma yok
 Thermal	Termal
+These layers share no numeric field.	Bu katmanların ortak sayısal alanı yok.
 Thesis figure, full page (160 × 225 mm)	Tez şekli, tam sayfa (160 × 225 mm)
 Thesis figure, half page (160 × 110 mm)	Tez şekli, yarım sayfa (160 × 110 mm)
 Thin	Seyrelt
 Thinking…	Düşünüyor…
 Third-party licences	Üçüncü taraf lisansları
 THIRD-PARTY-LICENSES.txt	THIRD-PARTY-LICENSES.txt
+This app can't request ArcGIS tokens.	Bu uygulama ArcGIS belirteci isteyemez.
 this build can't download plugins	bu sürüm eklenti indiremez
 this build can't reach AI providers	bu sürüm YZ sağlayıcılarına erişemez
+This build cannot save through the native picker.	Bu derleme yerel seçici üzerinden kaydedemez.
 this build has no download service	bu sürümde indirme servisi yok
 this build saves projects with Save As	bu sürüm projeleri Farklı Kaydet ile kaydeder
 This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Bu ChatGPT hesabı zaten kayıtlıydı. Bir dahaki sefere yeniden eklemek yerine listeden seçin.
@@ -4198,9 +4478,15 @@ This class is hidden, so it labels nothing.	Bu sınıf gizli, bu nedenle hiçbir
 This clause no longer reads, so no feature is labelled: {error}	Bu yan tümce artık okunamıyor, bu nedenle hiçbir detay etiketlenmiyor: {error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	Bu bilgisayar bu bağlantı için anahtar saklıyor: onlarla oturum açmak için anahtarları boş bırakın.
 This computer keeps this connection's keys: logging in reads them.	Bu bilgisayar bu bağlantının anahtarlarını saklıyor: oturum açınca okunurlar.
+This computer's clock can't be read, so an expiring ArcGIS token can't be used.	Bu bilgisayarın saati okunamıyor, bu yüzden süresi dolan bir ArcGIS belirteci kullanılamaz.
+This connection has no user: set user (connection.edit) to generate a token.	Bu bağlantının kullanıcısı yok: belirteç oluşturmak için kullanıcıyı ayarlayın (connection.edit).
 This connection is logged out. Log in explicitly to use it again.	Bu bağlantının oturumu kapatıldı. Yeniden kullanmak için açıkça oturum açın.
 This font isn't installed here, so the text is drawn in the sans-serif	Bu yazı tipi burada yüklü olmadığından metin tırnaksız yazı tipiyle çizilir
 This font isn't installed here, so the text is drawn in the serif	Bu yazı tipi burada yüklü olmadığından metin tırnaklı yazı tipiyle çizilir
+This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Bu resim işaretçi olamaz: kenar başına en fazla 20.000 px olan okunabilir bir PNG veya JPEG değil
+This image is too large for a marker: at most about 1.5 MiB	Bu resim bir işaretçi için çok büyük: en fazla yaklaşık 1,5 MiB
+This image is unavailable. Choose another image or No image.	Bu resim kullanılamıyor. Başka bir resim veya Resim yok seçin.
+This item is from a local or private network, whose files Bands and Index don't read yet	Bu öğe yerel veya özel bir ağdan; Bantlar ve İndeks henüz onun dosyalarını okumuyor
 This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	Bu katmanda dosyasında henüz bulunmayan düzenlemeler var. Kaynağa Yayımla bunları dosyaya yazar.
 This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.	Bu katmanda dosyasında bulunmayan düzenlemeler var ve dosya okunduğundan beri diskte değişti. Kaynağa Yayımla bu değişikliğin üzerine yazmak yerine reddeder; Detayları Dışa Aktar düzenlemeleri yeni bir dosyada saklar.
 This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.	Bu katmanda dosyasında bulunmayan düzenlemeler var. Kaynağa Yayımla, dosya okunduğu hale dönene kadar bunları yazamaz; Detayları Dışa Aktar onları yeni bir dosyada saklar.
@@ -4258,10 +4544,16 @@ Tint by elevation	Yüksekliğe göre renklendir
 Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	Dik zemini, ışık gölgelendirmeden önce zeminin kendi eğimine göre kaya rengine doğru renklendirir
 Tissot's Indicatrix	Tissot İndikatrisi
 Title	Başlık
+Title text	Başlık metni
 To	Bitiş
 Toggle Dark Mode	Koyu Modu Aç/Kapat
+Toggle Downloading Datum Grids	Datum Izgaralarını İndirmeyi Aç/Kapat
 Toggle GPU Rendering	GPU Çizimini Aç/Kapat
 Toggle Imperial Measurements	İngiliz Ölçü Birimlerini Aç/Kapat
+Toggle Sharp Tiles on HiDPI Displays	HiDPI Ekranlarda Keskin Karoları Aç/Kapat
+Token	Belirteç
+Token endpoint	Belirteç uç noktası
+Token from	Belirteç kaynağı
 Token Required	Belirteç Gerekli
 Tolerance	Tolerans
 Tolerance (km)	Tolerans (km)
@@ -4287,6 +4579,7 @@ Topology Options	Topoloji Seçenekleri
 Topology Options…	Topoloji Seçenekleri…
 Topology rules and the errors they find.	Topoloji kuralları ve buldukları hatalar.
 Total {total}   ·   Segment {segment}	Toplam {total}   ·   Bölüm {segment}
+Touch\nInterface	Dokunmatik\nArayüz
 Trace	İzle
 Trace a point first: click the map.	Önce bir nokta izleyin: haritaya tıklayın.
 Trace Edge Path	Kenar Yolunu İzle
@@ -4299,6 +4592,7 @@ Train Deep Learning Model	Derin Öğrenme Modeli Eğit
 Trained models	Eğitilmiş modeller
 Training polygons	Eğitim poligonları
 Transfer Fields	Alanları Aktar
+Translate tools	Araçları çevir
 Transparency	Saydamlık
 Traverse	Poligon Geçki
 Trend Analysis	Eğilim Analizi
@@ -4306,6 +4600,7 @@ Trend Analysis…	Eğilim Analizi…
 Trend over a series of rasters	Bir raster serisi üzerinde eğilim
 Triangle	Üçgen
 TRUE	TRUE
+True color	Gerçek renk
 Try Again	Yeniden Dene
 Try again	Yeniden dene
 Try again in a moment.	Birazdan yeniden deneyin.
@@ -4347,16 +4642,20 @@ Type the password or key to remember it on this computer.	Bu bilgisayarda hatır
 Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	Parolayı veya anahtarı yazın ya da bu bağlantının oturumunu veya kayıtlı girişini kullanmak için boş bırakın, ardından Kaydet'e basın.
 Type the password to remember it on this computer.	Bu bilgisayarda hatırlamak için parolayı yazın.
 Type the password, then Save. Remember on this computer is optional.	Parolayı yazın, sonra Kaydet'e basın. Bu bilgisayarda hatırla isteğe bağlıdır.
+Type the token this expiry is for.	Bu son kullanma süresinin ait olduğu belirteci yazın.
+Type the token, or the password to generate one, to remember it on this computer.	Bu bilgisayarda hatırlamak için belirteci veya bir tane oluşturmak için parolayı yazın.
 Typed below	Aşağıya yazılan
-typing must not start another lookup	typing must not start another lookup
 U.S. Census (addresses)	ABD Nüfus Sayımı (adresler)
 Ukraine	Ukrayna
 UM	UM
+Unavailable image	Kullanılamayan resim
+Unavailable image: {name}	Kullanılamayan resim: {name}
 Unavailable: {reason}	Kullanılamıyor: {reason}
 Unbind from Time Slider	Zaman kaydırıcısından ayır
 Undo	Geri Al
 Undo (Ctrl+Z)	Geri Al (Ctrl+Z)
 Undo doesn't remove the recorded step: delete it in Edit Steps once you stop recording.	Geri Al kaydedilen adımı kaldırmaz: kaydı durdurduktan sonra Adımları Düzenle'de silin.
+Undo History	Geri Alma Geçmişi
 Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	Geri Al, bellekteki verileri ve yapılandırmayı geri getirir; üzerine yazılan dosyaları ve geçmişte akıtılan içeriği getirmez.
 Undo the last change.	Son değişikliği geri al.
 Undo {action}	Geri al: {action}
@@ -4388,6 +4687,7 @@ Untitled	Adsız
 Untitled model	Adsız model
 Up	Yukarı
 Up a level	Bir düzey yukarı
+up to {bound}	en fazla {bound}
 Up to {n} points are compared: the oldest one was taken off.	En çok {n} nokta karşılaştırılır: en eskisi kaldırıldı.
 Update	Güncelle
 Update Bookmark	Yer İmini Güncelle
@@ -4418,10 +4718,15 @@ Use Current View	Geçerli görünümü kullan
 Use each feature's fill color	Her detayın dolgu rengini kullan
 Use each feature's line color	Her detayın çizgi rengini kullan
 Use each feature's line width	Her detayın çizgi kalınlığını kullan
+Use field range	Alan aralığını kullan
+Use image filename	Görüntü dosya adını kullan
 Use layers instead	Bunun yerine katmanları kullan
 Use System	Sistemi Kullan
 Use the Layer's Strokes	Katmanın Konturlarını Kullan
+Use the Touch Interface	Dokunmatik Arayüzü Kullan
 User	Kullanıcı
+Username	Kullanıcı adı
+Username and password	Kullanıcı adı ve parola
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	USGS 3DEP DEM
 USGS 3DEP DEM…	USGS 3DEP DEM…
@@ -4445,7 +4750,11 @@ Validate	Doğrula
 Validate Model	Modeli Doğrula
 value (empty: no-data)	değer (boş: veri yok)
 Value Field	Değer Alanı
+Values	Değerler
 Values from −stretch to +stretch are shown from black to full colour	−germe ile +germe arasındaki değerler siyahtan tam renge doğru gösterilir
+Values of the {of} features read for the view	Görünüm için okunan {of} detayın değerleri
+Values of {read} of the {of} features read for the view, evenly spread	Görünüm için okunan {of} detaydan {read} tanesinin değerleri, eşit dağılmış
+Values of {read} of {of} features, evenly spread	{of} detaydan {read} tanesinin değerleri, eşit dağılmış
 Vantor Open Data	Vantor Open Data
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	Vantor'un açık afet görüntüleri: bir olay ve bir evre (öncesi veya sonrası) seçin, ardından Öğeleri Bul'a tıklayın.
 Vantor…	Vantor…
@@ -4479,6 +4788,7 @@ View Extent	Görünüm Kapsamı
 View In Google Earth	Google Earth'te Görüntüle
 View In Google Maps	Google Maps'te Görüntüle
 View Unplaced	Yerleşmeyenleri Göster
+View › Interface	Görünüm › Arayüz
 View › Windows	Görünüm › Pencereler
 Viewshed from a point	Bir noktadan görünürlük alanı
 Viewshed {radius}	Görünürlük Alanı {radius}
@@ -4495,6 +4805,7 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3 (Vietnam)
 VN-2000 / UTM zone 48N	VN-2000 / UTM dilimi 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM dilimi 49N
 Volume	Hacim
+Wait for the original image grid before drawing.	Çizmeden önce özgün görüntü ızgarasını bekleyin.
 Wait for the run to finish	Çalıştırmanın bitmesini bekleyin
 Wait for the Script pane's run to finish	Betik bölmesindeki çalıştırmanın bitmesini bekleyin
 Waiting for the browser…	Tarayıcı bekleniyor…
@@ -4519,7 +4830,9 @@ Web Layer	Web Katmanı
 Web Link Chart	Web Bağlantı Grafiği
 Web maps	Web haritaları
 Web Mercator	Web Mercator
+Web Mercator grid metres	Web Mercator ızgara metresi
 Web Mercator grid metres, not ground metres.	Web Mercator ızgara metreleri, zemin metreleri değil.
+Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected.	Zemin metresi değil, Web Mercator ızgara metresi. Bir görüntü seçiliyken varsayılan, görüntü pikselleridir.
 Web Scene	Web Sahnesi
 Web service (detected)	Web servisi (algılandı)
 Web Style	Web Stili
@@ -4536,11 +4849,13 @@ WGS 84 / Web Mercator	WGS 84 / Web Mercator
 What each slice or bar says beside it: its value, its share in percent, or both	Her dilim veya çubuğun yanında ne yazacağı: değeri, yüzde payı ya da ikisi
 What RustGIS opens with: the World Atlas sample or a blank map.	RustGIS'in neyle açılacağı: World Atlas örneği ya da boş bir harita.
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	RustGIS'in neyle açılacağı: World Atlas örneği, boş bir harita, seçtiğiniz bir proje ya da en son açılan veya kaydedilen proje.
-What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	Koordinat ağının çizdiği: enlemler ve boylamlar, ölçülü bir ızgara veya UTM dilimleri.
+What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Koordinat ağının çizdiği: enlemler ve boylamlar, ölçülü bir ızgara, UTM dilimleri veya MGRS ızgarası.
 What the walls stand on: the ground, a field or the constant Base (m).	Duvarların üzerinde durduğu: zemin, bir alan veya sabit Taban (m).
 What to do, where to find it and why	Ne yapılacağı, nerede bulunacağı ve neden
 What's near a point	Bir noktanın yakınında ne var
 What's new	Yenilikler
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use for this session when this is off.	Bir koordinat sisteminin en doğru datum dönüşümü RustGIS'te olmayan bir ızgara gerektirdiğinde, onu PROJ'un ızgara sunucusundan (cdn.proj.org) indir. Bu kapalıyken, önceden indirilmiş ızgaralar bu oturum boyunca kullanılmaya devam eder.
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use when this is off: to stop using them, delete the datum-grids folder in RustGIS's app data and start RustGIS again (grids installed for PROJ are still used).	Bir koordinat sisteminin en doğru datum dönüşümü RustGIS'te olmayan bir ızgara gerektirdiğinde, onu PROJ'un ızgara sunucusundan (cdn.proj.org) indir. Bu kapalıyken önceden indirilmiş ızgaralar kullanılmaya devam eder: kullanmayı bırakmak için RustGIS'in uygulama verilerindeki datum-grids klasörünü silin ve RustGIS'i yeniden başlatın (PROJ için kurulmuş ızgaralar yine kullanılır).
 When a file holds several layers, choose the ones to add instead of adding them all.	Bir dosya birkaç katman içerdiğinde, tümünü eklemek yerine eklenecekleri seçin.
 When its place is taken, the label tries the other places round the point, corners first.	Yeri doluysa etiket, köşelerden başlayarak noktanın çevresindeki diğer yerleri dener.
 WHERE	WHERE
@@ -4609,10 +4924,11 @@ World, equal-area: true sizes, shapes bend towards the edges.	Dünya, eşalan: g
 Worldview	Sınırlar
 Wrap at	Sarma yeri
 Wrap length	Sarma uzunluğu
+Wrap to the box	Kutuya sığdır
 Write a plugin	Eklenti yaz
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Görünümün merkezi etrafında bir dönüşünü hareketli GIF veya PNG kareleri olarak yaz.
 Writes a separate two-vertex line for each consecutive vertex pair.	Ardışık her köşe çifti için ayrı bir iki köşeli çizgi yazar.
-Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Her detayı geometrisi mümkün olduğunca geçerli hâle getirilmiş olarak yazar: halkalar kapatılır, yinelenen köşeler ve bozuk parçalar atılır, kendisiyle kesişmeler, örtüşen parçalar ve dış sınırının dışındaki delikler giderilir. Herhangi bir yerinde, bir delikte bile, eksik veya sonlu olmayan bir koordinatı olan ya da onarımdan sonra kullanılabilir noktası veya çokgenler için alanı kalmayan detaylar geometrisiz yazılır. Denetlenemeyecek kadar karmaşık olan veya onarımı başarısız olan diğer detaylar değiştirilmeden yazılır. Her birinde neyin onarıldığını bildirir.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Her detayı geometrisi mümkün olduğunca geçerli hâle getirilmiş olarak yazar: halkalar kapatılır, yinelenen köşeler ve bozuk parçalar atılır, kendisiyle kesişmeler, örtüşen parçalar ve dış sınırının dışındaki delikler seçilen kurala göre giderilir (Shells Minus Holes örtüşen parçaları birleştirir; Even-Odd tek sayıda halkanın içinde kalanı korur). Herhangi bir yerinde, bir delikte bile, eksik veya sonlu olmayan bir koordinatı olan ya da onarımdan sonra kullanılabilir noktası veya çokgenler için alanı kalmayan detaylar geometrisiz yazılır. Denetlenemeyecek kadar karmaşık olan veya onarımı başarısız olan diğer detaylar değiştirilmeden yazılır. Her birinde neyin onarıldığını bildirir.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Her detay için, saklanan boylam/enlem koordinatlarında eksenlere hizalı bir sınırlayıcı dikdörtgen yazar. Alanı sıfır olan zarflar atlanır.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen eğimini, testin Z ve p değerini ve eğilimin anlamlı olduğu yerlerdeki eğimi yazar.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Kendisiyle kesişen veya kapanmamış halkalar, dış sınırının dışındaki delikler ya da örtüşen parçalar gibi geçersiz geometriye sahip detayları yazar ve her birinde neyin yanlış olduğunu bildirir.
@@ -4629,9 +4945,9 @@ Y Field	Y Alanı
 Year	Yıl
 Yes	Evet
 You can undo this with {shortcut}.	Bunu {shortcut} ile geri alabilirsiniz.
-You choose where the project is saved next.	Projenin bir sonraki kaydedileceği yeri siz seçersiniz.
 You have version {version}.	Sizdeki sürüm: {version}.
 You're using your ChatGPT plan	ChatGPT planınızı kullanıyorsunuz
+Your account's email address	Hesabınızın e-posta adresi
 Your browser may reserve some shortcuts.	Tarayıcınız bazı kısayolları ayırmış olabilir.
 Your changes will be lost if you don't save them.	Kaydetmezseniz değişiklikleriniz kaybolacak.
 Your skills are kept in the skills folder of the app's settings folder. Shared skills (~/.agents/skills) are off until you turn them on.	Becerileriniz uygulamanın ayarlar klasöründeki skills klasöründe tutulur. Paylaşılan beceriler (~/.agents/skills) siz açana kadar kapalıdır.
@@ -4644,6 +4960,7 @@ Zarr URL is required	Zarr URL'si gerekli
 Zarr Variables	Zarr Değişkenleri
 Zarr…	Zarr…
 Zonal Statistics	Bölgesel İstatistikler
+Zone Field	Bölge Alanı
 Zone Fields	Bölge Alanları
 Zone Polygons	Bölge Poligonları
 Zoom	Yakınlaştır

@@ -22,16 +22,19 @@
 /F	/F
 /PID	/PID
 /T	/T
+0 draws no border	0 هیچ حاشیه‌ای نمی‌کشد
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	۰° خط را به‌صورت عمود قطع می‌کند
 1 entry	1 مورد
+1 line doesn't fit the box	1 خط در کادر جا نمی‌شود
+1 line isn't drawn: a text draws 200 at most	1 خط کشیده نشد: یک متن حداکثر 200 خط می‌کشد
 1 more class isn't listed: the list's limit doesn't change how it's drawn	1 کلاس دیگر فهرست نشده است: محدودیت فهرست، نحوه ترسیم را تغییر نمی‌دهد
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	۱۶ ذخیره‌گاه Zarr واردشده از قبل در صف هستند
 18:00 UTC	18:00 UTC
 18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
-3035, vn2000tm3	3035, vn2000tm3
+3010, lv95	3010, lv95
 3D mesh	مش سه‌بعدی
 40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<هیچ>
@@ -40,6 +43,7 @@ A .geolibre project as a map	یک پروژه .geolibre به‌عنوان نقش�
 A .qgs or .qgz project as a map	یک پروژه .qgs یا .qgz به‌عنوان نقشه
 A 3D globe seen from space.	یک کره سه‌بعدی که از فضای دیده می‌شود.
 A blank map with a basemap	یک نقشه خالی با نقشه پایه
+A box behind the element, which moves with it.	کادری پشت عنصر که همراه آن جابه‌جا می‌شود.
 A call for the rustgis Python package	یک فراخوانی برای بسته Python به نام rustgis
 A catalogue's (CSW 2.0.2) address: search its records by words and, if you like, the map's area, then add the services and files they link to.	آدرس یک کاتالوگ (CSW 2.0.2): رکوردهایش را با کلمات و، در صورت تمایل، با محدودهٔ نقشه جستجو کنید؛ سپس سرویس‌ها و فایل‌های پیوندیافته به آن‌ها را اضافه کنید.
 A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	سقف مصرف طرح ChatGPT یا برنامه پر شده است. پیش از تلاش دوباره، «مصرف هفتگی» را ببینید.
@@ -47,6 +51,7 @@ A ChatGPT sign-in can only be used with the OpenAI API.	ورود به ChatGPT ف
 A colour, hatch lines, markers on a grid, a gradient, or a shapeburst (shaded from the edge inwards)	یک رنگ، خط‌های هاشور، نشانه‌ها روی یک شبکه، یک گرادیان یا یک سایه‌زنی از لبه (سایه‌زده از لبه به داخل)
 A command id is required.	شناسه فرمان لازم است.
 A connection has this name: give this one another name to remember its keys.	اتصالی با این نام وجود دارد: برای به خاطر سپردن کلیدهای این یکی، نام دیگری به آن بدهید.
+a Copernicus Data Space sign-in	ورود به Copernicus Data Space
 A copy of {name} with unsaved changes was kept a minute ago.	یک نسخه از {name} با تغییرات ذخیره‌نشده یک دقیقه پیش نگه داشته شد.
 A copy of {name} with unsaved changes was kept less than a minute ago.	یک نسخه از {name} با تغییرات ذخیره‌نشده کمتر از یک دقیقه پیش نگه داشته شد.
 A copy of {name} with unsaved changes was kept {n} days ago.	یک نسخه از {name} با تغییرات ذخیره‌نشده {n} روز پیش نگه داشته شد.
@@ -61,7 +66,7 @@ A fast, free and open-source GIS written in pure Rust, for mapping, analyzing an
 A field (known once the model runs)	یک فیلد (پس از اجرای مدل مشخص می‌شود)
 A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	بسته میدانی روی رایانه یا تلفن باز می‌شود که پوشه‌ای برای نقشه‌های پایه‌اش دارند: آن را آنجا باز کنید. «بازگرداندن» (داده › آفلاین) ویرایش‌هایش را به پروژه اینجا می‌آورد.
 A flat scene centred on the view (azimuthal equidistant).	یک صحنهٔ تخت با مرکز روی نما (سمتی هم‌فاصله).
-A GeoLens server's datasets, read as features (the first 1,000 of each).	داده‌های یک سرور GeoLens، به‌عنوان عناصر خوانده می‌شوند (اولین ۱٬۰۰۰ مورد از هر کدام).
+A GeoLens server's datasets, read as features.	مجموعه‌داده‌های یک سرور GeoLens، خوانده‌شده به‌صورت عنصر.
 A globe scene.	یک صحنه کره‌ای.
 A hidden class leaves its features unlabelled.	عناصر کلاس پنهان بدون برچسب می‌مانند.
 A label along a line isn't moved.	برچسبی که در امتداد خط است جابه‌جا نمی‌شود.
@@ -77,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	یک خط، یا نشانه‌ها یا خط‌های نشان در امتداد آن
 A magnifying lens that follows the pointer.	یک لنز بزرگنمایی که نشانگر را دنبال می‌کند.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	آدرس یک سرویس نقشه، عنصر یا پوشش: WMS، WMTS، WFS، WCS، OGC API Features or Tiles، یا یک FeatureServer، MapServer، ImageServer یا VectorTileServer ArcGIS (یا یک فهرست سرویس، برای مرور).
+A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	یک نام یا کد EPSG، WKT یا رشته PROJ؛ خالی: سیستم خود نقشه وقتی تصویرشده است، وگرنه ناحیه UTM در مرکز نما
 a name, or owner/name such as giswqs/geospatial	یک نام، یا مالک/نامی مانند giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	یک نقطه پایانی نام‌دار که می‌توانید دوباره استفاده کنید. کلیدها تا بسته‌شدن RustGIS نگه داشته می‌شوند، مگر اینکه به خاطر سپردنشان روی این رایانه را انتخاب کنید؛ خود اتصال هرگز آن‌ها را نگه نمی‌دارد.
 A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	یک نقطه پایانی نام‌دار که می‌توانید دوباره به کار ببرید. رمزها و کلیدها تا پایان این نشست می‌مانند مگر اینکه به خاطر سپردنشان روی این رایانه را انتخاب کنید؛ خود اتصال هرگز آن‌ها را نگه نمی‌دارد.
@@ -87,8 +93,10 @@ A node cannot connect to itself.	یک گره نمی‌تواند به خودش �
 A notebook of text and command cells.	یک دفترچه متنی از سلول‌های متن و دستور.
 A password or token in the address was left out of the saved connection definition.	رمز یا توکن موجود در نشانی از تعریف اتصال ذخیره‌شده کنار گذاشته شد.
 A place or an address	یک مکان یا آدرس
+A PNG or JPEG file as the marker	یک فایل PNG یا JPEG به‌عنوان نشانه
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	کلیدی که قبلاً ذخیره شده هنوز به‌صورت رمزنگاری‌نشده در تنظیمات برنامه نگه داشته می‌شود تا زمانی که بتوان آن را به جاکلیدی سیستم منتقل کرد.
 A project keeps at least one map	یک پروژه حداقل یک نقشه را نگه می‌دارد
+A project save is already in progress.	ذخیره پروژه از قبل در جریان است.
 A projected coordinate system.	سیستم مختصات تصویری
 A projected system such as EPSG:32616, or EPSG:4326 for degrees	یک سیستم تصویرشده مانند EPSG:32616، یا EPSG:4326 برای درجه
 a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	لایه رستری پرسش تعریف یا پیوند زمانی ندارد: برگه‌های پرس‌وجو و زمان مخصوص لایه عناصر هستند
@@ -101,6 +109,7 @@ A saved key could not be read. A key entered now will be kept for this session o
 A search area holds at most {n} shapes: Clear it to start again	پهنه جستجو حداکثر {n} شکل را نگه می‌دارد: برای شروع دوباره آن را پاک کنید
 A service import or refresh is already running.	واردسازی یا تازه‌سازی سرویس در حال اجراست
 A service's layers stay in their service group.	لایه‌های یک سرویس در گروه سرویس خود می‌مانند.
+A sign-in is remembered on this computer: it signs in when a file needs it.	یک ورود روی این رایانه به خاطر سپرده شده است: هرگاه فایلی به آن نیاز داشته باشد وارد می‌شود.
 A small chart of several numeric fields, drawn on each feature over its symbol	نمودار کوچکی از چند فیلد عددی که روی هر عنصر، بالای نمادش ترسیم می‌شود
 A streamed layer needs Load All Features first	لایه جریانی ابتدا به «بارگذاری همه عناصر» نیاز دارد
 A table replaced in a GeoPackage	جدولی که در یک GeoPackage جایگزین شد
@@ -111,18 +120,15 @@ A theme file was refused. Open Settings > Theme for the reason.	یک فایل پ
 A tile layer per grid tile, each following the time slider through its dates.	یک لایه کاشی برای هر کاشی شبکه، که هر کدام لغزنده زمان را در تاریخ‌هایش دنبال می‌کند.
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	آدرس سرویس تایل: تایل‌های رستری با {z}/{x}/{y} (یا {-y}، {q}، {bbox-epsg-3857} برای WMS)، تایل‌های برداری (.pbf) یا TileJSON، استایل MapLibre، بایگانی PMTiles (آدرس وب، یا فایلی روی این کامپیوتر)، یا فایل MBTiles روی این کامپیوتر
 A token for {server}	توکن برای {server}
+A token is already being generated for this connection. Cancel it first.	توکنی از قبل برای این اتصال در حال تولید است. ابتدا آن را لغو کنید.
+A token is being generated. Cancel it before saving again.	توکنی در حال تولید است. پیش از ذخیره دوباره آن را لغو کنید.
 A token is set.	توکن تنظیم شده است
+A value of {field}	یک مقدار از {field}
 a vector a pixel	یک برداری یک پیکسل
 a vector an image patch	یک برداری یک تصویر کوچک
 A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	یک ناحیه UTM در WGS 84 برای برچسب‌های MGRS، با کد EPSG آن (32632)؛ خالی: ناحیه نقشه اگر UTM باشد، وگرنه ناحیه مرکز قاب.
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	یک ذخیره‌سازی Zarr (فرمت ۲ یا ۳) با آدرس وب، با متادیتای ادغام‌شده، یا یک پوشه روی این کامپیوتر. نقشه‌ی یک متغیر برای مراحل انتخاب‌شده از ابعاد دیگر آن، مانند زمان، خوانده می‌شود
 A Zarr variable's values through time at points clicked on the map.	مقادیر یک متغیر Zarr در گذر زمان در نقاطی که روی نقشه کلیک می‌شوند.
-A2 landscape sheet	برگه A2 افقی
-A2 portrait sheet	برگه A2 عمودی
-A3 landscape sheet	برگه A3 افقی
-A3 portrait sheet	برگه A3 عمودی
-A4 landscape sheet	برگه A4 افقی
-A4 portrait sheet	برگه A4 عمودی
 A5 Grid	شبکه A5
 A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	سلول‌های پنج‌ضلعی هم‌مساحت A5 در یک تفکیک‌پذیری، روی گستره نقشه، یک لایه یا کل جهان، به‌صورت چندضلعی همراه با شناسه‌هایشان.
 About	درباره
@@ -165,6 +171,7 @@ Add a report file, or a report template for the selected layer.	افزودن ف�
 Add a scale bar for the map frame.	افزودن نوار مقیاس برای قاب نقشه.
 add a second map first (Data › New Map)	ابتدا نقشه‌ی دوم را اضافه کنید (داده › نقشه‌ی جدید)
 Add a second map frame first	ابتدا قاب نقشه‌ی دوم را اضافه کنید
+Add a spectral index of the item's bands, for the part of the map in view	افزودن یک شاخص طیفی از باندهای آیتم، برای بخشی از نقشه که در نما است
 Add a straight line.	افزودن خط راست.
 Add a text element.	افزودن عنصر متنی.
 Add a web basemap over the others instead of replacing them, to blend it with them. Click one that shows to take it off.	یک نقشه پایه وب را به جای جایگزینی آن‌ها، روی بقیه اضافه کنید تا با آن‌ها ترکیب شود. روی یکی که نمایش داده شده کلیک کنید تا آن را حذف کنید.
@@ -228,6 +235,7 @@ Add Layer File	افزودن پرونده لایه
 Add Mark	افزودن نشان
 Add more with plugins:	با افزونه‌ها موارد بیشتری اضافه کنید:
 Add Open Data	افزودن داده باز
+Add or create a polygon feature layer using Data, then choose it here.	با Data یک لایه عنصر چندضلعی بیفزایید یا بسازید، سپس آن را اینجا انتخاب کنید.
 Add Output	افزودن خروجی
 Add Overture Maps Data	افزودن داده نقشه‌های Overture
 Add Page After	افزودن صفحه بعد
@@ -249,8 +257,10 @@ Add Selected ({n})	افزودن انتخاب‌شده‌ها ({n})
 Add Service Layer	افزودن لایه سرویس
 Add skill…	افزودن مهارت…
 Add STAC Asset	افزودن دارایی STAC
+Add STAC Bands	افزودن باندهای STAC
 Add STAC Data Cube	افزودن مکعب داده STAC
 Add STAC Footprints	افزودن ردپاهای STAC
+Add STAC Index	افزودن شاخص STAC
 Add statistic	افزودن آماره
 Add Step	افزودن مرحله
 Add Stroke	افزودن خطوط
@@ -261,6 +271,7 @@ Add Text	افزودن متن
 Add text that updates: page, date, scale, map and more.	افزودن متن که به‌روز می‌شود: صفحه، تاریخ، مقیاس، نقشه و بیشتر.
 Add the attribute table of a layer in the map frame.	افزودن جدول ویژگی یک لایه در قاب نقشه.
 Add the current view as a keyframe.	افزودن نمای فعلی به عنوان کلیدفریم.
+Add the item's bands as one image, for the part of the map in view	افزودن باندهای آیتم به‌صورت یک تصویر، برای بخشی از نقشه که در نما است
 Add The National Map Service	افزودن سرویس نقشه ملی
 Add this GeoTIFF to the map	افزودن این GeoTIFF به نقشه
 Add this MCP server to your agent:	این سرور MCP را به ایجنت خود اضافه کنید:
@@ -279,7 +290,6 @@ Add {language}	افزودن {language}
 Add {n}	افزودن {n}
 Add ▾	افزودن ▾
 Added	افزوده شد
-Added Fixture	تجهیزات افزوده‌شده
 Added from {start} to {end}: the time slider steps through it	از {start} تا {end} افزوده شد: لغزنده زمان در آن گام برمی‌دارد
 Added Overture's {theme} as map tiles ({release}; some themes show only zoomed in): {attribution}	تم {theme} از Overture به‌عنوان کاشی نقشه افزوده شد ({release}؛ بعضی تم‌ها فقط در بزرگ‌نمایی نزدیک نمایش داده می‌شوند): {attribution}
 Added {name}	افزوده شد: {name}
@@ -318,6 +328,7 @@ Agents then run commands, change files and use the web on this computer without 
 Aggregate Points to A5	تجمیع نقاط در A5
 Aggregation	تراکم
 Agricultural field boundaries the Fields of the World model found in Sentinel-2 imagery, worldwide, a year at a time (2nd Edition, CC BY 4.0). These are model predictions, not surveyed parcels.	مرزهای مزارع کشاورزی که مدل Fields of World در تصاویر Sentinel-2 در سراسر جهان، یک سال در یک بار (ویرایش دوم، CC BY 4.0) پیدا کرده است. این‌ها پیش‌بینی مدل هستند، نه قطعات نقشه‌برداری شده.
+Agriculture	کشاورزی
 AI	هوش مصنوعی
 AI\nAssistant	دستیار\nهوش مصنوعی
 AI Assistant	دستیار هوش مصنوعی
@@ -352,16 +363,19 @@ Altitude	ارتفاع
 Always allow	همیشه اجازه بده
 Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3، یا یک سرویس سازگار با S3 (MinIO، Cloudflare R2، Wasabi…) از طریق نقطه پایانی آن. کلیدها تا بسته‌شدن RustGIS نگه داشته می‌شوند؛ یک اتصال ذخیره‌شده نام، نقطه پایانی و منطقه خود را نگه می‌دارد، هرگز اطلاعات محرمانه‌اش را.
+Ambient	نور محیطی
 amenity=cafe, shop	امنیت=کافه، فروشگاه
 An agent on this computer asks to:	ایجنتی روی این رایانه درخواست می‌کند:
+An API key in the URL path is saved as typed, not in the credential store.	کلید API در مسیر URL همان‌طور که تایپ شده ذخیره می‌شود، نه در انبار اعتبارنامه.
 An API key sent in a header must use plain ASCII characters.	کلید API که در سرآیند فرستاده می‌شود باید فقط نویسه‌های ساده ASCII داشته باشد.
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	نشانی یک سازمان ArcGIS Online یا یک پورتال ArcGIS Enterprise؛ اگر خالی باشد ArcGIS Online
+an ArcGIS sign-in	ورود به ArcGIS
 An AWS profile	پروفایل AWS
-an enqueued add is not a success	افزودن در صف‌قرارگرفته موفقیت نیست
-An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	یک کد EPSG، WKT یا رشته PROJ؛ خالی: سیستم خود نقشه وقتی تصویرشده است، وگرنه ناحیه UTM در مرکز نما
+An image picked for an earlier Image… was dropped: pick it again for that marker	تصویری که برای یک تصویر… قبلی برگزیده شده بود کنار گذاشته شد: آن را دوباره برای آن نشانه انتخاب کنید
 Analysis	تحلیل
 Analyze	تحلیل
 Analyze › AI	تحلیل › هوش مصنوعی
+Analyze › Annotate	تحلیل › حاشیه‌نویسی
 Analyze › Workflows	تحلیل › فرآیندها
 AND	و
 Angle	زاویه
@@ -369,6 +383,8 @@ Angle (°)	زاویه (°)
 Animated GIF	انیمیشن GIF
 Animated GIF or PNG frames (zip)	GIF متحرک یا فریم‌های PNG (zip)
 Animation	انیمیشن
+Annotate	حاشیه‌نویسی
+Annotation export uses GeoJSON.	خروجی حاشیه‌نویسی از GeoJSON استفاده می‌کند.
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	یک فایل رهاشده‌ی دیگر باز نشد: پس از پاسخ درباره‌ی تغییرات ذخیره‌نشده، آن را دوباره رها کنید.
 Another project is open now: open the dialog again from its table.	اکنون پروژه دیگری باز است: پنجره را دوباره از جدول آن باز کنید.
 another project was opened	پروژه دیگری باز شد
@@ -384,7 +400,9 @@ Application	برنامه
 Apply	اعمال
 Apply a function to a raster	اعمال یک تابع روی یک رستر
 Apply Control Points	اعمال نقاط کنترل
+Apply Conversion	اعمال تبدیل
 Apply elevation	اعمال ارتفاع
+Apply Shape Conversion	اعمال تبدیل شکل
 Apply Style	اعمال سبک
 Apply to layers	اعمال بر روی لایه‌ها
 Apply to the selected layer	اعمال بر روی لایه‌ی انتخاب شده
@@ -397,6 +415,7 @@ ArcGIS Portal…	ArcGIS Portal…
 ArcGIS REST	ArcGIS REST
 ArcGIS Sign-In Status	وضعیت ورود به ArcGIS
 ArcGIS token	توکن ArcGIS
+ArcGIS Token Status	وضعیت توکن ArcGIS
 Archive	بایگانی
 Archive History	تاریخچه بایگانی
 Archiving	در حال بایگانی
@@ -405,6 +424,7 @@ Area of use: longitude {w}° to {e}°, latitude {s}° to {n}°	منطقه است
 Area of use: the whole world	منطقه استفاده: کل جهان
 Area of use: within {r}° of the {lon}° meridian	محدوده استفاده: در فاصله {r}° از نصف‌النهار {lon}°
 Area of use: within {r}° of {lon}°, {lat}°	محدوده استفاده: در فاصله {r}° از {lon}°، {lat}°
+Area Unit	واحد مساحت
 Area {area}   ·   Perimeter {perimeter}	مساحت {area}   ·   محیط {perimeter}
 Areas (name, land use, area)	مساحت‌ها (نام، کاربری اراضی، مساحت)
 Argentina	آرژانتین
@@ -449,6 +469,7 @@ Automatic (mm to km)	خودکار (میلی‌متر تا کیلومتر)
 Automatic (system language)	خودکار (زبان سیستم)
 Automatic ({kind})	خودکار ({kind})
 Automatic ({n})	خودکار ({n})
+Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself.	حالت خودکار ستون‌ها را با استفاده از کل فایل انتخاب می‌کند. برای دیدن پیشنهادهای پیش‌نمایش یا انتخاب ستون‌ها توسط خودتان، یک فهرست را باز کنید.
 Autosave	ذخیره خودکار
 Autosave couldn't keep a recovery copy: {error}	ذخیره خودکار نتوانست نسخه‌ی بازیابی نگه دارد: {error}
 autosave failed unexpectedly; it goes on with the next copy	ذخیره خودکار به‌طور غیرمنتظره‌ای ناموفق شد؛ با نسخه‌ی بعدی ادامه می‌دهد
@@ -462,19 +483,25 @@ Back to the map	بازگشت به نقشه
 Back to tools	بازگشت به ابزارها
 Backdrop	پس‌زمینه
 Background	پس‌زمینه
+Balanced light	نور متعادل
 Band	باندها
 Band Combination	ترکیب باندها
+Band combinations are made on the desktop for now	ترکیب‌های باند فعلاً در نسخه رومیزی ساخته می‌شوند
 Band must be a positive integer, list of bands, or 'all'.	باند باید یک عدد صحیح مثبت، فهرستی از باندها یا 'all' باشد.
 Band {n}	باند {n}
 Band {n}: {name}	باند {n}: {name}
 Band {n}: {name}, {wavelength} nm	باند {n}: {name}، {wavelength} nm
 Bands	باندها
 Bands 1–{n}	باندهای ۱–{n}
+Bands left out	باندهای کنارگذاشته
 Bands: blue green red NIR SWIR	باندها: آبی، سبز، قرمز، مادون قرمز نزدیک (NIR)، مادون قرمز کوتاه‌موج (SWIR)
+Bands: public items only	باندها: فقط آیتم‌های عمومی
 Bangladesh	بنگلادش
 Banner	بنر
 Bar	میله‌ای
 Bar Chart	نمودار میله‌ای
+Bar color	رنگ میله
+Bars	میله‌ها
 Base	پایه
 Base (m)	پایه (m)
 Basemap	نقشه‌ی پایه
@@ -482,6 +509,7 @@ Basemaps	نقشه‌های پایه
 Basic authentication	احراز هویت پایه (Basic)
 Basin from hydrolocation	حوضه آبریز از موقعیت هیدرولوژیک
 Batch Run	اجرای دسته‌ای
+Bathymetric	عمق‌سنجی
 Bearing	جهت
 Before	قبل
 Before the event	پیش از رویداد
@@ -519,6 +547,8 @@ Boundaries…	مرزها…
 Bounding\nGeometry	هندسه\nمحدودکننده
 Box Construction	ساخت کادر
 Brazil	برزیل
+Break the text into lines at spaces to fit the width of its box	شکستن متن در فاصله‌ها به خطوط تا در عرض کادرش جا شود
+Breaks	شکست‌ها
 Brightness	روشنایی
 Brightness, contrast, saturation and sepia for the whole map.	روشنایی، کنتراست، اشباع و سپیای کل نقشه.
 Bring a field package's edits and photos back to the offline area it was made from.	ویرایش‌ها و عکس‌های یک بسته میدانی را به پهنه آفلاینی که از آن ساخته شده بازگردانید.
@@ -556,12 +586,17 @@ Bundle the project and its data into one file to share.	بسته‌بندی پر
 Bundle the visible layers, with simplified geometry for phones and tablets.	بسته‌بندی لایه‌های قابل‌دیدن، با هندسه ساده‌سازی‌شده برای تلفن‌ها و تبلت‌ها
 By\nAttributes	بر اساس\nویژگی‌ها
 By\nLocation	بر اساس\nموقعیت
+By area	بر اساس مساحت
+By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	بر اساس مساحت: مقداری که دو برابر دیگری است نشانه‌ای با حدود دو برابر مساحت می‌کشد. بر اساس شعاع: دو برابر اندازه.
 By Coordinates	با مختصات
 By Coordinates…	با مختصات…
 By Expression	با عبارت
+By label	بر اساس برچسب
 By layer	بر اساس لایه
 By Place or Address	با مکان یا نشانی
 By Place or Address…	با مکان یا نشانی…
+By radius	بر اساس شعاع
+By the bars	بر اساس میله‌ها
 by {author}	توسط {author}
 By {field}	بر اساس {field}
 cached tiles	کاشی‌های کش‌شده
@@ -585,7 +620,11 @@ Camera Effect	افکت دوربین
 Can't read this folder	نمی‌توان این پوشه را خواند
 Cancel	لغو
 Cancel ArcGIS Sign-In	لغو ورود به ArcGIS
+Cancel ArcGIS Token	لغو توکن ArcGIS
 Cancel Caching	لغو کش کردن
+Cancel Fitting	لغو برازش
+Cancel Grid Read	لغو خواندن شبکه
+Cancel token request	لغو درخواست توکن
 Cancelled	لغو شد
 Cap	پوشش
 Capture To Clipboard	کپی به کلیپ‌بورد
@@ -662,7 +701,9 @@ choose a folder	یک پوشه انتخاب کنید
 Choose a GeoPackage layer	یک لایه GeoPackage انتخاب کنید
 Choose a layer	یک لایه انتخاب کنید
 Choose a layer…	انتخاب لایه…
+Choose a loaded editable polygon layer.	یک لایه چندضلعی بارشده و قابل ویرایش انتخاب کنید.
 Choose a model.	یک مدل انتخاب کنید.
+Choose a polygon layer	یک لایه چندضلعی انتخاب کنید
 Choose a position within the supported map and construction grid.	موقعیتی درون نقشه و شبکه ساخت پشتیبانی‌شده انتخاب کنید.
 Choose a resampling type for the raster layer.	نوع بازنمونه‌برداری را برای لایه رستری انتخاب کنید.
 Choose a saved S3 connection before opening this source.	پیش از باز کردن این منبع، یک اتصال S3 ذخیره‌شده انتخاب کنید.
@@ -672,6 +713,10 @@ Choose a stop	انتخاب مقصد میانی
 Choose a table to load for editing	جدولی را برای بارگذاری و ویرایش انتخاب کنید
 Choose a zipped Shapefile, or pick its .shp and .dbf together.	یک Shapefile فشرده انتخاب کنید، یا فایل‌های .shp و .dbf آن را با هم برگزینید.
 Choose an account	انتخاب حساب
+Choose an image and target layer, then draw in the original image grid.	یک تصویر و لایه هدف انتخاب کنید، سپس در شبکه تصویر اصلی رسم کنید.
+Choose an image before using original-image pixels.	پیش از استفاده از پیکسل‌های تصویر اصلی، یک تصویر انتخاب کنید.
+Choose an image or Web Mercator grid metres before drawing.	پیش از رسم، یک تصویر یا متر شبکه Web Mercator انتخاب کنید.
+Choose Circle or Rotated Box.	دایره یا کادر چرخیده را انتخاب کنید.
 Choose Connection	انتخاب اتصال
 Choose Connection…	انتخاب اتصال…
 Choose extra buttons for the Quick Access Toolbar.	دکمه‌های اضافی نوار ابزار دسترسی سریع را انتخاب کنید.
@@ -708,6 +753,7 @@ Class color	رنگ کلاس
 Class Fields	فیلدهای کلاس
 Class Style	سبک کلاس
 Class {n}	کلاس {n}
+Class {n} more than {bound}	کلاس {n} بیش از {bound}
 Class {n} up to	کلاس {n} تا
 Classes	کلاس‌ها
 Classes from training polygons.	کلاس‌ها از چندضلعی‌های آموزشی.
@@ -795,6 +841,7 @@ Close the current dialog before reloading a layer with pending edits.	پیش ا�
 Close the layout and show the map.	صفحه‌آرایی را ببندید و نقشه را نشان دهید.
 Close the time slider (it stays on; Time Slider opens it again).	لغزنده زمان را ببندید (خاموش نمی‌شود؛ Time Slider دوباره بازش می‌کند).
 Close thread	بستن رشته گفت‌وگو
+Close without applying the preview and stop any pending fit. Use Undo after applying a conversion.	بستن بدون اعمال پیش‌نمایش و توقف هر برازش در انتظار. پس از اعمال تبدیل از واگرد استفاده کنید.
 Close {name}	بستن {name}
 Closest	نزدیک‌ترین
 Coded values, one per line: code=description	مقادیر کدشده، هر خط یکی: code=description
@@ -804,6 +851,8 @@ Collection	مجموعه
 Collection {id}: choose dates and Find Items	مجموعه {id}: تاریخ‌ها را انتخاب کنید و Find Items را بزنید
 Collections	مجموعه‌ها
 Color	رنگ
+Color by class	رنگ بر اساس کلاس
+Color infrared	فروسرخ رنگی
 Color Infrared (4, 1, 2)	فروسرخ رنگی (4, 1, 2)
 Color Ramps	طیف‌های رنگی
 Color Scheme	طرح رنگ
@@ -816,7 +865,6 @@ Colors from the raster's own color table.	رنگ‌ها از جدول رنگ خ�
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	طیف‌های رنگی (RustGIS، QGIS، GDAL، GMT)
 Column Statistics	آمار ستون
 Columns	ستون‌ها
-Columns named like longitude/latitude, easting/northing or geometry are picked for you.	ستون‌هایی که نامشان مثل longitude/latitude، easting/northing یا geometry باشد خودکار انتخاب می‌شوند.
 Combinations from the box above, one per line	ترکیب‌های داخل کادر بالا، هر خط یکی
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	دو لایه چندضلعی را به همه‌ی قطعاتی که هر کدام می‌پوشانند تبدیل می‌کند و در محل هم‌پوشانی ویژگی‌های هر دو را نگه می‌دارد.
 COMID {comid}	COMID {comid}
@@ -858,6 +906,7 @@ Constant	ثابت
 Constant ({m} m)	ثابت ({m} m)
 Constant height	ارتفاع ثابت
 Constant…	ثابت…
+Construction Grid	شبکه ساخت
 Content	محتوا
 Contingent Values	مقادیر وابسته
 Continue	ادامه
@@ -865,9 +914,18 @@ Continue with ChatGPT	ادامه با ChatGPT
 Contrast	کنتراست
 Control Point Fit	برازش نقاط کنترل
 Conversion	تبدیل
+Conversion closed because the source, selection or tool changed.	تبدیل بسته شد زیرا منبع، انتخاب یا ابزار تغییر کرد.
+conversion request limit reached	به سقف درخواست‌های تبدیل رسید
 Convert	تبدیل
 Convert a layer to another format	تبدیل یک لایه به فرمت دیگر
 Convert Field to Dates	تبدیل فیلد به تاریخ
+Convert Now	اکنون تبدیل کن
+Convert Now fits and applies immediately. Preview Conversion lets you review or adjust first.	«اکنون تبدیل کن» بی‌درنگ برازش و اعمال می‌کند. «پیش‌نمایش تبدیل» اجازه می‌دهد ابتدا بازبینی یا تنظیم کنید.
+Convert Polygon	تبدیل چندضلعی
+Convert Polygon to Shape…	تبدیل چندضلعی به شکل…
+Convert Polygon…	تبدیل چندضلعی…
+Convert Position	تبدیل موقعیت
+Convert Selected Polygon…	تبدیل چندضلعی انتخاب‌شده…
 Convert the selected layer's labels into an annotation layer.	برچسب‌های لایه انتخابی را به یک لایه annotation تبدیل کن.
 Convert this layer's labels into an annotation layer.	برچسب‌های این لایه را به یک لایه annotation تبدیل کن.
 Convert To Annotation	تبدیل به Annotation
@@ -877,8 +935,12 @@ Convert…	تبدیل…
 Coordinate	مختصات
 Coordinate System	سیستم مختصات
 Coordinate system	سیستم مختصات
+Coordinate systems	سیستم‌های مختصات
 Coordinate System…	سیستم مختصات…
 Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	مختصات به قالب {format}. برای تغییر کلیک کنید: درجه اعشاری، DMS، UTM، MGRS. UTM و MGRS شبکه‌هایی از زمین هستند که در شمال 84° N و جنوب 80° S به صورت UPS خوانده می‌شوند.
+Copernicus Data Space	Copernicus Data Space
+Copernicus Data Space Status	وضعیت Copernicus Data Space
+Copernicus Data Space…	Copernicus Data Space…
 Copied the command.	فرمان کپی شد.
 Copied the layout to the clipboard	صفحه‌آرایی در کلیپ‌بورد کپی شد
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	صفحه‌آرایی با {dpi} dpi و نه {wanted} در کلیپ‌بورد کپی شد: صفحه برای تصویر بزرگ‌تر خیلی بزرگ است
@@ -921,11 +983,14 @@ Copy, Cut and Paste keys cannot be reassigned.	کلیدهای کپی، برش و
 Corner radius	شعاع گوشه
 Corrections	اصلاحات
 Cost	هزینه
+Cost Field	فیلد هزینه
 could not draw the layout	ترسیم صفحه‌آرایی ممکن نشد
 could not draw the map	نمیتوانست نقشه را رسم کند
+Could not read saved ChatGPT sign-ins: {reason}	ورودهای ذخیره‌شده ChatGPT خوانده نشد: {reason}
 Could not start service discovery: {error}	شروع کشف سرویس ممکن نشد: {error}
 could not start the keychain worker	راه‌اندازی کارگر جاکلیدی ممکن نشد
 Couldn't check for updates: {error}	نمی‌توان به‌روزرسانی‌ها را بررسی کرد: {error}
+Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	فونت متن {language} روی نقشه دانلود نشد، بنابراین از نقشه و خروجی‌های آن کنار گذاشته می‌شود؛ برای تلاش دوباره یک زبان را در تنظیمات › زبان انتخاب کنید.
 Couldn't download the font for {language}; pick the language again to retry.	نمی‌توان فونت را برای {language} دانلود کرد؛ زبان را دوباره انتخاب کنید تا تلاش مجدد شود.
 Couldn't download the update: {error}	بارگیری به‌روزرسانی ممکن نشد: {error}
 Couldn't download the {view} worldview ({error}); the map keeps the {current} borders	نمای جهانی {view} دانلود نشد ({error})؛ نقشه مرزهای {current} را نگه می‌دارد
@@ -933,6 +998,7 @@ Couldn't install the update: {error}	نصب به‌روزرسانی ممکن ن�
 Couldn't load the plugin registry: {error}	نمی‌توان رجیستر افزونه را بارگذاری کرد: {error}
 Couldn't start reading: {e}	شروع خواندن ممکن نشد: {e}
 Couldn't start the search: {e}	شروع جستجو ممکن نشد: {e}
+Count	تعداد
 Counterclockwise	پادساعتگرد
 Countries, cities, rivers and lakes	کشورها، شهرها، رودها و دریاچه‌ها
 Country	کشور
@@ -942,6 +1008,7 @@ Counts, totals and top categories of what's in view.	تعداد، مجموع و 
 CPU	CPU
 Create	ایجاد
 Create (click points)	ایجاد (کلیک روی نقاط)
+Create a free account	ساخت حساب رایگان
 Create a new project or start from the World Atlas sample.	یک پروژه جدید ایجاد کنید یا از نمونه اطلس جهانی شروع کنید.
 Create Feature	ایجاد عنصر
 Create Hosted\nImagery	ایجاد تصاویر میزبان\nهمراه
@@ -972,6 +1039,7 @@ Current extent	گستره کنونی
 Current Project	پروژه فعلی
 Current scale ({scale})	مقیاس فعلی ({scale})
 Current time	زمان فعلی
+Current: {action}	کنونی: {action}
 Curve	منحنی
 Curved	منحنی
 Custom	سفارشی
@@ -982,6 +1050,7 @@ Cut	برش
 Cut a raster into web map tiles	یک رستر را به کاشی‌های نقشه وب برش بزنید
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	یک رستر را به کاشی‌های نقشه وب (XYZ PNG) با یک صفحه نمایشگر برش بزنید.
 Cut Polygon	برش چندضلعی
+Cutoff	حد قطع
 Dark	تاریک
 Dash	خط تیره
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	طول خط و فاصله به نقطه، به‌ترتیب، مانند 4 2. برای خط پیوسته خالی بگذارید.
@@ -1019,22 +1088,26 @@ Dates	تاریخ‌ها
 Dates a cell needs	تاریخ‌های لازم برای هر سلول
 Dates a cell needs is a whole number, or empty for half	تاریخ‌های لازم برای هر سلول یک عدد صحیح است، یا برای نصف خالی بگذارید
 DateTime	تاریخ‌وزمان
+Datum Grids	شبکه‌های دیتوم
 Day	روز
 Day and night shading for a time.	سایه‌روزی روز و شب برای یک زمان
 Decimal	ده‌دهی
 decimal degrees	درجه اعشاری
+Decimals	اعشار
 Decline	رد کردن
 Deep Learning	یادگیری عمیق
 Deep Learning\nTools	ابزارهای\nیادگیری عمیق
 Deep Learning Package	بسته یادگیری عمیق
 Deep Learning Tools	ابزارهای یادگیری عمیق
 Default	پیش‌فرض
+Default Border	حاشیه پیش‌فرض
 Default can't be removed. You can rename or hide it.	پیش‌فرض را نمی‌توان حذف کرد. می‌توانید نام آن را تغییر دهید یا پنهانش کنید.
 Define Projection	تعریف تصویر نقشه
 Define Projection…	تعریف تصویر نقشه…
 Definition\nQuery	پرسش\nتعریف
 Definition Query	پرسش تعریف
 Definition query	پرسش تعریف
+Degrees (0–90)	درجه (0–90)
 Degrees as decimals or degrees, minutes and seconds.	درجه به صورت اعشاری یا درجه، دقیقه و ثانیه.
 Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.	درجه به صورت اعشاری یا درجه، دقیقه و ثانیه؛ یا یک ارجاع UTM یا MGRS به جای هر دو.
 degrees, as the cell size is in degrees	درجه، چون اندازه سلول به درجه است
@@ -1081,7 +1154,9 @@ Description	توصیف
 Desktop and command line only	فقط دسکتاپ و خط فرمان
 Destination	مقصد
 Destination key	کلید مقصد
+Destinations	مقصدها
 Destinations ({operation}): {places}	مقصدها ({operation}): {places}
+Destinations to Find	مقصدهایی که باید یافت شوند
 Detail	جزئیات
 Details	جزئیات
 Details of the selected layer, on the Source tab of its properties.	جزئیات لایه انتخاب‌شده، در برگه منبع ویژگی‌های آن.
@@ -1146,6 +1221,9 @@ Double-click to add	برای افزودن دابل‌کلیک کنید
 Download	دانلود
 Download\nMap	دانلود\nنقشه
 Download and Install	بارگیری و نصب
+Download Datum Grids	دانلود شبکه‌های دیتوم
+Download GeoLibre Tool Translations	دانلود ترجمه‌های ابزارهای GeoLibre
+Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	دانلود ترجمه‌های GeoLibre از این ابزارها به {language} (حدود 2 MB، از languages.geolibre.app)
 Download it again and load it.	دوباره بارگیری و بارگذاری‌اش کنید.
 Download its features in the view (up to the server's limit)	عناصرش را در نما دانلود کنید (تا سقف مجاز سرور)
 Download Map	دانلود نقشه
@@ -1153,6 +1231,8 @@ Download offered: {name}	دانلود پیشنهاد شد: {name}
 Download offered: {name}. The browser doesn't say whether it saved the file.	دانلود پیشنهاد شد: {name}. مرورگر نمی‌گوید فایل ذخیره شد یا نه.
 Download OpenStreetMap Data	دانلود داده OpenStreetMap
 Download the GeoLibre runner	دانلود اجراکننده GeoLibre
+Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	در حال دانلود فونت متن {language} روی نقشه. تصاویری که پیش از رسیدن آن خروجی گرفته شوند آن متن را ندارند.
+Downloading the tool translations…	در حال دانلود ترجمه‌های ابزار…
 Downloading {url}…	در حال دانلود {url}…
 Downloading: {done} MB	در حال بارگیری: {done} مگابایت
 Downloading: {done} of {total} MB	در حال بارگیری: {done} از {total} مگابایت
@@ -1221,6 +1301,7 @@ Draw labels at every scale and distance.	برچسب‌ها را در هر مقی
 Draw line	رسم خط
 Draw new features in the selected layer. Double-click to finish lines and polygons.	عناصر جدید را در لایه انتخاب‌شده بکشید. برای خطوط و چندضلعی‌ها دوبار کلیک کنید تا پایان دهید.
 Draw new single-band rasters with the grey stretch again.	رسترهای تک‌بانده جدید را با کشش خاکستری دوباره بکشید.
+Draw on top of layers	رسم روی لایه‌ها
 Draw only polygon outlines, keeping their colors and widths.	فقط خط دور چندضلعی‌ها ترسیم شود، با حفظ رنگ‌ها و پهنای آن‌ها.
 Draw point	رسم نقطه
 Draw points as bins coloured by how many fall in each.	نقاط را به‌صورت خانه‌های رنگ‌آمیزی‌شده بر اساس تعداد نقاطِ هر خانه رسم کنید.
@@ -1228,14 +1309,17 @@ Draw polygon	رسم چندضلعی
 Draw polygons as outlines only.	چندضلعی‌ها را فقط به صورت خطوط بیرونی بکشید.
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	رسترهای تک‌بانده که از این به بعد اضافه می‌شوند را با این طرح رنگ، کشش و بازنمونه‌گیری مجدد بکشید.
 Draw strokes in levels	ترسیم ضربه‌ها در سطوح
+Draw the grid lines over the map's layers, under the labels; off: under the layers	خطوط شبکه را روی لایه‌های نقشه و زیر برچسب‌ها رسم کن؛ خاموش: زیر لایه‌ها
 Draw the layer at every scale.	این لایه را در هر مقیاس بکشید.
 Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).	نقشه را روی GPU بکشید (بتا؛ کره، جلوه‌های دید و شبیه‌سازی بینایی رنگی در رندر CPU باقی می‌مانند).
 Draw the selected layer above others.	لایه انتخاب‌شده را بالای لایه‌های دیگر بکشید.
 Draw the selected layer below others.	لایه انتخاب‌شده را زیر لایه‌های دیگر بکشید.
 Drawing	کشیدن
+Drawing cancelled because the map, image or construction grid changed. Check the grid, then start a new shape.	رسم لغو شد زیرا نقشه، تصویر یا شبکه ساخت تغییر کرد. شبکه را بررسی کنید، سپس شکل جدیدی آغاز کنید.
 Drawing Effects	جلوه‌های کشیدن
 Drawing Mode	حالت کشیدن
 Drawing Order	ترتیب کشیدن
+Drawing requires editing enabled, a loaded polygon layer and a flat Earth map with zero pitch.	رسم به فعال‌بودن ویرایش، یک لایه چندضلعی بارشده و نقشه زمین تخت با شیب دید صفر نیاز دارد.
 drawn by the server	توسط سرور کشیده شده
 Drive	درایو
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	تصاویر پهپادی و هوایی که در OpenAerialMap به اشتراک گذاشته شده‌اند، جدیدترین اول، به عنوان GeoTIFFهای بهینه‌شده در ابر اضافه می‌شوند.
@@ -1269,6 +1353,7 @@ Each class labels the features its own clause matches, so a feature can get a la
 Each click on the map adds a point, until you click this again.	هر کلیک روی نقشه یک نقطه اضافه می‌کند، تا زمانی که دوباره روی این کلیک کنید.
 Each geoprocessing run becomes a step, chained by its outputs	هر اجرای زمین‌پردازش یک گام می‌شود که با خروجی‌هایش به هم زنجیر می‌شوند
 Each line's whole result, to read or copy	نتیجه کامل هر خط، برای خواندن یا کپی
+Earliest available state	قدیمی‌ترین وضعیت موجود
 Earth Index has no points in the view	در این نما هیچ نقطه‌ای از Earth Index نیست
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1333,6 +1418,7 @@ Empty	خالی
 Empty Cache	خالی‌کردن حافظه نهان
 Empty Index Cache	خالی‌کردن حافظه نهان نمایه
 Empty the script and its results ({keys} brings the script back)	خالی‌کردن اسکریپت و نتایج آن ({keys} اسکریپت را برمی‌گرداند)
+Enable editing	فعال‌کردن ویرایش
 Enable Extension	فعال‌کردن افزودنی
 Enable Lighting	روشن‌کردن نورپردازی
 Enable Plugin	فعال‌کردن افزونه
@@ -1348,16 +1434,18 @@ Enter	Enter
 Enter a valid query parameter name before testing this connection.	پیش از آزمودن این اتصال، نام معتبری برای پارامتر پرس‌وجو وارد کنید.
 Enter an API key.	یک کلید API وارد کنید.
 Enter an EPSG code as a number, such as 32650	یک کد EPSG را به‌صورت عدد وارد کنید، مانند 32650
+Enter the expiry as a Unix time in milliseconds, or leave it blank.	زمان انقضا را به‌صورت زمان Unix بر حسب میلی‌ثانیه وارد کنید، یا خالی بگذارید.
 Enter the password or key for this connection. Remember on this computer is optional.	رمز یا کلید این اتصال را وارد کنید. «به خاطر سپردن روی این رایانه» اختیاری است.
+Enter the password to generate a token.	برای تولید توکن رمز را وارد کنید.
 Enter the provider's address.	نشانی ارائه‌دهنده را وارد کنید.
-Enter this connection's password or API key to log in.	برای ورود، رمز یا کلید API این اتصال را وارد کنید.
+Enter the user to generate a token for.	کاربری را که توکن برای او تولید می‌شود وارد کنید.
+Enter this connection's password, API key or token to log in.	برای ورود، رمز، کلید API یا توکن این اتصال را وارد کنید.
 Enter to send, Shift+Enter for a new line	با Enter بفرستید، با Shift+Enter خط جدید
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
 Environments	محیط‌ها
 EPSG	EPSG
 EPSG code	کد EPSG
-EPSG or ESRI code	کد EPSG یا ESRI
 EPSG:	کد EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832، WKT یا یک رشته PROJ؛ خالی: سیستم نقشه اگر تصویرشده باشد، وگرنه ناحیه UTM در مرکز قاب.
@@ -1385,9 +1473,11 @@ Every label setting of this layer, in the Labeling pane.	همه تنظیمات �
 Every layer, as FEMA draws them	هر لایه، همان‌طور که FEMA ترسیم می‌کند
 Every run, in order, as a script that opens the project	همه اجراها، به ترتیب، به‌صورت اسکریپتی که پروژه را باز می‌کند
 every Socrata site, or one such as data.cityofnewyork.us	هر سایت سقراطا، یا سایتی مانند data.cityofnewyork.us
+every value	هر مقدار
 Every {n} min	هر {n} دقیقه
 Everything done in this session, from the app, scripts, the AI Assistant or plugins	هر کاری که در این نشست انجام شده، از برنامه، اسکریپت‌ها، دستیار هوش مصنوعی یا افزونه‌ها
 Everywhere	هرwhere
+EVI (enhanced vegetation)	EVI (پوشش گیاهی بهبودیافته)
 Exact request	درخواست دقیق
 Existing field	فیلد موجود
 Existing Template	قالب موجود
@@ -1397,6 +1487,8 @@ Expand Group	گسترش گروه
 Expand Legend	گسترش افسانه
 Expand the ribbon	گسترش نوار
 Expand Tile Legend	گسترش شرح کاشی
+Expires at (Unix milliseconds)	انقضا در (میلی‌ثانیه Unix)
+expiresAt must be a Unix time in milliseconds, in the future.	expiresAt باید یک زمان Unix بر حسب میلی‌ثانیه و در آینده باشد.
 Explode	انفجار
 Exploratory 3D Analysis	تحلیل سه‌بعدی کاوشگرانه
 Exploratory Analysis	تحلیل کاوشگرانه
@@ -1408,6 +1500,7 @@ Export\nMap	برون‌بری\nنقشه
 Export\nRaster	برون‌بری\nرستر
 Export and print the layout's map frames to PDF with their coordinates, so PDF readers can locate and measure in them.	کادرهای نقشه چیدمان را با مختصاتشان به PDF صادر و چاپ کنید، تا PDFخوان‌ها بتوانند در آن‌ها مکان‌یابی و اندازه‌گیری کنند.
 Export Animation	برون‌بری انیمیشن
+Export Block	خروجی بلوک
 Export Bookmarks	برون‌بری نشانک‌ها
 Export Bookmarks…	برون‌بری نشانک‌ها…
 Export CSV…	خروجی CSV…
@@ -1415,6 +1508,7 @@ Export Features	برون‌بری عناصر
 Export Features (tool)	برون‌بری عناصر (ابزار)
 Export Features needs a vector layer (Data › Export Raster writes a raster)	برون‌بری عناصر به یک لایه برداری نیاز دارد (داده › برون‌بری رستر یک رستر می‌نویسد)
 Export Features…	برون‌بری عناصر…
+Export GeoJSON…	خروجی GeoJSON…
 Export Keyboard Shortcuts…	برون‌بری میان‌برهای صفحه‌کلید…
 Export Layout	برون‌بری صفحه‌آرایی
 Export Map	برون‌بری نقشه
@@ -1453,29 +1547,34 @@ exporting animations needs the desktop app	برون‌بری انیمیشن‌ه
 exporting time animations needs the desktop app	برون‌بری انیمیشن‌های زمانی به برنامه دسکتاپ نیاز دارد
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	یک لایه رستری نمادگذاری‌شده را به‌صورت کاشی‌های PNG وب مرکاتور در یک بایگانی PMTiles خروجی می‌گیرد.
 Exports a vector layer as a Web Mercator vector-tile PMTiles archive.	یک لایه برداری را به‌صورت بایگانی PMTiles کاشی برداری وب مرکاتور خروجی می‌گیرد.
+Exports contain ordinary polygons and feature properties. Image/grid choices and exact constructions remain session-only.	خروجی‌ها شامل چندضلعی‌های معمولی و ویژگی‌های عنصر هستند. انتخاب‌های تصویر/شبکه و ساخت‌های دقیق فقط در همین نشست می‌مانند.
 Export…	برون‌بری…
 Expression	عبارت
 Extensions	افزودنی‌ها
 Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands.	افزودنی‌ها بخش‌های اختیاری RustGIS هستند: چیزی برای دانلود نیست. یکی را خاموش کنید تا تب و دستورهایش پنهان شود.
 Extensions…	افزودنی‌ها…
 Extent	گستره
+Extent in	گستره بر حسب
 Extent Indicator	نشانگر گستره
 extent is [minLon, minLat, maxLon, maxLat], "view" or null	گستره به‌صورت [minLon, minLat, maxLon, maxLat]، "view" یا null است
 Extent: {extent}	گستره: {extent}
 Extract	استخراج
 Extracts the parts of input features that fall inside clip polygons.	بخش‌هایی از عناصر ورودی را که داخل چندضلعی‌های برش می‌افتند استخراج می‌کند.
+Extrude them all first: the base is what their walls stand on.	ابتدا همه را برجسته کنید: پایه چیزی است که دیوارهایشان روی آن می‌ایستد.
 Extruded shapes cast shadows on the map.	شکل‌های برجسته‌شده روی نقشه سایه می‌اندازند.
 Extrusion	برجسته‌سازی
 Extrusion Base	پایه برجسته‌سازی
 F2	F2
 Face Culling	حذف رویه‌های پنهان
 Faces	رویه‌ها
+Facilities	تسهیلات
 Factor	ضریب
 Failed	ناموفق
 Failed only	فقط ناموفق‌ها
 Failed replacement export	برون‌بری جایگزین ناموفق بود
 Fallback	جایگزین
 FALSE	FALSE
+False color urban	رنگ کاذب شهری
 Farthest	دورترین
 Faster drawing: no antialiasing.	ترسیم سریع‌تر: بدون antialiasing.
 Favourite Arrangement	چیدمان دلخواه
@@ -1555,6 +1654,7 @@ Find plugins in the RustGIS plugin registry.	یافتن افزونه‌ها در
 Find Similar	یافتن مشابه‌ها
 Find Tools	یافتن ابزارها
 Finding routes…	در حال یافتن مسیرها…
+Finds the lines reachable within one or more travel costs of points, along a line network.	خط‌هایی را که در یک یا چند هزینه سفر از نقطه‌ها، در امتداد یک شبکه خطی قابل دسترسی‌اند، پیدا می‌کند.
 Finish File Export	پایان برون‌بری فایل
 Finish Polygon	پایان چندضلعی
 Finish Profile	پایان نیم‌رخ
@@ -1569,15 +1669,19 @@ First-Person	دید اول‌شخص
 First-Person Navigation	ناوبری اول‌شخص
 Fit	کلاف
 Fit To Map View	برازش به نمای نقشه
+Fit: centre of the vertex bounds, radius enclosing all vertices. This is not recovery of the original circle.	برازش: مرکز کرانه‌های رأس‌ها، شعاعی که همه رأس‌ها را در بر می‌گیرد. این بازیابی دایره اصلی نیست.
+Fit: minimum-area enclosing rectangle of the vertices in the chosen grid.	برازش: مستطیل محیطی با کمترین مساحت برای رأس‌ها در شبکه انتخاب‌شده.
+Fitting in progress. Cancel is also available in the status bar.	برازش در جریان است. لغو در نوار وضعیت نیز در دسترس است.
 Fix the problems listed below first	ابتدا مشکلات فهرست‌شده در پایین را برطرف کنید
 Fixed	ثابت
 Fixed Zoom In	بزرگ‌نمایی ثابت به داخل
 Fixed Zoom Out	بزرگ‌نمایی ثابت به خارج
-Fixture	تجهیزات
 Flat	تخت
+Flat ground keeps the ramp's colour and slopes facing the sun brighten	زمین تخت رنگ طیف را نگه می‌دارد و شیب‌های رو به خورشید روشن‌تر می‌شوند
 FlatGeobuf	FlatGeobuf
 Flip Line	وارونگی خط
 Flowline	خط جریان
+FocusAtPassStart	FocusAtPassStart
 Fog	مه
 Folder	پوشه
 Folder Connections	اتصال‌های پوشه
@@ -1590,6 +1694,7 @@ Follow the time slider	دنبال‌کردن لغزنده زمان
 Font	فونت
 for a store that doesn't say	برای فروشگاهی که نامش را ننوشته
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	برای ArcGIS Online، شناسه کلاینت همان برنامه خود RustGIS است. برای یک پورتال ArcGIS Enterprise، یک برنامه OAuth روی آن ثبت کنید (Content › New item › Developer credentials) که نشانی بازگشت آن {redirect} باشد و شناسه کلاینت آن را وارد کنید.
+For img1.tiff, suggest img1.geojson. Choose the location in the save dialog.	برای img1.tiff، img1.geojson را پیشنهاد کن. مکان را در پنجره ذخیره انتخاب کنید.
 for the layers that change with time, as they list their times (2024-06-01, 1995)	برای لایه‌هایی که با زمان تغییر می‌کنند، به همان صورتی که زمان‌هایشان را فهرست می‌کنند (۲۰۲۴-۰۶-۰۱، ۱۹۹۵)
 Forest	جنگل
 Forget Earthdata Login Token	فراموش‌کردن توکن ورود Earthdata
@@ -1597,6 +1702,7 @@ Forget Saved Keys	فراموش‌کردن کلیدهای ذخیره‌شده
 Forget Saved Login	فراموش‌کردن ورود ذخیره‌شده
 Forget Saved Password	فراموش‌کردن رمز ذخیره‌شده
 Forget this plugin: the app stops trying to load it at start.	فراموش‌کردن این افزونه: برنامه دیگر هنگام شروع برای بارگذاری آن تلاش نمی‌کند.
+Forgets the sign-in, deletes the one remembered on this computer and empties the download cache.	ورود را فراموش می‌کند، ورود به خاطر سپرده‌شده روی این رایانه را حذف می‌کند و حافظه نهان دانلود را خالی می‌کند.
 Format	فرمت
 Found: {names}. An agent works on this map through RustGIS's tools and with its own (web, scripts, files) in a folder of its own, kept in Documents › RustGIS › Agent work. It asks you before each action.	پیدا شد: {names}. ایجنتی از طریق ابزارهای RustGIS روی این نقشه کار می‌کند و از ابزارهای خودش (وب، اسکریپت، فایل) در پوشه مخصوص به خود استفاده می‌کند که در Documents › RustGIS › Agent work نگه‌داری می‌شود. پیش از هر اقدام از شما می‌پرسد.
 Fr	جم
@@ -1630,6 +1736,8 @@ Gemini stopped the reply ({reason}).	پاسخ Gemini متوقف شد ({reason}).
 General	عمومی
 Generalization	تعمیم‌سازی
 Generate a token	ساخت توکن
+Generate ArcGIS Token	تولید توکن ArcGIS
+Generating token…	در حال تولید توکن…
 geoBoundaries listed no countries: type a country's code	هیچ کشوری از geoBoundaries فهرست نشده است: کد یک کشور را بنویسید
 Geocode	ژئوکدینگ
 Geocode Addresses	ژئوکدینگ نشانی‌ها
@@ -1649,6 +1757,7 @@ GeoLibre	GeoLibre
 GeoLibre project	پروژه GeoLibre
 GeoLibre Project…	پروژه GeoLibre…
 GeoLibre Tools	ابزارهای GeoLibre
+Geology	زمین‌شناسی
 Geometric Interval	فاصله هندسی
 Geometry	هندسه
 Geometry lost during import cannot be recovered here. Use Import Original File to choose its coordinate system before reading it. Streamed layers must first be loaded into memory.	هندسه‌ای که هنگام درون‌بری از دست رفته اینجا قابل بازیابی نیست. از «درون‌بری فایل اصلی» استفاده کنید تا پیش از خواندن، سیستم مختصات آن را انتخاب کنید. لایه‌های جریانی ابتدا باید در حافظه بارگذاری شوند.
@@ -1676,12 +1785,15 @@ Give the catalogue's web address	نشانی وب فهرست را بدهید
 Give the file's web address	نشانی وب فایل را بدهید
 Give the service's web address	نشانی وب سرویس را بدهید
 give the text's layer and row, or the lon and lat to place one	لایه و ردیف متن را بدهید، یا طول و عرض جغرافیایی را برای جای‌گذاری آن
+given up before it was read: it was cancelled, or its project was closed	پیش از خوانده‌شدن رها شد: لغو شد، یا پروژه‌اش بسته شد
+given up before it was read: its project was closed, or more than 64 downloads started after it	پیش از خوانده‌شدن رها شد: پروژه‌اش بسته شد، یا بیش از 64 دانلود پس از آن آغاز شد
 given up before its read began: its project was closed, or more than 64 downloads started after it	پیش از شروع خواندن رها شد: پروژه‌اش بسته شد، یا بیش از 64 بارگیری پس از آن آغاز شد
 given up during its read: its project was closed, or more than 64 downloads started after it	هنگام خواندن رها شد: پروژه‌اش بسته شد، یا بیش از 64 دانلود پس از آن شروع شد
 Global	سراسری
 Globe	کره
 Go	Go
 Go back a step.	یک گام به عقب.
+Go back to the phone's interface: the map with large buttons under it.	بازگشت به رابط تلفن: نقشه با دکمه‌های بزرگ زیر آن.
 Go back to the previous extent.	بازگشت به گستره قبلی.
 Go forward a step.	یک گام به جلو.
 Go forward to the next extent.	رفتن به گستره بعدی.
@@ -1710,7 +1822,10 @@ Greece	یونان
 Green	سبز
 Greys	خاکستری‌ها
 Grid	شبکه
+Grid color	رنگ شبکه
+Grid EPSG:{epsg}	شبکه EPSG:{epsg}
 Grid pixels; angle clockwise from grid right.	پیکسل‌های شبکه؛ زاویه ساعتگرد از سمت راست شبکه.
+Grid read cancelled. Reload the grid to draw in image pixels.	خواندن شبکه لغو شد. برای رسم در پیکسل‌های تصویر، شبکه را دوباره بارگذاری کنید.
 Grid Spacing (degrees)	فاصله شبکه (درجه)
 Ground	زمین
 Ground\nTo Grid	زمین\nبه شبکه
@@ -1718,6 +1833,7 @@ Ground heights	ارتفاع‌های زمین
 Ground To Grid	زمین به شبکه
 Group	گروه
 GROUP BY	GROUP BY
+Group by	گروه‌بندی بر اساس
 Group features by an integer code, each with default values.	عناصر را با یک کد عددی گروه‌بندی می‌کند، هر کدام با مقادیر پیش‌فرض.
 Group Option	گزینه گروه
 Group Properties	ویژگی‌های گروه
@@ -1737,8 +1853,10 @@ Haze, fog, rain or snow over the map.	غبار، مه، باران یا برف �
 Head/Tail Breaks	شکست‌های سر/دم
 Header name	نام سرآیند
 Height	ارتفاع
+Height (m)	ارتفاع (m)
 Height (mm)	ارتفاع (mm)
 Height (points)	ارتفاع (پوینت)
+Held in	نگه‌داری در
 Help	کمک
 Help › Help	راهنما › راهنما
 Hexagons	شش‌ضلعی‌ها
@@ -1772,7 +1890,10 @@ HOME	HOME
 Home	خانه
 Home › Add	خانه › افزودن
 Home › Add › Add Data	خانه › افزودن › افزودن داده
+Home › Add › Add Data › From Service	خانه › افزودن › افزودن داده › از سرویس
 Home › Add › Web Data	خانه › افزودن › داده وب
+Home › Add › Web Data › Copernicus Data Space	خانه › افزودن › داده وب › Copernicus Data Space
+Home › Add › Web Data › NASA Earthaccess	خانه › افزودن › داده وب › NASA Earthaccess
 Home › Add › Web Data › United States	خانه › افزودن › داده وب › ایالات متحده
 Home › Inspect › Measure	خانه › بازرسی › اندازه گیری
 Home › Navigate	خانه › ناوبری
@@ -1813,9 +1934,14 @@ IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	ابرهای نقطه LiDAR HD فرانسه از IGN: کاشی‌های 1 کیلومتری محل نقشه، افزوده‌شده به‌عنوان ابر نقطه COPC.
 Ignore holes	نادیده‌گرفتن حفره‌ها
 Illumination	نورپردازی
+Image	تصویر
 Image Analysis	تحلیل تصویر
+Image annotation	حاشیه‌نویسی تصویر
 Image Classification	طبقه‌بندی تصویر
+image is required; use null for No image	image is required; use null for No image
+Image markers that can't be drawn were replaced by the circles they showed as: {count} on "{layer}"	نشانه‌های تصویری که قابل رسم نیستند با دایره‌هایی که نشان می‌دادند جایگزین شدند: {count} در «{layer}»
 Image Page	صفحه تصویر
+Image-grid request limit reached	به سقف درخواست‌های شبکه تصویر رسید
 Imagery	تصاویر ماهواره‌ای
 Imagery Sharing	اشتراک تصاویر
 Imagery Tools	ابزارهای تصویر
@@ -1831,6 +1957,7 @@ Import Deep Learning Package	درون‌بری بسته یادگیری عمیق
 Import DXF	درون‌بری DXF
 Import DXF…	درون‌بری DXF…
 Import GeoLibre Project	درون‌بری پروژه GeoLibre
+Import GeoLibre Tool Translations	درون‌بری ترجمه‌های ابزارهای GeoLibre
 Import Keyboard Shortcuts	درون‌بری میان‌برهای صفحه‌کلید
 Import Keyboard Shortcuts…	درون‌بری میان‌برهای صفحه‌کلید…
 Import Layout	درون‌بری صفحه‌آرایی
@@ -1871,17 +1998,21 @@ In the coordinate system's units: metres for UTM.	به واحدهای سیستم
 In the middle	در میانه
 In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	در برنامه وب یک سرور پراکسی با CORS فعال بدهید؛ دسترسی مستقیم به Census به برنامه دسکتاپ یا CLI نیاز دارد.
 In use	در حال استفاده
+Include Empty Zones	شامل‌کردن ناحیه‌های خالی
 Include End Point	شامل نقطه پایانی
 Indent	تورفتگی
 Indent Group	تورفتگی گروه
 Indent Layer	تورفتگی لایه
+Index	شاخص
 Indexes	اندیس‌ها
 India	هند
 Indices	شاخص‌ها
+Indices are made on the desktop for now	شاخص‌ها فعلاً در نسخه رومیزی ساخته می‌شوند
 Indonesia	اندونزی
 Info	اطلاعات
 Infographics	اینفوگرافیک‌ها
 Information	اطلاعات
+Ink	جوهر
 INPUT	INPUT
 Input	ورودی
 Input Class Features	عناصر کلاس ورودی
@@ -1918,6 +2049,7 @@ Installed with Homebrew, winget, the AUR or COPR? Update it there.	با Homebrew
 Installed {name} {version}. Find it on the Plugins tab; its tools are also in the Tools pane.	نصب {name} {version} انجام شد. آن را در برگهٔ Plugins پیدا کنید؛ ابزارهایش هم در پنل Tools هستند.
 Installing it downloads Python {version} and the packages it needs from the internet.	نصب آن، Python {version} و بسته‌های مورد نیازش را از اینترنت دانلود می‌کند.
 Integer field: values are rounded.	فیلد عدد صحیح: مقادیر گرد می‌شوند.
+Interface	رابط کاربری
 Interface font: {font}	فونت رابط کاربری: {font}
 Interface Scale	مقیاس رابط کاربری
 Interface scale held to {percent}%	مقیاس رابط کاربری روی {percent}% محدود شد
@@ -1955,6 +2087,7 @@ It is locked, or one of its surrounds is: unlock it first	خودش یا یکی �
 It is remembered on this computer.	روی این رایانه به خاطر سپرده می‌شود.
 it is reserved to you (plugins, scripts, tasks, models and the GeoLibre runner)	مخصوص خود شماست (افزونه‌ها، اسکریپت‌ها، تسک‌ها، مدل‌ها و اجراکننده GeoLibre)
 it needs input: open it from its pane or button, or run it from a script or the assistant	به ورودی نیاز دارد: آن را از پنل یا دکمه‌اش باز کنید، یا از یک اسکریپت یا دستیار اجرا کنید
+It opens unsaved. Save to keep it.	ذخیره‌نشده باز می‌شود. برای نگه‌داشتن، ذخیره کنید.
 It opens unsaved; saving replaces {file}.	بدون ذخیره باز می‌شود؛ ذخیره‌کردن جایگزین {file} می‌شود.
 it reads or writes files on this computer	روی این رایانه فایل می‌خواند یا می‌نویسد
 it replaces the open project	پروژه باز را جایگزین می‌کند
@@ -1977,6 +2110,7 @@ its default	پیش‌فرض آن
 Its default: {default}. Its times: {times}	پیش‌فرض آن: {default}. زمان‌های آن: {times}
 Its firewall ({firewall}) blocked RustGIS. The service may only allow some applications: contact its administrator and send them the details below.	فایروال آن ({firewall}) RustGIS را مسدود کرد. ممکن است سرویس فقط به بعضی برنامه‌ها اجازه بدهد: با مدیر آن تماس بگیرید و جزئیات زیر را برایش بفرستید.
 its layer was removed	لایه آن حذف شد
+Its own colour for its text and lines; off, the default dark grey	رنگ خودش برای متن و خطوطش؛ خاموش، خاکستری تیره پیش‌فرض
 its tile archive changed or was removed	بایگانی کاشی‌اش تغییر کرد یا برداشته شد
 Its tool isn't available now (a plugin's, not loaded, or a suite's, not installed)	ابزار آن اکنون در دسترس نیست (ابزار یک افزونه که بارگذاری نشده، یا یک مجموعه که نصب نشده)
 Japan	ژاپن
@@ -2015,6 +2149,7 @@ Keep value	نگه‌داشتن مقدار
 Keeps the access key ID and secret access key in this computer's credential store, never in the connection or the project.	شناسه کلید دسترسی و کلید دسترسی محرمانه را در انبار اعتبارنامه این رایانه نگه می‌دارد، هرگز در اتصال یا پروژه.
 Keeps the parts of two polygon layers that only one of them covers, with that layer's attributes.	بخش‌هایی از دو لایه چندضلعی را نگه می‌دارد که فقط یکی از آن‌ها می‌پوشاند، با ویژگی‌های همان لایه.
 Keeps the token in the system's credential store, so it is there when RustGIS starts again. Unticked, a token remembered before is deleted when you save another.	توکن را در مخزن اعتبارنامه‌های سیستم نگه می‌دارد تا هنگام اجرای دوباره RustGIS در دسترس باشد. اگر تیک نخورد، توکنی که قبلاً به خاطر سپرده شده با ذخیره‌ی توکن دیگر حذف می‌شود.
+Keeps the username and password in the system's credential store, so RustGIS signs in by itself when it starts again. Not for an account with two-factor authentication. Unticked, a sign-in remembered before is deleted when you sign in.	نام کاربری و رمز را در انبار اعتبارنامه سیستم نگه می‌دارد تا RustGIS هنگام اجرای دوباره خودش وارد شود. برای حساب دارای احراز هویت دومرحله‌ای نیست. اگر تیک نخورد، ورودی که پیش‌تر به خاطر سپرده شده هنگام ورود حذف می‌شود.
 Kernel Density	تراکم کرنل
 Kernel Type	نوع کرنل
 Key	Key
@@ -2056,6 +2191,7 @@ Lambert Conformal Conic	لامبرت هم‌شکل مخروطی
 Lambert Cylindrical Equal Area	لامبرت استوانه‌ای هم‌مساحت
 Landscape	افقی (Landscape)
 Language	زبان
+Largest first	بزرگ‌ترین اول
 Lasso	لاسو
 Lasso (draw)	لاسو (رسم)
 Last agent call failed: {call} ({secs} s ago)	آخرین فراخوانی ایجنت ناموفق بود: {call} ({secs} ثانیه پیش)
@@ -2073,6 +2209,7 @@ Layer Extrusion	برجسته‌سازی لایه
 Layer File	فایل لایه
 Layer From\nSelection	لایه از\nانتخاب
 Layer not found	لایه پیدا نشد
+Layer order	ترتیب لایه‌ها
 Layer Properties	ویژگی‌های لایه
 Layer Properties Pane	پنل ویژگی‌های لایه
 Layer Properties · {layer}	ویژگی‌های لایه · {layer}
@@ -2095,6 +2232,7 @@ Layouts	صفحه‌آرایی‌ها
 Learn	یادگیری
 Learning\nResources	منابع\nیادگیری
 Least cloud first	کم‌ابرترین اول
+Leave out	کنار گذاشتن
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	کلیدها را خالی بگذارید تا با کلیدهای ذخیره‌شده روی این رایانه وارد شوید، یا کلیدهای دیگری وارد کنید، سپس ذخیره کنید.
 Left	چپ
 Legend	شرح
@@ -2158,6 +2296,7 @@ List Source Cooperative Files	فهرست فایل‌های Source Cooperative
 List Source Cooperative Products	فهرست محصولات Source Cooperative
 List STAC Collections	فهرست مجموعه‌های STAC
 List Tables	فهرست جدول‌ها
+List Tables reads a file of several layers (a KML, a zip) whole, up to {limit} MiB; add it with Add Data	«فهرست جدول‌ها» فایلی با چند لایه (یک KML، یک zip) را به‌طور کامل تا {limit} MiB می‌خواند؛ آن را با «افزودن داده» بیفزایید
 List The National Map Services	فهرست سرویس‌های The National Map
 List the provider's models	فهرست مدل‌های ارائه‌دهنده
 List this layer in the legend	این لایه در راهنما فهرست شود
@@ -2189,6 +2328,7 @@ Loads map tiles from the web	کاشی‌های نقشه را از وب می‌گ
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	یک جدول عناصر از یک GeoPackage روی این رایانه را (تا ۱۰۰٬۰۰۰ ردیف) بارگذاری می‌کند تا ویرایش‌هایش با ویرایش › ذخیره در GeoPackage به همان جدول برگردانده شوند. به یک INTEGER PRIMARY KEY نیاز دارد.
 Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	ردیف‌های لایه را دوباره همان‌طور که اکنون در پایگاه داده هستند بارگذاری می‌کند. ویرایش‌های ذخیره‌نشده‌اش دور انداخته می‌شوند (واگرد آن‌ها را برمی‌گرداند).
 Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	ردیف‌های لایه را دوباره همان‌طور که اکنون در فایل هستند بارگذاری می‌کند. ویرایش‌های ذخیره‌نشده‌اش دور انداخته می‌شوند (واگرد آن‌ها را برمی‌گرداند).
+Load…	بارگذاری…
 Local	محلی
 Locate	مکان‌یابی
 Locate GeoLibre Runner	مکان‌یابی اجراکننده GeoLibre
@@ -2249,6 +2389,7 @@ Map Labeling	برچسب‌گذاری نقشه
 Map Link	پیوند نقشه
 Map name	نام نقشه
 Map Page	صفحه نقشه
+Map projections	تصویرهای نقشه
 Map scale	مقیاس نقشه
 Map Series	سری نقشه‌ها
 Map Series Page	صفحه سری نقشه
@@ -2256,6 +2397,7 @@ Map series page name	نام صفحه سری نقشه
 Map style (JSON)	استایل نقشه (JSON)
 Map Surrounds	عناصر پیرامونی نقشه
 Map Thumbnail	تصویر بندانگشتی نقشه
+Map Tiles	کاشی‌های نقشه
 Map tiles of the whole world	کاشی‌های نقشه سراسر جهان
 Map Tool: {tool}	ابزار نقشه: {tool}
 Map View	نمای نقشه
@@ -2279,6 +2421,8 @@ Matplotlib	Matplotlib
 Max	بیشینه
 Max %	بیشینه %
 Max Neighbors	حداکثر همسایه‌ها
+Max X	بیشینه X
+Max Y	بیشینه Y
 Maximum Zoom	بیشینه بزرگ‌نمایی
 Maximum zoom	بیشینه بزرگ‌نمایی
 MCP Relay	رله MCP
@@ -2299,6 +2443,7 @@ Measured grid's coordinate system	سیستم مختصات شبکه اندازه�
 Measurement units	واحدهای اندازه‌گیری
 Measurement units must be metric or imperial	واحدهای اندازه‌گیری باید متریک یا امپریال باشند
 Measurements so far.	اندازه‌گیری‌های تا این‌جا.
+Measures the cost and length of the cheapest way along a line network from each origin to each destination.	هزینه و طول ارزان‌ترین مسیر در امتداد یک شبکه خطی را از هر مبدأ به هر مقصد اندازه می‌گیرد.
 Mensuration	اندازه‌نگاری
 Mensuration Tools	ابزارهای اندازه‌نگاری
 Merge	ادغام
@@ -2320,6 +2465,8 @@ Min	کمینه
 Min %	کمینه %
 Min must be less than Max	کمینه باید از بیشینه کمتر باشد
 Min must not be more than Max	کمینه نباید از بیشینه بیشتر باشد
+Min X	کمینه X
+Min Y	کمینه Y
 Minimum Bounding Geometry	کمینه هندسه دربرگیرنده
 Minimum Maximum	کمینه–بیشینه
 Minimum Zoom	کمینه بزرگ‌نمایی
@@ -2366,7 +2513,9 @@ Months	ماه‌ها
 Months are numbers from 1 to 12 (12, 1, 2 for December to February)	ماه‌ها اعداد 1 تا 12 هستند (12، 1، 2 برای دسامبر تا فوریه)
 More	بیشتر
 More basemaps:	نقشه‌های پایه بیشتر:
+More Quick Access commands	فرمان‌های بیشتر دسترسی سریع
 More than one saved connection could read these buckets. Choose the one that reads each; the project's sources that read it stay closed until you do.	بیش از یک اتصال ذخیره‌شده می‌تواند این باکت‌ها را بخواند. برای هر کدام اتصالی را که آن را می‌خواند انتخاب کنید؛ منابع پروژه که آن را می‌خوانند تا آن زمان بسته می‌مانند.
+more than {bound}	بیش از {bound}
 Morocco	مراکش
 Mosaic images into an orthomosaic	موزاییک تصاویر در یک ارتو موزاییک
 Mosaic Rasters	موزاییک رسترها
@@ -2406,6 +2555,7 @@ My OGC Layer	لایه OGC من
 MySQL/MariaDB	MySQL/MariaDB
 N/S/E/W	ش/ج/خ/غ
 Name	نام
+name or code	نام یا کد
 name the plugin whose panel to open: {"id": plugin id}	افزونه‌ای که پنلش باز شود را نام ببرید: {"id": plugin id}
 Names keep up to 200 characters.	نام‌ها تا 200 نویسه نگه داشته می‌شوند.
 NASA Earthaccess	NASA Earthaccess
@@ -2427,22 +2577,30 @@ Navigate with the mouse (planar) or walk with W A S D, Q and E (first-person).	�
 Navigation	ناوبری
 Navigation Mode	حالت ناوبری
 Navigator	ناوبر
+NBR (burn ratio)	NBR (نسبت سوختگی)
+NDBI (built-up)	NDBI (ساخته‌شده)
+NDVI (vegetation)	NDVI (پوشش گیاهی)
 NDVI, MODIS, rain…	NDVI، MODIS، باران…
 NDVI, NDWI, SAVI, NBR, NDBI, EVI.	NDVI، NDWI، SAVI، NBR، NDBI، EVI.
+NDWI (water)	NDWI (آب)
 Near	نزدیک‌ترین
 Near Features	عناصر نزدیک
 Nearest cell	نزدیک‌ترین سلول
 Nearest Neighbor	نزدیک‌ترین همسایه
 Neatline	خط تمیز
+Needed to make a token from a password	برای ساخت توکن از رمز لازم است
 Needs RustGIS {min}	به RustGIS {min} نیاز دارد
 Needs three or more bands.	به سه باند یا بیشتر نیاز دارد.
 Needs two or more numeric fields.	به دو فیلد عددی یا بیشتر نیاز دارد.
+Needs {what}, which isn't given: {place}.	به {what} نیاز دارد که داده نشده است: {place}.
+Needs {what}: kept.	به {what} نیاز دارد: نگه داشته شد.
 Neighborhood Explorer	کاوشگر همسایگی
 Nepal	نپال
 Netherlands	هلند
 Network	شبکه
 Network Analysis	تحلیل شبکه
 Network failures	خطاهای شبکه
+Network Lines	خطوط شبکه
 New	جدید
 New\nLayout	صفحه‌آرایی\nجدید
 New\nMap	نقشه\nجدید
@@ -2473,6 +2631,8 @@ New Relationship…	رابطه جدید…
 New Report	گزارش جدید
 New rows	ردیف‌های جدید
 New Selection	انتخاب جدید
+New shape grid	شبکه شکل جدید
+New shapes use the original GeoTIFF pixels, including rotation and shear. Existing objects keep their own grid.	شکل‌های جدید از پیکسل‌های اصلی GeoTIFF، شامل چرخش و برش، استفاده می‌کنند. اشیای موجود شبکه خود را نگه می‌دارند.
 New Style	استایل جدید
 New Style From Layer	استایل جدید از لایه
 New Task	تسک جدید
@@ -2499,6 +2659,7 @@ No catalogs below this one: Find Items lists its items	زیر این فهرست�
 No COMID was returned for this point.	برای این نقطه هیچ COMIDای برگردانده نشد.
 no command	بدون دستور
 No command matches	هیچ فرمانی مطابقت ندارد
+No coordinate system matches; a code or PROJ string is used as typed.	هیچ سیستم مختصاتی مطابقت ندارد؛ کد یا رشته PROJ همان‌طور که تایپ شده استفاده می‌شود.
 no data	بدون داده
 No data at the points picked.	در نقاط انتخاب‌شده داده‌ای نیست.
 No data cube matches	هیچ مکعب داده‌ای مطابقت ندارد
@@ -2515,6 +2676,8 @@ No Fill	بدون پرکننده
 No geometry to calculate	هندسه‌ای برای محاسبه نیست
 No granules in this view and date range.	در این نما و بازه تاریخی گرانولی نیست.
 no home folder	بدون پوشه خانه
+No image	بدون تصویر
+No installed font draws the {language} text on the map, so it is left out of the map and its exports.	هیچ فونت نصب‌شده‌ای متن {language} روی نقشه را رسم نمی‌کند، بنابراین از نقشه و خروجی‌های آن کنار گذاشته می‌شود.
 no layer	بدون لایه
 No layer has a field of dates.	هیچ لایه‌ای فیلد تاریخ ندارد.
 no layer has a field of dates: add one that has, or a tile layer whose address has a date (map.addTiles)	هیچ لایه‌ای فیلد تاریخ ندارد: یکی که داشته باشد اضافه کنید، یا لایه کاشی‌ای که نشانی‌اش تاریخ دارد (map.addTiles)
@@ -2538,6 +2701,7 @@ No polygon layer available in the map.	هیچ لایه چندضلعی در نق�
 No Pop-ups	بدون پاپ‌آپ
 No presentations yet. Publish › New Presentation starts one.	هنوز Presentationی نیست. انتشار › Presentation جدید یکی را شروع می‌کند.
 No products	بدون محصول
+No project changes to undo or redo.	هیچ تغییر پروژه‌ای برای واگرد یا بازانجام نیست.
 No project opened or saved yet	هنوز پروژه‌ای باز یا ذخیره نشده است
 No project sources are waiting for an S3 connection.	هیچ منبع پروژه‌ای منتظر اتصال S3 نیست.
 No properties	بدون ویژگی
@@ -2566,6 +2730,7 @@ NoData	NoData
 Nominatim	Nominatim
 None	هیچ
 None (public buckets)	هیچ (باکت‌های عمومی)
+None of these layers are polygon layers.	هیچ‌یک از این لایه‌ها لایه چندضلعی نیستند.
 none, a .duckdb file, or host=… dbname=… user=…	هیچ، یک فایل .duckdb، یا host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	هیچ، یا از PGPASSWORD، MYSQL_PWD یا SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	هیچ. یکی با نشانی اضافه کنید، یا از افزونه نقشه پایه.
@@ -2593,6 +2758,7 @@ Not sandboxed	بدون سندباکس
 Not saved yet	هنوز ذخیره نشده
 Not searched, as they didn't load: {folders}	جستجو نشدند چون بارگذاری نشدند: {folders}
 Not Selectable	غیرقابل انتخاب
+Not signed in.	وارد نشده‌اید.
 Not traced: a drawn line holds at most 10,000 points	ردگیری نشد: یک خط ترسیمی حداکثر 10,000 نقطه دارد
 Notebook	Notebook
 Notebook Pane	پنل Notebook
@@ -2618,6 +2784,7 @@ observer height m	ارتفاع ناظر m
 Ocean	اقیانوس
 Ocean Data Platform	Ocean Data Platform
 Ocean Data Platform…	Ocean Data Platform…
+OD Cost Matrix	ماتریس هزینه OD
 of a geometry that doesn't say	از هندسه‌ای که نامش را ننوشته
 Off	خاموش
 Off, the commands run aren't recorded; what is in the log stays	خاموش، فرمان‌های اجراشده ثبت نمی‌شوند؛ آنچه در گزارش هست می‌ماند
@@ -2633,8 +2800,10 @@ Older copies waiting: {n}.	نسخه‌های قدیمی‌تر در انتظار
 Oldest first	قدیمی‌ترین اول
 Ollama (local)	سرویس محلی Ollama
 On	On
+On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	روی نمایشگر با وضوح بالا (HiDPI)، کاشی‌های رستری و تصاویر WMS را برای پیکسل‌های خود نمایشگر، تا دو برابر جزئیات، دریافت کن: متن و خطوط درون آن‌ها تیز و کوچک‌تر می‌شوند. خاموش، برای پیکسل‌های منطقی آن دریافت و کشیده می‌شوند: نرم‌تر، با متن بزرگ‌تر.
 On Hold	در انتظار
 on hold	در انتظار
+on is required	on is required
 On its own tab, {tab}.	در تب خودش، {tab}.
 on must be true or false	on باید true یا false باشد
 On the desktop, the key can also come from {vars}.	در دسکتاپ، کلید می‌تواند از {vars} هم بیاید.
@@ -2650,7 +2819,7 @@ One page per feature of an index layer.	برای هر عنصر لایه ایند
 One per line: code=name	هر خط یکی: code=name
 One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.	یک تصویر از نما: نمادها و برچسب‌ها در لبه‌های کاشی بریده نمی‌شوند و در هر نما یک بار از سرویس درخواست می‌شود. روی کره، روی نقشه کج، یا در تصویر نقشه‌ای که سرویس ارائه نمی‌دهد به‌صورت کاشی ترسیم می‌شود.
 One stroke, from the symbol. Add strokes for casings, parallel lines and offsets.	یک ضربه، از نماد. برای پوسته، خط‌های موازی و آفست‌ها ضربه اضافه کنید.
-only a discovered list can invalidate the saved table	only a discovered list can invalidate the saved table
+One-time code	کد یک‌بارمصرف
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	فقط بایگانی کاشی خوانده‌شده از فایل (PMTiles یا MBTiles) قابل ترمیم است.
 Only cubes with data where the map is	فقط مکعب‌هایی که در محل نقشه داده دارند
 Only selected polygons will be included in the output.	فقط چندضلعی‌های انتخاب‌شده در خروجی گنجانده می‌شوند.
@@ -2660,6 +2829,7 @@ Only the features whose date falls in the slider's window draw	فقط عناصر
 Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.	فقط {kept} گره اول از {given} گره‌ای که افزونه داده نشان داده می‌شود: یک درخت حداکثر {kept} گره دارد.
 Only the map's area	فقط محدوده نقشه
 Only where the map is	فقط در محل نقشه
+Only with two-factor authentication	فقط با احراز هویت دومرحله‌ای
 Opacity	کدری
 Open	باز
 Open a .rgis project	بازکردن یک پروژه .rgis
@@ -2735,15 +2905,22 @@ Or grid reference	یا ارجاع شبکه‌ای
 Or run in a POSIX shell, for Claude Code or Codex:	یا در یک شل POSIX اجرا کنید، برای Claude Code یا Codex:
 Or run in PowerShell, for Claude Code or Codex:	یا در PowerShell اجرا کنید، برای Claude Code یا Codex:
 Or run, for Claude Code or Codex:	یا برای Claude Code یا Codex اجرا کنید:
+Order	ترتیب
 ORDER BY	ORDER BY
 Ordinary Kriging	کریجینگ معمولی
 Orientation	جهت‌گیری
 Origin	مبدأ
 Origin key	کلید مبدأ
 Original	اصلی
+Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.	پیکسل‌های اصلی GeoTIFF، شامل چرخش و برش. فقط GeoTIFFهای محلی یا جاسازی‌شده پشتیبانی می‌شوند.
 Original grid pixels. A circle may appear elliptical in the map projection.	پیکسل‌های اصلی شبکه. ممکن است دایره در سیستم تصویر نقشه بیضوی به نظر برسد.
+Original Image Grid	شبکه تصویر اصلی
+Original image grid: {width} × {height} pixels, EPSG:{epsg}	شبکه تصویر اصلی: {width} × {height} پیکسل، EPSG:{epsg}
+Original image pixels	پیکسل‌های تصویر اصلی
+Origins	مبدأها
 Ortho Mapping	ارثومپینگ
 Other	سایر
+Other bar	میله دیگر
 Other copies of unsaved work will be offered at the next start ({n}).	نسخه‌های دیگر کار ذخیره‌نشده در شروع بعدی پیشنهاد می‌شوند ({n}).
 Other Data	داده‌های دیگر
 Out Beyond	دورتر از
@@ -2773,6 +2950,7 @@ Overture Maps	Overture Maps
 Overture Maps' open data: buildings, places, transportation, administrative divisions, base layers and addresses. Where the map is, its features are read in place from Overture's GeoParquet files (zoom to a city or smaller); the whole world comes as map tiles.	داده باز Overture Maps: ساختمان‌ها، مکان‌ها، حمل‌ونقل، بخش‌های اداری، لایه‌های پایه و نشانی‌ها. در محل نقشه، عناصرش مستقیم از فایل‌های GeoParquet اوورت خوانده می‌شوند (به اندازه یک شهر یا کوچک‌تر بزرگ‌نمایی کنید)؛ کل جهان هم به‌صورت کاشی نقشه می‌آید.
 Overture Maps…	Overture Maps…
 Overwrite existing values	بازنویسی مقادیر موجود
+Own	خودش
 Package	بسته‌بندی
 Package a trained deep learning model.	بسته‌بندی یک مدل یادگیری عمیق آموزش‌دیده.
 Package for\nthe Field	بسته‌بندی\nبرای میدان
@@ -2781,6 +2959,7 @@ Package Map	بسته‌بندی نقشه
 Package Project	بسته‌بندی پروژه
 Package Results	بسته‌بندی نتایج
 Pad	امتداد
+Padding	فاصله داخلی
 Padding across	فاصله داخلی افقی
 Padding up and down	فاصله داخلی عمودی
 Page	صفحه
@@ -2813,8 +2992,11 @@ Parent folder	پوشه والد
 parks, bike lanes, flood zones…	پارک‌ها، مسیر دوچرخه، پهنه‌های سیل…
 Password	رمز
 Past its points: its end colors, back and forth, or over again	پس از نقطه‌هایش: رنگ‌های انتهایی آن، رفت‌وبرگشتی، یا از نو
+Past the limit	فراتر از حد
 Paste	چسباندن
 Paste a token	چسباندن یک توکن
+Paste a token for this connection, or make one from its user and password. Remember on this computer is optional.	یک توکن برای این اتصال بچسبانید، یا از کاربر و رمز آن یکی بسازید. «به خاطر سپردن روی این رایانه» اختیاری است.
+Paste a token, or type the password to make one, or leave it blank to use this connection's session or saved login, then Save.	یک توکن بچسبانید، یا رمز را برای ساخت آن تایپ کنید، یا خالی بگذارید تا از نشست یا ورود ذخیره‌شده این اتصال استفاده شود، سپس ذخیره کنید.
 Paste copied features into the selected layer, or as a new layer.	چسباندن عناصر کپی‌شده در لایه انتخاب‌شده، یا به‌عنوان لایه‌ای جدید.
 Paste Group	چسباندن گروه
 Paste Groups	چسباندن گروه‌ها
@@ -2822,6 +3004,7 @@ Paste Layer	چسباندن لایه
 Paste Layers	چسباندن لایه‌ها
 Paste Special	چسباندن ویژه
 Paste Special (as a new layer)	چسباندن ویژه (به‌عنوان لایه جدید)
+Paste token	چسباندن توکن
 paste your key	کلید خود را بچسبانید
 path is required	فیلد path الزامی است
 Pause	توقف موقت
@@ -2830,9 +3013,11 @@ PDF	PDF
 PDF or PNG	قالب PDF یا PNG
 PDF, PNG or SVG	PDF، PNG یا SVG
 PDOK's public server	سرور عمومی PDOK
+Percent	درصد
 Percent Clip	برش درصدی
 Perceptually Uniform	ادراکی یکنواخت
 Performance	کارایی
+Perpendicular	عمود
 Phase	فاز
 Photon	Photon
 Pick a date	انتخاب تاریخ
@@ -2865,6 +3050,7 @@ Pixel	پیکسل
 Pixel Editor	ویرایشگر پیکسل
 Pixel Size	اندازه پیکسل
 Pixel type	نوع پیکسل
+pixels is required	pixels is required
 Place	مکان
 Place a raster on the map	قرار دادن یک رستر روی نقشه
 Place a raster on the map from control points or the view.	قرار دادن رستری روی نقشه با نقاط کنترل یا نما.
@@ -2912,6 +3098,7 @@ Polar, conformal: the Arctic and the northern lands.	قطبی، هم‌شکل: �
 Polygon	چندضلعی
 Polygon (draw)	چندضلعی (رسم)
 Polygon layer	لایه چندضلعی
+Polygon layers only: {n} of the {all} selected	فقط لایه‌های چندضلعی: {n} از {all} انتخاب‌شده
 Polygon To Line	چندضلعی به خط
 Polygons	چندضلعی‌ها
 Polygons to Raster	چندضلعی‌ها به رستر
@@ -2948,6 +3135,8 @@ Preset	پری‌ست
 Press a key combination to assign it. Escape cancels.	برای اختصاص، یک ترکیب کلید فشار دهید. Escape لغو می‌کند.
 Press Load sources & plot first	اول «بارگذاری منابع و رسم» را بزنید
 Preview and set up the report.	پیش‌نمایش و تنظیم Report.
+Preview Conversion	پیش‌نمایش تبدیل
+Preview Shape Conversion	پیش‌نمایش تبدیل شکل
 Preview, edit and play the presentation.	پیش‌نمایش، ویرایش و پخش Presentation.
 Previous	قبلی
 Previous Extent	گستره قبلی
@@ -2978,6 +3167,7 @@ project is "sample", "blank", "last" or {"path": a project file}	پروژه "sam
 Project Raster	تصویرکردن رستر
 Project Template	قالب پروژه
 project's path is required	مسیر پروژه الزامی است
+Projected system	سیستم تصویرشده
 projected system (EPSG:32616), or degrees	سیستم تصویرشده (EPSG:32616)، یا درجه
 Projection	تصویر نقشه
 Projections	تصویرها
@@ -3043,7 +3233,9 @@ Raster to PMTiles	رستر به PMTiles
 Raster · {w} × {h} · {n} bands · {renderer}	رستر · {w} × {h} · {n} باند · {renderer}
 Rasters: {system}, cell size {cells}	رسترها: {system}، اندازه سلول {cells}
 Read	خواندن
+Read a script from a file in place of this one ({keys} brings it back)	خواندن اسکریپت از یک فایل به‌جای این یکی ({keys} آن را بازمی‌گرداند)
 Read and write files on this computer	خواندن و نوشتن فایل‌ها روی این رایانه
+Read Connection File	خواندن فایل اتصال
 Read error	خطای خواندن
 Read the bands picked for the view (at most about 6 km a side)	خواندن باند انتخاب‌شده برای نما (حداکثر حدود 6 کیلومتر هر طرف)
 Read the map's layers and features	خواندن لایه‌ها و عناصر نقشه
@@ -3053,13 +3245,16 @@ Reading a granule's files needs an Earthdata Login token, which works for every 
 Reading dates…	در حال خواندن تاریخ‌ها…
 Reading in place…	در حال خواندن درجا…
 Reading JAXA Earth's catalog…	در حال خواندن فهرست JAXA Earth…
+Reading original image grid…	در حال خواندن شبکه تصویر اصلی…
 Reading the catalog: {n} documents read, {m} items found…	در حال خواندن فهرست: {n} سند خوانده شد، {m} آیتم پیدا شد…
 Reading the catalog…	در حال خواندن فهرست…
+Reading the download failed unexpectedly	خواندن دانلود به‌طور غیرمنتظره ناموفق بود
 Reading the embeddings…	در حال خواندن Embeddings…
 Reading the file's layers…	در حال خواندن لایه‌های فایل…
 Reading the installed fonts…	در حال خواندن فونت‌های نصب‌شده…
 Reading the store… ({n} files to go)	در حال خواندن مخزن… ({n} فایل باقی مانده)
 Reading the tileset of {name}	در حال خواندن مجموعه کاشی‌های {name}
+Reading the time series…	در حال خواندن سری زمانی…
 Reading the window failed unexpectedly	خواندن پنجره به‌طور غیرمنتظره ناموفق بود
 Reading {n} of Overture's {ty} files where the map is: {attribution}	در حال خواندن {n} فایل {ty} از Overture در محل نقشه: {attribution}
 Reading {url}…	در حال خواندن {url}…
@@ -3068,7 +3263,9 @@ Reading…	در حال خواندن…
 Reads and writes files	فایل می‌خواند و می‌نویسد
 Reads the map	نقشه را می‌خواند
 Reality Mapping	نقشه‌نگاری واقعیت
+Received tile {z}/0/0.	کاشی {z}/0/0 دریافت شد.
 Recent	اخیر
+Recently used	اخیراً استفاده‌شده
 Record Task	ضبط تسک
 Recorded Task	تسک ضبط‌شده
 Recording stopped: another project opened, and its {n} steps were for the previous one.	ضبط متوقف شد: پروژه دیگری باز شد و {n} گامش مال پروژه قبلی بود.
@@ -3107,6 +3304,7 @@ Reload	بارگذاری دوباره
 Reload\nData	بارگذاری دوباره\nداده‌ها
 Reload Data	بارگذاری دوباره داده‌ها
 Reload Data from local files requires the desktop app.	بارگذاری دوباره داده‌ها از فایل‌های محلی به برنامه دسکتاپ نیاز دارد.
+Reload Grid	بارگذاری دوباره شبکه
 Reload Themes	بارگذاری دوباره پوسته‌ها
 Reload Tile Archive	بارگذاری دوباره بایگانی کاشی
 Reload Web Layers	بارگذاری دوباره لایه‌های وب
@@ -3127,6 +3325,7 @@ Remove Folder	حذف پوشه
 Remove From Current Selection	حذف از انتخاب فعلی
 Remove from Favourites	حذف از علاقه‌مندی‌ها
 Remove From Group	حذف از گروه
+Remove GeoLibre Tool Translations	حذف ترجمه‌های ابزارهای GeoLibre
 Remove Group	حذف گروه
 Remove Keyframe	حذف فریم کلیدی
 Remove Label Class	حذف کلاس برچسب
@@ -3141,6 +3340,7 @@ Remove this class's own strokes and draw it with the layer's	حذف ضربه‌�
 Remove this stop	حذف این مقصد میانی
 Remove Tile Layer	حذف لایه کاشی
 Remove token	حذف توکن
+Remove translations	حذف ترجمه‌ها
 Remove {name}	حذف {name}
 Removed {id}.	{id} حذف شد.
 Removed {name}	{name} حذف شد
@@ -3163,13 +3363,13 @@ Repair\nSource	ترمیم\nمنبع
 Repair Data Source	ترمیم منبع داده
 Repair Data Source…	ترمیم منبع داده…
 Repair Geometry	ترمیم هندسه
-Repair is disabled while discovery is in flight	Repair is disabled while discovery is in flight
 Repair Tile Archive	ترمیم بایگانی کاشی
 Repaired {name}	ترمیم شد: {name}
 Repeat	تکرار
 Replace	جایگزینی
 Replace Web Layer	جایگزینی لایه وب
 Replacement	جایگزین
+Replaces only this polygon. Its ID and attributes are preserved. Apply is undoable.	فقط این چندضلعی را جایگزین می‌کند. شناسه و ویژگی‌هایش حفظ می‌شوند. اعمال قابل واگرد است.
 Replaces the parts of input polygons that update polygons cover with the update polygons themselves.	بخش‌هایی از چندضلعی‌های ورودی را که چندضلعی‌های به‌روزرسانی می‌پوشانند با خود آن چندضلعی‌ها جایگزین می‌کند.
 Replay the route as a drive the map follows	بازپخش مسیر مثل رانندگی‌ای که نقشه دنبال می‌کند
 Report	Report
@@ -3350,6 +3550,7 @@ Save Project Template	ذخیره قالب پروژه
 Save Style Items	ذخیره آیتم‌های استایل
 Save Task Item	ذخیره آیتم تسک
 Save the active map (with its data) as a map file.	ذخیره نقشه فعال (با داده‌هایش) به‌عنوان فایل نقشه.
+Save the connection before generating a token.	پیش از تولید توکن، اتصال را ذخیره کنید.
 Save the connection first: a login belongs to a saved connection.	ابتدا اتصال را ذخیره کنید: ورود به یک اتصال ذخیره‌شده تعلق دارد.
 Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	داده‌های درون نما را، همراه با نقشه‌های پایه MBTiles و PMTiles نقشه، به صورت بسته میدانی برای باز کردن روی تلفن ذخیره کنید.
 Save the last task as a task file.	ذخیره آخرین تسک به‌عنوان فایل تسک.
@@ -3402,6 +3603,7 @@ Saved {name}.	ذخیره شد: {name}.
 Saved {path}	{path} ذخیره شد
 Saves the layer's edits to its table in one transaction. When a row you changed or deleted was changed or deleted in the database since it was loaded, or a new row's key is taken, nothing is saved and the rows are listed.	ویرایش‌های لایه را در یک تراکنش در جدولش ذخیره می‌کند. اگر ردیفی که تغییر داده یا حذف کرده‌اید از زمان بارگذاری در پایگاه داده تغییر کرده یا حذف شده باشد، یا کلید یک ردیف جدید قبلاً گرفته شده باشد، چیزی ذخیره نمی‌شود و ردیف‌ها فهرست می‌شوند.
 Saves the layer's edits to its table in the GeoPackage file in one transaction. When a row you changed or deleted was changed or deleted in the file since it was loaded, nothing is saved and the rows are listed. Saving the project keeps edits in the project only; exporting writes a new file.	ویرایش‌های لایه را در یک تراکنش در جدولش در فایل GeoPackage ذخیره می‌کند. اگر ردیفی که تغییر داده یا حذف کرده‌اید از زمان بارگذاری در فایل تغییر کرده یا حذف شده باشد، چیزی ذخیره نمی‌شود و ردیف‌ها فهرست می‌شوند. ذخیره پروژه ویرایش‌ها را فقط در پروژه نگه می‌دارد؛ خروجی‌گرفتن فایل جدیدی می‌نویسد.
+SAVI (vegetation over soil)	SAVI (پوشش گیاهی روی خاک)
 saving failed unexpectedly	ذخیره به‌طور غیرمنتظره‌ای ناموفق شد
 Saving to a file of your choice isn't available here on Android yet.	ذخیره در فایلی به انتخاب شما اینجا در Android هنوز در دسترس نیست.
 Saving to a file of your choice isn't available here on iOS yet.	ذخیره در فایلی به انتخاب شما اینجا در iOS هنوز در دسترس نیست.
@@ -3414,6 +3616,7 @@ Scale and rotate entered distances and directions to the grid.	مقیاس‌ده
 Scale ×2	مقیاس ×2
 Scale ×½	مقیاس ×½
 Scaled by sum	مقیاس‌شده بر اساس مجموع
+Scaling	مقیاس‌بندی
 Scene	صحنه
 Score threshold	آستانه امتیاز
 Score two rasters 1–10 and weight them	امتیازدهی دو رستر از 1 تا 10 و وزن‌دهی آن‌ها
@@ -3427,6 +3630,7 @@ Search	جستجو
 Search (this portal needs words)…	جستجو (این پورتال به واژه نیاز دارد)…
 Search area	پهنه جستجو
 Search area: {points} point, {lines} line and {polygons} polygon part(s)	پهنه جستجو: {points} نقطه، {lines} خط و {polygons} بخش چندضلعی
+Search by name or code	جستجو بر اساس نام یا کد
 Search candidates not shown: {n} (limit {limit}).	نامزدهای جستجوی نشان‌داده‌نشده: {n} (حد {limit}).
 Search Catalogue	جستجوی فهرست
 Search commands	جستجوی دستورها
@@ -3495,6 +3699,7 @@ Select a navigation method after tracing a point.	پس از ردگیری نقط�
 Select a raster or tile layer in the Layers pane first	اول در پنل Layers یک لایه رستر یا لایه کاشی انتخاب کنید
 Select All	انتخاب همه
 Select an element to format it.	عنصری انتخاب کنید تا قالب‌بندی شود.
+Select an image with an available filename, or uncheck Use image filename.	تصویری با نام فایل موجود انتخاب کنید، یا تیک «استفاده از نام فایل تصویر» را بردارید.
 Select By\nAttributes	انتخاب با\nویژگی ها
 Select By\nLocation	انتخاب با\nموقعیت
 Select By Attributes	انتخاب با ویژگی ها
@@ -3509,6 +3714,7 @@ Select Layer	انتخاب لایه
 Select Layer By Attribute	انتخاب لایه با ویژگی
 Select Layer By Location	انتخاب لایه با موقعیت
 Select None	انتخاب هیچ
+Select one polygon to convert.	یک چندضلعی را برای تبدیل انتخاب کنید.
 Select one text on the map, or a layout element, to format it.	یکی از متن‌های روی نقشه، یا یک عنصر صفحه‌آرایی را انتخاب کنید تا قالب‌بندی شود.
 Select options	گزینه‌های انتخاب
 Select Related	انتخاب مرتبط‌ها
@@ -3547,7 +3753,9 @@ Sepia	سپیا
 Sequential	ترتیبی
 Serif	سریف‌دار
 Server	سرور
+Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.	سرور در دسترس است، اما کاشی‌ای در {z}/0/0 نیست. نشانی و بازه بزرگنمایی لایه را بررسی کنید.
 Service	سرویس
+Service Area	ناحیه خدمات
 Service discovery was cancelled	کشف سرویس لغو شد
 Service Group	گروه سرویس
 Service group data exceeds 64 MB.	داده گروه سرویس از 64 MB فراتر رفته است.
@@ -3572,6 +3780,8 @@ Set the pixels inside a polygon.	پیکسل‌های داخل یک چندضلع�
 Settings	تنظیمات
 Settings › Customize	تنظیمات › شخصی‌سازی
 Settings › Customize › Keyboard Shortcuts	تنظیمات › شخصی‌سازی › میان‌برهای صفحه‌کلید
+Settings › Datum Grids	تنظیمات › شبکه‌های دیتوم
+Settings › Map Tiles	تنظیمات › کاشی‌های نقشه
 Settings › Theme	تنظیمات › پوسته
 Several places	چند مکان
 Several saved connections match this address. Choose a connection explicitly.	چند اتصال ذخیره‌شده با این نشانی مطابقت دارند. یک اتصال را صریحاً انتخاب کنید.
@@ -3581,6 +3791,7 @@ Shade walls by the way they face the light.	سایه‌زنی دیوارها ب�
 Shaded	سایه‌زده
 Shaded Relief	سایه‌روشن
 Shape	شکل
+Shape conversion isn't recorded: its preview belongs to this session. Convert the polygon explicitly after reopening the project.	تبدیل شکل ثبت نمی‌شود: پیش‌نمایش آن متعلق به این نشست است. پس از بازکردن دوباره پروژه، چندضلعی را صریحاً تبدیل کنید.
 Shapeburst	سایه‌زنی از لبه
 Shapefile	Shapefile
 Shapefile Index Cache	حافظه نهان نمایه Shapefile
@@ -3602,6 +3813,7 @@ Shared vertices must be on or off	رأس‌های مشترک باید روشن �
 Shares made, with Manage tools to update them.	اشتراک‌های ساخته‌شده، با ابزارهای مدیریت برای به‌روزرسانی‌شان.
 sharp left	پیچ تند به چپ
 sharp right	پیچ تند به راست
+Sharp Tiles on HiDPI Displays	کاشی‌های تیز روی نمایشگرهای HiDPI
 Shift+	Shift+
 Shift+drag	کشیدن با Shift
 Shift+Enter starts a new line.	برای خط جدید، Shift+Enter را بزنید.
@@ -3615,6 +3827,7 @@ Shortcut file exceeds the size limit.	فایل میان‌بر از حد اند�
 Shortcut keys are required.	کلیدهای میان‌بر لازم است.
 Shortcuts	میان‌برها
 Shortest route over a line network	کوتاه‌ترین مسیر روی شبکه خطی
+Shortwave infrared	فروسرخ موج کوتاه
 Show	نمایش‌دهنده
 Show a second map beside this one.	نمایش نقشه دومی کنار این یکی.
 Show All Columns	نمایش همه ستون‌ها
@@ -3635,11 +3848,12 @@ Show Me	نشانم بده
 Show no data	نمایش بدون داده
 Show or hide	نمایش یا پنهان‌کردن
 Show or hide the AI Assistant.	نمایش یا پنهان‌کردن دستیار هوش مصنوعی.
+Show or hide the Annotate pane.	نمایش یا پنهان‌کردن پنل حاشیه‌نویسی.
 Show or hide the Bookmarks pane: every map's bookmarks.	نمایش یا پنهان‌کردن پنل Bookmarks: نشانک‌های هر نقشه.
 Show or hide the Browser pane.	نمایش یا پنهان‌کردن پنل Browser.
 Show or hide the Data Sources pane.	نمایش یا پنهان‌کردن پنل منابع داده.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	نمایش یا پنهان‌کردن پنل Data Sources: علاقه‌مندی‌ها، داده‌های اخیر، سرویس‌های ذخیره‌شده، پایگاه‌های داده و APIهای STAC، و کتابخانه منابع عمومی.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	نمایش یا پنهان‌کردن شبکه جغرافیایی روی نقشه پایه: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده یا ناحیه‌های UTM.
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	نمایش یا پنهان‌کردن شبکه جغرافیایی روی نقشه‌ی پایه: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده، ناحیه‌های UTM یا شبکه MGRS.
 Show or hide the group's layers	نمایش یا پنهان‌کردن لایه‌های گروه
 Show or hide the layer.	نمایش یا پنهان‌کردن لایه.
 Show or hide the Layers pane.	نمایش یا پنهان‌کردن پنل Layers.
@@ -3661,6 +3875,7 @@ Show the selected layer's settings in one place.	تنظیمات لایه انت�
 Show the Symbology pane for the selected layer.	نمایش پنل Symbology برای لایه انتخاب‌شده.
 Show the whole model	نمایش کل مدل
 Show these bands and stretch on the AlphaEarth layers on the map	نمایش این باند و کشش روی لایه‌های AlphaEarth نقشه
+Show these tools in English again	نمایش دوباره این ابزارها به انگلیسی
 Show vertices	نمایش رأس‌ها
 Show where this step's command is, to do it yourself	نمایش جای دستور این گام، تا خودتان انجامش دهید
 Show {n} Steps	نمایش {n} گام
@@ -3684,19 +3899,24 @@ Side labels	برچسب‌های کناری
 Sign in	ورود
 Sign In to ArcGIS	ورود به ArcGIS
 Sign in to choose a model.	برای انتخاب مدل وارد شوید.
+Sign In to Copernicus Data Space	ورود به Copernicus Data Space
 Sign in with your ChatGPT account.	با حساب ChatGPT خود وارد شوید.
 Sign out	خروج
 Sign Out of ArcGIS	خروج از ArcGIS
+Sign Out of Copernicus Data Space	خروج از Copernicus Data Space
 Sign-in	ورود
 Sign-in cancelled.	ورود لغو شد.
 Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	ورود با وقفه زمانی مواجه شد. دوباره شروع کنید و اجازه دهید مرورگر به نشانی loopback این رایانه دسترسی داشته باشد.
 signed in	وارد شده
+Signed in as {name}.	وارد شده به‌عنوان {name}.
 Signed in to {portal}	وارد {portal} شده‌اید
 Signed in to {portal} as {user}	با نام {user} وارد {portal} شده‌اید
 Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	روی این رایانه خارج شدید، ولی OpenAI آن را تأیید نکرد. می‌توانید RustGIS را در تنظیمات ChatGPT قطع کنید.
 Signed out on this computer, but the system keychain couldn't be read, so OpenAI wasn't asked to end the session. You can disconnect RustGIS in ChatGPT's settings.	روی این رایانه خارج شدید، ولی جاکلیدی سیستم خوانده نشد، پس از OpenAI خواسته نشد نشست را پایان دهد. می‌توانید RustGIS را در تنظیمات ChatGPT قطع کنید.
 Significance level	سطح معناداری
 Signing in with ChatGPT works in the desktop app.	ورود با ChatGPT در برنامه دسکتاپ کار می‌کند.
+Signing in with the account remembered on this computer…	در حال ورود با حساب به خاطر سپرده‌شده روی این رایانه…
+Signing in…	در حال ورود…
 Signing the asset (Planetary Computer)…	در حال امضای asset (Planetary Computer)…
 Signs this account out and forgets it on this computer, with its saved sign-in.	این حساب را خارج می‌کند و آن را همراه با اطلاعات ورود ذخیره‌شده‌اش روی این رایانه فراموش می‌کند.
 Sill	آستانه (Sill)
@@ -3708,7 +3928,11 @@ Single image	تصویر تکی
 Single line	تک‌خطی
 Single Symbol	نماد یکتا
 Size	اندازه
+Size by	اندازه بر اساس
+Size by Field	اندازه بر اساس فیلد
+Size each point by a number field, keeping its class's colours	اندازه هر نقطه بر اساس یک فیلد عددی، با حفظ رنگ‌های کلاس آن
 Size, bands, statistics and coordinate system, on the Source tab of the raster's properties.	اندازه، باندها، آمار و سیستم مختصات، در برگه منبع ویژگی‌های رستر.
+Sizes	اندازه‌ها
 Skill (SKILL.md or .zip)	مهارت (SKILL.md یا .zip)
 Skills	مهارت‌ها
 Skills for the AI Assistant: {names}	مهارت‌های دستیار هوش مصنوعی: {names}
@@ -3716,12 +3940,14 @@ Sky visibility	دید آسمان
 Slideshow, PDF or PNG	اسلایدشو، PDF یا PNG
 slight left	پیچ ملایم به چپ
 slight right	پیچ ملایم به راست
-Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	شیب (درجه)، جهت شیب، سایه‌روشن، NDVI، ریاضیات باند و آستانه‌ها.
-Slope (degrees), hillshade, NDVI and more.	شیب (درجه)، سایه‌روشن، NDVI و بیشتر.
-Slope is in degrees (0–90), not percent.	شیب به درجه است (0–90)، نه درصد.
+Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.	شیب (درجه یا درصد)، جهت شیب، سایه‌روشن، NDVI، ریاضیات باند و آستانه‌ها.
+Slope (degrees or percent), hillshade, NDVI and more.	شیب (درجه یا درصد)، سایه‌روشن، NDVI و بیشتر.
 Slope per	شیب بر حسب
+Slope units	واحد شیب
 Small scales	مقیاس‌های کوچک
+Smallest first	کوچک‌ترین اول
 Snap	گیرش
+Snap Distance (m)	فاصله گیرش (m)
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	گیرش عناصر به راهنماها، صفحه و یکدیگر هنگام جابه‌جایی یا تغییر اندازه. با نگه‌داشتن Alt یک عنصر را آزاد بگذارید.
 Snap new vertices to nearby vertices, edges and line ends.	گیرش رأس‌های جدید به رأس‌ها، یال‌ها و انتهای خط‌های نزدیک.
 Snap Point	نقطه گیرش
@@ -3729,6 +3955,7 @@ Snapping	گیرش
 Snow	برف
 Socrata	Socrata
 Solid	پیوسته
+Some characters of the {language} text on the map aren't in its downloaded font, so they are left out.	برخی نویسه‌های متن {language} روی نقشه در فونت دانلودشده آن نیستند، بنابراین کنار گذاشته می‌شوند.
 Some images aren't shown: the notebook's images use all the memory set aside for them.	برخی تصویرها نشان داده نمی‌شوند: تصویرهای Notebook همه‌ی حافظه‌ی اختصاص‌یافته به آن‌ها را مصرف کرده‌اند.
 Some of the project's S3 sources wait for you to choose the saved connection that reads them	برخی از منابع S3 پروژه منتظرند تا اتصال ذخیره‌شده‌ای را که آن‌ها را می‌خواند انتخاب کنید
 Sort	مرتب‌سازی
@@ -3746,6 +3973,7 @@ Source-layer Name	نام لایه منبع
 South	جنوب
 South Korea	کره جنوبی
 South Polar Stereographic	قطبی استریوگرافیک جنوبی
+Space or middle-drag pans; releasing Space returns to the active drawing tool. Undo/Redo use the existing commands.	Space یا کشیدن با دکمه وسط جابه‌جا می‌کند؛ رهاکردن Space به ابزار رسم فعال بازمی‌گردد. واگرد/بازانجام از فرمان‌های موجود استفاده می‌کنند.
 Spacing	فاصله‌گذاری
 Spacing across	فاصله‌گذاری افقی
 Spacing down	فاصله‌گذاری عمودی
@@ -3820,6 +4048,7 @@ STAC Search…	جستجوی STAC…
 Stack another fill on top	چیدن پرکننده دیگری روی آن
 Stack another marker on top	چیدن نشانه دیگری روی آن
 Stack another stroke on top	چیدن ضربه دیگری روی آن
+Stack by	انباشتن بر اساس
 Stack on the current basemaps	چیدن روی نقشه‌های پایه فعلی
 Standalone Tables	جدول‌های مستقل
 Standard Deviation	انحراف معیار
@@ -3857,6 +4086,7 @@ Stepped line	خط پله‌ای
 Steps needing access	گام‌هایی که به دسترسی نیاز دارند
 STL 3D Model…	مدل سه‌بعدی STL…
 Stop	توقف
+Stop at the state reached so far	توقف در وضعیتی که تاکنون رسیده
 Stop drawing labels, for faster navigation.	توقف رسم برچسب‌ها، برای ناوبری سریع‌تر.
 Stop filling the cache.	توقف پرکردن حافظه نهان.
 Stop MCP relay	توقف رله MCP
@@ -3886,6 +4116,7 @@ Subreport	زیرReport
 Subreport: {name}	زیرReport: {name}
 Subtypes	زیرگروه‌ها
 Subtypes, one per line: code=name	زیرگروه‌ها، هر خط یکی: code=name
+Suggested filename: {name}	نام فایل پیشنهادی: {name}
 Suitability Modeler	مدل‌ساز تناسب‌سنجی
 Sum Fields	فیلدهای مجموع
 Summarise	خلاصه‌سازی
@@ -3927,7 +4158,9 @@ Table	جدول
 Table Frame	قاب جدول
 Table or layer	جدول یا لایه
 Tables	جدول‌ها
+Tabulate Area	جدول‌بندی مساحت
 Tabulate Intersection	جدول‌بندی اشتراک
+Tabulates each raster class by polygon zone, as area or cell count in a standalone table.	هر کلاس رستر را بر اساس ناحیه چندضلعی، به‌صورت مساحت یا تعداد سلول در یک جدول مستقل جدول‌بندی می‌کند.
 Tags	تگ‌ها
 Taiwan	تایوان
 Take the data in view offline, to edit and sync back later.	آفلاین‌کردن داده داخل نما، برای ویرایش و همگام‌سازی بعدی.
@@ -3936,6 +4169,7 @@ Take this point off	این نقطه را بردارید
 Target details ({operation}): {targets}	جزئیات هدف ({operation}): {targets}
 Target Features	عناصر هدف
 Target Key Field	فیلد کلید هدف
+Target layer	لایه هدف
 Target Records	رکوردهای هدف
 Target Table / Layer	جدول / لایه هدف
 Task	تسک
@@ -3969,11 +4203,14 @@ The answer isn't UTF-8 text	پاسخ متن UTF-8 نیست
 the answer isn't UTF-8 text	پاسخ، متن UTF-8 نیست
 The API changed while the search area was being made: press Find Items to search it	API هنگام ساخت پهنه جستجو تغییر کرد: برای جستجوی آن «یافتن آیتم‌ها» را بزنید
 The API did not sort them by {sort}: they are in its own order	API آن‌ها را بر اساس {sort} مرتب نکرد: به ترتیب خود API هستند
+The ArcGIS token has expired. Log in to this connection again.	توکن ArcGIS منقضی شده است. دوباره به این اتصال وارد شوید.
+The ArcGIS token must be at most 4096 ASCII letters, digits or - _ . ~ + / = characters.	توکن ArcGIS باید حداکثر 4096 نویسه از حروف ASCII، ارقام یا نویسه‌های - _ . ~ + / = باشد.
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	دستیار هنگام استفاده از یک مهارت، دستورالعمل‌های همان مهارت را دنبال می‌کند. با هر محتوایی که داشته باشد، دستورهای نیازمند تأیید شما همچنان سؤال می‌پرسند.
 The assistant is busy; stop it or wait for it to finish.	دستیار مشغول است؛ متوقفش کنید یا صبر کنید تا تمام شود.
 The assistant wants to run this, and {why}:	دستیار می‌خواهد این را اجرا کند، و {why}:
 The background worker could not start ({error}). Retry the command.	کارگر پس‌زمینه شروع نشد ({error}). دستور را دوباره اجرا کنید.
 The basemap now shows the {view} worldview; the project's Countries layer keeps its borders	نقشه پایه اکنون نمای جهانی {view} را نشان می‌دهد؛ لایه کشورهای پروژه مرزهای خودش را نگه می‌دارد
+The basemap's grid color	رنگ شبکه نقشه‌ی پایه
 The Basemaps plugin's tab of public basemaps.	برگه نقشه‌های پایه عمومی افزونه Basemaps.
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	مرورگر کلیپ‌بورد را به RustGIS نداد ({why}): با {keys} بچسبانید.
 the browser kept neither a copy of it nor where to download it	مرورگر نه نسخه‌ای از آن را نگه داشته و نه جای بارگیری‌اش را
@@ -3982,16 +4219,20 @@ the capture failed unexpectedly	گرفتن تصویر به‌طور غیرمنت
 The class these label groups and the Labeling pane edit.	کلاسی که این گروه‌های برچسب و پنل برچسب‌گذاری ویرایش می‌کنند.
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	کلیپ‌بورد پس از رفتن شما رسید، پس چیزی چسبانده نشد: با {keys} بچسبانید.
 The collection's own licence wasn't read: {why}	مجوز خود مجموعه خوانده نشد: {why}
+The connection changed while its token was being generated. Generate it again.	اتصال در حین تولید توکن تغییر کرد. دوباره آن را تولید کنید.
 The connection failed; trying again in {seconds} s.	اتصال ناموفق بود؛ تلاش دوباره در {seconds} ثانیه.
 the connection has no id	اتصال شناسه ندارد
 The constant base: used where no field is chosen, or the field holds no number.	پایه ثابت: جایی به کار می‌رود که فیلدی انتخاب نشده، یا فیلد عددی ندارد.
 The coordinate format must be decimal, dms, utm or mgrs	قالب مختصات باید decimal، dms، utm یا mgrs باشد
+The Copernicus Data Space Ecosystem publishes the Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land Cover…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its STAC catalog is open, but reading its files needs a sign-in with a free account.	Copernicus Data Space Ecosystem محصولات جهانی Copernicus Land Monitoring Service (NDVI، LAI، Burnt Area، Water Bodies، Land Cover…) و موزاییک‌های Sentinel-1 و Sentinel-2 را به‌صورت COG منتشر می‌کند. کاتالوگ STAC آن باز است، اما خواندن فایل‌هایش به ورود با یک حساب رایگان نیاز دارد.
 The country list couldn't be read ({e}): type a country's code	فهرست کشورها خوانده نشد ({e}): کد یک کشور را بنویسید
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	ارتفاع فعلی هنگام ویرایش ورودی‌ها برقرار می‌ماند. برای اعمال مقدار و واحدها روی «اعمال ارتفاع» کلیک کنید.
 The dataset has nothing RustGIS can add	این مجموعه داده چیزی برای افزودن به RustGIS ندارد
 The desktop app adds data cubes	برنامه دسکتاپ مکعب‌های داده را می‌افزاید
 The distance between two marks along the line	فاصله بین دو نشان در امتداد خط
 The distance to widen by is a number, 0 or more	فاصله پهن‌کردن یک عدد است، 0 یا بیشتر
+The downloaded translations name none of these tools: they may be for another GeoLibre version.	ترجمه‌های دانلودشده نام هیچ‌یک از این ابزارها را ندارند: ممکن است برای نسخه دیگری از GeoLibre باشند.
+the Earthdata Login token	توکن Earthdata Login
 The environment (AWS_ACCESS_KEY_ID…)	محیط (AWS_ACCESS_KEY_ID…)
 The features where the map is	عنصرهای موجود در محل نقشه
 The first 1,000 entries; narrow it down a folder at a time.	هزار ورودی اول؛ هر بار یک پوشه محدودش کنید.
@@ -4000,13 +4241,20 @@ The first {n} are shown: search to narrow them.	{n} مورد اول نمایش �
 The first {n} of them are listed; the filter searches all of them.	{n} مورد اول فهرست شده‌اند؛ فیلتر در همه آن‌ها جست‌وجو می‌کند.
 The first {n} rows	{n} ردیف اول
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	پاسخی از flowtrace نیامد: کل خط جریان نزدیک به نقطه نمایش داده می‌شود.
+The grid already has the basemap's color	شبکه از قبل رنگ نقشه‌ی پایه را دارد
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	ارقام شبکه باید تعدادی زوج از 0 تا 10 باشند، نیمی برای شرقی (easting) و نیمی برای شمالی (northing)
+The grid's color and opacity	رنگ و کدری شبکه
 the hash stopped	هش متوقف شد
+The history jump stopped because the project changed.	پرش در تاریخچه متوقف شد زیرا پروژه تغییر کرد.
+The image changed or was removed. Select it again or reload its grid.	تصویر تغییر کرد یا حذف شد. دوباره آن را انتخاب کنید یا شبکه‌اش را دوباره بارگذاری کنید.
+The image changed. Reload its grid before drawing.	تصویر تغییر کرد. پیش از رسم، شبکه‌اش را دوباره بارگذاری کنید.
+The image context changed. Select the image again before drawing.	زمینه تصویر تغییر کرد. پیش از رسم، تصویر را دوباره انتخاب کنید.
 the images' projected system, else degrees	سیستم تصویرشده تصاویر، وگرنه درجه
 The installed GeoLibre runner lists no tools.	اجراکننده نصب‌شده GeoLibre هیچ ابزاری فهرست نمی‌کند.
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	نصب‌کننده بارگیری و بررسی شده است. RustGIS بسته می‌شود، به‌روزرسانی را نصب می‌کند و دوباره باز می‌شود.
 The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	رنگ‌ها، فاصله‌ها و اندازه متن‌های رابط کاربری: یک پوسته داخلی یا فایلی از پوشه پوسته‌ها.
 The job covers the map view	کار، نمای نقشه را پوشش می‌دهد
+The kept tool translations can't be read: {error}	ترجمه‌های نگه‌داشته‌شده ابزار خوانده نمی‌شوند: {error}
 The key is added to each request to this address as this parameter. It is never saved in the connection or project.	کلید به عنوان این پارامتر به هر درخواست به این نشانی افزوده می‌شود. هرگز در اتصال یا پروژه ذخیره نمی‌شود.
 The key is kept for this session only.	کلید فقط برای همین نشست نگه داشته می‌شود.
 The key is kept for this session only; it has not been remembered.	کلید فقط برای همین نشست نگه داشته می‌شود؛ به خاطر سپرده نشده است.
@@ -4041,6 +4289,7 @@ The map's extent isn't known yet	گستره نقشه هنوز معلوم نیس�
 The map's UTM zone, else the frame's	ناحیه UTM نقشه، وگرنه ناحیه قاب
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	نمای نقشه {n} فایل {ty} اوورت را می‌گیرد (تا {max}): بزرگ‌نمایی کنید، یا تم را به‌عنوان کاشی نقشه اضافه کنید
 The map's, else its UTM zone	مال نقشه، وگرنه ناحیه UTM آن
+The marker to change is no longer there	نشانه‌ای که باید تغییر کند دیگر وجود ندارد
 the MCP relay couldn't start	رله MCP نتوانست راه‌اندازی شود
 The MCP relay couldn't start; agents can still use the file bridge. Click to turn agents off	رله MCP راه‌اندازی نشد؛ ایجنت‌ها همچنان می‌توانند از پل فایل استفاده کنند. برای خاموش‌کردن ایجنت‌ها کلیک کنید
 The menu bar keeps that key: choose another.	نوار منو آن کلید را نگه می‌دارد: کلید دیگری انتخاب کنید.
@@ -4058,16 +4307,19 @@ The next page link was refused: it points where this search may not read, so onl
 the NLDI's answer isn't UTF-8 text	پاسخ NLDI متن UTF-8 نیست
 the northing doesn't fall in the latitude band given	مختصات شمالی (northing) در کمربند عرض داده‌شده قرار نمی‌گیرد
 The notes are cut here: the release page has all of them.	یادداشت‌ها این‌جا کوتاه شده‌اند: صفحه انتشار همه آن‌ها را دارد.
-the old file's list must disappear immediately	the old file's list must disappear immediately
 The one waiting after it was left too	موردی که پس از آن در انتظار بود هم رها شد
 the open project has unsaved changes: save them before recovering other work	پروژه باز تغییرات ذخیره‌نشده دارد: پیش از بازیابی کار دیگر آن‌ها را ذخیره کنید
 The open project has unsaved changes: save them, then recover this copy.	پروژه باز تغییرات ذخیره‌نشده دارد: آن‌ها را ذخیره کنید، سپس این نسخه را بازیابی کنید.
 The order by {sort} could not be checked: it is the API's own order	ترتیب بر اساس {sort} قابل بررسی نبود: ترتیب خود API است
+The original image grid result could not be displayed.	نتیجه شبکه تصویر اصلی نمایش داده نشد.
 The page in colour, the title in light text and the map in a light card.	صفحه رنگی، عنوان با متن روشن و نقشه در یک کارت روشن.
 the page is too large to copy to the clipboard: export it instead	صفحه برای کپی در کلیپ‌بورد خیلی بزرگ است: به‌جای آن برون‌بری کنید
 the page is too large to draw	صفحه برای ترسیم خیلی بزرگ است
+The password is sent only to Copernicus Data Space's sign-in server and never kept in the project. The token it gives is sent only to its data servers.	رمز فقط به سرور ورود Copernicus Data Space فرستاده می‌شود و هرگز در پروژه نگه داشته نمی‌شود. توکنی که می‌دهد فقط به سرورهای داده آن فرستاده می‌شود.
+The password must be at most 4096 bytes, without control characters.	رمز باید حداکثر 4096 بایت و بدون نویسه‌های کنترلی باشد.
 The password or key must fit a 4096-byte HTTP header, without control characters.	رمز یا کلید باید در یک سرآیند HTTP به اندازه 4096 بایت جا شود، بدون نویسه‌های کنترلی.
 The password was refused. Type a password to try again.	رمز رد شد. برای تلاش دوباره رمزی وارد کنید.
+the phone keeps a recovery copy after edits	تلفن پس از ویرایش‌ها یک نسخه بازیابی نگه می‌دارد
 the picture is too large to show	تصویر برای نمایش خیلی بزرگ است
 the picture is too large to show, or isn't one	تصویر برای نمایش خیلی بزرگ است، یا اصلاً تصویر نیست
 the place lies outside the zone given	این مکان بیرون از ناحیه داده‌شده است
@@ -4078,11 +4330,14 @@ The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reas
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	افزونه {id} بارگذاری نشد. برای دیدنش افزونه‌ها › مدیریت افزونه را باز کنید.
 The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	افزونه‌های نصب‌شده در این مرورگر قابل خواندن نیستند، پس این تغییر به خاطر سپرده نمی‌شود: «plugins_web» را در ترجیحات ذخیره‌شده مرورگر اصلاح یا حذف کنید.
 The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	افزونه‌های نصب‌شده در این مرورگر خوانده نشدند (فهرست JSON نیستند): هیچ‌کدام بارگذاری نشد، و افزونه‌هایی که اکنون نصب یا حذف شوند به خاطر سپرده نمی‌شوند.
+The polygon layer doesn't draw at this scale. Zoom in or out until it draws, then draw.	لایه چندضلعی در این مقیاس رسم نمی‌شود. بزرگ‌نمایی یا کوچک‌نمایی کنید تا رسم شود، سپس رسم کنید.
 The portal's OAuth app	برنامه OAuth پورتال
 the presentation export failed unexpectedly	برون‌بری Presentation به‌طور غیرمنتظره‌ای ناموفق شد
 the preview failed unexpectedly	پیش‌نمایش به‌طور غیرمنتظره‌ای ناموفق شد
+The preview replaces the boundary; curved grid edges remain straight-edge approximations after projection. Saved/exported results are ordinary polygons.	پیش‌نمایش مرز را جایگزین می‌کند؛ لبه‌های خمیده شبکه پس از تصویرکردن به‌صورت تقریب‌های لبه‌صاف می‌مانند. نتایج ذخیره‌شده/خروجی‌گرفته چندضلعی‌های معمولی‌اند.
 The project changed while this was open: check the changes, then answer again.	هنگام باز بودن این پنجره پروژه تغییر کرد: تغییرات را بررسی کنید و دوباره پاسخ دهید.
 The project downloads as this file, to the folder your browser saves downloads in.	پروژه به‌صورت این فایل دانلود می‌شود، در پوشه‌ای که مرورگرتان دانلودها را ذخیره می‌کند.
+The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.	پروژه یا نقشه تغییر کرد. پیش از رسم، دوباره یک تصویر انتخاب کنید یا متر شبکه Web Mercator را برگزینید.
 The project's items in place of the map.	آیتم‌های پروژه، به‌جای نقشه.
 The project's thumbnail, from an image.	تصویر بندانگشتی پروژه، از یک تصویر.
 The project's thumbnail, from the map view.	تصویر بندانگشتی پروژه، از نمای نقشه.
@@ -4093,6 +4348,7 @@ The public server is free and shared by many: it answers light use, and may ask 
 The range is two numbers, low and high (0, 0.9)	بازه دو عدد است، کمینه و بیشینه (0, 0.9)
 The raster's data couldn't be read.	داده رستر خوانده نشد.
 The raster's data couldn't be read: {error}	داده‌های رستر خوانده نشد: {error}
+The recovery copy could not keep the opened package's path because it is not UTF-8.	نسخه بازیابی نتوانست مسیر بسته بازشده را نگه دارد زیرا UTF-8 نیست.
 the recovery copy is incomplete	نسخه‌ی بازیابی ناقص است
 the recovery copy is too large (maximum {mib} MiB on this computer)	نسخه‌ی بازیابی بیش از حد بزرگ است (حداکثر {mib} MiB روی این رایانه)
 the recovery copy isn't text	نسخه‌ی بازیابی متن نیست
@@ -4103,6 +4359,7 @@ The reply stopped early ({reason}).	پاسخ زودهنگام متوقف شد ({
 the report export failed unexpectedly	برون‌بری Report به‌طور غیرمنتظره‌ای ناموفق شد
 The request failed.	درخواست ناموفق بود.
 The result wired into this output is added to the map under this name.	نتیجه‌ای که به این خروجی وصل می‌شود، با همین نام به نقشه اضافه می‌گردد.
+The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login.	کاشی نمونه مبدأ (origin) اتصال را تغییر می‌دهد. برای آزمایش با ورود ذخیره‌شده از یک نام میزبان مشخص استفاده کنید.
 The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	چیدمان‌های ذخیره‌شده صفحه‌آرایی‌های انتشار قابل خواندن نیستند: همان‌طور که هستند باقی می‌مانند، و چیدمان‌هایی که اکنون ذخیره شوند فقط تا بسته‌شدن برنامه می‌مانند.
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	قالب مختصات ذخیره‌شده برای این نسخه شناخته‌شده نیست، پس درجه اعشاری نمایش داده می‌شود.
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	چیدمان دلخواه ذخیره‌شده برای صفحه‌آرایی‌های انتشار قابل استفاده نیست ({why})، پس «classic» به کار می‌رود.
@@ -4122,10 +4379,15 @@ The search area has no point, line or polygon to search with	پهنه جستجو
 The search area is still loading: search when it has finished	پهنه جستجو هنوز در حال بارگذاری است: پس از پایان آن جستجو کنید
 the selected features	عناصر انتخاب‌شده
 The selected GeoPackage layer is no longer available; choose a layer	لایه GeoPackage انتخاب‌شده دیگر در دسترس نیست؛ یک لایه انتخاب کنید
+The server answered, but the response is not a usable tile.	سرور پاسخ داد، اما پاسخ کاشی قابل استفاده‌ای نیست.
+The server didn't answer the token request in time.	سرور به‌موقع به درخواست توکن پاسخ نداد.
+The server didn't give a token. Check the user name, password and token endpoint.	سرور توکنی نداد. نام کاربری، رمز و نقطه پایانی توکن را بررسی کنید.
 The server had a problem answering.	سرور در پاسخ‌دادن به مشکل خورد.
 The server is limiting requests.	سرور در حال محدودکردن درخواست‌هاست.
 The server refused the request.	سرور درخواست را رد کرد.
 The server took too long to answer.	سرور برای پاسخ‌دادن خیلی طول کشید.
+The server's answer to the token request was too large.	پاسخ سرور به درخواست توکن بیش از حد بزرگ بود.
+The server's answer wasn't an ArcGIS token.	پاسخ سرور توکن ArcGIS نبود.
 The service may be private or need a token.	ممکن است سرویس خصوصی باشد یا به توکن نیاز داشته باشد.
 The service needs a sign-in or a token.	سرویس به ورود یا توکن نیاز دارد.
 The service test requires a credential-free HTTP or HTTPS address at the connection's origin.	آزمون سرویس به نشانی HTTP یا HTTPS بدون اعتبارنامه در مبدأ اتصال نیاز دارد.
@@ -4134,12 +4396,15 @@ The service's answer isn't UTF-8 text	پاسخ سرویس متن UTF-8 نیست
 The session login could not be used. Enter it again.	ورود نشست قابل استفاده نبود. دوباره واردش کنید.
 The Shapefile's files download as one zip.	فایل‌های Shapefile به‌صورت یک zip دانلود می‌شوند.
 The share of each cell covered by fields, for the zoomed-out view	سهم پوشش هر سلول از مزارع، برای نمای دور
+The share of the colour a slope turned fully from the sun keeps, from 0 to 1	سهمی از رنگ که شیبِ کاملاً پشت به خورشید نگه می‌دارد، از 0 تا 1
 The sign-in expired or was revoked. Sign in again.	ورود منقضی یا باطل شده است. دوباره وارد شوید.
+The sign-in expired. Sign in again.	ورود منقضی شد. دوباره وارد شوید.
 The sign-in is kept in the system keychain, never in the app's settings or a project file.	اطلاعات ورود در جاکلیدی سیستم نگه داشته می‌شود، هرگز در تنظیمات برنامه یا فایل پروژه.
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	اطلاعات ورود هنوز در پوشه تنظیمات برنامه نگه داشته می‌شود و با حساب کاربری شما خواناست: جاکلیدی سیستم در دسترس نیست، پس هنوز به آنجا منتقل نشده است.
 The significance level is a number, such as 0.05	سطح معناداری یک عدد است، مانند 0.05
 The size of the menu, the panes and the text drawn in them.	اندازه منو، پنل‌ها و متن‌هایی که در آن‌ها ترسیم می‌شود.
 The slider's span, step and playback are on View › Time.	بازه، گام و پخش لغزنده در نما › زمان هستند.
+The source changed. Preview the conversion again.	منبع تغییر کرد. دوباره پیش‌نمایش تبدیل را ببینید.
 The start-up project {path} didn't open: {error}	پروژه آغازین {path} باز نشد: {error}
 The start-up project {path} isn't a RustGIS project file.	پروژه آغازین {path} یک فایل پروژه RustGIS نیست.
 The step's layer {name} isn't in the map.	لایه گام، یعنی {name}، در نقشه نیست.
@@ -4153,11 +4418,22 @@ The system keychain is locked or access was refused.	جاکلیدی سیستم �
 The system keychain is unavailable, so this sign-in won't be remembered: it lasts until RustGIS closes.	جاکلیدی سیستم در دسترس نیست، پس این ورود به خاطر سپرده نمی‌شود: تا بسته‌شدن RustGIS می‌ماند.
 The system keychain is unavailable.	جاکلیدی سیستم در دسترس نیست.
 The task's steps changed, so the step being edited was closed: edit it again.	گام‌های تسک تغییر کردند، پس گامِ در حال ویرایش بسته شد: دوباره ویرایشش کنید.
+The tile URL has an unsupported placeholder.	URL کاشی یک جای‌نگهدار پشتیبانی‌نشده دارد.
+The time series couldn't start: {error}	سری زمانی آغاز نشد: {error}
+The time series failed unexpectedly	سری زمانی به‌طور غیرمنتظره ناموفق بود
+The time series was cancelled: nothing was added to the chart	سری زمانی لغو شد: چیزی به نمودار افزوده نشد
+The time series was stopped: another project was opened	سری زمانی متوقف شد: پروژه دیگری باز شد
 the time slider is off	لغزنده زمان خاموش است
 The title and subtitle in a band of colour across the top.	عنوان و زیرعنوان در نواری رنگی در بالا.
 The title over the map, the sources and the reference in boxes under it.	عنوان روی نقشه، منابع و مرجع در کادرهایی زیر آن.
 The token expired and was forgotten. Paste a new one.	توکن منقضی شد و فراموش شد. توکن جدیدی بچسبانید.
 The token expires on {date}.	توکن در {date} منقضی می‌شود.
+The token is added to each request to this address as its token parameter. With no expiry it is used until the server refuses it.	توکن به هر درخواست به این نشانی به‌عنوان پارامتر token آن افزوده می‌شود. بدون انقضا، تا زمانی که سرور آن را رد کند استفاده می‌شود.
+The token is renewed until you sign out.	توکن تا زمان خروج شما تمدید می‌شود.
+The token is renewed until {date}.	توکن تا {date} تمدید می‌شود.
+The token request couldn't be started.	درخواست توکن آغاز نشد.
+The token request failed.	درخواست توکن ناموفق بود.
+The token request was cancelled.	درخواست توکن لغو شد.
 the tool's own	مال خود ابزار
 the tool's own; {d}	پیش‌فرض ابزار؛ {d}
 The tools run on this project: saved with it, and each can run again	ابزارهایی که روی این پروژه اجرا شده‌اند: همراه آن ذخیره می‌شوند و هرکدام دوباره قابل اجراست
@@ -4178,16 +4454,20 @@ The {n} waiting after it were left too	{n} موردی که پس از آن در �
 Theme	پوسته
 Theme {name} loaded and kept at {path}	پوسته {name} بارگذاری و در {path} نگه داشته شد
 There is no expression defined.	هیچ عبارتی تعریف نشده است.
+There is no touch interface to go back to: it is on phones.	رابط لمسی‌ای برای بازگشت به آن نیست: روی تلفن‌ها است.
 there is no unsaved work to recover	کار ذخیره‌نشده‌ای برای بازیابی نیست
 Thermal	حرارتی
+These layers share no numeric field.	این لایه‌ها هیچ فیلد عددی مشترکی ندارند.
 Thesis figure, full page (160 × 225 mm)	شکل پایان‌نامه، تمام‌صفحه (160 × 225 mm)
 Thesis figure, half page (160 × 110 mm)	شکل پایان‌نامه، نیم‌صفحه (160 × 110 mm)
 Thin	تنک‌سازی
 Thinking…	در حال فکرکردن…
 Third-party licences	مجوزهای اشخاص ثالث
 THIRD-PARTY-LICENSES.txt	THIRD-PARTY-LICENSES.txt
+This app can't request ArcGIS tokens.	این برنامه نمی‌تواند توکن ArcGIS درخواست کند.
 this build can't download plugins	این بیلد نمی‌تواند افزونه دانلود کند
 this build can't reach AI providers	این بیلد نمی‌تواند به ارائه‌دهندگان هوش مصنوعی دسترسی پیدا کند
+This build cannot save through the native picker.	این نسخه نمی‌تواند از طریق انتخابگر بومی ذخیره کند.
 this build has no download service	این بیلد سرویس دانلود ندارد
 this build saves projects with Save As	این بیلد پروژه‌ها را با «ذخیره به‌عنوان» ذخیره می‌کند
 This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	این حساب ChatGPT قبلاً ذخیره شده است. دفعه بعد، به‌جای افزودن دوباره، آن را از فهرست انتخاب کنید.
@@ -4198,9 +4478,15 @@ This class is hidden, so it labels nothing.	این کلاس پنهان است، 
 This clause no longer reads, so no feature is labelled: {error}	این بند دیگر خوانا نیست، پس هیچ عنصری برچسب نمی‌خورد: {error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	این رایانه کلیدهای این اتصال را نگه می‌دارد: کلیدها را خالی بگذارید تا با آن‌ها وارد شوید.
 This computer keeps this connection's keys: logging in reads them.	این رایانه کلیدهای این اتصال را نگه می‌دارد: ورود آن‌ها را می‌خواند.
+This computer's clock can't be read, so an expiring ArcGIS token can't be used.	ساعت این رایانه خوانده نمی‌شود، بنابراین توکن ArcGIS دارای انقضا قابل استفاده نیست.
+This connection has no user: set user (connection.edit) to generate a token.	این اتصال کاربری ندارد: برای تولید توکن، user را تنظیم کنید (connection.edit).
 This connection is logged out. Log in explicitly to use it again.	این اتصال خارج شده است. برای استفاده دوباره، صریحاً وارد شوید.
 This font isn't installed here, so the text is drawn in the sans-serif	این فونت اینجا نصب نیست، پس متن با فونت بدون سریف ترسیم می‌شود
 This font isn't installed here, so the text is drawn in the serif	این فونت اینجا نصب نیست، پس متن با فونت سریف‌دار ترسیم می‌شود
+This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	این تصویر نمی‌تواند نشانه باشد: یک PNG یا JPEG خوانا با حداکثر 20,000 px در هر ضلع نیست
+This image is too large for a marker: at most about 1.5 MiB	این تصویر برای نشانه بیش از حد بزرگ است: حداکثر حدود 1.5 MiB
+This image is unavailable. Choose another image or No image.	این تصویر در دسترس نیست. تصویر دیگری یا «بدون تصویر» را انتخاب کنید.
+This item is from a local or private network, whose files Bands and Index don't read yet	این آیتم از یک شبکه محلی یا خصوصی است که «باندها» و «شاخص» هنوز فایل‌هایش را نمی‌خوانند
 This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	این لایه ویرایش‌هایی دارد که فایلش هنوز ندارد. «انتشار در منبع» آن‌ها را در فایل می‌نویسد.
 This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.	این لایه ویرایش‌هایی دارد که فایلش ندارد، و فایل پس از خوانده‌شدن روی دیسک تغییر کرده است. «انتشار در منبع» به جای بازنویسی آن تغییر، رد می‌کند؛ «برون‌بری عناصر» ویرایش‌ها را در فایلی جدید نگه می‌دارد.
 This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.	این لایه ویرایش‌هایی دارد که فایلش ندارد. «انتشار در منبع» تا وقتی فایل به حالتی که خوانده شده بود برنگردد نمی‌تواند آن‌ها را بنویسد؛ «برون‌بری عناصر» آن‌ها را در فایلی جدید نگه می‌دارد.
@@ -4258,10 +4544,16 @@ Tint by elevation	رنگ‌آمیزی بر اساس ارتفاع
 Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	پیش از سایه‌زدن نور، زمین پرشیب را بر اساس شیب خود زمین به رنگ سنگ متمایل می‌کند
 Tissot's Indicatrix	بیضی نشان تیسو
 Title	عنوان
+Title text	متن عنوان
 To	تا
 Toggle Dark Mode	تغییر حالت تیره
+Toggle Downloading Datum Grids	روشن/خاموش دانلود شبکه‌های دیتوم
 Toggle GPU Rendering	تغییر ترسیم GPU
 Toggle Imperial Measurements	تغییر اندازه‌گیری امپریال
+Toggle Sharp Tiles on HiDPI Displays	روشن/خاموش کاشی‌های تیز روی نمایشگرهای HiDPI
+Token	توکن
+Token endpoint	نقطه پایانی توکن
+Token from	توکن از
 Token Required	توکن لازم است
 Tolerance	رواداری
 Tolerance (km)	رواداری (km)
@@ -4287,6 +4579,7 @@ Topology Options	گزینه‌های توپولوژی
 Topology Options…	گزینه‌های توپولوژی…
 Topology rules and the errors they find.	قوانین توپولوژی و خطاهایی که پیدا می‌کنند.
 Total {total}   ·   Segment {segment}	مجموع {total}   ·   قطعه {segment}
+Touch\nInterface	رابط\nلمسی
 Trace	ردگیری
 Trace a point first: click the map.	اول نقطه‌ای را ردگیری کنید: روی نقشه کلیک کنید.
 Trace Edge Path	ردگیری مسیر لبه
@@ -4299,6 +4592,7 @@ Train Deep Learning Model	آموزش مدل یادگیری عمیق
 Trained models	مدل‌های آموزش‌دیده
 Training polygons	چندضلعی‌های آموزشی
 Transfer Fields	انتقال فیلدها
+Translate tools	ترجمه ابزارها
 Transparency	شفافیت
 Traverse	طی‌مسیر
 Trend Analysis	تحلیل روند
@@ -4306,6 +4600,7 @@ Trend Analysis…	تحلیل روند…
 Trend over a series of rasters	روند در یک سری از رسترها
 Triangle	مثلث
 TRUE	TRUE
+True color	رنگ واقعی
 Try Again	تلاش دوباره
 Try again	دوباره تلاش کنید
 Try again in a moment.	لحظه‌ای بعد دوباره تلاش کنید.
@@ -4347,16 +4642,20 @@ Type the password or key to remember it on this computer.	رمز یا کلید �
 Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	رمز یا کلید را وارد کنید، یا برای استفاده از نشست یا ورود ذخیره‌شده این اتصال خالی بگذارید، سپس ذخیره کنید.
 Type the password to remember it on this computer.	رمز را وارد کنید تا روی این رایانه به خاطر سپرده شود.
 Type the password, then Save. Remember on this computer is optional.	رمز را وارد کنید، سپس ذخیره کنید. «به خاطر سپردن روی این رایانه» اختیاری است.
+Type the token this expiry is for.	توکنی را که این انقضا برای آن است تایپ کنید.
+Type the token, or the password to generate one, to remember it on this computer.	برای به خاطر سپردن روی این رایانه، توکن یا رمزی را که برای تولید آن است تایپ کنید.
 Typed below	نوشته‌شده در پایین
-typing must not start another lookup	typing must not start another lookup
 U.S. Census (addresses)	سرشماری آمریکا (نشانی‌ها)
 Ukraine	اوکراین
 UM	UM
+Unavailable image	تصویر در دسترس نیست
+Unavailable image: {name}	تصویر در دسترس نیست: {name}
 Unavailable: {reason}	در دسترس نیست: {reason}
 Unbind from Time Slider	جدا کردن از لغزنده زمان
 Undo	واگرد
 Undo (Ctrl+Z)	واگرد (Ctrl+Z)
 Undo doesn't remove the recorded step: delete it in Edit Steps once you stop recording.	واگرد، گام ثبت‌شده را حذف نمی‌کند: وقتی ضبط را قطع کردید، آن را در ویرایش گام‌ها حذف کنید.
+Undo History	تاریخچه واگرد
 Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	واگرد داده‌ها و پیکربندی درون حافظه را بازمی‌گرداند، نه فایل‌های بازنویسی‌شده یا محتوای پخش‌شده تاریخی را.
 Undo the last change.	واگرد آخرین تغییر.
 Undo {action}	واگرد {action}
@@ -4388,6 +4687,7 @@ Untitled	بی‌نام
 Untitled model	مدل بی‌نام
 Up	Up
 Up a level	یک سطح بالا
+up to {bound}	تا {bound}
 Up to {n} points are compared: the oldest one was taken off.	حداکثر {n} نقطه مقایسه می‌شود: قدیمی‌ترین برداشته شد.
 Update	به‌روزرسانی
 Update Bookmark	به‌روزرسانی نشانک
@@ -4418,10 +4718,15 @@ Use Current View	استفاده از نمای فعلی
 Use each feature's fill color	استفاده از رنگ پرکننده هر عنصر
 Use each feature's line color	استفاده از رنگ خط هر عنصر
 Use each feature's line width	استفاده از ضخامت خط هر عنصر
+Use field range	استفاده از بازه فیلد
+Use image filename	استفاده از نام فایل تصویر
 Use layers instead	به‌جای آن از لایه‌ها استفاده کنید
 Use System	استفاده از سیستم
 Use the Layer's Strokes	استفاده از ضربه‌های لایه
+Use the Touch Interface	استفاده از رابط لمسی
 User	کاربر
+Username	نام کاربری
+Username and password	نام کاربری و رمز
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	DEM USGS 3DEP
 USGS 3DEP DEM…	DEM USGS 3DEP…
@@ -4445,7 +4750,11 @@ Validate	اعتبارسنجی
 Validate Model	اعتبارسنجی مدل
 value (empty: no-data)	مقدار (خالی: بدون داده)
 Value Field	فیلد مقدار
+Values	مقادیر
 Values from −stretch to +stretch are shown from black to full colour	مقادیر از −کشش تا +کشش از سیاه تا تمام‌رنگ نمایش داده می‌شوند
+Values of the {of} features read for the view	مقادیر {of} عنصر خوانده‌شده برای نما
+Values of {read} of the {of} features read for the view, evenly spread	مقادیر {read} از {of} عنصر خوانده‌شده برای نما، با پخش یکنواخت
+Values of {read} of {of} features, evenly spread	مقادیر {read} از {of} عنصر، با پخش یکنواخت
 Vantor Open Data	داده باز Vantor
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	تصاویر باز Vantor از بلایا: یک رویداد و یک فاز (پیش یا پس از آن) برگزینید، سپس Find Items.
 Vantor…	Vantor…
@@ -4479,6 +4788,7 @@ View Extent	گستره نما
 View In Google Earth	نمایش در Google Earth
 View In Google Maps	نمایش در Google Maps
 View Unplaced	نمایش جاافتاده‌ها
+View › Interface	نمایش › رابط کاربری
 View › Windows	نما › پنجره‌ها
 Viewshed from a point	میدان دید از یک نقطه
 Viewshed {radius}	میدان دید {radius}
@@ -4495,6 +4805,7 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3 (ویتنام)
 VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	حجم
+Wait for the original image grid before drawing.	پیش از رسم، منتظر شبکه تصویر اصلی بمانید.
 Wait for the run to finish	منتظر پایان اجرا بمانید
 Wait for the Script pane's run to finish	صبر کنید تا اجرای پنل Script تمام شود
 Waiting for the browser…	در انتظار مرورگر…
@@ -4519,7 +4830,9 @@ Web Layer	لایه وب
 Web Link Chart	نمودار پیوند وب
 Web maps	نقشه‌های وب
 Web Mercator	وب مرکاتور
+Web Mercator grid metres	متر شبکه Web Mercator
 Web Mercator grid metres, not ground metres.	متر شبکه Web Mercator، نه متر زمینی.
+Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected.	متر شبکه Web Mercator، نه متر زمینی. وقتی تصویری انتخاب شده، پیکسل‌های تصویر پیش‌فرض است.
 Web Scene	صحنه وب
 Web service (detected)	سرویس وب (شناسایی‌شده)
 Web Style	استایل وب
@@ -4536,11 +4849,13 @@ WGS 84 / Web Mercator	مرکاتور وب (WGS 84)
 What each slice or bar says beside it: its value, its share in percent, or both	آنچه کنار هر برش یا میله نوشته می‌شود: مقدارش، سهمش به درصد، یا هر دو
 What RustGIS opens with: the World Atlas sample or a blank map.	شروع RustGIS با چه چیزی باشد: نمونهٔ اطلس جهانی یا یک نقشهٔ خالی.
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	شروع RustGIS با چه چیزی باشد: نمونهٔ اطلس جهانی، یک نقشهٔ خالی، پروژه‌ای که خودتان انتخاب می‌کنید، یا آخرین پروژهٔ باز یا ذخیره‌شده.
-What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	آنچه شبکه جغرافیایی رسم می‌کند: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده یا ناحیه‌های UTM.
+What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	آنچه شبکه جغرافیایی رسم می‌کند: عرض‌ها و طول‌های جغرافیایی، یک شبکه اندازه‌گیری‌شده، ناحیه‌های UTM یا شبکه MGRS.
 What the walls stand on: the ground, a field or the constant Base (m).	دیوارها روی چه چیزی قرار دارند: زمین، یک فیلد یا «پایه (m)» ثابت.
 What to do, where to find it and why	چه کاری انجام شود، کجا پیدایش کنید و چرا
 What's near a point	چه چیزهایی نزدیک یک نقطه است
 What's new	تازه‌ها
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use for this session when this is off.	وقتی دقیق‌ترین تبدیل دیتوم یک سیستم مختصات به شبکه‌ای نیاز دارد که RustGIS ندارد، آن را از سرور شبکه PROJ (cdn.proj.org) دانلود کن. وقتی این خاموش است، شبکه‌های از قبل دانلودشده در این نشست همچنان استفاده می‌شوند.
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use when this is off: to stop using them, delete the datum-grids folder in RustGIS's app data and start RustGIS again (grids installed for PROJ are still used).	وقتی دقیق‌ترین تبدیل دیتوم یک سیستم مختصات به شبکه‌ای نیاز دارد که RustGIS ندارد، آن را از سرور شبکه PROJ (cdn.proj.org) دانلود کن. وقتی این خاموش است، شبکه‌های از قبل دانلودشده همچنان استفاده می‌شوند: برای توقف استفاده از آن‌ها، پوشه datum-grids را در داده‌های برنامه RustGIS حذف کنید و RustGIS را دوباره اجرا کنید (شبکه‌های نصب‌شده برای PROJ همچنان استفاده می‌شوند).
 When a file holds several layers, choose the ones to add instead of adding them all.	وقتی فایلی چند لایه دارد، به‌جای افزودن همه، لایه‌های افزودنی را انتخاب کنید.
 When its place is taken, the label tries the other places round the point, corners first.	وقتی جایش گرفته شده باشد، برچسب مکان‌های دیگر دور نقطه را امتحان می‌کند، نخست گوشه‌ها.
 WHERE	WHERE
@@ -4609,10 +4924,11 @@ World, equal-area: true sizes, shapes bend towards the edges.	جهانی، هم�
 Worldview	Worldview
 Wrap at	شکستن در
 Wrap length	طول شکستن
+Wrap to the box	شکستن خط در کادر
 Write a plugin	نوشتن افزونه
 Write a turn of the view about its centre as an animated GIF or PNG frames.	یک دور چرخش نما حول مرکزش را به صورت GIF متحرک یا فریم‌های PNG بنویسید.
 Writes a separate two-vertex line for each consecutive vertex pair.	برای هر جفت رأس پیاپی، یک خط دورأسی جداگانه می‌نویسد.
-Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	هر عنصر را تا جایی که ممکن است با هندسه معتبرشده می‌نویسد: حلقه‌ها بسته، رأس‌های تکراری و بخش‌های تباهیده حذف، و خودتقاطع‌ها، بخش‌های هم‌پوشان و حفره‌های بیرون از حلقه بیرونی رفع می‌شوند. عناصری که در هر جایی، حتی در یک حفره، مختصات گمشده یا نامتناهی دارند، یا پس از ترمیم هیچ نقطه قابل استفاده‌ای یا، برای چندضلعی‌ها، هیچ مساحتی برایشان نمی‌ماند، بدون هندسه نوشته می‌شوند. سایر عناصری که برای بررسی بیش از حد پیچیده‌اند یا ترمیمشان ناموفق است، بدون تغییر نوشته می‌شوند. می‌گوید در هر کدام چه چیزی ترمیم شد.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	هر عنصر را با هندسه‌ای که تا جای ممکن معتبر شده می‌نویسد: حلقه‌ها بسته می‌شوند، رأس‌های تکراری و بخش‌های تبهگن حذف می‌شوند، خودبرخوردها، بخش‌های هم‌پوشان و حفره‌های بیرون از پوسته با قاعده انتخاب‌شده حل می‌شوند (Shells Minus Holes بخش‌های هم‌پوشان را ادغام می‌کند؛ Even-Odd آنچه را درون تعداد فردی حلقه است نگه می‌دارد). عناصری که در هر جا، حتی در یک حفره، مختصات گم‌شده یا نامتناهی دارند، یا پس از ترمیم هیچ نقطه قابل استفاده‌ای یا، برای چندضلعی‌ها، هیچ مساحتی ندارند، بدون هندسه نوشته می‌شوند. عناصر دیگری که برای بررسی بیش از حد پیچیده‌اند، یا ترمیمشان ناموفق است، بدون تغییر نوشته می‌شوند. در هر یک می‌گوید چه چیزی ترمیم شد.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	برای هر عنصر یک مستطیل محدودکننده هم‌راستا با محورها در مختصات طول/عرض جغرافیایی ذخیره‌شده می‌نویسد. پوش‌های با مساحت صفر نادیده گرفته می‌شوند.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	شیب Sen، مقدار Z و p-value آزمون، و شیب در جاهایی که روند معنادار است را می‌نویسد.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	عناصری با هندسه نامعتبر، مانند حلقه‌های خودمتقاطع یا بسته‌نشده، حفره‌های بیرون از حلقه بیرونی یا بخش‌های هم‌پوشان، را می‌نویسد و می‌گوید هر کدام چه مشکلی دارد.
@@ -4629,9 +4945,9 @@ Y Field	فیلد Y
 Year	سال
 Yes	بله
 You can undo this with {shortcut}.	می‌توانید این را با {shortcut} واگرد کنید.
-You choose where the project is saved next.	شما انتخاب می‌کنید پروژه دفعه بعد کجا ذخیره شود.
 You have version {version}.	نسخه {version} را دارید.
 You're using your ChatGPT plan	در حال استفاده از طرح ChatGPT خود هستید
+Your account's email address	نشانی ایمیل حساب شما
 Your browser may reserve some shortcuts.	مرورگر شما ممکن است برخی میان‌برها را برای خود نگه دارد.
 Your changes will be lost if you don't save them.	اگر ذخیره نکنید، تغییراتتان از دست می‌رود.
 Your skills are kept in the skills folder of the app's settings folder. Shared skills (~/.agents/skills) are off until you turn them on.	مهارت‌های شما در پوشه skills داخل پوشه تنظیمات برنامه نگه‌داری می‌شوند. مهارت‌های مشترک (~/.agents/skills) تا وقتی خودتان فعالشان کنید خاموش‌اند.
@@ -4644,6 +4960,7 @@ Zarr URL is required	فیلد Zarr URL الزامی است
 Zarr Variables	متغیرهای Zarr
 Zarr…	Zarr…
 Zonal Statistics	آمار ناحیه‌ای
+Zone Field	فیلد ناحیه
 Zone Fields	فیلدهای ناحیه
 Zone Polygons	چندضلعی‌های ناحیه
 Zoom	زوم

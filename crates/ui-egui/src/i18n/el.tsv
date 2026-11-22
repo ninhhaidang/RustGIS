@@ -22,16 +22,19 @@
 /F	/F
 /PID	/PID
 /T	/T
+0 draws no border	Το 0 δεν σχεδιάζει περίγραμμα
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	Στις 0° οι γραμμές διασταυρώνονται κάθετα
 1 entry	1 καταχώριση
+1 line doesn't fit the box	1 γραμμή δεν χωράει στο πλαίσιο
+1 line isn't drawn: a text draws 200 at most	1 γραμμή δεν σχεδιάζεται: ένα κείμενο σχεδιάζει το πολύ 200
 1 more class isn't listed: the list's limit doesn't change how it's drawn	1 ακόμη κλάση δεν εμφανίζεται: το όριο της λίστας δεν αλλάζει τον τρόπο σχεδίασης
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	16 εισαγόμενες αποθήκες Zarr βρίσκονται ήδη στην ουρά
 18:00 UTC	18:00 UTC
 18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
-3035, vn2000tm3	3035, vn2000tm3
+3010, lv95	3010, lv95
 3D mesh	3D mesh
 40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<Κανένα>
@@ -40,6 +43,7 @@ A .geolibre project as a map	Ένα έργο .geolibre ως χάρτης
 A .qgs or .qgz project as a map	Ένα έργο .qgs ή .qgz ως χάρτης
 A 3D globe seen from space.	Μια τρισδιάστατη υδρόγειος όπως φαίνεται από το διάστημα.
 A blank map with a basemap	Ένας κενός χάρτης με basemap
+A box behind the element, which moves with it.	Ένα πλαίσιο πίσω από το στοιχείο, που μετακινείται μαζί του.
 A call for the rustgis Python package	Μια κλήση για το πακέτο Python rustgis
 A catalogue's (CSW 2.0.2) address: search its records by words and, if you like, the map's area, then add the services and files they link to.	Η διεύθυνση ενός καταλόγου (CSW 2.0.2): αναζητήστε τις εγγραφές του με λέξεις και, αν θέλετε, με την περιοχή του χάρτη, και έπειτα προσθέστε τις υπηρεσίες και τα αρχεία στα οποία παραπέμπουν.
 A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	Συμπληρώθηκε το όριο χρήσης της συνδρομής ChatGPT ή της εφαρμογής. Ελέγξτε την Εβδομαδιαία χρήση πριν δοκιμάσετε ξανά.
@@ -47,6 +51,7 @@ A ChatGPT sign-in can only be used with the OpenAI API.	Η σύνδεση με C
 A colour, hatch lines, markers on a grid, a gradient, or a shapeburst (shaded from the edge inwards)	Ένα χρώμα, γραμμές διαγράμμισης, δείκτες σε πλέγμα, μια διαβάθμιση ή ένα shapeburst (σκίαση από το άκρο προς τα μέσα)
 A command id is required.	Απαιτείται αναγνωριστικό εντολής.
 A connection has this name: give this one another name to remember its keys.	Υπάρχει ήδη σύνδεση με αυτό το όνομα: δώστε σε αυτήν άλλο όνομα για να απομνημονευτούν τα κλειδιά της.
+a Copernicus Data Space sign-in	μια σύνδεση στο Copernicus Data Space
 A copy of {name} with unsaved changes was kept a minute ago.	Ένα αντίγραφο του {name} με μη αποθηκευμένες αλλαγές διατηρήθηκε πριν από ένα λεπτό.
 A copy of {name} with unsaved changes was kept less than a minute ago.	Ένα αντίγραφο του {name} με μη αποθηκευμένες αλλαγές διατηρήθηκε πριν από λιγότερο από ένα λεπτό.
 A copy of {name} with unsaved changes was kept {n} days ago.	Ένα αντίγραφο του {name} με μη αποθηκευμένες αλλαγές διατηρήθηκε πριν από {n} ημέρες.
@@ -61,7 +66,7 @@ A fast, free and open-source GIS written in pure Rust, for mapping, analyzing an
 A field (known once the model runs)	Ένα πεδίο (γνωστό μόλις εκτελεστεί το μοντέλο)
 A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	Ένα πακέτο πεδίου ανοίγει σε υπολογιστή ή τηλέφωνο, που έχουν φάκελο για τα basemaps του: ανοίξτε το εκεί. Η «Επαναφορά» (Δεδομένα › Εκτός σύνδεσης) φέρνει τις αλλαγές του στο έργο εδώ.
 A flat scene centred on the view (azimuthal equidistant).	Μια επίπεδη σκηνή με κέντρο την προβολή (αζιμουθιακή ισαπέχουσα).
-A GeoLens server's datasets, read as features (the first 1,000 of each).	Τα σύνολα δεδομένων ενός διακομιστή GeoLens, ως οντότητες (οι πρώτες 1.000 από το καθένα).
+A GeoLens server's datasets, read as features.	Τα σύνολα δεδομένων ενός διακομιστή GeoLens, διαβασμένα ως οντότητες.
 A globe scene.	Μια σκηνή υδρογείου.
 A hidden class leaves its features unlabelled.	Μια κρυφή κλάση αφήνει τις οντότητές της χωρίς ετικέτες.
 A label along a line isn't moved.	Μια ετικέτα κατά μήκος γραμμής δεν μετακινείται.
@@ -77,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Μια γραμμή ή δείκτες ή σημάδια διαγράμμισης κατά μήκος της
 A magnifying lens that follows the pointer.	Ένας μεγεθυντικός φακός που ακολουθεί τον δείκτη.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Η διεύθυνση μιας υπηρεσίας χαρτών, οντοτήτων ή καλύψεων: WMS, WMTS, WFS, WCS, OGC API Features ή Tiles, ή ενός ArcGIS FeatureServer, MapServer, ImageServer ή VectorTileServer (ή ενός καταλόγου υπηρεσιών, για περιήγηση).
+A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Ένα όνομα ή κωδικός EPSG, WKT ή συμβολοσειρά PROJ· κενό: του ίδιου του χάρτη όταν είναι προβολικός, αλλιώς η ζώνη UTM στο κέντρο της προβολής
 a name, or owner/name such as giswqs/geospatial	ένα όνομα ή κάτοχος/όνομα, όπως giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Ένα επώνυμο τελικό σημείο που μπορείτε να επαναχρησιμοποιήσετε. Τα κλειδιά διατηρούνται μέχρι να κλείσει το RustGIS, εκτός αν επιλέξετε να απομνημονευτούν σε αυτόν τον υπολογιστή· η ίδια η σύνδεση δεν τα διατηρεί ποτέ.
 A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	Ένα επώνυμο τελικό σημείο που μπορείτε να επαναχρησιμοποιήσετε. Οι κωδικοί πρόσβασης και τα κλειδιά ισχύουν για αυτήν την περίοδο λειτουργίας, εκτός αν επιλέξετε να απομνημονευτούν σε αυτόν τον υπολογιστή· η ίδια η σύνδεση δεν τα διατηρεί ποτέ.
@@ -87,8 +93,10 @@ A node cannot connect to itself.	Ένας κόμβος δεν μπορεί να 
 A notebook of text and command cells.	Ένα σημειωματάριο με κελιά κειμένου και εντολών.
 A password or token in the address was left out of the saved connection definition.	Ένας κωδικός πρόσβασης ή ένα token της διεύθυνσης παραλείφθηκε από τον αποθηκευμένο ορισμό της σύνδεσης.
 A place or an address	Μια τοποθεσία ή μια διεύθυνση
+A PNG or JPEG file as the marker	Ένα αρχείο PNG ή JPEG ως δείκτης
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	Ένα κλειδί που αποθηκεύτηκε παλαιότερα παραμένει μη κρυπτογραφημένο στις προτιμήσεις της εφαρμογής, μέχρι να μπορέσει να μεταφερθεί στην κλειδοθήκη του συστήματος.
 A project keeps at least one map	Ένα έργο διατηρεί τουλάχιστον έναν χάρτη
+A project save is already in progress.	Μια αποθήκευση του έργου βρίσκεται ήδη σε εξέλιξη.
 A projected coordinate system.	Ένα προβολικό σύστημα συντεταγμένων.
 A projected system such as EPSG:32616, or EPSG:4326 for degrees	Ένα προβολικό σύστημα όπως το EPSG:32616 ή το EPSG:4326 για μοίρες
 a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	ένα επίπεδο raster δεν έχει ερώτημα ορισμού ούτε σύνδεση με τον χρόνο: οι καρτέλες Ερώτημα και Χρόνος ανήκουν σε επίπεδο οντοτήτων
@@ -101,6 +109,7 @@ A saved key could not be read. A key entered now will be kept for this session o
 A search area holds at most {n} shapes: Clear it to start again	Μια περιοχή αναζήτησης χωράει το πολύ {n} σχήματα: κάντε Απαλοιφή για να ξεκινήσετε ξανά
 A service import or refresh is already running.	Εκτελείται ήδη μια εισαγωγή ή ανανέωση υπηρεσίας.
 A service's layers stay in their service group.	Τα επίπεδα μιας υπηρεσίας παραμένουν στην ομάδα της υπηρεσίας τους.
+A sign-in is remembered on this computer: it signs in when a file needs it.	Μια σύνδεση απομνημονεύεται σε αυτόν τον υπολογιστή: συνδέεται όταν τη χρειάζεται ένα αρχείο.
 A small chart of several numeric fields, drawn on each feature over its symbol	Ένα μικρό γράφημα πολλών αριθμητικών πεδίων, σχεδιασμένο σε κάθε οντότητα πάνω από το σύμβολό της
 A streamed layer needs Load All Features first	Ένα επίπεδο ροής χρειάζεται πρώτα «Φόρτωση όλων των οντοτήτων»
 A table replaced in a GeoPackage	Ένας πίνακας αντικαταστάθηκε σε GeoPackage
@@ -111,18 +120,15 @@ A theme file was refused. Open Settings > Theme for the reason.	Ένα αρχε�
 A tile layer per grid tile, each following the time slider through its dates.	Ένα επίπεδο tiles ανά tile του πλέγματος, που το καθένα ακολουθεί το ρυθμιστικό χρόνου στις ημερομηνίες του.
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	Η διεύθυνση μιας υπηρεσίας tiles: raster tiles με {z}/{x}/{y} (ή {-y}, {q}, {bbox-epsg-3857} για WMS), vector tiles (.pbf) ή TileJSON, ένα στυλ MapLibre, ένα αρχείο PMTiles (διεύθυνση web ή αρχείο σε αυτόν τον υπολογιστή) ή ένα αρχείο MBTiles σε αυτόν τον υπολογιστή.
 A token for {server}	Ένα token για {server}
+A token is already being generated for this connection. Cancel it first.	Δημιουργείται ήδη ένα token για αυτή τη σύνδεση. Ακυρώστε το πρώτα.
+A token is being generated. Cancel it before saving again.	Δημιουργείται ένα token. Ακυρώστε το πριν αποθηκεύσετε ξανά.
 A token is set.	Έχει οριστεί token.
+A value of {field}	Μια τιμή του {field}
 a vector a pixel	ένα διάνυσμα ανά pixel
 a vector an image patch	ένα διάνυσμα ανά τμήμα εικόνας
 A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	Μια ζώνη UTM WGS 84 για τις ετικέτες MGRS, με τον κωδικό EPSG της (32632)· κενό: του χάρτη όταν είναι τέτοια, αλλιώς η ζώνη στο κέντρο του πλαισίου.
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	Μια αποθήκη Zarr (μορφή 2 ή 3) μέσω της διεύθυνσής της στο web, με ενοποιημένα μεταδεδομένα, ή ένας φάκελος σε αυτόν τον υπολογιστή. Ο χάρτης μιας μεταβλητής διαβάζεται για τα βήματα που επιλέγονται στις άλλες διαστάσεις της, όπως ο χρόνος.
 A Zarr variable's values through time at points clicked on the map.	Οι τιμές μιας μεταβλητής Zarr στον χρόνο, στα σημεία όπου κάνετε κλικ στον χάρτη.
-A2 landscape sheet	Φύλλο A2, οριζόντιο
-A2 portrait sheet	Φύλλο A2, κατακόρυφο
-A3 landscape sheet	Φύλλο A3, οριζόντιο
-A3 portrait sheet	Φύλλο A3, κατακόρυφο
-A4 landscape sheet	Φύλλο A4, οριζόντιο
-A4 portrait sheet	Φύλλο A4, κατακόρυφο
 A5 Grid	Πλέγμα A5
 A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	Τα ισεμβαδικά πενταγωνικά κελιά του A5 σε μια ανάλυση, στην έκταση του χάρτη, ενός επιπέδου ή ολόκληρου του κόσμου, ως πολύγωνα με τα αναγνωριστικά τους.
 About	Πληροφορίες
@@ -165,6 +171,7 @@ Add a report file, or a report template for the selected layer.	Προσθέστ
 Add a scale bar for the map frame.	Προσθέστε μια γραμμική κλίμακα για το πλαίσιο χάρτη.
 add a second map first (Data › New Map)	προσθέστε πρώτα έναν δεύτερο χάρτη (Δεδομένα › Νέος χάρτης)
 Add a second map frame first	Προσθέστε πρώτα ένα δεύτερο πλαίσιο χάρτη
+Add a spectral index of the item's bands, for the part of the map in view	Προσθήκη ενός φασματικού δείκτη από τα κανάλια του στοιχείου, για το τμήμα του χάρτη που φαίνεται
 Add a straight line.	Προσθέστε μια ευθεία γραμμή.
 Add a text element.	Προσθέστε ένα στοιχείο κειμένου.
 Add a web basemap over the others instead of replacing them, to blend it with them. Click one that shows to take it off.	Προσθέστε ένα web basemap πάνω από τα άλλα, αντί να τα αντικαταστήσει, για να αναμειχθεί μαζί τους. Κάντε κλικ σε ένα που εμφανίζεται για να το αφαιρέσετε.
@@ -228,6 +235,7 @@ Add Layer File	Προσθήκη αρχείου επιπέδου
 Add Mark	Προσθήκη σήμανσης
 Add more with plugins:	Προσθέστε περισσότερα με πρόσθετα:
 Add Open Data	Προσθήκη ανοιχτών δεδομένων
+Add or create a polygon feature layer using Data, then choose it here.	Προσθέστε ή δημιουργήστε ένα επίπεδο οντοτήτων πολυγώνων από τα Δεδομένα και, στη συνέχεια, επιλέξτε το εδώ.
 Add Output	Προσθήκη εξόδου
 Add Overture Maps Data	Προσθήκη δεδομένων Overture Maps
 Add Page After	Προσθήκη σελίδας μετά
@@ -249,8 +257,10 @@ Add Selected ({n})	Προσθήκη επιλεγμένων ({n})
 Add Service Layer	Προσθήκη επιπέδου υπηρεσίας
 Add skill…	Προσθήκη δεξιότητας…
 Add STAC Asset	Προσθήκη πόρου STAC
+Add STAC Bands	Προσθήκη καναλιών STAC
 Add STAC Data Cube	Προσθήκη κύβου δεδομένων STAC
 Add STAC Footprints	Προσθήκη αποτυπωμάτων STAC
+Add STAC Index	Προσθήκη δείκτη STAC
 Add statistic	Προσθήκη στατιστικού
 Add Step	Προσθήκη βήματος
 Add Stroke	Προσθήκη πινελιάς
@@ -261,6 +271,7 @@ Add Text	Προσθήκη κειμένου
 Add text that updates: page, date, scale, map and more.	Προσθέστε κείμενο που ενημερώνεται: σελίδα, ημερομηνία, κλίμακα, χάρτης και άλλα.
 Add the attribute table of a layer in the map frame.	Προσθέστε τον πίνακα γνωρισμάτων ενός επιπέδου του πλαισίου χάρτη.
 Add the current view as a keyframe.	Προσθέστε την τρέχουσα προβολή ως καρέ-κλειδί.
+Add the item's bands as one image, for the part of the map in view	Προσθήκη των καναλιών του στοιχείου ως μία εικόνα, για το τμήμα του χάρτη που φαίνεται
 Add The National Map Service	Προσθήκη υπηρεσίας The National Map
 Add this GeoTIFF to the map	Προσθήκη αυτού του GeoTIFF στον χάρτη
 Add this MCP server to your agent:	Προσθέστε αυτόν τον διακομιστή MCP στον πράκτορά σας:
@@ -279,7 +290,6 @@ Add {language}	Προσθήκη {language}
 Add {n}	Προσθήκη {n}
 Add ▾	Προσθήκη ▾
 Added	Προστέθηκε
-Added Fixture	Προστέθηκε εξάρτημα
 Added from {start} to {end}: the time slider steps through it	Προστέθηκε από {start} έως {end}: το ρυθμιστικό χρόνου το διατρέχει βήμα βήμα
 Added Overture's {theme} as map tiles ({release}; some themes show only zoomed in): {attribution}	Προστέθηκε το {theme} του Overture ως tiles χάρτη ({release}· ορισμένα θέματα εμφανίζονται μόνο σε μεγέθυνση): {attribution}
 Added {name}	Προστέθηκε: {name}
@@ -318,6 +328,7 @@ Agents then run commands, change files and use the web on this computer without 
 Aggregate Points to A5	Συνάθροιση σημείων σε A5
 Aggregation	Συνάθροιση
 Agricultural field boundaries the Fields of the World model found in Sentinel-2 imagery, worldwide, a year at a time (2nd Edition, CC BY 4.0). These are model predictions, not surveyed parcels.	Όρια γεωργικών αγροτεμαχίων που εντόπισε το μοντέλο Fields of the World σε εικόνες Sentinel-2, παγκοσμίως, ανά έτος (2η έκδοση, CC BY 4.0). Πρόκειται για προβλέψεις μοντέλου, όχι για τοπογραφημένα αγροτεμάχια.
+Agriculture	Γεωργία
 AI	AI
 AI\nAssistant	Βοηθός\nAI
 AI Assistant	Βοηθός AI
@@ -352,16 +363,19 @@ Altitude	Ύψος
 Always allow	Πάντα αποδοχή
 Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3 ή μια υπηρεσία συμβατή με S3 (MinIO, Cloudflare R2, Wasabi…) μέσω του τελικού σημείου της. Τα κλειδιά διατηρούνται μέχρι να κλείσει το RustGIS· μια αποθηκευμένη σύνδεση διατηρεί το όνομα, το τελικό σημείο και την περιοχή της, ποτέ το μυστικό της.
+Ambient	Διάχυτο
 amenity=cafe, shop	amenity=cafe, shop
 An agent on this computer asks to:	Ένας πράκτορας σε αυτόν τον υπολογιστή ζητά να:
+An API key in the URL path is saved as typed, not in the credential store.	Ένα κλειδί API στη διαδρομή του URL αποθηκεύεται όπως πληκτρολογήθηκε, όχι στην αποθήκη διαπιστευτηρίων.
 An API key sent in a header must use plain ASCII characters.	Ένα κλειδί API που αποστέλλεται σε κεφαλίδα πρέπει να χρησιμοποιεί απλούς χαρακτήρες ASCII.
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	Η διεύθυνση ενός οργανισμού ArcGIS Online ή μιας πύλης ArcGIS Enterprise· ArcGIS Online αν μείνει κενό
+an ArcGIS sign-in	μια σύνδεση στο ArcGIS
 An AWS profile	Ένα προφίλ AWS
-an enqueued add is not a success	μια ουρά προσθήκης δεν είναι επιτυχία
-An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Ένας κωδικός EPSG, WKT ή συμβολοσειρά PROJ· κενό: του ίδιου του χάρτη όταν είναι προβολικό, αλλιώς η ζώνη UTM στο κέντρο της προβολής
+An image picked for an earlier Image… was dropped: pick it again for that marker	Μια εικόνα που επιλέχθηκε για προηγούμενο «Εικόνα…» απορρίφθηκε: επιλέξτε την ξανά για εκείνον τον δείκτη
 Analysis	Ανάλυση
 Analyze	Ανάλυση
 Analyze › AI	Ανάλυση › AI
+Analyze › Annotate	Ανάλυση › Σχολιασμός
 Analyze › Workflows	Ανάλυση › Ροές εργασιών
 AND	AND
 Angle	Γωνία
@@ -369,6 +383,8 @@ Angle (°)	Γωνία (°)
 Animated GIF	Κινούμενο GIF
 Animated GIF or PNG frames (zip)	Κινούμενο GIF ή καρέ PNG (zip)
 Animation	Κίνηση
+Annotate	Σχολιασμός
+Annotation export uses GeoJSON.	Η εξαγωγή σχολιασμών χρησιμοποιεί GeoJSON.
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	Ένα άλλο αρχείο που αφέθηκε δεν άνοιξε: αφήστε το ξανά αφού απαντήσετε για τις μη αποθηκευμένες αλλαγές.
 Another project is open now: open the dialog again from its table.	Είναι ανοιχτό άλλο έργο τώρα: ανοίξτε ξανά το παράθυρο διαλόγου από τον πίνακά του.
 another project was opened	άνοιξε άλλο έργο
@@ -384,7 +400,9 @@ Application	Εφαρμογή
 Apply	Εφαρμογή
 Apply a function to a raster	Εφαρμογή συνάρτησης σε raster
 Apply Control Points	Εφαρμογή σημείων ελέγχου
+Apply Conversion	Εφαρμογή μετατροπής
 Apply elevation	Εφαρμογή υψομέτρου
+Apply Shape Conversion	Εφαρμογή μετατροπής σχήματος
 Apply Style	Εφαρμογή στυλ
 Apply to layers	Εφαρμογή σε επίπεδα
 Apply to the selected layer	Εφαρμογή στο επιλεγμένο επίπεδο
@@ -397,6 +415,7 @@ ArcGIS Portal…	ArcGIS Portal…
 ArcGIS REST	ArcGIS REST
 ArcGIS Sign-In Status	Κατάσταση σύνδεσης ArcGIS
 ArcGIS token	Token ArcGIS
+ArcGIS Token Status	Κατάσταση token ArcGIS
 Archive	Αρχειοθήκη
 Archive History	Ιστορικό αρχειοθήκης
 Archiving	Αρχειοθέτηση
@@ -405,6 +424,7 @@ Area of use: longitude {w}° to {e}°, latitude {s}° to {n}°	Περιοχή χ
 Area of use: the whole world	Περιοχή χρήσης: ολόκληρος ο κόσμος
 Area of use: within {r}° of the {lon}° meridian	Περιοχή χρήσης: εντός {r}° από τον μεσημβρινό {lon}°
 Area of use: within {r}° of {lon}°, {lat}°	Περιοχή χρήσης: εντός {r}° από {lon}°, {lat}°
+Area Unit	Μονάδα εμβαδού
 Area {area}   ·   Perimeter {perimeter}	Εμβαδόν {area}   ·   Περίμετρος {perimeter}
 Areas (name, land use, area)	Περιοχές (όνομα, χρήση γης, εμβαδόν)
 Argentina	Αργεντινή
@@ -449,6 +469,7 @@ Automatic (mm to km)	Αυτόματα (mm έως km)
 Automatic (system language)	Αυτόματο (γλώσσα συστήματος)
 Automatic ({kind})	Αυτόματο ({kind})
 Automatic ({n})	Αυτόματο ({n})
+Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself.	Η Αυτόματη επιλογή διαλέγει στήλες με βάση ολόκληρο το αρχείο. Ανοίξτε μια λίστα για να δείτε τις προτάσεις της προεπισκόπησης ή επιλέξτε στήλες μόνοι σας.
 Autosave	Αυτόματη αποθήκευση
 Autosave couldn't keep a recovery copy: {error}	Η αυτόματη αποθήκευση δεν μπόρεσε να διατηρήσει αντίγραφο ανάκτησης: {error}
 autosave failed unexpectedly; it goes on with the next copy	η αυτόματη αποθήκευση απέτυχε απροσδόκητα· συνεχίζει με το επόμενο αντίγραφο
@@ -462,19 +483,25 @@ Back to the map	Επιστροφή στον χάρτη
 Back to tools	Επιστροφή στα εργαλεία
 Backdrop	Φόντο
 Background	Φόντο
+Balanced light	Ισορροπημένο φωτεινό
 Band	Κανάλι
 Band Combination	Συνδυασμός καναλιών
+Band combinations are made on the desktop for now	Οι συνδυασμοί καναλιών γίνονται στην εφαρμογή για υπολογιστή προς το παρόν
 Band must be a positive integer, list of bands, or 'all'.	Το κανάλι πρέπει να είναι θετικός ακέραιος, λίστα καναλιών ή 'all'.
 Band {n}	Κανάλι {n}
 Band {n}: {name}	Κανάλι {n}: {name}
 Band {n}: {name}, {wavelength} nm	Κανάλι {n}: {name}, {wavelength} nm
 Bands	Κανάλια
 Bands 1–{n}	Κανάλια 1–{n}
+Bands left out	Κανάλια που εξαιρούνται
 Bands: blue green red NIR SWIR	Κανάλια: μπλε πράσινο κόκκινο NIR SWIR
+Bands: public items only	Κανάλια: μόνο δημόσια στοιχεία
 Bangladesh	Μπαγκλαντές
 Banner	Πανό
 Bar	Ράβδος
 Bar Chart	Ραβδόγραμμα
+Bar color	Χρώμα ράβδου
+Bars	Ράβδοι
 Base	Βάση
 Base (m)	Βάση (m)
 Basemap	Basemap
@@ -482,6 +509,7 @@ Basemaps	Basemaps
 Basic authentication	Βασικός έλεγχος ταυτότητας
 Basin from hydrolocation	Λεκάνη απορροής από υδρολογική θέση
 Batch Run	Μαζική εκτέλεση
+Bathymetric	Βαθυμετρικό
 Bearing	Αζιμούθιο
 Before	Πριν
 Before the event	Πριν από το συμβάν
@@ -519,6 +547,8 @@ Boundaries…	Όρια…
 Bounding\nGeometry	Γεωμετρία\nοριοθέτησης
 Box Construction	Κατασκευή πλαισίου
 Brazil	Βραζιλία
+Break the text into lines at spaces to fit the width of its box	Αναδίπλωση του κειμένου σε γραμμές στα κενά ώστε να χωράει στο πλάτος του πλαισίου του
+Breaks	Διακοπές
 Brightness	Φωτεινότητα
 Brightness, contrast, saturation and sepia for the whole map.	Φωτεινότητα, αντίθεση, κορεσμός και σέπια για ολόκληρο τον χάρτη.
 Bring a field package's edits and photos back to the offline area it was made from.	Επαναφορά των αλλαγών και των φωτογραφιών ενός πακέτου πεδίου στην περιοχή εκτός σύνδεσης από την οποία δημιουργήθηκε.
@@ -556,12 +586,17 @@ Bundle the project and its data into one file to share.	Συσκευάστε τ�
 Bundle the visible layers, with simplified geometry for phones and tablets.	Συσκευάστε τα ορατά επίπεδα, με απλοποιημένη γεωμετρία για κινητά και tablet.
 By\nAttributes	Κατά\nγνωρίσματα
 By\nLocation	Κατά\nθέση
+By area	Κατά εμβαδόν
+By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	Κατά εμβαδόν: μια τιμή διπλάσια από άλλη σχεδιάζει δείκτη με περίπου διπλάσιο εμβαδόν. Κατά ακτίνα: διπλάσιο μέγεθος.
 By Coordinates	Με συντεταγμένες
 By Coordinates…	Με συντεταγμένες…
 By Expression	Με έκφραση
+By label	Κατά ετικέτα
 By layer	Ανά επίπεδο
 By Place or Address	Με τοποθεσία ή διεύθυνση
 By Place or Address…	Με τοποθεσία ή διεύθυνση…
+By radius	Κατά ακτίνα
+By the bars	Κατά τις ράβδους
 by {author}	από {author}
 By {field}	Κατά {field}
 cached tiles	tiles από cache
@@ -585,7 +620,11 @@ Camera Effect	Εφέ κάμερας
 Can't read this folder	Δεν είναι δυνατή η ανάγνωση αυτού του φακέλου
 Cancel	Ακύρωση
 Cancel ArcGIS Sign-In	Ακύρωση σύνδεσης ArcGIS
+Cancel ArcGIS Token	Ακύρωση token ArcGIS
 Cancel Caching	Ακύρωση αποθήκευσης στην cache
+Cancel Fitting	Ακύρωση προσαρμογής
+Cancel Grid Read	Ακύρωση ανάγνωσης πλέγματος
+Cancel token request	Ακύρωση αιτήματος token
 Cancelled	Ακυρώθηκε
 Cap	Απόληξη
 Capture To Clipboard	Καταγραφή στο πρόχειρο
@@ -662,7 +701,9 @@ choose a folder	επιλογή φακέλου
 Choose a GeoPackage layer	Επιλέξτε επίπεδο GeoPackage
 Choose a layer	Επιλέξτε επίπεδο
 Choose a layer…	Επιλέξτε επίπεδο…
+Choose a loaded editable polygon layer.	Επιλέξτε ένα φορτωμένο επεξεργάσιμο επίπεδο πολυγώνων.
 Choose a model.	Επιλέξτε ένα μοντέλο.
+Choose a polygon layer	Επιλέξτε ένα επίπεδο πολυγώνων
 Choose a position within the supported map and construction grid.	Επιλέξτε μια θέση εντός του υποστηριζόμενου χάρτη και πλέγματος κατασκευής.
 Choose a resampling type for the raster layer.	Επιλέξτε τύπο επαναδειγματοληψίας για το επίπεδο raster.
 Choose a saved S3 connection before opening this source.	Επιλέξτε μια αποθηκευμένη σύνδεση S3 πριν ανοίξετε αυτή την πηγή.
@@ -672,6 +713,10 @@ Choose a stop	Επιλέξτε στάση
 Choose a table to load for editing	Επιλέξτε πίνακα για φόρτωση προς επεξεργασία
 Choose a zipped Shapefile, or pick its .shp and .dbf together.	Επιλέξτε ένα συμπιεσμένο (zip) Shapefile ή επιλέξτε μαζί τα .shp και .dbf του.
 Choose an account	Επιλέξτε λογαριασμό
+Choose an image and target layer, then draw in the original image grid.	Επιλέξτε μια εικόνα και ένα επίπεδο προορισμού και, στη συνέχεια, σχεδιάστε στο πλέγμα της αρχικής εικόνας.
+Choose an image before using original-image pixels.	Επιλέξτε μια εικόνα πριν χρησιμοποιήσετε pixel της αρχικής εικόνας.
+Choose an image or Web Mercator grid metres before drawing.	Επιλέξτε μια εικόνα ή μέτρα πλέγματος Web Mercator πριν σχεδιάσετε.
+Choose Circle or Rotated Box.	Επιλέξτε Κύκλο ή Περιστρεμμένο πλαίσιο.
 Choose Connection	Επιλογή σύνδεσης
 Choose Connection…	Επιλογή σύνδεσης…
 Choose extra buttons for the Quick Access Toolbar.	Επιλέξτε επιπλέον κουμπιά για τη γραμμή εργαλείων γρήγορης πρόσβασης.
@@ -708,6 +753,7 @@ Class color	Χρώμα κλάσης
 Class Fields	Πεδία κλάσης
 Class Style	Στυλ κλάσης
 Class {n}	Κλάση {n}
+Class {n} more than {bound}	Κλάση {n} πάνω από {bound}
 Class {n} up to	Κλάση {n} έως
 Classes	Κλάσεις
 Classes from training polygons.	Κλάσεις από πολύγωνα εκπαίδευσης.
@@ -795,6 +841,7 @@ Close the current dialog before reloading a layer with pending edits.	Κλείσ
 Close the layout and show the map.	Κλείσιμο της διάταξης και εμφάνιση του χάρτη.
 Close the time slider (it stays on; Time Slider opens it again).	Κλείσιμο του ρυθμιστικού χρόνου (παραμένει ενεργό· το «Ρυθμιστικό χρόνου» το ανοίγει ξανά).
 Close thread	Κλείσιμο νήματος
+Close without applying the preview and stop any pending fit. Use Undo after applying a conversion.	Κλείσιμο χωρίς εφαρμογή της προεπισκόπησης και διακοπή κάθε εκκρεμούς προσαρμογής. Χρησιμοποιήστε Αναίρεση μετά την εφαρμογή μιας μετατροπής.
 Close {name}	Κλείσιμο {name}
 Closest	Πλησιέστερο
 Coded values, one per line: code=description	Κωδικοποιημένες τιμές, μία ανά γραμμή: κωδικός=περιγραφή
@@ -804,6 +851,8 @@ Collection	Συλλογή
 Collection {id}: choose dates and Find Items	Συλλογή {id}: επιλέξτε ημερομηνίες και «Εύρεση στοιχείων»
 Collections	Συλλογές
 Color	Χρώμα
+Color by class	Χρώμα ανά κλάση
+Color infrared	Έγχρωμο υπέρυθρο
 Color Infrared (4, 1, 2)	Έγχρωμο υπέρυθρο (4, 1, 2)
 Color Ramps	Χρωματικές διαβαθμίσεις
 Color Scheme	Χρωματικός συνδυασμός
@@ -816,7 +865,6 @@ Colors from the raster's own color table.	Χρώματα από τον πίνα�
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	Χρωματικές διαβαθμίσεις (RustGIS, QGIS, GDAL, GMT)
 Column Statistics	Στατιστικά στήλης
 Columns	Στήλες
-Columns named like longitude/latitude, easting/northing or geometry are picked for you.	Οι στήλες με ονόματα όπως longitude/latitude, easting/northing ή geometry επιλέγονται αυτόματα.
 Combinations from the box above, one per line	Συνδυασμοί από το παραπάνω πλαίσιο, ένας ανά γραμμή
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	Συνδυάζει δύο πολυγωνικά επίπεδα σε κάθε τμήμα που καλύπτει οποιοδήποτε από τα δύο, με τα γνωρίσματα και των δύο όπου επικαλύπτονται.
 COMID {comid}	COMID {comid}
@@ -858,6 +906,7 @@ Constant	Σταθερά
 Constant ({m} m)	Σταθερή ({m} m)
 Constant height	Σταθερό ύψος
 Constant…	Σταθερά…
+Construction Grid	Πλέγμα κατασκευής
 Content	Περιεχόμενο
 Contingent Values	Εξαρτημένες τιμές
 Continue	Συνέχεια
@@ -865,9 +914,18 @@ Continue with ChatGPT	Συνέχεια με ChatGPT
 Contrast	Αντίθεση
 Control Point Fit	Προσαρμογή σημείων ελέγχου
 Conversion	Μετατροπή
+Conversion closed because the source, selection or tool changed.	Η μετατροπή έκλεισε επειδή άλλαξε η πηγή, η επιλογή ή το εργαλείο.
+conversion request limit reached	συμπληρώθηκε το όριο αιτημάτων μετατροπής
 Convert	Μετατροπή
 Convert a layer to another format	Μετατροπή επιπέδου σε άλλη μορφή
 Convert Field to Dates	Μετατροπή πεδίου σε ημερομηνίες
+Convert Now	Μετατροπή τώρα
+Convert Now fits and applies immediately. Preview Conversion lets you review or adjust first.	Η Μετατροπή τώρα προσαρμόζει και εφαρμόζει αμέσως. Η Προεπισκόπηση μετατροπής σάς επιτρέπει να ελέγξετε ή να προσαρμόσετε πρώτα.
+Convert Polygon	Μετατροπή πολυγώνου
+Convert Polygon to Shape…	Μετατροπή πολυγώνου σε σχήμα…
+Convert Polygon…	Μετατροπή πολυγώνου…
+Convert Position	Μετατροπή θέσης
+Convert Selected Polygon…	Μετατροπή επιλεγμένου πολυγώνου…
 Convert the selected layer's labels into an annotation layer.	Μετατροπή των ετικετών του επιλεγμένου επιπέδου σε επίπεδο σχολιασμού.
 Convert this layer's labels into an annotation layer.	Μετατροπή των ετικετών αυτού του επιπέδου σε επίπεδο σχολιασμού.
 Convert To Annotation	Μετατροπή σε σχολιασμό
@@ -877,8 +935,12 @@ Convert…	Μετατροπή…
 Coordinate	Συντεταγμένη
 Coordinate System	Σύστημα συντεταγμένων
 Coordinate system	Σύστημα συντεταγμένων
+Coordinate systems	Συστήματα συντεταγμένων
 Coordinate System…	Σύστημα συντεταγμένων…
 Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	Συντεταγμένες σε {format}. Κάντε κλικ για εναλλαγή: δεκαδικές μοίρες, DMS, UTM, MGRS. Τα UTM και MGRS είναι πλέγματα της Γης, που διαβάζονται σε UPS βόρεια των 84° Β και νότια των 80° Ν.
+Copernicus Data Space	Copernicus Data Space
+Copernicus Data Space Status	Κατάσταση Copernicus Data Space
+Copernicus Data Space…	Copernicus Data Space…
 Copied the command.	Η εντολή αντιγράφηκε.
 Copied the layout to the clipboard	Η διάταξη αντιγράφηκε στο πρόχειρο
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Η διάταξη αντιγράφηκε στο πρόχειρο στα {dpi} dpi, όχι στα {wanted}: η σελίδα είναι πολύ μεγάλη για μεγαλύτερη εικόνα
@@ -921,11 +983,14 @@ Copy, Cut and Paste keys cannot be reassigned.	Τα πλήκτρα Αντιγρ�
 Corner radius	Ακτίνα γωνίας
 Corrections	Διορθώσεις
 Cost	Κόστος
+Cost Field	Πεδίο κόστους
 could not draw the layout	δεν ήταν δυνατή η σχεδίαση της διάταξης
 could not draw the map	δεν ήταν δυνατή η σχεδίαση του χάρτη
+Could not read saved ChatGPT sign-ins: {reason}	Δεν ήταν δυνατή η ανάγνωση των αποθηκευμένων συνδέσεων ChatGPT: {reason}
 Could not start service discovery: {error}	Δεν ήταν δυνατή η εκκίνηση της ανακάλυψης υπηρεσιών: {error}
 could not start the keychain worker	δεν ήταν δυνατή η εκκίνηση της διεργασίας της κλειδοθήκης
 Couldn't check for updates: {error}	Δεν ήταν δυνατός ο έλεγχος για ενημερώσεις: {error}
+Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	Δεν ήταν δυνατή η λήψη της γραμματοσειράς για το κείμενο σε {language} στον χάρτη, οπότε παραλείπεται από τον χάρτη και τις εξαγωγές του· επιλέξτε γλώσσα στις Ρυθμίσεις › Γλώσσα για να δοκιμάσετε ξανά.
 Couldn't download the font for {language}; pick the language again to retry.	Δεν ήταν δυνατή η λήψη της γραμματοσειράς για τη γλώσσα {language}· επιλέξτε ξανά τη γλώσσα για νέα προσπάθεια.
 Couldn't download the update: {error}	Δεν ήταν δυνατή η λήψη της ενημέρωσης: {error}
 Couldn't download the {view} worldview ({error}); the map keeps the {current} borders	Δεν ήταν δυνατή η λήψη της οπτικής {view} για τα σύνορα ({error}). Ο χάρτης διατηρεί τα σύνορα {current}
@@ -933,6 +998,7 @@ Couldn't install the update: {error}	Δεν ήταν δυνατή η εγκατ�
 Couldn't load the plugin registry: {error}	Δεν ήταν δυνατή η φόρτωση του μητρώου πρόσθετων: {error}
 Couldn't start reading: {e}	Δεν ήταν δυνατή η έναρξη ανάγνωσης: {e}
 Couldn't start the search: {e}	Δεν ήταν δυνατή η έναρξη της αναζήτησης: {e}
+Count	Πλήθος
 Counterclockwise	Αριστερόστροφα
 Countries, cities, rivers and lakes	Χώρες, πόλεις, ποτάμια και λίμνες
 Country	Χώρα
@@ -942,6 +1008,7 @@ Counts, totals and top categories of what's in view.	Πλήθη, σύνολα κ
 CPU	CPU
 Create	Δημιουργία
 Create (click points)	Δημιουργία (κλικ σε σημεία)
+Create a free account	Δημιουργία δωρεάν λογαριασμού
 Create a new project or start from the World Atlas sample.	Δημιουργήστε νέο έργο ή ξεκινήστε από το δείγμα World Atlas.
 Create Feature	Δημιουργία οντότητας
 Create Hosted\nImagery	Δημιουργία\nφιλοξενούμενων εικόνων
@@ -972,6 +1039,7 @@ Current extent	Τρέχουσα έκταση
 Current Project	Τρέχον έργο
 Current scale ({scale})	Τρέχουσα κλίμακα ({scale})
 Current time	Τρέχουσα ώρα
+Current: {action}	Τρέχουσα: {action}
 Curve	Καμπύλη
 Curved	Καμπύλο
 Custom	Προσαρμοσμένο
@@ -982,6 +1050,7 @@ Cut	Αποκοπή
 Cut a raster into web map tiles	Τεμαχισμός raster σε tiles web χάρτη
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	Τεμαχισμός raster σε tiles web χάρτη (XYZ PNG) με σελίδα προβολής.
 Cut Polygon	Τομή πολυγώνου
+Cutoff	Όριο αποκοπής
 Dark	Σκούρο
 Dash	Παύλα
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	Μήκη παύλας και κενού σε pt, εναλλάξ, π.χ. 4 2. Κενό για συνεχή γραμμή.
@@ -1019,22 +1088,26 @@ Dates	Ημερομηνίες
 Dates a cell needs	Απαιτούμενες ημερομηνίες ανά κελί
 Dates a cell needs is a whole number, or empty for half	Οι απαιτούμενες ημερομηνίες ανά κελί είναι ακέραιος αριθμός ή κενό για το μισό
 DateTime	Ημερομηνία-ώρα
+Datum Grids	Πλέγματα datum
 Day	Ημέρα
 Day and night shading for a time.	Σκίαση ημέρας και νύχτας για μια χρονική στιγμή.
 Decimal	Δεκαδικό
 decimal degrees	δεκαδικές μοίρες
+Decimals	Δεκαδικά
 Decline	Απόρριψη
 Deep Learning	Βαθιά μάθηση
 Deep Learning\nTools	Εργαλεία\nβαθιάς μάθησης
 Deep Learning Package	Πακέτο βαθιάς μάθησης
 Deep Learning Tools	Εργαλεία βαθιάς μάθησης
 Default	Προεπιλογή
+Default Border	Προεπιλεγμένο περίγραμμα
 Default can't be removed. You can rename or hide it.	Η «Προεπιλογή» δεν μπορεί να καταργηθεί. Μπορείτε να τη μετονομάσετε ή να την αποκρύψετε.
 Define Projection	Ορισμός προβολής
 Define Projection…	Ορισμός προβολής…
 Definition\nQuery	Ερώτημα\nορισμού
 Definition Query	Ερώτημα ορισμού
 Definition query	Ερώτημα ορισμού
+Degrees (0–90)	Μοίρες (0–90)
 Degrees as decimals or degrees, minutes and seconds.	Δεκαδικές μοίρες ή μοίρες, λεπτά και δευτερόλεπτα.
 Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.	Δεκαδικές μοίρες ή μοίρες, λεπτά και δευτερόλεπτα· ή μια αναφορά UTM ή MGRS στη θέση και των δύο.
 degrees, as the cell size is in degrees	μοίρες, καθώς το μέγεθος κελιού είναι σε μοίρες
@@ -1081,7 +1154,9 @@ Description	Περιγραφή
 Desktop and command line only	Μόνο σε επιφάνεια εργασίας και γραμμή εντολών
 Destination	Προορισμός
 Destination key	Κλειδί προορισμού
+Destinations	Προορισμοί
 Destinations ({operation}): {places}	Προορισμοί ({operation}): {places}
+Destinations to Find	Προορισμοί προς εύρεση
 Detail	Λεπτομέρεια
 Details	Λεπτομέρειες
 Details of the selected layer, on the Source tab of its properties.	Λεπτομέρειες του επιλεγμένου επιπέδου, στην καρτέλα Πηγή των ιδιοτήτων του.
@@ -1146,6 +1221,9 @@ Double-click to add	Διπλό κλικ για προσθήκη
 Download	Λήψη
 Download\nMap	Λήψη\nχάρτη
 Download and Install	Λήψη και εγκατάσταση
+Download Datum Grids	Λήψη πλεγμάτων datum
+Download GeoLibre Tool Translations	Λήψη μεταφράσεων εργαλείων GeoLibre
+Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	Λήψη των μεταφράσεων του GeoLibre για αυτά τα εργαλεία στα {language} (περίπου 2 MB, από το languages.geolibre.app)
 Download it again and load it.	Κατεβάστε το ξανά και φορτώστε το.
 Download its features in the view (up to the server's limit)	Λήψη των οντοτήτων του στην προβολή (έως το όριο του διακομιστή)
 Download Map	Λήψη χάρτη
@@ -1153,6 +1231,8 @@ Download offered: {name}	Προσφέρθηκε λήψη: {name}
 Download offered: {name}. The browser doesn't say whether it saved the file.	Προσφέρθηκε λήψη: {name}. Το πρόγραμμα περιήγησης δεν δηλώνει αν αποθήκευσε το αρχείο.
 Download OpenStreetMap Data	Λήψη δεδομένων OpenStreetMap
 Download the GeoLibre runner	Λήψη του εκτελεστή GeoLibre
+Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	Γίνεται λήψη της γραμματοσειράς για το κείμενο σε {language} στον χάρτη. Οι εικόνες που εξάγονται πριν φτάσει παραλείπουν αυτό το κείμενο.
+Downloading the tool translations…	Λήψη των μεταφράσεων εργαλείων…
 Downloading {url}…	Λήψη {url}…
 Downloading: {done} MB	Λήψη: {done} MB
 Downloading: {done} of {total} MB	Λήψη: {done} από {total} MB
@@ -1221,6 +1301,7 @@ Draw labels at every scale and distance.	Σχεδίαση ετικετών σε 
 Draw line	Σχεδίαση γραμμής
 Draw new features in the selected layer. Double-click to finish lines and polygons.	Σχεδίαση νέων οντοτήτων στο επιλεγμένο επίπεδο. Κάντε διπλό κλικ για να ολοκληρώσετε γραμμές και πολύγωνα.
 Draw new single-band rasters with the grey stretch again.	Σχεδίαση των νέων μονοκαναλικών raster ξανά με την γκρι διάταση.
+Draw on top of layers	Σχεδίαση πάνω από τα επίπεδα
 Draw only polygon outlines, keeping their colors and widths.	Σχεδίαση μόνο των περιγραμμάτων των πολυγώνων, με διατήρηση των χρωμάτων και των πλατών τους.
 Draw point	Σχεδίαση σημείου
 Draw points as bins coloured by how many fall in each.	Σχεδίαση των σημείων ως κελιά χρωματισμένα ανάλογα με το πόσα πέφτουν σε καθένα.
@@ -1228,14 +1309,17 @@ Draw polygon	Σχεδίαση πολυγώνου
 Draw polygons as outlines only.	Σχεδίαση των πολυγώνων μόνο ως περιγράμματα.
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	Σχεδίαση των μονοκαναλικών raster που προστίθενται από εδώ και πέρα με αυτόν τον χρωματικό συνδυασμό, διάταση και επαναδειγματοληψία.
 Draw strokes in levels	Σχεδίαση πινελιών σε στάθμες
+Draw the grid lines over the map's layers, under the labels; off: under the layers	Σχεδίαση των γραμμών του πλέγματος πάνω από τα επίπεδα του χάρτη, κάτω από τις ετικέτες· ανενεργό: κάτω από τα επίπεδα
 Draw the layer at every scale.	Σχεδίαση του επιπέδου σε κάθε κλίμακα.
 Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).	Σχεδίαση του χάρτη στη GPU (beta· η υδρόγειος, τα εφέ προβολής και η προσομοίωση έγχρωμης όρασης παραμένουν στην απόδοση μέσω CPU).
 Draw the selected layer above others.	Σχεδίαση του επιλεγμένου επιπέδου πάνω από τα άλλα.
 Draw the selected layer below others.	Σχεδίαση του επιλεγμένου επιπέδου κάτω από τα άλλα.
 Drawing	Σχεδίαση
+Drawing cancelled because the map, image or construction grid changed. Check the grid, then start a new shape.	Η σχεδίαση ακυρώθηκε επειδή άλλαξε ο χάρτης, η εικόνα ή το πλέγμα κατασκευής. Ελέγξτε το πλέγμα και ξεκινήστε νέο σχήμα.
 Drawing Effects	Εφέ σχεδίασης
 Drawing Mode	Λειτουργία σχεδίασης
 Drawing Order	Σειρά σχεδίασης
+Drawing requires editing enabled, a loaded polygon layer and a flat Earth map with zero pitch.	Η σχεδίαση απαιτεί ενεργή επεξεργασία, ένα φορτωμένο επίπεδο πολυγώνων και επίπεδο χάρτη της Γης με μηδενική κλίση.
 drawn by the server	σχεδιάζεται από τον διακομιστή
 Drive	Αυτοκίνητο
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	Εικόνες drone και αεροφωτογραφίες κοινοποιημένες στο OpenAerialMap, οι νεότερες πρώτα, που προστίθενται ως cloud-optimised GeoTIFF.
@@ -1269,6 +1353,7 @@ Each class labels the features its own clause matches, so a feature can get a la
 Each click on the map adds a point, until you click this again.	Κάθε κλικ στον χάρτη προσθέτει ένα σημείο, μέχρι να κάνετε ξανά κλικ εδώ.
 Each geoprocessing run becomes a step, chained by its outputs	Κάθε εκτέλεση γεωεπεξεργασίας γίνεται βήμα, συνδεδεμένο σε αλυσίδα μέσω των εξόδων του
 Each line's whole result, to read or copy	Ολόκληρο το αποτέλεσμα κάθε γραμμής, για ανάγνωση ή αντιγραφή
+Earliest available state	Παλαιότερη διαθέσιμη κατάσταση
 Earth Index has no points in the view	Το Earth Index δεν έχει σημεία στην προβολή
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1333,6 +1418,7 @@ Empty	Άδειασμα
 Empty Cache	Άδειασμα cache
 Empty Index Cache	Άδειασμα cache ευρετηρίου
 Empty the script and its results ({keys} brings the script back)	Άδειασμα του σεναρίου και των αποτελεσμάτων του (το {keys} επαναφέρει το σενάριο)
+Enable editing	Ενεργοποίηση επεξεργασίας
 Enable Extension	Ενεργοποίηση επέκτασης
 Enable Lighting	Ενεργοποίηση φωτισμού
 Enable Plugin	Ενεργοποίηση πρόσθετου
@@ -1348,16 +1434,18 @@ Enter	Enter
 Enter a valid query parameter name before testing this connection.	Εισαγάγετε ένα έγκυρο όνομα παραμέτρου ερωτήματος πριν ελέγξετε αυτή τη σύνδεση.
 Enter an API key.	Εισαγάγετε ένα κλειδί API.
 Enter an EPSG code as a number, such as 32650	Εισαγάγετε έναν κωδικό EPSG ως αριθμό, π.χ. 32650
+Enter the expiry as a Unix time in milliseconds, or leave it blank.	Εισαγάγετε τη λήξη ως χρόνο Unix σε χιλιοστά του δευτερολέπτου ή αφήστε το κενό.
 Enter the password or key for this connection. Remember on this computer is optional.	Εισαγάγετε τον κωδικό πρόσβασης ή το κλειδί για αυτή τη σύνδεση. Η απομνημόνευση σε αυτόν τον υπολογιστή είναι προαιρετική.
+Enter the password to generate a token.	Εισαγάγετε τον κωδικό πρόσβασης για να δημιουργήσετε token.
 Enter the provider's address.	Εισαγάγετε τη διεύθυνση του παρόχου.
-Enter this connection's password or API key to log in.	Εισαγάγετε τον κωδικό πρόσβασης ή το κλειδί API αυτής της σύνδεσης για να συνδεθείτε.
+Enter the user to generate a token for.	Εισαγάγετε τον χρήστη για τον οποίο θα δημιουργηθεί token.
+Enter this connection's password, API key or token to log in.	Εισαγάγετε τον κωδικό πρόσβασης, το κλειδί API ή το token αυτής της σύνδεσης για να συνδεθείτε.
 Enter to send, Shift+Enter for a new line	Enter για αποστολή, Shift+Enter για νέα γραμμή
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
 Environments	Περιβάλλοντα
 EPSG	EPSG
 EPSG code	Κωδικός EPSG
-EPSG or ESRI code	Κωδικός EPSG ή ESRI
 EPSG:	EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832, WKT ή συμβολοσειρά PROJ· κενό: του χάρτη όταν είναι προβεβλημένος, αλλιώς η ζώνη UTM στο κέντρο του πλαισίου.
@@ -1384,9 +1472,11 @@ Every label setting of this layer, in the Labeling pane.	Όλες οι ρυθμ�
 Every layer, as FEMA draws them	Όλα τα επίπεδα, όπως τα σχεδιάζει η FEMA
 Every run, in order, as a script that opens the project	Κάθε εκτέλεση, με τη σειρά, ως σενάριο που ανοίγει το έργο
 every Socrata site, or one such as data.cityofnewyork.us	κάθε ιστότοπος Socrata ή ένας όπως το data.cityofnewyork.us
+every value	κάθε τιμή
 Every {n} min	Κάθε {n} λεπτά
 Everything done in this session, from the app, scripts, the AI Assistant or plugins	Όλα όσα έγιναν σε αυτή τη συνεδρία, από την εφαρμογή, σενάρια, τον Βοηθό AI ή πρόσθετα
 Everywhere	Παντού
+EVI (enhanced vegetation)	EVI (ενισχυμένη βλάστηση)
 Exact request	Ακριβές αίτημα
 Existing field	Υπάρχον πεδίο
 Existing Template	Υπάρχον πρότυπο
@@ -1396,6 +1486,8 @@ Expand Group	Ανάπτυξη ομάδας
 Expand Legend	Ανάπτυξη υπομνήματος
 Expand the ribbon	Ανάπτυξη της κορδέλας
 Expand Tile Legend	Ανάπτυξη υπομνήματος tiles
+Expires at (Unix milliseconds)	Λήγει στις (χιλιοστά δευτερολέπτου Unix)
+expiresAt must be a Unix time in milliseconds, in the future.	Το expiresAt πρέπει να είναι χρόνος Unix σε χιλιοστά του δευτερολέπτου, στο μέλλον.
 Explode	Διάσπαση
 Exploratory 3D Analysis	Διερευνητική ανάλυση 3D
 Exploratory Analysis	Διερευνητική ανάλυση
@@ -1407,6 +1499,7 @@ Export\nMap	Εξαγωγή\nχάρτη
 Export\nRaster	Εξαγωγή\nraster
 Export and print the layout's map frames to PDF with their coordinates, so PDF readers can locate and measure in them.	Εξαγωγή και εκτύπωση των πλαισίων χάρτη της διάταξης σε PDF με τις συντεταγμένες τους, ώστε οι αναγνώστες PDF να εντοπίζουν και να μετρούν σε αυτά.
 Export Animation	Εξαγωγή κίνησης
+Export Block	Εξαγωγή μπλοκ
 Export Bookmarks	Εξαγωγή σελιδοδεικτών
 Export Bookmarks…	Εξαγωγή σελιδοδεικτών…
 Export CSV…	Εξαγωγή CSV…
@@ -1414,6 +1507,7 @@ Export Features	Εξαγωγή οντοτήτων
 Export Features (tool)	Εξαγωγή οντοτήτων (εργαλείο)
 Export Features needs a vector layer (Data › Export Raster writes a raster)	Η Εξαγωγή οντοτήτων χρειάζεται επίπεδο vector (το Δεδομένα › Εξαγωγή raster γράφει raster)
 Export Features…	Εξαγωγή οντοτήτων…
+Export GeoJSON…	Εξαγωγή GeoJSON…
 Export Keyboard Shortcuts…	Εξαγωγή συντομεύσεων πληκτρολογίου…
 Export Layout	Εξαγωγή διάταξης
 Export Map	Εξαγωγή χάρτη
@@ -1452,29 +1546,34 @@ exporting animations needs the desktop app	η εξαγωγή κινήσεων α
 exporting time animations needs the desktop app	η εξαγωγή χρονικών κινήσεων απαιτεί την εφαρμογή για υπολογιστή
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	Εξάγει ένα επίπεδο raster με στυλ ως tiles PNG σε Web Mercator μέσα σε αρχείο PMTiles.
 Exports a vector layer as a Web Mercator vector-tile PMTiles archive.	Εξάγει ένα διανυσματικό επίπεδο ως αρχείο PMTiles διανυσματικών tiles σε Web Mercator.
+Exports contain ordinary polygons and feature properties. Image/grid choices and exact constructions remain session-only.	Οι εξαγωγές περιέχουν συνηθισμένα πολύγωνα και ιδιότητες οντοτήτων. Οι επιλογές εικόνας/πλέγματος και οι ακριβείς κατασκευές μένουν μόνο στη συνεδρία.
 Export…	Εξαγωγή…
 Expression	Έκφραση
 Extensions	Επεκτάσεις
 Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands.	Οι επεκτάσεις είναι προαιρετικά μέρη του RustGIS: δεν χρειάζεται λήψη. Απενεργοποιήστε μία για να κρύψετε την καρτέλα και τις εντολές της.
 Extensions…	Επεκτάσεις…
 Extent	Έκταση
+Extent in	Έκταση σε
 Extent Indicator	Δείκτης έκτασης
 extent is [minLon, minLat, maxLon, maxLat], "view" or null	η έκταση είναι [minLon, minLat, maxLon, maxLat], "view" ή null
 Extent: {extent}	Έκταση: {extent}
 Extract	Απόσπαση
 Extracts the parts of input features that fall inside clip polygons.	Εξάγει τα τμήματα των οντοτήτων εισόδου που βρίσκονται μέσα στα πολύγωνα αποκοπής.
+Extrude them all first: the base is what their walls stand on.	Εξωθήστε τα όλα πρώτα: η βάση είναι αυτό πάνω στο οποίο στέκονται οι τοίχοι τους.
 Extruded shapes cast shadows on the map.	Τα εξωθημένα σχήματα ρίχνουν σκιές στον χάρτη.
 Extrusion	Εξώθηση
 Extrusion Base	Βάση εξώθησης
 F2	F2
 Face Culling	Απόρριψη όψεων
 Faces	Όψεις
+Facilities	Εγκαταστάσεις
 Factor	Συντελεστής
 Failed	Απέτυχε
 Failed only	Μόνο αποτυχημένα
 Failed replacement export	Αποτυχημένη εξαγωγή αντικατάστασης
 Fallback	Εναλλακτικό
 FALSE	FALSE
+False color urban	Ψευδέγχρωμο αστικό
 Farthest	Μέγιστη απόσταση
 Faster drawing: no antialiasing.	Ταχύτερη σχεδίαση: χωρίς εξομάλυνση ακμών.
 Favourite Arrangement	Αγαπημένη διάταξη
@@ -1554,6 +1653,7 @@ Find plugins in the RustGIS plugin registry.	Βρείτε πρόσθετα στ�
 Find Similar	Εύρεση παρόμοιων
 Find Tools	Εύρεση εργαλείων
 Finding routes…	Εύρεση διαδρομών…
+Finds the lines reachable within one or more travel costs of points, along a line network.	Βρίσκει τις γραμμές που είναι προσβάσιμες εντός ενός ή περισσότερων κοστών μετακίνησης από σημεία, κατά μήκος ενός δικτύου γραμμών.
 Finish File Export	Ολοκλήρωση εξαγωγής αρχείου
 Finish Polygon	Ολοκλήρωση πολυγώνου
 Finish Profile	Ολοκλήρωση προφίλ
@@ -1568,15 +1668,19 @@ First-Person	Πρώτο πρόσωπο
 First-Person Navigation	Πλοήγηση πρώτου προσώπου
 Fit	Προσαρμογή
 Fit To Map View	Προσαρμογή στην προβολή χάρτη
+Fit: centre of the vertex bounds, radius enclosing all vertices. This is not recovery of the original circle.	Προσαρμογή: κέντρο των ορίων των κορυφών, ακτίνα που περικλείει όλες τις κορυφές. Δεν πρόκειται για ανάκτηση του αρχικού κύκλου.
+Fit: minimum-area enclosing rectangle of the vertices in the chosen grid.	Προσαρμογή: περιβάλλον ορθογώνιο ελάχιστου εμβαδού των κορυφών στο επιλεγμένο πλέγμα.
+Fitting in progress. Cancel is also available in the status bar.	Προσαρμογή σε εξέλιξη. Η Ακύρωση είναι διαθέσιμη και στη γραμμή κατάστασης.
 Fix the problems listed below first	Διορθώστε πρώτα τα προβλήματα που αναφέρονται παρακάτω
 Fixed	Σταθερό
 Fixed Zoom In	Σταθερή μεγέθυνση
 Fixed Zoom Out	Σταθερή σμίκρυνση
-Fixture	Εξάρτημα
 Flat	Επίπεδη
+Flat ground keeps the ramp's colour and slopes facing the sun brighten	Το επίπεδο έδαφος κρατά το χρώμα της κλίμακας και οι πλαγιές που βλέπουν προς τον ήλιο φωτίζονται
 FlatGeobuf	FlatGeobuf
 Flip Line	Αντιστροφή γραμμής
 Flowline	Γραμμή ροής
+FocusAtPassStart	FocusAtPassStart
 Fog	Ομίχλη
 Folder	Φάκελος
 Folder Connections	Συνδέσεις φακέλων
@@ -1589,6 +1693,7 @@ Follow the time slider	Ακολούθηση του ρυθμιστικού χρό
 Font	Γραμματοσειρά
 for a store that doesn't say	για αποθήκη που δεν το ορίζει
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	Για το ArcGIS Online, το client ID είναι η εφαρμογή του ίδιου του RustGIS. Για πύλη ArcGIS Enterprise, καταχωρίστε σε αυτήν μια εφαρμογή OAuth (Content › New item › Developer credentials) με URL ανακατεύθυνσης {redirect} και δώστε το client ID της.
+For img1.tiff, suggest img1.geojson. Choose the location in the save dialog.	Για το img1.tiff, πρόταση img1.geojson. Επιλέξτε τη θέση στο παράθυρο αποθήκευσης.
 for the layers that change with time, as they list their times (2024-06-01, 1995)	για τα επίπεδα που αλλάζουν με τον χρόνο, όπως αναφέρουν τους χρόνους τους (2024-06-01, 1995)
 Forest	Δάσος
 Forget Earthdata Login Token	Διαγραφή token Earthdata Login
@@ -1596,6 +1701,7 @@ Forget Saved Keys	Διαγραφή αποθηκευμένων κλειδιών
 Forget Saved Login	Διαγραφή αποθηκευμένης σύνδεσης
 Forget Saved Password	Διαγραφή αποθηκευμένου κωδικού πρόσβασης
 Forget this plugin: the app stops trying to load it at start.	Λήθη αυτού του πρόσθετου: η εφαρμογή σταματά να προσπαθεί να το φορτώσει κατά την εκκίνηση.
+Forgets the sign-in, deletes the one remembered on this computer and empties the download cache.	Ξεχνά τη σύνδεση, διαγράφει αυτήν που έχει απομνημονευτεί σε αυτόν τον υπολογιστή και αδειάζει την cache λήψεων.
 Format	Μορφή
 Found: {names}. An agent works on this map through RustGIS's tools and with its own (web, scripts, files) in a folder of its own, kept in Documents › RustGIS › Agent work. It asks you before each action.	Βρέθηκαν: {names}. Ένας πράκτορας εργάζεται σε αυτόν τον χάρτη μέσω των εργαλείων του RustGIS και με τα δικά του (web, σενάρια, αρχεία), σε δικό του φάκελο στο Έγγραφα › RustGIS › Agent work. Σας ρωτά πριν από κάθε ενέργεια.
 Fr	Πα
@@ -1629,6 +1735,8 @@ Gemini stopped the reply ({reason}).	Το Gemini διέκοψε την απάν�
 General	Γενικά
 Generalization	Γενίκευση
 Generate a token	Δημιουργία token
+Generate ArcGIS Token	Δημιουργία token ArcGIS
+Generating token…	Δημιουργία token…
 geoBoundaries listed no countries: type a country's code	το geoBoundaries δεν επέστρεψε χώρες: πληκτρολογήστε τον κωδικό μιας χώρας
 Geocode	Γεωκωδικοποίηση
 Geocode Addresses	Γεωκωδικοποίηση διευθύνσεων
@@ -1648,6 +1756,7 @@ GeoLibre	GeoLibre
 GeoLibre project	Έργο GeoLibre
 GeoLibre Project…	Έργο GeoLibre…
 GeoLibre Tools	Εργαλεία GeoLibre
+Geology	Γεωλογία
 Geometric Interval	Γεωμετρικό διάστημα
 Geometry	Γεωμετρία
 Geometry lost during import cannot be recovered here. Use Import Original File to choose its coordinate system before reading it. Streamed layers must first be loaded into memory.	Η γεωμετρία που χάθηκε κατά την εισαγωγή δεν μπορεί να ανακτηθεί εδώ. Χρησιμοποιήστε την «Εισαγωγή αρχικού αρχείου» για να επιλέξετε το σύστημα συντεταγμένων του πριν από την ανάγνωσή του. Τα επίπεδα με ροή δεδομένων (streaming) πρέπει πρώτα να φορτωθούν στη μνήμη.
@@ -1675,12 +1784,15 @@ Give the catalogue's web address	Δώστε τη διαδικτυακή διεύ
 Give the file's web address	Δώστε τη διαδικτυακή διεύθυνση του αρχείου
 Give the service's web address	Δώστε τη διαδικτυακή διεύθυνση της υπηρεσίας
 give the text's layer and row, or the lon and lat to place one	δώστε το επίπεδο και τη γραμμή του κειμένου ή τα lon και lat για να τοποθετήσετε ένα
+given up before it was read: it was cancelled, or its project was closed	εγκαταλείφθηκε πριν διαβαστεί: ακυρώθηκε ή έκλεισε το έργο του
+given up before it was read: its project was closed, or more than 64 downloads started after it	εγκαταλείφθηκε πριν διαβαστεί: έκλεισε το έργο του ή ξεκίνησαν περισσότερες από 64 λήψεις μετά από αυτό
 given up before its read began: its project was closed, or more than 64 downloads started after it	εγκαταλείφθηκε πριν αρχίσει η ανάγνωσή του: το έργο του έκλεισε ή ξεκίνησαν περισσότερες από 64 λήψεις μετά από αυτό
 given up during its read: its project was closed, or more than 64 downloads started after it	εγκαταλείφθηκε κατά την ανάγνωσή του: το έργο του έκλεισε ή ξεκίνησαν περισσότερες από 64 λήψεις μετά από αυτό
 Global	Παγκόσμια
 Globe	Υδρόγειος
 Go	Μετάβαση
 Go back a step.	Ένα βήμα πίσω.
+Go back to the phone's interface: the map with large buttons under it.	Επιστροφή στο περιβάλλον του τηλεφώνου: ο χάρτης με μεγάλα κουμπιά από κάτω.
 Go back to the previous extent.	Επιστροφή στην προηγούμενη έκταση.
 Go forward a step.	Ένα βήμα μπροστά.
 Go forward to the next extent.	Μετάβαση στην επόμενη έκταση.
@@ -1709,7 +1821,10 @@ Greece	Ελλάδα
 Green	Πράσινο
 Greys	Γκρι
 Grid	Πλέγμα
+Grid color	Χρώμα πλέγματος
+Grid EPSG:{epsg}	Πλέγμα EPSG:{epsg}
 Grid pixels; angle clockwise from grid right.	Pixel πλέγματος· γωνία δεξιόστροφα από τα δεξιά του πλέγματος.
+Grid read cancelled. Reload the grid to draw in image pixels.	Η ανάγνωση του πλέγματος ακυρώθηκε. Φορτώστε ξανά το πλέγμα για να σχεδιάσετε σε pixel της εικόνας.
 Grid Spacing (degrees)	Απόσταση πλέγματος (μοίρες)
 Ground	Έδαφος
 Ground\nTo Grid	Έδαφος\nπρος πλέγμα
@@ -1717,6 +1832,7 @@ Ground heights	Υψόμετρα εδάφους
 Ground To Grid	Έδαφος προς πλέγμα
 Group	Ομάδα
 GROUP BY	GROUP BY
+Group by	Ομαδοποίηση κατά
 Group features by an integer code, each with default values.	Ομαδοποιεί τις οντότητες κατά ακέραιο κωδικό, καθένας με τις δικές του προεπιλεγμένες τιμές.
 Group Option	Επιλογή ομαδοποίησης
 Group Properties	Ιδιότητες ομάδας
@@ -1736,8 +1852,10 @@ Haze, fog, rain or snow over the map.	Αχλή, ομίχλη, βροχή ή χι
 Head/Tail Breaks	Head/Tail Breaks
 Header name	Όνομα κεφαλίδας
 Height	Ύψος
+Height (m)	Ύψος (m)
 Height (mm)	Ύψος (mm)
 Height (points)	Ύψος (στιγμές)
+Held in	Αποθηκεύεται σε
 Help	Βοήθεια
 Help › Help	Βοήθεια › Βοήθεια
 Hexagons	Εξάγωνα
@@ -1771,7 +1889,10 @@ HOME	HOME
 Home	Αρχική
 Home › Add	Αρχική › Προσθήκη
 Home › Add › Add Data	Αρχική › Προσθήκη › Προσθήκη δεδομένων
+Home › Add › Add Data › From Service	Αρχική › Προσθήκη › Προσθήκη δεδομένων › Από υπηρεσία
 Home › Add › Web Data	Αρχική › Προσθήκη › Δεδομένα web
+Home › Add › Web Data › Copernicus Data Space	Αρχική › Προσθήκη › Δεδομένα web › Copernicus Data Space
+Home › Add › Web Data › NASA Earthaccess	Αρχική › Προσθήκη › Δεδομένα web › NASA Earthaccess
 Home › Add › Web Data › United States	Αρχική › Προσθήκη › Δεδομένα web › Ηνωμένες Πολιτείες
 Home › Inspect › Measure	Αρχική › Επιθεώρηση › Μέτρηση
 Home › Navigate	Αρχική › Πλοήγηση
@@ -1812,9 +1933,14 @@ IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	Νέφη σημείων LiDAR HD της IGN για τη Γαλλία: tiles 1 km στην περιοχή του χάρτη, που προστίθενται ως νέφη σημείων COPC.
 Ignore holes	Παράβλεψη οπών
 Illumination	Φωτισμός
+Image	Εικόνα
 Image Analysis	Ανάλυση εικόνων
+Image annotation	Σχολιασμός εικόνας
 Image Classification	Κατηγοριοποίηση εικόνων
+image is required; use null for No image	image is required· χρησιμοποιήστε null για Χωρίς εικόνα
+Image markers that can't be drawn were replaced by the circles they showed as: {count} on "{layer}"	Οι δείκτες εικόνας που δεν μπορούν να σχεδιαστούν αντικαταστάθηκαν από τους κύκλους με τους οποίους εμφανίζονταν: {count} στο «{layer}»
 Image Page	Σελίδα εικόνας
+Image-grid request limit reached	Συμπληρώθηκε το όριο αιτημάτων πλέγματος εικόνας
 Imagery	Εικόνες
 Imagery Sharing	Κοινή χρήση εικόνων
 Imagery Tools	Εργαλεία εικόνων
@@ -1830,6 +1956,7 @@ Import Deep Learning Package	Εισαγωγή πακέτου βαθιάς μάθ
 Import DXF	Εισαγωγή DXF
 Import DXF…	Εισαγωγή DXF…
 Import GeoLibre Project	Εισαγωγή έργου GeoLibre
+Import GeoLibre Tool Translations	Εισαγωγή μεταφράσεων εργαλείων GeoLibre
 Import Keyboard Shortcuts	Εισαγωγή συντομεύσεων πληκτρολογίου
 Import Keyboard Shortcuts…	Εισαγωγή συντομεύσεων πληκτρολογίου…
 Import Layout	Εισαγωγή διάταξης
@@ -1870,17 +1997,21 @@ In the coordinate system's units: metres for UTM.	Στις μονάδες του
 In the middle	Στη μέση
 In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	Στην εφαρμογή web, δώστε έναν διακομιστή μεσολάβησης με ενεργό CORS· η άμεση πρόσβαση στο Census απαιτεί την εφαρμογή για υπολογιστή ή το CLI.
 In use	Σε χρήση
+Include Empty Zones	Συμπερίληψη κενών ζωνών
 Include End Point	Συμπερίληψη τελικού σημείου
 Indent	Εσοχή
 Indent Group	Εσοχή ομάδας
 Indent Layer	Εσοχή επιπέδου
+Index	Δείκτης
 Indexes	Ευρετήρια
 India	Ινδία
 Indices	Δείκτες
+Indices are made on the desktop for now	Οι δείκτες γίνονται στην εφαρμογή για υπολογιστή προς το παρόν
 Indonesia	Ινδονησία
 Info	Πληροφορίες
 Infographics	Ενημερωτικά γραφήματα
 Information	Πληροφορίες
+Ink	Μελάνι
 INPUT	ΕΙΣΟΔΟΣ
 Input	Είσοδος
 Input Class Features	Οντότητες κλάσεων εισόδου
@@ -1917,6 +2048,7 @@ Installed with Homebrew, winget, the AUR or COPR? Update it there.	Το εγκα
 Installed {name} {version}. Find it on the Plugins tab; its tools are also in the Tools pane.	Εγκαταστάθηκε το {name} {version}. Θα το βρείτε στην καρτέλα «Πρόσθετα»· τα εργαλεία του βρίσκονται επίσης στο πλαίσιο «Εργαλεία».
 Installing it downloads Python {version} and the packages it needs from the internet.	Η εγκατάστασή του κατεβάζει από το διαδίκτυο την Python {version} και τα πακέτα που χρειάζεται.
 Integer field: values are rounded.	Ακέραιο πεδίο: οι τιμές στρογγυλοποιούνται.
+Interface	Περιβάλλον εργασίας
 Interface font: {font}	Γραμματοσειρά διεπαφής: {font}
 Interface Scale	Κλίμακα διεπαφής
 Interface scale held to {percent}%	Η κλίμακα διεπαφής περιορίστηκε στο {percent}%
@@ -1954,6 +2086,7 @@ It is locked, or one of its surrounds is: unlock it first	Είναι κλειδ�
 It is remembered on this computer.	Απομνημονεύεται σε αυτόν τον υπολογιστή.
 it is reserved to you (plugins, scripts, tasks, models and the GeoLibre runner)	προορίζεται μόνο για εσάς (πρόσθετα, σενάρια, εργασίες, μοντέλα και το πρόγραμμα εκτέλεσης GeoLibre)
 it needs input: open it from its pane or button, or run it from a script or the assistant	χρειάζεται δεδομένα εισόδου: ανοίξτε το από το πλαίσιο ή το κουμπί του, ή εκτελέστε το από σενάριο ή από τον βοηθό
+It opens unsaved. Save to keep it.	Ανοίγει μη αποθηκευμένο. Αποθηκεύστε το για να το κρατήσετε.
 It opens unsaved; saving replaces {file}.	Ανοίγει χωρίς αποθήκευση· η αποθήκευση αντικαθιστά το {file}.
 it reads or writes files on this computer	διαβάζει ή γράφει αρχεία σε αυτόν τον υπολογιστή
 it replaces the open project	αντικαθιστά το ανοιχτό έργο
@@ -1976,6 +2109,7 @@ its default	η προεπιλογή του
 Its default: {default}. Its times: {times}	Προεπιλογή: {default}. Χρόνοι: {times}
 Its firewall ({firewall}) blocked RustGIS. The service may only allow some applications: contact its administrator and send them the details below.	Το τείχος προστασίας ({firewall}) της υπηρεσίας απέκλεισε το RustGIS. Η υπηρεσία ίσως επιτρέπει μόνο ορισμένες εφαρμογές: επικοινωνήστε με τον διαχειριστή της και στείλτε του τις παρακάτω λεπτομέρειες.
 its layer was removed	το επίπεδό του αφαιρέθηκε
+Its own colour for its text and lines; off, the default dark grey	Δικό του χρώμα για το κείμενο και τις γραμμές του· ανενεργό: το προεπιλεγμένο σκούρο γκρι
 its tile archive changed or was removed	το αρχείο tile του άλλαξε ή αφαιρέθηκε
 Its tool isn't available now (a plugin's, not loaded, or a suite's, not installed)	Το εργαλείο του δεν είναι διαθέσιμο τώρα (ανήκει σε πρόσθετο που δεν έχει φορτωθεί ή σε σουίτα που δεν έχει εγκατασταθεί)
 Japan	Ιαπωνία
@@ -2014,6 +2148,7 @@ Keep value	Διατήρηση τιμής
 Keeps the access key ID and secret access key in this computer's credential store, never in the connection or the project.	Φυλάσσει το αναγνωριστικό κλειδιού πρόσβασης και το μυστικό κλειδί πρόσβασης στον χώρο αποθήκευσης διαπιστευτηρίων αυτού του υπολογιστή, ποτέ στη σύνδεση ή στο έργο.
 Keeps the parts of two polygon layers that only one of them covers, with that layer's attributes.	Διατηρεί τα τμήματα δύο πολυγωνικών επιπέδων που καλύπτει μόνο το ένα από αυτά, με τα γνωρίσματα εκείνου του επιπέδου.
 Keeps the token in the system's credential store, so it is there when RustGIS starts again. Unticked, a token remembered before is deleted when you save another.	Διατηρεί το token στο χώρο αποθήκευσης διαπιστευτηρίων του συστήματος, ώστε να υπάρχει όταν το RustGIS ξεκινήσει ξανά. Αν δεν είναι επιλεγμένο, ένα token που είχε απομνημονευτεί διαγράφεται όταν αποθηκεύσετε άλλο.
+Keeps the username and password in the system's credential store, so RustGIS signs in by itself when it starts again. Not for an account with two-factor authentication. Unticked, a sign-in remembered before is deleted when you sign in.	Κρατά το όνομα χρήστη και τον κωδικό πρόσβασης στην αποθήκη διαπιστευτηρίων του συστήματος, ώστε το RustGIS να συνδέεται μόνο του όταν ξεκινά ξανά. Όχι για λογαριασμό με έλεγχο ταυτότητας δύο παραγόντων. Αν δεν είναι επιλεγμένο, μια σύνδεση που είχε απομνημονευτεί διαγράφεται όταν συνδεθείτε.
 Kernel Density	Πυκνότητα πυρήνα
 Kernel Type	Τύπος πυρήνα
 Key	Κλειδί
@@ -2055,6 +2190,7 @@ Lambert Conformal Conic	Σύμμορφη κωνική Lambert
 Lambert Cylindrical Equal Area	Ισοδύναμη κυλινδρική Lambert
 Landscape	Οριζόντιος
 Language	Γλώσσα
+Largest first	Τα μεγαλύτερα πρώτα
 Lasso	Λάσο
 Lasso (draw)	Λάσο (σχεδίαση)
 Last agent call failed: {call} ({secs} s ago)	Η τελευταία κλήση πράκτορα απέτυχε: {call} (πριν από {secs} s)
@@ -2072,6 +2208,7 @@ Layer Extrusion	Εξώθηση επιπέδου
 Layer File	Αρχείο επιπέδου
 Layer From\nSelection	Επίπεδο από\nεπιλογή
 Layer not found	Το επίπεδο δεν βρέθηκε
+Layer order	Σειρά επιπέδων
 Layer Properties	Ιδιότητες επιπέδου
 Layer Properties Pane	Τμήμα ιδιοτήτων επιπέδου
 Layer Properties · {layer}	Ιδιότητες επιπέδου · {layer}
@@ -2094,6 +2231,7 @@ Layouts	Διατάξεις
 Learn	Εκμάθηση
 Learning\nResources	Υλικό\nεκμάθησης
 Least cloud first	Πρώτα η λιγότερη νεφοκάλυψη
+Leave out	Εξαίρεση
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	Αφήστε τα κλειδιά κενά για να συνδεθείτε με τα κλειδιά που είναι αποθηκευμένα σε αυτόν τον υπολογιστή, ή πληκτρολογήστε άλλα και, στη συνέχεια, επιλέξτε Αποθήκευση.
 Left	Αριστερά
 Legend	Υπόμνημα
@@ -2157,6 +2295,7 @@ List Source Cooperative Files	Λίστα αρχείων Source Cooperative
 List Source Cooperative Products	Λίστα προϊόντων Source Cooperative
 List STAC Collections	Λίστα συλλογών STAC
 List Tables	Λίστα πινάκων
+List Tables reads a file of several layers (a KML, a zip) whole, up to {limit} MiB; add it with Add Data	Η Λίστα πινάκων διαβάζει ολόκληρο ένα αρχείο με πολλά επίπεδα (KML, zip), έως {limit} MiB· προσθέστε το με την Προσθήκη δεδομένων
 List The National Map Services	Λίστα υπηρεσιών The National Map
 List the provider's models	Λίστα μοντέλων του παρόχου
 List this layer in the legend	Εμφάνιση αυτού του επιπέδου στο υπόμνημα
@@ -2188,6 +2327,7 @@ Loads map tiles from the web	Φορτώνει tiles χάρτη από το web
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	Φορτώνει έναν πίνακα οντοτήτων ενός GeoPackage σε αυτόν τον υπολογιστή (έως 100.000 γραμμές) ώστε οι επεξεργασίες του να αποθηκεύονται πίσω σε αυτόν τον πίνακα με Επεξεργασία › Αποθήκευση σε GeoPackage. Χρειάζεται INTEGER PRIMARY KEY.
 Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	Φορτώνει ξανά τις γραμμές του επιπέδου όπως είναι τώρα στη βάση δεδομένων. Οι μη αποθηκευμένες αλλαγές του απορρίπτονται (η Αναίρεση τις επαναφέρει).
 Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	Φορτώνει ξανά τις γραμμές του επιπέδου όπως είναι τώρα στο αρχείο. Οι μη αποθηκευμένες επεξεργασίες του απορρίπτονται (η Αναίρεση τις επαναφέρει).
+Load…	Φόρτωση…
 Local	Τοπικό
 Locate	Εντοπισμός
 Locate GeoLibre Runner	Εντοπισμός προγράμματος εκτέλεσης GeoLibre
@@ -2248,6 +2388,7 @@ Map Labeling	Απόδοση ετικετών χάρτη
 Map Link	Σύνδεσμος χάρτη
 Map name	Όνομα χάρτη
 Map Page	Σελίδα χάρτη
+Map projections	Χαρτογραφικές προβολές
 Map scale	Κλίμακα χάρτη
 Map Series	Σειρά χαρτών
 Map Series Page	Σελίδα σειράς χαρτών
@@ -2255,6 +2396,7 @@ Map series page name	Όνομα σελίδας σειράς χαρτών
 Map style (JSON)	Στυλ χάρτη (JSON)
 Map Surrounds	Συνοδευτικά στοιχεία χάρτη
 Map Thumbnail	Μικρογραφία χάρτη
+Map Tiles	Tiles χάρτη
 Map tiles of the whole world	Tiles χάρτη ολόκληρου του κόσμου
 Map Tool: {tool}	Εργαλείο χάρτη: {tool}
 Map View	Προβολή χάρτη
@@ -2278,6 +2420,8 @@ Matplotlib	Matplotlib
 Max	Μέγ.
 Max %	Μέγ. %
 Max Neighbors	Μέγ. γείτονες
+Max X	Μέγ. X
+Max Y	Μέγ. Y
 Maximum Zoom	Μέγιστη μεγέθυνση
 Maximum zoom	Μέγιστη μεγέθυνση
 MCP Relay	Αναμεταδότης MCP
@@ -2298,6 +2442,7 @@ Measured grid's coordinate system	Σύστημα συντεταγμένων με
 Measurement units	Μονάδες μέτρησης
 Measurement units must be metric or imperial	Οι μονάδες μέτρησης πρέπει να είναι μετρικές ή αγγλοσαξονικές
 Measurements so far.	Μετρήσεις μέχρι στιγμής.
+Measures the cost and length of the cheapest way along a line network from each origin to each destination.	Μετρά το κόστος και το μήκος της φθηνότερης διαδρομής κατά μήκος ενός δικτύου γραμμών από κάθε αφετηρία προς κάθε προορισμό.
 Mensuration	Μετρήσεις
 Mensuration Tools	Εργαλεία μετρήσεων
 Merge	Συγχώνευση
@@ -2319,6 +2464,8 @@ Min	Ελάχ.
 Min %	Ελάχ. %
 Min must be less than Max	Το Ελάχ. πρέπει να είναι μικρότερο από το Μέγ.
 Min must not be more than Max	Το Ελάχ. δεν πρέπει να είναι μεγαλύτερο από το Μέγ.
+Min X	Ελάχ. X
+Min Y	Ελάχ. Y
 Minimum Bounding Geometry	Ελάχιστη περιβάλλουσα γεωμετρία
 Minimum Maximum	Ελάχιστο–μέγιστο
 Minimum Zoom	Ελάχιστη μεγέθυνση
@@ -2365,7 +2512,9 @@ Months	Μήνες
 Months are numbers from 1 to 12 (12, 1, 2 for December to February)	Οι μήνες είναι αριθμοί από 1 έως 12 (12, 1, 2 για Δεκέμβριο έως Φεβρουάριο)
 More	Περισσότερα
 More basemaps:	Περισσότερα basemaps:
+More Quick Access commands	Περισσότερες εντολές γρήγορης πρόσβασης
 More than one saved connection could read these buckets. Choose the one that reads each; the project's sources that read it stay closed until you do.	Περισσότερες από μία αποθηκευμένες συνδέσεις μπορούν να διαβάσουν αυτά τα buckets. Επιλέξτε αυτή που διαβάζει το καθένα. Μέχρι τότε, οι πηγές του έργου που το διαβάζουν παραμένουν κλειστές.
+more than {bound}	πάνω από {bound}
 Morocco	Μαρόκο
 Mosaic images into an orthomosaic	Συνένωση εικόνων σε ορθομωσαϊκό
 Mosaic Rasters	Μωσαϊκό raster
@@ -2405,6 +2554,7 @@ My OGC Layer	Το επίπεδο OGC μου
 MySQL/MariaDB	MySQL/MariaDB
 N/S/E/W	N/S/E/W
 Name	Όνομα
+name or code	όνομα ή κωδικός
 name the plugin whose panel to open: {"id": plugin id}	ορίστε το πρόσθετο του οποίου το πλαίσιο θα ανοίξει: {"id": plugin id}
 Names keep up to 200 characters.	Τα ονόματα διατηρούν έως 200 χαρακτήρες.
 NASA Earthaccess	NASA Earthaccess
@@ -2426,22 +2576,30 @@ Navigate with the mouse (planar) or walk with W A S D, Q and E (first-person).	�
 Navigation	Πλοήγηση
 Navigation Mode	Λειτουργία πλοήγησης
 Navigator	Πλοηγός
+NBR (burn ratio)	NBR (λόγος καμένων)
+NDBI (built-up)	NDBI (δομημένο)
+NDVI (vegetation)	NDVI (βλάστηση)
 NDVI, MODIS, rain…	NDVI, MODIS, βροχή…
 NDVI, NDWI, SAVI, NBR, NDBI, EVI.	NDVI, NDWI, SAVI, NBR, NDBI, EVI.
+NDWI (water)	NDWI (νερό)
 Near	Πλησιέστερο
 Near Features	Πλησιέστερες οντότητες
 Nearest cell	Πλησιέστερο κελί
 Nearest Neighbor	Πλησιέστερος γείτονας
 Neatline	Γραμμή πλαισίου
+Needed to make a token from a password	Απαιτείται για τη δημιουργία token από κωδικό πρόσβασης
 Needs RustGIS {min}	Απαιτεί RustGIS {min}
 Needs three or more bands.	Απαιτεί τρία ή περισσότερα κανάλια.
 Needs two or more numeric fields.	Χρειάζονται δύο ή περισσότερα αριθμητικά πεδία.
+Needs {what}, which isn't given: {place}.	Χρειάζεται {what}, που δεν δόθηκε: {place}.
+Needs {what}: kept.	Χρειάζεται {what}: διατηρήθηκε.
 Neighborhood Explorer	Εξερεύνηση γειτονιάς
 Nepal	Νεπάλ
 Netherlands	Κάτω Χώρες
 Network	Δίκτυο
 Network Analysis	Ανάλυση δικτύου
 Network failures	Αποτυχίες δικτύου
+Network Lines	Γραμμές δικτύου
 New	Νέο
 New\nLayout	Νέα\nδιάταξη
 New\nMap	Νέος\nχάρτης
@@ -2472,6 +2630,8 @@ New Relationship…	Νέα σχέση…
 New Report	Νέα αναφορά
 New rows	Νέες γραμμές
 New Selection	Νέα επιλογή
+New shape grid	Πλέγμα νέων σχημάτων
+New shapes use the original GeoTIFF pixels, including rotation and shear. Existing objects keep their own grid.	Τα νέα σχήματα χρησιμοποιούν τα αρχικά pixel του GeoTIFF, συμπεριλαμβανομένων περιστροφής και διάτμησης. Τα υπάρχοντα αντικείμενα διατηρούν το δικό τους πλέγμα.
 New Style	Νέο στυλ
 New Style From Layer	Νέο στυλ από επίπεδο
 New Task	Νέα εργασία
@@ -2498,6 +2658,7 @@ No catalogs below this one: Find Items lists its items	Δεν υπάρχουν �
 No COMID was returned for this point.	Δεν επιστράφηκε COMID για αυτό το σημείο.
 no command	καμία εντολή
 No command matches	Καμία εντολή δεν ταιριάζει
+No coordinate system matches; a code or PROJ string is used as typed.	Κανένα σύστημα συντεταγμένων δεν ταιριάζει· ένας κωδικός ή μια συμβολοσειρά PROJ χρησιμοποιείται όπως πληκτρολογήθηκε.
 no data	χωρίς δεδομένα
 No data at the points picked.	Δεν υπάρχουν δεδομένα στα επιλεγμένα σημεία.
 No data cube matches	Κανένας κύβος δεδομένων δεν ταιριάζει
@@ -2514,6 +2675,8 @@ No Fill	Χωρίς γέμισμα
 No geometry to calculate	Δεν υπάρχει γεωμετρία για υπολογισμό
 No granules in this view and date range.	Δεν υπάρχουν granules σε αυτή την προβολή και το εύρος ημερομηνιών.
 no home folder	δεν υπάρχει προσωπικός φάκελος
+No image	Χωρίς εικόνα
+No installed font draws the {language} text on the map, so it is left out of the map and its exports.	Καμία εγκατεστημένη γραμματοσειρά δεν σχεδιάζει το κείμενο σε {language} στον χάρτη, οπότε παραλείπεται από τον χάρτη και τις εξαγωγές του.
 no layer	κανένα επίπεδο
 No layer has a field of dates.	Κανένα επίπεδο δεν έχει πεδίο ημερομηνιών.
 no layer has a field of dates: add one that has, or a tile layer whose address has a date (map.addTiles)	κανένα επίπεδο δεν έχει πεδίο ημερομηνιών: προσθέστε ένα που έχει ή ένα επίπεδο tiles του οποίου η διεύθυνση περιέχει ημερομηνία (map.addTiles)
@@ -2537,6 +2700,7 @@ No polygon layer available in the map.	Δεν υπάρχει διαθέσιμο 
 No Pop-ups	Χωρίς αναδυόμενα παράθυρα
 No presentations yet. Publish › New Presentation starts one.	Δεν υπάρχουν ακόμη παρουσιάσεις. Η εντολή Δημοσίευση › Νέα παρουσίαση δημιουργεί μία.
 No products	Δεν υπάρχουν προϊόντα
+No project changes to undo or redo.	Δεν υπάρχουν αλλαγές του έργου για αναίρεση ή επανάληψη.
 No project opened or saved yet	Δεν έχει ανοιχτεί ή αποθηκευτεί ακόμη έργο
 No project sources are waiting for an S3 connection.	Καμία πηγή του έργου δεν περιμένει σύνδεση S3.
 No properties	Χωρίς ιδιότητες
@@ -2565,6 +2729,7 @@ NoData	NoData
 Nominatim	Nominatim
 None	Κανένα
 None (public buckets)	Κανένα (δημόσια buckets)
+None of these layers are polygon layers.	Κανένα από αυτά τα επίπεδα δεν είναι επίπεδο πολυγώνων.
 none, a .duckdb file, or host=… dbname=… user=…	κανένα, ένα αρχείο .duckdb ή host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	κανένας ή από PGPASSWORD, MYSQL_PWD ή SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Κανένα. Προσθέστε ένα μέσω διεύθυνσης ή από ένα πρόσθετο basemap.
@@ -2592,6 +2757,7 @@ Not sandboxed	Χωρίς sandbox
 Not saved yet	Δεν έχει αποθηκευτεί ακόμη
 Not searched, as they didn't load: {folders}	Δεν έγινε αναζήτηση, καθώς δεν φορτώθηκαν: {folders}
 Not Selectable	Μη επιλέξιμο
+Not signed in.	Δεν έχετε συνδεθεί.
 Not traced: a drawn line holds at most 10,000 points	Δεν ιχνηλατήθηκε: μια σχεδιασμένη γραμμή έχει το πολύ 10.000 σημεία
 Notebook	Σημειωματάριο
 Notebook Pane	Πλαίσιο σημειωματαρίου
@@ -2617,6 +2783,7 @@ observer height m	ύψος παρατηρητή m
 Ocean	Ωκεανός
 Ocean Data Platform	Ocean Data Platform
 Ocean Data Platform…	Ocean Data Platform…
+OD Cost Matrix	Πίνακας κόστους OD
 of a geometry that doesn't say	για γεωμετρία χωρίς δηλωμένο σύστημα
 Off	Ανενεργό
 Off, the commands run aren't recorded; what is in the log stays	Απενεργοποιημένο, οι εντολές που εκτελούνται δεν καταγράφονται· ό,τι υπάρχει στο αρχείο καταγραφής μένει
@@ -2632,8 +2799,10 @@ Older copies waiting: {n}.	Παλαιότερα αντίγραφα σε αναμ
 Oldest first	Πρώτα τα παλαιότερα
 Ollama (local)	Ollama (τοπικά)
 On	Ενεργό
+On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	Σε οθόνη υψηλής ανάλυσης (HiDPI), λήψη raster tiles και εικόνων WMS για τα πραγματικά pixel της οθόνης, έως διπλάσια λεπτομέρεια: το κείμενο και οι γραμμές τους βγαίνουν ευκρινή και μικρότερα. Αν είναι ανενεργό, λαμβάνονται για τα λογικά pixel της και τεντώνονται: πιο θολά, με μεγαλύτερο κείμενο.
 On Hold	Σε αναμονή
 on hold	σε αναμονή
+on is required	Το on είναι υποχρεωτικό
 On its own tab, {tab}.	Στη δική της καρτέλα, {tab}.
 on must be true or false	το on είναι true ή false
 On the desktop, the key can also come from {vars}.	Στην εφαρμογή για υπολογιστή, το κλειδί μπορεί επίσης να προέρχεται από {vars}.
@@ -2649,7 +2818,7 @@ One page per feature of an index layer.	Μία σελίδα ανά οντότη�
 One per line: code=name	Ένα ανά γραμμή: κωδικός=όνομα
 One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.	Μία εικόνα της προβολής: τα σύμβολα και οι ετικέτες δεν κόβονται στα άκρα των tiles και η υπηρεσία ερωτάται μία φορά ανά προβολή. Σχεδιάζεται σε tiles στην υδρόγειο, σε κεκλιμένο χάρτη ή σε προβολή που η υπηρεσία δεν προσφέρει.
 One stroke, from the symbol. Add strokes for casings, parallel lines and offsets.	Μία πινελιά, από το σύμβολο. Προσθέστε πινελιές για περιβλήματα, παράλληλες γραμμές και μετατοπίσεις.
-only a discovered list can invalidate the saved table	μόνο μια λίστα που ανακαλύφθηκε μπορεί να ακυρώσει τον αποθηκευμένο πίνακα
+One-time code	Κωδικός μίας χρήσης
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Μόνο ένα αρχείο tiles που διαβάστηκε από αρχείο (PMTiles ή MBTiles) μπορεί να επιδιορθωθεί.
 Only cubes with data where the map is	Μόνο κύβοι με δεδομένα στην περιοχή του χάρτη
 Only selected polygons will be included in the output.	Στο αποτέλεσμα θα συμπεριληφθούν μόνο τα επιλεγμένα πολύγωνα.
@@ -2659,6 +2828,7 @@ Only the features whose date falls in the slider's window draw	Σχεδιάζο�
 Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.	Εμφανίζονται μόνο οι πρώτοι {kept} από τους {given} κόμβους που έδωσε το πρόσθετο: ένα δέντρο χωράει το πολύ {kept}.
 Only the map's area	Μόνο η περιοχή του χάρτη
 Only where the map is	Μόνο στην περιοχή του χάρτη
+Only with two-factor authentication	Μόνο με έλεγχο ταυτότητας δύο παραγόντων
 Opacity	Αδιαφάνεια
 Open	Άνοιγμα
 Open a .rgis project	Άνοιγμα έργου .rgis
@@ -2734,15 +2904,22 @@ Or grid reference	Ή αναφορά πλέγματος
 Or run in a POSIX shell, for Claude Code or Codex:	Ή εκτελέστε σε κέλυφος POSIX, για Claude Code ή Codex:
 Or run in PowerShell, for Claude Code or Codex:	Ή εκτελέστε στο PowerShell, για Claude Code ή Codex:
 Or run, for Claude Code or Codex:	Ή εκτελέστε, για Claude Code ή Codex:
+Order	Σειρά
 ORDER BY	ORDER BY
 Ordinary Kriging	Κανονικό kriging
 Orientation	Προσανατολισμός
 Origin	Προέλευση
 Origin key	Κλειδί προέλευσης
 Original	Πρωτότυπο
+Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.	Αρχικά pixel του GeoTIFF, συμπεριλαμβανομένων περιστροφής και διάτμησης. Υποστηρίζονται μόνο τοπικά ή ενσωματωμένα GeoTIFF.
 Original grid pixels. A circle may appear elliptical in the map projection.	Pixel του αρχικού πλέγματος. Ένας κύκλος μπορεί να φαίνεται ελλειπτικός στην προβολή του χάρτη.
+Original Image Grid	Πλέγμα αρχικής εικόνας
+Original image grid: {width} × {height} pixels, EPSG:{epsg}	Πλέγμα αρχικής εικόνας: {width} × {height} pixel, EPSG:{epsg}
+Original image pixels	Pixel αρχικής εικόνας
+Origins	Αφετηρίες
 Ortho Mapping	Ορθοχαρτογράφηση
 Other	Άλλο
+Other bar	Άλλη ράβδος
 Other copies of unsaved work will be offered at the next start ({n}).	Άλλα αντίγραφα μη αποθηκευμένης εργασίας θα προσφερθούν στην επόμενη εκκίνηση ({n}).
 Other Data	Άλλα δεδομένα
 Out Beyond	Όριο σμίκρυνσης
@@ -2772,6 +2949,7 @@ Overture Maps	Overture Maps
 Overture Maps' open data: buildings, places, transportation, administrative divisions, base layers and addresses. Where the map is, its features are read in place from Overture's GeoParquet files (zoom to a city or smaller); the whole world comes as map tiles.	Ανοιχτά δεδομένα του Overture Maps: κτίρια, τοποθεσίες, μεταφορές, διοικητικές διαιρέσεις, βασικά επίπεδα και διευθύνσεις. Στην περιοχή του χάρτη, οι οντότητες διαβάζονται επί τόπου από τα αρχεία GeoParquet του Overture (εστιάστε σε μια πόλη ή μικρότερη περιοχή)· ολόκληρος ο κόσμος έρχεται ως tiles χάρτη.
 Overture Maps…	Overture Maps…
 Overwrite existing values	Αντικατάσταση υπαρχουσών τιμών
+Own	Δικό του
 Package	Πακέτο
 Package a trained deep learning model.	Δημιουργία πακέτου εκπαιδευμένου μοντέλου βαθιάς μάθησης.
 Package for\nthe Field	Πακέτο\nγια πεδίο
@@ -2780,6 +2958,7 @@ Package Map	Δημιουργία πακέτου χάρτη
 Package Project	Δημιουργία πακέτου έργου
 Package Results	Δημιουργία πακέτου αποτελεσμάτων
 Pad	Επέκταση
+Padding	Περιθώριο
 Padding across	Περιθώριο οριζόντια
 Padding up and down	Περιθώριο πάνω και κάτω
 Page	Σελίδα
@@ -2812,8 +2991,11 @@ Parent folder	Γονικός φάκελος
 parks, bike lanes, flood zones…	πάρκα, ποδηλατόδρομοι, ζώνες πλημμύρας…
 Password	Κωδικός πρόσβασης
 Past its points: its end colors, back and forth, or over again	Πέρα από τα σημεία της: τα ακραία χρώματα, μπρος-πίσω ή από την αρχή
+Past the limit	Πέρα από το όριο
 Paste	Επικόλληση
 Paste a token	Επικολλήστε ένα token
+Paste a token for this connection, or make one from its user and password. Remember on this computer is optional.	Επικολλήστε ένα token για αυτή τη σύνδεση ή δημιουργήστε ένα από τον χρήστη και τον κωδικό πρόσβασής της. Η Απομνημόνευση σε αυτόν τον υπολογιστή είναι προαιρετική.
+Paste a token, or type the password to make one, or leave it blank to use this connection's session or saved login, then Save.	Επικολλήστε ένα token, ή πληκτρολογήστε τον κωδικό πρόσβασης για να δημιουργήσετε ένα, ή αφήστε το κενό για να χρησιμοποιηθεί η συνεδρία ή η αποθηκευμένη σύνδεση αυτής της σύνδεσης, και μετά Αποθήκευση.
 Paste copied features into the selected layer, or as a new layer.	Επικόλληση αντιγραμμένων οντοτήτων στο επιλεγμένο επίπεδο ή ως νέο επίπεδο.
 Paste Group	Επικόλληση ομάδας
 Paste Groups	Επικόλληση ομάδων
@@ -2821,6 +3003,7 @@ Paste Layer	Επικόλληση επιπέδου
 Paste Layers	Επικόλληση επιπέδων
 Paste Special	Ειδική επικόλληση
 Paste Special (as a new layer)	Ειδική επικόλληση (ως νέο επίπεδο)
+Paste token	Επικόλληση token
 paste your key	επικολλήστε το κλειδί σας
 path is required	απαιτείται το path
 Pause	Παύση
@@ -2829,9 +3012,11 @@ PDF	PDF
 PDF or PNG	PDF ή PNG
 PDF, PNG or SVG	PDF, PNG ή SVG
 PDOK's public server	Ο δημόσιος διακομιστής του PDOK
+Percent	Ποσοστό
 Percent Clip	Αποκοπή ποσοστού
 Perceptually Uniform	Αντιληπτικά ομοιόμορφο
 Performance	Επιδόσεις
+Perpendicular	Κάθετα
 Phase	Φάση
 Photon	Photon
 Pick a date	Επιλέξτε ημερομηνία
@@ -2864,6 +3049,7 @@ Pixel	Pixel
 Pixel Editor	Επεξεργαστής pixel
 Pixel Size	Μέγεθος pixel
 Pixel type	Τύπος pixel
+pixels is required	Το pixels είναι υποχρεωτικό
 Place	Τοποθεσία
 Place a raster on the map	Τοποθέτηση raster στον χάρτη
 Place a raster on the map from control points or the view.	Τοποθέτηση raster στον χάρτη από σημεία ελέγχου ή από την προβολή.
@@ -2911,6 +3097,7 @@ Polar, conformal: the Arctic and the northern lands.	Πολική, σύμμορ�
 Polygon	Πολύγωνο
 Polygon (draw)	Πολύγωνο (σχεδίαση)
 Polygon layer	Επίπεδο πολυγώνων
+Polygon layers only: {n} of the {all} selected	Μόνο επίπεδα πολυγώνων: {n} από τα {all} επιλεγμένα
 Polygon To Line	Πολύγωνο σε γραμμή
 Polygons	Πολύγωνα
 Polygons to Raster	Πολύγωνα σε raster
@@ -2947,6 +3134,8 @@ Preset	Προρρύθμιση
 Press a key combination to assign it. Escape cancels.	Πατήστε έναν συνδυασμό πλήκτρων για να τον αναθέσετε. Το Escape ακυρώνει.
 Press Load sources & plot first	Πατήστε πρώτα «Φόρτωση πηγών και σχεδίαση»
 Preview and set up the report.	Προεπισκόπηση και ρύθμιση της αναφοράς.
+Preview Conversion	Προεπισκόπηση μετατροπής
+Preview Shape Conversion	Προεπισκόπηση μετατροπής σχήματος
 Preview, edit and play the presentation.	Προεπισκόπηση, επεξεργασία και αναπαραγωγή της παρουσίασης.
 Previous	Προηγούμενο
 Previous Extent	Προηγούμενη έκταση
@@ -2977,6 +3166,7 @@ project is "sample", "blank", "last" or {"path": a project file}	το project ε
 Project Raster	Προβολή raster
 Project Template	Πρότυπο έργου
 project's path is required	απαιτείται το path του project
+Projected system	Προβολικό σύστημα
 projected system (EPSG:32616), or degrees	προβαλλόμενο σύστημα (EPSG:32616) ή μοίρες
 Projection	Προβολή
 Projections	Προβολές
@@ -3042,7 +3232,9 @@ Raster to PMTiles	Raster σε PMTiles
 Raster · {w} × {h} · {n} bands · {renderer}	Raster · {w} × {h} · {n} κανάλια · {renderer}
 Rasters: {system}, cell size {cells}	Raster: {system}, μέγεθος κελιού {cells}
 Read	Ανάγνωση
+Read a script from a file in place of this one ({keys} brings it back)	Ανάγνωση σεναρίου από αρχείο στη θέση αυτού ({keys} το επαναφέρει)
 Read and write files on this computer	Ανάγνωση και εγγραφή αρχείων σε αυτόν τον υπολογιστή
+Read Connection File	Ανάγνωση αρχείου σύνδεσης
 Read error	Σφάλμα ανάγνωσης
 Read the bands picked for the view (at most about 6 km a side)	Ανάγνωση των καναλιών που επιλέχθηκαν για την προβολή (έως περίπου 6 km ανά πλευρά)
 Read the map's layers and features	Ανάγνωση των επιπέδων και των οντοτήτων του χάρτη
@@ -3052,13 +3244,16 @@ Reading a granule's files needs an Earthdata Login token, which works for every 
 Reading dates…	Ανάγνωση ημερομηνιών…
 Reading in place…	Ανάγνωση επί τόπου…
 Reading JAXA Earth's catalog…	Ανάγνωση του καταλόγου του JAXA Earth…
+Reading original image grid…	Ανάγνωση πλέγματος αρχικής εικόνας…
 Reading the catalog: {n} documents read, {m} items found…	Ανάγνωση του καταλόγου: διαβάστηκαν {n} έγγραφα, βρέθηκαν {m} στοιχεία…
 Reading the catalog…	Ανάγνωση του καταλόγου…
+Reading the download failed unexpectedly	Η ανάγνωση της λήψης απέτυχε απρόσμενα
 Reading the embeddings…	Ανάγνωση των embeddings…
 Reading the file's layers…	Ανάγνωση των επιπέδων του αρχείου…
 Reading the installed fonts…	Ανάγνωση των εγκατεστημένων γραμματοσειρών…
 Reading the store… ({n} files to go)	Ανάγνωση της αποθήκης… (απομένουν {n} αρχεία)
 Reading the tileset of {name}	Ανάγνωση του tileset του {name}
+Reading the time series…	Ανάγνωση της χρονικής σειράς…
 Reading the window failed unexpectedly	Η ανάγνωση του παραθύρου απέτυχε απροσδόκητα
 Reading {n} of Overture's {ty} files where the map is: {attribution}	Ανάγνωση {n} αρχείων {ty} του Overture στην περιοχή του χάρτη: {attribution}
 Reading {url}…	Ανάγνωση του {url}…
@@ -3067,7 +3262,9 @@ Reading…	Ανάγνωση…
 Reads and writes files	Διαβάζει και γράφει αρχεία
 Reads the map	Διαβάζει τον χάρτη
 Reality Mapping	Reality Mapping
+Received tile {z}/0/0.	Λήφθηκε το tile {z}/0/0.
 Recent	Πρόσφατα
+Recently used	Πρόσφατα
 Record Task	Καταγραφή εργασίας
 Recorded Task	Καταγεγραμμένη εργασία
 Recording stopped: another project opened, and its {n} steps were for the previous one.	Η καταγραφή διακόπηκε: άνοιξε άλλο έργο, και τα {n} βήματά της αφορούσαν το προηγούμενο.
@@ -3106,6 +3303,7 @@ Reload	Επαναφόρτωση
 Reload\nData	Επαναφόρτωση\nδεδομένων
 Reload Data	Επαναφόρτωση δεδομένων
 Reload Data from local files requires the desktop app.	Η επαναφόρτωση δεδομένων από τοπικά αρχεία απαιτεί την εφαρμογή για υπολογιστή.
+Reload Grid	Επαναφόρτωση πλέγματος
 Reload Themes	Επαναφόρτωση θεμάτων
 Reload Tile Archive	Επαναφόρτωση αρχείου tile
 Reload Web Layers	Επαναφόρτωση επιπέδων web
@@ -3126,6 +3324,7 @@ Remove Folder	Κατάργηση φακέλου
 Remove From Current Selection	Αφαίρεση από την τρέχουσα επιλογή
 Remove from Favourites	Κατάργηση από τα αγαπημένα
 Remove From Group	Κατάργηση από την ομάδα
+Remove GeoLibre Tool Translations	Κατάργηση μεταφράσεων εργαλείων GeoLibre
 Remove Group	Κατάργηση ομάδας
 Remove Keyframe	Κατάργηση καρέ-κλειδιού
 Remove Label Class	Κατάργηση κλάσης ετικετών
@@ -3140,6 +3339,7 @@ Remove this class's own strokes and draw it with the layer's	Καταργήστ�
 Remove this stop	Κατάργηση αυτής της στάσης
 Remove Tile Layer	Κατάργηση επιπέδου tiles
 Remove token	Κατάργηση token
+Remove translations	Κατάργηση μεταφράσεων
 Remove {name}	Κατάργηση {name}
 Removed {id}.	Καταργήθηκε το {id}.
 Removed {name}	Καταργήθηκε το {name}
@@ -3162,13 +3362,13 @@ Repair\nSource	Επιδιόρθωση\nπηγής
 Repair Data Source	Επιδιόρθωση πηγής δεδομένων
 Repair Data Source…	Επιδιόρθωση πηγής δεδομένων…
 Repair Geometry	Επιδιόρθωση γεωμετρίας
-Repair is disabled while discovery is in flight	Η επιδιόρθωση είναι απενεργοποιημένη όσο βρίσκεται σε εξέλιξη η ανακάλυψη
 Repair Tile Archive	Επιδιόρθωση αρχείου tiles
 Repaired {name}	Επιδιορθώθηκε το {name}
 Repeat	Επανάληψη
 Replace	Αντικατάσταση
 Replace Web Layer	Αντικατάσταση επιπέδου web
 Replacement	Αντικατάσταση
+Replaces only this polygon. Its ID and attributes are preserved. Apply is undoable.	Αντικαθιστά μόνο αυτό το πολύγωνο. Το ID και τα γνωρίσματά του διατηρούνται. Η Εφαρμογή μπορεί να αναιρεθεί.
 Replaces the parts of input polygons that update polygons cover with the update polygons themselves.	Αντικαθιστά τα τμήματα των πολυγώνων εισόδου που καλύπτουν τα πολύγωνα ενημέρωσης με τα ίδια τα πολύγωνα ενημέρωσης.
 Replay the route as a drive the map follows	Αναπαραγωγή της διαδρομής ως οδήγησης, με τον χάρτη να ακολουθεί
 Report	Αναφορά
@@ -3349,6 +3549,7 @@ Save Project Template	Αποθήκευση προτύπου έργου
 Save Style Items	Αποθήκευση στοιχείων στυλ
 Save Task Item	Αποθήκευση στοιχείου εργασίας
 Save the active map (with its data) as a map file.	Αποθηκεύστε τον ενεργό χάρτη (με τα δεδομένα του) ως αρχείο χάρτη.
+Save the connection before generating a token.	Αποθηκεύστε τη σύνδεση πριν δημιουργήσετε token.
 Save the connection first: a login belongs to a saved connection.	Αποθηκεύστε πρώτα τη σύνδεση: μια σύνδεση χρήστη ανήκει σε αποθηκευμένη σύνδεση.
 Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	Αποθήκευση των δεδομένων της προβολής, με τα basemaps MBTiles και PMTiles του χάρτη, ως πακέτο πεδίου για άνοιγμα σε τηλέφωνο.
 Save the last task as a task file.	Αποθηκεύστε την τελευταία εργασία ως αρχείο εργασίας.
@@ -3401,6 +3602,7 @@ Saved {name}.	Αποθηκεύτηκε: {name}.
 Saved {path}	Αποθηκεύτηκε: {path}
 Saves the layer's edits to its table in one transaction. When a row you changed or deleted was changed or deleted in the database since it was loaded, or a new row's key is taken, nothing is saved and the rows are listed.	Αποθηκεύει τις αλλαγές του επιπέδου στον πίνακά του σε μία συναλλαγή. Αν μια γραμμή που αλλάξατε ή διαγράψατε άλλαξε ή διαγράφηκε στη βάση δεδομένων μετά τη φόρτωσή της ή αν το κλειδί μιας νέας γραμμής χρησιμοποιείται ήδη, δεν αποθηκεύεται τίποτα και εμφανίζεται λίστα των γραμμών.
 Saves the layer's edits to its table in the GeoPackage file in one transaction. When a row you changed or deleted was changed or deleted in the file since it was loaded, nothing is saved and the rows are listed. Saving the project keeps edits in the project only; exporting writes a new file.	Αποθηκεύει τις επεξεργασίες του επιπέδου στον πίνακά του στο αρχείο GeoPackage σε μία συναλλαγή. Όταν μια γραμμή που αλλάξατε ή διαγράψατε έχει αλλάξει ή διαγραφεί στο αρχείο από τη φόρτωσή της, δεν αποθηκεύεται τίποτα και οι γραμμές παρατίθενται. Η αποθήκευση του έργου διατηρεί τις επεξεργασίες μόνο στο έργο· η εξαγωγή γράφει νέο αρχείο.
+SAVI (vegetation over soil)	SAVI (βλάστηση πάνω σε έδαφος)
 saving failed unexpectedly	η αποθήκευση απέτυχε απροσδόκητα
 Saving to a file of your choice isn't available here on Android yet.	Η αποθήκευση σε αρχείο της επιλογής σας δεν είναι ακόμη διαθέσιμη εδώ στο Android.
 Saving to a file of your choice isn't available here on iOS yet.	Η αποθήκευση σε αρχείο της επιλογής σας δεν είναι ακόμη διαθέσιμη εδώ στο iOS.
@@ -3413,6 +3615,7 @@ Scale and rotate entered distances and directions to the grid.	Κλιμακώσ�
 Scale ×2	Κλιμάκωση ×2
 Scale ×½	Κλιμάκωση ×½
 Scaled by sum	Κλιμάκωση κατά άθροισμα
+Scaling	Κλιμάκωση
 Scene	Σκηνή
 Score threshold	Κατώφλι βαθμολογίας
 Score two rasters 1–10 and weight them	Βαθμολογήστε δύο raster με 1–10 και σταθμίστε τα
@@ -3426,6 +3629,7 @@ Search	Αναζήτηση
 Search (this portal needs words)…	Αναζήτηση (αυτή η πύλη απαιτεί λέξεις)…
 Search area	Περιοχή αναζήτησης
 Search area: {points} point, {lines} line and {polygons} polygon part(s)	Περιοχή αναζήτησης: τμήματα σημείων {points}, γραμμών {lines} και πολυγώνων {polygons}
+Search by name or code	Αναζήτηση κατά όνομα ή κωδικό
 Search candidates not shown: {n} (limit {limit}).	Υποψήφια αποτελέσματα αναζήτησης που δεν εμφανίζονται: {n} (όριο {limit}).
 Search Catalogue	Αναζήτηση στον κατάλογο
 Search commands	Αναζήτηση εντολών
@@ -3494,6 +3698,7 @@ Select a navigation method after tracing a point.	Επιλέξτε μέθοδο 
 Select a raster or tile layer in the Layers pane first	Επιλέξτε πρώτα ένα επίπεδο raster ή tiles στο πλαίσιο «Επίπεδα»
 Select All	Επιλογή όλων
 Select an element to format it.	Επιλέξτε ένα στοιχείο για να το μορφοποιήσετε.
+Select an image with an available filename, or uncheck Use image filename.	Επιλέξτε μια εικόνα με διαθέσιμο όνομα αρχείου ή αποεπιλέξτε το Χρήση ονόματος αρχείου εικόνας.
 Select By\nAttributes	Επιλογή βάσει\nγνωρισμάτων
 Select By\nLocation	Επιλογή βάσει\nθέσης
 Select By Attributes	Επιλογή βάσει γνωρισμάτων
@@ -3508,6 +3713,7 @@ Select Layer	Επιλογή επιπέδου
 Select Layer By Attribute	Επιλογή επιπέδου βάσει γνωρίσματος
 Select Layer By Location	Επιλογή επιπέδου βάσει θέσης
 Select None	Καμία επιλογή
+Select one polygon to convert.	Επιλέξτε ένα πολύγωνο για μετατροπή.
 Select one text on the map, or a layout element, to format it.	Επιλέξτε ένα κείμενο στον χάρτη ή ένα στοιχείο διάταξης για να το μορφοποιήσετε.
 Select options	Επιλέξτε τιμές
 Select Related	Επιλογή σχετικών
@@ -3546,7 +3752,9 @@ Sepia	Σέπια
 Sequential	Διαδοχικό
 Serif	Serif
 Server	Διακομιστής
+Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.	Ο διακομιστής είναι προσβάσιμος, αλλά δεν υπάρχει tile στο {z}/0/0. Ελέγξτε τη διεύθυνση και το εύρος ζουμ του επιπέδου.
 Service	Υπηρεσία
+Service Area	Περιοχή εξυπηρέτησης
 Service discovery was cancelled	Η ανακάλυψη υπηρεσιών ακυρώθηκε
 Service Group	Ομάδα υπηρεσιών
 Service group data exceeds 64 MB.	Τα δεδομένα της ομάδας υπηρεσιών υπερβαίνουν τα 64 MB.
@@ -3571,6 +3779,8 @@ Set the pixels inside a polygon.	Ορίζει τα pixel μέσα σε ένα π
 Settings	Ρυθμίσεις
 Settings › Customize	Ρυθμίσεις › Προσαρμογή
 Settings › Customize › Keyboard Shortcuts	Ρυθμίσεις › Προσαρμογή › Συντομεύσεις πληκτρολογίου
+Settings › Datum Grids	Ρυθμίσεις › Πλέγματα datum
+Settings › Map Tiles	Ρυθμίσεις › Tiles χάρτη
 Settings › Theme	Ρυθμίσεις › Θέμα
 Several places	Πολλές τοποθεσίες
 Several saved connections match this address. Choose a connection explicitly.	Πολλές αποθηκευμένες συνδέσεις ταιριάζουν με αυτή τη διεύθυνση. Επιλέξτε ρητά μια σύνδεση.
@@ -3580,6 +3790,7 @@ Shade walls by the way they face the light.	Σκίαση των τοίχων α�
 Shaded	Σκιασμένο
 Shaded Relief	Σκιασμένο ανάγλυφο
 Shape	Σχήμα
+Shape conversion isn't recorded: its preview belongs to this session. Convert the polygon explicitly after reopening the project.	Η μετατροπή σχήματος δεν καταγράφεται: η προεπισκόπησή της ανήκει σε αυτή τη συνεδρία. Μετατρέψτε το πολύγωνο ρητά αφού ανοίξετε ξανά το έργο.
 Shapeburst	Shapeburst
 Shapefile	Shapefile
 Shapefile Index Cache	Cache ευρετηρίου Shapefile
@@ -3601,6 +3812,7 @@ Shared vertices must be on or off	Οι κοινές κορυφές πρέπει 
 Shares made, with Manage tools to update them.	Κοινοποιήσεις που έχουν γίνει, με εργαλεία διαχείρισης για την ενημέρωσή τους.
 sharp left	απότομα αριστερά
 sharp right	απότομα δεξιά
+Sharp Tiles on HiDPI Displays	Ευκρινή tiles σε οθόνες HiDPI
 Shift+	Shift+
 Shift+drag	Shift+σύρσιμο
 Shift+Enter starts a new line.	Με Shift+Enter ξεκινά νέα γραμμή.
@@ -3614,6 +3826,7 @@ Shortcut file exceeds the size limit.	Το αρχείο συντομεύσεων
 Shortcut keys are required.	Απαιτούνται πλήκτρα συντόμευσης.
 Shortcuts	Συντομεύσεις πληκτρολογίου
 Shortest route over a line network	Συντομότερη διαδρομή σε δίκτυο γραμμών
+Shortwave infrared	Υπέρυθρο βραχέων κυμάτων
 Show	Εμφάνιση
 Show a second map beside this one.	Εμφάνιση δεύτερου χάρτη δίπλα σε αυτόν.
 Show All Columns	Εμφάνιση όλων των στηλών
@@ -3634,11 +3847,12 @@ Show Me	Δείξτε μου
 Show no data	Εμφάνιση κενών τιμών
 Show or hide	Εμφάνιση ή απόκρυψη
 Show or hide the AI Assistant.	Εμφάνιση ή απόκρυψη του Βοηθού AI.
+Show or hide the Annotate pane.	Εμφάνιση ή απόκρυψη του πλαισίου Σχολιασμός.
 Show or hide the Bookmarks pane: every map's bookmarks.	Εμφάνιση ή απόκρυψη του πλαισίου Σελιδοδείκτες: οι σελιδοδείκτες κάθε χάρτη.
 Show or hide the Browser pane.	Εμφάνιση ή απόκρυψη του περιηγητή.
 Show or hide the Data Sources pane.	Εμφάνιση ή απόκρυψη του πλαισίου πηγών δεδομένων.
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Εμφάνιση ή απόκρυψη του πλαισίου Πηγές δεδομένων: αγαπημένα, πρόσφατα δεδομένα, αποθηκευμένες υπηρεσίες, βάσεις δεδομένων και STAC APIs, καθώς και βιβλιοθήκη δημόσιων πηγών.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	Εμφάνιση ή απόκρυψη του καννάβου πάνω από το basemap: γεωγραφικά πλάτη και μήκη, μετρημένο πλέγμα ή ζώνες UTM.
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Εμφάνιση ή απόκρυψη του καννάβου πάνω από το basemap: γεωγραφικά πλάτη και μήκη, ένα μετρικό πλέγμα, οι ζώνες UTM ή το πλέγμα MGRS.
 Show or hide the group's layers	Εμφάνιση ή απόκρυψη των επιπέδων της ομάδας
 Show or hide the layer.	Εμφάνιση ή απόκρυψη του επιπέδου.
 Show or hide the Layers pane.	Εμφάνιση ή απόκρυψη του πλαισίου Επίπεδα.
@@ -3660,6 +3874,7 @@ Show the selected layer's settings in one place.	Εμφανίζει τις ρυ�
 Show the Symbology pane for the selected layer.	Εμφάνιση του πλαισίου Συμβολισμός για το επιλεγμένο επίπεδο.
 Show the whole model	Εμφάνιση ολόκληρου του μοντέλου
 Show these bands and stretch on the AlphaEarth layers on the map	Εμφάνιση αυτών των καναλιών και της διάτασης στα επίπεδα AlphaEarth του χάρτη
+Show these tools in English again	Εμφάνιση αυτών των εργαλείων ξανά στα αγγλικά
 Show vertices	Εμφάνιση κορυφών
 Show where this step's command is, to do it yourself	Εμφάνιση του σημείου όπου βρίσκεται η εντολή αυτού του βήματος, για να το κάνετε μόνοι σας
 Show {n} Steps	Εμφάνιση {n} βημάτων
@@ -3683,19 +3898,24 @@ Side labels	Πλευρικές ετικέτες
 Sign in	Σύνδεση
 Sign In to ArcGIS	Σύνδεση στο ArcGIS
 Sign in to choose a model.	Συνδεθείτε για να επιλέξετε μοντέλο.
+Sign In to Copernicus Data Space	Σύνδεση στο Copernicus Data Space
 Sign in with your ChatGPT account.	Συνδεθείτε με τον λογαριασμό σας ChatGPT.
 Sign out	Αποσύνδεση
 Sign Out of ArcGIS	Αποσύνδεση από το ArcGIS
+Sign Out of Copernicus Data Space	Αποσύνδεση από το Copernicus Data Space
 Sign-in	Σύνδεση
 Sign-in cancelled.	Η σύνδεση ακυρώθηκε.
 Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Έληξε το χρονικό όριο σύνδεσης. Ξεκινήστε ξανά και επιτρέψτε στο πρόγραμμα περιήγησης να έχει πρόσβαση στη διεύθυνση loopback αυτού του υπολογιστή.
 signed in	σε σύνδεση
+Signed in as {name}.	Συνδεθήκατε ως {name}.
 Signed in to {portal}	Συνδεθήκατε στο {portal}
 Signed in to {portal} as {user}	Συνδεθήκατε στο {portal} ως {user}
 Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Αποσυνδεθήκατε σε αυτόν τον υπολογιστή, αλλά το OpenAI δεν το επιβεβαίωσε. Μπορείτε να αποσυνδέσετε το RustGIS από τις ρυθμίσεις του ChatGPT.
 Signed out on this computer, but the system keychain couldn't be read, so OpenAI wasn't asked to end the session. You can disconnect RustGIS in ChatGPT's settings.	Αποσυνδεθήκατε σε αυτόν τον υπολογιστή, αλλά η κλειδοθήκη του συστήματος δεν ήταν δυνατό να διαβαστεί, οπότε δεν ζητήθηκε από το OpenAI να τερματίσει τη συνεδρία. Μπορείτε να αποσυνδέσετε το RustGIS από τις ρυθμίσεις του ChatGPT.
 Significance level	Επίπεδο σημαντικότητας
 Signing in with ChatGPT works in the desktop app.	Η σύνδεση με ChatGPT λειτουργεί στην εφαρμογή για υπολογιστή.
+Signing in with the account remembered on this computer…	Σύνδεση με τον λογαριασμό που έχει απομνημονευτεί σε αυτόν τον υπολογιστή…
+Signing in…	Σύνδεση…
 Signing the asset (Planetary Computer)…	Υπογραφή του αρχείου (Planetary Computer)…
 Signs this account out and forgets it on this computer, with its saved sign-in.	Αποσυνδέει αυτόν τον λογαριασμό και τον ξεχνά σε αυτόν τον υπολογιστή, μαζί με την αποθηκευμένη σύνδεσή του.
 Sill	Οροφή (sill)
@@ -3707,7 +3927,11 @@ Single image	Μία εικόνα
 Single line	Απλή γραμμή
 Single Symbol	Ενιαίο σύμβολο
 Size	Μέγεθος
+Size by	Μέγεθος κατά
+Size by Field	Μέγεθος κατά πεδίο
+Size each point by a number field, keeping its class's colours	Μέγεθος κάθε σημείου κατά ένα αριθμητικό πεδίο, διατηρώντας τα χρώματα της κλάσης του
 Size, bands, statistics and coordinate system, on the Source tab of the raster's properties.	Μέγεθος, κανάλια, στατιστικά και σύστημα συντεταγμένων, στην καρτέλα Πηγή των ιδιοτήτων του raster.
+Sizes	Μεγέθη
 Skill (SKILL.md or .zip)	Δεξιότητα (SKILL.md ή .zip)
 Skills	Δεξιότητες
 Skills for the AI Assistant: {names}	Δεξιότητες για τον Βοηθό AI: {names}
@@ -3715,12 +3939,14 @@ Sky visibility	Ορατότητα ουρανού
 Slideshow, PDF or PNG	Προβολή διαφανειών, PDF ή PNG
 slight left	ελαφρώς αριστερά
 slight right	ελαφρώς δεξιά
-Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	Κλίση (μοίρες), προσανατολισμός, σκιασμένο ανάγλυφο, NDVI, πράξεις καναλιών, κατώφλια.
-Slope (degrees), hillshade, NDVI and more.	Κλίση (μοίρες), σκιασμένο ανάγλυφο, NDVI και άλλα.
-Slope is in degrees (0–90), not percent.	Η κλίση είναι σε μοίρες (0–90), όχι σε ποσοστό.
+Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.	Κλίση (μοίρες ή ποσοστό), προσανατολισμός, σκιασμένο ανάγλυφο, NDVI, πράξεις καναλιών, κατώφλια.
+Slope (degrees or percent), hillshade, NDVI and more.	Κλίση (μοίρες ή ποσοστό), σκιασμένο ανάγλυφο, NDVI και άλλα.
 Slope per	Κλίση ανά
+Slope units	Μονάδες κλίσης
 Small scales	Μικρές κλίμακες
+Smallest first	Τα μικρότερα πρώτα
 Snap	Προσκόλληση
+Snap Distance (m)	Απόσταση προσκόλλησης (m)
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	Προσκόλληση στοιχείων σε οδηγούς, στη σελίδα και μεταξύ τους καθώς τα μετακινείτε ή αλλάζετε το μέγεθός τους. Κρατήστε πατημένο το Alt για ελεύθερη τοποθέτηση.
 Snap new vertices to nearby vertices, edges and line ends.	Προσκόλληση νέων κορυφών σε κοντινές κορυφές, ακμές και άκρα γραμμών.
 Snap Point	Προσκόλληση σημείου
@@ -3728,6 +3954,7 @@ Snapping	Προσκόλληση
 Snow	Χιόνι
 Socrata	Socrata
 Solid	Συμπαγές
+Some characters of the {language} text on the map aren't in its downloaded font, so they are left out.	Ορισμένοι χαρακτήρες του κειμένου σε {language} στον χάρτη δεν υπάρχουν στη γραμματοσειρά που λήφθηκε, οπότε παραλείπονται.
 Some images aren't shown: the notebook's images use all the memory set aside for them.	Ορισμένες εικόνες δεν εμφανίζονται: οι εικόνες του σημειωματαρίου χρησιμοποιούν όλη τη μνήμη που έχει διατεθεί για αυτές.
 Some of the project's S3 sources wait for you to choose the saved connection that reads them	Ορισμένες πηγές S3 του έργου περιμένουν να επιλέξετε την αποθηκευμένη σύνδεση που τις διαβάζει
 Sort	Ταξινόμηση
@@ -3745,6 +3972,7 @@ Source-layer Name	Όνομα επιπέδου πηγής
 South	Νότος
 South Korea	Νότια Κορέα
 South Polar Stereographic	Νότια πολική στερεογραφική
+Space or middle-drag pans; releasing Space returns to the active drawing tool. Undo/Redo use the existing commands.	Το Space ή η μεταφορά με το μεσαίο κουμπί μετακινεί τον χάρτη· όταν αφήσετε το Space επιστρέφετε στο ενεργό εργαλείο σχεδίασης. Η Αναίρεση/Επανάληψη χρησιμοποιούν τις υπάρχουσες εντολές.
 Spacing	Απόσταση
 Spacing across	Απόσταση οριζόντια
 Spacing down	Απόσταση κατακόρυφα
@@ -3819,6 +4047,7 @@ STAC Search…	Αναζήτηση STAC…
 Stack another fill on top	Στοίβαξη ενός ακόμη γεμίσματος από πάνω
 Stack another marker on top	Στοίβαξη ενός ακόμη δείκτη από πάνω
 Stack another stroke on top	Προσθήκη ακόμη μίας πινελιάς από πάνω
+Stack by	Στοίβαξη κατά
 Stack on the current basemaps	Στοίβαξη πάνω στα τρέχοντα basemaps
 Standalone Tables	Αυτόνομοι πίνακες
 Standard Deviation	Τυπική απόκλιση
@@ -3856,6 +4085,7 @@ Stepped line	Κλιμακωτή γραμμή
 Steps needing access	Βήματα που χρειάζονται πρόσβαση
 STL 3D Model…	Τρισδιάστατο μοντέλο STL…
 Stop	Διακοπή
+Stop at the state reached so far	Διακοπή στην κατάσταση που έχει επιτευχθεί ως τώρα
 Stop drawing labels, for faster navigation.	Διακοπή σχεδίασης ετικετών, για ταχύτερη πλοήγηση.
 Stop filling the cache.	Διακοπή γεμίσματος της cache.
 Stop MCP relay	Διακοπή αναμετάδοσης MCP
@@ -3885,6 +4115,7 @@ Subreport	Υποαναφορά
 Subreport: {name}	Υποαναφορά: {name}
 Subtypes	Υποτύποι
 Subtypes, one per line: code=name	Υποτύποι, ένας ανά γραμμή: κωδικός=όνομα
+Suggested filename: {name}	Προτεινόμενο όνομα αρχείου: {name}
 Suitability Modeler	Μοντελοποίηση καταλληλότητας
 Sum Fields	Πεδία αθροίσματος
 Summarise	Σύνοψη
@@ -3926,7 +4157,9 @@ Table	Πίνακας
 Table Frame	Πλαίσιο πίνακα
 Table or layer	Πίνακας ή επίπεδο
 Tables	Πίνακες
+Tabulate Area	Πινακοποίηση εμβαδού
 Tabulate Intersection	Πινακοποίηση τομής
+Tabulates each raster class by polygon zone, as area or cell count in a standalone table.	Πινακοποιεί κάθε κλάση raster ανά ζώνη πολυγώνου, ως εμβαδόν ή πλήθος κελιών, σε αυτόνομο πίνακα.
 Tags	Λέξεις-κλειδιά
 Taiwan	Ταϊβάν
 Take the data in view offline, to edit and sync back later.	Λήψη των δεδομένων της προβολής για χρήση εκτός σύνδεσης, με επεξεργασία και συγχρονισμό αργότερα.
@@ -3935,6 +4168,7 @@ Take this point off	Αφαίρεση αυτού του σημείου
 Target details ({operation}): {targets}	Λεπτομέρειες προορισμού ({operation}): {targets}
 Target Features	Οντότητες-στόχοι
 Target Key Field	Πεδίο κλειδιού προορισμού
+Target layer	Επίπεδο προορισμού
 Target Records	Εγγραφές-στόχοι
 Target Table / Layer	Πίνακας / επίπεδο προορισμού
 Task	Εργασία
@@ -3968,11 +4202,14 @@ The answer isn't UTF-8 text	Η απάντηση δεν είναι κείμενο
 the answer isn't UTF-8 text	η απάντηση δεν είναι κείμενο UTF-8
 The API changed while the search area was being made: press Find Items to search it	Το API άλλαξε ενώ δημιουργούνταν η περιοχή αναζήτησης: πατήστε «Εύρεση στοιχείων» για αναζήτηση σε αυτήν
 The API did not sort them by {sort}: they are in its own order	Το API δεν τα ταξινόμησε κατά {sort}: είναι στη δική του σειρά
+The ArcGIS token has expired. Log in to this connection again.	Το token του ArcGIS έληξε. Συνδεθείτε ξανά σε αυτή τη σύνδεση.
+The ArcGIS token must be at most 4096 ASCII letters, digits or - _ . ~ + / = characters.	Το token του ArcGIS πρέπει να έχει το πολύ 4096 γράμματα ASCII, ψηφία ή χαρακτήρες - _ . ~ + / =.
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	Ο βοηθός ακολουθεί τις οδηγίες μιας δεξιότητας όταν τη χρησιμοποιεί. Ό,τι κι αν λένε, οι εντολές του που χρειάζονται την έγκρισή σας εξακολουθούν να τη ζητούν.
 The assistant is busy; stop it or wait for it to finish.	Ο βοηθός είναι απασχολημένος. Διακόψτε τον ή περιμένετε να τελειώσει.
 The assistant wants to run this, and {why}:	Ο βοηθός θέλει να εκτελέσει αυτό, και {why}:
 The background worker could not start ({error}). Retry the command.	Ο εργάτης παρασκηνίου δεν μπόρεσε να ξεκινήσει ({error}). Δοκιμάστε ξανά την εντολή.
 The basemap now shows the {view} worldview; the project's Countries layer keeps its borders	Ο χάρτης βάσης εμφανίζει τώρα την οπτική {view}· το επίπεδο Countries του έργου διατηρεί τα σύνορά του
+The basemap's grid color	Το χρώμα πλέγματος του basemap
 The Basemaps plugin's tab of public basemaps.	Η καρτέλα δημόσιων basemaps του πρόσθετου Basemaps.
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	Το πρόγραμμα περιήγησης δεν έδωσε στο RustGIS το πρόχειρο ({why}): επικολλήστε με {keys}.
 the browser kept neither a copy of it nor where to download it	το πρόγραμμα περιήγησης δεν διατήρησε ούτε αντίγραφο ούτε τη θέση λήψης του
@@ -3981,16 +4218,20 @@ the capture failed unexpectedly	η καταγραφή απέτυχε απρόσ�
 The class these label groups and the Labeling pane edit.	Η κλάση που επεξεργάζονται αυτές οι ομάδες ετικετών και το πλαίσιο Απόδοση ετικετών.
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	Το πρόχειρο ήρθε αφού προχωρήσατε, οπότε δεν επικολλήθηκε τίποτα: επικολλήστε με {keys}.
 The collection's own licence wasn't read: {why}	Η δική της άδεια χρήσης της συλλογής δεν διαβάστηκε: {why}
+The connection changed while its token was being generated. Generate it again.	Η σύνδεση άλλαξε όσο δημιουργούνταν το token της. Δημιουργήστε το ξανά.
 The connection failed; trying again in {seconds} s.	Η σύνδεση απέτυχε. Νέα προσπάθεια σε {seconds} s.
 the connection has no id	η σύνδεση δεν έχει id
 The constant base: used where no field is chosen, or the field holds no number.	Η σταθερή βάση: χρησιμοποιείται όπου δεν έχει επιλεγεί πεδίο ή το πεδίο δεν περιέχει αριθμό.
 The coordinate format must be decimal, dms, utm or mgrs	Η μορφή συντεταγμένων πρέπει να είναι decimal, dms, utm ή mgrs
+The Copernicus Data Space Ecosystem publishes the Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land Cover…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its STAC catalog is open, but reading its files needs a sign-in with a free account.	Το Copernicus Data Space Ecosystem δημοσιεύει τα παγκόσμια προϊόντα της Copernicus Land Monitoring Service (NDVI, LAI, καμένες εκτάσεις, υδάτινα σώματα, κάλυψη γης…) και τα μωσαϊκά Sentinel-1 και Sentinel-2 ως COG. Ο κατάλογος STAC του είναι ανοιχτός, αλλά η ανάγνωση των αρχείων του απαιτεί σύνδεση με δωρεάν λογαριασμό.
 The country list couldn't be read ({e}): type a country's code	Δεν ήταν δυνατή η ανάγνωση της λίστας χωρών ({e}): πληκτρολογήστε τον κωδικό μιας χώρας
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	Το τρέχον υψόμετρο παραμένει σε ισχύ όσο επεξεργάζεστε τις τιμές. Κάντε κλικ στο «Εφαρμογή υψομέτρου» για να εφαρμόσετε την τιμή και τις μονάδες.
 The dataset has nothing RustGIS can add	Το σύνολο δεδομένων δεν περιέχει τίποτα που μπορεί να προσθέσει το RustGIS
 The desktop app adds data cubes	Η εφαρμογή επιφάνειας εργασίας προσθέτει κύβους δεδομένων
 The distance between two marks along the line	Η απόσταση μεταξύ δύο σημάνσεων κατά μήκος της γραμμής
 The distance to widen by is a number, 0 or more	Η απόσταση διεύρυνσης είναι αριθμός, 0 ή μεγαλύτερος
+The downloaded translations name none of these tools: they may be for another GeoLibre version.	Οι μεταφράσεις που λήφθηκαν δεν ονομάζουν κανένα από αυτά τα εργαλεία: ίσως είναι για άλλη έκδοση του GeoLibre.
+the Earthdata Login token	το token του Earthdata Login
 The environment (AWS_ACCESS_KEY_ID…)	Το περιβάλλον (AWS_ACCESS_KEY_ID…)
 The features where the map is	Οι οντότητες στην περιοχή του χάρτη
 The first 1,000 entries; narrow it down a folder at a time.	Οι πρώτες 1.000 καταχωρίσεις. Περιορίστε την αναζήτηση έναν φάκελο τη φορά.
@@ -3999,13 +4240,20 @@ The first {n} are shown: search to narrow them.	Εμφανίζονται τα π
 The first {n} of them are listed; the filter searches all of them.	Παρατίθενται οι πρώτοι {n}· το φίλτρο αναζητά σε όλους.
 The first {n} rows	Οι πρώτες {n} γραμμές
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	Το flowtrace δεν απάντησε: εμφανίζεται ολόκληρη η γραμμή ροής που βρίσκεται πλησιέστερα στο σημείο.
+The grid already has the basemap's color	Το πλέγμα έχει ήδη το χρώμα του basemap
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	τα ψηφία πλέγματος πρέπει να είναι άρτιο πλήθος από 0 έως 10, τα μισά για το easting και τα μισά για το northing
+The grid's color and opacity	Το χρώμα και η αδιαφάνεια του πλέγματος
 the hash stopped	ο κατακερματισμός διακόπηκε
+The history jump stopped because the project changed.	Η μετάβαση στο ιστορικό σταμάτησε επειδή άλλαξε το έργο.
+The image changed or was removed. Select it again or reload its grid.	Η εικόνα άλλαξε ή καταργήθηκε. Επιλέξτε την ξανά ή φορτώστε ξανά το πλέγμα της.
+The image changed. Reload its grid before drawing.	Η εικόνα άλλαξε. Φορτώστε ξανά το πλέγμα της πριν σχεδιάσετε.
+The image context changed. Select the image again before drawing.	Το πλαίσιο της εικόνας άλλαξε. Επιλέξτε ξανά την εικόνα πριν σχεδιάσετε.
 the images' projected system, else degrees	το προβολικό σύστημα των εικόνων, αλλιώς μοίρες
 The installed GeoLibre runner lists no tools.	Ο εγκατεστημένος εκτελεστής GeoLibre δεν παραθέτει κανένα εργαλείο.
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	Το πρόγραμμα εγκατάστασης λαμβάνεται και ελέγχεται. Το RustGIS κλείνει, εγκαθιστά την ενημέρωση και ανοίγει ξανά.
 The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	Τα χρώματα, οι αποστάσεις και τα μεγέθη κειμένου της διεπαφής: ένα ενσωματωμένο θέμα ή ένα αρχείο από τον φάκελο θεμάτων.
 The job covers the map view	Η διεργασία καλύπτει την προβολή χάρτη
+The kept tool translations can't be read: {error}	Οι διατηρημένες μεταφράσεις εργαλείων δεν μπορούν να διαβαστούν: {error}
 The key is added to each request to this address as this parameter. It is never saved in the connection or project.	Το κλειδί προστίθεται σε κάθε αίτημα προς αυτή τη διεύθυνση ως αυτή η παράμετρος. Δεν αποθηκεύεται ποτέ στη σύνδεση ή στο έργο.
 The key is kept for this session only.	Το κλειδί διατηρείται μόνο για αυτήν την περίοδο λειτουργίας.
 The key is kept for this session only; it has not been remembered.	Το κλειδί διατηρείται μόνο για αυτήν την περίοδο λειτουργίας. Δεν έχει απομνημονευτεί.
@@ -4040,6 +4288,7 @@ The map's extent isn't known yet	Η έκταση του χάρτη δεν είν
 The map's UTM zone, else the frame's	Η ζώνη UTM του χάρτη, αλλιώς του πλαισίου
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	Η προβολή του χάρτη απαιτεί {n} αρχεία {ty} του Overture (έως {max}): μεγεθύνετε ή προσθέστε το θέμα ως tiles χάρτη
 The map's, else its UTM zone	Του χάρτη, αλλιώς η ζώνη UTM του
+The marker to change is no longer there	Ο δείκτης προς αλλαγή δεν υπάρχει πια
 the MCP relay couldn't start	δεν ήταν δυνατή η εκκίνηση του αναμεταδότη MCP
 The MCP relay couldn't start; agents can still use the file bridge. Click to turn agents off	Δεν ήταν δυνατή η εκκίνηση του αναμεταδότη MCP. Οι πράκτορες μπορούν ακόμη να χρησιμοποιούν τη γέφυρα αρχείων. Κάντε κλικ για να απενεργοποιήσετε τους πράκτορες
 The menu bar keeps that key: choose another.	Η γραμμή μενού διατηρεί αυτό το πλήκτρο: επιλέξτε άλλο.
@@ -4057,16 +4306,19 @@ The next page link was refused: it points where this search may not read, so onl
 the NLDI's answer isn't UTF-8 text	η απάντηση του NLDI δεν είναι κείμενο UTF-8
 the northing doesn't fall in the latitude band given	το northing δεν βρίσκεται μέσα στη δοσμένη ζώνη πλάτους
 The notes are cut here: the release page has all of them.	Οι σημειώσεις κόβονται εδώ: η σελίδα της έκδοσης τις έχει όλες.
-the old file's list must disappear immediately	η λίστα του παλιού αρχείου πρέπει να εξαφανιστεί αμέσως
 The one waiting after it was left too	Εγκαταλείφθηκε και αυτό που περίμενε μετά από αυτό
 the open project has unsaved changes: save them before recovering other work	το ανοιχτό έργο έχει μη αποθηκευμένες αλλαγές: αποθηκεύστε τις πριν ανακτήσετε άλλη εργασία
 The open project has unsaved changes: save them, then recover this copy.	Το ανοιχτό έργο έχει μη αποθηκευμένες αλλαγές: αποθηκεύστε τις και μετά ανακτήστε αυτό το αντίγραφο.
 The order by {sort} could not be checked: it is the API's own order	Η σειρά κατά {sort} δεν ήταν δυνατό να ελεγχθεί: είναι η σειρά του ίδιου του API
+The original image grid result could not be displayed.	Δεν ήταν δυνατή η εμφάνιση του αποτελέσματος του πλέγματος αρχικής εικόνας.
 The page in colour, the title in light text and the map in a light card.	Η σελίδα έγχρωμη, ο τίτλος σε ανοιχτόχρωμο κείμενο και ο χάρτης σε φωτεινή κάρτα.
 the page is too large to copy to the clipboard: export it instead	η σελίδα είναι πολύ μεγάλη για αντιγραφή στο πρόχειρο: εξαγάγετέ την
 the page is too large to draw	η σελίδα είναι πολύ μεγάλη για σχεδίαση
+The password is sent only to Copernicus Data Space's sign-in server and never kept in the project. The token it gives is sent only to its data servers.	Ο κωδικός πρόσβασης αποστέλλεται μόνο στον διακομιστή σύνδεσης του Copernicus Data Space και δεν αποθηκεύεται ποτέ στο έργο. Το token που δίνει αποστέλλεται μόνο στους διακομιστές δεδομένων του.
+The password must be at most 4096 bytes, without control characters.	Ο κωδικός πρόσβασης πρέπει να έχει το πολύ 4096 byte, χωρίς χαρακτήρες ελέγχου.
 The password or key must fit a 4096-byte HTTP header, without control characters.	Ο κωδικός πρόσβασης ή το κλειδί πρέπει να χωρά σε κεφαλίδα HTTP 4096 byte, χωρίς χαρακτήρες ελέγχου.
 The password was refused. Type a password to try again.	Ο κωδικός πρόσβασης απορρίφθηκε. Πληκτρολογήστε κωδικό πρόσβασης για να δοκιμάσετε ξανά.
+the phone keeps a recovery copy after edits	το τηλέφωνο κρατά αντίγραφο ανάκτησης μετά από αλλαγές
 the picture is too large to show	η εικόνα είναι πολύ μεγάλη για εμφάνιση
 the picture is too large to show, or isn't one	η εικόνα είναι πολύ μεγάλη για εμφάνιση ή δεν είναι εικόνα
 the place lies outside the zone given	η τοποθεσία βρίσκεται έξω από τη δοσμένη ζώνη
@@ -4077,11 +4329,14 @@ The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reas
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Το πρόσθετο {id} δεν φορτώθηκε. Ανοίξτε Πρόσθετα › Διαχείριση πρόσθετων για να το δείτε.
 The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	Τα πρόσθετα που είναι εγκατεστημένα σε αυτό το πρόγραμμα περιήγησης δεν μπορούν να διαβαστούν, οπότε αυτή η αλλαγή δεν απομνημονεύεται: διορθώστε ή αφαιρέστε το «plugins_web» στις αποθηκευμένες προτιμήσεις του προγράμματος περιήγησης.
 The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	Τα πρόσθετα που είναι εγκατεστημένα σε αυτό το πρόγραμμα περιήγησης δεν ήταν δυνατό να διαβαστούν (δεν είναι λίστα JSON): δεν φορτώνεται κανένα, και τα πρόσθετα που εγκαθίστανται ή αφαιρούνται τώρα δεν απομνημονεύονται.
+The polygon layer doesn't draw at this scale. Zoom in or out until it draws, then draw.	Το επίπεδο πολυγώνων δεν σχεδιάζεται σε αυτή την κλίμακα. Κάντε μεγέθυνση ή σμίκρυνση μέχρι να σχεδιαστεί και μετά σχεδιάστε.
 The portal's OAuth app	Η εφαρμογή OAuth της πύλης
 the presentation export failed unexpectedly	η εξαγωγή της παρουσίασης απέτυχε απρόσμενα
 the preview failed unexpectedly	η προεπισκόπηση απέτυχε απρόσμενα
+The preview replaces the boundary; curved grid edges remain straight-edge approximations after projection. Saved/exported results are ordinary polygons.	Η προεπισκόπηση αντικαθιστά το όριο· οι καμπύλες ακμές του πλέγματος παραμένουν προσεγγίσεις με ευθύγραμμα τμήματα μετά την προβολή. Τα αποθηκευμένα/εξαγόμενα αποτελέσματα είναι συνηθισμένα πολύγωνα.
 The project changed while this was open: check the changes, then answer again.	Το έργο άλλαξε όσο ήταν ανοιχτό αυτό: ελέγξτε τις αλλαγές και απαντήστε ξανά.
 The project downloads as this file, to the folder your browser saves downloads in.	Η λήψη του έργου γίνεται ως αυτό το αρχείο, στον φάκελο όπου το πρόγραμμα περιήγησης αποθηκεύει τις λήψεις.
+The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.	Το έργο ή ο χάρτης άλλαξε. Επιλέξτε ξανά μια εικόνα ή επιλέξτε μέτρα πλέγματος Web Mercator πριν σχεδιάσετε.
 The project's items in place of the map.	Τα στοιχεία του έργου στη θέση του χάρτη.
 The project's thumbnail, from an image.	Η μικρογραφία του έργου, από εικόνα.
 The project's thumbnail, from the map view.	Η μικρογραφία του έργου, από την προβολή χάρτη.
@@ -4092,6 +4347,7 @@ The public server is free and shared by many: it answers light use, and may ask 
 The range is two numbers, low and high (0, 0.9)	Το εύρος είναι δύο αριθμοί, κατώτερος και ανώτερος (0, 0.9)
 The raster's data couldn't be read.	Δεν ήταν δυνατή η ανάγνωση των δεδομένων του raster.
 The raster's data couldn't be read: {error}	Δεν ήταν δυνατή η ανάγνωση των δεδομένων του raster: {error}
+The recovery copy could not keep the opened package's path because it is not UTF-8.	Το αντίγραφο ανάκτησης δεν μπόρεσε να διατηρήσει τη διαδρομή του ανοιχτού πακέτου επειδή δεν είναι UTF-8.
 the recovery copy is incomplete	το αντίγραφο ανάκτησης είναι ελλιπές
 the recovery copy is too large (maximum {mib} MiB on this computer)	το αντίγραφο ανάκτησης είναι πολύ μεγάλο (μέγιστο {mib} MiB σε αυτόν τον υπολογιστή)
 the recovery copy isn't text	το αντίγραφο ανάκτησης δεν είναι κείμενο
@@ -4102,6 +4358,7 @@ The reply stopped early ({reason}).	Η απάντηση σταμάτησε πρ�
 the report export failed unexpectedly	η εξαγωγή της αναφοράς απέτυχε απρόσμενα
 The request failed.	Το αίτημα απέτυχε.
 The result wired into this output is added to the map under this name.	Το αποτέλεσμα που συνδέεται σε αυτήν την έξοδο προστίθεται στον χάρτη με αυτό το όνομα.
+The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login.	Το δοκιμαστικό tile αλλάζει την προέλευση της σύνδεσης. Χρησιμοποιήστε συγκεκριμένο όνομα κεντρικού υπολογιστή για δοκιμή με αποθηκευμένη σύνδεση.
 The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	Οι αποθηκευμένες διατάξεις για διατάξεις έκδοσης δεν μπορούν να διαβαστούν: μένουν όπως είναι, και οι διατάξεις που αποθηκεύονται τώρα διαρκούν μόνο μέχρι να κλείσει η εφαρμογή.
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	Η αποθηκευμένη μορφή συντεταγμένων δεν είναι γνωστή σε αυτή την έκδοση, οπότε εμφανίζονται δεκαδικές μοίρες.
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	Η αποθηκευμένη αγαπημένη διάταξη για διατάξεις έκδοσης δεν μπορεί να χρησιμοποιηθεί ({why}), οπότε χρησιμοποιείται το «Κλασικό».
@@ -4121,10 +4378,15 @@ The search area has no point, line or polygon to search with	Η περιοχή �
 The search area is still loading: search when it has finished	Η περιοχή αναζήτησης φορτώνεται ακόμη: κάντε αναζήτηση όταν ολοκληρωθεί
 the selected features	οι επιλεγμένες οντότητες
 The selected GeoPackage layer is no longer available; choose a layer	Το επιλεγμένο επίπεδο GeoPackage δεν είναι πλέον διαθέσιμο· επιλέξτε επίπεδο
+The server answered, but the response is not a usable tile.	Ο διακομιστής απάντησε, αλλά η απάντηση δεν είναι χρήσιμο tile.
+The server didn't answer the token request in time.	Ο διακομιστής δεν απάντησε εγκαίρως στο αίτημα token.
+The server didn't give a token. Check the user name, password and token endpoint.	Ο διακομιστής δεν έδωσε token. Ελέγξτε το όνομα χρήστη, τον κωδικό πρόσβασης και το τελικό σημείο token.
 The server had a problem answering.	Ο διακομιστής αντιμετώπισε πρόβλημα κατά την απάντηση.
 The server is limiting requests.	Ο διακομιστής περιορίζει τα αιτήματα.
 The server refused the request.	Ο διακομιστής απέρριψε το αίτημα.
 The server took too long to answer.	Ο διακομιστής άργησε πολύ να απαντήσει.
+The server's answer to the token request was too large.	Η απάντηση του διακομιστή στο αίτημα token ήταν πολύ μεγάλη.
+The server's answer wasn't an ArcGIS token.	Η απάντηση του διακομιστή δεν ήταν token του ArcGIS.
 The service may be private or need a token.	Η υπηρεσία μπορεί να είναι ιδιωτική ή να απαιτεί token.
 The service needs a sign-in or a token.	Η υπηρεσία απαιτεί σύνδεση ή token.
 The service test requires a credential-free HTTP or HTTPS address at the connection's origin.	Η δοκιμή υπηρεσίας απαιτεί διεύθυνση HTTP ή HTTPS χωρίς διαπιστευτήρια στην προέλευση της σύνδεσης.
@@ -4133,12 +4395,15 @@ The service's answer isn't UTF-8 text	Η απάντηση της υπηρεσί�
 The session login could not be used. Enter it again.	Τα στοιχεία σύνδεσης της συνεδρίας δεν ήταν δυνατό να χρησιμοποιηθούν. Εισαγάγετέ τα ξανά.
 The Shapefile's files download as one zip.	Η λήψη των αρχείων του Shapefile γίνεται ως ένα zip.
 The share of each cell covered by fields, for the zoomed-out view	Το ποσοστό κάθε κελιού που καλύπτεται από αγροτεμάχια, για τη σμικρυμένη προβολή
+The share of the colour a slope turned fully from the sun keeps, from 0 to 1	Το μερίδιο του χρώματος που κρατά μια πλαγιά στραμμένη εντελώς αντίθετα από τον ήλιο, από 0 έως 1
 The sign-in expired or was revoked. Sign in again.	Η σύνδεση έληξε ή ανακλήθηκε. Συνδεθείτε ξανά.
+The sign-in expired. Sign in again.	Η σύνδεση έληξε. Συνδεθείτε ξανά.
 The sign-in is kept in the system keychain, never in the app's settings or a project file.	Η σύνδεση διατηρείται στην κλειδοθήκη του συστήματος, ποτέ στις ρυθμίσεις της εφαρμογής ή σε αρχείο έργου.
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	Η σύνδεση εξακολουθεί να διατηρείται στον φάκελο ρυθμίσεων της εφαρμογής, αναγνώσιμη από τον λογαριασμό χρήστη σας: η κλειδοθήκη του συστήματος δεν είναι διαθέσιμη, οπότε δεν έχει μεταφερθεί ακόμη εκεί.
 The significance level is a number, such as 0.05	Το επίπεδο σημαντικότητας είναι αριθμός, όπως 0.05
 The size of the menu, the panes and the text drawn in them.	Το μέγεθος του μενού, των πλαισίων και του κειμένου που σχεδιάζεται σε αυτά.
 The slider's span, step and playback are on View › Time.	Το εύρος, το βήμα και η αναπαραγωγή του ρυθμιστικού βρίσκονται στο Προβολή › Χρόνος.
+The source changed. Preview the conversion again.	Η πηγή άλλαξε. Κάντε ξανά προεπισκόπηση της μετατροπής.
 The start-up project {path} didn't open: {error}	Το έργο εκκίνησης {path} δεν άνοιξε: {error}
 The start-up project {path} isn't a RustGIS project file.	Το έργο εκκίνησης {path} δεν είναι αρχείο έργου RustGIS.
 The step's layer {name} isn't in the map.	Το επίπεδο {name} του βήματος δεν υπάρχει στον χάρτη.
@@ -4152,11 +4417,22 @@ The system keychain is locked or access was refused.	Η κλειδοθήκη τ�
 The system keychain is unavailable, so this sign-in won't be remembered: it lasts until RustGIS closes.	Η κλειδοθήκη του συστήματος δεν είναι διαθέσιμη, οπότε αυτή η σύνδεση δεν θα απομνημονευτεί: ισχύει μέχρι να κλείσει το RustGIS.
 The system keychain is unavailable.	Η κλειδοθήκη του συστήματος δεν είναι διαθέσιμη.
 The task's steps changed, so the step being edited was closed: edit it again.	Τα βήματα της εργασίας άλλαξαν, οπότε το βήμα που επεξεργαζόσασταν έκλεισε: επεξεργαστείτε το ξανά.
+The tile URL has an unsupported placeholder.	Το URL των tiles έχει μη υποστηριζόμενο σύμβολο κράτησης θέσης.
+The time series couldn't start: {error}	Η χρονική σειρά δεν μπόρεσε να ξεκινήσει: {error}
+The time series failed unexpectedly	Η χρονική σειρά απέτυχε απρόσμενα
+The time series was cancelled: nothing was added to the chart	Η χρονική σειρά ακυρώθηκε: δεν προστέθηκε τίποτα στο διάγραμμα
+The time series was stopped: another project was opened	Η χρονική σειρά διακόπηκε: άνοιξε άλλο έργο
 the time slider is off	το ρυθμιστικό χρόνου είναι απενεργοποιημένο
 The title and subtitle in a band of colour across the top.	Ο τίτλος και ο υπότιτλος σε έγχρωμη λωρίδα στο πάνω μέρος.
 The title over the map, the sources and the reference in boxes under it.	Ο τίτλος πάνω από τον χάρτη, οι πηγές και η αναφορά σε πλαίσια κάτω από αυτόν.
 The token expired and was forgotten. Paste a new one.	Το token έληξε και ξεχάστηκε. Επικολλήστε ένα νέο.
 The token expires on {date}.	Το token λήγει στις {date}.
+The token is added to each request to this address as its token parameter. With no expiry it is used until the server refuses it.	Το token προστίθεται σε κάθε αίτημα προς αυτή τη διεύθυνση ως παράμετρος token. Χωρίς λήξη, χρησιμοποιείται μέχρι να το απορρίψει ο διακομιστής.
+The token is renewed until you sign out.	Το token ανανεώνεται μέχρι να αποσυνδεθείτε.
+The token is renewed until {date}.	Το token ανανεώνεται έως τις {date}.
+The token request couldn't be started.	Δεν ήταν δυνατή η έναρξη του αιτήματος token.
+The token request failed.	Το αίτημα token απέτυχε.
+The token request was cancelled.	Το αίτημα token ακυρώθηκε.
 the tool's own	το δικό του εργαλείο
 the tool's own; {d}	του ίδιου του εργαλείου· {d}
 The tools run on this project: saved with it, and each can run again	Τα εργαλεία που εκτελέστηκαν σε αυτό το έργο: αποθηκεύονται μαζί του και το καθένα μπορεί να εκτελεστεί ξανά
@@ -4177,16 +4453,20 @@ The {n} waiting after it were left too	Εγκαταλείφθηκαν και τ�
 Theme	Θέμα
 Theme {name} loaded and kept at {path}	Το θέμα {name} φορτώθηκε και διατηρήθηκε στο {path}
 There is no expression defined.	Δεν έχει οριστεί έκφραση.
+There is no touch interface to go back to: it is on phones.	Δεν υπάρχει περιβάλλον αφής για επιστροφή: υπάρχει στα τηλέφωνα.
 there is no unsaved work to recover	δεν υπάρχει μη αποθηκευμένη εργασία για ανάκτηση
 Thermal	Θερμικό
+These layers share no numeric field.	Αυτά τα επίπεδα δεν έχουν κοινό αριθμητικό πεδίο.
 Thesis figure, full page (160 × 225 mm)	Σχήμα διατριβής, ολόκληρη σελίδα (160 × 225 mm)
 Thesis figure, half page (160 × 110 mm)	Σχήμα διατριβής, μισή σελίδα (160 × 110 mm)
 Thin	Λεπτό
 Thinking…	Σκέψη…
 Third-party licences	Άδειες τρίτων
 THIRD-PARTY-LICENSES.txt	THIRD-PARTY-LICENSES.txt
+This app can't request ArcGIS tokens.	Αυτή η εφαρμογή δεν μπορεί να ζητήσει token ArcGIS.
 this build can't download plugins	αυτή η έκδοση δεν μπορεί να κατεβάσει πρόσθετα
 this build can't reach AI providers	αυτή η έκδοση δεν μπορεί να συνδεθεί με παρόχους AI
+This build cannot save through the native picker.	Αυτή η έκδοση δεν μπορεί να αποθηκεύσει μέσω του εγγενούς επιλογέα.
 this build has no download service	αυτή η έκδοση δεν έχει υπηρεσία λήψης
 this build saves projects with Save As	αυτή η έκδοση αποθηκεύει έργα με την «Αποθήκευση ως»
 This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Αυτός ο λογαριασμός ChatGPT είχε ήδη αποθηκευτεί. Την επόμενη φορά, επιλέξτε τον από τη λίστα αντί να τον προσθέσετε ξανά.
@@ -4197,9 +4477,15 @@ This class is hidden, so it labels nothing.	Αυτή η κλάση είναι κ
 This clause no longer reads, so no feature is labelled: {error}	Αυτός ο όρος δεν είναι πλέον έγκυρος, οπότε καμία οντότητα δεν παίρνει ετικέτα: {error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	Αυτός ο υπολογιστής διατηρεί κλειδιά για αυτήν τη σύνδεση: αφήστε τα κλειδιά κενά για να συνδεθείτε με αυτά.
 This computer keeps this connection's keys: logging in reads them.	Αυτός ο υπολογιστής διατηρεί τα κλειδιά αυτής της σύνδεσης: η σύνδεση τα διαβάζει.
+This computer's clock can't be read, so an expiring ArcGIS token can't be used.	Το ρολόι αυτού του υπολογιστή δεν μπορεί να διαβαστεί, οπότε ένα token ArcGIS που λήγει δεν μπορεί να χρησιμοποιηθεί.
+This connection has no user: set user (connection.edit) to generate a token.	Αυτή η σύνδεση δεν έχει χρήστη: ορίστε user (connection.edit) για να δημιουργήσετε token.
 This connection is logged out. Log in explicitly to use it again.	Αυτή η σύνδεση είναι αποσυνδεδεμένη. Συνδεθείτε ρητά για να τη χρησιμοποιήσετε ξανά.
 This font isn't installed here, so the text is drawn in the sans-serif	Αυτή η γραμματοσειρά δεν είναι εγκατεστημένη εδώ, οπότε το κείμενο σχεδιάζεται με sans-serif
 This font isn't installed here, so the text is drawn in the serif	Αυτή η γραμματοσειρά δεν είναι εγκατεστημένη εδώ, οπότε το κείμενο σχεδιάζεται με serif
+This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Αυτή η εικόνα δεν μπορεί να γίνει δείκτης: δεν είναι αναγνώσιμο PNG ή JPEG έως 20.000 px ανά πλευρά
+This image is too large for a marker: at most about 1.5 MiB	Αυτή η εικόνα είναι πολύ μεγάλη για δείκτη: το πολύ περίπου 1,5 MiB
+This image is unavailable. Choose another image or No image.	Αυτή η εικόνα δεν είναι διαθέσιμη. Επιλέξτε άλλη εικόνα ή Χωρίς εικόνα.
+This item is from a local or private network, whose files Bands and Index don't read yet	Αυτό το στοιχείο προέρχεται από τοπικό ή ιδιωτικό δίκτυο, τα αρχεία του οποίου τα Κανάλια και ο Δείκτης δεν διαβάζουν ακόμη
 This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	Αυτό το επίπεδο έχει αλλαγές που δεν έχει ακόμη το αρχείο του. Η Δημοσίευση στην πηγή τις γράφει στο αρχείο.
 This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.	Αυτό το επίπεδο έχει αλλαγές που δεν έχει το αρχείο του, και το αρχείο άλλαξε στον δίσκο από τότε που διαβάστηκε. Η Δημοσίευση στην πηγή αρνείται αντί να αντικαταστήσει αυτή την αλλαγή· η Εξαγωγή οντοτήτων κρατά τις αλλαγές σε νέο αρχείο.
 This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.	Αυτό το επίπεδο έχει αλλαγές που δεν έχει το αρχείο του. Η Δημοσίευση στην πηγή δεν μπορεί να τις γράψει μέχρι το αρχείο να επανέλθει όπως διαβάστηκε· η Εξαγωγή οντοτήτων τις κρατά σε νέο αρχείο.
@@ -4257,10 +4543,16 @@ Tint by elevation	Χρωματισμός κατά υψόμετρο
 Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	Χρωματίζει το απότομο έδαφος προς ένα χρώμα βράχου πριν το σκιάσει το φως, ανάλογα με την κλίση του ίδιου του εδάφους
 Tissot's Indicatrix	Δείκτρια του Tissot
 Title	Τίτλος
+Title text	Κείμενο τίτλου
 To	Έως
 Toggle Dark Mode	Εναλλαγή σκούρας λειτουργίας
+Toggle Downloading Datum Grids	Εναλλαγή λήψης πλεγμάτων datum
 Toggle GPU Rendering	Εναλλαγή απόδοσης GPU
 Toggle Imperial Measurements	Εναλλαγή αγγλοσαξονικών μονάδων
+Toggle Sharp Tiles on HiDPI Displays	Εναλλαγή ευκρινών tiles σε οθόνες HiDPI
+Token	Token
+Token endpoint	Τελικό σημείο token
+Token from	Token από
 Token Required	Απαιτείται token
 Tolerance	Ανοχή
 Tolerance (km)	Ανοχή (km)
@@ -4286,6 +4578,7 @@ Topology Options	Επιλογές τοπολογίας
 Topology Options…	Επιλογές τοπολογίας…
 Topology rules and the errors they find.	Κανόνες τοπολογίας και τα σφάλματα που εντοπίζουν.
 Total {total}   ·   Segment {segment}	Σύνολο {total}   ·   Τμήμα {segment}
+Touch\nInterface	Περιβάλλον\nαφής
 Trace	Ιχνηλάτηση
 Trace a point first: click the map.	Ιχνηλατήστε πρώτα ένα σημείο: κάντε κλικ στον χάρτη.
 Trace Edge Path	Ιχνηλάτηση διαδρομής ορίου
@@ -4298,6 +4591,7 @@ Train Deep Learning Model	Εκπαίδευση μοντέλου βαθιάς μ�
 Trained models	Εκπαιδευμένα μοντέλα
 Training polygons	Πολύγωνα εκπαίδευσης
 Transfer Fields	Μεταφορά πεδίων
+Translate tools	Μετάφραση εργαλείων
 Transparency	Διαφάνεια
 Traverse	Όδευση
 Trend Analysis	Ανάλυση τάσης
@@ -4305,6 +4599,7 @@ Trend Analysis…	Ανάλυση τάσης…
 Trend over a series of rasters	Τάση σε μια σειρά raster
 Triangle	Τρίγωνο
 TRUE	TRUE
+True color	Φυσικά χρώματα
 Try Again	Δοκιμάστε ξανά
 Try again	Δοκιμάστε ξανά
 Try again in a moment.	Δοκιμάστε ξανά σε λίγο.
@@ -4346,16 +4641,20 @@ Type the password or key to remember it on this computer.	Πληκτρολογή
 Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	Πληκτρολογήστε τον κωδικό πρόσβασης ή το κλειδί, ή αφήστε το κενό για να χρησιμοποιηθεί η περίοδος λειτουργίας ή η αποθηκευμένη σύνδεση αυτής της σύνδεσης, και μετά Αποθήκευση.
 Type the password to remember it on this computer.	Πληκτρολογήστε τον κωδικό πρόσβασης για να τον απομνημονεύσετε σε αυτόν τον υπολογιστή.
 Type the password, then Save. Remember on this computer is optional.	Πληκτρολογήστε τον κωδικό πρόσβασης και επιλέξτε «Αποθήκευση». Η «Απομνημόνευση σε αυτόν τον υπολογιστή» είναι προαιρετική.
+Type the token this expiry is for.	Πληκτρολογήστε το token στο οποίο αντιστοιχεί αυτή η λήξη.
+Type the token, or the password to generate one, to remember it on this computer.	Πληκτρολογήστε το token, ή τον κωδικό πρόσβασης για να δημιουργηθεί ένα, ώστε να απομνημονευτεί σε αυτόν τον υπολογιστή.
 Typed below	Πληκτρολόγηση παρακάτω
-typing must not start another lookup	η πληκτρολόγηση δεν πρέπει να ξεκινά άλλη αναζήτηση
 U.S. Census (addresses)	Census ΗΠΑ (διευθύνσεις)
 Ukraine	Ουκρανία
 UM	UM
+Unavailable image	Μη διαθέσιμη εικόνα
+Unavailable image: {name}	Μη διαθέσιμη εικόνα: {name}
 Unavailable: {reason}	Μη διαθέσιμο: {reason}
 Unbind from Time Slider	Αποσύνδεση από το ρυθμιστικό χρόνου
 Undo	Αναίρεση
 Undo (Ctrl+Z)	Αναίρεση (Ctrl+Z)
 Undo doesn't remove the recorded step: delete it in Edit Steps once you stop recording.	Η αναίρεση δεν καταργεί το καταγεγραμμένο βήμα: διαγράψτε το στην Επεξεργασία βημάτων μόλις σταματήσετε την καταγραφή.
+Undo History	Ιστορικό αναιρέσεων
 Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	Η Αναίρεση επαναφέρει δεδομένα και ρυθμίσεις στη μνήμη, όχι αρχεία που αντικαταστάθηκαν ή ιστορικό περιεχόμενο ροής.
 Undo the last change.	Αναίρεση της τελευταίας αλλαγής.
 Undo {action}	Αναίρεση: {action}
@@ -4387,6 +4686,7 @@ Untitled	Χωρίς τίτλο
 Untitled model	Μοντέλο χωρίς τίτλο
 Up	Επάνω
 Up a level	Ένα επίπεδο επάνω
+up to {bound}	έως {bound}
 Up to {n} points are compared: the oldest one was taken off.	Συγκρίνονται έως {n} σημεία: αφαιρέθηκε το παλαιότερο.
 Update	Ενημέρωση
 Update Bookmark	Ενημέρωση σελιδοδείκτη
@@ -4417,10 +4717,15 @@ Use Current View	Χρήση τρέχουσας προβολής
 Use each feature's fill color	Χρήση του χρώματος γεμίσματος κάθε οντότητας
 Use each feature's line color	Χρήση του χρώματος γραμμής κάθε οντότητας
 Use each feature's line width	Χρήση του πάχους γραμμής κάθε οντότητας
+Use field range	Χρήση εύρους πεδίου
+Use image filename	Χρήση ονόματος αρχείου εικόνας
 Use layers instead	Χρήση επιπέδων αντί αυτού
 Use System	Χρήση συστήματος
 Use the Layer's Strokes	Χρήση των πινελιών του επιπέδου
+Use the Touch Interface	Χρήση του περιβάλλοντος αφής
 User	Χρήστης
+Username	Όνομα χρήστη
+Username and password	Όνομα χρήστη και κωδικός πρόσβασης
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	USGS 3DEP DEM
 USGS 3DEP DEM…	USGS 3DEP DEM…
@@ -4444,7 +4749,11 @@ Validate	Επικύρωση
 Validate Model	Επικύρωση μοντέλου
 value (empty: no-data)	τιμή (κενό: NoData)
 Value Field	Πεδίο τιμής
+Values	Τιμές
 Values from −stretch to +stretch are shown from black to full colour	Οι τιμές από −stretch έως +stretch εμφανίζονται από μαύρο έως πλήρες χρώμα
+Values of the {of} features read for the view	Τιμές των {of} οντοτήτων που διαβάστηκαν για την προβολή
+Values of {read} of the {of} features read for the view, evenly spread	Τιμές {read} από τις {of} οντότητες που διαβάστηκαν για την προβολή, ομοιόμορφα κατανεμημένες
+Values of {read} of {of} features, evenly spread	Τιμές {read} από {of} οντότητες, ομοιόμορφα κατανεμημένες
 Vantor Open Data	Vantor Open Data
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	Ανοιχτές εικόνες καταστροφών της Vantor: επιλέξτε ένα συμβάν και μια φάση (πριν ή μετά από αυτό) και πατήστε «Εύρεση στοιχείων».
 Vantor…	Vantor…
@@ -4478,6 +4787,7 @@ View Extent	Έκταση προβολής
 View In Google Earth	Προβολή στο Google Earth
 View In Google Maps	Προβολή στο Google Maps
 View Unplaced	Εμφάνιση μη τοποθετημένων
+View › Interface	Προβολή › Περιβάλλον εργασίας
 View › Windows	Προβολή › Παράθυρα
 Viewshed from a point	Πεδίο ορατότητας από σημείο
 Viewshed {radius}	Πεδίο ορατότητας {radius}
@@ -4494,6 +4804,7 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3 (Βιετνάμ)
 VN-2000 / UTM zone 48N	VN-2000 / UTM ζώνη 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM ζώνη 49N
 Volume	Όγκος
+Wait for the original image grid before drawing.	Περιμένετε το πλέγμα της αρχικής εικόνας πριν σχεδιάσετε.
 Wait for the run to finish	Περιμένετε να ολοκληρωθεί η εκτέλεση
 Wait for the Script pane's run to finish	Περιμένετε να ολοκληρωθεί η εκτέλεση του πλαισίου Σεναρίου
 Waiting for the browser…	Αναμονή για το πρόγραμμα περιήγησης…
@@ -4518,7 +4829,9 @@ Web Layer	Επίπεδο web
 Web Link Chart	Διάγραμμα συνδέσεων web
 Web maps	Χάρτες web
 Web Mercator	Web Mercator
+Web Mercator grid metres	Μέτρα πλέγματος Web Mercator
 Web Mercator grid metres, not ground metres.	Μέτρα πλέγματος Web Mercator, όχι μέτρα εδάφους.
+Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected.	Μέτρα πλέγματος Web Mercator, όχι μέτρα εδάφους. Τα pixel της εικόνας είναι η προεπιλογή όταν έχει επιλεγεί εικόνα.
 Web Scene	Σκηνή web
 Web service (detected)	Υπηρεσία web (εντοπίστηκε)
 Web Style	Στυλ web
@@ -4535,11 +4848,13 @@ WGS 84 / Web Mercator	WGS 84 / Web Mercator
 What each slice or bar says beside it: its value, its share in percent, or both	Τι γράφει κάθε τομέας ή ράβδος δίπλα του: την τιμή του, το ποσοστό του ή και τα δύο
 What RustGIS opens with: the World Atlas sample or a blank map.	Τι ανοίγει το RustGIS κατά την εκκίνηση: το δείγμα World Atlas ή έναν κενό χάρτη.
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	Τι ανοίγει το RustGIS κατά την εκκίνηση: το δείγμα World Atlas, έναν κενό χάρτη, ένα έργο που επιλέγετε ή το τελευταίο έργο που ανοίξατε ή αποθηκεύσατε.
-What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	Τι σχεδιάζει ο κάνναβος: γεωγραφικά πλάτη και μήκη, μετρημένο πλέγμα ή ζώνες UTM.
+What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Τι σχεδιάζει ο κάνναβος: γεωγραφικά πλάτη και μήκη, ένα μετρικό πλέγμα, τις ζώνες UTM ή το πλέγμα MGRS.
 What the walls stand on: the ground, a field or the constant Base (m).	Πού πατούν οι τοίχοι: στο έδαφος, σε ένα πεδίο ή στη σταθερή Βάση (m).
 What to do, where to find it and why	Τι να κάνετε, πού θα το βρείτε και γιατί
 What's near a point	Τι βρίσκεται κοντά σε ένα σημείο
 What's new	Τι νέο υπάρχει
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use for this session when this is off.	Όταν ο πιο ακριβής μετασχηματισμός datum ενός συστήματος συντεταγμένων χρειάζεται ένα πλέγμα που δεν έχει το RustGIS, λήψη του από τον διακομιστή πλεγμάτων του PROJ (cdn.proj.org). Τα πλέγματα που έχουν ήδη ληφθεί παραμένουν σε χρήση για αυτή τη συνεδρία όταν αυτό είναι ανενεργό.
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use when this is off: to stop using them, delete the datum-grids folder in RustGIS's app data and start RustGIS again (grids installed for PROJ are still used).	Όταν ο πιο ακριβής μετασχηματισμός datum ενός συστήματος συντεταγμένων χρειάζεται ένα πλέγμα που δεν έχει το RustGIS, λήψη του από τον διακομιστή πλεγμάτων του PROJ (cdn.proj.org). Τα πλέγματα που έχουν ήδη ληφθεί παραμένουν σε χρήση όταν αυτό είναι ανενεργό: για να σταματήσει η χρήση τους, διαγράψτε τον φάκελο datum-grids στα δεδομένα εφαρμογής του RustGIS και ξεκινήστε ξανά το RustGIS (τα πλέγματα που έχουν εγκατασταθεί για το PROJ εξακολουθούν να χρησιμοποιούνται).
 When a file holds several layers, choose the ones to add instead of adding them all.	Όταν ένα αρχείο περιέχει πολλά επίπεδα, επιλέξτε ποια θα προστεθούν αντί να προστεθούν όλα.
 When its place is taken, the label tries the other places round the point, corners first.	Όταν η θέση της είναι κατειλημμένη, η ετικέτα δοκιμάζει τις άλλες θέσεις γύρω από το σημείο, πρώτα τις γωνίες.
 WHERE	WHERE
@@ -4608,10 +4923,11 @@ World, equal-area: true sizes, shapes bend towards the edges.	Κόσμος, ισ
 Worldview	Σύνορα
 Wrap at	Αναδίπλωση στο
 Wrap length	Μήκος αναδίπλωσης
+Wrap to the box	Αναδίπλωση στο πλαίσιο
 Write a plugin	Συγγραφή πρόσθετου
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Εγγραφή μιας περιστροφής της προβολής γύρω από το κέντρο της ως κινούμενου GIF ή καρέ PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Γράφει ξεχωριστή γραμμή δύο κορυφών για κάθε ζεύγος διαδοχικών κορυφών.
-Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Γράφει κάθε οντότητα με τη γεωμετρία της έγκυρη όπου είναι δυνατό: κλειστοί δακτύλιοι, αφαίρεση επαναλαμβανόμενων κορυφών και εκφυλισμένων τμημάτων, επίλυση αυτοτομών, επικαλυπτόμενων τμημάτων και οπών εκτός του κελύφους τους. Οντότητες με συντεταγμένη που λείπει ή δεν είναι πεπερασμένη οπουδήποτε, ακόμη και σε οπή, ή που μετά την επιδιόρθωση μένουν χωρίς χρήσιμα σημεία ή, για πολύγωνα, χωρίς εμβαδόν, γράφονται χωρίς γεωμετρία. Άλλες οντότητες, πολύ σύνθετες για έλεγχο ή των οποίων η επιδιόρθωση αποτυγχάνει, γράφονται αμετάβλητες. Αναφέρει τι επιδιορθώθηκε σε καθεμία.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Γράφει κάθε οντότητα με τη γεωμετρία της διορθωμένη όπου είναι δυνατό: οι δακτύλιοι κλείνουν, οι επαναλαμβανόμενες κορυφές και τα εκφυλισμένα τμήματα αφαιρούνται, οι αυτοτομές, τα επικαλυπτόμενα τμήματα και οι οπές εκτός του κελύφους τους επιλύονται με τον επιλεγμένο κανόνα (το Shells Minus Holes συγχωνεύει τα επικαλυπτόμενα τμήματα· το Even-Odd κρατά ό,τι βρίσκεται μέσα σε περιττό αριθμό δακτυλίων). Οι οντότητες με συντεταγμένη που λείπει ή δεν είναι πεπερασμένη οπουδήποτε, ακόμη και σε οπή, ή που μένουν χωρίς χρήσιμα σημεία ή, για πολύγωνα, χωρίς εμβαδόν μετά τη διόρθωση, γράφονται χωρίς γεωμετρία. Άλλες οντότητες πολύ σύνθετες για έλεγχο, ή των οποίων η διόρθωση αποτυγχάνει, γράφονται αμετάβλητες. Αναφέρει τι διορθώθηκε σε καθεμία.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Γράφει ένα ορθογώνιο οριοθέτησης ευθυγραμμισμένο με τους άξονες ανά οντότητα σε αποθηκευμένες συντεταγμένες γεωγραφικού μήκους/πλάτους. Τα περιβάλλοντα μηδενικού εμβαδού παραλείπονται.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Γράφει την κλίση Sen, το Z και την τιμή p του ελέγχου, και την κλίση όπου η τάση είναι στατιστικά σημαντική.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Γράφει τις οντότητες με μη έγκυρη γεωμετρία, όπως αυτοτεμνόμενους ή μη κλειστούς δακτυλίους, οπές εκτός του κελύφους τους ή επικαλυπτόμενα τμήματα, και αναφέρει τι είναι λάθος σε καθεμία.
@@ -4628,9 +4944,9 @@ Y Field	Πεδίο Y
 Year	Έτος
 Yes	Ναι
 You can undo this with {shortcut}.	Μπορείτε να το αναιρέσετε με {shortcut}.
-You choose where the project is saved next.	Την επόμενη φορά εσείς επιλέγετε πού θα αποθηκευτεί το έργο.
 You have version {version}.	Έχετε την έκδοση {version}.
 You're using your ChatGPT plan	Χρησιμοποιείτε τη συνδρομή σας ChatGPT
+Your account's email address	Η διεύθυνση email του λογαριασμού σας
 Your browser may reserve some shortcuts.	Το πρόγραμμα περιήγησης μπορεί να δεσμεύει ορισμένες συντομεύσεις.
 Your changes will be lost if you don't save them.	Οι αλλαγές σας θα χαθούν αν δεν τις αποθηκεύσετε.
 Your skills are kept in the skills folder of the app's settings folder. Shared skills (~/.agents/skills) are off until you turn them on.	Οι δεξιότητές σας φυλάσσονται στον φάκελο skills του φακέλου ρυθμίσεων της εφαρμογής. Οι κοινόχρηστες δεξιότητες (~/.agents/skills) είναι απενεργοποιημένες μέχρι να τις ενεργοποιήσετε.
@@ -4643,6 +4959,7 @@ Zarr URL is required	Απαιτείται URL Zarr
 Zarr Variables	Μεταβλητές Zarr
 Zarr…	Zarr…
 Zonal Statistics	Ζωνικά στατιστικά
+Zone Field	Πεδίο ζώνης
 Zone Fields	Πεδία ζωνών
 Zone Polygons	Πολύγωνα ζωνών
 Zoom	Ζουμ

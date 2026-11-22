@@ -22,16 +22,19 @@
 /F	/F
 /PID	/PID
 /T	/T
+0 draws no border	0 не рисует рамку
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	0° — строго поперёк линии
 1 entry	1 запись
+1 line doesn't fit the box	1 строка не помещается в рамку
+1 line isn't drawn: a text draws 200 at most	1 строка не отрисована: текст отрисовывает не более 200
 1 more class isn't listed: the list's limit doesn't change how it's drawn	Ещё 1 класс не показан: ограничение списка не меняет отрисовку
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	16 импортированных хранилищ Zarr уже в очереди
 18:00 UTC	18:00 UTC
 18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
-3035, vn2000tm3	3035, vn2000tm3
+3010, lv95	3010, lv95
 3D mesh	3D-сетка
 40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<Нет>
@@ -40,6 +43,7 @@ A .geolibre project as a map	Проект .geolibre как карта
 A .qgs or .qgz project as a map	Проект .qgs или .qgz как карта
 A 3D globe seen from space.	Трёхмерный глобус, вид из космоса.
 A blank map with a basemap	Пустая карта с базовой картой
+A box behind the element, which moves with it.	Прямоугольник за элементом, который перемещается вместе с ним.
 A call for the rustgis Python package	Вызов для Python-пакета rustgis
 A catalogue's (CSW 2.0.2) address: search its records by words and, if you like, the map's area, then add the services and files they link to.	Адрес каталога (CSW 2.0.2): ищите его записи по словам и, при желании, по области карты, затем добавляйте сервисы и файлы, на которые они ссылаются.
 A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	Достигнут лимит использования тарифа ChatGPT или приложения. Проверьте использование за неделю перед повторной попыткой.
@@ -47,6 +51,7 @@ A ChatGPT sign-in can only be used with the OpenAI API.	Вход через Chat
 A colour, hatch lines, markers on a grid, a gradient, or a shapeburst (shaded from the edge inwards)	Цвет, линии штриховки, маркеры по сетке, градиент или заливка от края (с затенением от края внутрь)
 A command id is required.	Требуется идентификатор команды.
 A connection has this name: give this one another name to remember its keys.	Подключение с таким именем уже есть: дайте этому другое имя, чтобы запомнить его ключи.
+a Copernicus Data Space sign-in	вход в Copernicus Data Space
 A copy of {name} with unsaved changes was kept a minute ago.	Копия {name} с несохранёнными изменениями сохранена минуту назад.
 A copy of {name} with unsaved changes was kept less than a minute ago.	Копия {name} с несохранёнными изменениями сохранена меньше минуты назад.
 A copy of {name} with unsaved changes was kept {n} days ago.	Копия {name} с несохранёнными изменениями сохранена {n} дн. назад.
@@ -61,7 +66,7 @@ A fast, free and open-source GIS written in pure Rust, for mapping, analyzing an
 A field (known once the model runs)	Поле (известно после запуска модели)
 A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	Полевой пакет открывается на компьютере или телефоне, где есть папка для его базовых карт: откройте его там. «Вернуть» (Данные › Автономно) переносит его правки в этот проект.
 A flat scene centred on the view (azimuthal equidistant).	Плоская сцена с центром в виде (азимутальная равнопромежуточная).
-A GeoLens server's datasets, read as features (the first 1,000 of each).	Наборы данных сервера GeoLens, читаемые как объекты (первые 1000 из каждого).
+A GeoLens server's datasets, read as features.	Наборы данных сервера GeoLens, прочитанные как объекты.
 A globe scene.	Сцена-глобус.
 A hidden class leaves its features unlabelled.	Объекты скрытого класса остаются без подписей.
 A label along a line isn't moved.	Подпись вдоль линии не перемещается.
@@ -77,6 +82,7 @@ A line or polygon can't cross the 180° meridian: draw it in two parts, one on e
 A line, or markers or hash marks along it	Линия либо маркеры или штрихи вдоль неё
 A magnifying lens that follows the pointer.	Увеличительная лупа, следующая за указателем.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	Адрес сервиса карт, объектов или покрытий: WMS, WMTS, WFS, WCS, OGC API Features или Tiles либо ArcGIS FeatureServer, MapServer, ImageServer или VectorTileServer (или каталог сервисов для просмотра).
+A name or EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Имя или код EPSG, WKT или строка PROJ; пусто: система самой карты, если она в проекции, иначе зона UTM в центре вида
 a name, or owner/name such as giswqs/geospatial	имя или владелец/имя, например giswqs/geospatial
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	Именованная конечная точка для повторного использования. Ключи хранятся до закрытия RustGIS, если вы не решите запомнить их на этом компьютере; само подключение их никогда не хранит.
 A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	Именованная конечная точка для повторного использования. Пароли и ключи действуют в течение этого сеанса, если вы не решите запомнить их на этом компьютере; само подключение их никогда не хранит.
@@ -87,8 +93,10 @@ A node cannot connect to itself.	Узел не может соединяться
 A notebook of text and command cells.	Блокнот из текстовых и командных ячеек.
 A password or token in the address was left out of the saved connection definition.	Пароль или токен в адресе не включён в сохранённое определение подключения.
 A place or an address	Место или адрес
+A PNG or JPEG file as the marker	Файл PNG или JPEG в качестве маркера
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	Ранее сохранённый ключ всё ещё хранится в настройках приложения в незашифрованном виде, пока его нельзя перенести в системную связку ключей.
 A project keeps at least one map	В проекте остаётся хотя бы одна карта
+A project save is already in progress.	Сохранение проекта уже выполняется.
 A projected coordinate system.	Система координат проекции.
 A projected system such as EPSG:32616, or EPSG:4326 for degrees	Проекционная система, например EPSG:32616, или EPSG:4326 для градусов
 a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	у растрового слоя нет запроса определения и привязки ко времени: вкладки «Запрос» и «Время» относятся к векторному слою
@@ -101,6 +109,7 @@ A saved key could not be read. A key entered now will be kept for this session o
 A search area holds at most {n} shapes: Clear it to start again	Область поиска вмещает не более {n} фигур: очистите её, чтобы начать заново
 A service import or refresh is already running.	Импорт или обновление сервиса уже выполняется.
 A service's layers stay in their service group.	Слои сервиса остаются в группе своего сервиса.
+A sign-in is remembered on this computer: it signs in when a file needs it.	Вход запомнен на этом компьютере: он выполняется, когда он нужен файлу.
 A small chart of several numeric fields, drawn on each feature over its symbol	Небольшая диаграмма нескольких числовых полей, рисуемая на каждом объекте поверх его символа
 A streamed layer needs Load All Features first	Для потокового слоя сначала нужно «Загрузить все объекты»
 A table replaced in a GeoPackage	Таблица, заменённая в GeoPackage
@@ -111,18 +120,15 @@ A theme file was refused. Open Settings > Theme for the reason.	Файл тем�
 A tile layer per grid tile, each following the time slider through its dates.	Слой тайлов на каждый тайл сетки; каждый следует за ползунком времени по своим датам.
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	Адрес сервиса тайлов: растровые тайлы с {z}/{x}/{y} (или {-y}, {q}, {bbox-epsg-3857} для WMS), векторные тайлы (.pbf) или TileJSON, стиль MapLibre, архив PMTiles (веб-адрес или файл на этом компьютере) или файл MBTiles на этом компьютере.
 A token for {server}	Токен для {server}
+A token is already being generated for this connection. Cancel it first.	Для этого подключения уже создаётся токен. Сначала отмените его.
+A token is being generated. Cancel it before saving again.	Создаётся токен. Отмените его, прежде чем сохранять снова.
 A token is set.	Токен задан.
+A value of {field}	Значение {field}
 a vector a pixel	вектор на пиксель
 a vector an image patch	вектор на фрагмент изображения
 A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	Зона UTM WGS 84 для подписей MGRS, по коду EPSG (32632); если пусто — зона карты, если она в ней, иначе зона в центре фрейма.
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	Хранилище Zarr (формат 2 или 3) по веб-адресу, с консолидированными метаданными, или папка на этом компьютере. Карта переменной читается для выбранных шагов её других измерений, например времени.
 A Zarr variable's values through time at points clicked on the map.	Значения переменной Zarr во времени в точках, указанных щелчком на карте.
-A2 landscape sheet	Лист A2, альбомная ориентация
-A2 portrait sheet	Лист A2, книжная ориентация
-A3 landscape sheet	Лист A3, альбомная ориентация
-A3 portrait sheet	Лист A3, книжная ориентация
-A4 landscape sheet	Лист A4, альбомная ориентация
-A4 portrait sheet	Лист A4, книжная ориентация
 A5 Grid	Сетка A5
 A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	Равновеликие пятиугольные ячейки A5 заданного разрешения в экстенте карты, слоя или всего мира, в виде полигонов с их идентификаторами.
 About	О программе
@@ -165,6 +171,7 @@ Add a report file, or a report template for the selected layer.	Добавить
 Add a scale bar for the map frame.	Добавить масштабную линейку для фрейма карты.
 add a second map first (Data › New Map)	сначала добавьте вторую карту (Данные › Новая карта)
 Add a second map frame first	Сначала добавьте второй фрейм карты
+Add a spectral index of the item's bands, for the part of the map in view	Добавить спектральный индекс по каналам элемента для видимой части карты
 Add a straight line.	Добавить прямую линию.
 Add a text element.	Добавить текстовый элемент.
 Add a web basemap over the others instead of replacing them, to blend it with them. Click one that shows to take it off.	Добавить веб-базовую карту поверх остальных, не заменяя их, чтобы смешать её с ними. Щёлкните по показанной, чтобы убрать её.
@@ -228,6 +235,7 @@ Add Layer File	Добавить файл слоя
 Add Mark	Добавить знак
 Add more with plugins:	Больше можно добавить с помощью модулей:
 Add Open Data	Добавить открытые данные
+Add or create a polygon feature layer using Data, then choose it here.	Добавьте или создайте полигональный слой объектов на вкладке «Данные», затем выберите его здесь.
 Add Output	Добавить выход
 Add Overture Maps Data	Добавить данные Overture Maps
 Add Page After	Добавить страницу после
@@ -249,8 +257,10 @@ Add Selected ({n})	Добавить выбранные ({n})
 Add Service Layer	Добавить слой сервиса
 Add skill…	Добавить навык…
 Add STAC Asset	Добавить ресурс STAC
+Add STAC Bands	Добавить каналы STAC
 Add STAC Data Cube	Добавить куб данных STAC
 Add STAC Footprints	Добавить контуры STAC
+Add STAC Index	Добавить индекс STAC
 Add statistic	Добавить статистику
 Add Step	Добавить шаг
 Add Stroke	Добавить обводку
@@ -261,6 +271,7 @@ Add Text	Добавить текст
 Add text that updates: page, date, scale, map and more.	Добавить обновляемый текст: страница, дата, масштаб, карта и другое.
 Add the attribute table of a layer in the map frame.	Добавить таблицу атрибутов слоя из фрейма карты.
 Add the current view as a keyframe.	Добавить текущий вид как ключевой кадр.
+Add the item's bands as one image, for the part of the map in view	Добавить каналы элемента одним изображением для видимой части карты
 Add The National Map Service	Добавить сервис The National Map
 Add this GeoTIFF to the map	Добавить этот GeoTIFF на карту
 Add this MCP server to your agent:	Добавьте этот MCP-сервер в своего агента:
@@ -279,7 +290,6 @@ Add {language}	Добавить {language}
 Add {n}	Добавить {n}
 Add ▾	Добавить ▾
 Added	Добавлено
-Added Fixture	Добавленный объект
 Added from {start} to {end}: the time slider steps through it	Добавлено с {start} по {end}: ползунок времени проходит по этому периоду
 Added Overture's {theme} as map tiles ({release}; some themes show only zoomed in): {attribution}	Тема Overture «{theme}» добавлена как тайлы карты ({release}; некоторые темы видны только при приближении): {attribution}
 Added {name}	Добавлено: {name}
@@ -318,6 +328,7 @@ Agents then run commands, change files and use the web on this computer without 
 Aggregate Points to A5	Агрегировать точки в A5
 Aggregation	Агрегация
 Agricultural field boundaries the Fields of the World model found in Sentinel-2 imagery, worldwide, a year at a time (2nd Edition, CC BY 4.0). These are model predictions, not surveyed parcels.	Границы сельскохозяйственных полей, найденные моделью Fields of the World на снимках Sentinel-2 по всему миру, по одному году (2nd Edition, CC BY 4.0). Это предсказания модели, а не обмеренные участки.
+Agriculture	Сельское хозяйство
 AI	ИИ
 AI\nAssistant	Помощник\nИИ
 AI Assistant	ИИ-помощник
@@ -352,16 +363,19 @@ Altitude	Высота
 Always allow	Всегда разрешать
 Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3 или S3-совместимый сервис (MinIO, Cloudflare R2, Wasabi…) по его конечной точке. Ключи хранятся до закрытия RustGIS; сохранённое подключение сохраняет имя, конечную точку и регион, но никогда не сохраняет секретный ключ.
+Ambient	Рассеянный
 amenity=cafe, shop	amenity=cafe, shop
 An agent on this computer asks to:	Агент на этом компьютере просит:
+An API key in the URL path is saved as typed, not in the credential store.	Ключ API в пути URL сохраняется как введён, а не в хранилище учётных данных.
 An API key sent in a header must use plain ASCII characters.	Ключ API, передаваемый в заголовке, должен содержать только символы ASCII.
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	Адрес организации ArcGIS Online или портала ArcGIS Enterprise; если пусто — ArcGIS Online
+an ArcGIS sign-in	вход в ArcGIS
 An AWS profile	Профиль AWS
-an enqueued add is not a success	поставленное в очередь добавление не является успехом
-An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	Код EPSG, WKT или строка PROJ; если пусто — система самой карты, если она проекционная, иначе зона UTM в центре вида
+An image picked for an earlier Image… was dropped: pick it again for that marker	Изображение, выбранное ранее через «Изображение…», отброшено: выберите его снова для этого маркера
 Analysis	Анализ
 Analyze	Анализ
 Analyze › AI	Анализ › ИИ
+Analyze › Annotate	Анализ › Аннотации
 Analyze › Workflows	Анализ › Рабочие процессы
 AND	AND
 Angle	Угол
@@ -369,6 +383,8 @@ Angle (°)	Угол (°)
 Animated GIF	Анимированный GIF
 Animated GIF or PNG frames (zip)	Анимированный GIF или кадры PNG (zip)
 Animation	Анимация
+Annotate	Аннотации
+Annotation export uses GeoJSON.	Аннотации экспортируются в GeoJSON.
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	Другой перетащенный файл не был открыт: перетащите его снова после ответа о несохранённых изменениях.
 Another project is open now: open the dialog again from its table.	Сейчас открыт другой проект: откройте диалог снова из его таблицы.
 another project was opened	открыт другой проект
@@ -384,7 +400,9 @@ Application	Приложение
 Apply	Применить
 Apply a function to a raster	Применить функцию к растру
 Apply Control Points	Применить контрольные точки
+Apply Conversion	Применить преобразование
 Apply elevation	Применить высоту
+Apply Shape Conversion	Применить преобразование фигуры
 Apply Style	Применить стиль
 Apply to layers	Применить к слоям
 Apply to the selected layer	Применить к выбранному слою
@@ -397,6 +415,7 @@ ArcGIS Portal…	ArcGIS Portal…
 ArcGIS REST	ArcGIS REST
 ArcGIS Sign-In Status	Состояние входа в ArcGIS
 ArcGIS token	Токен ArcGIS
+ArcGIS Token Status	Состояние токена ArcGIS
 Archive	Архив
 Archive History	История архива
 Archiving	Архивирование
@@ -405,6 +424,7 @@ Area of use: longitude {w}° to {e}°, latitude {s}° to {n}°	Область п
 Area of use: the whole world	Область применения: весь мир
 Area of use: within {r}° of the {lon}° meridian	Область применения: в пределах {r}° от меридиана {lon}°
 Area of use: within {r}° of {lon}°, {lat}°	Область применения: в пределах {r}° от {lon}°, {lat}°
+Area Unit	Единица площади
 Area {area}   ·   Perimeter {perimeter}	Площадь {area}   ·   Периметр {perimeter}
 Areas (name, land use, area)	Территории (название, землепользование, площадь)
 Argentina	Аргентина
@@ -449,6 +469,7 @@ Automatic (mm to km)	Автоматически (от мм до км)
 Automatic (system language)	Автоматически (язык системы)
 Automatic ({kind})	Автоматически ({kind})
 Automatic ({n})	Автоматически ({n})
+Automatic chooses columns using the whole file. Open a list to see the preview suggestions or choose columns yourself.	«Автоматически» выбирает столбцы по всему файлу. Откройте список, чтобы увидеть предложения предпросмотра, или выберите столбцы сами.
 Autosave	Автосохранение
 Autosave couldn't keep a recovery copy: {error}	Автосохранению не удалось создать копию для восстановления: {error}
 autosave failed unexpectedly; it goes on with the next copy	автосохранение неожиданно завершилось ошибкой; оно продолжится со следующей копией
@@ -462,19 +483,25 @@ Back to the map	Назад к карте
 Back to tools	Назад к инструментам
 Backdrop	Фон
 Background	Фон
+Balanced light	Сбалансированная светлая
 Band	Канал
 Band Combination	Комбинация каналов
+Band combinations are made on the desktop for now	Комбинации каналов пока создаются только в настольной версии
 Band must be a positive integer, list of bands, or 'all'.	Канал должен быть положительным целым числом, списком каналов или 'all'.
 Band {n}	Канал {n}
 Band {n}: {name}	Канал {n}: {name}
 Band {n}: {name}, {wavelength} nm	Канал {n}: {name}, {wavelength} нм
 Bands	Каналы
 Bands 1–{n}	Каналы 1–{n}
+Bands left out	Исключённые каналы
 Bands: blue green red NIR SWIR	Каналы: синий, зелёный, красный, NIR, SWIR
+Bands: public items only	Каналы: только общедоступные элементы
 Bangladesh	Бангладеш
 Banner	Баннер
 Bar	Столбцы
 Bar Chart	Столбчатая диаграмма
+Bar color	Цвет столбца
+Bars	Столбцы
 Base	Основание
 Base (m)	Основание (м)
 Basemap	Базовая карта
@@ -482,6 +509,7 @@ Basemaps	Базовые карты
 Basic authentication	Базовая аутентификация
 Basin from hydrolocation	Бассейн по гидролокации
 Batch Run	Пакетный запуск
+Bathymetric	Батиметрическая
 Bearing	Азимут
 Before	До
 Before the event	До события
@@ -519,6 +547,8 @@ Boundaries…	Границы…
 Bounding\nGeometry	Ограничивающая\nгеометрия
 Box Construction	Построение прямоугольника
 Brazil	Бразилия
+Break the text into lines at spaces to fit the width of its box	Разбивать текст на строки по пробелам, чтобы он помещался по ширине рамки
+Breaks	Границы
 Brightness	Яркость
 Brightness, contrast, saturation and sepia for the whole map.	Яркость, контраст, насыщенность и сепия для всей карты.
 Bring a field package's edits and photos back to the offline area it was made from.	Вернуть правки и фотографии полевого пакета в автономную область, из которой он был создан.
@@ -556,12 +586,17 @@ Bundle the project and its data into one file to share.	Упаковать пр�
 Bundle the visible layers, with simplified geometry for phones and tablets.	Упаковать видимые слои с упрощённой геометрией для телефонов и планшетов.
 By\nAttributes	По\nатрибутам
 By\nLocation	По\nрасположению
+By area	По площади
+By area: a value twice another draws a marker of about twice the area. By radius: twice the size.	По площади: значение вдвое больше другого рисует маркер примерно вдвое большей площади. По радиусу: вдвое большего размера.
 By Coordinates	По координатам
 By Coordinates…	По координатам…
 By Expression	По выражению
+By label	По подписи
 By layer	По слою
 By Place or Address	По месту или адресу
 By Place or Address…	По месту или адресу…
+By radius	По радиусу
+By the bars	По столбцам
 by {author}	автор: {author}
 By {field}	По {field}
 cached tiles	кэшированные тайлы
@@ -585,7 +620,11 @@ Camera Effect	Эффект камеры
 Can't read this folder	Не удаётся прочитать эту папку
 Cancel	Отмена
 Cancel ArcGIS Sign-In	Отменить вход в ArcGIS
+Cancel ArcGIS Token	Отменить токен ArcGIS
 Cancel Caching	Отменить кэширование
+Cancel Fitting	Отменить подгонку
+Cancel Grid Read	Отменить чтение сетки
+Cancel token request	Отменить запрос токена
 Cancelled	Отменено
 Cap	Окончание
 Capture To Clipboard	Снимок в буфер обмена
@@ -662,7 +701,9 @@ choose a folder	выбрать папку
 Choose a GeoPackage layer	Выберите слой GeoPackage
 Choose a layer	Выберите слой
 Choose a layer…	Выберите слой…
+Choose a loaded editable polygon layer.	Выберите загруженный редактируемый полигональный слой.
 Choose a model.	Выберите модель.
+Choose a polygon layer	Выберите полигональный слой
 Choose a position within the supported map and construction grid.	Выберите положение в пределах поддерживаемой карты и сетки построения.
 Choose a resampling type for the raster layer.	Выберите тип передискретизации для растрового слоя.
 Choose a saved S3 connection before opening this source.	Выберите сохранённое подключение S3, прежде чем открывать этот источник.
@@ -672,6 +713,10 @@ Choose a stop	Выберите остановку
 Choose a table to load for editing	Выберите таблицу для загрузки и редактирования
 Choose a zipped Shapefile, or pick its .shp and .dbf together.	Выберите Shapefile в ZIP или выберите вместе его .shp и .dbf.
 Choose an account	Выбрать учётную запись
+Choose an image and target layer, then draw in the original image grid.	Выберите изображение и целевой слой, затем рисуйте в сетке исходного изображения.
+Choose an image before using original-image pixels.	Выберите изображение, прежде чем использовать пиксели исходного изображения.
+Choose an image or Web Mercator grid metres before drawing.	Перед рисованием выберите изображение или метры сетки Web Mercator.
+Choose Circle or Rotated Box.	Выберите «Круг» или «Повёрнутый прямоугольник».
 Choose Connection	Выбрать подключение
 Choose Connection…	Выбрать подключение…
 Choose extra buttons for the Quick Access Toolbar.	Выбрать дополнительные кнопки для панели быстрого доступа.
@@ -708,6 +753,7 @@ Class color	Цвет класса
 Class Fields	Поля классов
 Class Style	Стиль классов
 Class {n}	Класс {n}
+Class {n} more than {bound}	Класс {n} более {bound}
 Class {n} up to	Класс {n} до
 Classes	Классы
 Classes from training polygons.	Классы по обучающим полигонам.
@@ -795,6 +841,7 @@ Close the current dialog before reloading a layer with pending edits.	Закро
 Close the layout and show the map.	Закрыть макет и показать карту.
 Close the time slider (it stays on; Time Slider opens it again).	Закрыть ползунок времени (он остаётся включённым; «Ползунок времени» открывает его снова).
 Close thread	Закрыть поток
+Close without applying the preview and stop any pending fit. Use Undo after applying a conversion.	Закрыть без применения предпросмотра и остановить ожидающую подгонку. После применения преобразования используйте «Отменить».
 Close {name}	Закрыть {name}
 Closest	Ближайшее
 Coded values, one per line: code=description	Кодированные значения, по одному в строке: код=описание
@@ -804,6 +851,8 @@ Collection	Коллекция
 Collection {id}: choose dates and Find Items	Коллекция {id}: выберите даты и нажмите «Найти элементы»
 Collections	Коллекции
 Color	Цвет
+Color by class	Цвет по классу
+Color infrared	Цветной инфракрасный
 Color Infrared (4, 1, 2)	Цветной инфракрасный (4, 1, 2)
 Color Ramps	Цветовые шкалы
 Color Scheme	Цветовая схема
@@ -816,7 +865,6 @@ Colors from the raster's own color table.	Цвета из собственной
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	Цветовые шкалы (RustGIS, QGIS, GDAL, GMT)
 Column Statistics	Статистика столбца
 Columns	Столбцы
-Columns named like longitude/latitude, easting/northing or geometry are picked for you.	Столбцы с именами вроде longitude/latitude, easting/northing или geometry выбираются автоматически.
 Combinations from the box above, one per line	Сочетания из поля выше, по одному в строке
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	Объединяет два полигональных слоя во все части, покрытые любым из них, с атрибутами обоих там, где они перекрываются.
 COMID {comid}	COMID {comid}
@@ -858,6 +906,7 @@ Constant	Константа
 Constant ({m} m)	Постоянное ({m} м)
 Constant height	Постоянная высота
 Constant…	Константа…
+Construction Grid	Сетка построения
 Content	Содержание
 Contingent Values	Условные значения
 Continue	Продолжить
@@ -865,9 +914,18 @@ Continue with ChatGPT	Продолжить с ChatGPT
 Contrast	Контраст
 Control Point Fit	Подгонка по контрольным точкам
 Conversion	Преобразование
+Conversion closed because the source, selection or tool changed.	Преобразование закрыто, так как изменились источник, выборка или инструмент.
+conversion request limit reached	достигнут лимит запросов на преобразование
 Convert	Преобразовать
 Convert a layer to another format	Преобразовать слой в другой формат
 Convert Field to Dates	Преобразовать поле в даты
+Convert Now	Преобразовать сейчас
+Convert Now fits and applies immediately. Preview Conversion lets you review or adjust first.	«Преобразовать сейчас» подгоняет и применяет сразу. «Предпросмотр преобразования» позволяет сначала проверить или настроить.
+Convert Polygon	Преобразовать полигон
+Convert Polygon to Shape…	Преобразовать полигон в фигуру…
+Convert Polygon…	Преобразовать полигон…
+Convert Position	Преобразовать позицию
+Convert Selected Polygon…	Преобразовать выбранный полигон…
 Convert the selected layer's labels into an annotation layer.	Преобразовать подписи выбранного слоя в слой аннотаций.
 Convert this layer's labels into an annotation layer.	Преобразовать подписи этого слоя в слой аннотаций.
 Convert To Annotation	Преобразовать в аннотации
@@ -877,8 +935,12 @@ Convert…	Преобразовать…
 Coordinate	Координата
 Coordinate System	Система координат
 Coordinate system	Система координат
+Coordinate systems	Системы координат
 Coordinate System…	Система координат…
 Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	Координаты в формате {format}. Щёлкните для переключения: десятичные градусы, DMS, UTM, MGRS. UTM и MGRS — сетки Земли; севернее 84° с. ш. и южнее 80° ю. ш. они читаются в UPS.
+Copernicus Data Space	Copernicus Data Space
+Copernicus Data Space Status	Состояние Copernicus Data Space
+Copernicus Data Space…	Copernicus Data Space…
 Copied the command.	Команда скопирована.
 Copied the layout to the clipboard	Макет скопирован в буфер обмена
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Макет скопирован в буфер обмена с разрешением {dpi} dpi, а не {wanted}: страница слишком велика для большего изображения
@@ -921,11 +983,14 @@ Copy, Cut and Paste keys cannot be reassigned.	Клавиши копирован
 Corner radius	Радиус скругления
 Corrections	Коррекция
 Cost	Стоимость
+Cost Field	Поле стоимости
 could not draw the layout	не удалось нарисовать макет
 could not draw the map	не удалось отрисовать карту
+Could not read saved ChatGPT sign-ins: {reason}	Не удалось прочитать сохранённые входы ChatGPT: {reason}
 Could not start service discovery: {error}	Не удалось запустить обнаружение служб: {error}
 could not start the keychain worker	не удалось запустить обработчик связки ключей
 Couldn't check for updates: {error}	Не удалось проверить обновления: {error}
+Couldn't download the font for the {language} text on the map, so it is left out of the map and its exports; pick a language in Settings › Language to retry.	Не удалось скачать шрифт для текста на языке {language} на карте, поэтому он не попадает на карту и в её экспорт; выберите язык в «Настройки › Язык», чтобы повторить попытку.
 Couldn't download the font for {language}; pick the language again to retry.	Не удалось загрузить шрифт для {language}; выберите язык ещё раз, чтобы повторить попытку.
 Couldn't download the update: {error}	Не удалось скачать обновление: {error}
 Couldn't download the {view} worldview ({error}); the map keeps the {current} borders	Не удалось загрузить версию границ «{view}» ({error}); на карте остаются границы «{current}»
@@ -933,6 +998,7 @@ Couldn't install the update: {error}	Не удалось установить о
 Couldn't load the plugin registry: {error}	Не удалось загрузить каталог модулей: {error}
 Couldn't start reading: {e}	Не удалось начать чтение: {e}
 Couldn't start the search: {e}	Не удалось начать поиск: {e}
+Count	Количество
 Counterclockwise	Против часовой стрелки
 Countries, cities, rivers and lakes	Страны, города, реки и озёра
 Country	Страна
@@ -942,6 +1008,7 @@ Counts, totals and top categories of what's in view.	Количества, ит�
 CPU	CPU
 Create	Создать
 Create (click points)	Создать (щелчками по точкам)
+Create a free account	Создать бесплатную учётную запись
 Create a new project or start from the World Atlas sample.	Создайте новый проект или начните с примера «Атлас мира».
 Create Feature	Создать объект
 Create Hosted\nImagery	Создать размещённые\nизображения
@@ -972,6 +1039,7 @@ Current extent	Текущий охват
 Current Project	Текущий проект
 Current scale ({scale})	Текущий масштаб ({scale})
 Current time	Текущее время
+Current: {action}	Текущее: {action}
 Curve	Кривая
 Curved	Изогнуто
 Custom	Пользовательский
@@ -982,6 +1050,7 @@ Cut	Вырезать
 Cut a raster into web map tiles	Нарезать растр на тайлы веб-карты
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	Нарезать растр на тайлы веб-карты (XYZ PNG) со страницей просмотра.
 Cut Polygon	Разрезать полигон
+Cutoff	Порог
 Dark	Тёмная
 Dash	Штрих
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	Длины штрихов и пробелов в пунктах, поочерёдно, например 4 2. Пусто — сплошная линия.
@@ -1019,22 +1088,26 @@ Dates	Даты
 Dates a cell needs	Дат нужно ячейке
 Dates a cell needs is a whole number, or empty for half	«Дат нужно ячейке» — целое число или пусто для половины
 DateTime	Дата и время
+Datum Grids	Сетки датумов
 Day	День
 Day and night shading for a time.	Затенение дня и ночи на заданное время.
 Decimal	Десятичные
 decimal degrees	десятичные градусы
+Decimals	Знаков после запятой
 Decline	Отклонить
 Deep Learning	Глубокое обучение
 Deep Learning\nTools	Инструменты\nглуб. обучения
 Deep Learning Package	Пакет глубокого обучения
 Deep Learning Tools	Инструменты глубокого обучения
 Default	По умолчанию
+Default Border	Рамка по умолчанию
 Default can't be removed. You can rename or hide it.	Класс «По умолчанию» нельзя удалить. Его можно переименовать или скрыть.
 Define Projection	Определить проекцию
 Define Projection…	Определить проекцию…
 Definition\nQuery	Запрос\nопределения
 Definition Query	Запрос определения
 Definition query	Запрос определения
+Degrees (0–90)	Градусы (0–90)
 Degrees as decimals or degrees, minutes and seconds.	Десятичные градусы или градусы, минуты и секунды.
 Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.	Десятичные градусы или градусы, минуты и секунды; либо ссылка UTM или MGRS вместо обеих координат.
 degrees, as the cell size is in degrees	градусы, так как размер ячейки задан в градусах
@@ -1081,7 +1154,9 @@ Description	Описание
 Desktop and command line only	Только настольное приложение и командная строка
 Destination	Назначение
 Destination key	Ключ назначения
+Destinations	Пункты назначения
 Destinations ({operation}): {places}	Назначения ({operation}): {places}
+Destinations to Find	Число пунктов назначения
 Detail	Детализация
 Details	Сведения
 Details of the selected layer, on the Source tab of its properties.	Сведения о выбранном слое на вкладке «Источник» его свойств.
@@ -1146,6 +1221,9 @@ Double-click to add	Двойной щелчок — добавить
 Download	Скачать
 Download\nMap	Скачать\nкарту
 Download and Install	Скачать и установить
+Download Datum Grids	Скачивать сетки датумов
+Download GeoLibre Tool Translations	Скачать переводы инструментов GeoLibre
+Download GeoLibre's translations of these tools into {language} (about 2 MB, from languages.geolibre.app)	Скачать переводы этих инструментов GeoLibre на язык {language} (около 2 МБ, с languages.geolibre.app)
 Download it again and load it.	Скачайте его снова и загрузите.
 Download its features in the view (up to the server's limit)	Загрузить его объекты в виде (до предела сервера)
 Download Map	Скачать карту
@@ -1153,6 +1231,8 @@ Download offered: {name}	Предложена загрузка: {name}
 Download offered: {name}. The browser doesn't say whether it saved the file.	Предложена загрузка: {name}. Браузер не сообщает, сохранён ли файл.
 Download OpenStreetMap Data	Скачать данные OpenStreetMap
 Download the GeoLibre runner	Скачать модуль запуска GeoLibre
+Downloading the font for the {language} text on the map. Images exported before it arrives leave that text out.	Скачивается шрифт для текста на языке {language} на карте. В изображениях, экспортированных до его загрузки, этого текста не будет.
+Downloading the tool translations…	Скачивание переводов инструментов…
 Downloading {url}…	Загрузка {url}…
 Downloading: {done} MB	Скачивание: {done} МБ
 Downloading: {done} of {total} MB	Скачивание: {done} из {total} МБ
@@ -1221,6 +1301,7 @@ Draw labels at every scale and distance.	Отображать подписи п�
 Draw line	Нарисовать линию
 Draw new features in the selected layer. Double-click to finish lines and polygons.	Рисуйте новые объекты в выбранном слое. Двойной щелчок завершает линии и полигоны.
 Draw new single-band rasters with the grey stretch again.	Снова отображать новые одноканальные растры с серой растяжкой.
+Draw on top of layers	Рисовать поверх слоёв
 Draw only polygon outlines, keeping their colors and widths.	Отрисовывать только контуры полигонов, сохраняя их цвета и толщину.
 Draw point	Нарисовать точку
 Draw points as bins coloured by how many fall in each.	Отображать точки ячейками, окрашенными по их количеству в каждой.
@@ -1228,14 +1309,17 @@ Draw polygon	Нарисовать полигон
 Draw polygons as outlines only.	Отображать полигоны только контурами.
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	Отображать добавляемые с этого момента одноканальные растры с этой цветовой схемой, растяжкой и передискретизацией.
 Draw strokes in levels	Отрисовывать обводки по уровням
+Draw the grid lines over the map's layers, under the labels; off: under the layers	Рисовать линии сетки поверх слоёв карты, под подписями; выкл.: под слоями
 Draw the layer at every scale.	Отображать слой в любом масштабе.
 Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).	Отрисовывать карту на GPU (бета; глобус, эффекты вида и имитация цветового зрения остаются на CPU-рендерере).
 Draw the selected layer above others.	Отображать выбранный слой над остальными.
 Draw the selected layer below others.	Отображать выбранный слой под остальными.
 Drawing	Отображение
+Drawing cancelled because the map, image or construction grid changed. Check the grid, then start a new shape.	Рисование отменено, так как изменились карта, изображение или сетка построения. Проверьте сетку и начните новую фигуру.
 Drawing Effects	Эффекты отображения
 Drawing Mode	Режим отображения
 Drawing Order	Порядок отображения
+Drawing requires editing enabled, a loaded polygon layer and a flat Earth map with zero pitch.	Для рисования нужны включённое редактирование, загруженный полигональный слой и плоская карта Земли с нулевым наклоном.
 drawn by the server	отрисовано сервером
 Drive	Авто
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	Снимки с дронов и аэросъёмка, опубликованные на OpenAerialMap, сначала новые; добавляются как облачно-оптимизированные GeoTIFF.
@@ -1269,6 +1353,7 @@ Each class labels the features its own clause matches, so a feature can get a la
 Each click on the map adds a point, until you click this again.	Каждый щелчок по карте добавляет точку, пока вы не нажмёте эту кнопку снова.
 Each geoprocessing run becomes a step, chained by its outputs	Каждый запуск геообработки становится шагом, связанным через свои результаты
 Each line's whole result, to read or copy	Полный результат каждой строки для чтения или копирования
+Earliest available state	Самое раннее доступное состояние
 Earth Index has no points in the view	В Earth Index нет точек в этом виде
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1333,6 +1418,7 @@ Empty	Пусто
 Empty Cache	Очистить кэш
 Empty Index Cache	Очистить кэш индексов
 Empty the script and its results ({keys} brings the script back)	Очистить скрипт и его результаты ({keys} возвращает скрипт)
+Enable editing	Включить редактирование
 Enable Extension	Включить расширение
 Enable Lighting	Включить освещение
 Enable Plugin	Включить модуль
@@ -1348,16 +1434,18 @@ Enter	Enter
 Enter a valid query parameter name before testing this connection.	Введите допустимое имя параметра запроса перед проверкой этого подключения.
 Enter an API key.	Введите ключ API.
 Enter an EPSG code as a number, such as 32650	Введите код EPSG числом, например 32650
+Enter the expiry as a Unix time in milliseconds, or leave it blank.	Введите срок действия как время Unix в миллисекундах или оставьте поле пустым.
 Enter the password or key for this connection. Remember on this computer is optional.	Введите пароль или ключ для этого подключения. «Запомнить на этом компьютере» — по желанию.
+Enter the password to generate a token.	Введите пароль, чтобы создать токен.
 Enter the provider's address.	Введите адрес поставщика.
-Enter this connection's password or API key to log in.	Введите пароль или ключ API этого подключения, чтобы войти.
+Enter the user to generate a token for.	Введите пользователя, для которого создаётся токен.
+Enter this connection's password, API key or token to log in.	Введите пароль, ключ API или токен этого подключения, чтобы войти.
 Enter to send, Shift+Enter for a new line	Enter — отправить, Shift+Enter — новая строка
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
 Environments	Среды
 EPSG	EPSG
 EPSG code	Код EPSG
-EPSG or ESRI code	Код EPSG или ESRI
 EPSG:	EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832, WKT или строка PROJ; если пусто — система карты, если она проекционная, иначе зона UTM в центре рамки.
@@ -1385,9 +1473,11 @@ Every label setting of this layer, in the Labeling pane.	Все настройк
 Every layer, as FEMA draws them	Все слои в отрисовке FEMA
 Every run, in order, as a script that opens the project	Все запуски по порядку в виде скрипта, открывающего проект
 every Socrata site, or one such as data.cityofnewyork.us	любой сайт Socrata или конкретный, например data.cityofnewyork.us
+every value	каждое значение
 Every {n} min	Каждые {n} мин
 Everything done in this session, from the app, scripts, the AI Assistant or plugins	Всё, что сделано в этом сеансе приложением, скриптами, ИИ-помощником или модулями
 Everywhere	Везде
+EVI (enhanced vegetation)	EVI (улучшенный вегетационный)
 Exact request	Точный запрос
 Existing field	Существующее поле
 Existing Template	Существующий шаблон
@@ -1397,6 +1487,8 @@ Expand Group	Развернуть группу
 Expand Legend	Развернуть легенду
 Expand the ribbon	Развернуть ленту
 Expand Tile Legend	Развернуть легенду тайлов
+Expires at (Unix milliseconds)	Истекает (миллисекунды Unix)
+expiresAt must be a Unix time in milliseconds, in the future.	expiresAt должно быть временем Unix в миллисекундах в будущем.
 Explode	Разбить
 Exploratory 3D Analysis	Исследовательский 3D-анализ
 Exploratory Analysis	Исследовательский анализ
@@ -1408,6 +1500,7 @@ Export\nMap	Экспорт\nкарты
 Export\nRaster	Экспорт\nрастра
 Export and print the layout's map frames to PDF with their coordinates, so PDF readers can locate and measure in them.	Экспорт и печать рамок карты макета в PDF с их координатами, чтобы программы просмотра PDF могли определять положение и выполнять измерения.
 Export Animation	Экспорт анимации
+Export Block	Экспортировать блок
 Export Bookmarks	Экспорт закладок
 Export Bookmarks…	Экспорт закладок…
 Export CSV…	Экспорт CSV…
@@ -1415,6 +1508,7 @@ Export Features	Экспорт объектов
 Export Features (tool)	Экспорт объектов (инструмент)
 Export Features needs a vector layer (Data › Export Raster writes a raster)	Для экспорта объектов нужен векторный слой (Данные › Экспорт растра записывает растр)
 Export Features…	Экспорт объектов…
+Export GeoJSON…	Экспорт GeoJSON…
 Export Keyboard Shortcuts…	Экспорт сочетаний клавиш…
 Export Layout	Экспорт макета
 Export Map	Экспорт карты
@@ -1453,29 +1547,34 @@ exporting animations needs the desktop app	для экспорта анимац�
 exporting time animations needs the desktop app	для экспорта временных анимаций нужно настольное приложение
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	Экспортирует стилизованный растровый слой как тайлы PNG в Web Mercator в архив PMTiles.
 Exports a vector layer as a Web Mercator vector-tile PMTiles archive.	Экспортирует векторный слой в архив PMTiles с векторными тайлами в Web Mercator.
+Exports contain ordinary polygons and feature properties. Image/grid choices and exact constructions remain session-only.	Экспорт содержит обычные полигоны и свойства объектов. Выбор изображения/сетки и точные построения остаются только в сеансе.
 Export…	Экспорт…
 Expression	Выражение
 Extensions	Расширения
 Extensions are optional parts of RustGIS: nothing to download. Turn one off to hide its tab and commands.	Расширения — необязательные части RustGIS: ничего загружать не нужно. Отключите расширение, чтобы скрыть его вкладку и команды.
 Extensions…	Расширения…
 Extent	Охват
+Extent in	Охват в
 Extent Indicator	Индикатор экстента
 extent is [minLon, minLat, maxLon, maxLat], "view" or null	экстент должен быть [minLon, minLat, maxLon, maxLat], "view" или null
 Extent: {extent}	Экстент: {extent}
 Extract	Извлечение
 Extracts the parts of input features that fall inside clip polygons.	Извлекает части входных объектов, попадающие внутрь обрезающих полигонов.
+Extrude them all first: the base is what their walls stand on.	Сначала выдавите их все: на основании стоят их стены.
 Extruded shapes cast shadows on the map.	Выдавленные фигуры отбрасывают тени на карту.
 Extrusion	Выдавливание
 Extrusion Base	Основание выдавливания
 F2	F2
 Face Culling	Отсечение граней
 Faces	Грани
+Facilities	Объекты обслуживания
 Factor	Коэффициент
 Failed	Ошибка
 Failed only	Только сбои
 Failed replacement export	Сбой экспорта с заменой
 Fallback	Запасной
 FALSE	FALSE
+False color urban	Городские ложные цвета
 Farthest	Самое дальнее
 Faster drawing: no antialiasing.	Быстрая отрисовка: без сглаживания.
 Favourite Arrangement	Избранная компоновка
@@ -1555,6 +1654,7 @@ Find plugins in the RustGIS plugin registry.	Найти модули в ката
 Find Similar	Найти похожие
 Find Tools	Найти инструменты
 Finding routes…	Поиск маршрутов…
+Finds the lines reachable within one or more travel costs of points, along a line network.	Находит линии, достижимые от точек в пределах одной или нескольких стоимостей пути по линейной сети.
 Finish File Export	Завершить экспорт в файл
 Finish Polygon	Завершить полигон
 Finish Profile	Завершить профиль
@@ -1569,15 +1669,19 @@ First-Person	От первого лица
 First-Person Navigation	Навигация от первого лица
 Fit	Вписать
 Fit To Map View	Подогнать к виду карты
+Fit: centre of the vertex bounds, radius enclosing all vertices. This is not recovery of the original circle.	Подгонка: центр границ вершин, радиус охватывает все вершины. Это не восстановление исходного круга.
+Fit: minimum-area enclosing rectangle of the vertices in the chosen grid.	Подгонка: описанный прямоугольник минимальной площади вокруг вершин в выбранной сетке.
+Fitting in progress. Cancel is also available in the status bar.	Выполняется подгонка. Отмена доступна и в строке состояния.
 Fix the problems listed below first	Сначала исправьте перечисленные ниже проблемы
 Fixed	Фиксированный
 Fixed Zoom In	Фиксированное приближение
 Fixed Zoom Out	Фиксированное отдаление
-Fixture	Объект
 Flat	Плоское
+Flat ground keeps the ramp's colour and slopes facing the sun brighten	Ровная поверхность сохраняет цвет шкалы, а склоны, обращённые к солнцу, светлеют
 FlatGeobuf	FlatGeobuf
 Flip Line	Развернуть линию
 Flowline	Линия стока
+FocusAtPassStart	FocusAtPassStart
 Fog	Туман
 Folder	Папка
 Folder Connections	Подключения к папкам
@@ -1590,6 +1694,7 @@ Follow the time slider	Следовать за ползунком времени
 Font	Шрифт
 for a store that doesn't say	для хранилища, где это не указано
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	Для ArcGIS Online ID клиента — это собственное приложение RustGIS. Для портала ArcGIS Enterprise зарегистрируйте на нём приложение OAuth (Content › New item › Developer credentials) с URL перенаправления {redirect} и укажите его ID клиента.
+For img1.tiff, suggest img1.geojson. Choose the location in the save dialog.	Для img1.tiff предлагать img1.geojson. Место выберите в диалоге сохранения.
 for the layers that change with time, as they list their times (2024-06-01, 1995)	для слоёв, меняющихся со временем, в том виде, как они перечисляют свои времена (2024-06-01, 1995)
 Forest	Лес
 Forget Earthdata Login Token	Забыть токен Earthdata Login
@@ -1597,6 +1702,7 @@ Forget Saved Keys	Забыть сохранённые ключи
 Forget Saved Login	Забыть сохранённый вход
 Forget Saved Password	Забыть сохранённый пароль
 Forget this plugin: the app stops trying to load it at start.	Забыть этот модуль: приложение перестанет пытаться загружать его при запуске.
+Forgets the sign-in, deletes the one remembered on this computer and empties the download cache.	Забывает вход, удаляет вход, запомненный на этом компьютере, и очищает кэш загрузок.
 Format	Формат
 Found: {names}. An agent works on this map through RustGIS's tools and with its own (web, scripts, files) in a folder of its own, kept in Documents › RustGIS › Agent work. It asks you before each action.	Найдены: {names}. Агент работает с этой картой через инструменты RustGIS и свои собственные (веб, скрипты, файлы) в отдельной папке, которая сохраняется в Документы › RustGIS › Agent work. Он спрашивает вас перед каждым действием.
 Fr	Пт
@@ -1630,6 +1736,8 @@ Gemini stopped the reply ({reason}).	Gemini остановил ответ ({reas
 General	Общие
 Generalization	Генерализация
 Generate a token	Создать токен
+Generate ArcGIS Token	Создать токен ArcGIS
+Generating token…	Создание токена…
 geoBoundaries listed no countries: type a country's code	geoBoundaries не вернул список стран: введите код страны
 Geocode	Геокодировать
 Geocode Addresses	Геокодировать адреса
@@ -1649,6 +1757,7 @@ GeoLibre	GeoLibre
 GeoLibre project	Проект GeoLibre
 GeoLibre Project…	Проект GeoLibre…
 GeoLibre Tools	Инструменты GeoLibre
+Geology	Геология
 Geometric Interval	Геометрический интервал
 Geometry	Геометрия
 Geometry lost during import cannot be recovered here. Use Import Original File to choose its coordinate system before reading it. Streamed layers must first be loaded into memory.	Геометрию, потерянную при импорте, здесь восстановить нельзя. Используйте «Импорт исходного файла», чтобы выбрать её систему координат перед чтением. Потоковые слои сначала нужно загрузить в память.
@@ -1676,12 +1785,15 @@ Give the catalogue's web address	Укажите веб-адрес каталог
 Give the file's web address	Укажите веб-адрес файла
 Give the service's web address	Укажите веб-адрес сервиса
 give the text's layer and row, or the lon and lat to place one	укажите слой и строку текста или долготу и широту, чтобы разместить его
+given up before it was read: it was cancelled, or its project was closed	отменено до чтения: загрузку отменили или её проект закрыт
+given up before it was read: its project was closed, or more than 64 downloads started after it	отменено до чтения: её проект закрыт или после неё началось более 64 загрузок
 given up before its read began: its project was closed, or more than 64 downloads started after it	отменено до начала чтения: его проект был закрыт или после него началось более 64 загрузок
 given up during its read: its project was closed, or more than 64 downloads started after it	прервано во время чтения: его проект был закрыт или после него началось более 64 загрузок
 Global	Глобальная
 Globe	Глобус
 Go	Перейти
 Go back a step.	Шаг назад.
+Go back to the phone's interface: the map with large buttons under it.	Вернуться к интерфейсу телефона: карта с крупными кнопками под ней.
 Go back to the previous extent.	Вернуться к предыдущему экстенту.
 Go forward a step.	Шаг вперёд.
 Go forward to the next extent.	Перейти к следующему экстенту.
@@ -1710,7 +1822,10 @@ Greece	Греция
 Green	Зелёный
 Greys	Оттенки серого
 Grid	Сетка
+Grid color	Цвет сетки
+Grid EPSG:{epsg}	Сетка EPSG:{epsg}
 Grid pixels; angle clockwise from grid right.	Пиксели сетки; угол по часовой стрелке от правого направления сетки.
+Grid read cancelled. Reload the grid to draw in image pixels.	Чтение сетки отменено. Перезагрузите сетку, чтобы рисовать в пикселях изображения.
 Grid Spacing (degrees)	Шаг сетки (градусы)
 Ground	Земля
 Ground\nTo Grid	Земля\nв сетку
@@ -1718,6 +1833,7 @@ Ground heights	Высоты рельефа
 Ground To Grid	Земля в сетку
 Group	Группа
 GROUP BY	GROUP BY
+Group by	Группировать по
 Group features by an integer code, each with default values.	Группировать объекты по целочисленному коду, каждая группа со своими значениями по умолчанию.
 Group Option	Способ группировки
 Group Properties	Свойства группы
@@ -1737,8 +1853,10 @@ Haze, fog, rain or snow over the map.	Дымка, туман, дождь или 
 Head/Tail Breaks	Разрывы «голова/хвост»
 Header name	Имя заголовка
 Height	Высота
+Height (m)	Высота (м)
 Height (mm)	Высота (мм)
 Height (points)	Высота (пункты)
+Held in	Хранится в
 Help	Справка
 Help › Help	Справка › Справка
 Hexagons	Шестиугольники
@@ -1772,7 +1890,10 @@ HOME	HOME
 Home	Главная
 Home › Add	Главная › Добавить
 Home › Add › Add Data	Главная › Добавить › Добавить данные
+Home › Add › Add Data › From Service	Главная › Добавить › Добавить данные › Из сервиса
 Home › Add › Web Data	Главная › Добавить › Веб-данные
+Home › Add › Web Data › Copernicus Data Space	Главная › Добавить › Веб-данные › Copernicus Data Space
+Home › Add › Web Data › NASA Earthaccess	Главная › Добавить › Веб-данные › NASA Earthaccess
 Home › Add › Web Data › United States	Главная › Добавить › Веб-данные › США
 Home › Inspect › Measure	Главная › Изучение › Измерить
 Home › Navigate	Главная › Навигация
@@ -1813,9 +1934,14 @@ IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	Облака точек LiDAR HD от IGN по Франции: тайлы по 1 км в области карты, добавляются как облака точек COPC.
 Ignore holes	Игнорировать отверстия
 Illumination	Освещение
+Image	Изображение
 Image Analysis	Анализ изображений
+Image annotation	Аннотация изображения
 Image Classification	Классификация изображений
+image is required; use null for No image	image is required; используйте null для «Без изображения»
+Image markers that can't be drawn were replaced by the circles they showed as: {count} on "{layer}"	Маркеры-изображения, которые нельзя отрисовать, заменены кругами, которыми они отображались: {count} в «{layer}»
 Image Page	Страница изображения
+Image-grid request limit reached	Достигнут лимит запросов сетки изображения
 Imagery	Изображения
 Imagery Sharing	Публикация изображений
 Imagery Tools	Инструменты изображений
@@ -1831,6 +1957,7 @@ Import Deep Learning Package	Импорт пакета глубокого обу
 Import DXF	Импорт DXF
 Import DXF…	Импорт DXF…
 Import GeoLibre Project	Импорт проекта GeoLibre
+Import GeoLibre Tool Translations	Импортировать переводы инструментов GeoLibre
 Import Keyboard Shortcuts	Импорт сочетаний клавиш
 Import Keyboard Shortcuts…	Импорт сочетаний клавиш…
 Import Layout	Импорт макета
@@ -1871,17 +1998,21 @@ In the coordinate system's units: metres for UTM.	В единицах систе
 In the middle	Посередине
 In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	В веб-приложении укажите прокси-сервер с поддержкой CORS; для прямого доступа к Census нужно настольное приложение или CLI.
 In use	Используется
+Include Empty Zones	Включать пустые зоны
 Include End Point	Включить конечную точку
 Indent	Увеличить отступ
 Indent Group	Увеличить отступ группы
 Indent Layer	Увеличить отступ слоя
+Index	Индекс
 Indexes	Индексы
 India	Индия
 Indices	Индексы
+Indices are made on the desktop for now	Индексы пока создаются только в настольной версии
 Indonesia	Индонезия
 Info	Информация
 Infographics	Инфографика
 Information	Информация
+Ink	Чернила
 INPUT	ВХОД
 Input	Вход
 Input Class Features	Входные объекты классов
@@ -1918,6 +2049,7 @@ Installed with Homebrew, winget, the AUR or COPR? Update it there.	Устано�
 Installed {name} {version}. Find it on the Plugins tab; its tools are also in the Tools pane.	Установлен модуль {name} {version}. Он находится на вкладке «Модули»; его инструменты также есть на панели «Инструменты».
 Installing it downloads Python {version} and the packages it needs from the internet.	При установке из интернета загружаются Python {version} и нужные ему пакеты.
 Integer field: values are rounded.	Целочисленное поле: значения округляются.
+Interface	Интерфейс
 Interface font: {font}	Шрифт интерфейса: {font}
 Interface Scale	Масштаб интерфейса
 Interface scale held to {percent}%	Масштаб интерфейса ограничен {percent}%
@@ -1955,6 +2087,7 @@ It is locked, or one of its surrounds is: unlock it first	Он закреплё�
 It is remembered on this computer.	Запоминается на этом компьютере.
 it is reserved to you (plugins, scripts, tasks, models and the GeoLibre runner)	доступно только вам (модули, скрипты, задачи, модели и средство запуска GeoLibre)
 it needs input: open it from its pane or button, or run it from a script or the assistant	нужны входные данные: откройте его с его панели или кнопки либо запустите из скрипта или помощника
+It opens unsaved. Save to keep it.	Он открывается несохранённым. Сохраните его, чтобы не потерять.
 It opens unsaved; saving replaces {file}.	Открывается несохранённым; при сохранении заменит {file}.
 it reads or writes files on this computer	читает или записывает файлы на этом компьютере
 it replaces the open project	заменяет открытый проект
@@ -1977,6 +2110,7 @@ its default	его значение по умолчанию
 Its default: {default}. Its times: {times}	По умолчанию: {default}. Времена: {times}
 Its firewall ({firewall}) blocked RustGIS. The service may only allow some applications: contact its administrator and send them the details below.	Его брандмауэр ({firewall}) заблокировал RustGIS. Сервис может разрешать только некоторые приложения: свяжитесь с его администратором и отправьте ему подробности ниже.
 its layer was removed	его слой удалён
+Its own colour for its text and lines; off, the default dark grey	Свой цвет для текста и линий; выкл.: тёмно-серый по умолчанию
 its tile archive changed or was removed	его архив тайлов изменился или был удалён
 Its tool isn't available now (a plugin's, not loaded, or a suite's, not installed)	Его инструмент сейчас недоступен (инструмент модуля, который не загружен, или набора, который не установлен)
 Japan	Япония
@@ -2015,6 +2149,7 @@ Keep value	Сохранить значение
 Keeps the access key ID and secret access key in this computer's credential store, never in the connection or the project.	Хранит идентификатор ключа доступа и секретный ключ доступа в хранилище учётных данных этого компьютера, а не в подключении или проекте.
 Keeps the parts of two polygon layers that only one of them covers, with that layer's attributes.	Сохраняет части двух полигональных слоёв, покрытые только одним из них, с атрибутами этого слоя.
 Keeps the token in the system's credential store, so it is there when RustGIS starts again. Unticked, a token remembered before is deleted when you save another.	Хранит токен в системном хранилище учётных данных, чтобы он был доступен при следующем запуске RustGIS. Если флажок снят, ранее запомненный токен удаляется при сохранении другого.
+Keeps the username and password in the system's credential store, so RustGIS signs in by itself when it starts again. Not for an account with two-factor authentication. Unticked, a sign-in remembered before is deleted when you sign in.	Хранит имя пользователя и пароль в системном хранилище учётных данных, чтобы RustGIS входил сам при следующем запуске. Не для учётной записи с двухфакторной аутентификацией. Если флажок снят, ранее запомненный вход удаляется при входе.
 Kernel Density	Плотность ядра
 Kernel Type	Тип ядра
 Key	Key
@@ -2056,6 +2191,7 @@ Lambert Conformal Conic	Равноугольная коническая Ламб
 Lambert Cylindrical Equal Area	Равновеликая цилиндрическая Ламберта
 Landscape	Альбомная
 Language	Язык
+Largest first	Сначала крупные
 Lasso	Лассо
 Lasso (draw)	Лассо (рисование)
 Last agent call failed: {call} ({secs} s ago)	Последний вызов агента не удался: {call} ({secs} с назад)
@@ -2073,6 +2209,7 @@ Layer Extrusion	Выдавливание слоя
 Layer File	Файл слоя
 Layer From\nSelection	Слой из\nвыборки
 Layer not found	Слой не найден
+Layer order	Порядок слоёв
 Layer Properties	Свойства слоя
 Layer Properties Pane	Панель свойств слоя
 Layer Properties · {layer}	Свойства слоя · {layer}
@@ -2095,6 +2232,7 @@ Layouts	Макеты
 Learn	Обучение
 Learning\nResources	Учебные\nматериалы
 Least cloud first	Сначала с наименьшей облачностью
+Leave out	Исключить
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	Оставьте ключи пустыми, чтобы войти с ключами, сохранёнными на этом компьютере, или введите другие и нажмите «Сохранить».
 Left	Слева
 Legend	Легенда
@@ -2158,6 +2296,7 @@ List Source Cooperative Files	Список файлов Source Cooperative
 List Source Cooperative Products	Список продуктов Source Cooperative
 List STAC Collections	Список коллекций STAC
 List Tables	Список таблиц
+List Tables reads a file of several layers (a KML, a zip) whole, up to {limit} MiB; add it with Add Data	«Список таблиц» читает файл из нескольких слоёв (KML, zip) целиком, до {limit} MiB; добавьте его через «Добавить данные»
 List The National Map Services	Список сервисов The National Map
 List the provider's models	Показать модели поставщика
 List this layer in the legend	Показывать этот слой в легенде
@@ -2189,6 +2328,7 @@ Loads map tiles from the web	Загружает тайлы карты из ин�
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	Загружает одну таблицу объектов GeoPackage на этом компьютере (до 100 000 строк), чтобы её правки можно было сохранить обратно в эту таблицу через Правка › Сохранить в GeoPackage. Нужен INTEGER PRIMARY KEY.
 Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	Снова загружает строки слоя в том виде, как они есть в базе данных сейчас. Несохранённые правки отбрасываются (их возвращает «Отменить»).
 Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	Снова загружает строки слоя в том виде, как они есть в файле сейчас. Несохранённые правки отбрасываются (их возвращает «Отменить»).
+Load…	Загрузить…
 Local	Локальная
 Locate	Найти место
 Locate GeoLibre Runner	Указать модуль запуска GeoLibre
@@ -2249,6 +2389,7 @@ Map Labeling	Подписи карты
 Map Link	Ссылка на карту
 Map name	Имя карты
 Map Page	Страница карты
+Map projections	Картографические проекции
 Map scale	Масштаб карты
 Map Series	Серия карт
 Map Series Page	Страница серии карт
@@ -2256,6 +2397,7 @@ Map series page name	Имя страницы серии карт
 Map style (JSON)	Стиль карты (JSON)
 Map Surrounds	Элементы оформления карты
 Map Thumbnail	Эскиз карты
+Map Tiles	Тайлы карты
 Map tiles of the whole world	Тайлы карты всего мира
 Map Tool: {tool}	Инструмент карты: {tool}
 Map View	Вид карты
@@ -2279,6 +2421,8 @@ Matplotlib	Matplotlib
 Max	Макс.
 Max %	Макс. %
 Max Neighbors	Макс. соседей
+Max X	Макс. X
+Max Y	Макс. Y
 Maximum Zoom	Максимальный масштаб
 Maximum zoom	Максимальный масштаб
 MCP Relay	MCP-релей
@@ -2299,6 +2443,7 @@ Measured grid's coordinate system	Система координат измери
 Measurement units	Единицы измерения
 Measurement units must be metric or imperial	Единицы измерения должны быть метрическими или имперскими
 Measurements so far.	Измерения на данный момент.
+Measures the cost and length of the cheapest way along a line network from each origin to each destination.	Измеряет стоимость и длину самого дешёвого пути по линейной сети от каждого начала до каждого пункта назначения.
 Mensuration	Мензурация
 Mensuration Tools	Инструменты мензурации
 Merge	Слить
@@ -2320,6 +2465,8 @@ Min	Мин.
 Min %	Мин. %
 Min must be less than Max	Мин. должен быть меньше Макс.
 Min must not be more than Max	Мин. не должен быть больше Макс.
+Min X	Мин. X
+Min Y	Мин. Y
 Minimum Bounding Geometry	Минимальная ограничивающая геометрия
 Minimum Maximum	Минимум-максимум
 Minimum Zoom	Минимальный масштаб
@@ -2366,7 +2513,9 @@ Months	Месяцы
 Months are numbers from 1 to 12 (12, 1, 2 for December to February)	Месяцы задаются числами от 1 до 12 (12, 1, 2 для декабря–февраля)
 More	Ещё
 More basemaps:	Ещё базовые карты:
+More Quick Access commands	Другие команды быстрого доступа
 More than one saved connection could read these buckets. Choose the one that reads each; the project's sources that read it stay closed until you do.	Эти бакеты могут читать несколько сохранённых подключений. Выберите, какое читает каждый; источники проекта, которые его читают, останутся закрытыми, пока вы не выберете.
+more than {bound}	более {bound}
 Morocco	Марокко
 Mosaic images into an orthomosaic	Сшить изображения в ортомозаику
 Mosaic Rasters	Мозаика растров
@@ -2406,6 +2555,7 @@ My OGC Layer	Мой слой OGC
 MySQL/MariaDB	MySQL/MariaDB
 N/S/E/W	N/S/E/W
 Name	Имя
+name or code	имя или код
 name the plugin whose panel to open: {"id": plugin id}	укажите модуль, панель которого нужно открыть: {"id": plugin id}
 Names keep up to 200 characters.	Имена сохраняются до 200 символов.
 NASA Earthaccess	NASA Earthaccess
@@ -2427,22 +2577,30 @@ Navigate with the mouse (planar) or walk with W A S D, Q and E (first-person).	�
 Navigation	Навигация
 Navigation Mode	Режим навигации
 Navigator	Навигатор
+NBR (burn ratio)	NBR (индекс гарей)
+NDBI (built-up)	NDBI (застройка)
+NDVI (vegetation)	NDVI (растительность)
 NDVI, MODIS, rain…	NDVI, MODIS, дождь…
 NDVI, NDWI, SAVI, NBR, NDBI, EVI.	NDVI, NDWI, SAVI, NBR, NDBI, EVI.
+NDWI (water)	NDWI (вода)
 Near	Ближайший
 Near Features	Ближайшие объекты
 Nearest cell	Ближайшая ячейка
 Nearest Neighbor	Ближайший сосед
 Neatline	Рамка
+Needed to make a token from a password	Нужно для создания токена по паролю
 Needs RustGIS {min}	Требуется RustGIS {min}
 Needs three or more bands.	Нужно три или более канала.
 Needs two or more numeric fields.	Нужно два или более числовых поля.
+Needs {what}, which isn't given: {place}.	Нужно {what}, но не указано: {place}.
+Needs {what}: kept.	Нужно {what}: сохранено.
 Neighborhood Explorer	Анализ окрестности
 Nepal	Непал
 Netherlands	Нидерланды
 Network	Сеть
 Network Analysis	Сетевой анализ
 Network failures	Сбои сети
+Network Lines	Линии сети
 New	Создать
 New\nLayout	Новый\nмакет
 New\nMap	Новая\nкарта
@@ -2473,6 +2631,8 @@ New Relationship…	Новое отношение…
 New Report	Новый отчёт
 New rows	Новые строки
 New Selection	Новая выборка
+New shape grid	Сетка новых фигур
+New shapes use the original GeoTIFF pixels, including rotation and shear. Existing objects keep their own grid.	Новые фигуры используют исходные пиксели GeoTIFF, включая поворот и скос. Существующие объекты сохраняют свою сетку.
 New Style	Новый стиль
 New Style From Layer	Новый стиль из слоя
 New Task	Новая задача
@@ -2499,6 +2659,7 @@ No catalogs below this one: Find Items lists its items	Ниже этого ка�
 No COMID was returned for this point.	Для этой точки не возвращён COMID.
 no command	нет команды
 No command matches	Нет подходящих команд
+No coordinate system matches; a code or PROJ string is used as typed.	Подходящей системы координат нет; код или строка PROJ используется как введено.
 no data	нет данных
 No data at the points picked.	В выбранных точках нет данных.
 No data cube matches	Нет подходящих кубов данных
@@ -2515,6 +2676,8 @@ No Fill	Без заливки
 No geometry to calculate	Нет геометрии для вычисления
 No granules in this view and date range.	Нет гранул в этом виде и диапазоне дат.
 no home folder	нет домашней папки
+No image	Без изображения
+No installed font draws the {language} text on the map, so it is left out of the map and its exports.	Ни один установленный шрифт не отображает текст на языке {language} на карте, поэтому он не попадает на карту и в её экспорт.
 no layer	нет слоя
 No layer has a field of dates.	Ни у одного слоя нет поля с датами.
 no layer has a field of dates: add one that has, or a tile layer whose address has a date (map.addTiles)	ни у одного слоя нет поля с датами: добавьте слой с таким полем или слой тайлов, адрес которого содержит дату (map.addTiles)
@@ -2538,6 +2701,7 @@ No polygon layer available in the map.	На карте нет полигонал
 No Pop-ups	Без всплывающих окон
 No presentations yet. Publish › New Presentation starts one.	Презентаций пока нет. Публикация › Новая презентация создаёт презентацию.
 No products	Нет продуктов
+No project changes to undo or redo.	Нет изменений проекта для отмены или повтора.
 No project opened or saved yet	Проекты ещё не открывались и не сохранялись
 No project sources are waiting for an S3 connection.	Нет источников проекта, ожидающих подключения S3.
 No properties	Нет свойств
@@ -2566,6 +2730,7 @@ NoData	NoData
 Nominatim	Nominatim
 None	Нет
 None (public buckets)	Нет (публичные бакеты)
+None of these layers are polygon layers.	Ни один из этих слоёв не является полигональным.
 none, a .duckdb file, or host=… dbname=… user=…	нет, файл .duckdb или host=… dbname=… user=…
 none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	нет или из PGPASSWORD, MYSQL_PWD или SQLCMDPASSWORD
 None. Add one by address, or from a basemap plugin.	Нет. Добавьте слой по адресу или из плагина базовых карт.
@@ -2593,6 +2758,7 @@ Not sandboxed	Без песочницы
 Not saved yet	Ещё не сохранено
 Not searched, as they didn't load: {folders}	Не просмотрены, так как не загрузились: {folders}
 Not Selectable	Недоступен для выбора
+Not signed in.	Вход не выполнен.
 Not traced: a drawn line holds at most 10,000 points	Не отслежено: нарисованная линия содержит не более 10 000 точек
 Notebook	Блокнот
 Notebook Pane	Панель блокнота
@@ -2618,6 +2784,7 @@ observer height m	высота наблюдателя, м
 Ocean	Океан
 Ocean Data Platform	Ocean Data Platform
 Ocean Data Platform…	Ocean Data Platform…
+OD Cost Matrix	Матрица стоимостей OD
 of a geometry that doesn't say	для геометрии, где это не указано
 Off	Выкл.
 Off, the commands run aren't recorded; what is in the log stays	Выключено: выполняемые команды не записываются; то, что уже в журнале, остаётся
@@ -2633,8 +2800,10 @@ Older copies waiting: {n}.	Ожидают более старые копии: {n
 Oldest first	Сначала старые
 Ollama (local)	Ollama (локально)
 On	Вкл.
+On a high-resolution (HiDPI) display, fetch raster tiles and WMS pictures for the display's own pixels, up to twice the detail: text and lines in them come out sharp and smaller. Off, they are fetched for its logical pixels and stretched: softer, with larger text.	На дисплее высокого разрешения (HiDPI) загружать растровые тайлы и изображения WMS для собственных пикселей дисплея, с детализацией до двух раз выше: текст и линии в них получаются чёткими и мельче. Если выключено, они загружаются для логических пикселей и растягиваются: мягче, с более крупным текстом.
 On Hold	Приостановлено
 on hold	приостановлено
+on is required	on обязателен
 On its own tab, {tab}.	На отдельной вкладке {tab}.
 on must be true or false	on должно быть true или false
 On the desktop, the key can also come from {vars}.	На компьютере ключ также может браться из {vars}.
@@ -2650,7 +2819,7 @@ One page per feature of an index layer.	По одной странице на к
 One per line: code=name	По одному в строке: код=имя
 One picture of the view: symbols and labels aren't cut at tile edges, and the service is asked once a view. Drawn in tiles on the globe, on a tilted map, or in a projection the service doesn't offer.	Одно изображение вида: символы и подписи не обрезаются по границам тайлов, а сервис запрашивается один раз на вид. На глобусе, наклонной карте или в проекции, которую сервис не предлагает, отрисовывается тайлами.
 One stroke, from the symbol. Add strokes for casings, parallel lines and offsets.	Одна обводка из символа. Добавьте обводки для окантовки, параллельных линий и смещений.
-only a discovered list can invalidate the saved table	only a discovered list can invalidate the saved table
+One-time code	Одноразовый код
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Исправить можно только архив тайлов, прочитанный из файла (PMTiles или MBTiles).
 Only cubes with data where the map is	Только кубы с данными в области карты
 Only selected polygons will be included in the output.	В результат будут включены только выбранные полигоны.
@@ -2660,6 +2829,7 @@ Only the features whose date falls in the slider's window draw	Отрисовы�
 Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.	Показаны только первые {kept} из {given} узлов, переданных модулем: дерево содержит не более {kept}.
 Only the map's area	Только область карты
 Only where the map is	Только в области карты
+Only with two-factor authentication	Только с двухфакторной аутентификацией
 Opacity	Непрозрачность
 Open	Открыть
 Open a .rgis project	Открыть проект .rgis
@@ -2735,15 +2905,22 @@ Or grid reference	Или ссылка на сетку
 Or run in a POSIX shell, for Claude Code or Codex:	Или выполните в оболочке POSIX для Claude Code или Codex:
 Or run in PowerShell, for Claude Code or Codex:	Или выполните в PowerShell для Claude Code или Codex:
 Or run, for Claude Code or Codex:	Или выполните для Claude Code или Codex:
+Order	Порядок
 ORDER BY	ORDER BY
 Ordinary Kriging	Обычный кригинг
 Orientation	Ориентация
 Origin	Начало
 Origin key	Ключ начала
 Original	Оригинальные
+Original GeoTIFF pixels, including rotation and shear. Only local or embedded GeoTIFFs are supported.	Исходные пиксели GeoTIFF, включая поворот и скос. Поддерживаются только локальные или встроенные GeoTIFF.
 Original grid pixels. A circle may appear elliptical in the map projection.	Пиксели исходной сетки. В проекции карты круг может выглядеть эллипсом.
+Original Image Grid	Сетка исходного изображения
+Original image grid: {width} × {height} pixels, EPSG:{epsg}	Сетка исходного изображения: {width} × {height} пикселей, EPSG:{epsg}
+Original image pixels	Пиксели исходного изображения
+Origins	Начальные точки
 Ortho Mapping	Ортотрансформирование
 Other	Другое
+Other bar	Другой столбец
 Other copies of unsaved work will be offered at the next start ({n}).	Другие копии несохранённой работы будут предложены при следующем запуске ({n}).
 Other Data	Другие данные
 Out Beyond	Выкл. за пределами
@@ -2773,6 +2950,7 @@ Overture Maps	Overture Maps
 Overture Maps' open data: buildings, places, transportation, administrative divisions, base layers and addresses. Where the map is, its features are read in place from Overture's GeoParquet files (zoom to a city or smaller); the whole world comes as map tiles.	Открытые данные Overture Maps: здания, места, транспорт, административные деления, базовые слои и адреса. В области карты объекты читаются на месте из файлов GeoParquet Overture (приблизьтесь до города или меньше); весь мир поставляется как тайлы карты.
 Overture Maps…	Overture Maps…
 Overwrite existing values	Перезаписать существующие значения
+Own	Свой
 Package	Пакет
 Package a trained deep learning model.	Упаковать обученную модель глубокого обучения.
 Package for\nthe Field	Пакет для\nполевых работ
@@ -2781,6 +2959,7 @@ Package Map	Упаковать карту
 Package Project	Упаковать проект
 Package Results	Упаковать результаты
 Pad	Дополнение
+Padding	Отступ
 Padding across	Отступ по горизонтали
 Padding up and down	Отступ по вертикали
 Page	Страница
@@ -2813,8 +2992,11 @@ Parent folder	Родительская папка
 parks, bike lanes, flood zones…	парки, велодорожки, зоны затопления…
 Password	Пароль
 Past its points: its end colors, back and forth, or over again	За пределами его точек: крайние цвета, туда и обратно или заново
+Past the limit	Сверх лимита
 Paste	Вставить
 Paste a token	Вставьте токен
+Paste a token for this connection, or make one from its user and password. Remember on this computer is optional.	Вставьте токен для этого подключения или создайте его по имени пользователя и паролю. Флажок «Запомнить на этом компьютере» необязателен.
+Paste a token, or type the password to make one, or leave it blank to use this connection's session or saved login, then Save.	Вставьте токен, или введите пароль, чтобы создать его, или оставьте поле пустым, чтобы использовать сеанс или сохранённый вход этого подключения, затем нажмите «Сохранить».
 Paste copied features into the selected layer, or as a new layer.	Вставить скопированные объекты в выбранный слой или как новый слой.
 Paste Group	Вставить группу
 Paste Groups	Вставить группы
@@ -2822,6 +3004,7 @@ Paste Layer	Вставить слой
 Paste Layers	Вставить слои
 Paste Special	Специальная вставка
 Paste Special (as a new layer)	Специальная вставка (как новый слой)
+Paste token	Вставить токен
 paste your key	вставьте ключ
 path is required	требуется path
 Pause	Приостановить
@@ -2830,9 +3013,11 @@ PDF	PDF
 PDF or PNG	PDF или PNG
 PDF, PNG or SVG	PDF, PNG или SVG
 PDOK's public server	Публичный сервер PDOK
+Percent	Процент
 Percent Clip	Процентное отсечение
 Perceptually Uniform	Перцептивно однородные
 Performance	Производительность
+Perpendicular	Перпендикулярно
 Phase	Фаза
 Photon	Photon
 Pick a date	Выберите дату
@@ -2865,6 +3050,7 @@ Pixel	Пиксель
 Pixel Editor	Редактор пикселей
 Pixel Size	Размер пикселя
 Pixel type	Тип пикселя
+pixels is required	pixels обязателен
 Place	Место
 Place a raster on the map	Разместить растр на карте
 Place a raster on the map from control points or the view.	Разместить растр на карте по контрольным точкам или по виду.
@@ -2912,6 +3098,7 @@ Polar, conformal: the Arctic and the northern lands.	Полярная, равн�
 Polygon	Полигон
 Polygon (draw)	Полигон (рисование)
 Polygon layer	Полигональный слой
+Polygon layers only: {n} of the {all} selected	Только полигональные слои: {n} из {all} выбранных
 Polygon To Line	Полигон в линию
 Polygons	Полигоны
 Polygons to Raster	Полигоны в растр
@@ -2948,6 +3135,8 @@ Preset	Шаблон
 Press a key combination to assign it. Escape cancels.	Нажмите сочетание клавиш, чтобы назначить его. Escape — отмена.
 Press Load sources & plot first	Сначала нажмите «Загрузить источники и построить»
 Preview and set up the report.	Предпросмотр и настройка отчёта.
+Preview Conversion	Предпросмотр преобразования
+Preview Shape Conversion	Предпросмотр преобразования фигуры
 Preview, edit and play the presentation.	Предпросмотр, редактирование и показ презентации.
 Previous	Назад
 Previous Extent	Предыдущий экстент
@@ -2978,6 +3167,7 @@ project is "sample", "blank", "last" or {"path": a project file}	project дол�
 Project Raster	Проецировать растр
 Project Template	Шаблон проекта
 project's path is required	требуется путь к проекту
+Projected system	Проекционная система
 projected system (EPSG:32616), or degrees	проекционная система (EPSG:32616) или градусы
 Projection	Проекция
 Projections	Проекции
@@ -3043,7 +3233,9 @@ Raster to PMTiles	Растр в PMTiles
 Raster · {w} × {h} · {n} bands · {renderer}	Растр · {w} × {h} · каналов: {n} · {renderer}
 Rasters: {system}, cell size {cells}	Растры: {system}, размер ячейки {cells}
 Read	Чтение
+Read a script from a file in place of this one ({keys} brings it back)	Прочитать скрипт из файла вместо этого ({keys} возвращает его)
 Read and write files on this computer	Читать и записывать файлы на этом компьютере
+Read Connection File	Прочитать файл подключения
 Read error	Ошибка чтения
 Read the bands picked for the view (at most about 6 km a side)	Прочитать выбранные каналы для вида (не более примерно 6 км по стороне)
 Read the map's layers and features	Читать слои и объекты карты
@@ -3053,13 +3245,16 @@ Reading a granule's files needs an Earthdata Login token, which works for every 
 Reading dates…	Чтение дат…
 Reading in place…	Чтение на месте…
 Reading JAXA Earth's catalog…	Чтение каталога JAXA Earth…
+Reading original image grid…	Чтение сетки исходного изображения…
 Reading the catalog: {n} documents read, {m} items found…	Чтение каталога: прочитано документов: {n}, найдено элементов: {m}…
 Reading the catalog…	Чтение каталога…
+Reading the download failed unexpectedly	Чтение загрузки неожиданно завершилось ошибкой
 Reading the embeddings…	Чтение эмбеддингов…
 Reading the file's layers…	Чтение слоёв файла…
 Reading the installed fonts…	Чтение установленных шрифтов…
 Reading the store… ({n} files to go)	Чтение хранилища… (осталось файлов: {n})
 Reading the tileset of {name}	Чтение набора тайлов {name}
+Reading the time series…	Чтение временного ряда…
 Reading the window failed unexpectedly	Чтение окна неожиданно завершилось сбоем
 Reading {n} of Overture's {ty} files where the map is: {attribution}	Чтение файлов Overture «{ty}» в области карты ({n}): {attribution}
 Reading {url}…	Чтение {url}…
@@ -3068,7 +3263,9 @@ Reading…	Чтение…
 Reads and writes files	Читает и записывает файлы
 Reads the map	Читает карту
 Reality Mapping	Картографирование реальности
+Received tile {z}/0/0.	Получен тайл {z}/0/0.
 Recent	Недавние
+Recently used	Недавние
 Record Task	Записать задачу
 Recorded Task	Записанная задача
 Recording stopped: another project opened, and its {n} steps were for the previous one.	Запись остановлена: открыт другой проект, а её шаги ({n}) относились к предыдущему.
@@ -3107,6 +3304,7 @@ Reload	Обновить
 Reload\nData	Обновить\nданные
 Reload Data	Обновить данные
 Reload Data from local files requires the desktop app.	Для обновления данных из локальных файлов нужно приложение для компьютера.
+Reload Grid	Перезагрузить сетку
 Reload Themes	Перезагрузить темы
 Reload Tile Archive	Обновить архив тайлов
 Reload Web Layers	Обновить веб-слои
@@ -3127,6 +3325,7 @@ Remove Folder	Удалить папку
 Remove From Current Selection	Удалить из текущей выборки
 Remove from Favourites	Удалить из избранного
 Remove From Group	Удалить из группы
+Remove GeoLibre Tool Translations	Удалить переводы инструментов GeoLibre
 Remove Group	Удалить группу
 Remove Keyframe	Удалить ключевой кадр
 Remove Label Class	Удалить класс подписей
@@ -3141,6 +3340,7 @@ Remove this class's own strokes and draw it with the layer's	Удалить со
 Remove this stop	Удалить эту остановку
 Remove Tile Layer	Удалить слой тайлов
 Remove token	Удалить токен
+Remove translations	Удалить переводы
 Remove {name}	Удалить {name}
 Removed {id}.	{id} удалён.
 Removed {name}	{name} удалён
@@ -3163,13 +3363,13 @@ Repair\nSource	Исправить\nисточник
 Repair Data Source	Исправить источник данных
 Repair Data Source…	Исправить источник данных…
 Repair Geometry	Исправить геометрию
-Repair is disabled while discovery is in flight	Repair is disabled while discovery is in flight
 Repair Tile Archive	Исправить архив тайлов
 Repaired {name}	Исправлено: {name}
 Repeat	Повторение
 Replace	Заменить
 Replace Web Layer	Заменить веб-слой
 Replacement	Замена
+Replaces only this polygon. Its ID and attributes are preserved. Apply is undoable.	Заменяет только этот полигон. Его ID и атрибуты сохраняются. Применение можно отменить.
 Replaces the parts of input polygons that update polygons cover with the update polygons themselves.	Заменяет части входных полигонов, покрытые полигонами обновления, самими этими полигонами.
 Replay the route as a drive the map follows	Воспроизвести маршрут как поездку, за которой следует карта
 Report	Отчёт
@@ -3350,6 +3550,7 @@ Save Project Template	Сохранить шаблон проекта
 Save Style Items	Сохранить элементы стилей
 Save Task Item	Сохранить элемент задачи
 Save the active map (with its data) as a map file.	Сохранить активную карту (с её данными) как файл карты.
+Save the connection before generating a token.	Сохраните подключение, прежде чем создавать токен.
 Save the connection first: a login belongs to a saved connection.	Сначала сохраните подключение: вход относится к сохранённому подключению.
 Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	Сохранить видимые данные вместе с базовыми картами MBTiles и PMTiles карты как полевой пакет для открытия на телефоне.
 Save the last task as a task file.	Сохранить последнюю задачу как файл задачи.
@@ -3402,6 +3603,7 @@ Saved {name}.	Сохранено: {name}.
 Saved {path}	Сохранено: {path}
 Saves the layer's edits to its table in one transaction. When a row you changed or deleted was changed or deleted in the database since it was loaded, or a new row's key is taken, nothing is saved and the rows are listed.	Сохраняет правки слоя в его таблицу одной транзакцией. Если строка, которую вы изменили или удалили, была изменена или удалена в базе данных после загрузки либо ключ новой строки занят, ничего не сохраняется, а строки выводятся списком.
 Saves the layer's edits to its table in the GeoPackage file in one transaction. When a row you changed or deleted was changed or deleted in the file since it was loaded, nothing is saved and the rows are listed. Saving the project keeps edits in the project only; exporting writes a new file.	Сохраняет правки слоя в его таблицу в файле GeoPackage одной транзакцией. Если строка, которую вы изменили или удалили, была изменена или удалена в файле после загрузки, ничего не сохраняется, а строки выводятся списком. Сохранение проекта хранит правки только в проекте; экспорт записывает новый файл.
+SAVI (vegetation over soil)	SAVI (растительность с поправкой на почву)
 saving failed unexpectedly	сохранение неожиданно завершилось ошибкой
 Saving to a file of your choice isn't available here on Android yet.	Сохранение в выбранный вами файл здесь на Android пока недоступно.
 Saving to a file of your choice isn't available here on iOS yet.	Сохранение в выбранный вами файл здесь на iOS пока недоступно.
@@ -3414,6 +3616,7 @@ Scale and rotate entered distances and directions to the grid.	Масштаби�
 Scale ×2	Масштаб ×2
 Scale ×½	Масштаб ×½
 Scaled by sum	Масштаб по сумме
+Scaling	Масштабирование
 Scene	Сцена
 Score threshold	Порог оценки
 Score two rasters 1–10 and weight them	Оценить два растра по шкале 1–10 и взвесить их
@@ -3427,6 +3630,7 @@ Search	Поиск
 Search (this portal needs words)…	Поиск (этому порталу нужны слова)…
 Search area	Область поиска
 Search area: {points} point, {lines} line and {polygons} polygon part(s)	Область поиска: частей — точечных {points}, линейных {lines}, полигональных {polygons}
+Search by name or code	Поиск по имени или коду
 Search candidates not shown: {n} (limit {limit}).	Не показано кандидатов поиска: {n} (предел {limit}).
 Search Catalogue	Поиск по каталогу
 Search commands	Поиск команд
@@ -3495,6 +3699,7 @@ Select a navigation method after tracing a point.	Выберите метод н
 Select a raster or tile layer in the Layers pane first	Сначала выберите растровый слой или слой тайлов на панели «Слои»
 Select All	Выбрать все
 Select an element to format it.	Выберите элемент, чтобы отформатировать его.
+Select an image with an available filename, or uncheck Use image filename.	Выберите изображение с доступным именем файла или снимите флажок «Использовать имя файла изображения».
 Select By\nAttributes	Выбрать по\nатрибутам
 Select By\nLocation	Выбрать по\nрасположению
 Select By Attributes	Выбрать по атрибутам
@@ -3509,6 +3714,7 @@ Select Layer	Выбрать слой
 Select Layer By Attribute	Выбрать в слое по атрибуту
 Select Layer By Location	Выбрать в слое по расположению
 Select None	Снять выбор
+Select one polygon to convert.	Выберите один полигон для преобразования.
 Select one text on the map, or a layout element, to format it.	Выберите один текст на карте или элемент макета, чтобы отформатировать его.
 Select options	Параметры выборки
 Select Related	Выбрать связанные
@@ -3547,7 +3753,9 @@ Sepia	Сепия
 Sequential	Последовательные
 Serif	С засечками
 Server	Сервер
+Server reachable, but no tile at {z}/0/0. Check the address and the layer's zoom range.	Сервер доступен, но тайла {z}/0/0 нет. Проверьте адрес и диапазон масштабов слоя.
 Service	Сервис
+Service Area	Зона обслуживания
 Service discovery was cancelled	Обнаружение служб отменено
 Service Group	Группа сервиса
 Service group data exceeds 64 MB.	Объём данных группы сервиса превышает 64 МБ.
@@ -3572,6 +3780,8 @@ Set the pixels inside a polygon.	Задать пиксели внутри пол
 Settings	Настройки
 Settings › Customize	Настройки › Настроить
 Settings › Customize › Keyboard Shortcuts	Настройки › Настроить › Сочетания клавиш
+Settings › Datum Grids	Настройки › Сетки датумов
+Settings › Map Tiles	Настройки › Тайлы карты
 Settings › Theme	Настройки › Тема
 Several places	Несколько мест
 Several saved connections match this address. Choose a connection explicitly.	Этому адресу соответствует несколько сохранённых подключений. Выберите подключение явно.
@@ -3581,6 +3791,7 @@ Shade walls by the way they face the light.	Затенять стены в за�
 Shaded	Затенено
 Shaded Relief	Теневой рельеф
 Shape	Форма
+Shape conversion isn't recorded: its preview belongs to this session. Convert the polygon explicitly after reopening the project.	Преобразование фигуры не записывается: его предпросмотр принадлежит этому сеансу. Преобразуйте полигон явно после повторного открытия проекта.
 Shapeburst	Заливка от края
 Shapefile	Shapefile
 Shapefile Index Cache	Кэш индексов Shapefile
@@ -3602,6 +3813,7 @@ Shared vertices must be on or off	Общие вершины должны быт�
 Shares made, with Manage tools to update them.	Созданные публикации с инструментами управления для их обновления.
 sharp left	резко налево
 sharp right	резко направо
+Sharp Tiles on HiDPI Displays	Чёткие тайлы на дисплеях HiDPI
 Shift+	Shift+
 Shift+drag	Shift+перетаскивание
 Shift+Enter starts a new line.	Shift+Enter начинает новую строку.
@@ -3615,6 +3827,7 @@ Shortcut file exceeds the size limit.	Файл сочетаний клавиш �
 Shortcut keys are required.	Требуются клавиши сочетания.
 Shortcuts	Сочетания клавиш
 Shortest route over a line network	Кратчайший маршрут по линейной сети
+Shortwave infrared	Коротковолновый инфракрасный
 Show	Показать
 Show a second map beside this one.	Показать вторую карту рядом с этой.
 Show All Columns	Показать все столбцы
@@ -3635,11 +3848,12 @@ Show Me	Показать
 Show no data	Показывать «нет данных»
 Show or hide	Показать или скрыть
 Show or hide the AI Assistant.	Показать или скрыть ИИ-помощника.
+Show or hide the Annotate pane.	Показать или скрыть панель аннотаций.
 Show or hide the Bookmarks pane: every map's bookmarks.	Показать или скрыть панель закладок: закладки всех карт.
 Show or hide the Browser pane.	Показать или скрыть панель «Браузер».
 Show or hide the Data Sources pane.	Показать или скрыть панель «Источники данных».
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	Показать или скрыть панель «Источники данных»: избранное, недавние данные, сохранённые сервисы, базы данных и STAC API, а также библиотеку публичных источников.
-Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	Показать или скрыть сетку координат поверх базовой карты: широты и долготы, измерительную сетку или зоны UTM.
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Показать или скрыть сетку координат поверх базовой карты: широты и долготы, метрическую сетку, зоны UTM или сетку MGRS.
 Show or hide the group's layers	Показать или скрыть слои группы
 Show or hide the layer.	Показать или скрыть слой.
 Show or hide the Layers pane.	Показать или скрыть панель «Слои».
@@ -3661,6 +3875,7 @@ Show the selected layer's settings in one place.	Показать настрой
 Show the Symbology pane for the selected layer.	Показать панель «Символы» для выбранного слоя.
 Show the whole model	Показать всю модель
 Show these bands and stretch on the AlphaEarth layers on the map	Показать эти каналы и растяжку на слоях AlphaEarth на карте
+Show these tools in English again	Снова показывать эти инструменты на английском
 Show vertices	Показывать вершины
 Show where this step's command is, to do it yourself	Показать, где находится команда этого шага, чтобы выполнить её самостоятельно
 Show {n} Steps	Показать шаги ({n})
@@ -3684,19 +3899,24 @@ Side labels	Подписи сторон
 Sign in	Войти
 Sign In to ArcGIS	Войти в ArcGIS
 Sign in to choose a model.	Войдите, чтобы выбрать модель.
+Sign In to Copernicus Data Space	Войти в Copernicus Data Space
 Sign in with your ChatGPT account.	Войдите с учётной записью ChatGPT.
 Sign out	Выйти
 Sign Out of ArcGIS	Выйти из ArcGIS
+Sign Out of Copernicus Data Space	Выйти из Copernicus Data Space
 Sign-in	Вход
 Sign-in cancelled.	Вход отменён.
 Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Время ожидания входа истекло. Начните заново и разрешите браузеру доступ к адресу обратной петли этого компьютера.
 signed in	вход выполнен
+Signed in as {name}.	Вход выполнен как {name}.
 Signed in to {portal}	Вход выполнен: {portal}
 Signed in to {portal} as {user}	Вход выполнен: {portal}, пользователь {user}
 Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Выход на этом компьютере выполнен, но OpenAI его не подтвердил. Вы можете отключить RustGIS в настройках ChatGPT.
 Signed out on this computer, but the system keychain couldn't be read, so OpenAI wasn't asked to end the session. You can disconnect RustGIS in ChatGPT's settings.	Выход на этом компьютере выполнен, но системную связку ключей не удалось прочитать, поэтому OpenAI не получил запрос на завершение сеанса. Вы можете отключить RustGIS в настройках ChatGPT.
 Significance level	Уровень значимости
 Signing in with ChatGPT works in the desktop app.	Вход через ChatGPT работает в настольном приложении.
+Signing in with the account remembered on this computer…	Вход с учётной записью, запомненной на этом компьютере…
+Signing in…	Вход…
 Signing the asset (Planetary Computer)…	Подписание ресурса (Planetary Computer)…
 Signs this account out and forgets it on this computer, with its saved sign-in.	Выполняет выход из этой учётной записи и забывает её на этом компьютере вместе с сохранёнными данными входа.
 Sill	Порог
@@ -3708,7 +3928,11 @@ Single image	Одно изображение
 Single line	Одинарная линия
 Single Symbol	Единый символ
 Size	Размер
+Size by	Размер по
+Size by Field	Размер по полю
+Size each point by a number field, keeping its class's colours	Задавать размер каждой точки по числовому полю, сохраняя цвета её класса
 Size, bands, statistics and coordinate system, on the Source tab of the raster's properties.	Размер, каналы, статистика и система координат на вкладке «Источник» свойств растра.
+Sizes	Размеры
 Skill (SKILL.md or .zip)	Навык (SKILL.md или .zip)
 Skills	Навыки
 Skills for the AI Assistant: {names}	Навыки для ИИ-помощника: {names}
@@ -3716,12 +3940,14 @@ Sky visibility	Видимость неба
 Slideshow, PDF or PNG	Слайд-шоу, PDF или PNG
 slight left	плавно налево
 slight right	плавно направо
-Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	Уклон (градусы), экспозиция, отмывка рельефа, NDVI, растровая алгебра, пороги.
-Slope (degrees), hillshade, NDVI and more.	Уклон (градусы), отмывка рельефа, NDVI и другое.
-Slope is in degrees (0–90), not percent.	Уклон задаётся в градусах (0–90), а не в процентах.
+Slope (degrees or percent), aspect, hillshade, NDVI, band math, thresholds.	Уклон (градусы или проценты), экспозиция, отмывка рельефа, NDVI, растровая алгебра, пороги.
+Slope (degrees or percent), hillshade, NDVI and more.	Уклон (градусы или проценты), отмывка рельефа, NDVI и другое.
 Slope per	Наклон за
+Slope units	Единицы уклона
 Small scales	Мелкие масштабы
+Smallest first	Сначала мелкие
 Snap	Привязка
+Snap Distance (m)	Расстояние привязки (м)
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	Привязывать элементы к направляющим, странице и друг к другу при перемещении и изменении размера. Удерживайте Alt, чтобы разместить элемент свободно.
 Snap new vertices to nearby vertices, edges and line ends.	Привязывать новые вершины к ближайшим вершинам, рёбрам и концам линий.
 Snap Point	Точка привязки
@@ -3729,6 +3955,7 @@ Snapping	Привязка
 Snow	Снег
 Socrata	Socrata
 Solid	Сплошная
+Some characters of the {language} text on the map aren't in its downloaded font, so they are left out.	Некоторых символов текста на языке {language} на карте нет в скачанном шрифте, поэтому они не отображаются.
 Some images aren't shown: the notebook's images use all the memory set aside for them.	Некоторые изображения не показаны: изображения блокнота заняли всю отведённую для них память.
 Some of the project's S3 sources wait for you to choose the saved connection that reads them	Некоторые источники S3 проекта ждут, пока вы выберете сохранённое подключение, которое их читает
 Sort	Сортировка
@@ -3746,6 +3973,7 @@ Source-layer Name	Имя исходного слоя
 South	Юг
 South Korea	Южная Корея
 South Polar Stereographic	Южная полярная стереографическая
+Space or middle-drag pans; releasing Space returns to the active drawing tool. Undo/Redo use the existing commands.	Space или перетаскивание средней кнопкой сдвигает карту; отпускание Space возвращает к активному инструменту рисования. Отмена и повтор используют существующие команды.
 Spacing	Интервал
 Spacing across	Интервал по горизонтали
 Spacing down	Интервал по вертикали
@@ -3820,6 +4048,7 @@ STAC Search…	Поиск STAC…
 Stack another fill on top	Добавить ещё одну заливку сверху
 Stack another marker on top	Добавить ещё один маркер сверху
 Stack another stroke on top	Добавить ещё одну обводку сверху
+Stack by	Накопление по
 Stack on the current basemaps	Наложить на текущие базовые карты
 Standalone Tables	Отдельные таблицы
 Standard Deviation	Стандартное отклонение
@@ -3857,6 +4086,7 @@ Stepped line	Ступенчатая линия
 Steps needing access	Шаги, требующие доступа
 STL 3D Model…	3D-модель STL…
 Stop	Остановить
+Stop at the state reached so far	Остановиться на достигнутом состоянии
 Stop drawing labels, for faster navigation.	Не отображать подписи для ускорения навигации.
 Stop filling the cache.	Прекратить заполнение кэша.
 Stop MCP relay	Остановить MCP-релей
@@ -3886,6 +4116,7 @@ Subreport	Подотчёт
 Subreport: {name}	Подотчёт: {name}
 Subtypes	Подтипы
 Subtypes, one per line: code=name	Подтипы, по одному в строке: код=имя
+Suggested filename: {name}	Предлагаемое имя файла: {name}
 Suitability Modeler	Моделирование пригодности
 Sum Fields	Поля суммы
 Summarise	Обобщить
@@ -3927,7 +4158,9 @@ Table	Таблица
 Table Frame	Фрейм таблицы
 Table or layer	Таблица или слой
 Tables	Таблицы
+Tabulate Area	Табулировать площадь
 Tabulate Intersection	Табулировать пересечение
+Tabulates each raster class by polygon zone, as area or cell count in a standalone table.	Табулирует каждый класс растра по полигональным зонам в виде площади или числа ячеек в отдельной таблице.
 Tags	Теги
 Taiwan	Тайвань
 Take the data in view offline, to edit and sync back later.	Перевести данные в пределах вида в автономный режим, чтобы редактировать и затем синхронизировать.
@@ -3936,6 +4169,7 @@ Take this point off	Убрать эту точку
 Target details ({operation}): {targets}	Сведения о целях ({operation}): {targets}
 Target Features	Целевые объекты
 Target Key Field	Ключевое поле цели
+Target layer	Целевой слой
 Target Records	Целевые записи
 Target Table / Layer	Целевая таблица или слой
 Task	Задача
@@ -3969,11 +4203,14 @@ The answer isn't UTF-8 text	Ответ не является текстом UTF-
 the answer isn't UTF-8 text	ответ не является текстом UTF-8
 The API changed while the search area was being made: press Find Items to search it	API изменился, пока создавалась область поиска: нажмите «Найти элементы», чтобы выполнить поиск
 The API did not sort them by {sort}: they are in its own order	API не отсортировал их по {sort}: они в его собственном порядке
+The ArcGIS token has expired. Log in to this connection again.	Срок действия токена ArcGIS истёк. Войдите в это подключение снова.
+The ArcGIS token must be at most 4096 ASCII letters, digits or - _ . ~ + / = characters.	Токен ArcGIS должен содержать не более 4096 букв ASCII, цифр или символов - _ . ~ + / =.
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	Помощник следует инструкциям навыка, когда использует его. Что бы в них ни говорилось, команды, требующие вашего одобрения, по-прежнему спрашивают.
 The assistant is busy; stop it or wait for it to finish.	Помощник занят; остановите его или дождитесь завершения.
 The assistant wants to run this, and {why}:	Помощник хочет выполнить следующее, но это действие {why}:
 The background worker could not start ({error}). Retry the command.	Фоновый процесс не удалось запустить ({error}). Повторите команду.
 The basemap now shows the {view} worldview; the project's Countries layer keeps its borders	Базовая карта теперь показывает версию границ «{view}»; слой «Страны» проекта сохраняет свои границы
+The basemap's grid color	Цвет сетки базовой карты
 The Basemaps plugin's tab of public basemaps.	Вкладка модуля «Базовые карты» с публичными базовыми картами.
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	Браузер не предоставил RustGIS буфер обмена ({why}): вставьте с помощью {keys}.
 the browser kept neither a copy of it nor where to download it	браузер не сохранил ни его копию, ни адрес для скачивания
@@ -3982,16 +4219,20 @@ the capture failed unexpectedly	снимок неожиданно заверши
 The class these label groups and the Labeling pane edit.	Класс, который редактируют эти группы подписей и панель подписей.
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	Буфер обмена поступил после вашего перехода, поэтому ничего не вставлено: вставьте с помощью {keys}.
 The collection's own licence wasn't read: {why}	Собственную лицензию коллекции прочитать не удалось: {why}
+The connection changed while its token was being generated. Generate it again.	Подключение изменилось, пока создавался его токен. Создайте его снова.
 The connection failed; trying again in {seconds} s.	Не удалось подключиться; повтор через {seconds} с.
 the connection has no id	у подключения нет идентификатора
 The constant base: used where no field is chosen, or the field holds no number.	Постоянное основание: используется, если поле не выбрано или в поле нет числа.
 The coordinate format must be decimal, dms, utm or mgrs	Формат координат должен быть decimal, dms, utm или mgrs
+The Copernicus Data Space Ecosystem publishes the Copernicus Land Monitoring Service's global products (NDVI, LAI, Burnt Area, Water Bodies, Land Cover…) and the Sentinel-1 and Sentinel-2 mosaics as COGs. Its STAC catalog is open, but reading its files needs a sign-in with a free account.	Copernicus Data Space Ecosystem публикует глобальные продукты Copernicus Land Monitoring Service (NDVI, LAI, гари, водные объекты, земной покров…) и мозаики Sentinel-1 и Sentinel-2 в виде COG. Его каталог STAC открыт, но для чтения файлов нужен вход с бесплатной учётной записью.
 The country list couldn't be read ({e}): type a country's code	Не удалось прочитать список стран ({e}): введите код страны
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	Текущая высота действует, пока вы изменяете поля ввода. Нажмите «Применить высоту», чтобы применить значение и единицы.
 The dataset has nothing RustGIS can add	В наборе данных нет ничего, что RustGIS может добавить
 The desktop app adds data cubes	Кубы данных добавляет настольное приложение
 The distance between two marks along the line	Расстояние между двумя знаками вдоль линии
 The distance to widen by is a number, 0 or more	Расстояние расширения — число, 0 или больше
+The downloaded translations name none of these tools: they may be for another GeoLibre version.	Скачанные переводы не содержат ни одного из этих инструментов: возможно, они для другой версии GeoLibre.
+the Earthdata Login token	токен Earthdata Login
 The environment (AWS_ACCESS_KEY_ID…)	Окружение (AWS_ACCESS_KEY_ID…)
 The features where the map is	Объекты в области карты
 The first 1,000 entries; narrow it down a folder at a time.	Первые 1 000 записей; сужайте поиск по одной папке за раз.
@@ -4000,13 +4241,20 @@ The first {n} are shown: search to narrow them.	Показаны первые {n
 The first {n} of them are listed; the filter searches all of them.	Показаны первые {n} из них; фильтр ищет по всем.
 The first {n} rows	Первые {n} строк
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	Flowtrace не ответил: показана вся ближайшая к точке линия стока.
+The grid already has the basemap's color	Сетка уже имеет цвет базовой карты
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	цифр сетки должно быть чётное количество от 0 до 10: половина для восточного смещения и половина для северного
+The grid's color and opacity	Цвет и непрозрачность сетки
 the hash stopped	хеширование остановлено
+The history jump stopped because the project changed.	Переход по истории остановлен, так как проект изменился.
+The image changed or was removed. Select it again or reload its grid.	Изображение изменено или удалено. Выберите его снова или перезагрузите его сетку.
+The image changed. Reload its grid before drawing.	Изображение изменилось. Перезагрузите его сетку перед рисованием.
+The image context changed. Select the image again before drawing.	Контекст изображения изменился. Выберите изображение снова перед рисованием.
 the images' projected system, else degrees	проекционная система снимков, иначе градусы
 The installed GeoLibre runner lists no tools.	Установленный модуль запуска GeoLibre не содержит инструментов.
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	Установщик скачивается и проверяется. RustGIS закрывается, устанавливает обновление и открывается снова.
 The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	Цвета, отступы и размеры текста интерфейса: встроенная тема или файл из папки тем.
 The job covers the map view	Задание охватывает вид карты
+The kept tool translations can't be read: {error}	Не удаётся прочитать сохранённые переводы инструментов: {error}
 The key is added to each request to this address as this parameter. It is never saved in the connection or project.	Ключ добавляется к каждому запросу по этому адресу как этот параметр. Он никогда не сохраняется в подключении или проекте.
 The key is kept for this session only.	Ключ хранится только в течение этого сеанса.
 The key is kept for this session only; it has not been remembered.	Ключ хранится только в течение этого сеанса; он не запомнен.
@@ -4041,6 +4289,7 @@ The map's extent isn't known yet	Экстент карты пока неизве
 The map's UTM zone, else the frame's	Зона UTM карты, иначе зона фрейма
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	Вид карты охватывает {n} файлов Overture «{ty}» (не более {max}): приблизьте карту или добавьте тему как тайлы карты
 The map's, else its UTM zone	Система карты, иначе её зона UTM
+The marker to change is no longer there	Изменяемого маркера больше нет
 the MCP relay couldn't start	не удалось запустить MCP-релей
 The MCP relay couldn't start; agents can still use the file bridge. Click to turn agents off	MCP-релей не удалось запустить; агенты по-прежнему могут использовать файловый мост. Щёлкните, чтобы отключить агентов
 The menu bar keeps that key: choose another.	Эта клавиша занята строкой меню: выберите другую.
@@ -4058,16 +4307,19 @@ The next page link was refused: it points where this search may not read, so onl
 the NLDI's answer isn't UTF-8 text	ответ NLDI не является текстом UTF-8
 the northing doesn't fall in the latitude band given	северное смещение не попадает в указанный широтный пояс
 The notes are cut here: the release page has all of them.	Примечания здесь обрезаны: полностью они на странице выпуска.
-the old file's list must disappear immediately	the old file's list must disappear immediately
 The one waiting after it was left too	Ожидавшая после него задача тоже отменена
 the open project has unsaved changes: save them before recovering other work	в открытом проекте есть несохранённые изменения: сохраните их перед восстановлением другой работы
 The open project has unsaved changes: save them, then recover this copy.	В открытом проекте есть несохранённые изменения: сохраните их, затем восстановите эту копию.
 The order by {sort} could not be checked: it is the API's own order	Порядок по {sort} проверить не удалось: это собственный порядок API
+The original image grid result could not be displayed.	Не удалось отобразить результат сетки исходного изображения.
 The page in colour, the title in light text and the map in a light card.	Страница в цвете, заголовок светлым текстом и карта на светлой карточке.
 the page is too large to copy to the clipboard: export it instead	страница слишком велика для копирования в буфер обмена: экспортируйте её
 the page is too large to draw	страница слишком велика для отрисовки
+The password is sent only to Copernicus Data Space's sign-in server and never kept in the project. The token it gives is sent only to its data servers.	Пароль отправляется только на сервер входа Copernicus Data Space и никогда не хранится в проекте. Выданный им токен отправляется только на его серверы данных.
+The password must be at most 4096 bytes, without control characters.	Пароль должен быть не длиннее 4096 байт и без управляющих символов.
 The password or key must fit a 4096-byte HTTP header, without control characters.	Пароль или ключ должен помещаться в HTTP-заголовок размером 4096 байт и не содержать управляющих символов.
 The password was refused. Type a password to try again.	Пароль отклонён. Введите пароль, чтобы попробовать снова.
+the phone keeps a recovery copy after edits	телефон хранит копию для восстановления после правок
 the picture is too large to show	изображение слишком большое для показа
 the picture is too large to show, or isn't one	изображение слишком большое для показа или не является изображением
 the place lies outside the zone given	место лежит вне указанной зоны
@@ -4078,11 +4330,14 @@ The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reas
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Модуль {id} не загружен. Откройте «Модули › Менеджер модулей», чтобы увидеть его.
 The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	Модули, установленные в этом браузере, не читаются, поэтому это изменение не запоминается: исправьте или удалите «plugins_web» в сохранённых настройках браузера.
 The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	Не удалось прочитать модули, установленные в этом браузере (это не список JSON): ни один не загружен, а модули, установленные или удалённые сейчас, не запоминаются.
+The polygon layer doesn't draw at this scale. Zoom in or out until it draws, then draw.	Полигональный слой не отображается в этом масштабе. Приблизьте или отдалите карту, пока он не появится, затем рисуйте.
 The portal's OAuth app	Приложение OAuth портала
 the presentation export failed unexpectedly	экспорт презентации неожиданно завершился ошибкой
 the preview failed unexpectedly	предпросмотр неожиданно завершился ошибкой
+The preview replaces the boundary; curved grid edges remain straight-edge approximations after projection. Saved/exported results are ordinary polygons.	Предпросмотр заменяет границу; изогнутые края сетки после проецирования остаются приближениями прямыми отрезками. Сохранённые/экспортированные результаты являются обычными полигонами.
 The project changed while this was open: check the changes, then answer again.	Проект изменился, пока это окно было открыто: проверьте изменения и ответьте снова.
 The project downloads as this file, to the folder your browser saves downloads in.	Проект скачивается как этот файл в папку, куда браузер сохраняет загрузки.
+The project or map changed. Choose an image again or select Web Mercator grid metres before drawing.	Проект или карта изменились. Перед рисованием снова выберите изображение или метры сетки Web Mercator.
 The project's items in place of the map.	Элементы проекта вместо карты.
 The project's thumbnail, from an image.	Эскиз проекта из изображения.
 The project's thumbnail, from the map view.	Эскиз проекта из вида карты.
@@ -4093,6 +4348,7 @@ The public server is free and shared by many: it answers light use, and may ask 
 The range is two numbers, low and high (0, 0.9)	Диапазон задаётся двумя числами, нижним и верхним (0, 0.9)
 The raster's data couldn't be read.	Не удалось прочитать данные растра.
 The raster's data couldn't be read: {error}	Не удалось прочитать данные растра: {error}
+The recovery copy could not keep the opened package's path because it is not UTF-8.	Копия для восстановления не смогла сохранить путь открытого пакета, так как он не в UTF-8.
 the recovery copy is incomplete	копия для восстановления неполна
 the recovery copy is too large (maximum {mib} MiB on this computer)	копия для восстановления слишком велика (максимум {mib} MiB на этом компьютере)
 the recovery copy isn't text	копия для восстановления не является текстом
@@ -4103,6 +4359,7 @@ The reply stopped early ({reason}).	Ответ прервался раньше �
 the report export failed unexpectedly	экспорт отчёта неожиданно завершился ошибкой
 The request failed.	Запрос не удался.
 The result wired into this output is added to the map under this name.	Результат, подключённый к этому выходу, добавляется на карту под этим именем.
+The sample tile changes the connection's origin. Use a concrete hostname to test with a saved login.	Пробный тайл меняет источник подключения. Чтобы проверить с сохранённым входом, используйте конкретное имя хоста.
 The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	Сохранённые компоновки макетов публикации не читаются: они оставлены как есть, а компоновки, сохранённые сейчас, действуют только до закрытия приложения.
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	Сохранённый формат координат неизвестен этой версии, поэтому показываются десятичные градусы.
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	Сохранённую избранную компоновку макетов публикации использовать нельзя ({why}), поэтому используется «classic».
@@ -4122,10 +4379,15 @@ The search area has no point, line or polygon to search with	В области �
 The search area is still loading: search when it has finished	Область поиска ещё загружается: выполните поиск, когда загрузка завершится
 the selected features	выбранные объекты
 The selected GeoPackage layer is no longer available; choose a layer	Выбранный слой GeoPackage больше недоступен; выберите слой
+The server answered, but the response is not a usable tile.	Сервер ответил, но ответ не является пригодным тайлом.
+The server didn't answer the token request in time.	Сервер не ответил на запрос токена вовремя.
+The server didn't give a token. Check the user name, password and token endpoint.	Сервер не выдал токен. Проверьте имя пользователя, пароль и конечную точку токена.
 The server had a problem answering.	У сервера возникла проблема с ответом.
 The server is limiting requests.	Сервер ограничивает запросы.
 The server refused the request.	Сервер отклонил запрос.
 The server took too long to answer.	Сервер слишком долго не отвечал.
+The server's answer to the token request was too large.	Ответ сервера на запрос токена слишком велик.
+The server's answer wasn't an ArcGIS token.	Ответ сервера не является токеном ArcGIS.
 The service may be private or need a token.	Сервис может быть закрытым или требовать токен.
 The service needs a sign-in or a token.	Сервису нужен вход или токен.
 The service test requires a credential-free HTTP or HTTPS address at the connection's origin.	Для проверки службы нужен HTTP- или HTTPS-адрес без учётных данных, совпадающий с источником подключения.
@@ -4134,12 +4396,15 @@ The service's answer isn't UTF-8 text	Ответ сервиса не являе�
 The session login could not be used. Enter it again.	Не удалось использовать вход сеанса. Введите его снова.
 The Shapefile's files download as one zip.	Файлы Shapefile скачиваются одним zip-архивом.
 The share of each cell covered by fields, for the zoomed-out view	Доля каждой ячейки, покрытая полями, для отдалённого вида
+The share of the colour a slope turned fully from the sun keeps, from 0 to 1	Доля цвета, которую сохраняет склон, полностью отвёрнутый от солнца, от 0 до 1
 The sign-in expired or was revoked. Sign in again.	Срок действия входа истёк или доступ отозван. Войдите снова.
+The sign-in expired. Sign in again.	Срок действия входа истёк. Войдите снова.
 The sign-in is kept in the system keychain, never in the app's settings or a project file.	Данные входа хранятся в системной связке ключей и никогда в настройках приложения или файле проекта.
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	Данные входа всё ещё хранятся в папке настроек приложения и доступны вашей учётной записи: системная связка ключей недоступна, поэтому они ещё не перенесены туда.
 The significance level is a number, such as 0.05	Уровень значимости — число, например 0.05
 The size of the menu, the panes and the text drawn in them.	Размер меню, панелей и текста в них.
 The slider's span, step and playback are on View › Time.	Диапазон, шаг и воспроизведение ползунка находятся в Вид › Время.
+The source changed. Preview the conversion again.	Источник изменился. Выполните предпросмотр преобразования снова.
 The start-up project {path} didn't open: {error}	Не удалось открыть стартовый проект {path}: {error}
 The start-up project {path} isn't a RustGIS project file.	Стартовый проект {path} не является файлом проекта RustGIS.
 The step's layer {name} isn't in the map.	Слоя {name} из этого шага нет на карте.
@@ -4153,11 +4418,22 @@ The system keychain is locked or access was refused.	Системная связ
 The system keychain is unavailable, so this sign-in won't be remembered: it lasts until RustGIS closes.	Системная связка ключей недоступна, поэтому этот вход не будет запомнен: он действует до закрытия RustGIS.
 The system keychain is unavailable.	Системная связка ключей недоступна.
 The task's steps changed, so the step being edited was closed: edit it again.	Шаги задачи изменились, поэтому редактируемый шаг закрыт: измените его снова.
+The tile URL has an unsupported placeholder.	В URL тайлов есть неподдерживаемый заполнитель.
+The time series couldn't start: {error}	Не удалось запустить временной ряд: {error}
+The time series failed unexpectedly	Временной ряд неожиданно завершился ошибкой
+The time series was cancelled: nothing was added to the chart	Временной ряд отменён: на диаграмму ничего не добавлено
+The time series was stopped: another project was opened	Временной ряд остановлен: открыт другой проект
 the time slider is off	ползунок времени выключен
 The title and subtitle in a band of colour across the top.	Заголовок и подзаголовок в цветной полосе сверху.
 The title over the map, the sources and the reference in boxes under it.	Заголовок поверх карты, источники и справка в рамках под ней.
 The token expired and was forgotten. Paste a new one.	Срок действия токена истёк, и он забыт. Вставьте новый.
 The token expires on {date}.	Срок действия токена истекает {date}.
+The token is added to each request to this address as its token parameter. With no expiry it is used until the server refuses it.	Токен добавляется к каждому запросу по этому адресу как параметр token. Без срока действия он используется, пока сервер его не отклонит.
+The token is renewed until you sign out.	Токен обновляется до вашего выхода.
+The token is renewed until {date}.	Токен обновляется до {date}.
+The token request couldn't be started.	Не удалось начать запрос токена.
+The token request failed.	Запрос токена завершился ошибкой.
+The token request was cancelled.	Запрос токена отменён.
 the tool's own	собственный для инструмента
 the tool's own; {d}	собственное значение инструмента; {d}
 The tools run on this project: saved with it, and each can run again	Инструменты, запущенные в этом проекте: сохраняются вместе с ним, и каждый можно запустить снова
@@ -4178,16 +4454,20 @@ The {n} waiting after it were left too	Ожидавшие после него з
 Theme	Тема
 Theme {name} loaded and kept at {path}	Тема {name} загружена и сохранена в {path}
 There is no expression defined.	Выражение не задано.
+There is no touch interface to go back to: it is on phones.	Нет сенсорного интерфейса, к которому можно вернуться: он есть на телефонах.
 there is no unsaved work to recover	нет несохранённой работы для восстановления
 Thermal	Тепловая
+These layers share no numeric field.	У этих слоёв нет общего числового поля.
 Thesis figure, full page (160 × 225 mm)	Рисунок для диссертации, полная страница (160 × 225 мм)
 Thesis figure, half page (160 × 110 mm)	Рисунок для диссертации, половина страницы (160 × 110 мм)
 Thin	Прореживать
 Thinking…	Думает…
 Third-party licences	Лицензии третьих сторон
 THIRD-PARTY-LICENSES.txt	THIRD-PARTY-LICENSES.txt
+This app can't request ArcGIS tokens.	Это приложение не может запрашивать токены ArcGIS.
 this build can't download plugins	эта сборка не может загружать модули
 this build can't reach AI providers	эта сборка не может подключаться к поставщикам ИИ
+This build cannot save through the native picker.	Эта сборка не может сохранять через системный диалог выбора.
 this build has no download service	в этой сборке нет службы загрузки
 this build saves projects with Save As	эта сборка сохраняет проекты через «Сохранить как»
 This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Этот аккаунт ChatGPT уже был сохранён. В следующий раз выберите его в списке, а не добавляйте снова.
@@ -4198,9 +4478,15 @@ This class is hidden, so it labels nothing.	Этот класс скрыт, по
 This clause no longer reads, so no feature is labelled: {error}	Это условие больше не читается, поэтому объекты не подписаны: {error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	Этот компьютер хранит ключи для этого подключения: оставьте ключи пустыми, чтобы войти с ними.
 This computer keeps this connection's keys: logging in reads them.	Этот компьютер хранит ключи этого подключения: при входе они будут прочитаны.
+This computer's clock can't be read, so an expiring ArcGIS token can't be used.	Не удаётся прочитать часы этого компьютера, поэтому токен ArcGIS с ограниченным сроком действия нельзя использовать.
+This connection has no user: set user (connection.edit) to generate a token.	У этого подключения нет пользователя: задайте user (connection.edit), чтобы создать токен.
 This connection is logged out. Log in explicitly to use it again.	Из этого подключения выполнен выход. Войдите явно, чтобы снова его использовать.
 This font isn't installed here, so the text is drawn in the sans-serif	Этот шрифт здесь не установлен, поэтому текст отрисован шрифтом без засечек
 This font isn't installed here, so the text is drawn in the serif	Этот шрифт здесь не установлен, поэтому текст отрисован шрифтом с засечками
+This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side	Это изображение не может быть маркером: это не читаемый PNG или JPEG размером не более 20 000 px по стороне
+This image is too large for a marker: at most about 1.5 MiB	Это изображение слишком велико для маркера: не более примерно 1,5 MiB
+This image is unavailable. Choose another image or No image.	Это изображение недоступно. Выберите другое изображение или «Без изображения».
+This item is from a local or private network, whose files Bands and Index don't read yet	Этот элемент из локальной или частной сети, файлы которой «Каналы» и «Индекс» пока не читают
 This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	В этом слое есть правки, которых ещё нет в его файле. «Опубликовать в источник» записывает их в файл.
 This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.	В этом слое есть правки, которых нет в его файле, а файл изменился на диске после чтения. «Опубликовать в источник» отказывается перезаписывать это изменение; «Экспорт объектов» сохраняет правки в новом файле.
 This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.	В этом слое есть правки, которых нет в его файле. «Опубликовать в источник» не может записать их, пока файл не вернётся к прочитанному состоянию; «Экспорт объектов» сохраняет их в новом файле.
@@ -4258,10 +4544,16 @@ Tint by elevation	Окраска по высоте
 Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	Окрашивает крутой рельеф в цвет скал до затенения светом, в зависимости от уклона самого рельефа
 Tissot's Indicatrix	Индикатриса Тиссо
 Title	Заголовок
+Title text	Текст заголовка
 To	По
 Toggle Dark Mode	Переключить тёмную тему
+Toggle Downloading Datum Grids	Переключить скачивание сеток датумов
 Toggle GPU Rendering	Переключить отрисовку на GPU
 Toggle Imperial Measurements	Переключить имперские единицы
+Toggle Sharp Tiles on HiDPI Displays	Переключить чёткие тайлы на дисплеях HiDPI
+Token	Токен
+Token endpoint	Конечная точка токена
+Token from	Токен из
 Token Required	Требуется токен
 Tolerance	Допуск
 Tolerance (km)	Допуск (км)
@@ -4287,6 +4579,7 @@ Topology Options	Параметры топологии
 Topology Options…	Параметры топологии…
 Topology rules and the errors they find.	Правила топологии и найденные ими ошибки.
 Total {total}   ·   Segment {segment}	Всего {total}   ·   Сегмент {segment}
+Touch\nInterface	Сенсорный\nинтерфейс
 Trace	Отследить
 Trace a point first: click the map.	Сначала отследите точку: щёлкните по карте.
 Trace Edge Path	Отследить путь по границе
@@ -4299,6 +4592,7 @@ Train Deep Learning Model	Обучить модель глубокого обу�
 Trained models	Обученные модели
 Training polygons	Обучающие полигоны
 Transfer Fields	Перенос полей
+Translate tools	Перевести инструменты
 Transparency	Прозрачность
 Traverse	Ход
 Trend Analysis	Анализ тренда
@@ -4306,6 +4600,7 @@ Trend Analysis…	Анализ тренда…
 Trend over a series of rasters	Тренд по серии растров
 Triangle	Треугольник
 TRUE	TRUE
+True color	Естественные цвета
 Try Again	Повторить
 Try again	Повторить
 Try again in a moment.	Повторите попытку через мгновение.
@@ -4347,16 +4642,20 @@ Type the password or key to remember it on this computer.	Введите пар�
 Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	Введите пароль или ключ либо оставьте поле пустым, чтобы использовать сеанс или сохранённый вход этого подключения, затем нажмите «Сохранить».
 Type the password to remember it on this computer.	Введите пароль, чтобы запомнить его на этом компьютере.
 Type the password, then Save. Remember on this computer is optional.	Введите пароль и нажмите «Сохранить». «Запомнить на этом компьютере» — по желанию.
+Type the token this expiry is for.	Введите токен, к которому относится этот срок действия.
+Type the token, or the password to generate one, to remember it on this computer.	Введите токен или пароль для его создания, чтобы запомнить его на этом компьютере.
 Typed below	Ввод ниже
-typing must not start another lookup	typing must not start another lookup
 U.S. Census (addresses)	Census США (адреса)
 Ukraine	Украина
 UM	UM
+Unavailable image	Недоступное изображение
+Unavailable image: {name}	Недоступное изображение: {name}
 Unavailable: {reason}	Недоступно: {reason}
 Unbind from Time Slider	Отвязать от ползунка времени
 Undo	Отменить
 Undo (Ctrl+Z)	Отменить (Ctrl+Z)
 Undo doesn't remove the recorded step: delete it in Edit Steps once you stop recording.	Отмена не удаляет записанный шаг: удалите его в «Изменить шаги» после остановки записи.
+Undo History	История отмены
 Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	Отмена восстанавливает данные в памяти и конфигурацию, но не перезаписанные файлы и не прежнее содержимое потоковых данных.
 Undo the last change.	Отменить последнее изменение.
 Undo {action}	Отменить: {action}
@@ -4388,6 +4687,7 @@ Untitled	Без названия
 Untitled model	Модель без имени
 Up	Вверх
 Up a level	На уровень вверх
+up to {bound}	до {bound}
 Up to {n} points are compared: the oldest one was taken off.	Сравниваются до {n} точек: самая старая убрана.
 Update	Обновить
 Update Bookmark	Обновить закладку
@@ -4418,10 +4718,15 @@ Use Current View	Использовать текущий вид
 Use each feature's fill color	Использовать цвет заливки каждого объекта
 Use each feature's line color	Использовать цвет линии каждого объекта
 Use each feature's line width	Использовать толщину линии каждого объекта
+Use field range	Использовать диапазон поля
+Use image filename	Использовать имя файла изображения
 Use layers instead	Использовать слои
 Use System	Как в системе
 Use the Layer's Strokes	Использовать обводки слоя
+Use the Touch Interface	Использовать сенсорный интерфейс
 User	Пользователь
+Username	Имя пользователя
+Username and password	Имя пользователя и пароль
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	USGS 3DEP DEM
 USGS 3DEP DEM…	USGS 3DEP DEM…
@@ -4445,7 +4750,11 @@ Validate	Проверить
 Validate Model	Проверить модель
 value (empty: no-data)	значение (пусто: нет данных)
 Value Field	Поле значения
+Values	Значения
 Values from −stretch to +stretch are shown from black to full colour	Значения от −stretch до +stretch показываются от чёрного до полного цвета
+Values of the {of} features read for the view	Значения {of} объектов, прочитанных для вида
+Values of {read} of the {of} features read for the view, evenly spread	Значения {read} из {of} объектов, прочитанных для вида, равномерно распределённых
+Values of {read} of {of} features, evenly spread	Значения {read} из {of} объектов, равномерно распределённых
 Vantor Open Data	Vantor Open Data
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	Открытые снимки стихийных бедствий от Vantor: выберите событие и фазу (до или после него), затем «Найти элементы».
 Vantor…	Vantor…
@@ -4479,6 +4788,7 @@ View Extent	Экстент вида
 View In Google Earth	Открыть в Google Earth
 View In Google Maps	Открыть в Google Maps
 View Unplaced	Показать неразмещённые
+View › Interface	Вид › Интерфейс
 View › Windows	Вид › Окна
 Viewshed from a point	Зона видимости из точки
 Viewshed {radius}	Зона видимости {radius}
@@ -4495,6 +4805,7 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3 (Вьетнам)
 VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	Объём
+Wait for the original image grid before drawing.	Дождитесь сетки исходного изображения перед рисованием.
 Wait for the run to finish	Дождитесь завершения запуска
 Wait for the Script pane's run to finish	Дождитесь завершения запуска на панели скриптов
 Waiting for the browser…	Ожидание браузера…
@@ -4519,7 +4830,9 @@ Web Layer	Веб-слой
 Web Link Chart	Веб-диаграмма связей
 Web maps	Веб-карты
 Web Mercator	Web Mercator
+Web Mercator grid metres	Метры сетки Web Mercator
 Web Mercator grid metres, not ground metres.	Метры сетки Web Mercator, а не метры на местности.
+Web Mercator grid metres, not ground metres. Image pixels are the default when an image is selected.	Метры сетки Web Mercator, а не метры на местности. Когда выбрано изображение, по умолчанию используются пиксели изображения.
 Web Scene	Веб-сцена
 Web service (detected)	Веб-сервис (определён)
 Web Style	Веб-стиль
@@ -4536,11 +4849,13 @@ WGS 84 / Web Mercator	WGS 84 / Web Mercator
 What each slice or bar says beside it: its value, its share in percent, or both	Что показывается рядом с каждым сектором или столбцом: значение, доля в процентах или и то и другое
 What RustGIS opens with: the World Atlas sample or a blank map.	С чем открывается RustGIS: с примером World Atlas или с пустой картой.
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	С чем открывается RustGIS: с примером World Atlas, с пустой картой, с выбранным вами проектом или с последним открытым или сохранённым проектом.
-What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	Что рисует сетка координат: широты и долготы, измерительную сетку или зоны UTM.
+What the graticule draws: latitudes and longitudes, a measured grid, the UTM zones or the MGRS grid.	Что рисует сетка координат: широты и долготы, метрическую сетку, зоны UTM или сетку MGRS.
 What the walls stand on: the ground, a field or the constant Base (m).	На чём стоят стены: на земле, на поле или на постоянном основании (м).
 What to do, where to find it and why	Что сделать, где это найти и зачем
 What's near a point	Что находится рядом с точкой
 What's new	Что нового
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use for this session when this is off.	Когда для наиболее точного преобразования датума системы координат нужна сетка, которой у RustGIS нет, скачивать её с сервера сеток PROJ (cdn.proj.org). Если выключено, уже скачанные сетки используются до конца этого сеанса.
+When a coordinate system's most accurate datum transformation needs a grid RustGIS doesn't have, download it from PROJ's grid server (cdn.proj.org). Grids already downloaded stay in use when this is off: to stop using them, delete the datum-grids folder in RustGIS's app data and start RustGIS again (grids installed for PROJ are still used).	Когда для наиболее точного преобразования датума системы координат нужна сетка, которой у RustGIS нет, скачивать её с сервера сеток PROJ (cdn.proj.org). Если выключено, уже скачанные сетки продолжают использоваться: чтобы перестать их использовать, удалите папку datum-grids в данных приложения RustGIS и перезапустите RustGIS (сетки, установленные для PROJ, по-прежнему используются).
 When a file holds several layers, choose the ones to add instead of adding them all.	Если файл содержит несколько слоёв, выбирать нужные, а не добавлять все.
 When its place is taken, the label tries the other places round the point, corners first.	Когда место занято, подпись пробует другие места вокруг точки, начиная с углов.
 WHERE	WHERE
@@ -4609,10 +4924,11 @@ World, equal-area: true sizes, shapes bend towards the edges.	Мир, равно
 Worldview	Границы
 Wrap at	Перенос по
 Wrap length	Длина переноса
+Wrap to the box	Переносить по рамке
 Write a plugin	Написать модуль
 Write a turn of the view about its centre as an animated GIF or PNG frames.	Записать поворот вида вокруг центра как анимированный GIF или кадры PNG.
 Writes a separate two-vertex line for each consecutive vertex pair.	Записывает отдельную линию из двух вершин для каждой пары последовательных вершин.
-Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Записывает каждый объект с геометрией, исправленной там, где это возможно: кольца замкнуты, повторяющиеся вершины и вырожденные части удалены, самопересечения, перекрывающиеся части и дырки вне внешней границы устранены. Объекты с отсутствующей или неконечной координатой где угодно, даже в дырке, а также объекты, у которых после исправления не осталось пригодных точек или, для полигонов, площади, записываются без геометрии. Другие объекты, слишком сложные для проверки или не поддавшиеся исправлению, записываются без изменений. Сообщает, что исправлено в каждом.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved by the chosen rule (Shells Minus Holes merges overlapping parts; Even-Odd keeps what lies inside an odd number of rings). Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Записывает каждый объект с геометрией, исправленной, где это возможно: кольца замыкаются, повторяющиеся вершины и вырожденные части удаляются, самопересечения, перекрывающиеся части и дыры вне своей оболочки разрешаются по выбранному правилу (Shells Minus Holes объединяет перекрывающиеся части; Even-Odd оставляет то, что лежит внутри нечётного числа колец). Объекты с отсутствующей или нечисловой координатой где угодно, даже в дыре, а также оставшиеся без пригодных точек или, для полигонов, без площади после исправления, записываются без геометрии. Другие объекты, слишком сложные для проверки или исправление которых не удалось, записываются без изменений. Сообщает, что исправлено в каждом.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Записывает по одному ограничивающему прямоугольнику, выровненному по осям, на каждый объект в сохранённых координатах долготы/широты. Охваты нулевой площади пропускаются.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Записывает наклон Сена, Z и p-значение теста, а также наклон там, где тренд значим.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Записывает объекты с недопустимой геометрией, например самопересекающимися или незамкнутыми кольцами, дырками вне внешней границы или перекрывающимися частями, и сообщает, что не так с каждым.
@@ -4629,9 +4945,9 @@ Y Field	Поле Y
 Year	Год
 Yes	Да
 You can undo this with {shortcut}.	Это можно отменить с помощью {shortcut}.
-You choose where the project is saved next.	В следующий раз вы выберете, куда сохранить проект.
 You have version {version}.	У вас версия {version}.
 You're using your ChatGPT plan	Вы используете свой тариф ChatGPT
+Your account's email address	Адрес электронной почты вашей учётной записи
 Your browser may reserve some shortcuts.	Ваш браузер может резервировать некоторые сочетания клавиш.
 Your changes will be lost if you don't save them.	Если не сохранить изменения, они будут потеряны.
 Your skills are kept in the skills folder of the app's settings folder. Shared skills (~/.agents/skills) are off until you turn them on.	Ваши навыки хранятся в папке skills в папке настроек приложения. Общие навыки (~/.agents/skills) выключены, пока вы их не включите.
@@ -4644,6 +4960,7 @@ Zarr URL is required	требуется URL Zarr
 Zarr Variables	Переменные Zarr
 Zarr…	Zarr…
 Zonal Statistics	Зональная статистика
+Zone Field	Поле зон
 Zone Fields	Поля зон
 Zone Polygons	Полигоны зон
 Zoom	Масштаб
