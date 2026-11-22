@@ -9,6 +9,23 @@ use rustgis_engine::{Project, Session};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// The check that a command declared as not mutating leaves the layers alone runs here too, where
+/// commands take their valid paths (#2645; AGENTS.md, feature `declaration-check`).
+#[test]
+#[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
+fn a_command_that_adds_a_layer_must_say_it_mutates() {
+    let mut s = Session::new(Project::new("Declared"));
+    s.registry.commands.push(
+        rustgis_engine::CommandSpec::new("test.quietLayer", "Quiet layer", "Test", |s, _| {
+            let ds = Dataset::new("Quiet", rustgis_engine::data::GeometryType::Point, vec![]);
+            rustgis_engine::cmd::layer::add_dataset(s, ds);
+            Ok(Value::Null)
+        })
+        .view(),
+    );
+    let _ = s.run("test.quietLayer", &Value::Null);
+}
+
 /// Declared versions are checked before payloads, and unreadable nodes cannot disappear on import.
 #[test]
 fn model_import_refuses_unsupported_files_without_changing_session() {

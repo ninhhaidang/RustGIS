@@ -5198,6 +5198,7 @@ dependencies = [
  "rusqlite",
  "rustgis-analysis",
  "rustgis-data",
+ "rustgis-engine",
  "rustgis-geolibre",
  "rustgis-geom",
  "rustgis-map",

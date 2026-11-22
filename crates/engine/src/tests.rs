@@ -377,6 +377,78 @@ fn script_step_follows_what_its_lines_change_not_what_they_reach() {
     assert_eq!(s.path.as_deref(), Some(first.as_path()));
 }
 
+/// A plugin's command can't run as a step of another command (#2645): it would be a transaction
+/// of its own inside the caller's.
+#[test]
+fn invoke_refuses_a_plugin_command_as_a_step() {
+    let mut s = world();
+    plugin("step-plugin", &["edit"]);
+    let err = s.run("script.run", &json!({"script": "plugin:step-plugin/h {}"})).unwrap_err();
+    assert!(err.contains("unknown command"), "{err}");
+    let op = s.authorize("plugin:step-plugin/h", &json!({})).unwrap();
+    let err = s.invoke(op, crate::policy::Txn::Shared).unwrap_err();
+    assert!(err.contains("runs only by itself"), "{err}");
+}
+
+/// A step that changed the project and then failed is undone whole by its savepoint, so it isn't
+/// an edit; without one, nothing undoes it part way, so it counts (#2645).
+#[test]
+fn a_failed_step_counts_unless_its_savepoint_undid_it() {
+    let mut s = world();
+    let rename = *s.registry.get("map.rename").unwrap();
+    let name = s.map().name.clone();
+    let half_done = |s: &mut Session| -> crate::CmdResult {
+        s.map_mut().name = "Half done".into();
+        Err("failed part way".into())
+    };
+    for savepoint in [true, false] {
+        s.shared_steps = crate::StepTally::default();
+        let spec = crate::CommandSpec { atomic: savepoint, ..rename };
+        assert!(s.shared_step(&spec, half_done).is_err());
+        assert_eq!((s.map().name == name, s.shared_steps.edited), (savepoint, !savepoint), "savepoint: {savepoint}");
+        s.map_mut().name = name.clone();
+    }
+}
+
+/// A step that doesn't mutate but changes the layers is still an edit (#2645): they are measured
+/// in every build, not inferred from the command's declaration.
+#[test]
+fn shared_step_measures_the_layers_a_step_changes() {
+    let mut s = world();
+    let spec = *s.registry.get("map.zoomFull").unwrap();
+    let (count, ds) = (s.map().layers.len(), s.map().layers[0].dataset.clone());
+    let quiet_layer = |s: &mut Session| -> crate::CmdResult {
+        crate::cmd::layer::add_dataset(s, ds);
+        Ok(Value::Null)
+    };
+    s.shared_step(&spec, quiet_layer).unwrap();
+    assert_eq!((s.shared_steps.edited, s.map().layers.len()), (true, count + 1));
+}
+
+/// A command declared as not mutating that adds, removes or reorders layers fails the tests
+/// (#2645), by itself or as a script's line; an edit it makes on the way, marking the project
+/// unsaved or failing afterwards doesn't excuse it. A layer's name, look or features aren't
+/// measured.
+#[test]
+#[should_panic(expected = "test.quietLayer doesn't mutate but changed the layers")]
+fn a_command_that_changes_layers_must_say_it_mutates() {
+    let mut s = world();
+    s.registry.commands.push(
+        crate::CommandSpec::new("test.quietLayer", "Quiet layer", "Test", |s, _| {
+            let ds = s.map().layers[0].dataset.clone();
+            crate::cmd::layer::add_dataset(s, ds);
+            s.mark_unsaved();
+            s.guarded("Rename", true, |s| {
+                s.map_mut().name = "Renamed on the way".into();
+                Ok(Value::Null)
+            })?;
+            Err("failed after adding it".into())
+        })
+        .view(),
+    );
+    let _ = s.run("test.quietLayer", &Value::Null);
+}
+
 /// A task's steps are counted as a script's lines: an undo step only when one edited (#2621).
 #[test]
 fn task_takes_an_undo_step_only_when_a_step_edits() {

@@ -927,6 +927,12 @@ impl Session {
         let node = op.node.clone();
         match &op.op {
             CommandOp::Plugin { pin, .. } => {
+                // A plugin's command is a transaction of its own, never a step of another
+                // command: scripts and tasks run registered commands only, and a plugin can't run
+                // another's.
+                if !matches!(txn, Txn::Own) {
+                    return Err("a plugin's command runs only by itself, not as a step of another command".into());
+                }
                 let pin = pin.clone();
                 // Plugin host calls are checked against the pinned manifest, not an invented
                 // finite list of calls made by code that has yet to run.
@@ -985,13 +991,27 @@ impl Session {
                 // start in it, and inside the transaction that made it, so Undo and a failure take
                 // it back and the project is unsaved ([`crate::cmd::project::first_layer_watch`]).
                 let first_layer = crate::cmd::project::first_layer_watch(self, &spec);
+                // A command that doesn't mutate leaves the layers alone, unless it says it moves the
+                // history (Undo, Redo) or replaces the project: what it did on the way (a nested
+                // edit, an unsaved mark, a failure) doesn't excuse it, since by itself nothing
+                // undoes it. Checked on every registered command the unit and integration tests
+                // run, by itself or as a step, so one declared wrong fails them on the paths they
+                // reach (AGENTS.md).
+                #[cfg(any(test, feature = "declaration-check"))]
+                let declared = (!spec.mutates
+                    && !spec.effects.contains(crate::policy::Effect::History)
+                    && !spec.effects.contains(crate::policy::Effect::Replaces))
+                .then(|| self.restored().layers);
                 let result = match txn {
                     Txn::Own => self.guarded(spec.label, spec.mutates, run),
-                    Txn::Shared if spec.id == "edit.applyShapeConversion" => self.shared_step(&spec, |s| s.savepoint(spec.label, run)),
                     Txn::Shared => self.shared_step(&spec, run),
                 };
                 if let (Ok(_), Some(before)) = (&result, first_layer) {
                     crate::cmd::project::take_first_layer_system(self, &before);
+                }
+                #[cfg(any(test, feature = "declaration-check"))]
+                if let Some(before) = declared {
+                    assert!(self.restored().layers == before, "{} doesn't mutate but changed the layers", spec.id);
                 }
                 self.url_completion_landed(spec.id, &params, &result);
                 if result.is_ok() && (spec.mutates || spec.effects.contains(crate::policy::Effect::History)) && spec.id != "data.similar" {

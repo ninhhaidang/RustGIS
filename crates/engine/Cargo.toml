@@ -36,10 +36,15 @@ geolibre = ["dep:rustgis-geolibre"]
 pdf = ["rustgis-data/pdf"]
 # Existing in-tree Wasm fixtures for adapter tests; no guest or production interface change.
 testing = ["rustgis-plugins/testing"]
+# The check that a command declared as not mutating leaves the layers alone, in the integration
+# tests too (they link the library without `cfg(test)`; AGENTS.md). Never in a release.
+declaration-check = []
 # The JSON Schema of the project file (`cargo xtask schema`).
 schema = ["dep:schemars", "rustgis-data/schema", "rustgis-geom/schema"]
 
 [dev-dependencies]
+# The declaration check in the integration tests.
+rustgis-engine = { path = ".", features = ["declaration-check"] }
 # Reading back the PDFs layouts export (#2336).
 rustgis-data = { workspace = true, features = ["pdf"] }
 miniz_oxide = { workspace = true }
