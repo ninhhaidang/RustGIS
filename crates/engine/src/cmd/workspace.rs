@@ -321,7 +321,8 @@ pub fn commands() -> Vec<C> {
                 let mut m = a.data.clone();
                 let map_name = offline_map_name(&a.name);
                 let taken = |n: &str| s.project.maps.iter().any(|m| m.name.eq_ignore_ascii_case(n));
-                m.name = if taken(&map_name) { super::numbered(&map_name, taken) } else { map_name };
+                m.name = if taken(&map_name) { super::numbered(&map_name, taken) } else { map_name.clone() };
+                super::say_name_cut(s, "Open Offline Map", "the offline map's name", &map_name, &m.name);
                 m.offline_area_id = Some(id);
                 m.renew_instance_id();
                 // An area saved before offline copies were unlinked from their tables.

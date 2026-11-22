@@ -76,15 +76,27 @@ fn copy(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"copied": n, "layers": names}))
 }
 
-/// A name no layer of the map has (case aside): the name itself, else `<name> copy`, numbered.
-fn unique_layer_name(m: &Map, name: &str) -> String {
+/// A name no layer of the map has (case aside): the name itself, else `<name> copy`, numbered;
+/// and whether that cut the name to fit (#2639).
+fn unique_layer_name(m: &Map, name: &str) -> (String, bool) {
     let taken = |n: &str| m.layers.iter().any(|l| l.name.eq_ignore_ascii_case(n));
-    if taken(name) { copy_name(None, name, taken) } else { name.to_string() }
+    if taken(name) {
+        let (name, cut) = copy_name("Paste Layers", None, name, taken);
+        (name, cut.is_some())
+    } else {
+        (name.to_string(), false)
+    }
 }
 
-fn unique_group_name(m: &Map, name: &str) -> String {
+/// [`unique_layer_name`] for a group.
+fn unique_group_name(m: &Map, name: &str) -> (String, bool) {
     let taken = |n: &str| m.groups.iter().any(|g| g.name.eq_ignore_ascii_case(n));
-    if taken(name) { copy_name(None, name, taken) } else { name.to_string() }
+    if taken(name) {
+        let (name, cut) = copy_name("Paste Layers", None, name, taken);
+        (name, cut.is_some())
+    } else {
+        (name.to_string(), false)
+    }
 }
 
 /// What a paste added, as its notice says it: "2 layers", "1 group and 3 layers", "1 group" (an
@@ -148,9 +160,12 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     // Each pasted layer's name as copied, in drawing order, to find masks by.
     let mut copied: Vec<(String, u32)> = Vec::new();
     let mut pasted: Vec<u32> = Vec::new();
+    // Copies' names cut so " copy" and a number fit, counted to be said.
+    let mut names_cut = 0usize;
     for mut l in clip.layers {
         let old = l.id;
-        let name = unique_layer_name(m, &l.name);
+        let (name, cut) = unique_layer_name(m, &l.name);
+        names_cut += usize::from(cut);
         let was = std::mem::replace(&mut l.name, name.clone());
         l.dataset.name = name.clone();
         let id = m.add_layer(l);
@@ -181,7 +196,9 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     for mut g in groups {
         let old = g.id;
         g.children = g.children.iter().filter_map(|c| new_ids.get(c).copied()).collect();
-        g.name = unique_group_name(m, &g.name);
+        let (name, cut) = unique_group_name(m, &g.name);
+        g.name = name;
+        names_cut += usize::from(cut);
         g.parent = match g.parent.and_then(|p| new_groups.get(&p)) {
             Some(p) => Some(*p),
             None => into,
@@ -198,6 +215,12 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     }
     // Said, as a paste from the Browser can go to a map out of view.
     s.notify(format!("Pasted {} into {map}", pasted_what(pasted.len(), group_ids.len())), false);
+    if names_cut > 0 {
+        s.notify(
+            format!("Paste Layers: {names_cut} copied name(s) cut so \" copy\" and a number fit in {} characters", super::MAX_NAME),
+            false,
+        );
+    }
     match unmasked.as_slice() {
         [] => {}
         [one] => s.notify(format!("{one} lost its mask: {map} has no polygon layer by that name"), false),

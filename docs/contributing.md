@@ -345,11 +345,13 @@ them all the same way:
 
 - An integration test (`crates/<crate>/tests/`) seeds its runner from `PROPERTY_SEED` (1 if
   unset) and runs `PROPERTY_CASES` cases, with a default that takes a few seconds, and no
-  failure file. A failure panics with `PROPERTY_SEED=<seed>` and the smallest input found.
+  failure file. A value set that isn't a whole number fails rather than running the defaults.
+  A failure panics with `PROPERTY_SEED=<seed>` and the smallest input found.
 - Pull requests run the fixed seed with `cargo test`. The nightly runs each property test on a
   new seed with more cases; add a new one to its step in `nightly.yml`.
 - What the rule allows (a format's limits, a tolerance) is a list in the test, each entry with
-  its reason.
+  its reason. A rule about notices is tested both ways: lossy input gives the notice of that
+  kind, clean input gives none.
 
 To run a failing seed again, or deeper:
 `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-engine --test integration never_silent_roundtrip::`.

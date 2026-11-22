@@ -250,6 +250,9 @@ pub fn commands() -> Vec<C> {
             let id = s.layer_id(p)?;
             let (points, lines) = points_and_lines(s.map().layer(id).ok_or("no such layer")?);
             let guide = label_guide(s, p, s.map().layer(id).ok_or("no such layer")?)?;
+            // A repeat or line offset given where it does nothing (not along a line), kept for
+            // when the class is placed along one, and said (#2639).
+            let mut unused: Vec<&str> = Vec::new();
             let done = with_labels(s, p, |labels| {
                 let c = class_in(labels, p)?;
                 if let Some(pos) = pos {
@@ -308,8 +311,26 @@ pub fn commands() -> Vec<C> {
                 if others == Some(true) && !tries_other_places(points, lines, c) {
                     return Err("otherPositions is for points, and for lines placed parallel or curved without a repeat".into());
                 }
+                if !(lines && c.placement.along_line()) {
+                    if repeat.is_some_and(|r| r.is_some()) {
+                        unused.push("repeat");
+                    }
+                    if line_offset.is_some_and(|d| d != 0.0) {
+                        unused.push("lineOffset");
+                    }
+                }
                 Ok(())
             })?;
+            if !unused.is_empty() {
+                let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+                s.notify_text(
+                    NoticeText::format(
+                        "{name}: {keys} kept, but it does nothing here: it places only labels along a line (parallel or curved) where the layer has lines",
+                        [("name", name.into()), ("keys", unused.join(" and ").into())],
+                    ),
+                    false,
+                );
+            }
             if let Some(note) = callout_note {
                 s.notify(note, false);
             }

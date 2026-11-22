@@ -73,6 +73,7 @@ pub fn commands() -> Vec<C> {
             if let Some(l) = s.project.layouts.get_mut(i) {
                 l.name = unique.clone();
             }
+            super::say_name_cut(s, "Rename Layout", "the name given", &name, &unique);
             Ok(json!({"name": unique}))
         }).inputs(named_object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName": string}"#),
@@ -80,14 +81,22 @@ pub fn commands() -> Vec<C> {
         // are per layout, so legends and scale bars stay on their frames, which show the same maps.
         C::new("layout.duplicate", "Duplicate Layout", "Browser", |s, p| {
             let i = index(s, &by_name(p))?;
+            // A name given past the limit is refused, as layout.rename refuses it, not cut (#2639).
+            let given = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty());
+            let given = given.map(|n| super::within("newName", "a layout's name", n, super::MAX_NAME)).transpose()?;
             let mut l = s.project.layouts.get(i).ok_or("open a layout first")?.clone();
-            l.name = super::copy_name(ps(p, "newName"), &l.name, |n| s.project.layouts.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
-            let name = l.name.clone();
+            let (name, cut) = super::copy_name("Duplicate Layout", given.as_deref(), &l.name, |n| {
+                s.project.layouts.iter().any(|x| x.name.eq_ignore_ascii_case(n))
+            });
+            l.name = name.clone();
             if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
                 return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
             }
             s.project.layouts.insert(i + 1, l);
             s.active_layout = Some(i + 1);
+            if let Some(cut) = cut {
+                s.notify(cut, false);
+            }
             Ok(json!({"name": name, "layout": i + 1}))
         }).inputs(named_object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName"?: string (default: "<layout> copy")}"#),
@@ -225,10 +234,15 @@ fn unlocked(l: &Layout, id: u32) -> Result<(), String> {
     }
 }
 
-fn unique_name(s: &Session, base: &str) -> String {
+/// `base` (trimmed; "Layout" when blank), numbered when another layout has it, with the notice to
+/// give when that cuts it ([`super::name_cut`]): `command` is the command's title and `whose` says
+/// where the name came from.
+fn unique_name(s: &Session, command: &str, whose: &str, base: &str) -> (String, Option<String>) {
     let base = base.trim();
     let base = if base.is_empty() { "Layout" } else { base };
-    numbered(base, |n| s.project.layouts.iter().any(|l| l.name.eq_ignore_ascii_case(n)))
+    let name = numbered(base, |n| s.project.layouts.iter().any(|l| l.name.eq_ignore_ascii_case(n)));
+    let cut = super::name_cut(command, whose, base, &name);
+    (name, cut)
 }
 
 /// (width, height) in mm from page/orientation/width/height parameters.
@@ -297,7 +311,8 @@ pub(crate) fn new_layout(s: &mut Session, p: &Value) -> CmdResult {
         &json!({"page": ps(p, "page").unwrap_or("letter"), "orientation": ps(p, "orientation").unwrap_or("landscape"), "width": p.get("width"), "height": p.get("height")}),
         None,
     )?;
-    let name = unique_name(s, &super::within("name", "a layout's name", ps(p, "name").unwrap_or("Layout").trim(), super::MAX_NAME)?);
+    let given = super::within("name", "a layout's name", ps(p, "name").unwrap_or("Layout").trim(), super::MAX_NAME)?;
+    let (name, cut) = unique_name(s, "New Layout", "the name given", &given);
     let mut l = Layout::new(name.clone(), w, h);
     match ps(p, "template").unwrap_or("map") {
         "blank" => {}
@@ -343,6 +358,9 @@ pub(crate) fn new_layout(s: &mut Session, p: &Value) -> CmdResult {
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
     s.active_layout = Some(i);
+    if let Some(cut) = cut {
+        s.notify(cut, false);
+    }
     Ok(json!({"layout": i, "name": name, "elements": elements}))
 }
 
@@ -1890,7 +1908,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     };
     let scale = round_scale(scale);
     let grid = Grid { step, edges, ..Grid::default() };
-    let name = unique_name(s, ps(p, "name").unwrap_or("Publication"));
+    // A name given past the limit is refused, as layout.new refuses it, not cut (#2639).
+    let given = super::within("name", "a layout's name", ps(p, "name").unwrap_or("Publication").trim(), super::MAX_NAME)?;
+    let (name, name_cut) = unique_name(s, "New Publication Layout", "the name given", &given);
     let mut l = Layout::new(name.clone(), w, h);
     l.decimal_comma = comma;
     let (over, under): (Vec<_>, Vec<_>) = page_wide.into_iter().partition(|e| e.3);
@@ -1947,6 +1967,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         None if sheet => (0.24 * fw.min(fh)).clamp(25.0 * k, 70.0 * k),
         None => (0.3 * fw.min(fh)).clamp(18.0, 45.0),
     };
+    let mut locator_cut = None;
     let locator_map = match locator {
         Locator::None => None,
         Locator::Globe => {
@@ -1958,7 +1979,11 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             let orphan = locator_orphan(s);
             let name = match orphan.and_then(|i| s.project.maps.get(i)) {
                 Some(x) => x.name.clone(),
-                None => numbered(&base, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n))),
+                None => {
+                    let name = numbered(&base, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+                    locator_cut = super::name_cut("New Publication Layout", "the locator map's name", &base, &name);
+                    name
+                }
             };
             // A new map of what the globe draws, not a clone of the whole map (every layer's
             // features): its basemap (the land and borders around the area), graticule and body,
@@ -2943,6 +2968,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
     s.active_layout = Some(i);
+    for cut in [name_cut, locator_cut].into_iter().flatten() {
+        s.notify(cut, false);
+    }
     let locator = locator_map.map(|(map, ..)| map);
     Ok(
         json!({"layout": i, "name": name, "profile": profile.id, "page": [w, h], "scale": scale, "grid": step, "locator": locator, "style": style.code(), "arrangement": arrangement_used, "legendColumns": legend_cols, "mapShift": [map_shift.0, map_shift.1], "veiled": veiled.is_some(), "legendBox": legend_rect.is_some() && !legend_bare, "elements": elements, "moved": moved, "coverage": coverage_written, "warnings": warnings}),
@@ -3113,6 +3141,7 @@ fn duplicate_element(s: &mut Session, p: &Value) -> CmdResult {
         c.visible = e.visible;
         c.background = e.background;
     }
+    super::say_name_cut(s, "Duplicate Element", "the copy's name", &e.name, &name);
     Ok(json!({"element": copy, "name": name}))
 }
 
@@ -3271,6 +3300,85 @@ fn corner_radius(p: &Value, d: f64) -> Result<f64, String> {
         Some(v) => {
             v.as_f64().filter(|r| r.is_finite() && *r >= 0.0).map(|r| r.min(50.0)).ok_or_else(|| "radius is millimetres, 0 or more".into())
         }
+    }
+}
+
+/// The shape whose outline `width` (and a rectangle's `radius`) a layout command reads, by the
+/// element's kind: what [`held_to_limits`] checks.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Rectangle,
+    Ellipse,
+    Line,
+}
+
+impl Shape {
+    fn of_kind(kind: &ElementKind) -> Option<Shape> {
+        match kind {
+            ElementKind::Rectangle { .. } => Some(Shape::Rectangle),
+            ElementKind::Ellipse { .. } => Some(Shape::Ellipse),
+            ElementKind::Line { .. } => Some(Shape::Line),
+            _ => None,
+        }
+    }
+
+    fn of_name(kind: &str) -> Option<Shape> {
+        match kind {
+            "rectangle" => Some(Shape::Rectangle),
+            "ellipse" | "circle" => Some(Shape::Ellipse),
+            "line" | "arrow" => Some(Shape::Line),
+            _ => None,
+        }
+    }
+}
+
+/// What a layout command holds to a limit instead of taking as given (#2639): a shape's outline
+/// `width` (0 to 50 points; a line's from 0.1), a rectangle's `radius` (up to 50 mm), and a
+/// background's width, radius and padding, each said with the value asked and the one kept. A
+/// value the command refuses (not a number, negative where that isn't taken) isn't said here.
+fn held_to_limits(p: &Value, shape: Option<Shape>) -> Vec<String> {
+    use rustgis_map::layout::{MAX_BACKGROUND_PADDING, MAX_BACKGROUND_RADIUS, MAX_BACKGROUND_WIDTH};
+    let mut said = Vec::new();
+    let mut hold = |key: &str, asked: f64, kept: f64, range: &str| {
+        if asked != kept {
+            said.push(format!("{key} {asked} held to {kept} ({range})"));
+        }
+    };
+    if let Some(shape) = shape {
+        if let Some(w) = f(p, "width") {
+            let least = if shape == Shape::Line { 0.1 } else { 0.0 };
+            hold("width", w, w.clamp(least, 50.0), if shape == Shape::Line { "0.1 to 50 points" } else { "0 to 50 points" });
+        }
+        if shape == Shape::Rectangle
+            && let Some(r) = p.get("radius").and_then(Value::as_f64).filter(|r| r.is_finite() && *r >= 0.0)
+        {
+            hold("radius", r, r.min(50.0), "up to 50 mm");
+        }
+    }
+    if let Some(o) = p.get("background").and_then(Value::as_object) {
+        for (k, max, unit) in
+            [("width", MAX_BACKGROUND_WIDTH, "points"), ("radius", MAX_BACKGROUND_RADIUS, "mm"), ("padding", MAX_BACKGROUND_PADDING, "mm")]
+        {
+            if let Some(v) = o.get(k).and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0) {
+                hold(&format!("background {k}"), v, v.min(max), &format!("up to {max} {unit}"));
+            }
+        }
+    }
+    said
+}
+
+/// A frame's extent indicator's or border's `width` in `p` (that object) held to `range` points,
+/// said as [`held_to_limits`] says it; `what` names the setting ("extent indicator width").
+fn held_width(p: &Value, what: &str, range: (f64, f64)) -> Option<String> {
+    let w = f(p, "width")?;
+    let kept = w.clamp(range.0, range.1);
+    (w != kept).then(|| format!("{what} {w} held to {kept} ({} to {} points)", range.0, range.1))
+}
+
+/// Says what [`held_to_limits`] found, in one notice for the command `title`.
+fn say_held(s: &mut Session, title: &str, held: Vec<String>) {
+    if !held.is_empty() {
+        s.notify(format!("{title}: {}", held.join("; ")), false);
     }
 }
 
@@ -3793,6 +3901,8 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
                 *extent_color = color;
                 *extent_width = width;
             }
+            let range = (rustgis_map::layout::MIN_INDICATOR_WIDTH, rustgis_map::layout::MAX_INDICATOR_WIDTH);
+            say_held(s, "Add Element", held_width(p, "extent indicator width", range).into_iter().collect());
             return Ok(json!({"element": frame}));
         }
         "grid" => {
@@ -3846,6 +3956,7 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(said) = empty_colorbar {
         s.warn(said);
     }
+    say_held(s, "Add Element", held_to_limits(p, Shape::of_name(kind)));
     let mut out = json!({"element": id});
     if let Some(w) = warning {
         out["warning"] = json!(w);
@@ -4919,6 +5030,7 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     // A north arrow's or scale bar's new look, and a map frame's grid: `"grid": false` removes it,
     // `true` adds the default one, an object changes the options it names, and null (not set)
     // leaves it as it is.
+    let held;
     let (restyled, new_grid, new_indicator, new_border) = {
         let l = s.project.layouts.get(li).ok_or("no layout")?;
         let kind = &l.element(id).ok_or_else(|| format!("no element {id}"))?.kind;
@@ -4956,6 +5068,17 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             (_, Some(_)) => return Err("only map frames have a grid".into()),
             _ => None,
         };
+        let mut said = held_to_limits(p, Shape::of_kind(kind));
+        if let (ElementKind::MapFrame { .. }, Some(Some(_))) = (kind, &indicator)
+            && let Some(v) = p.get("extentIndicator")
+        {
+            let range = (rustgis_map::layout::MIN_INDICATOR_WIDTH, rustgis_map::layout::MAX_INDICATOR_WIDTH);
+            said.extend(held_width(v, "extent indicator width", range));
+        }
+        if let (ElementKind::MapFrame { .. }, Some(v @ Value::Object(_))) = (kind, p.get("border")) {
+            said.extend(held_width(v, "border width", (0.0, rustgis_map::layout::MAX_FRAME_BORDER_WIDTH)));
+        }
+        held = said;
         (restyle(kind, p)?, grid, indicator, border)
     };
     // A line turned to an "angle" or made a "length" long, about its centre: its new box,
@@ -5370,6 +5493,7 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     if shown || TEXT_FIT_KEYS.iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
         say_text_fit(s, li, id);
     }
+    say_held(s, "Element Properties", held);
     if let Some(w) = font_told {
         return Ok(json!({"warning": w}));
     }
@@ -6150,7 +6274,11 @@ pub(crate) fn import(s: &mut Session, text: &str) -> CmdResult {
             s.notify(notice, false);
         }
     }
-    l.name = unique_name(s, &l.name);
+    let (name, cut) = unique_name(s, "Import Layout", "the layout file's name", &l.name);
+    l.name = name;
+    if let Some(cut) = cut {
+        s.notify(cut, false);
+    }
     // Frames showing maps this project lacks show the active map instead.
     let fallback = s.map().name.clone();
     let names: Vec<String> = s.project.maps.iter().map(|m| m.name.to_ascii_lowercase()).collect();

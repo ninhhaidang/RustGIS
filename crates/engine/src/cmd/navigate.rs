@@ -140,6 +140,7 @@ pub fn commands() -> Vec<C> {
             if let Some(b) = s.project.maps.get_mut(mi).and_then(|m| m.bookmarks.get_mut(bi)) {
                 b.name = name.clone();
             }
+            super::say_name_cut(s, "Rename Bookmark", "the name given", &new, &name);
             Ok(json!({"name": name}))
         }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "newName": string (a number is added when another bookmark has it), "map"?: name}"#),
@@ -202,6 +203,7 @@ pub fn commands() -> Vec<C> {
                 m.name = name.clone();
             }
             follow_renamed_map(s, &old, &name);
+            super::say_name_cut(s, "Rename Map", "the name given", s_name(p)?.trim(), &name);
             Ok(json!({"name": name}))
         }).transition(rename_transition).inputs(map_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string (the new name; a number is added when another map has it), "map"?: name (default: the active map)}"#),
@@ -262,8 +264,12 @@ pub(crate) fn map_at(input: &impl super::InputSource, p: &Value) -> Result<usize
 /// map, so the copy keeps them; layouts aren't copied and keep showing the original.
 fn duplicate_map(s: &mut Session, p: &Value) -> CmdResult {
     let i = map_at(s, p)?;
+    // A name given past the limit is refused, as map.rename refuses it, not cut (#2639).
+    let given = super::name_given(p, "a map's name", super::MAX_NAME)?;
     let mut m = s.project.maps.get(i).ok_or("no map")?.clone();
-    m.name = super::copy_name(ps(p, "name"), &m.name, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+    let (name, cut) =
+        super::copy_name("Duplicate Map", given.as_deref(), &m.name, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+    m.name = name;
     m.offline_area_id = None;
     m.label_lock = None;
     m.label_lock_line_anchors.clear();
@@ -280,6 +286,9 @@ fn duplicate_map(s: &mut Session, p: &Value) -> CmdResult {
     if !was_active {
         s.active_layer = s.map().layers.first().map(|l| l.id);
         s.table_layer = None;
+    }
+    if let Some(cut) = cut {
+        s.notify(cut, false);
     }
     Ok(json!({"name": name}))
 }
@@ -1015,6 +1024,7 @@ fn add_bookmark(s: &mut Session, p: &Value) -> CmdResult {
     let name = unique_bookmark_name(s, mi, None, &base);
     let m = s.project.maps.get_mut(mi).ok_or("no map")?;
     m.bookmarks.push(Bookmark { description, ..Bookmark::new(name.clone(), m.camera) });
+    super::say_name_cut(s, "New Bookmark", "the name given", &base, &name);
     Ok(json!({"name": name}))
 }
 

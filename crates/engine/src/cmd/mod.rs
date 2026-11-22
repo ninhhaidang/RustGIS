@@ -256,15 +256,45 @@ pub(crate) fn numbered_saying(
     (name, cut)
 }
 
-/// A copy's name: the one `given` (trimmed), else `<original> copy` with the original cut so
-/// " copy" fits; then [`numbered`] by `taken`.
-pub(crate) fn copy_name(given: Option<&str>, original: &str, taken: impl Fn(&str) -> bool) -> String {
+/// A copy's name: the one `given` (trimmed; the caller refuses one past [`MAX_NAME`]), else
+/// `<original> copy` with the original cut so " copy" fits; then [`numbered`] by `taken`. With the
+/// notice to give when that cut part of the name ([`name_cut`]); `command` is the command's title.
+pub(crate) fn copy_name(command: &str, given: Option<&str>, original: &str, taken: impl Fn(&str) -> bool) -> (String, Option<String>) {
     const COPY: &str = " copy";
-    let base = match given.map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) => n.to_string(),
-        None => original.chars().take(MAX_NAME - COPY.len()).chain(COPY.chars()).collect(),
+    let (base, whole, whose) = match given.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => (n.to_string(), n.to_string(), "the name given"),
+        None => {
+            (original.chars().take(MAX_NAME - COPY.len()).chain(COPY.chars()).collect(), format!("{original}{COPY}"), "the copy's name")
+        }
     };
-    numbered(&base, taken)
+    let name = numbered(&base, taken);
+    let cut = name_cut(command, whose, &whole, &name);
+    (name, cut)
+}
+
+/// The notice to give when `name`, the name a command kept, doesn't keep all of `given`, the name
+/// it was making (#2639): cut to a limit, or cut to fit what follows it (" copy", " 2"), as
+/// [`numbered`] and [`copy_name`] do. `command` is the command's title, such as "Duplicate Map",
+/// and `whose` says where the name came from ("the name given", "the copy's name"). None when the
+/// whole of `given` is kept.
+pub(crate) fn name_cut(command: &str, whose: &str, given: &str, name: &str) -> Option<String> {
+    let kept = given.chars().zip(name.chars()).take_while(|(a, b)| a == b).count();
+    if kept >= given.chars().count() {
+        return None;
+    }
+    let after: String = name.chars().skip(kept).collect();
+    Some(if after.is_empty() {
+        format!("{command}: {whose} is cut to {kept} characters")
+    } else {
+        format!("{command}: {whose} is cut to {kept} characters to fit \"{after}\"")
+    })
+}
+
+/// Gives the [`name_cut`] notice, if any.
+pub(crate) fn say_name_cut(s: &mut Session, command: &str, whose: &str, given: &str, name: &str) {
+    if let Some(cut) = name_cut(command, whose, given, name) {
+        s.notify(cut, false);
+    }
 }
 
 /// The most unread true/false parameters one command names in its notice.

@@ -4746,24 +4746,58 @@ pub(crate) fn read_delimited_bytes(
     Ok((ds, report))
 }
 
+/// The last segment of `url`'s path, without its query, control characters, backslashes or colons:
+/// the file name [`url_file_name`] starts from.
+fn url_last_segment(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let path = path.split_once("://").map_or(path, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
+    path.rsplit('/').find(|p| !p.is_empty()).unwrap_or("").chars().filter(|c| !c.is_control() && !matches!(c, '\\' | ':')).collect()
+}
+
+/// The longest file name [`url_file_name`] keeps.
+const MAX_URL_FILE_NAME: usize = 120;
+
+/// The notice to give when [`url_file_name`] cut `url`'s file name, which names the layer unless
+/// `p` gives a `name` (#2639); `command` is the command's title. None when it wasn't cut, a name
+/// is given, or the download (`bytes`) is a zip, whose layers are named by the files in it. A
+/// `.shp` address's zip is the one made of its parts, named from the address, so it counts.
+pub(crate) fn url_name_cut(command: &str, url: &str, p: &Value, bytes: &[u8]) -> Option<String> {
+    let full = url_last_segment(url);
+    let shp = Path::new(&full).extension().is_some_and(|e| e.eq_ignore_ascii_case("shp"));
+    let n = full.chars().count();
+    // A short name first, so the common case doesn't read the download again.
+    if n <= MAX_URL_FILE_NAME || ps(p, "name").is_some_and(|n| !n.trim().is_empty()) || (is_zip(bytes) && !shp) {
+        return None;
+    }
+    // Decided by the stem the layer is named from: a long extension that isn't one (`a.xxx…`)
+    // is dropped, not cut.
+    let kept = url_file_name(url, bytes).ok()?;
+    let stem = |name: &str| Path::new(name).file_stem().and_then(|s| s.to_str()).map_or(0, |s| s.chars().count());
+    // A CityJSON model's ".city" is added, not kept from the address.
+    let kept_stem = Path::new(&kept).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let kept_stem = kept_stem.strip_suffix(".city").filter(|_| !full.to_ascii_lowercase().contains(".city.")).unwrap_or(kept_stem);
+    (kept_stem.chars().count() < stem(&full)).then(|| {
+        format!(
+            "{command}: the address's file name is {n} characters, so the file name the layer is named from is cut to {MAX_URL_FILE_NAME} (give a name to choose it)"
+        )
+    })
+}
+
 /// The file name for data downloaded from `url`: its last path segment when that has an extension
 /// RustGIS reads, else `<segment or "data">.<ext>` with the extension its contents suggest
 /// (an error when they suggest none). The name is cut to 120 characters, keeping an extension
 /// shorter than 60; a `.shp` address whose download is a zip of its parts is named `<stem>.zip`.
 /// JPEG 2000 named or recognised by its contents is refused where GDAL can't run (the browser).
 pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
-    let path = url.split(['?', '#']).next().unwrap_or(url);
-    let path = path.split_once("://").map_or(path, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
-    let full: String =
-        path.rsplit('/').find(|p| !p.is_empty()).unwrap_or("").chars().filter(|c| !c.is_control() && !matches!(c, '\\' | ':')).collect();
+    let full = url_last_segment(url);
     let raw_ext = Path::new(&full).extension().and_then(|e| e.to_str());
     let ext = raw_ext.map(str::to_ascii_lowercase).unwrap_or_default();
     // At most 120 characters, keeping an extension shorter than 60 (a long `.shp` name is still one).
     let last: String = match raw_ext {
-        Some(e) if full.chars().count() > 120 && e.chars().count() < 60 => {
-            format!("{}.{e}", full.chars().take(119 - e.chars().count()).collect::<String>())
+        Some(e) if full.chars().count() > MAX_URL_FILE_NAME && e.chars().count() < 60 => {
+            format!("{}.{e}", full.chars().take(MAX_URL_FILE_NAME - 1 - e.chars().count()).collect::<String>())
         }
-        _ => full.chars().take(120).collect(),
+        _ => full.chars().take(MAX_URL_FILE_NAME).collect(),
     };
     // JPEG 2000 (Sentinel-2's imagery) is read through GDAL, which the browser can't run.
     let jpeg2000_only_on_desktop = |name: String| {
@@ -5166,8 +5200,17 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
         if super::b(p, "service").unwrap_or(false) && !tiff {
             let label = ps(p, "name").map(str::to_string).unwrap_or_else(|| crate::sources::address_in_message(url));
             let bounds = super::service::bounds_of(p.get("bounds"))?;
-            let file = |bytes: &[u8]| url_file_name(url, bytes);
-            return super::service::add_service_layer(s, p, &label, url, bounds, public, b(p, "zoom"), file).map_err(named);
+            // The cut judged from the bytes the layer is named from, as they are named.
+            let mut cut = None;
+            let file = |bytes: &[u8]| {
+                cut = url_name_cut("Add Data From URL", url, p, bytes);
+                url_file_name(url, bytes)
+            };
+            let r = super::service::add_service_layer(s, p, &label, url, bounds, public, b(p, "zoom"), file).map_err(named)?;
+            if let Some(cut) = cut {
+                s.notify(cut, false);
+            }
+            return Ok(r);
         }
         // An address without a file name may be a GeoTIFF too: its first bytes are read to see,
         // and anything that doesn't answer as one is downloaded whole, as before.
@@ -5197,9 +5240,13 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
         };
         let name = url_file_name(url, &bytes).map_err(named)?;
         let left_out = parts_left_out(url, &bytes, p);
+        let cut = url_name_cut("Add Data From URL", url, p, &bytes);
         let r = super::raster::add_named_bytes(s, p, name, bytes, b(p, "zoom")).map_err(named)?;
         if let Some(n) = left_out {
             s.notify(n, false);
+        }
+        if let Some(cut) = cut {
+            s.notify(cut, false);
         }
         Ok(r)
     }
@@ -6531,6 +6578,8 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
         url_file_name(&url, &bytes).map_err(|e| crate::sources::message_with_address(&url, &e))?
     };
     let left_out = parts_left_out(&url, &bytes, p);
+    // A coverage is named coverage.tif; a service's features are named from the address too.
+    let cut = if coverage { None } else { url_name_cut("Add Downloaded Data", &url, p, &bytes) };
     // A PDF's page the app drew off the frame as it landed (#2336).
     #[cfg(not(target_arch = "wasm32"))]
     let drawn = s.landed_pages.iter().position(|(d, _)| *d == id).map(|i| s.landed_pages.remove(i).1);
@@ -6539,6 +6588,9 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
     let r = super::raster::add_named_bytes_read(s, p, name, bytes, b(p, "zoom"), drawn)?;
     if let Some(n) = left_out {
         s.notify(n, false);
+    }
+    if let Some(cut) = cut {
+        s.notify(cut, false);
     }
     added_download(s, p, r, service || coverage, &url)
 }

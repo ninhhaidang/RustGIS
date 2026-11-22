@@ -17,6 +17,8 @@ rustgis-render = { workspace = true }
 tiny-skia = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The keys a project file has that this version doesn't read, to say what opening it left out.
+serde_ignored = "0.1"
 log = { workspace = true }
 web-time = { workspace = true }
 base64 = { workspace = true }

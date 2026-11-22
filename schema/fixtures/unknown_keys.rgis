@@ -1,0 +1,14 @@
+{
+  "format": 2,
+  "name": "Unknown keys",
+  "active_map": 0,
+  "future_setting": {"from": "another program"},
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ]
+}

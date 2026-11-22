@@ -36,9 +36,25 @@ fn declared(c: &str) -> bool {
     })
 }
 
-/// A number from the environment, else `default`.
+/// A number from the environment, else `default`; one set that isn't a whole number fails, so a
+/// typo doesn't run the defaults without a word (#2639).
 fn env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
+        Err(_) => default,
+    }
+}
+
+/// What a project's reading says of the keys it left out.
+const UNKNOWN_KEYS: &str = " key(s) this version doesn't read were left out";
+
+/// How many keys the notices say were left out, over every part's notice.
+fn keys_said(notices: &[String]) -> usize {
+    notices
+        .iter()
+        .filter_map(|n| n.find(UNKNOWN_KEYS).map(|i| &n[..i]))
+        .filter_map(|before| before.rsplit(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse::<usize>().ok()))
+        .sum()
 }
 
 /// Names leaning on edges: unicode, long, blank, spaces around, quotes, a duplicate.
@@ -310,7 +326,8 @@ fn runner(default_cases: u32) -> (u64, TestRunner) {
     let seed = env("PROPERTY_SEED", 1);
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
-    let cases = u32::try_from(env("PROPERTY_CASES", u64::from(default_cases))).unwrap_or(default_cases);
+    let cases = env("PROPERTY_CASES", u64::from(default_cases));
+    let cases = u32::try_from(cases).unwrap_or_else(|_| panic!("PROPERTY_CASES={cases} is past {}", u32::MAX));
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     (seed, TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes)))
 }
@@ -351,6 +368,10 @@ fn a_saved_project_opens_as_it_was_saved() {
         let mut changed = Vec::new();
         diff("", &before, &seen(&opened), &mut changed);
         compared.set(compared.get() + usize::from(notices.is_empty()));
+        // A file this version wrote has no key it doesn't read.
+        if keys_said(&notices) > 0 {
+            return Err(TestCaseError::fail(format!("its own file had keys it doesn't read: {notices:?}")));
+        }
         // Values that aren't finite numbers, which saving writes as null and says so, are null in
         // what the user sees before saving too (`Value`'s `Serialize`): nothing is excused.
         changed.retain(|c| !declared(c));
@@ -387,10 +408,36 @@ fn insert_at(v: &mut Value, n: &mut usize, key: &str) -> bool {
     }
 }
 
+/// Whether a key at `place` (a path from [`place_of`]) may be left out without being counted:
+/// any key not directly in the project's, a map's, a layer's or a layout's own settings. Deeper
+/// settings are read whole too, but some are read leniently (a damaged one taken as none) or
+/// flattened into another (a layer's labels beside `enabled`), which buffers them where the reader
+/// can't see their keys.
+fn unseen(place: &str) -> bool {
+    let parent: Vec<&str> = place.rsplit_once('/').map_or("", |(p, _)| p).split('/').collect();
+    let index = |s: &&str| s.parse::<usize>().is_ok();
+    !match parent.as_slice() {
+        [""] => true,
+        ["", "maps", m] | ["", "layouts", m] => index(m),
+        ["", "maps", m, "layers", l] => index(m) && index(l),
+        _ => false,
+    }
+}
+
+/// Where `key` is in `v`, as a path of keys and indexes.
+fn place_of(v: &Value, key: &str, at: &str) -> Option<String> {
+    match v {
+        Value::Object(o) if o.contains_key(key) => Some(format!("{at}/{key}")),
+        Value::Object(o) => o.iter().find_map(|(k, v)| place_of(v, key, &format!("{at}/{k}"))),
+        Value::Array(a) => a.iter().enumerate().find_map(|(i, v)| place_of(v, key, &format!("{at}/{i}"))),
+        _ => None,
+    }
+}
+
 #[test]
 fn a_project_from_a_newer_rustgis_opens_only_when_this_version_can_keep_it() {
     let dir = scratch("project-newer");
-    let (clean, newer) = (dir.join("clean.rgis"), dir.join("newer.rgis"));
+    let (clean, newer, again) = (dir.join("clean.rgis"), dir.join("newer.rgis"), dir.join("again.rgis"));
     let (seed, mut runner) = runner(128);
     let places = prop::collection::vec(0usize..400, 1..4);
     let raised = prop::option::of(prop::sample::select(vec![1u64, 2, 1000, u64::from(u32::MAX)]));
@@ -399,18 +446,26 @@ fn a_project_from_a_newer_rustgis_opens_only_when_this_version_can_keep_it() {
         let (mut s, _) = build(&names, &steps);
         s.run("project.saveAs", &json!({"path": clean})).map_err(TestCaseError::fail)?;
         let mut file: Value = serde_json::from_str(&std::fs::read_to_string(&clean).unwrap()).unwrap();
+        let mut inserted = Vec::new();
         for (i, mut place) in places.into_iter().enumerate() {
-            insert_at(&mut file, &mut place, &format!("futureField{i}"));
+            if insert_at(&mut file, &mut place, &format!("futureField{i}")) {
+                inserted.push(i);
+            }
         }
         if let Some(k) = raised {
             file["format"] = json!(u64::from(rustgis_engine::project::READ_FORMAT) + k);
         }
         std::fs::write(&newer, file.to_string()).unwrap();
         let mut a = Session::new(Project::new("Other"));
+        let clean_mark = a.notice_mark();
         a.run("project.open", &json!({"path": clean})).map_err(TestCaseError::fail)?;
+        if keys_said(&said(&a, clean_mark)) > 0 {
+            return Err(TestCaseError::fail(format!("a clean file said keys were left out: {:?}", said(&a, clean_mark))));
+        }
         // Refused, it leaves the project open as it was, layers, groups and layouts too.
         let (mut b, _) = build(&names, &steps);
         let before = seen(&b);
+        let mark = b.notice_mark();
         let open = b.run("project.open", &json!({"path": newer}));
         let count = if open.is_ok() { &opened } else { &refused };
         count.set(count.get() + 1);
@@ -429,11 +484,33 @@ fn a_project_from_a_newer_rustgis_opens_only_when_this_version_can_keep_it() {
                 let mut changed = Vec::new();
                 diff("", &seen(&a), &seen(&b), &mut changed);
                 changed.retain(|c| !declared(c));
-                if changed.is_empty() {
-                    Ok(())
-                } else {
-                    Err(TestCaseError::fail(format!("unknown fields changed the project: {changed:#?}")))
+                if !changed.is_empty() {
+                    return Err(TestCaseError::fail(format!("unknown fields changed the project: {changed:#?}")));
                 }
+                // Each key left out is counted in a notice (#2639): those a save of the opened
+                // project doesn't keep. One put in a value kept as it is (a feature's attributes,
+                // a JSON setting) is kept, and isn't said. A key the notices count is one left
+                // out; and every key left out of the project's, a map's, a layer's or a layout's
+                // own settings is counted. (Keys inside a setting read leniently or flattened into
+                // another, such as a layer's labels, aren't seen by the reader: see `unseen`.)
+                let notices = said(&b, mark);
+                b.run("project.saveAs", &json!({"path": again})).map_err(TestCaseError::fail)?;
+                let resaved = std::fs::read_to_string(&again).unwrap_or_default();
+                let dropped: Vec<String> = inserted
+                    .iter()
+                    .map(|i| format!("futureField{i}"))
+                    .filter(|key| !resaved.contains(&format!("\"{key}\"")))
+                    .filter_map(|key| place_of(&file, &key, ""))
+                    .collect();
+                let must = dropped.iter().filter(|place| !unseen(place)).count();
+                let counted = keys_said(&notices);
+                if counted < must || counted > dropped.len() {
+                    return Err(TestCaseError::fail(format!(
+                        "{} key(s) left out at {dropped:?}, {must} of them in settings read whole, but the notices say {notices:?}",
+                        dropped.len()
+                    )));
+                }
+                Ok(())
             }
             _ => Ok(()),
         }

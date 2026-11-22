@@ -436,6 +436,8 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
     // Both read before either is set, so a bad one changes nothing and says nothing; a cell size
     // given with a system is in its units.
     let mut note = None;
+    // A cell size another system had, which a new one doesn't take (in that system's units).
+    let mut dropped = None;
     let projected = match p.get("crs") {
         None => s.project.gp_env.projected,
         Some(Value::Null) => None,
@@ -449,6 +451,13 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         }
         Some(_) => return Err("crs is a projected coordinate system (such as \"EPSG:32616\"), or null".into()),
     };
+    // Any change of system, to another or to none, drops the old one's cell size.
+    if let Some(old) = s.project.gp_env.projected
+        && let Some(cell) = old.cell_size
+        && projected.is_none_or(|g| g.crs != old.crs)
+    {
+        dropped = Some((old.crs, cell, projected.is_none()));
+    }
     let size = match p.get("cellSize") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -459,6 +468,23 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
     }
     if let Some(note) = note {
         s.notify(format!("Environments: its coordinate system: {note}"), false);
+    }
+    // Said (#2639): always when the system is cleared; on a change of system, unless this call
+    // gives the new one its own cell size.
+    match (dropped, size) {
+        (Some((crs, cell, true)), _) => s.notify(
+            format!("Environments: the cell size {cell} in {}'s units was dropped with that system", crs.label()),
+            false,
+        ),
+        // (`cellSize: null` gives the new one none, so it is said too.)
+        (Some((crs, cell, false)), None | Some(None)) => s.notify(
+            format!(
+                "Environments: the cell size {cell} was in {}'s units, so it was dropped with that system: give cellSize for the new one, or each run picks its own",
+                crs.label()
+            ),
+            false,
+        ),
+        _ => {}
     }
     s.project.gp_env.projected = projected;
     if let Some(size) = size {

@@ -759,6 +759,19 @@ impl Bridge<'_> {
     }
 }
 
+/// The most characters of a plugin's notice shown.
+const MAX_PLUGIN_NOTICE: usize = 500;
+
+/// What `host.notify` shows of a plugin's `text`: all of it up to [`MAX_PLUGIN_NOTICE`]
+/// characters, else that much and how long it was, so the cut is said (#2639).
+fn plugin_notice(text: &str) -> String {
+    let n = text.chars().count();
+    if n <= MAX_PLUGIN_NOTICE {
+        return text.to_string();
+    }
+    format!("{}… (cut from {n} characters)", text.chars().take(MAX_PLUGIN_NOTICE).collect::<String>())
+}
+
 impl Host for Bridge<'_> {
     fn call(&mut self, op: &str, params: &Value) -> Result<Value, String> {
         match op {
@@ -768,7 +781,7 @@ impl Host for Bridge<'_> {
             "host.features" => self.features(params),
             "host.view" => Ok(view_of(self.s)),
             "host.notify" => {
-                let text: String = ps(params, "text").unwrap_or_default().chars().take(500).collect();
+                let text = plugin_notice(ps(params, "text").unwrap_or_default());
                 let error = b(params, "error").unwrap_or(false);
                 self.s.notify(format!("{}: {text}", self.plugin.manifest.name), error);
                 Ok(Value::Null)
@@ -1321,6 +1334,17 @@ fn capped_error(error: &str, timeout: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin's notice past 500 characters is cut and says how long it was; a short one is shown
+    /// as it is (#2639).
+    #[test]
+    fn a_long_plugin_notice_says_it_was_cut() {
+        assert_eq!(plugin_notice("done"), "done");
+        let edge = "a".repeat(MAX_PLUGIN_NOTICE);
+        assert_eq!(plugin_notice(&edge), edge);
+        let long = plugin_notice(&"é".repeat(MAX_PLUGIN_NOTICE + 7));
+        assert!(long.starts_with(&"é".repeat(MAX_PLUGIN_NOTICE)) && long.ends_with("… (cut from 507 characters)"), "{long}");
+    }
 
     /// Why a session plugin's program was stopped is said; one that ended by itself says nothing.
     #[cfg(not(target_arch = "wasm32"))]

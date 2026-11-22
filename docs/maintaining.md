@@ -68,6 +68,10 @@ same files. New and changed code follows these rules; not every existing reader 
   doesn't save it again without what it couldn't read.
 - A format's version goes up only when a file uses something an older reader would lose or
   misread.
+- A key a project file has that this version doesn't read (a hand edit, another program) is left
+  out on open and said: one notice per part of the project, with a count and the first few
+  places. Keys inside a setting read leniently or flattened into another (a layer's labels) aren't
+  seen, so they go unsaid (#2639).
 - Where a change allows it, reading a new version ships at least one release before anything
   writes it.
 - A project, map or layer file, a model or a web tool lists in `requires` each capability it needs

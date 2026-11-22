@@ -1,6 +1,8 @@
 //! Never silent (AGENTS.md), as a property: a generated layer exported with `share.exportLayer`
-//! and added back with `layer.addData` comes back the same, or the export says something. What a
-//! format can't hold and says nothing about is listed in [`LIMITS`], with the reason. Layers lean
+//! and added back with `layer.addData` comes back the same, or a notice of each change says it
+//! (one naming its field, or of its kind). What a format can't hold and says nothing about is
+//! listed in [`LIMITS`], with the reason; and a trip that changes nothing else says no loss
+//! ([`QUIET`] lists the notices that say none). Layers lean
 //! on edges: names formats treat specially, extreme and non-finite numbers, odd text, nulls,
 //! multipoints, the antimeridian and the poles.
 //!
@@ -47,12 +49,21 @@ const LIMITS: &[(&str, &str, &str)] = &[
     ("shp", "field of nulls type changed", "a number column's type comes from its values"),
 ];
 
+/// Notices a trip may give that say no loss, as (format or `*`, part of the notice, why): what a
+/// clean trip says besides them is a loss notice for nothing lost (#2639).
+const QUIET: &[(&str, &str, &str)] = &[
+    // A feature without geometry is a row with empty coordinates: kept, and said to be without them.
+    ("csv", "had no usable coordinates", "the reader says which rows it read without geometry; none are lost"),
+    ("*", "read in place a view at a time", "how the layer is held, not what it holds"),
+    ("*", "placed at 0,0", "a point at 0,0 may be a missing coordinate: a warning, the point kept"),
+    ("csv", "with an apostrophe for spreadsheet protection", "what the file holds for a spreadsheet; the reader takes the apostrophe off"),
+];
+
 /// KML and GPX hold text, read with types from the values as for CSV (`type_text_columns`); the
 /// name field is written as the feature's name and read back as `name`.
 const TEXT_FORMAT_LIMITS: &[&str] = &[
     "field type changed",
     "field of nulls type changed",
-    "field renamed",
     "boolean became text",
     "date became text",
     "datetime became text",
@@ -67,9 +78,13 @@ fn declared(ext: &str, change: &str) -> bool {
         || matches!(ext, "kml" | "gpx") && TEXT_FORMAT_LIMITS.iter().any(|start| change.starts_with(start))
 }
 
-/// A number from the environment, else `default`.
+/// A number from the environment, else `default`; one set that isn't a whole number fails, so a
+/// typo in the nightly doesn't run the defaults without a word (#2639).
 fn env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} isn't a whole number")),
+        Err(_) => default,
+    }
 }
 
 /// A longitude/latitude, sometimes on an edge: ±180°, the poles, past Web Mercator's 85.05°.
@@ -299,7 +314,8 @@ fn value_change(a: &Value, b: &Value) -> Option<String> {
     }
     // Text that reads as the number exactly.
     let reads_as = |t: &str, v: &Value| match v {
-        Value::Int(i) => t.trim().parse::<i64>() == Ok(*i),
+        // Only the number's own form: "007" read as 7 loses its zeros.
+        Value::Int(i) => t.trim() == i.to_string(),
         Value::Float(f) => t.trim().parse::<f64>().is_ok_and(|m| m == *f),
         _ => false,
     };
@@ -398,17 +414,84 @@ fn renames(notices: &[String]) -> Vec<(String, String)> {
     out
 }
 
-/// Whether `change`, in `field` if any, is said: by a notice naming the field, the export's or the
-/// reading's, or by any export notice for a change in no field. A notice that renames a field
-/// (`'a' → 'a_1'`) says the rename, not a change in the values of either name.
-fn is_said(change: &str, field: Option<&str>, said: &Said) -> bool {
-    let Some(f) = field else { return !said.export.is_empty() };
-    said.export.iter().chain(&said.read).any(|n| {
-        let mut n = n.clone();
-        if !change.starts_with("field renamed") {
-            for (old, new) in renames(std::slice::from_ref(&n)) {
-                n = n.replace(&format!("'{old}' → '{new}'"), "");
+/// The words a notice of a change in no field uses for it, by the start of the change (#2639): a
+/// geometry changed, dropped or made up is said by a notice of geometry, a feature count by one of
+/// features. A change in no field that isn't listed (a file not read back) is said by none.
+/// Each is matched as a whole word, so "converted" isn't "vert" nor "string" "ring".
+const NO_FIELD_WORDS: &[(&str, &[&str])] = &[
+    (
+        "geometry",
+        &[
+            "geometry",
+            "geometries",
+            "point",
+            "points",
+            "multipoint",
+            "multipoints",
+            "line",
+            "lines",
+            "polygon",
+            "polygons",
+            "ring",
+            "rings",
+            "part",
+            "parts",
+            "coordinate",
+            "coordinates",
+            "vertex",
+            "vertices",
+        ],
+    ),
+    ("feature count changed", &["feature", "features", "waypoint", "waypoints", "track", "tracks", "row", "rows"]),
+];
+
+/// What a notice says in its own words, lower case: without the file it names before its first
+/// ": " and without quoted names (`'geometry'`), so a field or file named like a kind of change
+/// isn't taken for a notice of it. A quoted name opens with a quote at the start or after a space
+/// or "(", and closes with one followed by the end, a space or punctuation; an apostrophe inside
+/// a word ("don't") is text.
+fn prose(notice: &str) -> String {
+    let text = notice.split_once(": ").map_or(notice, |(_, rest)| rest);
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        let opens = c == '\'' && (i == 0 || chars.get(i - 1).is_some_and(|p| p.is_whitespace() || *p == '('));
+        let close = opens
+            .then(|| (i + 1..chars.len()).find(|&j| chars[j] == '\'' && chars.get(j + 1).is_none_or(|n| !n.is_alphanumeric())))
+            .flatten();
+        match close {
+            Some(j) => i = j + 1,
+            None => {
+                out.push(c);
+                i += 1;
             }
+        }
+    }
+    out.to_lowercase()
+}
+
+/// Whether `change`, in `field` if any, is said by a notice of its kind, the export's or the
+/// reading's (#2639): a rename by a notice of that rename (`'a' → 'a_1'`, or `renamed`, the names
+/// a format's own rules give, such as KML's `name`); a change in a field's type or values by a
+/// notice naming the field for something other than its rename; a change in no field by a notice
+/// with its words ([`NO_FIELD_WORDS`]).
+fn is_said(change: &str, field: Option<&str>, said: &Said, renamed: &[(String, String)]) -> bool {
+    let mut notices = said.export.iter().chain(&said.read);
+    let Some(f) = field else {
+        let words = NO_FIELD_WORDS.iter().find(|(start, _)| change.starts_with(start)).map_or(&[][..], |(_, words)| *words);
+        return notices.any(|n| {
+            let n = prose(n);
+            n.split(|c: char| !c.is_alphanumeric()).any(|word| words.contains(&word))
+        });
+    };
+    if let Some((old, new)) = change.strip_prefix("field renamed (").and_then(|c| c.strip_suffix(')')).and_then(|c| c.split_once(" → ")) {
+        return renamed.iter().any(|(o, n)| o == old && n == new);
+    }
+    notices.any(|n| {
+        let mut n = n.clone();
+        for (old, new) in renames(std::slice::from_ref(&n)) {
+            n = n.replace(&format!("'{old}' → '{new}'"), "");
         }
         n.contains(&format!("'{f}'"))
     })
@@ -490,7 +573,8 @@ fn an_export_that_changes_a_layer_says_so() {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&seed.to_le_bytes());
     // About 6 ms a case.
-    let cases = u32::try_from(env("PROPERTY_CASES", 256)).unwrap_or(256);
+    let cases = env("PROPERTY_CASES", 256);
+    let cases = u32::try_from(cases).unwrap_or_else(|_| panic!("PROPERTY_CASES={cases} is past {}", u32::MAX));
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &bytes));
     // Layers each format wrote: one that refuses every layer checks nothing.
@@ -509,48 +593,73 @@ fn an_export_that_changes_a_layer_says_so() {
             };
             *written.borrow_mut().entry(ext).or_default() += 1;
             let mut held = ds.clone();
+            // The notices the layer's own edges explain, which a clean trip may give.
+            let mut explained: Vec<&str> = Vec::new();
             if GEOMETRY_ONLY.contains(&ext) {
                 held.features.retain(|f| f.geometry.is_some());
-                if held.features.len() < ds.features.len() && !said.export.iter().any(|n| n.contains("left out")) {
-                    return Err(TestCaseError::fail(format!(
-                        "{ext}: features without geometry left out without a notice; said: {:?}",
-                        said.export
-                    )));
+                let left = ds.features.len() - held.features.len();
+                // Said with how many: "2 features without geometry left out".
+                let says_left =
+                    |n: &String| n.contains("left out") && prose(n).split(|c: char| !c.is_ascii_digit()).any(|w| w == left.to_string());
+                if left > 0 {
+                    if !said.export.iter().any(says_left) {
+                        return Err(TestCaseError::fail(format!(
+                            "{ext}: {left} feature(s) without geometry left out without a notice that counts them; said: {:?}",
+                            said.export
+                        )));
+                    }
+                    explained.extend(said.export.iter().filter(|n| says_left(n)).map(String::as_str));
                 }
             }
             // An export that says it wrote NaN and infinity as null holds them as null.
-            if said.export.iter().any(|n| n.contains("aren't finite numbers")) {
+            let finite = said.export.iter().filter(|n| n.contains("aren't finite numbers")).map(String::as_str).collect::<Vec<_>>();
+            if !finite.is_empty() {
                 for v in held.features.iter_mut().flat_map(|f| f.attrs.iter_mut()) {
                     if matches!(v, Value::Float(x) if !x.is_finite()) {
                         *v = Value::Null;
                     }
                 }
+                explained.extend(finite);
             }
-            let found = back.map_or_else(
-                |e| vec![(format!("not read back: {e}"), None)],
-                |back| {
-                    let notices: Vec<String> = said.export.iter().chain(&said.read).cloned().collect();
-                    let mut renamed = renames(&notices);
-                    // KML and GPX write the first field named like `name` as each feature's
-                    // name, which reads back as `name`.
-                    if matches!(ext, "kml" | "gpx")
-                        && let Some(f) = held.fields.iter().find(|f| f.name.eq_ignore_ascii_case("name"))
-                    {
-                        renamed.insert(0, (f.name.clone(), "name".to_string()));
-                    }
-                    changes(&held, &back, &renamed)
-                },
-            );
-            // A change is said by a notice naming its field, the export's or the reading's, or by
-            // any export notice for one in no field (geometry, the feature count): a notice of
-            // geometry names no field to look for, so this half is looser.
+            let notices: Vec<String> = said.export.iter().chain(&said.read).cloned().collect();
+            let mut renamed = renames(&notices);
+            // KML and GPX write the first field named like `name` as each feature's name, which
+            // reads back as `name`.
+            if matches!(ext, "kml" | "gpx")
+                && let Some(f) = held.fields.iter().find(|f| f.name.eq_ignore_ascii_case("name"))
+            {
+                renamed.insert(0, (f.name.clone(), "name".to_string()));
+            }
+            let found = match back {
+                Ok(back) => changes(&held, &back, &renamed),
+                // Every feature left out, as said above: a file with nothing to read, which its
+                // reading says, and nothing to compare (nor a clean trip to check).
+                Err(_) if held.features.is_empty() && !explained.is_empty() => continue,
+                Err(e) => vec![(format!("not read back: {e}"), None)],
+            };
+            // Each change is said by a notice of its kind ([`is_said`]).
+            let (allowed, rest): (Vec<Change>, Vec<Change>) = found.into_iter().partition(|(c, _)| declared(ext, c));
             let silent: Vec<String> =
-                found.into_iter().filter(|(c, field)| !declared(ext, c) && !is_said(c, field.as_deref(), &said)).map(|(c, _)| c).collect();
+                rest.iter().filter(|(c, field)| !is_said(c, field.as_deref(), &said, &renamed)).map(|(c, _)| c.clone()).collect();
             if !silent.is_empty() {
                 return Err(TestCaseError::fail(format!(
                     "{ext}: changed without a notice: {silent:?}; said: {:?}, {:?}",
                     said.export, said.read
                 )));
+            }
+            // Test both ways: a trip that changed nothing, or only what the format changes by
+            // design, says no loss beyond what the layer's edges explain, a notice of a field that
+            // changed by design (a date-time column written as text), or what [`QUIET`] lists.
+            // (A file read back as nothing, as a format may by design, has nothing to compare.)
+            if rest.is_empty() && !allowed.iter().any(|(c, _)| c.starts_with("not read back")) {
+                let of_allowed =
+                    |n: &String| allowed.iter().any(|(_, field)| field.as_ref().is_some_and(|f| n.contains(&format!("'{f}'"))));
+                let quiet = |n: &String| QUIET.iter().any(|(f, part, _)| (*f == ext || *f == "*") && n.contains(part));
+                let loud: Vec<&String> =
+                    notices.iter().filter(|n| !explained.contains(&n.as_str()) && !of_allowed(n) && !quiet(n)).collect();
+                if !loud.is_empty() {
+                    return Err(TestCaseError::fail(format!("{ext}: a clean trip (changes: {allowed:?}) said {loud:?}")));
+                }
             }
         }
         Ok(())
@@ -569,9 +678,34 @@ fn an_export_that_changes_a_layer_says_so() {
 fn a_rename_notice_says_the_rename_not_a_change_in_values() {
     let said = |n: &str| Said { export: vec![n.to_string()], read: Vec::new() };
     let renamed = said("l.gpkg: 2 field names were changed to fit a GeoPackage: 'name' → 'name_1', 'name_1' → 'name_1_1'");
-    assert!(is_said("field renamed (name_1 → name_1_1)", Some("name_1"), &renamed));
-    assert!(!is_said("number changed (name_1: Int(1) → Int(2))", Some("name_1"), &renamed));
+    let pairs = renames(&renamed.export);
+    assert!(is_said("field renamed (name_1 → name_1_1)", Some("name_1"), &renamed, &pairs));
+    assert!(!is_said("number changed (name_1: Int(1) → Int(2))", Some("name_1"), &renamed, &pairs));
+    // A rename no notice says isn't said by one naming the field for something else.
     let values = said("l.shp: 1 value of 'name_1' was cut to fit");
-    assert!(is_said("number changed (name_1: Int(1) → Int(2))", Some("name_1"), &values));
-    assert!(!is_said("number changed (other: Int(1) → Int(2))", Some("other"), &values));
+    assert!(!is_said("field renamed (name_1 → NAME_1)", Some("name_1"), &values, &[]));
+    assert!(is_said("number changed (name_1: Int(1) → Int(2))", Some("name_1"), &values, &[]));
+    assert!(!is_said("number changed (other: Int(1) → Int(2))", Some("other"), &values, &[]));
+}
+
+/// A change in no field is said only by a notice of its kind, not by any notice (#2639).
+#[test]
+fn a_change_in_no_field_needs_a_notice_of_its_kind() {
+    let said = |n: &str| Said { export: vec![n.to_string()], read: Vec::new() };
+    let cut = said("l.shp: 1 value of 'name' was cut to at most 254 bytes");
+    assert!(!is_said("geometry changed", None, &cut, &[]));
+    assert!(!is_said("feature count changed (3 → 2)", None, &cut, &[]));
+    assert!(!is_said("not read back: no layer", None, &cut, &[]));
+    // Nor by a notice of a field or a file named like one.
+    let named = said("/tmp/geometry.shp: 1 value of 'geometry' was cut to at most 254 bytes");
+    assert!(!is_said("geometry changed", None, &named, &[]));
+    // An apostrophe in a word is text, not a quoted name.
+    assert!(is_said("geometry changed", None, &said("l.gpx: 2 features don't keep their geometry"), &[]));
+    assert!(!is_said("geometry changed", None, &said("l.gpx: 2 values don't fit in 'geometry'"), &[]));
+    // Words are matched whole: "converted", "string" and "borrow" aren't "vert", "ring", "row".
+    let words = said("l.csv: 1 value converted to a string during the borrow");
+    assert!(!is_said("geometry changed", None, &words, &[]));
+    assert!(!is_said("feature count changed (3 → 2)", None, &words, &[]));
+    assert!(is_said("geometry dropped", None, &said("l.gpx: 1 geometry part written as a track"), &[]));
+    assert!(is_said("feature count changed (3 → 2)", None, &said("l.kml: 1 feature without geometry left out"), &[]));
 }
