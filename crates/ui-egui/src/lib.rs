@@ -3040,6 +3040,10 @@ impl RustGisApp {
             if id == "layer.sizeBy" {
                 return readjob::run(self, "layer.sizeBy", params);
             }
+            // Reading a style's file and its images' files: on a thread of its own, with Cancel.
+            if id == "style.importQgis" {
+                return readjob::run(self, "style.importQgis", params);
+            }
             // Publishing hashes, reads and writes the whole file: on a thread of its own, with
             // progress and Cancel, as an export is.
             if id == "source.publish" {

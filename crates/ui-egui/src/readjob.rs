@@ -212,6 +212,7 @@ fn run_presented(
             | "raster.imageGrid"
             | "edit.previewShapeConversion"
             | "layer.sizeBy"
+            | "style.importQgis"
     )
     .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
     .flatten();
@@ -411,6 +412,7 @@ fn called<'a>(command: &str, what: &'a str) -> &'a str {
         (true, "table.statistics") => tl_raw!("Column Statistics"),
         (true, "data.similar") => tl_raw!("Find Similar"),
         (true, "layer.sizeBy") => tl_raw!("Size by Field"),
+        (true, "style.importQgis") => tl_raw!("Import QGIS Style"),
         (true, "service.add") => tl_raw!("Add Service Layer"),
         (true, "service.layers") => tl_raw!("List Service Layers"),
         (true, "edit.previewShapeConversion") => tl_raw!("Preview Shape Conversion"),
@@ -1701,6 +1703,52 @@ mod tests {
         let steps = app.ws.recording.clone().unwrap();
         let step = steps.iter().find(|s| s.command == "layer.sizeBy").expect("recorded");
         assert_eq!(step.params["layer"], json!("towns"));
+    }
+
+    /// Import QGIS Style reads its file and its raster image markers' images on a thread first
+    /// (#2620): the layer is styled when they have been read, with the notes the command gives.
+    #[test]
+    fn a_qgis_style_is_read_on_a_thread_before_it_lands() {
+        use rustgis_engine::data::{Coord, Dataset, Geometry, GeometryType};
+        let dir = tempfile::tempdir().unwrap();
+        let picture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../map/testdata/qgis/generated/data/picture.png");
+        let path = dir.path().join("pin.qml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">
+                <layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="{}"/><Option name="size" value="6"/>
+                </Option></layer></symbol></symbols></renderer-v2></qgis>"#,
+                picture.display()
+            ),
+        )
+        .unwrap();
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let mut ds = Dataset::new("towns", GeometryType::Point, vec![]);
+        ds.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![]);
+        let id = rustgis_engine::cmd::layer::add_dataset(&mut app.session, ds);
+        app.reads_off_frame = true;
+        let params = json!({"layer": id, "path": path});
+        assert_eq!(app.run_by_user("style.importQgis", params).unwrap()["started"], "Import QGIS Style");
+        assert!(
+            matches!(app.session.map().layer(id).unwrap().symbol(0).marker, rustgis_engine::map::Marker::Circle),
+            "styled only once it has been read"
+        );
+        landed(&mut app, 60);
+        assert!(matches!(app.session.map().layer(id).unwrap().symbol(0).marker, rustgis_engine::map::Marker::Picture(_)));
+        app.run("edit.undo", Value::Null).unwrap();
+        assert!(matches!(app.session.map().layer(id).unwrap().symbol(0).marker, rustgis_engine::map::Marker::Circle));
+        // A clean style says nothing; one whose image isn't a PNG or JPEG says so once, on landing.
+        let said = |app: &RustGisApp| app.session.notices.iter().filter(|n| n.text.contains("isn't a PNG or JPEG")).count();
+        assert_eq!(said(&app), 0);
+        std::fs::write(dir.path().join("pin.gif"), b"GIF89a").unwrap();
+        let gif = dir.path().join("gif.qml");
+        let text = std::fs::read_to_string(&path).unwrap().replace(&picture.display().to_string(), "pin.gif");
+        std::fs::write(&gif, text).unwrap();
+        app.run_by_user("style.importQgis", json!({"layer": id, "path": gif})).unwrap();
+        assert_eq!(said(&app), 0, "said on landing, not before");
+        landed(&mut app, 60);
+        assert_eq!(said(&app), 1);
     }
 
     /// Task steps cannot bypass the worker through direct or scripted table writes.

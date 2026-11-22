@@ -3576,6 +3576,109 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
     }
 }
 
+/// A QGIS style's file and its raster image markers' images are read on a thread before the
+/// command lands (#2620): the landing needs neither file, says what the inline import says, can be
+/// undone, and a style read for a layer that was renamed meanwhile is refused. A cancelled read
+/// changes nothing.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn qgis_style_import_reads_its_files_ahead() {
+    use cancellation::contents;
+    use rustgis_analysis::control::Control;
+    use rustgis_map::Marker;
+    // Removed however the test ends.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let guard = Dir(std::env::temp_dir().join(format!("rustgis-qgis-style-ahead-{}", std::process::id())));
+    let dir = guard.0.clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pins")).unwrap();
+    image::RgbImage::from_pixel(8, 4, image::Rgb([200, 30, 30])).save(dir.join("pins/pin.png")).unwrap();
+    std::fs::write(dir.join("pins/pin.gif"), b"GIF89a").unwrap();
+    let qml = |files: &[&str]| {
+        let layers: String = files
+            .iter()
+            .map(|f| {
+                format!(
+                    r#"<layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="{f}"/><Option name="size" value="6"/></Option></layer>"#
+                )
+            })
+            .collect();
+        format!(
+            r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">{layers}</symbol></symbols></renderer-v2></qgis>"#
+        )
+    };
+    let notes = |r: &Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
+    let path = dir.join("pins.qml");
+    let p = json!({"layer": "Cities", "path": path.to_string_lossy()});
+    // A clean style says nothing; a lossy one says what the inline import says, as the same notes.
+    for (files, said) in [(&["pins/pin.png"][..], 0), (&["pins/pin.gif"][..], 1)] {
+        std::fs::write(&path, qml(files)).unwrap();
+        let mut inline = world();
+        let inline_notes = notes(&inline.run("style.importQgis", &p).unwrap());
+        assert_eq!(inline_notes.len(), said, "{files:?}: {inline_notes:?}");
+        let mut s = world();
+        let before = marker(&s);
+        let ahead = crate::cmd::reads::read_ahead(&mut s, "style.importQgis", &p).unwrap();
+        assert!(ahead.reads(), "{files:?}: the style is read ahead");
+        let read = ahead.run(&Control::stoppable()).unwrap();
+        // Neither file is needed once read.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(dir.join("pins/pin.png")).unwrap();
+        let r = crate::cmd::reads::read_land(&mut s, read).unwrap();
+        assert_eq!(notes(&r), inline_notes, "{files:?}");
+        assert_eq!(marker(&s), marker(&inline), "{files:?}");
+        s.run("edit.undo", &Value::Null).unwrap();
+        assert_eq!(marker(&s), before, "{files:?}: undone");
+        image::RgbImage::from_pixel(8, 4, image::Rgb([200, 30, 30])).save(dir.join("pins/pin.png")).unwrap();
+    }
+    assert!(matches!(marker(&world()), Marker::Circle));
+    // Cancel: no change, and the read looked at Cancel.
+    std::fs::write(&path, qml(&["pins/pin.png"])).unwrap();
+    let mut s = world();
+    let before = contents(&s.project);
+    let control = Control::cancelled_once_started();
+    let e = crate::cmd::reads::read_ahead(&mut s, "style.importQgis", &p).unwrap().run(&control).err().unwrap();
+    assert!(e.contains("cancelled"), "{e}");
+    assert!(control.looked() > 0, "never looks at Cancel");
+    assert!(contents(&s.project) == before);
+    // A Cancel that comes at any check (the file's, each image's, after the parse) is the cancelled
+    // error, not a style with its image noted as skipped; read here under the same probe as well.
+    let count = Control::cancelled_at_look(u64::MAX);
+    crate::cmd::reads::read_ahead(&mut s, "style.importQgis", &p).unwrap().run(&count).unwrap();
+    assert!(count.looked() >= 3, "the file, the image and the parse's end look: {}", count.looked());
+    for n in 1..=count.looked() {
+        let e = crate::cmd::reads::read_ahead(&mut s, "style.importQgis", &p).unwrap().run(&Control::cancelled_at_look(n)).err().unwrap();
+        assert!(e.contains("cancelled"), "check {n}: {e}");
+    }
+    let here = Control::cancelled_at_look(u64::MAX);
+    {
+        let _probe = rustgis_analysis::control::install_progress(Some(here.clone()));
+        s.run("style.importQgis", &p).unwrap();
+    }
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert!(here.looked() >= 3, "read here: {}", here.looked());
+    for n in 1..=here.looked() {
+        let _probe = rustgis_analysis::control::install_progress(Some(Control::cancelled_at_look(n)));
+        let e = s.run("style.importQgis", &p).unwrap_err();
+        assert!(e.contains("cancelled"), "check {n}, read here: {e}");
+        assert!(contents(&s.project) == before, "check {n}");
+    }
+    // Renamed while it was read: refused, the layer as it was.
+    let read = crate::cmd::reads::read_ahead(&mut s, "style.importQgis", &p).unwrap().run(&Control::stoppable()).unwrap();
+    let id = s.layer_id(&p).unwrap();
+    s.run("layer.rename", &json!({"layer": id, "name": "Towns"})).unwrap();
+    let before = contents(&s.project);
+    let e = crate::cmd::reads::read_land(&mut s, read).unwrap_err();
+    assert!(e.contains("renamed while its style was read"), "{e}");
+    assert!(contents(&s.project) == before);
+}
+
 /// Pictures are charged to an import's budget (1 KiB in tests) only once placed: pictures that
 /// don't take to longitude and latitude leave it whole, and those past it are left out, noted.
 #[test]

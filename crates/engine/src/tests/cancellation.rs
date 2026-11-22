@@ -261,6 +261,14 @@ pub(super) fn long_commands(boundaries: bool) {
     // Automatic size bounds scan the numeric field on that queue too.
     s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
     read(&s, "layer.sizeBy", &json!({"layer": "Cities", "field": "pop_max"}));
+    // A QGIS style's raster image marker: the image is read on that queue, Cancel looked at before it
+    // (the style file's one read and its XML's one parse don't look; #2620).
+    image::RgbImage::from_pixel(4, 4, image::Rgb([200, 30, 30])).save(out("pin.png")).unwrap();
+    let marker = r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">
+        <layer class="RasterMarker" enabled="1"><Option type="Map"><Option name="imageFile" value="pin.png"/></Option></layer>
+        </symbol></symbols></renderer-v2></qgis>"#;
+    std::fs::write(out("pin.qml"), marker).unwrap();
+    read(&s, "style.importQgis", &json!({"layer": "Cities", "path": out("pin.qml")}));
 
     s.run("layer.addDataText", &json!({"fileName": "calc.csv", "text": "n,day\n1,01/02/2024\n2,02/03/2024\n"})).unwrap();
     s.run("edit.enable", &json!({"on": true})).unwrap();
@@ -445,7 +453,7 @@ impl Kind {
 /// bits retain NaNs and signed zero. Include streamed rows omitted by project serialization;
 /// normalize GP record timestamps/durations and geometry cache generations, which naturally
 /// differ on a successful retry or Undo/Redo. All features, pixels and layer settings remain.
-fn contents(project: &Project) -> Value {
+pub(super) fn contents(project: &Project) -> Value {
     let pixels: Vec<_> = project
         .maps
         .iter()

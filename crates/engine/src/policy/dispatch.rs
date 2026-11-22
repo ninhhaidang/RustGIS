@@ -172,6 +172,7 @@ impl Session {
                 | "raster.imageGrid"
                 | "edit.previewShapeConversion"
                 | "layer.sizeBy"
+                | "style.importQgis"
         ) && (!matches!(command, "edit.previewShapeConversion" | "raster.imageGrid") || self.policy_user())
             || (command == "edit.convertField" && params.get("table").is_none_or(Value::is_null))
         {
