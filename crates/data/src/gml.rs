@@ -727,7 +727,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             let what = if unplaced == 1 { "feature has" } else { "features have" };
             let system = file_srs.map_or_else(String::new, |(c, _)| format!(" in {}", c.label()));
             rep.messages.push(format!(
-                "{}: {unplaced} {what} places{system} that can't be given in longitude/latitude; they are left out of the shapes",
+                "{}: {unplaced} {what} places{system} that can't be given in longitude/latitude; they are kept as missing coordinates and don't draw",
                 ds.name
             ));
         }

@@ -200,5 +200,5 @@ words of a site search.
 
 You can block analytics with a content blocker or your browser's tracking protection; the sites
 work normally without them. Analytics run only on the sites we host: the measurement ID is added
-when those sites are deployed, so the desktop app, the command line and any copy you build
-yourself never load them.
+when those sites are deployed, so the desktop app, the command line, the Android and iOS apps
+and any copy you build yourself never load them.

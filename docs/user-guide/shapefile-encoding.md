@@ -83,7 +83,7 @@ tables or system programs are needed for the supported decoders above.
 - [`yore`'s `CodePage` implementations](https://docs.rs/yore/1.4.0/yore/trait.CodePage.html#implementors)
   list the available legacy decoders and lossy decoding API.
 
-`crates/data/tests/shapefile_encoding.rs` specifies fixed bytes and Unicode expectations
+`crates/data/tests/integration/shapefile_encoding.rs` specifies fixed bytes and Unicode expectations
 independently of RustGIS's mapping. Its matrix covers every marker above, names and values,
 ZIP and loose-file imports, a genuinely sampled streamed read, a complete read, and ordered
 chunk traversal. It also checks `.cpg` precedence, fallback diagnostics, the notices for text

@@ -111,10 +111,11 @@ features build on.
   save, not built in memory first.
 - A snapshot test of command ids and parameters, so a removal is always deliberate (the project
   file's JSON Schema, its fixtures and the files past releases saved are checked today).
-- A compressed encoding of today's project JSON, read one release before it is written; a
-  reference system: named connections, copies that remember their source, missing and changed
-  states, a place for results ([#1653](https://github.com/opengeos/RustGIS/issues/1653)).
-  _Coordinate first._
+- A compressed encoding of today's project JSON, read one release before it is written.
+  _Coordinate first_: an issue is needed.
+- A system for the data a project refers to: named connections, copies that remember their
+  source, missing and changed states, a place for results
+  ([#1653](https://github.com/opengeos/RustGIS/issues/1653)). _Coordinate first._
 - What a project holds by default, its own data or links to it
   ([poll #1660](https://github.com/opengeos/RustGIS/discussions/1660)), and storage that opens a
   large project without reading it whole. _Decide first._

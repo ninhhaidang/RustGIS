@@ -432,7 +432,7 @@ fn in_file<'a>(ds: &'a Dataset, crs: Option<Crs>, as_held: Option<(&Dataset, &Da
             crate::progress::check()?;
             if f.geometry.is_none() && r.geometry.is_some() {
                 return Err(DataError::Format(format!(
-                    "source shape {} couldn't be converted to longitude/latitude, so its native geometry can't be matched safely; check the source projection and add the file again; nothing was written",
+                    "source shape {} couldn't be converted from the source projection when it was read, so its native geometry can't be matched safely; check the source projection and add the file again; nothing was written",
                     i + 1
                 )));
             }

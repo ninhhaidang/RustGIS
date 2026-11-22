@@ -157,7 +157,9 @@ RustGIS also runs in the browser, compiled to WebAssembly: open
   after it, and **Save** downloads it under that name again. The browser doesn't tell RustGIS
   whether it saved a download (its save prompt can be cancelled), so **Save** keeps any unsaved
   changes, and **Save As** to a different name makes the project unsaved. Closing or leaving
-  the tab asks first while there are unsaved changes; an unchanged project stays clean.
+  the tab may ask first while there are unsaved changes, but browsers don't promise to (mobile
+  browsers often skip it when a tab is closed from the tab switcher), so check that the saved
+  file downloaded before you leave; an unchanged project stays clean.
 - The interface uses the built-in font, because a web page can't read installed fonts. Choosing
   Chinese, Japanese, Korean or Persian downloads a font for that script.
 - Process plugins (including Python plugins), and the formats read through GDAL or DuckDB,

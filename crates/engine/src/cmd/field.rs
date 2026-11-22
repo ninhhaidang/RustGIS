@@ -29,7 +29,7 @@ const BASEMAPS: &str = "basemaps";
 /// The folder of a field package that holds its features' photos.
 const PHOTOS: &str = "photos";
 /// What an offline area's map is called after: `<area> (offline)`.
-pub(crate) const OFFLINE: &str = " (offline)";
+pub const OFFLINE: &str = " (offline)";
 /// The most bytes read from one field package's entries when it is opened.
 const MOST_UNPACKED: usize = rustgis_data::zip::MAX_TOTAL;
 /// Optional information for the crew. Older readers extract it like any other companion file.

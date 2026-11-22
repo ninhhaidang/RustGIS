@@ -102,7 +102,7 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
   to step through decimal degrees, DMS, UTM and MGRS; see [Coordinate readouts](maps.md#coordinate-readouts)),
   the coordinate system (click it to change the
   projection), the selection count (with a button to clear it), the latest notice (click to open
-  **Diagnostics**), a **Diagnostics** button, the last draw time, the frame rate and a **GPU**/**CPU**
+  **Messages**), a **Messages** button, the last draw time, the frame rate and a **GPU**/**CPU**
   renderer switch. While agents control the desktop app, it also shows the MCP relay or file bridge.
 
 **Command Search** (++ctrl+k++, or the box at the top right) finds commands and geoprocessing

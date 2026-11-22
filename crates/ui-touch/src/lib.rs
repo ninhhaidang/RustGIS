@@ -278,7 +278,7 @@ fn can_send_field_package(app: &RustGisApp) -> bool {
     }
     // An area ID with no area (a damaged file) is no copy to send.
     let area = map.offline_area_id.as_deref().map(|id| project.offline_areas.iter().any(|a| a.id == id));
-    area.unwrap_or_else(|| map.name.ends_with(" (offline)"))
+    area.unwrap_or_else(|| map.name.ends_with(rustgis_ui_egui::rustgis_engine::cmd::field::OFFLINE))
 }
 
 /// Draws where the device is: a dot, in a ring as wide as the position is good to.

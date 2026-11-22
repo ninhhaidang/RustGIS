@@ -2292,6 +2292,8 @@ struct TopologyInput {
     data: rustgis_data::Dataset,
     query: Option<String>,
     by: Option<rustgis_data::Dataset>,
+    /// The covering layer's name on the map, which its data's own name may not be.
+    by_layer: String,
 }
 
 /// Captures the rules and their raw inputs; a rule whose layer is gone is left out, as before.
@@ -2304,11 +2306,18 @@ fn topology_checks(s: &Session) -> Vec<TopologyInput> {
         // A covering layer that is gone leaves the rule with nothing to check (its primary
         // latitudes are still checked). Its whole resident dataset supplies coverage,
         // independently of selection, definition query, display filters and time window.
-        let by = match &rule {
-            TopologyRule::MustBeCoveredBy { by, .. } => s.map().layer_by_name(by).map(|b| b.dataset.clone()),
-            _ => None,
+        let (by, by_layer) = match &rule {
+            TopologyRule::MustBeCoveredBy { by, .. } => (s.map().layer_by_name(by).map(|b| b.dataset.clone()), by.clone()),
+            _ => (None, String::new()),
         };
-        inputs.push(TopologyInput { rule, layer: l.name.clone(), data: l.dataset.clone(), query: l.definition_query.clone(), by });
+        inputs.push(TopologyInput {
+            rule,
+            layer: l.name.clone(),
+            data: l.dataset.clone(),
+            query: l.definition_query.clone(),
+            by,
+            by_layer,
+        });
     }
     inputs
 }
@@ -2377,15 +2386,19 @@ fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<TopologyChecked,
         // Preserve the existing coordinate boundary and error precedence. A primary failure
         // wins over a covering-layer failure; neither can run on coordinates of another system.
         rustgis_data::progress::check().map_err(|_| cancelled())?;
-        let named = |e: String| {
+        // A conversion's error starts with its data's own name, which the map's name for the
+        // layer may not be (a name taken on a clash): that is replaced by the map's, so the layer
+        // is named once. A covering layer's is named as that layer, not the one checked.
+        let named = |source: &str, layer: &str, e: String| {
             if matches!(rustgis_data::DataError::of_conversion(e.clone()), rustgis_data::DataError::Cancelled) {
                 cancelled()
             } else {
-                format!("{}: {e}", i.layer)
+                let rest = e.strip_prefix(&format!("{source}: ")).unwrap_or(&e);
+                format!("{layer}: {rest}")
             }
         };
-        let data = i.data.in_lonlat().map_err(named)?;
-        let by = i.by.as_ref().map(|b| b.in_lonlat().map_err(named)).transpose()?;
+        let data = i.data.in_lonlat().map_err(|e| named(&i.data.name, &i.layer, e))?;
+        let by = i.by.as_ref().map(|b| b.in_lonlat().map_err(|e| named(&b.name, &i.by_layer, e))).transpose()?;
         rustgis_data::progress::check().map_err(|_| cancelled())?;
         rustgis_analysis::validate_latitudes(&data, rows.iter().copied())?;
         rustgis_data::progress::check().map_err(|_| cancelled())?;
@@ -2734,6 +2747,55 @@ mod tests {
         }
         assert_eq!(errors[0], errors[1]);
         assert!(errors[0] > 0, "the overlap is found");
+    }
+
+    /// A held layer with a place that can't be given in longitude/latitude is refused, naming
+    /// the layer once; a covering layer's is named as that layer, not the one checked.
+    #[test]
+    fn a_topology_refusal_names_its_layer_once() {
+        let held = |name: &str, kind: GeometryType, far: bool| {
+            let mut ds = rustgis_data::Dataset::new(name, kind, vec![]);
+            ds.hold_in(rustgis_data::raster::Crs::Epsg(32632)).unwrap();
+            // Far beyond any place UTM 32N holds, or in it.
+            let (x, y) = if far { (1e12, 1e12) } else { (500_000.0, 5_400_000.0) };
+            let ring = vec![Coord::new(x, y), Coord::new(x + 10.0, y), Coord::new(x + 10.0, y + 10.0), Coord::new(x, y)];
+            let shape = match kind {
+                GeometryType::Polygon => Geometry::Polygon(vec![vec![ring]]),
+                GeometryType::Point => Geometry::Point(Coord::new(x, y)),
+                _ => Geometry::Line(vec![ring]),
+            };
+            ds.push(Some(shape), vec![]);
+            ds
+        };
+        let mut s = Session::new(crate::Project::default());
+        s.map_mut().add_dataset(held("Parcels", GeometryType::Polyline, true));
+        s.run("topology.rules", &json!({"add": {"rule": "mustNotHaveDangles", "layer": "Parcels"}})).unwrap();
+        let Err(e) = check_topology(&topology_checks(&s), 1.0) else { panic!("the check is refused") };
+        assert!(e.starts_with("Parcels: feature"), "{e}");
+        assert_eq!(e.matches("Parcels").count(), 1, "{e}");
+        // A checked layer whose map name isn't its data's (a name taken on a clash) is named as
+        // the map has it, once.
+        s.map_mut().layers.iter_mut().find(|l| l.name == "Parcels").unwrap().name = "Parcels (2)".into();
+        s.map_mut().editing.topology = vec![TopologyRule::MustNotHaveDangles { layer: "Parcels (2)".into() }];
+        let Err(e) = check_topology(&topology_checks(&s), 1.0) else { panic!("the check is refused") };
+        assert!(e.starts_with("Parcels (2): feature"), "{e}");
+        assert_eq!(e.matches("Parcels").count(), 1, "{e}");
+
+        let mut s = Session::new(crate::Project::default());
+        s.map_mut().add_dataset(held("Cities", GeometryType::Point, false));
+        s.map_mut().add_dataset(held("Countries", GeometryType::Polygon, true));
+        s.run("topology.rules", &json!({"add": {"rule": "mustBeCoveredBy", "layer": "Cities", "by": "Countries"}})).unwrap();
+        let Err(e) = check_topology(&topology_checks(&s), 1.0) else { panic!("the check is refused") };
+        assert!(e.starts_with("Countries: feature"), "{e}");
+        assert!(!e.contains("Cities"), "{e}");
+        // A covering layer whose map name isn't its data's (a name taken on a clash) is named as
+        // the map has it.
+        s.map_mut().layers.iter_mut().find(|l| l.name == "Countries").unwrap().name = "Borders".into();
+        s.map_mut().editing.topology = vec![TopologyRule::MustBeCoveredBy { layer: "Cities".into(), by: "Borders".into() }];
+        let Err(e) = check_topology(&topology_checks(&s), 1.0) else { panic!("the check is refused") };
+        assert!(e.starts_with("Borders: feature"), "{e}");
+        assert_eq!(e.matches("Countries").count() + e.matches("Borders").count(), 1, "{e}");
+        assert!(!e.contains("Cities"), "{e}");
     }
 
     #[test]

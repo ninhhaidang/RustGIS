@@ -312,7 +312,7 @@ impl PanelDecl {
             }
             if options.len() != item.options.len() {
                 return Err(what(&format!(
-                    "a dropdown's options are at most {MAX_CHOICES} objects, each with a unique id of 1 to {MAX_TREE_ID} characters"
+                    "options (dropdown or tab row) are at most {MAX_CHOICES} objects, each with a unique id of 1 to {MAX_TREE_ID} characters"
                 )));
             }
             if kind != "text" && !item.text.is_empty() {

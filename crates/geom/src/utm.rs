@@ -840,7 +840,7 @@ mod tests {
     /// GeographicLib's GeoConvert documentation converts 33.3° N 44.4° E (Baghdad) to
     /// `38n 444140.54 3684706.36` and MGRS `38SMB4414084706`
     /// (https://geographiclib.sourceforge.io/C++/doc/GeoConvert.1.html). Also checked against
-    /// terrio-crs in `crates/data/tests/utm_vs_proj.rs`.
+    /// terrio-crs in `crates/data/tests/integration/utm_vs_proj.rs`.
     #[test]
     fn published_reference_point() {
         let u = to_utm(c(44.4, 33.3)).unwrap();

@@ -156,7 +156,8 @@ It counts only the libraries and programs built for the host, not tests, example
 built only for other targets, nor a row indexed without reading a field (`features[i]` alone); use
 the accessors there too.
 While you work, `cargo xtask changed` runs the same checks on only the packages your branch changes
-and those that depend on them (and `test-hygiene` on the whole workspace), or everything when a
+and those that depend on them (and `test-hygiene` on the whole workspace, and formatting, `layers` and
+`rows` when packages are checked), or everything when a
 changed file such as `Cargo.lock` is outside every package and nothing includes it.
 A new dependency must have a licence `deny.toml` allows (CI runs `cargo deny check licenses`); after
 changing dependencies, run `cargo xtask notices` to refresh the `THIRD-PARTY-LICENSES.txt` files the

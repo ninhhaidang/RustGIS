@@ -13,6 +13,10 @@
 //! - Every package that depends on a changed one, as a dependency of any kind, is checked too. So
 //!   a changed package gets the features every workspace package turns on in it; a feature that a
 //!   package left out turns on in an outside crate isn't, which can make a result differ from CI's.
+//! - `test-hygiene` always looks at the whole workspace. When Rust packages are checked,
+//!   formatting, `layers` and `rows` look at the whole workspace too, as a change anywhere can
+//!   break them; when nothing changed, or only the non-code files `is_non_code` names, they
+//!   don't run.
 //!
 //! `--list` prints the packages it would check, one a line, or `all`, or `none`, and checks nothing.
 

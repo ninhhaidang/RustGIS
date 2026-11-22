@@ -10,7 +10,7 @@
 //! changes nothing.
 //!
 //! Pull requests run a fixed seed; the nightly a new one with more cases. To run a seed again, or
-//! deeper: `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-engine --test project_save_roundtrip`.
+//! deeper: `PROPERTY_SEED=7 PROPERTY_CASES=2000 cargo test -p rustgis-engine --test integration project_save_roundtrip`.
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use rustgis_engine::{
