@@ -1282,7 +1282,7 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
     }
     let mut done = match &changes {
         Some(changes) => super::field_changes::apply(s, ai, &edited, changes)?,
-        None => super::workspace::sync_area(s, ai, &edited)?,
+        None => super::workspace::sync_area(s, ai, &edited, &package)?,
     };
     if !package.is_empty()
         && let Some(a) = s.project.offline_areas.get_mut(ai)

@@ -781,7 +781,7 @@ fn a_held_layers_offline_edits_sync_alike() {
         l.dataset = l.dataset.in_lonlat().unwrap().into_owned();
     }
     let ai = ss[1].project.offline_areas.iter().position(|a| a.name == "Field").unwrap();
-    crate::cmd::workspace::sync_area(&mut ss[1], ai, &returned).unwrap();
+    crate::cmd::workspace::sync_area(&mut ss[1], ai, &returned, "").unwrap();
     assert_close(&lonlat(&ss[0], "Wells"), &lonlat(&ss[1], "Wells"), "synced");
     let held = &ss[1].map().layer_by_name("Wells").unwrap().dataset;
     assert_eq!(held.coord_crs(), UTM);
@@ -809,7 +809,7 @@ fn a_held_offline_map_keeps_the_sources_later_edits() {
     let returned = s.project.maps.iter().find(|m| m.name == "Field (offline)").unwrap().clone();
     assert_eq!(returned.layers.iter().find(|l| l.name == "Wells").unwrap().dataset.coord_crs(), UTM);
     let ai = s.project.offline_areas.iter().position(|a| a.name == "Field").unwrap();
-    crate::cmd::workspace::sync_area(&mut s, ai, &returned).unwrap();
+    crate::cmd::workspace::sync_area(&mut s, ai, &returned, "").unwrap();
     let wells = &s.map().layer_by_name("Wells").unwrap().dataset;
     let n = wells.field_index("n").unwrap();
     assert_eq!(wells.value(0, n), &Cell::Int(7), "an unedited offline copy replaced the source's edit");

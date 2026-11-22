@@ -1,5 +1,103 @@
 {
   "$defs": {
+    "AreaConflict": {
+      "description": "A feature a sync or a Bring Back of an offline area changed in one place and found changed in\nthe other too, with the version that lost (#2468).",
+      "properties": {
+        "at": {
+          "description": "When it was found, in seconds since 1970, as [`OfflineArea::synced`].",
+          "format": "double",
+          "type": "number"
+        },
+        "feature": {
+          "description": "The feature, by its id in the map.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "geometry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Geometry"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ConflictKind"
+        },
+        "layer": {
+          "description": "The layer, by id, in the area's map, and its name then.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layer_name": {
+          "type": "string"
+        },
+        "package": {
+          "description": "The field package that brought it ([`FieldOrigin::package`]); empty for a sync, or for a\npackage made before packages had one.",
+          "type": "string"
+        },
+        "shape": {
+          "description": "Whether the shape lost too: then [`AreaConflict::geometry`] is the shape that lost, in\nlongitude/latitude (`None`: it had none).",
+          "type": "boolean"
+        },
+        "values": {
+          "description": "The values that lost, by field name.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/Value"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "at",
+        "layer",
+        "layer_name",
+        "feature",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ConflictKind": {
+      "description": "What happened to a feature changed in both places, and so which version an\n[`AreaConflict`] keeps.",
+      "oneOf": [
+        {
+          "const": "replaced",
+          "description": "Edited in both places: the field's version went in, and the values the map had lost.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Deleted in the field after a change in the map: deleted, and the map's feature lost.",
+          "type": "string"
+        },
+        {
+          "const": "kept",
+          "description": "Deleted in the field after a change in the map: kept, and only the deletion lost.",
+          "type": "string"
+        },
+        {
+          "const": "dropped",
+          "description": "Edited in the field but deleted in the map meanwhile: left deleted, and the field's edits\nlost.",
+          "type": "string"
+        }
+      ]
+    },
     "Coord": {
       "description": "A 2-D coordinate.",
       "properties": {
@@ -634,6 +732,13 @@
     "OfflineArea": {
       "description": "A map's data clipped to an extent, to take into the field.",
       "properties": {
+        "conflicts": {
+          "description": "The versions that lost when a sync or a Bring Back of the area found a feature changed both\nhere and in the field, oldest first: kept so they can be looked at again after the notice\nis gone (Data › Offline › Conflicts), until they are dismissed.",
+          "items": {
+            "$ref": "#/$defs/AreaConflict"
+          },
+          "type": "array"
+        },
         "created": {
           "format": "double",
           "type": "number"
@@ -1160,6 +1265,7 @@
           "layout-chart-stack",
           "field-generation",
           "field-package",
+          "field-conflicts",
           "offline-map-area-id",
           "crs-wkt",
           "zarr-window",
@@ -1262,6 +1368,7 @@
     "layout-chart-stack",
     "field-generation",
     "field-package",
+    "field-conflicts",
     "offline-map-area-id",
     "crs-wkt",
     "zarr-window",

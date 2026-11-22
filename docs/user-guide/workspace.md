@@ -643,7 +643,8 @@ duplication and nudging have their own [layout shortcuts](layouts.md#layouts).
   Sync sends changed, new and deleted features back and refreshes it. A feature changed in the
   map since the last sync and also edited or deleted offline takes the offline version, with a
   warning naming it (Undo reverts the whole sync, restoring the map's version); an offline edit
-  to a feature since deleted from the map is dropped, with a warning too. **Package for the Field**
+  to a feature since deleted from the map is dropped, with a warning too. **Conflicts** keeps the
+  version that lost each time, by area, until it is dismissed. **Package for the Field**
   and **Bring Back** carry an area to a phone and its edits back (see [Field Work](field-work.md)).
   **Feature Cache** prepares
   every layer's geometry for the current projection (Fill, Empty, Cancel, Auto Cache).

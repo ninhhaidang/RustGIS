@@ -46,6 +46,9 @@ impl Project {
         {
             required.push("field-package");
         }
+        if self.offline_areas.iter().any(|area| !area.conflicts.is_empty()) {
+            required.push(super::FIELD_CONFLICTS);
+        }
         // A table saved in a coordinate system of its own, as a layer's is (map_capabilities).
         if !required.contains(&super::NATIVE_COORDINATES) && self.tables.iter().any(|t| held_natively(&t.dataset)) {
             required.push(super::NATIVE_COORDINATES);
@@ -1319,6 +1322,7 @@ mod tests {
             generation: String::new(),
             returned: Vec::new(),
             ids: Default::default(),
+            conflicts: Default::default(),
             data: with_area.map().clone(),
         });
         assert_eq!(serde_json::to_value(&with_area).unwrap()["requires"], json!(["field-origin"]));
@@ -1328,6 +1332,37 @@ mod tests {
         let mut invalid = saved;
         invalid["offline_areas"][0]["generation"] = json!("nope");
         assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
+    }
+
+    /// The versions an offline area's conflicts kept are saved again as they were read, one of each
+    /// kind, and require their own capability, which goes once none is left.
+    #[test]
+    fn offline_area_conflicts_are_preserved_and_required() {
+        use crate::project::ConflictKind;
+        let project = Project::from_json(include_str!("../../../schema/fixtures/field_conflicts.rgis")).unwrap();
+        let kept = &project.offline_areas[0].conflicts;
+        let kinds: Vec<ConflictKind> = kept.iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, [ConflictKind::Replaced, ConflictKind::Deleted, ConflictKind::Kept, ConflictKind::Dropped]);
+        assert_eq!(kept[0].values[1], ("pop_max".to_string(), rustgis_data::Value::Int(1200)));
+        assert_eq!(kept[0].geometry, Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(12.5, 41.9))));
+        // A shape that lost with none: the feature had no shape.
+        assert!(kept[1].shape && kept[1].geometry.is_none());
+        assert!(!kept[3].shape && kept[3].package == "a1b2c3d4e5f60718293a4b5c6d7e8f90");
+        let saved = serde_json::to_value(&project).unwrap();
+        assert!(saved["requires"].as_array().unwrap().contains(&json!("field-conflicts")), "{}", saved["requires"]);
+        assert_eq!(Project::from_json(&saved.to_string()).unwrap().offline_areas[0].conflicts, *kept);
+        // An Undo step's copy of the project shares each one, and so does a list changed after it.
+        let mut copy = project.clone();
+        copy.offline_areas[0].conflicts.remove(0);
+        assert!(std::sync::Arc::ptr_eq(&copy.offline_areas[0].conflicts[0], &project.offline_areas[0].conflicts[1]));
+        let mut none = project.clone();
+        none.offline_areas[0].conflicts = Default::default();
+        let saved = serde_json::to_value(&none).unwrap();
+        assert!(!saved["requires"].as_array().unwrap().contains(&json!("field-conflicts")), "{}", saved["requires"]);
+        // A kind this version doesn't know is refused, not read as another.
+        let mut strange = serde_json::to_value(&project).unwrap();
+        strange["offline_areas"][0]["conflicts"][0]["kind"] = json!("merged");
+        assert!(Project::from_json(&strange.to_string()).is_err());
     }
 
     /// A package's identity, and an area's list of packages brought back, are kept on saving and
@@ -1370,6 +1405,7 @@ mod tests {
             generation: String::new(),
             returned: vec!["a1b2c3d4e5f60718293a4b5c6d7e8f90".into()],
             ids: Default::default(),
+            conflicts: Default::default(),
             data: with_area.map().clone(),
         });
         let saved = serde_json::to_value(&with_area).unwrap();
@@ -1413,6 +1449,7 @@ mod tests {
             generation: String::new(),
             returned: Vec::new(),
             ids: Default::default(),
+            conflicts: Default::default(),
             data: p.map().clone(),
         });
         p.maps[0].tiles.clear();
@@ -1441,6 +1478,7 @@ mod tests {
             generation: String::new(),
             returned: Vec::new(),
             ids: Default::default(),
+            conflicts: Default::default(),
             data: p.map().clone(),
         });
         p.maps[0].view.terrain = None;

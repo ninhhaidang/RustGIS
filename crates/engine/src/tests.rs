@@ -9322,6 +9322,7 @@ fn opening_projects_reports_moved_label_and_callout_adjustments() {
         generation: String::new(),
         returned: Vec::new(),
         ids: Default::default(),
+        conflicts: Default::default(),
         data: project.maps[0].clone(),
     });
     let clean = serde_json::to_string(&project).unwrap();
@@ -18202,6 +18203,92 @@ fn offline_sync_field_added_on_both_sides_is_compared() {
     assert_eq!(done["conflicts"].as_u64(), Some(1), "{done}");
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
     assert!(said.iter().any(|t| t.contains("replaced the map's changes") && t.contains("Assets #")), "{said:?}");
+    // The office's value, which the crew's replaced, is kept on the area.
+    let listed = s.run("offline.conflicts", &json!({"name": "Fieldwork"})).unwrap();
+    let list = listed["conflicts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{listed}");
+    assert_eq!(
+        (&list[0]["kind"], &list[0]["values"], &list[0]["package"]),
+        (&json!("replaced"), &json!({"notes": "office"}), &json!("")),
+        "{listed}"
+    );
+    assert!(list[0].get("geometry").is_none(), "the shape didn't change: {listed}");
+}
+
+/// An offline edit to a feature deleted from the source meanwhile is dropped, and the area keeps
+/// what the edit changed as the version that lost.
+#[test]
+fn offline_sync_keeps_an_edit_dropped_for_a_deletion() {
+    let mut s = offline_field_session(&["Assets"], false);
+    s.run("edit.setValue", &json!({"layer": "Assets", "row": 0, "field": "name", "value": "crew"})).unwrap();
+    s.run("map.activate", &json!({"name": "Map"})).unwrap();
+    s.run("select.rows", &json!({"layer": "Assets", "rows": [0]})).unwrap();
+    s.run("edit.delete", &Value::Null).unwrap();
+    let done = s.run("offline.sync", &json!({"name": "Fieldwork"})).unwrap();
+    assert_eq!(done["skipped"].as_u64(), Some(1), "{done}");
+    let listed = s.run("offline.conflicts", &json!({"name": "Fieldwork"})).unwrap();
+    let list = listed["conflicts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{listed}");
+    assert_eq!(list[0]["kind"], "dropped", "{listed}");
+    // Only what the area changed: its name, not its other values or its unmoved shape.
+    assert_eq!(list[0]["values"], json!({"name": "crew"}), "{listed}");
+    assert!(list[0].get("geometry").is_none(), "{listed}");
+    // A sync with nothing in conflict keeps nothing more.
+    s.run("offline.sync", &json!({"name": "Fieldwork"})).unwrap();
+    assert_eq!(s.project.offline_areas[0].conflicts.len(), 1);
+}
+
+/// A kept conflict's value that isn't a finite number is saved as null and counted, as a layer's
+/// is; a shape that lost with such a coordinate refuses the save, naming the conflict, and a clean
+/// list says nothing.
+#[test]
+fn saving_kept_conflicts_counts_numbers_written_as_null_and_refuses_bad_shapes() {
+    use crate::project::ConflictKind;
+    let dir = std::env::temp_dir().join(format!("rustgis-conflict-save-{}-{}", std::process::id(), crate::project::field_id().unwrap()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.rgis");
+    let mut s = offline_field_session(&["Assets"], false);
+    let kept = |values, geometry| {
+        let mut c = crate::cmd::workspace::conflict("", 1, "Assets", 1, ConflictKind::Dropped, values, Some(geometry));
+        c.at = 1.0;
+        c
+    };
+    let said = |s: &mut Session| {
+        let mark = s.notice_mark();
+        let done = s.run("project.saveAs", &json!({"path": path}));
+        (done, s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>())
+    };
+    let point = |x: f64| Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(x, 1.0)));
+    s.project.offline_areas[0].conflicts = vec![kept(vec![("population".into(), rustgis_data::Value::Int(10))], point(1.0)).into()];
+    let (done, notices) = said(&mut s);
+    assert!(done.is_ok() && notices.iter().all(|n| !n.contains("written as null")), "{notices:?}");
+    let mark = s.notice_mark();
+    s.run("offline.conflicts", &json!({"name": "Fieldwork"})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("listed as null")), "a clean list says nothing");
+    s.project.offline_areas[0].conflicts.push(kept(vec![("population".into(), rustgis_data::Value::Float(f64::NAN))], point(1.0)).into());
+    let (done, notices) = said(&mut s);
+    assert!(done.is_ok(), "{done:?}");
+    assert!(
+        notices.iter().any(|n| n.contains("1 attribute value(s)") && n.contains("offline area 'Fieldwork''s conflicts")),
+        "{notices:?}"
+    );
+    let before = std::fs::read(&path).unwrap();
+    s.project.offline_areas[0].conflicts.push(kept(Vec::new(), point(f64::NAN)).into());
+    // Listed, the value and the shape are null, and said.
+    let mark = s.notice_mark();
+    let listed = s.run("offline.conflicts", &json!({"name": "Fieldwork"})).unwrap();
+    assert_eq!(
+        (&listed["conflicts"][1]["values"]["population"], &listed["conflicts"][2]["geometry"]),
+        (&Value::Null, &Value::Null),
+        "{listed}"
+    );
+    let listing: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(listing.iter().any(|n| n.contains("Offline area 'Fieldwork': 2 kept value(s) or shape(s)")), "{listing:?}");
+    let (done, _) = said(&mut s);
+    let e = done.unwrap_err();
+    assert!(e.contains("offline area 'Fieldwork'") && e.contains("Assets #1") && e.contains("dismiss it first"), "{e}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the file is kept as it was");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -54000,6 +54087,7 @@ fn opening_a_diagram_that_wont_show_says_why() {
         generation: String::new(),
         returned: Vec::new(),
         ids: Default::default(),
+        conflicts: Default::default(),
         data: snapshot,
     });
     let mut reread = Session::new(Project::from_json(&serde_json::to_string(&offline.project).unwrap()).unwrap());

@@ -424,6 +424,101 @@ fn audit_delete_vs_edit_both_ways() {
     assert!(said.iter().any(|t| t.contains("edits were dropped") && t.contains(&format!("Cities #{f1}"))), "{said:?}");
 }
 
+/// Moves feature `feature` of layer `id` to `at`, as a vertex edit does.
+fn move_point(s: &mut Session, id: u32, feature: u64, at: [f64; 2]) {
+    let ds = &mut s.map_mut().layers.iter_mut().find(|l| l.id == id).unwrap().dataset;
+    let r = ds.features.iter().position(|f| f.id == feature).unwrap();
+    ds.features.set_geometry(r, Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(at[0], at[1]))));
+}
+
+/// Each conflict of a Bring Back keeps the version that lost on the area, by feature: home's value
+/// and shape the field's edit replaced, the field's edit to a feature home deleted, and a deletion
+/// home's edit beat. They are saved with the project (which an older RustGIS refuses), Undo of the
+/// Bring Back takes them away with it, and they go when dismissed, one or all.
+#[test]
+fn the_versions_that_lost_a_bring_back_are_kept_until_dismissed() {
+    let temp = Temp::new("kept-conflicts");
+    let mut home = home(&temp);
+    let (_, out) = package(&mut home, &json!({"name": "Day", "extent": AREA})).unwrap();
+    let mut a = phone(&temp, &out, "a");
+    let package_id = a.project.field_origin.as_ref().unwrap().package.clone();
+    let cities = layer(&a, "Cities");
+    let name = text_field(&a, cities);
+    let ids: Vec<u64> = a.map().layer(cities).unwrap().dataset.features.iter().take(4).map(|f| f.id).collect();
+    // Phone: edit 0 and move it, delete 1, edit 2; 3 edited at home only.
+    a.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": name, "value": "Crew 0"})).unwrap();
+    move_point(&mut a, cities, ids[0], [1.0, 2.0]);
+    a.run("edit.setValue", &json!({"layer": cities, "row": 2, "field": name, "value": "Crew 2"})).unwrap();
+    a.run("select.rows", &json!({"layer": cities, "rows": [1]})).unwrap();
+    a.run("edit.delete", &Value::Null).unwrap();
+    // Office: edit 0 and move it, edit 1, delete 2, edit 3.
+    let hc = layer(&home, "Cities");
+    let row = |s: &Session, id: u64| s.map().layer(hc).unwrap().dataset.features.iter().position(|f| f.id == id).unwrap();
+    for (i, label) in [(0, "Office 0"), (1, "Office 1"), (3, "Office 3")] {
+        let r = row(&home, ids[i]);
+        home.run("edit.setValue", &json!({"layer": hc, "row": r, "field": name, "value": label})).unwrap();
+    }
+    move_point(&mut home, hc, ids[0], [3.0, 4.0]);
+    let r = row(&home, ids[2]);
+    home.run("select.rows", &json!({"layer": hc, "rows": [r]})).unwrap();
+    home.run("edit.delete", &Value::Null).unwrap();
+    let (done, said) = bring_back(&temp, &mut a, &mut home, "a");
+    assert_eq!((done["conflicts"].as_u64(), done["kept"].as_u64(), done["skipped"].as_u64()), (Some(2), Some(1), Some(1)), "{done}");
+    assert!(
+        said.iter().any(|t| t.contains("Data › Offline › Conflicts keeps the versions that lost") && t.contains("edits were dropped")),
+        "{said:?}"
+    );
+    let listed = home.run("offline.conflicts", &json!({"name": "Day"})).unwrap();
+    let list = listed["conflicts"].as_array().unwrap();
+    let point = |x: f64, y: f64| json!({"type": "Point", "coordinates": [x, y]});
+    let found = |kind: &str, id: u64| {
+        list.iter().find(|c| c["kind"] == kind && c["feature"] == id).unwrap_or_else(|| panic!("{kind} #{id}: {listed}"))
+    };
+    assert_eq!(list.len(), 3, "{listed}");
+    // Home's name and place, which the field's replaced.
+    let replaced = found("replaced", ids[0]);
+    assert_eq!((&replaced["values"], &replaced["geometry"]), (&json!({&name: "Office 0"}), &point(3.0, 4.0)), "{listed}");
+    // The field's edit, which home's deletion dropped: nothing about its place lost.
+    let dropped = found("dropped", ids[2]);
+    assert_eq!((&dropped["values"], dropped.get("geometry")), (&json!({&name: "Crew 2"}), None), "{listed}");
+    // Only the deletion lost.
+    assert_eq!(found("kept", ids[1])["values"], json!({}), "{listed}");
+    assert!(list.iter().all(|c| c["package"] == package_id.as_str() && c["layerName"] == "Cities"), "{listed}");
+    assert!(list.iter().all(|c| c["feature"] != ids[3]), "a feature changed at home only is no conflict: {listed}");
+    // Saved, and refused by a reader that doesn't know them.
+    let saved = serde_json::to_value(&home.project).unwrap();
+    assert!(saved["requires"].as_array().unwrap().contains(&json!("field-conflicts")), "{}", saved["requires"]);
+    let reopened = crate::project::Project::from_json(&saved.to_string()).unwrap();
+    assert_eq!(reopened.offline_areas[0].conflicts, home.project.offline_areas[0].conflicts);
+    // Undo takes them away with the Bring Back; Redo brings them back.
+    assert!(home.undo());
+    assert!(home.project.offline_areas[0].conflicts.is_empty());
+    assert!(home.redo());
+    assert_eq!(home.project.offline_areas[0].conflicts.len(), 3);
+    // Dismissed one at a time, or all.
+    let kept_index = found("kept", ids[1])["index"].clone();
+    let state = home.run("offline.conflicts", &json!({"name": "Day"})).unwrap()["state"].clone();
+    assert!(
+        home.run("offline.dismissConflicts", &json!({"name": "Day", "conflicts": [7], "state": state}))
+            .unwrap_err()
+            .contains("no conflict 7")
+    );
+    assert!(home.run("offline.dismissConflicts", &json!({"name": "Day", "conflicts": [0]})).unwrap_err().contains("state is required"));
+    let dismiss = json!({"name": "Day", "conflicts": [kept_index], "state": state});
+    let left = home.run("offline.dismissConflicts", &dismiss).unwrap();
+    assert_eq!((left["dismissed"].as_u64(), left["left"].as_u64()), (Some(1), Some(2)), "{left}");
+    assert!(home.project.offline_areas[0].conflicts.iter().all(|c| c.kind != crate::project::ConflictKind::Kept));
+    // The same request sent again (its reply lost) dismisses nothing more.
+    assert!(home.run("offline.dismissConflicts", &dismiss).unwrap_err().contains("has changed since"));
+    assert_eq!(home.project.offline_areas[0].conflicts.len(), 2);
+    home.run("offline.dismissConflicts", &json!({"name": "Day"})).unwrap();
+    assert!(home.project.offline_areas[0].conflicts.is_empty());
+    let saved = serde_json::to_value(&home.project).unwrap();
+    assert!(!saved["requires"].as_array().unwrap().contains(&json!("field-conflicts")), "{}", saved["requires"]);
+    assert!(home.undo());
+    assert_eq!(home.project.offline_areas[0].conflicts.len(), 2);
+}
+
 /// Two packages of one area, one for each phone. A fixes a city and captures a point; B fixes
 /// another, captures a point and deletes a third. A comes back first, then B: each brings back only
 /// what it changed, so neither undoes the other, and nothing is said to be in conflict.
@@ -459,6 +554,7 @@ fn two_phones_with_packages_of_one_area_both_come_back_and_neither_undoes_the_ot
     assert_eq!(value_of(&home, hc, ids[2], &name), None);
     assert_eq!((with_label(&home, hc, &name, "Well from A"), with_label(&home, hc, &name, "Well from B")), (1, 1));
     assert!(said.iter().all(|t| !t.contains("replaced the map's changes")), "{said:?}");
+    assert!(home.project.offline_areas[0].conflicts.is_empty(), "{:?}", home.project.offline_areas[0].conflicts);
 }
 
 /// The crew removes a field on the phone that home still has: its values in the field aren't
@@ -1501,6 +1597,14 @@ fn delete_after_office_filled_new_field(whole: bool) {
     let (deleted, said_as) = if whole { (1, "replaced the map's changes") } else { (0, "so they were kept") };
     assert_eq!((done["deleted"].as_u64(), done["conflicts"].as_u64()), (Some(deleted), Some(1)), "{done}");
     assert!(said.iter().any(|t| t.contains(said_as) && t.contains(&format!("Cities #{id}"))), "{said:?}");
+    // As a whole map the office's feature lost, its new value with it; with a list, the deletion.
+    let kept = &home.project.offline_areas[0].conflicts;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let c = &kept[0];
+    assert_eq!((c.feature, c.kind), (id, if whole { crate::project::ConflictKind::Deleted } else { crate::project::ConflictKind::Kept }));
+    let inspected = c.values.iter().find(|(n, _)| n == "inspected").map(|(_, v)| v.clone());
+    assert_eq!(inspected, whole.then(|| rustgis_data::Value::Text("flagged".into())), "{c:?}");
+    assert_eq!(c.shape, whole, "{c:?}");
 }
 
 /// A layer added in the field, whose id a layer added at home has taken meanwhile: it isn't the

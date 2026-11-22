@@ -1,0 +1,140 @@
+{
+  "format": 2,
+  "name": "Offline area conflicts",
+  "requires": [
+    "offline-map-area-id",
+    "field-origin",
+    "field-conflicts"
+  ],
+  "active_map": 1,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {
+        "center": {
+          "x": 0,
+          "y": 0
+        },
+        "res": 30000
+      }
+    },
+    {
+      "name": "Renamed at home",
+      "offline_area_id": "00112233445566778899aabbccddeeff",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {
+        "center": {
+          "x": 0,
+          "y": 0
+        },
+        "res": 30000
+      }
+    }
+  ],
+  "offline_areas": [
+    {
+      "id": "00112233445566778899aabbccddeeff",
+      "name": "Crew",
+      "map": "Map",
+      "extent": {
+        "min_x": -20,
+        "min_y": -40,
+        "max_x": 60,
+        "max_y": 40
+      },
+      "created": 0,
+      "data": {
+        "name": "Map",
+        "layers": [],
+        "basemap": "Paper",
+        "camera": {
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "res": 30000
+        }
+      },
+      "conflicts": [
+        {
+          "at": 1763800000.5,
+          "layer": 1,
+          "layer_name": "Cities",
+          "package": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "feature": 7,
+          "kind": "replaced",
+          "values": [
+            [
+              "name",
+              {
+                "Text": "Office 7"
+              }
+            ],
+            [
+              "pop_max",
+              {
+                "Int": 1200
+              }
+            ]
+          ],
+          "shape": true,
+          "geometry": {
+            "Point": {
+              "x": 12.5,
+              "y": 41.9
+            }
+          }
+        },
+        {
+          "at": 1763800000.5,
+          "layer": 1,
+          "layer_name": "Cities",
+          "feature": 8,
+          "kind": "deleted",
+          "values": [
+            [
+              "name",
+              {
+                "Text": "Office 8"
+              }
+            ]
+          ],
+          "shape": true
+        },
+        {
+          "at": 1763800000.5,
+          "layer": 1,
+          "layer_name": "Cities",
+          "package": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "feature": 9,
+          "kind": "kept"
+        },
+        {
+          "at": 1763800000.5,
+          "layer": 1,
+          "layer_name": "Cities",
+          "package": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "feature": 10,
+          "kind": "dropped",
+          "values": [
+            [
+              "name",
+              {
+                "Text": "Crew 10"
+              }
+            ],
+            [
+              "checked",
+              {
+                "Bool": true
+              }
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

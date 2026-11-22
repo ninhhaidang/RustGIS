@@ -100,6 +100,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-chart-stack",
     "field-generation",
     "field-package",
+    FIELD_CONFLICTS,
     "offline-map-area-id",
     "crs-wkt",
     "zarr-window",
@@ -110,6 +111,9 @@ pub const CAPABILITIES: &[&str] = &[
     "label-guide",
     PROJECT_CRS,
 ];
+/// An offline area keeping the versions that lost a sync or a Bring Back
+/// (`OfflineArea::conflicts`, #2468): an older reader would save it again without them.
+pub(crate) const FIELD_CONFLICTS: &str = "field-conflicts";
 /// A layer or table saved in a coordinate system of its own, not longitude/latitude
 /// (`Dataset::held_in`, #2032 C2d): an older reader would read its coordinates as degrees.
 pub(crate) const NATIVE_COORDINATES: &str = "native-coordinates";
@@ -775,9 +779,61 @@ pub struct OfflineArea {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[cfg_attr(feature = "schema", schemars(with = "std::collections::BTreeMap<u32, crate::schema::IdFloor>"))]
     pub ids: std::collections::BTreeMap<u32, u64>,
+    /// The versions that lost when a sync or a Bring Back of the area found a feature changed both
+    /// here and in the field, oldest first: kept so they can be looked at again after the notice
+    /// is gone (Data › Offline › Conflicts), until they are dismissed.
+    // Each shared, so neither an Undo step's copy of the project nor a change to the list (one
+    // added or dismissed) copies a conflict's values and shape: only the pointers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<std::sync::Arc<AreaConflict>>,
     /// The snapshot: the map's feature layers holding the features meeting the extent.
     #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub data: Map,
+}
+
+/// A feature a sync or a Bring Back of an offline area changed in one place and found changed in
+/// the other too, with the version that lost (#2468).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AreaConflict {
+    /// When it was found, in seconds since 1970, as [`OfflineArea::synced`].
+    pub at: f64,
+    /// The field package that brought it ([`FieldOrigin::package`]); empty for a sync, or for a
+    /// package made before packages had one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    /// The layer, by id, in the area's map, and its name then.
+    pub layer: u32,
+    pub layer_name: String,
+    /// The feature, by its id in the map.
+    pub feature: u64,
+    pub kind: ConflictKind,
+    /// The values that lost, by field name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<(String, rustgis_data::Value)>,
+    /// Whether the shape lost too: then [`AreaConflict::geometry`] is the shape that lost, in
+    /// longitude/latitude (`None`: it had none).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shape: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<rustgis_data::Geometry>,
+}
+
+/// What happened to a feature changed in both places, and so which version an
+/// [`AreaConflict`] keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictKind {
+    /// Edited in both places: the field's version went in, and the values the map had lost.
+    Replaced,
+    /// Deleted in the field after a change in the map: deleted, and the map's feature lost.
+    Deleted,
+    /// Deleted in the field after a change in the map: kept, and only the deletion lost.
+    Kept,
+    /// Edited in the field but deleted in the map meanwhile: left deleted, and the field's edits
+    /// lost.
+    Dropped,
 }
 
 /// Settings every geoprocessing run honours.
@@ -2721,8 +2777,10 @@ impl Durable for Project {
             p.child(Owner::Map(i), v);
         }
         for (i, v) in offline_areas.iter().enumerate() {
-            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, generation: _, returned: _, ids: _, data } = v;
+            let OfflineArea { id: _, name, map: _, extent: _, created: _, synced: _, generation: _, returned: _, ids: _, conflicts, data } =
+                v;
             p.child(Owner::Area(i), data);
+            p.count_conflicts(name, conflicts);
         }
         for (i, v) in tables.iter().enumerate() {
             p.child(Owner::Table(i), v);

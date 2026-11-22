@@ -196,6 +196,15 @@ Where a change meets one made on the computer since the package was made:
   removed on the phone that the computer's layer still has, as its values in the field aren't
   known.
 
+Each of these keeps the version that lost on the offline area: the computer's values and shape
+the phone's replaced, the phone's edits to a feature deleted on the computer, the computer's feature
+a whole-map return deleted, and a deletion the computer's change beat. **Data › Offline ›
+Conflicts** lists them by area. **Show** selects a feature the map still has and zooms to it, and
+**Dismiss** forgets one once it has been dealt with (Undo brings it back). They are saved with the
+project until dismissed, and Undo of the Bring Back takes them away with it. From a script, the
+command line or Python, `offline.conflicts` lists them with the project's `state`, and `offline.dismissConflicts` dismisses
+them by index with that state, refusing a list read before the project changed.
+
 Only the photos of features the phone added, or whose photos it changed, come back: a photo of a
 feature whose photos it left alone is left out, and the summary says how many.
 

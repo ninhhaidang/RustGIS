@@ -1065,6 +1065,28 @@ fn offline_group(app: &mut RustGisApp, ui: &mut Ui) {
                     }
                 });
             }
+            // The versions that lost when an area's edits came back, kept until dismissed (#2468).
+            let held: Vec<(String, usize)> =
+                app.session.project.offline_areas.iter().map(|a| (a.name.clone(), a.conflicts.len())).collect();
+            small_menu(
+                ui,
+                app,
+                "merge",
+                "Conflicts",
+                "Look at the versions that lost when an offline area's edits came back.",
+                move |ui, app| {
+                    if held.is_empty() {
+                        ui.label(egui::RichText::new(tl!("No offline areas")).weak());
+                    }
+                    for (n, count) in &held {
+                        let label = crate::i18n::fmt("{area} ({count})", &[("area", n), ("count", &count.to_string())]);
+                        if ui.button(label).clicked() {
+                            let _ = app.run("ui.dialog", json!({"name": "offlineConflicts", "area": n}));
+                            ui.close();
+                        }
+                    }
+                },
+            );
         });
     });
 }

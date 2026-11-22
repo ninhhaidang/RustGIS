@@ -306,6 +306,26 @@ impl<'a> Prepare<'a> {
         self.record_numbers(dataset.unsaved_numbers(), format!("'{}'", crate::project::short_name(&dataset.name)).into());
     }
 
+    /// Counts the values offline area `area`'s saved conflicts are written without, as
+    /// [`Self::count_numbers`] does a layer's, and refuses the output when a shape that lost has a
+    /// coordinate that isn't a number: the file couldn't be opened again.
+    pub(crate) fn count_conflicts(&mut self, area: &str, conflicts: &[std::sync::Arc<crate::project::AreaConflict>]) {
+        if conflicts.is_empty() {
+            return;
+        }
+        if self.refusal.is_none()
+            && let Some(c) = conflicts.iter().find(|c| c.geometry.as_ref().is_some_and(|g| !g.is_finite()))
+        {
+            self.refusal = Some(format!(
+                "not saved: a conflict kept by offline area '{area}' ({} #{}) has a shape with a coordinate that isn't a number (NaN or infinite), which the saved file couldn't hold or be opened again with; dismiss it first (Data › Offline › Conflicts)",
+                c.layer_name, c.feature
+            ));
+        }
+        let count = conflicts.iter().flat_map(|c| &c.values).filter(|(_, v)| v.is_non_finite()).count();
+        let place = crate::notice_text::NoticeText::format("offline area {name}'s conflicts", [("name", format!("'{area}'").into())]);
+        self.record_numbers(count, place);
+    }
+
     /// Counts saved row and design values. Editable source rows cannot be nulled in output:
     /// their retained baseline hashes would turn the substitution into a source edit on reopen.
     fn count_layer_numbers(&mut self, layer: &rustgis_map::Layer) {

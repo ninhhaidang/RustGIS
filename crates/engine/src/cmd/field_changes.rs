@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::Session;
-use crate::project::Project;
+use crate::project::{ConflictKind, Project};
 
 /// The package entry holding the list of changes.
 pub(crate) const ENTRY: &str = "changes.v1.json";
@@ -770,23 +770,32 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
         let field_value =
             |row: usize, field: &str| theirs.field_index(field).map_or(&Value::Null, |i| theirs.features.value(row, i)).clone();
         let mut written = HashSet::new();
+        let lost = |kind, id, values, shape| super::workspace::conflict(&changes.package, lc.layer, &name, id, kind, values, shape);
         for g in &lc.edited {
-            let Some(&r) = at.get(&g.id) else {
-                done.skipped += 1;
-                done.dropped.push(tag(&name, g.id));
-                continue;
-            };
+            // An edit naming a feature the package's map hasn't has no values to bring back or keep.
             let Some(&p) = at_field.get(&g.id) else {
                 done.unknown += 1;
                 continue;
             };
-            let (mut changed, mut conflict) = (false, false);
+            let Some(&r) = at.get(&g.id) else {
+                done.skipped += 1;
+                done.dropped.push(tag(&name, g.id));
+                // The field's edits lost: the values and shape it changed.
+                let values = g.values.iter().map(|(field, _)| (field.clone(), field_value(p, field))).collect();
+                let shape = g.geometry.as_ref().map(|_| theirs.features.geometry(p).cloned());
+                done.lost.push(lost(ConflictKind::Dropped, g.id, values, shape));
+                continue;
+            };
+            let (mut changed, mut values, mut shape) = (false, Vec::new(), None);
             for (field, was) in &g.values {
                 let Some(j) = sl.dataset.field_index(field) else { continue };
                 let new = field_value(p, field);
                 let now = sl.dataset.features.value(r, j);
                 if now != &new {
-                    conflict |= now != was;
+                    // Changed at home too: home's value is replaced, and kept as the one that lost.
+                    if now != was {
+                        values.push((field.clone(), now.clone()));
+                    }
                     sl.dataset.features.set_value(r, j, new);
                     changed = true;
                 }
@@ -795,7 +804,9 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
                 let new = theirs.features.geometry(p);
                 let now = sl.dataset.features.geometry(r);
                 if now != new {
-                    conflict |= now != was.as_ref();
+                    if now != was.as_ref() {
+                        shape = Some(now.cloned());
+                    }
                     sl.dataset.features.set_geometry(r, new.cloned());
                     changed = true;
                 }
@@ -804,8 +815,9 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
                 done.updated += 1;
                 written.insert(g.id);
             }
-            if conflict {
+            if !values.is_empty() || shape.is_some() {
                 done.conflicts.push(tag(&name, g.id));
+                done.lost.push(lost(ConflictKind::Replaced, g.id, values, shape));
             }
         }
         // A deletion goes in while the feature is as it was given; one changed at home stays.
@@ -829,6 +841,7 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
                 gone.insert(g.id);
             } else {
                 done.kept.push(tag(&name, g.id));
+                done.lost.push(lost(ConflictKind::Kept, g.id, Vec::new(), None));
             }
         }
         if !gone.is_empty() {
@@ -863,6 +876,7 @@ pub(crate) fn apply(s: &mut Session, ai: usize, edited: &rustgis_map::Map, chang
         sl.touch_geometry();
     }
     super::workspace::renew_area(s, ai, si, offline_map, next_generation)?;
+    super::workspace::keep_conflicts(s, ai, std::mem::take(&mut done.lost));
     done.say(s, &area_name, &source);
     Ok(json!({
         "updated": done.updated,
@@ -981,6 +995,8 @@ struct Applied {
     dropped: Vec<String>,
     /// Layers changed in the field that the source map no longer has.
     gone: Vec<String>,
+    /// The versions that lost, of the conflicts, kept and dropped features above, kept on the area.
+    lost: Vec<crate::project::AreaConflict>,
 }
 
 impl Applied {
@@ -996,7 +1012,7 @@ impl Applied {
         if !self.conflicts.is_empty() {
             s.notify(
                 format!(
-                    "Offline area '{area}': {} feature(s) were changed in the map '{source}' since the field package was made and also in the field, so the field's values replaced the map's changes: {}. Undo restores the map's versions",
+                    "Offline area '{area}': {} feature(s) were changed in the map '{source}' since the field package was made and also in the field, so the field's values replaced the map's changes: {}. Undo restores the map's versions, and Data › Offline › Conflicts keeps the versions that lost",
                     self.conflicts.len(),
                     listed(&self.conflicts)
                 ),
@@ -1006,7 +1022,7 @@ impl Applied {
         if !self.kept.is_empty() {
             s.notify(
                 format!(
-                    "Offline area '{area}': {} feature(s) deleted in the field were changed in the map '{source}' since the field package was made, so they were kept: {}",
+                    "Offline area '{area}': {} feature(s) deleted in the field were changed in the map '{source}' since the field package was made, so they were kept: {}. Data › Offline › Conflicts lists them",
                     self.kept.len(),
                     listed(&self.kept)
                 ),
@@ -1016,7 +1032,7 @@ impl Applied {
         if !self.dropped.is_empty() {
             s.notify(
                 format!(
-                    "Offline area '{area}': {} feature(s) edited in the field were deleted from the map '{source}' meanwhile, so those edits were dropped: {}",
+                    "Offline area '{area}': {} feature(s) edited in the field were deleted from the map '{source}' meanwhile, so those edits were dropped: {}. Data › Offline › Conflicts keeps the versions that lost",
                     self.dropped.len(),
                     listed(&self.dropped)
                 ),
