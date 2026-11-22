@@ -83,7 +83,8 @@ A result is right, or RustGIS says what it lost or assumed
   KML, KMZ, GPX, GML, GeoRSS,
   DXF, LandXML and MapInfo, with height-loss cases for CityJSON, CityGML, GeoPackage,
   FlatGeobuf, GeoParquet and FileGDB, Z/M-loss and non-UTF-8 text cases for Shapefile, and
-  ring-loss cases for OSM PBF, WKT height/member losses for XLSX, ODS, XLS and XLSB, and
+  ring-loss cases for OSM PBF, separate Z- and M-loss cases for feature-service PBF, and WKT
+  height/member losses for XLSX, ODS, XLS and XLSB, and
   error-cell losses for XLSX; other loss kinds remain.
   XLSM shares the XLSX parser; macros are untested.
   Exports are checked by `never_silent_roundtrip.rs` _(open)_.

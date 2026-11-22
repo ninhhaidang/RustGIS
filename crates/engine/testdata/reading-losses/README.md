@@ -134,6 +134,26 @@ Native checks require zero skipped rows, the expected height flag and exactly on
 Z/M message for the height variant (none otherwise). Valid lossy fixtures must import.
 Dates, error cells, other sheets and broader type/encoding fidelity are not certified.
 
+## Feature-service PBF
+
+Three tiny, independently encoded feature-service query answers, written offline with
+Python's standard-library `struct` and Protocol Buffers wire encoding, following
+[FeatureCollection.proto](https://github.com/Esri/arcgis-pbf/blob/master/proto/FeatureCollection/FeatureCollection.proto).
+No service data, exporter or third-party code is included. These exercise the sniffed
+feature-service reader, distinct from the OSM PBF reader despite the shared extension.
+
+All declare WKID 4326, point geometry, lower-left origin, XY scale 0.5 and translation
+(10, 20). One point's quantized XY (3, -5) becomes (11.5, 17.5); its attributes are
+OID `id=7` and string `name=Place`. `feature-xy.pbf` (100 bytes) is clean.
+`feature-xyz.pbf` and `feature-xym.pbf` (121 bytes each) add respectively `hasZ` or
+`hasM`, a third coordinate 37, and that component's unit scale/zero translation.
+The clean file serves both pairs. This tests separate dimension flags, not renamed files.
+
+The corpus checks exact geometry, feature ID, field names/types and attributes through
+`esripbf::read` and `layer.addData`, with no skipped features. The native and command
+messages must be exactly the one-feature Z/M drop message for XYZ/XYM and absent for XY.
+Other geometry and attribute losses and network paging are outside these fixtures.
+
 ## Coverage boundaries
 
 The corpus is a list of specific losses, not a format-completeness certificate.
@@ -159,7 +179,7 @@ but not covered here, not necessarily a known bug. CRS assumptions remain separa
 | DXF | Varying line Z, unreadable entity/vertex | Other entities/curves/parts, attributes |
 | MapInfo MIF/MID | Unreadable object, arc, short part/ring | Other geometry and attribute conversion |
 | OSM PBF | Missing member/node, unclosed/outside inner ring | Other relations, attributes; native coordinates are XY |
-| Feature-service PBF (distinct sniffed PBF parser) | None | Dimensions, geometry members, attributes |
+| Feature-service PBF (distinct sniffed PBF parser) | Point Z and M, separately | Other geometries/dimensions, geometry members, attributes |
 | GeoPackage / FlatGeobuf / GeoParquet / FileGDB (distinct readers) | Z in each | M, members/parts/curves where supported, attributes |
 | LAS/LAZ | None in this paired corpus | Sampling, dimensions/attributes; geometry members/holes inapplicable |
 | XLSX | WKT Z/members, error-valued attribute | M, other geometry, dates/formulas/names/encoding |
