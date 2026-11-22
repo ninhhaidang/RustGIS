@@ -310,9 +310,22 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     staying with the row under it. The box keeps its size, so widen it for the columns: in a box
     too narrow they close up and long labels run into the next or past the box, and a box too
     short fills each column in turn and leaves out the last rows.
-    Giving `"columns"`, or changing the box or what a legend in columns lists, says when its box
-    loses rows or closes the columns up. A legend in one column is told so only when given
-    `"columns"`.
+    A legend says when its box loses rows or closes its columns up when it is given `"columns"`,
+    `"textSize"` (`null` included), `"showNoData"` or `"labels"`, and, in columns or at a text
+    size of its own, when its box or what it lists changes. A legend in one column at the default
+    size is told so only when given one of those.
+  - **Text size** (`"textSize"`, 4 to 100 points, 9 by default; a size outside that range is
+    refused): the size of its layers' names and classes' labels. Its title, rows, indents and the
+    gap between columns follow in proportion, and so do a web layer's legend pictures and the length
+    and height of line and polygon swatches, whose lines keep the width the map draws them at (a
+    swatch's line or outline that reaches past its row is cut at the row's top and bottom, so it
+    doesn't cover the rows beside it, and at its sides where its text starts, the column before it
+    or the legend's edge begins, so it doesn't cover its label, another column or what lies past
+    the legend). A
+    point symbol keeps the size the map draws it at, its row growing only when the symbol needs it,
+    so a legend of proportional symbols still matches the map. `"textSize": null` gives the default
+    back. A size its box no longer holds says what the legend loses, and so does a box made too
+    small for a legend with a size of its own (see Columns for when a legend says so).
   - **Point symbols**: a point layer's symbol is drawn as the map draws it: its marker or the
     stacked marks of its class or layer, its size and outline, the transparency of the layer and
     its groups, and its reference scale at the frame's scale, unturned. A row has one symbol, so

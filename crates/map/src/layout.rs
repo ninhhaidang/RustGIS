@@ -842,6 +842,26 @@ fn is_one_column(columns: &usize) -> bool {
     *columns == 1
 }
 
+/// A legend's text size until it is set (#2581), in points: its layers' names and classes'
+/// labels, as legends have always drawn them.
+pub const LEGEND_TEXT_PT: f64 = 9.0;
+/// The sizes a legend's text takes, in points.
+pub const LEGEND_TEXT_SIZE: std::ops::RangeInclusive<f64> = 4.0..=100.0;
+
+/// A legend's text size kept within [`LEGEND_TEXT_SIZE`], [`LEGEND_TEXT_PT`] when it is no number:
+/// what a layout opened and the drawing take, so they agree (a command refuses one out of range).
+pub fn legend_text_in_range(pt: f64) -> f64 {
+    finite_or(pt, LEGEND_TEXT_PT).clamp(*LEGEND_TEXT_SIZE.start(), *LEGEND_TEXT_SIZE.end())
+}
+
+fn legend_text_pt() -> f64 {
+    LEGEND_TEXT_PT
+}
+
+fn is_legend_text_pt(size: &f64) -> bool {
+    *size == LEGEND_TEXT_PT
+}
+
 /// The dark grey a scale bar draws in by default, and a legend, colorbar, table or chart without
 /// an ink of its own ([`ElementKind::ink`]).
 pub const INK: Rgba = Rgba::rgb(0x22, 0x22, 0x22);
@@ -989,6 +1009,12 @@ pub enum ElementKind {
         /// when none, so layouts saved before keep their bytes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<Rgba>,
+        /// The size of its layers' names and its classes' labels, in points, within
+        /// [`LEGEND_TEXT_SIZE`] (#2581): its title, rows, swatches and gaps follow in proportion,
+        /// a point symbol keeping the size the map draws it at. [`LEGEND_TEXT_PT`] unless set,
+        /// and left out then, so layouts saved before keep their bytes.
+        #[serde(default = "legend_text_pt", skip_serializing_if = "is_legend_text_pt")]
+        text_size: f64,
     },
     /// The colour scale of a raster layer in a frame's map: a gradient bar for a stretch, steps
     /// for classes, a block per value for unique values and colour tables (#326).
@@ -1417,9 +1443,12 @@ impl ElementKind {
     }
 
     /// Whether `key` given as null changes an element of this kind, giving it back its default:
-    /// an ink's `color`, and a chart's `title` (the title it is given) and `barColor`.
+    /// an ink's `color`, a chart's `title` (the title it is given) and `barColor`, and a legend's
+    /// `textSize` (#2581).
     pub fn null_resets(&self, key: &str) -> bool {
-        (self.takes_ink() && key == "color") || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor"))
+        (self.takes_ink() && key == "color")
+            || (matches!(self, ElementKind::Chart { .. }) && matches!(key, "title" | "barColor"))
+            || (matches!(self, ElementKind::Legend { .. }) && key == "textSize")
     }
 
     /// Its ink, when it [takes one](ElementKind::takes_ink) and has one; `None` draws in [`INK`].
@@ -1442,6 +1471,11 @@ impl ElementKind {
             | ElementKind::Chart { color, .. } => Some(color),
             _ => None,
         }
+    }
+
+    /// Whether it is a legend whose text isn't the default size (#2581).
+    pub fn has_custom_legend_text(&self) -> bool {
+        matches!(self, ElementKind::Legend { text_size, .. } if !is_legend_text_pt(text_size))
     }
 
     /// Whether it is a map frame whose border isn't the default one (#2557).
@@ -2481,7 +2515,8 @@ impl Layout {
                         g.width = finite_or(g.width, grid_width()).clamp(0.0, MAX_GRID_WIDTH);
                     }
                 }
-                ElementKind::Legend { exclude, columns, labels, .. } => {
+                ElementKind::Legend { exclude, columns, labels, text_size, .. } => {
+                    *text_size = legend_text_in_range(*text_size);
                     // Names stay whole: a layer's own name isn't cut, and a cut one would no
                     // longer match it.
                     cut |= exclude.len() > MAX_LEGEND_EXCLUDED;
@@ -3543,6 +3578,34 @@ mod tests {
         assert!(l.remove(f));
         assert!(l.element(n).is_none(), "the frame's north arrow goes with it");
         assert!(l.element(t).is_some());
+    }
+
+    /// A legend's text size (#2581): 9 points unless set, and left out then, so a layout saved
+    /// before keeps its bytes; one past its range is brought into it, and counted.
+    #[test]
+    fn a_legends_text_size_defaults_and_is_kept_in_range() {
+        let page = |legend: &str| {
+            format!(
+                r#"{{"name":"x","width":297,"height":210,"elements":[
+                {{"id":1,"name":"f","x":0,"y":0,"w":100,"h":100,"kind":{{"MapFrame":{{"map":"M","center":{{"x":0,"y":0}},"scale":1e6}}}}}},
+                {{"id":2,"name":"l","x":0,"y":0,"w":50,"h":50,"kind":{{"Legend":{legend}}}}}]}}"#
+            )
+        };
+        let size = |l: &Layout| match &l.elements[1].kind {
+            ElementKind::Legend { text_size, .. } => *text_size,
+            _ => panic!("legend expected"),
+        };
+        let old: Layout = serde_json::from_str(&page(r#"{"frame":1,"title":"L"}"#)).unwrap();
+        assert_eq!(size(&old), LEGEND_TEXT_PT);
+        assert!(!old.elements[1].kind.has_custom_legend_text());
+        assert!(!serde_json::to_string(&old).unwrap().contains("text_size"), "the default isn't written");
+        let mut big: Layout = serde_json::from_str(&page(r#"{"frame":1,"title":"L","text_size":1e9}"#)).unwrap();
+        assert_eq!(big.clamp().elements_adjusted, 1);
+        assert_eq!(size(&big), *LEGEND_TEXT_SIZE.end());
+        assert!(big.elements[1].kind.has_custom_legend_text());
+        let saved = serde_json::to_string(&big).unwrap();
+        assert!(saved.contains(r#""text_size":100.0"#), "{saved}");
+        assert_eq!(serde_json::from_str::<Layout>(&saved).unwrap(), big);
     }
 
     #[test]

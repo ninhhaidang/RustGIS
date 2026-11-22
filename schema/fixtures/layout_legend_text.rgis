@@ -1,0 +1,26 @@
+{
+  "format": 2,
+  "name": "Legend text sizes",
+  "requires": ["layout-legend-text"],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ],
+  "layouts": [
+    {
+      "name": "Legends",
+      "width": 200,
+      "height": 100,
+      "elements": [
+        {"id": 1, "name": "Map Frame", "x": 5, "y": 5, "w": 90, "h": 90, "kind": {"MapFrame": {"map": "Map", "center": {"x": 0, "y": 0}, "scale": 1000000}}},
+        {"id": 2, "name": "Default", "x": 100, "y": 5, "w": 45, "h": 90, "kind": {"Legend": {"frame": 1, "title": "Legend"}}},
+        {"id": 3, "name": "Poster", "x": 150, "y": 5, "w": 45, "h": 90, "kind": {"Legend": {"frame": 1, "title": "Legend", "text_size": 18}}}
+      ]
+    }
+  ]
+}

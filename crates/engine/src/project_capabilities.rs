@@ -93,6 +93,11 @@ impl Project {
         {
             required.push("layout-frame-border");
         }
+        if !required.contains(&"layout-legend-text")
+            && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.has_custom_legend_text()))
+        {
+            required.push("layout-legend-text");
+        }
         // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
         // points as its WKT does (angles in grads, a datum transformation the definition can't
         // hold).
@@ -141,6 +146,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-chart-stack", command_uses_chart_stack),
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
+    ("layout-legend-text", command_uses_legend_text),
 ];
 
 /// A saved `map.graticule` that switches to the MGRS grid, its type read as the command reads it:
@@ -175,6 +181,24 @@ fn command_colors_graticule(id: &str, params: &Value) -> bool {
     match id {
         "map.graticule" => params.get("color").is_some(),
         "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_colors_graticule)),
+        _ => false,
+    }
+}
+
+/// A layout command that gives a legend a text size other than the default (#2581): an older
+/// reader warns that it ignores `textSize` and draws the legend at 9 points. `null` or 9 only give
+/// the default, which an older reader's legends always have. A saved `layout.update` isn't told
+/// which element it changes, so one this release refuses (on another kind) requires it too, as for
+/// the other layout keys.
+fn command_uses_legend_text(id: &str, params: &Value) -> bool {
+    let sized = || params.get("textSize").is_some_and(|v| !v.is_null() && v.as_f64() != Some(rustgis_map::layout::LEGEND_TEXT_PT));
+    match id {
+        "layout.addElement" => {
+            params.get("kind").and_then(Value::as_str).is_some_and(|k| k.trim().eq_ignore_ascii_case("legend")) && sized()
+        }
+        "layout.update" => sized(),
+        "layout.import" => imported_layout_uses(params, "\"text_size\"", |e| e.kind.has_custom_legend_text()),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_uses_legend_text)),
         _ => false,
     }
 }
@@ -1459,6 +1483,65 @@ mod tests {
         let mut unknown = saved;
         unknown["requires"] = json!(["layout-frame-border", "future-border"]);
         assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-border"));
+    }
+
+    /// A legend's text size other than the default (#2581) is required where it is saved, so an
+    /// older reader refuses the project instead of drawing the legend at 9 points and saving it so.
+    /// The default size is not written and needs nothing.
+    #[test]
+    fn legend_text_capability_follows_saved_layouts_and_commands() {
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/layout_legend_text.rgis")).unwrap();
+        let saved = serde_json::to_value(&fixture).unwrap();
+        assert_eq!(saved["requires"], json!(["layout-legend-text"]));
+        let elements = &saved["layouts"][0]["elements"];
+        assert!(elements[1]["kind"]["Legend"].get("text_size").is_none());
+        assert_eq!(elements[2]["kind"]["Legend"]["text_size"], json!(18.0));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(reopened.layouts, fixture.layouts);
+        let mut clean = fixture;
+        for e in &mut clean.layouts[0].elements {
+            if let rustgis_map::layout::ElementKind::Legend { text_size, .. } = &mut e.kind {
+                *text_size = rustgis_map::layout::LEGEND_TEXT_PT;
+            }
+        }
+        let base = serde_json::to_value(&clean).unwrap();
+        assert!(base.get("requires").is_none(), "default sizes need nothing");
+        // A saved command that sizes a legend's text needs it; null or 9 only give the default.
+        for (id, params, required) in [
+            ("layout.update", json!({"element": 2, "textSize": 18}), true),
+            ("layout.update", json!({"element": 2, "textSize": null}), false),
+            ("layout.update", json!({"element": 2, "textSize": 9}), false),
+            ("layout.update", json!({"element": 2, "title": "Key"}), false),
+            ("layout.addElement", json!({"kind": "legend", "textSize": 6}), true),
+            ("layout.addElement", json!({"kind": "legend"}), false),
+            ("layout.addElement", json!({"kind": "text", "text": "textSize", "size": 18}), false),
+        ] {
+            let script = format!("{id} {params}");
+            for value in [
+                json!([{"name": "Task", "steps": [{"title": "Size", "command": id, "params": params}]}]),
+                json!([{"name": "Script", "steps": [{"title": "Size", "command": "script.run", "params": {"script": script}}]}]),
+            ] {
+                let mut document = base.clone();
+                document["tasks"] = value;
+                let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+                if required {
+                    assert_eq!(saved["requires"], json!(["layout-legend-text"]), "{id} {params}");
+                } else {
+                    assert!(saved.get("requires").is_none(), "{id} {params}");
+                }
+            }
+        }
+        // An imported layout's text with a sized legend needs it; with the default, none.
+        for (layout, required) in [(&saved["layouts"][0], true), (&base["layouts"][0], false)] {
+            let params = json!({"text": layout.to_string()});
+            let mut document = base.clone();
+            document["tasks"] = json!([{"name": "Task", "steps": [{"title": "Import", "command": "layout.import", "params": params}]}]);
+            let saved = serde_json::to_value(Project::from_json(&document.to_string()).unwrap()).unwrap();
+            assert_eq!(saved.get("requires").is_some(), required, "{layout}");
+        }
+        let mut unknown = saved;
+        unknown["requires"] = json!(["layout-legend-text", "future-legend"]);
+        assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-legend"));
     }
 
     /// Nondefault relief effects survive project, map and layer files; ordinary relief needs none.

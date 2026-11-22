@@ -13338,6 +13338,115 @@ fn a_legend_takes_columns_from_one_to_three() {
     }
 }
 
+/// `"textSize"` on a legend (#2581): given and changed, 4 to 100 points, null giving the default
+/// back, refused out of that range, as anything but a number and on any other element (where
+/// null is let through, as for `showNoData`); undone as any change; a size its box no longer
+/// holds, or a box that no longer holds its size, says what it loses.
+#[test]
+fn a_legend_takes_a_text_size() {
+    use rustgis_map::layout::{ElementKind, LEGEND_TEXT_PT};
+    let dir = std::env::temp_dir().join(format!("rustgis-legend-text-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.geojson");
+    std::fs::write(
+        &path,
+        r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[4,4],[6,4],[6,6],[4,6],[4,4]]]}}]}"#,
+    )
+    .unwrap();
+    let mut s = Session::new(Project::default());
+    for _ in 0..4 {
+        s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    }
+    s.run("layout.new", &json!({"template": "map"})).unwrap();
+    let size = |s: &Session, id: u64| match s.project.layouts[0].element(id as u32).map(|e| &e.kind) {
+        Some(ElementKind::Legend { text_size, .. }) => *text_size,
+        other => panic!("{other:?}"),
+    };
+    let said = |s: &Session, mark: u64| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>().join(" | ");
+    let mark = s.notice_mark();
+    let added = s.run("layout.addElement", &json!({"kind": "legend", "x": 10, "y": 10, "w": 150, "h": 150})).unwrap();
+    let id = added["element"].as_u64().unwrap();
+    assert_eq!(size(&s, id), LEGEND_TEXT_PT);
+    let big = s.run("layout.addElement", &json!({"kind": "legend", "textSize": 18, "x": 10, "y": 10, "w": 150, "h": 150})).unwrap();
+    assert_eq!(size(&s, big["element"].as_u64().unwrap()), 18.0);
+    assert_eq!(said(&s, mark), "", "a box that holds it says nothing");
+    s.run("layout.update", &json!({"element": id, "textSize": 12.5})).unwrap();
+    assert_eq!(size(&s, id), 12.5);
+    s.run("layout.update", &json!({"element": id, "title": "Key"})).unwrap();
+    assert_eq!(size(&s, id), 12.5, "another change leaves it");
+    for edge in [4.0, 100.0] {
+        s.run("layout.update", &json!({"element": id, "textSize": edge})).unwrap();
+        assert_eq!(size(&s, id), edge);
+    }
+    s.run("layout.update", &json!({"element": id, "textSize": null})).unwrap();
+    assert_eq!(size(&s, id), LEGEND_TEXT_PT, "null gives the default back");
+    // Out of the range, or no number, it is refused, not drawn at another size, and the legend
+    // keeps its own.
+    for bad in [json!(3.9), json!(100.5), json!(1e6), json!("12"), json!(true), json!([9])] {
+        let err = s.run("layout.update", &json!({"element": id, "textSize": bad})).unwrap_err();
+        assert!(err.contains("textSize is a number of points, 4 to 100"), "{bad}: {err}");
+        assert_eq!(size(&s, id), LEGEND_TEXT_PT, "{bad}");
+        let err = s.run("layout.addElement", &json!({"kind": "legend", "textSize": bad})).unwrap_err();
+        assert!(err.contains("textSize is a number of points, 4 to 100"), "{bad}: {err}");
+    }
+    s.run("layout.update", &json!({"element": id, "textSize": 20})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(size(&s, id), LEGEND_TEXT_PT, "undone");
+    let arrow = s.run("layout.addElement", &json!({"kind": "northArrow"})).unwrap();
+    let err = s.run("layout.addElement", &json!({"kind": "northArrow", "textSize": 12})).unwrap_err();
+    assert!(err.contains("only legends take textSize"), "{err}");
+    let err = s.run("layout.update", &json!({"element": arrow["element"], "textSize": 12})).unwrap_err();
+    assert!(err.contains("only legends take textSize"), "{err}");
+    // A null there is let through, as for showNoData: it asks for nothing.
+    s.run("layout.addElement", &json!({"kind": "northArrow", "textSize": null})).unwrap();
+    s.run("layout.update", &json!({"element": arrow["element"], "textSize": null})).unwrap();
+    // A locked legend takes no size, and null counts as a change there too.
+    s.run("layout.update", &json!({"element": id, "locked": true})).unwrap();
+    assert!(s.run("layout.update", &json!({"element": id, "textSize": null})).is_err());
+    s.run("layout.update", &json!({"element": id, "locked": false})).unwrap();
+    // Grown past what its box holds, in one column, it says what it loses; and the measure is the
+    // one it draws at: the same box holds the rows at 9 points.
+    s.run("layout.update", &json!({"element": id, "w": 40, "h": 40})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "textSize": 40})).unwrap();
+    assert!(said(&s, mark).contains("its last rows or the ends of long labels are left out"), "{}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "textSize": 9})).unwrap();
+    assert_eq!(said(&s, mark), "");
+    // Added in a box too small for it: told whenever a text size is given, 9 included, as
+    // `"columns"` is; given nothing, it says nothing, as before.
+    for pt in [40, 9] {
+        let mark = s.notice_mark();
+        s.run("layout.addElement", &json!({"kind": "legend", "textSize": pt, "x": 10, "y": 10, "w": 5, "h": 5})).unwrap();
+        assert!(said(&s, mark).contains("are left out"), "{pt} pt: {}", said(&s, mark));
+    }
+    let mark = s.notice_mark();
+    s.run("layout.addElement", &json!({"kind": "legend", "x": 10, "y": 10, "w": 5, "h": 5})).unwrap();
+    assert_eq!(said(&s, mark), "", "nothing given, nothing said");
+    // With a size of its own, a box made too small for it says so too, in one column; at the
+    // default size a resize says nothing, as before.
+    s.run("layout.update", &json!({"element": id, "w": 150, "h": 150})).unwrap();
+    s.run("layout.update", &json!({"element": id, "textSize": 40})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "w": 40, "h": 40})).unwrap();
+    assert!(said(&s, mark).contains("its last rows or the ends of long labels are left out"), "{}", said(&s, mark));
+    s.run("layout.update", &json!({"element": id, "textSize": null, "w": 150, "h": 150})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "w": 40, "h": 40})).unwrap();
+    assert_eq!(said(&s, mark), "", "a default legend is told on a resize only in columns");
+    // `null` columns or missing-value row changes nothing and says nothing; a `null` text size gives
+    // 9 points back and is told, as a new size is.
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "columns": null, "showNoData": null})).unwrap();
+    assert_eq!(said(&s, mark), "", "nothing changed, nothing said");
+    s.run("layout.update", &json!({"element": id, "textSize": 40, "w": 150, "h": 150})).unwrap();
+    s.run("layout.update", &json!({"element": id, "w": 5, "h": 5})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.update", &json!({"element": id, "textSize": null})).unwrap();
+    assert!(said(&s, mark).contains("are left out"), "{}", said(&s, mark));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A legend given `"columns"` says when its box doesn't hold them, and only then.
 #[test]
 fn a_legends_columns_say_when_its_box_is_too_small() {

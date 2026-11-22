@@ -892,6 +892,24 @@ type SpriteKey = (Rgba, Rgba, u32, u32, Marker, u8, u8);
 /// The marker sprites a frame has drawn ([`Ctx::sprites`]).
 type Sprites = std::collections::HashMap<SpriteKey, Option<std::sync::Arc<Pixmap>>>;
 
+/// The stroke a stacked line's `st` is drawn with, `width` device pixels wide: its cap and join.
+pub(crate) fn line_stroke(st: &LineStroke, width: f32) -> Stroke {
+    Stroke {
+        width,
+        line_cap: match st.cap {
+            rustgis_map::LineCap::Round => LineCap::Round,
+            rustgis_map::LineCap::Butt => LineCap::Butt,
+            rustgis_map::LineCap::Square => LineCap::Square,
+        },
+        line_join: match st.join {
+            rustgis_map::LineJoin::Round => LineJoin::Round,
+            rustgis_map::LineJoin::Miter => LineJoin::Miter,
+            rustgis_map::LineJoin::Bevel => LineJoin::Bevel,
+        },
+        ..Stroke::default()
+    }
+}
+
 impl Ctx<'_> {
     /// Logical screen position of a coordinate, `None` when it is behind the globe.
     fn screen(&self, c: Coord) -> Option<(f64, f64)> {
@@ -1202,20 +1220,7 @@ impl Ctx<'_> {
                 o => shifted.iter().find(|(x, _)| *x == o).and_then(|(_, p)| p.as_ref()),
             };
             let Some(drawn) = drawn else { continue };
-            let stroke = Stroke {
-                width: (w * self.ppp).max(0.5),
-                line_cap: match st.cap {
-                    rustgis_map::LineCap::Round => LineCap::Round,
-                    rustgis_map::LineCap::Butt => LineCap::Butt,
-                    rustgis_map::LineCap::Square => LineCap::Square,
-                },
-                line_join: match st.join {
-                    rustgis_map::LineJoin::Round => LineJoin::Round,
-                    rustgis_map::LineJoin::Miter => LineJoin::Miter,
-                    rustgis_map::LineJoin::Bevel => LineJoin::Bevel,
-                },
-                ..Stroke::default()
-            };
+            let stroke = line_stroke(st, (w * self.ppp).max(0.5));
             let steps = st.dash.and_then(|d| self.dash(&d, drawn));
             let period: f32 = steps.iter().flatten().sum();
             // A dashed line cut into pieces: each piece starts its pattern where its line is. Only

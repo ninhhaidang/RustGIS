@@ -104,6 +104,7 @@ pub const CAPABILITIES: &[&str] = &[
     "blank-paper",
     "layout-frame-border",
     NATIVE_COORDINATES,
+    "layout-legend-text",
     "label-guide",
 ];
 /// A layer or table saved in a coordinate system of its own, not longitude/latitude

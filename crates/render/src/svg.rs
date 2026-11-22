@@ -473,6 +473,7 @@ mod tests {
                 columns: 1,
                 labels: Default::default(),
                 color: None,
+                text_size: rustgis_map::layout::LEGEND_TEXT_PT,
             },
         );
         assert_eq!(picture_dpi(&layout, 600.0, |e| !written_as_svg(e)), 600.0);
@@ -514,6 +515,7 @@ mod tests {
                 columns: 1,
                 labels: Default::default(),
                 color: None,
+                text_size: rustgis_map::layout::LEGEND_TEXT_PT,
             },
         );
         let info = PageInfo::default();
