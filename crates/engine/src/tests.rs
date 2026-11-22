@@ -7338,15 +7338,189 @@ fn hostile_params_never_panic_7() {
     hostile_params_never_panic(7);
 }
 
-/// Every command with junk parameters returns Ok or Err, never panics, and leaves a usable session.
-/// Runs the commands of one shard: those whose place in the registry is `shard` modulo
-/// [`HOSTILE_SHARDS`].
-fn hostile_params_never_panic(shard: usize) {
+#[test]
+fn field_floors_hold_for_every_command_0() {
+    field_floors_hold_for_every_command(0);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_1() {
+    field_floors_hold_for_every_command(1);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_2() {
+    field_floors_hold_for_every_command(2);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_3() {
+    field_floors_hold_for_every_command(3);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_4() {
+    field_floors_hold_for_every_command(4);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_5() {
+    field_floors_hold_for_every_command(5);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_6() {
+    field_floors_hold_for_every_command(6);
+}
+
+#[test]
+fn field_floors_hold_for_every_command_7() {
+    field_floors_hold_for_every_command(7);
+}
+
+/// The ids a field package out holds are never given out again, by any command, nor after its
+/// Undo and Redo: every command of one shard runs with [`hostile_junk`] on a home project whose
+/// offline area has a package out, its offline map open, and floors above each layer's highest
+/// id. After the command, its Undo and its Redo: no area's recorded floor drops, no layer of the
+/// area's source map or offline map keeps a lower floor, and no feature the command made has an
+/// id at or below the floor. This is what catches a path that replaces a layer's rows (a reload,
+/// a restore) and then adds features, whichever command it is.
+fn field_floors_hold_for_every_command(shard: usize) {
+    use std::collections::{BTreeMap, HashSet};
     #[cfg(not(target_arch = "wasm32"))]
-    if isolate_process_test(&format!("tests::hostile_params_never_panic_{shard}")) {
+    if isolate_process_test(&format!("tests::field_floors_hold_for_every_command_{shard}")) {
         return;
     }
-    let junk = [
+    let mut home = world();
+    crate::cmd::field::package(&mut home, &json!({"name": "Floor", "extent": [-180.0, -90.0, 180.0, 90.0]})).unwrap();
+    home.run("offline.open", &json!({"name": "Floor"})).unwrap();
+    let source = home.project.offline_areas[0].map.clone();
+    home.run("map.activate", &json!({"name": source})).unwrap();
+    // Floors above every layer's highest id, as when the office deleted features a package holds.
+    let raised: BTreeMap<u32, u64> = home.project.offline_areas[0].ids.iter().map(|(l, id)| (*l, id + 1000)).collect();
+    assert!(!raised.is_empty());
+    home.project.offline_areas[0].ids = raised;
+    let fixture = Session::new(home.project.clone());
+    // The area's maps: its source, and its offline map.
+    fn area_maps<'a>(s: &'a Session, area: &'a crate::project::OfflineArea) -> impl Iterator<Item = &'a rustgis_map::Map> + 'a {
+        s.project
+            .maps
+            .iter()
+            .filter(move |m| m.name.eq_ignore_ascii_case(&area.map) || m.offline_area_id.as_deref() == Some(area.id.as_str()))
+    }
+    // The floors held, by area id, and every id the area's maps hold, by layer.
+    type Held = (BTreeMap<String, BTreeMap<u32, u64>>, BTreeMap<u32, HashSet<u64>>);
+    let held = |s: &Session| -> Held {
+        let floors = s.project.offline_areas.iter().map(|a| (a.id.clone(), a.ids.clone())).collect();
+        let mut ids: BTreeMap<u32, HashSet<u64>> = BTreeMap::new();
+        for a in &s.project.offline_areas {
+            for m in area_maps(s, a) {
+                for l in m.layers.iter().filter(|l| !l.is_raster()) {
+                    ids.entry(l.id).or_default().extend(l.dataset.features.rows().map(|r| r.id()));
+                }
+            }
+        }
+        (floors, ids)
+    };
+    let check = |s: &Session, before: &Held, what: &str| {
+        for a in &s.project.offline_areas {
+            let Some(was) = before.0.get(&a.id) else { continue };
+            for (layer, floor) in was {
+                let now = a.ids.get(layer).copied().unwrap_or(0);
+                assert!(now >= *floor, "{what}: area '{}' layer {layer}: its floor went from {floor} to {now}", a.name);
+                for m in area_maps(s, a) {
+                    let Some(l) = m.layers.iter().find(|l| l.id == *layer && !l.is_raster()) else { continue };
+                    assert!(l.dataset.features.id_floor() >= *floor, "{what}: map '{}' layer {layer} keeps a floor below {floor}", m.name);
+                    let had = before.1.get(layer);
+                    for id in l.dataset.features.rows().map(|r| r.id()).filter(|id| had.is_none_or(|h| !h.contains(id))) {
+                        assert!(id > *floor, "{what}: map '{}' layer {layer} gave a new feature id {id}, at or below {floor}", m.name);
+                    }
+                }
+            }
+        }
+    };
+    let ids: Vec<&str> =
+        fixture.registry.commands.iter().enumerate().filter(|(i, _)| i % HOSTILE_SHARDS == shard).map(|(_, c)| c.id).collect();
+    // With the junk, parameters that let commands which make features make them: a place in a
+    // point layer, features to paste, rows to copy from, so a path that adds is reached.
+    let cities = fixture.map().layer_by_name("Cities").map(|l| l.id).unwrap_or_default();
+    let point =
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[10,5]}}]}"#;
+    let mut params = hostile_junk();
+    params.extend([
+        json!({"layer": cities, "geometry": {"type": "Point", "coordinates": [10, 5]}, "attributes": {}}),
+        json!({"layer": cities, "text": point}),
+        json!({"layer": cities, "rows": [0, 1], "row": 0, "dx": 0.5, "dy": 0.5}),
+    ]);
+    for id in ids {
+        if hostile_skips(id) || id == "map.route" {
+            continue;
+        }
+        for p in &params {
+            let mut s = Session::new(fixture.project.clone());
+            let before = held(&s);
+            let _ = s.run(id, p);
+            check(&s, &before, &format!("{id} {p}"));
+            let _ = s.run("edit.undo", &Value::Null);
+            check(&s, &before, &format!("{id} {p}, then Undo"));
+            let _ = s.run("edit.redo", &Value::Null);
+            check(&s, &before, &format!("{id} {p}, then Redo"));
+            // The same command landed from a read made ahead (Reload Data, Load All…), as the app
+            // runs those: a landed read replaces rows too.
+            let mut s = Session::new(fixture.project.clone());
+            let before = held(&s);
+            if let Ok(read) = crate::cmd::reads::read_ahead(&mut s, id, p)
+                && read.reads()
+                && let Ok(done) = read.run(&rustgis_analysis::control::Control::new())
+            {
+                let _ = crate::cmd::reads::read_land(&mut s, done);
+                check(&s, &before, &format!("{id} {p}, landed from a read"));
+            }
+        }
+    }
+}
+
+/// A read made ahead lands through the same end as any command: a layer whose rows it replaced
+/// keeps the floor of the ids a package holds, so the next feature added is above it.
+#[test]
+fn a_landed_read_keeps_the_floor_of_the_ids_a_package_holds() {
+    let mut home = world();
+    crate::cmd::field::package(&mut home, &json!({"name": "Floor", "extent": [-180.0, -90.0, 180.0, 90.0]})).unwrap();
+    let cities = home.map().layer_by_name("Cities").unwrap().id;
+    let floor = home.project.offline_areas[0].ids[&cities] + 1000;
+    home.project.offline_areas[0].ids.insert(cities, floor);
+    let mut s = Session::new(home.project.clone());
+    // As a reload replaces the layer's rows: the floor they carried is gone.
+    let rows = s.map().layer(cities).unwrap().dataset.features.to_rows();
+    s.map_mut().layer_mut(cities).unwrap().dataset.features = rows.into();
+    assert_eq!(s.map().layer(cities).unwrap().dataset.features.id_floor(), 0);
+    let read = crate::cmd::reads::read_ahead(&mut s, "table.statistics", &json!({"layer": cities, "field": "pop_max"})).unwrap();
+    let done = read.run(&rustgis_analysis::control::Control::new()).unwrap();
+    crate::cmd::reads::read_land(&mut s, done).unwrap();
+    assert_eq!(s.map().layer(cities).unwrap().dataset.features.id_floor(), floor);
+    s.run("edit.addFeature", &json!({"layer": cities, "geometry": {"type": "Point", "coordinates": [10, 5]}, "attributes": {}})).unwrap();
+    assert_eq!(s.map().layer(cities).unwrap().dataset.features.last().unwrap().id, floor + 1);
+}
+
+/// [`field_floors_hold_for_every_command`] reaches a command that makes a feature: Add Feature with
+/// its parameters gives one above the floor, so the invariant isn't vacuous.
+#[test]
+fn field_floors_are_checked_on_a_command_that_adds() {
+    let mut home = world();
+    crate::cmd::field::package(&mut home, &json!({"name": "Floor", "extent": [-180.0, -90.0, 180.0, 90.0]})).unwrap();
+    let cities = home.map().layer_by_name("Cities").unwrap().id;
+    let floor = home.project.offline_areas[0].ids[&cities] + 1000;
+    home.project.offline_areas[0].ids.insert(cities, floor);
+    let mut s = Session::new(home.project.clone());
+    s.run("edit.addFeature", &json!({"layer": cities, "geometry": {"type": "Point", "coordinates": [10, 5]}, "attributes": {}})).unwrap();
+    let added = s.map().layer(cities).unwrap().dataset.features.last().unwrap().id;
+    assert_eq!(added, floor + 1);
+}
+
+/// The junk parameters every command is run with by [`hostile_params_never_panic`] and
+/// [`field_floors_hold_for_every_command`].
+fn hostile_junk() -> Vec<Value> {
+    vec![
         Value::Null,
         json!({}),
         // Shared vertex moves: valid row/destination, hostile node addresses and coordinate types.
@@ -7426,7 +7600,57 @@ fn hostile_params_never_panic(shard: usize) {
         // A sign-in past its username: a password of the wrong type is refused before any request.
         json!({"username": "junk@example.invalid", "password": 7, "totp": []}),
         json!({"username": "junk@example.invalid", "password": "", "totp": "x"}),
-    ];
+    ]
+}
+
+/// The commands the hostile runs leave out: they write files, reach the network or change state the
+/// process's other tests share.
+fn hostile_skips(id: &str) -> bool {
+    matches!(
+        id,
+        "project.save"
+                    | "project.saveAs"
+                    | "project.exportLog"
+                    | "share.exportMap"
+                    | "time.export"
+                    | "map.exportOrbit"
+                    | "map.exportBlock"
+                    | "share.exportLayer"
+                    | "share.exportTable"
+                    | "share.exportRaster"
+                    // Download from the network.
+                    | "gp.installGeolibre"
+                    // Deletes the installed GeoLibre runner.
+                    | "gp.uninstallGeolibre"
+                    // Downloads GeoLibre's tool translations, and deletes the kept ones.
+                    | "gp.installGeolibreLanguage"
+                    | "gp.uninstallGeolibreLanguage"
+                    | "plugin.registry"
+                    | "plugin.installFromRegistry"
+                    // Ask Earth Search when no API is given.
+                    | "stac.collections"
+                    | "stac.search"
+                    // Asks geoBoundaries for its list.
+                    | "boundaries.countries"
+                    // Asks Source Cooperative for its featured products.
+                    | "sourcecoop.products"
+                    // Starts a sign-in's callback server (RustGIS's own app on ArcGIS Online).
+                    | "arcgis.signIn"
+                    // Signs every session out, which the process's other tests use (its junk is
+                    // covered by an_arcgis_token_in_a_service_address_reaches_its_layers).
+                    | "arcgis.signOut"
+    )
+}
+
+/// Every command with junk parameters returns Ok or Err, never panics, and leaves a usable session.
+/// Runs the commands of one shard: those whose place in the registry is `shard` modulo
+/// [`HOSTILE_SHARDS`].
+fn hostile_params_never_panic(shard: usize) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test(&format!("tests::hostile_params_never_panic_{shard}")) {
+        return;
+    }
+    let junk = hostile_junk();
     let ids: Vec<&str> = Session::new(Project::default())
         .registry
         .commands
@@ -7471,40 +7695,7 @@ fn hostile_params_never_panic(shard: usize) {
         (s.states, s.unsaved_marks, s.opened, s.active_layer, s.tool, s.project.maps.len(), cam, layers)
     };
     for id in ids {
-        if matches!(
-            id,
-            "project.save"
-                | "project.saveAs"
-                | "project.exportLog"
-                | "share.exportMap"
-                | "time.export"
-                | "map.exportOrbit"
-                | "map.exportBlock"
-                | "share.exportLayer"
-                | "share.exportTable"
-                | "share.exportRaster"
-                // Download from the network.
-                | "gp.installGeolibre"
-                // Deletes the installed GeoLibre runner.
-                | "gp.uninstallGeolibre"
-                // Downloads GeoLibre's tool translations, and deletes the kept ones.
-                | "gp.installGeolibreLanguage"
-                | "gp.uninstallGeolibreLanguage"
-                | "plugin.registry"
-                | "plugin.installFromRegistry"
-                // Ask Earth Search when no API is given.
-                | "stac.collections"
-                | "stac.search"
-                // Asks geoBoundaries for its list.
-                | "boundaries.countries"
-                // Asks Source Cooperative for its featured products.
-                | "sourcecoop.products"
-                // Starts a sign-in's callback server (RustGIS's own app on ArcGIS Online).
-                | "arcgis.signIn"
-                // Signs every session out, which the process's other tests use (its junk is
-                // covered by an_arcgis_token_in_a_service_address_reaches_its_layers).
-                | "arcgis.signOut"
-        ) {
+        if hostile_skips(id) {
             continue;
         }
         let mut s_world = world();
@@ -8995,6 +9186,8 @@ fn opening_projects_reports_moved_label_and_callout_adjustments() {
         created: 0.0,
         synced: 0.0,
         generation: String::new(),
+        returned: Vec::new(),
+        ids: Default::default(),
         data: project.maps[0].clone(),
     });
     let clean = serde_json::to_string(&project).unwrap();
@@ -53492,6 +53685,8 @@ fn opening_a_diagram_that_wont_show_says_why() {
         created: 0.0,
         synced: 0.0,
         generation: String::new(),
+        returned: Vec::new(),
+        ids: Default::default(),
         data: snapshot,
     });
     let mut reread = Session::new(Project::from_json(&serde_json::to_string(&offline.project).unwrap()).unwrap());

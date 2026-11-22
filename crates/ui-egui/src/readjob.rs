@@ -420,6 +420,7 @@ fn called<'a>(command: &str, what: &'a str) -> &'a str {
         (true, "source.syncState") => tl_raw!("Source File State"),
         (true, "map.reloadTiles") => tl_raw!("Reload Tile Archive"),
         (true, "map.repairTiles") => tl_raw!("Repair Tile Archive"),
+        (true, "offline.keepRows") => tl_raw!("Keep Field Package Rows"),
         (true, _) => tl_raw!("A background read"),
     }
 }

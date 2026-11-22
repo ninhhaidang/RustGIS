@@ -1357,6 +1357,27 @@ impl Session {
         self.statistics_window_thread = enabled.then(|| std::thread::current().id());
     }
 
+    /// Keeps the ids new features are given above those field packages hold, in every layer they
+    /// apply to ([`Project::keep_field_floors`]). Run when a project is opened, after every command
+    /// wherever it runs (`invoke`: run, landed from a copy or a read, or a line of a script or task),
+    /// after an export lands, and after Undo and Redo: a floor lives with a layer's rows, which a
+    /// reload, a renewal or a restored snapshot replaces.
+    pub(crate) fn keep_field_floors(&mut self) {
+        self.project.keep_field_floors();
+    }
+
+    /// Whether the open field package's rows are waiting to be kept on this device
+    /// (`offline.keepRows`), as opening a package from home asks.
+    pub fn field_rows_waiting(&self) -> bool {
+        self.project.given.is_some()
+    }
+
+    /// Lets go of the open field package's rows waiting to be kept, when they can't be: the rows
+    /// they share with the project are then no longer held for them.
+    pub fn forget_field_rows(&mut self) {
+        self.project.given = None;
+    }
+
     /// Starts an independent session with fresh runtime selection intent and request order.
     /// Prepared script copies explicitly share request order with their originating session.
     pub fn new(mut project: Project) -> Self {
@@ -1547,6 +1568,8 @@ impl Session {
         for text in label_notices {
             session.notify_text(text, false);
         }
+        // A project opened: its layers keep new ids above those field packages hold.
+        session.keep_field_floors();
         session
     }
 
@@ -3578,6 +3601,8 @@ impl Session {
             std::mem::swap(&mut self.opened_package, &mut files.opened_package);
         }
         self.project.keep_table_ids(&cur);
+        self.project.keep_field_ids(&cur);
+        self.keep_field_floors();
         self.reopen_layout(open, saved);
         self.keep_time_position(&cur);
         self.keep_tile_pick(&cur);
@@ -3618,6 +3643,8 @@ impl Session {
             std::mem::swap(&mut self.opened_package, &mut files.opened_package);
         }
         self.project.keep_table_ids(&cur);
+        self.project.keep_field_ids(&cur);
+        self.keep_field_floors();
         self.reopen_layout(open, saved);
         self.keep_time_position(&cur);
         self.keep_tile_pick(&cur);

@@ -2984,6 +2984,19 @@ impl RustGisApp {
         }
     }
 
+    /// Says that the open field package's rows couldn't be kept (`offline.keepRows` was refused,
+    /// for `why`), and what that means for its return, and lets go of the rows it held for them.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_refused(&mut self, why: &str) {
+        let name = self.session.project.name.clone();
+        self.session.forget_field_rows();
+        let text = i18n::fmt(
+            "The rows field package '{name}' gave couldn't be kept on this device ({why}): Send Field Package sends its whole map, which Bring Back refuses if its offline area has been brought back or synced since the package was made",
+            &[("name", &name), ("why", why)],
+        );
+        self.session.notify(text, true);
+    }
+
     /// Runs a command by id: `ui.*` here, everything else in the engine.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -3175,6 +3188,17 @@ impl RustGisApp {
         crate::circleedit::cancel_stale(self);
         if let Err(e) = &r {
             self.command_failed(id, e, notice_mark);
+        }
+        // A field package from home opened: the rows it gave are kept on a thread of their own,
+        // with progress and Cancel, rather than as it opens.
+        #[cfg(not(target_arch = "wasm32"))]
+        if r.is_ok()
+            && id == "project.open"
+            && self.reads_off_frame
+            && self.session.field_rows_waiting()
+            && let Err(e) = readjob::run(self, "offline.keepRows", json!({}))
+        {
+            self.keep_refused(&e);
         }
         // Commands can replace the project, switch maps or change the renderer while the pane
         // is closed. A field picked for the old context must not overwrite the new renderer.
@@ -6538,6 +6562,15 @@ impl RustGisApp {
         annotation::sync(self);
         #[cfg(not(target_arch = "wasm32"))]
         self.session.statistics_need_read_ahead(self.reads_off_frame);
+        // A field package opened by a way other than `run` (a script on the file bridge) has its
+        // rows kept as one opened here does: the read takes them, so this starts it once.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.reads_off_frame
+            && self.session.field_rows_waiting()
+            && let Err(e) = readjob::run(self, "offline.keepRows", json!({}))
+        {
+            self.keep_refused(&e);
+        }
         let _diagnostics = self.session.diagnostics.enter();
         // What this thread draws (an image, a print, a page, a preview, an agent's snapshot)
         // never waits for cast shadows still being worked out: it says they were (Never hold the

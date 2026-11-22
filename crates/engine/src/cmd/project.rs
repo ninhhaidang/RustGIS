@@ -680,6 +680,18 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
         }
     };
     reset(s, proj);
+    // The rows a package from home gave are kept on this device. The app keeps them on a thread of
+    // its own (it runs `offline.keepRows` next); a script or the command line keeps them here.
+    #[cfg(not(target_arch = "wasm32"))]
+    let window = s.statistics_window_thread == Some(std::thread::current().id());
+    #[cfg(target_arch = "wasm32")]
+    let window = true;
+    if s.project.given.is_some()
+        && !window
+        && let Err(e) = super::field_changes::keep_rows(s, &Value::Null)
+    {
+        s.warn(e);
+    }
     let legacy_field = is_package && legacy_field_package(&s.project);
     unlink_partial_copies(s, is_field || legacy_field);
     // A package opens as a new, unsaved project (saving writes a plain project file).

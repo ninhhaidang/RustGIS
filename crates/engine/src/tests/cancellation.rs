@@ -149,8 +149,9 @@ pub(super) fn long_commands(boundaries: bool) {
     s.run("layer.addDataText", &json!({"fileName": "ranks.csv", "text": "name,score\na,1\nb,3\n"})).unwrap();
     let registered = crate::cmd::exports::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(listed(&exports), registered, "add a new background export here");
-    // Reuse the same origin and generation on every retry. The open area includes a real
-    // streamed layer to exercise cancellation during its source traversal as well as the write.
+    // Reuse the same origin and generation on every retry (each package's own identity is new, and
+    // `comparable` blanks it). The open area includes a real streamed layer to exercise
+    // cancellation during its source traversal as well as the write.
     let mut field = session(&s);
     field.run("layer.addData", &json!({"path": out("towns.shp"), "name": "Streamed towns", "stream": true})).unwrap();
     field.run("offline.package", &json!({"path": out("seed.rgisfield"), "name": "Crew", "extent": [9, 44, 11, 46]})).unwrap();
@@ -167,6 +168,14 @@ pub(super) fn long_commands(boundaries: bool) {
             s.run("map.terrain", &json!({"off": true})).unwrap();
         }
     }
+
+    // Opening a field package from home keeps the rows it gave on a read of its own
+    // (`offline.keepRows`); each run starts with none kept.
+    let seed = std::fs::read(out("seed.rgisfield")).unwrap();
+    let unpacked = dir.0.join("field package");
+    let (text, _) = crate::cmd::field::unpack_into(&seed, &unpacked).unwrap();
+    let phone = Session::new(crate::cmd::field::project_in(&text, &unpacked).unwrap());
+    read(&phone, "offline.keepRows", &json!({}));
 
     // The Add Service dialog replays supplied metadata off the desktop frame too.
     let params = json!({"url":"https://maps.example.org/dataset","type":"ogcapi","text":"{\"collections\":[]}"});
@@ -531,6 +540,35 @@ fn files(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf
     out
 }
 
+/// `files` with each field package's own identity blanked: every package is given a new one, so
+/// two complete runs write the same package but for it.
+fn comparable(
+    mut files: std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+) -> std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+    for (path, bytes) in &mut files {
+        let Some(zip) = bytes.as_ref().filter(|_| path.extension().is_some_and(|e| e == "rgisfield")) else { continue };
+        let Ok(entries) = rustgis_data::zip::read(zip) else { continue };
+        let mut out = Vec::new();
+        for (name, data) in entries {
+            let data = match serde_json::from_slice::<Value>(&data) {
+                // The entry naming the identity of a package going out.
+                Ok(_) if name == crate::cmd::field_changes::GIVEN => Vec::new(),
+                Ok(mut project) if name.ends_with(".rgis") => {
+                    if let Some(origin) = project.get_mut("field_origin").and_then(Value::as_object_mut) {
+                        origin.remove("package");
+                    }
+                    project.to_string().into_bytes()
+                }
+                _ => data,
+            };
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&data);
+        }
+        *bytes = Some(out);
+    }
+    files
+}
+
 /// Restores only this test's private directory between independent runs; never before a retry.
 fn restore(dir: &std::path::Path, before: &std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>) {
     std::fs::remove_dir_all(dir).unwrap();
@@ -551,8 +589,19 @@ fn restore(dir: &std::path::Path, before: &std::collections::BTreeMap<std::path:
 /// (`exports::written_under`); they must match a normal run's complete files and session.
 fn exercise(fixture: &Session, command: &str, p: &Value, kind: Kind, dir: &std::path::Path, boundaries: bool) {
     const MAX_CHECKS: u64 = 256;
+    // A keep finds the rows it kept on an earlier run and stops at its first check: each run starts
+    // with none kept, so the sweep reaches the write loop, and what a run leaves there is compared.
+    let bases = (command == "offline.keepRows").then(crate::cmd::field_changes::test_bases::root).flatten();
+    let fresh_bases = || {
+        if let Some(root) = &bases {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    };
     let files = || {
         let mut found = files(dir);
+        if let Some(root) = bases.as_ref().filter(|r| r.exists()) {
+            found.extend(files(root).into_iter().map(|(path, bytes)| (std::path::Path::new("field bases").join(path), bytes)));
+        }
         if command == "source.publish"
             && let Some(lock) = found.remove(std::path::Path::new(".towns.shp.rustgis-lock"))
         {
@@ -562,15 +611,19 @@ fn exercise(fixture: &Session, command: &str, p: &Value, kind: Kind, dir: &std::
         }
         found
     };
+    fresh_bases();
     let before_files = files();
     let mut normal = session(fixture);
     let expected = if boundaries {
         let count = Control::cancelled_at_look(u64::MAX);
         kind.run(&mut normal, command, p, &count).unwrap_or_else(|e| panic!("{command} {p}: normal run: {e}"));
         assert!(count.looked() > 0, "{command} {p}: never looks at Cancel");
+        // Kept from scratch, a keep looks between rows, not only once.
+        assert!(bases.is_none() || count.looked() > 2, "{command} {p}: looked {} times; it kept nothing", count.looked());
         assert!(count.looked() < MAX_CHECKS, "{command} {p}: {} checks; shrink the fixture to fit the cap", count.looked());
-        let result = (contents(&normal.project), files());
+        let result = (contents(&normal.project), comparable(files()));
         restore(dir, &before_files);
+        fresh_bases();
         Some(result)
     } else {
         None
@@ -592,18 +645,23 @@ fn exercise(fixture: &Session, command: &str, p: &Value, kind: Kind, dir: &std::
             if !boundaries {
                 return;
             }
+            if bases.is_some() {
+                // A cancelled keep lets the rows go by design, so the package keeps them when it is
+                // opened again: the retry opens it again.
+                s.project.given.clone_from(&fixture.project.given);
+            }
             kind.run(&mut s, command, p, &Control::new()).unwrap_or_else(|e| panic!("{what}: retry: {e}"));
         } else {
             assert!(boundaries, "{what}: ran on after Cancel");
         }
         let (expected, complete_files) = expected.as_ref().unwrap();
         assert!(&contents(&s.project) == expected, "{what}: completion differs from normal run");
-        assert!(&files() == complete_files, "{what}: completion left incomplete files");
+        assert!(&comparable(files()) == complete_files, "{what}: completion left incomplete files");
         if result.is_ok() && control.is_cancelled() {
             // A committed export is already complete, and a subsequent invocation still works.
             kind.run(&mut s, command, p, &Control::new()).unwrap_or_else(|e| panic!("{what}: retry after commit: {e}"));
             assert!(&contents(&s.project) == expected, "{what}: retry after commit changed completion");
-            assert!(&files() == complete_files, "{what}: retry after commit left incomplete files");
+            assert!(&comparable(files()) == complete_files, "{what}: retry after commit left incomplete files");
         }
         // Retry directly on the cancelled session before doing anything that could reset it.
         // Then exercise Undo/Redo: an added step restores the pre-command map. A publication's
@@ -628,6 +686,7 @@ fn exercise(fixture: &Session, command: &str, p: &Value, kind: Kind, dir: &std::
         assert!(s.redo(), "{what}: lost Redo");
         assert!(contents(&s.project) == completed, "{what}: redo didn't restore completion");
         restore(dir, &before_files);
+        fresh_bases();
         if !control.is_cancelled() {
             return;
         }

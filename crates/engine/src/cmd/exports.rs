@@ -405,6 +405,15 @@ pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
 /// its answer: the troubleshooting history files what it says (its failure too) under that
 /// command, and the session's log has its entry, as when it runs here.
 pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String>) -> CmdResult {
+    let landed = export_land_floored(s, started, done);
+    // A landed export (a field package's) may record ids packages hold: kept as any command's are.
+    s.keep_field_floors();
+    landed
+}
+
+/// [`export_land`], before field packages' id floors are kept.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_land_floored(s: &mut Session, started: Started, done: Result<Wrote, String>) -> CmdResult {
     let _inputs = s.log.on().then(rustgis_data::provenance::Capture::start);
     rustgis_data::provenance::record(started.inputs.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
     let Started { command, params, at, start, owner, project, .. } = started;

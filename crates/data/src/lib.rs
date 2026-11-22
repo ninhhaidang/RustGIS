@@ -273,6 +273,10 @@ pub struct Features {
     /// The largest id, kept by [`Dataset::push`] and [`Dataset::push_next`] so that building `n`
     /// rows doesn't search them `n` times; `None` (search once) after any other change to the rows.
     max_id: Option<u64>,
+    /// An id new rows are always given one above, whatever rows are removed: the highest of the
+    /// rows a field package gave, so a feature added on the phone never takes one of theirs
+    /// ([`Features::keep_ids_above`]). Not saved with the rows; 0 for none.
+    id_floor: u64,
 }
 
 impl Features {
@@ -307,7 +311,7 @@ impl Features {
     /// that removes or reorders rows clears it (`DerefMut`, `remove_row`, `retain_rows`,
     /// `truncate_rows`), and the pushes keep it.
     fn push_with_new_id(&mut self, geometry: Option<Geometry>, attrs: Vec<Value>) {
-        let max = self.max_id.unwrap_or_else(|| self.rows.iter().map(|f| f.id).max().unwrap_or(0));
+        let max = self.max_id.unwrap_or_else(|| self.rows.iter().map(|f| f.id).max().unwrap_or(0)).max(self.id_floor);
         let id = max.saturating_add(1);
         self.before_copy();
         std::sync::Arc::make_mut(&mut self.rows).push(Feature { id, geometry, attrs });
@@ -353,7 +357,7 @@ impl std::fmt::Debug for Features {
 
 impl From<Vec<Feature>> for Features {
     fn from(v: Vec<Feature>) -> Features {
-        Features { rows: std::sync::Arc::new(v), max_id: None }
+        Features { rows: std::sync::Arc::new(v), max_id: None, id_floor: 0 }
     }
 }
 

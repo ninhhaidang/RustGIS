@@ -10,10 +10,12 @@
 //! project there, unsaved, as a project package opens.
 //!
 //! Coming back, the field's map is packaged as it is, with the photos its features name (in a
-//! layer's `photos` field, paths separated by `;`) under `photos/`. Bring Back Edits
+//! layer's `photos` field, paths separated by `;`) under `photos/`, and the list of what the phone
+//! changed in the rows it was given ([`super::field_changes`]). Bring Back Edits
 //! (`offline.bringBack`) reads such a package in the project it was made from, puts its photos in
-//! a folder beside that project, and copies the edits back to the area's map by feature, as Sync
-//! does, saying which features were changed on both sides.
+//! a folder beside that project, and applies the list to the area's map, saying which features were
+//! changed on both sides. A package without a list (made or opened where none could be kept) is
+//! compared with the area as last synced, as Sync does.
 
 use std::path::{Path, PathBuf};
 
@@ -67,7 +69,10 @@ pub fn suggested_name(s: &Session, p: &Value) -> String {
 /// online (a web address, not an archive), and an archive that couldn't be read are said.
 #[cfg(test)]
 pub(crate) fn package(s: &mut Session, p: &Value) -> Result<(String, Vec<u8>), String> {
-    let (name, bytes, notes) = package_output(s, p)?;
+    let made = package_output(s, p);
+    // As the command's end keeps the floors of the ids packages hold.
+    s.keep_field_floors();
+    let (name, bytes, notes) = made?;
     for note in notes {
         s.notify(note, false);
     }
@@ -137,6 +142,17 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
     // Only a map coming back from the field carries its photos. Its persisted provenance
     // survives an ordinary Save As; going out, the photos named are at home.
     let coming_back = returning.is_some() && opened_field;
+    // Going out from an area's offline map with edits not synced yet, a feature sketched there and
+    // one added to the area's map since can share an id, so the crew's edits would come home to the
+    // wrong one: refused, as Bring Back refuses it, with nothing changed.
+    if let Some(ai) = home_area.filter(|_| returning.is_some())
+        && super::workspace::area_unsynced(&s.project, ai)
+    {
+        let area = s.project.offline_areas.get(ai).map(|a| a.name.clone()).unwrap_or_default();
+        return Err(format!(
+            "offline area '{area}' has edits in its offline map that aren't synced yet, and a package made from it could give the field ids the map uses for other features. Nothing was changed. Sync the area first (Data › Offline › Sync), then make the package again"
+        ));
+    }
     let (area, mut map) = match returning {
         Some(area) => {
             // Its raster layers stay behind, as an offline area's do going out: said.
@@ -266,6 +282,32 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             ));
         }
         entries.extend(photos.entries);
+        // What the phone changed in the rows it was given, which Bring Back applies.
+        let package = s.project.field_origin.as_ref().map(|o| o.package.clone()).unwrap_or_default();
+        match s.project.field_origin.as_ref().filter(|_| package.is_empty()) {
+            Some(origin) if origin.generation.is_empty() => losses.push(
+                "The field package goes back as a whole map with no return check: it was made before packages had one, so Bring Back can't tell it from a copy already brought back, and bringing it back may undo or repeat what came home since".into(),
+            ),
+            Some(_) => losses.push(WHOLE_MAP.replace("{why}", "the package was made before packages had an identity of their own")),
+            None => {}
+        }
+        if !package.is_empty() {
+            match super::field_changes::list(s.map(), &package) {
+                Ok(Some(changes)) => {
+                    if !changes.gone.is_empty() {
+                        losses.push(format!(
+                            "{} layer(s) the field package gave were removed from its map, so none of their features change at home: {}",
+                            changes.gone.len(),
+                            changes.gone.join(", ")
+                        ));
+                    }
+                    entries.push((super::field_changes::ENTRY.into(), serde_json::to_vec(&changes).map_err(|e| e.to_string())?));
+                }
+                Ok(None) => losses.push(WHOLE_MAP.replace("{why}", "this device doesn't keep the rows the package was given")),
+                Err(e) if e == rustgis_data::DataError::Cancelled.to_string() => return Err(e),
+                Err(e) => losses.push(WHOLE_MAP.replace("{why}", &format!("the rows the package was given couldn't be read ({e})"))),
+            }
+        }
     }
     // A project of the one map: what else the project holds (tables, notebooks, models, shared
     // items and their paths…) stays at home. The custom colour ramps and styles go with it, as its
@@ -318,6 +360,8 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             project: s.project.origin_id.clone(),
             area: home_area.id.clone(),
             generation: home_area.generation.clone(),
+            package: crate::project::field_id()?,
+            ids: Default::default(),
         })
     };
     if origin
@@ -345,6 +389,37 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             .extent;
         let available = project_room(companion_bytes(&entries));
         copied = copy_streams(&mut map, extent, stream_budget(available), &mut losses)?;
+    }
+    // Going out, the highest id each layer has: features added in the field are given ids above it,
+    // and so are those added here, in the area's map or its offline map, while the package is out.
+    if !coming_back && let Some(origin) = project.field_origin.as_mut() {
+        // At least what earlier packages of the area recorded: the area's map, renewed from the
+        // snapshot, holds no floor of its own, and a package still out may hold a higher id.
+        let recorded =
+            s.project.offline_areas.iter().find(|a| a.name.eq_ignore_ascii_case(&area)).map(|a| a.ids.clone()).unwrap_or_default();
+        // New features are given ids above the highest: at `i64::MAX`, the largest a GeoPackage or
+        // PostGIS feature can have, the next would be one neither can hold, and the floor isn't one a
+        // project can keep.
+        if let Some(l) = map.layers.iter().find(|l| !l.is_raster() && l.dataset.features.highest_id() >= i64::MAX.unsigned_abs()) {
+            return Err(format!(
+                "{}: a feature's id is {} or more, so features added in the field couldn't be given ids a GeoPackage or PostGIS table can hold. Give the layer's features smaller ids (copy them to a new layer), then package it",
+                l.name,
+                i64::MAX
+            ));
+        }
+        origin.ids = map
+            .layers
+            .iter()
+            .filter(|l| !l.is_raster())
+            .map(|l| (l.id, l.dataset.features.highest_id().max(recorded.get(&l.id).copied().unwrap_or(0))))
+            .filter(|(_, id)| *id > 0)
+            .collect();
+        if let Some(home) = s.project.offline_areas.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&area)) {
+            for (layer, id) in &origin.ids {
+                let held = home.ids.entry(*layer).or_insert(0);
+                *held = (*held).max(*id);
+            }
+        }
     }
     project.maps = vec![map];
     let home = &s.project;
@@ -424,11 +499,18 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
     if !manifest.is_empty() {
         entries.push((LEFT_BEHIND.into(), manifest));
     }
+    // Going out, the package says so, with its identity: only its rows are kept as given.
+    if let Some(package) = project.field_origin.as_ref().map(|o| o.package.as_str()).filter(|p| !coming_back && !p.is_empty()) {
+        entries.push((super::field_changes::GIVEN.into(), super::field_changes::given_entry(package)?));
+    }
     let bytes = rustgis_data::zip::write(&entries)?;
     progress::check().map_err(|e| e.to_string())?;
     notes.extend(losses);
     Ok((area, bytes))
 }
+
+/// Said when a returning package goes without its list of changes (`{why}`).
+const WHOLE_MAP: &str = "The field package goes back as a whole map, without the list of what changed in it: {why}. Bring Back refuses it if its offline area has been brought back or synced since the package was made";
 
 /// Builds and stages the package against a shared-row project snapshot. Delivery checks
 /// the live home state before installing the file and recording the new identities or area.
@@ -459,6 +541,8 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             let outbound = copy.project.offline_areas.iter().any(|saved| saved.name.eq_ignore_ascii_case(&area));
             Ok((answer, file, notes, outbound))
         });
+        // A return spends its package: the rows it gave are let go once the return is written.
+        let spent = spent_package(&copy);
         rustgis_data::progress::check().map_err(|e| e.to_string())?;
         let (errors, other): (Vec<_>, Vec<_>) = copy.notices.into_iter().partition(|n| n.error);
         let diagnostics = errors.into_iter().map(|n| (n.severity, n.text)).collect();
@@ -467,6 +551,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         let control = rustgis_analysis::control::current();
         let then: super::exports::Then = Box::new(move |s, answer| {
             let (result, file, notes, outbound) = staged?;
+            let spent = spent.filter(|_| !outbound);
             if outbound && (s.opened != opened || s.state() != state) {
                 return Err("the home project changed during packaging; make a new package before sending it to the field".into());
             }
@@ -492,6 +577,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             for note in notes.into_iter().chain(construction_notes) {
                 s.notify(note, false);
             }
+            spend(s, spent);
             s.retain_written_notices(mark);
             *answer = result;
             Ok(())
@@ -509,11 +595,32 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
     }))
 }
 
+/// The package a field project's return spends: its own identity, when it has one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn spent_package(s: &Session) -> Option<String> {
+    s.project.field_origin.as_ref().map(|o| o.package.clone()).filter(|p| !p.is_empty())
+}
+
+/// Once a return of package `spent` has been written: home brings a package back once, so the rows
+/// it gave this device are no longer needed, and are removed. Said either way.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn spend(s: &mut Session, spent: Option<String>) {
+    let Some(package) = spent else { return };
+    match super::field_changes::forget(&package) {
+        Ok(true) => s.notify(
+            "The field package went back: this device no longer keeps the rows it gave. A package comes back once, so make a new field package for more edits",
+            false,
+        ),
+        Ok(false) => {}
+        Err(e) => s.notify(format!("The field package went back, but the rows it gave couldn't be removed from this device: {e}"), true),
+    }
+}
+
 /// Offline area identity state which packaging can change. Feature rows are shared with home
 /// until the worker builds a new area's clipped baseline.
 #[cfg(not(target_arch = "wasm32"))]
-fn area_ids(project: &Project) -> Vec<(String, String)> {
-    project.offline_areas.iter().map(|a| (a.id.clone(), a.generation.clone())).collect()
+fn area_ids(project: &Project) -> Vec<(String, String, std::collections::BTreeMap<u32, u64>)> {
+    project.offline_areas.iter().map(|a| (a.id.clone(), a.generation.clone(), a.ids.clone())).collect()
 }
 
 fn companion_bytes(entries: &[(String, Vec<u8>)]) -> u64 {
@@ -892,11 +999,21 @@ fn plain_file(file: &str) -> bool {
 /// folder beside this project (`<area> photos`), or the app's own `field photos/<area>` for a
 /// project not saved yet, and its features name them there; one whose name is taken there by
 /// other bytes gets a name of its own (`2-<name>`), and an entry that isn't a plain file name is
-/// left out and counted. Then its edits are copied back to the area's map by feature, as Sync does
-/// (`sync_area`), which says the conflicts.
+/// left out and counted. Then its list of changes is applied to the area's map
+/// ([`super::field_changes::apply`]); a package without one is compared with the area as last
+/// synced, as Sync does (`sync_area`), and only while the area is as it was when the package was
+/// made. Each says the conflicts. A package comes back once: its identity is kept with the area,
+/// and a package of that identity is refused after.
 ///
-/// It runs where it is called, on the window's thread, as Sync does: the package is one read, each
-/// photo one write, and the sync one pass over the area's features, with no Cancel between them.
+/// It runs where it is called, on the window's thread, as it did before packages carried a list of
+/// changes and as Sync does: it changes the area's map, the area and its offline map, and writes
+/// the photos, as one undoable step, which none of the background paths (tools, exports, reads,
+/// rasters) carries yet; moving it to one, with progress and Cancel, belongs with #1562. Its work:
+/// the package is one read, each photo one write, the changes one pass over each changed layer of
+/// the map and of the package's map, and, when the area's offline map is open with rows no longer
+/// shared with its snapshot, one comparison of those rows with the snapshot's
+/// ([`super::workspace::area_unsynced`]); a whole map, one pass over the area's features. No
+/// Cancel between them.
 pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
     let legacy_area = if p.get("legacyArea").is_some() {
         legacy_user(s)?;
@@ -918,9 +1035,15 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
     // Photo entries that aren't a plain file name, left out.
     let mut strange = 0usize;
     let mut index = String::new();
+    let mut changes = None;
+    let mut outbound = false;
     for (name, data) in entries {
         if name == INDEX {
             index = String::from_utf8_lossy(&data).into_owned();
+        } else if name == super::field_changes::ENTRY {
+            changes = Some(data);
+        } else if name == super::field_changes::GIVEN {
+            outbound = true;
         } else if !name.contains('/') && crate::project::is_project_file(&name) {
             text = Some(String::from_utf8(data).map_err(|_| "the field package's project is damaged".to_string())?);
         } else if let Some(file) = name.strip_prefix(&format!("{PHOTOS}/")) {
@@ -933,6 +1056,11 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
         }
     }
     let text = text.ok_or("the file holds no field package's project")?;
+    // A package made here to go out, not one coming back: bringing it back would record it as
+    // returned, and refuse the phone's real return after.
+    if outbound {
+        return Err("this field package was made here to go to the field, not sent back from it: Bring Back reads the package the phone sends with Send Field Package. Nothing was changed".into());
+    }
     let project = Project::from_import_json(&text, None)?;
     let ai = if let Some(area) = legacy_area {
         let raw: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
@@ -970,10 +1098,24 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
             .ok_or("this project has no offline area with the field package's identity: open the project as saved after packaging")?
     };
     let area = s.project.offline_areas.get(ai).ok_or("no such area")?.name.clone();
-    // The package must be of the area's state as it is: a copy of a package already brought back (a
-    // second phone's, or the same phone's second return), or one made before a sync, would undo or
-    // repeat what came home since. Nothing has been changed yet.
-    if let Some(origin) = project.field_origin.as_ref().filter(|_| legacy_area.is_none()) {
+    let origin = project.field_origin.as_ref().filter(|_| legacy_area.is_none());
+    let package = origin.map(|o| o.package.clone()).unwrap_or_default();
+    // A package comes back once: its changes applied again would be repeated.
+    if !package.is_empty() && s.project.offline_areas.get(ai).is_some_and(|a| a.returned.contains(&package)) {
+        return Err(format!(
+            "this field package was brought back to offline area '{area}' already, so bringing it back again would repeat its changes. Nothing was changed. Give each phone a package of its own, and a new one for more edits after a Bring Back: make it from the area's offline map"
+        ));
+    }
+    let changes = match changes {
+        Some(bytes) if !package.is_empty() => Some(super::field_changes::Changes::read(&bytes, &package)?),
+        Some(_) => return Err("the field package lists its changes but has no identity of its own: it is damaged".into()),
+        None => None,
+    };
+    // Without a list of its changes, the package's map is compared with the area as last synced, so
+    // it must be of that state: a copy of a package already brought back (a second phone's, or the
+    // same phone's second return), or one made before a sync, would undo or repeat what came home
+    // since. Nothing has been changed yet.
+    if let Some(origin) = origin.filter(|_| changes.is_none()) {
         let held = s.project.offline_areas.get(ai).map(|a| a.generation.as_str()).unwrap_or_default();
         if origin.generation.is_empty() {
             s.notify(
@@ -987,6 +1129,13 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
                 "this field package is out of date: offline area '{area}' has been brought back or synced since it was made, so bringing it back too would undo or repeat what came home. Nothing was changed. Make a new package from the area's offline map for this phone (one package per phone, a new one after each Bring Back), then redo this phone's edits"
             ));
         }
+    }
+    // An offline map of the area open here with edits not synced yet would be replaced as the area
+    // is renewed from its map: refused first, with nothing changed.
+    if super::workspace::area_unsynced(&s.project, ai) {
+        return Err(format!(
+            "offline area '{area}' has edits in its offline map that aren't synced yet, and bringing the field package back would replace them. Nothing was changed. Sync the area first (Data › Offline › Sync), then Bring Back again"
+        ));
     }
     if project.maps.len() != 1 {
         return Err("a field package must hold exactly its original field map".into());
@@ -1020,6 +1169,12 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
         }
         keep
     });
+    // The changes to the layers left out (copies of sources read in place, layers the area hasn't)
+    // stay in the field project with them.
+    let changes = changes.map(|mut c| {
+        c.layers.retain(|lc| edited.layers.iter().any(|l| l.id == lc.layer));
+        c
+    });
     let skipped_photos = if (!reference.is_empty() || !unowned.is_empty()) && !photos.is_empty() {
         let before = photos.len();
         // An entry may be shared by a kept feature and a dropped one. Only discard entries
@@ -1041,6 +1196,24 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
         before - photos.len()
     } else {
         0
+    };
+    // With a list of changes, only the photos of the cells it changes and the features it adds
+    // come home: a cell the field didn't change stays as home has it, so its photo would be kept
+    // with nothing naming it.
+    let unchanged_photos = match &changes {
+        Some(changes) if !photos.is_empty() => {
+            let home = s.project.offline_areas.get(ai).and_then(|a| s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(&a.map)));
+            let named = super::field_changes::photos_named(&edited, home, changes, photos_field, |text| {
+                photo_paths(text)
+                    .into_iter()
+                    .filter_map(|r| text.get(r).and_then(|p| p.strip_prefix(&format!("{PHOTOS}/"))).map(str::to_string))
+                    .collect()
+            });
+            let before = photos.len();
+            photos.retain(|(name, _)| named.contains(name));
+            before - photos.len()
+        }
+        _ => 0,
     };
     // The photos, beside the project, and the features naming them there.
     let mut put = 0usize;
@@ -1099,20 +1272,25 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
         folder = Some((dir, photos, placed));
     }
     // Fields the field added (a layer's photos field, made with its first photo) come too.
-    let added = take_new_fields(s, ai, &edited);
+    // A list of changes names the fields the field added; a whole map is compared with the area.
+    let added = match &changes {
+        Some(changes) => super::field_changes::add_fields(s, ai, changes),
+        None => take_new_fields(s, ai, &edited),
+    };
     if !added.is_empty() {
         s.notify(format!("Added the field(s) the field package's layers added: {}", added.join(", ")), false);
     }
-    let mut done = super::workspace::sync_area(s, ai, &edited)?;
-    // The phone keeps its own ids: a feature it added whose id was taken here comes back next time
-    // under that id, and is replaced then.
+    let mut done = match &changes {
+        Some(changes) => super::field_changes::apply(s, ai, &edited, changes)?,
+        None => super::workspace::sync_area(s, ai, &edited)?,
+    };
+    if !package.is_empty()
+        && let Some(a) = s.project.offline_areas.get_mut(ai)
+    {
+        a.returned.push(package.clone());
+    }
     if let Some(n) = done.get("renumbered").and_then(Value::as_u64).filter(|n| *n > 0) {
-        s.notify(
-            format!(
-                "{n} feature(s) added in the field took a new id here, theirs being used in this map already. A later field package from the same phone replaces them under another new id: send a new field package for more edits"
-            ),
-            false,
-        );
+        s.notify(format!("{n} feature(s) added in the field took a new id here, theirs being used in this map already"), false);
     }
     // The edits are back: now the photos are written. One that can't be takes those written before
     // it away again, and the command fails (the project is put back as it was).
@@ -1163,6 +1341,14 @@ pub(crate) fn bring_back(s: &mut Session, p: &Value) -> Result<Value, String> {
                 "Bring Back skipped {} layer(s) that aren't in offline area '{area}' (added in the field). Their features stay in the field project: {}",
                 unowned.len(),
                 unowned.join(", ")
+            ),
+            false,
+        );
+    }
+    if unchanged_photos > 0 {
+        s.notify(
+            format!(
+                "Bring Back left out {unchanged_photos} photo(s) that no change it brings back names (photos the field didn't change, or of features deleted here): home's are kept"
             ),
             false,
         );
@@ -1258,7 +1444,7 @@ pub(crate) fn unpack(bytes: &[u8], stem: &str) -> Result<(PathBuf, String, Vec<S
 
 /// Unpacks a field package's `bytes` into `dir`, a folder not there yet (see [`unpack`]), and
 /// returns the project text and its optional notices. A write that fails removes what was written.
-fn unpack_into(bytes: &[u8], dir: &Path) -> Result<(String, Vec<String>), String> {
+pub(crate) fn unpack_into(bytes: &[u8], dir: &Path) -> Result<(String, Vec<String>), String> {
     let entries = rustgis_data::zip::read(bytes)?;
     let mut project = None;
     let mut manifest = None;
@@ -1321,7 +1507,9 @@ fn read_manifest(bytes: &[u8]) -> Vec<String> {
 
 /// Reads a field package with paths to its unpacked basemaps and photos. Absolute paths to
 /// photos stay usable after opening a recovery copy, which has no unpack directory of its own.
-/// References that cannot store an absolute path are left relative and reported on open.
+/// References that cannot store an absolute path are left relative and reported on open. A package
+/// that went out from home has the rows it gives taken (`Project::given`), for
+/// `offline.keepRows` to keep on this device.
 pub(crate) fn project_in(text: &str, dir: &Path) -> Result<Project, String> {
     let mut project = Project::from_import_json(text, Some(dir))?;
     let photos = std::path::absolute(dir.join(PHOTOS)).map_err(|e| e.to_string())?;
@@ -1342,6 +1530,9 @@ pub(crate) fn project_in(text: &str, dir: &Path) -> Result<Project, String> {
             });
         }
     }
+    // The rows as given, taken (sharing them) for `offline.keepRows` to keep, when this package
+    // went out from home: a return opened here keeps none.
+    project.given = super::field_changes::GivenRows::in_package(dir, &project).map(std::sync::Arc::new);
     if relative > 0 {
         project.read_notices.push((
             crate::project::ReadPart::Maps,
@@ -1563,7 +1754,7 @@ mod tests {
         // The package: the project, the archive under basemaps/, a README.
         let entries = rustgis_data::zip::read(&bytes).unwrap();
         let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["Survey.rgis", "basemaps/site.mbtiles", "README.txt", LEFT_BEHIND]);
+        assert_eq!(names, ["Survey.rgis", "basemaps/site.mbtiles", "README.txt", LEFT_BEHIND, crate::cmd::field_changes::GIVEN]);
         assert_eq!(entries[1].1, b"stand-in archive bytes");
         // Unpacked and read: one map, the area's, its features in it, its basemap read from beside it.
         let into = temp.path().join("unpacked");
@@ -1866,11 +2057,22 @@ mod tests {
         assert_eq!(entries[0].0, "Back.rgis");
     }
 
-    /// What a new package of `home`'s only area does for a phone's copy: its return check is the area's
-    /// as it is now, as a package made after the last Bring Back has.
+    /// What a new package of `home`'s only area does for a phone's copy: an identity not brought
+    /// back yet, and the area's return check as it is now. This device keeps no rows for that
+    /// identity, so it goes back as a whole map, compared with the area as last synced.
     fn given_a_new_package(home: &Session, field: &mut Session) {
         let held = home.project.offline_areas[0].generation.clone();
-        field.project.field_origin.as_mut().unwrap().generation = held;
+        let origin = field.project.field_origin.as_mut().unwrap();
+        origin.generation = held;
+        origin.package = crate::project::field_id().unwrap();
+    }
+
+    /// A session of a field project just read from its package, its given rows kept as the app
+    /// keeps them once it opens.
+    fn opened(project: Project) -> Session {
+        let mut s = Session::new(project);
+        s.run("offline.keepRows", &Value::Null).unwrap();
+        s
     }
 
     /// Layer `name`'s id in the active map.
@@ -1946,7 +2148,7 @@ mod tests {
         // In the field: the package opened, a city renamed, one added, one deleted, a photo taken.
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         // As `project.open` marks a project opened from a field package.
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         assert_eq!(field.map().name, "Trip (offline)");
@@ -1997,7 +2199,7 @@ mod tests {
         assert!(said.iter().any(|t| t.contains("Brought the field's edits back") && t.contains("1 photo(s)")), "{said:?}");
         // The same package brought back again is refused: no feature twice.
         let again = home.run("offline.bringBack", &json!({"path": sent.display().to_string()})).unwrap_err();
-        assert!(again.contains("out of date"), "{again}");
+        assert!(again.contains("brought back to offline area 'Trip' already"), "{again}");
         assert_eq!(home.map().layer(home_cities).unwrap().dataset.features.len(), before);
         // A package for another home is refused before looking up an area by name.
         let mut other = sample();
@@ -2024,9 +2226,12 @@ mod tests {
         // Coming back: the picture only, under a plain name; the text file stays named as it was.
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         // As `project.open` marks a project opened from a field package.
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        // The field names the photos again, in another order: a change it brings back.
+        let reordered = format!("{};{}", picture.display(), secret.display());
+        field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": reordered})).unwrap();
         let back = |field: &mut Session| package(field, &Value::Null).unwrap().1;
         let entries = rustgis_data::zip::read(&back(&mut field)).unwrap();
         let photos: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).filter(|n| n.starts_with("photos/") && *n != INDEX).collect();
@@ -2067,7 +2272,7 @@ mod tests {
         let (_, out) = package(&mut home, &json!({"name": "Here", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         // Sent back with no edit: the picture goes in, listed with its path; the gif is said.
         let mark = field.notice_mark();
@@ -2095,7 +2300,7 @@ mod tests {
         let (_, out) = package(&mut home, &json!({"name": "Semi", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         let cities = layer(&field, "Cities");
         // A picture in a folder with a `;` in its name, and a gif named by two features.
@@ -2143,7 +2348,7 @@ mod tests {
         let (_, out) = package(&mut home, &json!({"name": "Odd", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         let (_, back) = package(&mut field, &Value::Null).unwrap();
         let path = temp.path().join("back.rgisfield");
@@ -2177,8 +2382,12 @@ mod tests {
         let (_, bytes) = package(&mut home, &json!({"name": "Site", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&bytes, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
+        // A feature naming the photo the package carries.
+        let cities = layer(&field, "Cities");
+        field.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
+        field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": "photos/new.jpg"})).unwrap();
         let (_, back) = package(&mut field, &Value::Null).unwrap();
         let mut entries = rustgis_data::zip::read(&back).unwrap();
         entries.push(("photos/new.jpg".into(), b"photo".to_vec()));
@@ -2208,7 +2417,7 @@ mod tests {
         let (_, out) = package(&mut home, &json!({"name": "All", "extent": [-180.0, -90.0, 180.0, 90.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         let cities = layer(&field, "Cities");
         field.run("edit.addFeature", &json!({"layer": cities, "geometry": {"type": "Point", "coordinates": [10.0, 5.0]}})).unwrap();
@@ -2224,7 +2433,7 @@ mod tests {
         assert!(home.map().layer(home_cities).unwrap().dataset.features.iter().any(|f| f.id == id));
         // Again: refused, so the feature isn't there twice.
         let again = home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap_err();
-        assert!(again.contains("out of date"), "{again}");
+        assert!(again.contains("already"), "{again}");
         assert_eq!(home.map().layer(home_cities).unwrap().dataset.features.iter().filter(|f| f.id == id).count(), 1);
     }
 
@@ -2355,7 +2564,7 @@ mod tests {
         let (_, out) = package(&mut other, &json!({"name": "Site", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         let (_, back) = package(&mut field, &Value::Null).unwrap();
         // Here, an area of that name made from this project's map.
@@ -2377,22 +2586,24 @@ mod tests {
         let (_, out) = package(&mut home, &json!({"name": "Back", "extent": [-180.0, -85.0, 180.0, 85.0]})).unwrap();
         let unpacked = temp.path().join("field");
         let text = unpack_into(&out, &unpacked).unwrap().0;
-        let mut field = Session::new(project_in(&text, &unpacked).unwrap());
+        let mut field = opened(project_in(&text, &unpacked).unwrap());
         field.opened_package = Some(temp.path().join("sent.rgisfield"));
         let cities = layer(&field, "Cities");
         let photo = temp.path().join("site.jpg");
         std::fs::write(&photo, b"jpeg").unwrap();
         field.run("edit.addField", &json!({"layer": cities, "name": "photos", "type": "text"})).unwrap();
         field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": "photos", "value": photo.display().to_string()})).unwrap();
+        let gone = field.map().layer(cities).unwrap().dataset.fields[0].name.clone();
+        field.run("edit.setValue", &json!({"layer": cities, "row": 0, "field": gone, "value": "Changed in the field"})).unwrap();
         let (_, back) = package(&mut field, &Value::Null).unwrap();
         std::fs::remove_file(&photo).unwrap();
-        // At home meanwhile, a field the field has is removed: the sync is refused.
+        // At home meanwhile, a field the field changed is removed: Bring Back is refused.
         let home_cities = layer(&home, "Cities");
-        let gone = home.map().layer(home_cities).unwrap().dataset.fields[0].name.clone();
         home.run("edit.deleteField", &json!({"layer": home_cities, "field": gone})).unwrap();
         let path = temp.path().join("back.rgisfield");
         std::fs::write(&path, &back).unwrap();
-        assert!(home.run("offline.bringBack", &json!({"path": path.display().to_string()})).is_err());
+        let refused = home.run("offline.bringBack", &json!({"path": path.display().to_string()})).unwrap_err();
+        assert!(refused.contains("hasn't the field(s)") && refused.contains(&gone), "{refused}");
         assert!(!temp.path().join("Back photos").exists());
         // Nor the photos field it would have added.
         assert!(home.map().layer(home_cities).unwrap().dataset.field_index("photos").is_none());

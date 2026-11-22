@@ -235,6 +235,7 @@ pub(crate) const IN_BACKGROUND: &[(&str, &str)] = &[
     ("table.statistics", "Column Statistics"),
     ("data.similar", "Find Similar"),
     ("layer.sizeBy", "Size by Field"),
+    ("offline.keepRows", "Keep Field Package Rows"),
     ("style.importQgis", "Import QGIS Style"),
 ];
 
@@ -328,6 +329,7 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
         "table.statistics" => (super::table_stats::stats_ahead(s, params), None),
         "data.similar" => (super::similar::ahead(s, params), None),
         "layer.sizeBy" => (super::layer::size_by_ahead(s, params), None),
+        "offline.keepRows" => (super::field_changes::keep_ahead(s), None),
         "style.importQgis" => (super::qgis::style_ahead(s, params), None),
         // Listed in IN_BACKGROUND without a read here.
         id => return Err(not_in_background(id)),

@@ -99,6 +99,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-chart-classes",
     "layout-chart-stack",
     "field-generation",
+    "field-package",
     "offline-map-area-id",
     "crs-wkt",
     "zarr-window",
@@ -409,6 +410,11 @@ pub struct Project {
     /// The home and area this field copy belongs to, retained through ordinary saves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_origin: Option<FieldOrigin>,
+    /// The rows a field package from home gave, taken as it opened and not yet kept on this device
+    /// (`offline.keepRows`). Never saved.
+    #[serde(skip)]
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    pub(crate) given: Option<std::sync::Arc<crate::cmd::field_changes::GivenRows>>,
     #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub maps: Vec<Map>,
     pub active_map: usize,
@@ -661,17 +667,77 @@ pub struct Job {
 pub struct FieldOrigin {
     pub project: String,
     pub area: String,
-    /// The area's [`OfflineArea::generation`] when the package was made. Bring Back accepts the
-    /// package only while the area still has it. Empty for a package made before packages carried
-    /// one.
+    /// The area's [`OfflineArea::generation`] when the package was made. Bring Back accepts a
+    /// package without a list of its changes only while the area still has it. Empty for a package
+    /// made before packages carried one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generation: String,
+    /// This package's own identity, new for each package made: Bring Back refuses a package whose
+    /// identity its area has brought back already ([`OfflineArea::returned`]), and the phone finds
+    /// the copy of the rows it was given by it. Empty for a package made before packages had one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    /// The highest feature id each of the package's layers had when it was made, by layer id: a
+    /// feature added in the field is given an id above it, even after the features with the
+    /// highest ids are deleted, so it is never taken for one the package gave.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[cfg_attr(feature = "schema", schemars(with = "std::collections::BTreeMap<u32, crate::schema::IdFloor>"))]
+    pub ids: std::collections::BTreeMap<u32, u64>,
+}
+
+impl Project {
+    /// Keeps the ids new features are given above those field packages hold: in a field project,
+    /// those its package gave ([`FieldOrigin::ids`]); at home, those an offline area's packages gave
+    /// ([`OfflineArea::ids`]), in both maps a feature can be added to for the area, its source map
+    /// (by [`OfflineArea::map`]) and its offline map when open (by its area id, or the offline title
+    /// a map saved before maps carried one has). The session runs it after every command, Undo and
+    /// Redo, and when a project is opened ([`crate::Session::keep_field_floors`]), so a layer whose
+    /// rows were replaced (reloaded, renewed, restored) still keeps them.
+    pub(crate) fn keep_field_floors(&mut self) {
+        if let (Some(origin), Some(map)) = (self.field_origin.clone(), self.maps.first_mut()) {
+            origin.keep_ids(map);
+        }
+        for area in &self.offline_areas {
+            let offline = format!("{}{}", area.name, crate::cmd::field::OFFLINE);
+            let is_area_map = |m: &Map| {
+                m.name.eq_ignore_ascii_case(&area.map)
+                    || (!area.id.is_empty() && m.offline_area_id.as_deref() == Some(area.id.as_str()))
+                    || (m.offline_area_id.is_none() && m.name.eq_ignore_ascii_case(&offline))
+            };
+            for map in self.maps.iter_mut().filter(|m| is_area_map(m)) {
+                for (layer, id) in &area.ids {
+                    if let Some(l) = map.layers.iter_mut().find(|l| l.id == *layer && !l.is_raster()) {
+                        l.dataset.features.keep_ids_above(*id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl FieldOrigin {
+    /// Keeps the ids new features of `map`'s layers are given above those the package gave
+    /// ([`FieldOrigin::ids`]).
+    pub(crate) fn keep_ids(&self, map: &mut Map) {
+        for (layer, id) in &self.ids {
+            if let Some(l) = map.layers.iter_mut().find(|l| l.id == *layer && !l.is_raster()) {
+                l.dataset.features.keep_ids_above(*id);
+            }
+        }
+    }
 }
 
 pub(crate) fn field_id() -> Result<String, String> {
     let mut bits = [0u8; 16];
     getrandom::fill(&mut bits).map_err(|e| format!("cannot make a field-package identity: {e}"))?;
     Ok(bits.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Whether the highest ids a field package's layers had ([`FieldOrigin::ids`], [`OfflineArea::ids`])
+/// can be: below the largest id a GeoPackage or PostGIS feature can have (`i64::MAX`), so the next
+/// new feature's id is one either can hold. One at or above it is hostile, and refused.
+pub(crate) fn valid_id_floors(ids: &std::collections::BTreeMap<u32, u64>) -> bool {
+    ids.values().all(|id| *id < i64::MAX.unsigned_abs())
 }
 
 pub(crate) fn valid_field_id(id: &str) -> bool {
@@ -693,11 +759,22 @@ pub struct OfflineArea {
     #[serde(default)]
     pub synced: f64,
     /// Which state of the area its field packages were made from: given when a package is first
-    /// made of the area, and replaced at every sync or Bring Back. A package comes back only while
-    /// the area still has the one it was made with, so a second copy of a package, or a second
-    /// return, can't undo or repeat what the first brought home. Empty until a package is made.
+    /// made of the area, and replaced at every sync or Bring Back. A package without a list of its
+    /// changes, compared with the area as last synced, comes back only while the area still has the
+    /// one it was made with, so it can't undo or repeat what came home since. Empty until a package
+    /// is made.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generation: String,
+    /// The identities ([`FieldOrigin::package`]) of the field packages of this area already
+    /// brought back: each comes back once, so its changes can't be applied twice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returned: Vec<String>,
+    /// The highest feature id each layer of its map had in any field package made of the area, by
+    /// layer id: a feature added to the map here is given an id above it, so a package still out
+    /// never takes one added since for a feature it was given.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[cfg_attr(feature = "schema", schemars(with = "std::collections::BTreeMap<u32, crate::schema::IdFloor>"))]
+    pub ids: std::collections::BTreeMap<u32, u64>,
     /// The snapshot: the map's feature layers holding the features meeting the extent.
     #[cfg_attr(feature = "schema", schemars(with = "crate::schema::Open"))]
     pub data: Map,
@@ -1169,6 +1246,7 @@ impl Project {
             name: name.into(),
             origin_id: String::new(),
             field_origin: None,
+            given: None,
             maps: vec![Map::new("Map")],
             active_map: 0,
             tables: Vec::new(),
@@ -1293,6 +1371,30 @@ impl Project {
     /// which takes its place (undo, redo): the counter never goes back.
     pub(crate) fn keep_table_ids(&mut self, other: &Project) {
         self.next_table_id = self.next_table_id.max(other.next_table_id);
+    }
+
+    /// Keeps the ids field packages hold, recorded in another state of the project, in this one,
+    /// which takes its place (undo, redo): each offline area's ([`OfflineArea::ids`], by area id)
+    /// and the field project's own ([`FieldOrigin::ids`], for the same package) only go up. A
+    /// package sent goes on holding its ids whatever is undone at home.
+    pub(crate) fn keep_field_ids(&mut self, other: &Project) {
+        let up = |into: &mut std::collections::BTreeMap<u32, u64>, from: &std::collections::BTreeMap<u32, u64>| {
+            for (layer, id) in from {
+                let held = into.entry(*layer).or_insert(0);
+                *held = (*held).max(*id);
+            }
+        };
+        for area in self.offline_areas.iter_mut().filter(|a| !a.id.is_empty()) {
+            if let Some(was) = other.offline_areas.iter().find(|o| o.id == area.id) {
+                up(&mut area.ids, &was.ids);
+            }
+        }
+        if let (Some(origin), Some(was)) = (self.field_origin.as_mut(), other.field_origin.as_ref())
+            && !origin.package.is_empty()
+            && origin.package == was.package
+        {
+            up(&mut origin.ids, &was.ids);
+        }
     }
 
     /// Adds a standalone table, and returns the id it got.
@@ -1785,10 +1887,14 @@ impl Project {
                 !valid_field_id(&origin.project)
                     || !valid_field_id(&origin.area)
                     || (!origin.generation.is_empty() && !valid_field_id(&origin.generation))
+                    || (!origin.package.is_empty() && !valid_field_id(&origin.package))
+                    || !valid_id_floors(&origin.ids)
             })
             || p.offline_areas.iter().any(|area| {
                 (!area.id.is_empty() && (!valid_field_id(&area.id) || !area_ids.insert(area.id.as_str())))
                     || (!area.generation.is_empty() && !valid_field_id(&area.generation))
+                    || area.returned.iter().any(|id| !valid_field_id(id))
+                    || !valid_id_floors(&area.ids)
             })
             || p.maps.iter().any(|map| map.offline_area_id.as_deref().is_some_and(|id| !valid_field_id(id) || !offline_map_ids.insert(id)))
         {
@@ -2584,6 +2690,7 @@ impl Durable for Project {
             name: _,
             origin_id: _,
             field_origin: _,
+            given: _,
             maps,
             active_map: _,
             tables,
@@ -2614,7 +2721,7 @@ impl Durable for Project {
             p.child(Owner::Map(i), v);
         }
         for (i, v) in offline_areas.iter().enumerate() {
-            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, generation: _, data } = v;
+            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, generation: _, returned: _, ids: _, data } = v;
             p.child(Owner::Area(i), data);
         }
         for (i, v) in tables.iter().enumerate() {

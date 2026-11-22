@@ -29,6 +29,28 @@ impl JsonSchema for Open {
     }
 }
 
+/// A field package's highest feature id for a layer (`FieldOrigin::ids`, `OfflineArea::ids`): below
+/// `i64::MAX`, as the project reader requires, so the next new feature's id is one a GeoPackage or
+/// PostGIS table can hold.
+pub struct IdFloor;
+
+impl JsonSchema for IdFloor {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "IdFloor".into()
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "maximum": i64::MAX - 1
+        })
+    }
+}
+
 /// The schema as [`PATH`] holds it: JSON Schema 2020-12, with the formats it covers (the one this
 /// RustGIS writes and the newest it reads) and the capabilities it knows, so changing any of them
 /// changes the file too.

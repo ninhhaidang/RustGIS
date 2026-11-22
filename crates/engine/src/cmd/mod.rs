@@ -20,6 +20,7 @@ pub mod embeddings;
 pub mod exports;
 pub mod extensions;
 pub mod field;
+pub(crate) mod field_changes;
 pub mod geocode;
 pub mod geolibre;
 pub mod gp;

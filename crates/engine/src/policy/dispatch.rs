@@ -915,6 +915,15 @@ impl Session {
     }
     /// The sole Handler call seam; preserves transaction ownership and provenance rollback.
     pub(crate) fn invoke(&mut self, op: Authorized<CommandOp>, txn: Txn) -> CmdResult {
+        let result = self.invoke_unfloored(op, txn);
+        // Whatever the command replaced, new features stay above the ids field packages hold: here,
+        // where every command runs (a script's or a task's lines too), so the next one allocates
+        // above them.
+        self.keep_field_floors();
+        result
+    }
+    /// [`Self::invoke`], before field packages' id floors are kept.
+    fn invoke_unfloored(&mut self, op: Authorized<CommandOp>, txn: Txn) -> CmdResult {
         let node = op.node.clone();
         match &op.op {
             CommandOp::Plugin { pin, .. } => {

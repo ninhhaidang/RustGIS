@@ -141,6 +141,16 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
         return Err("features can't be pasted into a raster layer".into());
     }
     let want = l.geometry_type();
+    // Ids for every feature the layer takes (one of another shape is left out below), above every id
+    // it has or keeps new rows above, refused before anything changes when they would run past the
+    // largest id.
+    let taking = src.features.rows().filter(|r| !r.geometry().is_some_and(|g| want != GeometryType::None && g.kind() != want)).count();
+    let mut next = l
+        .dataset
+        .features
+        .free_ids(taking)
+        .ok_or_else(|| format!("{}: no ids are left above the layer's highest for the pasted features", l.name))?
+        .saturating_sub(1);
     if want != GeometryType::None && src.geometry_type != GeometryType::None && want != src.geometry_type {
         return Err(format!(
             "{} features can't go in a {} layer; use Paste Special to paste them as a new layer",
@@ -163,7 +173,6 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     }
     // Fields are matched by name; the rest are left empty.
     let map: Vec<Option<usize>> = l.dataset.fields.iter().map(|f| src.field_index(&f.name)).collect();
-    let mut next = l.dataset.features.iter().map(|f| f.id).max().unwrap_or(0);
     let first = l.dataset.features.len();
     // Per field, what converting the pasted values cut, and the values that aren't null but that
     // the field can't hold.
@@ -265,6 +274,40 @@ fn copy_path(s: &mut Session, p: &Value) -> CmdResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paste that would need ids past the largest there is is refused, with nothing pasted,
+    /// rather than giving pasted features one id between them.
+    #[test]
+    fn a_paste_with_no_ids_left_is_refused() {
+        let mut s = Session::new(crate::sample::world_project());
+        let id = s.map().layer_by_name("Cities").unwrap().id;
+        s.run("select.rows", &json!({"layer": id, "rows": [0, 1]})).unwrap();
+        s.run("edit.copy", &Value::Null).unwrap();
+        let ds = &mut s.map_mut().layer_mut(id).unwrap().dataset;
+        let fields = ds.fields.len();
+        // One id left below `i64::MAX`, the largest a GeoPackage or PostGIS feature can have.
+        let top = i64::MAX.unsigned_abs() - 2;
+        ds.features.push_parts(top, None, vec![Attr::Null; fields]);
+        let before = s.map().layer(id).unwrap().dataset.features.len();
+        let refused = s.run("edit.paste", &json!({"layer": id})).unwrap_err();
+        assert!(refused.contains("no ids are left"), "{refused}");
+        assert_eq!(s.map().layer(id).unwrap().dataset.features.len(), before);
+        // A polygon and a point pasted into a polygon layer with room for one id: the point is
+        // left out, as ever, and the polygon takes the one id left.
+        let countries = s.map().layer_by_name("Countries").unwrap().id;
+        let ds = &mut s.map_mut().layer_mut(countries).unwrap().dataset;
+        let fields = ds.fields.len();
+        ds.features.push_parts(top, None, vec![Attr::Null; fields]);
+        let mixed = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}},
+            {"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0.5,0.5]}}]}"#;
+        let pasted = s.run("edit.paste", &json!({"layer": countries, "text": mixed})).unwrap();
+        assert_eq!(pasted["pasted"], 1, "{pasted}");
+        assert!(s.map().layer(countries).unwrap().dataset.features.iter().any(|f| f.id == top + 1));
+        // With room for them, they paste.
+        s.map_mut().layer_mut(id).unwrap().dataset.features.retain_rows(|r| r.id() != top);
+        s.run("edit.paste", &json!({"layer": id})).unwrap();
+    }
 
     #[test]
     fn a_moment_pasted_into_a_date_field_keeps_its_day() {

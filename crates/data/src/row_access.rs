@@ -133,11 +133,48 @@ impl Features {
         Ok(old)
     }
 
+    /// From now on, new rows ([`crate::Dataset::push`]) are given ids above `id`, even once the rows
+    /// holding the highest ids are removed: for a layer whose ids up to `id` belong to rows given to
+    /// it from elsewhere (a field package's), which a new row must never be taken for.
+    pub fn keep_ids_above(&mut self, id: u64) {
+        self.id_floor = self.id_floor.max(id);
+    }
+
+    /// The id new rows are kept above ([`Features::keep_ids_above`]), 0 for none.
+    pub fn id_floor(&self) -> u64 {
+        self.id_floor
+    }
+
+    /// The highest id a row has, or that new rows are kept above ([`Features::keep_ids_above`]):
+    /// the next new row's id is one more.
+    pub fn highest_id(&self) -> u64 {
+        self.rows.iter().map(|f| f.id).max().unwrap_or(0).max(self.id_floor)
+    }
+
+    /// The id the first of `n` new rows takes, one above [`Features::highest_id`], when all `n`
+    /// have one free above it below `i64::MAX`, the largest id a GeoPackage or PostGIS feature can
+    /// have (so the last still leaves room for the next); `None` when they haven't, for a caller to
+    /// refuse rather than give an id a table can't hold, or two rows one id. No rows always fit.
+    pub fn free_ids(&self, n: usize) -> Option<u64> {
+        if n == 0 {
+            return Some(self.highest_id().saturating_add(1));
+        }
+        let first = self.highest_id().checked_add(1)?;
+        let last = first.checked_add(u64::try_from(n).ok()?.saturating_sub(1))?;
+        (last < i64::MAX.unsigned_abs()).then_some(first)
+    }
+
     /// Appends `feature` as the last row, keeping its id.
     pub fn push_row(&mut self, feature: Feature) {
         let id = feature.id;
         self.rows_mut().push(feature);
         self.max_id = self.max_id.map(|m| m.max(id));
+    }
+
+    /// Appends a row of id `id`, `geometry` and the values `attrs`, in field order: a row made from
+    /// its parts, such as one copied in from another layer's fields.
+    pub fn push_parts(&mut self, id: u64, geometry: Option<Geometry>, attrs: Vec<Value>) {
+        self.push_row(Feature { id, geometry, attrs });
     }
 
     /// The rows for a change, copied first when another owner (an Undo snapshot) shares them.
@@ -197,6 +234,16 @@ mod tests {
         ds.push(None, vec![Value::Text("b".into()), Value::Int(2)]);
         ds.push(Some(Geometry::Point(rustgis_geom::Coord::new(3.0, 4.0))), vec![Value::Text("c".into())]);
         ds
+    }
+
+    #[test]
+    fn no_new_rows_always_fit_below_the_largest_id() {
+        let mut ds = layer();
+        ds.features.keep_ids_above(i64::MAX.unsigned_abs() - 1);
+        assert_eq!(ds.features.free_ids(1), None);
+        assert!(ds.features.free_ids(0).is_some());
+        ds.features.keep_ids_above(u64::MAX);
+        assert!(ds.features.free_ids(0).is_some());
     }
 
     #[test]

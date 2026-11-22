@@ -255,6 +255,12 @@ pub fn commands() -> Vec<C> {
                 return Err(format!("{path}: {e}"));
             }
             for note in notes { s.notify(note, false); }
+            // A return written spends its package (only a field project's own identity).
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let spent = super::field::spent_package(s);
+                super::field::spend(s, spent);
+            }
             s.retain_written_notices(written);
             Ok(super::field::packaged(&path, &area, bytes.len()))
         })
@@ -265,6 +271,10 @@ pub fn commands() -> Vec<C> {
             .roles(&[])
             .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .params(r#"{"path"?: "*.rgisfield", "data"?: base64 of one, "legacyArea"?: "native User only: explicitly verified home offline area for an entirely ID-less legacy return; cannot override any present or incomplete identity"}"#),
+        C::new("offline.keepRows", "Keep Field Package Rows", "Data › Offline", super::field_changes::keep_rows)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
+            .view(),
         C::new("offline.sync", "Sync", "Data › Offline", offline_sync).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": offline area}"#),
         C::new("offline.remove", "Remove", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
@@ -673,6 +683,9 @@ fn snapshot(m: &mut rustgis_map::Map, e: &Extent) -> rustgis_map::Map {
         let own = l.dataset.extent_from_lonlat(e);
         c.dataset.features =
             l.dataset.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&own))).cloned().collect();
+        // New features in the copy are given ids above every id the layer has or keeps, so none takes
+        // the id of one left out, or deleted since a package of the area was made.
+        c.dataset.features.keep_ids_above(l.dataset.features.highest_id());
         c.selection.clear();
         // Only part of the rows read: no longer the layer its file's record describes.
         c.synced = None;
@@ -770,9 +783,9 @@ pub(crate) fn note_unbound(s: &mut Session, n: usize, copy: &str) {
 const MAX_AREAS: usize = 20;
 
 /// Makes an offline area of the active map: a snapshot of its feature layers' features in `extent`
-/// (the view's, unless one is given), which a later sync or a field package's return is compared
-/// against. It gets its identities and its home project's here; its return check waits until a
-/// field package is first made of it.
+/// (the view's, unless one is given), which a later sync, or a field package's return without a
+/// list of its changes, is compared against. It gets its identities and its home project's here;
+/// its return check waits until a field package is first made of it.
 pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     crate::project::ensure_map_imports_complete(s.map())?;
     let e = match p.get("extent").and_then(Value::as_array) {
@@ -822,6 +835,8 @@ pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
         created: t,
         synced: t,
         generation: String::new(),
+        returned: Vec::new(),
+        ids: Default::default(),
         data,
     });
     note_unbound(s, bound, &format!("the offline area '{name}'"));
@@ -861,7 +876,7 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
 
 /// A layer's conversion error in a sync, named by the layer; a cancel stays a cancel, as the
 /// command's other cancels read.
-fn sync_error(layer: &str, e: String) -> String {
+pub(crate) fn sync_error(layer: &str, e: String) -> String {
     if e == rustgis_data::DataError::Cancelled.to_string() { e } else { format!("cannot sync layer '{layer}': {e}") }
 }
 
@@ -997,6 +1012,9 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
             // The features this sync writes, by their ids in the source: only these are converted
             // back to a held source's system.
             let mut written = std::collections::HashSet::new();
+            // Every id the source had, or kept new ones above, before this sync: a feature added
+            // offline keeps its own id only above it.
+            let home_top = sl.dataset.features.highest_id();
             // Deletions first, so a fresh id given to a new feature below can't be swept away.
             let before = sl.dataset.features.len();
             sl.dataset.features.retain_rows(|x| {
@@ -1010,9 +1028,17 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
             });
             deleted += before - sl.dataset.features.len();
             // Where each id is in the source, and the id a feature added offline takes when its own
-            // is taken: one above any the source and the area have.
+            // is taken: one above any the source, the area and the returning copy have, so it never
+            // takes the free id of a feature added after it.
             let mut at: std::collections::HashMap<u64, usize> = sl.dataset.features.rows().enumerate().map(|(i, r)| (r.id(), i)).collect();
-            let mut top = at.keys().chain(had.iter()).copied().max().unwrap_or(0);
+            let mut top = at
+                .keys()
+                .chain(had.iter())
+                .copied()
+                .chain(ol_ds.features.rows().map(|r| r.id()))
+                .max()
+                .unwrap_or(0)
+                .max(sl.dataset.features.highest_id());
             for f in ol_ds.features.rows() {
                 let fid = f.id();
                 if had.contains(&fid) {
@@ -1044,12 +1070,9 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
                 } else {
                     // Added offline: its own id when the source and the area haven't used it, else
                     // a fresh one above any they have (its id clashed with one outside the area).
-                    let id = if at.contains_key(&fid) || had.contains(&fid) {
-                        renumbered += 1;
-                        top.saturating_add(1)
-                    } else {
-                        fid
-                    };
+                    let (id, renewed) =
+                        super::field_changes::id_at_home(fid, home_top, at.contains_key(&fid) || had.contains(&fid), top, &lname)?;
+                    renumbered += usize::from(renewed);
                     top = top.max(id);
                     let mut attrs = vec![rustgis_data::Value::Null; sl.dataset.fields.len()];
                     for (i, j) in to_source.iter().enumerate() {
@@ -1073,25 +1096,7 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
             sl.touch_geometry();
         }
     }
-    let fresh = s.project.maps.get_mut(si).map(|m| snapshot(m, &area.extent)).ok_or("the source map is gone")?;
-    if let Some(m) = offline_map.and_then(|i| s.project.maps.get_mut(i)) {
-        let name = m.name.clone();
-        *m = fresh.clone();
-        m.name = name;
-        m.offline_area_id = (!area.id.is_empty()).then(|| area.id.clone());
-        // A copy of the source map: a map, and layers, of its own.
-        m.renew_instance_id();
-        for l in &mut m.layers {
-            l.renew_instance_id();
-        }
-    }
-    if let Some(a) = s.project.offline_areas.get_mut(ai) {
-        a.data = fresh;
-        a.synced = now();
-        if let Some(id) = next_generation {
-            a.generation = id;
-        }
-    }
+    renew_area(s, ai, si, offline_map, next_generation)?;
     // Never silent: say which features lost an edit, so they can be checked (Undo puts the
     // source's versions back).
     let listed = |ids: &[String]| {
@@ -1128,6 +1133,66 @@ pub(crate) fn sync_area(s: &mut Session, ai: usize, edited: &rustgis_map::Map) -
     Ok(
         json!({"updated": updated, "added": added, "deleted": deleted, "skipped": skipped, "conflicts": conflicts.len(), "renumbered": renumbered}),
     )
+}
+
+/// Renews offline area `ai` from its source map `si` once edits have come back to it: its snapshot,
+/// its offline map `offline_map` (when open) and its sync time, so a package made of it next holds
+/// what came home. `next_generation` is its new return check, for an area a package was made of: a
+/// package made before, with no list of its changes, was compared with the snapshot replaced here.
+pub(crate) fn renew_area(
+    s: &mut Session,
+    ai: usize,
+    si: usize,
+    offline_map: Option<usize>,
+    next_generation: Option<String>,
+) -> Result<(), String> {
+    let (extent, id) = s.project.offline_areas.get(ai).map(|a| (a.extent, a.id.clone())).ok_or("no such area")?;
+    let fresh = s.project.maps.get_mut(si).map(|m| snapshot(m, &extent)).ok_or("the source map is gone")?;
+    if let Some(m) = offline_map.and_then(|i| s.project.maps.get_mut(i)) {
+        let name = m.name.clone();
+        *m = fresh.clone();
+        m.name = name;
+        m.offline_area_id = (!id.is_empty()).then(|| id.clone());
+        // A copy of the source map: a map, and layers, of its own.
+        m.renew_instance_id();
+        for l in &mut m.layers {
+            l.renew_instance_id();
+        }
+    }
+    if let Some(a) = s.project.offline_areas.get_mut(ai) {
+        a.data = fresh;
+        a.synced = now();
+        if let Some(id) = next_generation {
+            a.generation = id;
+        }
+    }
+    Ok(())
+}
+
+/// Whether offline area `ai`'s offline map is open with edits not synced to its map yet: a feature
+/// layer whose rows or fields differ from the area's snapshot, or one added or removed. Rows still
+/// shared with the snapshot are the same without being compared.
+pub(crate) fn area_unsynced(project: &Project, ai: usize) -> bool {
+    let (Some(area), Some(open)) = (project.offline_areas.get(ai), area_map_index(project, ai).and_then(|i| project.maps.get(i))) else {
+        return false;
+    };
+    let layers = |m: &rustgis_map::Map| m.layers.iter().filter(|l| !l.is_raster()).map(|l| l.id).collect::<std::collections::BTreeSet<_>>();
+    layers(open) != layers(&area.data)
+        || open.layers.iter().filter(|l| !l.is_raster()).any(|l| {
+            area.data.layers.iter().find(|b| b.id == l.id).is_none_or(|b| {
+                // Coordinates read in another system (Define Projection) are an edit though the rows
+                // are the same.
+                l.dataset.coord_crs() != b.dataset.coord_crs()
+                    || l.dataset.crs != b.dataset.crs
+                    || l.dataset.fields != b.dataset.fields
+                    || (!l.dataset.features.shares(&b.dataset.features) && l.dataset.features != b.dataset.features)
+            })
+        })
+}
+
+/// Where offline area `ai`'s open offline map is, if it is open.
+pub(crate) fn area_map_index(project: &Project, ai: usize) -> Option<usize> {
+    project.offline_areas.get(ai).and_then(|area| offline_map_index(project, area))
 }
 
 /// Binds the elevation raster and literal selected-line source.

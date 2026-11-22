@@ -39,6 +39,13 @@ impl Project {
         {
             required.push("field-generation");
         }
+        // A package's identity and the packages already brought back: an older reader would drop
+        // them on saving, and then apply a package's changes twice.
+        if self.field_origin.as_ref().is_some_and(|origin| !origin.package.is_empty() || !origin.ids.is_empty())
+            || self.offline_areas.iter().any(|area| !area.returned.is_empty() || !area.ids.is_empty())
+        {
+            required.push("field-package");
+        }
         // A table saved in a coordinate system of its own, as a layer's is (map_capabilities).
         if !required.contains(&super::NATIVE_COORDINATES) && self.tables.iter().any(|t| held_natively(&t.dataset)) {
             required.push(super::NATIVE_COORDINATES);
@@ -1303,6 +1310,8 @@ mod tests {
             created: 0.0,
             synced: 0.0,
             generation: String::new(),
+            returned: Vec::new(),
+            ids: Default::default(),
             data: with_area.map().clone(),
         });
         assert_eq!(serde_json::to_value(&with_area).unwrap()["requires"], json!(["field-origin"]));
@@ -1311,6 +1320,70 @@ mod tests {
         assert_eq!(saved["requires"], json!(["field-origin", "field-generation"]));
         let mut invalid = saved;
         invalid["offline_areas"][0]["generation"] = json!("nope");
+        assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
+    }
+
+    /// A package's identity, and an area's list of packages brought back, are kept on saving and
+    /// require their own capability; an invalid one is refused.
+    #[test]
+    fn field_package_ids_are_preserved_and_required_and_must_be_identities() {
+        let project = Project::from_json(include_str!("../../../schema/fixtures/field_package.rgis")).unwrap();
+        let saved = serde_json::to_value(&project).unwrap();
+        assert_eq!(saved["requires"], json!(["field-origin", "field-generation", "field-package"]));
+        let reopened = Project::from_json(&saved.to_string()).unwrap();
+        assert_eq!(reopened.field_origin.as_ref().map(|o| o.package.as_str()), Some("a1b2c3d4e5f60718293a4b5c6d7e8f90"));
+        assert_eq!(reopened.field_origin.as_ref().map(|o| o.ids.clone()), Some([(1, 120)].into()));
+        let mut invalid = saved.clone();
+        invalid["field_origin"]["package"] = json!("not-an-id");
+        assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
+        // Hostile highest ids, whose next id no GeoPackage or PostGIS table could hold, are refused
+        // too, from the largest such a feature can have (`i64::MAX`) up; the one below it is kept.
+        for bad in [json!(u64::MAX), json!(u64::MAX - 1), json!(i64::MAX.unsigned_abs() + 1), json!(i64::MAX.unsigned_abs())] {
+            let mut invalid = saved.clone();
+            invalid["field_origin"]["ids"] = json!({"1": bad});
+            assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"), "{bad}");
+        }
+        // Floors on their own, with no package identity, require the capability too, and are kept.
+        let mut floors = Project::from_json(include_str!("../../../schema/fixtures/field_origin.rgis")).unwrap();
+        floors.field_origin.as_mut().unwrap().ids = [(1, 7)].into();
+        let kept = serde_json::to_value(&floors).unwrap();
+        assert!(kept["requires"].as_array().unwrap().contains(&json!("field-package")), "{}", kept["requires"]);
+        assert_eq!(Project::from_json(&kept.to_string()).unwrap().field_origin.unwrap().ids, floors.field_origin.as_ref().unwrap().ids);
+        let mut largest = saved.clone();
+        largest["field_origin"]["ids"] = json!({"1": i64::MAX.unsigned_abs() - 1});
+        assert!(Project::from_json(&largest.to_string()).is_ok());
+        let mut with_area = Project::from_json(include_str!("../../../schema/fixtures/field_origin.rgis")).unwrap();
+        with_area.offline_areas.push(super::super::OfflineArea {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            name: "Field".into(),
+            map: "Map".into(),
+            extent: rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0),
+            created: 0.0,
+            synced: 0.0,
+            generation: String::new(),
+            returned: vec!["a1b2c3d4e5f60718293a4b5c6d7e8f90".into()],
+            ids: Default::default(),
+            data: with_area.map().clone(),
+        });
+        let saved = serde_json::to_value(&with_area).unwrap();
+        assert_eq!(saved["requires"], json!(["field-origin", "field-package"]));
+        assert_eq!(Project::from_json(&saved.to_string()).unwrap().offline_areas[0].returned, with_area.offline_areas[0].returned);
+        // The ids an area's packages gave require it too, on their own.
+        let mut only_ids = with_area.clone();
+        only_ids.offline_areas[0].returned.clear();
+        only_ids.offline_areas[0].ids = [(1, 120)].into();
+        assert_eq!(serde_json::to_value(&only_ids).unwrap()["requires"], json!(["field-origin", "field-package"]));
+        // The same bound for an area's: refused from `i64::MAX` up, the one below it kept.
+        for bad in [json!(u64::MAX), json!(i64::MAX.unsigned_abs())] {
+            let mut hostile = saved.clone();
+            hostile["offline_areas"][0]["ids"] = json!({"1": bad});
+            assert!(Project::from_json(&hostile.to_string()).unwrap_err().contains("identity"), "{bad}");
+        }
+        let mut largest = saved.clone();
+        largest["offline_areas"][0]["ids"] = json!({"1": i64::MAX.unsigned_abs() - 1});
+        assert!(Project::from_json(&largest.to_string()).is_ok());
+        let mut invalid = saved;
+        invalid["offline_areas"][0]["returned"] = json!(["nope"]);
         assert!(Project::from_json(&invalid.to_string()).unwrap_err().contains("identity"));
     }
 
@@ -1331,6 +1404,8 @@ mod tests {
             created: 0.0,
             synced: 0.0,
             generation: String::new(),
+            returned: Vec::new(),
+            ids: Default::default(),
             data: p.map().clone(),
         });
         p.maps[0].tiles.clear();
@@ -1357,6 +1432,8 @@ mod tests {
             created: 0.0,
             synced: 0.0,
             generation: String::new(),
+            returned: Vec::new(),
+            ids: Default::default(),
             data: p.map().clone(),
         });
         p.maps[0].view.terrain = None;
