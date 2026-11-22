@@ -389,7 +389,10 @@ jobs:
           newest="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
           [ -n "$newest" ] || { echo "::error::No Xcode on the runner."; exit 1; }
           sudo xcode-select -s "$newest/Contents/Developer"
-          echo "::notice::$(xcodebuild -version | head -1), iOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
+          sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "::notice::$(xcodebuild -version | head -1), iOS SDK $sdk"
+          # App Store Connect requires the iOS 27 SDK from April 2027 (ITMS-90725).
+          [ "${sdk%%.*}" -ge 27 ] || { echo "::error::$(basename "$newest") has the iOS $sdk SDK; App Store uploads need iOS 27 or later."; exit 1; }
 
       # The whole bundle, unsigned: any failure on the way fails the step.
       - name: Build the app
