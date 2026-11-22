@@ -1283,7 +1283,8 @@ impl StyleView {
 pub enum Source {
     Vector {
         tiles: Vec<String>,
-        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        /// Runtime provenance of the tile templates: `None` for a template given directly;
+        /// templates from a TileJSON keep that document's origin, even when the user picked it.
         from: Option<crate::address::Origin>,
         url: Option<String>,
         min_zoom: u8,
@@ -1292,7 +1293,8 @@ pub enum Source {
     },
     Raster {
         tiles: Vec<String>,
-        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        /// Runtime provenance of the tile templates: `None` for a template given directly;
+        /// templates from a TileJSON keep that document's origin, even when the user picked it.
         from: Option<crate::address::Origin>,
         url: Option<String>,
         tile_size: u32,
@@ -1303,7 +1305,8 @@ pub enum Source {
     /// Elevation tiles, for `hillshade` and `color-relief` layers.
     RasterDem {
         tiles: Vec<String>,
-        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        /// Runtime provenance of the tile templates: `None` for a template given directly;
+        /// templates from a TileJSON keep that document's origin, even when the user picked it.
         from: Option<crate::address::Origin>,
         url: Option<String>,
         tile_size: u32,

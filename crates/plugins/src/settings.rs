@@ -237,6 +237,12 @@ impl Host for Scoped<'_> {
 #[cfg(not(target_arch = "wasm32"))]
 use native::{remove_saved, with_backing};
 
+/// The file a plugin's settings are saved in, when there is a plugins folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn file(id: &str) -> Option<std::path::PathBuf> {
+    native::file(id)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::path::{Path, PathBuf};
@@ -300,6 +306,10 @@ mod native {
         let dir = dir().ok_or("there is no folder for plugins")?;
         let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         f(&Dir(&dir))
+    }
+
+    pub(super) fn file(id: &str) -> Option<PathBuf> {
+        dir().map(|d| Dir(&d).file(id))
     }
 
     /// Without a plugins folder nothing could have been saved: there is nothing to erase.

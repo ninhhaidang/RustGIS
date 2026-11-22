@@ -862,7 +862,8 @@ fn step_value(script: &str, at: usize, session: &rustgis_engine::Session) -> Opt
 /// What a `gp.run` line's tool takes for the value being typed in its `"params"` (#788), by the
 /// kind of the tool's parameter of that key, as the tool's form offers it (`takes_layer`,
 /// `takes_field`): the layers of its kind, then the tables for one that takes any layer; the
-/// fields it takes of the layer or table the tool's first layer parameter names (before or after
+/// fields it takes of the layer or table named by the parameter whose fields it lists (the
+/// input `fieldlists::input` gives for its kind, else `panes::layer_for_param`, before or after
 /// it); or its choices. None for another kind: a number, a bool, a path, a text, several layers in
 /// one string.
 fn tool_value(script: &str, at: usize, session: &rustgis_engine::Session) -> Option<Offer> {

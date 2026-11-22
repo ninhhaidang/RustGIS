@@ -1015,7 +1015,6 @@ fn tabs(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, stat
         });
     });
     ui.add_space(2.0);
-    let _ = t;
     if let Some(n) = pick {
         send(app, pid, item, json!(n));
     }

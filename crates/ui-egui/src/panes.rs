@@ -1950,8 +1950,9 @@ fn disk_note(app: &RustGisApp, layer: Option<&Layer>, tile: Option<usize>) -> Op
 
 /// The note after a layer's name, its details and tint, as [`disk_note`] gives them. A layer read
 /// whole from a Shapefile or GeoJSON file it publishes to (`source.publish`) also says whether it
-/// holds edits the file lacks (`syncmark`), and its file's changes point to Publish to Source,
-/// which refuses to overwrite them, rather than Reload Data, which can't read it again.
+/// holds edits the file lacks (`syncmark`). A change on disk with no edits points to adding the
+/// file again (and Source File State), not Reload Data, which can't read it again; with edits,
+/// Publish to Source refuses to overwrite the change and Export Features keeps them.
 pub(crate) fn layer_note(app: &mut RustGisApp, l: &Layer, ctx: &egui::Context) -> Option<(String, String, Option<bool>)> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -3406,7 +3407,9 @@ fn geolibre_card(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ui.label(egui::RichText::new(e).size(11.0).color(t.red));
         }
     }
-    let download = status["download"].as_str().unwrap_or("https://github.com/opengeos/geolibre-rust/releases/latest").to_string();
+    // The pinned release's page, as `gp::geolibre_status` gives it; none, no link (never the latest
+    // release, which may be one this version can't run).
+    let download = status["download"].as_str().map(str::to_string);
     ui.add_space(6.0);
     egui::Frame::NONE.stroke(Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(10)).show(
         ui,
@@ -3458,8 +3461,16 @@ fn geolibre_card(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     }
                     ui.add_space(2.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(tl!("Or")).size(11.0).color(t.text_dim));
-                        ui.add(egui::Hyperlink::from_label_and_url(tl!("Download the GeoLibre runner"), download).open_in_new_tab(true));
+                        // "Or" only when something follows it: the browser has no download link
+                        // and no Locate….
+                        if download.is_some() || cfg!(not(target_arch = "wasm32")) {
+                            ui.label(egui::RichText::new(tl!("Or")).size(11.0).color(t.text_dim));
+                        }
+                        if let Some(download) = &download {
+                            ui.add(
+                                egui::Hyperlink::from_label_and_url(tl!("Download the GeoLibre runner"), download).open_in_new_tab(true),
+                            );
+                        }
                         #[cfg(not(target_arch = "wasm32"))]
                         if ui.small_button(tl!("Locate…")).clicked()
                             && let Some(path) =

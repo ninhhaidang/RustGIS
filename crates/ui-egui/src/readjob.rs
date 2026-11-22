@@ -242,7 +242,6 @@ fn run_presented(
         return Ok(json!({"reading": instance}));
     }
     let archive = matches!(command, "map.reloadTiles" | "map.repairTiles").then(|| reads::archive_target(&app.session, &p)).flatten();
-    let mut p = p;
     if let Some((i, _)) = &archive
         && let Some(params) = p.as_object_mut()
     {
@@ -393,17 +392,24 @@ fn leave(app: &mut RustGisApp, left: &mut Vec<(String, Gone)>, asked: &Asked, wh
     left.push((what, why));
 }
 
-/// What a command asked for is called in a notice: a script, or an unnamed model, by the
-/// command's name.
+/// What a command asked for is called in a notice: a script, an unnamed model or anything else
+/// that gives no name, by the command's name.
 fn called<'a>(command: &str, what: &'a str) -> &'a str {
     match (what.is_empty(), command) {
         (false, _) => what,
         (true, "script.run") => tl_raw!("Run Script"),
+        (true, "model.run") => tl_raw!("Run Model"),
         (true, "topology.validate") => tl_raw!("Error Inspector"),
         (true, "table.statistics") => tl_raw!("Column Statistics"),
         (true, "layer.sizeBy") => tl_raw!("Size by Field"),
         (true, "service.add") => tl_raw!("Add Service Layer"),
-        (true, _) => tl_raw!("Run Model"),
+        (true, "service.layers") => tl_raw!("List Service Layers"),
+        (true, "edit.previewShapeConversion") => tl_raw!("Preview Shape Conversion"),
+        (true, "raster.imageGrid") => tl_raw!("Original Image Grid"),
+        (true, "source.syncState") => tl_raw!("Source File State"),
+        (true, "map.reloadTiles") => tl_raw!("Reload Tile Archive"),
+        (true, "map.repairTiles") => tl_raw!("Repair Tile Archive"),
+        (true, _) => tl_raw!("A background read"),
     }
 }
 
@@ -786,6 +792,17 @@ mod tests {
             assert!(std::time::Instant::now() < end, "the reads never landed");
             std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background read completion
         }
+    }
+
+    #[test]
+    fn a_read_without_a_name_is_called_by_its_own_command() {
+        assert_eq!(called("model.run", "Flood"), "Flood");
+        assert_eq!(called("model.run", ""), "Run Model");
+        assert_eq!(called("service.layers", ""), "List Service Layers");
+        for command in ["edit.previewShapeConversion", "raster.imageGrid", "source.syncState", "map.reloadTiles", "map.repairTiles"] {
+            assert_ne!(called(command, ""), "Run Model", "{command}");
+        }
+        assert_eq!(called("layer.loadAll", ""), "A background read");
     }
 
     #[test]

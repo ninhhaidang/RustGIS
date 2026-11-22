@@ -155,8 +155,8 @@ pub(crate) struct Tab<T> {
 /// A row of tabs drawn as the ribbon's: the chosen one open onto the pane below with its accent
 /// bar, a base line and a hover fill; as the pane narrows, each tab drops its icon, then its name
 /// (the icon alone, its hover text — or its name — on hover). `current` becomes the chosen tab's
-/// value; returns whether it changed.
-pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Tokens, id: egui::Id, current: &mut T, tabs: &[Tab<T>]) -> bool {
+/// value.
+pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Tokens, id: egui::Id, current: &mut T, tabs: &[Tab<T>]) {
     let font = |on: bool| if on { semibold(12.5) } else { regular(12.5) };
     let (pad, icon, gap, h) = (8.0, 16.0, 5.0, 30.0);
     // Measured in the chosen tab's font, so the tabs don't move as another is chosen.
@@ -176,7 +176,6 @@ pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Tokens, id: egui::Id, c
     let base = row.max.y - 0.5;
     ui.painter().hline(row.x_range(), base, Stroke::new(1.0, t.border));
     let mut x = row.min.x;
-    let mut changed = false;
     for (tab, w) in tabs.iter().zip(text) {
         let shown = tl!(tab.label);
         let on = tab.value == *current;
@@ -217,12 +216,10 @@ pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Tokens, id: egui::Id, c
                 resp = resp.on_hover_text(tl!(hover));
             }
         }
-        if resp.clicked() && *current != tab.value {
+        if resp.clicked() {
             *current = tab.value;
-            changed = true;
         }
     }
-    changed
 }
 
 /// The shortcut of a command run without parameters (`⌘S` on a Mac, as egui reads the keys,

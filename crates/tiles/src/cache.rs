@@ -257,7 +257,9 @@ static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static SIGNED_OUT: AtomicU64 = AtomicU64::new(0);
 
 /// Source revisions are locked before any retained cache. Publication and reload share this
-/// lock; callbacks and I/O must always run after releasing it.
+/// lock. [`if_archive_current`] runs its `f` while holding it (`land`, `keep` and
+/// `remember_info` run there), so such a callback must not do I/O or call back into code that
+/// takes this lock; any other I/O runs after releasing it.
 fn archive_epochs() -> &'static Mutex<HashMap<String, u64>> {
     static E: std::sync::LazyLock<Mutex<HashMap<String, u64>>> = std::sync::LazyLock::new(Mutex::default);
     &E

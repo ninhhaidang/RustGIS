@@ -1484,7 +1484,10 @@ impl RustGisApp {
             Some(Value::Number(_) | Value::String(_)) => {}
             // Not taken for the active layer: with replaceTable that would overwrite a table.
             Some(other) => {
-                return Err(crate::i18n::fmt("\"layer\" must be a layer's id or name, not {value}", &[("value", &other.to_string())]));
+                return Err(crate::i18n::fmt(
+                    "\"layer\" must be a layer's id or name, not {value}",
+                    &[("value", &crate::theme::clip(&other.to_string()))],
+                ));
             }
         }
         let id = self.session.layer_id(p)?;
@@ -2402,8 +2405,8 @@ impl RustGisApp {
             return Err(tl!("this build saves projects with Save As").into());
         }
         let stem: String = stem.chars().take(200).collect();
-        // Not an undoable edit: saving names the project, as `project.saveAs` does, once the
-        // browser takes the file.
+        // Not an undoable edit: saving names the project, as `project.saveAs` does. The name
+        // stays set while the download is offered, and goes back if the download fails.
         let construction_notes = self.session.construction_output_notes()?;
         let old = std::mem::replace(&mut self.session.project.name, stem.clone());
         let (text, report) = match self.session.project.saved_text(None) {
@@ -6089,7 +6092,7 @@ impl RustGisApp {
         })?;
         // What a task needs to read it again, as the download itself can't be (`record_step`).
         let mut window = json!({});
-        for k in ["bbox", "cellSize", "cog"] {
+        for k in rustgis_engine::policy::WINDOW_KEYS {
             if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
                 window[k] = v.clone();
             }
@@ -8714,7 +8717,7 @@ mod download_service_tests {
         assert!(!app.session.notices.iter().any(|n| n.text.contains("Download offered")));
         assert!(!app.download("archive.pmtiles", vec![1, 2, 3]));
         assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("browser rejected download")));
-        assert!(!app.session.notices.iter().any(|n| n.text.contains("Downloaded")));
+        assert!(!app.session.notices.iter().any(|n| n.text.contains("Download offered")));
     }
 
     /// The web download encodes the filtered rows and reports the count once the bytes are accepted.

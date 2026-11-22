@@ -263,7 +263,10 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     let fields = c.form.iter().any(|f| !is_tabs(f));
 
     let mut open = true;
-    let title = format!("{} › {}", m.translate(&lang, &m.name), m.translate(&lang, &c.label).replace('\n', " "));
+    let title = crate::i18n::fmt(
+        "{plugin} › {command}",
+        &[("plugin", m.translate(&lang, &m.name)), ("command", &m.translate(&lang, &c.label).replace('\n', " "))],
+    );
     egui::Window::new(title)
         .id(egui::Id::unique(("plugin_form", &d.plugin, &d.command)))
         .open(&mut open)
@@ -295,7 +298,8 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         let mut layer: Option<String> = None;
                         for f in c.form.iter().filter(|f| !is_tabs(f)) {
                             let text = m.translate(&lang, &f.label);
-                            let mut label = ui.label(if f.required { format!("{text} *") } else { text.to_string() });
+                            let mut label =
+                                ui.label(if f.required { crate::i18n::fmt("{label} *", &[("label", text)]) } else { text.to_string() });
                             if !f.help.is_empty() {
                                 label = label.on_hover_text(m.translate(&lang, &f.help));
                             }

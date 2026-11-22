@@ -87,8 +87,9 @@ Rust calls Java and never the other way: each frame the app collects what happen
 A phone starts in the touch interface: the map, a bar of four large buttons under it (Layers, Add
 Data, Capture, More) and sheets that rise over the map. The Layers sheet shows and hides layers,
 zooms to one and makes one the active layer; the More sheet has Full Extent, the project, undo
-and redo, and **Use the Desktop Interface**, which brings back the ribbon and panes until the app
-is started again.
+and redo, and **Use the Desktop Interface**, which brings back the ribbon and panes; **Touch
+Interface**, on the View tab (or Use the Touch Interface in Command Search), returns to the phone's
+interface.
 
 **Capture** adds a feature to one of the map's point, line or polygon layers. A cross marks the
 middle of the map: the map is moved under it, and the sheet's fields are filled in (one for each

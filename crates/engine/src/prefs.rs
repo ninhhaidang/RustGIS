@@ -91,17 +91,13 @@ fn write_at_with_bytes(
     map.insert(key.to_string(), Value::String(value.to_string()));
     let text = serde_json::to_vec(&map).map_err(|_| "could not serialize preferences")?;
     let dir = path.parent().ok_or("the settings folder isn't available")?;
-    std::fs::create_dir_all(dir).and_then(|_| rustgis_data::io::replace_atomic(path, &text)).map_err(|error| match &set_aside {
-        Some(backup) => format!("could not save preferences: {error}; malformed preferences were kept at {}", backup.display()),
-        None => format!("could not save preferences: {error}"),
-    })?;
-    sync(path).map_err(|error| match &set_aside {
-        Some(backup) => format!(
-            "preferences were replaced, but their durability could not be confirmed: {error}; malformed preferences were kept at {}",
-            backup.display()
-        ),
-        None => format!("preferences were replaced, but their durability could not be confirmed: {error}"),
-    })?;
+    // The app wraps these in "Settings could not be saved reliably (…)", so they don't repeat it.
+    let kept = |message: String| match &set_aside {
+        Some(backup) => format!("{message}; malformed preferences were kept at {}", backup.display()),
+        None => message,
+    };
+    std::fs::create_dir_all(dir).and_then(|_| rustgis_data::io::replace_atomic(path, &text)).map_err(|error| kept(error.to_string()))?;
+    sync(path).map_err(|error| kept(format!("preferences were replaced, but their durability could not be confirmed: {error}")))?;
     Ok(set_aside)
 }
 
@@ -181,7 +177,8 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 }
 
 /// Returns the open copy when its bytes match, so the caller can confirm its durability.
-/// Symlink paths and read errors do not establish a match; sync failures remain distinct.
+/// Symlink paths and read errors do not establish a match. This doesn't sync: the caller confirms
+/// durability on the returned file.
 fn same_contents(source: &[u8], target: &Path) -> std::io::Result<Option<std::fs::File>> {
     if !std::fs::symlink_metadata(target)?.file_type().is_file() {
         return Ok(None);

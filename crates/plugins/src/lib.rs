@@ -461,7 +461,7 @@ fn call_with_timeout(
 ) -> Result<Value, String> {
     // A command's settings requests are answered here, by this plugin's own id, however it runs.
     // A tool gets none: it runs off the UI thread, in models and on copies, and its output must
-    // not depend on what was saved (it makes no host requests).
+    // not depend on what was saved (its settings requests are refused).
     let mut scoped;
     let host: &mut dyn Host = if tool {
         host

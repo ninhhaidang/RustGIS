@@ -72,6 +72,10 @@ pub const CHOOSE_CONNECTION: &str = "Several saved connections match this addres
 pub const NO_SUCH_CONNECTION: &str = "No saved web-service connection with this id.";
 /// A request's `connection` that isn't text.
 pub const CONNECTION_TEXT: &str = "connection must be a saved web-service connection id (text)";
+/// A form-test probe given an unusable connection definition.
+pub const BAD_DEFINITION: &str = "The service test requires a valid web-service connection and login.";
+/// A form-test probe given an address that isn't plain and at the connection's origin.
+pub const BAD_ADDRESS: &str = "The service test requires a credential-free HTTP or HTTPS address at the connection's origin.";
 /// The commands that add layers from a service, and so may record the connection they came from
 /// (their `connection` parameter, or the connection whose login their address is read with).
 pub const ADD_COMMANDS: &[&str] = &[
@@ -323,8 +327,6 @@ impl Drop for TemporaryProbe {
 /// `url` is the address returned by the existing anonymous `connection.test` probe. Only a
 /// plain, credential-free address at the cleaned definition's exact origin may carry it.
 pub fn temporary_probe(c: &Connection, secret: &str, insecure: bool, url: &str) -> Result<(String, TemporaryProbe), String> {
-    const BAD_DEFINITION: &str = "The service test requires a valid web-service connection and login.";
-    const BAD_ADDRESS: &str = "The service test requires a credential-free HTTP or HTTPS address at the connection's origin.";
     if !c.id.is_empty() || !is_service(c) {
         return Err(BAD_DEFINITION.into());
     }

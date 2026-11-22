@@ -56,14 +56,11 @@ pub fn label_of(url: &str) -> String {
 }
 
 /// The children (`child` links) of a catalog's document fetched from `from`: web addresses only,
-/// sorted by title.
-pub fn parse_children(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
-    parse_children_from_origin(bytes, &crate::address::Origin::named(from))
-}
-
-/// Like [`parse_children`], carrying the observed post-redirect [`crate::address::Origin`] and reach.
-pub fn parse_children_from_origin(bytes: &[u8], origin: &crate::address::Origin) -> Result<Vec<Child>, String> {
-    parse_children_noted(bytes, origin).map(|listing| listing.links)
+/// sorted by title. For tests: it drops the counts of links refused or left out, which code that
+/// lists children reports through [`parse_children_noted`].
+#[cfg(test)]
+pub(crate) fn parse_children(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
+    parse_children_noted(bytes, &crate::address::Origin::named(from)).map(|listing| listing.links)
 }
 
 /// A bounded link listing and the counted reasons it is incomplete.
@@ -87,8 +84,9 @@ pub fn parse_children_noted(bytes: &[u8], origin: &crate::address::Origin) -> Re
 }
 
 /// The items (`item` links) of a catalog's or collection's document fetched from `from`: web
-/// addresses only, in the order the document gives them.
-pub fn parse_item_links(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
+/// addresses only, in the order the document gives them. For tests, as [`parse_children`].
+#[cfg(test)]
+pub(crate) fn parse_item_links(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
     parse_item_links_noted(bytes, &crate::address::Origin::named(from)).map(|listing| listing.links)
 }
 

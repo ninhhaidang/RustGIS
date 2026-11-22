@@ -333,13 +333,31 @@ fn header(bytes: &[u8]) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>, Fa
 const SHOWN: [image::ImageFormat; 4] =
     [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::WebP, image::ImageFormat::Gif];
 
+/// A HEIC, HEIF or AVIF picture (common from phones), by the brand of its ISO-BMFF `ftyp` box, which
+/// `image` doesn't recognise without those decoders: such a picture says its format rather than
+/// that it isn't a picture.
+fn heif_brand(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.get(4..8) != Some(b"ftyp".as_slice()) {
+        return None;
+    }
+    match bytes.get(8..12)? {
+        b"heic" | b"heix" => Some("HEIC"),
+        // The generic HEIF brands, whose pictures need not be HEVC-coded.
+        b"mif1" | b"msf1" => Some("HEIF"),
+        b"avif" | b"avis" => Some("AVIF"),
+        _ => None,
+    }
+}
+
 /// Decodes a fetched picture for the pop-up: refused when it isn't one, or is in a format outside
 /// [`SHOWN`], or when its header says it is larger than [`crate::mapview::decode_picture`] takes
 /// (before anything is decoded, so a small file can't unpack into a huge picture), and kept at
 /// most [`MAX_SIDE`] pixels a side.
 pub(crate) fn decode(bytes: &[u8]) -> Result<image::RgbaImage, Failure> {
     let header = header(bytes)?;
-    let Some(format) = header.format() else { return Err(Failure::NotPicture) };
+    let Some(format) = header.format() else {
+        return Err(heif_brand(bytes).map_or(Failure::NotPicture, |f| Failure::Unsupported(f.into())));
+    };
     // A picture in another format says so, rather than that it isn't one.
     if !SHOWN.contains(&format) {
         return Err(Failure::Unsupported(format!("{format:?}").to_uppercase()));
@@ -560,6 +578,17 @@ mod tests {
         let mut tiff = b"II*\0".to_vec();
         tiff.resize(64, 0);
         assert_eq!(decode(&tiff), Err(Failure::Unsupported("TIFF".into())));
+        // A phone's HEIC or AVIF photo names its format, by its `ftyp` brand.
+        let ftyp = |brand: &[u8]| {
+            let mut box_ = b"\0\0\0\x18ftyp".to_vec();
+            box_.extend_from_slice(brand);
+            box_.resize(64, 0);
+            box_
+        };
+        assert_eq!(decode(&ftyp(b"heic")), Err(Failure::Unsupported("HEIC".into())));
+        assert_eq!(decode(&ftyp(b"mif1")), Err(Failure::Unsupported("HEIF".into())));
+        assert_eq!(decode(&ftyp(b"avif")), Err(Failure::Unsupported("AVIF".into())));
+        assert_eq!(decode(&ftyp(b"isom")), Err(Failure::NotPicture));
         // A GIF is shown (a 1 × 1 one).
         let gif = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
         assert_eq!(decode(gif).unwrap().dimensions(), (1, 1));

@@ -151,12 +151,8 @@ pub(crate) fn translated(e: &str) -> String {
         web::NOT_THIS_SESSION => tl!("This request's login does not belong to this session."),
         web::CHOOSE_CONNECTION => tl!("Several saved connections match this address. Choose a connection explicitly."),
         web::NO_SUCH_CONNECTION => tl!("No saved web-service connection with this id."),
-        "The service test requires a valid web-service connection and login." => {
-            tl!("The service test requires a valid web-service connection and login.")
-        }
-        "The service test requires a credential-free HTTP or HTTPS address at the connection's origin." => {
-            tl!("The service test requires a credential-free HTTP or HTTPS address at the connection's origin.")
-        }
+        web::BAD_DEFINITION => tl!("The service test requires a valid web-service connection and login."),
+        web::BAD_ADDRESS => tl!("The service test requires a credential-free HTTP or HTTPS address at the connection's origin."),
         web::CONNECTION_TEXT => tl!("connection must be a saved web-service connection id (text)"),
         other => other,
     }

@@ -112,7 +112,7 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
             ui.separator();
             let title = ui.label(egui::RichText::new(e.name.as_str()).strong());
             // A JAXA Earth collection's licence is read once its entry comes into view.
-            let shown = ui.is_rect_visible(title.rect);
+            let visible = ui.is_rect_visible(title.rect);
             ui.label(egui::RichText::new(format!("{} · {} · {} · {}", e.provider, period(e), e.step, e.resolution)).small());
             let source = match &e.source {
                 Source::Stac { collection, asset } => format!("STAC {collection} · {asset}"),
@@ -157,7 +157,7 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
                 }
                 ui.hyperlink_to(tl!("About"), e.about.as_str());
                 if !e.credit.is_empty() {
-                    licence_link(ui, e, shown);
+                    licence_link(ui, e, visible);
                 }
             });
         }
@@ -217,9 +217,9 @@ fn jaxa_line(ui: &mut egui::Ui, t: &crate::theme::Tokens) {
     }
 }
 
-/// A JAXA Earth cube's licence: its collection's own once read (asked for when `shown`), JAXA's
+/// A JAXA Earth cube's licence: its collection's own once read (asked for when `visible`), JAXA's
 /// terms when it can't be.
-fn licence_link(ui: &mut egui::Ui, e: &Entry, shown: bool) {
+fn licence_link(ui: &mut egui::Ui, e: &Entry, visible: bool) {
     match jaxa::licence(&e.url) {
         Some(Ok(l)) => {
             let tip = l.title.clone().unwrap_or_else(|| l.url.clone());
@@ -231,14 +231,11 @@ fn licence_link(ui: &mut egui::Ui, e: &Entry, shown: bool) {
         }
         None => {
             // Not in tests, which read nothing from the web.
-            #[cfg(not(test))]
-            if shown {
+            if visible && !cfg!(test) {
                 jaxa::fetch_licence(&e.url);
                 // As for the catalog: look again until the licence is read.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
             }
-            #[cfg(test)]
-            let _ = shown;
             ui.label(egui::RichText::new(tl!("Licence…")).small().weak());
         }
     }

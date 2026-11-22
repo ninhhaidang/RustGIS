@@ -10,10 +10,14 @@ use std::{
     },
 };
 
+/// The keys of a window the app reads off the frame (`"window"`, #1330): the app copies these
+/// from the request, and a landed window holding any other key is refused.
+pub const WINDOW_KEYS: [&str; 3] = ["bbox", "cellSize", "cog"];
+
 /// What a window the app read off the frame says it read (`"window"`, #1330) is what its request
 /// asked for: a box, and its cell size and `"cog"` if the request gave them, nothing else.
 fn asked_window(asked: &Value, window: &Value) -> bool {
-    const KEYS: [&str; 3] = ["bbox", "cellSize", "cog"];
+    const KEYS: [&str; 3] = WINDOW_KEYS;
     let given = |k: &str| asked.get(k).filter(|v| !v.is_null());
     given("bbox").is_some()
         && window.as_object().is_some_and(|w| w.keys().all(|k| KEYS.contains(&k.as_str())) && KEYS.iter().all(|k| given(k) == w.get(*k)))

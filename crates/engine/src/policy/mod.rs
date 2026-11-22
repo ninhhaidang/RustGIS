@@ -5,6 +5,7 @@
 mod decide;
 mod dispatch;
 pub(crate) mod downloads;
+pub use downloads::WINDOW_KEYS;
 mod effects;
 pub mod handler;
 mod plan;

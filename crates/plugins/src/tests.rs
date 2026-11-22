@@ -2567,8 +2567,10 @@ fn panel_diagnostic_field_samples_are_bounded_and_counts_are_complete() {
     let report = state.apply(&decl, &json!({"items":fields}));
     assert!(report.fields.len() <= 10);
     assert!(report.fields.iter().all(|name| name.chars().count() <= 200));
+    // A name cut to fit says so.
+    assert!(report.fields.iter().all(|name| name.ends_with('…')), "{:?}", report.fields);
     let notice = report.notice().unwrap();
-    assert!(notice.contains("1000 item field(s)"), "{notice}");
+    assert!(notice.contains("1000 field(s)"), "{notice}");
     assert!(notice.len() < 7000);
 }
 

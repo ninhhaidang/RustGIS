@@ -827,13 +827,20 @@ fn statistics_window(app: &mut RustGisApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             if ui.button(tl!("Copy")).clicked() {
                 // The values as the answer holds them, not as the window rounds them, for a spreadsheet.
-                let text: Vec<String> = lines.iter().map(|(n, _, full)| format!("{n}\t{full}")).collect();
-                ui.ctx().copy_text(text.join("\n"));
+                ui.ctx().copy_text(stats_tsv(&lines));
             }
         });
     if !open {
         app.table.stats = None;
     }
+}
+
+/// The statistics as tab-separated lines, one per statistic: a tab or line break inside a name
+/// or value (a text column's minimum, say) becomes a space so it can't split the pasted table.
+fn stats_tsv(lines: &[(String, String, String)]) -> String {
+    let cell = |s: &str| s.replace(['\t', '\r', '\n'], " ");
+    let text: Vec<String> = lines.iter().map(|(n, _, full)| format!("{}\t{}", cell(n), cell(full))).collect();
+    text.join("\n")
 }
 
 /// The window's first line: the layer and the field.
@@ -1556,6 +1563,16 @@ mod tests {
         let of = |n: &str| lines.iter().find(|l| l.0 == n).map(|l| (l.1.clone(), l.2.clone()));
         assert_eq!(of("Sum"), Some(("12,345.68".to_string(), "12345.678".to_string())));
         assert_eq!(of("Mean"), Some(("0.123457".to_string(), "0.1234567".to_string())));
+    }
+
+    #[test]
+    fn a_tab_or_line_break_in_a_text_value_keeps_one_copied_line_per_statistic() {
+        let text = json!({"kind": "text", "count": 2, "nulls": 0, "distinct": 2, "min": "a\tb", "max": "c\r\nd"});
+        let lines = stats_lines(&text);
+        let copied = stats_tsv(&lines);
+        assert_eq!(copied.lines().count(), lines.len());
+        assert!(copied.lines().all(|l| l.matches('\t').count() == 1), "{copied}");
+        assert!(copied.contains("a b") && copied.contains("c  d"), "{copied}");
     }
 
     #[test]

@@ -225,7 +225,8 @@ fn no_params() -> String {
     "{}".into()
 }
 
-/// A tool parameter: the Tools pane turns its kind into a widget.
+/// A tool parameter, or a field of a command's dialog (`commands[].form`): the Tools pane and the
+/// dialog turn its kind into a widget.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParamDecl {

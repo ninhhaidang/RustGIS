@@ -218,7 +218,7 @@ fn name_key(instance: u64) -> egui::Id {
 }
 
 /// The most characters `layer.rename` takes of a name: the box takes no more (a longer paste is
-/// cut to fit, and a note under the box says so), so the command refuses none.
+/// cut to fit, and a note under the box says so), so a name typed here is never refused.
 const NAME_LIMIT: usize = rustgis_engine::cmd::layer::MAX_LAYER_NAME;
 
 /// The layer's name, renamed (`layer.rename`) when the box is left (a click elsewhere, another

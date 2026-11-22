@@ -39,7 +39,6 @@ pub const MAX_FORM_FIELD_ID: usize = 64;
 pub const MAX_FORM_CHOICES: usize = 256;
 /// The most options a dropdown (`choice`) holds.
 pub const MAX_CHOICES: usize = 1_000;
-/// The widget kinds.
 /// Whether a kind takes its value from a list of `options`: a dropdown, or a tab row, which is the
 /// same thing drawn as a row of labels instead of a menu. They differ only in how they look, so
 /// everything from `options` to the value they keep is shared.
@@ -48,6 +47,7 @@ pub fn picks_an_option(kind: &str) -> bool {
     matches!(kind, "choice" | "tabs")
 }
 
+/// The widget kinds.
 pub const KINDS: &[&str] = &["text", "checkbox", "slider", "button", "tree", "form", "choice", "tabs", "date", "range", "pick"];
 /// What a pick asks for on the map: a point (the default) or a box.
 pub const PICK_SHAPES: &[&str] = &["point", "box"];
@@ -93,6 +93,7 @@ pub struct PanelItemDecl {
     /// A text's first contents, until the plugin sets them.
     #[serde(default)]
     pub text: String,
+    /// The command it runs: a button's when clicked; a checkbox's when ticked or cleared; a
     /// slider's or a range's when let go (or stepped); a tree's or a dropdown's when a node or an
     /// option is chosen; a form's when one of its fields changes; a date's when a date is picked;
     /// a pick's when the place is picked on the map. Optional for all but buttons, whose values
@@ -352,10 +353,24 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// A bounded, single-line name for a diagnostic, without terminal control characters.
+/// A bounded, single-line name for a diagnostic, without terminal control characters: one longer
+/// than [`MAX_TREE_ID`] ends in `…` to show it was cut.
 fn diagnostic_name(s: &str) -> String {
-    s.chars()
-        .take(MAX_TREE_ID)
+    diagnostic_cut(s, MAX_TREE_ID)
+}
+
+/// A diagnostic name of a widget id and a suffix (`.label`): the id is cut, not the suffix.
+fn diagnostic_suffixed(id: &str, suffix: &str) -> String {
+    let room = MAX_TREE_ID.saturating_sub(suffix.chars().count()).max(1);
+    format!("{}{suffix}", diagnostic_cut(id, room))
+}
+
+/// `s` as [`diagnostic_name`] makes it, at most `n` characters with the last a `…` when cut.
+fn diagnostic_cut(s: &str, n: usize) -> String {
+    let cut = s.chars().count() > n;
+    let mut out: String = s
+        .chars()
+        .take(if cut { n.saturating_sub(1) } else { n })
         .map(|c| {
             if c.is_control() || matches!(c,'\u{061c}'|'\u{200e}'|'\u{200f}'|'\u{2028}'..='\u{202e}'|'\u{2066}'..='\u{2069}') {
                 ' '
@@ -363,7 +378,11 @@ fn diagnostic_name(s: &str) -> String {
                 c
             }
         })
-        .collect()
+        .collect();
+    if cut {
+        out.push('…');
+    }
+    out
 }
 
 /// A whole number from an integer or a float with no fraction (JSON from other languages).
@@ -489,7 +508,9 @@ const MAX_NAMED: usize = 10;
 
 /// Counts and bounded name samples for what a panel update left out or changed. `values`,
 /// `fields`, `clipped` and `label_fields` retain at most ten names, each at most 200 characters.
-/// The unlisted counters retain the remaining totals; `labels` is the full clipped-label count.
+/// The unlisted counters retain the remaining totals; `labels` is the full clipped-label count;
+/// `cut` holds each tree cut at [`MAX_TREE_NODES`] (its id and the nodes it was given), and the
+/// notice names the first ten.
 /// Use `notice()` for the complete counts and sampled locations.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dropped {
@@ -513,7 +534,7 @@ impl Dropped {
     fn clip_label(&mut self, id: &str) {
         self.labels = self.labels.saturating_add(1);
         if self.label_fields.len() < MAX_NAMED {
-            self.label_fields.push(diagnostic_name(&format!("{id}.label")));
+            self.label_fields.push(diagnostic_suffixed(id, ".label"));
         }
     }
     /// Count every field, retaining only a bounded sample for diagnostics.
@@ -546,7 +567,7 @@ impl Dropped {
     pub fn notice(&self) -> Option<String> {
         let mut parts = Vec::new();
         if self.malformed > 0 {
-            parts.push(format!("{} panel object(s) not taken: expected an object", self.malformed));
+            parts.push(format!("{} update object(s) not taken: expected an object", self.malformed));
         }
         if self.labels > 0 {
             let names = self.label_fields.iter().map(|name| diagnostic_name(name)).collect::<Vec<_>>().join(", ");
@@ -555,8 +576,8 @@ impl Dropped {
             parts.push(format!("{} label(s) clipped to {MAX_STATE_LABEL} characters{location}", self.labels));
         }
         for (ids, unlisted, what) in [
-            (&self.fields, self.unlisted_fields, "item field(s) not taken (unknown, inapplicable, wrong type or invalid bounds)"),
-            (&self.clipped, self.unlisted_clipped, "item field(s) clipped or truncated"),
+            (&self.fields, self.unlisted_fields, "field(s) not taken (unknown, inapplicable, wrong type or invalid bounds)"),
+            (&self.clipped, self.unlisted_clipped, "field(s) clipped or truncated"),
             (
                 &self.adjusted,
                 0,
@@ -1102,11 +1123,12 @@ impl PanelState {
     /// Takes in a plugin's answer about its panel: `{"values": {...}, "items": {"id": {...}}}`.
     /// An item may set `label` (`null` for the declared one), `text`, `enabled`, `visible`, for a
     /// slider or a range `min`, `max` and `labels`, for a tree `nodes`, for a dropdown `options`,
-    /// and for a form `fields`. Unknown ids and fields, and values of the wrong type, are ignored;
+    /// and for a form `fields`. Unknown ids and fields, and values of the wrong type, aren't taken;
     /// texts are clipped, sliders' values kept within their ends, a tree's chosen node among its
     /// nodes, and a form's value to its fields (a field the plugin no longer gives is dropped; a
     /// new one starts at its default). A pick's value can only be cleared (`null`): the place is
-    /// the user's to pick. Returns the values, options and nodes left out.
+    /// the user's to pick. Everything not taken, clipped, adjusted or cut is counted and named in
+    /// the returned [`Dropped`], whose `notice` reports it.
     pub fn apply(&mut self, decl: &PanelDecl, update: &Value) -> Dropped {
         let mut dropped = Dropped::default();
         if !update.is_object() {
@@ -1335,6 +1357,19 @@ impl PanelState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_diagnostic_name_ends_in_an_ellipsis_and_keeps_its_suffix() {
+        let id = "w".repeat(300);
+        let name = diagnostic_name(&id);
+        assert_eq!(name.chars().count(), MAX_TREE_ID);
+        assert!(name.ends_with('…'), "{name}");
+        let label = diagnostic_suffixed(&id, ".label");
+        assert_eq!(label.chars().count(), MAX_TREE_ID);
+        assert!(label.ends_with("….label"), "{label}");
+        assert_eq!(diagnostic_name("short"), "short");
+        assert_eq!(diagnostic_suffixed("short", ".label"), "short.label");
+    }
 
     fn form_decl() -> PanelDecl {
         PanelDecl {

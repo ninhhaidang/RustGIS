@@ -287,10 +287,10 @@ fn fetch_registry(s: &mut Session, url: &str) -> Result<Vec<rustgis_plugins::reg
         Err(_) => Ok(Vec::new()),
     };
     match applied {
-        Ok(pulled) if !pulled.is_empty() => s.notify(
-            format!("{} plugin(s) were withdrawn from the plugin registry and turned off: {}", pulled.len(), pulled.join(", ")),
-            true,
-        ),
+        // A warning, not an error: the list was read and the withdrawal applied as asked.
+        Ok(pulled) if !pulled.is_empty() => {
+            s.warn(format!("{} plugin(s) were withdrawn from the plugin registry and turned off: {}", pulled.len(), pulled.join(", ")))
+        }
         Ok(_) => {}
         Err(e) => s.warn(format!("{blocklist}: {e}; the last blocklist read, if any, stays in force")),
     }

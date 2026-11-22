@@ -1408,16 +1408,16 @@ fn source_input(app: &RustGisApp, n: &ModelNode, input: &str) -> Option<String> 
     }
 }
 
-/// Fields of a known model input. Numeric parameters refer strictly to a standalone table ID;
+/// The dataset of a known model input, whose fields its field parameters offer. Numeric parameters refer strictly to a standalone table ID;
 /// a wire takes precedence, and tool-produced schemas remain unknown until execution.
-fn input_fields<'a>(app: &'a RustGisApp, n: &ModelNode, input: &str) -> Option<&'a [rustgis_engine::data::Field]> {
+fn input_dataset<'a>(app: &'a RustGisApp, n: &ModelNode, input: &str) -> Option<&'a rustgis_engine::data::Dataset> {
     if !app.mb.graph.edges.iter().any(|e| e.to == n.id && e.to_port == input)
         && let Some(id) = n.params.get(input).and_then(Value::as_u64)
     {
-        return app.session.project.table(u32::try_from(id).ok()?).map(|t| t.dataset.fields.as_slice());
+        return app.session.project.table(u32::try_from(id).ok()?).map(|t| &t.dataset);
     }
     let name = source_input(app, n, input)?;
-    crate::panes::input_dataset(&app.session, &name).map(|d| d.fields.as_slice())
+    crate::panes::input_dataset(&app.session, &name)
 }
 
 fn tool_settings(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, i: usize, n: &ModelNode) {
@@ -1502,7 +1502,7 @@ fn tool_settings(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, i: usize, n: &Mo
             continue;
         }
         if let Some(input) = crate::fieldlists::input(p.kind) {
-            let fields = input_fields(app, n, input);
+            let fields = input_dataset(app, n, input).map(|d| d.fields.as_slice());
             let edit = ui.push_id(("mb_list", &n.id, p.name), |ui| crate::fieldlists::show(ui, p.kind, &cur, fields)).inner;
             if edit.checkpoint {
                 app.mb.edit();
@@ -1518,17 +1518,14 @@ fn tool_settings(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, i: usize, n: &Mo
         let fields: Vec<&str> =
             if matches!(p.kind, ParamKind::Field | ParamKind::FieldNames | ParamKind::NumericField | ParamKind::CoordinateField) {
                 crate::panes::layer_for_param(spec, p.name)
-                    .and_then(|input| input_fields(app, n, input.name))
-                    .map(|fields| {
-                        // As the Tools pane offers them (`panes::takes_field`).
-                        fields
+                    .and_then(|input| input_dataset(app, n, input.name))
+                    .map(|d| {
+                        // As the Tools pane offers them.
+                        d.fields
                             .iter()
-                            .filter(|f| match p.kind {
-                                ParamKind::NumericField => f.ty.is_numeric(),
-                                ParamKind::FieldNames => !f.name.contains([',', ';']),
-                                _ => true,
-                            })
-                            .map(|f| f.name.as_str())
+                            .enumerate()
+                            .filter(|(i, _)| crate::panes::takes_field(p.kind, d, *i))
+                            .map(|(_, f)| f.name.as_str())
                             .collect()
                     })
                     .unwrap_or_default()

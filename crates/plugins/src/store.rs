@@ -381,7 +381,7 @@ pub fn uninstall(id: &str) -> Result<(), String> {
     // tried again from here (it is gone), so a step that fails now says where they are when they
     // stay (a later install of the id would find them).
     let erase = is_package || package.is_none();
-    let file = dir().map(|d| d.join("settings").join(format!("{id}.json")));
+    let file = crate::settings::file(id);
     let kept = |e: String| match file.as_ref().filter(|f| erase && f.exists()) {
         Some(f) => format!("{e} (the plugin was uninstalled; its saved settings were kept: remove {} by hand)", f.display()),
         None => e,

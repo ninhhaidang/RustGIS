@@ -81,15 +81,20 @@ struct Running {
 impl Running {
     /// Whether one more line may be logged now; says once when lines stop being logged.
     fn may_log(&mut self) -> bool {
-        if self.logged.0.elapsed() > LOG_WINDOW {
-            self.logged = (Instant::now(), 0);
-        }
-        self.logged.1 += 1;
-        if self.logged.1 == MAX_LOGGED + 1 {
-            log::info!("{}: more output than {MAX_LOGGED} lines a minute; the rest isn't logged", self.plugin);
-        }
-        self.logged.1 <= MAX_LOGGED
+        may_log(&mut self.logged, &self.plugin)
     }
+}
+
+/// [`Running::may_log`] over the fields it reads, for code that holds other fields borrowed.
+fn may_log(logged: &mut (Instant, usize), plugin: &str) -> bool {
+    if logged.0.elapsed() > LOG_WINDOW {
+        *logged = (Instant::now(), 0);
+    }
+    logged.1 += 1;
+    if logged.1 == MAX_LOGGED + 1 {
+        log::info!("{plugin}: more output than {MAX_LOGGED} lines a minute; the rest isn't logged");
+    }
+    logged.1 <= MAX_LOGGED
 }
 
 static RUNNING: Mutex<Vec<Running>> = Mutex::new(Vec::new());
@@ -229,30 +234,33 @@ fn shut(mut r: Running, grace: Duration) -> (Option<ExitStatus>, bool, Option<St
 
 /// Logs the error output the program wrote since the last call, as it runs.
 fn log_errors(r: &mut Running) {
-    let (lines, dropped) = r.errs.lock().map(|mut k| (k.lines.drain(..).collect(), std::mem::take(&mut k.dropped))).unwrap_or_default();
-    let lines: Vec<String> = lines;
-    if dropped > 0 && r.may_log() {
-        log::info!("plugin {}: {dropped} earlier lines of its error output weren't kept", r.program);
-    }
-    for line in lines.into_iter().filter(|l| !l.trim().is_empty()) {
-        if r.may_log() {
-            log::info!("plugin {}: {line}", r.program);
-        }
-        r.last_stderr = Some(line);
+    let Running { errs, program, logged, plugin, last_stderr, .. } = r;
+    if let Some(line) = take_errors(errs, program, || may_log(logged, plugin)) {
+        *last_stderr = Some(line);
     }
 }
 
 /// Logs what is left of a program's error output; returns its last line.
 fn drain_errors(errs: &Kept, program: &str) -> Option<String> {
-    let (lines, dropped) = errs.lock().map(|mut k| (k.lines.drain(..).collect(), std::mem::take(&mut k.dropped))).unwrap_or_default();
-    let lines: Vec<String> = lines;
-    if dropped > 0 {
+    take_errors(errs, program, || true)
+}
+
+/// Takes the error output `errs` holds, logging each line (and how many earlier ones weren't
+/// kept) while `may_log` allows; returns the last line that isn't blank.
+fn take_errors(errs: &Kept, program: &str, mut may_log: impl FnMut() -> bool) -> Option<String> {
+    let (lines, dropped): (Vec<String>, usize) =
+        errs.lock().map(|mut k| (k.lines.drain(..).collect(), std::mem::take(&mut k.dropped))).unwrap_or_default();
+    if dropped > 0 && may_log() {
         log::info!("plugin {program}: {dropped} earlier lines of its error output weren't kept");
     }
-    for line in lines.iter().filter(|l| !l.trim().is_empty()) {
-        log::info!("plugin {program}: {line}");
+    let mut last = None;
+    for line in lines.into_iter().filter(|l| !l.trim().is_empty()) {
+        if may_log() {
+            log::info!("plugin {program}: {line}");
+        }
+        last = Some(line);
     }
-    lines.into_iter().rev().find(|l| !l.trim().is_empty())
+    last
 }
 
 /// Stops `plugin`'s program, if it's running.

@@ -931,11 +931,11 @@ mod tests {
         }
         assert!(!ctx.has_requested_repaint(), "clean preferences keep the window idle");
         // A full disk: said once, not for every setting that follows.
-        prefs::saved(Err("could not save preferences: no space left".into()));
-        prefs::saved(Err("could not save preferences: no space left".into()));
+        prefs::saved(Err("no space left".into()));
+        prefs::saved(Err("no space left".into()));
         frame();
         assert!(ctx.has_requested_repaint(), "the pending failure requests its delivery frame");
-        assert_eq!(prefs::take_notices(), [Notice::NotSaved("could not save preferences: no space left".into())]);
+        assert_eq!(prefs::take_notices(), [Notice::NotSaved("no space left".into())]);
         for _ in 0..4 {
             frame();
         }
@@ -949,8 +949,8 @@ mod tests {
         assert!(prefs::take_notices().is_empty(), "equivalent recovery outcomes stay quiet");
         // Once a save works, the next failure is news again.
         prefs::saved(Ok(None));
-        prefs::saved(Err("could not save preferences: read-only".into()));
-        assert_eq!(prefs::take_notices(), [Notice::NotSaved("could not save preferences: read-only".into())]);
+        prefs::saved(Err("read-only".into()));
+        assert_eq!(prefs::take_notices(), [Notice::NotSaved("read-only".into())]);
         prefs::saved(Ok(None));
         // A malformed file set aside says where it went.
         let bad = std::path::PathBuf::from("prefs.json.bad");
@@ -959,7 +959,7 @@ mod tests {
         let text = prefs::text(&Notice::SetAside(bad));
         assert!(text.contains("prefs.json.bad"), "{text}");
         // Both a failed replacement and an unconfirmed final flush give an accurate notice.
-        for error in ["could not save preferences: read-only", "preferences were replaced, but their durability could not be confirmed"] {
+        for error in ["read-only", "preferences were replaced, but their durability could not be confirmed"] {
             let text = prefs::text(&Notice::NotSaved(error.into()));
             assert!(text.contains("Settings could not be saved reliably") && text.contains(error), "{text}");
             assert!(!text.contains("changes last only until"), "{text}");

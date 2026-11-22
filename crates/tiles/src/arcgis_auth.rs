@@ -752,8 +752,8 @@ pub fn signed_in(portal: &str) -> Option<Info> {
 }
 
 /// Whether a sign-in kept still gives a token: one that renews itself or hasn't expired. A sign-in
-/// past its expiry with nothing to renew it is kept, but no request uses it; a token given with an
-/// address covers its server only and isn't counted.
+/// past its expiry with nothing to renew it stays in memory but isn't counted (no request uses
+/// it); a token given with an address covers its server only and isn't counted either.
 pub fn kept() -> bool {
     let now = now_secs();
     sessions().iter().any(|s| s.signed_in_at(now))

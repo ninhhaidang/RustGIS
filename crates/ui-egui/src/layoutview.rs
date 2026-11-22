@@ -1398,7 +1398,6 @@ fn text_field(
     None
 }
 
-/// A map frame's grid options; `set` sends the changed ones (`false` removes the grid).
 /// An outline in a map frame's properties (its extent indicator, its border): the command key its
 /// changes go under, its width's drag id, and its colour and width (points) within `range`.
 struct Outline {
@@ -1445,6 +1444,7 @@ fn outline_rows(
     });
 }
 
+/// A map frame's grid options; `set` sends the changed ones (`false` removes the grid).
 fn grid_properties(app: &mut RustGisApp, ui: &mut Ui, grid: Option<&Grid>, id: u32, set: &dyn Fn(&mut RustGisApp, Value)) {
     let mut on = grid.is_some();
     if ui.checkbox(&mut on, tl!("Show grid")).changed() {

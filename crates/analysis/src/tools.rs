@@ -5511,8 +5511,8 @@ fn ground_area_perimeter(g: &Geometry) -> (f64, f64) {
             for c in &mut ring.0 {
                 let step = c.x - previous;
                 previous = c.x;
-                // Within 1e-4° of a full turn, as `wgs84_ring_perimeter_area_m2` takes it.
-                if step.abs() >= 360.0 - 1e-4 && step.is_finite() {
+                // A full turn as `wgs84_ring_perimeter_area_m2` takes it.
+                if rustgis_geom::is_full_turn_step(step) {
                     longitude += step;
                     full_turn = true;
                 } else {

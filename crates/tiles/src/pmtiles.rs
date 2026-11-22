@@ -907,6 +907,10 @@ struct DirectorySummary {
 }
 
 /// An unfinished range encountered again is a cycle; completed ranges cost no further I/O or budget.
+///
+/// Reload and repair validate more strictly than an ordinary open: a tile run past
+/// `data_length` is refused even when the header gives 0 (where [`find`] reads it), and so is any
+/// entry over [`MAX_BYTES`], where the reader fails only that tile.
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_directories(
     archive: &str,

@@ -1049,7 +1049,7 @@ impl Raster {
         if self.georeferenced {
             Ok(())
         } else {
-            Err(format!("{} has no coordinates: georeference it first (raster.georeference)", self.name))
+            Err(format!("{} has no coordinates: georeference it first (raster.georeference, with the Imagery extension on)", self.name))
         }
     }
 

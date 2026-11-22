@@ -179,18 +179,13 @@ pub(crate) fn drawn(
         }
     }
     if written.is_ok() {
-        let listed = |v: &[String]| {
-            let more = v.len().saturating_sub(10);
-            let shown = v.iter().take(10).cloned().collect::<Vec<_>>().join("; ");
-            if more > 0 { format!("{shown}; and {more} more") } else { shown }
-        };
         let warn = rustgis_data::diagnostics::Severity::Warning;
         if unplaced > 0 {
             notices.push((
                 warn,
                 format!(
                     "{path}: {unplaced} feature(s) have a place that can't be given in longitude/latitude, drawn without it ({})",
-                    listed(&partly)
+                    crate::listed(&partly)
                 ),
             ));
         }
@@ -200,7 +195,7 @@ pub(crate) fn drawn(
                 format!(
                     "{path}: {} layer(s) aren't drawn, as their system can't be given in longitude/latitude: {}",
                     undrawn.len(),
-                    listed(&undrawn)
+                    crate::listed(&undrawn)
                 ),
             ));
         }
