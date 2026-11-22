@@ -467,6 +467,47 @@ fn geopackage_provenance_keeps_a_linked_path() {
     assert!(paths.contains(&format!("{}-wal", resolved.display())), "{paths:?}");
 }
 
+/// A retained conversion read after its original changed names the original as it was when the
+/// conversion was opened, not as it is now; a DuckDB database's write-ahead log with it (#2639).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_conversion_names_its_original_as_it_was_when_opened() {
+    use crate::provenance::{Capture, Fingerprint};
+    let folder = tempfile::tempdir().unwrap();
+    let original = folder.path().join("drawing.dwg");
+    std::fs::write(&original, b"first").unwrap();
+    let converted = folder.path().join("cache.fgb");
+    write_fgb(&converted);
+    let source = super::fgb::FgbSource::open_converted_path(&converted, "grid", &original, None).unwrap();
+    let inputs = || {
+        let captured = Capture::start();
+        assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+        captured.inputs()
+    };
+    let before = inputs();
+    assert!(before.len() == 1 && before[0].size == Some(5) && before[0].path == original.display().to_string(), "{before:?}");
+    std::fs::write(&original, b"changed since").unwrap();
+    assert_eq!(inputs(), before, "the conversion holds the original as it was");
+    // GeoParquet from a DuckDB database: the database and its log as they were.
+    let db = folder.path().join("places.duckdb");
+    std::fs::write(&db, b"db").unwrap();
+    std::fs::write(folder.path().join("places.duckdb.wal"), b"wal").unwrap();
+    let parquet = folder.path().join("cache.parquet");
+    write_parquet(&parquet, true);
+    let source = super::parquet::ParquetSource::open_converted_path(&parquet, "grid", Some(&db), None).unwrap();
+    let inputs = || {
+        let captured = Capture::start();
+        assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+        captured.inputs()
+    };
+    let before: Vec<Fingerprint> = inputs();
+    assert_eq!(before.len(), 2, "{before:?}");
+    assert!(before.iter().any(|i| i.path.ends_with("places.duckdb.wal") && i.size == Some(3)), "{before:?}");
+    assert!(!before.iter().any(|i| i.path.ends_with("cache.parquet")), "{before:?}");
+    std::fs::write(folder.path().join("places.duckdb.wal"), b"more changes").unwrap();
+    assert_eq!(inputs(), before);
+}
+
 /// 30 × 20 points over the world, named and numbered.
 fn points() -> Vec<(Coord, String, i64)> {
     let mut v = Vec::new();

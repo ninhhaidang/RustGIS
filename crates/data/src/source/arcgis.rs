@@ -663,9 +663,14 @@ impl FeatureSource for ArcgisSource {
             // page before it is full, as pages are.
             const WINDOW: usize = remote::ROUND_ANSWERS / 2;
             let forget = |urls: &[String]| urls.iter().for_each(|u| self.remote.forget_answer(u));
+            // The most features a page holds, as the service sends them: a service whose transfer
+            // limit is below its `maxRecordCount` sends shorter pages than asked for, and the
+            // window's offsets follow what it sends, so its answers are used, not fetched and
+            // thrown away (#2639).
+            let mut sends = usize::MAX;
             'pages: loop {
                 crate::progress::check()?;
-                let page_len = self.page();
+                let page_len = self.page().min(sends);
                 let urls: Vec<String> = (0..WINDOW)
                     .map(|i| offset.saturating_add(i.saturating_mul(page_len)))
                     .take_while(|o| *o == offset || (*o as u64) < total)
@@ -738,7 +743,11 @@ impl FeatureSource for ArcgisSource {
                     }
                     if sent != page_len {
                         // A page shorter or longer than asked for: the rest of the window starts
-                        // at the wrong offsets.
+                        // at the wrong offsets. Shorter, the next windows ask for pages as long as
+                        // it, which the service sends whole.
+                        if sent < page_len {
+                            sends = sent;
+                        }
                         forget(&urls);
                         continue 'pages;
                     }

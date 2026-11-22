@@ -540,8 +540,9 @@ fn a_materialized_layer_says_each_loss_once() {
 fn a_visit_reads_short_pages_in_order() {
     // Pages of 30 asked for a window at a time, 7 sent: each window starts again where a short
     // page ended.
-    let (query, _) = service_with("live-short.test", Opts { caps: Some(7), ..Opts::default() });
+    let (query, asked) = service_with("live-short.test", Opts { caps: Some(7), ..Opts::default() });
     let src = open_blocking(&query).unwrap();
+    let before = asked.urls.lock().unwrap().len();
     let mut seen = Vec::new();
     src.visit_chunks(None, 4 << 10, &mut |c| {
         seen.extend(c.iter().map(|f| f.id));
@@ -549,6 +550,11 @@ fn a_visit_reads_short_pages_in_order() {
     })
     .unwrap();
     assert!(seen.into_iter().eq(1..=FEATURES));
+    // After the first short page, pages are asked for as long as the service sends them: only the
+    // first window's answers past it are thrown away (#2639).
+    let pages = asked.since(before).iter().filter(|u| u.contains("resultOffset")).count();
+    let needed = (FEATURES as usize).div_ceil(7);
+    assert!(pages < needed + remote::ROUND_ANSWERS / 2, "{pages} pages asked for, {needed} needed");
 }
 
 #[test]

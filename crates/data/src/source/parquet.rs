@@ -36,10 +36,23 @@ const MAX_GROUP_ROWS: usize = if cfg!(target_arch = "wasm32") { 1 << 21 } else {
 /// Conservative decoded-column budget for one group scanned without native view bounds.
 const MAX_SCAN_BYTES: u64 = if cfg!(target_arch = "wasm32") { 64 << 20 } else { 256 << 20 };
 
+/// What a GeoParquet source's reads are attributed to ([`ParquetSource::attribute`]).
+#[derive(Clone, Debug)]
+enum Attributed {
+    /// The file read, observed as it is at each read.
+    File(std::path::PathBuf),
+    /// A conversion's original, as it was when the conversion was opened. Conversions run only
+    /// on the desktop.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Original(Arc<Vec<crate::provenance::Fingerprint>>),
+}
+
 /// A GeoParquet file.
 pub struct ParquetSource {
-    /// The local input attributed to reads; a conversion names its source, never its cache.
-    path: Option<std::path::PathBuf>,
+    /// The local input attributed to reads: the file itself, observed again at each read, or a
+    /// conversion's source (never its cache) as it was when the conversion was opened, since a
+    /// source changed since isn't what the conversion holds.
+    path: Option<Attributed>,
     info: SourceInfo,
     reader: Arc<dyn FileReader>,
     /// Leaf column index of the geometry.
@@ -69,8 +82,17 @@ impl ParquetSource {
     pub fn open_path(path: &Path, name: &str) -> Result<Self> {
         let file = crate::provenance::open(path)?;
         let mut source = Self::new(Arc::new(SerializedFileReader::new(file).map_err(err)?), name, None)?;
-        source.path = Some(path.to_path_buf());
+        source.path = Some(Attributed::File(path.to_path_buf()));
         Ok(source)
+    }
+
+    /// Records the input this reads: the file as it is now, or a conversion's original as it was.
+    fn attribute(&self) {
+        match &self.path {
+            Some(Attributed::File(path)) => crate::provenance::path(path),
+            Some(Attributed::Original(seen)) => crate::provenance::record(seen.iter().cloned()),
+            None => {}
+        }
     }
 
     /// Opens a conversion while retaining its original local input for later reads and traversals.
@@ -83,10 +105,9 @@ impl ParquetSource {
         workspace: Option<Arc<super::duckdb::ReloadWorkspace>>,
     ) -> Result<Self> {
         let mut source = crate::provenance::without(|| Self::open_path(path, name))?;
-        source.path = original.map(Path::to_path_buf);
-        if let Some(path) = &source.path {
-            crate::provenance::path(path);
-        }
+        source.path =
+            original.map(|original| Attributed::Original(Arc::new(crate::provenance::snapshot(|| crate::provenance::duckdb(original)).1)));
+        source.attribute();
         source._workspace = workspace;
         Ok(source)
     }
@@ -474,9 +495,7 @@ impl FeatureSource for ParquetSource {
     /// budget before decoding, count rows and check Cancel between them. They decode every selected group's geometry
     /// and fields before sampling matches; a refused view therefore scans the selected file.
     fn read(&self, req: &Request) -> Result<Batch> {
-        if let Some(path) = &self.path {
-            crate::provenance::path(path);
-        }
+        self.attribute();
         let limit = clamp_limit(req.limit);
         let md = self.reader.metadata();
         let native = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
@@ -693,9 +712,7 @@ impl FeatureSource for ParquetSource {
     /// Checks Cancel between groups and scanned rows; each group's column decoding finishes
     /// before the next check. An unbounded view also checks the decoded-column budget first.
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
-        if let Some(path) = &self.path {
-            crate::provenance::path(path);
-        }
+        self.attribute();
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
         if self.remote.is_some() {
             return Err(DataError::Unsupported("a whole GeoParquet by its web address read a chunk at a time".into()));

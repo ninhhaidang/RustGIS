@@ -629,9 +629,29 @@ fn is_zero(value: &u64) -> bool {
 }
 
 impl LogEntry {
-    /// Keeps whole fingerprints, counting those cut rather than shortening their identities.
+    /// Keeps whole fingerprints, counting those cut rather than shortening their identities. The
+    /// marks saying a list is incomplete there ([`Fingerprint::incomplete`]) are kept first, in
+    /// their place: cut, the list would look complete.
+    ///
+    /// [`Fingerprint::incomplete`]: rustgis_data::provenance::Fingerprint::incomplete
     fn bound_inputs(&mut self) {
         let omitted = self.inputs.len().saturating_sub(LOG_LIST_ITEMS);
+        if omitted > 0 {
+            let marks = self.inputs.iter().filter(|i| i.incomplete.is_some()).count().min(LOG_LIST_ITEMS);
+            let mut others = LOG_LIST_ITEMS - marks;
+            let mut kept_marks = marks;
+            self.inputs.retain(|i| {
+                if i.incomplete.is_some() && kept_marks > 0 {
+                    kept_marks -= 1;
+                    true
+                } else if i.incomplete.is_none() && others > 0 {
+                    others -= 1;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
         self.inputs.truncate(LOG_LIST_ITEMS);
         self.inputs_omitted = self.inputs_omitted.saturating_add(u64::try_from(omitted).unwrap_or(u64::MAX));
     }

@@ -376,10 +376,15 @@ For an address ending in a layer id, such as `…/NFHL/MapServer/21`, list the s
 with that same root. Both MapServer and FeatureServer services can offer feature layers.
 
 When an ArcGIS feature page fails with a server error, a timeout or a reset connection, RustGIS
-retries that offset with half as many features, down to one feature per page. Subsequent pages
-keep the smaller size. A notice counts the requests retried with smaller pages. Persistent
-failures identify the layer and offset; features already received are kept with an incomplete-read
-notice. The feature, byte, memory and overall wait limits still apply, and Cancel stops the read.
+retries that offset with half as many features, down to one feature per page. A page of more than
+one feature has 10 seconds to arrive; one that takes longer counts as a timeout and is retried the
+same way. Subsequent pages keep the smaller size for the rest of the read, never growing back, so
+a slow server is read in more, smaller requests. A notice counts the requests retried with smaller
+pages. Persistent failures identify the layer and offset; features already received are kept with
+an incomplete-read notice. When the pages fail from the layer's very first feature, the query is
+read as it is (as many features as the server sends at once), with a notice saying why the pages
+failed and how many smaller pages were tried. The feature, byte, memory and overall wait limits
+still apply, and Cancel stops the read.
 
 A coverage is read once, for the view when it was added (its DescribeCoverage first, for its axes,
 format and bounds; `service.coverage` gives the GetCoverage address alone). Moving the map doesn't

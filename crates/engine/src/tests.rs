@@ -45644,6 +45644,7 @@ fn session_log_bounds_input_fingerprints() {
             modified_ns: Some("123456789".into()),
             sha256: None,
             hash_unavailable: Some("streamed input".into()),
+            incomplete: None,
         })
     };
     let mut s = world();
@@ -45707,6 +45708,54 @@ fn session_log_bounds_input_fingerprints() {
     s.log_entry(separate, false);
     assert_eq!(s.notices.len(), 1);
     assert!(s.notices[0].text.contains("3 input fingerprints"));
+}
+
+/// A mark saying an entry's inputs are incomplete there is kept when the list is cut, so a cut
+/// list never looks complete; a list without marks is cut as before (#2639).
+#[test]
+fn session_log_keeps_incomplete_marks_when_it_cuts_inputs() {
+    use crate::project_log::LOG_LIST_ITEMS;
+    use rustgis_data::provenance::{Fingerprint, record};
+    let file = |i: usize| Fingerprint {
+        path: format!("/inputs/{i:04}.csv"),
+        size: Some(1),
+        modified_ns: None,
+        sha256: None,
+        hash_unavailable: Some("streamed input".into()),
+        incomplete: None,
+    };
+    let mark = Fingerprint {
+        path: "/inputs/zz.gdb".into(),
+        size: None,
+        modified_ns: None,
+        sha256: None,
+        hash_unavailable: None,
+        incomplete: Some("more than 1000 files; only the first 1000 are named".into()),
+    };
+    let mut s = world();
+    let total = LOG_LIST_ITEMS + 5;
+    s.command_epilogue("project.rename", &json!({"name": "Marked"}), |_| {
+        record((0..total).map(file).chain([mark.clone()]));
+        Ok(Value::Null)
+    })
+    .unwrap();
+    let entry = s.log.entries().last().unwrap();
+    assert_eq!(entry.inputs.len(), LOG_LIST_ITEMS);
+    assert_eq!(entry.inputs_omitted, 6);
+    assert_eq!(entry.inputs.last(), Some(&mark), "the mark, sorted last, survives the cut");
+    assert_eq!(entry.inputs.iter().filter(|i| i.incomplete.is_some()).count(), 1);
+    let mut jsonl = Vec::new();
+    s.log.write(&mut jsonl, false).unwrap();
+    assert!(String::from_utf8(jsonl).unwrap().contains(r#""incomplete":"more than 1000 files"#));
+    // Without marks, nothing says incomplete.
+    s.command_epilogue("project.rename", &json!({"name": "Clean"}), |_| {
+        record((0..total).map(file));
+        Ok(Value::Null)
+    })
+    .unwrap();
+    let entry = s.log.entries().last().unwrap();
+    assert_eq!(entry.inputs, (0..LOG_LIST_ITEMS).map(file).collect::<Vec<_>>());
+    assert!(entry.inputs.iter().all(|i| i.incomplete.is_none()));
 }
 
 /// The session log (#797): a command run by itself that changes the project, or reaches a file

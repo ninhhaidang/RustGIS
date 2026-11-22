@@ -3451,6 +3451,9 @@ pub struct Pages {
     /// Why the layer's first protocol buffer page couldn't be read, when it is read in GeoJSON
     /// pages instead: said in the note it ends with.
     pbf_failed: Option<String>,
+    /// Why an ArcGIS layer's pages from its start failed, when its query is fetched as it is
+    /// instead: said in the note it ends with.
+    paging_failed: Option<String>,
     /// How an ArcGIS layer's description says it is drawn (its `drawingInfo`, an object), or what
     /// says why it couldn't be read, until taken ([`Pages::take_drawing_info`]).
     drawing_info: Option<Result<serde_json::Value, String>>,
@@ -3620,6 +3623,7 @@ fn start(url: &str, max: usize, pbf: bool) -> Step {
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
+        paging_failed: None,
         // A query asking for a window of its own skips the description that says how it is drawn.
         drawing_info: (is_arcgis_query(url) && !paged).then(|| Err(WINDOW_DRAWING.to_string())),
     }))
@@ -3687,6 +3691,7 @@ fn read_first(url: &str, first: Vec<u8>, max: usize, paging: Option<ArcgisPaging
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
+        paging_failed: None,
         drawing_info: None,
     };
     pages.advance()
@@ -3745,16 +3750,34 @@ impl Pages {
     /// address to fetch, or the collection as read. A layer read in GeoJSON because its protocol
     /// buffer pages couldn't be read says so in its note.
     pub fn land(mut self, answer: Result<Vec<u8>, String>) -> Step {
-        let Some(why) = self.pbf_failed.take() else { return self.land_page(answer) };
-        match self.land_page(answer) {
-            // Carried to the next page, whichever reading goes on with it.
+        let paging = self.paging_failed.take();
+        let step = match self.pbf_failed.take() {
+            None => self.land_page(answer),
+            Some(why) => match self.land_page(answer) {
+                // Carried to the next page, whichever reading goes on with it.
+                Step::Fetch(mut pages) => {
+                    pages.pbf_failed = Some(why);
+                    Step::Fetch(pages)
+                }
+                Step::Done(bytes, note) => Step::Done(bytes, Some(read_in_geojson(&why, note))),
+                Step::Decoded(ds, report, note) => Step::Decoded(ds, report, Some(read_in_geojson(&why, note))),
+                step => step,
+            },
+        };
+        let Some(why) = paging else { return step };
+        let join = |note: Option<String>| Some(note.map_or_else(|| why.clone(), |note| format!("{why}; {note}")));
+        match step {
+            // Carried on until the read ends (the query as it is may lead to more pages).
             Step::Fetch(mut pages) => {
-                pages.pbf_failed = Some(why);
+                pages.paging_failed = Some(match pages.paging_failed.take() {
+                    Some(later) => format!("{why}; {later}"),
+                    None => why,
+                });
                 Step::Fetch(pages)
             }
-            Step::Done(bytes, note) => Step::Done(bytes, Some(read_in_geojson(&why, note))),
-            Step::Decoded(ds, report, note) => Step::Decoded(ds, report, Some(read_in_geojson(&why, note))),
-            step => step,
+            Step::Done(bytes, note) => Step::Done(bytes, join(note)),
+            Step::Decoded(ds, report, note) => Step::Decoded(ds, report, join(note)),
+            Step::Failed(e) => Step::Failed(format!("{e} ({why})")),
         }
     }
 
@@ -4116,10 +4139,17 @@ impl Pages {
             Phase::WfsHits => format!("{} WFS features read: {note}", self.features.len()),
             _ => note,
         };
-        if let Phase::Offsets { first, start: None, .. } = &mut self.phase {
+        if let Phase::Offsets { first, start: None, smaller, .. } = &mut self.phase {
+            // Why the pages failed, and the retries made, said with whatever is read instead.
+            let retried =
+                if *smaller > 0 { format!("; {smaller} failed page request(s) retried with smaller pages") } else { String::new() };
+            let said = |what: &str| format!("the layer couldn't be read in pages from its start, so {what}: {note}{retried}");
             return match first.take() {
-                Some(first) => Step::Done(first, None),
-                None => self.ask_as_it_is(None),
+                Some(first) => Step::Done(first, Some(said("only its first page is read"))),
+                None => {
+                    self.paging_failed = Some(said("it is read as its query answers"));
+                    self.ask_as_it_is(None)
+                }
             };
         }
         self.finish(Some(note))
@@ -5663,6 +5693,7 @@ mod tests {
             decoded_bytes: 0,
             decoded_budget: max_decoded_bytes(),
             pbf_failed: None,
+            paging_failed: None,
             drawing_info: None,
         };
         // A page in another coordinate system, or of another geometry type, isn't joined; one
@@ -5855,14 +5886,15 @@ mod tests {
         let answer = server(layer(r#", "maxRecordCount": 5"#));
         let (joined, note) = super::join_pages(query, 100, |u| answer(&mut asked, u)).unwrap();
         assert_eq!((ids(&joined), note, asked.len()), (vec![0, 1, 2, 3, 4], None, 2));
-        // Pages that fail before one is read: the query as it is, as it came; an error when that
-        // can't be fetched either.
+        // Pages that fail before one is read: the query as it is, as it came, saying why; an error
+        // when that can't be fetched either.
         let mut asked = Vec::new();
         let answer = server(layer(r#", "maxRecordCount": 2"#));
         let (joined, note) = join_pages(query, page(0, 2), 100, |u| {
             if u.contains("resultOffset") { Err("http status: 500".into()) } else { answer(&mut asked, u) }
         });
-        assert_eq!((joined, note, asked.len()), (page(0, 2), None, 1));
+        assert_eq!((joined, asked.len()), (page(0, 2), 1));
+        assert!(note.as_deref().is_some_and(|n| n.contains("from its start") && n.contains("http status: 500")), "{note:?}");
         let answer = server(layer(r#", "maxRecordCount": 2"#));
         let failed = super::join_pages(query, 100, |u| {
             if u.contains("resultOffset") || u == query { Err("http status: 500".into()) } else { answer(&mut Vec::new(), u) }
@@ -5908,12 +5940,23 @@ mod tests {
         // Paging that fails before a page is read (a page that adds nothing would ask for itself
         // again; a page that can't be fetched): the first page as it came.
         let empty = br#"{"type":"FeatureCollection","features":[],"properties":{"exceededTransferLimit":true}}"#;
+        // Why the pages failed is said with it (#2639).
         let (joined, note) =
             join_pages(query, page(0, 2), 100, |u| if u.contains("resultOffset") { Ok(empty.to_vec()) } else { Ok(layer("")) });
-        assert_eq!((joined, note), (page(0, 2), None));
+        assert_eq!(joined, page(0, 2));
+        assert!(
+            note.as_deref()
+                .is_some_and(|n| n.starts_with("the layer couldn't be read in pages from its start, so only its first page is read")
+                    && n.contains("earlier page")),
+            "{note:?}"
+        );
         let (joined, note) =
             join_pages(query, page(0, 2), 100, |u| if u.contains("resultOffset") { Err("http status: 500".into()) } else { Ok(layer("")) });
-        assert_eq!((joined, note), (page(0, 2), None));
+        assert_eq!(joined, page(0, 2));
+        assert!(
+            note.as_deref().is_some_and(|n| n.contains("from its start") && n.contains("(http status: 500)") && n.contains("offset 0")),
+            "{note:?}"
+        );
         // A page that fails later ends the reading with what was read, and says so.
         let answer = server(layer(r#", "maxRecordCount": 2"#));
         let (joined, note) = join_pages(query, page(0, 2), 100, |u| {
@@ -6043,6 +6086,48 @@ mod tests {
             let note = note.unwrap();
             assert!(note.contains("MapServer/28") && note.contains("offset 2"), "{note}");
             assert_eq!(note.contains("smaller pages"), sizes.len() > 1, "{note}");
+        }
+    }
+
+    /// Pages from the start that fail at every size, down to one feature, have the query fetched
+    /// as it is: its answer comes with why the pages failed and how many smaller pages were tried
+    /// (#2639); a query that pages well says nothing.
+    #[test]
+    fn arcgis_paging_that_fails_from_the_start_says_why_with_the_query_as_it_is() {
+        let query = "https://x.org/rest/services/P/MapServer/28/query?where=1%3D1&f=geojson";
+        let description = br#"{"maxRecordCount":8,"advancedQueryCapabilities":{"supportsPagination":true}}"#;
+        let first = br#"{"type":"FeatureCollection","exceededTransferLimit":true,"features":[{"id":0},{"id":1}]}"#;
+        for fails in [true, false] {
+            let mut sizes = Vec::new();
+            let (bytes, note) = super::join_pages(query, 100, |url| {
+                if !url.contains("/query") {
+                    return Ok(description.to_vec());
+                }
+                let Some(size) = query_value(url, "resultRecordCount") else { return Ok(first.to_vec()) };
+                sizes.push(size.parse::<usize>().unwrap());
+                if fails {
+                    Err("http status: 503".into())
+                } else {
+                    Ok(br#"{"type":"FeatureCollection","features":[{"id":0},{"id":1},{"id":2}]}"#.to_vec())
+                }
+            })
+            .unwrap();
+            let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if fails {
+                assert_eq!(sizes, [8, 4, 2, 1]);
+                assert_eq!(bytes, first.to_vec());
+                let note = note.unwrap();
+                assert!(
+                    note.starts_with("the layer couldn't be read in pages from its start, so it is read as its query answers"),
+                    "{note}"
+                );
+                assert!(note.contains("MapServer/28") && note.contains("offset 0") && note.contains("http status: 503"), "{note}");
+                assert!(note.contains("3 failed page request(s) retried with smaller pages"), "{note}");
+            } else {
+                assert_eq!(sizes, [8]);
+                assert_eq!(doc["features"].as_array().unwrap().len(), 3);
+                assert_eq!(note, None);
+            }
         }
     }
 

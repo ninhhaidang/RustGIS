@@ -135,82 +135,133 @@ fn missing_text(here: &str) -> String {
     }
 }
 
+/// What an ER Mapper header says it opens: every `DataSetType` and `DataFile` line's value, read
+/// once ([`ers_header`]) for both the check ([`check_ers`]) and the inputs ([`observe_ers`]).
+#[derive(Debug)]
+struct ErsHeader {
+    types: Vec<String>,
+    data_files: Vec<String>,
+}
+
+/// A header is a few kilobytes of text.
+const MAX_ERS_HEADER: u64 = 1 << 20;
+
+/// Reads an ER Mapper header once, its bytes recorded as an input; `None` for a file that isn't
+/// one (not `.ers`). Refused when it isn't a file (a pipe would never finish being read) or is
+/// larger than [`MAX_ERS_HEADER`].
+fn ers_header(src: &Path) -> Option<Result<ErsHeader>> {
+    use std::io::Read;
+    if !src.extension().is_some_and(|e| e.eq_ignore_ascii_case("ers")) {
+        return None;
+    }
+    let read = || -> Result<ErsHeader> {
+        let meta = std::fs::metadata(src)?;
+        if !meta.is_file() {
+            return Err(DataError::Format("not a file: an ER Mapper header is one".into()));
+        }
+        if meta.len() > MAX_ERS_HEADER {
+            return Err(DataError::Format("too large for an ER Mapper header".into()));
+        }
+        let file = std::fs::File::open(src)?;
+        let mut bytes = Vec::new();
+        (&file).take(MAX_ERS_HEADER + 1).read_to_end(&mut bytes)?;
+        // Grown since it was measured.
+        if bytes.len() as u64 > MAX_ERS_HEADER {
+            return Err(DataError::Format("too large for an ER Mapper header".into()));
+        }
+        crate::provenance::buffer(src, &file, &bytes);
+        let text = String::from_utf8_lossy(&bytes);
+        // Every line naming a key, so a second one can't hide behind the first.
+        let values = |key: &str| {
+            // GDAL ends a line at a carriage return too.
+            text.split(['\r', '\n'])
+                .filter_map(|l| l.split_once('='))
+                .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+                .collect::<Vec<_>>()
+        };
+        Ok(ErsHeader { types: values("DataSetType"), data_files: values("DataFile") })
+    };
+    Some(read())
+}
+
+impl ErsHeader {
+    /// Only raw data of its own: each type's first word, so trailing text can't change it. No
+    /// type at all is raw data to GDAL (only `Translated` links).
+    fn own_data(&self) -> bool {
+        self.types.iter().all(|t| t.split_whitespace().next().is_some_and(|w| w.trim_matches('"').eq_ignore_ascii_case("ERStorage")))
+    }
+}
+
+/// Whether an ER Mapper `DataFile` names a file beside its header (GDAL before 3.12 follows `../`).
+fn beside(name: &str) -> bool {
+    !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', ':'])
+}
+
 /// Refuses an ER Mapper header that would open more than its own data: any but an `ERStorage` one
 /// (a `Translated` one's data file GDAL opens as any format, so a VRT beside it would read whatever
 /// it names), or one whose data file isn't a file beside it (GDAL before 3.12 follows `../`).
-/// Other files pass.
-fn plain_ers(src: &Path) -> Result<()> {
-    if !src.extension().is_some_and(|e| e.eq_ignore_ascii_case("ers")) {
-        return Ok(());
-    }
-    // A header is a few kilobytes of text.
-    const MAX_HEADER: u64 = 1 << 20;
-    let meta = std::fs::metadata(src)?;
-    // A pipe or device named `.ers` would never finish being read.
-    if !meta.is_file() {
-        return Err(DataError::Format("not a file: an ER Mapper header is one".into()));
-    }
-    if meta.len() > MAX_HEADER {
-        return Err(DataError::Format("too large for an ER Mapper header".into()));
-    }
-    let text = String::from_utf8_lossy(&crate::provenance::read(src)?).into_owned();
-    // Every line naming a key, so a second one can't hide behind the first.
-    let values = |key: &str| {
-        // GDAL ends a line at a carriage return too.
-        text.split(['\r', '\n'])
-            .filter_map(|l| l.split_once('='))
-            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.trim().trim_matches('"').to_string())
-            .collect::<Vec<_>>()
-    };
-    // Only raw data of its own: each type's first word, so trailing text can't change it.
-    let own = |t: &String| t.split_whitespace().next().is_some_and(|w| w.trim_matches('"').eq_ignore_ascii_case("ERStorage"));
-    if !values("DataSetType").iter().all(own) {
+/// Other files (`None`) pass.
+fn check_ers(header: Option<Result<ErsHeader>>) -> Result<()> {
+    let Some(header) = header else { return Ok(()) };
+    let header = header?;
+    if !header.own_data() {
         return Err(DataError::Unsupported(
             "an ER Mapper header that isn't raw data of its own (DataSetType = ERStorage), such as one linking to another file, isn't read"
                 .into(),
         ));
     }
-    if values("DataFile").iter().any(|f| f.contains(['/', '\\', ':']) || f == "..") {
+    if header.data_files.iter().any(|f| f.contains(['/', '\\', ':']) || f == "..") {
         return Err(DataError::Unsupported("an ER Mapper header whose data file isn't beside it isn't read".into()));
-    }
-    for data in values("DataFile") {
-        crate::provenance::path(&src.with_file_name(data));
     }
     Ok(())
 }
 
-/// Observes only plainly named local companions, without imposing a header validation on conversion.
-/// Failure to inspect this small header affects provenance alone, never whether GDAL can open it.
-fn observe_ers_companions(src: &Path) {
-    use std::io::Read;
-    if !crate::provenance::active() || !src.extension().is_some_and(|e| e.eq_ignore_ascii_case("ers")) {
+/// Records the data file an ER Mapper header opens: each `DataFile` beside it, or, when it names
+/// none, GDAL's default, the header's name without `.ers`, when that file is there. Observing never
+/// adds a requirement to reading: what can't be listed (a header that couldn't be read, a data
+/// file elsewhere, a linked dataset's own inputs) leaves an incomplete mark on the header instead.
+fn observe_ers(src: &Path, header: Option<&Result<ErsHeader>>) {
+    if !crate::provenance::active() {
         return;
     }
-    const MAX_HEADER: u64 = 1 << 20;
-    if !std::fs::metadata(src).is_ok_and(|m| m.is_file() && m.len() <= MAX_HEADER) {
-        return;
+    let header = match header {
+        None => return,
+        Some(Ok(header)) => header,
+        Some(Err(e)) => {
+            crate::provenance::incomplete(src, &format!("the ER Mapper header couldn't be read ({e}): its data file isn't named"));
+            return;
+        }
+    };
+    if !header.own_data() {
+        crate::provenance::incomplete(src, "a linked ER Mapper dataset: the files its data file opens aren't named");
     }
-    let Ok(file) = std::fs::File::open(src) else { return };
-    let mut bytes = Vec::new();
-    if (&file).take(MAX_HEADER + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > MAX_HEADER {
-        return;
-    }
-    crate::provenance::buffer(src, &file, &bytes);
-    let text = String::from_utf8_lossy(&bytes);
-    for line in text.split(['\r', '\n']) {
-        if let Some((key, value)) = line.split_once('=')
-            && key.trim().eq_ignore_ascii_case("DataFile")
-        {
-            let name = value.trim().trim_matches('"');
-            if !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', ':']) {
-                let companion = src.with_file_name(name);
-                if companion.is_file() {
-                    crate::provenance::path(&companion);
-                }
+    for name in &header.data_files {
+        if beside(name) {
+            let data = src.with_file_name(name);
+            if data.is_file() {
+                crate::provenance::path(&data);
+            } else {
+                crate::provenance::incomplete(src, "the data file the ER Mapper header names isn't there");
             }
+        } else {
+            crate::provenance::incomplete(src, "the ER Mapper header names a data file not beside it, which isn't named");
         }
     }
+    if header.data_files.is_empty() {
+        let cells = src.with_extension("");
+        if cells.is_file() {
+            crate::provenance::path(&cells);
+        }
+    }
+}
+
+/// [`check_ers`] of a header read here, recording its data file ([`observe_ers`]).
+#[cfg(test)]
+fn plain_ers(src: &Path) -> Result<()> {
+    let header = ers_header(src);
+    observe_ers(src, header.as_ref());
+    check_ers(header)
 }
 
 fn is_vsi(s: &str) -> bool {
@@ -237,16 +288,27 @@ fn local_regular_file(src: &Path) -> Result<PathBuf> {
 /// The subdatasets of a file (NetCDF variables, HDF datasets): GDAL's name for each, and its
 /// description. Empty for a file that is one raster.
 pub fn subdatasets(src: &Path) -> Result<Vec<(String, String)>> {
-    subdatasets_with_budget(src, None)
+    subdatasets_with_budget(src, None, None)
 }
 
-/// Lists subdatasets with the downloaded raster's optional workspace budget.
-fn subdatasets_with_budget(src: &Path, workspace: Option<(&Path, u64)>) -> Result<Vec<(String, String)>> {
+/// Lists subdatasets with the downloaded raster's optional workspace budget. `ers`: its ER Mapper
+/// header ([`ers_header`]), when the caller has read it already (and recorded what it names);
+/// otherwise read here.
+fn subdatasets_with_budget(
+    src: &Path,
+    workspace: Option<(&Path, u64)>,
+    ers: Option<Option<Result<ErsHeader>>>,
+) -> Result<Vec<(String, String)>> {
     let full = local_regular_file(src)?;
     crate::provenance::path(&full);
     // Its type and header first, so a file that isn't read says so whether GDAL is installed or not.
     let drivers = drivers(&full)?;
-    plain_ers(&full)?;
+    let header = ers.unwrap_or_else(|| {
+        let header = ers_header(&full);
+        observe_ers(&full, header.as_ref());
+        header
+    });
+    check_ers(header)?;
     let gdalinfo = program("gdalinfo").ok_or_else(missing)?;
     let mut c = command(gdalinfo, drivers);
     // With the metadata (`-nomd` would drop the SUBDATASETS domain too, `-mdd` or not).
@@ -482,7 +544,12 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
     }
     let full = local_regular_file(src)?;
     crate::provenance::path(&full);
-    observe_ers_companions(&full);
+    // Read once: here when the inputs are being captured (a cached conversion still came from
+    // its data file), and for the check before converting.
+    let mut ers = crate::provenance::active().then(|| ers_header(&full));
+    if let Some(header) = &ers {
+        observe_ers(&full, header.as_ref());
+    }
     let layer = layer.map(str::trim).filter(|l| !l.is_empty());
     std::fs::create_dir_all(dir)?;
     external::prune(dir, ours, KEEP);
@@ -511,7 +578,7 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
     }
     let translate = program("gdal_translate").ok_or_else(missing)?;
     let drivers = drivers(&full)?;
-    let subs = subdatasets_with_budget(&full, workspace)?;
+    let subs = subdatasets_with_budget(&full, workspace, ers.take())?;
     let (input, picked) = if subs.is_empty() {
         if let Some(l) = layer {
             return Err(DataError::Format(format!("no subdataset '{l}': the file is one raster")));
@@ -815,6 +882,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An ER Mapper header read for a cached conversion names its data file: the `DataFile`, or
+    /// GDAL's default without one; a header that can't be read, or a data file elsewhere, leaves
+    /// an incomplete mark on the header instead of a list that looks whole (#2639).
+    #[test]
+    fn er_mapper_provenance_names_the_default_cell_file_and_marks_what_it_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(dir.path().join("plain"), b"cells").unwrap();
+        // A cached conversion of `src`, so the header is read for the inputs alone.
+        let cached = |src: &Path| {
+            let (len, modified) = stamp(src).unwrap();
+            let key = format!("raster {CONVERSION}\n{}\nNone\nNone\n{len}\n{modified}", src.display());
+            let tag = format!("{:016x}", fnv1a(key.as_bytes()));
+            std::fs::write(cache.join(format!("{tag}.tif")), b"cached conversion").unwrap();
+            std::fs::write(cache.join(format!("{tag}.rkey")), format!("{key}{FOUND}{{}}")).unwrap();
+            let capture = crate::provenance::Capture::start();
+            assert!(convert_in(&cache, src, None, None, None).is_ok());
+            capture.inputs()
+        };
+        let src = dir.path().join("plain.ers");
+        let marks = |inputs: &[crate::provenance::Fingerprint]| inputs.iter().filter_map(|i| i.incomplete.clone()).collect::<Vec<_>>();
+        // No `DataFile`: the header's name without `.ers`, and no mark.
+        std::fs::write(&src, "DatasetHeader Begin\nDataSetType = ERStorage\nDatasetHeader End\n").unwrap();
+        let inputs = cached(&src);
+        assert!(inputs.iter().any(|i| i.path == dir.path().join("plain").display().to_string() && i.size == Some(5)), "{inputs:?}");
+        assert!(marks(&inputs).is_empty(), "{inputs:?}");
+        // A header larger than one is, never read: the header, marked.
+        std::fs::write(&src, "x".repeat((MAX_ERS_HEADER + 1) as usize)).unwrap();
+        let inputs = cached(&src);
+        assert!(!inputs.iter().any(|i| i.path.ends_with("plain")), "{inputs:?}");
+        let found = marks(&inputs);
+        assert!(found.len() == 1 && found[0].contains("too large"), "{found:?}");
+        // A data file elsewhere, and a linked dataset, are marked too.
+        std::fs::write(&src, "DatasetHeader Begin\nDataSetType = Translated\nDataFile = \"../far.dat\"\nDatasetHeader End\n").unwrap();
+        let found = marks(&cached(&src));
+        assert!(found.iter().any(|m| m.contains("not beside it")) && found.iter().any(|m| m.contains("linked")), "{found:?}");
+        // A data file that isn't there isn't named as read: the header is marked.
+        std::fs::write(&src, "DatasetHeader Begin\nDataFile = \"gone.dat\"\nDatasetHeader End\n").unwrap();
+        let inputs = cached(&src);
+        assert!(!inputs.iter().any(|i| i.path.ends_with("gone.dat")), "{inputs:?}");
+        assert!(marks(&inputs).iter().any(|m| m.contains("isn't there")), "{inputs:?}");
+        // A header whose type and data file are its own: its data file, no mark.
+        std::fs::write(&src, "DatasetHeader Begin\nDataSetType = ERStorage\nDataFile = \"plain\"\nDatasetHeader End\n").unwrap();
+        let inputs = cached(&src);
+        assert!(inputs.iter().any(|i| i.path.ends_with("plain")) && marks(&inputs).is_empty(), "{inputs:?}");
     }
 
     /// A VRT renamed `.img` isn't opened as a VRT, so the raster it names isn't read.
