@@ -80,6 +80,8 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
         let info = src.info();
         let mut ds = rustgis_data::Dataset::new(name.clone(), info.geometry_type, info.fields.clone());
         ds.crs = src.crs();
+        // Held as the table holds it, in its own system.
+        ds.held_in = src.coord_crs();
         ds.zm_dropped = info.zm_dropped;
         let path = path.to_string_lossy().into_owned();
         ds.source = Some(path.clone());
@@ -236,7 +238,11 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         }
         let rows = changes.insert_rows;
         let edits = rustgis_data::source::edits::Edits { updates: changes.updates, deletes: changes.deletes, inserts: changes.inserts };
-        let saved_rows = match src.save(&edits, &fields, edit.versions.iter().map(|(key, _)| key), &edit.revision).map_err(err)? {
+        // In the system the layer holds its geometry in: the table's own, longitude/latitude for
+        // a layer a project saved before RustGIS kept a table's own coordinates, or another,
+        // converted straight to the table's; the rows read back come in that system too.
+        let held = s.map().layer(id).ok_or("no such layer")?.dataset.coord_crs();
+        let saved_rows = match src.save(&edits, &fields, edit.versions.iter().map(|(key, _)| key), &edit.revision, held).map_err(err)? {
             Ok(saved) => saved,
             Err(conflicts) => {
                 let mut said: Vec<String> = conflicts.iter().take(20).map(ToString::to_string).collect();
@@ -356,6 +362,7 @@ pub(super) fn read_candidate(name: &str, edit: &rustgis_map::source::GpkgEdit) -
     let info = src.info();
     let mut ds = rustgis_data::Dataset::new(name, info.geometry_type, info.fields.clone());
     ds.crs = src.crs();
+    ds.held_in = src.coord_crs();
     ds.source = Some(edit.path.clone());
     ds.zm_dropped = info.zm_dropped;
     ds.features = editable.features.into();

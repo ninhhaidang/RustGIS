@@ -108,6 +108,12 @@ impl EditTable {
         (!self.src.reproject.is_lonlat()).then_some(self.src.reproject.crs)
     }
 
+    /// The system its rows are read in and written back from: the table's own (its `srs_id`), as
+    /// a file's coordinates are kept.
+    pub fn coord_crs(&self) -> Crs {
+        self.src.reproject.crs
+    }
+
     pub fn table(&self) -> &str {
         &self.src.table
     }
@@ -167,7 +173,7 @@ impl EditTable {
             let mut rows = st.query([limit.clamp(1, MAX_EDITABLE) as i64]).map_err(err)?;
             while let Some(row) = rows.next().map_err(err)? {
                 let id = row.get::<_, i64>(key).map_err(err)?.cast_unsigned();
-                let Some(geometry) = self.geometry(row.get_ref(geom).map_err(err)?) else {
+                let Some(geometry) = self.geometry(row.get_ref(geom).map_err(err)?, &Held::Own) else {
                     out.skipped += 1;
                     continue;
                 };
@@ -194,13 +200,21 @@ impl EditTable {
     /// New positive keys exceed those keys, the table's current maximum and its AUTOINCREMENT
     /// history. Stored snapshots and their versions are decoded together before commit; an
     /// unreadable or trigger-removed row aborts the whole transaction.
+    ///
+    /// `held` is the system the edits' geometry is in, which the rows returned are given in too:
+    /// the table's own ([`Self::coord_crs`]); longitude/latitude, as a layer a project saved
+    /// before RustGIS kept a table's own coordinates holds it; or another, converted straight to
+    /// and from the table's. A geometry is written only when it differs from the stored one in
+    /// `held`, so an attribute edit leaves it as stored.
     pub fn save(
         &self,
         edits: &Edits,
         fields: &[Field],
         reserved: impl Iterator<Item = u64>,
         expected_revision: &str,
+        held: Crs,
     ) -> Result<std::result::Result<SavedRows, Vec<Conflict>>> {
+        let how = &self.held(held)?;
         let mut conn =
             Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(err)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true).map_err(err)?;
@@ -301,10 +315,11 @@ impl EditTable {
                 }
             }
             let old = ValueRef::from(row.get(geom).ok_or_else(|| self.shape_error())?);
-            let geometry_changed = self.geometry(old).ok_or_else(|| self.shape_error())? != f.geometry;
+            let stored = self.geometry(old, how).ok_or_else(|| self.unread(f.id, how))?;
+            let geometry_changed = stored != f.geometry;
             spatial_changed |= geometry_changed;
             if geometry_changed {
-                let blob = self.geometry_blob(f.geometry.as_ref(), Some((f.id, old)))?;
+                let blob = self.geometry_blob(f.geometry.as_ref(), Some((f.id, old)), how)?;
                 sets.push(format!("{} = ?", quote(self.geometry_column())));
                 args.push(blob);
             }
@@ -352,7 +367,7 @@ impl EditTable {
             let mut names = vec![pk.clone()];
             let mut args = vec![Sql::Integer(new_key)];
             if let Some(g) = &f.geometry {
-                let blob = self.geometry_blob(Some(g), None)?;
+                let blob = self.geometry_blob(Some(g), None, how)?;
                 names.push(quote(self.geometry_column()));
                 args.push(blob);
             }
@@ -407,9 +422,14 @@ impl EditTable {
             .chain(additional.iter().filter(|k| rows.contains_key(*k)).map(|k| (None, *k)));
         for (original, k) in originals {
             let row = rows.get(&k).ok_or_else(|| DataError::Format(format!("row {k}: it was removed while saving")))?;
-            let geometry = self
-                .geometry(ValueRef::from(row.get(geom).ok_or_else(|| self.shape_error())?))
-                .ok_or_else(|| DataError::Format(format!("row {k}: its stored geometry can't be read, so nothing was saved")))?;
+            let geometry =
+                self.geometry(ValueRef::from(row.get(geom).ok_or_else(|| self.shape_error())?), how).ok_or_else(|| match how {
+                    Held::Other { crs, .. } => DataError::Format(format!(
+                        "row {k}: its stored geometry can't be converted to {}, so nothing was saved",
+                        crs.label()
+                    )),
+                    _ => DataError::Format(format!("row {k}: its stored geometry can't be read, so nothing was saved")),
+                })?;
             let mut feature = Feature { id: k.cast_unsigned(), geometry, attrs: vec![Value::Null; fields.len()] };
             if let Some(original) = original {
                 for &i in &unstored_fields {
@@ -514,20 +534,57 @@ impl EditTable {
         key.zip(geom).ok_or_else(|| self.shape_error())
     }
 
-    // Outer None is unreadable; inner None is a valid NULL or empty geometry.
-    fn geometry(&self, v: ValueRef<'_>) -> Option<Option<Geometry>> {
+    /// How edits held in `held` meet the table's coordinates.
+    fn held(&self, held: Crs) -> Result<Held> {
+        let own = self.coord_crs();
+        Ok(if held == own {
+            Held::Own
+        } else if held == Crs::LonLat {
+            Held::LonLat
+        } else {
+            let failed = |e: String| {
+                DataError::Format(format!(
+                    "{}: the edits are in {}, which can't be converted to {}: {e}",
+                    self.table(),
+                    held.label(),
+                    own.label()
+                ))
+            };
+            Held::Other { crs: held, to_held: own.to(held).map_err(failed)?, to_table: held.to(own).map_err(failed)? }
+        })
+    }
+
+    /// A stored geometry that can't be read, or given in `how`'s system.
+    fn unread(&self, id: u64, how: &Held) -> DataError {
+        match how {
+            Held::Other { crs, .. } => {
+                DataError::Format(format!("row {}: its stored geometry can't be converted to {}", id.cast_signed(), crs.label()))
+            }
+            _ => self.shape_error(),
+        }
+    }
+
+    // Outer None is unreadable (or, in another system, can't be converted); inner None is a valid
+    // NULL or empty geometry. As the table holds it, in longitude/latitude (for a layer a project
+    // saved before RustGIS kept a table's own coordinates), or in another system.
+    fn geometry(&self, v: ValueRef<'_>, how: &Held) -> Option<Option<Geometry>> {
         match v {
             ValueRef::Null => Some(None),
             ValueRef::Blob(b) if is_empty_blob(b) => Some(None),
             ValueRef::Blob(b) => {
                 let (_, body) = split_blob(b)?;
-                self.src.reproject.to_lonlat_geometry(wkb::decode(body)?).map(Some)
+                let g = wkb::decode(body)?;
+                match how {
+                    Held::Own => Some(Some(g)),
+                    Held::LonLat => self.src.reproject.to_lonlat_geometry(g).map(Some),
+                    Held::Other { to_held, .. } => to_held.whole_geometry(&g).map(Some),
+                }
             }
             _ => None,
         }
     }
 
-    fn geometry_blob(&self, g: Option<&Geometry>, row: Option<(u64, ValueRef<'_>)>) -> Result<Sql> {
+    fn geometry_blob(&self, g: Option<&Geometry>, row: Option<(u64, ValueRef<'_>)>, how: &Held) -> Result<Sql> {
         // Check before returning NULL: removing geometry must not silently drop existing Z/M.
         let has_zm = row.is_some_and(|(_, v)| match v {
             ValueRef::Blob(b) => split_blob(b).is_some_and(|(_, body)| wkb::has_zm(body)),
@@ -549,10 +606,23 @@ impl EditTable {
         let Some(g) = g else {
             return Ok(Sql::Null);
         };
-        let native = self.src.reproject.to_native(g).ok_or_else(|| {
-            let id = row.map(|(k, _)| k.cast_signed().to_string()).unwrap_or_else(|| "new".into());
-            DataError::Format(format!("row {id}: its geometry can't be converted to {}", self.src.reproject.label()))
-        })?;
+        let id = || row.map(|(k, _)| k.cast_signed().to_string()).unwrap_or_else(|| "new".into());
+        let unconverted = || DataError::Format(format!("row {}: its geometry can't be converted to {}", id(), self.src.reproject.label()));
+        // A coordinate that isn't a number can't be stored (it reads back as an empty or
+        // unreadable geometry), nor converted: an infinite one could convert to a finite pole.
+        let mut finite = true;
+        g.for_each_coord(|c| finite &= c.is_finite());
+        if !finite {
+            return Err(DataError::Format(format!(
+                "row {}: its geometry has a coordinate that isn't a number, so it can't be saved",
+                id()
+            )));
+        }
+        let native = match how {
+            Held::LonLat => self.src.reproject.to_native(g).ok_or_else(unconverted)?,
+            Held::Other { to_table, .. } => to_table.whole_geometry(g).ok_or_else(unconverted)?,
+            Held::Own => g.clone(),
+        };
         let body = match (self.geometry_type.as_str(), &native) {
             ("POINT", Geometry::Point(_) | Geometry::MultiPoint(_))
             | ("LINESTRING", Geometry::Line(_))
@@ -864,6 +934,16 @@ fn maintain_rtree(conn: &Connection, rtree: Option<&str>, key: i64, extent: &Ext
     Ok(())
 }
 
+/// How the edits' coordinates meet the table's ([`EditTable::save`]).
+enum Held {
+    /// The table's own.
+    Own,
+    /// Longitude/latitude, through the table's reprojection.
+    LonLat,
+    /// Another system, converted straight to and from the table's.
+    Other { crs: Crs, to_held: crate::raster::Reprojection, to_table: crate::raster::Reprojection },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,7 +964,7 @@ mod tests {
         let mut changed = read.features[0].clone();
         changed.attrs[name] = Value::Text("edited".into());
         let edits = Edits { updates: vec![(changed, read.versions[0].1)], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.changes.updated, 1);
         let stored: (String, String) = conn.query_row("SELECT name, lanes FROM roads", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(stored, ("edited".into(), "NaN".into()));
@@ -893,7 +973,7 @@ mod tests {
         let mut cleared = read.features[0].clone();
         cleared.attrs[lane] = Value::Null;
         let edits = Edits { updates: vec![(cleared, read.versions[0].1)], ..Default::default() };
-        table.save(&edits, &table.info().fields, std::iter::empty(), &saved.revision).unwrap().unwrap();
+        table.save(&edits, &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs()).unwrap().unwrap();
         assert!(conn.query_row("SELECT lanes IS NULL FROM roads", [], |r| r.get::<_, bool>(0)).unwrap());
     }
 
@@ -906,19 +986,19 @@ mod tests {
         let table = EditTable::open(&path, "roads").unwrap();
         let loaded = table.read_editable(MAX_EDITABLE).unwrap();
         let edits = Edits { inserts: vec![Feature { id: 100, geometry: Some(line(4.0)), attrs: vec![] }], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
         assert!(saved.revision > loaded.revision);
         drop(table);
         // An older serialized project cannot repeat an insert, even in a new editing session.
         let table = EditTable::open(&path, "roads").unwrap();
-        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision).unwrap_err();
+        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision, table.coord_crs()).unwrap_err();
         assert!(error.to_string().contains("refusing stale inserts"), "{error}");
         assert_eq!(conn.query_row("SELECT count(*) FROM roads", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         assert_eq!(table.read_editable(MAX_EDITABLE).unwrap().revision, saved.revision);
         let mut revision = saved.revision;
         for _ in 0..8 {
             // Identical geometries/attributes are legitimate new features, not duplicate rows.
-            let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &revision).unwrap().unwrap();
+            let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &revision, table.coord_crs()).unwrap().unwrap();
             assert!(saved.revision > revision);
             assert_eq!(table.read_editable(MAX_EDITABLE).unwrap().revision, saved.revision);
             revision = saved.revision;
@@ -930,7 +1010,7 @@ mod tests {
         )
         .unwrap();
         let before = table.read_editable(MAX_EDITABLE).unwrap();
-        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &revision).unwrap_err();
+        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &revision, table.coord_crs()).unwrap_err();
         assert!(error.to_string().contains("marker refused"), "{error}");
         let after = table.read_editable(MAX_EDITABLE).unwrap();
         assert_eq!(after.revision, before.revision);
@@ -949,7 +1029,7 @@ mod tests {
             Connection::open(&path).unwrap().execute(mutation, []).unwrap();
             assert!(table.read_editable(MAX_EDITABLE).is_err(), "{mutation}");
             let edits = Edits { inserts: vec![Feature { id: 100, geometry: None, attrs: vec![] }], ..Default::default() };
-            let error = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision).unwrap_err();
+            let error = table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision, table.coord_crs()).unwrap_err();
             assert!(error.to_string().contains("missing or invalid"), "{mutation}: {error}");
             assert_eq!(Connection::open(&path).unwrap().query_row("SELECT count(*) FROM roads", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         }
@@ -974,7 +1054,7 @@ mod tests {
                 }
                 let edits = Edits { updates: vec![(changed, before.versions[0].1)], ..Default::default() };
                 Connection::open(&path).unwrap().execute(&format!("UPDATE gpkg_geometry_columns SET {declaration}"), []).unwrap();
-                let error = table.save(&edits, &table.info().fields, [1].into_iter(), &before.revision).unwrap_err();
+                let error = table.save(&edits, &table.info().fields, [1].into_iter(), &before.revision, table.coord_crs()).unwrap_err();
                 assert!(error.to_string().contains(message), "{declaration}: {error}");
                 let after = table.read_editable(MAX_EDITABLE).unwrap();
                 assert_eq!(after.features, before.features);
@@ -1003,7 +1083,10 @@ mod tests {
                 let table = EditTable::open(&path, "roads").unwrap();
                 let read = table.read_editable(MAX_EDITABLE).unwrap();
                 let edits = Edits { inserts: vec![Feature { id: 100, geometry: Some(line(10.0)), attrs: vec![] }], ..Default::default() };
-                table.save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision).unwrap().unwrap();
+                table
+                    .save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision, table.coord_crs())
+                    .unwrap()
+                    .unwrap();
                 let bounds: (f64, f64, f64, f64) = conn
                     .query_row("SELECT min_x, min_y, max_x, max_y FROM gpkg_contents", [], |r| {
                         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -1073,7 +1156,7 @@ mod tests {
                 inserts: vec![Feature { id: 100, geometry: Some(line(4.0)), attrs: vec![Value::Text("move".into()), Value::Null] }],
                 ..Default::default()
             };
-            let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision).unwrap().unwrap();
+            let saved = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision, table.coord_crs()).unwrap().unwrap();
             assert_eq!(saved.features[0].geometry, Some(line(90.0)), "{coverage}");
             assert_eq!(saved.features[1].geometry, Some(line(60.0)), "{coverage}");
             for (x, expected) in [(90.5, vec![1_i64]), (60.5, vec![2]), (4.5, vec![]), (1.5, vec![])] {
@@ -1092,7 +1175,8 @@ mod tests {
             )
             .unwrap();
             let edits = Edits { deletes: saved.changes.versions, ..Default::default() };
-            let restored = table.save(&edits, &table.info().fields, [1, 2].into_iter(), &saved.revision).unwrap().unwrap();
+            let restored =
+                table.save(&edits, &table.info().fields, [1, 2].into_iter(), &saved.revision, table.coord_crs()).unwrap().unwrap();
             assert_eq!(restored.changes.deleted, 1);
             assert_eq!(restored.features[0].id, 1);
             assert_eq!(restored.features[0].geometry, Some(line(40.0)));
@@ -1151,7 +1235,8 @@ mod tests {
             let mut feature = loaded.features[0].clone();
             feature.attrs[0] = Value::Text("move other rows".into());
             let edits = Edits { updates: vec![(feature, loaded.versions[0].1)], ..Default::default() };
-            let saved = table.save(&edits, &table.info().fields, [1, 2, 3].into_iter(), &loaded.revision).unwrap().unwrap();
+            let saved =
+                table.save(&edits, &table.info().fields, [1, 2, 3].into_iter(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
             assert_eq!(saved.features.iter().map(|f| f.id).collect::<Vec<_>>(), vec![1, 2]);
             assert_eq!(saved.features[1].geometry, Some(moved.clone()));
             assert_eq!(saved.changes.versions.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![1, 2]);
@@ -1199,7 +1284,10 @@ mod tests {
         feature.attrs[0] = Value::Text("change residents".into());
         let version = loaded.versions.iter().find(|(k, _)| *k == 1).unwrap().1;
         let edits = Edits { updates: vec![(feature, version)], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, [(-2_i64).cast_unsigned(), 2].into_iter(), &loaded.revision).unwrap().unwrap();
+        let saved = table
+            .save(&edits, &table.info().fields, [(-2_i64).cast_unsigned(), 2].into_iter(), &loaded.revision, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.features.iter().map(|f| f.id.cast_signed()).collect::<Vec<_>>(), vec![1, -2]);
         assert_eq!(saved.changes.versions.iter().map(|(k, _)| k.cast_signed()).collect::<Vec<_>>(), vec![1, -2]);
         assert_eq!(saved.removed, vec![2]);
@@ -1209,7 +1297,10 @@ mod tests {
         let mut next = negative;
         next.attrs[0] = Value::Text("next".into());
         let edits = Edits { updates: vec![(next, saved.changes.versions[1].1)], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, [1, (-2_i64).cast_unsigned()].into_iter(), &saved.revision).unwrap().unwrap();
+        let saved = table
+            .save(&edits, &table.info().fields, [1, (-2_i64).cast_unsigned()].into_iter(), &saved.revision, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.changes.updated, 1);
         let stored: (String, i64) =
             conn.query_row("SELECT name,lanes FROM roads WHERE fid=-2", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -1235,13 +1326,13 @@ mod tests {
         let mut moved = read.features[1].clone();
         moved.geometry = Some(line(-10.0));
         let edits = Edits { updates: vec![(moved, read.versions[1].1)], ..Default::default() };
-        table.save(&edits, &table.info().fields, [1, 2].into_iter(), &read.revision).unwrap().unwrap();
+        table.save(&edits, &table.info().fields, [1, 2].into_iter(), &read.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(bounds(), (Some(-10.0), Some(2.0), Some(2.0), Some(3.0)));
         for (key, expected) in [(2, (Some(1.0), Some(2.0), Some(2.0), Some(3.0))), (1, (None, None, None, None))] {
             let read = table.read_editable(MAX_EDITABLE).unwrap();
             let version = read.versions.iter().find(|(id, _)| *id == key).unwrap().1;
             let edits = Edits { deletes: vec![(key, version)], ..Default::default() };
-            let saved = table.save(&edits, &table.info().fields, [1, 2].into_iter(), &read.revision).unwrap().unwrap();
+            let saved = table.save(&edits, &table.info().fields, [1, 2].into_iter(), &read.revision, table.coord_crs()).unwrap().unwrap();
             assert_eq!(saved.changes.deleted, 1);
             assert_eq!(bounds(), expected);
         }
@@ -1280,7 +1371,7 @@ mod tests {
         let mut feature = read.features[0].clone();
         feature.attrs[0] = Value::Text("must roll back".into());
         let edits = Edits { updates: vec![(feature, read.versions[0].1)], ..Default::default() };
-        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision).unwrap_err();
+        let error = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision, table.coord_crs()).unwrap_err();
         assert!(error.to_string().contains("stored geometry can't be read"), "{error}");
         let after = table.read_editable(MAX_EDITABLE).unwrap();
         assert_eq!(after.features, read.features);
@@ -1315,7 +1406,10 @@ mod tests {
         let mut changed = read.features[0].clone();
         changed.attrs[0] = Value::Text("changed".into());
         let edits = Edits { updates: vec![(changed, read.versions[0].1)], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision).unwrap().unwrap();
+        let saved = table
+            .save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(conn.query_row("SELECT count(*) FROM roads WHERE fid = 2", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(saved.removed, vec![2], "the evicted resident row is reported; the earlier external delete isn't");
         assert!(saved.features.iter().all(|f| f.id != 9), "an unknown trigger-inserted row must not join the loaded scope");
@@ -1335,7 +1429,7 @@ mod tests {
         let mut feature = loaded.features[0].clone();
         feature.attrs[0] = Value::Text("must roll back".into());
         let edits = Edits { updates: vec![(feature, loaded.versions[0].1)], ..Default::default() };
-        assert!(table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision).is_err());
+        assert!(table.save(&edits, &table.info().fields, [1].into_iter(), &loaded.revision, table.coord_crs()).is_err());
         let after = table.read_editable(MAX_EDITABLE).unwrap();
         assert_eq!(after.features, loaded.features);
         assert_eq!(after.versions, loaded.versions);
@@ -1385,7 +1479,10 @@ mod tests {
     fn gpkg_single_lines_and_transaction_rollback() {
         let (_dir, path) = fixture();
         let table = EditTable::open(&path, "ROADS").unwrap();
-        let saved = table.save(&update(&table, Some(line(4.0))), &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap();
+        let saved = table
+            .save(&update(&table, Some(line(4.0))), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.changes.updated, 1);
         let bytes = blob_at(&path, 1);
         let (_, body) = split_blob(&bytes).unwrap();
@@ -1396,7 +1493,7 @@ mod tests {
         let multipart = Geometry::Line(vec![part.clone(), part]);
         assert!(
             table
-                .save(&update(&table, Some(multipart)), &table.info().fields, std::iter::empty(), &saved.revision)
+                .save(&update(&table, Some(multipart)), &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs())
                 .unwrap_err()
                 .to_string()
                 .contains("holds one part")
@@ -1414,7 +1511,13 @@ mod tests {
         let new = Feature { id: 100, geometry: Some(line(7.0)), attrs: vec![Value::Text("bad".into()), Value::Null] };
         let edits = Edits { updates: vec![(changed, read.versions[0].1)], inserts: vec![new], ..Default::default() };
         let before: String = conn.query_row("SELECT last_change FROM gpkg_contents", [], |r| r.get(0)).unwrap();
-        assert!(table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).unwrap_err().to_string().contains("bad name"));
+        assert!(
+            table
+                .save(&edits, &table.info().fields, std::iter::empty(), &read.revision, table.coord_crs())
+                .unwrap_err()
+                .to_string()
+                .contains("bad name")
+        );
         assert_eq!(conn.query_row("SELECT name FROM roads WHERE fid = 1", [], |r| r.get::<_, String>(0)).unwrap(), "old");
         assert_eq!(conn.query_row("SELECT count(*) FROM roads", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(conn.query_row("SELECT last_change FROM gpkg_contents", [], |r| r.get::<_, String>(0)).unwrap(), before);
@@ -1429,13 +1532,13 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         conn.execute("UPDATE roads SET photo = x'01ff' WHERE fid = 1", []).unwrap();
         assert_eq!(
-            table.save(&edits, &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap_err(),
+            table.save(&edits, &table.info().fields, std::iter::empty(), REVISION, table.coord_crs()).unwrap().unwrap_err(),
             vec![Conflict::Changed(1)]
         );
         assert_eq!(conn.query_row("SELECT last_change FROM gpkg_contents", [], |r| r.get::<_, String>(0)).unwrap(), REVISION);
         conn.execute("DELETE FROM roads WHERE fid = 1", []).unwrap();
         assert_eq!(
-            table.save(&edits, &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap_err(),
+            table.save(&edits, &table.info().fields, std::iter::empty(), REVISION, table.coord_crs()).unwrap().unwrap_err(),
             vec![Conflict::Deleted(1)]
         );
         assert_ne!(
@@ -1462,7 +1565,15 @@ mod tests {
         assert!(read.features[1..].iter().all(|f| f.geometry.is_none()));
         assert_eq!(table.read_editable(0).unwrap().features.len(), 1);
         let edits = Edits { deletes: read.versions, ..Default::default() };
-        assert_eq!(table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).unwrap().unwrap().changes.deleted, 3);
+        assert_eq!(
+            table
+                .save(&edits, &table.info().fields, std::iter::empty(), &read.revision, table.coord_crs())
+                .unwrap()
+                .unwrap()
+                .changes
+                .deleted,
+            3
+        );
         assert_eq!(conn.query_row("SELECT count(*) FROM roads", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         assert_eq!(conn.query_row("SELECT geom FROM roads WHERE fid = 4", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), b"GP\0\x03");
     }
@@ -1487,7 +1598,7 @@ mod tests {
         for g in [None, Some(line(6.0))] {
             assert!(
                 table
-                    .save(&update(&table, g), &table.info().fields, std::iter::empty(), REVISION)
+                    .save(&update(&table, g), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
                     .unwrap_err()
                     .to_string()
                     .contains("Z or M")
@@ -1496,18 +1607,27 @@ mod tests {
         }
         let mut edits = update(&table, Some(line(1.0)));
         edits.updates[0].0.attrs[0] = Value::Text("attributes only".into());
-        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap();
+        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), REVISION, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.changes.updated, 1);
         assert_eq!(blob_at(&path, 1), original);
         conn.execute("UPDATE gpkg_geometry_columns SET z = 1", []).unwrap();
         let table = EditTable::open(&path, "roads").unwrap();
         let edits = Edits { inserts: vec![Feature { id: 100, geometry: Some(line(4.0)), attrs: vec![] }], ..Default::default() };
         assert!(
-            table.save(&edits, &table.info().fields, std::iter::empty(), &saved.revision).unwrap_err().to_string().contains("needs Z or M")
+            table
+                .save(&edits, &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs())
+                .unwrap_err()
+                .to_string()
+                .contains("needs Z or M")
         );
         let edits = Edits { inserts: vec![Feature { id: 100, geometry: None, attrs: vec![] }], ..Default::default() };
         assert_eq!(
-            table.save(&edits, &table.info().fields, std::iter::empty(), &saved.revision).unwrap().unwrap().changes.inserted,
+            table
+                .save(&edits, &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs())
+                .unwrap()
+                .unwrap()
+                .changes
+                .inserted,
             vec![(100, 2)]
         );
     }
@@ -1522,7 +1642,10 @@ mod tests {
         )
         .unwrap();
         let table = EditTable::open(&path, "roads").unwrap();
-        let saved = table.save(&update(&table, Some(line(10.0))), &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap();
+        let saved = table
+            .save(&update(&table, Some(line(10.0))), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
+            .unwrap()
+            .unwrap();
         let envelope: (f64, f64, f64, f64) = conn
             .query_row("SELECT minx, maxx, miny, maxy FROM rtree_roads_geom WHERE id = 1", [], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -1531,7 +1654,7 @@ mod tests {
         assert_eq!(envelope, (10.0, 11.0, 2.0, 3.0));
         assert_eq!(conn.query_row("SELECT max_x FROM gpkg_contents", [], |r| r.get::<_, f64>(0)).unwrap(), 11.0);
         assert_ne!(conn.query_row("SELECT last_change FROM gpkg_contents", [], |r| r.get::<_, String>(0)).unwrap(), REVISION);
-        table.save(&update(&table, None), &table.info().fields, std::iter::empty(), &saved.revision).unwrap().unwrap();
+        table.save(&update(&table, None), &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(conn.query_row("SELECT count(*) FROM rtree_roads_geom", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         let read = table.read_editable(MAX_EDITABLE).unwrap();
         let edits = Edits {
@@ -1539,7 +1662,7 @@ mod tests {
             inserts: vec![Feature { id: 100, geometry: Some(line(20.0)), attrs: vec![] }],
             ..Default::default()
         };
-        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.changes.inserted, vec![(100, 2)]);
         assert_eq!(saved.changes.deleted, 1);
         assert_eq!(conn.query_row("SELECT id FROM rtree_roads_geom", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
@@ -1567,7 +1690,7 @@ mod tests {
         let mut feature = loaded.features[0].clone();
         feature.attrs[name] = Value::Text("renamed".into());
         let edits = Edits { updates: vec![(feature, loaded.versions[0].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, std::iter::empty(), &loaded.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, std::iter::empty(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
         let conn = Connection::open(&path).unwrap();
         assert_eq!(conn.query_row("SELECT seen FROM roads", [], |r| r.get::<_, String>(0)).unwrap(), stored);
         assert_eq!(conn.query_row("SELECT name FROM roads", [], |r| r.get::<_, String>(0)).unwrap(), "renamed");
@@ -1597,7 +1720,7 @@ mod tests {
         let mut feature = loaded.features[0].clone();
         feature.attrs[name] = Value::Text("renamed".into());
         let edits = Edits { updates: vec![(feature, loaded.versions[0].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, [1].into_iter(), &loaded.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, [1].into_iter(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.features[0].attrs[seen], loaded.features[0].attrs[seen], "it reads back as it was shown");
         assert_eq!(saved.rounded_dates.get(seen), Some(&1), "{:?}", saved.rounded_dates);
     }
@@ -1628,7 +1751,7 @@ mod tests {
         let mut feature = loaded.features[k].clone();
         feature.attrs[name] = Value::Text("renamed".into());
         let edits = Edits { updates: vec![(feature, loaded.versions[k].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &loaded.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
         let other = saved.features.iter().find(|f| f.id == 2).expect("the trigger's row is read back");
         assert_eq!(other.attrs[seen].to_string(), "2026-03-05T14:30:00.123457Z");
         assert_eq!(saved.rounded_dates.get(seen), Some(&1), "{:?}", saved.rounded_dates);
@@ -1645,7 +1768,7 @@ mod tests {
         let mut feature = loaded.features[k].clone();
         feature.attrs[name] = Value::Text("renamed again".into());
         let edits = Edits { updates: vec![(feature, loaded.versions[k].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &loaded.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &loaded.revision, table.coord_crs()).unwrap().unwrap();
         assert!(saved.features.iter().find(|f| f.id == 2).unwrap().attrs[seen].is_null());
         assert_eq!(saved.unread_dates.get(seen), Some(&1), "{:?}", saved.unread_dates);
     }
@@ -1665,9 +1788,12 @@ mod tests {
         )
         .unwrap();
         let table = EditTable::open(&path, "roads").unwrap();
-        let saved = table.save(&update(&table, Some(line(8.0))), &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap();
+        let saved = table
+            .save(&update(&table, Some(line(8.0))), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(conn.query_row("SELECT maxx FROM rtree_roads_geom", [], |r| r.get::<_, f64>(0)).unwrap(), 9.0);
-        table.save(&update(&table, None), &table.info().fields, std::iter::empty(), &saved.revision).unwrap().unwrap();
+        table.save(&update(&table, None), &table.info().fields, std::iter::empty(), &saved.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(conn.query_row("SELECT count(*) FROM rtree_roads_geom", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         register_functions(&conn).unwrap();
         for sql in ["SELECT ST_IsEmpty(NULL)", "SELECT ST_MinX('text')", "SELECT ST_MaxY(x'00')"] {
@@ -1687,26 +1813,76 @@ mod tests {
         super::super::write_in(&ds, &path, crs).unwrap();
         let table = EditTable::open(&path, "roads").unwrap();
         assert_eq!(table.crs(), Some(crs));
+        assert_eq!(table.coord_crs(), crs);
+        // Read as the table holds it, and written back so: moved a metre, exactly.
         let mut edits = update(&table, None);
         let original = table.read_editable(MAX_EDITABLE).unwrap().features[0].geometry.clone().unwrap();
-        let moved = original.map_coords(&|c| Coord::new(c.x + 1.0, c.y + 1.0));
-        let expected = table.src.reproject.to_native(&moved).unwrap();
-        edits.updates[0].0.geometry = Some(moved.clone());
+        assert_eq!(original, line(1_000_000.0));
+        let expected = original.map_coords(&|c| Coord::new(c.x + 1.0, c.y + 1.0));
+        edits.updates[0].0.geometry = Some(expected.clone());
         let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
-        table.save(&edits, &[], std::iter::empty(), &revision).unwrap().unwrap();
+        let saved = table.save(&edits, &[], std::iter::empty(), &revision, table.coord_crs()).unwrap().unwrap();
+        assert_eq!(saved.features[0].geometry, Some(expected.clone()));
         let stored = blob_at(&path, 1);
         let (envelope, body) = split_blob(&stored).unwrap();
         assert_eq!(envelope, Some(expected.extent()));
         assert_eq!(wkb::decode(body), Some(expected.clone()));
+        // A layer held in longitude/latitude (saved by an older release) is converted, and
+        // given back so; one held in another system is refused.
+        let lonlat = table.src.reproject.to_lonlat_geometry(expected.clone()).unwrap();
+        let back = lonlat.map_coords(&|c| Coord::new(c.x + 0.001, c.y));
+        let mut edits = update(&table, None);
+        edits.updates[0].0.geometry = Some(back.clone());
+        let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
+        let saved = table.save(&edits, &[], std::iter::empty(), &revision, Crs::LonLat).unwrap().unwrap();
+        let given = saved.features[0].geometry.clone().unwrap();
+        let mut close = true;
+        given.for_each_coord(|c| close &= c.x.abs() <= 180.0);
+        assert!(close, "{given:?}");
+        assert_eq!(wkb::decode(split_blob(&blob_at(&path, 1)).unwrap().1), table.src.reproject.to_native(&back));
+        // Held in another system: written straight from it, and given back in it.
+        let utm = Crs::from_epsg(32632).unwrap();
+        let mut edits = update(&table, None);
+        let there = Crs::LonLat.to(utm).unwrap().geometry(&back);
+        edits.updates[0].0.geometry = Some(there.clone());
+        let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
+        let saved = table.save(&edits, &[], std::iter::empty(), &revision, utm).unwrap().unwrap();
+        let stored = blob_at(&path, 1);
+        let want = utm.to(crs).unwrap().whole_geometry(&there).unwrap();
+        assert_eq!(wkb::decode(split_blob(&stored).unwrap().1), Some(want.clone()));
+        assert_eq!(saved.features[0].geometry, crs.to(utm).unwrap().whole_geometry(&want));
+        // A row held there whose geometry wasn't edited leaves the stored one as it is, bit for bit.
+        let mut edits = update(&table, None);
+        edits.updates[0].0.geometry = saved.features[0].geometry.clone();
+        let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
+        let again = table.save(&edits, &[], std::iter::empty(), &revision, utm).unwrap().unwrap();
+        assert_eq!(blob_at(&path, 1), stored, "unchanged");
+        assert_eq!(again.changes.unchanged, 1);
+        // In the table's own system, a coordinate that isn't a number is refused, as conversion
+        // refuses it.
+        let mut edits = update(&table, None);
+        edits.updates[0].0.geometry = Some(line(f64::NAN));
+        let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
+        let e = table.save(&edits, &[], std::iter::empty(), &revision, crs).unwrap_err().to_string();
+        assert!(e.contains("row 1") && e.contains("isn't a number"), "{e}");
+        assert_eq!(blob_at(&path, 1), stored, "nothing written");
+        // In another system too, before converting: an infinite coordinate could convert to a pole.
+        let mut edits = update(&table, None);
+        edits.updates[0].0.geometry = Some(Geometry::Point(Coord::new(0.0, f64::INFINITY)));
+        let e = table.save(&edits, &[], std::iter::empty(), &revision, utm).unwrap_err().to_string();
+        assert!(e.contains("row 1") && e.contains("isn't a number"), "{e}");
+        assert_eq!(blob_at(&path, 1), stored, "nothing written");
+        let edits = update(&table, None);
+        let revision = table.read_editable(MAX_EDITABLE).unwrap().revision;
+        let mut edits = edits;
+        edits.updates[0].0.geometry = Some(back.clone());
+        table.save(&edits, &[], std::iter::empty(), &revision, Crs::LonLat).unwrap().unwrap();
         let conn = Connection::open(&path).unwrap();
         let minx: f64 = conn.query_row("SELECT minx FROM rtree_roads_geom WHERE id = 1", [], |r| r.get(0)).unwrap();
-        assert!((minx - expected.extent().min_x).abs() < 1.0);
+        let written = table.src.reproject.to_native(&back).unwrap();
+        assert!((minx - written.extent().min_x).abs() < 1.0);
         let reloaded = table.read_editable(MAX_EDITABLE).unwrap().features[0].geometry.clone().unwrap();
-        let mut expected_coords = Vec::new();
-        moved.for_each_coord(|c| expected_coords.push(c));
-        let mut actual_coords = Vec::new();
-        reloaded.for_each_coord(|c| actual_coords.push(c));
-        assert!(expected_coords.iter().zip(actual_coords).all(|(a, b)| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6));
+        assert_eq!(reloaded, written);
     }
 
     #[test]
@@ -1722,20 +1898,29 @@ mod tests {
         let mut f = read.features[0].clone();
         f.attrs = vec![Value::Text("not saved".into()), Value::Text("old".into()), Value::Int(999)];
         let mut edits = Edits { updates: vec![(f, read.versions[0].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, std::iter::empty(), &read.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, std::iter::empty(), &read.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!((saved.changes.unchanged, saved.changes.updated), (1, 0));
         assert_eq!(saved.changes.skipped_fields, vec!["missing", "fid"]);
         let mut expected = edits.updates[0].0.clone();
         expected.attrs[2] = Value::Int(1);
         assert_eq!(saved.features, vec![expected]);
         edits.updates[0].0.attrs[1] = Value::Text("new".into());
-        assert_eq!(table.save(&edits, &fields, std::iter::empty(), &saved.revision).unwrap().unwrap().changes.updated, 1);
+        assert_eq!(
+            table.save(&edits, &fields, std::iter::empty(), &saved.revision, table.coord_crs()).unwrap().unwrap().changes.updated,
+            1
+        );
         let conn = Connection::open(&path).unwrap();
         let stored: (i64, String, i64, Vec<u8>) =
             conn.query_row("SELECT fid, name, lanes, photo FROM roads", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(stored, (1, "new".into(), 2, vec![0, 255]));
         conn.execute("ALTER TABLE roads RENAME COLUMN geom TO shape", []).unwrap();
-        assert!(table.save(&Edits::default(), &fields, std::iter::empty(), REVISION).unwrap_err().to_string().contains("changed shape"));
+        assert!(
+            table
+                .save(&Edits::default(), &fields, std::iter::empty(), REVISION, table.coord_crs())
+                .unwrap_err()
+                .to_string()
+                .contains("changed shape")
+        );
     }
 
     #[test]
@@ -1781,7 +1966,7 @@ mod tests {
             attrs: vec![Value::Null, Value::Text("insert-only".into()), Value::Null, Value::Null, Value::Int(999)],
         };
         let edits = Edits { updates: vec![(unchanged, version)], inserts: vec![inserted], ..Default::default() };
-        let saved = table.save(&edits, &fields, [1].into_iter(), REVISION).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, [1].into_iter(), REVISION, table.coord_crs()).unwrap().unwrap();
         assert_eq!((saved.changes.unchanged, saved.changes.updated), (1, 0));
         assert_eq!(saved.changes.inserted, vec![(100, 2)]);
         assert_eq!(saved.features.len(), 2);
@@ -1809,7 +1994,7 @@ mod tests {
         changed.attrs[2] = Value::Text("edited".into());
         changed.geometry = Some(line(8.0));
         let edits = Edits { updates: vec![(changed, saved.changes.versions[1].1)], ..Default::default() };
-        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &saved.revision).unwrap().unwrap();
+        let saved = table.save(&edits, &fields, [1, 2].into_iter(), &saved.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.changes.updated, 1);
         assert_eq!(saved.features[0].geometry, None);
         assert_eq!(saved.features[0].attrs[0], Value::Int(8));
@@ -1819,7 +2004,7 @@ mod tests {
         assert_eq!(saved.changes.versions, vec![read.versions[1]]);
         // Reusing the returned snapshot and version must not reset trigger-produced values.
         let edits = Edits { updates: vec![(saved.features[0].clone(), saved.changes.versions[0].1)], ..Default::default() };
-        let saved_again = table.save(&edits, &fields, [1, 2].into_iter(), &saved.revision).unwrap().unwrap();
+        let saved_again = table.save(&edits, &fields, [1, 2].into_iter(), &saved.revision, table.coord_crs()).unwrap().unwrap();
         assert_eq!((saved_again.changes.unchanged, saved_again.changes.updated), (1, 0));
         assert_eq!(saved_again.features, saved.features);
     }
@@ -1850,7 +2035,7 @@ mod tests {
                         attrs: vec![Value::Text("broken".into()), Value::Null],
                     });
                 }
-                let error = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision).unwrap_err();
+                let error = table.save(&edits, &table.info().fields, [1].into_iter(), &read.revision, table.coord_crs()).unwrap_err();
                 assert!(error.to_string().contains(message), "{operation}: {error}");
                 let after = table.read_editable(MAX_EDITABLE).unwrap();
                 assert_eq!(after.features, read.features);
@@ -1873,7 +2058,10 @@ mod tests {
             inserts: vec![Feature { id: 999, geometry: None, attrs: vec![Value::Text("new".into()), Value::Null] }],
             ..Default::default()
         };
-        let saved = table.save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision).unwrap().unwrap();
+        let saved = table
+            .save(&edits, &table.info().fields, read.versions.iter().map(|(k, _)| *k), &read.revision, table.coord_crs())
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.changes.inserted, vec![(999, 4)]);
         assert_eq!(saved.features[0].id, 4);
         assert_eq!(conn.query_row("SELECT count(*) FROM roads WHERE fid IN (3, 999)", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
@@ -1895,7 +2083,7 @@ mod tests {
         .unwrap();
         let table = EditTable::open(&path, "roads").unwrap();
         let edits = Edits { inserts: vec![Feature { id: 999, geometry: None, attrs: vec![] }], ..Default::default() };
-        let saved = table.save(&edits, &table.info().fields, [70].into_iter(), REVISION).unwrap().unwrap();
+        let saved = table.save(&edits, &table.info().fields, [70].into_iter(), REVISION, table.coord_crs()).unwrap().unwrap();
         assert_eq!(saved.changes.inserted, vec![(999, 101)]);
         assert_eq!(saved.features[0].id, 101);
         assert_eq!(conn.query_row("SELECT seq FROM sqlite_sequence WHERE name = 'roads'", [], |r| r.get::<_, i64>(0)).unwrap(), 101);
@@ -1931,7 +2119,7 @@ mod tests {
                 ..Default::default()
             };
             let reserved = if high_water_source == "reserved" { (i64::MAX - 1).cast_unsigned() } else { 1 };
-            let error = table.save(&edits, &table.info().fields, [reserved].into_iter(), &before.revision).unwrap_err();
+            let error = table.save(&edits, &table.info().fields, [reserved].into_iter(), &before.revision, table.coord_crs()).unwrap_err();
             assert!(error.to_string().contains("no positive INTEGER PRIMARY KEY"), "{high_water_source}: {error}");
             let after = table.read_editable(MAX_EDITABLE).unwrap();
             assert_eq!(after.features, before.features, "{high_water_source}");
@@ -1964,7 +2152,9 @@ mod tests {
             let table = EditTable::open(&path, "roads").unwrap();
             let original = blob_at(&path, 1);
             assert!(
-                table.save(&update(&table, Some(geometry.clone())), &table.info().fields, std::iter::empty(), REVISION).is_err(),
+                table
+                    .save(&update(&table, Some(geometry.clone())), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
+                    .is_err(),
                 "{ty}"
             );
             assert_eq!(blob_at(&path, 1), original, "{ty}");
@@ -1973,7 +2163,7 @@ mod tests {
             changed.attrs[0] = Value::Text("must roll back".into());
             let inserted = Feature { id: 99, geometry: Some(geometry), attrs: vec![Value::Text("new".into()), Value::Null] };
             let edits = Edits { updates: vec![(changed, read.versions[0].1)], inserts: vec![inserted], ..Default::default() };
-            assert!(table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).is_err(), "{ty}");
+            assert!(table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision, table.coord_crs()).is_err(), "{ty}");
             let stored: (i64, String) = conn.query_row("SELECT count(*), name FROM roads", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             assert_eq!(stored, (1, "old".into()), "{ty}");
             assert_eq!(blob_at(&path, 1), original, "{ty}");
@@ -1996,7 +2186,10 @@ mod tests {
             let (_dir, path) = fixture();
             Connection::open(&path).unwrap().execute("UPDATE gpkg_geometry_columns SET geometry_type_name = ?1", [ty]).unwrap();
             let table = EditTable::open(&path, "roads").unwrap();
-            table.save(&update(&table, Some(geometry)), &table.info().fields, std::iter::empty(), REVISION).unwrap().unwrap();
+            table
+                .save(&update(&table, Some(geometry)), &table.info().fields, std::iter::empty(), REVISION, table.coord_crs())
+                .unwrap()
+                .unwrap();
             let bytes = blob_at(&path, 1);
             let (_, body) = split_blob(&bytes).unwrap();
             assert_eq!(body.get(1..5), Some(wkb_type.to_le_bytes().as_slice()), "{ty}");

@@ -4,8 +4,8 @@
 //! bounded reads; geometry and geography arrive as linearized WKB, longitude first. Sampling
 //! and keyless ids use server-side row numbers, so only the kept rows cross the network.
 
-use super::{Batch, Family, FeatureSource, Reproject, Request, SourceInfo, clamp_limit, in_request, stride};
-use crate::{DataError, Feature, Field, FieldType, Geometry, GeometryType, Result, Value, wkb};
+use super::{Batch, Family, FeatureSource, Reproject, Request, SourceInfo, clamp_limit, stride};
+use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use rustgis_geom::Extent;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -959,7 +959,12 @@ impl SqlServerSource {
         let Ok(b) = self.read_within(&Request { extent: None, limit: EXTENT_SAMPLE }, Some(PROBE_TIMEOUT)) else {
             return Extent::EMPTY;
         };
-        b.features.iter().filter_map(|f| f.geometry.as_ref()).fold(Extent::EMPTY, |e, g| e.union(&g.extent()))
+        // Read in the table's own system: each placed in longitude/latitude, vertex by vertex.
+        b.features
+            .into_iter()
+            .filter_map(|f| f.geometry)
+            .filter_map(|g| self.reproject.read(g))
+            .fold(Extent::EMPTY, |e, p| e.union(&p.lonlat))
     }
 
     fn filter(&self, window: Option<&str>) -> String {
@@ -980,14 +985,15 @@ impl SqlServerSource {
         w
     }
 
-    /// A row read as a feature: the id, the geometry and the fields, in the order of the select.
-    /// `None` without an id or a geometry RustGIS reads. A value of a date field that isn't a date
-    /// RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
-    fn row_feature(&self, r: &Row, unread: &mut Vec<usize>) -> Option<Feature> {
+    /// A row read as a feature: the id, the geometry (as the table holds it, in its own system)
+    /// and the fields, in the order of the select, with the geometry's box in longitude/latitude.
+    /// `None` without an id or a geometry RustGIS reads and places. A value of a date field that
+    /// isn't a date RustGIS holds is null, counted in `unread` ([`Batch::unread_dates`]).
+    fn row_feature(&self, r: &Row, unread: &mut Vec<usize>) -> Option<(Feature, Extent)> {
         let id = id_of(at(r, 0))?;
-        let geometry: Geometry = self.reproject.to_lonlat_geometry(wkb::decode(bytes_of(at(r, 1))?)?)?;
+        let super::Placed { geometry, lonlat } = self.reproject.read(wkb::decode(bytes_of(at(r, 1))?)?)?;
         let attrs = self.info.fields.iter().enumerate().map(|(k, f)| attr_of(f.ty, at(r, k + 2), unread, k)).collect();
-        Some(Feature { id, geometry: Some(geometry), attrs })
+        Some((Feature { id, geometry: Some(geometry), attrs }, lonlat))
     }
 
     /// Reads what a request asks for, each statement timing out after `timeout` seconds (else the
@@ -1039,11 +1045,12 @@ impl SqlServerSource {
         for r in &rows {
             // Dates that aren't ones are counted in the rows kept.
             let mut unread = Vec::new();
-            let Some(f) = self.row_feature(r, &mut unread) else {
+            let Some((f, lonlat)) = self.row_feature(r, &mut unread) else {
                 out.skipped += 1;
                 continue;
             };
-            if f.geometry.as_ref().is_some_and(|g| in_request(g, req)) {
+            // Kept as the table holds it, placed in longitude/latitude to compare with the view.
+            if req.extent.is_none_or(|e| lonlat.intersects(&e)) {
                 super::add_unread_dates(&mut out.unread_dates, &unread);
                 out.features.push(f);
             }
@@ -1126,6 +1133,11 @@ fn box_text(n: &Extent, geographic: bool) -> Option<String> {
 impl FeatureSource for SqlServerSource {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+
+    /// The table's own system, which its rows are read in (as a file's are kept).
+    fn coord_crs(&self) -> crate::raster::Crs {
+        self.reproject.crs()
     }
     fn read(&self, req: &Request) -> Result<Batch> {
         self.read_within(req, None)
@@ -1506,8 +1518,10 @@ mod tests {
                 } else {
                     src.read(&Request { extent: Some(q), limit: 1000 }).unwrap_or_else(|e| panic!("{}: {e}", t.label()))
                 };
+                // In the table's own system: compared in longitude/latitude, as the request is.
+                let to = src.coord_crs().to(crate::raster::Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));
                 for ft in &part.features {
-                    let g = ft.geometry.as_ref().map(|g| g.extent()).unwrap_or(Extent::EMPTY);
+                    let g = ft.geometry.as_ref().map(|g| to.geometry(g).extent()).unwrap_or(Extent::EMPTY);
                     assert!(g.intersects(&q.padded(0.01, 0.0)), "{}: feature {} outside the request", t.label(), ft.id);
                 }
                 let mut ids: Vec<u64> = whole.features.iter().map(|f| f.id).collect();
