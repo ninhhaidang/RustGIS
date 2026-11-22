@@ -85,6 +85,15 @@ impl MarkerImage {
                         "This image can't be a marker: it has more pixels than {side} × {side}; make it smaller",
                         &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
                     ),
+                    // An SVG's (a file of another name holding one, as the picker lists PNG and
+                    // JPEG).
+                    MarkerRefusal::TooMuchToDraw => crate::i18n::fmt(
+                        "This image can't be a marker: it is an SVG with more to draw than a {side} × {side} image",
+                        &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
+                    ),
+                    MarkerRefusal::SvgUndrawn => {
+                        tl!("This image can't be a marker: it is an SVG with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images").to_string()
+                    }
                     MarkerRefusal::PastRunPixels => tl!(
                         "This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another"
                     )

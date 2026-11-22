@@ -20,8 +20,8 @@ pub enum Marker {
     Star,
     /// A character of a font, as QGIS's font markers draw one: the size is the font's em.
     Char(Glyph),
-    /// A PNG or JPEG image, as QGIS's raster image markers draw one: the size is its width, its
-    /// height as the image's proportions make it. Its fill and outline don't change it.
+    /// A PNG, JPEG or SVG image, as QGIS's raster image markers draw one: the size is its width,
+    /// its height as the image's proportions make it. Its fill and outline don't change it.
     Picture(Picture),
 }
 
@@ -113,7 +113,7 @@ pub const MAX_PICTURES_BYTES: usize = 64 << 20;
 /// The longest picture kept, in bytes of base64 (2 MiB): a marker's image is an icon.
 pub const MAX_PICTURE_BYTES: usize = 2 << 20;
 
-/// A picture marker's image: a PNG or JPEG as base64, kept once for the rest of the run so a
+/// A picture marker's image: a PNG, JPEG or SVG as base64, kept once for the rest of the run so a
 /// symbol showing one stays `Copy`. The same image is the same `Picture`, so two are compared
 /// (and hashed, for the sprites a point layer is stamped from) by where it's kept, not by its
 /// bytes. Empty (the default) for an image that wasn't kept: one longer than

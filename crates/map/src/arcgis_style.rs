@@ -660,7 +660,7 @@ mod tests {
 
     /// The renderer's check stood in for (`map` doesn't decode images): a PNG's base64 begins so.
     fn png(b64: &str) -> Result<(), &'static str> {
-        if b64.starts_with("iVBORw0KGgo") { Ok(()) } else { Err("whose image isn't a PNG or JPEG RustGIS reads") }
+        if b64.starts_with("iVBORw0KGgo") { Ok(()) } else { Err("whose image isn't a PNG, JPEG or SVG RustGIS reads") }
     }
 
     fn styled(g: GeometryType, info: Value) -> (Layer, Notes) {
@@ -796,7 +796,7 @@ mod tests {
             (json!(null), "picture markers with no image, drawn as circles"),
             (json!(""), "picture markers with no image, drawn as circles"),
             (json!(12), "picture markers with no image, drawn as circles"),
-            (json!(gif), "picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"),
+            (json!(gif), "picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles"),
             (json!(long), "picture markers past 2 MiB of base64, drawn as circles"),
         ] {
             assert_eq!(circle(json!({"type": "esriPMS", "imageData": image, "width": 15, "height": 18})), why);

@@ -50,6 +50,13 @@ shapefile = { version = "0.9", features = ["encoding_rs", "yore"] }
 encoding_rs = "0.8"
 csv = "1"
 tiny-skia = "0.12"
+# Picture markers drawn from SVG (opengeos/RustGIS#2266): no text, fonts, compressed SVG or raster
+# images, so an SVG reads no files and passes no image caps. 0.50 bounds how deep it nests.
+resvg = { version = "0.50", default-features = false }
+# What resvg's reader (usvg) builds an SVG's paths and arcs with, read ahead to bound it
+# (crates/render/src/picture/svg.rs): the versions it already brings in.
+svgtypes = "0.16"
+kurbo = "0.13"
 # GPU map backend: vertex data shared with wgpu in ui-egui (derive only; unsafe stays forbidden).
 bytemuck = { version = "1", features = ["derive"] }
 # GPU map backend: polygon/line tessellation for the GPU scene (same major as SpatialOS's 1.x).

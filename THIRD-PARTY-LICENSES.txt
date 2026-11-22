@@ -17,43 +17,43 @@ block-buffer, block-padding, blocking, btoi, bufstream, bumpalo, bytemuck, bytem
 cfg-if, chacha20, cipher, cmake, cmov, codepage, codespan-reporting, color, concurrent-queue,
 const-oid, const-random, const-random-macro, constant_time_eq, core-foundation, core-foundation-sys,
 core-graphics, core-graphics-types, core_detect, cpubits, cpufeatures, crossbeam-channel,
-crossbeam-deque, crossbeam-epoch, crossbeam-queue, crossbeam-utils, crypto-common, ctutils, der,
-der_derive, derive_utils, digest, dispatch2, displaydoc, document-features, downcast-rs, dunce,
-ecolor, eframe, egui, egui-wgpu, egui-winit, egui_extras, either, emath, encoding_rs, enum-map,
-enum-map-derive, epaint, equivalent, errno, euclid, event-listener, event-listener-strategy,
-fastrand, fdeflate, fearless_simd, filetime, find-msvc-tools, fixedbitset, flagset, flatbuffers,
-flate2, form_urlencoded, futures-lite, futures-timer, geo, geo-traits, geo-types, geozero,
-gethostname, gif, gl_generator, glow, guillotiere, half, hash32, hashbrown, hashlink, hayro,
-hayro-ccitt, hayro-cmap, hayro-font, hayro-interpret, hayro-jbig2, hayro-jpeg2000, hayro-postscript,
-hayro-syntax, heapless, heck, hkdf, hmac, httparse, hybrid-array, i_overlay, idna, idna_adapter,
-image, image-webp, indexmap, inout, io-enum, itertools, itoa, jobserver, js-sys, keyboard-types,
-khronos-egl, khronos_api, kurbo, laz, lazy_static, leb128fmt, lerc-core, lerc-reader, libc,
-linebender_resource_handle, linux-raw-sys, litrs, lock_api, log, lyon, lyon_algorithms, lyon_geom,
-lyon_path, lyon_tessellation, md-5, md5, miniz_oxide, muda, multiversion_no_op, mysql, mysql_common,
-naga, naga-types, named_pipe, nohash-hasher, ntapi, num, num-bigint, num-complex, num-conv,
-num-integer, num-iter, num-rational, num-traits, objc2-app-kit, objc2-core-foundation,
-objc2-core-graphics, objc2-io-kit, objc2-metal, objc2-quartz-core, objc2-system-configuration,
-objc2-uniform-type-identifiers, once_cell, openssl-probe, ordered-stream, owned_ttf_parser, parking,
-parking_lot, parking_lot_core, peniko, percent-encoding, petgraph, pin-project,
-pin-project-internal, pin-project-lite, piper, pkg-config, png, polling, pollster, polycool,
-postgres, postgres-protocol, postgres-types, presser, proc-macro2, profiling, pyo3,
-pyo3-build-config, pyo3-ffi, pyo3-macros, pyo3-macros-backend, quote, rand, range-alloc,
+crossbeam-deque, crossbeam-epoch, crossbeam-queue, crossbeam-utils, crypto-common, ctutils,
+data-url, der, der_derive, derive_utils, digest, dispatch2, displaydoc, document-features,
+downcast-rs, dunce, ecolor, eframe, egui, egui-wgpu, egui-winit, egui_extras, either, emath,
+encoding_rs, enum-map, enum-map-derive, epaint, equivalent, errno, euclid, event-listener,
+event-listener-strategy, fastrand, fdeflate, fearless_simd, filetime, find-msvc-tools, fixedbitset,
+flagset, flatbuffers, flate2, form_urlencoded, futures-lite, futures-timer, geo, geo-traits,
+geo-types, geozero, gethostname, gif, gl_generator, glow, guillotiere, half, hash32, hashbrown,
+hashlink, hayro, hayro-ccitt, hayro-cmap, hayro-font, hayro-interpret, hayro-jbig2, hayro-jpeg2000,
+hayro-postscript, hayro-syntax, heapless, heck, hkdf, hmac, httparse, hybrid-array, i_overlay, idna,
+idna_adapter, image, image-webp, indexmap, inout, io-enum, itertools, itoa, jobserver, js-sys,
+keyboard-types, khronos-egl, khronos_api, kurbo, laz, lazy_static, leb128fmt, lerc-core,
+lerc-reader, libc, linebender_resource_handle, linux-raw-sys, litrs, lock_api, log, lyon,
+lyon_algorithms, lyon_geom, lyon_path, lyon_tessellation, md-5, md5, miniz_oxide, muda,
+multiversion_no_op, mysql, mysql_common, naga, naga-types, named_pipe, nohash-hasher, ntapi, num,
+num-bigint, num-complex, num-conv, num-integer, num-iter, num-rational, num-traits, objc2-app-kit,
+objc2-core-foundation, objc2-core-graphics, objc2-io-kit, objc2-metal, objc2-quartz-core,
+objc2-system-configuration, objc2-uniform-type-identifiers, once_cell, openssl-probe,
+ordered-stream, owned_ttf_parser, parking, parking_lot, parking_lot_core, peniko, percent-encoding,
+petgraph, pin-project, pin-project-internal, pin-project-lite, piper, pkg-config, png, polling,
+pollster, polycool, postgres, postgres-protocol, postgres-types, presser, proc-macro2, profiling,
+pyo3, pyo3-build-config, pyo3-ffi, pyo3-macros, pyo3-macros-backend, quote, rand, range-alloc,
 raw-window-handle, raw-window-metal, rayon, rayon-core, regex, regex-automata, regex-syntax,
-renderdoc-sys, ring, robust, roxmltree, rstar, rustc-hash, rustc_version, rustix, rustls,
+renderdoc-sys, resvg, ring, robust, roxmltree, rstar, rustc-hash, rustc_version, rustix, rustls,
 rustls-native-certs, rustls-pemfile, rustls-platform-verifier, rustversion, ryu, scoped-tls,
 scopeguard, secrecy, secret-service, security-framework, security-framework-sys, self_cell, semver,
 send_wrapper, seq-macro, serde, serde_core, serde_derive, serde_ignored, serde_json, serde_repr,
-sha1, sha2, shlex, sif-itree, signal-hook-registry, simdutf8, siphasher, smallvec, smol_str,
-socket2, spade, spirv, spki, stable_deref_trait, static_assertions, subsetter, syn, sys-locale, tar,
-tempfile, thiserror, thiserror-impl, tiberius-macros, time, time-core, tinyvec, tokio-postgres,
-ttf-parser, type-map, typed-path, unicode-bidi, unicode-ident, unicode-normalization,
-unicode-properties, unicode-segmentation, unicode-width, ureq, ureq-proto, url, utf8-zero,
-utf8_iter, uuid, vcpkg, vello_common, vello_cpu, version_check, wasm-bindgen, wasm-bindgen-futures,
-wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-encoder, wasmi,
-wasmi_collections, wasmi_core, wasmi_ir, wasmparser, wast, wat, web-sys, weezl, wgpu, wgpu-core,
-wgpu-core-deps-apple, wgpu-core-deps-wasm, wgpu-core-deps-windows-linux-android, wgpu-hal,
-wgpu-naga-bridge, wgpu-types, whoami, winauth, wkt, wl-clipboard-rs, x11rb, x11rb-protocol,
-x509-cert, xattr, zeroize, zeroize_derive, zune-core, zune-jpeg
+sha1, sha2, shlex, sif-itree, signal-hook-registry, simdutf8, simplecss, siphasher, smallvec,
+smol_str, socket2, spade, spirv, spki, stable_deref_trait, static_assertions, subsetter, svgtypes,
+syn, sys-locale, tar, tempfile, thiserror, thiserror-impl, tiberius-macros, time, time-core,
+tinyvec, tokio-postgres, ttf-parser, type-map, typed-path, unicode-bidi, unicode-ident,
+unicode-normalization, unicode-properties, unicode-segmentation, unicode-width, ureq, ureq-proto,
+url, usvg, utf8-zero, utf8_iter, uuid, vcpkg, vello_common, vello_cpu, version_check, wasm-bindgen,
+wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared,
+wasm-encoder, wasmi, wasmi_collections, wasmi_core, wasmi_ir, wasmparser, wast, wat, web-sys, weezl,
+wgpu, wgpu-core, wgpu-core-deps-apple, wgpu-core-deps-wasm, wgpu-core-deps-windows-linux-android,
+wgpu-hal, wgpu-naga-bridge, wgpu-types, whoami, winauth, wkt, wl-clipboard-rs, x11rb,
+x11rb-protocol, x509-cert, xattr, zeroize, zeroize_derive, zune-core, zune-jpeg
 ====================================================================================================
 
                                  Apache License
@@ -9665,6 +9665,31 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 ====================================================================================================
 MIT License
+Used by: float-cmp
+====================================================================================================
+
+Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+====================================================================================================
+MIT License
 Used by: float_next_after
 ====================================================================================================
 
@@ -9836,6 +9861,33 @@ Used by: i_tree
 MIT License
 
 Copyright (c) 2024 iShape-Rust
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: imagesize
+====================================================================================================
+
+MIT License
+
+Copyright (c) 2017 Maiddog
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -10147,6 +10199,31 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
 MIT License
+Used by: pico-args
+====================================================================================================
+
+Copyright (c) 2019 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+====================================================================================================
+MIT License
 Used by: pretty-hex
 ====================================================================================================
 
@@ -10207,6 +10284,33 @@ Used by: rfd, sctk-adwaita
 MIT License
 
 Copyright (c) 2022 Bartłomiej Maryńczak
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: rgb
+====================================================================================================
+
+MIT License
+
+Copyright (c) 2019 Kornel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

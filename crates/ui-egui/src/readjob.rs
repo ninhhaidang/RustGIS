@@ -1739,8 +1739,8 @@ mod tests {
         assert!(matches!(app.session.map().layer(id).unwrap().symbol(0).marker, rustgis_engine::map::Marker::Picture(_)));
         app.run("edit.undo", Value::Null).unwrap();
         assert!(matches!(app.session.map().layer(id).unwrap().symbol(0).marker, rustgis_engine::map::Marker::Circle));
-        // A clean style says nothing; one whose image isn't a PNG or JPEG says so once, on landing.
-        let said = |app: &RustGisApp| app.session.notices.iter().filter(|n| n.text.contains("isn't a PNG or JPEG")).count();
+        // A clean style says nothing; one whose image isn't a PNG, JPEG or SVG says so once, on landing.
+        let said = |app: &RustGisApp| app.session.notices.iter().filter(|n| n.text.contains("isn't a PNG, JPEG or SVG")).count();
         assert_eq!(said(&app), 0);
         std::fs::write(dir.path().join("pin.gif"), b"GIF89a").unwrap();
         let gif = dir.path().join("gif.qml");

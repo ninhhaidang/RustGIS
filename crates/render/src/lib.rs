@@ -600,8 +600,9 @@ pub fn picture_size(b64: &str) -> Option<(u32, u32)> {
 pub use picture::{MARKER_PIXELS, MARKER_PIXELS_SIDE, MarkerRefusal, RUN_MARKER_BYTES, RUN_MARKER_PIXELS};
 
 /// Base64 `b64` as a picture marker's image (one kept already, or one before it is set): its
-/// height for its width when it draws (a PNG or JPEG within [`MARKER_PIXELS`] and what the run has
-/// left of [`RUN_MARKER_PIXELS`] and [`RUN_MARKER_BYTES`], that decodes), or why it would be drawn
+/// height for its width when it draws (a PNG or JPEG within [`MARKER_PIXELS`], an SVG with as much
+/// to draw and no filters, within what the run has left of [`RUN_MARKER_PIXELS`] and
+/// [`RUN_MARKER_BYTES`], that decodes), or why it would be drawn
 /// as a circle. Decoded once for the run, where drawing it finds it.
 pub fn picture_marker_check(b64: &str) -> Result<f32, MarkerRefusal> {
     picture::check(b64)

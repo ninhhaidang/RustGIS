@@ -2148,8 +2148,9 @@ fn empty_map() -> &'static Map {
 pub const MAX_ITEMS: usize = 1000;
 
 /// What a read made of the image markers of `layers` and saved `styles` (by name): those not
-/// kept, which saving loses, and those the renderer draws as circles, by why (not a PNG or JPEG
-/// that decodes, past `render::MARKER_PIXELS`, or past what the run has left of
+/// kept, which saving loses, and those the renderer draws as circles, by why (not a PNG, JPEG
+/// or SVG that decodes, past `render::MARKER_PIXELS`, an SVG with too much to draw or with
+/// filters, text, images, animation or links to other files, or past what the run has left of
 /// `render::RUN_MARKER_PIXELS`; each image checked once); both are drawn as circles. Checking
 /// decodes each new image, on the UI thread: at most what the run decodes, once.
 pub(crate) fn picture_notices<'a>(
@@ -2177,14 +2178,20 @@ pub(crate) fn picture_notices_by<'a>(
         *seen.borrow_mut().entry(p).or_insert_with(|| check(p))
     };
     // The names with an image refused so, by each refusal in `WHY`, in the order their notices go.
-    const WHY: [MarkerRefusal; 3] = [MarkerRefusal::NotAnImage, MarkerRefusal::TooManyPixels, MarkerRefusal::PastRunPixels];
-    let (mut dropped, mut bad) = (Vec::new(), [Vec::new(), Vec::new(), Vec::new()]);
+    const WHY: [MarkerRefusal; 5] = [
+        MarkerRefusal::NotAnImage,
+        MarkerRefusal::TooManyPixels,
+        MarkerRefusal::TooMuchToDraw,
+        MarkerRefusal::SvgUndrawn,
+        MarkerRefusal::PastRunPixels,
+    ];
+    let (mut dropped, mut bad) = (Vec::new(), WHY.map(|_| Vec::<&str>::new()));
     let mut note = |name: &'a str, any: &dyn Fn(&dyn Fn(Picture) -> bool) -> bool| {
         if any(&Picture::is_dropped) {
             dropped.push(name);
         }
         // One walk of the symbols (answering no to see them all), noting each refusal met.
-        let met = std::cell::Cell::new([false; 3]);
+        let met = std::cell::Cell::new([false; WHY.len()]);
         any(&|p| {
             if let Some(why) = refused(p)
                 && let Some(i) = WHY.iter().position(|w| *w == why)
@@ -2219,10 +2226,10 @@ pub(crate) fn picture_notices_by<'a>(
             ],
         ));
     }
-    let [not_images, too_large, past_run] = &bad;
+    let [not_images, too_large, too_much, filtered, past_run] = &bad;
     if !not_images.is_empty() {
         notices.push(NoticeText::format(
-            "Image markers in {names} aren't PNG or JPEG images and are drawn as circles",
+            "Image markers in {names} aren't PNG, JPEG or SVG images and are drawn as circles",
             [("names", picture_names(not_images))],
         ));
     }
@@ -2230,6 +2237,18 @@ pub(crate) fn picture_notices_by<'a>(
         notices.push(NoticeText::format(
             "Image markers in {names} have more pixels than {side} × {side} and are drawn as circles",
             [("names", picture_names(too_large)), ("side", rustgis_render::MARKER_PIXELS_SIDE.to_string().into())],
+        ));
+    }
+    if !too_much.is_empty() {
+        notices.push(NoticeText::format(
+            "Image markers in {names} are SVGs with more to draw than a {side} × {side} image and are drawn as circles",
+            [("names", picture_names(too_much)), ("side", rustgis_render::MARKER_PIXELS_SIDE.to_string().into())],
+        ));
+    }
+    if !filtered.is_empty() {
+        notices.push(NoticeText::format(
+            "Image markers in {names} are SVGs with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images, and are drawn as circles",
+            [("names", picture_names(filtered))],
         ));
     }
     if !past_run.is_empty() {

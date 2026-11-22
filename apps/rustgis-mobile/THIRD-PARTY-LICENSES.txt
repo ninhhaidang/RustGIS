@@ -13,10 +13,10 @@ android_system_properties, approx, arc-swap, arrayvec, async-trait, autocfg, aws
 bit-set, bit-vec, bitflags, block-buffer, btoi, bufstream, bumpalo, bytemuck, bytemuck_derive, cc,
 cfg-if, chacha20, cmake, cmov, codepage, codespan-reporting, color, const-oid, constant_time_eq,
 core-foundation, core-foundation-sys, core_detect, cpufeatures, crossbeam-deque, crossbeam-epoch,
-crossbeam-queue, crossbeam-utils, crypto-common, ctutils, der, der_derive, derive_utils, digest,
-dispatch2, displaydoc, document-features, dunce, ecolor, eframe, egui, egui-wgpu, egui-winit,
-egui_extras, either, emath, encoding_rs, enum-map, enum-map-derive, epaint, equivalent, errno,
-euclid, fastrand, fdeflate, fearless_simd, find-msvc-tools, flagset, flatbuffers, flate2,
+crossbeam-queue, crossbeam-utils, crypto-common, ctutils, data-url, der, der_derive, derive_utils,
+digest, dispatch2, displaydoc, document-features, dunce, ecolor, eframe, egui, egui-wgpu,
+egui-winit, egui_extras, either, emath, encoding_rs, enum-map, enum-map-derive, epaint, equivalent,
+errno, euclid, fastrand, fdeflate, fearless_simd, find-msvc-tools, flagset, flatbuffers, flate2,
 form_urlencoded, futures-timer, geo, geo-traits, geo-types, geozero, gif, glow, guillotiere, half,
 hash32, hashbrown, hashlink, heapless, hmac, httparse, hybrid-array, i_overlay, idna, idna_adapter,
 image, image-webp, indexmap, io-enum, itertools, itoa, jni, jni-macros, jni-sys-macros, jobserver,
@@ -30,16 +30,16 @@ objc2-quartz-core, objc2-system-configuration, objc2-ui-kit, objc2-uniform-type-
 objc2-user-notifications, once_cell, openssl-probe, owned_ttf_parser, parking_lot, parking_lot_core,
 peniko, percent-encoding, pin-project-lite, pkg-config, png, pollster, polycool, postgres,
 postgres-protocol, postgres-types, presser, proc-macro2, profiling, quote, rand, raw-window-handle,
-raw-window-metal, rayon, rayon-core, regex, regex-automata, regex-syntax, renderdoc-sys, ring,
-robust, roxmltree, rstar, rustc-hash, rustc_version, rustix, rustls, rustls-native-certs,
+raw-window-metal, rayon, rayon-core, regex, regex-automata, regex-syntax, renderdoc-sys, resvg,
+ring, robust, roxmltree, rstar, rustc-hash, rustc_version, rustix, rustls, rustls-native-certs,
 rustls-pemfile, rustls-platform-verifier, rustls-platform-verifier-android, rustversion, ryu,
 scopeguard, secrecy, security-framework, security-framework-sys, self_cell, semver, seq-macro,
 serde, serde_core, serde_derive, serde_ignored, serde_json, sha1, sha2, shlex, sif-itree,
-simd_cesu8, simdutf8, siphasher, smallvec, smol_str, socket2, spade, spirv, spki,
-stable_deref_trait, static_assertions, subsetter, syn, sys-locale, tempfile, thiserror,
+simd_cesu8, simdutf8, simplecss, siphasher, smallvec, smol_str, socket2, spade, spirv, spki,
+stable_deref_trait, static_assertions, subsetter, svgtypes, syn, sys-locale, tempfile, thiserror,
 thiserror-impl, tiberius-macros, time, time-core, tinyvec, tokio-postgres, ttf-parser, type-map,
 typed-path, unicode-bidi, unicode-ident, unicode-normalization, unicode-properties,
-unicode-segmentation, unicode-width, ureq, ureq-proto, url, utf8-zero, utf8_iter, uuid, vcpkg,
+unicode-segmentation, unicode-width, ureq, ureq-proto, url, usvg, utf8-zero, utf8_iter, uuid, vcpkg,
 vello_common, vello_cpu, version_check, wasmi, wasmi_collections, wasmi_core, wasmi_ir, wasmparser,
 weezl, wgpu, wgpu-core, wgpu-core-deps-apple, wgpu-core-deps-windows-linux-android, wgpu-hal,
 wgpu-naga-bridge, wgpu-types, whoami, wkt, x509-cert, zeroize, zeroize_derive, zune-core, zune-jpeg
@@ -8367,6 +8367,31 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 ====================================================================================================
 MIT License
+Used by: float-cmp
+====================================================================================================
+
+Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+====================================================================================================
+MIT License
 Used by: float_next_after
 ====================================================================================================
 
@@ -8538,6 +8563,33 @@ Used by: i_tree
 MIT License
 
 Copyright (c) 2024 iShape-Rust
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: imagesize
+====================================================================================================
+
+MIT License
+
+Copyright (c) 2017 Maiddog
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -8746,12 +8798,64 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
 MIT License
+Used by: pico-args
+====================================================================================================
+
+Copyright (c) 2019 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+====================================================================================================
+MIT License
 Used by: pretty-hex
 ====================================================================================================
 
 MIT License
 
 Copyright (c) 2018 Andrei Volnin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: rgb
+====================================================================================================
+
+MIT License
+
+Copyright (c) 2019 Kornel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

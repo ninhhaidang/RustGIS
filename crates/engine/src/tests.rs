@@ -2622,6 +2622,88 @@ fn an_image_marker_past_the_runs_budget_is_said_with_its_caps() {
     );
 }
 
+/// An SVG is a marker's image: `layer.marker` takes one, drawn at its proportions, as an undo
+/// step. One with filters, or with more to draw than a 2048 × 2048 image, is refused saying why,
+/// and changes nothing.
+#[test]
+fn layer_marker_takes_an_svg_and_refuses_one_it_cant_draw() {
+    use base64::Engine;
+    use rustgis_map::{Marker, Picture};
+    let svg = |body: &str| {
+        let text = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">{body}</svg>"#);
+        base64::engine::general_purpose::STANDARD.encode(text)
+    };
+    let mut s = world();
+    let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
+    let depth = s.undo_depth();
+    let blurred = svg(r#"<filter id="f"><feGaussianBlur stdDeviation="2"/></filter><rect width="40" height="20" filter="url(#f)"/>"#);
+    let piled = svg(&r##"<rect width="40" height="20" fill="#0a0" fill-opacity="0.5"/>"##.repeat(2000));
+    for (refused, why) in [
+        (
+            blurred,
+            "this one is an SVG with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images",
+        ),
+        (piled, "this one is an SVG with more to draw than a 2048 × 2048 image"),
+    ] {
+        let e = s.run("layer.marker", &json!({"layer": "Cities", "image": refused})).unwrap_err();
+        assert!(e.to_string().ends_with(why), "{e}");
+        assert_eq!((marker(&s), s.undo_depth()), (Marker::Circle, depth));
+    }
+    let pin = svg(r##"<circle cx="10" cy="10" r="9" fill="#c00"/><rect x="22" y="2" width="16" height="16" fill="#00c"/>"##);
+    s.run("layer.marker", &json!({"layer": "Cities", "image": pin, "size": 20})).unwrap();
+    assert_eq!((marker(&s), s.undo_depth()), (Marker::Picture(Picture::new(&pin)), depth + 1));
+    assert_eq!(rustgis_render::picture_marker_kept_check(Picture::new(&pin)), Ok(0.5));
+}
+
+/// An SVG image marker that has too much to draw, or filters, is said with why on reading, apart
+/// from the others (the renderer's check stood in for).
+#[test]
+fn svg_image_markers_that_dont_draw_are_said_with_why() {
+    use rustgis_render::MarkerRefusal;
+    let mut s = world();
+    let picture = rustgis_map::Picture::new(&base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "<svg/>"));
+    let [cities, rivers] = ["Cities", "Rivers"].map(|name| s.map().layer_by_name(name).unwrap().id);
+    for id in [cities, rivers] {
+        s.map_mut().layer_mut(id).unwrap().renderer.map_symbols(|sym| sym.marker = rustgis_map::Marker::Picture(picture));
+    }
+    let layers = [s.map().layer(cities).unwrap(), s.map().layer(rivers).unwrap()];
+    for (why, notice) in [
+        (
+            MarkerRefusal::TooMuchToDraw,
+            "Image markers in \"Cities\", \"Rivers\" are SVGs with more to draw than a 2048 × 2048 image and are drawn as circles",
+        ),
+        (
+            MarkerRefusal::SvgUndrawn,
+            "Image markers in \"Cities\", \"Rivers\" are SVGs with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images, and are drawn as circles",
+        ),
+    ] {
+        let said: Vec<String> = crate::project::picture_notices_by(layers, [], &|_| Some(why)).iter().map(|n| n.english()).collect();
+        assert_eq!(said, [notice]);
+    }
+}
+
+/// Saved image markers that are SVGs open drawn, and one with a filter, which RustGIS doesn't draw,
+/// opens said and drawn as a circle, its image kept for saving (#2266 part E).
+#[test]
+fn an_svg_picture_marker_fixture_opens_drawn_or_said() {
+    let text = include_str!("../../../schema/fixtures/picture_markers_svg.rgis");
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("project.openText", &json!({"text": text})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    let glows = "Image markers in \"Glows\" are SVGs with filters, text, images, animation or links to other files";
+    assert!(said.iter().any(|n| n.contains(glows)) && !said.iter().any(|n| n.contains("\"Pins\"")), "{said:?}");
+    let picture = |i: usize| match &s.project.styles[i].renderer {
+        rustgis_map::Renderer::Single(symbol) => match symbol.marker {
+            rustgis_map::Marker::Picture(p) => p,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert!(rustgis_render::picture_marker_draws(picture(0)));
+    assert!(picture(1).base64().starts_with("PHN2Zy") && !rustgis_render::picture_marker_draws(picture(1)));
+}
+
 /// A saved image marker that is a GIF (which the desktop's decoder reads and the web's doesn't)
 /// opens said and drawn as a circle on every platform, its image kept for saving.
 #[test]
@@ -2631,7 +2713,7 @@ fn a_gif_picture_marker_fixture_opens_said_as_a_circle() {
     let mark = s.notice_mark();
     s.run("project.openText", &json!({"text": text})).unwrap();
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-    assert!(said.iter().any(|n| n.contains("Image markers in \"Schools\" aren't PNG or JPEG images")), "{said:?}");
+    assert!(said.iter().any(|n| n.contains("Image markers in \"Schools\" aren't PNG, JPEG or SVG images")), "{said:?}");
     let rustgis_map::Renderer::Single(symbol) = &s.project.styles[0].renderer else { panic!("a single symbol") };
     let rustgis_map::Marker::Picture(picture) = symbol.marker else { panic!("an image marker") };
     assert!(picture.base64().starts_with("R0lGOD") && !rustgis_render::picture_marker_draws(picture));
@@ -2700,7 +2782,7 @@ fn an_image_is_a_marker_kept_in_the_project_file_that_an_older_reader_refuses() 
     let gif = gif_base64();
     for junk in ["bm90IGFuIGltYWdl", cut.as_str(), gif.as_str()] {
         let (_, said) = opened(saved_text.replace(&b64, junk));
-        assert!(said.iter().any(|n| n.contains("Image markers in \"Cities\" aren't PNG or JPEG images")), "{said:?}");
+        assert!(said.iter().any(|n| n.contains("Image markers in \"Cities\" aren't PNG, JPEG or SVG images")), "{said:?}");
         assert!(!said.iter().any(|n| n.contains("weren't kept")), "{said:?}");
     }
     // So does a map file or a layer file added on its own.
@@ -2768,10 +2850,10 @@ fn an_image_is_a_marker_kept_in_the_project_file_that_an_older_reader_refuses() 
     }
     let depth = s.undo_depth();
     for (bad, says) in [
-        (json!({"layer": "Cities", "image": 7}), "PNG or JPEG image as base64"),
-        (json!({"layer": "Cities", "image": "bm90IGFuIGltYWdl"}), "PNG or JPEG image as base64"),
-        (json!({"layer": "Cities", "image": "%%%"}), "PNG or JPEG image as base64"),
-        (json!({"layer": "Cities", "image": gif_base64()}), "PNG or JPEG image as base64"),
+        (json!({"layer": "Cities", "image": 7}), "PNG, JPEG or SVG image as base64"),
+        (json!({"layer": "Cities", "image": "bm90IGFuIGltYWdl"}), "PNG, JPEG or SVG image as base64"),
+        (json!({"layer": "Cities", "image": "%%%"}), "PNG, JPEG or SVG image as base64"),
+        (json!({"layer": "Cities", "image": gif_base64()}), "PNG, JPEG or SVG image as base64"),
         (json!({"layer": "Cities", "image": ""}), "image is empty"),
         (json!({"layer": "Cities", "image": " ", "shape": "star"}), "image is empty"),
         (json!({"layer": "Cities", "image": "", "shape": "star", "char": "x"}), "image is empty"),
@@ -2835,12 +2917,12 @@ fn an_image_marks_a_line_a_point_and_a_dot_fill() {
     let _ = Picture::new("bm90IGFuIGltYWdlIGVpdGhlcg==");
     let too_long = "A".repeat(rustgis_map::symbology::MAX_PICTURE_BYTES + 4);
     for (layer, markers, says) in [
-        ("Rivers", json!({"image": 7}), "PNG or JPEG image as base64"),
-        ("Rivers", json!({"image": junk}), "PNG or JPEG image as base64"),
-        ("Rivers", json!({"image": gif_base64()}), "PNG or JPEG image as base64"),
+        ("Rivers", json!({"image": 7}), "PNG, JPEG or SVG image as base64"),
+        ("Rivers", json!({"image": junk}), "PNG, JPEG or SVG image as base64"),
+        ("Rivers", json!({"image": gif_base64()}), "PNG, JPEG or SVG image as base64"),
         ("Rivers", json!({"image": ""}), "image is empty"),
         ("Rivers", json!({"mark": "circle", "image": ""}), "image is empty"),
-        ("Rivers", json!({"image": "bm90IGFuIGltYWdlIGVpdGhlcg=="}), "PNG or JPEG image as base64"),
+        ("Rivers", json!({"image": "bm90IGFuIGltYWdlIGVpdGhlcg=="}), "PNG, JPEG or SVG image as base64"),
         ("Rivers", json!({"image": too_long}), "at most 2 MiB"),
         ("Rivers", json!({"mark": "image"}), "needs its image"),
         ("Rivers", json!({"mark": "circle", "image": unkept}), "only one"),
@@ -2852,9 +2934,9 @@ fn an_image_marks_a_line_a_point_and_a_dot_fill() {
         assert!(err.contains(says), "{err}");
     }
     for (layer, fill, says) in [
-        ("Countries", json!({"pattern": "dots", "image": 7}), "PNG or JPEG image as base64"),
-        ("Countries", json!({"pattern": "dots", "image": junk}), "PNG or JPEG image as base64"),
-        ("Countries", json!({"pattern": "dots", "image": gif_base64()}), "PNG or JPEG image as base64"),
+        ("Countries", json!({"pattern": "dots", "image": 7}), "PNG, JPEG or SVG image as base64"),
+        ("Countries", json!({"pattern": "dots", "image": junk}), "PNG, JPEG or SVG image as base64"),
+        ("Countries", json!({"pattern": "dots", "image": gif_base64()}), "PNG, JPEG or SVG image as base64"),
         ("Countries", json!({"pattern": "dots", "marker": "star", "image": ""}), "image is empty"),
         ("Countries", json!({"pattern": "hatch", "image": " "}), "image is empty"),
         ("Countries", json!({"pattern": "dots", "image": too_long}), "at most 2 MiB"),
@@ -3570,7 +3652,7 @@ fn qgis_annotation_layers_import_as_graphics_layers() {
 }
 
 /// A QGIS style's raster image markers draw their PNG or JPEG file, read from the style's folder;
-/// one that isn't a PNG or JPEG, doesn't open or is past what a marker keeps is a circle, noted.
+/// one that isn't a PNG, JPEG or SVG, doesn't open or is past what a marker keeps is a circle, noted.
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
@@ -3591,6 +3673,12 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
     image.save(dir.join("pins/pin.png")).unwrap();
     image.save(dir.join("pins/pin.jpg")).unwrap();
     image.save(dir.join("pins/pin.gif")).unwrap();
+    // An SVG goes through the same check as `layer.marker`, so it draws too.
+    std::fs::write(
+        dir.join("pins/pin.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4"><rect width="8" height="4" fill="#c81e1e"/></svg>"##,
+    )
+    .unwrap();
     // Past the 2 MiB of base64 a marker keeps (1.5 MiB of file); its start a PNG's.
     let mut big = std::fs::read(dir.join("pins/pin.png")).unwrap();
     big.resize(1600 << 10, 0);
@@ -3608,7 +3696,7 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
         |r: &serde_json::Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     let mut s = world();
     let marker = |s: &Session| s.map().layer_by_name("Cities").unwrap().symbol(0).marker;
-    for file in ["./pins/pin.png", "pins/pin.jpg"] {
+    for file in ["./pins/pin.png", "pins/pin.jpg", "pins/pin.svg"] {
         let path = dir.join("pins.qml");
         std::fs::write(&path, qml(file)).unwrap();
         let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
@@ -3617,7 +3705,7 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
         assert!(notes(&r).is_empty(), "{file}: {:?}", notes(&r));
     }
     for (file, note) in [
-        ("pins/pin.gif", "raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"),
+        ("pins/pin.gif", "raster image markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles"),
         ("pins/gone.png", "raster image markers whose image file doesn't open, drawn as circles"),
         ("pins/big.png", "raster image markers whose image is past 2 MiB of base64, drawn as circles"),
         ("pins/many.png", "raster image markers whose image has more pixels than 2048 × 2048, drawn as circles"),
@@ -3633,7 +3721,7 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
     let path = dir.join("pins.qml");
     std::fs::write(&path, qml("pins/empty.png")).unwrap();
     let r = s.run("style.importQgis", &json!({"layer": "Cities", "path": path.to_string_lossy()})).unwrap();
-    assert_eq!(notes(&r), ["raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"]);
+    assert_eq!(notes(&r), ["raster image markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles"]);
     // A named pipe isn't opened: opening one waits for a writer, which would hold the import.
     #[cfg(unix)]
     if std::process::Command::new("mkfifo").arg(dir.join("pins/pipe.png")).status().is_ok_and(|s| s.success()) {
@@ -3671,7 +3759,7 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
         said,
         [
             ("raster image markers past the bytes of images an import reads, drawn as circles".to_string(), 1),
-            ("raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles".to_string(), 2),
+            ("raster image markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles".to_string(), 2),
         ]
     );
     // A file past what a marker keeps is charged for what was read of it: two take the budget.
@@ -25610,8 +25698,9 @@ fn a_service_download_is_added_with_the_drawing_info_given() {
 }
 
 /// An ArcGIS service's picture markers draw their images, checked as `layer.marker` checks one:
-/// a PNG class draws it and the project then asks for picture markers; a GIF class, which the
-/// renderer refuses, is a circle in a ramp's colour, said (#2266 part C).
+/// a PNG class draws it and the project then asks for picture markers, and so does an SVG class
+/// (#2266 part E); a GIF class, which the renderer refuses, is a circle in a ramp's colour, said
+/// (#2266 part C).
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn an_arcgis_services_picture_markers_draw_their_images() {
@@ -25622,12 +25711,16 @@ fn an_arcgis_services_picture_markers_draw_their_images() {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .unwrap();
     let (png, gif) = (base64::engine::general_purpose::STANDARD.encode(&png), gif_base64());
+    let svg = base64::engine::general_purpose::STANDARD
+        .encode(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 4"><rect width="6" height="4" fill="#0078c8"/></svg>"##);
     let picture = |b64: &str| json!({"type": "esriPMS", "imageData": b64, "contentType": "image/png", "width": 12, "height": 8});
     let drawing = json!({"renderer": {"type": "uniqueValue", "field1": "KIND", "uniqueValueInfos": [
-        {"value": "school", "symbol": picture(&png)}, {"value": "stop", "symbol": picture(&gif)}]}});
+        {"value": "school", "symbol": picture(&png)}, {"value": "stop", "symbol": picture(&gif)},
+        {"value": "park", "symbol": picture(&svg)}]}});
     let answer = r#"{"type": "FeatureCollection", "features": [
         {"type": "Feature", "properties": {"KIND": "school"}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
-        {"type": "Feature", "properties": {"KIND": "stop"}, "geometry": {"type": "Point", "coordinates": [1, 1]}}]}"#;
+        {"type": "Feature", "properties": {"KIND": "stop"}, "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        {"type": "Feature", "properties": {"KIND": "park"}, "geometry": {"type": "Point", "coordinates": [2, 2]}}]}"#;
     let mut s = Session::new(Project::default());
     let id = s.download_started();
     assert!(s.download_landed(id, answer.as_bytes().to_vec()));
@@ -25635,12 +25728,12 @@ fn an_arcgis_services_picture_markers_draw_their_images() {
     s.run("layer.addDownload", &json!({"id": id, "url": url, "name": "Places", "service": true, "drawingInfo": drawing})).unwrap();
     let places = s.map().layer_by_name("Places").unwrap();
     let rustgis_map::Renderer::Unique { classes, .. } = &places.renderer else { panic!("{:?}", places.renderer) };
-    let [(_, school), (_, stop)] = classes.as_slice() else { panic!("{classes:?}") };
+    let [(_, school), (_, stop), (_, park)] = classes.as_slice() else { panic!("{classes:?}") };
     assert!(matches!(school.marker, Marker::Picture(p) if p.base64() == png), "{school:?}");
+    assert!(matches!(park.marker, Marker::Picture(p) if p.base64() == svg && rustgis_render::picture_marker_draws(p)), "{park:?}");
     assert_eq!((school.size, stop.marker), (12.0, Marker::Circle));
     let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
-    let said =
-        "Places: the service's symbology came in, except: picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles";
+    let said = "Places: the service's symbology came in, except: picture markers whose image isn't a PNG, JPEG or SVG RustGIS reads, drawn as circles";
     assert!(texts.contains(&said), "{texts:?}");
     assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["picture-markers"]));
 }
