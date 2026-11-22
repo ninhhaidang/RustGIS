@@ -208,7 +208,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.csv",
             "wkt,id\n\"GEOMETRYCOLLECTION(POINT(1 2))\",1\n",
             "wkt,id\n\"GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))\",1\n",
-            Silent("only the collection's first member is kept"),
+            Imported("1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"),
         ),
         case(
             "CSV: cells past the header",
@@ -417,7 +417,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.xlsx",
             include_bytes!("../../testdata/reading-losses/book-clean.xlsx"),
             include_bytes!("../../testdata/reading-losses/book-collection.xlsx"),
-            Silent("only the collection's first member is kept"),
+            Imported("1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"),
         ),
         case(
             "XLSX: an error-valued attribute cell",
@@ -441,7 +441,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.ods",
             include_bytes!("../../testdata/reading-losses/book-clean.ods"),
             include_bytes!("../../testdata/reading-losses/book-collection.ods"),
-            Silent("only the collection's first member is kept"),
+            Imported("1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"),
         ),
     ]);
 
@@ -458,7 +458,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.xls",
             include_bytes!("../../testdata/reading-losses/book-clean.xls"),
             include_bytes!("../../testdata/reading-losses/book-collection.xls"),
-            Silent("only the collection's first member is kept"),
+            Imported("1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"),
         ),
         case(
             "XLSB: a height in WKT",
@@ -479,7 +479,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.xlsb",
             include_bytes!("../../testdata/reading-losses/book-clean.xlsb"),
             include_bytes!("../../testdata/reading-losses/book-collection.xlsb"),
-            Silent("only the collection's first member is kept"),
+            Imported("1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"),
         ),
     ]);
 
@@ -742,6 +742,24 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     } else {
         std::fs::write(&path, content)?;
     }
+    let collection = content == b"wkt,id\n\"GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))\",1\n"
+        || content == include_bytes!("../../testdata/reading-losses/book-collection.xlsx")
+        || content == include_bytes!("../../testdata/reading-losses/book-collection.ods")
+        || content == include_bytes!("../../testdata/reading-losses/book-collection.xls")
+        || content == include_bytes!("../../testdata/reading-losses/book-collection.xlsb");
+    let collection_note = "1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept";
+    let csv_collection = file.ends_with(".csv") && (collection || content == b"wkt,id\n\"GEOMETRYCOLLECTION(POINT(1 2))\",1\n");
+    if csv_collection {
+        let (native, report) = rustgis_engine::data::io::read_path(&path).map_err(std::io::Error::other)?;
+        if native.features.len() != 1
+            || native.features[0].geometry != Some(rustgis_engine::data::Geometry::Point(rustgis_engine::geom::Coord::new(1.0, 2.0)))
+            || native.features[0].attrs != [rustgis_engine::data::Value::Int(1)]
+            || report.skipped != 0
+            || report.messages != if collection { vec![collection_note] } else { vec![] }
+        {
+            return Err(std::io::Error::other(format!("CSV collection retained data or notice differs: {native:?}, {report:?}")));
+        }
+    }
     if file.ends_with(".shp") {
         let (native, report) =
             rustgis_engine::data::io::read_path(&path).map_err(|e| std::io::Error::other(format!("native Shapefile fixture: {e}")))?;
@@ -763,6 +781,9 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             || content == include_bytes!("../../testdata/reading-losses/book-z.xls")
             || content == include_bytes!("../../testdata/reading-losses/book-z.xlsb");
         let errors = content == include_bytes!("../../testdata/reading-losses/book-error.xlsx");
+        if collection && report.messages != [collection_note] {
+            return Err(std::io::Error::other(format!("native spreadsheet collection notice: {report:?}")));
+        }
         if errors && report.messages != ["1 spreadsheet error cell was read as empty, in 'note'"] {
             return Err(std::io::Error::other(format!("native spreadsheet error notice: {report:?}")));
         }
@@ -771,7 +792,7 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             || if height {
                 report.messages.len() != 1 || !report.messages[0].contains("Z or M")
             } else {
-                !errors && !report.messages.is_empty()
+                !errors && !collection && !report.messages.is_empty()
             }
         {
             return Err(std::io::Error::other(format!("native spreadsheet fixture has the wrong loss report: {report:?}")));
@@ -813,6 +834,26 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             && !s.notices_since(mark).is_empty()
         {
             return Err(std::io::Error::other("clean spreadsheet fixture gave a notice"));
+        }
+    }
+    if collection || csv_collection {
+        let notices = s.notices_since(mark);
+        if notices.iter().map(|n| n.text.as_str()).collect::<Vec<_>>() != if collection { vec![collection_note] } else { vec![] } {
+            return Err(std::io::Error::other(format!("collection command notice: {notices:?}")));
+        }
+        if csv_collection {
+            if s.map().layers.len() != 1 || !s.project.tables.is_empty() {
+                return Err(std::io::Error::other("CSV collection didn't add exactly one layer"));
+            }
+            use rustgis_engine::data::{Geometry, Value};
+            use rustgis_engine::geom::Coord;
+            let ds = &s.map().layers[0].dataset;
+            if ds.features.len() != 1
+                || ds.features[0].geometry != Some(Geometry::Point(Coord::new(1.0, 2.0)))
+                || ds.features[0].attrs != [Value::Int(1)]
+            {
+                return Err(std::io::Error::other("CSV command lost retained point or ID"));
+            }
         }
     }
     if feature_pbf {

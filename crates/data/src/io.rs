@@ -2681,7 +2681,7 @@ pub(crate) fn read_rows(
                 .push(format!("{n} values in '{column}' aren't dates and were read as empty, so their rows have no geometry")),
         }
     }
-    let (mut bad_wkt, mut zm_rows) = (0usize, 0usize);
+    let (mut bad_wkt, mut zm_rows, mut collection_rows) = (0usize, 0usize, 0usize);
     for r in rows {
         crate::progress::step(1)?;
         let cell = |i: usize| r.get(i).map(|s| s.trim()).unwrap_or("");
@@ -2696,10 +2696,11 @@ pub(crate) fn read_rows(
         } else if let Some(w) = wkt {
             match cell(w) {
                 "" => None,
-                t => match crate::interop::parse_wkt_zm(t) {
-                    Ok((g, s, zm)) => {
+                t => match crate::interop::parse_wkt_report(t) {
+                    Ok((g, s, zm, members_dropped)) => {
                         srid = srid.or(s);
                         zm_rows += usize::from(zm);
+                        collection_rows += usize::from(members_dropped);
                         g
                     }
                     Err(_) => {
@@ -2732,6 +2733,11 @@ pub(crate) fn read_rows(
         ds.push_next(geom, attrs);
     }
     ds.drop_zm(&mut report, zm_rows);
+    if collection_rows > 0 {
+        let column = wkt.and_then(|i| headers.get(i)).map_or("", |h| h.trim());
+        let what = if collection_rows == 1 { "WKT value" } else { "WKT values" };
+        report.messages.push(format!("{collection_rows} {what} in '{column}' lost later non-empty geometry-collection members; only the first non-empty member is kept"));
+    }
     if report.skipped > malformed {
         report.messages.push(format!("{} rows had no usable coordinates", report.skipped - malformed));
     }
@@ -6245,6 +6251,50 @@ mod tests {
             read_csv_with("g|v\nPOLYGON ((0 0, 1000 0, 1000 1000, 0 0))|1\n", "t", &CsvOptions { delimiter: Some(b'|'), ..opts }).unwrap();
         assert_eq!(ds.geometry_type, GeometryType::Polygon);
         assert_eq!(ds.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["v"]);
+    }
+
+    /// Counts affected input values once, even when loss happens at several nesting levels.
+    #[test]
+    fn wkt_collection_losses_are_said_without_changing_retained_data() {
+        let values = [
+            "GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4),POINT(5 6))",
+            "GEOMETRYCOLLECTION(GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4)),POINT(5 6))",
+            "GEOMETRYCOLLECTION(POINT EMPTY,GEOMETRYCOLLECTION(POINT(1 2),POINT EMPTY))",
+            "GEOMETRYCOLLECTION EMPTY",
+            "GEOMETRYCOLLECTION(POINT EMPTY,GEOMETRYCOLLECTION EMPTY)",
+            "GEOMETRYCOLLECTION(POINT(1 2))",
+        ];
+        let mut csv = String::from("wkt,id\n");
+        for (i, value) in values.iter().enumerate() {
+            csv.push_str(&format!("\"SRID=4326;{value}\",{i}\n"));
+        }
+        let (ds, report) = read_csv(&csv, "collections").unwrap();
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            report.messages,
+            ["2 WKT values in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept"]
+        );
+        assert_eq!(ds.held_in, crate::raster::Crs::LonLat);
+        assert!(!ds.zm_dropped);
+        for (i, row) in ds.features.iter().enumerate() {
+            assert_eq!(row.attrs, [Value::Int(i as i64)]);
+            assert_eq!(row.geometry, if matches!(i, 3 | 4) { None } else { Some(Geometry::Point(Coord::new(1.0, 2.0))) });
+        }
+        for value in &values[2..] {
+            let (_, report) = read_csv(&format!("wkt,id\n\"{value}\",7\n"), "clean").unwrap();
+            assert!(report.messages.is_empty(), "{value}: {report:?}");
+        }
+        let (ds, report) = read_csv("wkt,id\n\"SRID=4326;GEOMETRYCOLLECTION(POINT M(1 2 3),POINT Z(3 4 5))\",7\n", "dimensions").unwrap();
+        assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(1.0, 2.0))));
+        assert_eq!(ds.features[0].attrs, [Value::Int(7)]);
+        assert!(ds.zm_dropped);
+        assert_eq!(
+            report.messages,
+            [
+                crate::zm_note(Some(1)),
+                "1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept".into()
+            ]
+        );
     }
 
     /// Z and M values RustGIS doesn't keep are said when read, whole or in place, and the mark

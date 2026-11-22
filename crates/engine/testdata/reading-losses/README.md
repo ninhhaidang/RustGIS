@@ -57,7 +57,7 @@ exercise coordinate-system assumptions.
 | --- | --- | --- | --- |
 | `book-clean.xlsx` | `POINT(1 2)` | absent | None; no command notice |
 | `book-z.xlsx` | `POINT Z(1 2 3)` | absent | Imports with a Z/M-loss notice |
-| `book-collection.xlsx` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | absent | Silent: only the first member remains |
+| `book-collection.xlsx` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | absent | Imported: one WKT value loses later non-empty members; the first remains |
 | `book-error.xlsx` | `POINT(1 2)` | error cell (`t="e"`, value `#DIV/0!`) | Imports with a counted notice naming `note`; the error becomes Null |
 
 The clean workbook is shared by all three pairs. All four must retain exactly one point
@@ -82,7 +82,7 @@ numeric `id=7` and an empty note cell. The WKT is ordinary string content:
 | --- | --- | --- |
 | `book-clean.ods` | `POINT(1 2)` | None; no native or command notice |
 | `book-z.ods` | `POINT Z(1 2 3)` | Imports with a Z/M-loss notice |
-| `book-collection.ods` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | Silent: only the first member remains |
+| `book-collection.ods` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | Imported: one WKT value loses later non-empty members; the first remains |
 
 The clean workbook serves both pairs. The same retained-data assertions as XLSX require
 exactly one point at (1, 2), integer `id=7` and text `note=Null` through the native
@@ -125,7 +125,7 @@ command imports must retain exactly the point with no attribute fields/values or
 | --- | --- | --- |
 | `book-clean` | `POINT(1 2)` | None; no native or command notice |
 | `book-z` | `POINT Z(1 2 3)` | Imports with a Z/M-loss notice |
-| `book-collection` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | Silent: only the first member remains |
+| `book-collection` | `GEOMETRYCOLLECTION(POINT(1 2),POINT(3 4))` | Imported: one WKT value loses later non-empty members; the first remains |
 | `book-short.xlsb` (paired with `book-clean.xlsb`) | `POINT(1 2)` | Silent: all attribute fields and values are lost |
 
 The height/member pairs must retain exactly one point at (1, 2), integer `id=7`,

@@ -310,6 +310,12 @@ pub fn parse_wkt(text: &str) -> Result<(Option<Geometry>, Option<u32>), String> 
 
 /// [`parse_wkt`], also telling whether a coordinate had Z or M values, which were dropped.
 pub fn parse_wkt_zm(text: &str) -> Result<(Option<Geometry>, Option<u32>, bool), String> {
+    parse_wkt_report(text).map(|(g, srid, zm, _)| (g, srid, zm))
+}
+
+/// Parses WKT for tabular imports. The fourth tuple element says later non-empty collection
+/// members were dropped. Nested losses mark the input value once, not once per collection.
+pub(crate) fn parse_wkt_report(text: &str) -> Result<(Option<Geometry>, Option<u32>, bool, bool), String> {
     let text = text.trim();
     let (srid, body) = if text.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("SRID=")) {
         let (s, rest) = text.split_once(';').ok_or("an SRID= without the ';' before its geometry")?;
@@ -317,12 +323,12 @@ pub fn parse_wkt_zm(text: &str) -> Result<(Option<Geometry>, Option<u32>, bool),
     } else {
         (None, text)
     };
-    let mut p = WktParser { toks: wkt_tokens(body)?, at: 0, coords: 0, zm: false };
+    let mut p = WktParser { toks: wkt_tokens(body)?, at: 0, coords: 0, zm: false, members_dropped: false };
     let g = p.geometry(0)?;
     if p.at != p.toks.len() {
         return Err("text after the geometry".into());
     }
-    Ok((g, srid, p.zm))
+    Ok((g, srid, p.zm, p.members_dropped))
 }
 
 #[derive(Debug, PartialEq)]
@@ -389,6 +395,8 @@ struct WktParser {
     coords: usize,
     /// A coordinate had more than x and y.
     zm: bool,
+    /// This value lost at least one non-empty member, at any nesting depth.
+    members_dropped: bool,
 }
 
 impl WktParser {
@@ -462,6 +470,8 @@ impl WktParser {
         }
     }
 
+    /// Parses every member, retaining the first non-empty one and flagging later non-empty
+    /// members at the discard step; nested collections contribute to the same value's flag.
     fn geometry(&mut self, depth: usize) -> Result<Option<Geometry>, String> {
         if depth > 8 {
             return Err("geometry collections nested too deep".into());
@@ -500,7 +510,10 @@ impl WktParser {
             "MULTIPOLYGON" => Geometry::Polygon(self.list(Self::rings)?),
             "GEOMETRYCOLLECTION" => {
                 let members = self.list(|p| p.geometry(depth + 1))?;
-                return Ok(members.into_iter().flatten().next());
+                let mut members = members.into_iter().flatten();
+                let first = members.next();
+                self.members_dropped |= members.next().is_some();
+                return Ok(first);
             }
             other => return Err(format!("'{other}' geometries aren't read")),
         }))
