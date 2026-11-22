@@ -10230,10 +10230,10 @@ fn terrain_block_is_checked_kept_and_taken_off() {
     assert_eq!(v["block"]["radius_capped"], false);
     // One larger than the circle in the DEM's box (about 4453 m across) is drawn as that circle,
     // and the result says so; with none, that circle's too.
-    let v = s.run("map.terrain", &json!({"block": {"shape": "circle", "radius": 5000}})).unwrap();
+    let v = s.run("map.terrain", &json!({"block": {"extent": null, "shape": "circle", "radius": 5000}})).unwrap();
     assert_eq!(v["block"]["radius_capped"], true);
     assert!(v["block"]["radius"].as_f64().is_some_and(|r| (r - 2226.5).abs() < 2.0), "{v}");
-    let v = s.run("map.terrain", &json!({"block": {"shape": "circle"}})).unwrap();
+    let v = s.run("map.terrain", &json!({"block": {"shape": "circle", "radius": null}})).unwrap();
     assert!(v["block"]["radius"].as_f64().is_some_and(|r| (r - 2226.5).abs() < 2.0), "{v}");
     let v = s.run("map.terrain", &json!({"block": {"shape": "box"}})).unwrap();
     assert_eq!(v["block"]["shape"].as_str(), Some("box"));
@@ -10271,12 +10271,120 @@ fn terrain_block_is_checked_kept_and_taken_off() {
     assert!(e.contains("degrees"), "{e}");
     s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png", "block": {"extent": [0, 0, 1000, 1000]}})).unwrap();
     // A block on the DEM's extent left behind on a switch to tiles; one with a box kept.
-    s.run("map.terrain", &json!({"layer": dem, "block": {}})).unwrap();
+    s.run("map.terrain", &json!({"layer": dem, "block": {"extent": null}})).unwrap();
     let v = s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png"})).unwrap();
     assert!(v["block"].is_null(), "{v}");
     s.run("map.terrain", &json!({"layer": dem, "block": {"extent": inside}})).unwrap();
     let v = s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png"})).unwrap();
     assert_eq!(v["block"]["extent"], json!([1114000.0, 5622000.0, 1116000.0, 5625000.0]));
+}
+
+/// #2447: a `"block"` object changes only the keys it gives. A key left out stays as the block had
+/// it, `null` puts one back to its default, `true` keeps the block as it is, `false` takes it off.
+#[test]
+fn a_terrain_block_object_changes_only_the_keys_it_gives() {
+    use base64::Engine;
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let add = |s: &mut Session, file: &str, gj: Value| {
+        let data = base64::engine::general_purpose::STANDARD.encode(gj.to_string().as_bytes());
+        s.run("layer.addDataBytes", &json!({"fileName": file, "data": data})).unwrap();
+        s.map().layers.iter().rev().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap()
+    };
+    let ring = |x0: f64, x1: f64| json!([[[x0, 45.0], [x1, 45.0], [x1, 45.04], [x0, 45.04], [x0, 45.0]]]);
+    let one = |props: Value, ring: Value| {
+        json!({"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": props, "geometry": {"type": "Polygon", "coordinates": ring}}]})
+    };
+    let geo = add(&mut s, "geologia.geojson", one(json!({"unidade": "granito"}), ring(10.0, 10.02)));
+    let lagos = add(&mut s, "lagos.geojson", one(json!({"prof": 12.0}), ring(10.02, 10.03)));
+    let inside = json!([1114000.0, 5622000.0, 1116000.0, 5625000.0]);
+    let block = |v: Value| v["block"].clone();
+    let v = s
+        .run(
+            "map.terrain",
+            &json!({"layer": dem, "water": {"layer": lagos},
+                "block": {"extent": inside, "depth": 300, "walls": {"color": "#E0D0B0", "layer": geo}}}),
+        )
+        .unwrap();
+    let walls = json!({"color": "#E0D0B0", "layer": geo});
+    assert_eq!(block(v)["water"], json!(null));
+    let first = s.map().view.terrain.clone();
+    // The water set alone leaves the box, the depth and the walls as they were.
+    let v = s.run("map.terrain", &json!({"block": {"water": {"depth": 5}}})).unwrap();
+    let b = block(v);
+    assert_eq!((&b["extent"], b["extent_from"].as_str(), &b["depth"], &b["walls"]), (&inside, Some("box"), &json!(300.0), &walls), "{b}");
+    assert_eq!(b["water"], json!({"depth": 5.0}));
+    // Undo puts the whole old block back.
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.map().view.terrain, first, "the whole old block (box, depth, walls, water) comes back");
+    let back = s.map().view.terrain.as_ref().and_then(|t| t.block.clone()).unwrap();
+    assert!(back.water.is_none() && back.depth == Some(300.0) && back.extent.is_some(), "{back:?}");
+    s.run("edit.redo", &Value::Null).unwrap();
+    // The terrain's water can't go under the block's water, and the refusal says how to take that off.
+    let before = s.map().view.terrain.clone();
+    let e = s.run("map.terrain", &json!({"water": false})).unwrap_err();
+    assert!(e.contains(r#"take the block's water off with "block": {"water": false}"#), "{e}");
+    assert_eq!(s.map().view.terrain, before);
+    // null puts a key back to its default, the rest stays.
+    let b = block(s.run("map.terrain", &json!({"block": {"depth": null}})).unwrap());
+    assert_eq!((&b["depth"], &b["extent"], &b["walls"], &b["water"]), (&json!(null), &inside, &walls, &json!({"depth": 5.0})), "{b}");
+    let b = block(s.run("map.terrain", &json!({"block": {"water": false}})).unwrap());
+    assert_eq!((&b["water"], &b["extent"]), (&json!(null), &inside));
+    // Inside the walls: a layer given keeps the colour, a colour given keeps the layer.
+    let b = block(s.run("map.terrain", &json!({"block": {"walls": {"layer": null}}})).unwrap());
+    assert_eq!(b["walls"], json!("#E0D0B0"));
+    let b = block(s.run("map.terrain", &json!({"block": {"walls": {"layer": geo}}})).unwrap());
+    assert_eq!(b["walls"], walls);
+    let b = block(s.run("map.terrain", &json!({"block": {"walls": {"color": "#806040"}}})).unwrap());
+    assert_eq!(b["walls"], json!({"color": "#806040", "layer": geo}));
+    let b = block(s.run("map.terrain", &json!({"block": {"walls": "#806040"}})).unwrap());
+    assert_eq!(b["walls"], json!("#806040"), "a plain colour takes the layer off");
+    let b = block(s.run("map.terrain", &json!({"block": {"walls": null}})).unwrap());
+    assert_eq!(b["walls"], json!("#C8B89A"));
+    // true and {} keep the block as it is.
+    let before = s.map().view.terrain.clone();
+    for keep in [json!(true), json!({})] {
+        s.run("map.terrain", &json!({"block": keep})).unwrap();
+        assert_eq!(s.map().view.terrain, before, "{keep}");
+    }
+    // A round block stays round, with its radius, while other keys change; a box drops the radius.
+    let b = block(s.run("map.terrain", &json!({"block": {"shape": "circle", "radius": 400}})).unwrap());
+    assert_eq!((b["shape"].as_str(), b["radius"].as_f64()), (Some("circle"), Some(400.0)));
+    let b = block(s.run("map.terrain", &json!({"block": {"depth": 200}})).unwrap());
+    assert_eq!((b["shape"].as_str(), b["radius"].as_f64(), b["depth"].as_f64()), (Some("circle"), Some(400.0), Some(200.0)));
+    let b = block(s.run("map.terrain", &json!({"block": {"radius": 300}})).unwrap());
+    assert_eq!(b["radius"].as_f64(), Some(300.0));
+    let b = block(s.run("map.terrain", &json!({"block": {"shape": "box"}})).unwrap());
+    assert_eq!((b["shape"].as_str(), b["radius"].is_null()), (Some("box"), true));
+    let e = s.run("map.terrain", &json!({"block": {"radius": 300}})).unwrap_err();
+    assert!(e.contains("radius is a circle's"), "{e}");
+    // The DEM's box again.
+    let b = block(s.run("map.terrain", &json!({"block": {"extent": null}})).unwrap());
+    assert_eq!(b["extent_from"].as_str(), Some("layer"));
+    // Cut to polygons: the box kept from before is dropped, the polygons kept by the keys that follow.
+    s.run("map.terrain", &json!({"block": {"extent": inside}})).unwrap();
+    let b = block(s.run("map.terrain", &json!({"block": {"shape": {"layer": geo}}})).unwrap());
+    assert_eq!(b["extent_from"].as_str(), Some("shape"), "{b}");
+    let b = block(s.run("map.terrain", &json!({"block": {"depth": 250}})).unwrap());
+    assert_eq!((&b["shape"], b["extent_from"].as_str()), (&json!({"layer": geo, "where": null}), Some("shape")), "{b}");
+    let e = s.run("map.terrain", &json!({"block": {"extent": inside}})).unwrap_err();
+    assert!(e.contains("give no extent") && e.contains("the block's shape is the one kept from before"), "{e}");
+    // A box kept from before that the DEM can't take is refused, and the refusal says it was kept.
+    s.run("map.terrain", &json!({"block": {"shape": "box"}})).unwrap();
+    if let Some(b) = s.map_mut().view.terrain.as_mut().and_then(|t| t.block.as_mut()) {
+        b.extent = Some([0.0, 0.0, 1000.0, 1000.0]);
+    }
+    let before = s.map().view.terrain.clone();
+    let e = s.run("map.terrain", &json!({"block": {"depth": 200}})).unwrap_err();
+    assert!(e.contains("the block's extent is the one kept from before"), "{e}");
+    assert_eq!(s.map().view.terrain, before);
+    s.run("map.terrain", &json!({"block": {"depth": 200, "extent": null}})).unwrap();
+    // Taken off, a block object is a new block with the defaults.
+    s.run("map.terrain", &json!({"block": false})).unwrap();
+    let b = block(s.run("map.terrain", &json!({"block": {"depth": 200}})).unwrap());
+    assert_eq!((b["extent_from"].as_str(), &b["walls"], b["depth"].as_f64()), (Some("layer"), &json!("#C8B89A"), Some(200.0)));
 }
 
 #[test]

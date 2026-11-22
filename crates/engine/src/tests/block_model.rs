@@ -202,7 +202,7 @@ fn a_round_blocks_model_is_the_box_round_its_circle_based_below_all_of_its_groun
     // The circle's box: as wide as INSIDE, as tall, centred.
     let [x0, y0, x1, y1] = INSIDE;
     let (cy, r) = ((y0 + y1) / 2.0, (x1 - x0) / 2.0);
-    let square = meshes(&mut s, json!({"extent": [x0, cy - r, x1, cy + r], "depth": 50}), "square.glb");
+    let square = meshes(&mut s, json!({"extent": [x0, cy - r, x1, cy + r], "shape": "box", "depth": 50}), "square.glb");
     // The ground outside the circle is in the model, so its base is the box's, below all of it:
     // no wall runs up from the ground to a base taken from the circle's ground only.
     assert_eq!(round, square);

@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
         C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A) | {"color"?: "#RRGGBB" (default #C8B89A), "layer"?: a polygon layer that holds all its features (not one read a view at a time; it may be hidden): its symbology colours the walls where its polygons meet the block's edge, and the walls are color off its polygons}, "shape"?: "box" (default) | "circle" (the largest circle in the box, its walls round it) | {"layer": a polygon layer, "where"?: sql (picks its polygons, as a definition query)} (the ground inside the polygons' outer rings, holes not cut, the box round them: no extent), "radius"?: a circle's radius in map units (default: the largest in the box), "water"?: the terrain's water shown in the walls' section {"depth"?: metres from the level to the floor, "field"?: a numeric field of the water layer holding each one's depth} (one of them needed), or false}, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore), "glint"?: 0 to 1, how brightly a tilted view's water shines where it reflects the sun toward the eye (default 0.3; 0: none), "shore"?: 0 to 1, how dark the band along the water's shore is at the outline, fading a few pixels inside it (default 0.35; 0: none)}, or false to take it off (default: as it was), "off"?: true}"##,
+            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "block"?: a block diagram {"extent"?: "layer" (the DEM's extent, default) | [xmin, ymin, xmax, ymax] in map units (needed over tiles), "depth"?: metres from the lowest ground to the base (default half the relief, at least 100), "walls"?: "#RRGGBB" (default #C8B89A) | {"color"?: "#RRGGBB" (default #C8B89A), "layer"?: a polygon layer that holds all its features (not one read a view at a time; it may be hidden): its symbology colours the walls where its polygons meet the block's edge, and the walls are color off its polygons}, "shape"?: "box" (default) | "circle" (the largest circle in the box, its walls round it) | {"layer": a polygon layer, "where"?: sql (picks its polygons, as a definition query)} (the ground inside the polygons' outer rings, holes not cut, the box round them: no extent), "radius"?: a circle's radius in map units (default: the largest in the box), "water"?: the terrain's water shown in the walls' section {"depth"?: metres from the level to the floor, "field"?: a numeric field of the water layer holding each one's depth} (one of them needed), or false}, keys left out stay as the block had them and null puts one back to its default (a new block takes the defaults), and the block's "water" is given whole each time, replacing the old, or false to take it off (default: as it was), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore), "glint"?: 0 to 1, how brightly a tilted view's water shines where it reflects the sun toward the eye (default 0.3; 0: none), "shore"?: 0 to 1, how dark the band along the water's shore is at the outline, fading a few pixels inside it (default 0.35; 0: none)}, or false to take it off (default: as it was), "off"?: true}"##,
         ),
         C::new("map.exportOrbit", "Export Orbit", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportOrbit")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
@@ -306,12 +306,20 @@ fn walk(s: &mut Session, p: &Value) -> CmdResult {
 /// A block diagram's settings (#1914) from `map.terrain`'s `"block"` object: the shape read here,
 /// the values checked by [`rustgis_map::view::TerrainBlock::check`] (as a saved project's are),
 /// and the walls' layer as the water's is ([`polygon_layer`]).
-fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainBlock, String> {
+///
+/// Keys left out keep `base`'s values (the defaults without one); `null` puts one back to its default.
+fn terrain_block(
+    s: &Session,
+    b: &serde_json::Map<String, Value>,
+    base: Option<&rustgis_map::view::TerrainBlock>,
+) -> Result<rustgis_map::view::TerrainBlock, String> {
+    use rustgis_map::view::{BLOCK_WALLS, BlockShape};
     if let Some(k) = b.keys().find(|k| !matches!(k.as_str(), "extent" | "depth" | "walls" | "shape" | "radius" | "water")) {
         return Err(format!("block has no '{k}' (extent, depth, walls, shape, radius, water)"));
     }
-    let extent = match b.get("extent") {
-        None | Some(Value::Null) => None,
+    let mut extent = match b.get("extent") {
+        None => base.and_then(|b| b.extent),
+        Some(Value::Null) => None,
         Some(Value::String(s)) if s.eq_ignore_ascii_case("layer") => None,
         Some(Value::Array(a)) => {
             let e: Vec<f64> = a.iter().filter_map(Value::as_f64).filter(|v| v.is_finite()).collect();
@@ -323,33 +331,41 @@ fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rust
         Some(_) => return Err("block's extent is \"layer\" or [xmin, ymin, xmax, ymax]".into()),
     };
     let depth = match b.get("depth") {
-        None | Some(Value::Null) => None,
+        None => base.and_then(|b| b.depth),
+        Some(Value::Null) => None,
         Some(v) => Some(v.as_f64().ok_or("block's depth is metres, 0 to 20000")?),
     };
-    let color = |c: Option<&Value>| match c {
-        None | Some(Value::Null) => Ok(rustgis_map::view::BLOCK_WALLS),
+    let color = |c: Option<&Value>, left_out: rustgis_map::Rgba| match c {
+        None => Ok(left_out),
+        Some(Value::Null) => Ok(BLOCK_WALLS),
         Some(Value::String(c)) => rustgis_map::Rgba::from_hex(c).ok_or("block's walls is an opaque colour, #RRGGBB"),
         Some(_) => Err("block's walls is a colour, #RRGGBB, or {\"color\"?, \"layer\"?}"),
     };
     // A colour, or the colour and a polygon layer that colours the walls where it has a polygon.
+    let (kept_color, kept_layer) = base.map_or((BLOCK_WALLS, None), |b| (b.walls, b.walls_layer.clone()));
     let (walls, walls_layer) = match b.get("walls") {
+        None => (kept_color, kept_layer),
+        Some(Value::Null) => (BLOCK_WALLS, None),
         Some(Value::Object(w)) => {
             if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "color" | "layer")) {
                 return Err(format!("block's walls has no '{k}' (color, layer)"));
             }
             let layer = match w.get("layer") {
-                None | Some(Value::Null) => None,
+                None => kept_layer,
+                Some(Value::Null) => None,
                 Some(Value::String(n)) => Some(polygon_layer(s, n, "block's walls", "the units the walls show")?),
                 Some(_) => return Err("block's walls' layer is a polygon layer's name".into()),
             };
-            (color(w.get("color"))?, layer)
+            (color(w.get("color"), kept_color)?, layer)
         }
-        other => (color(other)?, None),
+        // A plain colour takes the walls' layer off.
+        other => (color(other, BLOCK_WALLS)?, None),
     };
     // The water in the walls' section (#2317): its depth, or the water layer's field holding it
     // (checked against the terrain's water once that is known, in `terrain`).
     let water = match b.get("water") {
-        None | Some(Value::Null | Value::Bool(false)) => None,
+        None => base.and_then(|b| b.water.clone()),
+        Some(Value::Null | Value::Bool(false)) => None,
         Some(Value::Object(w)) => {
             if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "depth" | "field")) {
                 return Err(format!("block's water has no '{k}' (depth, field)"));
@@ -368,22 +384,43 @@ fn terrain_block(s: &Session, b: &serde_json::Map<String, Value>) -> Result<rust
         Some(_) => return Err("block's water is {\"depth\"?, \"field\"?}, or false".into()),
     };
     // The outline inside the box (#2318): the box itself, or the circle in it.
+    // A round block's radius is kept, as the shape is, when the call gives neither.
+    let kept_radius = base.and_then(|b| match b.shape {
+        BlockShape::Circle { radius } => radius,
+        _ => None,
+    });
     let radius = match b.get("radius") {
-        None | Some(Value::Null) => None,
+        None => kept_radius,
+        Some(Value::Null) => None,
         Some(v) => Some(v.as_f64().ok_or("block's radius is metres (map units)")?),
     };
     let shape = match b.get("shape") {
-        None | Some(Value::Null) => rustgis_map::view::BlockShape::Box,
-        Some(Value::String(s)) if s.eq_ignore_ascii_case("box") => rustgis_map::view::BlockShape::Box,
-        Some(Value::String(s)) if s.eq_ignore_ascii_case("circle") => rustgis_map::view::BlockShape::Circle { radius },
+        None => match base.map(|b| &b.shape) {
+            Some(BlockShape::Circle { .. }) => BlockShape::Circle { radius },
+            Some(other) => other.clone(),
+            None => BlockShape::Box,
+        },
+        Some(Value::Null) => BlockShape::Box,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("box") => BlockShape::Box,
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("circle") => BlockShape::Circle { radius },
         Some(Value::Object(o)) => block_polygons(s, o)?,
         Some(_) => return Err("block's shape is \"box\", \"circle\" or {\"layer\", \"where\"?}".into()),
     };
-    // "extent": "layer" names the DEM's box, which a block cut to polygons doesn't take.
-    if matches!(shape, rustgis_map::view::BlockShape::Polygon { .. }) && b.get("extent").is_some_and(|e| !e.is_null()) {
-        return Err("a block cut to polygons takes their box: give no extent".into());
+    // "extent": "layer" names the DEM's box, which a block cut to polygons doesn't take; one kept
+    // from before is dropped, as the polygons' box is the block's.
+    if matches!(shape, BlockShape::Polygon { .. }) {
+        if b.get("extent").is_some_and(|e| !e.is_null()) {
+            let kept = if b.contains_key("shape") {
+                ""
+            } else {
+                " (the block's shape is the one kept from before, and \"shape\": \"box\" takes the polygons off)"
+            };
+            return Err(format!("a block cut to polygons takes their box: give no extent{kept}"));
+        }
+        extent = None;
     }
-    if radius.is_some() && !matches!(shape, rustgis_map::view::BlockShape::Circle { .. }) {
+    // Only a radius this call gives is refused; one kept from a round block just goes with its shape.
+    if b.get("radius").is_some_and(|r| !r.is_null()) && !matches!(shape, BlockShape::Circle { .. }) {
         return Err("block's radius is a circle's: give \"shape\": \"circle\" too".into());
     }
     let block = rustgis_map::view::TerrainBlock { extent, depth, walls, walls_layer, shape, water };
@@ -518,12 +555,14 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         s.map_mut().view.terrain = None;
         return Ok(json!({"terrain": null}));
     }
-    // Left out, the block stays as it was; false or null takes it off.
+    // Left out, the block stays as it was; an object changes only the keys it gives (`true` is one
+    // with none); false or null takes it off.
+    let base = s.map().view.terrain.as_ref().and_then(|t| t.block.clone());
     let block = match p.get("block") {
         None => None,
         Some(Value::Null | Value::Bool(false)) => Some(None),
-        Some(Value::Bool(true)) => Some(Some(terrain_block(s, &serde_json::Map::new())?)),
-        Some(Value::Object(b)) => Some(Some(terrain_block(s, b)?)),
+        Some(Value::Bool(true)) => Some(Some(terrain_block(s, &serde_json::Map::new(), base.as_ref())?)),
+        Some(Value::Object(b)) => Some(Some(terrain_block(s, b, base.as_ref())?)),
         Some(_) => return Err("block is an object (extent, depth, walls, shape, radius, water), or false to take it off".into()),
     };
     // Left out (or null, as for the exaggeration), the water stays as it was; false takes it off
@@ -638,7 +677,17 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         _ => None,
     };
     // A block this call leaves out is the one the terrain had: the refusal says so, and how to take it off.
-    let kept = if block.is_none() { "; the block is the one kept from before, and \"block\": false takes it off" } else { "" };
+    let given = |k: &str| matches!(p.get("block"), Some(Value::Object(b)) if b.contains_key(k));
+    let kept = match &block {
+        None => "; the block is the one kept from before, and \"block\": false takes it off",
+        Some(Some(b)) if b.extent.is_some() && !given("extent") => {
+            "; the block's extent is the one kept from before, and \"extent\": null puts it back to the DEM's"
+        }
+        Some(Some(b)) if matches!(b.shape, rustgis_map::view::BlockShape::Polygon { .. }) && !given("shape") => {
+            "; the block's shape is the one kept from before, and \"shape\": \"box\" takes the polygons off"
+        }
+        _ => "",
+    };
     // A block cut to polygons (#2318) is checked on the box round them, refused when they can't
     // be read (a block kept from before whose layer changed).
     let own = t.block.as_ref().and_then(|b| super::terrain_blocks::own_box(m, b));
@@ -757,7 +806,7 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(bw) = block_water {
         let checked = (|| {
             let w = t.water.as_ref().ok_or(
-                "block's water shows the terrain's water in the walls: give the terrain a water layer, or take the block's water off by giving the block again without it (a \"block\" object sets the whole block: its extent, depth and walls too)",
+                "block's water shows the terrain's water in the walls: give the terrain a water layer, or take the block's water off with \"block\": {\"water\": false}",
             )?;
             let l = m.layer_by_name(&w.layer).ok_or_else(|| format!("no layer '{}'", w.layer))?;
             let Some(f) = &bw.field else { return Ok(None) };

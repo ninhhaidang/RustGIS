@@ -106,7 +106,12 @@ numbers, or `"layer"` while the DEM's data isn't read); `"depth"` puts the base
 that many metres below the lowest ground in the box (ground with no height, drawn at 0, counts as 0; default half the box's relief, at least
 100 m; both are stretched by the exaggeration), and `"walls": "#RRGGBB"` colours the walls
 (default `#C8B89A`, a sandy brown). The walls are lit by the way they face the light, as extruded
-walls are, darker toward their foot, and outlined. Left out, the block stays as it was;
+walls are, darker toward their foot, and outlined. Left out, the block stays as it was, and
+a `"block"` object changes only the keys it gives: keys left out stay as they were, and `null` puts one back to its
+default (`"extent": null` the DEM's extent, `"depth": null` half the relief, `"walls": null` `#C8B89A` with no layer,
+`"water": null` or `false` no water in the walls, `"shape": null` a box, `"radius": null` the circle's largest);
+the block's `"water"` is given whole (`{depth, field}`) each time: `{"water": {"depth": 5}}` replaces a water that had a field.
+Without a block, the keys left out take the defaults, and `"block": true` keeps a block as it is, or draws one with them;
 `"block": false` takes it off. It shows in the settled view and in exported maps (over elevation tiles, the walls once the
 box's tiles are read); while the map
 moves the ground is drawn whole, and labels, markers and extruded features outside the box still
@@ -131,6 +136,8 @@ must be a polygon layer that holds all its
 features (not one read a view at a time), with a name of its own; it follows the layer's renames,
 and when it is removed, or a project opens without it, the walls are `color` (said) until a
 polygon layer of that name comes back. A plain `"walls": "#RRGGBB"` takes the layer off.
+`{"walls": {"layer": "Geology"}}` keeps the walls' colour, `{"walls": {"color": "#806040"}}` keeps the layer, and
+`{"walls": {"layer": null}}` takes the layer off and keeps the colour.
 
 `"shape": "circle"` cuts a round block: the largest circle inside the box (the DEM's extent or
 `"extent"`), centred in it, or a smaller one with `"radius"` (map units; one larger than the
@@ -138,7 +145,7 @@ box's circle takes the box's). It reads the same at any bearing, which suits a f
 turns or an orbit. Only the ground inside the circle is drawn and sets the base, and the wall
 runs round its near half, with everything a box's walls have: colour, a walls layer's units and
 their patterns (which run on round the wall), light and fog. `"shape": "box"` (the default)
-takes it back to the box.
+takes it back to the box. A block kept from before stays round when another key changes, its radius too.
 
 `"shape": {"layer": "Bacias", "where": "nome = 'Rio Doce'"}` cuts the block to a study area: the
 polygons of a polygon layer that the expression picks (written as a definition query, among the
@@ -151,7 +158,7 @@ than 45°. A `"where"` that picks no polygon is refused. Holes are not cut: the 
 them is drawn, and a notice says how many. Several polygons each stand as their own block on the
 same base (dissolve touching ones first for one outline). The outline follows the polygons to about a third of the
 finest mesh cell (a ring narrower than that is left out, and said), and is read again when the
-layer is edited.
+layer is edited. A box kept from before is dropped when the block is cut to polygons.
 
 With water on the terrain (below), `"block": {"water": {"depth": 12}}` shows it in the walls'
 section: where the block's edge (a round block's circle too) runs inside a water polygon (the first in the layer's rows where
@@ -168,8 +175,7 @@ from about the shore band's width in (a few pixels at the view's centre), so the
 basin, not a cliff. A water body with no depth, or no level, shows none, and setting the block or
 the water says how many of those its definition query keeps have no value in the field. These depths
 are schematic unless they come from a field: say so in the figure's caption. `"water": false` in the
-block takes the water out of the walls (give the block whole again: a `"block"` object sets all of
-it, its extent, depth and walls too); while it is there, taking the terrain's water off, or giving
+block takes the water out of the walls (the rest of the block stays as it was); while it is there, taking the terrain's water off, or giving
 it a layer without the depth field, is refused. Deleting the depth field keeps the water's own
 `depth` for all the water, or takes the water out of the walls when there is none, and says so.
 
