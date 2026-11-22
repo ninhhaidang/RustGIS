@@ -147,6 +147,11 @@ Projects, map files and layer files with a window of a Zarr variable that follow
 reader refuses them instead of reading the whole map at each step. A saved `layer.addZarr` command
 with both needs nothing: an older RustGIS refuses it when it runs.
 
+Projects, map files and layer files with a label class curved along a guide line layer
+(`labels.placement` with a `guide`) require `label-guide`, so an older reader refuses them instead
+of placing those labels as without it and saving them again without the guide. A saved
+`labels.placement` command with a guide needs nothing: an older RustGIS refuses the key when it runs.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands

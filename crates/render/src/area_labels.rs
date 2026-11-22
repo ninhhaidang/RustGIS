@@ -315,6 +315,26 @@ pub(super) fn glyphs(
     Some((centre, glyphs))
 }
 
+/// The rings of the polygon `polys` near the view on the screen, thinned before they are projected
+/// (about [`MAX_VERTICES`] in all); `None` when a place of one doesn't project (behind the globe).
+pub(super) fn screen_rings(ctx: &super::Ctx<'_>, polys: &[Vec<Vec<Coord>>]) -> Option<Vec<Vec<(f32, f32)>>> {
+    let near = |ring: &Vec<Coord>| {
+        let mut e = Extent::EMPTY;
+        ring.iter().for_each(|c| e.expand(*c));
+        ctx.globe.is_some() || ctx.cull.intersects(&e)
+    };
+    let near: Vec<&Vec<Coord>> = polys.iter().filter(|poly| poly.first().is_some_and(near)).flatten().collect();
+    let how = Thinning::new(near.iter().map(|r| r.len()));
+    near.into_iter()
+        .map(|ring| {
+            thin(ring, how, |c| (c.x, c.y))
+                .into_iter()
+                .map(|c| ctx.screen(c).map(|(x, y)| (x as f32, y as f32)))
+                .collect::<Option<Vec<_>>>()
+        })
+        .collect()
+}
+
 /// [`glyphs`]' characters `advances` wide and `height` tall, as [`Line::curved`] takes them.
 fn curved(
     ctx: &super::Ctx<'_>,
@@ -324,23 +344,7 @@ fn curved(
     size: f32,
     height: f32,
 ) -> Option<((f32, f32), Vec<(f32, f32, f32)>)> {
-    let near = |ring: &Vec<Coord>| {
-        let mut e = Extent::EMPTY;
-        ring.iter().for_each(|c| e.expand(*c));
-        ctx.globe.is_some() || ctx.cull.intersects(&e)
-    };
-    let near: Vec<&Vec<Coord>> = polys.iter().filter(|poly| poly.first().is_some_and(near)).flatten().collect();
-    // Thinned before they are projected.
-    let how = Thinning::new(near.iter().map(|r| r.len()));
-    let rings: Vec<Vec<(f32, f32)>> = near
-        .into_iter()
-        .map(|ring| {
-            thin(ring, how, |c| (c.x, c.y))
-                .into_iter()
-                .map(|c| ctx.screen(c).map(|(x, y)| (x as f32, y as f32)))
-                .collect::<Option<Vec<_>>>()
-        })
-        .collect::<Option<_>>()?;
+    let rings = screen_rings(ctx, polys)?;
     let len = line_labels::curved_len(advances, gap);
     // Too small on the screen for the text: no grid worked out.
     let (mut lo, mut hi) = ((f32::INFINITY, f32::INFINITY), (f32::NEG_INFINITY, f32::NEG_INFINITY));

@@ -476,6 +476,12 @@ fn held_natively(ds: &rustgis_data::Dataset) -> bool {
     !ds.windowed && ds.coord_crs() != rustgis_data::raster::Crs::LonLat
 }
 
+/// Whether a layer's labels follow a guide line layer (#2262): an older reader would drop the
+/// guide, and place and save them as without it.
+fn label_guide(layer: &Layer) -> bool {
+    layer.labels.in_order().any(|c| c.guide.is_some())
+}
+
 /// The capabilities a layer needs, in [`map_capabilities`]'s order.
 fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
     [
@@ -484,6 +490,7 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
         (layer.size_by.is_some(), super::SIZE_BY_CAPABILITY),
         (layer.has_picture_markers(), "picture-markers"),
         (zarr_window(layer), "zarr-window"),
+        (label_guide(layer), "label-guide"),
         (held_natively(&layer.dataset), super::NATIVE_COORDINATES),
     ]
     .into_iter()
@@ -509,11 +516,12 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         mut grid_color,
     ) = (false, false, false, false, false, false, false, false, false, false, false, false, false, false);
     let mut polygon = false;
-    let (mut offline_area_id, mut paper, mut native) = (false, false, false);
+    let (mut offline_area_id, mut paper, mut native, mut guided) = (false, false, false, false);
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
         paper |= map.paper.is_some();
+        guided |= map.layers.iter().any(label_guide);
         // An older reader doesn't know the MGRS graticule (#1042 piece 8): it refuses the
         // project by name rather than failing to read the type.
         mgrs |= map.graticule_type == rustgis_map::graticule::GraticuleType::Mgrs;
@@ -555,6 +563,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (sized, super::SIZE_BY_CAPABILITY),
         (pictures, "picture-markers"),
         (zarr, "zarr-window"),
+        (guided, "label-guide"),
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
         (native, super::NATIVE_COORDINATES),

@@ -309,6 +309,7 @@ fn class(
         show_all: false,
         callout: None,
         square_to: None,
+        guide: None,
         fit: Default::default(),
         abbreviations: Default::default(),
         stretch: None,

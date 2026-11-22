@@ -672,6 +672,17 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   the text fits, with the polygon at least half the text's height either side and the centre
   line trimmed short of its tips. A polygon too short, narrow or sharply bent for its text is
   labelled as automatic (`labels.placement={"layer": "Lakes", "position": "curved"}`).
+- **Guide lines**: a point's or a polygon's label can be curved along a line of another layer,
+  as a range's name follows its ridge (ridge and valley lines from GeoLibre's
+  `ridge_and_valley_vectors`, or lines drawn by hand; the guide layer needn't be shown). Each
+  label follows the guide line with the same value in the given field as its feature has: a
+  polygon's wherever that line runs in view, a point's only when it is within the text's width.
+  With no field, or no such line the text fits along, a polygon's goes on the longest guide line
+  in view whose stretch under the text is inside it, and a point's on the nearest guide line
+  within the text's width.
+  A feature with no guide line its text fits along is labelled as without a guide
+  (`labels.placement={"layer": "Serras", "guide": {"layer": "Cumeadas", "field": "nome"}}`;
+  `"guide": null` removes it).
 - **Other places round points**: a point's label whose place another label takes tries the
   other places round the point, corners first (above right, above left, below right, below left,
   right, left, above, below, leaving out its own), and goes to the first where

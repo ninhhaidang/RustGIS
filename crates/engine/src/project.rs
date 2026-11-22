@@ -104,6 +104,7 @@ pub const CAPABILITIES: &[&str] = &[
     "blank-paper",
     "layout-frame-border",
     NATIVE_COORDINATES,
+    "label-guide",
 ];
 /// A layer or table saved in a coordinate system of its own, not longitude/latitude
 /// (`Dataset::held_in`, #2032 C2d): an older reader would read its coordinates as degrees.

@@ -2666,6 +2666,10 @@ pub struct LabelClass {
     /// [`Perpendicular`](LabelPlacement::Perpendicular) (#2263); none labels it as `Auto`.
     #[serde(default, deserialize_with = "de_square_to", skip_serializing_if = "Option::is_none")]
     pub square_to: Option<SquareTo>,
+    /// The line layer a point's or a polygon's label is curved along (#2262), as a ridge names a
+    /// range: see [`LabelGuide`]; none, or no guide line for the feature, labels it as before.
+    #[serde(default, deserialize_with = "de_guide", skip_serializing_if = "Option::is_none")]
+    pub guide: Option<LabelGuide>,
     /// Along a line placed curved, how the label fits the room its line gives (#2265): off places
     /// it as before; [`LabelFit::Auto`] abbreviates a name that doesn't fit, sets one that takes
     /// more than a third of the line on its straightest stretch, and spreads one over
@@ -3135,6 +3139,30 @@ fn default_square_within() -> f32 {
     20.0
 }
 
+/// The lines point and polygon labels are curved along ([`LabelClass::guide`], #2262): each
+/// feature's label follows the guide line with the same value in `field` as the feature has, else
+/// (no field, or no such line) the longest guide line in view whose stretch under the label is
+/// inside its polygon, or the nearest to its point within the text's width. The guide lines aren't
+/// drawn by this; a feature with no guide line its text fits along is labelled as without one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LabelGuide {
+    /// A line layer, by name.
+    pub layer: String,
+    /// A field both layers have, by name, matching a feature to its guide line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+/// A project file's `guide`: one that doesn't read, or names no layer, is none; its layer's name
+/// trimmed, as the command keeps it; a blank field none.
+fn de_guide<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<LabelGuide>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<LabelGuide>(v)
+        .ok()
+        .map(|g| LabelGuide { layer: g.layer.trim().to_owned(), field: g.field.filter(|f| !f.trim().is_empty()) })
+        .filter(|g| !g.layer.is_empty()))
+}
+
 /// How a label along a line fits the room the line gives ([`LabelClass::fit`], #2265).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -3374,6 +3402,7 @@ impl LabelClass {
             show_all: false,
             callout: None,
             square_to: None,
+            guide: None,
             fit: LabelFit::Off,
             abbreviations: BTreeMap::new(),
             stretch: None,
