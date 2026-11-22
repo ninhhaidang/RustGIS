@@ -14699,6 +14699,44 @@ fn terrain_block_walls_follow_a_polygon_layer() {
     assert!(s.map().view.terrain.is_none());
 }
 
+/// #2605: `map.terrain`'s help names every key the block's parts and the water take, each in its
+/// own part of the text, as the parser lists them when it refuses one it doesn't know (the walls'
+/// object form of #2173 was missing); so do the errors for a block or water that isn't an object.
+#[test]
+fn terrain_help_names_every_block_key() {
+    let mut s = Session::new(Project::default());
+    let help = s.registry.get("map.terrain").map(|c| c.params).unwrap();
+    // The text between `from` and the next `to` after it.
+    let part = |from: &str, to: &str| {
+        let at = help.find(from).unwrap_or_else(|| panic!("no {from} in {help}"));
+        let rest = &help[at..];
+        rest[..rest.find(to).unwrap_or_else(|| panic!("no {to} after {from}"))].to_string()
+    };
+    // The keys an error lists at its end, "(a, b, c)".
+    let listed = |e: &str| -> Vec<String> {
+        let keys = e.rsplit_once('(').and_then(|(_, k)| k.strip_suffix(')')).unwrap_or_else(|| panic!("{e}"));
+        keys.split(", ").map(str::to_string).collect()
+    };
+    for (params, from, to) in [
+        (json!({"block": {"bogus": 1}}), r#""block"?:"#, ", or false to take it off"),
+        (json!({"block": {"walls": {"bogus": 1}}}), r#""walls"?:"#, r#", "shape"?:"#),
+        (json!({"block": {"shape": {"bogus": 1}}}), r#""shape"?:"#, r#", "radius"?:"#),
+        (json!({"block": {"water": {"bogus": 1}}}), r#""water"?: the terrain's water"#, ", or false}"),
+        (json!({"water": {"bogus": 1}}), r#""water"?: water bodies"#, ", or false to take it off"),
+    ] {
+        let e = s.run("map.terrain", &params).unwrap_err();
+        let text = part(from, to);
+        for k in listed(&e) {
+            assert!(text.contains(&format!("\"{k}\"")), "{params}: the help's {from} part doesn't name \"{k}\": {text}");
+        }
+    }
+    for (what, wrong) in [("block", json!({"block": {"bogus": 1}})), ("water", json!({"water": {"bogus": 1}}))] {
+        let keys = listed(&s.run("map.terrain", &wrong).unwrap_err());
+        let e = s.run("map.terrain", &json!({what: 3})).unwrap_err();
+        assert_eq!(listed(e.split_once(", or false").map_or(e.as_str(), |(head, _)| head)), keys, "{e}");
+    }
+}
+
 #[test]
 fn terrain_block_water_needs_the_terrains_water_and_a_depth() {
     // #2317: the water a block's walls cut through, deep by a number or a numeric field.
