@@ -130,6 +130,42 @@ rustgis-cli run --data dem.tif \
   <figcaption>A map exported by <code>rustgis-cli</code>, with no window open.</figcaption>
 </figure>
 
+### Strict runs
+
+Some notices that say a command lost data carry a loss code, such as `dropped.ring`, that stays
+the same however their wording changes. `run --strict` stops after the first command that reports a
+loss with a code that no `--allow` accepts, and exits with status 3, before the commands after it
+and before `--save`. That command, including a failed one, has already run: a file it wrote, or the
+project `--save` wrote when the save itself reported the loss, is already there. Standard error
+lists each loss by code, with how many notices reported it (each notice says how much it lost)
+and what to do about it. Other failures
+still exit with status 1.
+
+Repeat `--allow` to accept the losses a job expects, by kind (`dropped`, `changed`, `approximated`
+or `assumed`) or by code:
+
+```sh
+rustgis-cli run --strict --allow dropped.ring --data storms.rss \
+  --cmd 'share.exportMap={"path":"storms.png"}'
+```
+
+An `--allow` that names no kind or code is refused with status 2, as is `--allow` without
+`--strict`. A code is never renamed or reused, so a job can match on it.
+
+### Loss codes
+
+| Code | What to do |
+|---|---|
+| `dropped.legend` | Use a service with short HTTP or HTTPS addresses for its legend pictures. |
+| `dropped.ring` | Correct the unreadable polygon ring in the source. |
+| `dropped.extra-attributes` | Add fields for the extra attribute values or remove those values from the input. |
+| `dropped.time` | Write to a date-time field to keep the time of day. |
+| `dropped.value` | Correct the value or use a destination field that can hold it. |
+| `dropped.calculation-result` | Correct the expression or check the input rows named in the notice. |
+| `changed.truncated` | Use a decimal field to keep the fractional part. |
+
+Not every loss has a code yet: losses still reported without one don't stop a strict run.
+
 ## Asking the AI assistant
 
 `ask` gives the [AI Assistant](user-guide/assistant.md) one request. It loads data like `run`,

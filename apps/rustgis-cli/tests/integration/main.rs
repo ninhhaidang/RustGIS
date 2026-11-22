@@ -3,4 +3,5 @@
 mod memory_override;
 mod reproducible_exports;
 mod saved_secrets;
+mod strict;
 mod threads;

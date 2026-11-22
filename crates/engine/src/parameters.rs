@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn counted_notice_overflow_warns_without_assigning_a_cause() {
+    fn counted_notice_overflow_keeps_each_cause() {
         use rustgis_data::{diagnostics::Severity, loss::LossCode};
         let mut session = crate::Session::new(crate::Project::default());
         session
@@ -164,12 +164,17 @@ mod tests {
                     source: None,
                 });
                 s.notify_counted(Some(LossCode::DroppedLegend), "{n} omitted legends", 2);
+                s.notify_counted(Some(LossCode::DroppedLegend), "{n} other omitted legends", 1);
+                s.notify_counted(None, "{n} other advisories", 4);
                 Ok(Value::Null)
             })
             .unwrap();
-        let overflow = session.notices.last().unwrap();
-        assert_eq!(overflow.text, "2 further counted notice occurrence(s) could not be described");
-        assert_eq!(overflow.severity, Severity::Warning);
-        assert_eq!(overflow.loss(), None);
+        // Past the cap each cause still says its code, so a strict run sees it.
+        let [.., legends, advisories] = session.notices.as_slice() else { panic!("expected the overflow notices") };
+        assert_eq!(legends.text, "3 further dropped.legend occurrence(s) could not be described");
+        assert_eq!((legends.severity, legends.loss()), (Severity::Warning, Some(LossCode::DroppedLegend)));
+        assert_eq!(advisories.text, "4 further counted notice occurrence(s) could not be described");
+        assert_eq!((advisories.severity, advisories.loss()), (Severity::Warning, None));
+        assert_eq!(session.losses_given(), &[(LossCode::DroppedLegend, 1)]);
     }
 }

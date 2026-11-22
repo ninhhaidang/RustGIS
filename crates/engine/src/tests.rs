@@ -647,6 +647,26 @@ fn scoped_table_writes_need_prepared_worker_results() {
 }
 
 #[test]
+fn losses_given_counts_what_the_notice_queue_no_longer_keeps() {
+    use rustgis_data::loss::LossCode;
+    let mut s = Session::new(Project::default());
+    s.notify_loss(LossCode::DroppedRing, String::from("a ring").into());
+    for i in 0..300 {
+        s.notify(format!("notice {i}"), false);
+    }
+    assert!(s.notices_since(0).iter().all(|n| n.loss().is_none()), "the loss notice left the queue");
+    assert_eq!(s.losses_given(), &[(LossCode::DroppedRing, 1)]);
+    // A loss a failed command reported is withdrawn with what it changed.
+    let failed = s.guarded("Lose then fail", true, |s| {
+        s.notify_loss(LossCode::DroppedRing, String::from("another ring").into());
+        s.notify_loss(LossCode::DroppedValue, String::from("a value").into());
+        Err("failed after the loss".into())
+    });
+    assert!(failed.is_err());
+    assert_eq!(s.losses_given(), &[(LossCode::DroppedRing, 1), (LossCode::DroppedValue, 0)]);
+}
+
+#[test]
 fn a_standalone_table_is_edited_with_the_edit_commands() {
     let mut s = world();
     s.run("layer.addDataText", &json!({"fileName": "sites.csv", "text": "id,street,visits\n1,Champ de Mars,3\n2,Rue Cler,5\n"})).unwrap();
