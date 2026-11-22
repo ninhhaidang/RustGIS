@@ -1184,6 +1184,8 @@ struct Out {
     lines: Dataset,
     polygons: Dataset,
     count: usize,
+    /// One flag per emitted feature, by geometry layer; counted only after CRS filtering.
+    varying_z: [Vec<bool>; 3],
     capped: bool,
     cut: usize,
     /// Entity placements visited so far ([`MAX_STEPS`]), and whether the budget ran out.
@@ -1223,6 +1225,16 @@ fn xy(p: P3) -> Coord {
 
 fn finite(ps: &[P3]) -> bool {
     ps.iter().all(|p| p.iter().all(|v| v.is_finite()))
+}
+
+/// Whether retained, placed vertices have heights the single elevation attribute cannot hold.
+/// Compare after all object/block transforms: a placement may flatten previously varying Z.
+fn has_varying_z<'a>(mut points: impl Iterator<Item = &'a P3>, first: Option<P3>, placement_z: f64) -> bool {
+    let Some(first) = first else { return false };
+    // Equal source heights can round differently during spline evaluation. Include the placement's
+    // Z offset so cancellation cannot collapse the comparison scale near zero.
+    let scale = first[2].abs().max(placement_z.abs());
+    points.any(|p| (p[2] - first[2]).abs() > (64.0 * f64::EPSILON) * p[2].abs().max(scale))
 }
 
 /// Draws entities through `xf` (a block's placement), into `out`.
@@ -1373,20 +1385,30 @@ fn emit(
         }
         out.vertices += n;
         let tr = |ps: &[P3]| -> Vec<P3> { ps.iter().map(|p| xf.apply(*p)).collect() };
-        let (geometry, first, target) = match &e.shape {
+        let (geometry, first, target, varying_z) = match &e.shape {
             Shape::Point(p) => {
                 let p = xf.apply(*p);
-                (finite(&[p]).then(|| Geometry::Point(xy(p))), Some(p), 0)
+                (finite(&[p]).then(|| Geometry::Point(xy(p))), Some(p), 0, false)
             }
             Shape::Line(ps) => {
                 let ps = tr(ps);
                 let ok = ps.len() >= 2 && finite(&ps);
-                (ok.then(|| Geometry::Line(vec![ps.iter().map(|p| xy(*p)).collect()])), ps.first().copied(), 1)
+                (
+                    ok.then(|| Geometry::Line(vec![ps.iter().map(|p| xy(*p)).collect()])),
+                    ps.first().copied(),
+                    1,
+                    has_varying_z(ps.iter(), ps.first().copied(), xf.0[2][3]),
+                )
             }
             Shape::Polygon(ps) => {
                 let ps = tr(ps);
                 let ok = ps.len() >= 4 && finite(&ps);
-                (ok.then(|| Geometry::Polygon(vec![vec![ps.iter().map(|p| xy(*p)).collect()]])), ps.first().copied(), 2)
+                (
+                    ok.then(|| Geometry::Polygon(vec![vec![ps.iter().map(|p| xy(*p)).collect()]])),
+                    ps.first().copied(),
+                    2,
+                    has_varying_z(ps.iter(), ps.first().copied(), xf.0[2][3]),
+                )
             }
             Shape::Rings(rings) => {
                 let rings: Vec<Vec<P3>> = rings.iter().map(|r| tr(r)).filter(|r| finite(r)).collect();
@@ -1399,7 +1421,14 @@ fn emit(
                 } else {
                     crate::mapinfo::region(rings.iter().map(|r| r.iter().map(|p| xy(*p)).collect()).collect())
                 };
-                (g, first, 2)
+                // Count only rings the geometry builder keeps: polyfaces need four vertices;
+                // region() also closes open rings, then requires four. Keep the original first
+                // point above: its Z is the elevation attribute even if its ring was omitted.
+                let kept = rings.iter().filter(|r| {
+                    r.len() >= 4 || (e.kind != "POLYLINE" && r.len() == 3 && r.first().map(|p| xy(*p)) != r.last().map(|p| xy(*p)))
+                });
+                let varying = has_varying_z(kept.flatten(), first, xf.0[2][3]);
+                (g, first, 2, varying)
             }
             Shape::Insert(_) => continue,
         };
@@ -1425,6 +1454,9 @@ fn emit(
             _ => &mut out.polygons,
         };
         ds.push_next(Some(geometry), attrs);
+        if let Some(flags) = out.varying_z.get_mut(target) {
+            flags.push(varying_z);
+        }
         out.count += 1;
     }
     Ok(())
@@ -1452,6 +1484,7 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         lines: Dataset::new(format!("{name} lines"), GeometryType::Polyline, fields()),
         polygons: Dataset::new(format!("{name} polygons"), GeometryType::Polygon, fields()),
         count: 0,
+        varying_z: Default::default(),
         capped: false,
         cut: 0,
         steps: 0,
@@ -1522,7 +1555,8 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         None => None,
     };
     let mut layers: Vec<(Dataset, ReadReport)> = Vec::new();
-    for mut ds in [out.points, out.lines, out.polygons] {
+    let mut varying_count = 0usize;
+    for (mut ds, flags) in [out.points, out.lines, out.polygons].into_iter().zip(out.varying_z) {
         if ds.features.is_empty() {
             continue;
         }
@@ -1533,11 +1567,13 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
             // longitude/latitude.
             ds.held_in = *c;
             let mut lost = 0usize;
-            for f in &mut ds.features {
+            for (f, varying) in ds.features.iter_mut().zip(&flags) {
                 crate::progress::check()?;
                 if let Some(g) = f.geometry.take() {
                     if crate::io::places_in_lonlat(&g, t) {
                         f.geometry = Some(g);
+                        ds.zm_dropped |= *varying;
+                        varying_count += usize::from(*varying);
                     } else {
                         lost += 1;
                     }
@@ -1548,7 +1584,18 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
                 rep.messages.push(format!("{lost} features couldn't be converted from {}", c.label()));
             }
         }
+        if transformer.is_none() {
+            let count = flags.iter().filter(|&&varying| varying).count();
+            ds.zm_dropped = count > 0;
+            varying_count += count;
+        }
         layers.push((ds, rep));
+    }
+    if varying_count > 0
+        && let Some((_, report)) = layers.first_mut()
+    {
+        let subject = if varying_count == 1 { "feature" } else { "features" };
+        report.messages.push(format!("{varying_count} {subject} lost varying Z coordinates; only the elevation attribute is kept"));
     }
     if layers.is_empty() {
         return Err(DataError::Format(match opts.layer {
@@ -2153,13 +2200,13 @@ mod tests {
         assert_eq!(all[0].0.value(0, i), &Value::Bool(false));
     }
 
-    /// A large polyline in a block inserted as a 100 × 100 array: coordinates are bounded in total,
-    /// not only per entity.
+    /// A tilted polyline in a block inserted as a 100 × 100 array: coordinates are bounded in total,
+    /// not only per entity, and height losses count only copies that were kept.
     #[test]
     fn total_coordinates_are_bounded() {
-        let mut text = String::from("  0\nSECTION\n  2\nBLOCKS\n  0\nBLOCK\n  2\nBIG\n  0\nLWPOLYLINE\n");
+        let mut text = String::from("  0\nSECTION\n  2\nBLOCKS\n  0\nBLOCK\n  2\nBIG\n  0\nLWPOLYLINE\n210\n1\n220\n0\n230\n1\n");
         for i in 0..200_000 {
-            text.push_str(&format!(" 10\n{i}\n 20\n0\n"));
+            text.push_str(&format!(" 10\n0\n 20\n{i}\n"));
         }
         text.push_str(
             "  0\nENDBLK\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n  0\nINSERT\n  2\nBIG\n 70\n100\n 71\n100\n  0\nENDSEC\n  0\nEOF\n",
@@ -2178,6 +2225,11 @@ mod tests {
             .sum();
         assert!(held <= MAX_TOTAL_VERTICES, "{held}");
         assert_eq!(l[0].0.features.len(), MAX_TOTAL_VERTICES / 200_000);
+        assert!(l[0].0.zm_dropped);
+        assert_eq!(
+            l[0].1.messages.iter().filter(|m| m.contains("varying Z")).collect::<Vec<_>>(),
+            [&format!("{} features lost varying Z coordinates; only the elevation attribute is kept", l[0].0.features.len())]
+        );
         assert!(l[0].1.messages.iter().any(|m| m.contains("coordinates")), "{:?}", l[0].1.messages);
     }
 
@@ -2404,6 +2456,181 @@ mod tests {
         let e = read("blocks.dxf", &only_block, &Options { blocks: false, ..Options::default() }).unwrap_err().to_string();
         assert!(e.contains("\"blocks\": true"), "{e}");
         assert_eq!(read("blocks.dxf", &only_block, &Options::default()).unwrap()[0].0.features.len(), 1);
+    }
+
+    /// Counts placements after their transforms and filters, leaving constant elevations quiet.
+    #[test]
+    fn varying_heights_follow_retained_placements() {
+        let text = "0 SECTION 2 BLOCKS
+            0 BLOCK 2 B 0 LINE 8 0 10 0 20 0 30 5 11 1 21 1 31 9 0 ENDBLK
+            0 ENDSEC 0 SECTION 2 ENTITIES
+            0 INSERT 8 Keep 2 B 10 10 20 20 30 3 43 2 70 2 44 4
+            0 INSERT 8 Keep 2 B 10 20 20 30 30 3 43 0
+            0 LINE 8 Other 10 0 20 0 30 5 11 1 21 1 31 9
+            0 LINE 8 Keep 67 1 10 0 20 0 30 5 11 1 21 1 31 9
+            0 POINT 8 Keep 10 1 20 2 30 5
+            0 ENDSEC 0 EOF"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let opts = Options { layer: Some("Keep"), ..Options::default() };
+        let layers = read("placed.dxf", text.as_bytes(), &opts).unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].0.features.len(), 1);
+        assert!(!layers[0].0.zm_dropped);
+        let lines = &layers[1].0;
+        assert_eq!(lines.features.len(), 3);
+        assert!(lines.zm_dropped);
+        for (i, (x, y, z)) in [(10.0, 20.0, 13.0), (14.0, 20.0, 13.0), (20.0, 30.0, 3.0)].into_iter().enumerate() {
+            assert_eq!(lines.features[i].geometry, Some(Geometry::Line(vec![vec![Coord::new(x, y), Coord::new(x + 1.0, y + 1.0)]])));
+            assert_eq!(lines.value(i, 0), &Value::Text("Keep".into()));
+            assert_eq!(lines.value(i, 7), &Value::Text("B".into()));
+            assert_eq!(lines.value(i, 8), &Value::Float(z));
+        }
+        let notes: Vec<&str> =
+            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("varying Z")).map(String::as_str).collect();
+        assert_eq!(notes, ["2 features lost varying Z coordinates; only the elevation attribute is kept"]);
+        let no_blocks = read("placed.dxf", text.as_bytes(), &Options { blocks: false, ..opts }).unwrap();
+        assert_eq!(no_blocks.len(), 1);
+        assert!(no_blocks.iter().all(|(ds, r)| !ds.zm_dropped && r.messages.iter().all(|m| !m.contains("varying Z"))));
+    }
+
+    /// Rational spline noise stays quiet even when a block's offsets cancel its height.
+    #[test]
+    fn constant_spline_height_stays_quiet() {
+        for (height, changed, base, offset, elevation) in
+            [("0.1", "0.1000000001", "0", "0", 0.1), ("500.1", "500.1000000001", "500", "-0.1", 0.0)]
+        {
+            for varying in [false, true] {
+                let end = if varying { changed } else { height };
+                let bytes = dxf(&[
+                    (0, "SECTION"),
+                    (2, "BLOCKS"),
+                    (0, "BLOCK"),
+                    (2, "B"),
+                    (10, "0"),
+                    (20, "0"),
+                    (30, base),
+                    (0, "SPLINE"),
+                    (71, "3"),
+                    (40, "0"),
+                    (40, "0"),
+                    (40, "0"),
+                    (40, "0"),
+                    (40, "1"),
+                    (40, "1"),
+                    (40, "1"),
+                    (40, "1"),
+                    (41, "1"),
+                    (41, "0.5"),
+                    (41, "2"),
+                    (41, "1"),
+                    (10, "0"),
+                    (20, "0"),
+                    (30, height),
+                    (10, "1"),
+                    (20, "1"),
+                    (30, height),
+                    (10, "2"),
+                    (20, "1"),
+                    (30, height),
+                    (10, "3"),
+                    (20, "0"),
+                    (30, end),
+                    (0, "ENDBLK"),
+                    (0, "ENDSEC"),
+                    (0, "SECTION"),
+                    (2, "ENTITIES"),
+                    (0, "INSERT"),
+                    (2, "B"),
+                    (10, "0"),
+                    (20, "0"),
+                    (30, offset),
+                    (0, "ENDSEC"),
+                    (0, "EOF"),
+                ]);
+                let layers = read("spline.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+                assert_eq!(layers.len(), 1);
+                let (ds, report) = &layers[0];
+                assert_eq!(ds.features.len(), 1);
+                assert_eq!(ds.value(0, 8), &Value::Float(elevation));
+                assert_eq!(ds.zm_dropped, varying, "height={height}, offset={offset}: {:?}", report.messages);
+                assert_eq!(report.skipped, 0);
+                let expected =
+                    if varying { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
+                assert_eq!(report.messages, expected);
+                let Some(Geometry::Line(parts)) = &ds.features[0].geometry else { panic!("spline line") };
+                assert_eq!(parts[0].first(), Some(&Coord::new(0.0, 0.0)));
+                assert_eq!(parts[0].last(), Some(&Coord::new(3.0, 0.0)));
+            }
+        }
+    }
+
+    /// The corpus pair retains all XY/attributes, but the second height cannot fit in elevation.
+    #[test]
+    fn varying_line_height_is_reported() {
+        for end in ["5", "9"] {
+            let d = dxf(&[
+                (0, "SECTION"),
+                (2, "ENTITIES"),
+                (0, "LINE"),
+                (8, "0"),
+                (10, "0"),
+                (20, "0"),
+                (30, "5"),
+                (11, "1"),
+                (21, "1"),
+                (31, end),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let layers = read("a.dxf", &d, &Options::default()).unwrap();
+            assert_eq!(layers.len(), 1);
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.features.len(), 1);
+            assert_eq!(ds.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]])));
+            assert_eq!(
+                ds.features[0].attrs,
+                [
+                    Value::Text("0".into()),
+                    Value::Text("LINE".into()),
+                    Value::Int(7),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Float(5.0),
+                    Value::Bool(false)
+                ]
+            );
+            assert_eq!(report.skipped, 0);
+            assert_eq!(
+                report.messages[0],
+                "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are"
+            );
+            assert_eq!(report.messages.len(), if end == "9" { 2 } else { 1 });
+            if end == "9" {
+                assert_eq!(report.messages[1], "1 feature lost varying Z coordinates; only the elevation attribute is kept");
+            }
+        }
+    }
+
+    /// A wholly rejected feature loses its geometry, not just heights in retained output.
+    #[test]
+    fn varying_heights_exclude_crs_rejected_features() {
+        let text = "0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 30 5
+            0 LINE 10 0 20 100 30 5 11 1 21 100 31 9 0 ENDSEC 0 EOF"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let layers = read("crs.dxf", text.as_bytes(), &Options { crs: Some(Crs::from_epsg(4269).unwrap()), ..Options::default() }).unwrap();
+        assert_eq!(layers.iter().map(|(ds, _)| ds.features.len()).sum::<usize>(), 1);
+        assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Point(Coord::new(0.0, 0.0))));
+        assert!(layers.iter().all(|(ds, r)| !ds.zm_dropped && r.messages.iter().all(|m| !m.contains("varying Z"))));
+        let messages: Vec<&str> = layers.iter().flat_map(|(_, r)| &r.messages).map(String::as_str).collect();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].starts_with("1 features couldn't be converted from "), "{messages:?}");
     }
 
     #[test]

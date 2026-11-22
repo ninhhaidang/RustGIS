@@ -370,7 +370,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.dxf",
             dxf(&["0 LINE 8 0 10 0 20 0 30 5 11 1 21 1 31 5"]),
             dxf(&["0 LINE 8 0 10 0 20 0 30 5 11 1 21 1 31 9"]),
-            Silent("one elevation per entity is kept, the first vertex's"),
+            Imported("1 feature lost varying Z coordinates; only the elevation attribute is kept"),
         ),
         case(
             "DXF: an unreadable polyline vertex",
@@ -685,6 +685,33 @@ fn check_workbook(ds: &rustgis_engine::data::Dataset, short_cells: bool) -> std:
     Ok(())
 }
 
+/// The height pair keeps the same XY and all ten DXF attributes; only the second Z is lost.
+fn check_dxf_height(ds: &rustgis_engine::data::Dataset) -> std::io::Result<()> {
+    use rustgis_engine::data::{Geometry, Value};
+    use rustgis_engine::geom::Coord;
+    let names: Vec<&str> = ds.fields.iter().map(|f| f.name.as_str()).collect();
+    if names != ["layer", "entity", "color", "linetype", "text", "height", "rotation", "block", "elevation", "paperspace"]
+        || ds.features.len() != 1
+        || ds.features[0].geometry != Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]]))
+        || ds.features[0].attrs
+            != [
+                Value::Text("0".into()),
+                Value::Text("LINE".into()),
+                Value::Int(7),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Float(5.0),
+                Value::Bool(false),
+            ]
+    {
+        return Err(std::io::Error::other(format!("DXF height fixture retained unexpected data: {ds:?}")));
+    }
+    Ok(())
+}
+
 /// The PBF variants differ only in the discarded dimension; fractional XY and attributes survive.
 fn check_feature_pbf(ds: &rustgis_engine::data::Dataset, lossy: bool) -> std::io::Result<()> {
     use rustgis_engine::data::{Field, FieldType, Geometry, GeometryType, Value};
@@ -808,6 +835,21 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
             return Err(std::io::Error::other(format!("feature-service PBF has the wrong native report: {report:?}")));
         }
     }
+    let dxf_lossy = file == "a.dxf" && content == dxf(&["0 LINE 8 0 10 0 20 0 30 5 11 1 21 1 31 9"]).as_bytes();
+    let dxf_height = dxf_lossy || (file == "a.dxf" && content == dxf(&["0 LINE 8 0 10 0 20 0 30 5 11 1 21 1 31 5"]).as_bytes());
+    let mut dxf_messages = vec![
+        "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are".to_string(),
+    ];
+    if dxf_lossy {
+        dxf_messages.push("1 feature lost varying Z coordinates; only the elevation attribute is kept".into());
+    }
+    if dxf_height {
+        let native = rustgis_engine::data::dxf::read(file, content, &Default::default()).map_err(std::io::Error::other)?;
+        if native.len() != 1 || native[0].1.skipped != 0 || native[0].1.messages != dxf_messages {
+            return Err(std::io::Error::other(format!("DXF height native report: {native:?}")));
+        }
+        check_dxf_height(&native[0].0)?;
+    }
     let mut s = Session::new(Project::default());
     // Layers and standalone tables (what a file without geometry adds).
     let held = |s: &Session| s.map().layers.len() + s.project.tables.len();
@@ -865,6 +907,16 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         // Require the exact loss count and subject, and no additional notice.
         if notices.iter().map(|n| n.text.clone()).collect::<Vec<_>>() != pbf_messages {
             return Err(std::io::Error::other(format!("feature-service PBF has the wrong command notices: {notices:?}")));
+        }
+    }
+    if dxf_height {
+        if s.map().layers.len() != 1 || !s.project.tables.is_empty() {
+            return Err(std::io::Error::other("DXF height fixture didn't add exactly one layer"));
+        }
+        check_dxf_height(&s.map().layers[0].dataset)?;
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        if said != dxf_messages {
+            return Err(std::io::Error::other(format!("DXF height command notices: {said:?}")));
         }
     }
     let said = s.notices_since(mark).iter().map(|n| (n.text.clone(), n.loss())).collect();
