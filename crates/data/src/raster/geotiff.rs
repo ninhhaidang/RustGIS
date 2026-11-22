@@ -752,9 +752,12 @@ fn samples<R: Read + Seek>(dec: &mut Decoder<R>) -> usize {
 /// undone, corrupting the colours (https://github.com/image-rs/image-tiff/issues/425); as grey,
 /// every sample is decoded. The only change is the PhotometricInterpretation value (→ 1) in each
 /// such image's IFD, in memory.
+///
+/// It also shows a SampleFormat of 4 ("undefined", which CBERS-4 scenes have) as 1, unsigned, as
+/// libtiff and GDAL read it: the `tiff` crate refuses to decode it (#2593).
 pub(crate) struct Unpaletted<R> {
     inner: R,
-    /// Where each patched image's PhotometricInterpretation value is, and what to show there.
+    /// Where each patched PhotometricInterpretation or SampleFormat value is, and what to show there.
     patches: Vec<(u64, [u8; 2])>,
     /// Whether the first image (the full one) is a palette image.
     first_palette: bool,
@@ -764,15 +767,16 @@ pub(crate) struct Unpaletted<R> {
     pos: u64,
 }
 
-/// Most images and IFD entries looked at for palette images.
+/// Most images and IFD entries looked at for palette images, and SampleFormat values in an image.
 const MAX_IFDS: usize = 64;
 const MAX_ENTRIES: u64 = 4096;
 
 /// Where the palette images' PhotometricInterpretation values are, and those of RGB images with
 /// samples past the colour ones (which the decoder would leave out, or refuse), walking the IFD
 /// chain (classic and BigTIFF). A file it can't walk has none: the decoder reports what's wrong.
-/// Returns the patches, whether the first image is a palette image, and whether it is such an RGB
-/// image.
+/// Each SampleFormat value of 4 (undefined) is patched to 1 too, in the entry or in the array it
+/// points to (#2593). Returns the patches, whether the first image is a palette image, and whether
+/// it is such an RGB image.
 fn palette_patches<R: Read + Seek>(r: &mut R) -> (Vec<(u64, [u8; 2])>, bool, bool) {
     use std::io::SeekFrom;
     let mut patches = Vec::new();
@@ -825,31 +829,44 @@ fn palette_patches<R: Read + Seek>(r: &mut R) -> (Vec<(u64, [u8; 2])>, bool, boo
             let mut entries = vec![0u8; usize::try_from(n * entry_len).ok()?];
             r.read_exact(&mut entries).ok()?;
             let value_at = if big { 12 } else { 8 };
-            let grey = if little { [1, 0] } else { [0, 1] };
+            // The SHORT 1: grey as a PhotometricInterpretation, unsigned as a SampleFormat.
+            let one = if little { [1, 0] } else { [0, 1] };
             // PhotometricInterpretation (262): where its value is, and the value; SamplesPerPixel
-            // (277); the first ExtraSamples (338) value, when it is inline. Each a SHORT, as the
-            // decoder itself requires of them.
-            let (mut photometric, mut samples, mut extra) = (None, 1u16, None);
+            // (277); the first ExtraSamples (338) value, when it is inline; SampleFormat (339):
+            // where its values are (in the entry when they fit there, else where it points) and
+            // how many. Each a SHORT, as the decoder itself requires of them.
+            let (mut photometric, mut samples, mut extra, mut format) = (None, 1u16, None, None);
             for (i, e) in entries.chunks(entry_len as usize).enumerate() {
                 let short = u16_(e.get(2..)?)? == 3;
+                let entry_value = ifd + count_len + i as u64 * entry_len + value_at as u64;
                 match u16_(e)? {
-                    262 if short => {
-                        photometric = Some((ifd + count_len + i as u64 * entry_len + value_at as u64, u16_(e.get(value_at..)?)?))
-                    }
+                    262 if short => photometric = Some((entry_value, u16_(e.get(value_at..)?)?)),
                     277 if short => samples = u16_(e.get(value_at..)?)?,
                     338 if short => extra = u16_(e.get(value_at..)?),
+                    339 if short => {
+                        let count = if big { u64_(e.get(4..)?)? } else { u64::from(u32_(e.get(4..)?)?) };
+                        // Two bytes a value: four fit in a BigTIFF entry, two in a classic one.
+                        let at = if count <= if big { 4 } else { 2 } {
+                            entry_value
+                        } else if big {
+                            u64_(e.get(value_at..)?)?
+                        } else {
+                            u64::from(u32_(e.get(value_at..)?)?)
+                        };
+                        format = (count <= MAX_ENTRIES).then_some((at, count));
+                    }
                     _ => {}
                 }
             }
             match photometric {
                 Some((at, 3)) => {
-                    patches.push((at, grey));
+                    patches.push((at, one));
                     first |= k == 0;
                 }
                 // An RGB image whose fourth sample isn't alpha, or with five or more: RGBI
                 // orthophotos, multispectral images.
                 Some((at, 2)) if samples > 4 || (samples == 4 && !matches!(extra, Some(1 | 2))) => {
-                    patches.push((at, grey));
+                    patches.push((at, one));
                     first_wide |= k == 0;
                 }
                 _ => {}
@@ -857,6 +874,18 @@ fn palette_patches<R: Read + Seek>(r: &mut R) -> (Vec<(u64, [u8; 2])>, bool, boo
             let mut next = [0u8; 8];
             r.read_exact(&mut next[..next_len]).ok()?;
             ifd = if big { u64_(&next)? } else { u64::from(u32_(&next)?) };
+            // Each SampleFormat value of 4 (undefined) is shown as 1, unsigned, as libtiff and GDAL
+            // read it (#2593). Values that can't be read are left to the decoder.
+            if let Some((at, count)) = format {
+                let mut values = vec![0u8; count as usize * 2];
+                if r.seek(SeekFrom::Start(at)).is_ok() && r.read_exact(&mut values).is_ok() {
+                    for (j, v) in values.as_chunks::<2>().0.iter().enumerate() {
+                        if u16_(v.as_slice()) == Some(4) {
+                            patches.push((at + 2 * j as u64, one));
+                        }
+                    }
+                }
+            }
         }
         Some(())
     };
@@ -3392,6 +3421,150 @@ mod tests {
                 want[photo_at..photo_at + 2].copy_from_slice(&short(1));
                 assert_eq!(patched, want);
                 assert_eq!(r.inner.into_inner(), original);
+            }
+        }
+    }
+
+    /// A SampleFormat of 4 (undefined) is shown to the decoder as 1, unsigned (#2593): in the
+    /// entry when its values fit there, else in the array it points to, in both byte orders and
+    /// both TIFF sizes. The file itself is unchanged.
+    #[test]
+    fn void_sample_format_patches_handle_both_byte_orders_and_tiff_sizes() {
+        for big in [false, true] {
+            for little in [false, true] {
+                for samples in [1u16, 3, 5] {
+                    let short = |v: u16| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+                    let long = |v: u32| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+                    let wide = |v: u64| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+                    let count = |v: usize| if big { wide(v as u64).to_vec() } else { long(v as u32).to_vec() };
+                    let mut bytes = if little { b"II".to_vec() } else { b"MM".to_vec() };
+                    bytes.extend(short(if big { 43 } else { 42 }));
+                    let at = if big { 16 } else { 8 };
+                    if big {
+                        bytes.extend(short(8));
+                        bytes.extend(short(0));
+                        bytes.extend(wide(at));
+                        bytes.extend(wide(3));
+                    } else {
+                        bytes.extend(long(at as u32));
+                        bytes.extend(short(3));
+                    }
+                    let (entry_len, field) = if big { (20, 8) } else { (12, 4) };
+                    let entries_at = bytes.len();
+                    for (tag, value) in [(262, 1), (277, samples)] {
+                        bytes.extend(short(tag));
+                        bytes.extend(short(3));
+                        bytes.extend(count(1));
+                        bytes.extend(short(value));
+                        bytes.extend(vec![0; field - 2]);
+                    }
+                    // SampleFormat: 4 for each sample, in the entry or after the IFD.
+                    let n = usize::from(samples);
+                    let values: Vec<u8> = (0..n).flat_map(|_| short(4)).collect();
+                    let inline = 2 * n <= field;
+                    let array_at = entries_at + 3 * entry_len + field;
+                    bytes.extend(short(339));
+                    bytes.extend(short(3));
+                    bytes.extend(count(n));
+                    if inline {
+                        bytes.extend(&values);
+                        bytes.extend(vec![0; field - values.len()]);
+                    } else {
+                        bytes.extend(count(array_at));
+                    }
+                    bytes.extend(vec![0; field]);
+                    if !inline {
+                        bytes.extend(&values);
+                    }
+                    let original = bytes.clone();
+                    let mut r = Unpaletted::new(std::io::Cursor::new(bytes)).unwrap();
+                    assert!(!r.first_is_wide_rgb() && !r.first_is_palette());
+                    let mut patched = Vec::new();
+                    // Reading a byte at a time exercises patches split between reads.
+                    let mut byte = [0u8; 1];
+                    while r.read(&mut byte).unwrap() != 0 {
+                        patched.push(byte[0]);
+                    }
+                    let mut want = original.clone();
+                    let first = if inline { entries_at + 2 * entry_len + if big { 12 } else { 8 } } else { array_at };
+                    for j in 0..n {
+                        want[first + 2 * j..first + 2 * j + 2].copy_from_slice(&short(1));
+                    }
+                    assert_eq!(patched, want, "big {big}, little {little}, {samples} samples");
+                    assert_eq!(r.inner.into_inner(), original);
+                }
+            }
+        }
+    }
+
+    /// Sets every SampleFormat value in a little-endian classic TIFF to `format`, in the entry or in
+    /// the array it points to, each image's; returns how many it set.
+    fn set_sample_format(file: &mut [u8], format: u16) -> usize {
+        let short = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+        let long = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize;
+        let (mut ifd, mut set) = (long(file, 4), 0);
+        while ifd != 0 {
+            let n = usize::from(short(file, ifd));
+            let entries: Vec<usize> = (0..n).map(|i| ifd + 2 + 12 * i).filter(|e| short(file, *e) == 339).collect();
+            for e in entries {
+                let count = long(file, e + 4);
+                let at = if count <= 2 { e + 8 } else { long(file, e + 8) };
+                for j in 0..count {
+                    file[at + 2 * j..at + 2 * j + 2].copy_from_slice(&format.to_le_bytes());
+                    set += 1;
+                }
+            }
+            ifd = long(file, ifd + 2 + 12 * n);
+        }
+        set
+    }
+
+    /// A GeoTIFF whose SampleFormat is 4, undefined (the CBERS-4 scenes of the Brazil Data Cube),
+    /// reads as unsigned whole numbers, as libtiff and GDAL read it (#2593): the same type and
+    /// values as the file with 1. A one-band 8-bit Deflate image in strips; a tiled three-band one
+    /// with overviews, whose SampleFormat values are arrays apart from their entries, whole and a
+    /// tile at a time as a COG window reads it.
+    #[test]
+    fn a_void_sample_format_reads_as_unsigned() {
+        use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
+        let mut strips = Vec::new();
+        TiffEncoder::new(std::io::Cursor::new(&mut strips))
+            .unwrap()
+            .with_compression(Compression::Deflate(DeflateLevel::Balanced))
+            .write_image::<colortype::Gray8>(2, 2, &[3, 70, 140, 255])
+            .unwrap();
+        let (w, h) = (600u32, 600u32);
+        let bands = (0..3).map(|b| (0..w * h).map(|i| ((i + 40 * b) % 256) as f32).collect()).collect();
+        let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 };
+        let rgb = Raster::new("rgb", w, h, bands, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "Byte").unwrap();
+        let tiled = crate::raster::cogwrite::write(&rgb, 0).unwrap();
+        for (name, file, values) in [("strips", strips, 1), ("tiled", tiled, 6)] {
+            let mut void = file.clone();
+            assert!(set_sample_format(&mut void, 4) >= values, "{name}: SampleFormat set");
+            let want = read(std::io::Cursor::new(&file), name).unwrap();
+            let got = read(std::io::Cursor::new(&void), name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((got.data_type.as_str(), got.band_count()), (want.data_type.as_str(), want.band_count()), "{name}");
+            assert!(got.bands.iter().zip(&want.bands).all(|(a, b)| a.data == b.data), "{name}: the values");
+            if name == "strips" {
+                continue;
+            }
+            // A tile at a time, each level, as a COG window reads it. Compared bit for bit: an
+            // overview's tile past its image's edge is NaN.
+            let layout = |file: &[u8]| match super::super::cog::layout(&Sparse::default().with(0, file.to_vec())).unwrap() {
+                super::super::cog::Parse::Done(l) => l,
+                _ => panic!("{name}: not read a tile at a time"),
+            };
+            let (l, lv) = (layout(&void), layout(&file));
+            assert!(l.levels.len() > 1, "{name}: overviews");
+            for level in 0..l.levels.len() {
+                let (at, n) = (l.levels[level].offsets[0] as usize, l.levels[level].counts[0] as usize);
+                let tile = |file: &[u8], l: &super::super::cog::Layout| {
+                    let bands =
+                        super::super::cog::decode_tile(&Sparse::default().with(0, file.to_vec()), l, level, 0, file[at..at + n].to_vec())
+                            .unwrap_or_else(|e| panic!("level {level}: {e}"));
+                    bands.into_iter().map(|b| b.into_iter().map(f32::to_bits).collect::<Vec<u32>>()).collect::<Vec<_>>()
+                };
+                assert_eq!(tile(&void, &l), tile(&file, &lv), "level {level}");
             }
         }
     }
