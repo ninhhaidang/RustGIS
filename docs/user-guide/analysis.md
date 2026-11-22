@@ -228,6 +228,11 @@ larger limit, or none, lets through.
 From the command line or a script (`gp.run`), a built-in tool's parameter with a list of choices, such as Buffer's
 units, takes one of them in any letter case (`"meters"` for `Meters`); any other value is an error
 that names the choices (Buffer's units no longer take the abbreviations `m`, `mi` or `metres`).
+A parameter the tool doesn't have is said, not dropped without a word, since the tool then uses
+its default: `"unit": "Miles"` for `units` gives *Buffer ignores 'unit' (it reads input, distance,
+units, dissolve, output)*, and the buffers are in kilometers. `gp.run`, a model's steps and
+`gp.batch` all say so, and `model.validate` lists it under `warnings`, which don't keep the model
+from running.
 Buffer and Select Layer By Location accept **Kilometers**, **Meters**, **Miles** and **Feet**. Feet are international feet
 (exactly 0.3048 metres): a 500-foot notification radius is 152.4 metres on the ground.
 

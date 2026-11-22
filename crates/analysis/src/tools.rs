@@ -7814,10 +7814,7 @@ fn zonal_stats(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 
 /// [`zonal_stats`] on `threads` threads (none: as many as pay off and the masks' memory allows).
 fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
-    let r_name = {
-        let n = s(p, "raster");
-        if n.is_empty() { s(p, "layer") } else { n }
-    };
+    let r_name = s(p, "raster");
     if r_name.is_empty() {
         return Err("parameter 'raster' is required".into());
     }
@@ -7825,7 +7822,7 @@ fn zonal_stats_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<
     let r = r_input.raster;
     r.require_coordinates()?;
 
-    let poly_param = if !s(p, "polygons").is_empty() { "polygons" } else { "input" };
+    let poly_param = "polygons";
     let poly_ds = input(inp, p, poly_param)?;
     if poly_ds.geometry_type != GeometryType::Polygon {
         return Err(format!(

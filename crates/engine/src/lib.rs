@@ -373,6 +373,18 @@ fn param_entries<'a>(desc: &'a str, mut visit: impl FnMut(&'a str, bool)) -> Opt
 /// What a zoom to a place the map's projection doesn't reach says, once in a command.
 const BEYOND_PROJECTION: &str = "The place lies beyond what the map's projection shows, so the view wasn't moved to it.";
 
+/// What a command (#194) or a tool (#2307) says of the parameters it was given but doesn't read,
+/// so a script or an agent can correct itself: "Buffer ignores 'unit' (it reads input, distance,
+/// units, dissolve, output)". `None` when `unknown` is empty. The keys are listed as a tool's
+/// missing-parameter error lists them ([`rustgis_analysis::quoted_keys`]).
+pub(crate) fn ignored_keys(name: &str, unknown: Vec<&str>, known: &[&str]) -> Option<String> {
+    if unknown.is_empty() {
+        return None;
+    }
+    let reads = if known.is_empty() { "no parameters".to_string() } else { known.join(", ") };
+    Some(format!("{name} ignores {} (it reads {reads})", rustgis_analysis::quoted_keys(unknown)))
+}
+
 /// `s` cut to `n` characters, with `…` when cut.
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() > n { s.chars().take(n).chain(['…']).collect() } else { s.to_string() }
@@ -1869,15 +1881,9 @@ impl Session {
         }
         // Keys the command does not read: said, so a script or an agent can correct itself.
         if let (Value::Object(given), Some(known)) = (params, spec.param_keys()) {
-            // Bounded: the keys come from the caller (the first few, each clipped).
-            let unknown: Vec<&String> = given.keys().filter(|k| !known.contains(&k.as_str())).collect();
-            if !unknown.is_empty() {
-                let mut said: Vec<String> = unknown.iter().take(5).map(|k| format!("'{}'", clip(k, 40))).collect();
-                if unknown.len() > 5 {
-                    said.push(format!("{} more", unknown.len() - 5));
-                }
-                let reads = if known.is_empty() { "no parameters".to_string() } else { known.join(", ") };
-                self.warn(format!("{id} ignores {} (it reads {reads})", said.join(", ")));
+            let unknown = given.keys().map(String::as_str).filter(|k| !known.contains(k)).collect();
+            if let Some(said) = ignored_keys(id, unknown, &known) {
+                self.warn(said);
             }
         }
         let active = self.active_layer;

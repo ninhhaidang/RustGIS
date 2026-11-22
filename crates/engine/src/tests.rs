@@ -40511,6 +40511,27 @@ fn model_graphs(s: &mut Session) {
     let rep = s.model_run.clone().unwrap();
     assert_eq!(rep.nodes.last().unwrap().status, "error");
     assert_eq!(s.map().layers.len(), layers, "a failed run is undone");
+    // A parameter a step's tool ignores is said once for the run (#2307): in the error of a run
+    // that fails later, which keeps it after the rollback, and beside the result of one that doesn't.
+    let failing_ignores = json!({"nodes": [
+        {"id": "i1", "kind": "input", "layer": "Cities"},
+        {"id": "t1", "kind": "tool", "tool": "buffer", "params": {"distance": 20, "unit": "Miles"}},
+        {"id": "t2", "kind": "tool", "tool": "dissolve", "params": {"field": "no_such_field"}}],
+        "edges": [{"from": "i1", "fromPort": "out", "to": "t1", "toPort": "input"},
+                  {"from": "t1", "fromPort": "out", "to": "t2", "toPort": "input"}]});
+    let e = s.run("model.run", &json!({"graph": failing_ignores})).unwrap_err();
+    assert!(e.contains("Buffer ignores 'unit'"), "{e}");
+    let repeats = json!({"nodes": [
+        {"id": "i1", "kind": "input", "layer": "Cities"},
+        {"id": "t1", "kind": "tool", "tool": "buffer", "params": {"distance": 20, "unit": "Miles"}},
+        {"id": "t2", "kind": "tool", "tool": "buffer", "params": {"distance": 5, "unit": "Miles"}}],
+        "edges": [{"from": "i1", "fromPort": "out", "to": "t1", "toPort": "input"},
+                  {"from": "t1", "fromPort": "out", "to": "t2", "toPort": "input"}]});
+    let mark = s.notice_mark();
+    s.run("model.run", &json!({"graph": repeats})).unwrap();
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| t.contains("ignores 'unit'")).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("(in 2 steps)"), "{said:?}");
     // Two outputs on one result are refused.
     let mut twice = graph.clone();
     twice["nodes"].as_array_mut().unwrap().push(json!({"id": "o2", "kind": "output", "name": "Again"}));

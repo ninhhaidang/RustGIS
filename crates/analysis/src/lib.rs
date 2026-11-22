@@ -457,6 +457,36 @@ pub fn resolve_params(spec: &ToolSpec, params: &Value) -> Result<Value, String> 
     params_for(spec, params, source_of(spec).is_none())
 }
 
+/// The keys of `params` that `spec` doesn't read, for an error that a required parameter is
+/// missing (#2307): a misspelled key is the likely reason, and a failed run's warnings are taken
+/// back, so the error says it: " (given 'clips', which Clip doesn't read)". Empty when there are
+/// none. Bounded as [`quoted_keys`] bounds them.
+fn unread(spec: &ToolSpec, params: &Value) -> String {
+    let Some(given) = params.as_object() else { return String::new() };
+    let unknown: Vec<&str> = given.keys().map(String::as_str).filter(|k| !is_expected_key(spec, params, k)).collect();
+    if unknown.is_empty() {
+        return String::new();
+    }
+    format!(" (given {}, which {} doesn't read)", quoted_keys(unknown), spec.name)
+}
+
+/// Parameter keys a command or tool was given but doesn't read, quoted for a notice or an error
+/// (#194, #2307): `'a', 'b', 'c', 'd', 'e', 2 more`. Bounded, since the keys come from the caller:
+/// the first five, sorted, each cut to 40 characters, then how many more.
+pub fn quoted_keys(mut unknown: Vec<&str>) -> String {
+    unknown.sort_unstable();
+    // A control character (a newline, an escape) would reach a terminal as it is: shown as `?`.
+    let clip = |k: &str| {
+        let safe = k.chars().map(|c| if c.is_control() { '?' } else { c });
+        if k.chars().count() > 40 { safe.take(40).chain(['…']).collect() } else { safe.collect::<String>() }
+    };
+    let mut said: Vec<String> = unknown.iter().take(5).map(|k| format!("'{}'", clip(k))).collect();
+    if unknown.len() > 5 {
+        said.push(format!("{} more", unknown.len() - 5));
+    }
+    said.join(", ")
+}
+
 /// Applies the captured schema without looking its suite up again after a reload.
 fn params_for(spec: &ToolSpec, params: &Value, built_in: bool) -> Result<Value, String> {
     let mut p = params.as_object().cloned().unwrap_or_default();
@@ -471,22 +501,23 @@ fn params_for(spec: &ToolSpec, params: &Value, built_in: bool) -> Result<Value, 
             p.insert(ps.name.to_string(), v);
         }
         if ps.required && p.get(ps.name).is_none_or(|v| v.is_null() || v.as_str() == Some("")) {
-            return Err(format!("{}: '{}' is required", spec.name, ps.label));
+            return Err(format!("{}: '{}' is required{}", spec.name, ps.label, unread(spec, params)));
         }
         // The built-in tools' choices are the whole list. An external tool's (GeoLibre's, a
         // plugin's) can be looser, such as GeoLibre's comma-separated lists of options: its own
         // runner checks them.
+        // A refused value's error names the keys it doesn't read too, as a missing one's does.
         if let ParamKind::Choice(choices) = ps.kind
             && built_in
             && let Some(v) = p.get_mut(ps.name)
         {
-            *v = choice(spec, ps, choices, v)?;
+            *v = choice(spec, ps, choices, v).map_err(|e| format!("{e}{}", unread(spec, params)))?;
         }
         if ps.kind == ParamKind::Bool
             && built_in
             && let Some(v) = p.get_mut(ps.name)
         {
-            *v = boolean(spec, ps, v)?;
+            *v = boolean(spec, ps, v).map_err(|e| format!("{e}{}", unread(spec, params)))?;
         }
     }
     Ok(Value::Object(p))
@@ -496,10 +527,24 @@ pub use tools::JOIN_FIELD_ALIASES;
 
 /// Whether a parameter key is declared by `spec` or accepted as a valid parameter alias.
 pub fn is_accepted_param(spec: &ToolSpec, key: &str) -> bool {
-    if spec.params.iter().any(|p| p.name == key) {
-        return true;
-    }
-    if spec.id == "joinField" { JOIN_FIELD_ALIASES.contains(&key) } else { false }
+    spec.params.iter().any(|p| p.name == key) || (spec.id == "joinField" && JOIN_FIELD_ALIASES.contains(&key))
+}
+
+/// Whether a key given with a run isn't one to warn of (#2307): one [`is_accepted_param`] accepts,
+/// or the name the app's tool dialog puts beside a table's id for the run's history: `<name>_name`
+/// beside a layer parameter `<name>` that holds a table id (a number, or its digits as text for a
+/// tool that isn't built in, read as a table id is read). No tool reads it, so it isn't a
+/// parameter to run over either; given without the id, it's taken for a stray.
+pub fn is_expected_key(spec: &ToolSpec, params: &Value, key: &str) -> bool {
+    // A built-in tool reads digit text as a name, not a table id.
+    let table_id = |id: &Value| {
+        id.as_u64().is_some_and(|n| u32::try_from(n).is_ok())
+            || (source_of(spec).is_some() && id.as_str().is_some_and(|t| t.trim().parse::<u32>().is_ok()))
+    };
+    is_accepted_param(spec, key)
+        || key.strip_suffix("_name").is_some_and(|base| {
+            spec.params.iter().any(|p| p.name == base && matches!(p.kind, ParamKind::Layer)) && params.get(base).is_some_and(table_id)
+        })
 }
 
 /// The names a tool reads one of its parameters under, `key` among them, or none when it has no
