@@ -561,7 +561,19 @@ impl<'a> Builder<'a> {
             CallKind::Adapter { what, effects, params } => {
                 self.charge(params)?;
                 let effects = if matches!(*what, "snapshot" | "view_map") {
-                    effects.union(crate::cmd::tiles::render_reach(self.context().map()))
+                    // A layout's look reaches what its frames' maps do, as exporting it does.
+                    let context = self.context();
+                    match (*what == "view_map").then(|| crate::cmd::layout::view_inputs(&context, params)).flatten() {
+                        Some(Ok(inputs)) => inputs
+                            .maps
+                            .iter()
+                            .filter_map(|id| context.project.maps.iter().find(|m| m.instance_id() == *id))
+                            .fold(*effects, |reach, map| reach.union(crate::cmd::tiles::render_reach(map))),
+                        // An unknown layout reaches nothing: a strict plan refuses it with the
+                        // inputs below, and view_map itself otherwise.
+                        Some(Err(_)) => *effects,
+                        None => effects.union(crate::cmd::tiles::render_reach(context.map())),
+                    }
                 } else {
                     *effects
                 };
@@ -843,7 +855,11 @@ impl<'a> Builder<'a> {
             // Their caller-supplied effects can add reach, but cannot remove these owner inputs.
             let selected = match &n.op {
                 Op::Command(spec) => spec.inputs.map(|select| select(&self.context(), params)),
-                Op::Adapter("snapshot" | "view_map") => Some(Ok(crate::cmd::tiles::render_inputs(self.context().map()))),
+                Op::Adapter("view_map") => Some(
+                    crate::cmd::layout::view_inputs(&self.context(), params)
+                        .unwrap_or_else(|| Ok(crate::cmd::tiles::render_inputs(self.context().map()))),
+                ),
+                Op::Adapter("snapshot") => Some(Ok(crate::cmd::tiles::render_inputs(self.context().map()))),
                 _ => None,
             };
             let owner_selected = selected.is_some();

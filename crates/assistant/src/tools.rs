@@ -40,12 +40,17 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "view_map",
-            description: "The map as it looks now, as a PNG image: look after changing it. The current view, at a size of your choosing (default 1024 x 640).",
+            description: "The map as it looks now, as a PNG image: look after changing it. The current view, at a size of your choosing (default 1024 x 640), or a layout's page; region draws part of either at full detail, to read small text.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "width": {"type": "integer", "description": "Pixels (64 to 2048)"},
-                    "height": {"type": "integer", "description": "Pixels (64 to 2048)"}
+                    "height": {"type": "integer", "description": "Pixels (64 to 2048); with a layout or a region, the picture fits width (and height when given) in their shape"},
+                    "layout": {"type": "string", "description": "A layout's name: its page (a map series' current page) instead of the map view"},
+                    "region": {
+                        "type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4,
+                        "description": "A closer look, drawn at full detail (up to 600 dpi on a page): [x, y, w, h] in mm from the page's top left with a layout, else [west, south, east, north] in degrees on the map (with a small margin)"
+                    }
                 }
             }),
         },
@@ -283,13 +288,101 @@ pub fn view_map(s: &mut Session, call: &ToolCall, scope: Scope, permit: Option<P
     s.finish_deferred(owned, |s| draw_view(s, &call.args, MAX_PNG_BYTES))?
 }
 
-/// Draws the view for `view_map`, in a picture of at most `max` bytes. A picture drawn smaller
-/// than asked says so in its caption.
+/// The most dots per inch `view_map` draws a layout at, as Export Layout's most.
+const MAX_LAYOUT_DPI: f64 = 600.0;
+
+/// Draws what `view_map` is asked for (the view, a layout's page, a region of either), in a
+/// picture of at most `max` bytes. A picture drawn smaller than asked says so in its caption, and
+/// what drawing it said (texts cut off, layers drawn without their cast shadows) follows it.
 pub(crate) fn draw_view(s: &mut Session, a: &Value, max: usize) -> Result<(String, ToolImage), String> {
-    let size =
-        |k: &str, default: f64| a.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(default).clamp(64.0, MAX_VIEW).round();
-    let (asked_w, asked_h) = (size("width", 1024.0), size("height", 640.0));
-    let (png, w, h) = draw_within(asked_w, asked_h, max, |w, h| rustgis_engine::cmd::share::map_png(s, Some(w), Some(h), None))?;
+    let mark = s.notice_mark();
+    let size = |k: &str| a.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).map(|v| v.clamp(64.0, MAX_VIEW).round());
+    let region = match a.get("region") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_array()
+                .filter(|v| v.len() == 4)
+                .map(|v| v.iter().filter_map(Value::as_f64).filter(|x| x.is_finite()).collect::<Vec<_>>())
+                .and_then(|n| <[f64; 4]>::try_from(n).ok())
+                .ok_or("region must be four numbers: [x, y, w, h] in mm with a layout, [west, south, east, north] in degrees on the map")?,
+        ),
+    };
+    let asked = (size("width"), size("height"));
+    let (mut caption, png, w, h) = if a.get("layout").is_some_and(|v| !v.is_null()) {
+        draw_layout(s, a, region, asked, max)?
+    } else {
+        draw_map(s, region, asked, max)?
+    };
+    // Each once: a picture drawn again smaller says it all again.
+    let mut said: Vec<String> = Vec::new();
+    for text in s.notices_since(mark).iter().map(|n| public_text(n.text.clone())) {
+        if !said.contains(&text) {
+            said.push(text);
+        }
+    }
+    if !said.is_empty() {
+        caption.push_str(&format!(" Drawing it said: {}", said.join(" | ")));
+    }
+    Ok((caption, ToolImage { png, width: w, height: h }))
+}
+
+/// The size a PNG says it is, from its header.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    let dim = |at: usize| png.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map_or(0, u32::from_be_bytes);
+    (dim(16), dim(20))
+}
+
+/// A picture of `view_map`: its caption, its PNG and its size in pixels.
+type Drawn = (String, Vec<u8>, u32, u32);
+
+/// `view_map` of the map view, or of the part of the map in `region` (lon/lat) fitted in the
+/// asked size as Zoom To fits an extent, with its margin; the view is left as it was.
+fn draw_map(s: &mut Session, region: Option<[f64; 4]>, asked: (Option<f64>, Option<f64>), max: usize) -> Result<Drawn, String> {
+    let (mut asked_w, mut asked_h) = (asked.0.unwrap_or(1024.0), asked.1.unwrap_or(640.0));
+    let fitted = match region {
+        None => None,
+        Some([west, south, east, north]) => {
+            let lon = -180.0..=180.0;
+            let lat = -90.0..=90.0;
+            if !(lon.contains(&west) && lon.contains(&east) && lat.contains(&south) && lat.contains(&north))
+                || west >= east
+                || south >= north
+            {
+                return Err(format!(
+                    "region [{west}, {south}, {east}, {north}] must be [west, south, east, north] in degrees, west < east and south < north (one across the 180° meridian is not drawn)"
+                ));
+            }
+            if s.map().projection.is_globe() {
+                return Err("region needs a flat map, and this one is a globe: give it a flat projection (map.projection), or look at the whole view".into());
+            }
+            let e = rustgis_engine::geom::Extent { min_x: west, min_y: south, max_x: east, max_y: north };
+            // Without a height, the picture takes the region's shape on the map.
+            let m = s.map().flat().extent(&e);
+            if asked.1.is_none() && m.width() > 0.0 && m.height() > 0.0 {
+                asked_h = (asked_w * m.height() / m.width()).round();
+                if asked_h > MAX_VIEW {
+                    asked_w = (asked_w * MAX_VIEW / asked_h).round().max(64.0);
+                }
+                asked_h = asked_h.clamp(64.0, MAX_VIEW);
+            }
+            Some(e)
+        }
+    };
+    let (camera, view_size) = (s.map().camera, s.view_size);
+    let drawn = draw_within(asked_w, asked_h, max, |w, h| {
+        if let Some(e) = &fitted {
+            // Fitted at the picture's own size, which the image then keeps.
+            s.view_size = (w, h);
+            s.map_mut().camera = camera;
+            if !s.map_mut().fit_lonlat(e, w, h) {
+                return Err("the region is outside what the map's projection shows".to_string());
+            }
+        }
+        rustgis_engine::cmd::share::map_png(s, Some(w), Some(h), None)
+    });
+    s.map_mut().camera = camera;
+    s.view_size = view_size;
+    let (png, w, h) = drawn?;
     let m = s.map();
     let c = m.center_lonlat();
     let smaller = if (w, h) != (asked_w, asked_h) {
@@ -297,15 +390,76 @@ pub(crate) fn draw_view(s: &mut Session, a: &Value, max: usize) -> Result<(Strin
     } else {
         String::new()
     };
-    let caption = format!(
-        "Map \"{}\", {} layers, centre {:.4}, {:.4} (lon, lat), scale 1:{:.0}, {w:.0} x {h:.0} px{smaller}.",
-        m.name,
-        m.layers.len(),
-        c.x,
-        c.y,
-        m.scale()
-    );
-    Ok((caption, ToolImage { png, width: w as u32, height: h as u32 }))
+    let shown = match region {
+        Some([west, south, east, north]) => format!("region {west}, {south}, {east}, {north} (west, south, east, north)"),
+        None => format!("centre {:.4}, {:.4} (lon, lat), scale 1:{:.0}", c.x, c.y, m.scale()),
+    };
+    let caption = format!("Map \"{}\", {} layers, {shown}, {w:.0} x {h:.0} px{smaller}.", m.name, m.layers.len());
+    Ok((caption, png, w as u32, h as u32))
+}
+
+/// `view_map` of a layout's page, or of the part of it in `region` (mm), drawn at the dpi that
+/// fits the asked width (and height when given), at most [`MAX_LAYOUT_DPI`]. A region is drawn
+/// at that dpi rather than cut out of the whole page, and the frames it cuts are drawn whole, as
+/// on the page: a close look at a large frame costs what exporting the page at that dpi does.
+fn draw_layout(
+    s: &mut Session,
+    a: &Value,
+    region: Option<[f64; 4]>,
+    asked: (Option<f64>, Option<f64>),
+    max: usize,
+) -> Result<Drawn, String> {
+    let li = rustgis_engine::cmd::layout::named(s, a)?;
+    let l = s.project.layouts.get(li).ok_or("no layout")?;
+    let (name, pw, ph) = (l.name.clone(), l.width, l.height);
+    // A region is cut to the page, and the cut said.
+    let (part, cut) = match region {
+        None => ([0.0, 0.0, pw, ph], false),
+        Some([x, y, w, h]) => {
+            let (x0, y0, x1, y1) = (x.max(0.0), y.max(0.0), (x + w).min(pw), (y + h).min(ph));
+            if w <= 0.0 || h <= 0.0 || x1 <= x0 || y1 <= y0 {
+                return Err(format!(
+                    "region [{x}, {y}, {w}, {h}] is not on the page: give [x, y, w, h] in mm from its top left, inside its {pw:.0} x {ph:.0} mm"
+                ));
+            }
+            ([x0, y0, x1 - x0, y1 - y0], (x0, y0, x1, y1) != (x, y, x + w, y + h))
+        }
+    };
+    let (asked_w, asked_h) = (asked.0.unwrap_or(1024.0), asked.1.unwrap_or(MAX_VIEW));
+    // A region's edges are rounded outward to whole pixels, up to one more each side.
+    let edge = if region.is_some() { 2.0 } else { 0.0 };
+    let dpi_for = |w: f64, h: f64| (25.4 * ((w - edge) / part[2]).min((h - edge) / part[3])).min(MAX_LAYOUT_DPI);
+    let (png, w, h) =
+        draw_within(asked_w, asked_h, max, |w, h| rustgis_engine::cmd::layout::layout_png(s, li, dpi_for(w, h), region.map(|_| part)))?;
+    let (pxw, pxh) = png_size(&png);
+    // A page drawn at its least resolution (a quarter of the screen's) can still be larger than
+    // a picture is sent at: refused, rather than sent too large.
+    if f64::from(pxw.max(pxh)) > MAX_VIEW {
+        return Err(format!(
+            "the page, {pw:.0} x {ph:.0} mm, is {pxw} x {pxh} px drawn at its least, more than the {MAX_VIEW:.0} a side view_map draws: give a region"
+        ));
+    }
+    let dpi = f64::from(pxw) * 25.4 / part[2];
+    let shown = match region {
+        Some(_) => format!(
+            ", region {:.1}, {:.1}, {:.1}, {:.1} mm (x, y, w, h){}",
+            part[0],
+            part[1],
+            part[2],
+            part[3],
+            if cut { ", cut to the page" } else { "" }
+        ),
+        None => String::new(),
+    };
+    let smaller = if (w, h) != (asked_w, asked_h) {
+        format!(", smaller than asked, to fit the {:.2} MB a picture may weigh", max as f64 / 1e6)
+    } else if dpi_for(w, h) >= MAX_LAYOUT_DPI {
+        format!(", at the {MAX_LAYOUT_DPI:.0} dpi a page is drawn at the most")
+    } else {
+        String::new()
+    };
+    let caption = format!("Layout \"{name}\", page {pw:.0} x {ph:.0} mm{shown}, {pxw} x {pxh} px at {dpi:.0} dpi{smaller}.");
+    Ok((caption, png, pxw, pxh))
 }
 
 /// Runs a call; `Err` is a result the model is told failed.

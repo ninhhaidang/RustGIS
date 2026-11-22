@@ -147,6 +147,12 @@ replaced by a line saying they're no longer attached. When the provider refuses 
 Ollama model without vision, say), the request is sent again without them, and from then on
 `view_map` tells that model it doesn't read images.
 
+`view_map` can also show a layout's page (`layout`, by name), and a closer look at part of the
+page or the map (`region`: millimetres on a page, degrees on the map), drawn at full detail rather
+than cut out of a smaller picture, so the assistant can read small text, a legend's rows or a
+label at the frame's edge. What drawing it said, such as a text cut off at the page's edge, comes
+with the picture.
+
 ## Tool output limits
 
 The assistant can `search_docs` and `read_doc` to look up RustGIS features and commands.

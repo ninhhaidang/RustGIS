@@ -5743,6 +5743,48 @@ pub fn layout_bytes_with(
     )?
 }
 
+/// Layout `li`'s current page as a PNG at `dpi`, or only its part in `region` (`[x, y, w, h]` in
+/// millimetres from the page's top left), drawn at that `dpi` rather than cut out of the whole
+/// page: what the assistant's `view_map` shows of a layout. It says what exporting the page says
+/// of it: texts cut off, named fonts still being read, frames drawn without their cast shadows.
+pub fn layout_png(s: &mut Session, li: usize, dpi: f64, region: Option<[f64; 4]>) -> Result<Vec<u8>, String> {
+    let layout = s.project.layouts.get(li).ok_or("no layout")?.clone();
+    if let Some(note) = named_fonts_unread(&layout) {
+        s.warn(note);
+    }
+    let page = layout.series.as_ref().map_or(0, |sr| sr.page);
+    let series = series_info(s, li, page);
+    let info = rustgis_render::layout::PageInfo {
+        page: page + 1,
+        pages: series.as_ref().map_or(1, |i| i.0),
+        page_name: series.map(|i| i.1).unwrap_or_default(),
+    };
+    let mut clipped = rustgis_render::layout::clipped_text(&layout, &s.project.maps, dpi, &info);
+    // A region says the texts cut off in it, not those elsewhere on the page it doesn't show.
+    if let Some(r) = region {
+        clipped.retain(|(id, _)| layout.element(*id).is_some_and(|e| rustgis_render::layout::meets(e, r, 0.0)));
+    }
+    let img = super::share::saying_shadows(s, "The layout", |s| match region {
+        Some(r) => rustgis_render::layout::render_region(&layout, &mut s.project.maps, dpi, &info, r),
+        None => rustgis_render::layout::render(&layout, &mut s.project.maps, dpi, &info),
+    })?;
+    if let Some(note) = rustgis_render::layout::clipped_text_notice(&layout, &clipped) {
+        s.warn(note);
+    }
+    img.encode_png().map_err(|e| e.to_string())
+}
+
+/// What `view_map` draws when it is given a `layout`: the layout's frames' maps and their tiles,
+/// as exporting it reads them, rather than the active map's. `None` without a `layout`.
+pub(crate) fn view_inputs(input: &super::InputContext<'_>, p: &Value) -> Option<Result<super::Inputs, String>> {
+    p.get("layout").filter(|v| !v.is_null()).map(|_| layout_inputs(input, p))
+}
+
+/// The layout `p` names (`layout`, a name or an index), as Export Layout finds it.
+pub fn named(s: &Session, p: &Value) -> Result<usize, String> {
+    index(s, p)
+}
+
 fn layout_bytes_inner(
     s: &mut Session,
     li: usize,
