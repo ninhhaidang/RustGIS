@@ -114,6 +114,26 @@ impl DatasetDiscovery {
         self.omissions.iter().map(|(reason, count)| format!("{count} {reason}")).collect()
     }
 
+    /// Adds counts for known work abandoned by a terminal discovery error or budget. A document
+    /// queued twice (a shared list and metadata pair) or left unread by the failure itself is
+    /// counted per queue entry. Waiting for supplied bytes is not terminal; callers use `notes`
+    /// for that snapshot.
+    pub fn stopped_notes(&self) -> Vec<String> {
+        let mut notes = self.notes();
+        let mut left = BTreeMap::<&str, usize>::new();
+        for doc in &self.pending {
+            let (kind, count) = match &doc.kind {
+                Kind::Tiles(_) => ("tileset documents", 1),
+                Kind::Styles => ("style catalogues", 1),
+                Kind::Style { .. } => ("stylesheets", 1),
+                Kind::Source(candidate) => ("TileJSON source checks", candidate.remaining.len()),
+            };
+            *left.entry(kind).or_default() += count;
+        }
+        notes.extend(left.into_iter().map(|(kind, count)| format!("{count} {kind} were left out: dataset discovery stopped")));
+        notes
+    }
+
     /// Counts dataset catalogues that the existing collections traversal does not visit.
     /// Map metadata keeps its legacy resolver; vector tiles and styles need the dataset plan.
     pub(super) fn collections_notes(mut self) -> Vec<String> {

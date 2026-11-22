@@ -180,6 +180,11 @@ pub(super) fn long_commands(boundaries: bool) {
     // The Add Service dialog replays supplied metadata off the desktop frame too.
     let params = json!({"url":"https://maps.example.org/dataset","type":"ogcapi","text":"{\"collections\":[]}"});
     for command in ["service.layers", "service.add"] {
+        // An add names its layer: a call without one is refused before any discovery starts.
+        let mut params = params.clone();
+        if command == "service.add" {
+            params["layer"] = json!("map");
+        }
         // Adding a service needs a real collection and remote features to succeed. An empty
         // listing is useful only for the original first-check cancellation test.
         if !boundaries || command == "service.layers" {

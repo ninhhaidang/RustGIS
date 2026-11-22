@@ -113,8 +113,12 @@ struct Discovery {
 }
 
 impl Discovery {
+    /// Keeps usable offers and counts work abandoned by a terminal failure; an unusable
+    /// result includes those counts in its error, surviving a mutating command's rollback.
     fn failed(mut self, s: &mut Session, error: String, dataset: Option<&rustgis_data::ogc::DatasetDiscovery>) -> Result<Self, String> {
-        self.dataset_notes(dataset);
+        if let Some(dataset) = dataset {
+            self.service.notes.extend(dataset.stopped_notes());
+        }
         if self.service.layers.is_empty() {
             notify_withheld(s, self.service.withheld_addresses);
             // An unusable result is an error; keep its counted omissions in that error too.
@@ -941,16 +945,19 @@ pub(crate) fn listing_ahead(s: &mut Session, p: &Value) -> Result<Option<super::
     })))
 }
 
-/// Prepares supplied metadata for an add under its initiating login. Only discovery runs on
-/// the worker; the admitted command selects and installs the layer on the original session.
+/// Prepares supplied or URL-only discovery for an add under its initiating login. Only
+/// discovery runs on the worker; the admitted command installs on the original session. A call
+/// `add` would refuse for its address or missing layer is refused here, before any fetch.
+/// Cancel is looked at between documents: one document's download, up to
+/// [`BLOCKING_TIMEOUT`](crate::render::rustgis_tiles::cache::BLOCKING_TIMEOUT), is a long step
+/// without a check.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn adding_ahead(s: &mut Session, p: &Value) -> Result<Option<super::reads::ReadWork>, String> {
-    if ps(p, "text").is_none() {
-        return Ok(None);
-    }
     let owned = without_token(p)?;
     let p = owned.as_ref().unwrap_or(p);
     let p = crate::service_logins::request_params(s, p)?.into_owned();
+    url_of(&p)?;
+    ps(&p, "layer").map(str::trim).filter(|l| !l.is_empty()).ok_or("layer is required")?;
     Ok(Some(super::reads::ahead("Add Service Layer", "service.add".into(), move || {
         let explicit_map = ps(&p, "tiles").filter(|_| ps(&p, "layer").map(str::trim) == Some("map")).map(|t| (t, ps(&p, "source_url")));
         discovery_read(|s| discover(s, &p, false, explicit_map))
@@ -1094,8 +1101,8 @@ fn notify_withheld(s: &mut Session, count: u32) {
 }
 
 /// Adds one of a service's layers: map layers as tiles (an overlay), a style as a style, features
-/// downloaded. The desktop prepares supplied-document discovery off the frame before this
-/// command selects and applies its layer; CLI and browser calls discover synchronously.
+/// downloaded. The desktop discovers the service's documents, supplied or fetched, off the frame
+/// before this command selects and applies its layer; CLI and browser calls discover synchronously.
 pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     let owned = without_token(p)?;
     let p = owned.as_ref().unwrap_or(p);

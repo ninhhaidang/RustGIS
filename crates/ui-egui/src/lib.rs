@@ -3009,7 +3009,7 @@ impl RustGisApp {
             if id == "service.layers" {
                 return readjob::run(self, "service.layers", params);
             }
-            if id == "service.add" && params.get("text").and_then(Value::as_str).is_some() {
+            if id == "service.add" {
                 return readjob::run(self, "service.add", params);
             }
             if id == "layer.repairSource" {

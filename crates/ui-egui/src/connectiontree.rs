@@ -77,7 +77,7 @@ pub(crate) fn take_origin_key(params: &mut Value) -> Option<String> {
 /// Runs a command that adds a dataset now, noting it in Recent under the connection's name.
 pub(crate) fn run_named(app: &mut RustGisApp, id: &str, params: Value, origin: Option<&str>) -> Result<Value, String> {
     #[cfg(not(target_arch = "wasm32"))]
-    if id == "service.add" && app.reads_off_frame && params.get("text").and_then(Value::as_str).is_some() {
+    if id == "service.add" && app.reads_off_frame {
         let name = params.get("name").or_else(|| params.get("layer")).and_then(Value::as_str).unwrap_or_default().to_string();
         return crate::readjob::run_service(app, params, &name, origin);
     }
@@ -733,6 +733,41 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "timed out waiting");
             h.step();
             std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling while driving connection-tree frames
+        }
+    }
+
+    #[test]
+    fn ogc_dataset_url_only_add_runs_off_frame_and_keeps_its_connection_name() {
+        let _turn = crate::fetching::turn();
+        let base = serve(|request| {
+            let body = if request.starts_with("GET /tiles?") {
+                json!({"tileMatrixSetId":"WebMercatorQuad","links":[
+                    {"rel":"item","type":"image/png","href":"/map/{tileMatrix}/{tileRow}/{tileCol}.png"}]})
+            } else {
+                json!({"links":[{"rel":"tilesets-map","href":"/tiles?f=json"}]})
+            };
+            (200, body.to_string().into_bytes())
+        });
+        for named in [false, true] {
+            let mut h = harness();
+            h.state_mut().reads_off_frame = true;
+            let before = h.state().session.map().tiles.len();
+            let bare = h.state_mut().run("service.add", json!({"url":format!("{base}/dataset"),"type":"ogcapi"}));
+            assert_eq!(bare.unwrap_err(), "layer is required", "a call the command refuses is not started");
+            let params = json!({"url":format!("{base}/dataset"),"type":"ogcapi","layer":"map"});
+            let reply = if named {
+                run_named(h.state_mut(), "service.add", params, Some("Fixture connection"))
+            } else {
+                h.state_mut().run("service.add", params)
+            }
+            .unwrap();
+            assert_eq!(reply["started"], "Add Service Layer", "the root desktop entry point must defer URL-only discovery");
+            assert_eq!(h.state().session.map().tiles.len(), before);
+            until(&mut h, |app| app.session.map().tiles.len() > before);
+            assert_eq!(h.state().session.map().tiles.last().unwrap().url, format!("{base}/map/{{z}}/{{y}}/{{x}}.png"));
+            if named {
+                assert_eq!(h.state().session.sources.recent[0].name, "Fixture connection");
+            }
         }
     }
 
