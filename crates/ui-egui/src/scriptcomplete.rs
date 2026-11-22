@@ -18,7 +18,7 @@ use egui::{Id, Ui};
 use rustgis_engine::Quotes;
 use rustgis_engine::cmd::workflows::refused_in_script;
 
-use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
+use crate::completion::{Asked, Before, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
 
 /// The fewest characters typed before ids are offered (one would offer most of them).
 const MIN_TYPED: usize = 2;
@@ -1339,6 +1339,12 @@ impl Offered for Offer {
     fn end(&self) -> usize {
         self.end
     }
+
+    /// A list of choices (a parameter's allowed values) has no help (`item_help`); every other
+    /// list's items have one.
+    fn has_help(&self) -> bool {
+        !matches!(self.of, Some(Of::Choices))
+    }
 }
 
 /// The help shown by the cursor while it's in a line's `{…}`.
@@ -1454,21 +1460,18 @@ pub fn show(
     let icon = |offer: &Offer, item: &str| item_icon(session, offer.of.as_ref(), item);
     // Worked out each frame the list shows, for one command or tool: a lookup and a short
     // description split. Kept, it would need the id and the language as its key (the help is
-    // translated), for next to nothing saved. A gap before it, not a separator: in a row, egui's
-    // separator takes all the height it can, and would stretch the list down to the bottom of the
-    // screen.
+    // translated), for next to nothing saved. It goes in the help's box beside the list, after the
+    // gap the list leaves (`completion::rows`).
     let draw = |ui: &mut Ui, offer: &Offer, item: &str, width: f32| match &offer.of {
         // A tool: its help, as a command's.
         Some(Of::ToolIds) => {
             if let Some(t) = rustgis_engine::analysis::tool(item) {
-                ui.add_space(GAP);
                 draw_help(ui, &tool_help(t), width);
             }
         }
         // A command, starting a line or for a value.
         None | Some(Of::CommandIds) => {
             if let Some(help) = help(session, item) {
-                ui.add_space(GAP);
                 draw_help(ui, &help, width);
             }
         }
@@ -1480,7 +1483,6 @@ pub fn show(
         // A key: the line describing its parameter; a layer or a field: what it holds.
         Some(of) => {
             if let Some((text, about)) = item_help(session, of, item) {
-                ui.add_space(GAP);
                 draw_key_help(ui, &text, about.as_deref(), width);
             }
         }
@@ -2224,8 +2226,11 @@ mod tests {
         assert!(items.len() > 3, "a longer list: {items:?}");
         let state = h.ctx.data(|d| d.get_temp::<super::State>(egui::Id::unique("script_text").with("complete"))).unwrap();
         let shown = state.list.drawn().unwrap();
-        let last = h.get_by_role_and_label(egui::accesskit::Role::Button, items.last().unwrap()).rect();
-        assert!(last.max.y <= shown.max.y, "every item in view, no scroll: {last:?} in {shown:?}");
+        // The last row the list shows at once (it scrolls past `MAX_ROWS`): one further down would
+        // be clipped to the list, its rect no measure of the popup.
+        let last = &items[items.len().min(crate::completion::MAX_ROWS) - 1];
+        let last = h.get_by_role_and_label(egui::accesskit::Role::Button, last).rect();
+        assert!(last.max.y <= shown.max.y, "every row in view, no scroll: {last:?} in {shown:?}");
     }
 
     /// What `brace` makes of `ins` typed at char `at` of `old`, as the box would leave it.
@@ -3222,6 +3227,12 @@ mod tests {
         assert!(offer(&app, r#"gp.run {"tool": "summaryStatistics", "params": {"field": ""#).is_none(), "no input");
         assert!(offer(&app, r#"gp.run {"tool": "summaryStatistics", "params": {"input": "Nowhere", "field": ""#).is_none());
         let o = offer(&app, r#"gp.run {"tool": "buffer", "params": {"units": ""#).unwrap();
+        // Mere choices: no help, and no room kept for one beside them (#2618).
+        assert!(!crate::completion::Offered::has_help(&o), "choices have no help");
+        assert!(
+            crate::completion::Offered::has_help(&offer(&app, r#"gp.run {"tool": "buffer", "params": {"input": ""#).unwrap()),
+            "layers do"
+        );
         assert_eq!((o.items, o.of), (["Kilometers", "Meters", "Miles", "Feet"].map(String::from).to_vec(), Some(super::Of::Choices)));
         assert_eq!(offer(&app, r#"gp.run {"tool": "buffer", "params": {"units": "mi"#).unwrap().items, ["Miles"], "case aside");
         assert!(offer(&app, r#"gp.run {"tool": "buffer", "params": {"distance": ""#).is_none(), "a number");

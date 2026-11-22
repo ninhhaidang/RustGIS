@@ -15,7 +15,9 @@ use egui::{Id, Key, Modifiers, Ui};
 /// The list's narrowest width.
 const MIN_WIDTH: f32 = 220.0;
 /// The most rows a list shows at once: it scrolls beyond, its help staying beside it.
-const MAX_ROWS: usize = 10;
+pub(crate) const MAX_ROWS: usize = 10;
+/// The fewest rows' height the help's box takes, beside a short list (`rows`).
+const HELP_MIN_ROWS: usize = 6;
 /// The side of a row's icon.
 const ICON: f32 = 16.0;
 /// The help's widest line, so a long signature or parameter wraps rather than widen the list
@@ -33,6 +35,11 @@ pub(crate) const FRAME: f32 = 24.0;
 pub(crate) trait Offered: Clone + PartialEq {
     fn items(&self) -> &[String];
     fn end(&self) -> usize;
+    /// Whether its items have a help to show beside them (`rows`): a list of mere choices has
+    /// none, and keeps no room for one.
+    fn has_help(&self) -> bool {
+        true
+    }
 }
 
 /// Which side of the cursor's line (or a button) a popup goes on when it fits there.
@@ -137,11 +144,11 @@ pub(crate) fn pressed_over_menu(ctx: &egui::Context) -> bool {
     }
 }
 
-/// How a list and its help sit in a screen `width` wide: the help beside the list in the room the
-/// screen leaves, or under it when that's too narrow to read (a narrow window), so neither is cut
-/// off at the screen's edge; and the help's width.
-fn help_layout(width: f32) -> (egui::Layout, f32) {
-    let beside = (width - MIN_WIDTH - GAP - FRAME).min(HELP_WIDTH);
+/// How a list `list` wide and its help sit in a screen `width` wide: the help beside the list in
+/// the room the screen leaves, or under it when that's too narrow to read (a narrow window, a list
+/// of long names), so neither is cut off at the screen's edge; and the help's width.
+fn help_layout(width: f32, list: f32) -> (egui::Layout, f32) {
+    let beside = (width - list - GAP - FRAME).min(HELP_WIDTH);
     if beside >= HELP_MIN_WIDTH {
         (egui::Layout::left_to_right(egui::Align::Min), beside)
     } else {
@@ -499,9 +506,10 @@ impl<O: Offered> List<O> {
         let screen = ui.ctx().content_rect();
         let (corner, room) = place(cursor, size, screen, row * 3.0, Side::Below);
         let mut clicked = None;
+        let has_help = offer.has_help();
         let scroll = &mut self.scroll;
         let items = offer.items();
-        let (area, size) = popup(ui, id, corner, room, |ui| {
+        let (area, drawn) = popup(ui, id, corner, room, |ui| {
             // The focus stays on the box: the rows take none.
             let picked = rows(
                 ui,
@@ -510,6 +518,7 @@ impl<O: Offered> List<O> {
                 pointer_leads,
                 scroll,
                 false,
+                has_help,
                 |item| icon(&offer, item),
                 |_| None,
                 |ui, item, width| {
@@ -523,7 +532,12 @@ impl<O: Offered> List<O> {
             self.drawn = None;
         } else {
             self.open = Some((offer, selected));
-            self.drawn = Some((area, size));
+            // Placed by a guess (its first frame) or by another list's size: place it again by
+            // what it holds now, not on the next input.
+            if drawn != size {
+                ui.ctx().request_repaint();
+            }
+            self.drawn = Some((area, drawn));
         }
         clicked
     }
@@ -544,6 +558,11 @@ struct Scroll {
     /// The widest row, worked out once: with only the rows in view drawn, theirs alone would
     /// widen and narrow the list as it scrolls.
     widest: Option<f32>,
+    /// The item whose help shows: another one's starts from the top of the help's box.
+    help_for: Option<usize>,
+    /// Where the help's box was, the gap before it included: with the pointer there, the help
+    /// stays the one shown (the item the pointer left, to read or scroll its help).
+    help_at: Option<egui::Rect>,
 }
 
 /// What a list's rows gave this frame.
@@ -576,6 +595,14 @@ fn widest(ui: &Ui, items: &[String], icon: impl Fn(&str) -> Option<&'static str>
 /// narrow window), the `help` on the item under the pointer when `pointer_leads`, else on the
 /// highlighted one. Scrolls to the highlighted one when it changes (`scroll`); with `focus`, the
 /// highlighted row takes the focus too.
+///
+/// The help, when the list `has_help`, goes in a box of one size for the whole list: as wide as
+/// the layout gives it and as tall as the list's rows (`HELP_MIN_ROWS` at least, for a short
+/// list), scrolling a longer help. Sized to each help, the popup would change size from item to
+/// item and `around` would move it, sideways by its width at the screen's right edge, up and
+/// down by its height above the cursor or across to the other side: a row would move out from
+/// under the pointer (#2618). Its size depends only on the list, the screen and the font, so it
+/// stays put while the list is open.
 fn rows(
     ui: &mut Ui,
     items: &[String],
@@ -583,11 +610,15 @@ fn rows(
     pointer_leads: bool,
     scroll: &mut Scroll,
     focus: bool,
+    has_help: bool,
     icon: impl Fn(&str) -> Option<&'static str>,
     describe: impl Fn(usize) -> Option<String>,
     help: impl FnOnce(&mut Ui, &str, f32),
 ) -> Rows {
-    let (layout, help_width) = help_layout(ui.ctx().content_rect().width());
+    // Worked out once: with only the rows in view drawn, theirs alone would widen and narrow the
+    // list as it scrolls; and the help's room beside it depends on it.
+    let list = *scroll.widest.get_or_insert_with(|| widest(ui, items, &icon));
+    let (layout, help_width) = help_layout(ui.ctx().content_rect().width(), list);
     let mut out = Rows::default();
     ui.with_layout(layout, |ui| {
         let mut hovered = None;
@@ -630,7 +661,7 @@ fn rows(
             // only those in view are (Ctrl+Space on an empty word offers some 600).
             if ui.ctx().has_accesskit_node(ui.unique_id()) {
                 area.show(ui, |ui| {
-                    ui.set_min_width(MIN_WIDTH);
+                    ui.set_min_width(list);
                     for (i, item) in items.iter().enumerate() {
                         let r = draw(ui, i, item);
                         if i == selected && scroll.to != Some(selected) {
@@ -640,9 +671,8 @@ fn rows(
                     }
                 });
             } else {
-                let width = *scroll.widest.get_or_insert_with(|| widest(ui, items, &icon));
                 area.show_rows(ui, row - spacing, items.len(), |ui, range| {
-                    ui.set_min_width(width);
+                    ui.set_min_width(list);
                     // The highlighted row may be out of the range drawn: where it would be.
                     if scroll.to != Some(selected) {
                         let top = ui.max_rect().top() + (selected as f32 - range.start as f32) * row;
@@ -655,11 +685,37 @@ fn rows(
                 });
             }
         });
-        // The help follows the item under the pointer, else the highlighted one.
-        let shown = hovered.filter(|_| pointer_leads).unwrap_or(selected);
-        if let Some(item) = items.get(shown) {
-            help(ui, item, help_width);
+        if !has_help {
+            return;
         }
+        // The help follows the item under the pointer, else the highlighted one; with the pointer
+        // gone from a row to the help (to read or scroll it), that row's help stays. After a gap,
+        // beside the list or under it.
+        let on_help = scroll.help_at.is_some_and(|r| ui.rect_contains_pointer(r));
+        let shown = match hovered {
+            Some(i) if pointer_leads => i,
+            _ if pointer_leads && on_help => scroll.help_for.unwrap_or(selected),
+            _ => selected,
+        };
+        let size = egui::vec2(help_width, row * items.len().clamp(HELP_MIN_ROWS, MAX_ROWS) as f32 - spacing);
+        ui.add_space(GAP);
+        let boxed = ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+            // Set first, so it counts from the box's corner: set after, a minimum counts from
+            // where the content ended.
+            ui.set_min_size(size);
+            // Its own ID per item: a new help starts with no fling left from the last one's scroll.
+            let mut area = egui::ScrollArea::vertical().id_salt(("help", shown)).max_height(size.y).auto_shrink([false, false]);
+            if scroll.help_for != Some(shown) {
+                area = area.vertical_scroll_offset(0.0);
+                scroll.help_for = Some(shown);
+            }
+            area.show(ui, |ui| {
+                if let Some(item) = items.get(shown) {
+                    help(ui, item, help_width);
+                }
+            });
+        });
+        scroll.help_at = Some(boxed.response.rect.expand(GAP));
     });
     out
 }
@@ -702,8 +758,8 @@ struct MenuState {
 /// (`rows`): the first item highlighted, ↑/↓ move the highlight (and the focus along, from a row a
 /// screen reader focused, which takes the highlight), Enter accepts it, a click accepts
 /// the item clicked, Escape or a press elsewhere closes the list; each item after its `icon`, with
-/// the `help` on the highlighted one, or the one under the pointer, beside it, and what it says
-/// (`describe`) given to a screen reader with each. The same from the keyboard: Tab to the button,
+/// the `help` on the highlighted one, or the one under the pointer, beside it when it `has_help`,
+/// and what it says (`describe`) given to a screen reader with each. The same from the keyboard: Tab to the button,
 /// Enter (or Space) opens it, and Tab on to another widget closes it. Returns the button, and the
 /// item accepted.
 pub(crate) fn menu(
@@ -712,6 +768,7 @@ pub(crate) fn menu(
     items: impl FnOnce() -> Vec<String>,
     icon: impl Fn(&str) -> Option<&'static str>,
     describe: impl Fn(usize) -> Option<String>,
+    has_help: bool,
     help: impl FnOnce(&mut Ui, &str, f32),
 ) -> (egui::Response, Option<String>) {
     let button = ui.button(label);
@@ -802,7 +859,13 @@ pub(crate) fn menu(
         let (selected, pointer_leads) = (s.selected.min(n - 1), s.pointer_leads);
         let scroll = &mut s.scroll;
         let mut got = Rows::default();
-        let drawn = popup(ui, id, corner, room, |ui| got = rows(ui, &items, selected, pointer_leads, scroll, follow, icon, describe, help));
+        let drawn = popup(ui, id, corner, room, |ui| {
+            got = rows(ui, &items, selected, pointer_leads, scroll, follow, has_help, icon, describe, help)
+        });
+        // Placed by a guess (its first frame): place it again by what it holds now.
+        if drawn.1 != size {
+            ui.ctx().request_repaint();
+        }
         s.drawn = Some(drawn);
         accepted = got.clicked;
         s.row_focused = got.focused.is_some();
@@ -968,7 +1031,7 @@ mod tests {
         let items: Vec<String> = (0..30).map(|i| format!("item{i:02}")).collect();
         let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 900.0)).build_ui_state(
             move |ui, id: &mut Option<egui::Id>| {
-                let (button, _) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {});
+                let (button, _) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {});
                 *id = Some(button.id.with("menu"));
             },
             None,
@@ -995,6 +1058,172 @@ mod tests {
         assert_eq!(scrolled, Some(15), "scrolled to the highlight once");
     }
 
+    /// A button's list at the right edge of a window `size` big, `top` down it, the help of each
+    /// item `helps` gives drawn beside it as a box's is, when the list `has_help`: where the popup
+    /// is drawn as ↓ moves the highlight from the first item to the last, and where the button is.
+    fn popups_by_the_right_edge(size: egui::Vec2, top: f32, has_help: bool, helps: Vec<Option<String>>) -> (Vec<egui::Rect>, egui::Rect) {
+        use egui_kittest::kittest::Queryable;
+        let items: Vec<String> = (0..helps.len()).map(|i| format!("item{i:02}")).collect();
+        let n = items.len();
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            move |ui, id: &mut Option<egui::Id>| {
+                ui.add_space(top);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    let help = |ui: &mut egui::Ui, item: &str, width: f32| {
+                        let Some(text) = items.iter().position(|i| i == item).and_then(|i| helps[i].as_ref()) else { return };
+                        ui.vertical(|ui| {
+                            ui.set_max_width(width);
+                            ui.label(text);
+                        });
+                    };
+                    let (button, _) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, has_help, help);
+                    *id = Some(button.id.with("menu"));
+                });
+            },
+            None,
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        let id = h.state().unwrap();
+        let drawn = |h: &egui_kittest::Harness<'_, Option<egui::Id>>| {
+            h.ctx.data(|d| d.get_temp::<super::MenuState>(id)).and_then(|s| s.drawn).map(|(r, _)| r).unwrap()
+        };
+        let mut out = vec![drawn(&h)];
+        for _ in 1..n {
+            h.key_press(egui::Key::ArrowDown);
+            h.run();
+            out.push(drawn(&h));
+        }
+        (out, h.get_by_label("Open").rect())
+    }
+
+    /// By the window's right edge, a list whose items have helps of other widths and heights, or
+    /// none (the first one too), keeps one place and one size as the highlight moves: the help's
+    /// box is the same for every item, so the popup doesn't move sideways at the edge, up or down,
+    /// and no row moves out from under the pointer (#2618). In a wide window (the help beside the
+    /// list) and in one too narrow for that (the help under it).
+    #[test]
+    fn a_list_by_the_right_edge_stays_put_as_its_help_changes() {
+        let long = "a long help that wraps over several lines ".repeat(40);
+        for width in [1000.0, 380.0] {
+            let helps = vec![None, Some("short".into()), Some(long.clone()), Some("short".into()), None];
+            let (drawn, _) = popups_by_the_right_edge(egui::vec2(width, 700.0), 0.0, true, helps);
+            for d in &drawn {
+                assert!(
+                    (d.min - drawn[0].min).length() < 0.5 && (d.size() - drawn[0].size()).length() < 0.5,
+                    "{width}: one place and size: {drawn:?}"
+                );
+            }
+            assert!(drawn[0].right() <= width + 0.5, "{width}: on screen: {drawn:?}");
+        }
+    }
+
+    /// A help longer than its box scrolls inside it (the wheel over it), and the next item's help
+    /// starts from the top of the box again.
+    #[test]
+    fn a_long_help_scrolls_in_its_box_and_the_next_starts_at_its_top() {
+        use egui_kittest::kittest::Queryable;
+        let long = format!("first line {}", "a long help that wraps over several lines ".repeat(40));
+        let items: Vec<String> = vec!["item00".into(), "item01".into()];
+        let next = format!("next help {}", "another long help over several lines ".repeat(40));
+        let helps = [long.clone(), next.clone()];
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
+            move |ui, _: &mut ()| {
+                let help = |ui: &mut egui::Ui, item: &str, width: f32| {
+                    let Some(text) = items.iter().position(|i| i == item).map(|i| &helps[i]) else { return };
+                    ui.set_max_width(width);
+                    ui.label(text);
+                };
+                let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, true, help);
+            },
+            (),
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        let top = h.get_by_label(&long).rect().top();
+        // Over the help's first lines: the label runs on far below the box.
+        h.hover_at(h.get_by_label(&long).rect().left_top() + egui::vec2(40.0, 10.0));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -200.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.run();
+        assert!(h.get_by_label(&long).rect().top() < top - 50.0, "scrolled in its box");
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        // A long one too: with the first help's scroll kept, it would start scrolled.
+        let next = h.get_by_label(&next).rect().top();
+        assert!((next - top).abs() < 0.5, "the next help from the top: {next} for {top}");
+    }
+
+    /// The pointer gone from a row to the help (to read or scroll it) keeps that row's help, not
+    /// the highlighted item's.
+    #[test]
+    fn the_pointer_on_the_help_keeps_the_help_of_the_row_it_left() {
+        use egui_kittest::kittest::Queryable;
+        let items: Vec<String> = vec!["item00".into(), "item01".into()];
+        let helps = ["help zero".to_string(), "help one".to_string()];
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
+            move |ui, _: &mut ()| {
+                let help = |ui: &mut egui::Ui, item: &str, _: f32| {
+                    if let Some(i) = items.iter().position(|i| i == item) {
+                        ui.label(&helps[i]);
+                    }
+                };
+                let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, true, help);
+            },
+            (),
+        );
+        h.run();
+        h.get_by_label("Open").click();
+        h.run();
+        h.hover_at(h.get_by_label("item01").rect().center());
+        h.run();
+        let one = h.get_by_label("help one").rect();
+        h.hover_at(one.center());
+        h.run();
+        assert!(h.query_by_label("help one").is_some() && h.query_by_label("help zero").is_none(), "the row's help stays");
+    }
+
+    /// The help's room beside a list is what the list's own width leaves: a list of long names
+    /// puts it under the list where a short one leaves it room beside.
+    #[test]
+    fn the_help_s_room_is_what_the_list_leaves() {
+        let (layout, width) = super::help_layout(1000.0, super::MIN_WIDTH);
+        assert!(layout.main_dir() == egui::Direction::LeftToRight && width == super::HELP_WIDTH, "beside: {width}");
+        let (layout, width) = super::help_layout(500.0, 300.0);
+        assert!(layout.main_dir() == egui::Direction::TopDown && width <= 500.0 - super::FRAME, "under: {width}");
+    }
+
+    /// A list without help keeps no room for one: it stays as narrow as its rows.
+    #[test]
+    fn a_list_without_help_stays_narrow() {
+        let (drawn, _) = popups_by_the_right_edge(egui::vec2(1000.0, 700.0), 0.0, false, vec![None, None]);
+        let width = drawn[0].width();
+        assert!(width < super::MIN_WIDTH + super::GAP + super::HELP_MIN_WIDTH, "no room for a help: {width}");
+    }
+
+    /// The case of a popup crossing to the other side as its help changed (#2618, a help too tall
+    /// for the room on either side, then shorter ones, by a button with a little more room above
+    /// it than under it): the popup's size is the list's, not the help's, so it stays on one side
+    /// and in one place.
+    #[test]
+    fn a_popup_keeps_its_side_while_its_list_is_open() {
+        let long = "a long help that wraps over several lines ".repeat(40);
+        let helps = vec![Some(long), Some("short".into()), Some("short".into())];
+        let (drawn, button) = popups_by_the_right_edge(egui::vec2(1000.0, 400.0), 184.0, true, helps);
+        let (above, below) = (button.top(), 400.0 - button.bottom());
+        assert!(above > below && above - below < 10.0, "a little more room above: {above} {below}");
+        for d in &drawn {
+            assert!((d.min - drawn[0].min).length() < 0.5 && (d.size() - drawn[0].size()).length() < 0.5, "one place and size: {drawn:?}");
+        }
+    }
+
     /// A screen reader focuses a row and then, in a later frame, activates it: the list stays open
     /// on the focus (still on a widget of its own) and takes the row activated.
     #[test]
@@ -1003,7 +1232,7 @@ mod tests {
         let items: Vec<String> = (0..3).map(|i| format!("item{i:02}")).collect();
         let mut h = egui_kittest::Harness::new_ui_state(
             move |ui, got: &mut Option<String>| {
-                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {}) {
+                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {}) {
                     *got = Some(item);
                 }
             },
@@ -1028,7 +1257,7 @@ mod tests {
         let items: Vec<String> = (0..3).map(|i| format!("item{i:02}")).collect();
         let mut h = egui_kittest::Harness::new_ui_state(
             move |ui, got: &mut Option<String>| {
-                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {}) {
+                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {}) {
                     *got = Some(item);
                 }
             },
@@ -1054,7 +1283,7 @@ mod tests {
         let items: Vec<String> = (0..4).map(|i| format!("item{i:02}")).collect();
         let mut h = egui_kittest::Harness::new_ui_state(
             move |ui, got: &mut Option<String>| {
-                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {}) {
+                if let (_, Some(item)) = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {}) {
                     *got = Some(item);
                 }
                 let _ = ui.button("Under");
@@ -1094,7 +1323,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let items: Vec<String> = (0..6).map(|i| format!("item{i:02}")).collect();
         let mut h = egui_kittest::Harness::new_ui(move |ui| {
-            let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {});
+            let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {});
         });
         let focused = |h: &egui_kittest::Harness<'_>, label: &str| h.query_by_label(label).is_some_and(|n| n.is_focused());
         h.run();
@@ -1130,7 +1359,7 @@ mod tests {
         let mut h = egui_kittest::Harness::new_ui_state(
             move |ui, shown: &mut bool| {
                 if *shown {
-                    let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {});
+                    let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {});
                 }
             },
             true,
@@ -1156,7 +1385,7 @@ mod tests {
             let items: Vec<String> = (0..4).map(|i| format!("item{i:02}")).collect();
             let mut h = egui_kittest::Harness::new_ui(move |ui| {
                 let _ = ui.button("Before");
-                let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, |_, _, _| {});
+                let _ = super::menu(ui, "Open", || items.clone(), |_| None, |_| None, false, |_, _, _| {});
                 let _ = ui.button("Under");
             });
             h.run();
@@ -1193,7 +1422,7 @@ mod tests {
                         drawn.borrow_mut().push(item.to_string());
                         None
                     };
-                    super::rows(ui, &items, selected, false, &mut scroll, false, icon, |_| None, |_, _, _| {});
+                    super::rows(ui, &items, selected, false, &mut scroll, false, false, icon, |_| None, |_, _, _| {});
                 })
                 .textures_delta
                 .clear();

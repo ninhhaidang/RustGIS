@@ -12,7 +12,7 @@ use egui::{Id, Ui};
 use rustgis_engine::data::Dataset;
 use rustgis_engine::data::query::{self, Call, Completion, FuncSpec, Kw, Place, VARS};
 
-use crate::completion::{Asked, Before, GAP, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
+use crate::completion::{Asked, Before, Keyed, List, Offered, Side, Tip, Worked, byte_at, char_at, pairs};
 
 /// The most fields the list holds (typing narrows them; it scrolls): a table of hundreds of
 /// columns mustn't draw hundreds of rows. The functions, variables and keywords after them are
@@ -506,11 +506,10 @@ pub(crate) fn names_field(offer: &Offer, item: &str) -> bool {
     matches!(find(offer, item), Some(Item::Field(_)))
 }
 
-/// The help of `item` of `offer` beside the list, after a gap (`draw_help`): the expression box's
-/// list and the Script's show the same.
+/// The help of `item` of `offer` beside the list (`draw_help`), in the help's box: the expression
+/// box's list and the Script's show the same.
 pub(crate) fn draw_item(ui: &mut Ui, offer: &Offer, item: &str, ds: Option<&Dataset>, width: f32) {
     if let Some(of) = find(offer, item) {
-        ui.add_space(GAP);
         draw_help(ui, of, ds, width);
     }
 }
@@ -593,7 +592,6 @@ pub(crate) fn menu(ui: &mut Ui, label: impl Into<egui::WidgetText>, menu: Menu) 
     let find = |item: &str| catalog.iter().find(|(s, _)| s == item).map(|(_, i)| i);
     let help = |ui: &mut Ui, item: &str, width: f32| {
         if let Some(of) = find(item) {
-            ui.add_space(GAP);
             draw_help(ui, of, None, width);
         }
     };
@@ -603,7 +601,7 @@ pub(crate) fn menu(ui: &mut Ui, label: impl Into<egui::WidgetText>, menu: Menu) 
         _ => None,
     };
     let items = || catalog.iter().map(|(s, _)| s.clone()).collect();
-    let (_, accepted) = crate::completion::menu(ui, label, items, |_| None, describe, help);
+    let (_, accepted) = crate::completion::menu(ui, label, items, |_| None, describe, true, help);
     find(&accepted?).map(|item| match item {
         Item::Function(f) if f.max > 0 => format!("{}(", f.name),
         item => shown(item),
