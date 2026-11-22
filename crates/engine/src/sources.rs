@@ -88,32 +88,42 @@ impl Kept {
     /// keeps apart from them): a bare `key` is a secret beside a web address, and an address
     /// holding a secret doesn't stop being one; `known` is the row's known details (its `extra`), a
     /// sibling too. Only then are the classified entries removed.
-    fn without_secrets(&mut self, mut o: Map<String, Value>, address: &str, known: &Value) -> Map<String, Value> {
-        // Count address-bearing siblings once; unknown preference fields are not capped.
-        let addresses =
-            o.iter().filter(|(k, v)| !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0)).count();
+    fn without_secrets(&mut self, o: Map<String, Value>, address: &str, known: &Value) -> Map<String, Value> {
         let beside = web_address(&Value::String(address.into()), 0) || web_address(known, 0);
-        let secret: BTreeSet<String> = o
-            .iter()
-            .filter(|(k, v)| {
-                let mut probe = Map::new();
-                probe.insert((*k).clone(), (*v).clone());
-                let own_address = !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0);
-                if beside || addresses > usize::from(own_address) {
-                    probe.insert("\u{1}beside".into(), "https://a".into());
-                }
-                holds_secret(&Value::Object(probe))
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-        self.secrets += secret.len();
-        o.retain(|k, _| !secret.contains(k));
+        let (o, secrets) = without_secrets(o, beside);
+        self.secrets += secrets;
         o
     }
 }
 
+/// The entries of `o` without a password, key or token, and how many were left out. Every entry
+/// is classified on the original object first, beside the others: a bare `key` is a secret beside
+/// a web address (another entry, or one outside `o` when `beside`), and an address holding a
+/// secret doesn't stop being one. Only then are the classified entries removed.
+pub(crate) fn without_secrets(mut o: Map<String, Value>, beside: bool) -> (Map<String, Value>, usize) {
+    // Count address-bearing siblings once; unknown preference fields are not capped.
+    let addresses =
+        o.iter().filter(|(k, v)| !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0)).count();
+    let secret: BTreeSet<String> = o
+        .iter()
+        .filter(|(k, v)| {
+            let mut probe = Map::new();
+            probe.insert((*k).clone(), (*v).clone());
+            let own_address = !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0);
+            if beside || addresses > usize::from(own_address) {
+                probe.insert("\u{1}beside".into(), "https://a".into());
+            }
+            holds_secret(&Value::Object(probe))
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    let left_out = secret.len();
+    o.retain(|k, _| !secret.contains(k));
+    (o, left_out)
+}
+
 /// Whether `v` is, or holds, a web address (not under a file's `data` or `text`).
-fn web_address(v: &Value, depth: usize) -> bool {
+pub(crate) fn web_address(v: &Value, depth: usize) -> bool {
     match v {
         Value::String(t) => t.trim_start().get(..4).is_some_and(|p| p.eq_ignore_ascii_case("http")),
         Value::Object(o) if depth < 4 => {
@@ -206,6 +216,11 @@ impl Sources {
                     }
                     _ if holds_secret(&row) => s.kept.secrets += 1,
                     read => {
+                        // A readable row past the cap is still the first of its identity, so a
+                        // later repeat of it is said as repeated, not counted past the cap again.
+                        if let Some((_, source, _)) = &read {
+                            seen.insert(identity(&source.kind, &source.address));
+                        }
                         s.kept.over += usize::from(read.is_some());
                         s.kept.rows.entry(list).or_default().push(row);
                     }
@@ -1355,6 +1370,12 @@ MIIE
         let stored: Vec<Value> = (0..MAX_KEPT).map(|i| json!({"kind": "file", "name": "", "address": format!("/{i}.csv")})).collect();
         s.merge(Sources::from_json(&json!({ "favourites": stored }).to_string()));
         assert!(s.unread().iter().any(|t| t.contains("past the lists' limits")), "{:?}", s.unread());
+        // A row past the limit counts once: its repeat is said as repeated, not past the limit.
+        let mut over: Vec<Value> = (0..MAX_KEPT).map(|i| json!({"kind": "file", "name": "", "address": format!("/{i}.csv")})).collect();
+        over.extend([json!({"kind": "file", "name": "", "address": "/x.csv"}), json!({"kind": "file", "name": "", "address": "/x.csv"})]);
+        let s = Sources::from_json(&json!({ "saved": over }).to_string());
+        assert_eq!((s.kept.over, s.kept.repeated), (1, 1));
+        assert!(s.unread().iter().any(|t| t.starts_with("1 saved data source is past the lists' limits")), "{:?}", s.unread());
         // A repeat past the limit is dropped, not kept as an overflow row. A bound address is the
         // bare one's identity: forgetting by either form removes a kept over-limit row of it, never
         // an unreadable row that merely shares the address.
@@ -1371,7 +1392,8 @@ MIIE
         full.push(json!({"kind": "future", "name": "", "address": twin}));
         full.push(json!({"kind": " url ", "name": 5, "address": twin}));
         let mut s = Sources::from_json(&json!({"saved": full}).to_string());
-        assert_eq!(s.kept.over, 2, "{:?}", s.unread());
+        // The twin repeats the bound row's identity, past the limit as it is: said as repeated.
+        assert_eq!((s.kept.over, s.kept.repeated), (1, 1), "{:?}", s.unread());
         let generation = s.generation;
         // Only kept rows go: that is still a removal, and the pane must still save.
         assert!(s.forget("saved", "url", &twin).unwrap() && s.generation != generation);

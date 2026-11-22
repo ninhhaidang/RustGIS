@@ -52,12 +52,13 @@ url = { workspace = true }
 # Generated layers for the never-silent round trip (tests/never_silent_roundtrip.rs).
 proptest = { workspace = true }
 
-# Time slider animations as GIFs (exported by the desktop app only).
+# Random field-package identities; in the browser through its JavaScript crypto.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = "0.4"
+# Time slider animations as GIFs (exported by the desktop app only).
 image = { workspace = true, features = ["gif"] }
 
 # The live PostGIS tests make their own tables, and change rows as someone else would.

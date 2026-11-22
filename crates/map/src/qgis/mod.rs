@@ -32,7 +32,7 @@ use crate::symbology::{Labeling, LineStroke, MarkerRotation, Picture, Renderer};
 pub use annotation::{Annotation, MAX_ITEMS as MAX_ANNOTATIONS};
 pub use expr::{reads_measure, to_sql};
 pub use source::{MAX_MEMORY_FIELDS, Source, VirtualFrom, WebOptions, is_drive_relative, is_relative};
-pub use structure::{MAX_BOOKMARKS, MAX_RELATIONS, ProjectBookmark, ProjectRelation};
+pub use structure::{MAX_BOOKMARKS, MAX_RELATIONS, ProjectBookmark, ProjectRelation, listed};
 
 /// The most XML nodes a project or style is read with (a large project's file is some hundred
 /// thousand).
@@ -1010,13 +1010,6 @@ fn project_notes(root: Node, report: &mut Report) {
 /// `effects`: the groups whose blending mode, draw effect is left out), and a drawing order of
 /// its own.
 fn group_notes(tree: &Tree, blended: &[String], effects: &[String], report: &mut Report) {
-    let listed = |names: &[&str]| {
-        let mut text = names.iter().take(8).copied().collect::<Vec<_>>().join(", ");
-        if names.len() > 8 {
-            text.push_str(", …");
-        }
-        format!("{}: {text}", names.len())
-    };
     if tree.folded > 0 {
         report.approximated(
             "",

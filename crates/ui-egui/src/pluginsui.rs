@@ -278,7 +278,7 @@ pub(crate) fn fetch(app: &RustGisApp, url: &str, limit: usize, ctx: Option<egui:
 }
 
 pub(crate) fn take(slot: &Download) -> Option<Result<Vec<u8>, String>> {
-    slot.lock().ok().and_then(|mut s| s.take())
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
 }
 
 /// Whether the web app keeps installed plugins in its preferences (the desktop keeps them in

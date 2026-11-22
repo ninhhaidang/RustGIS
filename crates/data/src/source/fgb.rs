@@ -143,14 +143,6 @@ impl FgbSource {
         Self::new(f, Input::Path(path.to_path_buf(), None), name)
     }
 
-    /// Opens a private conversion, keeping its files alive for every shared reader.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_owned_path(path: &Path, name: &str, workspace: Arc<super::gdal::ReloadWorkspace>) -> Result<Self> {
-        let mut source = Self::open_path(path, name)?;
-        source._workspace = Some(workspace);
-        Ok(source)
-    }
-
     pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Self> {
         Self::open_shared(super::Shared(Arc::new(bytes)), name)
     }

@@ -368,12 +368,19 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         app.update.result = Some(r.and_then(|body| parse_release(&body)));
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Install::Downloading { version, slot, .. } = &app.update.install
-        && let Some(r) = slot.lock().ok().and_then(|mut s| s.take())
-    {
+    let landed = match &app.update.install {
+        // A worker that panicked holding the slot still leaves what it put there.
+        Install::Downloading { version, slot, .. } => {
+            let taken = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            taken.map(|r| (version.clone(), r))
+        }
+        _ => None,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((version, r)) = landed {
         app.update.install = match r {
-            Ok(saved) => Install::Ready { version: version.clone(), saved, at_exit: false },
-            Err(error) => Install::Failed { version: version.clone(), error, installing: false },
+            Ok(saved) => Install::Ready { version, saved, at_exit: false },
+            Err(error) => Install::Failed { version, error, installing: false },
         };
     }
     let current = env!("CARGO_PKG_VERSION");

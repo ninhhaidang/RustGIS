@@ -6129,9 +6129,6 @@ pub(crate) fn import(s: &mut Session, text: &str) -> CmdResult {
         );
     }
     let name = l.name.clone();
-    if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
-        return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
-    }
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
     s.active_layout = Some(i);

@@ -135,7 +135,7 @@ fn said(s: &mut Session, wrote: Wrote) -> CmdResult {
     }
     for note in notes {
         if written_path.is_some() {
-            s.notify_written(note, false);
+            s.notify_written(note);
         } else {
             s.notify(note, false);
         }
@@ -261,7 +261,7 @@ pub(crate) fn drawn(
         // already reported above retain their screen markers, so this cannot duplicate them.
         s.notice_landed_pixels();
         written?;
-        s.notify_written(format!("Exported {path}"), false);
+        s.notify_written(format!("Exported {path}"));
         Ok(())
     });
     Ok(Wrote {

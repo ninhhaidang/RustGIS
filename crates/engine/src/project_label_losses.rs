@@ -63,6 +63,9 @@ impl<'de> Deserialize<'de> for MoveCount {
 
 #[derive(Default, Deserialize)]
 struct Class {
+    /// The class's name as written (a missing one is "Default", as the reader takes it).
+    #[serde(default)]
+    name: Option<serde_json::Value>,
     #[serde(default)]
     moved: MoveCount,
     #[serde(default)]
@@ -81,6 +84,9 @@ struct Class {
 
 #[derive(Default, Deserialize)]
 struct Labels {
+    /// The Default class's name as written.
+    #[serde(default)]
+    name: Option<serde_json::Value>,
     #[serde(default)]
     moved: MoveCount,
     #[serde(default)]
@@ -180,6 +186,55 @@ fn damaged_flag(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_boolean() && !v.is_null())
 }
 
+/// What reading a layer's label classes drops or cuts (see `From<LabelingFile> for Labeling`).
+#[derive(Default)]
+struct ClassLosses {
+    /// Class names longer than [`rustgis_map::symbology::MAX_LABEL_CLASS_NAME`], cut to it.
+    cut: usize,
+    /// Classes past [`rustgis_map::symbology::MAX_LABEL_CLASSES`], dropped.
+    excess: usize,
+    /// Classes with no name, or the name of an earlier class or of Default, dropped.
+    unnamed_or_repeated: usize,
+}
+
+impl ClassLosses {
+    /// Replays the reader's class rules on one layer's raw labels and adds what they drop or cut.
+    fn add(&mut self, labels: &Labels) {
+        use rustgis_map::symbology::{DEFAULT_LABEL_CLASS, MAX_LABEL_CLASS_NAME, MAX_LABEL_CLASSES, label_class_name};
+        let raw_name = |n: &Option<serde_json::Value>| match n {
+            None => DEFAULT_LABEL_CLASS.to_string(),
+            Some(v) => v.as_str().unwrap_or_default().to_string(),
+        };
+        let mut cut = |raw: &str| {
+            if raw.trim().chars().count() > MAX_LABEL_CLASS_NAME {
+                self.cut = self.cut.saturating_add(1);
+            }
+        };
+        let raw_default = raw_name(&labels.name);
+        cut(&raw_default);
+        let mut default = label_class_name(&raw_default);
+        if default.is_empty() {
+            default = DEFAULT_LABEL_CLASS.into();
+        }
+        let mut kept: Vec<String> = Vec::new();
+        for class in &labels.classes {
+            if kept.len() >= MAX_LABEL_CLASSES {
+                self.excess = self.excess.saturating_add(1);
+                continue;
+            }
+            let raw = raw_name(&class.name);
+            cut(&raw);
+            let name = label_class_name(&raw);
+            let same = |n: &str| n.eq_ignore_ascii_case(&name);
+            if name.is_empty() || same(&default) || kept.iter().any(|o| same(o)) {
+                self.unnamed_or_repeated = self.unnamed_or_repeated.saturating_add(1);
+            } else {
+                kept.push(name);
+            }
+        }
+    }
+}
+
 /// Count what the raw layers hold against what the read labels kept; one notice per kind, each
 /// naming the item read (`name`) and what it was (`what`: "the project", "the map file", ...).
 fn count<'a>(
@@ -188,12 +243,15 @@ fn count<'a>(
     name: &str,
     what: &str,
 ) -> Vec<(ReadPart, String)> {
+    let name = crate::project::short_name(name);
+    let mut classes = ClassLosses::default();
     let (mut moves, mut callouts, mut offsets, mut flags, mut squares, mut stretches) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut guides = 0usize;
     let mut diagrams = rustgis_map::diagram::DiagramAudit::default();
     for layer in raw {
         diagrams = diagrams.plus(layer.diagram);
         let labels = &layer.labels;
+        classes.add(labels);
         moves = moves.saturating_add(labels.moved.0);
         callouts = callouts.saturating_add(usize::from(adjusted_callout(labels.callout.as_ref())));
         offsets = offsets.saturating_add(usize::from(adjusted_line_offset(labels.line_offset.as_ref())));
@@ -239,9 +297,29 @@ fn count<'a>(
     if stretches > 0 {
         messages.push(format!("{name}: {stretches} label stretch setting(s) out of range or not a number adjusted while opening {what}"));
     }
+    if classes.cut > 0 {
+        messages.push(format!(
+            "{name}: {} label class name(s) longer than {} characters cut to that length while opening {what}",
+            classes.cut,
+            rustgis_map::symbology::MAX_LABEL_CLASS_NAME
+        ));
+    }
+    if classes.excess > 0 {
+        messages.push(format!(
+            "{name}: {} label class(es) past the {} a layer holds dropped while opening {what}",
+            classes.excess,
+            rustgis_map::symbology::MAX_LABEL_CLASSES
+        ));
+    }
+    if classes.unnamed_or_repeated > 0 {
+        messages.push(format!(
+            "{name}: {} label class(es) with no name, or the name of an earlier class or of Default, dropped while opening {what}",
+            classes.unnamed_or_repeated
+        ));
+    }
     let mut messages: Vec<(ReadPart, String)> = messages.into_iter().map(|m| (ReadPart::Labels, m)).collect();
     let mut found = Vec::new();
-    diagram_messages(diagrams, name, what, &mut found);
+    diagram_messages(diagrams, &name, what, &mut found);
     messages.extend(found.into_iter().map(|m| (ReadPart::Diagrams, m)));
     messages
 }

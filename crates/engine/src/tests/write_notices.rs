@@ -351,7 +351,7 @@ fn write_notices_keep_the_ordinary_queue_bounded_and_marks_consistent() {
             s.notify("rolled-back edit", false);
             s.guarded("Inner", true, |s| {
                 for i in 0..250 {
-                    s.notify_written(format!("committed {i}"), false);
+                    s.notify_written(format!("committed {i}"));
                 }
                 Err("inner failed".into())
             })?;

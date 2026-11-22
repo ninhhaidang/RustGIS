@@ -123,7 +123,7 @@ fn export_log(s: &mut Session, p: &Value) -> CmdResult {
     rustgis_data::io::write_atomic_with(&path, |w| s.log.write(w, format == "csv")).map_err(|e| format!("{}: {e}", path.display()))?;
     // Entries dropped past the log's limits aren't in the file: said.
     let dropped = s.log.dropped_said().map(|d| format!("; not in it: {d}")).unwrap_or_default();
-    s.notify_written(format!("Exported the session log ({n} entries) to {}{dropped}", path.display()), false);
+    s.notify_written(format!("Exported the session log ({n} entries) to {}{dropped}", path.display()));
     Ok(json!({"path": path.display().to_string(), "entries": n, "format": format}))
 }
 
@@ -762,6 +762,9 @@ fn write(s: &mut Session, path: PathBuf) -> CmdResult {
         let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         return Err(if ext == crate::project::PACKAGE_EXTENSION {
             "a project saves to a .rgis file; Package Project (project.package) writes a .rgispkg package".into()
+        } else if ext.is_empty() || ext == crate::project::EXTENSION {
+            // `foo.` and `a.rgis.` end in a bare dot; `atlas.rgis/` names a folder.
+            "a project saves to a .rgis file".into()
         } else {
             format!("a project saves to a .rgis file, not a .{ext} one")
         });
@@ -772,7 +775,7 @@ fn write(s: &mut Session, path: PathBuf) -> CmdResult {
     s.mark_saved();
     s.edit_counts.clear();
     let written = s.notice_mark();
-    s.notify_written(format!("Saved {}", path.display()), false);
+    s.notify_written(format!("Saved {}", path.display()));
     crate::durable::notify(s, &report);
     for note in construction_notes {
         s.notify(note, false);
@@ -854,6 +857,14 @@ fn parse_tool(p: &Value) -> Result<Tool, String> {
     Tool::from_code(name).ok_or_else(|| format!("unknown tool '{name}'"))
 }
 
+/// A transparency (or any `f32` setting) for JSON, rounded to 4 decimals: widened as it is, 33.3
+/// would read 33.299999237060547 to the Assistant and plugins.
+pub(crate) fn percent(v: f32) -> Value {
+    let wide = f64::from(v);
+    let rounded = (wide * 10_000.0).round() / 10_000.0;
+    json!(if rounded.is_finite() { rounded } else { wide })
+}
+
 /// A longitude/latitude extent as `[west, south, east, north]`, or null when there is none.
 pub(crate) fn bbox(e: rustgis_geom::Extent) -> Value {
     // Rounded outwards, so the bounds still hold every coordinate.
@@ -910,7 +921,7 @@ fn info(s: &mut Session, p: &Value) -> CmdResult {
             };
             if let Some(o) = v.as_object_mut() {
                 o.insert("group".into(), json!(m.group_of(l.id).map(|g| g.name.as_str())));
-                o.insert("transparency".into(), json!(l.transparency));
+                o.insert("transparency".into(), json!(percent(l.transparency)));
                 o.insert("source".into(), json!(source(l)));
                 o.insert("extent".into(), bbox(l.extent()));
                 if !fields {
@@ -955,7 +966,7 @@ fn info(s: &mut Session, p: &Value) -> CmdResult {
         "activeLayer": active,
         "layers": layers,
         "groups": m.groups.iter().map(|g| json!({
-            "id": g.id, "name": g.name, "visible": g.visible, "transparency": g.transparency,
+            "id": g.id, "name": g.name, "visible": g.visible, "transparency": percent(g.transparency),
             "minScale": g.min_scale, "maxScale": g.max_scale, "layers": g.children, "parent": g.parent,
         })).collect::<Vec<_>>(),
         // Web tile layers (XYZ, WMS, vector tiles, styles, archives), each drawn over the map layer

@@ -1302,7 +1302,13 @@ impl Project {
 
     /// The same repairs with deferred translation for session-owned interface notices.
     pub(crate) fn normalize_text(&mut self) -> Vec<NoticeText> {
-        self.repair(false).into_iter().map(|(_, n)| n).collect()
+        self.normalize_after("while checking the project")
+    }
+
+    /// [`Project::normalize_text`] after something was added to the project, its notices saying
+    /// `when` the repairs were made ("while importing the map").
+    pub(crate) fn normalize_after(&mut self, when: &'static str) -> Vec<NoticeText> {
+        self.repair(false, when).into_iter().map(|(_, n)| n).collect()
     }
 
     /// [`Project::normalize`] for a project read from its file, which also opens its plain COG
@@ -1312,12 +1318,13 @@ impl Project {
     /// as it is. Returns a notice for each kind of change that removed, cut or renamed
     /// something, with the part of the project it is about.
     pub(crate) fn normalize_opened(&mut self) -> Vec<(ReadPart, NoticeText)> {
-        self.repair(true)
+        self.repair(true, "while opening the project")
     }
 
     /// Reports removed or shortened content, renamed items and repaired group display settings
-    /// with their affected part. Table ids absent from older formats are filled in for compatibility.
-    fn repair(&mut self, opened: bool) -> Vec<(ReadPart, NoticeText)> {
+    /// with their affected part, each saying `when` it was made. Table ids absent from older
+    /// formats are filled in for compatibility.
+    fn repair(&mut self, opened: bool, when: &'static str) -> Vec<(ReadPart, NoticeText)> {
         if self.maps.is_empty() {
             self.maps.push(Map::new("Map"));
         }
@@ -1350,7 +1357,6 @@ impl Project {
                 repairs.push((l.name.clone(), r));
             }
         }
-        let when = if opened { "while opening the project" } else { "while checking the project" };
         let mut notices: Vec<(ReadPart, NoticeText)> =
             layout_notices(&self.name, when, layouts_dropped, &repairs).into_iter().map(|n| (ReadPart::Layouts, n.into())).collect();
         let mut done = Repaired::default();
@@ -1761,7 +1767,12 @@ impl Project {
         if let Some(limit) = map_limit {
             p.maps.truncate(limit);
         }
-        let repair_notices = if normalize { p.normalize_opened() } else { Vec::new() };
+        // Maps imported from a project are read as it opens, and said as imported.
+        let repair_notices = match (normalize, map_limit) {
+            (false, _) => Vec::new(),
+            (true, None) => p.normalize_opened(),
+            (true, Some(_)) => p.repair(true, "while importing the maps"),
+        };
         p.read_notices =
             label_losses::notices_for_maps(text, &p, map_limit.is_some())?.into_iter().map(|(part, text)| (part, text.into())).collect();
         p.read_notices.extend(repair_notices);
@@ -2013,7 +2024,6 @@ pub(crate) const ALL_PARTS: [ReadPart; 7] = [
 /// The most layouts a project keeps (`layout.*` commands refuse to make more).
 pub(crate) const MAX_LAYOUTS: usize = 200;
 
-/// The layouts named in a notice, the first few of them.
 /// A name cut to 100 characters for a notice, so a long one can't crowd out the count (a
 /// notice too long is withheld whole).
 pub(crate) fn short_name(name: &str) -> String {
@@ -2023,6 +2033,7 @@ pub(crate) fn short_name(name: &str) -> String {
     }
 }
 
+/// The layouts named in a notice, the first few of them.
 fn layout_names(
     repairs: &[(String, rustgis_map::layout::LayoutRepairs)],
     of: impl Fn(&rustgis_map::layout::LayoutRepairs) -> usize,

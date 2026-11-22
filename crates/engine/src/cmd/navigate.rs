@@ -1108,8 +1108,8 @@ pub fn new_bookmark_name(map: &Map) -> String {
 pub(crate) const MAX_BOOKMARK_NAME: usize = 120;
 const MAX_DESCRIPTION: usize = 2_000;
 
-/// Most bookmarks a map keeps.
-pub(crate) const MAX_BOOKMARKS: usize = 10_000;
+/// Most bookmarks a map keeps: as many as a QGIS project import reads.
+pub(crate) use rustgis_map::qgis::MAX_BOOKMARKS;
 
 /// The map's bookmarks as a bookmarks file. Places are lon/lat and metres per pixel, so they
 /// open in the same place on a map in any projection.

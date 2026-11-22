@@ -5,7 +5,7 @@ use roxmltree::Node;
 
 use super::{Report, child, crs_of};
 
-/// The most bookmarks and relations an import reads.
+/// The most bookmarks and relations an import reads; also the most bookmarks a map keeps.
 pub const MAX_BOOKMARKS: usize = 10_000;
 pub const MAX_RELATIONS: usize = 10_000;
 
@@ -331,7 +331,7 @@ fn polygon_extent(wkt: &str) -> Option<[f64; 4]> {
 }
 
 /// Up to eight names, comma-separated, after their count.
-fn listed(names: &[&str]) -> String {
+pub fn listed(names: &[&str]) -> String {
     let mut text = names.iter().take(8).copied().collect::<Vec<_>>().join(", ");
     if names.len() > 8 {
         text.push_str(", …");

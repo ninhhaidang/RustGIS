@@ -1194,7 +1194,7 @@ pub(super) fn write_and_report(s: &mut Session, r: &Raster, bi: usize, cog: bool
     let wrote =
         write_geotiff_with_guidance(r, bi, cog, path, "export the resulting layer with share.exportRaster and give \"band\" for another")?;
     for note in wrote.notes {
-        s.notify_written(note, false);
+        s.notify_written(note);
     }
     Ok(wrote.answer)
 }

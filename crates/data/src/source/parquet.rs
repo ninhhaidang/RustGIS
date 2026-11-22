@@ -91,12 +91,6 @@ impl ParquetSource {
         Ok(source)
     }
 
-    /// Opens a private conversion, keeping its files alive for every shared reader.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_owned_path(path: &Path, name: &str, workspace: Arc<super::duckdb::ReloadWorkspace>) -> Result<Self> {
-        Self::open_converted_path(path, name, None, Some(workspace))
-    }
-
     pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Self> {
         Self::open_shared(super::Shared(Arc::new(bytes)), name)
     }

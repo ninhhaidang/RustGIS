@@ -288,7 +288,7 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
         "edit.previewShapeConversion" => ("Preview Shape Conversion", crate::shape_conversion::ahead(s, params), None),
         "table.statistics" => ("Column Statistics", super::table_stats::stats_ahead(s, params), None),
         "layer.sizeBy" => ("Size by Field", super::layer::size_by_ahead(s, params), None),
-        _ => return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service listings, topology, Source File State, Column Statistics and Size by Field prepare background work".into()),
+        _ => return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service listings, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics and Size by Field prepare background work".into()),
     };
     let name = work.as_ref().map_or(name, |work| work.name);
     let table = super::edit::table_edit_in_background(spec.id)

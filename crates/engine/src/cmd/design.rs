@@ -1725,12 +1725,7 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
     super::at_most("subtypes", "a field", list, 1000)?;
     for v in list {
         let code = v.get("code").and_then(Json::as_i64).ok_or("each subtype has an integer code")?;
-        let name = super::within(
-            "a subtype's name",
-            "a subtype's name",
-            v.get("name").and_then(Json::as_str).ok_or("each subtype has a name")?,
-            200,
-        )?;
+        let name = super::within("name", "a subtype's name", v.get("name").and_then(Json::as_str).ok_or("each subtype has a name")?, 200)?;
         let defaults: Vec<(String, Value)> = v
             .get("defaults")
             .and_then(Json::as_object)

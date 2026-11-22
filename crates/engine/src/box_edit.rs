@@ -265,7 +265,7 @@ pub(crate) fn delete_box(s: &mut Session, p: &Value) -> CmdResult {
         return Err("the feature changed during this edit".into());
     }
     let layer = s.map_mut().layer_mut(id).ok_or("no layer")?;
-    let before = layer.dataset.features.remove(row);
+    let before = layer.dataset.features.remove_row(row).ok_or("no such feature")?;
     layer.selection = layer.selection.iter().copied().filter(|r| *r != row).map(|r| if r > row { r - 1 } else { r }).collect();
     layer.touch_geometry();
     crate::cmd::design::apply(s, id, vec![crate::cmd::design::Change { before: Some(before), row: None }])?;

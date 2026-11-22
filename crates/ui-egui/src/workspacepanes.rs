@@ -560,7 +560,7 @@ pub fn land_series(app: &mut RustGisApp) -> bool {
         app.ws.message = Some((tl!("The time series was stopped: another project was opened").to_string(), false));
         return false;
     }
-    let Some((res, notes)) = r.result.lock().ok().and_then(|mut g| g.take()) else { return true };
+    let Some((res, notes)) = r.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return true };
     let cancelled = r.control.is_cancelled();
     app.ws.series_reading = None;
     // What reading it said, though it then failed; not for a read that was cancelled.
@@ -628,7 +628,7 @@ fn area_under(line: &[egui::Pos2], base: f32, colour: Color32) -> egui::Mesh {
 pub fn land_summary(app: &mut RustGisApp) -> bool {
     use std::sync::atomic::Ordering;
     let Some(r) = &app.ws.reducing else { return false };
-    let Some(res) = r.result.lock().ok().and_then(|mut g| g.take()) else { return true };
+    let Some(res) = r.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return true };
     let (root, variable, name, id) = (r.run.root.clone(), r.run.variable.clone(), r.run.name.clone(), r.id);
     // A run the user cancelled stops quietly: no error for it.
     let cancelled = r.cancel.load(Ordering::Relaxed);

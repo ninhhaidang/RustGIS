@@ -107,7 +107,7 @@ pub fn commands() -> Vec<C> {
             .effects(crate::policy::Effects::NONE)
             .when(need_polygons)
             .params(
-                r#"{"layer"?: name|id | [name|id] (default: the active layer; a list is set alike in one step, or refused whole), "type": "none"|"height"|"field", "field"?: numeric field (metres), "height"?: metres, "factor"?: number}"#,
+                r#"{"layer"?: name|id | [name|id] (default: the active layer; a list is set alike in one step, or refused whole), "type": "none"|"height"|"field", "field"?: a numeric field's name (its values are metres), "height"?: metres, "factor"?: number}"#,
             ),
         C::new("layer.faces", "Faces", "Style › Faces", |s, p| {
             let (cull, light) = (b(p, "culling"), b(p, "lighting"));
@@ -143,7 +143,7 @@ pub fn commands() -> Vec<C> {
             .roles(&[])
             .effects(crate::policy::Effects::NONE)
             .when(need_polygons)
-            .params(r#"{"layer"?: name|id | [name|id] (as layer.extrusion), "field"?: numeric field (metres; null or "" clears it), "base"?: metres (0 to 10,000,000)}"#),
+            .params(r#"{"layer"?: name|id | [name|id] (as layer.extrusion), "field"?: a numeric field's name (its values are metres; null or "" clears it), "base"?: metres (0 to 10,000,000)}"#),
     ]
 }
 
@@ -158,12 +158,7 @@ fn display_filters(s: &mut Session, p: &Value) -> CmdResult {
         rustgis_data::query::parse(w, ds)?;
         let scale = |k: &str| v.get(k).and_then(Value::as_f64).filter(|x| x.is_finite() && *x > 0.0);
         filters.push(DisplayFilter {
-            name: super::within(
-                "a filter's name",
-                "a display filter's name",
-                v.get("name").and_then(Value::as_str).unwrap_or("Filter"),
-                100,
-            )?,
+            name: super::within("name", "a display filter's name", v.get("name").and_then(Value::as_str).unwrap_or("Filter"), 100)?,
             min_scale: scale("minScale"),
             max_scale: scale("maxScale"),
             where_: w.to_string(),

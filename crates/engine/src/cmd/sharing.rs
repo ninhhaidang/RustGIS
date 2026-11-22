@@ -179,16 +179,15 @@ pub fn commands() -> Vec<C> {
             crate::model::check_file(&v)?;
             let name = v["name"].as_str().unwrap_or("Tool").chars().take(200).collect::<String>();
             // A model file (`*.model.json`) holds a graph; a web tool its steps.
-            let mark = s.notice_mark();
             let imported = if let Some(graph) = v.get("graph") {
                 s.run("model.new", &json!({"name": name, "graph": graph, "imported": true}))?
             } else {
-                let steps = v.get("steps").cloned().ok_or("not a RustGIS model or web tool (no graph or steps)")?;
+                let steps = v.get("steps").cloned().ok_or(crate::model::NOT_A_MODEL)?;
                 s.run("model.new", &json!({"name": name, "steps": steps, "imported": true}))?
             };
             // A name `model.new` cut to tell it apart is said once, by it (#1923), unless this cut
             // it first: `model.new` saw only the first 200 characters, so that cut is said here.
-            let said = s.notices_since(mark).iter().any(|n| n.text.starts_with("ModelBuilder: a model has that name already"));
+            let said = imported.get("cut").and_then(Value::as_bool).unwrap_or(false);
             let cut_here = v["name"].as_str().is_some_and(|n| n.chars().count() > 200);
             if (cut_here || !said) && v.get("name").map_or(Some("Tool"), Value::as_str) != imported.get("model").and_then(Value::as_str) {
                 // A cut to the 200 says how much it cut.
@@ -394,7 +393,7 @@ fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
         }
     };
     let written = s.notice_mark();
-    s.notify_written(format!("Shared {name} to {path}"), false);
+    s.notify_written(format!("Shared {name} to {path}"));
     // After it, so the status bar, which shows the last notice, keeps saying it.
     note_label_classes(s, kind, p);
     note_export(s, kind, p, &path);

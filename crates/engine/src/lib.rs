@@ -2700,7 +2700,7 @@ impl Session {
                 }
                 if let Some(note) = layer.source.as_mut().and_then(|source| source.take_not_utf8()) {
                     not_utf8.push(notice_text::NoticeText::format(
-                        "{name}: some text values in it aren't valid UTF-8 (Load All Features counts them all); so far, {note}",
+                        "{name}: so far, {note} (Load All Features counts them all)",
                         [("name", layer.name.clone().into()), ("note", note.into())],
                     ));
                 }
@@ -2839,9 +2839,8 @@ impl Session {
     /// Says once a session that native HTTPS trusts the bundled Mozilla roots, as a Linux or BSD
     /// system with no CA certificates and no `SSL_CERT_FILE` or `SSL_CERT_DIR` makes it
     /// ([`rustgis_data::http::bundled_roots`]): the trust source was assumed, not the system's.
-    /// Checked after each command and each frame, as the clients are first made when a request is.
-    /// Says, once a session, that native HTTPS fell back to the bundled CA roots, if it did. Run
-    /// with [`Session::notice_landed_rasters`]; a reader of the notices that runs no command (the
+    /// Checked after each command and each frame (with [`Session::notice_landed_rasters`]), as the
+    /// clients are first made when a request is; a reader of the notices that runs no command (the
     /// Python package) calls it first, as a client made on a background thread chooses the trust.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn notice_trust(&mut self) {
@@ -2943,9 +2942,9 @@ impl Session {
     /// A notice about a file or database write that has committed, not a pending delivery or
     /// an in-memory edit. It follows the ordinary redaction, bounds and diagnostics path, but
     /// survives a later enclosing command's rollback.
-    pub(crate) fn notify_written(&mut self, text: impl Into<String>, error: bool) {
+    pub(crate) fn notify_written(&mut self, text: impl Into<String>) {
         let mark = self.notice_mark();
-        self.notify(text, error);
+        self.notify(text, false);
         self.retain_written_notices(mark);
     }
 

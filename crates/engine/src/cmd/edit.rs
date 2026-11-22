@@ -349,7 +349,8 @@ pub(crate) fn validate(g: &Geometry) -> Result<(), String> {
 /// `v` as a value of a `ty` field. A date-time into a date field is the day it shows. A number goes into a number field as it is, not through the
 /// text it shows (which rounds a decimal to six places); a decimal, or text written as one, into a
 /// whole-number field loses its fraction (toward zero); a whole number past 2^53 into a decimal
-/// field is the nearest decimal. Not a number is null. Other values go through their text (a
+/// field is the nearest decimal. Not a number, and an infinity in a whole-number field, are null.
+/// Other values go through their text (a
 /// decimal into a text field as it's shown, to six places), and what the field can't hold is
 /// null. A number past the 64-bit range is held at the range's end, as it was; [`coerce_cut`], for
 /// callers that say what was cut, makes it null instead.
@@ -370,8 +371,11 @@ pub(crate) enum Cut {
     Fraction,
     /// All of it: a number past the 64-bit range is null.
     Range,
-    /// All of it: not a number (NaN) is null.
+    /// All of it: not a number (NaN), or a word read as one, is null.
     NotANumber,
+    /// All of it: an infinity, given as a number or as text ("inf"), is null in a field that
+    /// holds only finite numbers.
+    NotFinite,
     /// A date-time's time of day or zone: a date field keeps its day.
     Time,
 }
@@ -382,6 +386,7 @@ pub(crate) struct Cuts {
     fractions: usize,
     past: usize,
     not_numbers: usize,
+    not_finite: usize,
     times: usize,
 }
 
@@ -392,6 +397,7 @@ impl Cuts {
             Cut::Fraction => self.fractions += 1,
             Cut::Range => self.past += 1,
             Cut::NotANumber => self.not_numbers += 1,
+            Cut::NotFinite => self.not_finite += 1,
             Cut::Time => self.times += 1,
         }
     }
@@ -419,6 +425,10 @@ impl Cuts {
         if self.not_numbers > 0 {
             let are = if self.not_numbers == 1 { "isn't a number" } else { "aren't numbers" };
             out.push((LossCode::DroppedValue, format!("{by}: '{field}' is null for {} that {are}", results(self.not_numbers))));
+        }
+        if self.not_finite > 0 {
+            let are = if self.not_finite == 1 { "isn't a finite number" } else { "aren't finite numbers" };
+            out.push((LossCode::DroppedValue, format!("{by}: '{field}' is null for {} that {are}", results(self.not_finite))));
         }
         if self.times > 0 {
             let their = if self.times == 1 { "its" } else { "their" };
@@ -537,7 +547,7 @@ impl WriteLosses {
 /// in a whole-number field.
 pub(crate) fn coerce_cut(v: Value, ty: FieldType) -> (Value, Cut) {
     if ty == FieldType::Double && non_finite_input(&v, ty) {
-        return (Value::Null, Cut::NotANumber);
+        return (Value::Null, if infinite(&v) { Cut::NotFinite } else { Cut::NotANumber });
     }
     let (v, cut, _) = convert(v, ty);
     (v, cut)
@@ -554,11 +564,21 @@ pub(crate) fn non_finite_input(value: &Value, ty: FieldType) -> bool {
         }
 }
 
+/// Whether a number, or a number written as text, is an infinity (not NaN).
+fn infinite(value: &Value) -> bool {
+    match value {
+        Value::Float(f) => f.is_infinite(),
+        Value::Text(text) => text.trim().parse::<f64>().is_ok_and(f64::is_infinite),
+        _ => false,
+    }
+}
+
 /// [`coerce_cut`], and for a number past the range the decimal it was read as.
 fn convert(v: Value, ty: FieldType) -> (Value, Cut, Option<f64>) {
     match (v, ty) {
         (Value::Null, _) => (Value::Null, Cut::None, None),
         (Value::Int(i), FieldType::Integer) => (Value::Int(i), Cut::None, None),
+        (Value::Float(f), FieldType::Integer) if f.is_infinite() => (Value::Null, Cut::NotFinite, None),
         (Value::Float(f), FieldType::Integer) => whole(f),
         (Value::Float(f), FieldType::Double) => (Value::Float(f), Cut::None, None),
         (Value::Int(i), FieldType::Double) => (Value::Float(i as f64), Cut::None, None),
@@ -577,6 +597,7 @@ fn convert(v: Value, ty: FieldType) -> (Value, Cut, Option<f64>) {
                 // A word the decimal reader takes ("inf", "NaN") isn't a number written as text:
                 // null, and said so, as not a number.
                 (None, Ok(f)) if f.is_finite() || t.bytes().any(|b| b.is_ascii_digit()) => whole(f),
+                (None, Ok(f)) if f.is_infinite() => (Value::Null, Cut::NotFinite, None),
                 (None, Ok(_)) => (Value::Null, Cut::NotANumber, None),
                 _ => (Value::parse(&t, ty), Cut::None, None),
             },
@@ -1817,7 +1838,8 @@ mod tests {
     fn coerce_takes_not_a_number_as_null() {
         assert_eq!(coerce_cut(Value::Float(f64::NAN), FieldType::Integer), (Value::Null, Cut::NotANumber));
         assert_eq!(coerce(Value::Float(f64::NAN), FieldType::Integer), Value::Null);
-        assert_eq!(coerce_cut(Value::Float(f64::INFINITY), FieldType::Integer), (Value::Null, Cut::Range));
+        assert_eq!(coerce_cut(Value::Float(f64::INFINITY), FieldType::Integer), (Value::Null, Cut::NotFinite));
+        assert_eq!(coerce(Value::Float(f64::INFINITY), FieldType::Integer), Value::Null);
         assert_eq!(coerce(Value::Float(-1e30), FieldType::Integer), Value::Int(i64::MIN));
         assert_eq!(coerce(Value::Float(0.1 + 0.2), FieldType::Double), Value::Float(0.1 + 0.2));
         // Text past the range, whole or decimal: null where it's said, at the range's end elsewhere.
@@ -1843,6 +1865,16 @@ mod tests {
         cuts = Cuts::default();
         cuts.add(Cut::NotANumber);
         assert_eq!(cuts.notices("Rule", "n"), ["Rule: 'n' is null for 1 result that isn't a number"]);
+        // An infinity is said as not finite, not as not a number; NaN stays not a number.
+        assert_eq!(coerce_cut(Value::Float(f64::INFINITY), FieldType::Double), (Value::Null, Cut::NotFinite));
+        assert_eq!(coerce_cut(text("-inf"), FieldType::Double), (Value::Null, Cut::NotFinite));
+        assert_eq!(coerce_cut(text("inf"), FieldType::Integer), (Value::Null, Cut::NotFinite));
+        assert_eq!(coerce_cut(Value::Float(f64::NAN), FieldType::Double), (Value::Null, Cut::NotANumber));
+        assert_eq!(coerce_cut(text("NaN"), FieldType::Integer), (Value::Null, Cut::NotANumber));
+        cuts = Cuts::default();
+        cuts.add(Cut::NotFinite);
+        cuts.add(Cut::NotFinite);
+        assert_eq!(cuts.notices("Calculate Field", "d"), ["Calculate Field: 'd' is null for 2 results that aren't finite numbers"]);
     }
 
     /// Every form the earlier calculator read gives the same stored values through the

@@ -257,7 +257,7 @@ pub(crate) fn preview(s: &mut Session, p: &Value) -> CmdResult {
     let ready = crate::cmd::reads::take::<Prepared>(s, "shapeConversion");
     #[cfg(not(target_arch = "wasm32"))]
     if ready.is_none() && s.statistics_window_thread == Some(std::thread::current().id()) {
-        return Err("shape fitting needs the desktop background preview queue; use Convert to or a direct MCP preview request".into());
+        return Err("shape fitting needs the desktop background preview queue; use Convert Polygon to Shape… (its Preview Conversion), or ask for edit.previewShapeConversion through MCP".into());
     }
     let done = if let Some(a) = ready {
         let l = s.map().layer(t.layer).ok_or("no layer")?;

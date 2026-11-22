@@ -4,7 +4,7 @@
 //! (`rustgis_map::qgis::Report`).
 
 use rustgis_geom::{Coord, Extent};
-use rustgis_map::qgis::{self, NoteKind, Report, Source};
+use rustgis_map::qgis::{self, NoteKind, Report, Source, listed};
 use serde_json::{Value, json};
 
 use super::{need_layer, ps};
@@ -85,18 +85,18 @@ fn marker_images() -> impl FnMut(&str) -> Result<(String, f32), &'static str> {
 /// 20,000 pixels a side within 512 MiB, as `layer.marker` does.
 fn marker_image(source: &str, read: &mut usize) -> Result<(String, f32), &'static str> {
     use base64::Engine;
-    use rustgis_map::symbology::MAX_PICTURE_BYTES;
+    use rustgis_map::symbology::MAX_PICTURE_BYTES as MARKER_PICTURE_BYTES;
     const TOO_LARGE: &str = "whose image is past 2 MiB of base64";
     const NOT_AN_IMAGE: &str = "whose image isn't a PNG or JPEG RustGIS reads";
     let b64 = match source.strip_prefix("base64:") {
         // Past the limit, refused before it is copied, and charged as a file past it is.
-        Some(b64) if b64.trim().len() > MAX_PICTURE_BYTES => {
-            *read += MAX_PICTURE_BYTES;
+        Some(b64) if b64.trim().len() > MARKER_PICTURE_BYTES => {
+            *read += MARKER_PICTURE_BYTES;
             return Err(TOO_LARGE);
         }
         Some(b64) => b64.trim().to_string(),
         // Base64 is 4 characters for 3 bytes.
-        None => match super::graphics::read_picture_file(source, MAX_PICTURE_BYTES / 4 * 3) {
+        None => match super::graphics::read_picture_file(source, MARKER_PICTURE_BYTES / 4 * 3) {
             Ok(bytes) if bytes.is_empty() => return Err(NOT_AN_IMAGE),
             Ok(bytes) => base64::engine::general_purpose::STANDARD.encode(bytes),
             Err(e) => {
@@ -116,7 +116,7 @@ fn marker_image(source: &str, read: &mut usize) -> Result<(String, f32), &'stati
     if b64.is_empty() {
         return Err("with no image");
     }
-    if b64.len() > MAX_PICTURE_BYTES {
+    if b64.len() > MARKER_PICTURE_BYTES {
         return Err(TOO_LARGE);
     }
     // As `layer.marker` checks one: one kept already decodes into the drawing's cache.
@@ -1689,13 +1689,6 @@ fn add_relations(s: &mut Session, project: &qgis::Project, came_in: &[CameIn], r
             destination_key,
         });
     }
-    let listed = |names: &[&str]| {
-        let mut text = names.iter().take(8).copied().collect::<Vec<_>>().join(", ");
-        if names.len() > 8 {
-            text.push_str(", …");
-        }
-        format!("{}: {text}", names.len())
-    };
     if !missing.is_empty() {
         report.skipped("", format!("its relations between layers that didn't come in or haven't the fields ({})", listed(&missing)));
     }
@@ -1864,13 +1857,6 @@ fn add_bookmarks(s: &mut Session, project: &qgis::Project, report: &mut Report) 
         m.bookmarks.push(rustgis_map::Bookmark::new(name, m.camera));
     }
     m.camera = view;
-    let listed = |names: &[&str]| {
-        let mut text = names.iter().take(8).copied().collect::<Vec<_>>().join(", ");
-        if names.len() > 8 {
-            text.push_str(", …");
-        }
-        format!("{}: {text}", names.len())
-    };
     if !none.is_empty() {
         report.skipped("", format!("its bookmarks with no coordinate system, in a project without one ({})", listed(&none)));
     }

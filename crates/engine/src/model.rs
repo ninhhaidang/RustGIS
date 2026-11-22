@@ -355,12 +355,19 @@ pub fn new_id(g: &ModelGraph, prefix: &str) -> String {
     (1..).map(|i| format!("{prefix}{i}")).find(|id| !g.nodes.iter().any(|n| &n.id == id)).unwrap_or_else(|| prefix.to_string())
 }
 
+/// The parts of a step's input-port value: for a port that takes many layers, each name between
+/// `;`s, trimmed, blanks left out; for one that takes one, the whole value, trimmed.
+fn port_parts(value: &str, many: bool) -> impl Iterator<Item = &str> {
+    value.split(move |c| many && c == ';').map(str::trim).filter(move |part| !many || !part.is_empty())
+}
+
 /// A graph from steps run in order (`%n` for step n's output): an input node for each layer
-/// the steps read, a tool node per step, laid out.
-pub fn steps_to_graph(steps: &[ModelStep]) -> ModelGraph {
+/// the steps read, a tool node per step, laid out. Only [`checked_steps_to_graph`] calls it, which
+/// refuses steps past the graph's limits first.
+pub(crate) fn steps_to_graph(steps: &[ModelStep]) -> ModelGraph {
     let mut g = ModelGraph::default();
     let mut inputs: HashMap<String, String> = HashMap::new();
-    for (i, st) in steps.iter().take(MAX_NODES / 2).enumerate() {
+    for (i, st) in steps.iter().enumerate() {
         let id = format!("t{}", i + 1);
         let mut params = match &st.params {
             Value::Object(o) => o.clone(),
@@ -369,8 +376,7 @@ pub fn steps_to_graph(steps: &[ModelStep]) -> ModelGraph {
         let node = ModelNode { id: id.clone(), kind: ModelNodeKind::Tool, tool: Some(st.tool.clone()), ..Default::default() };
         for port in input_ports(&node) {
             let Some(v) = params.get(port.id).and_then(Value::as_str).map(str::to_string) else { continue };
-            let parts: Vec<&str> = if port.many { v.split(';').map(str::trim).filter(|x| !x.is_empty()).collect() } else { vec![v.trim()] };
-            for part in parts {
+            for part in port_parts(&v, port.many) {
                 let from = match part.strip_prefix('%').and_then(|n| n.parse::<usize>().ok()) {
                     Some(n) if (1..=i).contains(&n) => format!("t{n}"),
                     Some(_) => continue,
@@ -417,10 +423,7 @@ pub fn checked_steps_to_graph(steps: &[ModelStep]) -> Result<ModelGraph, String>
         let node = ModelNode { tool: Some(step.tool.clone()), kind: ModelNodeKind::Tool, ..Default::default() };
         for port in input_ports(&node) {
             let Some(value) = step.params.get(port.id).and_then(Value::as_str) else { continue };
-            for part in value.split(|c| port.many && c == ';').map(str::trim) {
-                if port.many && part.is_empty() {
-                    continue;
-                }
+            for part in port_parts(value, port.many) {
                 match part.strip_prefix('%').and_then(|n| n.parse::<usize>().ok()) {
                     Some(n) if !(1..=index).contains(&n) => {
                         return Err(format!(
@@ -884,6 +887,9 @@ struct ImportItem<T> {
     extra: HashMap<String, Value>,
 }
 
+/// What a file that is no model or web tool is refused with.
+pub(crate) const NOT_A_MODEL: &str = "not a RustGIS model or web tool (no graph or steps)";
+
 /// Check declared versions, required capabilities (`requires`, as a project's; see
 /// [`crate::project::CAPABILITIES`]) and model contents before import can discard data. Missing
 /// versions are legacy files. The stricter field checks apply only to file import.
@@ -895,7 +901,7 @@ pub(crate) fn check_file(v: &Value) -> Result<(), String> {
     let tool = v.get("steps").is_some() || v.get("format").and_then(Value::as_str) == Some("RustGIS web tool");
     // Some other file (GeoJSON, a project) is said to be one, not told to update RustGIS.
     if !model && !tool {
-        return Err("not a RustGIS model or web tool (no graph or steps)".into());
+        return Err(NOT_A_MODEL.into());
     }
     if let Some(version) = v.get("version") {
         let supported = if model { version.as_str() == Some(FILE_VERSION) } else { version.as_u64() == Some(WEB_TOOL_VERSION) };
@@ -905,7 +911,8 @@ pub(crate) fn check_file(v: &Value) -> Result<(), String> {
     }
     crate::project::check_requires(v.get("requires"), "model or web tool", "import")?;
     if graph.is_none() && v.get("steps").is_none() {
-        return Err("not a RustGIS model or web tool (no graph or steps)".into());
+        // Identified as one by its schema or format above, but holding neither.
+        return Err("a RustGIS model or web tool with neither graph nor steps".into());
     }
     if graph.is_some() && v.get("steps").is_some() {
         return Err("a model file cannot contain both a graph and steps. Choose one representation before importing it.".into());

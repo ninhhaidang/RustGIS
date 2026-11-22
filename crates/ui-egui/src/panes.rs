@@ -3377,7 +3377,7 @@ fn geolibre_card(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         return;
     }
     // An install that just finished: use the runner, and remember it.
-    let finished = app.gp.install.as_ref().and_then(|st| st.lock().ok().and_then(|mut s| s.result.take()));
+    let finished = app.gp.install.as_ref().and_then(|st| st.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.take());
     if let Some(result) = finished {
         app.gp.install = None;
         match result.and_then(|path| app.run("gp.setGeolibre", json!({"path": path})).map(|_| path)) {
@@ -3559,7 +3559,7 @@ fn geolibre_language(app: &mut RustGisApp, ui: &mut Ui) {
     // One download at a time, whatever the language now: a second one would take the first's
     // place, and the first's result (or failure) would never be shown.
     if let Some((_, slot)) = &app.gp.language_download {
-        let done = slot.lock().ok().and_then(|mut r| r.take());
+        let done = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         match done {
             // A pack that names none of these tools (made for another runner version) would leave
             // them in English under Remove translations, without a word.

@@ -1717,19 +1717,32 @@ fn edge_pixels(r: &Raster, e: &Extent) -> Option<Vec<(f64, f64)>> {
     })
 }
 
-/// The columns and rows of a raster under a longitude/latitude box, or `None` when it misses
-/// (or can't be placed on it, [`edge_pixels`]).
-fn pixel_window(r: &Raster, e: &Extent) -> Option<(std::ops::Range<u32>, std::ops::Range<u32>)> {
+/// What [`pixel_window`] says of a polygon whose box misses the raster.
+const OUTSIDE_THE_RASTER: &str = "the polygon is outside the raster";
+
+/// The columns and rows of a raster under a longitude/latitude box; an error when it misses, or
+/// when the raster's coordinate system can't place the box's edge on it ([`edge_pixels`]).
+fn pixel_window(r: &Raster, e: &Extent) -> Result<(std::ops::Range<u32>, std::ops::Range<u32>), String> {
+    let pixels = edge_pixels(r, e).ok_or_else(|| {
+        let b = r.extent();
+        let misses = e.max_x < b.min_x || e.min_x > b.max_x || e.max_y < b.min_y || e.min_y > b.max_y;
+        if misses {
+            OUTSIDE_THE_RASTER.to_string()
+        } else {
+            format!("{}'s coordinate system can't place the polygon's edge on the raster", r.name)
+        }
+    })?;
     let (mut c0, mut r0, mut c1, mut r1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for (c, rr) in edge_pixels(r, e)? {
+    for (c, rr) in pixels {
         (c0, r0, c1, r1) = (c0.min(c), r0.min(rr), c1.max(c), r1.max(rr));
     }
     if c0 > c1 || c1 < 0.0 || r1 < 0.0 || c0 > f64::from(r.width) || r0 > f64::from(r.height) {
-        return None;
+        return Err(OUTSIDE_THE_RASTER.into());
     }
-    let cols = (c0.floor().max(0.0) as u32).min(r.width)..(c1.ceil().max(0.0) as u32 + 1).min(r.width);
-    let rows = (r0.floor().max(0.0) as u32).min(r.height)..(r1.ceil().max(0.0) as u32 + 1).min(r.height);
-    Some((cols, rows))
+    // A far edge past u32's range saturates there; the step past it mustn't overflow.
+    let cols = (c0.floor().max(0.0) as u32).min(r.width)..(c1.ceil().max(0.0) as u32).saturating_add(1).min(r.width);
+    let rows = (r0.floor().max(0.0) as u32).min(r.height)..(r1.ceil().max(0.0) as u32).saturating_add(1).min(r.height);
+    Ok((cols, rows))
 }
 
 fn edit_pixels(s: &mut Session, p: &Value) -> CmdResult {
@@ -1766,7 +1779,7 @@ fn edit_pixels(s: &mut Session, p: &Value) -> CmdResult {
     let mut bands = copied(&r)?;
     let mut n = 0usize;
     // Only the pixels under the polygon's box are visited.
-    let (cols, rows) = pixel_window(&r, &e).ok_or("the polygon is outside the raster")?;
+    let (cols, rows) = pixel_window(&r, &e)?;
     let tr = r.transformer();
     for row in rows {
         for col in cols.clone() {
@@ -1926,7 +1939,7 @@ fn measure(s: &mut Session, p: &Value) -> CmdResult {
             let mut cells = Vec::new();
             let mut e = Extent::EMPTY;
             pts.iter().for_each(|c| e.expand(*c));
-            let (cols, rows) = pixel_window(d, &e).ok_or("the polygon is outside the raster")?;
+            let (cols, rows) = pixel_window(d, &e)?;
             let tr = d.transformer();
             for row in rows.map(i64::from) {
                 for col in cols.clone().map(i64::from) {
@@ -2488,4 +2501,24 @@ fn robinson_pixel_window_keeps_the_equatorial_edges() {
         assert!(f64::from(columns.start) <= col && f64::from(columns.end) >= col);
         assert!(f64::from(rows.start) <= row && f64::from(rows.end) >= row);
     }
+}
+
+/// A polygon off the raster is said to be outside it; one its coordinate system can't place (on
+/// the equator past 90° from a UTM zone's meridian) is said to be that, not outside the raster.
+#[test]
+fn pixel_window_tells_a_miss_from_a_place_it_cant_take() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform};
+    let transform = GeoTransform { origin_x: 0.0, origin_y: 1.0, pixel_width: 0.01, pixel_height: -0.01 };
+    let r = Raster::new("small", 100, 100, vec![vec![1.0; 10_000]], transform, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+    assert_eq!(pixel_window(&r, &Extent::new(50.0, 50.0, 51.0, 51.0)).unwrap_err(), OUTSIDE_THE_RASTER);
+    // A box reaching billions of pixels past the raster is the raster's part, without overflow.
+    let tiny = GeoTransform { origin_x: 0.0, origin_y: 1.0, pixel_width: 1e-8, pixel_height: -1e-8 };
+    let r2 = Raster::new("tiny", 100, 100, vec![vec![1.0; 10_000]], tiny, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+    assert_eq!(pixel_window(&r2, &Extent::new(0.0, -80.0, 170.0, 1.0)).unwrap(), (0..100, 0..100));
+    // UTM zone 17 refuses places on the equator more than 90° from its meridian (#1925).
+    let crs = Crs::from_epsg(32617).unwrap();
+    let transform = GeoTransform { origin_x: -9_000_000.0, origin_y: 9_000_000.0, pixel_width: 100_000.0, pixel_height: -100_000.0 };
+    let r = Raster::new("zone", 180, 180, vec![vec![1.0; 32_400]], transform, crs, None, ColorHint::Gray, "Float32").unwrap();
+    let e = pixel_window(&r, &Extent::new(-170.0, -10.0, 10.0, 10.0)).unwrap_err();
+    assert!(e.contains("coordinate system can't place the polygon's edge"), "{e}");
 }

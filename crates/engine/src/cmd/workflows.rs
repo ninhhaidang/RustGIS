@@ -745,7 +745,9 @@ fn new_model(s: &mut Session, p: &Value) -> CmdResult {
     s.project.models.push(Model { name: name.clone(), steps, graph });
     notify_graph_dropped(s, dropped);
     let kept = name.chars().count() - if i > 1 { format!(" {i}").chars().count() } else { 0 };
-    if kept < length {
+    // Said here, and in the result (`"cut"`), so a caller doesn't say it again.
+    let cut = kept < length;
+    if cut {
         s.notify(
             format!("ModelBuilder: a model has that name already, so the name given is cut to {kept} characters to fit \" {i}\""),
             false,
@@ -772,7 +774,11 @@ fn new_model(s: &mut Session, p: &Value) -> CmdResult {
             false,
         );
     }
-    Ok(json!({"model": name, "steps": n}))
+    let mut answer = json!({"model": name, "steps": n});
+    if cut {
+        answer["cut"] = json!(true);
+    }
+    Ok(answer)
 }
 
 /// The model a command names (or the last one), or the graph it passes: its name, graph and
@@ -2096,7 +2102,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             }
             notes.extend(
                 rustgis_data::source::unread_dates_note(&ds.fields, &result.unread_dates)
-                    .map(|n| format!("{path}: {}: {n}, so they're empty in the export", ds.name)),
+                    .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
             );
             notes.extend(
                 rustgis_data::source::rounded_dates_note(&ds.fields, &result.rounded_dates)
@@ -2104,7 +2110,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             );
             notes.extend(
                 rustgis_data::source::null_text_note(&ds.fields, &result.null_text)
-                    .map(|n| format!("{path}: {}: {n}, so they're empty in the export", ds.name)),
+                    .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
             );
             notes.extend(result.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", ds.name)));
             notes.extend(rustgis_data::source::not_utf8_note(&ds.fields, &result.not_utf8).map(|n| format!("{path}: {}: {n}", ds.name)));
@@ -2180,7 +2186,7 @@ fn converted(ds: &Dataset, p: &Value) -> Result<(String, Vec<String>), String> {
     };
     let target = ps(p, "path").unwrap_or(&ds.name);
     let mut notes = rustgis_data::export_notes([(ds, ds.lonlat_extent())], target, rustgis_data::raster::Crs::LonLat);
-    // CSV holds a point a row, GPX a name for each feature and no areas; reading text back trims it or reads blanks as null.
+    // CSV holds a point a row, GPX a name for each feature and no areas; reading text back, CSV reads blanks as null and KML and GPX trim it.
     notes.extend(rustgis_data::io::export_losses_notes(ds, format, name_field, target).map_err(|e| e.to_string())?);
     // KML and GPX hold features with geometry only.
     if let ext @ ("kml" | "gpx") = format {

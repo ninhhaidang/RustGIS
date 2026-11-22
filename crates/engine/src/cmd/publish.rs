@@ -139,7 +139,7 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                     }
                     _ => s.warn(format!("{said} was written, but {name} changed while it was: add the file again to compare them")),
                 }
-                s.notify_written(format!("Published {name} to {said}"), false);
+                s.notify_written(format!("Published {name} to {said}"));
                 s.retain_written_notices(mark);
                 Ok(())
             });
@@ -253,9 +253,14 @@ fn sync_state(s: &mut Session, p: &Value) -> CmdResult {
 /// Whether `path` names a file on this computer a record is made for: a Shapefile or `.geojson`
 /// file, not an address, a database or a network share (`\\host\share`, `//host/share`,
 /// `/\host\share`, `\\?\UNC\host\share`). Windows' long form of a local path (`\\?\C:\…`) is one
-/// on this computer. The desktop's Layers pane marks the same layers this publishes.
+/// on this computer. A `file://` address isn't one: the record's file is opened by the path as
+/// written, so the path checked here is the one opened. The desktop's Layers pane marks the same
+/// layers this publishes.
 pub fn local_file(path: &str) -> bool {
-    let b = rustgis_map::paths::local_path(path).as_bytes();
+    if rustgis_map::paths::local_path(path) != path {
+        return false;
+    }
+    let b = path.as_bytes();
     let sep = |i: usize| b.get(i).is_some_and(|c| matches!(c, b'/' | b'\\'));
     // Windows takes any two leading separators, of either kind, for a network share, unless they
     // begin the long form of a path on a drive.

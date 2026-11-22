@@ -48,6 +48,31 @@ fn position(p: &Json) -> Option<Pos> {
     Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, extra])
 }
 
+/// Whether a position's third member is there but is neither a number nor null (`"10"`, `true`):
+/// the position is read without a height, which [`read`] counts. Null is no height, written on
+/// purpose (before a measure, `[x, y, null, m]`).
+fn height_unread(p: &Json) -> bool {
+    p.as_array().and_then(|a| a.get(2)).is_some_and(|z| !z.is_number() && !z.is_null())
+}
+
+/// The positions of a geometry's points (Point, MultiPoint, and those of a GeometryCollection's
+/// members, at most four collections deep) whose height [`height_unread`].
+fn point_heights_unread(g: &Json, depth: usize) -> usize {
+    let coords = g.get("coordinates");
+    let own = match g.get("type").and_then(Json::as_str) {
+        Some("Point") => coords.map_or(0, |c| usize::from(height_unread(c))),
+        Some("MultiPoint") => coords.and_then(Json::as_array).map_or(0, |a| a.iter().filter(|p| height_unread(p)).count()),
+        _ => 0,
+    };
+    let collection = g.get("type").and_then(Json::as_str) == Some("GeometryCollection");
+    let nested = if collection && depth < 4 {
+        g.get("geometries").and_then(Json::as_array).into_iter().flatten().map(|m| point_heights_unread(m, depth + 1)).sum()
+    } else {
+        0
+    };
+    own.saturating_add(nested)
+}
+
 /// "1 geometry" or "2 geometries": `n` and the word for one or for several.
 fn counted(n: usize, one: &str, several: &str) -> String {
     if n == 1 { format!("1 {one}") } else { format!("{n} {several}") }
@@ -103,6 +128,9 @@ struct Topology {
     arcs: Vec<Option<Vec<Pos>>>,
     /// By arc, the positions inside a plain arc that couldn't be read and were left out of it.
     arcs_lost: Vec<usize>,
+    /// By arc, the positions read without a height their third member gave as something other
+    /// than a number ([`height_unread`]).
+    arcs_heights_unread: Vec<usize>,
     transform: Option<([f64; 2], [f64; 2])>,
     /// Coordinates still allowed to be rebuilt, across all objects. A geometry is checked whole
     /// and counted ([`Topology::need`]) before any arc is copied, so only geometries kept use it,
@@ -331,7 +359,7 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
     // and counted; one at its end (a joint), or a quantized one (every later position is a delta
     // from it), makes the arc unreadable.
     let mut total = 0usize;
-    let (mut arcs, mut arcs_lost) = (Vec::new(), Vec::new());
+    let (mut arcs, mut arcs_lost, mut arcs_heights_unread) = (Vec::new(), Vec::new(), Vec::new());
     for a in v.get("arcs").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default() {
         // Read ahead, off the UI thread: a large file can be cancelled between arcs and objects.
         crate::progress::check()?;
@@ -339,6 +367,7 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
         let Some(positions) = a.as_array() else {
             arcs.push(None);
             arcs_lost.push(0);
+            arcs_heights_unread.push(0);
             continue;
         };
         total += positions.len();
@@ -371,9 +400,15 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
             (Some(p), None) => positions.len() - p.len(),
             _ => 0,
         });
+        // Only the positions the arc keeps: one left out is counted as left out, not as read.
+        arcs_heights_unread.push(if pts.is_some() {
+            positions.iter().filter(|p| position(p).is_some() && height_unread(p)).count()
+        } else {
+            0
+        });
         arcs.push(pts);
     }
-    let mut topo = Topology { arcs, arcs_lost, transform, budget };
+    let mut topo = Topology { arcs, arcs_lost, arcs_heights_unread, transform, budget };
     let objects = v.get("objects").and_then(Json::as_object).ok_or_else(|| DataError::Format(format!("{file_name}: no objects")))?;
     let mut out = Vec::new();
     for (name, obj) in objects.iter().take(MAX_OBJECTS) {
@@ -392,7 +427,7 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
         };
         // Geometries that couldn't be read, those left out at the coordinate limit, and the arcs
         // drawn through by those rebuilt.
-        let (mut bad, mut cut, mut properties_left_out) = (0usize, 0usize, 0usize);
+        let (mut bad, mut cut, mut properties_left_out, mut point_heights) = (0usize, 0usize, 0usize, 0usize);
         let mut used = std::collections::BTreeSet::new();
         let features: Vec<Json> = members
             .into_iter()
@@ -404,6 +439,7 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
                     match topo.geometry(g) {
                         Ok(geometry) => {
                             arcs_used(g, 0, &mut used);
+                            point_heights = point_heights.saturating_add(point_heights_unread(g, 0));
                             geometry
                         }
                         Err(Unreadable) => {
@@ -455,6 +491,13 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
             rep.messages.push(format!(
                 "{} in its arcs couldn't be read: left out of the lines and rings drawn through them",
                 counted(lost, "position", "positions")
+            ));
+        }
+        let heights = used.iter().filter_map(|i| topo.arcs_heights_unread.get(*i)).fold(point_heights, |n, h| n.saturating_add(*h));
+        if heights > 0 {
+            rep.messages.push(format!(
+                "{} with a third member that isn't a number read without a height",
+                counted(heights, "position", "positions")
             ));
         }
         if no_list {
@@ -617,6 +660,32 @@ mod tests {
         let text = r#"{"type":"Topology","objects":{"o":{"type":"LineString","arcs":[0]}},"arcs":[5]}"#;
         let (_, rep) = read("p.topojson", text).unwrap().remove(0);
         assert_eq!(rep.skipped, 0);
+    }
+
+    /// A third member that isn't a number (text, true) is read without a height, counted in one
+    /// notice per layer, for points and arcs alike; numeric heights, or none, say nothing.
+    #[test]
+    fn a_height_that_isnt_a_number_is_said() {
+        let said = |text: &str| -> Vec<String> {
+            let (_, rep) = read("h.topojson", text).unwrap().remove(0);
+            rep.messages.into_iter().filter(|m| m.contains("read without a height")).collect()
+        };
+        let lossy = r#"{"type":"Topology","objects":{"o":{"type":"GeometryCollection","geometries":[
+{"type":"Point","coordinates":[1,2,"10"]},{"type":"MultiPoint","coordinates":[[1,2,true],[3,4,5]]},{"type":"LineString","arcs":[0]}]}},
+"arcs":[[[0,0,"a"],[1,1,2],[2,2,"b"]]]}"#;
+        assert_eq!(said(lossy), ["4 positions with a third member that isn't a number read without a height"]);
+        let clean = r#"{"type":"Topology","objects":{"o":{"type":"GeometryCollection","geometries":[
+{"type":"Point","coordinates":[1,2,10]},{"type":"Point","coordinates":[1,2,null]},{"type":"LineString","arcs":[0]}]}},
+"arcs":[[[0,0,1],[1,1]]]}"#;
+        assert!(said(clean).is_empty());
+        // A position left out of its arc isn't also read without a height; a member of a Point
+        // (not a collection) isn't read, so isn't counted either.
+        let left_out = r#"{"type":"Topology","objects":{"o":{"type":"Point","coordinates":[0,0],
+"geometries":[{"type":"Point","coordinates":[3,4,"bad"]}]},"p":{"type":"LineString","arcs":[0]}},
+"arcs":[[[0,0],[null,1,"bad"],[2,2]]]}"#;
+        for (_, rep) in read("h.topojson", left_out).unwrap() {
+            assert!(!rep.messages.iter().any(|m| m.contains("read without a height")), "{:?}", rep.messages);
+        }
     }
 
     #[test]

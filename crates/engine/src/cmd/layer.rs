@@ -810,6 +810,8 @@ fn size_by(s: &mut Session, p: &Value) -> CmdResult {
     // The mapping's own where it is of the same field, else the field's range.
     let had = l.size_by.as_ref().filter(|h| l.dataset.field_index(&h.field) == Some(fi));
     let (min, max) = (min.or(had.map(|h| h.min)), max.or(had.map(|h| h.max)));
+    // Both bounds from the field's own range: a field with one value has no spread to scale over.
+    let both_from_range = min.is_none() && max.is_none();
     let range = if min.is_none() || max.is_none() {
         // A streamed layer holds the view's features only, so their range would be the view's.
         if l.is_streamed() {
@@ -832,6 +834,9 @@ fn size_by(s: &mut Session, p: &Value) -> CmdResult {
     };
     let min = min.or(range.map(|r| r.0)).ok_or_else(|| format!("'{field}' has no numeric values: give min and max"))?;
     let max = max.or(range.map(|r| r.1)).ok_or_else(|| format!("'{field}' has no numeric values: give min and max"))?;
+    if max <= min && both_from_range {
+        return Err(format!("'{field}' has the same value ({min}) in every row, so give min and max"));
+    }
     if max <= min {
         return Err(format!("max ({max}) must be above min ({min})"));
     }
@@ -3250,7 +3255,7 @@ fn add_source_read(
         .into_iter()
         .map(|(kind, count)| {
             if kind == "attributes" {
-                format!("{count} attribute-only tables not added: GeoPackage attribute tables are not supported")
+                format!("{count} attribute-only table(s) not added: GeoPackage attribute tables are not supported")
             } else if kind == "features" {
                 format!("{count} feature table(s) not added: no geometry column is registered")
             } else {
@@ -4690,7 +4695,16 @@ fn read_delimited(
 /// which may be a sidecar of the requested file.
 fn whole_read_error(path: &str, error: rustgis_data::DataError) -> String {
     let message = error.to_string();
-    if rustgis_data::io::file_size_error_args(&message).is_some() { message } else { format!("{path}: {message}") }
+    if rustgis_data::io::file_size_error_args(&message).is_some() || message.starts_with(&format!("{path}:")) {
+        return message;
+    }
+    // A reader that names the file by its name alone (the delimited and gzip readers) is named
+    // once, by the path given.
+    let file = Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+    match message.strip_prefix(file).filter(|rest| rest.starts_with(':')) {
+        Some(rest) => format!("{path}{rest}"),
+        None => format!("{path}: {message}"),
+    }
 }
 
 /// Reads local/uploaded delimited bytes with the same options and CRS notices on every path.
@@ -5609,7 +5623,11 @@ pub(crate) fn cog_tile_where(t: &rustgis_map::tiles::TileLayer, address: &str) -
         Some((_, rest)) => rest.split_once('/').map_or("", |(_, path)| path),
         None => address,
     };
-    let file: String = path.rsplit(['/', '\\']).next().unwrap_or_default().chars().take(80).collect();
+    let whole = path.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut file: String = whole.chars().take(80).collect();
+    if whole.chars().nth(80).is_some() {
+        file.push('…');
+    }
     if file.is_empty() { t.name.clone() } else { format!("{} ({file})", t.name) }
 }
 
@@ -6937,8 +6955,9 @@ fn square_labels_follow_removal(s: &mut Session, names: &[String]) {
     }
     if !squared.is_empty() {
         let (count, names) = (squared.len(), squared.join(", "));
+        let layers = if count == 1 { "line layer" } else { "line layers" };
         s.notify(
-            format!("Labels: {count} perpendicular labels' line layer(s) {names} removed, so their labels are placed as auto until a layer of that name comes back"),
+            format!("Labels: {count} perpendicular labels' {layers} {names} removed, so their labels are placed as auto until a layer of that name comes back"),
             false,
         );
     }

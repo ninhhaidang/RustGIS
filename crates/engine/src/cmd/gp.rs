@@ -1939,7 +1939,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
     // Each item keeps its output as a layer: a hostile list or folder can't make the batch unbounded.
     if targets.len() > MAX_BATCH_ITEMS {
         return Err(format!(
-            "{} inputs is more than a batch runs (at most {MAX_BATCH_ITEMS}); split it into smaller batches",
+            "{} inputs are more than a batch runs (at most {MAX_BATCH_ITEMS}); split it into smaller batches",
             targets.len()
         ));
     }
@@ -2608,19 +2608,13 @@ pub(crate) fn run_step(s: &mut Session, tool: &str, params: &Value) -> CmdResult
 /// `error` with the keys of `params` that `spec` doesn't read after it — " (given 'unit', which
 /// Buffer doesn't read)" — unless it says them already (a refused parameter's does).
 fn saying_unread(spec: &rustgis_analysis::ToolSpec, params: &Value, error: String) -> String {
-    if error.ends_with("doesn't read)") {
+    // The same text the tool adds to a refused parameter's error, made once: an error that ends
+    // in it says it already.
+    let unread = rustgis_analysis::unread(spec, params);
+    if unread.is_empty() || error.ends_with(&unread) {
         return error;
     }
-    let unknown: Vec<&str> = params
-        .as_object()
-        .into_iter()
-        .flat_map(|m| m.keys().map(String::as_str))
-        .filter(|k| !rustgis_analysis::is_expected_key(spec, params, k))
-        .collect();
-    if unknown.is_empty() {
-        return error;
-    }
-    format!("{error} (given {}, which {} doesn't read)", rustgis_analysis::quoted_keys(unknown), spec.name)
+    format!("{error}{unread}")
 }
 
 /// The control a tool run in the session takes: where a person at a terminal can stop it with
@@ -2905,7 +2899,7 @@ fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
     }
     for message in &file.record.messages {
         if file.record.ok {
-            s.notify_written(message.clone(), false);
+            s.notify_written(message.clone());
         } else {
             s.notify(message.clone(), true);
         }
@@ -3191,7 +3185,7 @@ fn apply_with(
             if let Some(code) = code {
                 publish_tool_loss(s, *code, message, wrote_file);
             } else if wrote_file {
-                s.notify_written(message.clone(), false);
+                s.notify_written(message.clone());
             } else {
                 s.notify(message.clone(), false);
             }
@@ -4400,7 +4394,7 @@ mod batch_tests {
         std::fs::write(&txt, "skip me").unwrap();
 
         let mut s = Session::new(crate::Project::default());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -4413,7 +4407,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["total"], 3);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("1 unsupported files skipped")));
 
         let _ = std::fs::remove_dir_all(root);
@@ -4894,7 +4888,7 @@ mod batch_tests {
     #[test]
     fn batch_run_lossy_inputs_notified() {
         let mut s = test_session();
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         // Lossy input: empty string and non-string in array, plus non-object params
         let res = s
             .run(
@@ -4909,13 +4903,13 @@ mod batch_tests {
 
         assert_eq!(res["total"], 1);
         assert_eq!(res["succeeded"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("3 invalid input(s) skipped")));
         assert!(notices.iter().any(|n| n.text.contains("'params' must be an object")));
 
         // Clean input says nothing
         let mut s2 = test_session();
-        let mark2 = s2.notices.len();
+        let mark2 = s2.notice_mark();
         let _ = s2
             .run(
                 "gp.batch",
@@ -4926,7 +4920,7 @@ mod batch_tests {
                 }),
             )
             .unwrap();
-        let notices2 = &s2.notices[mark2..];
+        let notices2 = s2.notices_since(mark2);
         assert!(
             !notices2.iter().any(|n| n.text.contains("skipped") || n.text.contains("invalid") || n.text.contains("params")),
             "clean input must give no skip notices: {notices2:?}"
@@ -5176,7 +5170,7 @@ mod batch_tests {
         let ds = Dataset::new("L1", rustgis_data::GeometryType::Point, Vec::new());
         s.map_mut().add_layer(rustgis_map::Layer::new(0, ds));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s.run(
             "gp.batch",
             &json!({
@@ -5187,7 +5181,7 @@ mod batch_tests {
         let err = res.unwrap_err();
         assert!(err.contains("Batch 'test:empty_output' failed"));
         assert!(err.contains("custom message from empty tool"));
-        assert!(s.notices[mark..].iter().any(|n| n.text.contains("1 failed (L1)")));
+        assert!(s.notices_since(mark).iter().any(|n| n.text.contains("1 failed (L1)")));
     }
 
     fn empty_output_multi_message_runner(
@@ -5351,7 +5345,7 @@ mod batch_tests {
         std::fs::write(&f1, sample_geojson).unwrap();
 
         let mut s = Session::new(crate::Project::default());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5364,7 +5358,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(!notices.iter().any(|n| n.text.contains("both 'inputs' and 'folder'")));
 
         let _ = std::fs::remove_dir_all(root);
@@ -5378,7 +5372,7 @@ mod batch_tests {
         s.map_mut().add_layer(rustgis_map::Layer::new(10, pre1));
         s.map_mut().add_layer(rustgis_map::Layer::new(11, pre2));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5391,7 +5385,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("1 output name(s) collided and were renamed")));
     }
 
@@ -5525,7 +5519,7 @@ mod batch_tests {
         ds.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(10.0, 20.0))), vec![rustgis_data::Value::Int(100)]);
         s.map_mut().add_layer(rustgis_map::Layer::new(0, ds));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5538,7 +5532,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(
             !notices.iter().any(|n| n.text.contains("params.output is ignored")),
             "tool without output param must not emit 'params.output is ignored' notice: {notices:?}"
@@ -5583,7 +5577,7 @@ mod batch_tests {
     #[test]
     fn batch_run_aggregates_tool_messages() {
         let mut s = test_session();
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5596,7 +5590,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 2);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("2 item(s) reported messages (Buffer: 1 features at 10 Kilometers (×2))")));
     }
 
@@ -5612,7 +5606,7 @@ mod batch_tests {
         l2.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(16.0, 26.0))), Vec::new());
         s.map_mut().add_layer(rustgis_map::Layer::new(1, l2));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5625,7 +5619,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 2);
-        let recent: Vec<_> = s.notices[mark..].iter().filter(|n| n.text.contains("reported messages")).collect();
+        let recent: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("reported messages")).collect();
         assert_eq!(recent.len(), 1, "must emit exactly one tool messages notice: {recent:?}");
         assert_eq!(
             recent[0].text,
@@ -5645,7 +5639,7 @@ mod batch_tests {
         l2.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(16.0, 26.0))), Vec::new());
         s.map_mut().add_layer(rustgis_map::Layer::new(1, l2));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5658,7 +5652,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 2);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         let msg_notice = notices.iter().find(|n| n.text.contains("reported messages")).unwrap();
         assert!(msg_notice.text.contains("Buffer: 1 features at 10 Kilometers"));
         assert!(msg_notice.text.contains("Buffer: 2 features at 10 Kilometers"));
@@ -5667,7 +5661,7 @@ mod batch_tests {
     #[test]
     fn batch_run_null_options_emit_no_spurious_notices() {
         let mut s = test_session();
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5683,7 +5677,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(
             !notices.iter().any(|n| n.text.contains("must be an object")
                 || n.text.contains("both 'inputs' and 'folder'")
@@ -5692,7 +5686,7 @@ mod batch_tests {
             "null options must not emit spurious notices: {notices:?}"
         );
 
-        let mark2 = s.notices.len();
+        let mark2 = s.notice_mark();
         let res2 = s
             .run(
                 "gp.batch",
@@ -5709,7 +5703,7 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res2["succeeded"], 1);
-        let notices2 = &s.notices[mark2..];
+        let notices2 = s.notices_since(mark2);
         assert!(
             !notices2.iter().any(|n| n.text.contains("output is ignored") || n.text.contains("is replaced by the batch inputs")),
             "null param fields must not emit spurious notices: {notices2:?}"
@@ -5773,7 +5767,7 @@ mod batch_tests {
     #[test]
     fn batch_run_unrecognised_option_emits_notice() {
         let mut s = test_session();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5791,7 +5785,7 @@ mod batch_tests {
 
         // Clean call emits no unrecognised option notice
         let mut s_clean = test_session();
-        let mark_clean = s_clean.notices.len() as u64;
+        let mark_clean = s_clean.notice_mark();
         let res_clean = s_clean
             .run(
                 "gp.batch",
@@ -5814,7 +5808,7 @@ mod batch_tests {
     #[test]
     fn batch_run_unrecognised_param_in_params_emits_notice() {
         let mut s = test_session();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -5834,7 +5828,7 @@ mod batch_tests {
 
         // Clean call emits no unrecognised notice
         let mut s_clean = test_session();
-        let mark_clean = s_clean.notices.len() as u64;
+        let mark_clean = s_clean.notice_mark();
         let res_clean = s_clean
             .run(
                 "gp.batch",
@@ -5865,12 +5859,12 @@ mod batch_tests {
         };
         let buffer = "Buffer ignores 'unit' (it reads input, distance, units, dissolve, output)";
         let mut s = test_session();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100, "unit": "Miles"}})).unwrap();
         assert_eq!(said(&s, mark), [buffer]);
         // The run is as before: the default units, which its own message names.
         assert!(s.notices_since(mark).iter().any(|n| n.text.contains("at 100 Kilometers")));
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100, "units": "Miles"}})).unwrap();
         assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
         // The name the tool dialog puts beside a table's id (`input_name`) isn't taken for a stray;
@@ -5890,7 +5884,7 @@ mod batch_tests {
         let stray = ignored_params(buffer_spec, &json!({"input": "Cities", "distance": 1, "distance_name": "x"})).unwrap();
         assert!(stray.starts_with("Buffer ignores 'distance_name'"), "{stray}");
         // Many keys: the first five, sorted, each cut to 40 characters, then how many more.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let long = "x".repeat(60);
         let mut params = json!({"input": "Cities", "distance": 1, "a": 1, "b": 1, "c": 1, "d": 1, "e": 1, "f": 1});
         params[&long] = json!(1);
@@ -5898,11 +5892,11 @@ mod batch_tests {
         let got = said(&s, mark);
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].starts_with("Buffer ignores 'a', 'b', 'c', 'd', 'e', 2 more"), "{got:?}");
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 1, &long: 1}})).unwrap();
         assert!(said(&s, mark)[0].contains(&format!("'{}…'", "x".repeat(40))), "{:?}", said(&s, mark));
         // A control character in a key reaches no terminal as it is.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 1, "a\n\u{1b}[31mb": 1}})).unwrap();
         assert!(said(&s, mark)[0].starts_with("Buffer ignores 'a??[31mb'"), "{:?}", said(&s, mark));
         // A run refused for want of a parameter that was misspelled says which key it didn't read,
@@ -5925,12 +5919,12 @@ mod batch_tests {
         assert!(e.contains("(given 'clips', which Clip doesn't read)"), "{e}");
         assert_eq!(e.matches("'clips'").count(), 1, "said once: {e}");
         // A command that runs a tool for its own parameters says a stray key once, as a command.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.spatialJoin", &json!({"target": "Cities", "join": "Parks", "prefx": "j_"})).unwrap();
         let got = said(&s, mark);
         assert!(got.len() == 1 && got[0].starts_with("gp.spatialJoin ignores 'prefx'"), "{got:?}");
         // It declares every key its tool reads, so those aren't taken for strays.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let join = json!({"target": "Cities", "join": "Parks", "match": "Within a distance", "distance": 5000, "units": "Miles", "distanceField": "d"});
         s.run("gp.spatialJoin", &join).unwrap();
         assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
@@ -5945,11 +5939,11 @@ mod batch_tests {
         let e = s.run("gp.run", &json!({"tool": "zonalStats", "params": {"layer": "Cities", "polygons": "Parks"}})).unwrap_err();
         assert!(e.ends_with("'Input Raster' is required (given 'layer', which Zonal Statistics doesn't read)"), "{e}");
         // A run started in the background says it too, before its work.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let _run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 100, "unit": "Miles"})).unwrap();
         assert_eq!(said(&s, mark), [buffer]);
         // A batch says it once, its own way, not once per item as well.
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.batch", &json!({"tool": "buffer", "inputs": ["Cities"], "params": {"distance": 10, "unit": "Miles"}})).unwrap();
         assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
         assert!(s.notices_since(mark).iter().any(|n| n.text.contains("unrecognised parameter(s) ignored in 'params' (unit)")));
@@ -5961,7 +5955,7 @@ mod batch_tests {
         let warnings = v["warnings"].as_array().unwrap();
         assert_eq!(warnings.len(), 1, "{v}");
         assert_eq!((warnings[0]["code"].as_str(), warnings[0]["message"].as_str()), (Some("unknown-param"), Some(buffer)), "{v}");
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("model.run", &json!({"name": "Typo"})).unwrap();
         assert_eq!(said(&s, mark), [buffer]);
         s.run("model.new", &json!({"name": "Clean", "steps": [{"tool": "buffer", "params": {"input": "Cities", "distance": 100}}]}))
@@ -5985,7 +5979,7 @@ mod batch_tests {
             {"tool": "buffer", "params": {"input": "%1", "distance": 10, "unit": "Miles"}}
         ]);
         s.run("model.new", &json!({"name": "Twice", "steps": twice})).unwrap();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("model.run", &json!({"name": "Twice"})).unwrap();
         assert_eq!(said(&s, mark), [format!("{buffer} (in 2 steps)")]);
         // A failing step after an ignoring one: the error carries the warning, and no warning
@@ -5995,7 +5989,7 @@ mod batch_tests {
             {"tool": "buffer", "params": {"distance": 10}}
         ]);
         s.run("model.new", &json!({"name": "Stops", "steps": stops})).unwrap();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let e = s.run("model.run", &json!({"name": "Stops"})).unwrap_err();
         assert!(e.starts_with("step 2 (buffer)"), "{e}");
         assert!(e.ends_with(&format!("; {buffer}")), "{e}");
@@ -6005,7 +5999,7 @@ mod batch_tests {
     #[test]
     fn batch_run_params_batch_param_overwritten_notified() {
         let mut s = test_session();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6025,7 +6019,7 @@ mod batch_tests {
 
         // Clean call without batch_param in params gives no replacement notice
         let mut s_clean = test_session();
-        let mark_clean = s_clean.notices.len() as u64;
+        let mark_clean = s_clean.notice_mark();
         let res_clean = s_clean
             .run(
                 "gp.batch",
@@ -6049,7 +6043,7 @@ mod batch_tests {
         let mut s = test_session();
 
         // Both param and batch_param
-        let mark1 = s.notices.len() as u64;
+        let mark1 = s.notice_mark();
         let res1 = s
             .run(
                 "gp.batch",
@@ -6071,7 +6065,7 @@ mod batch_tests {
 
         // Clean call with only param
         let mut s_clean1 = test_session();
-        let mark_clean1 = s_clean1.notices.len() as u64;
+        let mark_clean1 = s_clean1.notice_mark();
         let res_clean1 = s_clean1
             .run(
                 "gp.batch",
@@ -6092,7 +6086,7 @@ mod batch_tests {
 
         // Both outputPattern and output_pattern
         let mut s2 = test_session();
-        let mark2 = s2.notices.len() as u64;
+        let mark2 = s2.notice_mark();
         let res2 = s2
             .run(
                 "gp.batch",
@@ -6114,7 +6108,7 @@ mod batch_tests {
 
         // Clean call with only outputPattern
         let mut s_clean2 = test_session();
-        let mark_clean2 = s_clean2.notices.len() as u64;
+        let mark_clean2 = s_clean2.notice_mark();
         let res_clean2 = s_clean2
             .run(
                 "gp.batch",
@@ -6153,7 +6147,7 @@ mod batch_tests {
         ds_join.push_next(None, vec![rustgis_data::Value::Text("01".into())]);
         s.project.add_table(ds_join);
 
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6326,7 +6320,7 @@ mod batch_tests {
     #[test]
     fn blank_folder_beside_inputs_is_not_reported() {
         let mut s = test_session();
-        let mark = s.notices.len() as u64;
+        let mark = s.notice_mark();
         s.run("gp.batch", &json!({"tool": "buffer", "inputs": ["Cities"], "folder": "  ", "params": {"distance": 1}})).unwrap();
         assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("both 'inputs' and 'folder'")));
     }
@@ -6350,7 +6344,7 @@ mod batch_tests {
         std::fs::write(&f2, r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1.0,2.0]},"properties":{}}]}"#).unwrap();
 
         let mut s = Session::new(crate::Project::default());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6367,7 +6361,7 @@ mod batch_tests {
         let outputs = res["outputs"].as_array().unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].as_str().unwrap(), "sample_buffer");
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(!notices.iter().any(|n| n.text.contains("collided and were renamed")));
 
         let _ = std::fs::remove_dir_all(root);
@@ -6384,7 +6378,7 @@ mod batch_tests {
         write_test_shapefile(&root.join("test.shp"));
 
         let mut s = Session::new(crate::Project::default());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6396,7 +6390,7 @@ mod batch_tests {
             )
             .unwrap();
         assert_eq!(res["total"], 1);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(
             !notices.iter().any(|n| n.text.contains("unsupported files skipped")),
             "shapefile companion files must not be reported as unsupported: {notices:?}"
@@ -6404,7 +6398,7 @@ mod batch_tests {
 
         std::fs::write(root.join("notes.txt"), b"some notes").unwrap();
         let mut s2 = Session::new(crate::Project::default());
-        let mark2 = s2.notices.len();
+        let mark2 = s2.notice_mark();
         let res2 = s2
             .run(
                 "gp.batch",
@@ -6416,7 +6410,7 @@ mod batch_tests {
             )
             .unwrap();
         assert_eq!(res2["total"], 1);
-        let notices2 = &s2.notices[mark2..];
+        let notices2 = s2.notices_since(mark2);
         assert!(
             notices2.iter().any(|n| n.text.contains("1 unsupported files skipped")),
             "exactly 1 unsupported file (notes.txt) should be reported: {notices2:?}"
@@ -6467,7 +6461,7 @@ mod batch_tests {
         let mut s = test_session();
         s.map_mut().add_raster("Elevation", rustgis_map::RasterLayer::from_path(raster, "test.tif"));
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6480,11 +6474,11 @@ mod batch_tests {
             .unwrap();
 
         assert_eq!(res["succeeded"], 2);
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("1 raster layer(s) left out of '*' (it runs vector layers)")));
 
         let mut s2 = test_session();
-        let mark2 = s2.notices.len();
+        let mark2 = s2.notice_mark();
         let _ = s2
             .run(
                 "gp.batch",
@@ -6495,7 +6489,7 @@ mod batch_tests {
                 }),
             )
             .unwrap();
-        let notices2 = &s2.notices[mark2..];
+        let notices2 = s2.notices_since(mark2);
         assert!(!notices2.iter().any(|n| n.text.contains("raster layer(s)")));
     }
 
@@ -6651,7 +6645,7 @@ mod batch_tests {
 
         let mut s = Session::new(crate::Project::default());
         let padded = format!("  {}  ", f1.display());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6666,7 +6660,7 @@ mod batch_tests {
         assert_eq!(res["succeeded"], 1);
         let outputs = res["outputs"].as_array().unwrap();
         assert_eq!(outputs[0], "cities_buffer");
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("1 file path(s) trimmed of surrounding whitespace")));
 
         let _ = std::fs::remove_dir_all(root);
@@ -6803,7 +6797,7 @@ mod batch_tests {
             .collect();
 
         let mut s = Session::new(crate::Project::default());
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -6827,7 +6821,7 @@ mod batch_tests {
         }
 
         // Notices aggregated into a single notice per warning kind without truncating later files
-        let notice = s.notices[mark..].iter().find(|n| n.text.contains("Z or M")).unwrap();
+        let notice = s.notices_since(mark).iter().find(|n| n.text.contains("Z or M")).unwrap();
         assert!(notice.text.starts_with("gp.batch: 4 inputs ("));
         assert!(notice.text.contains("file_1.geojson"));
         assert!(notice.text.contains("file_2.geojson"));
@@ -7009,7 +7003,7 @@ mod batch_tests {
         notes_layer.graphics = true;
         s.map_mut().add_layer(notes_layer);
 
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let res = s
             .run(
                 "gp.batch",
@@ -7025,7 +7019,7 @@ mod batch_tests {
         let outputs = res["outputs"].as_array().unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0], "Rivers_buffer");
-        let notices = &s.notices[mark..];
+        let notices = s.notices_since(mark);
         assert!(notices.iter().any(|n| n.text.contains("1 graphics layer(s) left out of '*'")));
 
         let mut s_empty = Session::new(crate::Project::default());

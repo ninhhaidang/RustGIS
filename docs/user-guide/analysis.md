@@ -318,15 +318,18 @@ gp.batch={"tool":"buffer","inputs":["Cities","Rivers"],"outputPattern":"{input}_
 - `"folder"`: on desktop and the command line, a folder whose `.shp`, `.geojson`, `.json`,
   `.gpkg`, `.fgb`, `.parquet`, `.geoparquet`, `.kml`, `.kmz`, `.gpx` and `.csv` files are run over
   in file-name order (byte order, so ASCII capitals come before lowercase letters). Subfolders and symbolic links are skipped, with a count.
+  A folder with more than 10,000 supported files is refused; split it into smaller folders.
 - `"outputPattern"` (or `"output_pattern"`): the name of each output layer, `"{input}_{tool}"` by
   default, where `{input}` is the layer's name or the file's name without its extension and
   `{tool}` the tool's id. It must include `{input}`. A name already taken gets a number (`_2`).
   Tools that change a layer in place or select features keep their own names.
 - `"params"`: the parameters every run shares. The batch input replaces a value given there for
-  the input parameter, with a notice.
+  the input parameter, and for the other names the tool reads it under (such as Join Field's
+  `target` beside `target_layer`), with a notice naming them.
 - `"param"` (or `"batch_param"`): the parameter each input goes to; by default the tool's first
   layer parameter, else `"input"`.
 
+A batch runs at most 10,000 inputs; more are refused, so split them into smaller batches.
 One input failing doesn't stop the others. The result counts what `"succeeded"` and `"failed"`,
 names the `"outputs"` (layers or tables) and lists each failure in `"errors"`, with one notice
 for the failures. If every input fails, the batch is an error naming each input and why. What a

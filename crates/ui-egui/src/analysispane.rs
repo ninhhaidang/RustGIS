@@ -1703,7 +1703,7 @@ fn trend(app: &mut RustGisApp, ui: &mut Ui, rasters: &[String]) {
 pub fn land_trend(app: &mut RustGisApp) -> bool {
     use std::sync::atomic::Ordering;
     let Some(r) = &app.workflow.trend.running else { return false };
-    let Some(res) = r.result.lock().ok().and_then(|mut g| g.take()) else { return true };
+    let Some(res) = r.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return true };
     let mut p = r.params.clone();
     // A run the user cancelled stops quietly: no error for it.
     let cancelled = r.cancel.load(Ordering::Relaxed);

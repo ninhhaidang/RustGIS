@@ -1719,7 +1719,7 @@ fn a_streamed_shapefile_says_null_markers_once_and_in_its_exports() {
             assert_eq!(notes.len(), usize::from(said), "{name} {command}: {:?}", s.notices_since(mark));
             if said {
                 assert!(
-                    notes[0].ends_with("zoning: 1 value written as Null was read as empty, in 'ZONING', so they're empty in the export"),
+                    notes[0].ends_with("zoning: 1 value written as Null was read as empty, in 'ZONING' (empty in the export)"),
                     "{}",
                     notes[0]
                 );
@@ -2009,7 +2009,7 @@ fn an_export_says_what_its_whole_read_did_to_dates() {
     assert_eq!(
         crate::cmd::share::read_date_notes("out.geojson", "Sites", &lost),
         [
-            "out.geojson: Sites: 1 value isn't a date and was read as empty, in 'day', so they're empty in the export",
+            "out.geojson: Sites: 1 value isn't a date and was read as empty, in 'day' (empty in the export)",
             "out.geojson: Sites: 1 date-time was rounded to the microsecond, as more digits than that aren't kept, in 'at' when read for the export",
         ]
     );
@@ -2688,6 +2688,20 @@ fn a_streamed_layer_needs_bounds_for_its_size_mapping() {
     assert!(err.contains("streamed"), "{err}");
     s.run("layer.sizeBy", &json!({"layer": id, "field": "x", "min": -180, "max": 180})).unwrap();
     assert!(s.map().layers[0].size_by.is_some());
+}
+
+/// A field with one value in every row, with no bounds given, says so rather than comparing
+/// bounds that weren't given; a bound given is still compared with the other.
+#[test]
+fn sizing_by_a_field_with_one_value_asks_for_bounds() {
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": "name"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "Cities", "name": "flat", "type": "double"})).unwrap();
+    s.run("edit.calculateField", &json!({"layer": "Cities", "field": "flat", "expression": "5"})).unwrap();
+    let err = s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "flat"})).unwrap_err();
+    assert_eq!(err, "'flat' has the same value (5) in every row, so give min and max");
+    let err = s.run("layer.sizeBy", &json!({"layer": "Cities", "field": "flat", "min": 5})).unwrap_err();
+    assert!(err.contains("max (5) must be above min (5)"), "{err}");
 }
 
 /// `layer.sizeBy` sizes a classified point layer by a field, keeping what it isn't given, refusing
@@ -5008,7 +5022,7 @@ fn removing_a_perpendicular_label_line_says_so() {
     s.run("layer.remove", &json!({"layer": "Rivers"})).unwrap();
     let notes = said(&s, mark);
     assert_eq!(notes.len(), 1, "{notes:?}");
-    assert!(notes[0].contains("1 perpendicular labels' line layer(s) 'Rivers' removed"), "{notes:?}");
+    assert!(notes[0].contains("1 perpendicular labels' line layer 'Rivers' removed"), "{notes:?}");
     let c = s.map().layer_by_name("Cities").unwrap().labels.default.clone();
     assert_eq!((c.placement, c.square_to.unwrap().layer.as_str()), (crate::map::LabelPlacement::Perpendicular, "Rivers"));
 }
@@ -5620,6 +5634,11 @@ fn save_refuses_a_path_that_isnt_a_project_file() {
     assert!(e.contains("a .rgis file, not a .geojson one"), "{e}");
     let e = s.run("project.save", &json!({"path": dir.join("data.GPKG")})).unwrap_err();
     assert!(e.contains("not a .gpkg one"), "{e}");
+    // A bare trailing dot, or a folder named like a project, is refused without naming an extension.
+    for odd in ["foo.", "a.rgis.", "atlas.rgis/"] {
+        let e = s.run("project.saveAs", &json!({"path": format!("{}/{odd}", dir.display())})).unwrap_err();
+        assert_eq!(e, "a project saves to a .rgis file", "{odd}");
+    }
     let package = dir.join("atlas.rgispkg");
     let e = s.run("project.saveAs", &json!({"path": package})).unwrap_err();
     assert!(e.contains("project.package"), "{e}");
@@ -7961,6 +7980,51 @@ fn line_labels_fit_their_line_with_a_word_list() {
     assert_eq!(class(&s), (LabelFit::Off, Default::default()));
 }
 
+/// Opening a project says how many label classes it cut or dropped: a name over the length a
+/// class keeps, a class with no name or the name of one before it, and the classes past the cap;
+/// classes that read as written say nothing.
+#[test]
+fn opening_says_which_label_classes_it_cut_or_dropped() {
+    let mut s = world();
+    s.run("labels.class.add", &json!({"layer": "Cities", "name": "Big", "where": "pop_max > 5000000"})).unwrap();
+    let text = serde_json::to_string(&s.project).unwrap();
+    let said = |v: &Value| {
+        let s = Session::new(Project::from_json(&v.to_string()).unwrap());
+        s.notices.iter().filter(|n| n.text.contains("label class")).map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    let clean: Value = serde_json::from_str(&text).unwrap();
+    assert!(said(&clean).is_empty(), "{:?}", said(&clean));
+    let mut damaged = clean.clone();
+    let cities = damaged["maps"][0]["layers"].as_array_mut().unwrap().iter_mut().find(|l| l["name"] == "Cities").unwrap();
+    let classes = cities["labels"]["classes"].as_array_mut().unwrap();
+    let mut long = classes[0].clone();
+    long["name"] = json!("x".repeat(101));
+    let mut repeat = classes[0].clone();
+    repeat["name"] = json!("BIG");
+    classes.push(long);
+    classes.push(repeat);
+    let loaded = Project::from_json(&damaged.to_string()).unwrap();
+    let kept = &loaded.maps[0].layer_by_name("Cities").unwrap().labels.classes;
+    assert_eq!(kept.len(), 2, "the repeat is dropped");
+    let notes = said(&damaged);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("1 label class name(s) longer than 100 characters cut")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("1 label class(es) with no name, or the name of an earlier class")), "{notes:?}");
+    let classes =
+        damaged["maps"][0]["layers"].as_array_mut().unwrap().iter_mut().find(|l| l["name"] == "Cities").unwrap()["labels"]["classes"]
+            .as_array_mut()
+            .unwrap();
+    let template = classes[0].clone();
+    classes.truncate(1);
+    for i in 0..rustgis_map::symbology::MAX_LABEL_CLASSES + 2 {
+        let mut c = template.clone();
+        c["name"] = json!(format!("c{i}"));
+        classes.push(c);
+    }
+    let notes = said(&damaged);
+    assert!(notes.iter().any(|n| n.contains("3 label class(es) past the 64 a layer holds dropped")), "{notes:?}");
+}
+
 /// How much of its line a fitted label is spread over (#2265): `stretch` on the text symbol,
 /// brought into 0.1 to 1, null for the default, junk refused, and kept with the project (one
 /// that doesn't read is none, and opening says so with a count; in range or null says nothing).
@@ -8613,6 +8677,26 @@ fn imported_items_report_content_cuts() {
             }
         }
     }
+}
+
+/// What repairing imported maps changed is said as done while importing them, not while opening or
+/// checking the project: maps from a project file, and a single map file alike.
+#[test]
+fn imported_map_repairs_say_they_were_made_while_importing() {
+    let mut p = Project::default();
+    p.maps[0].groups.push(rustgis_map::LayerGroup::new("Broken group"));
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("map.import", &json!({"text": serde_json::to_string(&p).unwrap()})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("layer group(s)")).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("removed while importing the maps"), "{said:?}");
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("map.import", &json!({"text": serde_json::to_string(&p.maps[0]).unwrap()})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("layer group(s)")).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("removed while importing the map "), "{said:?}");
 }
 
 /// Map imports audit retained maps only, and a usable tile still reports discarded dated content.
@@ -11310,12 +11394,12 @@ fn publication_layouts_fit_their_pages() {
     // Beside it on the side it grows to: the left one when it keeps its right edge.
     let x = if boxed.x + boxed.w / 2.0 > frame_x_mid(&s, li, frame) { boxed.x - 5.5 } else { boxed.x + boxed.w + 0.5 };
     s.run("layout.update", &json!({"layout": li, "element": arrow, "x": x, "y": boxed.y, "w": 5.0, "h": 5.0})).unwrap();
-    let mark = s.notices.len();
+    let mark = s.notice_mark();
     s.run("layout.update", &json!({"layout": li, "element": scale_text, "text": "Escala aproximada da folha {scale}"})).unwrap();
     s.run("layout.update", &json!({"layout": li, "element": frame, "scale": 30_000_000.0})).unwrap();
     let after = s.project.layouts[li].element(b).cloned().unwrap();
     assert_eq!((after.x, after.w), (boxed.x, boxed.w), "the box stays");
-    assert!(s.notices[mark..].iter().any(|n| n.text.contains("would now cover the north arrow")), "said");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("would now cover the north arrow")), "said");
     // A text longer than the widest box, its box widened by hand for it: the width is kept.
     s.run("layout.update", &json!({"layout": li, "element": arrow, "x": 0.0, "y": 0.0})).unwrap();
     let long = "Escala aproximada da folha impressa em papel de formato A4 {scale}";
@@ -15248,12 +15332,12 @@ fn a_viewshed_says_what_ground_with_no_data_it_saw_across() {
         // missing ground is.
         let walled = run(&mut s, &dems[1], heights);
         let walled_across = walled["acrossNoData"].as_u64().unwrap();
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let v = run(&mut s, &dems[0], heights);
         let across = v["acrossNoData"].as_u64().unwrap();
         assert!(across > 100 && across <= v["visibleCells"].as_u64().unwrap(), "{heights}: {v}");
         assert!(walled_across > 0 && walled_across + 100 < across, "{heights}: {walled_across} of {across}");
-        let said: Vec<&str> = s.notices[mark..].iter().map(|n| n.text.as_str()).collect();
+        let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
         assert!(
             said.iter().any(|t| t.contains(&format!("{across} cell(s) of the viewshed were seen across ground with no data"))),
             "{heights}: {said:?}"
@@ -15289,9 +15373,9 @@ fn a_viewshed_says_what_it_did_with_its_radius_and_the_seam() {
     s.run("layer.addDataBytes", &json!({"fileName": "globe.tif", "data": data})).unwrap();
     let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
     let said = |s: &mut Session, p: Value| {
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         s.run("analysis.viewshed", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
-        s.notices[mark..].iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>()
     };
     let seam = "rays don't cross its east–west edge";
     // By the edge with no radius (the whole raster): the seam is said.
@@ -15748,13 +15832,13 @@ fn analysis_workflows_models_scripts_and_raster_functions() {
     // Bilinear heights read the ground between cells: on this hill and wall they see at least
     // what the nearest cells do (a cell nearer the top no longer stands in for the ground), and
     // little more. Any other name, or a value that isn't one, is refused, saying which there are.
-    let mark = s.notices.len();
+    let mark = s.notice_mark();
     let b = s.run("analysis.viewshed", &json!({"layer": dem, "lon": 10.0055, "lat": 45.0395, "height": 2, "heights": "Bilinear"})).unwrap();
     let (near, bil) = (v["visibleCells"].as_u64().unwrap(), b["visibleCells"].as_u64().unwrap());
     assert!(bil >= near && bil <= near + near / 10, "nearest {near}, bilinear {bil}");
     // A DEM with every cell holding data: nothing to say about ground with none, and the answer
     // says none.
-    assert!(s.notices[mark..].is_empty(), "{:?}", s.notices[mark..].iter().map(|n| &n.text).collect::<Vec<_>>());
+    assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark).iter().map(|n| &n.text).collect::<Vec<_>>());
     for a in [&v, &b] {
         assert_eq!((&a["acrossNoData"], &a["readNearest"]), (&json!(0), &json!(0)), "{a}");
     }
@@ -17791,7 +17875,7 @@ fn plugin_host_features_refuses_what_it_can_not_place_with_crs_errors() {
     ds.name = "Sinu".into();
     s.map_mut().add_dataset(ds);
     let e = ask(&mut s, "Sinu", "layer").unwrap_err();
-    assert!(e.contains("crs:") && e.contains("no EPSG code"), "{e}");
+    assert!(e.contains("crs:") && e.contains("can name in GeoJSON"), "{e}");
     // `host.layers` still names it (not the null of an unread raster).
     let layers = forward(&mut s, "eng-crs-no", "host.layers", json!({})).unwrap();
     let sinu = layers.as_array().unwrap().iter().find(|l| l["name"] == "Sinu").unwrap();
@@ -17799,7 +17883,7 @@ fn plugin_host_features_refuses_what_it_can_not_place_with_crs_errors() {
     // "map" on a projection with no EPSG code is refused, and nothing is registered for it.
     s.run("map.projection", &json!({"type": "robinson"})).unwrap();
     let e = ask(&mut s, "P", "map").unwrap_err();
-    assert!(e.contains("crs:") && e.contains("no EPSG code"), "{e}");
+    assert!(e.contains("crs:") && e.contains("can name in GeoJSON"), "{e}");
     s.run("map.projection", &json!({"type": "EPSG:3857"})).unwrap();
     // Geocentric targets can't carry a third coordinate.
     let e = ask(&mut s, "P", "EPSG:4978").unwrap_err();
@@ -25372,7 +25456,7 @@ fn geopackage_attribute_tables_are_not_silently_omitted() {
         );
         let notes = skipped(&s);
         assert_eq!(notes.len(), 1, "bytes={bytes}: {notes:?}");
-        assert!(notes[0].contains("2 attribute-only tables") && notes[0].contains("mixed.gpkg"), "{notes:?}");
+        assert!(notes[0].contains("2 attribute-only table(s)") && notes[0].contains("mixed.gpkg"), "{notes:?}");
         assert!(s.notices.iter().any(|n| n.text.contains("1 tiles table(s) not added")), "bytes={bytes}: {:?}", s.notices);
     }
     // Selecting one feature table deliberately does not claim to add the whole file.
@@ -26877,9 +26961,9 @@ fn csv_and_gpx_exports_say_what_they_leave_out() {
     };
     s.map_mut().add_dataset(named(layer("Names", GeometryType::Point, clean)));
     let said = |s: &mut Session, id: &str, p: Value| {
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         s.run(id, &p).unwrap();
-        s.notices[mark..].iter().map(|n| n.text.clone()).filter(|t| !t.starts_with("Exported ")).collect::<Vec<_>>()
+        s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| !t.starts_with("Exported ")).collect::<Vec<_>>()
     };
     let out = |name: &str| dir.join(name).display().to_string();
     let n = said(&mut s, "share.exportLayer", json!({"layer": "Areas", "path": out("areas.csv")}));
@@ -27689,8 +27773,8 @@ fn derived_multiband_rasters_keep_every_band_in_the_project() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// An ASCII grid whose `.prj` can't be read is added in longitude/latitude, and adding it says so;
-/// one whose `.prj` is read says nothing of it.
+/// Equidistant Cylindrical typed as WKT, on a layer's inputs (Define Projection, a CSV's `crs`,
+/// an export), says which formula it is read with, once; typed by its EPSG code it says nothing.
 #[test]
 fn projection_review_typed_layer_inputs_report_the_formula_choice() {
     let wkt = include_str!("../../data/src/raster/wkt2_corpus.tsv")
@@ -27892,6 +27976,8 @@ fn ascii_grid_reports_declared_method_1028_compatibility() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// An ASCII grid whose `.prj` can't be read is added in longitude/latitude, and adding it says so;
+/// one whose `.prj` is read says nothing of it.
 #[test]
 fn an_ascii_grid_s_unread_prj_is_said_when_added() {
     let dir = std::env::temp_dir().join(format!("rustgis-engine-asc-prj-{}", std::process::id()));
@@ -28018,10 +28104,10 @@ fn a_system_without_an_epsg_code_is_exported_in_its_own_system() {
     let own = s.map().layers.iter().find(|l| l.name == "sites").and_then(|l| l.dataset.crs).unwrap();
     assert_eq!(own.epsg(), 0, "the .prj has no authority: {}", own.label());
     for file in ["sites.gpkg", "sites.fgb", "again.shp"] {
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let r = s.run("share.exportLayer", &json!({"layer": "sites", "path": path(file)})).unwrap();
         assert_eq!(r["crs"], own.label(), "{file}");
-        let said: Vec<_> = s.notices[mark..].iter().map(|n| n.text.clone()).filter(|t| !t.starts_with("Exported ")).collect();
+        let said: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| !t.starts_with("Exported ")).collect();
         assert!(said.is_empty(), "{file}: {said:?}");
         // Added back, the point is where it was and the layer is in the same system.
         let r = s.run("layer.addData", &json!({"path": path(file)})).unwrap();
@@ -28035,10 +28121,10 @@ fn a_system_without_an_epsg_code_is_exported_in_its_own_system() {
     let gnomonic = "+proj=gnom +lat_0=35 +lon_0=-90 +datum=WGS84 +units=m +no_defs";
     s.run("layer.addData", &json!({"path": path("sites.csv"), "name": "far", "x": "longitude", "y": "latitude", "crs": gnomonic})).unwrap();
     for file in ["far.gpkg", "far.fgb"] {
-        let mark = s.notices.len();
+        let mark = s.notice_mark();
         let r = s.run("share.exportLayer", &json!({"layer": "far", "path": path(file)})).unwrap();
         assert_eq!(r["crs"], "EPSG:4326", "{file}");
-        let said: Vec<_> = s.notices[mark..].iter().map(|n| n.text.clone()).collect();
+        let said: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
         assert!(said.iter().any(|t| t.contains("WGS 84") && t.contains(file) && t.contains("far")), "{file}: {said:?}");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -42308,13 +42394,13 @@ fn legends_label_layers() {
         Some(ElementKind::Legend { labels, .. }) if labels.get("Rivers").is_some_and(|l| l == "Rios principais")
     ));
     let cut_notice =
-        |s: &Session, from: usize| s.notices[from..].iter().filter(|n| n.text.contains("legend labels cut to their limits")).count();
+        |s: &Session, from: u64| s.notices_since(from).iter().filter(|n| n.text.contains("legend labels cut to their limits")).count();
     assert_eq!(cut_notice(&s, 0), 0, "nothing was cut");
     // A layout file with a label longer than a legend keeps is read with it cut, and says so.
     let mut text: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     let legend = text["elements"].as_array_mut().unwrap().iter_mut().find(|e| e["id"] == json!(id)).unwrap();
     legend["kind"]["Legend"]["labels"]["Rivers"] = json!("x".repeat(rustgis_map::layout::MAX_LEGEND_LABEL_CHARS + 50));
-    let mark = s.notices.len();
+    let mark = s.notice_mark();
     s.run("layout.import", &json!({"text": text.to_string()})).unwrap();
     assert_eq!(cut_notice(&s, mark), 1);
     assert!(matches!(
@@ -42325,7 +42411,7 @@ fn legends_label_layers() {
     // says so.
     let legend = text["elements"].as_array_mut().unwrap().iter_mut().find(|e| e["id"] == json!(id)).unwrap();
     legend["kind"]["Legend"]["labels"] = json!({"Rivers": "Rios", "rivers": "rios", "Lakes": "Lagos"});
-    let mark = s.notices.len();
+    let mark = s.notice_mark();
     s.run("layout.import", &json!({"text": text.to_string()})).unwrap();
     assert_eq!(cut_notice(&s, mark), 1);
     assert!(matches!(
@@ -42337,8 +42423,8 @@ fn legends_label_layers() {
     // (The imported layout is the active one now; the rest goes to the first.)
     // The label follows its layer renamed, and goes with it removed, so a later layer of that
     // name isn't labelled unasked.
-    let lost = |s: &Session, from: usize| s.notices[from..].iter().filter(|n| n.text.contains("lost its label")).count();
-    let mark = s.notices.len();
+    let lost = |s: &Session, from: u64| s.notices_since(from).iter().filter(|n| n.text.contains("lost its label")).count();
+    let mark = s.notice_mark();
     s.run("layer.rename", &json!({"layer": "Rivers", "name": "Hidrografia"})).unwrap();
     assert_eq!(labels(&s, id), [pair("Hidrografia", "Rios principais"), pair("Lakes", "Lagos")]);
     s.run("layer.remove", &json!({"layer": "Lakes"})).unwrap();
@@ -42349,7 +42435,7 @@ fn legends_label_layers() {
     // Its label is dropped, and said once for the four legends that had it (this one and the
     // three layouts imported above); following a rename or a removal is not.
     assert_eq!(lost(&s, mark), 1);
-    assert!(s.notices[mark..].iter().any(|n| n.text.contains("'Hidrografia', renamed 'Cities', lost its label in 4 legend(s)")));
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("'Hidrografia', renamed 'Cities', lost its label in 4 legend(s)")));
     assert!(labels(&s, id).is_empty());
     // A WMS or WMTS layer is labelled by name too.
     let wms = json!({"url": "https://maps.example.org/wms/{bbox-epsg-3857}", "name": "Soils", "overlay": true, "legend": "https://maps.example.org/legend.png"});
@@ -49196,11 +49282,12 @@ fn calculate_field_keeps_decimals_and_says_what_whole_numbers_cut() {
     // it, though as a decimal it rounds to -2^63, which is i64::MIN.
     texts(&mut s, ["-9223372036854775809", "-9223372036854775900", "+9223372036854775808"]);
     assert_eq!(calc(&mut s, "i", "t2"), (vec![past("3 results")], vec![V::Null; 3]));
-    // Words the decimal reader takes aren't numbers written as text: null, said as not numbers,
-    // not as past the range; a number too large for a decimal is past it.
+    // Words the decimal reader takes aren't numbers written as text: null, said as not a number
+    // or not finite, not as past the range; a number too large for a decimal is past it.
     texts(&mut s, ["NaN", "inf", "1e400"]);
-    let not_numbers = "Calculate Field: 'i' is null for 2 results that aren't numbers".to_string();
-    assert_eq!(calc(&mut s, "i", "t2"), (vec![past("1 result"), not_numbers], vec![V::Null; 3]));
+    let not_numbers = "Calculate Field: 'i' is null for 1 result that isn't a number".to_string();
+    let not_finite = "Calculate Field: 'i' is null for 1 result that isn't a finite number".to_string();
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![past("1 result"), not_numbers, not_finite], vec![V::Null; 3]));
     // With an exponent, text is read as a decimal: 0.25 loses its fraction, 3 is whole; "-" is
     // no number.
     texts(&mut s, ["2.5e-1", "3e0", "-"]);
@@ -54261,12 +54348,12 @@ fn arrangements_are_saved_by_name() {
     let r = s.run("layout.arrangement", &json!({"save": "Copy", "arrangement": "mirrored"})).unwrap();
     assert_eq!(r["saved"]["Copy"]["locator"], "top-right", "{r}");
     // "arrangement" with "save" is read, not said to be ignored.
-    let mark = s.notices.len();
+    let mark = s.notice_mark();
     s.run("layout.arrangement", &json!({"save": "Print", "arrangement": "classic"})).unwrap();
     assert!(
-        !s.notices[mark..].iter().any(|n| n.text.contains("ignores")),
+        !s.notices_since(mark).iter().any(|n| n.text.contains("ignores")),
         "{:?}",
-        s.notices[mark..].iter().map(|n| &n.text).collect::<Vec<_>>()
+        s.notices_since(mark).iter().map(|n| &n.text).collect::<Vec<_>>()
     );
     s.run("layout.arrangement", &json!({"remove": "Print"})).unwrap();
     // Taken by name, case aside, and named in the answer as it is kept.
@@ -57254,4 +57341,48 @@ fn row_resolver_buffer_and_both_clip_inputs() {
             assert!(notices[0].text.contains(detail), "{notices:?}");
         }
     }
+}
+
+/// A dated cloud-optimised GeoTIFF's file is named in its notices cut to 80 characters, and a cut
+/// name ends in an ellipsis so it doesn't pass for the whole one.
+#[test]
+fn a_cog_tile_notice_marks_a_cut_file_name() {
+    let mut tile = rustgis_map::tiles::TileLayer::new("Dated", rustgis_map::tiles::TileKind::Cog, "https://example.com/a.tif");
+    tile.time_url = Some("https://example.com/{date}.tif".into());
+    let long = format!("https://example.com/{}.tif", "n".repeat(100));
+    let said = crate::cmd::layer::cog_tile_where(&tile, &long);
+    assert!(said.ends_with("…)"), "{said}");
+    assert_eq!(said.chars().filter(|c| *c == 'n').count(), 80, "{said}");
+    assert_eq!(crate::cmd::layer::cog_tile_where(&tile, "https://example.com/short.tif"), "Dated (short.tif)");
+}
+
+/// A `file://` address isn't a local file a record is made for: the record's file is opened by
+/// the path as written, so a path that passes the check is the path opened.
+#[test]
+fn a_file_address_is_not_a_local_file_to_publish() {
+    assert!(!crate::cmd::publish::local_file("file:///tmp/a.shp"));
+    assert!(!crate::cmd::publish::local_file("file:///C:/data/a.shp"));
+    assert!(crate::cmd::publish::local_file("/tmp/a.shp"));
+}
+
+/// A delimited file that doesn't read is named once in the error, not by its path and again by
+/// its name.
+#[test]
+fn an_unread_delimited_file_is_named_once() {
+    let dir = std::env::temp_dir().join(format!("rustgis-dat-named-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("summary.dat");
+    std::fs::write(&path, b"just one column\nand another line\n").unwrap();
+    let mut s = world();
+    let e = s.run("layer.addData", &json!({"path": path})).unwrap_err();
+    assert_eq!(e.matches("summary.dat").count(), 1, "{e}");
+    assert!(e.contains("not recognised as delimited text"), "{e}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A transparency is given to the Assistant and plugins as set, not widened with f32 noise.
+#[test]
+fn a_transparency_reads_back_without_float_noise() {
+    assert_eq!(crate::cmd::project::percent(33.3), json!(33.3));
+    assert_eq!(crate::cmd::project::percent(0.0), json!(0.0));
 }

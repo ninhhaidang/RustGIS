@@ -460,8 +460,9 @@ pub fn resolve_params(spec: &ToolSpec, params: &Value) -> Result<Value, String> 
 /// The keys of `params` that `spec` doesn't read, for an error that a required parameter is
 /// missing (#2307): a misspelled key is the likely reason, and a failed run's warnings are taken
 /// back, so the error says it: " (given 'clips', which Clip doesn't read)". Empty when there are
-/// none. Bounded as [`quoted_keys`] bounds them.
-fn unread(spec: &ToolSpec, params: &Value) -> String {
+/// none. Bounded as [`quoted_keys`] bounds them. A caller adding it to an error the tool gave
+/// checks for this exact text, so it isn't said twice.
+pub fn unread(spec: &ToolSpec, params: &Value) -> String {
     let Some(given) = params.as_object() else { return String::new() };
     let unknown: Vec<&str> = given.keys().map(String::as_str).filter(|k| !is_expected_key(spec, params, k)).collect();
     if unknown.is_empty() {
