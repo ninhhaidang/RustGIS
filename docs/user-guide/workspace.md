@@ -472,7 +472,9 @@ Right-click a map or layout tab (or its entry in Browser) to **Rename**, **Dupli
 Click **Command Search** at the right of the title bar or on the Help tab, or press ++ctrl+k++
 (++cmd+k++ on macOS). Search by command name, ID or ribbon location; analysis tools, workflow
 names, plugin commands and plugin panels are searchable too. Click a result, or press Enter to
-choose the first available one. Commands that need inputs open their dialog, pane or workflow when one
+run the highlighted one: the first available result, until ++up++ and ++down++ move the highlight.
+The first ten available results show a number: ++ctrl+1++ to ++ctrl+9++ and ++ctrl+0++ (++cmd+1++ …
+++cmd+0++ on macOS) run them directly. Commands that need inputs open their dialog, pane or workflow when one
 is available; unavailable commands stay visible but disabled, with the reason on hover.
 Use scripts or the assistant for parameterized commands without an interactive entry point.
 
