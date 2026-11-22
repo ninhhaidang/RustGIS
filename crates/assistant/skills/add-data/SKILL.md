@@ -15,7 +15,8 @@ and its limits are listed in `user-guide/data-formats.md`.
   coordinates land in the wrong place. Use `"delimiter"` when it isn't a comma.
 - **A web address:** `layer.addUrl` `{"url": U}` for GeoJSON, CSV, GeoParquet, FlatGeobuf,
   GeoPackage, zipped Shapefiles, KML/KMZ, GPX, GeoTIFF, GRIB or a PMTiles archive. This uses the
-  network, so the user is asked first.
+  network, so the user is asked first. One record of a large GRIB file: `"bytes": [first, last]`,
+  the octets its `.inv` inventory gives (the record's offset to the next one's, less one).
 - **SQL:** `layer.addSql` `{"sql": "SELECT … FROM read_parquet('…')"}` runs one DuckDB query
   (DuckDB Spatial's `ST_` functions; PostgreSQL through `"database"`). It needs DuckDB installed on
   the desktop.

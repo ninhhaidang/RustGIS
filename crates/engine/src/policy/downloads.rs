@@ -14,6 +14,14 @@ use std::{
 /// from the request, and a landed window holding any other key is refused.
 pub const WINDOW_KEYS: [&str; 3] = ["bbox", "cellSize", "cog"];
 
+/// The address a claim's GRIB range is downloaded from ([`crate::cmd::layer::ranged_address`]),
+/// when it asks for one (`"bytes"`).
+fn ranged_claim(p: &Value) -> Option<String> {
+    let url = p.get("url")?.as_str()?;
+    let range = crate::cmd::layer::byte_range(p, url).ok()??;
+    Some(crate::cmd::layer::ranged_address(url, range))
+}
+
 /// What a window the app read off the frame says it read (`"window"`, #1330) is what its request
 /// asked for: a box, and its cell size and `"cog"` if the request gave them, nothing else.
 fn asked_window(asked: &Value, window: &Value) -> bool {
@@ -485,6 +493,9 @@ impl Session {
                     && crate::cmd::bool_value(value) == Some(false)
                     && claim.params.get(key).and_then(crate::cmd::bool_value) == Some(true))
                 || (key == "window" && asked_window(&claim.params, value))
+                // A GRIB file's range (`"bytes"`): the app downloads, and completes with, the
+                // address that range makes of the claim's own, and no other.
+                || (key == "url" && ranged_claim(&claim.params).is_some_and(|u| value.as_str() == Some(u.as_str())))
                 // How an ArcGIS service draws the layer, read by the app from its description
                 // while reading its features (#2080).
                 || (key == "drawingInfo" && value.is_object() && claim.params.get("service").and_then(Value::as_bool) == Some(true));

@@ -3409,6 +3409,14 @@ mod native {
         len.trim().parse::<u64>().ok().filter(|len| *len > 0)
     }
 
+    /// The octets a `Content-Range` header says an answer holds (`bytes 200-299/1000`: 200 and
+    /// 299); none when it can't be read.
+    pub(super) fn content_range_span(header: &str) -> Option<(u64, u64)> {
+        let span = header.trim().strip_prefix("bytes")?.trim_start().split('/').next()?;
+        let (a, b) = span.split_once('-')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    }
+
     /// The sign-ins' tokens a hop to `at` carries, as (header, value, whether a refusal must be
     /// status-only): none for a `bare` request (signed for S3, or read anonymously, as a plugin's
     /// `host.fetch` is), at any hop.
@@ -3654,6 +3662,15 @@ mod native {
                 && a > 0
             {
                 return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into());
+            }
+            // A range answered (206) with other octets than asked for: never read as the range. An
+            // answer may end sooner (the file's end), never start elsewhere or run past the range.
+            if let Some((a, b)) = range.filter(|_| !whole)
+                && let Some((from, to)) = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(content_range_span)
+                && (from != a || to > b)
+            {
+                let why = format!("the server answered octets {from}-{to}, not the {a}-{b} asked for");
+                return Err(rustgis_data::diagnostics::message_with_address(url, &why).into());
             }
             let mut buf = Vec::new();
             if !resp.status().is_success() {

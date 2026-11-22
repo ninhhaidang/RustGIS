@@ -49169,6 +49169,125 @@ fn a_grib_download_is_read_off_the_frame() {
     assert!(download_page("https://example.org/a.tif", &asked, message).is_none());
 }
 
+/// A GRIB1 message of 88 octets: a 2 × 1 grid of 1° cells from 60° N, 10° E, its two values 16
+/// bits each (R = 0, E = 0, D = 0).
+#[cfg(not(target_arch = "wasm32"))]
+fn grib1_message(a: u16, b: u16) -> Vec<u8> {
+    let mut m = b"GRIB\0\0\x58\x01".to_vec();
+    // Product definition (28 octets): a grid description follows, parameter 11 at the surface.
+    m.extend([0, 0, 28, 2, 7, 96, 255, 0x80, 11, 105, 0, 2, 26, 11, 18, 6, 0, 1, 0, 0, 0, 0, 0, 0, 21, 0, 0, 0]);
+    // Grid description (32 octets): latitude/longitude, 2 × 1, 60° N 10° E to 60° N 11° E, 1°.
+    m.extend([0, 0, 32, 0, 255, 0, 0, 2, 0, 1, 0, 0xea, 0x60, 0, 0x27, 0x10, 0x80, 0, 0xea, 0x60, 0, 0x2a, 0xf8]);
+    m.extend([0x03, 0xe8, 0x03, 0xe8, 0, 0, 0, 0, 0]);
+    // Binary data (16 octets): 8 unused bits, 16 bits a value, one octet of padding.
+    m.extend([0, 0, 16, 8, 0, 0, 0, 0, 0, 0, 16]);
+    m.extend(a.to_be_bytes());
+    m.extend(b.to_be_bytes());
+    m.push(0);
+    m.extend(b"7777");
+    m
+}
+
+/// `layer.addUrl` with `"bytes"` asks for that range of a GRIB file only and reads it as the file
+/// (#2428): the second of two records, by its name or by `"format"`. A server that ignores the
+/// range, an answer shorter than the range, and a range of another format are refused.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_grib_files_byte_range_is_added_as_the_file() {
+    let mut file = grib1_message(1, 2);
+    file.extend(grib1_message(3, 4));
+    assert_eq!(file.len(), 176);
+    let (base, sent) = serve_ranges(file.clone());
+    let mut s = Session::new(Project::default());
+    for p in [
+        json!({"url": format!("{base}/run/PREC.grb"), "bytes": [88, 175]}),
+        json!({"url": format!("{base}/record?id=2"), "bytes": [88, 175], "format": "grib"}),
+    ] {
+        let r = s.run("layer.addUrl", &p).unwrap();
+        let layer = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+        let raster = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
+        assert_eq!(raster.bands[0].data, vec![3.0, 4.0], "{p}");
+    }
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 176, "the range alone, twice");
+    // A range past the file's end: the 88 octets there aren't the 100 asked for.
+    let e = s.run("layer.addUrl", &json!({"url": format!("{base}/PREC.grb"), "bytes": [88, 187]})).unwrap_err();
+    assert!(e.contains("answered 88 octets of the 100 asked for"), "{e}");
+    // A server that answers the whole file to a range.
+    let (whole, _) = serve_file(file.clone(), false);
+    let e = s.run("layer.addUrl", &json!({"url": format!("{whole}/PREC.grb"), "bytes": [88, 175]})).unwrap_err();
+    assert!(e.contains(crate::render::rustgis_tiles::cache::NO_RANGES), "{e}");
+    // From octet 0, refused once its answer is longer than the range, and said so.
+    let e = s.run("layer.addUrl", &json!({"url": format!("{whole}/PREC.grb"), "bytes": [0, 87]})).unwrap_err();
+    assert!(e.contains("more than the range asked for") && e.contains(crate::render::rustgis_tiles::cache::NO_RANGES), "{e}");
+    // A server answering other octets of the same length (the first record, `Content-Range:
+    // bytes 0-87/176`) for the second record asked for: refused, never read as it.
+    let first = file[..88].to_vec();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let wrong = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut c in listener.incoming().flatten() {
+            let _ = c.read(&mut [0u8; 4096]);
+            let head = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-87/176\r\nContent-Length: 88\r\nConnection: close\r\n\r\n";
+            let _ = c.write_all(head.as_bytes()).and_then(|()| c.write_all(&first));
+        }
+    });
+    let e = s.run("layer.addUrl", &json!({"url": format!("{wrong}/PREC.grb"), "bytes": [88, 175]})).unwrap_err();
+    assert!(e.contains("the server answered octets 0-87, not the 88-175 asked for"), "{e}");
+    // Without a range, "format" is left as it was before ranges: not refused.
+    let text = br#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}]}"#;
+    let (plain, _) = serve_ranges(text.to_vec());
+    s.run("layer.addUrl", &json!({"url": format!("{plain}/points.geojson"), "format": "geojson"})).unwrap();
+    // A range that isn't a GRIB message is refused, whatever its octets read as.
+    let text = br#"{"type": "FeatureCollection", "features": []}"#.to_vec();
+    let last = text.len() as u64 - 1;
+    let (other, _) = serve_ranges(text);
+    let e = s.run("layer.addUrl", &json!({"url": format!("{other}/record"), "bytes": [0, last], "format": "grib"})).unwrap_err();
+    assert!(e.contains("the range doesn't start a GRIB message"), "{e}");
+    // Asked wrongly, or of another format: refused before anything is fetched.
+    let grb = format!("{base}/PREC.grb");
+    for (p, said) in [
+        (json!({"url": format!("{base}/a.tif"), "bytes": [0, 9]}), "a range of another format isn't a file"),
+        (json!({"url": format!("{base}/a.tif"), "bytes": [0, 9], "format": "grib"}), "the address names a.tif"),
+        (json!({"url": grb, "bytes": [9, 0]}), "comes after the last"),
+        (json!({"url": grb, "bytes": [0, 64 << 20]}), "more than a range may have (64 MB)"),
+        (json!({"url": grb, "bytes": [0, u64::MAX]}), "more than a range may have (64 MB)"),
+        (json!({"url": grb, "bytes": "0-9"}), "two octet offsets"),
+        (json!({"url": grb, "bytes": [0, 9], "format": "tiff"}), "the one format a byte range is read as"),
+        (json!({"url": grb, "format": "grib"}), "\"format\" goes with \"bytes\""),
+        (json!({"url": grb, "bytes": [0, 9], "as": "scan"}), "doesn't go with \"as\""),
+    ] {
+        let before = sent.load(std::sync::atomic::Ordering::Relaxed);
+        let e = s.run("layer.addUrl", &p).unwrap_err();
+        assert!(e.contains(said), "{p}: {e}");
+        assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), before, "{p}");
+    }
+}
+
+/// A plugin's command asking for a GRIB file's range leaves it to the app, which completes the
+/// download with the range's address (the claim's own address with its range): it is added.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_plugin_commands_grib_range_is_added_when_the_app_completes_it() {
+    let mut file = grib1_message(1, 2);
+    file.extend(grib1_message(3, 4));
+    let (base, _) = serve_ranges(file.clone());
+    let mut s = world();
+    plugin("eng-grib-range", &["edit", "network"]);
+    let url = format!("{base}/run/PREC.grb");
+    let p = json!({"op": "layer.addUrl", "params": {"url": url, "bytes": [88, 175], "name": "Rain"}});
+    s.run_leaving_downloads("plugin:eng-grib-range/f", &p).unwrap();
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 1);
+    let id = s.download_started_for(&asked[0]).unwrap();
+    assert!(s.download_landed(id, file[88..].to_vec()));
+    // As the app completes it: the address it downloaded, with the request's name.
+    let add = json!({"id": id, "url": crate::cmd::layer::ranged_address(&url, (88, 175)), "name": "Rain"});
+    s.complete_download(id, &add).unwrap();
+    let layer = s.map().layer_by_name("Rain").filter(|l| l.is_raster()).unwrap();
+    assert_eq!(layer.raster.as_ref().unwrap().data.as_ref().unwrap().bands[0].data, vec![3.0, 4.0]);
+}
+
 /// Each page of a map series is georeferenced with its own view, not the first page's (#1191).
 #[test]
 fn a_map_series_pdf_georeferences_each_page_with_its_view() {

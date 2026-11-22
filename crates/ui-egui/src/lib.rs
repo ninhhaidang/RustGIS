@@ -5668,6 +5668,9 @@ impl RustGisApp {
             if public || check_origin.is_some() || claim.is_none() {
                 rustgis_engine::cmd::layer::mark_url_reach(bound_url, check_origin, public);
             }
+            // A byte range of a GRIB file (`"bytes"`), checked as the command checks it: only that
+            // range is downloaded (below), never probed, and read as the file.
+            let range = rustgis_engine::cmd::layer::byte_range(p, url)?;
             // A window of a cloud-optimised GeoTIFF is read off the frame (below), with no
             // probe: it is refused unless it is one. In the browser the command refuses it.
             let window = cfg!(not(target_arch = "wasm32")) && p.get("bbox").is_some_and(|v| !v.is_null());
@@ -5700,7 +5703,7 @@ impl RustGisApp {
                 && !tiff
                 && rustgis_engine::cmd::layer::is_unnamed_url(url)
                 && ["service", "coverage"].iter().all(|k| p.get(*k).and_then(Value::as_bool) != Some(true));
-            if !window && (remote || tiff || unnamed) && !scan && p.get("whole").and_then(Value::as_bool) != Some(true) {
+            if range.is_none() && !window && (remote || tiff || unnamed) && !scan && p.get("whole").and_then(Value::as_bool) != Some(true) {
                 let slot: Slot<Result<bool, String>> = Slot::default();
                 let land = slot.clone();
                 if remote {
@@ -5738,7 +5741,10 @@ impl RustGisApp {
                 self.ui.cog_probes.push((probe, claim, slot));
                 return Ok(Value::Null);
             }
-            let url = address;
+            let url = match range {
+                Some(r) => rustgis_engine::cmd::layer::ranged_address(&address, r),
+                None => address,
+            };
             // The request receipt is correlation only; its admitted claim stays outside JSON.
             let mut q = json!({"url": url});
             for k in ["name", "layer", "crs", "connection", "from"] {
@@ -5820,6 +5826,9 @@ impl RustGisApp {
                         public,
                         if q.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
                             rustgis_engine::map::geolibre::MAX_TEXT
+                        } else if let Some((first, last)) = range {
+                            // A range's answer may be no longer than the range.
+                            usize::try_from(last - first + 1).unwrap_or(usize::MAX)
                         } else {
                             rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD
                         },
@@ -5919,6 +5928,10 @@ impl RustGisApp {
         });
         for (id, url, mut p, r) in landed {
             let origin = connectiontree::take_origin_key(&mut p);
+            // A range's answer shorter than the range is refused, never read as the record.
+            let r = r
+                .map_err(|e| rustgis_engine::cmd::layer::range_failed(&url, e))
+                .and_then(|bytes| rustgis_engine::cmd::layer::check_range_answer(&url, &bytes).map(|()| bytes));
             match r {
                 Ok(bytes) => {
                     let landed = serviceui::Landed { id, url, params: p, origin };
