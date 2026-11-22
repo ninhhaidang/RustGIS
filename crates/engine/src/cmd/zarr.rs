@@ -304,7 +304,8 @@ fn read_store(url: &str, variable: &str) -> Result<(zarr::Store, bool), String> 
 /// `raster.zarrInfo`. It reads the store's metadata and coordinates on the UI thread, with no
 /// Cancel, as it did before windows: the Add Data › Zarr dialog reads them off the frame, and none
 /// of the background paths takes a command that answers with what a store holds yet. A `"bbox"`
-/// adds the variable's two map coordinates, read whole: at most `MAX_COORDS` values each (32 MB
+/// adds the variable's two map coordinates, read whole (none for a grid its `spatial:transform`
+/// places): at most `MAX_COORDS` values each (32 MB
 /// as Float64), each file a download of at most 60 s. A store whose root lists no arrays is read
 /// in up to [`MEMBER_ROUNDS`] more rounds of metadata files ([`store_at`]), each at most
 /// `zarr::member_keys`' 163 names (one or two files each), fetched several at a time.
@@ -441,7 +442,8 @@ fn place_window(root: &str, store: &zarr::Store, sel: &mut zarr::Selection, aske
             let coords = store_files(root, &zarr::window_keys(store, &sel.variable).map_err(at)?)?;
             let (w, cut, widened) = zarr::window_of(store, &sel.variable, &coords, bbox).map_err(at)?;
             sel.window = Some(w);
-            let cells = format!("columns {}–{} and rows {}–{}", w.x0, w.x1, w.y0, w.y1);
+            // A window's ends are exclusive; the text gives the last column and row read.
+            let cells = format!("columns {}–{} and rows {}–{}", w.x0, w.x1.saturating_sub(1), w.y0, w.y1.saturating_sub(1));
             let mut said = Vec::new();
             if cut {
                 said.push(format!("the bbox reaches past the grid: only {cells} within it are read"));
@@ -458,7 +460,8 @@ fn place_window(root: &str, store: &zarr::Store, sel: &mut zarr::Selection, aske
 /// as it did before windows: the Add Data › Zarr dialog reads its slices off the frame and hands
 /// them over (`"ran"`), and none of the background paths takes a command that adds a layer from a
 /// store yet. A window bounds the read: `"cells"` reads only the chunks it touches and its part of
-/// the coordinates; `"bbox"` first reads the variable's two map coordinates whole, at most
+/// the coordinates; `"bbox"` first reads the variable's two map coordinates whole (none for a grid
+/// its `spatial:transform` places), at most
 /// `MAX_COORDS` values each (32 MB as Float64), each file a download of at most 60 s.
 pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     let asked = asked_window(p)?;

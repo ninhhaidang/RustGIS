@@ -1290,6 +1290,9 @@ fn saved_conversion_cannot_borrow_another_sessions_reload_workspace_when_origina
         let original = f.file(if duckdb { "removed.duckdb" } else { "removed.gdb" });
         let workspace = f.file("reload-another-session");
         std::fs::create_dir(&workspace).unwrap();
+        // Another session's workspace holds its owner lock, marked as one: a folder that only has
+        // such a name is a durable cache.
+        std::fs::write(workspace.join("owner.lock"), b"RustGIS reload workspace v1\n1\n").unwrap();
         let converted = workspace.join(if duckdb { "converted.parquet" } else { "converted.fgb" });
         io::write_path(&points(&["rank"], Some(8.0)), &converted).unwrap();
         let handle = rustgis_engine::data::source::open_path(&converted, None).unwrap();

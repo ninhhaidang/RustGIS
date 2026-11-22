@@ -479,7 +479,8 @@ pub const MAX_LISTED_LAYERS: usize = 2_000;
 const MAX_READ_LAYERS: usize = if cfg!(test) { 3_000 } else { 100_000 };
 /// Most bytes of a document's own request addresses (its GetMap's, GetFeature's…) copied into
 /// its layers together: each layer's address repeats them, so long ones lower how many are read.
-const MAX_COPIED_ADDRESS_BYTES: usize = if cfg!(test) { 8 << 20 } else { 64 << 20 };
+/// The same budget bounds the document addresses a listing repeats (`service.layers`).
+pub const MAX_COPIED_ADDRESS_BYTES: usize = if cfg!(test) { 8 << 20 } else { 64 << 20 };
 
 /// How many layers are read from a document whose layers each copy `per_layer` bytes of its
 /// request addresses: [`MAX_READ_LAYERS`], fewer for long addresses, at least one. (Fewer than
@@ -3902,7 +3903,9 @@ impl Pages {
                 && !matches!(self.phase, Phase::Offsets { pbf: true, .. })
                 && query_value(&self.url, "where").is_some_and(|w| !w.eq_ignore_ascii_case("1%3D1") && w != "1=1")
             {
-                return Step::Failed(self.page_failure(&format!("the server rejected the query with its where clause: {error}")));
+                return Step::Failed(
+                    self.page_failure(&format!("the server rejected the query (its where clause or area may be the cause): {error}")),
+                );
             }
         }
         if matches!(self.phase, Phase::Offsets { pbf: true, .. }) {

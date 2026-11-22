@@ -55241,7 +55241,7 @@ fn a_zarr_window_reads_only_its_chunks_by_range() {
     let mark = s.notice_mark();
     s.run("layer.addZarr", &json!({"url": url, "variable": "v", "index": {"time": 1}, "bbox": [2.2, 5.2, 2.4, 7.8]})).unwrap();
     assert!(
-        s.notices_since(mark).iter().any(|n| n.text.contains("within one cell along an axis") && n.text.contains("columns 2–4")),
+        s.notices_since(mark).iter().any(|n| n.text.contains("within one cell along an axis") && n.text.contains("columns 2–3 and rows")),
         "{:?}",
         s.notices_since(mark)
     );
@@ -55254,7 +55254,7 @@ fn a_zarr_window_reads_only_its_chunks_by_range() {
     let mark = s.notice_mark();
     s.run("layer.addZarr", &json!({"url": url, "variable": "v", "bbox": [-20.0, 5.2, 4.8, 7.8]})).unwrap();
     assert!(
-        s.notices_since(mark).iter().any(|n| n.text.contains("the bbox reaches past the grid: only columns 0–5")),
+        s.notices_since(mark).iter().any(|n| n.text.contains("the bbox reaches past the grid: only columns 0–4 and rows")),
         "{:?}",
         s.notices_since(mark)
     );

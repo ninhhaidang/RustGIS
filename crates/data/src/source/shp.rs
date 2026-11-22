@@ -239,6 +239,7 @@ impl FeatureSource for ShpSource {
         let mut row = vec![0u8; self.table.row_len];
         let mut features = Vec::new();
         let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
+        let mut deleted = 0usize;
         let utf8 = self.encoding.is_utf8();
         // An extent the file's system couldn't bound (#1925) has no boxes for the index to sample
         // by: every record is visited, tested, and the matches sampled as they come.
@@ -295,8 +296,9 @@ impl FeatureSource for ShpSource {
                     skipped += 1;
                     return Ok(());
                 }
-                // A deleted row: its shape is left out too.
+                // A deleted row: its shape is left out too, and counted.
                 if row.first() == Some(&b'*') {
+                    deleted += 1;
                     return Ok(());
                 }
                 if late && !sample.wants() {
@@ -334,7 +336,10 @@ impl FeatureSource for ShpSource {
             null_text,
             // A sampled read visits only some of the matches, so its count is of those; a late one
             // visits the whole layer, so its count is of the layer.
-            notes: boxed_off_note(boxed_off, !late && !complete, late),
+            notes: boxed_off_note(boxed_off, !late && !complete, late)
+                .into_iter()
+                .chain(deleted_note(deleted, !late && !complete))
+                .collect(),
             not_utf8,
         })
     }
@@ -359,6 +364,7 @@ impl FeatureSource for ShpSource {
         let mut buf = Vec::new();
         let mut row = vec![0u8; self.table.row_len];
         let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
+        let mut deleted = 0usize;
         let utf8 = self.encoding.is_utf8();
         // The same directory, ordering, extent rules and read-only scan fallback as sampled
         // reads, with no interaction row cap. The index visits records without materializing
@@ -411,8 +417,9 @@ impl FeatureSource for ShpSource {
                     skipped += 1;
                     return Ok(());
                 }
-                // A deleted row: its shape is left out too.
+                // A deleted row: its shape is left out too, and counted.
                 if row.first() == Some(&b'*') {
+                    deleted += 1;
                     return Ok(());
                 }
                 self.table.values(&row, &encoding, &mut unread_dates, &mut null_text, utf8.then_some(&mut not_utf8))
@@ -430,7 +437,7 @@ impl FeatureSource for ShpSource {
             unread_dates,
             rounded_dates: Vec::new(),
             null_text,
-            notes: boxed_off_note(boxed_off, false, late),
+            notes: boxed_off_note(boxed_off, false, late).into_iter().chain(deleted_note(deleted, false)).collect(),
             not_utf8,
         })
     }
@@ -458,6 +465,17 @@ fn boxed_off_note(n: u64, sampled: bool, late: bool) -> Vec<String> {
     vec![format!(
         "{what} have a coordinate that isn't a number under a bounding box that is one: they're left out of the read, but the layer's extent and its index still take in their stored boxes"
     )]
+}
+
+/// The note for `n` records marked deleted in the `.dbf`, left out with their shapes; of those
+/// read when the read is `sampled`.
+fn deleted_note(n: usize, sampled: bool) -> Option<String> {
+    if sampled && n > 0 {
+        return Some(format!(
+            "{n} of the records read (a sample of the layer, which may hold more) are marked deleted in the .dbf: they're left out, with their shapes"
+        ));
+    }
+    crate::io::deleted_records_text(n, true)
 }
 
 /// A file read at offsets, through a buffer that a nearby offset reuses.
@@ -811,7 +829,9 @@ fn value(c: &Column, b: &[u8], encoding: &dyn shapefile::dbase::Encoding) -> Val
             Some(b'0' | b'F' | b'f' | b'N' | b'n') => Value::Bool(false),
             _ => Value::Null,
         },
-        b'D' => crate::dbf::date(b).ok().flatten().map_or(Value::Null, Value::Date),
+        // Dates are read, and those that aren't ones counted, by `Table::values`, which never
+        // passes a date column here.
+        b'D' => Value::Null,
         // Memos (in a `.dbt` beside the file), date-times and binary fields aren't read.
         b'M' | b'T' | b'@' | b'B' | b'G' | b'P' => Value::Null,
         _ => {

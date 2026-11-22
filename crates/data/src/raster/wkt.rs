@@ -2400,7 +2400,9 @@ const ELLIPSOIDS: &[(&str, &str, f64)] = &[
     ("sphere", "Sphere", 0.0),
 ];
 
-/// The radius of the sphere with the area of the ellipsoid of axes `a` and `b` (PROJ's `+R_A`).
+/// The radius of the sphere with the area of the ellipsoid of axes `a` and `b` (PROJ's `+R_A`):
+/// `a √(q_p / 2)`, with `q_p` the authalic `q` at the pole, as in Snyder, *Map Projections: A
+/// Working Manual*, USGS Professional Paper 1395 (1987), for the radius of the authalic sphere.
 fn authalic_radius(a: f64, b: f64) -> f64 {
     let e2 = 1.0 - (b / a).powi(2);
     let e = e2.sqrt();

@@ -251,13 +251,7 @@ pub fn instant(s: &str) -> Option<i64> {
         return None;
     }
     let (y, m, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let month_days = match m {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
+    let month_days = rustgis_data::date::days_in_month(y, m);
     if !(1..=12).contains(&m) || !(1..=month_days).contains(&d) {
         return None;
     }

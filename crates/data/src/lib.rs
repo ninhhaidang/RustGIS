@@ -303,8 +303,9 @@ impl Features {
         }
     }
 
-    /// Appends a row with the id one past the largest. `max_id` stays right only because every
-    /// other change to `rows` goes through `DerefMut`, which clears it.
+    /// Appends a row with the id one past the largest. `max_id` stays right because every change
+    /// that removes or reorders rows clears it (`DerefMut`, `remove_row`, `retain_rows`,
+    /// `truncate_rows`), and the pushes keep it.
     fn push_with_new_id(&mut self, geometry: Option<Geometry>, attrs: Vec<Value>) {
         let max = self.max_id.unwrap_or_else(|| self.rows.iter().map(|f| f.id).max().unwrap_or(0));
         let id = max.saturating_add(1);

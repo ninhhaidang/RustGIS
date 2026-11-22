@@ -286,6 +286,28 @@ fn retype_columns(dbf: &mut [u8], from: u8, to: u8) -> Vec<usize> {
     changed
 }
 
+/// The records of a `.dbf` marked deleted (`*`), by their position, with their marks cleared so
+/// dBASE's reader gives every record the header counts, one for each shape: it passes over a
+/// deleted record, which would pair every later shape with the next record. Only the records the
+/// header counts that the file holds are looked at.
+pub(crate) fn take_deleted(dbf: &mut [u8]) -> Vec<usize> {
+    let le16 = |at: usize| Some(usize::from(u16::from_le_bytes([*dbf.get(at)?, *dbf.get(at + 1)?])));
+    let (Some(header_len), Some(record_len)) = (le16(8), le16(10)) else { return Vec::new() };
+    let count = dbf.get(4..8).and_then(|b| <[u8; 4]>::try_from(b).ok()).map_or(0, u32::from_le_bytes);
+    if record_len == 0 {
+        return Vec::new();
+    }
+    let Some(body) = dbf.get_mut(header_len..) else { return Vec::new() };
+    let mut deleted = Vec::new();
+    for (k, record) in body.chunks_exact_mut(record_len).take(usize::try_from(count).unwrap_or(usize::MAX)).enumerate() {
+        if let Some(flag) = record.first_mut().filter(|f| **f == b'*') {
+            *flag = b' ';
+            deleted.push(k);
+        }
+    }
+    deleted
+}
+
 /// A column of a `.dbf` as its header describes it: its name's bytes (up to the first NUL),
 /// type letter, length in bytes and decimals.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,7 +403,7 @@ pub(crate) fn read_cpg(path: &std::path::Path, notes: &mut Vec<String>) -> Optio
     match try_read_cpg(path) {
         Ok(bytes) => bytes,
         Err(e) => {
-            notes.push(format!("Shapefile: could not read .cpg ({e}); using the .dbf code page, or UTF-8 if unavailable"));
+            notes.push(format!("could not read the .cpg ({e}); using the .dbf code page, or UTF-8 if unavailable"));
             None
         }
     }

@@ -2324,7 +2324,8 @@ fn grid_axes(store: &Store, a: &Array, chunks: &HashMap<String, Vec<u8>>) -> Res
 
 /// The chunk keys of `variable`'s map coordinates, for [`window_of`]: each is read whole (its
 /// first [`MAX_CHUNKS`] chunks, as any coordinate), so longer ones than [`MAX_COORDS`] can't place
-/// a box (a window is given in cells instead). None for a grid its `spatial:transform` places.
+/// a box (a window is given in cells instead). Empty for a grid its `spatial:transform` places
+/// (a box is placed by arithmetic).
 pub fn window_keys(store: &Store, variable: &str) -> Result<Vec<String>> {
     let a = store.array(variable).ok_or_else(|| bad(format!("no variable named {variable}")))?;
     // A grid placed by its spatial:transform places a box by arithmetic, however long its axes.

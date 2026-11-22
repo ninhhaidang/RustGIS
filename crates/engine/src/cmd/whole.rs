@@ -168,7 +168,7 @@ pub(crate) fn load_into(l: &mut Layer) -> Result<Unread, String> {
 }
 
 /// The notice for `unread` rows of `layer`'s source that couldn't be read.
-pub(crate) fn unread_notice(layer: &str, unread: usize) -> String {
+pub fn unread_notice(layer: &str, unread: usize) -> String {
     match unread {
         1 => format!("{layer}: 1 row couldn't be read and was left out"),
         n => format!("{layer}: {n} rows couldn't be read and were left out"),

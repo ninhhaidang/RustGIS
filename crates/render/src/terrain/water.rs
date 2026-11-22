@@ -59,7 +59,9 @@ pub(crate) struct Water {
     /// Polygons left on the ground: no height read along their shore and no level given.
     pub(super) unlevelled: usize,
     /// Polygons whose shore was read at wider steps than half a cell of the ground, to keep
-    /// within [`MAX_SHORE_SAMPLES`]: their lowest shore may lie between two steps.
+    /// within [`MAX_SHORE_SAMPLES`]: their lowest shore may lie between two steps. Read by the
+    /// tests: the app counts them from the shapes alone ([`coarse_shores`]).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the tests check the budget's count"))]
     pub(super) coarse: usize,
     /// When to read it again: over elevation tiles, soon while a tile along the shores is on its
     /// way, after the tile cache's wait when one failed; never otherwise.

@@ -2,7 +2,8 @@
 //!
 //! On the desktop a memory limit plans for a share of the physical memory ([`SHARE`]): never below
 //! the fixed value it had before (its floor, still the browser's limit), never above a ceiling. A
-//! container's memory limit counts, when it is lower. The memory is read once, at the first limit
+//! control-group limit (a container's, or a service's such as systemd's `MemoryMax`) counts, when
+//! it is lower. The memory is read once, at the first limit
 //! asked for; [`scaled`] takes it as an argument, so tests pass fixed amounts. Most limits plan for
 //! what is left once the process holds more than half the memory ([`planned`], #2431 fix 3), so
 //! they can be lower later in a session, never below their floors.
@@ -26,7 +27,8 @@ pub fn physical() -> Option<u64> {
 }
 
 /// Where [`physical`]'s figure came from: `"override"` ([`OVERRIDE`]), `"container"` (a
-/// container's limit, lower than the computer's memory), `"computer"`, or `"unknown"` (the browser,
+/// control-group limit, a container's or a service's such as systemd's `MemoryMax`, lower than
+/// the computer's memory), `"computer"`, or `"unknown"` (the browser,
 /// a fuzzing build, or memory that couldn't be read), so a leftover override doesn't change the
 /// limits unnoticed.
 pub fn source() -> &'static str {
@@ -59,8 +61,8 @@ fn overridden(value: Option<&str>) -> Option<u64> {
     value?.trim().parse::<u64>().ok().filter(|m| *m > 0)
 }
 
-/// The memory to plan for: the override when it is set, else physical memory, or a container's
-/// limit when that is lower.
+/// The memory to plan for: the override when it is set, else physical memory, or a control-group
+/// limit (a container's, or a service's such as systemd's `MemoryMax`) when that is lower.
 #[cfg(all(not(fuzzing), not(target_arch = "wasm32")))]
 fn read() -> (Option<u64>, &'static str) {
     if let Some(m) = overridden(std::env::var(OVERRIDE).ok().as_deref()) {

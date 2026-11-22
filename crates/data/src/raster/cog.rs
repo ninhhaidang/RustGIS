@@ -441,8 +441,10 @@ fn read_layout(r: Sparse) -> Result<Parse> {
     let mut index = 0usize;
     let mut allowance = MAX_TOTAL_TILES;
     // Overviews left out for a sample count other than the full image's (its tag's, which a
-    // JPEG YCbCr image's decoded bands may differ from), and how many.
+    // JPEG YCbCr image's decoded bands may differ from), or another alpha role for the sample past
+    // the colour ones (an RGBA overview of an RGBI image would show its NIR as alpha), and how many.
     let full_samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok().flatten().unwrap_or(1);
+    let full_alpha = super::geotiff::extra_alpha(&mut dec);
     let mut mismatched: Vec<String> = Vec::new();
     let mut mismatched_count = 0usize;
     // Images no smaller than the full image in both width and height (not overviews), and how many.
@@ -483,6 +485,7 @@ fn read_layout(r: Sparse) -> Result<Parse> {
             // passed over too. All are said, and skipped before a tile size is checked or their
             // tiles count against the budget.
             let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok().flatten().unwrap_or(1);
+            let alpha = super::geotiff::extra_alpha(&mut dec);
             let passed = match levels.first().map(|l| (l.width, l.height)) {
                 // The full image itself.
                 None => false,
@@ -493,10 +496,17 @@ fn read_layout(r: Sparse) -> Result<Parse> {
                     }
                     true
                 }
-                Some(_) if samples != full_samples => {
+                Some(_) if samples != full_samples || alpha != full_alpha => {
                     mismatched_count += 1;
                     if mismatched.len() < 5 {
-                        mismatched.push(format!("image {index} ({samples})"));
+                        let role = if alpha == full_alpha {
+                            ""
+                        } else if alpha {
+                            ", with alpha"
+                        } else {
+                            ", without alpha"
+                        };
+                        mismatched.push(format!("image {index} ({samples}{role})"));
                     }
                     true
                 }
@@ -556,7 +566,12 @@ fn read_layout(r: Sparse) -> Result<Parse> {
             counts.truncate(n);
             levels.push(Level { ifd: index, width: w, height: h, tile_width: tw, tile_height: th, offsets, counts });
         }
-        if levels.len() >= MAX_LEVELS || !dec.more_images() {
+        if !dec.more_images() {
+            break;
+        }
+        // Sorted below, so a file storing its overviews smallest first loses its finest: said.
+        if levels.len() >= MAX_LEVELS {
+            lost.push(format!("the scan for overviews stopped at {MAX_LEVELS} levels: later images aren't read"));
             break;
         }
         dec.next_image().map_err(err)?;
@@ -577,7 +592,8 @@ fn read_layout(r: Sparse) -> Result<Parse> {
     if mismatched_count > 0 {
         let more = if mismatched_count > mismatched.len() { ", …" } else { "" };
         lost.push(format!(
-            "{mismatched_count} overview(s) with samples per pixel other than the full image's {full_samples} are left out: {}{more}",
+            "{mismatched_count} overview(s) with samples per pixel or an alpha sample other than the full image's ({full_samples}{}) are left out: {}{more}",
+            if full_alpha { ", with alpha" } else { "" },
             mismatched.join(", ")
         ));
     }

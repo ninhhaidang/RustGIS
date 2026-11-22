@@ -45,9 +45,26 @@ impl ReloadWorkspace {
         self.dir.path()
     }
 
-    /// Whether a saved conversion belongs to a disposable workspace rather than a durable cache.
+    /// Whether a saved conversion belongs to a disposable workspace rather than a durable cache:
+    /// in a folder named as a workspace that holds its owner lock, marked as one. A user's cache
+    /// folder that only has such a name (`RUSTGIS_GDAL_CACHE=/data/reload-2024`) isn't one. A lock
+    /// that is there but can't be opened or read is held by a live owner (Windows refuses reads of
+    /// a locked range); one shorter than the marker isn't a workspace's.
     pub fn contains_file(path: &Path) -> bool {
-        path.parent().and_then(Path::file_name).is_some_and(|name| name.to_string_lossy().starts_with(RELOAD_PREFIX))
+        use std::io::Read;
+        let Some(parent) = path.parent() else { return false };
+        if !parent.file_name().is_some_and(|name| name.to_string_lossy().starts_with(RELOAD_PREFIX)) {
+            return false;
+        }
+        let mut lock = match std::fs::File::open(parent.join("owner.lock")) {
+            Ok(lock) => lock,
+            Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+        };
+        let mut marker = [0; RELOAD_OWNER_MARKER.len()];
+        match lock.read_exact(&mut marker) {
+            Ok(()) => marker.as_slice() == RELOAD_OWNER_MARKER,
+            Err(e) => e.kind() != std::io::ErrorKind::UnexpectedEof,
+        }
     }
 }
 
@@ -327,6 +344,21 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds)))
             .unwrap();
+    }
+
+    /// A durable cache folder that is only named as a workspace keeps its conversions; a real
+    /// workspace's are disposable.
+    #[test]
+    fn only_a_real_workspace_contains_its_files() {
+        let cache = tempfile::tempdir().unwrap();
+        let durable = cache.path().join("reload-2024");
+        std::fs::create_dir_all(&durable).unwrap();
+        assert!(!ReloadWorkspace::contains_file(&durable.join("layer.fgb")));
+        std::fs::write(durable.join("owner.lock"), b"something else").unwrap();
+        assert!(!ReloadWorkspace::contains_file(&durable.join("layer.fgb")));
+        let workspace = reload_workspace(cache.path()).unwrap();
+        assert!(ReloadWorkspace::contains_file(&workspace.path().join("layer.fgb")));
+        assert!(!ReloadWorkspace::contains_file(&cache.path().join("layer.fgb")));
     }
 
     #[test]

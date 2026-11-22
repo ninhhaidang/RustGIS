@@ -835,8 +835,8 @@ pub(crate) struct Reproject {
 }
 
 impl Reproject {
-    /// For a reader that converts only EPSG codes: a coordinate system declared without one, by
-    /// `authority` and `code` or by a `wkt` definition, when it is another body's
+    /// For [`declared_reproject`]: a coordinate system declared by `authority` and `code` or by a
+    /// `wkt` definition, when it is another body's
     /// ([`crate::raster::planetary::declared`]). `None` when it isn't.
     /// - Its longitude/latitude are read as they are, with a note. The layer keeps the system when
     ///   the definition gives it.

@@ -1201,7 +1201,9 @@ impl PostgisSource {
         if let Some(r) = &self.reproject {
             return r.extent_to_lonlat(e);
         }
-        self.server_transform(e, self.srid, 4326).unwrap_or(Extent::EMPTY)
+        // The layer's extent is only shown: a box the server can't give, or a lost connection
+        // (which the next read reports), leaves it empty.
+        self.server_transform(e, self.srid, 4326).ok().flatten().unwrap_or(Extent::EMPTY)
     }
 
     /// A longitude/latitude extent in the table's coordinates; a refused box is an error,
@@ -1211,26 +1213,31 @@ impl PostgisSource {
             return r.database_extent(e);
         }
         let c = Extent::new(e.min_x.max(-180.0), e.min_y.max(-89.9), e.max_x.min(180.0), e.max_y.min(89.9));
-        self.server_transform(&c, 4326, self.srid).ok_or_else(super::unbounded_database_view)
+        self.server_transform(&c, 4326, self.srid)?.ok_or_else(super::unbounded_database_view)
     }
 
-    /// An extent converted by the server: its edges, densified, transformed.
-    fn server_transform(&self, e: &Extent, from: i32, to: i32) -> Option<Extent> {
+    /// An extent converted by the server: its edges, densified, transformed. `Ok(None)` when it
+    /// has none there: empty, or a box the server refuses to transform; a lost connection or
+    /// another failure to reach the server is an error, not a box that can't be bounded.
+    fn server_transform(&self, e: &Extent, from: i32, to: i32) -> Result<Option<Extent>> {
         if e.is_empty() {
-            return None;
+            return Ok(None);
         }
         let step = (e.width().max(e.height()) / 16.0).max(1e-9);
-        self.conn
-            .with(|c| {
-                c.query_opt(
-                    "SELECT ST_XMin(b), ST_YMin(b), ST_XMax(b), ST_YMax(b) FROM \
-                     (SELECT ST_Transform(ST_Segmentize(ST_MakeEnvelope($1, $2, $3, $4, $5), $6), $7)::box2d AS b) s",
-                    &[&e.min_x, &e.min_y, &e.max_x, &e.max_y, &from, &step, &to],
-                )
-            })
-            .ok()
-            .flatten()
-            .and_then(|r| row_extent(&r))
+        let row = self.conn.with(|c| {
+            match c.query_opt(
+                "SELECT ST_XMin(b), ST_YMin(b), ST_XMax(b), ST_YMax(b) FROM \
+                 (SELECT ST_Transform(ST_Segmentize(ST_MakeEnvelope($1, $2, $3, $4, $5), $6), $7)::box2d AS b) s",
+                &[&e.min_x, &e.min_y, &e.max_x, &e.max_y, &from, &step, &to],
+            ) {
+                // The server's own refusal of the box: PostGIS raises a projection's failure as an
+                // internal error (XX000), and a value out of range is a data exception (22).
+                // Anything else (permissions, a lost connection) stays an error.
+                Err(e) if e.as_db_error().is_some_and(|d| matches!(d.code().code().get(..2), Some("XX" | "22"))) => Ok(None),
+                r => r,
+            }
+        })?;
+        Ok(row.and_then(|r| row_extent(&r)))
     }
 
     /// The `WHERE` condition: a geometry, of the family read, and with `in_extent`, in the extent

@@ -629,12 +629,9 @@ fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     let st = &mut app.ui.stac;
     let n = walk.items().len().to_string();
+    // Refused and skipped links have their own notices above: the stops they don't say come first.
     st.info = Some(if walk.complete() {
         i18n::fmt("Showing {n} items", &[("n", &n)])
-    } else if walk.refused() > 0 {
-        i18n::fmt("Showing {n} items ({f} catalog links were refused)", &[("n", &n), ("f", &walk.refused().to_string())])
-    } else if walk.skipped() > 0 {
-        i18n::fmt("Showing {n} items ({s} catalog links were skipped)", &[("n", &n), ("s", &walk.skipped().to_string())])
     } else if walk.reads >= catalog::MAX_READS {
         i18n::fmt(
             "Showing {n} items (stopped after reading {r} documents: pick a catalog further down)",
@@ -644,6 +641,10 @@ fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
         i18n::fmt("Showing {n} items ({f} documents couldn't be read)", &[("n", &n), ("f", &walk.failed.to_string())])
     } else if walk.cut && walk.items().len() < 50 {
         i18n::fmt("Showing {n} items (some catalogs were too deep or too large to read: pick a catalog further down)", &[("n", &n)])
+    } else if walk.refused() > 0 {
+        i18n::fmt("Showing {n} items ({f} catalog links were refused)", &[("n", &n), ("f", &walk.refused().to_string())])
+    } else if walk.skipped() > 0 {
+        i18n::fmt("Showing {n} items ({s} catalog links were skipped)", &[("n", &n), ("s", &walk.skipped().to_string())])
     } else {
         i18n::fmt("Showing {n} items (more match: narrow the search)", &[("n", &n)])
     });

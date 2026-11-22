@@ -138,6 +138,25 @@ pub(super) fn collections_json(s: &mut Session, api: &str, bytes: &[u8]) -> CmdR
     collections_json_from_origin(s, api, bytes, &crate::render::rustgis_tiles::address::Origin::named(api))
 }
 
+/// The notices for the catalog links a listing left out: `refused` by the document's network
+/// reach, `skipped` for their addresses, and `omitted` past the listing limit, in that order and
+/// only those that happened. Callers give them the severity they need.
+pub(crate) fn catalog_link_notes(refused: usize, skipped: usize, omitted: usize) -> Vec<String> {
+    [
+        (refused, "was refused by the document's network reach", "were refused by the document's network reach"),
+        (
+            skipped,
+            "was left out because its address is missing, invalid or not HTTP(S)",
+            "were left out because their addresses are missing, invalid or not HTTP(S)",
+        ),
+        (omitted, "was left out because the listing limit was reached", "were left out because the listing limit was reached"),
+    ]
+    .into_iter()
+    .filter(|(n, ..)| *n > 0)
+    .map(|(n, one, many)| if n == 1 { format!("1 catalog link {one}") } else { format!("{n} catalog links {many}") })
+    .collect()
+}
+
 fn collections_json_from_origin(
     s: &mut Session,
     api: &str,
@@ -146,14 +165,8 @@ fn collections_json_from_origin(
 ) -> CmdResult {
     if stac::catalog::is_static(api) {
         let listing = stac::catalog::parse_children_noted(bytes, origin)?;
-        if listing.refused > 0 {
-            s.warn(format!("{} catalog links were refused by the document's network reach", listing.refused));
-        }
-        if listing.skipped > 0 {
-            s.warn(format!("{} catalog links were left out because their addresses are missing, invalid or not HTTP(S)", listing.skipped));
-        }
-        if listing.omitted > 0 {
-            s.warn(format!("{} catalog links were left out because the listing limit was reached", listing.omitted));
+        for note in catalog_link_notes(listing.refused, listing.skipped, listing.omitted) {
+            s.warn(note);
         }
         let c = listing.links;
         let mut out = json!({"count": c.len(), "static": true, "collections": c.iter().map(|c| json!({"id": c.url, "title": c.title})).collect::<Vec<_>>()});
@@ -309,13 +322,9 @@ fn search_static(s: &mut Session, p: &Value, root: &str) -> CmdResult {
         let walk = stac::catalog::walk_blocking(root, filter, search.limit);
         let complete = walk.complete();
         let (read, failed) = (walk.reads, walk.failed);
-        let refused = walk.refused();
-        if refused > 0 {
-            s.warn(format!("{refused} catalog links were refused by the document's network reach"));
-        }
-        let skipped = walk.skipped();
-        if skipped > 0 {
-            s.warn(format!("{skipped} catalog links were left out because their addresses are missing, invalid or not HTTP(S)"));
+        let (refused, skipped) = (walk.refused(), walk.skipped());
+        for note in catalog_link_notes(refused, skipped, 0) {
+            s.warn(note);
         }
         let items = walk.into_items();
         let all = b(p, "properties").unwrap_or(false);
@@ -1842,8 +1851,8 @@ mod deferred_asset_tests {
             let notices = session.notices_since(mark);
             assert_eq!(notices.len(), if refused { 3 } else { 0 });
             if refused {
-                assert!(notices.iter().any(|n| n.text.contains("1 catalog links were refused")));
-                assert!(notices.iter().any(|n| n.text.contains("1 catalog links were left out because their addresses")));
+                assert!(notices.iter().any(|n| n.text.contains("1 catalog link was refused")));
+                assert!(notices.iter().any(|n| n.text.contains("1 catalog link was left out because its address")));
             }
         }
     }

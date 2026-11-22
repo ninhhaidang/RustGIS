@@ -773,21 +773,17 @@ fn catalogs(s: &mut Session, bytes: &[u8], origin: &address::Origin) -> Result<F
             }
         }
     }
-    if refused > 0 {
-        s.notify(format!("{refused} catalog links were refused by the document's network reach"), false);
-    }
-    if skipped > 0 {
-        s.notify(format!("{skipped} catalog links were left out because their addresses are missing, invalid or not HTTP(S)"), false);
-    }
     omitted += children.len().saturating_sub(MAX_CHILDREN);
-    if omitted > 0 {
-        s.notify(format!("{omitted} catalog links were left out because the listing limit was reached"), false);
+    for note in crate::cmd::stac::catalog_link_notes(refused, skipped, omitted) {
+        s.notify(note, false);
     }
-    if dropped > 0 {
-        s.notify(
-            format!("{dropped} catalog links were left out because their node addresses are too long or contain control characters"),
+    match dropped {
+        0 => {}
+        1 => s.notify("1 catalog link was left out because its node address is too long or contains control characters".to_string(), false),
+        n => s.notify(
+            format!("{n} catalog links were left out because their node addresses are too long or contain control characters"),
             false,
-        );
+        ),
     }
     let mut found = Found::new(children);
     found.truncated |= dropped > 0 || refused > 0 || omitted > 0 || skipped > 0;
@@ -1063,7 +1059,7 @@ mod tests {
             let notices = session.notices_since(mark);
             assert_eq!(notices.len(), usize::from(omitted > 0));
             if omitted > 0 {
-                assert!(notices[0].text.contains(&format!("{omitted} catalog links were left out")));
+                assert!(notices[0].text.contains(&format!("{omitted} catalog link")) && notices[0].text.contains("listing limit"));
             }
         }
     }

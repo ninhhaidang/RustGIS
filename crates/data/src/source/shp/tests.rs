@@ -804,3 +804,31 @@ fn a_nan_shape_under_a_finite_box_is_said_when_left_out() {
     });
     std::fs::remove_dir_all(fixture).unwrap();
 }
+/// A streamed Shapefile leaves a record marked deleted out with its shape, as a whole read does,
+/// and counts it; a clean one says nothing of it.
+#[test]
+fn a_streamed_shapefile_counts_its_deleted_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("pts.shp");
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![crate::Field::new("name", crate::FieldType::Text)]);
+    for (k, name) in ["a", "b", "c"].iter().enumerate() {
+        ds.push(Some(Geometry::Point(Coord::new(k as f64, k as f64))), vec![crate::Value::Text((*name).into())]);
+    }
+    write_shapefile(&ds, &path);
+    let said = |r: &crate::ReadReport| r.messages.iter().filter(|m| m.contains("marked deleted")).cloned().collect::<Vec<_>>();
+    cache::with_index_dir(tmp.path().join("cache"), || {
+        let (clean, report) = crate::source::materialize(&ShpSource::open_path(&path, "pts").unwrap()).unwrap();
+        assert_eq!(clean.features.len(), 3);
+        assert!(said(&report).is_empty(), "{:?}", report.messages);
+        let dbf_path = path.with_extension("dbf");
+        let mut dbf = std::fs::read(&dbf_path).unwrap();
+        let header = usize::from(u16::from_le_bytes([dbf[8], dbf[9]]));
+        let len = usize::from(u16::from_le_bytes([dbf[10], dbf[11]]));
+        dbf[header + len] = b'*';
+        std::fs::write(&dbf_path, &dbf).unwrap();
+        let (ds, report) = crate::source::materialize(&ShpSource::open_path(&path, "pts").unwrap()).unwrap();
+        let names: Vec<_> = ds.features.iter().map(|f| f.attrs[0].clone()).collect();
+        assert_eq!(names, [crate::Value::Text("a".into()), crate::Value::Text("c".into())]);
+        assert_eq!(said(&report), ["pts: 1 dBASE record marked deleted was left out, with its shape"]);
+    });
+}

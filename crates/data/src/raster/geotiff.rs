@@ -1466,6 +1466,7 @@ pub(super) fn read_limited_with_nodata(
         Err(e) => (None, Some(format!("its Copyright tag: it can't be read ({e}), so it is left out"))),
     };
     let spp = samples(&mut dec);
+    let full_alpha = extra_alpha(&mut dec);
     let bytes = sample_bytes(&mut dec);
     // The decoded image is held at its own pixel size before conversion to f32, so bound bytes
     // as well as samples.
@@ -1495,9 +1496,14 @@ pub(super) fn read_limited_with_nodata(
             }
             let Ok((ow, oh)) = dec.dimensions() else { continue };
             let (ospp, obytes) = (samples(&mut dec), sample_bytes(&mut dec));
-            // An overview with another sample count (three of an RGBI image's four) would read
-            // as another kind of image: the full image is read sparsely instead.
-            if ospp == spp && fits(ow, oh, ospp, obytes) && best.is_none_or(|(_, bw, bh)| ow as u64 * oh as u64 > bw as u64 * bh as u64) {
+            // An overview with another sample count (three of an RGBI image's four), or another
+            // alpha role for the sample past the colour ones (an RGBA overview of an RGBI image),
+            // would read as another kind of image: the full image is read sparsely instead.
+            if ospp == spp
+                && extra_alpha(&mut dec) == full_alpha
+                && fits(ow, oh, ospp, obytes)
+                && best.is_none_or(|(_, bw, bh)| ow as u64 * oh as u64 > bw as u64 * bh as u64)
+            {
                 best = Some((index, ow, oh));
             }
         }
@@ -1928,8 +1934,10 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
 }
 
 /// Writes every band of a raster, for a layer whose pixels the project keeps: as [`write`] does
-/// when that keeps them all, otherwise as 32-bit float samples (RGB first for a colour raster,
-/// and alpha after them when it has one), which [`read`] reads back as the same bands.
+/// when that keeps them all. Otherwise: 8-bit samples when the raster is `UInt8` and every valid
+/// value is a whole number in 0–255 (an empty cell only where no-data can mark it), else 32-bit
+/// float samples (RGB first for a colour raster, and alpha after them when it has one). [`read`]
+/// reads them back as the same bands.
 pub fn write_all(r: &Raster) -> Result<Vec<u8>> {
     encode(r, 0, true)
 }
@@ -3614,6 +3622,58 @@ mod tests {
         }
     }
 
+    /// Sets the ExtraSamples value of each image with one, in turn, of a file
+    /// [`rgb_tiled_samples`] wrote.
+    fn set_extra_samples(bytes: &mut [u8], values: &[u16]) {
+        // The tag's entry: 338, type 3 (short), count 1, the value 0 as written.
+        let entry = [0x52, 0x01, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let at: Vec<usize> = (0..bytes.len().saturating_sub(12)).filter(|i| bytes[*i..*i + 12] == entry).collect();
+        assert_eq!(at.len(), values.len());
+        for (at, value) in at.iter().zip(values) {
+            bytes[at + 8..at + 10].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// An overview with the full image's sample count but another alpha role (an RGBA overview of
+    /// an RGBI image, or the reverse) is left out and said, not decoded with the full image's
+    /// colour layout; one with the same role is a level, with nothing said.
+    #[test]
+    fn cog_overviews_require_a_matching_alpha_sample() {
+        use super::super::cog::{self, Parse, Sparse};
+        for (full, overview) in [(0, 0), (2, 2), (0, 2), (2, 0)] {
+            let mut bytes = rgb_tiled_samples(&[(40, 16, 4), (20, 16, 4)], 8, 1, |b, x, y| (b * 10 + x + y) as u16);
+            set_extra_samples(&mut bytes, &[full, overview]);
+            let whole = Sparse::default().with_len(bytes.len() as u64).with(0, bytes);
+            let Parse::Done(layout) = cog::layout(&whole).unwrap() else { panic!("not a COG") };
+            let said: Vec<_> = layout.lost.iter().filter(|n| n.contains("overview(s)")).collect();
+            if full == overview {
+                assert_eq!(layout.levels.len(), 2);
+                assert!(said.is_empty(), "{:?}", layout.lost);
+            } else {
+                assert_eq!(layout.levels.len(), 1);
+                let role = if overview == 2 { "image 1 (4, with alpha)" } else { "image 1 (4, without alpha)" };
+                assert!(said.len() == 1 && said[0].contains("an alpha sample") && said[0].contains(role), "{:?}", layout.lost);
+            }
+        }
+    }
+
+    /// The scan stops at its most levels, and says so when the file holds more images; a file
+    /// with fewer says nothing of it.
+    #[test]
+    fn cog_says_when_it_stops_at_its_most_levels() {
+        use super::super::cog::{self, Parse, Sparse};
+        const STOPPED: &str = "the scan for overviews stopped at 32 levels";
+        for (images, cut) in [(32u32, false), (33, true)] {
+            // The full image 64 wide, its overviews 63, 62, … wide, smallest last.
+            let sizes: Vec<(u32, u32, u16)> = (0..images).map(|k| (64 - k, 16, 3)).collect();
+            let bytes = rgb_tiled_samples(&sizes, 8, 1, |b, x, y| (b + x + y) as u16);
+            let whole = Sparse::default().with_len(bytes.len() as u64).with(0, bytes);
+            let Parse::Done(layout) = cog::layout(&whole).unwrap() else { panic!("not a COG") };
+            assert_eq!(layout.levels.len(), 32.min(images as usize));
+            assert_eq!(layout.lost.iter().any(|n| n.contains(STOPPED)), cut, "{:?}", layout.lost);
+        }
+    }
+
     #[test]
     fn cog_overviews_require_matching_sample_counts() {
         use super::super::cog::{self, Parse, Sparse};
@@ -3631,11 +3691,9 @@ mod tests {
                     let Parse::Done(layout) = cog::layout(&whole).unwrap() else { panic!("not a COG") };
                     assert_eq!((layout.levels.len(), layout.bands), (1, usize::from(full)));
                     assert!(
-                        layout
-                            .lost
-                            .iter()
-                            .any(|n| n.contains(&format!("1 overview(s) with samples per pixel other than the full image's {full}"))
-                                && n.contains(&format!("image 1 ({overview})"))),
+                        layout.lost.iter().any(|n| n.contains(&format!(
+                            "1 overview(s) with samples per pixel or an alpha sample other than the full image's ({full})"
+                        )) && n.contains(&format!("image 1 ({overview})"))),
                         "{:?}",
                         layout.lost
                     );
@@ -3652,7 +3710,8 @@ mod tests {
             layout
                 .lost
                 .iter()
-                .any(|n| n.contains("1 overview(s) with samples per pixel other than the full image's 4") && n.contains("image 2 (3)")),
+                .any(|n| n.contains("1 overview(s) with samples per pixel or an alpha sample other than the full image's (4)")
+                    && n.contains("image 2 (3)")),
             "{:?}",
             layout.lost
         );

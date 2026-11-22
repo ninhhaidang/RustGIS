@@ -147,7 +147,9 @@ const LEGENDS_LEFT_OUT_NOTICE: &str =
 
 /// Most bytes of document addresses a listing repeats: each listed layer's `source_url` is its
 /// document's address, which nothing bounds (a landing page links to any collections address).
-const MAX_LISTED_ADDRESS_BYTES: usize = if cfg!(test) { 8 << 20 } else { 64 << 20 };
+/// The budget [`rustgis_data::ogc::MAX_COPIED_ADDRESS_BYTES`] gives a document's own addresses;
+/// the engine's tests list 8 MiB, as the data crate's do (its `cfg!(test)` is off for them).
+const MAX_LISTED_ADDRESS_BYTES: usize = if cfg!(test) { 8 << 20 } else { rustgis_data::ogc::MAX_COPIED_ADDRESS_BYTES };
 
 /// Whether what this `service.add` would wait for is left off the frame: it is a plugin command's,
 /// run by the desktop app, which runs the command again when it has come (#1319).

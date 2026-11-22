@@ -328,8 +328,8 @@ fn leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-/// The days in a month of the proleptic Gregorian calendar.
-pub(crate) fn days_in_month(y: i64, m: i64) -> i64 {
+/// The days in a month (1 to 12) of the proleptic Gregorian calendar; 31 for another month.
+pub fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         2 if leap(y) => 29,
         2 => 28,
