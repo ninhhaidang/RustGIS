@@ -444,7 +444,6 @@ Asking the map service…	Xəritə xidmətindən soruşulur…
 Asking the NLDI…	NLDI-yə sorğu…
 Asset	Resurs
 Assign Escape	Escape təyin et
-assistant picture	köməkçinin şəkli
 Assistant settings	Köməkçi parametrləri
 At both ends	Hər iki ucda
 At inner vertices	Daxili təpələrdə
@@ -1400,7 +1399,6 @@ Editing settings.	Redaktə parametrləri.
 Editor\nTools	Redaktə\nalətləri
 Editor Tools	Redaktə alətləri
 Editorial	Redaksiya
-Edits not published	Dəyişikliklər dərc edilməyib
 Edits since the project was saved.	Layihə saxlanıldıqdan sonrakı redaktələr.
 Edits the project	Layihəni redaktə edir
 Edit…	Redaktə et…
@@ -4500,9 +4498,9 @@ This connection has no user: set user (connection.edit) to generate a token.	Bu 
 This connection is logged out. Log in explicitly to use it again.	Bu bağlantıdan çıxış edilib. Yenidən istifadə etmək üçün açıq şəkildə daxil olun.
 This font isn't installed here, so the text is drawn in the sans-serif	Bu şrift burada quraşdırılmayıb, ona görə mətn sans-serif şriftlə çəkilir
 This font isn't installed here, so the text is drawn in the serif	Bu şrift burada quraşdırılmayıb, ona görə mətn serif şriftlə çəkilir
-This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Bu təsvir marker ola bilməz: onun pikselləri {side} × {side}-dən çoxdur; onu kiçildin
+This image can't be a marker: it has more pixels than {side} × {side}; make it smaller	Bu təsvir marker ola bilməz: onun pikselləri {side} × {side}-dən çoxdur; onu kiçiltin
 This image can't be a marker: it isn't a readable PNG or JPEG	Bu təsvir marker ola bilməz: o, oxuna bilən PNG və ya JPEG deyil
-This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Bu təsvir marker ola bilməz: RustGIS yenidən başlayana qədər deşifrə etdiyi qədər marker təsvirini artıq deşifrə edib; başqasından istifadə etmək üçün onu yenidən başladın
+This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another	Bu təsvir marker ola bilməz: RustGIS yenidən başlayana qədər deşifrə etdiyi qədər marker təsvirini artıq deşifrə edib; başqasından istifadə etmək üçün onu yenidən başlatın
 This image is too large for a marker: at most about 1.5 MiB	Bu təsvir marker üçün çox böyükdür: ən çoxu təxminən 1,5 MiB
 This image is unavailable. Choose another image or No image.	Bu təsvir əlçatan deyil. Başqa təsvir və ya «Təsvir yoxdur» seçin.
 This item is from a local or private network, whose files Bands and Index don't read yet	Bu element lokal və ya özəl şəbəkədəndir; Kanallar və İndeks onun fayllarını hələ oxumur
