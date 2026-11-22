@@ -208,6 +208,9 @@ tile), without a STAC catalogue:
   smaller box. The header and then each band's tiles are waited for up to two minutes each. No
   band is started after five minutes in all, the header's read counted (the last one started
   may take two minutes more): past that the window is given up, saying how many bands were read.
+  A read of more than 1 MiB (a large tile) is no longer cut at the 30 seconds of a map tile, but the
+  transfer and the waits above still apply; a server that sends nothing is given up on after seven
+  minutes.
   A window reads 256 bands at most. A window near the limit takes several hundred MB of memory
   while it is read and kept.
 - The Add Data From URL dialog has no box to fill in, so a window is asked for by a command. On

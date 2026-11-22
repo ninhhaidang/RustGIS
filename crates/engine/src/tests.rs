@@ -46923,6 +46923,17 @@ fn a_windows_bands_are_started_within_its_wait() {
     assert_eq!(batch_wait(16, s(400)), s(120), "a band's two minutes at least");
 }
 
+/// The longest a window waits for a batch's tiles is what a read of more than 1 MiB may take
+/// (`cache::LONG_READ`), so a change to `BAND_WAIT` or `WINDOW_WAIT` can't leave a transfer cut short
+/// while a window still waits for it (#2570).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_windows_longest_wait_is_what_a_big_tile_read_may_take() {
+    use crate::cmd::layer::{WINDOW_BATCH, batch_wait};
+    let longest = batch_wait(WINDOW_BATCH, std::time::Duration::ZERO);
+    assert_eq!(longest, crate::render::rustgis_tiles::cache::LONG_READ);
+}
+
 /// A script or model the desktop app runs off the frame, as a plugin's command, leaves a window to
 /// the app: answered pending, and queued, not refused (#1330).
 #[cfg(not(target_arch = "wasm32"))]

@@ -5743,7 +5743,7 @@ const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The bands of a window read together, at most: their tiles asked for at once.
 #[cfg(not(target_arch = "wasm32"))]
-const WINDOW_BATCH: usize = 16;
+pub(crate) const WINDOW_BATCH: usize = 16;
 
 /// How long a window's band may be waited for: a batch of bands has this much a band.
 #[cfg(not(target_arch = "wasm32"))]

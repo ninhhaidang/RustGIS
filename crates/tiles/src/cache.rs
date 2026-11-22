@@ -158,6 +158,13 @@ type ImageDecoder = Box<dyn Fn(Vec<u8>, Decoded) + Send + Sync>;
 const BUDGET: usize = if cfg!(target_arch = "wasm32") { 160 << 20 } else { 384 << 20 };
 /// A failed address is tried again after this long.
 pub const RETRY: Duration = Duration::from_secs(60);
+/// How long a read of more than 1 MiB (a big tile of a slow server, #2570) may take in all, where
+/// a map tile has 30 seconds. The longest any caller waits for one: a COG window's first batch of
+/// four bands or more waits 420 seconds (the engine's `batch_wait`: `WINDOW_WAIT` and `BAND_WAIT`;
+/// an engine test holds the two together). The others give up at or before that: two minutes for a
+/// header, one band, a raster in place or a remote file, five minutes for a Tessera read, and a
+/// map's tile layer has nobody waiting. Keep it no less than the longest wait, no more.
+pub const LONG_READ: Duration = Duration::from_secs(420);
 /// The largest tile or document fetched.
 pub const MAX_BYTES: usize = 16 << 20;
 /// The error a fetcher gives a request it dropped unfetched (the view moved on): the address is
@@ -2593,7 +2600,12 @@ mod native {
 
     /// Workers share this agent's checked connections and bounded idle pool.
     pub(super) fn agent() -> ureq::Agent {
-        let config = config_builder(std::time::Duration::from_secs(30))
+        agent_with(std::time::Duration::from_secs(30))
+    }
+
+    /// An agent of the workers' kind with `timeout` for a whole request.
+    fn agent_with(timeout: std::time::Duration) -> ureq::Agent {
+        let config = config_builder(timeout)
             // The workers share the agent: keep a connection open for each fetch a server
             // may have under way, so the next tile doesn't connect again.
             .max_idle_connections_per_host(PER_HOST)
@@ -2606,6 +2618,26 @@ mod native {
     fn shared_agent() -> &'static ureq::Agent {
         static A: OnceLock<ureq::Agent> = OnceLock::new();
         A.get_or_init(agent)
+    }
+
+    /// A range read of more than this many bytes is a big tile (a cloud-optimised GeoTIFF's are
+    /// often 2 to 8 MB), which a slow server needs longer than a map tile's 30 seconds for.
+    const LONG_RANGE: u64 = 1 << 20;
+
+    /// The agent the workers read `url` with: the shared one, or for a range of more than
+    /// [`LONG_RANGE`] bytes the one with [`super::LONG_READ`] to spend, as a window waits for it. A
+    /// server that sends nothing is still given up on then (ureq 3 has no idle timeout). Each agent
+    /// has its own connections, as `download_agent`'s do.
+    pub(super) fn worker_agent(url: &str, ceiling: Reach) -> &'static ureq::Agent {
+        static LONG: OnceLock<ureq::Agent> = OnceLock::new();
+        static LONG_PUBLIC: OnceLock<ureq::Agent> = OnceLock::new();
+        let long = super::split_range(url).1.is_some_and(|(a, b)| b.saturating_sub(a) >= LONG_RANGE);
+        match (ceiling == Reach::Public, long) {
+            (false, false) => shared_agent(),
+            (true, false) => shared_public_agent(),
+            (false, true) => LONG.get_or_init(|| agent_with(super::LONG_READ)),
+            (true, true) => LONG_PUBLIC.get_or_init(|| public_agent(super::LONG_READ)),
+        }
     }
 
     /// An agent for downloads, which may take minutes.
@@ -3215,7 +3247,6 @@ mod native {
 
     /// Dispatches each queued read through the pool matching its inherited IP ceiling.
     fn work() {
-        let agent = shared_agent();
         let q = queue();
         loop {
             let (url, done, host, capture, omit, still, ceiling) = {
@@ -3233,8 +3264,7 @@ mod native {
             let _scope = capture.enter();
             let result = super::with_optional_still(still.clone(), || {
                 super::check_current()?;
-                fetch_answer(if ceiling == Reach::Public { shared_public_agent() } else { agent }, &url, ceiling, false, omit)
-                    .map_err(|f| f.message)
+                fetch_answer(worker_agent(&url, ceiling), &url, ceiling, false, omit).map_err(|f| f.message)
             });
             {
                 let mut jobs = q.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -4072,6 +4102,84 @@ mod tests {
 
     fn network_records(history: &rustgis_data::diagnostics::History, url: &str) -> Vec<rustgis_data::diagnostics::Record> {
         history.records().into_iter().filter(|record| record.network.as_ref().is_some_and(|network| network.url == url)).collect()
+    }
+
+    /// A range of more than 1 MiB is a big tile, which a slow server needs longer than a map
+    /// tile's 30 seconds for (#2570): the workers read it with the agent that has the long wait.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_range_of_more_than_1_mib_is_read_with_the_long_timeout() {
+        use crate::address::Reach;
+        use std::time::Duration;
+        let _turn = turn();
+        let (short, long) = (Some(Duration::from_secs(30)), Some(super::LONG_READ));
+        let wait = |url: &str, ceiling| native::worker_agent(url, ceiling).config().timeouts().global;
+        for ceiling in [Reach::Local, Reach::Public] {
+            for small in [
+                "https://example.org/a.tif",
+                "https://example.org/a.tif#rustgis-range=0-99",
+                "https://example.org/a.tif#rustgis-range=0-1048575",
+                "https://example.org/a.tif#rustgis-tail=2000000",
+                "https://example.org/a.tif#rustgis-range=9-1",
+                "https://example.org/a.tif#rustgis-range=x-y",
+            ] {
+                assert_eq!(wait(small, ceiling), short, "{small}");
+            }
+            for big in [
+                "https://example.org/a.tif#rustgis-range=0-1048576",
+                "https://example.org/a.tif#rustgis-range=5000000000-5003750013",
+                "https://example.org/a.tif#rustgis-range=0-18446744073709551615",
+            ] {
+                assert_eq!(wait(big, ceiling), long, "{big}");
+            }
+        }
+        let (local, public) = (
+            native::worker_agent("https://example.org/a.tif", Reach::Local),
+            native::worker_agent("https://example.org/a.tif", Reach::Public),
+        );
+        let (long_local, long_public) = (
+            native::worker_agent("https://example.org/a.tif#rustgis-range=0-2097151", Reach::Local),
+            native::worker_agent("https://example.org/a.tif#rustgis-range=0-2097151", Reach::Public),
+        );
+        let agents = [local, public, long_local, long_public];
+        for (i, a) in agents.iter().enumerate() {
+            for b in agents.iter().skip(i + 1) {
+                assert!(!std::ptr::eq(*a, *b), "each pool has its own agent");
+            }
+        }
+        assert!(std::ptr::eq(long_local, native::worker_agent("https://example.org/b.tif#rustgis-range=0-4194303", Reach::Local)));
+    }
+
+    /// A big range comes back through the real worker and the long agent, a small one through the
+    /// short agent, from a server that sends its body in two pieces.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_big_range_from_a_server_that_sends_it_in_pieces_is_read() {
+        use std::io::Write;
+        let _turn = turn();
+        for len in [1usize << 21, 20_000] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                assert!(request.to_ascii_lowercase().contains(&format!("range: bytes=0-{}", len - 1)), "{request}");
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/9999999\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                    len - 1
+                );
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&vec![7u8; len / 2]).unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(200)); // test-wait: a server sending its body in pieces
+                stream.write_all(&vec![7u8; len - len / 2]).unwrap();
+            });
+            let (tx, rx) = std::sync::mpsc::channel();
+            native::fetch(format!("{base}/big.tif#rustgis-range=0-{}", len - 1), Box::new(move |result| tx.send(result).unwrap()), &[]);
+            let bytes = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+            assert_eq!(bytes.len(), len);
+            server.join().unwrap();
+        }
     }
 
     /// Exercise the worker used for tiles, styles, services and remote data ranges, without
