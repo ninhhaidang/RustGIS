@@ -91,6 +91,9 @@ pub(crate) struct TiltDrape {
     /// again (each would wake the next frame) until one of them changes.
     #[cfg(not(target_arch = "wasm32"))]
     empty: Option<(DrapeKey, Camera)>,
+    /// Where its workers hand over what their drapes approximated, for the map view to say
+    /// (Never silent); a new drape (another project's) has its own.
+    pub relay: render::ApproximationRelay,
 }
 
 impl TiltDrape {
@@ -164,8 +167,10 @@ impl TiltDrape {
     /// is done. False when no thread could be started.
     #[cfg(not(target_arch = "wasm32"))]
     fn start(&mut self, ctx: &egui::Context, mut map: Map, view: View, max_side: u32, key: DrapeKey, tiles: u64, time: f64) -> bool {
+        // What the drape approximates goes to the relay of the project it is started for.
+        let relay = self.relay.clone();
         self.start_with(ctx, key, move || {
-            let drawn = draw(&mut map, &view, max_side, key, tiles, time);
+            let drawn = draw(&mut map, &view, max_side, key, tiles, time, &relay);
             (drawn, map)
         })
     }
@@ -327,7 +332,8 @@ impl TiltDrape {
             }
             // On a copy, the panic caught: one from the map's own data comes again here.
             let mut copy = map.clone();
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(&mut copy, &view, max_side, key, tiles, time))) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(&mut copy, &view, max_side, key, tiles, time, &self.relay)))
+            {
                 Ok(drawn) => {
                     map.adopt_caches(&copy);
                     drawn
@@ -338,10 +344,10 @@ impl TiltDrape {
                 }
             }
         } else {
-            draw(map, &view, max_side, key, tiles, time)
+            draw(map, &view, max_side, key, tiles, time, &self.relay)
         };
         #[cfg(target_arch = "wasm32")]
-        let drawn = draw(map, &view, max_side, key, tiles, time);
+        let drawn = draw(map, &view, max_side, key, tiles, time, &self.relay);
         if drawn.patches.is_empty() {
             self.drape = None;
             return false;
@@ -569,12 +575,15 @@ impl TiltDrape {
 
 /// Draws the drape of `map` for `view`: its bands flat, at most `max_side` pixels a side, the
 /// extruded features and point markers standing on it, and over terrain the ground's height
-/// under each band's grid.
-fn draw(map: &mut Map, view: &View, max_side: u32, key: DrapeKey, tiles: u64, time: f64) -> Drawn {
+/// under each band's grid. What its bands approximated is handed over to `relay`, the one of the
+/// project it was started for.
+fn draw(map: &mut Map, view: &View, max_side: u32, key: DrapeKey, tiles: u64, time: f64, relay: &render::ApproximationRelay) -> Drawn {
     let cam = view.camera;
     let ppp = view.pixels_per_point as f32;
     let archives = render::archive_revisions([&*map]);
     let patches = render::render_tilt_drape(map, view, MARGIN, max_side);
+    // What its bands approximated, for the map view to say (Never silent): drawn on a worker.
+    relay.hand_over();
     if patches.is_empty() {
         return Drawn {
             key,
@@ -1135,7 +1144,7 @@ mod tests {
         assert_eq!(d.drape.as_ref().map(|d| d.built), Some(1.0));
         let mut copy = m.clone();
         let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera: m.camera, sky: true };
-        assert!(d.start_with(&ctx, key, move || (draw(&mut copy, &view, 1024, key, 0, 0.0), copy)));
+        assert!(d.start_with(&ctx, key, move || (draw(&mut copy, &view, 1024, key, 0, 0.0, &Default::default()), copy)));
         wait(&mut d, &ctx, &mut m, key, 1.1);
         assert_eq!(d.drape.as_ref().map(|d| d.built), Some(1.0), "the newer drape stays");
     }

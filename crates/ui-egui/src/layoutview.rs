@@ -61,8 +61,12 @@ const FRAMES_REDRAW_S: f64 = 0.25;
 /// Says, once each, why frames drawn for a page or a preview drew layers without their cast
 /// shadows (see [`rustgis_engine::render::shadows_said`]), as the map view says them.
 pub(crate) fn say_frame_shadows(app: &mut RustGisApp, said: &rustgis_engine::render::ShadowsSaid) {
-    for e in &said.notices {
-        if app.map.tile_errors.insert(e.clone()) {
+    // Keyed by kind, as the map view keys its own (`say_approximations`): an approximation's text
+    // carries a count that changes as the page is drawn again, and the map view and a page say
+    // each kind once between them.
+    for (i, e) in said.notices.iter().enumerate() {
+        let key = said.keys.get(i).cloned().unwrap_or_else(|| e.clone());
+        if app.map.tile_errors.insert(key) {
             app.session.warn(e.clone());
         }
     }
@@ -2725,6 +2729,23 @@ mod tests {
     use egui::{Event, Key, Modifiers, PointerButton, Pos2, Rect, vec2};
     use serde_json::json;
     use std::{cell::Cell, rc::Rc};
+
+    /// A page or preview says each kind of approximation once, as the map view does, though its
+    /// count changes as the page is drawn again (#2657).
+    #[test]
+    fn frame_approximations_are_said_once_a_kind() {
+        let mut app = RustGisApp::with_sample();
+        let mark = app.session.notice_mark();
+        let said = |n: u32| rustgis_engine::render::ShadowsSaid {
+            notices: vec![format!("Roads: {n} dashed line(s) drawn solid")],
+            keys: vec!["approximated\0Roads\0dashes".to_string()],
+            to_come: false,
+        };
+        super::say_frame_shadows(&mut app, &said(5));
+        super::say_frame_shadows(&mut app, &said(7));
+        let n = app.session.notices_since(mark).iter().filter(|n| n.text.starts_with("Roads: ")).count();
+        assert_eq!(n, 1);
+    }
 
     /// Ink starts white only over a dark background, so turning it on never hides the text (#2257).
     #[test]

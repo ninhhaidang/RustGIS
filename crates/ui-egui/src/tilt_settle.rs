@@ -43,6 +43,9 @@ pub(crate) struct TiltSettle<K> {
     ready: Option<(K, Done)>,
     /// The last frame that couldn't be drawn (the renderer panicked): it isn't tried again.
     failed: Option<K>,
+    /// Where its workers hand over what their frames approximated, for the map view to say
+    /// (Never silent); replaced when the map view opens another project.
+    pub relay: render::ApproximationRelay,
 }
 
 impl<K> Default for TiltSettle<K> {
@@ -55,6 +58,7 @@ impl<K> Default for TiltSettle<K> {
             #[cfg(target_arch = "wasm32")]
             ready: None,
             failed: None,
+            relay: Default::default(),
         }
     }
 }
@@ -62,7 +66,9 @@ impl<K> Default for TiltSettle<K> {
 /// A job's stop flag (see `render::cancel`).
 type Stop = std::sync::Arc<std::sync::atomic::AtomicBool>;
 
-fn draw(mut map: Map, view: View, backend: Backend, stop: Stop) -> Done {
+/// Draws `map` for `view`; what it approximated is handed over to `relay`, the one of the project
+/// it was started for.
+fn draw(mut map: Map, view: View, backend: Backend, stop: Stop, relay: &render::ApproximationRelay) -> Done {
     let t0 = web_time::Instant::now();
     let _stop = render::cancel::install(stop.clone());
     let archives = render::archive_revisions([&map]);
@@ -76,6 +82,8 @@ fn draw(mut map: Map, view: View, backend: Backend, stop: Stop) -> Done {
     };
     #[cfg(not(target_arch = "wasm32"))]
     let (rendered, incomplete) = (render::render_backend(&mut map, &view, backend), false);
+    // What it approximated, for the map view to say (Never silent): this is its worker's thread.
+    relay.hand_over();
     // Stopped only if it came back without a picture: a stop after the renderer's last look
     // leaves a finished frame.
     let cancelled = rendered.is_none() && stop.load(std::sync::atomic::Ordering::Relaxed);
@@ -116,7 +124,9 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
     pub fn start_backend(&mut self, ctx: &egui::Context, key: K, map: Map, view: View, backend: Backend) {
         let stop = Stop::default();
         let flag = stop.clone();
-        self.start_with(ctx, key, stop, move || draw(map, view, backend, flag));
+        // What the frame approximates goes to the relay of the project it is started for.
+        let relay = self.relay.clone();
+        self.start_with(ctx, key, stop, move || draw(map, view, backend, flag, &relay));
     }
 
     /// [`TiltSettle::start_backend`], then `prepare` on the worker with the finished frame (not
@@ -133,8 +143,9 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
     ) {
         let stop = Stop::default();
         let flag = stop.clone();
+        let relay = self.relay.clone();
         self.start_with(ctx, key, stop, move || {
-            let mut done = draw(map, view, backend, flag.clone());
+            let mut done = draw(map, view, backend, flag.clone(), &relay);
             if !flag.load(std::sync::atomic::Ordering::Relaxed) {
                 done.prepared = prepare(&done);
             }
@@ -265,6 +276,47 @@ mod tests {
         assert!(s.take().is_none());
     }
 
+    /// What a worker's frame approximated reaches the relay it was started with, not one the map
+    /// view takes on after (another project's, #2639).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_workers_approximations_reach_the_map_view_of_the_project_it_was_started_for() {
+        use rustgis_engine::data::{Dataset, Geometry, GeometryType};
+        use rustgis_engine::geom::Coord;
+        use rustgis_engine::map::{Basemap, LineStroke, symbology::Dash};
+        let ctx = egui::Context::default();
+        let mut map = Map::new("m");
+        map.basemap = Basemap::Blank;
+        let mut d = Dataset::new("settled road", GeometryType::Polyline, vec![]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, 0.0), Coord::new(1.0, 0.0)]])), vec![]);
+        let id = map.add_dataset(d);
+        if let Some(l) = map.layer_mut(id) {
+            l.line_strokes = vec![LineStroke { dash: Dash::new(&[0.2, 0.2]), width: Some(4.0), ..Default::default() }];
+        }
+        let camera = Camera { center: rustgis_engine::geom::lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 64.0, height: 48.0, pixels_per_point: 1.0, camera, sky: false };
+        let ours = |said: Vec<(String, String)>| said.into_iter().filter(|(_, e)| e.starts_with("settled road: ")).count();
+        let settle = |forget: bool| {
+            let mut s = TiltSettle::default();
+            let started_with = s.relay.clone();
+            s.start(&ctx, 1u8, map.clone(), view);
+            if forget {
+                s.relay = Default::default();
+            }
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while s.take().is_none() {
+                assert!(std::time::Instant::now() < end, "the frame never came");
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: polling for the worker's frame
+            }
+            let said = render::take_approximations(&[&s.relay]);
+            (said, render::take_approximations(&[&started_with]))
+        };
+        let (said, _) = settle(false);
+        assert_eq!(ours(said), 1, "said for the project it was started for");
+        let (said, left) = settle(true);
+        assert_eq!((ours(said), ours(left)), (0, 1), "not for one opened after it started");
+    }
+
     /// A frame stopped part-way comes back without a picture, isn't taken for one that failed,
     /// and frees the worker for the next.
     #[cfg(not(target_arch = "wasm32"))]
@@ -282,7 +334,7 @@ mod tests {
             while !seen.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: hold the fake renderer until cancellation is seen
             }
-            draw(m, v, Backend::Cpu, seen)
+            draw(m, v, Backend::Cpu, seen, &Default::default())
         });
         assert!(s.busy());
         s.cancel();

@@ -119,6 +119,10 @@ pub struct Block {
     /// A block cut to polygons (#2318): their outline, the box above being the one round it.
     /// None: the box, or the circle.
     pub outline: Option<Arc<Outline>>,
+    /// The share (0 to 1) of the ground read for the base that had no height (off the DEM, its
+    /// nodata, an elevation tile that failed) and was taken as 0, as it is drawn; 0 while the
+    /// base isn't settled.
+    pub without_height: f64,
 }
 
 impl Block {
@@ -127,6 +131,12 @@ impl Block {
     /// base move, so `settled` alone is not enough once the ground has been sampled.
     pub fn walls_stand(&self, ground: &Ground) -> bool {
         self.settled && !ground.pending()
+    }
+
+    /// What to say of the ground in it with no height ([`Block::without_height`]), taken as 0;
+    /// `None` when all of it has a height.
+    pub fn without_height_notice(&self) -> Option<String> {
+        (self.without_height > 0.0).then(|| crate::approximations::ground_without_height_text(self.without_height))
     }
 }
 
@@ -399,7 +409,7 @@ impl Ground {
             }
         };
         let n = BLOCK_SAMPLES as f64;
-        let (mut lo, mut hi, mut missing) = (f64::INFINITY, f64::NEG_INFINITY, false);
+        let (mut lo, mut hi, mut missing, mut read) = (f64::INFINITY, f64::NEG_INFINITY, 0usize, 0usize);
         // A thin polygon can slip between the grid's points: its corners count too (a few
         // hundred of them, and each ring's first, so a small ring is never left out).
         let corners = outline.iter().flat_map(|o| {
@@ -417,16 +427,18 @@ impl Ground {
             if !on_outline && outline.as_ref().is_some_and(|o| !o.contains(m)) {
                 continue;
             }
+            read += 1;
             match sample(m) {
                 Some(h) => (lo, hi) = (lo.min(h), hi.max(h)),
-                None => missing = true,
+                None => missing += 1,
             }
         }
         // Elevation tiles still on their way: the base would move with each one that arrives.
         let settled = !self.pending();
         // Ground with no height (a DEM's nodata or ground off it, a tile that failed) is drawn at
         // 0 (`up_px`): once settled, the base goes below it too.
-        if missing && settled {
+        let without_height = if missing > 0 && settled { missing as f64 / read.max(1) as f64 } else { 0.0 };
+        if without_height > 0.0 {
             lo = lo.min(0.0);
         }
         if lo > hi {
@@ -437,7 +449,7 @@ impl Ground {
             Some(d) => d * self.exaggeration,
             None => (0.5 * (hi - lo)).max(rustgis_map::view::BLOCK_MIN_DEPTH * self.exaggeration),
         };
-        Some(Block { x0, y0, x1, y1, base: lo - depth, settled, walls: b.walls, circle, outline })
+        Some(Block { x0, y0, x1, y1, base: lo - depth, settled, walls: b.walls, circle, outline, without_height })
     }
 
     /// Whether elevation tiles are still on their way (drawing again later shows more).
@@ -688,6 +700,18 @@ mod tests {
         let camera = Camera { center: Coord::new(100.0, 50.0), res: 1.0, bearing: 0.0, pitch: 60.0 };
         let b = Ground::of(&m, &camera).and_then(|g| g.block(&m)).expect("a block");
         assert!((b.base + 1000.0).abs() < 1e-6, "{}", b.base);
+        // Said, with how much of it (#2639): the grid's points the nodata cell leaves without a
+        // height (a quarter of them, the cells' heights blended between their centres).
+        assert!((0.2..0.3).contains(&b.without_height), "{}", b.without_height);
+        let said = b.without_height_notice().unwrap_or_default();
+        assert!(said.starts_with("Block diagram: about 26%") && said.contains("taken as 0 m"), "{said}");
+        // Ground with a height everywhere says nothing.
+        let whole =
+            Raster::new("dem", 2, 1, vec![vec![5000.0, 4000.0]], gt, Crs::WebMercator, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+        m.layers.clear();
+        m.add_raster("dem", rustgis_map::RasterLayer::from_path(whole, "dem.tif"));
+        let b = Ground::of(&m, &camera).and_then(|g| g.block(&m)).expect("a block");
+        assert_eq!((b.without_height, b.without_height_notice()), (0.0, None));
     }
 
     #[test]
@@ -734,7 +758,8 @@ mod tests {
             water: None,
         });
         let waiting = ground(true).block(&m).expect("a block");
-        assert!(!waiting.settled);
+        // Not said while the tiles are on their way: they may bring the heights.
+        assert!(!waiting.settled && waiting.without_height_notice().is_none());
         let done = ground(false).block(&m).expect("a block");
         assert!(done.settled && (done.base + 300.0).abs() < 1e-6, "{done:?}");
         // The block read from cached tiles, then finer mesh samples asking for tiles on their way:

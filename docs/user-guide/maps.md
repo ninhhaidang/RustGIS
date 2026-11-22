@@ -103,7 +103,7 @@ base. `"extent": [xmin, ymin, xmax, ymax]` gives another box, in the map's units
 metres, at least 10 a side, not all within ±180 by ±90; needed over elevation tiles, which have no extent of their own; a box
 in degrees, off the world or off the DEM is refused, and the result gives the box cut to as
 numbers, or `"layer"` while the DEM's data isn't read); `"depth"` puts the base
-that many metres below the lowest ground in the box (ground with no height, drawn at 0, counts as 0; default half the box's relief, at least
+that many metres below the lowest ground in the box (ground with no height, drawn at 0, counts as 0, and a notice says how much of the box has none; default half the box's relief, at least
 100 m; both are stretched by the exaggeration), and `"walls": "#RRGGBB"` colours the walls
 (default `#C8B89A`, a sandy brown). The walls are lit by the way they face the light, as extruded
 walls are, darker toward their foot, and outlined. Left out, the block stays as it was, and
@@ -131,7 +131,7 @@ perspective, as a geologic block diagram shows its rock units: a hatch's angle i
 horizontal (0° gives bedding lines), and a pattern is as big on the wall as on the ground at the
 view's centre (a reference scale grows it as it does on the ground). A pattern too fine to draw
 on a wall shows as its colour mixed over the fill. Gradient and shapeburst fills aren't drawn on
-walls. The layer may be hidden, so the walls can show geology while the ground shows soils. It
+walls, and a notice says how many of the layer's polygons along them show without theirs. The layer may be hidden, so the walls can show geology while the ground shows soils. It
 must be a polygon layer that holds all its
 features (not one read a view at a time), with a name of its own; it follows the layer's renames,
 and when it is removed, or a project opens without it, the walls are `color` (said) until a

@@ -649,10 +649,16 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
     let cut = layer_cut(layer, b, false, env);
     let styler = layer.styler_with(env.clone());
     let grow = layer.size_factor(scale);
+    // The rows along the walls whose gradients or shapebursts the walls leave off, said once
+    // with their number (see `crate::approximations`).
+    let plain = std::cell::RefCell::new(std::collections::BTreeSet::new());
     let look = |row: Option<usize>| match row {
         None => (b.walls, Vec::new()),
         Some(r) => {
             let (sym, _, fills) = styler.style_and_fills(r);
+            if left_off(sym.fill, fills) {
+                plain.borrow_mut().insert(r);
+            }
             let (color, mut patterns) = unit_paint(sym.fill, fills, b.walls);
             if grow != 1.0 {
                 patterns.iter_mut().for_each(|(p, _)| *p = grown(*p, grow));
@@ -671,7 +677,24 @@ pub(crate) fn runs(map: &Map, b: &Block, scale: f64, env: &rustgis_data::query::
         }
         out
     };
-    cut.units.iter().map(side_runs).collect()
+    let runs = cut.units.iter().map(side_runs).collect();
+    let plain = plain.borrow().len();
+    if plain > 0 {
+        crate::approximations::walls_left_plain(&layer.name, plain);
+    }
+    runs
+}
+
+/// Whether walls leave off part of how a polygon whose symbol fills with `fill`, or with the
+/// stacked `fills` in its place, looks: a gradient or shapeburst that shows over its topmost
+/// opaque solid fill (over everything, without one), which [`unit_paint`] leaves off.
+fn left_off(fill: Rgba, fills: &[FillLayer]) -> bool {
+    // Only an opaque solid hides what is under it on the map.
+    let top = fills.iter().rposition(|f| matches!(f.pattern, FillPattern::Solid) && f.color.unwrap_or(fill).a() == 255);
+    fills
+        .iter()
+        .skip(top.map_or(0, |i| i + 1))
+        .any(|f| matches!(f.pattern, FillPattern::Gradient { .. } | FillPattern::Shapeburst { .. }) && f.draws(fill))
 }
 
 /// How a wall looks under a polygon whose symbol fills with `fill`, or with the stacked `fills`
@@ -1604,6 +1627,7 @@ mod tests {
             walls: Rgba::rgb(200, 184, 154),
             circle: None,
             outline: None,
+            without_height: 0.0,
         }
     }
 
@@ -1885,6 +1909,7 @@ mod tests {
             walls: rustgis_map::view::BLOCK_WALLS,
             circle: None,
             outline: None,
+            without_height: 0.0,
         };
         (m, b)
     }
@@ -2024,6 +2049,37 @@ mod tests {
         let big = FillPattern::Hatch { angle: 0.0, spacing: 8.0, width: 2.0, offset: 1.0 };
         assert_eq!(runs(&m, &b, 10_000.0, &Default::default())[0][0].patterns, vec![(big, ink)]);
         m.layers[0].reference_scale = None;
+        // A hatch drawn on the walls says nothing (#2639)...
+        crate::approximations::take();
+        runs(&m, &b, 10_000.0, &Default::default());
+        assert!(crate::approximations::take().is_empty());
+        // ...a shapeburst they leave off says so once, with the polygons along them it leaves.
+        let burst = FillPattern::Shapeburst {
+            color2: Rgba::rgb(0, 0, 255),
+            stops: Default::default(),
+            discrete: false,
+            distance: None,
+            blur: 0,
+            ignore_rings: false,
+        };
+        m.layers[0].fill_layers = vec![FillLayer { color: None, pattern: burst }];
+        runs(&m, &b, 10_000.0, &Default::default());
+        runs(&m, &b, 10_000.0, &Default::default());
+        let said = crate::approximations::take();
+        assert!(
+            said.len() == 1 && said.iter().all(|e| e.starts_with("geo: gradient and shapeburst fills") && e.contains(" 3 of its polygons")),
+            "{said:?}"
+        );
+        // Under a solid fill, it doesn't show on the map either: nothing to say.
+        m.layers[0].fill_layers =
+            vec![FillLayer { color: None, pattern: burst }, FillLayer { color: Some(Rgba::rgb(0, 0, 0)), pattern: FillPattern::Solid }];
+        runs(&m, &b, 10_000.0, &Default::default());
+        assert!(crate::approximations::take().is_empty());
+        // Under a see-through one, it shows on the map: said.
+        let glass = FillLayer { color: Some(Rgba::new(255, 0, 0, 128)), pattern: FillPattern::Solid };
+        m.layers[0].fill_layers = vec![FillLayer { color: None, pattern: burst }, glass];
+        runs(&m, &b, 10_000.0, &Default::default());
+        assert_eq!(crate::approximations::take().len(), 1);
         m.layers[0].fill_layers.clear();
         // No such layer: the walls' colour all along.
         m.view.terrain.as_mut().unwrap().block.as_mut().unwrap().walls_layer = Some("none".into());
