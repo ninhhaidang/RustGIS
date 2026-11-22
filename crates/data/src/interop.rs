@@ -497,11 +497,16 @@ impl WktParser {
     }
 }
 
+/// A [`to_wkt_csv`] cell's text before quoting: text starting like a formula is prefixed with `'`
+/// so spreadsheets show it rather than run it.
+pub(crate) fn wkt_csv_text(s: &str) -> String {
+    if s.starts_with(['=', '+', '-', '@']) && s.parse::<f64>().is_err() { format!("'{s}") } else { s.to_string() }
+}
+
 /// CSV with a `wkt` geometry column and every attribute; cancellable between features.
 pub fn to_wkt_csv(ds: &Dataset) -> crate::Result<String> {
-    // Text starting like a formula is prefixed with ' so spreadsheets show it rather than run it.
     let q = |s: &str| {
-        let s = if s.starts_with(['=', '+', '-', '@']) && s.parse::<f64>().is_err() { format!("'{s}") } else { s.to_string() };
+        let s = wkt_csv_text(s);
         if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s }
     };
     let mut out = String::from("wkt");

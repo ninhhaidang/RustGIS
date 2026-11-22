@@ -743,6 +743,8 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             dates.extend(e.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", layer.name)));
             let mut format_notes = e.csv.notes(&ds.fields, path);
             format_notes.extend(e.csv.coordinates_note(&ds.fields, path));
+            // CSV readers trim text or read blanks as null.
+            format_notes.extend(e.text.notes(&ds.fields, path));
             (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers, moved, format_notes, dates)
         }
         None => {

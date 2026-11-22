@@ -46,6 +46,8 @@ pub struct Exported {
     pub beyond_web_mercator: usize,
     /// Geometry and text changed by CSV export, counted over all chunks.
     pub csv: crate::io::CsvLosses,
+    /// Text a CSV changes when read back, counted over all chunks (none for the other formats).
+    pub text: crate::io::TextLosses,
     /// Per field of the layer, values of the source's date fields that weren't dates, so are
     /// written as null ([`crate::source::Batch::unread_dates`], said by
     /// [`crate::source::unread_dates_note`]).
@@ -253,6 +255,7 @@ fn write_chunks_as(
     let mut beyond_web_mercator = 0usize;
     let mut null_numbers = 0usize;
     let mut csv = crate::io::CsvLosses::default();
+    let mut text = crate::io::TextLosses::default();
     let mut unread_dates = Vec::new();
     let mut rounded_dates = Vec::new();
     let mut null_text = Vec::new();
@@ -274,6 +277,7 @@ fn write_chunks_as(
         beyond_web_mercator = 0;
         null_numbers = 0;
         csv = crate::io::CsvLosses::default();
+        text = crate::io::TextLosses::default();
         utc_dates.clear();
         fine_dates.clear();
         written_values.clear();
@@ -307,6 +311,7 @@ fn write_chunks_as(
             null_numbers = null_numbers.saturating_add(numbers_written_as_null(&chunk, &layer.fields, ext));
             if ext == "csv" {
                 csv += crate::io::CsvLosses::of(&chunk, geometry_type, &layer.fields)?;
+                text += crate::io::TextLosses::of(&chunk, &layer.fields, geometry_type, ext, None);
             }
             if ext == "gpkg" {
                 crate::source::add_unread_dates(&mut utc_dates, &crate::io::offset_dates(chunk.iter(), &layer.fields));
@@ -373,6 +378,7 @@ fn write_chunks_as(
             unfit,
             beyond_web_mercator,
             csv,
+            text,
             unread_dates,
             rounded_dates,
             null_text,

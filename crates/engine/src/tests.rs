@@ -26576,7 +26576,14 @@ fn csv_and_gpx_exports_say_what_they_leave_out() {
     ];
     s.map_mut().add_dataset(layer("Sites", GeometryType::Point, pts));
     let clean = vec![(Geometry::Point(Coord::new(1.0, 2.0)), vec![V::Text("P".into()), V::Null])];
-    s.map_mut().add_dataset(layer("Clean", GeometryType::Point, clean));
+    s.map_mut().add_dataset(layer("Clean", GeometryType::Point, clean.clone()));
+    // Names alone, which GPX holds whole.
+    let named = |mut ds: Dataset| {
+        ds.fields.truncate(1);
+        ds.features.iter_mut().for_each(|f| f.attrs.truncate(1));
+        ds
+    };
+    s.map_mut().add_dataset(named(layer("Names", GeometryType::Point, clean)));
     let said = |s: &mut Session, id: &str, p: Value| {
         let mark = s.notices.len();
         s.run(id, &p).unwrap();
@@ -26637,6 +26644,9 @@ fn csv_and_gpx_exports_say_what_they_leave_out() {
     ] {
         assert!(n.len() == 1 && n[0].contains("1 field wasn't written: 'height'"), "{n:?}");
     }
+    // Names alone: GPX holds them whole.
+    assert_eq!(said(&mut s, "share.exportLayer", json!({"layer": "Names", "path": out("names.gpx")})), Vec::<String>::new());
+    assert_eq!(said(&mut s, "data.convert", json!({"layer": "Names", "format": "gpx"})), Vec::<String>::new());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -43272,6 +43282,34 @@ fn data_interop_reads_the_whole_source() {
     }
     let error = s.run("data.convert", &json!({"layer": id, "format": "geojson"})).unwrap_err();
     assert!(error.contains("path"), "{error}");
+}
+
+/// A streamed point layer converted to CSV in chunks says, as a whole conversion does, when its
+/// fields take every name reading takes for a longitude or latitude; a plain one doesn't.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn streamed_csv_conversion_says_coordinate_columns_reading_wouldnt_take() {
+    let fixture = GpkgRegressionFixture::new("interop-coordinates");
+    let said = |name: &str| {
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addData", &json!({"path": fixture.path(), "stream": true})).unwrap()["layer"].clone();
+        assert!(s.map().layer(id.as_u64().unwrap() as u32).unwrap().is_streamed());
+        let mark = s.notice_mark();
+        s.run("data.convert", &json!({"layer": id, "format": "csv", "path": fixture.dir.join(name)})).unwrap();
+        s.notices_since(mark).iter().filter(|n| n.text.contains("every name read as a longitude or latitude")).count()
+    };
+    assert_eq!(said("plain.csv"), 0);
+    let db = rusqlite::Connection::open(fixture.path()).unwrap();
+    for column in ["longitude", "lon", "lng", "long", "lon_dd", "longitude_dd", "stop_lon"].iter().chain(&[
+        "latitude",
+        "lat",
+        "lat_dd",
+        "latitude_dd",
+        "stop_lat",
+    ]) {
+        db.execute_batch(&format!("ALTER TABLE roads ADD COLUMN \"{column}\" TEXT DEFAULT 'a';")).unwrap();
+    }
+    assert_eq!(said("named.csv"), 1);
 }
 
 /// A non-finite REAL survives source reading but becomes JSON null: both whole and chunked

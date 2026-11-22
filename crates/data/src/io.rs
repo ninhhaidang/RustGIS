@@ -2793,30 +2793,71 @@ fn out_of_lonlat(g: &Geometry) -> bool {
 /// otherwise (or with no values) Text. A number whose digits a Double doesn't keep, such as a
 /// 20-digit identifier, keeps its column Text, so no digit is rounded away ([`double_holds`]).
 pub(crate) fn text_type<'a>(vals: impl Iterator<Item = &'a str>) -> FieldType {
-    let mut ty: Option<FieldType> = None;
-    // A whole number a Double can't hold: fine in an Integer column, not in a Double one.
-    let mut whole_past_double = false;
-    for v in vals.map(str::trim).filter(|s| !s.is_empty()) {
+    let mut column = TextColumn::default();
+    vals.for_each(|v| column.add(v));
+    column.ty()
+}
+
+/// [`text_type`] a value at a time, so a column written a chunk at a time is typed as one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TextColumn {
+    ty: Option<FieldType>,
+    /// A whole number a Double can't hold: fine in an Integer column, not in a Double one.
+    whole_past_double: bool,
+}
+
+impl TextColumn {
+    /// Adds a value's text; one that is empty once trimmed types nothing.
+    fn add(&mut self, v: &str) {
+        let v = v.trim();
+        if v.is_empty() {
+            return;
+        }
         let t = if has_leading_zero(v) {
             // Identifiers such as ZIP codes keep their leading zeros.
             FieldType::Text
         } else if let Ok(i) = v.parse::<i64>() {
             // A whole number is held when its Double is the same number (in i128: no saturation).
-            whole_past_double |= (i as f64) as i128 != i128::from(i);
+            self.whole_past_double |= (i as f64) as i128 != i128::from(i);
             FieldType::Integer
         } else if double_holds(v) {
             FieldType::Double
         } else {
             FieldType::Text
         };
-        ty = Some(match ty {
-            None => t,
-            Some(prev) => widen(prev, Some(t)),
-        });
+        self.ty = Some(self.ty.map_or(t, |prev| widen(prev, Some(t))));
+        self.settle();
     }
-    match ty {
-        Some(FieldType::Double) if whole_past_double => FieldType::Text,
-        ty => ty.unwrap_or(FieldType::Text),
+
+    /// Adds another chunk of the column.
+    fn merge(&mut self, other: Self) {
+        self.whole_past_double |= other.whole_past_double;
+        self.ty = match self.ty {
+            None => other.ty,
+            Some(prev) => Some(widen(prev, other.ty)),
+        };
+        self.settle();
+    }
+
+    /// Whether the column is Text whatever values follow.
+    fn is_text(self) -> bool {
+        self.ty == Some(FieldType::Text)
+    }
+
+    /// One state for a Text column, however its values came: a column skips the values after it
+    /// is Text, and its chunks then compare equal to the whole.
+    fn settle(&mut self) {
+        if self.is_text() {
+            self.whole_past_double = false;
+        }
+    }
+
+    /// The column's type: Text without values.
+    fn ty(self) -> FieldType {
+        match self.ty {
+            Some(FieldType::Double) if self.whole_past_double => FieldType::Text,
+            ty => ty.unwrap_or(FieldType::Text),
+        }
     }
 }
 
@@ -4443,10 +4484,268 @@ impl std::ops::AddAssign for CsvLosses {
     }
 }
 
-/// What a CSV, KML, KMZ or GPX file of the whole dataset changes when written to `target`.
-/// A streamed export counts CSV's changes a chunk at a time instead.
+/// What reading a CSV, Shapefile, KML or GPX export back does to its text, counted for each field
+/// over the features the writer writes and reading keeps: spaces around text dropped, blank text
+/// read as null, and features and vertices reading skips. Readers, as they are:
+/// - CSV (and Data Interop's WKT CSV) keeps a cell as it is; an empty one reads as null, and so
+///   does one of spaces in a column read as numbers, and text `<Null>` ([`Value::parse_file`]).
+/// - dBase drops the spaces after text, and reads text of spaces only, or `<Null>`, as null
+///   ([`read_dbf`]).
+/// - KML and GPX trim each value; a blank name reads as null, and a blank KML extended data
+///   value too in a column read as numbers ([`type_text_columns`], for each kind of geometry's
+///   layer). A KML description is kept as it is. KML writes no null value, so a field without one
+///   has no column, which [`export_losses_notes`] says; GPX writes only names, which
+///   [`gpx_notes`] says.
+///
+/// A streamed export adds up its chunks' (`+=`): whether reading takes a column as numbers, which
+/// decides what its blanks become, is settled over all of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextLosses {
+    /// For each layer reading gives (KML: points, lines, polygons; the others: one), each field's,
+    /// in the layer's order.
+    layers: Vec<Vec<FieldText>>,
+    /// Only the spaces after text are dropped (dBase).
+    ends_only: bool,
+    /// Features written that reading skips (KML, GPX): no coordinate in longitude/latitude, or
+    /// too few for their shape.
+    unread: usize,
+    /// Vertices of the features reading keeps (KML, GPX) that don't read back with them
+    /// ([`crate::kml::lost_vertices`], [`crate::gpx::lost_vertices`]).
+    vertices: usize,
+}
+
+/// One field's [`TextLosses`] in one layer read back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FieldText {
+    /// Text with spaces around it that reading drops, unless its column reads as numbers (the
+    /// text is then a number, and read as one).
+    padded: usize,
+    /// Text with spaces around it in a KML or GPX name, which reading trims whatever its
+    /// extended data column's type.
+    name_padded: usize,
+    /// Blank text, read as null.
+    blank: usize,
+    /// Text `<Null>` ([`Value::is_null_marker`]), which CSV and dBase read as null.
+    markers: usize,
+    /// Blank text read as null in a column read as numbers, else read as it is.
+    blank_in_numbers: usize,
+    /// Text of spaces only: read as null in a column read as numbers, else as empty text.
+    spaces: usize,
+    /// The column's written text, when reading types the column from its values.
+    column: Option<TextColumn>,
+}
+
+/// How reading treats one copy of a field's text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextRead {
+    /// A CSV cell, as it is.
+    Cell,
+    /// A dBase Character column: the spaces after it dropped.
+    Dbf,
+    /// A KML or GPX name: trimmed, a blank one null.
+    Name,
+    /// KML extended data: trimmed, its column typed from its values.
+    Data,
+}
+
+/// Whether a longitude and latitude are in range, which the KML and GPX readers keep.
+pub(crate) fn lon_lat_in_range(x: f64, y: f64) -> bool {
+    (-180.0..=180.0).contains(&x) && (-90.0..=90.0).contains(&y)
+}
+
+impl TextLosses {
+    /// The losses of `features`, with `fields`, in a layer of type `gt` written to a file of
+    /// extension `ext` (lowercase), each KML or GPX feature named from field `name_field`; none
+    /// for another format.
+    ///
+    /// One pass over the features without a check for Cancel: the counts of a pass stopped half
+    /// way would understate the losses, so it can't return early. It formats each value once,
+    /// in memory, which is less than the write it follows (the same formatting, plus the write),
+    /// and a streamed export counts a chunk at a time, looking at Cancel between chunks.
+    pub fn of(features: &[crate::Feature], fields: &[Field], gt: GeometryType, ext: &str, name_field: Option<usize>) -> Self {
+        let (csv, shp, kml, gpx) = (matches!(ext, "csv" | "wkt"), matches!(ext, "shp" | "zip"), matches!(ext, "kml" | "kmz"), ext == "gpx");
+        if !(csv || shp || kml || gpx) {
+            return Self::default();
+        }
+        // How reading treats each field's copies: a KML name field is the placemark's name and,
+        // unless called `name` (whose copy reading leaves out as the same), extended data too.
+        let reads: Vec<Vec<TextRead>> = (fields.iter().enumerate())
+            .map(|(k, f)| {
+                let named = (kml || gpx) && Some(k) == name_field;
+                let mut reads = Vec::new();
+                if named {
+                    reads.push(TextRead::Name);
+                }
+                if csv {
+                    reads.push(TextRead::Cell);
+                } else if shp && matches!(f.ty, FieldType::Text | FieldType::DateTime) {
+                    reads.push(TextRead::Dbf);
+                } else if kml && f.name != "description" && !(named && f.name.eq_ignore_ascii_case("name")) {
+                    // A KML description is text as it is.
+                    reads.push(TextRead::Data);
+                }
+                reads
+            })
+            .collect();
+        let fresh: Vec<FieldText> = reads
+            .iter()
+            .map(|r| FieldText { column: (csv || r.contains(&TextRead::Data)).then(TextColumn::default), ..FieldText::default() })
+            .collect();
+        // KML reads a layer for each kind of geometry, and types each one's columns apart.
+        let mut layers = vec![fresh; if kml { 3 } else { 1 }];
+        let mut unread = 0usize;
+        let mut vertices = 0usize;
+        let layer_of = |g: &Geometry| match g.kind() {
+            _ if !kml => 0,
+            GeometryType::Point => 0,
+            GeometryType::Polyline => 1,
+            _ => 2,
+        };
+        for feature in features {
+            let layer = match &feature.geometry {
+                _ if csv => 0,
+                g if shp && shapefile_keeps(g.as_ref(), gt) => 0,
+                Some(g) if kml && crate::kml::keeps(g) => {
+                    vertices = vertices.saturating_add(crate::kml::lost_vertices(g));
+                    layer_of(g)
+                }
+                Some(g) if gpx && crate::gpx::keeps(g) => {
+                    vertices = vertices.saturating_add(crate::gpx::lost_vertices(g));
+                    layer_of(g)
+                }
+                // Written, and skipped on reading (a GPX empty multipoint isn't written at all, and
+                // is said as left out).
+                Some(g) if kml || (gpx && !matches!(g, Geometry::MultiPoint(v) if v.is_empty())) => {
+                    unread = unread.saturating_add(1);
+                    continue;
+                }
+                _ => continue,
+            };
+            let Some(layer) = layers.get_mut(layer) else { continue };
+            for ((v, loss), reads) in feature.attrs.iter().zip(layer.iter_mut()).zip(&reads) {
+                if v.is_null() {
+                    continue;
+                }
+                // Text absorbs every later value, so a column typed Text needs no more.
+                if let Some(column) = &mut loss.column
+                    && !column.is_text()
+                {
+                    let text = match ext {
+                        "csv" => csv_cell(v),
+                        "wkt" => crate::interop::wkt_csv_text(&v.to_file_text()),
+                        _ => v.to_file_text(),
+                    };
+                    // CSV's `<Null>` reads as null, so it types a column no more than an empty cell.
+                    if !(csv && Value::is_null_marker(&text)) {
+                        column.add(&text);
+                    }
+                }
+                let Value::Text(s) = v else { continue };
+                let trimmed = s.trim();
+                // A value is counted once, however many copies of it are written (a KML name
+                // field's extended data, a GPX multipoint's waypoints): by its first copy, the
+                // name, whose loss is never less than the extended data's.
+                if let Some(read) = reads.first() {
+                    let count = match read {
+                        TextRead::Cell if s.is_empty() => &mut loss.blank,
+                        TextRead::Cell | TextRead::Dbf if Value::is_null_marker(s) => &mut loss.markers,
+                        TextRead::Cell if trimmed.is_empty() => &mut loss.blank_in_numbers,
+                        // A Character column; text cut to 254 bytes is said as cut.
+                        TextRead::Dbf if s.len() <= 254 && s.trim_end_matches(' ').is_empty() => &mut loss.blank,
+                        TextRead::Dbf if s.len() <= 254 && s.ends_with(' ') => &mut loss.padded,
+                        TextRead::Name if trimmed.is_empty() => &mut loss.blank,
+                        TextRead::Name if trimmed.len() < s.len() => &mut loss.name_padded,
+                        TextRead::Data if s.is_empty() => &mut loss.blank_in_numbers,
+                        TextRead::Data if trimmed.is_empty() => &mut loss.spaces,
+                        TextRead::Data if trimmed.len() < s.len() => &mut loss.padded,
+                        _ => continue,
+                    };
+                    *count += 1;
+                }
+            }
+        }
+        Self { layers, ends_only: shp, unread, vertices }
+    }
+
+    /// One notice for each loss of a layer with `fields` written to `target`, with a count and
+    /// the fields; none without loss.
+    pub fn notes(&self, fields: &[Field], target: &str) -> Vec<String> {
+        let numbers = |t: &FieldText| t.column.is_some_and(|c| c.ty() != FieldType::Text);
+        // Each field's count over the layers read back.
+        let counts = |count: &dyn Fn(&FieldText) -> usize| -> Vec<usize> {
+            (0..fields.len()).map(|k| self.layers.iter().filter_map(|l| l.get(k)).map(count).sum()).collect()
+        };
+        let trimmed = counts(&|t| t.name_padded + if numbers(t) { 0 } else { t.padded + t.spaces });
+        let blank = counts(&|t| t.blank + t.markers + if numbers(t) { t.blank_in_numbers + t.spaces } else { 0 });
+        let markers = self.layers.iter().flatten().any(|t| t.markers > 0);
+        let target: String = target.chars().map(dbf_notice_char).collect();
+        let mut notes = Vec::new();
+        let n: usize = trimmed.iter().sum();
+        if n > 0 {
+            let what = match (n, self.ends_only) {
+                (1, true) => "1 text value ends with spaces".to_string(),
+                (1, false) => "1 text value starts or ends with spaces, tabs or line breaks".to_string(),
+                (n, true) => format!("{n} text values end with spaces"),
+                (n, false) => format!("{n} text values start or end with spaces, tabs or line breaks"),
+            };
+            notes.push(format!("{target}: {what}, which reading the file back drops, in {}", named_fields(fields, &trimmed)));
+        }
+        let n: usize = blank.iter().sum();
+        if n > 0 {
+            let what = match (n, markers) {
+                (1, false) => "1 blank text value reads".to_string(),
+                (n, false) => format!("{n} blank text values read"),
+                (1, true) => "1 text value, blank or <Null>, reads".to_string(),
+                (n, true) => format!("{n} text values, blank or <Null>, read"),
+            };
+            notes.push(format!("{target}: {what} back as empty (null), in {}", named_fields(fields, &blank)));
+        }
+        if self.unread > 0 {
+            let what = if self.unread == 1 { "1 feature is".to_string() } else { format!("{} features are", self.unread) };
+            notes.push(format!(
+                "{target}: {what} written but won't read back: no coordinate is inside longitude/latitude, or too few for the shape"
+            ));
+        }
+        if self.vertices > 0 {
+            let what = if self.vertices == 1 { "1 vertex won't".to_string() } else { format!("{} vertices won't", self.vertices) };
+            notes.push(format!(
+                "{target}: {what} read back with the features kept: outside longitude/latitude, or in a part left with too few to keep"
+            ));
+        }
+        notes
+    }
+}
+
+impl std::ops::AddAssign for TextLosses {
+    /// Adds a chunk's losses, of the same fields.
+    fn add_assign(&mut self, other: Self) {
+        if self.layers.is_empty() {
+            *self = other;
+            return;
+        }
+        self.unread = self.unread.saturating_add(other.unread);
+        self.vertices = self.vertices.saturating_add(other.vertices);
+        for (a, b) in self.layers.iter_mut().zip(other.layers).flat_map(|(a, b)| a.iter_mut().zip(b)) {
+            a.padded += b.padded;
+            a.name_padded += b.name_padded;
+            a.blank += b.blank;
+            a.markers += b.markers;
+            a.blank_in_numbers += b.blank_in_numbers;
+            a.spaces += b.spaces;
+            if let (Some(a), Some(b)) = (&mut a.column, b.column) {
+                a.merge(b);
+            }
+        }
+    }
+}
+
+/// What a CSV, Shapefile, KML, KMZ or GPX file (extension `ext`) of the whole dataset `ds`
+/// changes when written to `target`: [`CsvLosses`]' notices, KML's fields without a value,
+/// [`gpx_notes`] with each feature named from `name_field`, and [`TextLosses`]' (a Shapefile's
+/// other values are [`shapefile_values_notes`]). A streamed export counts CSV's changes a chunk
+/// at a time instead.
 pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str) -> Result<Vec<String>> {
-    Ok(match ext {
+    let mut notes = match ext {
         "csv" => {
             // Of the longitude/latitude the file is written in.
             let ds = ds.in_lonlat().map_err(DataError::of_conversion)?;
@@ -4458,7 +4757,9 @@ pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, t
         "kml" | "kmz" => kml_empty_fields_note(ds, target)?.into_iter().collect(),
         "gpx" => gpx_notes(ds, name_field, target),
         _ => Vec::new(),
-    })
+    };
+    notes.extend(TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, ext, name_field).notes(&ds.fields, target));
+    Ok(notes)
 }
 
 /// KML writes ExtendedData only for non-null values of placemarks it writes. Report every
@@ -6526,6 +6827,339 @@ mod tests {
         ds.push(None, vec![]);
         assert_eq!(gpx_left_out(&ds), 2);
         assert_eq!(write_bytes(&ds, "gpx").unwrap().1, 2);
+    }
+
+    /// A text layer for [`TextLosses`]: point features with `rows` of text values, and one without
+    /// geometry holding blanks and padded text, which KML, GPX and Shapefile don't write.
+    fn text_layer(names: &[&str], rows: &[&[Option<&str>]]) -> Dataset {
+        let fields = names.iter().map(|n| Field::new(*n, FieldType::Text)).collect();
+        let mut ds = Dataset::new("t", GeometryType::Point, fields);
+        for (i, row) in rows.iter().enumerate() {
+            let attrs = row.iter().map(|v| v.map_or(Value::Null, |t| Value::Text(t.to_string()))).collect();
+            ds.push(Some(Geometry::Point(Coord::new(i as f64, 1.0))), attrs);
+        }
+        ds.push(None, names.iter().map(|_| Value::Text(" ".into())).collect());
+        ds
+    }
+
+    fn text_notes(ds: &Dataset, ext: &str) -> Vec<String> {
+        TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, ext, name_field(ds)).notes(&ds.fields, "t")
+    }
+
+    #[test]
+    fn csv_says_blank_text_that_reads_as_null() {
+        // 'code' reads as numbers, so its blank of spaces reads as null; 'note' stays text, which
+        // keeps spaces.
+        let ds = text_layer(&["note", "code"], &[&[Some(""), Some("1")], &[Some("  "), Some(" ")], &[Some(" x "), Some("")]]);
+        // The feature without geometry is a CSV row: its blank in 'code' counts too.
+        assert_eq!(text_notes(&ds, "csv"), ["t: 4 blank text values read back as empty (null), in 'note', 'code'"]);
+        assert_eq!(text_notes(&ds, "wkt"), ["t: 4 blank text values read back as empty (null), in 'note', 'code'"]);
+        let mut clean = text_layer(&["note", "code"], &[&[Some(" x "), Some("1")], &[Some("  "), None]]);
+        // Without the row of spaces, which 'code' reads as null.
+        clean.features.truncate(2);
+        assert!(text_notes(&clean, "csv").is_empty());
+    }
+
+    #[test]
+    fn shapefile_says_trailing_spaces_and_blank_text() {
+        let ds = text_layer(&["a", "b"], &[&[Some("lead "), Some(" kept")], &[Some("   "), Some("")], &[None, Some("x  ")]]);
+        assert_eq!(
+            text_notes(&ds, "shp"),
+            [
+                "t: 2 text values end with spaces, which reading the file back drops, in 'a', 'b'",
+                "t: 2 blank text values read back as empty (null), in 'a', 'b'",
+            ]
+        );
+        assert_eq!(text_notes(&ds, "zip"), text_notes(&ds, "shp"));
+        let clean = text_layer(&["a"], &[&[Some(" kept")], &[None]]);
+        assert!(text_notes(&clean, "shp").is_empty());
+    }
+
+    #[test]
+    fn kml_says_trimmed_and_blank_text() {
+        let ds = text_layer(
+            &["name", "note", "code", "gone", "folder", "description"],
+            &[
+                &[Some(" a"), Some(" padded "), Some("1"), None, None, Some(" kept ")],
+                &[Some("  "), Some(""), Some(""), None, None, Some("")],
+                &[Some("b"), Some(" "), Some("2"), None, None, None],
+            ],
+        );
+        assert_eq!(
+            text_notes(&ds, "kml"),
+            [
+                "t: 3 text values start or end with spaces, tabs or line breaks, which reading the file back drops, in 'name', 'note'",
+                "t: 2 blank text values read back as empty (null), in 'name', 'code'",
+            ]
+        );
+        assert_eq!(text_notes(&ds, "kmz"), text_notes(&ds, "kml"));
+        // What the notes say is what reading the file back does.
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let back = &crate::kml::read("t.kml", &bytes).unwrap()[0].dataset;
+        let column = |n: &str| back.field_index(n).map(|i| back.features.iter().map(|f| f.attrs[i].clone()).collect::<Vec<_>>());
+        let text = |t: &str| Value::Text(t.into());
+        assert_eq!(column("name"), Some(vec![text("a"), Value::Null, text("b")]));
+        assert_eq!(column("note"), Some(vec![text("padded"), text(""), text("")]));
+        assert_eq!(column("code"), Some(vec![Value::Int(1), Value::Null, Value::Int(2)]));
+        assert_eq!(column("gone"), None);
+        assert_eq!(column("description"), Some(vec![text(" kept "), text(""), Value::Null]));
+        let clean = text_layer(&["name", "note"], &[&[Some("a"), Some("")], &[None, Some("x")]]);
+        assert!(text_notes(&clean, "kml").is_empty());
+    }
+
+    #[test]
+    fn gpx_says_trimmed_and_blank_names() {
+        let ds = text_layer(&["name", "note", "gone", "ele"], &[&[Some("a "), Some("x"), None, None], &[Some(""), None, None, None]]);
+        assert_eq!(
+            text_notes(&ds, "gpx"),
+            [
+                "t: 1 text value starts or ends with spaces, tabs or line breaks, which reading the file back drops, in 'name'",
+                "t: 1 blank text value reads back as empty (null), in 'name'",
+            ]
+        );
+        // GPX writes only names: one notice says the other fields, with a value first.
+        assert_eq!(
+            gpx_notes(&ds, name_field(&ds), "t"),
+            ["t: GPX holds a name for each feature, so fields weren't written: 'note', 'gone', 'ele'"]
+        );
+        let clean = text_layer(&["name"], &[&[Some("a")], &[None]]);
+        assert!(text_notes(&clean, "gpx").is_empty());
+        assert!(gpx_notes(&clean, name_field(&clean), "t").is_empty());
+        assert!(text_notes(&ds, "geojson").is_empty());
+    }
+
+    /// A placemark or waypoint reading skips (no coordinate in range, or a line of one point)
+    /// holds nothing that comes back.
+    #[test]
+    fn kml_and_gpx_count_only_features_reading_keeps() {
+        let mut ds = text_layer(&["name", "note"], &[&[Some("a"), None]]);
+        ds.push(Some(Geometry::Point(Coord::new(200.0, 0.0))), vec![Value::Text(" off ".into()), Value::Text(" x".into())]);
+        ds.push(Some(Geometry::MultiPoint(vec![])), vec![Value::Text("".into()), Value::Text("".into())]);
+        ds.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0)]])), vec![Value::Text(" ".into()), Value::Text(" ".into())]);
+        // 'note' has values only where reading skips the placemark: its padded text doesn't come
+        // back, but its name still gives a column, of nulls. The skipped placemarks are said.
+        let unread =
+            |n: &str| format!("t: {n} written but won't read back: no coordinate is inside longitude/latitude, or too few for the shape");
+        assert_eq!(text_notes(&ds, "kml"), [unread("3 features are")]);
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let layers = crate::kml::read("t.kml", &bytes).unwrap();
+        assert_eq!(layers.len(), 1);
+        let back = &layers[0].dataset;
+        assert_eq!(back.features.len(), 1);
+        assert_eq!(back.field_index("note").map(|i| back.value(0, i).clone()), Some(Value::Null));
+        // GPX doesn't write the empty multipoint (said as left out); the other two it skips.
+        assert_eq!(text_notes(&ds, "gpx"), [unread("2 features are")]);
+        let (bytes, _) = write_bytes(&ds, "gpx").unwrap();
+        let read = crate::gpx::read("t.gpx", &bytes).unwrap();
+        // One waypoint, and no track (its lone point, unnamed, is among the track points).
+        let count = |name: &str| read.iter().find(|(d, _)| d.name == name).map(|(d, _)| d.features.len());
+        assert_eq!((count("t waypoints"), count("t tracks")), (Some(1), None));
+        // The same values in a feature reading keeps are said.
+        let kept = text_layer(&["name", "note"], &[&[Some(" off "), Some(" x")]]);
+        assert_eq!(text_notes(&kept, "kml").len(), 1);
+        assert_eq!(text_notes(&kept, "gpx").len(), 1);
+    }
+
+    /// A KML name field not called `name` is the placemark's name and its own extended data
+    /// column, read with a type from its values: each value is counted once.
+    #[test]
+    fn a_kml_name_field_of_another_name_counts_each_value_once() {
+        let ds = text_layer(&["title", "other"], &[&[Some(" a"), Some("x")], &[Some(""), Some("y")], &[Some("5"), Some("z")]]);
+        let losses = |ds: &Dataset| TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, "kml", Some(0)).notes(&ds.fields, "t");
+        // In the name, " a" is trimmed and "" null; in 'title', a text column, " a" is trimmed too,
+        // the same value.
+        assert_eq!(
+            losses(&ds),
+            [
+                "t: 1 text value starts or ends with spaces, tabs or line breaks, which reading the file back drops, in 'title'",
+                "t: 1 blank text value reads back as empty (null), in 'title'",
+            ]
+        );
+        let back = crate::interop::to_kml(&ds, Some(0)).unwrap();
+        let read = &crate::kml::read("t.kml", back.as_bytes()).unwrap()[0].dataset;
+        let column = |n: &str| read.field_index(n).map(|i| read.features.iter().map(|f| f.attrs[i].clone()).collect::<Vec<_>>());
+        let text = |t: &str| Value::Text(t.into());
+        assert_eq!(column("name"), Some(vec![text("a"), Value::Null, text("5")]));
+        assert_eq!(column("title"), Some(vec![text("a"), text(""), text("5")]));
+        let clean = text_layer(&["title"], &[&[Some("a")], &[Some("b")]]);
+        assert!(losses(&clean).is_empty());
+    }
+
+    /// A KML name field's placemark name is trimmed even when its own extended data column reads
+    /// as numbers, which keeps the padded number as a number.
+    #[test]
+    fn a_kml_name_of_numbers_is_still_trimmed() {
+        let ds = text_layer(&["code"], &[&[Some(" 5")], &[Some("6")]]);
+        let losses = |ds: &Dataset| TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, "kml", Some(0)).notes(&ds.fields, "t");
+        assert_eq!(
+            losses(&ds),
+            ["t: 1 text value starts or ends with spaces, tabs or line breaks, which reading the file back drops, in 'code'"]
+        );
+        let back = crate::interop::to_kml(&ds, Some(0)).unwrap();
+        let read = &crate::kml::read("t.kml", back.as_bytes()).unwrap()[0].dataset;
+        let column = |n: &str| read.field_index(n).map(|i| read.features.iter().map(|f| f.attrs[i].clone()).collect::<Vec<_>>());
+        assert_eq!(column("name"), Some(vec![Value::Text("5".into()), Value::Text("6".into())]));
+        assert_eq!(column("code"), Some(vec![Value::Int(5), Value::Int(6)]));
+        let clean = text_layer(&["code"], &[&[Some("5")], &[Some("6")]]);
+        assert!(losses(&clean).is_empty());
+    }
+
+    /// CSV and dBase read text `<Null>`, in any case and with spaces around it, as null.
+    #[test]
+    fn csv_and_shapefile_say_text_null_markers() {
+        let mut ds = text_layer(&["note"], &[&[Some("<Null>")], &[Some(" <null> ")], &[Some("x")], &[Some("")]]);
+        ds.features.retain(|f| f.geometry.is_some());
+        for ext in ["csv", "zip"] {
+            assert_eq!(text_notes(&ds, ext), ["t: 3 text values, blank or <Null>, read back as empty (null), in 'note'"], "{ext}");
+            let (bytes, _) = write_bytes(&ds, ext).unwrap();
+            let (back, _) = read_bytes(&format!("t.{ext}"), &bytes).unwrap();
+            let i = back.field_index("note").unwrap();
+            let values: Vec<_> = back.features.iter().map(|f| f.attrs[i].clone()).collect();
+            assert_eq!(values, [Value::Null, Value::Null, Value::Text("x".into()), Value::Null], "{ext}");
+        }
+        // Text that only looks like the marker comes back as it is.
+        let mut clean = text_layer(&["note"], &[&[Some("Null")], &[Some("<Null>x")]]);
+        clean.features.retain(|f| f.geometry.is_some());
+        assert!(text_notes(&clean, "csv").is_empty());
+        assert!(text_notes(&clean, "zip").is_empty());
+    }
+
+    /// GPX writes a waypoint for each point of a multipoint, each with the name: reading trims each
+    /// copy, and the value is counted once. The point out of range is a vertex that doesn't read
+    /// back.
+    #[test]
+    fn gpx_counts_a_multipoints_name_once() {
+        let mut ds = Dataset::new("t", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        let points = vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0), Coord::new(200.0, 0.0)];
+        ds.push(Some(Geometry::MultiPoint(points)), vec![Value::Text(" a".into())]);
+        assert_eq!(
+            text_notes(&ds, "gpx"),
+            [
+                "t: 1 text value starts or ends with spaces, tabs or line breaks, which reading the file back drops, in 'name'",
+                "t: 1 vertex won't read back with the features kept: outside longitude/latitude, or in a part left with too few to keep",
+            ]
+        );
+        let (bytes, _) = write_bytes(&ds, "gpx").unwrap();
+        let read = crate::gpx::read("t.gpx", &bytes).unwrap();
+        let (waypoints, _) = read.iter().find(|(d, _)| d.name == "t waypoints").unwrap();
+        let names: Vec<_> = waypoints.features.iter().map(|f| f.attrs[0].clone()).collect();
+        assert_eq!(names, [Value::Text("a".into()), Value::Text("a".into())]);
+        ds.features[0].attrs = vec![Value::Text("a".into())];
+        ds.features[0].geometry = Some(Geometry::MultiPoint(vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]));
+        assert!(text_notes(&ds, "gpx").is_empty());
+    }
+
+    /// KML and GPX readers drop a vertex outside longitude/latitude one at a time, and a part left
+    /// with too few: the features kept lose those vertices, which are counted.
+    #[test]
+    fn kml_and_gpx_count_vertices_that_dont_read_back() {
+        let c = Coord::new;
+        let geometries = [
+            // One vertex out of range; the line keeps two.
+            Geometry::Line(vec![vec![c(0.0, 0.0), c(200.0, 0.0), c(1.0, 1.0)]]),
+            // A second part left with one vertex is dropped whole: 2 vertices.
+            Geometry::Line(vec![vec![c(0.0, 0.0), c(1.0, 1.0)], vec![c(2.0, 2.0), c(0.0, 95.0)]]),
+            // Two points of three out of range.
+            Geometry::MultiPoint(vec![c(0.0, 0.0), c(181.0, 0.0), c(0.0, -91.0)]),
+        ];
+        let mut ds = Dataset::new("t", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        for g in geometries {
+            ds.push(Some(g), vec![Value::Text("a".into())]);
+        }
+        let vertices = |n: usize| {
+            format!(
+                "t: {n} vertices won't read back with the features kept: outside longitude/latitude, or in a part left with too few to keep"
+            )
+        };
+        assert_eq!(text_notes(&ds, "kml"), [vertices(5)]);
+        assert_eq!(text_notes(&ds, "gpx"), [vertices(5)]);
+        // Reading the file back keeps the other 5 of the 10 vertices written.
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let read = crate::kml::read("t.kml", &bytes).unwrap();
+        let kept: usize =
+            read.iter().flat_map(|l| &l.dataset.features).filter_map(|f| f.geometry.as_ref()).map(Geometry::coord_count).sum();
+        assert_eq!(kept, 10 - 5);
+        // A polygon: an outer ring of four in range keeps them; a hole left with two is dropped
+        // (4 vertices), and a part whose outer ring is left with two is dropped with its hole.
+        let square = |x: f64| vec![c(x, 0.0), c(x + 1.0, 0.0), c(x + 1.0, 1.0), c(x, 0.0)];
+        let polygon = Geometry::Polygon(vec![
+            vec![square(0.0), vec![c(0.1, 0.1), c(200.0, 0.0), c(200.0, 1.0), c(0.1, 0.1)]],
+            vec![vec![c(2.0, 0.0), c(300.0, 0.0), c(300.0, 1.0), c(2.0, 1.0)], square(2.0)],
+        ]);
+        let mut ds = Dataset::new("t", GeometryType::Polygon, vec![Field::new("name", FieldType::Text)]);
+        ds.push(Some(polygon), vec![Value::Text("a".into())]);
+        assert_eq!(text_notes(&ds, "kml"), [vertices(12)]);
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let read = crate::kml::read("t.kml", &bytes).unwrap();
+        assert_eq!(read[0].dataset.features[0].geometry, Some(Geometry::Polygon(vec![vec![square(0.0)]])));
+        // GPX writes the outer rings as a track: the second is left with two, so isn't dropped.
+        assert_eq!(text_notes(&ds, "gpx"), [vertices(2)]);
+        // In range, nothing is said.
+        let mut clean = Dataset::new("t", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        clean.push(Some(Geometry::Line(vec![vec![c(0.0, 0.0), c(180.0, 90.0)]])), vec![Value::Text("a".into())]);
+        clean.push(Some(Geometry::MultiPoint(vec![c(-180.0, -90.0), c(1.0, 1.0)])), vec![Value::Text("b".into())]);
+        clean.push(Some(Geometry::Polygon(vec![vec![square(0.0), square(0.0)]])), vec![Value::Text("c".into())]);
+        assert!(text_notes(&clean, "kml").is_empty());
+        assert!(text_notes(&clean, "gpx").is_empty());
+    }
+
+    /// KML reads a layer for each kind of geometry and types each one's columns apart: a blank in
+    /// the points' column of numbers reads as null, one in the lines' column of text doesn't.
+    #[test]
+    fn kml_types_each_kind_of_geometry_apart() {
+        let line = || Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]]));
+        let point = |x: f64| Some(Geometry::Point(Coord::new(x, 1.0)));
+        let mut ds = Dataset::new("t", GeometryType::Point, vec![Field::new("code", FieldType::Text)]);
+        for (g, v) in [(point(0.0), "1"), (point(1.0), ""), (line(), "x"), (line(), "")] {
+            ds.push(g, vec![Value::Text(v.into())]);
+        }
+        assert_eq!(text_notes(&ds, "kml"), ["t: 1 blank text value reads back as empty (null), in 'code'"]);
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let layers = crate::kml::read("t.kml", &bytes).unwrap();
+        let code = |l: usize| {
+            let d = &layers[l].dataset;
+            let i = d.field_index("code").unwrap();
+            d.features.iter().map(|f| f.attrs[i].clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(code(0), [Value::Int(1), Value::Null]);
+        assert_eq!(code(1), [Value::Text("x".into()), Value::Text("".into())]);
+        // Lines alone: their blank is kept.
+        ds.features.retain(|f| matches!(f.geometry, Some(Geometry::Line(_))));
+        assert!(text_notes(&ds, "kml").is_empty());
+    }
+
+    /// A streamed CSV export adds up its chunks' text losses to the whole layer's, and types a
+    /// column over all of them: 'code' reads as numbers only from the second chunk on.
+    #[test]
+    fn text_losses_of_chunks_add_up_to_the_whole_layer() {
+        let ds = text_layer(
+            &["note", "code"],
+            &[&[Some(""), Some(" ")], &[Some("  "), Some("")], &[Some("x"), Some("12")], &[None, Some("  ")]],
+        );
+        let whole = TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, "csv", None);
+        for size in 1..=ds.features.len() {
+            let mut sum = TextLosses::default();
+            for chunk in ds.features.chunks(size) {
+                sum += TextLosses::of(chunk, &ds.fields, ds.geometry_type, "csv", None);
+            }
+            assert_eq!(sum, whole, "chunks of {size}");
+        }
+        assert_eq!(whole.notes(&ds.fields, "t"), ["t: 5 blank text values read back as empty (null), in 'note', 'code'"]);
+        // Alone, the first chunk's 'code' is text, which keeps its spaces.
+        let first = TextLosses::of(&ds.features[..1], &ds.fields, ds.geometry_type, "csv", None);
+        assert_eq!(first.notes(&ds.fields, "t"), ["t: 1 blank text value reads back as empty (null), in 'note'"]);
+        // A column that is Text skips the values after, and chunks still add up to the whole: a
+        // whole number past a Double's digits, alone a chunk's Integer, is Text after text.
+        let wide = text_layer(&["id"], &[&[Some("abc")], &[Some("9007199254740993")], &[Some(" ")]]);
+        let whole = TextLosses::of(&wide.features, &wide.fields, wide.geometry_type, "csv", None);
+        for size in 1..=wide.features.len() {
+            let mut sum = TextLosses::default();
+            for chunk in wide.features.chunks(size) {
+                sum += TextLosses::of(chunk, &wide.fields, wide.geometry_type, "csv", None);
+            }
+            assert_eq!(sum, whole, "chunks of {size}");
+        }
+        assert_eq!(whole.notes(&wide.fields, "t"), Vec::<String>::new());
     }
 
     /// GPX names fields with values before fields of nulls, so a field that lost data isn't

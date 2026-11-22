@@ -29,7 +29,39 @@ fn child_text(n: &Node, name: &str) -> Option<String> {
 fn coord(n: &Node) -> Option<Coord> {
     let x = n.attribute("lon")?.trim().parse::<f64>().ok()?;
     let y = n.attribute("lat")?.trim().parse::<f64>().ok()?;
-    ((-180.0..=180.0).contains(&x) && (-90.0..=90.0).contains(&y)).then(|| Coord::new(x, y))
+    crate::io::lon_lat_in_range(x, y).then(|| Coord::new(x, y))
+}
+
+/// Whether reading keeps a feature that [`crate::interop::to_gpx`] writes with geometry `g`: a
+/// waypoint in range ([`coord`]), or a track with a segment of two such points.
+pub(crate) fn keeps(g: &Geometry) -> bool {
+    let kept = |c: &&Coord| crate::io::lon_lat_in_range(c.x, c.y);
+    let segment = |p: &Vec<Coord>| p.iter().filter(kept).count() >= 2;
+    match g {
+        Geometry::Point(c) => kept(&c),
+        Geometry::MultiPoint(v) => v.iter().any(|c| kept(&c)),
+        Geometry::Line(parts) => parts.iter().any(segment),
+        // Written as a track along each part's outer ring.
+        Geometry::Polygon(polys) => polys.iter().filter_map(|rings| rings.first()).any(segment),
+    }
+}
+
+/// The vertices of a feature reading keeps ([`keeps`]) that don't read back with it: points of a
+/// multipoint outside longitude/latitude ([`coord`]), and those of a track's segments (a polygon's
+/// outer rings) out of range, or all of a segment left with fewer than two, which reading leaves
+/// out of the track.
+pub(crate) fn lost_vertices(g: &Geometry) -> usize {
+    let in_range = |p: &[Coord]| p.iter().filter(|c| crate::io::lon_lat_in_range(c.x, c.y)).count();
+    let segment = |p: &Vec<Coord>| {
+        let n = in_range(p);
+        if n >= 2 { p.len().saturating_sub(n) } else { p.len() }
+    };
+    match g {
+        Geometry::Point(_) => 0,
+        Geometry::MultiPoint(v) => v.len().saturating_sub(in_range(v)),
+        Geometry::Line(parts) => parts.iter().map(segment).sum(),
+        Geometry::Polygon(polys) => polys.iter().filter_map(|rings| rings.first()).map(segment).sum(),
+    }
 }
 
 fn text(v: Option<String>) -> Value {

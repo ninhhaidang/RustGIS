@@ -23,13 +23,10 @@ const GEOMETRY_ONLY: [&str; 4] = ["fgb", "shp", "kml", "gpx"];
 
 /// Changes a format makes without a notice, as (format, the start of a change from [`changes`],
 /// why). Each is what the format can hold or how its reader works, not a loss of a value's
-/// number or text, except trimming (Shapefile, KML, GPX) and blanks read as null, which are kept
-/// here until they are said (#1907). CSV keeps the spaces
-/// around a value (#2059).
+/// number or text. Text a reader trims, blanks read as null and (KML, GPX) a field of nulls left
+/// out are said by the export (#1907).
 const LIMITS: &[(&str, &str, &str)] = &[
-    // CSV holds text: reading types each column from its values (`text_type`) and reads an empty
-    // cell as null.
-    ("csv", "blank text became null", "an empty cell is read as null"),
+    // CSV holds text: reading types each column from its values (`text_type`).
     ("csv", "field type changed", "a column's type comes from its values"),
     ("csv", "field of nulls type changed", "a column's type comes from its values"),
     ("csv", "boolean became text", "yes/no values are written as True/False, read back as text"),
@@ -46,10 +43,7 @@ const LIMITS: &[(&str, &str, &str)] = &[
     ("geojson", "date became text", "a date is written as ISO 8601 text and stays text on read (#853)"),
     ("geojson", "datetime became text", "a date is written as ISO 8601 text and stays text on read (#853)"),
     ("geojson", "not read back: nothing", "a layer without geometry or values reads as nothing"),
-    // dBase pads text with spaces and has no null text; reading makes a whole-number column an
-    // integer one.
-    ("shp", "text trimmed", "dBase pads text with spaces after it, and reading drops them, so spaces at its end go"),
-    ("shp", "blank text became null", "dBase has no null text: blank text reads as null"),
+    // Reading makes a whole-number column an integer one.
     ("shp", "field of nulls type changed", "a number column's type comes from its values"),
     ("shp", "field type changed Double → Integer", "a column of whole numbers reads as integers"),
 ];
@@ -57,8 +51,6 @@ const LIMITS: &[(&str, &str, &str)] = &[
 /// KML and GPX hold text, read with types from the values as for CSV (`type_text_columns`); the
 /// name field is written as the feature's name and read back as `name`.
 const TEXT_FORMAT_LIMITS: &[&str] = &[
-    "text trimmed",
-    "blank text became null",
     "field type changed",
     "field of nulls type changed",
     "field renamed",

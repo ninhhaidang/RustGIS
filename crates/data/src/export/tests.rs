@@ -232,6 +232,11 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     } else {
                         Default::default()
                     },
+                    text: if ext == "csv" {
+                        crate::io::TextLosses::of(&whole.features, &whole.fields, whole.geometry_type, ext, None)
+                    } else {
+                        Default::default()
+                    },
                     unread_dates: Vec::new(),
                     rounded_dates: Vec::new(),
                     null_text: Vec::new(),
