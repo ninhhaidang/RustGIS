@@ -435,8 +435,10 @@ impl<O: Offered> List<O> {
     /// None with text selected), a new offer keeping the highlight on the same item when it is
     /// still there, drawn just under the cursor, each item after its `icon`, the highlighted
     /// item's `help` beside it (or under it, in a narrow window), and what each says (`describe`)
-    /// for a screen reader, the highlighted one read as the box's. `visible` is the part of the box
-    /// that shows (its scroll's viewport: the text edit's own clip rect is its whole text).
+    /// for a screen reader, the highlighted one read as the box's, kept while `said` (a key of what
+    /// `describe` reads for the offer, asked only while a list shows) gives the same. `visible` is
+    /// the part of the box that shows (its scroll's viewport: the text edit's own clip rect is its
+    /// whole text).
     /// Returns an item clicked, to accept. The list closes when the box loses focus or nothing
     /// matches.
     pub fn show(
@@ -447,6 +449,7 @@ impl<O: Offered> List<O> {
         visible: egui::Rect,
         work: impl FnOnce(Option<usize>) -> Option<O>,
         icon: impl Fn(&O, &str) -> Option<&'static str>,
+        said: impl FnOnce(&O) -> u64,
         describe: impl Fn(&O, &str) -> Option<String>,
         help: impl FnOnce(&mut Ui, &O, &str, f32),
     ) -> Option<(O, String)> {
@@ -521,6 +524,12 @@ impl<O: Offered> List<O> {
         } else if self.open.as_ref().is_some_and(|(o, _)| *o != offer) {
             // The same items, but what they say may not be (a field's type, read again).
             self.scroll.described = Arc::default();
+        }
+        // Or what they're read from changed, with the same offer (a layer's count of features).
+        let key = said(&offer);
+        if self.scroll.said != key {
+            self.scroll.described = Arc::default();
+            self.scroll.said = key;
         }
         let kept = self.open.as_ref().and_then(|(o, s)| o.items().get(*s));
         let selected = kept.and_then(|item| offer.items().iter().position(|i| i == item)).unwrap_or(0);
@@ -601,10 +610,12 @@ struct Scroll {
     /// Where the help's box was, the gap before it included: with the pointer there, the help
     /// stays the one shown (the item the pointer left, to read or scroll its help).
     help_at: Option<egui::Rect>,
-    /// What each row says to a screen reader, worked out once per row while the offer is the same
-    /// (`rows`). Shared, not copied, with each copy of the box's state (`load` clones it every
-    /// frame): a row worked out copies it at most once in that frame.
+    /// What each row says to a screen reader, worked out once per row while the offer and what it's
+    /// read from (`said`) are the same (`rows`). Shared, not copied, with each copy of the box's
+    /// state (`load` clones it every frame): a row worked out copies it at most once in that frame.
     described: Arc<HashMap<usize, Option<String>>>,
+    /// What `described` was read from (`List::show`'s `said`).
+    said: u64,
     /// Page Up (-1) or Page Down (1) pressed for the help, not yet applied (`rows`).
     page: i32,
     /// How far the help's box scrolled at most last frame: a page down stops there.
@@ -1753,6 +1764,7 @@ mod tests {
                         visible,
                         |_| Some(offer),
                         |_, _| None,
+                        |_| 0,
                         |_, _| None,
                         |ui, _, item, width| shown(ui, item, width),
                     );
@@ -1810,7 +1822,7 @@ mod tests {
                 let visible = ui.clip_rect();
                 let offer = Words(vec!["one".into(), "two".into()]);
                 let describe = |_: &Words, item: &str| Some(format!("about {item}"));
-                list.show(ui, egui::Id::unique("list"), &out, visible, |_| Some(offer), |_, _| None, describe, |_, _, _, _| {});
+                list.show(ui, egui::Id::unique("list"), &out, visible, |_| Some(offer), |_, _| None, |_| 0, describe, |_, _, _, _| {});
             },
             super::List::default(),
         );
@@ -1824,6 +1836,42 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().open.is_none(), "closed");
         assert!(h.state().scroll.described.is_empty(), "gone with the list");
+    }
+
+    /// What the rows said is kept while `said` gives the same key, and read again when it gives
+    /// another (what they're read from changed), with the list still open.
+    #[test]
+    fn a_list_s_descriptions_are_read_again_when_their_key_changes() {
+        use std::sync::Arc;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
+            |ui, (list, key): &mut (super::List<Words>, u64)| {
+                let id = egui::Id::unique("box");
+                let _ = list.keys(ui, id);
+                let label = ui.label("Expression");
+                let filter = egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true };
+                let mut text = String::new();
+                let out = egui::TextEdit::singleline(&mut text).id(id).event_filter(filter).show(ui);
+                let _ = out.response.response.clone().labelled_by(label.id);
+                if !out.response.response.has_focus() {
+                    out.response.response.request_focus();
+                }
+                let visible = ui.clip_rect();
+                let offer = Words(vec!["one".into(), "two".into()]);
+                let k = *key;
+                let describe = move |_: &Words, item: &str| Some(format!("{item} {k}"));
+                list.show(ui, egui::Id::unique("list"), &out, visible, |_| Some(offer), |_, _| None, |_| k, describe, |_, _, _, _| {});
+            },
+            (super::List::default(), 1),
+        );
+        h.run_steps(3);
+        let first = Arc::clone(&h.state().0.scroll.described);
+        assert_eq!(first.get(&0), Some(&Some("one 1".to_string())));
+        h.run_steps(2);
+        assert!(Arc::ptr_eq(&first, &h.state().0.scroll.described), "the same key: kept");
+        h.state_mut().1 = 2;
+        h.run_steps(2);
+        assert!(h.state().0.open.is_some(), "still open");
+        assert_eq!(h.state().0.scroll.described.get(&0), Some(&Some("one 2".to_string())), "read again");
     }
 
     /// A page pressed on the frame a list closes (Escape, Enter, a click on a row with another
@@ -1861,6 +1909,7 @@ mod tests {
                         visible,
                         |_| Some(offer),
                         |_, _| None,
+                        |_| 0,
                         |_, _| None,
                         |ui, _, item, width| {
                             ui.set_max_width(width);
@@ -1956,7 +2005,17 @@ mod tests {
                     out.response.response.request_focus();
                     let visible = ui.clip_rect();
                     let offer = Words(offered.clone());
-                    list.show(ui, egui::Id::unique("list"), &out, visible, |_| Some(offer), |_, _| None, |_, _| None, |_, _, _, _| {});
+                    list.show(
+                        ui,
+                        egui::Id::unique("list"),
+                        &out,
+                        visible,
+                        |_| Some(offer),
+                        |_, _| None,
+                        |_| 0,
+                        |_, _| None,
+                        |_, _, _, _| {},
+                    );
                 },
                 (String::new(), super::List::default()),
             );

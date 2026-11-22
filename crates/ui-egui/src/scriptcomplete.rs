@@ -1506,9 +1506,24 @@ pub fn show(
         }
         Some(of) => item_help(session, of, item).map(|(text, about)| crate::completion::spoken(&text, about.as_deref())),
     };
-    let clicked = state.list.show(ui, box_id.with("complete_list"), out, visible, work, icon, describe, draw);
+    let said = |offer: &Offer| rows_key(session, offer);
+    let clicked = state.list.show(ui, box_id.with("complete_list"), out, visible, work, icon, said, describe, draw);
     store(ui, box_id, state);
     clicked
+}
+
+/// A key of what the rows of `offer` say is read from (`List::show`'s `said`): the project, as the
+/// offer's own key has it (`show`'s `with`: plugins, the session's revision, the active layer), and
+/// for a list of layers each one's count of features, which a streamed layer's read for the view
+/// changes with no command, so with no revision.
+fn rows_key(session: &rustgis_engine::Session, offer: &Offer) -> u64 {
+    let mut key = egui::util::hash((rustgis_engine::plugins::revision(), session.revision, session.active_layer));
+    if matches!(offer.of, Some(Of::Layers)) {
+        for l in &session.map().layers {
+            key = egui::util::hash((key, l.id, l.dataset.features.len()));
+        }
+    }
+    key
 }
 
 /// After the list: with no list open, the help of the command whose parameters the cursor is in
@@ -1815,6 +1830,74 @@ mod tests {
         let (label, said) = read(&h).expect("a row named");
         assert_eq!(label, "pop_est");
         assert!(!said.is_empty(), "the field's type");
+    }
+
+    /// The key of what a list's rows say (`rows_key`): a layer list's moves with a layer's count
+    /// of features, read with no command (a streamed layer's view); a command list's doesn't, so its
+    /// rows aren't read again; every list's moves with the session's revision (a command run).
+    #[test]
+    fn a_list_s_rows_are_keyed_by_what_they_read() {
+        use super::{Of, Offer, rows_key};
+        let mut app = crate::RustGisApp::with_sample();
+        let offer = |of: Of| Offer { start: 0, end: 0, items: Vec::new(), of: Some(of) };
+        let (layers, commands, tables) = (offer(Of::Layers), offer(Of::CommandIds), offer(Of::Tables));
+        let s = &mut app.session;
+        let was = [rows_key(s, &layers), rows_key(s, &commands), rows_key(s, &tables)];
+        let id = s.map().layer_by_name("Cities").map(|l| l.id);
+        if let Some(l) = id.and_then(|id| s.map_mut().layer_mut(id)) {
+            l.dataset.features.pop();
+        }
+        assert_ne!(rows_key(s, &layers), was[0], "a layer's count, with no command");
+        assert_eq!(rows_key(s, &commands), was[1], "a command list: no count in its key");
+        assert_eq!(rows_key(s, &tables), was[2]);
+        s.revision = s.revision.wrapping_add(1);
+        assert_ne!(rows_key(s, &tables), was[2], "a command run");
+        assert_ne!(rows_key(s, &commands), was[1]);
+    }
+
+    /// A layer's count of features changed while its list is open: the row says the new count, as
+    /// its help does, after a command and after a read with no command (`rows_key`).
+    #[test]
+    fn a_row_says_a_layer_s_new_count_while_its_list_is_open() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let said = |h: &egui_kittest::Harness<'_, crate::RustGisApp>| {
+            let node = h.get_by_role(egui::accesskit::Role::MultilineTextInput);
+            node.accesskit_node().active_descendant().and_then(|row| Some((row.label()?, row.description()?)))
+        };
+        let count = |h: &egui_kittest::Harness<'_, crate::RustGisApp>| {
+            h.state().session.map().layer_by_name("Cities").map_or(0, |l| l.dataset.features.len())
+        };
+        let mut h = pane();
+        type_in(&mut h, r#"labels.style {"layer": "Citi"#);
+        let (label, before) = said(&h).expect("a row named");
+        assert_eq!(label, "Cities");
+        let n = count(&h);
+        assert!(before.contains(&format!(" {n} features")), "{before}");
+        // Some cities deleted as the app does it, by commands (which move the session's revision).
+        let session = &mut h.state_mut().session;
+        let revision = session.revision;
+        let ran = [
+            ("select.byAttributes", serde_json::json!({"layer": "Cities", "where": "pop_max > 10000000"})),
+            ("edit.enable", serde_json::json!({"on": true})),
+            ("edit.delete", serde_json::json!({})),
+        ]
+        .into_iter()
+        .all(|(id, params)| session.run(id, &params).is_ok());
+        assert!(ran && session.revision != revision, "deleted by commands");
+        h.run();
+        let left = count(&h);
+        assert!(left < n, "some deleted: {left} of {n}");
+        let (_, after) = said(&h).expect("still open");
+        assert!(after.contains(&format!(" {left} features")) && !after.contains(&format!(" {n} features")), "the new count: {after}");
+        // A streamed layer's read as the map is drawn: no command, the revision kept.
+        let session = &mut h.state_mut().session;
+        let id = session.map().layer_by_name("Cities").map(|l| l.id);
+        if let Some(l) = id.and_then(|id| session.map_mut().layer_mut(id)) {
+            l.dataset.features.pop();
+        }
+        h.run();
+        let (_, read) = said(&h).expect("still open");
+        assert!(read.contains(&format!(" {} features", left - 1)), "the count read with the view: {read}");
     }
 
     /// In an expression's string (#1240) the list holds the line's layer's fields, Enter puts the

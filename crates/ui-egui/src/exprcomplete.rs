@@ -346,7 +346,8 @@ pub(crate) fn expr_edit_lines(
     let icon = |offer: &Offer, item: &str| names_field(offer, item).then_some("field");
     let describe = |offer: &Offer, item: &str| describe_item(offer, item, ds);
     let draw = |ui: &mut Ui, offer: &Offer, item: &str, width: f32| draw_item(ui, offer, item, ds, width);
-    let clicked = state.list.show(ui, id.with("expr_list"), &out, visible, work, icon, describe, draw);
+    // What a row says is read from the offer, which holds its fields (`fields_key`): no other key.
+    let clicked = state.list.show(ui, id.with("expr_list"), &out, visible, work, icon, |_| 0, describe, draw);
     // The call the cursor is in, kept with the offer `work` worked out for the list this frame
     // (it works one out for the cursor whenever the box has the focus). Shown while no list is open: one open only hides
     // it, so what Escape closed stays closed until the cursor leaves the call.

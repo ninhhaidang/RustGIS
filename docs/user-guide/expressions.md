@@ -24,15 +24,15 @@ area('ac') BETWEEN 1 AND 5 AND zoning = 'R-1'
 ```
 
 In Select By Attributes, the Layer Properties Query tab and a label class's SQL query, the
-**Functions** and **Variables** menus list the language's catalog in the same list the
-expression box suggests from. The highlighted item's help shows beside the list (below it in a
-narrow window), or the help of the item under the pointer: a function's signature, description
-and example, or a variable's description. The list shows ten items at a time and scrolls to the
-rest. Up and Down move the highlight, Enter or a click appends the item to the expression, and
-Escape, Tab or a click elsewhere closes the list; from the keyboard, Tab to the menu and press
-Enter or Space to open it (Space again closes it). While the list is open, shortcuts with Ctrl
-(⌘) still work. A function opens its argument list, or inserts the complete call when it takes
-no arguments.
+**Functions** and **Variables** menus list the language's catalog in the same list the expression
+box suggests from. The highlighted item's help shows beside the list (below it in a narrow window),
+or the help of the item under the pointer: a function's signature, description and example, or a
+variable's description. The list shows ten items at a time and scrolls to the rest. Up and Down move
+the highlight, Page Up and Page Down scroll a help longer than its box, Enter or a click appends the
+item to the expression, and Escape, Tab or a click elsewhere closes the list; from the keyboard, Tab
+to the menu and press Enter or Space to open it (Space again closes it). While the list is open,
+shortcuts with Ctrl (⌘) still work. A function opens its argument list, or inserts the complete call
+when it takes no arguments.
 
 ## Grammar
 
@@ -221,9 +221,11 @@ As the expression is typed, a list under the cursor suggests what can go there: 
 (quoted when their name needs it: `"Pop Est"`), the functions, the variables and the keywords
 that start with what's typed, each with its help beside (a function's signature, description
 and example; a field's type). Ctrl+Space opens it with nothing typed (on macOS, where Ctrl+Space
-may switch the input source, type the first letter instead). ↑/↓ move through it, Enter
-or Tab take the highlighted item (Enter doesn't calculate while the list is open) and Escape
-closes it. Inside a quoted field name (`"Pop`) only fields are suggested. Inside a text compared
+may switch the input source, type the first letter instead). ↑/↓ move through it, Page Up and
+Page Down scroll a help longer than its box, Enter or Tab take the highlighted item (Enter
+doesn't calculate while the list is open) and Escape closes it. With a screen reader, each item
+the highlight moves to is read with a short form of its help. Inside a quoted field name
+(`"Pop`) only fields are suggested. Inside a text compared
 with a text, date or date-time field (`name = 'Pa`, `name LIKE '`, `name IN ('Lima', '`), the list
 suggests that field's values that start with what's typed, and the one taken is written with its
 quotes (`'Paris'`, a `'` in it doubled), over the closing quote. Where a value goes with nothing

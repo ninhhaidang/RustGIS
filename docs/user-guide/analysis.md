@@ -1785,7 +1785,9 @@ opens a list of the commands it starts, under the cursor: ↑/↓ to move, Enter
 Escape to close, or a click; Ctrl+Space opens it with nothing typed yet (on an empty line, every
 command), or again after Escape closed it (on macOS, where Ctrl+Space may switch the input source,
 type the first letter instead). Beside it, the highlighted command's help: its signature (keys with `?`
-may be left out), its name, its parameters one per line, and where it sits in the interface.
+may be left out), its name, its parameters one per line, and where it sits in the interface. Page Up
+and Page Down scroll a help longer than its box. With a screen reader, each entry the highlight
+moves to is read with a short form of its help.
 Accepting a command on a line of its own adds its braces: with its required keys ready for their
 values, the cursor at the first (`map.goToXY {"lon": , "lat": }`), or empty with the cursor inside
 when every key may be left out; a command with no parameters gets none, and a line that has
