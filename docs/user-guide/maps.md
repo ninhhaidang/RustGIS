@@ -819,8 +819,8 @@ World, Sphere and Africa Sinusoidal (`ESRI:54008`, `53008`, `102011`) can be the
 
 ### Finding a coordinate system
 
-The coordinate system boxes of the Coordinate System dialog, Define Projection, the Shapefile, DXF
-and CSV imports, the measured grid, **Settings › Start-up › Projection** and the analysis
+The coordinate system boxes of the Coordinate System dialog, Project Properties, Define Projection,
+the Shapefile, DXF and CSV imports, the measured grid, **Settings › Start-up › Projection** and the analysis
 environment search as you type. A box finds a system by its code (`3035`, `EPSG:3035`,
 `esri:102033`), by words of its name (`lv95`, `utm 32n wgs`), by its projection method (`albers`,
 `oblique mercator`) or by its area of use (`switzerland`), and lists the matches under the box: the
@@ -841,6 +841,31 @@ or ↓ chose a row. A box for the map, the measured grid or the analysis environ
 systems only. Text the list doesn't hold, such as WKT or a PROJ string, is used as typed. A system
 is remembered once it is applied or its import starts; **Clear** beside **Recently used** in the
 Coordinate System dialog forgets them all.
+
+### The project's coordinate system
+
+A project can have a coordinate system of its own, set in **Project Properties** (the project
+page's **Project Properties…** button, or `project.coordinateSystem` from the command line, Python
+or the Assistant). New maps are drawn in it, starting where the active map is looking, and new
+empty layers from **Layer Templates** hold their coordinates in it, so features drawn in them are
+stored in its units. Maps and layers already in the project keep their own systems. A system in
+degrees, or one without an EPSG or ESRI code, can't be a map's projection: new maps then stay in
+Web Mercator, and RustGIS says why. A project without one works as before.
+
+**While it has none, take it from the first layer added** gives the project the system of the next
+layer added from data (**Home › Add**: a file, a URL, a service, a database; or a map imported, an
+offline map opened, layers pasted) that says what system
+it is in (a raster's, or a file's such as a GeoPackage's or a Shapefile's `.prj`), and says so; Undo
+takes it back with the layer. A tool's output gives none. A layer that names no system, taken for
+longitude/latitude, gives none, nor does a raster read as WGS 84 because its coordinates look like
+degrees; one that names WGS 84 or another system in degrees gives that, and new maps then stay in
+Web Mercator. A raster read in place gives its system once its pixels have arrived, at the next
+change to the project. The setting and the option are saved with the project;
+an older RustGIS refuses a project that has them (it needs `project-crs`) rather than saving it
+again without them.
+
+In the **Coordinate System** dialog, **Use the project's** and **Use the first layer's** pick the
+project's system or that of the map's first layer with one, and Apply draws the map in it.
 
 ## Globe
 

@@ -1795,6 +1795,7 @@ pub(super) fn read_limited_with_nodata(
     r.copyright = copyright.filter(|c| !c.is_empty());
     r.lost.extend(copyright_lost);
     r.lost.extend(super::planetary::note_of(crs));
+    r.crs_assumed = assumed.is_some();
     r.lost.extend(assumed);
     r.lost.extend(turned);
     r.lost.extend(table_lost);

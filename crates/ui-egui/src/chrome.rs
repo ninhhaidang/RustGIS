@@ -1106,6 +1106,7 @@ fn search_action(id: &str) -> Option<SearchAction> {
         "map.import" => OpenItem("map"),
         "map.save" => SaveItem("map"),
         "map.package" => SaveItem("mapPackage"),
+        "project.coordinateSystem" => Dialog("projectProperties"),
         "map.rename" => Dialog("renameMap"),
         "map.goToXY" => Dialog("goToXY"),
         "map.exportOrbit" => Dialog("exportOrbit"),

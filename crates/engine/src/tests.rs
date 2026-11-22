@@ -33,6 +33,8 @@ mod write_notices;
 
 #[path = "tests/held_layers.rs"]
 mod held_layers;
+#[path = "tests/project_crs.rs"]
+mod project_crs;
 
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;

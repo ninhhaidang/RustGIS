@@ -1331,6 +1331,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A file added on a thread gives the project its coordinate system when the project takes
+    /// it from the first layer added: the read lands through the same seam as a command.
+    #[test]
+    fn a_file_added_on_a_thread_gives_the_project_its_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bern.shp");
+        let mut w = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        w.run("project.coordinateSystem", &json!({"crs": "EPSG:2056"})).unwrap();
+        w.run("layer.template", &json!({"template": "points", "name": "Bern"})).unwrap();
+        w.map_mut().editing.settings.enabled = true;
+        w.run("edit.addFeature", &json!({"layer": "Bern", "geometry": {"type": "Point", "coordinates": [7.43863, 46.95108]}})).unwrap();
+        w.run("share.exportLayer", &json!({"layer": "Bern", "path": path})).unwrap();
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.reads_off_frame = true;
+        app.run("project.coordinateSystem", json!({"fromFirstLayer": true})).unwrap();
+        assert_eq!(crate::layerchooser::add_file(&mut app, &path.display().to_string()).unwrap()["started"], "Add Data");
+        landed(&mut app, 60);
+        assert_eq!(app.session.map().layers.len(), 1);
+        assert_eq!(app.session.project.coordinate_system, Some(rustgis_engine::data::raster::Crs::Epsg(2056)));
+        app.run("edit.undo", Value::Null).unwrap();
+        assert_eq!(app.session.project.coordinate_system, None, "Undo takes it back with the layer");
+    }
+
     /// Scripted Delimited Text picks join the same background queue as ordinary file picks.
     #[test]
     fn scripted_delimited_picks_run_in_background() {

@@ -929,6 +929,21 @@
       "minimum": 0,
       "type": "integer"
     },
+    "coordinate_system": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Crs"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The project's coordinate system (#2032 C3a): new maps are drawn in it, when a map can be,\nand new empty layers hold their coordinates in it. Maps and layers already in the project\nkeep theirs. `None`: new maps in Web Mercator and new layers in longitude/latitude, as\nbefore there was one. Saved with [`PROJECT_CRS`], which an older reader refuses rather\nthan saving the project again without it."
+    },
+    "crs_from_first_layer": {
+      "description": "While the project has no coordinate system, the first layer added with one of its own\ngives it its system ([`Project::coordinate_system`]). Off by default.",
+      "type": "boolean"
+    },
     "data_stores": {
       "default": [],
       "items": {
@@ -1114,7 +1129,8 @@
           "layout-frame-border",
           "native-coordinates",
           "layout-legend-text",
-          "label-guide"
+          "label-guide",
+          "project-crs"
         ],
         "type": "string"
       },
@@ -1214,7 +1230,8 @@
     "layout-frame-border",
     "native-coordinates",
     "layout-legend-text",
-    "label-guide"
+    "label-guide",
+    "project-crs"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

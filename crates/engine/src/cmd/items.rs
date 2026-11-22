@@ -940,7 +940,15 @@ fn layer_template(s: &mut Session, p: &Value) -> CmdResult {
         o => return Err(format!("unknown layer template '{o}'")),
     };
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(title);
-    let id = super::layer::add_dataset(s, Dataset::new(name, gt, fields));
+    let mut ds = Dataset::new(name, gt, fields);
+    // Held in the project's coordinate system, when it has one (#2032 C3a).
+    // One that doesn't convert to longitude/latitude, which the map draws through, is said.
+    if let Some(crs) = s.project.coordinate_system
+        && let Err(e) = ds.hold_as(crs, Some(crs))
+    {
+        s.notify(format!("Layer '{name}' is held in longitude/latitude, not the project's coordinate system: {e}"), false);
+    }
+    let id = super::layer::add_dataset(s, ds);
     if let Some(l) = s.map_mut().layer_mut(id) {
         l.labels.default.field = "name".into();
     }

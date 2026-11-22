@@ -2070,8 +2070,10 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
     // Unread proj: values stay visible beside the system used, or in the error below.
     let found = crs_of(store, a);
     let unread = if found.is_none() { unread_proj(a) } else { None };
+    let mut crs_assumed = false;
     let (crs, crs_notes): (Option<Crs>, Vec<String>) = if lonlat {
         let assumed = lonlat_assumption(found.as_ref().map(|(c, _)| *c), crs);
+        crs_assumed = assumed.is_some();
         let (actual, note) = found.unwrap_or((Crs::LonLat, None));
         (Some(if actual.is_geographic() { actual } else { Crs::LonLat }), note.into_iter().chain(assumed).collect())
     } else {
@@ -2117,6 +2119,7 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
     if rounded > 0 {
         r.rounded = vec![rounded];
     }
+    r.crs_assumed = crs_assumed;
     r.lost.extend(crs_notes);
     r.lost.extend(unread);
     // A transform the coordinates stood in for is said, not dropped without a word.

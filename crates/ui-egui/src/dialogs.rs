@@ -13,6 +13,9 @@ use crate::{RustGisApp, i18n};
 
 #[derive(Default)]
 pub struct Dialogs {
+    /// Project Properties: the system text last read, and what was said of it (and whether that is
+    /// an error); empty when the dialog opens, so each opening reads its text once.
+    pub project_crs_said: Option<(String, Option<(String, bool)>)>,
     /// The layer captured when Define Projection opens; changing selection must not retarget it.
     pub projection_layer: Option<u32>,
     /// Map-local layer IDs require the dialog to retain its original project and map as well.
@@ -147,6 +150,7 @@ impl Dialogs {
             "renameServiceGroup" => "renameServiceGroup",
             "renameGroup" => "renameGroup",
             "coordinateSystem" => "coordinateSystem",
+            "projectProperties" => "projectProperties",
             "defineProjection" => "defineProjection",
             "addShapefile" => "addShapefile",
             "camera" => "camera",
@@ -209,6 +213,10 @@ impl Dialogs {
                 // An EPSG code goes in the code box; presets are picked from the list.
                 let is_code = self.text.to_ascii_lowercase().starts_with("epsg");
                 self.a = if is_code { self.text.trim_start_matches(|c: char| !c.is_ascii_digit()).to_string() } else { String::new() };
+            }
+            "projectProperties" => {
+                self.text = s.project.coordinate_system.map(rustgis_engine::cmd::project::crs_text).unwrap_or_default();
+                self.flag = s.project.crs_from_first_layer;
             }
             "addDxf" => {
                 // A drawing never says its coordinate system: the map's, where it is drawn.
@@ -327,6 +335,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         "addField" => "Add Field",
         "calculateField" => "Calculate Field",
         "coordinateSystem" => "Coordinate System",
+        "projectProperties" => "Project Properties",
         "defineProjection" => "Define Projection",
         "addShapefile" => "Import Shapefile with Projection",
         "camera" => "Camera",
@@ -536,6 +545,58 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                     let crs = app.dialogs.text.trim().to_string();
                     app.run("layer.defineProjection", json!({"layer": id, "crs": crs}))?;
                     app.remember_crs_if_listed(&crs);
+                    Ok(())
+                });
+            }
+            "projectProperties" => {
+                ui.label(egui::RichText::new(&app.session.project.name).strong());
+                ui.label(tl!("New maps are drawn in the project's coordinate system, and new empty layers hold their coordinates in it. Maps and layers already in the project keep theirs."));
+                let input_label = ui.label(tl!("Coordinate system"));
+                let recent = app.ui.recent_crs.clone();
+                let width = ui.available_width();
+                let (r, taken) = crate::crspicker::crs_box(
+                    ui,
+                    "projectProperties",
+                    &mut app.dialogs.text,
+                    &recent,
+                    crate::crspicker::Offer::All,
+                    width,
+                    tl!("None: new maps in Web Mercator"),
+                    &t,
+                );
+                let r = r.labelled_by(input_label.id);
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, tl!("Coordinate system")));
+                // Read once the text is taken (the box left, a row picked, or the dialog opened on
+                // it), not as it is typed: a WKT or PROJ definition costs a conversion to build,
+                // and each one read takes a place in the run's table of typed systems for good.
+                let typed = app.dialogs.text.trim().to_string();
+                let cached = app.dialogs.project_crs_said.clone();
+                let committed = taken || r.lost_focus() || cached.is_none();
+                let said = match cached {
+                    Some((text, said)) if text == typed => said,
+                    _ if !committed => None,
+                    _ => {
+                        let said = match (!typed.is_empty()).then(|| rustgis_engine::data::raster::Crs::parse(&typed)) {
+                            Some(Ok(crs)) => rustgis_engine::cmd::navigate::map_projection_for(crs)
+                                .err()
+                                .map(|why| (i18n::fmt("New maps stay in Web Mercator: {why}", &[("why", &why)]), false)),
+                            Some(Err(e)) => Some((e, true)),
+                            None => None,
+                        };
+                        app.dialogs.project_crs_said = Some((typed.clone(), said.clone()));
+                        said
+                    }
+                };
+                if let Some((text, error)) = said {
+                    ui.label(egui::RichText::new(text).color(if error { t.red } else { t.text_dim }));
+                }
+                ui.checkbox(&mut app.dialogs.flag, tl!("While it has none, take it from the first layer added"));
+                close = buttons(app, ui, "Apply", |app| {
+                    let crs = app.dialogs.text.trim().to_string();
+                    app.run("project.coordinateSystem", json!({"crs": crs, "fromFirstLayer": app.dialogs.flag}))?;
+                    if !crs.is_empty() {
+                        app.remember_crs_if_listed(&crs);
+                    }
                     Ok(())
                 });
             }
@@ -2781,6 +2842,40 @@ fn coordinate_system(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) -> boo
             });
         });
     });
+    // The project's system and the first layer's with one of its own, each picked as a row of the
+    // list is (Apply draws the map in it), and off with why when a map can't be drawn in it.
+    ui.horizontal_wrapped(|ui| {
+        use rustgis_engine::cmd::navigate::map_projection_for;
+        let project = app.session.project.coordinate_system;
+        let first =
+            app.session.map().layers.iter().find_map(|l| rustgis_engine::cmd::project::layer_system(l).map(|c| (c, l.name.clone())));
+        let offers = [
+            (
+                tl!("Use the project's"),
+                project.ok_or_else(|| tl!("The project has no coordinate system (Project Properties)").to_string()),
+                "useProject",
+            ),
+            (
+                tl!("Use the first layer's"),
+                first.map(|(c, _)| c).ok_or_else(|| tl!("No layer of the map has a coordinate system of its own").to_string()),
+                "useFirstLayer",
+            ),
+        ];
+        for (label, crs, _) in offers {
+            let projection = crs.and_then(|c| map_projection_for(c).map(|p| (c, p)));
+            let r = ui.add_enabled(projection.is_ok(), egui::Button::new(label));
+            let r = match &projection {
+                Ok((c, _)) => r.on_hover_text(c.label()),
+                Err(why) => r.on_disabled_hover_text(why.as_str()),
+            };
+            if r.clicked()
+                && let Ok((_, p)) = projection
+            {
+                app.dialogs.text = p.code();
+                app.dialogs.a.clear();
+            }
+        }
+    });
     ui.separator();
     let chosen = app.dialogs.text.clone();
     let check = rustgis_engine::map::Projection::from_code(&chosen);
@@ -3535,6 +3630,45 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Button, &first).is_none(), "Escape closed it");
         assert_eq!(h.state().dialogs.open, Some("selectByAttributes"), "not the dialog");
         assert_eq!(h.state().session.tool, rustgis_engine::Tool::ZoomIn, "nor switched the tool");
+    }
+
+    /// Project Properties sets the project's coordinate system and its first-layer option through
+    /// `project.coordinateSystem`, and opens on what the project has; the map's Coordinate System
+    /// dialog then offers the project's system, and the first layer's once one has a system.
+    #[test]
+    fn project_properties_set_the_system_the_map_dialog_offers() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.dialog", json!({"name": "projectProperties"})).unwrap();
+        assert_eq!((app.dialogs.text.as_str(), app.dialogs.flag), ("", false));
+        app.dialogs.text = "EPSG:2056".into();
+        app.dialogs.flag = true;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1000.0)).with_max_steps(64).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::Button, "Apply").click();
+        h.run_steps(4);
+        let p = &h.state().session.project;
+        assert_eq!((p.coordinate_system, p.crs_from_first_layer), (Some(rustgis_engine::data::raster::Crs::Epsg(2056)), true));
+        assert_eq!(h.state().dialogs.open, None, "applied and closed");
+        h.state_mut().run("ui.dialog", json!({"name": "projectProperties"})).unwrap();
+        assert_eq!((h.state().dialogs.text.as_str(), h.state().dialogs.flag), ("EPSG:2056", true), "opens on what it has");
+        h.state_mut().dialogs.open = None;
+        h.state_mut().run("ui.dialog", json!({"name": "coordinateSystem"})).unwrap();
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::Button, "Use the project's").click();
+        h.run_steps(2);
+        assert_eq!(h.state().dialogs.text, "EPSG:2056");
+        h.get_by_role_and_label(Role::Button, "Apply").click();
+        h.run_steps(4);
+        assert_eq!(h.state().session.map().projection.code(), "EPSG:2056");
     }
 
     /// In the app, Escape in a coordinate system box closes its list, not the dialog, and the

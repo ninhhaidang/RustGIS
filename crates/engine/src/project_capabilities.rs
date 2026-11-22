@@ -43,6 +43,9 @@ impl Project {
         if !required.contains(&super::NATIVE_COORDINATES) && self.tables.iter().any(|t| held_natively(&t.dataset)) {
             required.push(super::NATIVE_COORDINATES);
         }
+        if self.coordinate_system.is_some() || self.crs_from_first_layer {
+            required.push(super::PROJECT_CRS);
+        }
         // Saved symbology keeps its images too.
         if !required.contains(&"picture-markers") && self.styles.iter().any(|s| s.renderer.has_picture_markers()) {
             required.push("picture-markers");
@@ -1396,6 +1399,27 @@ mod tests {
         let mut unknown = saved;
         unknown["requires"] = json!(["zarr-window", "future-zarr"]);
         assert!(Project::from_json(&unknown.to_string()).unwrap_err().contains("future-zarr"));
+    }
+
+    /// A project's coordinate system and its first-layer option (#2032 C3a) are required by name:
+    /// an older reader would save the project again without them. A project with neither needs
+    /// nothing, and one listing a capability this release lacks is still refused by name.
+    #[test]
+    fn a_project_coordinate_system_is_required_where_it_is_saved() {
+        let text = include_str!("../../../schema/fixtures/project_crs.rgis");
+        let mut p = Project::from_json(text).unwrap();
+        assert_eq!(p.coordinate_system, Some(rustgis_data::raster::Crs::Epsg(2056)));
+        assert!(p.crs_from_first_layer);
+        let saved = serde_json::to_value(&p).unwrap();
+        assert_eq!(saved["requires"], json!(["project-crs"]));
+        assert_eq!(saved["coordinate_system"], json!({"Epsg": 2056}));
+        p.coordinate_system = None;
+        p.crs_from_first_layer = false;
+        let clean = serde_json::to_value(&p).unwrap();
+        assert!(clean.get("requires").is_none() && clean.get("coordinate_system").is_none() && clean.get("crs_from_first_layer").is_none());
+        let mut newer: Value = serde_json::from_str(text).unwrap();
+        newer["requires"] = json!(["project-crs", "future-crs"]);
+        assert!(Project::from_json(&newer.to_string()).unwrap_err().contains("future-crs"));
     }
 
     /// A blank basemap's paper colour (#2532) is required by name in a project and a map file: an

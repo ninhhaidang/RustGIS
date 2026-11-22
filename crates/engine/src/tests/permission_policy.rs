@@ -2154,3 +2154,28 @@ fn permission_policy_rollback_keeps_retired_url_requests_consumed() {
     assert_eq!(addresses, ["https://rollback.invalid/untouched.csv"], "rollback cannot revive retired authority");
     assert_eq!(s.notices_since(mark).iter().filter(|n| n.text.contains("revoked before it started")).count(), 1);
 }
+
+/// A script sent as a call (the MCP vehicle, not `script.run`) gives the project its coordinate
+/// system at the line that adds the first layer with one, as a script run by itself does.
+#[test]
+fn permission_policy_a_called_script_gives_the_project_its_system() {
+    let dir = std::env::temp_dir().join(format!("rustgis-called-script-crs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bern.gpkg");
+    let mut w = Session::new(Project::default());
+    w.run("project.coordinateSystem", &json!({"crs": "EPSG:2056"})).unwrap();
+    w.run("layer.template", &json!({"template": "points", "name": "Bern"})).unwrap();
+    w.map_mut().editing.settings.enabled = true;
+    w.run("edit.addFeature", &json!({"layer": "Bern", "geometry": {"type": "Point", "coordinates": [7.43863, 46.95108]}})).unwrap();
+    w.run("share.exportLayer", &json!({"layer": "Bern", "path": path})).unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("project.coordinateSystem", &json!({"fromFirstLayer": true})).unwrap();
+    let (scope, _) = assistant(26670);
+    let call = Call::script(&format!("layer.addData {}\nmap.new {}", json!({"path": path}), json!({"name": "After"})));
+    let approved = pending(&s, &scope, &call);
+    s.run_permitted(scope, approved.allow(), &call).unwrap();
+    assert_eq!(s.project.coordinate_system, Some(rustgis_data::raster::Crs::Epsg(2056)));
+    assert_eq!(s.map().projection.code(), "EPSG:2056");
+    std::fs::remove_dir_all(&dir).ok();
+}

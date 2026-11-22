@@ -726,6 +726,11 @@ pub struct Raster {
     /// `false` for a scan (a TIFF with no GeoTIFF tags, a PNG, a JPEG): `transform` is then only
     /// a stand-in until the picture is placed or georeferenced, and says nothing about the ground.
     pub georeferenced: bool,
+    /// Whether `crs` is WGS 84 assumed for a file that doesn't say its system, its coordinates
+    /// looking like degrees (an ASCII grid without a `.prj`, a GeoTIFF without one), or says only
+    /// that it is in degrees (a GeoTIFF's geographic model with no EPSG code, its datum unread):
+    /// it names no system to give (a project taking its system from the first layer added).
+    pub crs_assumed: bool,
     /// What reading it left out or cut (a colour table, names), one line a kind with a count,
     /// for whoever adds it to the map to say (AGENTS.md, Never silent). Empty when nothing was
     /// left out.
@@ -922,6 +927,7 @@ impl Raster {
             step: 1,
             posts: false,
             georeferenced: true,
+            crs_assumed: false,
             lost: Vec::new(),
             rounded: Vec::new(),
             rounded_some: Vec::new(),
@@ -1544,6 +1550,7 @@ pub fn read_converted(path: &Path, c: &gdal::Converted) -> Result<Raster> {
     // assumed as if it had been the file's own): said with the raster's other losses, whichever way
     // it is read, as a reload says them again.
     if c.assumed_lonlat {
+        r.crs_assumed = true;
         r.lost.push(format!("{} (give \"crs\" if not)", assumed_wgs84_note("it doesn't say its coordinate system")));
     }
     if !c.others.is_empty() {

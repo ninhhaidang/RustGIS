@@ -931,6 +931,7 @@ fn check_prepared_prefix(s: &Session, lines: &[(usize, String, Value)]) -> Resul
 /// A line that makes rows of its own (a layer edit, a layer from a selection) isn't one. Table edits are the
 /// exception: their rows are recorded and taken, so later tools retain their shared input.
 pub(crate) const ON_A_COPY: &[&str] = &[
+    "project.coordinateSystem",
     "edit.enable",
     "edit.setValue",
     "edit.addFeature",

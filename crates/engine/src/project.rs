@@ -107,10 +107,15 @@ pub const CAPABILITIES: &[&str] = &[
     NATIVE_COORDINATES,
     "layout-legend-text",
     "label-guide",
+    PROJECT_CRS,
 ];
 /// A layer or table saved in a coordinate system of its own, not longitude/latitude
 /// (`Dataset::held_in`, #2032 C2d): an older reader would read its coordinates as degrees.
 pub(crate) const NATIVE_COORDINATES: &str = "native-coordinates";
+/// A project with a coordinate system of its own, or taking one from its first layer
+/// (`Project::coordinate_system`, `Project::crs_from_first_layer`, #2032 C3a): an older reader
+/// would save it again without them.
+pub(crate) const PROJECT_CRS: &str = "project-crs";
 /// Independent marker sizes alongside classified point colours (`Layer::size_by`).
 pub(crate) const SIZE_BY_CAPABILITY: &str = "classified-point-size";
 /// The most entries a document's `requires` may list: past it the document is refused without
@@ -386,6 +391,11 @@ pub(crate) fn public_login_params(value: &serde_json::Value) -> Option<serde_jso
 #[serde(remote = "Self")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Project {
+    /// Which layers have been looked at for the project's coordinate system, and which wait for
+    /// their pixels (`crate::cmd::project::take_first_layer_system`): never saved, and kept with
+    /// the project so that Undo and a rolled-back command restore it with the layers.
+    #[serde(skip)]
+    pub(crate) first_layer: FirstLayerSeen,
     /// Read-time adjustments (labels, diagrams, layouts), consumed by the session and never saved.
     #[serde(skip)]
     pub(crate) read_notices: Vec<(ReadPart, NoticeText)>,
@@ -471,6 +481,33 @@ pub struct Project {
     #[serde(default)]
     #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub data_stores: Vec<crate::cmd::sharing::DataStore>,
+    /// The project's coordinate system (#2032 C3a): new maps are drawn in it, when a map can be,
+    /// and new empty layers hold their coordinates in it. Maps and layers already in the project
+    /// keep theirs. `None`: new maps in Web Mercator and new layers in longitude/latitude, as
+    /// before there was one. Saved with [`PROJECT_CRS`], which an older reader refuses rather
+    /// than saving the project again without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_system: Option<rustgis_data::raster::Crs>,
+    /// While the project has no coordinate system, the first layer added with one of its own
+    /// gives it its system ([`Project::coordinate_system`]). Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crs_from_first_layer: bool,
+}
+
+/// The layers a project taking its system from the first layer added has looked at, by instance
+/// id: those looked at (each once, by the innermost step that added it), and rasters added whose
+/// pixels were still to come.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FirstLayerSeen {
+    pub(crate) considered: std::collections::HashSet<u64>,
+    pub(crate) pending: Vec<u64>,
+}
+
+impl FirstLayerSeen {
+    /// The project has a system, or doesn't take one: the rasters waiting count as looked at.
+    pub(crate) fn settle(&mut self) {
+        self.considered.extend(self.pending.drain(..));
+    }
 }
 
 /// A standalone table: a dataset without geometry, under an id that stays with it. Names can
@@ -1126,6 +1163,7 @@ impl Project {
 
     pub fn new(name: impl Into<String>) -> Self {
         Project {
+            first_layer: FirstLayerSeen::default(),
             read_notices: Vec::new(),
             format: FORMAT,
             name: name.into(),
@@ -1154,6 +1192,8 @@ impl Project {
             dl_models: Vec::new(),
             shared: Vec::new(),
             data_stores: Vec::new(),
+            coordinate_system: None,
+            crs_from_first_layer: false,
         }
     }
 
@@ -2458,6 +2498,7 @@ impl Durable for Project {
     /// Offers classified whole fields once, before any live mutation.
     fn prepare(&self, p: &mut Prepare<'_>) {
         let Self {
+            first_layer: _,
             read_notices: _,
             format: _,
             name: _,
@@ -2486,6 +2527,8 @@ impl Durable for Project {
             dl_models: _,
             shared: _,
             data_stores: _,
+            coordinate_system: _,
+            crs_from_first_layer: _,
         } = self;
         for (i, v) in maps.iter().enumerate() {
             p.child(Owner::Map(i), v);

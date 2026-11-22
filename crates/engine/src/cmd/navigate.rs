@@ -1247,11 +1247,46 @@ fn new_map(s: &mut Session, p: &Value) -> CmdResult {
     }
     let mut m = Map::new(name.clone());
     (m.basemap, m.paper) = (s.map().basemap, s.map().paper);
+    // Drawn in the project's coordinate system, where the active map is looking; one a map can't
+    // be drawn in is said, and the map starts in Web Mercator as without one.
+    if let Some(crs) = s.project.coordinate_system {
+        match map_projection_for(crs) {
+            Ok(projection) => {
+                (m.projection, m.camera) = (s.map().projection.clone(), s.map().camera);
+                m.camera.bearing = 0.0;
+                m.camera.pitch = 0.0;
+                m.set_projection(projection);
+            }
+            Err(why) => s.notify(format!("New map '{name}' is drawn in Web Mercator: {why}"), false),
+        }
+    }
     s.project.maps.push(m);
     s.project.active_map = s.project.maps.len() - 1;
     s.active_layer = None;
     s.table_layer = None;
     Ok(json!({"name": name}))
+}
+
+/// The map projection for a coordinate system, or why a map can't be drawn in it: a map is
+/// drawn in Web Mercator, a world projection or a projected system with an EPSG or ESRI code.
+pub fn map_projection_for(crs: rustgis_data::raster::Crs) -> Result<Projection, String> {
+    use rustgis_data::raster::Crs;
+    match crs {
+        Crs::WebMercator => Ok(Projection::WebMercator),
+        c if c.is_geographic() => {
+            Err(format!("the project's coordinate system, {}, is in degrees, and a map is drawn in a projected one", c.label()))
+        }
+        // An ESRI system is a custom one named by its code.
+        c => {
+            let code = match c {
+                Crs::Epsg(_) => c.code(),
+                _ => Some(c.label()).filter(|l| l.starts_with("ESRI:")).ok_or_else(|| {
+                    format!("a map is drawn in a system with an EPSG or ESRI code, and the project's, {}, has none", c.label())
+                })?,
+            };
+            Projection::from_code(&code).map_err(|e| format!("a map can't be drawn in the project's coordinate system, {}: {e}", c.label()))
+        }
+    }
 }
 
 /// Uses the strict map selector for operations that accept map names or null.

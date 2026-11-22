@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "name": "Project coordinate system",
+  "requires": ["project-crs"],
+  "active_map": 0,
+  "maps": [
+    {
+      "name": "Map",
+      "layers": [],
+      "basemap": "Paper",
+      "camera": {"center": {"x": 0, "y": 0}, "res": 30000}
+    }
+  ],
+  "coordinate_system": {"Epsg": 2056},
+  "crs_from_first_layer": true
+}

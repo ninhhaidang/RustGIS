@@ -149,7 +149,15 @@ fn start(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         ui.label(egui::RichText::new(tl!("Layers")).color(t.text_dim));
         ui.label(app.session.project.maps.iter().map(|m| m.layers.len()).sum::<usize>().to_string());
         ui.end_row();
+        ui.label(egui::RichText::new(tl!("Coordinate system")).color(t.text_dim));
+        ui.label(app.session.project.coordinate_system.map_or_else(|| tl!("None").to_string(), |c| c.label()));
+        ui.end_row();
     });
+    ui.add_space(6.0);
+    if ui.button(tl!("Project Properties…")).clicked() {
+        let _ = app.run("ui.dialog", json!({"name": "projectProperties"}));
+        app.ui.backstage = false;
+    }
 }
 
 /// A project choice whose visible title is also its accessible button name.

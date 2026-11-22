@@ -110,6 +110,7 @@ pub(super) fn read_with_nodata(
     let mut r = Raster::new(name, w, h, vec![data], gt, crs, nodata, ColorHint::Gray, "Float32")?;
     r.lost.extend(super::planetary::note_of(crs));
     if assumed {
+        r.crs_assumed = true;
         r.lost.push(super::assumed_wgs84_note(
             crs_issue.unwrap_or("it doesn't say its coordinate system (a .prj file next to an ASCII grid does)"),
         ));

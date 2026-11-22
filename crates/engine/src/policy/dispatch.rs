@@ -968,11 +968,21 @@ impl Session {
                         result
                     })
                 };
+                // Each step that adds data, however it lands (a read ahead, a download, a URL
+                // read in place, a line of a script or task), may add the layer the project takes
+                // its system from, and any step that changes the project may find a raster added
+                // earlier whose pixels have landed: taken then, so the steps after it (a new map)
+                // start in it, and inside the transaction that made it, so Undo and a failure take
+                // it back and the project is unsaved ([`crate::cmd::project::first_layer_watch`]).
+                let first_layer = crate::cmd::project::first_layer_watch(self, &spec);
                 let result = match txn {
                     Txn::Own => self.guarded(spec.label, spec.mutates, run),
                     Txn::Shared if spec.id == "edit.applyShapeConversion" => self.shared_step(&spec, |s| s.savepoint(spec.label, run)),
                     Txn::Shared => self.shared_step(&spec, run),
                 };
+                if let (Ok(_), Some(before)) = (&result, first_layer) {
+                    crate::cmd::project::take_first_layer_system(self, &before);
+                }
                 self.url_completion_landed(spec.id, &params, &result);
                 if result.is_ok() && (spec.mutates || spec.effects.contains(crate::policy::Effect::History)) && spec.id != "data.similar" {
                     // Edits and history moves can replace selections without select::set. History

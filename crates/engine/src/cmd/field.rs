@@ -328,6 +328,8 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
     }
     let mut project = crate::project::Project::new(area.clone());
     project.field_origin = origin;
+    // New layers made in the field are held in the home project's system, as at home.
+    (project.coordinate_system, project.crs_from_first_layer) = (s.project.coordinate_system, s.project.crs_from_first_layer);
     // The package has no home offline areas and carries its association in field_origin.
     map.offline_area_id = None;
     let mut copied = Vec::new();
