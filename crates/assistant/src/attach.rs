@@ -4,7 +4,8 @@
 //! upright, drawn smaller when it is larger than models read, and encoded again, which leaves out
 //! whatever the file carried besides its pixels (a photo's location among them).
 //!
-//! Plain functions without I/O, as the rest of the crate: the front end reads the file.
+//! Plain functions without I/O, but for [`read`] (native only), the one capped file read the
+//! desktop and the command line share; the browser and the phone read files their own way.
 
 use std::io::Cursor;
 

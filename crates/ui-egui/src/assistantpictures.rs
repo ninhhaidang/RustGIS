@@ -133,10 +133,12 @@ fn say_refused(app: &mut RustGisApp) {
         }
     }
     for (_, notes) in kinds {
-        let Some(first) = notes.first().map(crate::i18n::note) else { continue };
+        let Some(first) = notes.first() else { continue };
         let text = if notes.len() == 1 {
-            first
+            crate::i18n::note(first)
         } else {
+            // The first refusal goes into the count's message in logical order.
+            let first = crate::i18n::note_raw(first);
             crate::i18n::fmt("{n} pictures weren't attached, such as {first}", &[("n", &notes.len().to_string()), ("first", &first)])
         };
         app.session.notify(text, true);

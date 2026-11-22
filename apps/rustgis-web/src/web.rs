@@ -541,10 +541,12 @@ async fn read_together(mut files: Vec<web_sys::File>, mark: &str, inbox: &Inbox,
         }
     }
     if let Some(first) = too_large.first() {
-        let first = rustgis_ui_egui::i18n::note(&rustgis_ui_egui::rustgis_assistant::attach::too_large(first.clone()));
+        let why = rustgis_ui_egui::rustgis_assistant::attach::too_large(first.clone());
         let text = if too_large.len() == 1 {
-            first
+            rustgis_ui_egui::i18n::note(&why)
         } else {
+            // In logical order inside the count's message, which is put in display form once.
+            let first = rustgis_ui_egui::i18n::note_raw(&why);
             rustgis_ui_egui::i18n::fmt(
                 "{n} pictures weren't attached, such as {first}",
                 &[("n", &too_large.len().to_string()), ("first", &first)],

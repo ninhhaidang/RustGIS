@@ -228,11 +228,15 @@ impl<P: Phone> App<P> {
                 Problem::PicturesTooLarge { names } => {
                     let n = names.len();
                     let first = names.into_iter().next().unwrap_or_default();
-                    let first = i18n::note(&rustgis_ui_egui::rustgis_assistant::attach::too_large(first));
+                    let why = rustgis_ui_egui::rustgis_assistant::attach::too_large(first);
                     if n == 1 {
-                        first
+                        i18n::note(&why)
                     } else {
-                        i18n::fmt("{n} pictures weren't attached, such as {first}", &[("n", &n.to_string()), ("first", &first)])
+                        // In logical order inside the count's message, put in display form once.
+                        i18n::fmt(
+                            "{n} pictures weren't attached, such as {first}",
+                            &[("n", &n.to_string()), ("first", &i18n::note_raw(&why))],
+                        )
                     }
                 }
                 Problem::PicturesLeftOut { names } => i18n::fmt(
