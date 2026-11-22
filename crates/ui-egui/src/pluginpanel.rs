@@ -134,6 +134,17 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         app.ui.close_right(RightPane::Plugin);
         return;
     };
+    // A plugin updated while its panel is in view has its state made again from the new
+    // declaration: the state command fills it, as opening the panel does (#2550). A failure is in
+    // the status bar, and the panel stays open.
+    let state = if app.session.take_panel_refresh(&pid) {
+        if let Err(e) = app.run("plugin.panel", json!({"id": pid, "refresh": true})) {
+            app.session.notify(e, true);
+        }
+        app.session.plugin_panel(&pid).cloned().unwrap_or(state)
+    } else {
+        state
+    };
     let m = &plugin.manifest;
     let Some(decl) = m.panel.as_ref() else { return };
     // A draft belongs to a form field the plugin still gives: one it removed takes its draft
@@ -1405,6 +1416,45 @@ mod tests {
         assert!(h.query_by_label("Place 2").is_some());
         assert!(h.query_by_label_contains("Only the first").is_none(), "a tree within its limit says nothing");
         plugins::unload("ui-cut");
+    }
+
+    /// A plugin updated while its panel is in view shows the values its state command gives on the
+    /// next frame, as opening the panel shows them, not the new declaration's defaults; the panel
+    /// stays open (#2550).
+    #[test]
+    fn an_updated_plugins_panel_in_view_runs_its_state_command_again() {
+        let _turn = crate::fetching::turn();
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::plugins;
+        let id = "ui-updated";
+        let load = |note: Option<&str>| {
+            let mut m: Value = serde_json::from_str(&plugins::testing::panel_manifest(id)).unwrap();
+            if let Some(text) = note {
+                m["panel"]["items"].as_array_mut().unwrap().push(json!({"kind": "text", "id": "note", "label": "Note", "text": text}));
+            }
+            let manifest = m.to_string();
+            let zip = plugins::testing::zip_of(&[("plugin.json", manifest.as_bytes()), ("plugin.wasm", &plugins::testing::wasm())]);
+            plugins::load(plugins::Package::from_zip(&zip).unwrap(), "test").unwrap();
+        };
+        load(None);
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 860.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            RustGisApp::with_sample(),
+        );
+        h.state_mut().run("ui.pane.plugin", json!({"id": id})).unwrap();
+        h.run_steps(3);
+        assert!(h.query_all_by_label_contains("Release 13192").next().is_some(), "opened, its state command filled it");
+        load(Some("Updated"));
+        h.run_steps(3);
+        assert!(h.query_all_by_label_contains("Updated").next().is_some(), "the new declaration in view");
+        assert!(h.query_all_by_label_contains("Release 13192").next().is_some(), "the state command ran again");
+        assert_eq!(h.state().session.plugin_panels[id].slider("release"), 12);
+        assert_eq!(h.state().ui.right, Some(RightPane::Plugin), "the panel stays open");
+        plugins::unload(id);
     }
 
     /// A plugin's command adding data by address doesn't wait for it: the app downloads it off

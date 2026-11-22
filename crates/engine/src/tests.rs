@@ -17709,6 +17709,54 @@ fn plugin_panels_keep_their_state_between_calls() {
     rustgis_plugins::unload("eng-nopanel");
 }
 
+/// A plugin updated with another panel declaration has its panel's kept state made again from
+/// it, which loses what the state command set: the panel is marked for that command to run again,
+/// as the panel in view does, and a refresh clears the mark and gives the plugin's values back
+/// (#2550). A state made the first time isn't marked (opening the panel runs the command), nor is
+/// one the same declaration keeps, nor a panel with no state command.
+#[test]
+fn an_updated_plugins_panel_is_marked_for_its_state_command() {
+    use rustgis_plugins::{Package, testing};
+    let id = "eng-panel-update";
+    let with_items = |extra: &[Value], state: bool| {
+        let mut m: Value = serde_json::from_str(&testing::panel_manifest(id)).unwrap();
+        m["panel"]["items"].as_array_mut().unwrap().extend(extra.iter().cloned());
+        if !state {
+            m["panel"].as_object_mut().unwrap().remove("state");
+        }
+        let zip = testing::zip_of(&[("plugin.json", m.to_string().as_bytes()), ("plugin.wasm", &testing::wasm())]);
+        rustgis_plugins::load(Package::from_zip(&zip).unwrap(), "test").unwrap();
+    };
+    let note = |text: &str| json!({"kind": "text", "id": "note", "label": "Note", "text": text});
+    let mut s = world();
+    with_items(&[], true);
+    assert_eq!(s.plugin_panel(id).unwrap().slider("release"), 0);
+    assert!(!s.take_panel_refresh(id), "a first state: opening the panel runs the command");
+    let st = s.run("plugin.panel", &json!({"id": id, "refresh": true})).unwrap();
+    assert_eq!(st["values"]["release"], 12);
+    // The same declaration again keeps the state.
+    with_items(&[], true);
+    assert_eq!(s.plugin_panel(id).unwrap().slider("release"), 12);
+    assert!(!s.take_panel_refresh(id), "the same declaration");
+    // One more widget: the state starts again from the declaration, marked, once.
+    with_items(&[note("First")], true);
+    assert_eq!(s.plugin_panel(id).unwrap().slider("release"), 0, "made again from the declaration");
+    assert!(s.take_panel_refresh(id), "marked for the state command");
+    assert!(!s.take_panel_refresh(id), "asking clears it");
+    // Marked by another update, a refresh runs the command, which clears the mark.
+    with_items(&[note("Second")], true);
+    assert!(s.plugin_panel(id).is_some());
+    let st = s.run("plugin.panel", &json!({"id": id, "refresh": true})).unwrap();
+    assert_eq!(st["values"]["release"], 12, "the state command's values are back");
+    assert_eq!(st["items"]["selected"]["text"], "2025-12-18\nRelease 13192");
+    assert!(!s.take_panel_refresh(id), "refreshed");
+    // A panel with no state command has nothing to run again.
+    with_items(&[note("Third")], false);
+    assert!(s.plugin_panel(id).is_some());
+    assert!(!s.take_panel_refresh(id), "no state command");
+    rustgis_plugins::unload(id);
+}
+
 /// A pick's place reaches the plugin in degrees and in the map's coordinates, worked out by the
 /// session from the map it was picked on, whatever was given for them.
 #[test]
