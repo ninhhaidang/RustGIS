@@ -2088,7 +2088,9 @@ The Imagery tab's groups open their tools in the Workflows pane. The tab belongs
     yet and no cap on its work: each polygon fills the cells it covers, so many large polygons on a
     fine grid take time in proportion.
 - **Classification Wizard** (unsupervised k-means) and **Classification Tools** (minimum distance
-  from training polygons).
+  from training polygons). Training polygons held in a coordinate system of their own are read as
+  they are: a pixel's centre is converted into their system to be tested, straight by the
+  transformation between the two datums where they differ, as for Deep Learning Tools.
 - **Mensuration**: distances along the surface, heights between two points, areas, and volumes
   above or below a base height, with a list of results.
 
@@ -2354,8 +2356,9 @@ the wrong field.
 ## Deep learning and hosted imagery
 
 **Imagery › Deep Learning Tools** trains a neural network (a multilayer perceptron) on the pixels
-under training polygons and classifies every pixel, adding a class raster with a confidence band
-and reporting the accuracy on held-back pixels. Run from its pane in the desktop app, it trains
+under training polygons (tested in the system their layer holds them in, as for Classification
+Tools) and classifies every pixel, adding a class raster with a confidence band and reporting the
+accuracy on held-back pixels. Run from its pane in the desktop app, it trains
 on every sampled pixel for all the epochs asked, however long that takes, and can be cancelled;
 elsewhere it keeps to a few seconds of work (see the limits above). Trained models stay in the project; **Publish ›
 Share As › Deep Learning** saves one as a package to apply in other projects. **Imagery › Create

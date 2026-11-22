@@ -49,11 +49,27 @@ pub use parallel::scratch_budget;
 pub use parameters::StatisticList;
 pub use tools::{
     SimplifyNotes, TOOLS, find_field_case_insensitive, holds_coordinates, in_its_units, layer_raster_crs, max_buffer_bytes, min_pad,
-    param_applies, past_pole, points_in, projected_crs, raster_crs, simplify_geometry, zonal_bands,
+    param_applies, past_pole, points_from, points_in, projected_crs, raster_crs, raster_crs_in, simplify_geometry, zonal_bands,
 };
 
 use rustgis_data::Dataset;
 use serde_json::Value;
+
+/// Whether a tool that works in its first input's own system ([`ToolSpec::works_in_own_system`]),
+/// and the Geostatistical Wizard, works in `crs`: a projected system, whose coordinates are a
+/// plane's. Longitude/latitude, Web Mercator and the other world projections (whose plane has the
+/// antimeridian as a seam and the poles as lines,
+/// [`rustgis_data::raster::Crs::is_world_projection`]), and other geographic or geocentric
+/// systems, keep the longitude/latitude path, whose plane and geodesics their coordinates need. So
+/// does a system whose conversion can't be made or gives no parameters, whose unit and axes
+/// ([`rustgis_data::raster::Crs::unit_and_axes`]) aren't known.
+pub fn works_in(crs: rustgis_data::raster::Crs) -> bool {
+    crs != rustgis_data::raster::Crs::LonLat
+        && !crs.is_world_projection()
+        && !crs.is_geographic()
+        && !crs.is_geocentric()
+        && crs.transformer().is_ok_and(|t| t.params().is_some())
+}
 
 /// Parameter kinds, which the Tools pane turns into widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

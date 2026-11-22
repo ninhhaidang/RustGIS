@@ -219,7 +219,9 @@ impl Training {
         name: String,
     ) -> Result<DlModel, String> {
         let (classes, polygons) = training_polygons(ds, field)?;
-        let (samples, per_class) = neural::training_samples(raster, bands, &polygons, classes.len(), MAX_SAMPLES_PER_CLASS)?;
+        // Sampled in the system the polygons are held in.
+        let (samples, per_class) =
+            neural::training_samples_in(raster, ds.coord_crs(), bands, &polygons, classes.len(), MAX_SAMPLES_PER_CLASS)?;
         // Every class needs pixels of its own (its polygons may miss the raster or cover no data).
         if let Some((c, _)) = classes.iter().zip(&per_class).find(|(_, n)| **n < 5) {
             return Err(format!("the class '{c}' has fewer than 5 pixels with data under its polygons"));

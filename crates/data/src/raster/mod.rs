@@ -1267,7 +1267,12 @@ impl Raster {
 
     /// The pixel under a longitude/latitude point.
     pub fn pixel_at(&self, lonlat: Coord) -> Option<(i64, i64)> {
-        let (c, r) = self.transform.to_pixel(self.transformer.from_lonlat(lonlat)?);
+        self.pixel_at_world(self.transformer.from_lonlat(lonlat)?)
+    }
+
+    /// The pixel under a place in the raster's own system.
+    pub fn pixel_at_world(&self, w: Coord) -> Option<(i64, i64)> {
+        let (c, r) = self.transform.to_pixel(w);
         let (c, r) = (self.wrap_col(c).floor(), r.floor());
         (c >= 0.0 && r >= 0.0 && c < self.width as f64 && r < self.height as f64).then_some((c as i64, r as i64))
     }

@@ -737,7 +737,8 @@ fn a_held_layer_feeds_other_layers_alike() {
         assert!((p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7, "annotation: {p:?} vs {q:?}");
     }
     // Cells off the wells' box's edges (the held layer's is a hair larger: see the extent above).
-    let [a, b] = run_both(&mut ss, "analysis.interpolate", &json!({"layer": "Wells", "field": "n", "cellSize": 0.0015}));
+    let [a, b] =
+        run_both(&mut ss, "analysis.interpolate", &json!({"layer": "Wells", "field": "n", "cellSize": 0.0015, "crs": "EPSG:4326"}));
     let grid =
         |s: &Session, v: &Value| s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
     let (ga, gb) = (grid(&ss[0], &a), grid(&ss[1], &b));
@@ -2155,6 +2156,97 @@ fn datum_pair() -> Session {
     add_in(&mut s, "Zone", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![ring]])], GK3);
     add_in(&mut s, "Converted", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![there]])], ETRS_UTM);
     s
+}
+
+/// The Geostatistical Wizard makes a held layer's surface in the system it holds its coordinates
+/// in, from them as they are: points 1500 km east of UTM 32N's central meridian, where a round trip
+/// through longitude/latitude doesn't come back to the same bits, give a grid whose corner is
+/// their own bounds, padded.
+#[test]
+fn the_geostatistical_wizard_works_in_the_held_system() {
+    let at: Vec<Coord> =
+        (0..9).map(|i| Coord::new(2_000_003.7 + f64::from(i % 3) * 100.0, 5_400_001.3 + f64::from(i / 3) * 100.0)).collect();
+    let mut s = Session::new(Project::default());
+    add_in(&mut s, "Wells", GeometryType::Point, at.iter().map(|c| Geometry::Point(*c)).collect(), UTM);
+    s.run("analysis.interpolate", &json!({"layer": "Wells", "field": "v", "cellSize": 10, "name": "Surface"})).unwrap();
+    let g = grid_of(&s, "Surface");
+    let mut e = rustgis_geom::Extent::EMPTY;
+    at.iter().for_each(|c| e.expand(*c));
+    let e = e.padded(0.05, rustgis_analysis::min_pad(UTM));
+    assert_eq!(g.crs, UTM);
+    assert_eq!((g.transform.origin_x, g.transform.origin_y), (e.min_x, e.max_y));
+}
+
+/// A new feature's elevation from a surface whose system can't give its place refuses the edit,
+/// rather than leave the feature without its `z`: the North Pole held in polar stereographic north,
+/// over a surface in Antarctic polar stereographic (EPSG:3031), whose plane has no place for it.
+#[test]
+fn elevation_from_a_surface_that_cant_hold_the_place_refuses_the_edit() {
+    use rustgis_data::raster::{ColorHint, GeoTransform, Raster};
+    let mut s = Session::new(Project::default());
+    let gt = GeoTransform { origin_x: -1000.0, origin_y: 1000.0, pixel_width: 100.0, pixel_height: -100.0 };
+    let r = Raster::new("south", 20, 20, vec![vec![1.0; 400]], gt, Crs::Epsg(3031), None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("south", rustgis_map::raster::RasterLayer::from_path(r, "south.tif"));
+    add_in(&mut s, "Pins", GeometryType::Point, Vec::new(), POLAR);
+    s.run("edit.enable", &json!({"on": true})).unwrap();
+    s.run("edit.elevation", &json!({"mode": "surface", "surface": "south"})).unwrap();
+    let e = s.run("edit.addFeature", &json!({"layer": "Pins", "geometry": {"type": "Point", "coordinates": [0.0, 90.0]}})).unwrap_err();
+    assert!(e.contains("can't be given in the system of the surface south"), "{e}");
+    assert!(s.map().layer_by_name("Pins").unwrap().dataset.features.is_empty());
+}
+
+/// Training polygons held in another system than the raster's reach it by the direct operation:
+/// two 3 m squares of two classes held in Gauss-Krüger zone 3 (DHDN) train the same supervised
+/// classification and the same deep learning model over a raster of 10 cm cells in UTM 32N
+/// (ETRS89) as the squares converted there by [`Crs::to`], where the way through WGS 84 is 0.44 m
+/// off.
+#[test]
+fn training_polygons_reach_a_raster_by_the_direct_operation() {
+    let mut s = datum_pair();
+    let (cx, cy) = (3_500_000.0, 5_400_000.0);
+    let square = |dx: f64| -> Vec<Coord> {
+        [(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5), (-1.5, -1.5)].iter().map(|(x, y)| Coord::new(cx + dx + x, cy + y)).collect()
+    };
+    let to = GK3.to(ETRS_UTM).unwrap();
+    let held = [square(-2.0), square(2.0)];
+    let there: Vec<Vec<Coord>> = held.iter().map(|r| r.iter().map(|c| to.point(*c).unwrap()).collect()).collect();
+    add_in(&mut s, "Training", GeometryType::Polygon, held.into_iter().map(|r| Geometry::Polygon(vec![vec![r]])).collect(), GK3);
+    add_in(&mut s, "TrainingThere", GeometryType::Polygon, there.into_iter().map(|r| Geometry::Polygon(vec![vec![r]])).collect(), ETRS_UTM);
+    let mut got = Vec::new();
+    for training in ["Training", "TrainingThere"] {
+        let p = json!({"layer": "grid", "training": training, "classField": "v", "name": format!("{training} classes")});
+        let classified = s.run("raster.classifySupervised", &p).unwrap();
+        let dl = json!({"layer": "grid", "training": training, "classField": "v", "epochs": 5, "name": format!("{training} dl")});
+        let learnt = s.run("dl.classify", &dl).unwrap();
+        got.push((classified["classes"].clone(), raster_cells(&s, &classified), learnt["classes"].clone(), raster_cells(&s, &learnt)));
+    }
+    // 30 × 30 cells a class.
+    assert_eq!(got[0].0[0]["pixels"], 900, "{:?}", got[0].0);
+    assert_eq!(got[0], got[1]);
+}
+
+/// A new feature's elevation from a surface is read where the layer holds it, placed on the
+/// surface by the direct operation: a point held in Gauss-Krüger zone 3 (DHDN) added over a
+/// surface of 10 cm cells in UTM 32N (ETRS89) takes the cell its place converted by [`Crs::to`]
+/// lands on, not the one 0.44 m off that the way through WGS 84 gives.
+#[test]
+fn elevation_is_read_from_a_surface_by_the_direct_operation() {
+    let mut s = datum_pair();
+    add_in(&mut s, "Pins", GeometryType::Point, Vec::new(), GK3);
+    s.run("edit.enable", &json!({"on": true})).unwrap();
+    s.run("edit.elevation", &json!({"mode": "surface", "surface": "grid"})).unwrap();
+    let at = Coord::new(3_500_000.0, 5_400_000.0);
+    let lonlat = GK3.to(Crs::LonLat).unwrap().point(at).unwrap();
+    s.run("edit.addFeature", &json!({"layer": "Pins", "geometry": {"type": "Point", "coordinates": [lonlat.x, lonlat.y]}})).unwrap();
+    let l = s.map().layer_by_name("Pins").unwrap();
+    let Some(Geometry::Point(p)) = l.dataset.features[0].geometry.clone() else { panic!("a point") };
+    let z = l.dataset.field_index("z").map(|i| l.dataset.value(0, i).as_f64()).unwrap_or_else(|| panic!("no z"));
+    let grid = grid_of(&s, "grid");
+    let value = |w: Coord| grid.pixel_at_world(w).and_then(|(c, r)| grid.value(0, c, r)).map(f64::from);
+    let direct = value(GK3.to(ETRS_UTM).unwrap().point(p).unwrap());
+    let via = value(ETRS_UTM.transformer().unwrap().from_lonlat(GK3.transformer().unwrap().to_lonlat(p).unwrap()).unwrap());
+    assert_ne!(direct, via, "the two ways land on one cell");
+    assert_eq!(z, direct);
 }
 
 /// Zonal Statistics and Tabulate Area place zones held in another system than the raster's by the

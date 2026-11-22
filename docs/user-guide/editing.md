@@ -146,7 +146,9 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
 - **Settings**: **Show Vertices** marks the vertices of the selected features even when Edit
   Vertices isn't on (`edit.settings={"showVertices": true}`).
 - **Elevation**: new features get a `z` attribute, constant or sampled from a raster surface at
-  the feature's label point; this is not a change to its geometry's coordinates.
+  the feature's label point, as the layer holds it, placed on the surface by the transformation
+  between the two systems; this is not a change to its geometry's coordinates. An edit whose
+  label point the surface's system can't give is refused.
 - **Ground to grid**: a scale factor and rotation applied to entered distances and directions
   (Move, and `edit.traverse`, which draws a line or polygon from distances and bearings).
 - **Topology**: rules (must not overlap, must not have gaps, must not self-intersect, must not

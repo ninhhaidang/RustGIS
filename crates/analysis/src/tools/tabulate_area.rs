@@ -178,7 +178,7 @@ fn summarize(
         crate::control::check()?;
         let shape = zones.features.get(row).and_then(|f| f.geometry.as_ref());
         let valid = match shape {
-            Some(Geometry::Polygon(p)) => crate::rasterops::transform_feature_polygons_to_lonlat(p, None).ok(),
+            Some(Geometry::Polygon(p)) => crate::rasterops::validated_polygon_parts(p).ok(),
             _ => None,
         };
         match valid {

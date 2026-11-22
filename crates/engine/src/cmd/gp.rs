@@ -1521,21 +1521,9 @@ fn streamed_inputs(
     Ok((full, said))
 }
 
-/// Whether a tool that works in its first input's own system ([`ToolSpec::works_in_own_system`])
-/// works in `crs`: a projected system, whose coordinates are a plane's. Longitude/latitude, Web
-/// Mercator and the other world projections (whose plane has the antimeridian as a seam and the
-/// poles as lines, [`Crs::is_world_projection`]), and other geographic or geocentric systems, keep
-/// the longitude/latitude path, whose plane and geodesics their coordinates need. So does a system
-/// whose conversion can't be made or gives no parameters, whose unit and axes
-/// ([`Crs::unit_and_axes`]) aren't known.
-///
-/// [`ToolSpec::works_in_own_system`]: rustgis_analysis::ToolSpec::works_in_own_system
+/// Whether a run works in `crs`: [`rustgis_analysis::works_in`].
 fn works_in(crs: Crs) -> bool {
-    crs != Crs::LonLat
-        && !crs.is_world_projection()
-        && !crs.is_geographic()
-        && !crs.is_geocentric()
-        && crs.transformer().is_ok_and(|t| t.params().is_some())
+    rustgis_analysis::works_in(crs)
 }
 
 /// The system a run works in: its first input's own ([`Dataset::coord_crs`]) when the tool works

@@ -143,31 +143,54 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     }
     let elevation = s.map().editing.settings.elevation.clone();
     // Elevation from a surface: sampled before the layer is borrowed mutably.
-    let z_of = |s: &Session, g: &Geometry| -> Option<f64> {
+    let new_rows: Vec<usize> =
+        if new_defaults { changes.iter().filter(|c| c.before.is_none()).filter_map(|c| c.row).collect() } else { Vec::new() };
+    // The surface is read at the label point of the shape as the layer holds it, placed on the
+    // surface's grid by the direct operation between the two systems (none of it when they are
+    // one), made once for all the new features (a conversion that can't be made refuses only a
+    // feature with a place to read). A label point the surface's system can't give refuses the
+    // edit rather than leave the feature without its `z`; one off the surface, or over no data,
+    // gets none.
+    let (layer_name, layer_crs) = s.map().layer(id).map(|l| (l.name.clone(), l.dataset.coord_crs())).ok_or("no such layer")?;
+    let to_surface = match &elevation {
+        Elevation::Surface(name) if !new_rows.is_empty() => {
+            match surface_layer(s, name).and_then(|l| l.raster.as_ref()?.data.as_ref()).map(|r| r.crs) {
+                Some(crs) if crs != layer_crs => Some(layer_crs.to(crs).map_err(|e| format!("{layer_name}: {e}"))),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let z_of = |s: &Session, g: &Geometry| -> Result<Option<f64>, String> {
         match &elevation {
-            Elevation::None => None,
-            Elevation::Constant(z) => Some(*z),
+            Elevation::None => Ok(None),
+            Elevation::Constant(z) => Ok(Some(*z)),
             Elevation::Surface(name) => {
-                let c = g.label_point()?;
-                let r = surface_layer(s, name)?.raster.as_ref()?.data.as_ref()?;
-                let (col, row) = r.pixel_at(c)?;
-                r.value(0, col, row).map(f64::from)
+                let Some(c) = g.label_point() else { return Ok(None) };
+                let Some(r) = surface_layer(s, name).and_then(|l| l.raster.as_ref()?.data.as_ref()) else { return Ok(None) };
+                let w = match &to_surface {
+                    Some(Err(e)) => return Err(e.clone()),
+                    Some(Ok(to)) => to.point(c).ok_or_else(|| {
+                        format!(
+                            "{layer_name}: this feature's place in {} can't be given in the system of the surface {name}, {}",
+                            layer_crs.label(),
+                            r.crs.label()
+                        )
+                    })?,
+                    None => c,
+                };
+                Ok(r.pixel_at_world(w).and_then(|(col, row)| r.value(0, col, row)).map(f64::from))
             }
         }
     };
-    let new_rows: Vec<usize> =
-        if new_defaults { changes.iter().filter(|c| c.before.is_none()).filter_map(|c| c.row).collect() } else { Vec::new() };
-    // Sampled from a surface at each place in longitude/latitude, from the layer's own coordinates:
-    // a place that can't be converted refuses the edit rather than leave the feature without its
-    // `z`. Without a surface, the place isn't converted. Done before anything below changes the
-    // session, so a refusal leaves it as it was.
+    // Sampled from a surface at each place in the layer's own coordinates (see `z_of`). Done before
+    // anything below changes the session, so a refusal leaves it as it was.
     let mut zs: Vec<(usize, Option<f64>)> = Vec::with_capacity(new_rows.len());
     for r in &new_rows {
-        let stored = s.map().layer(id).and_then(|l| Some((l, l.dataset.features.get(*r)?.geometry.as_ref()?)));
-        let z = match (stored, &elevation) {
-            (None, _) => None,
-            (Some((l, g)), Elevation::Surface(_)) => z_of(s, l.dataset.geometry_to_lonlat(g)?.as_ref()),
-            (Some((_, g)), _) => z_of(s, g),
+        let stored = s.map().layer(id).and_then(|l| l.dataset.features.get(*r)?.geometry.as_ref());
+        let z = match stored {
+            Some(g) => z_of(s, g)?,
+            None => None,
         };
         zs.push((*r, z));
     }

@@ -1059,8 +1059,26 @@ impl ZoneIn {
         })
     }
 
+    /// Whether the zone's box `e` holds a pole its system holds, in a system other than the
+    /// raster's: the outline bounds nothing there (on a Web Mercator raster it lands south of the
+    /// cells near the pole), so the whole raster is read.
+    pub(crate) fn holds_a_pole(&self, e: &Extent) -> bool {
+        matches!(self, Self::Own { to_zone, .. } if to_zone.poles().iter().any(|p| e.contains(*p)))
+    }
+
+    /// The columns and rows of `r` whose cell centres can fall in the zone's box `e`: the whole
+    /// raster when the box holds a pole ([`ZoneIn::holds_a_pole`]), else [`zone_window`], with its
+    /// interior samples for a zone in a system of its own.
+    pub(crate) fn window(&self, r: &Raster, e: &Extent) -> (Range<u32>, Range<u32>) {
+        match self {
+            _ if self.holds_a_pole(e) => (0..r.width, 0..r.height),
+            Self::Own { .. } => zone_window(r, e, true, |c| self.grid(r, c)),
+            Self::LonLat => zone_window(r, e, false, |c| self.grid(r, c)),
+        }
+    }
+
     /// A place in the raster's system in the zone's.
-    fn zone(&self, r: &Raster, w: Coord) -> Option<Coord> {
+    pub(crate) fn zone(&self, r: &Raster, w: Coord) -> Option<Coord> {
         match self {
             Self::LonLat => r.transformer().to_lonlat(w),
             Self::Own { to_zone, .. } => to_zone.place(w),
@@ -1068,7 +1086,7 @@ impl ZoneIn {
     }
 
     /// A place in the zone's system in the raster's.
-    fn grid(&self, r: &Raster, c: Coord) -> Option<Coord> {
+    pub(crate) fn grid(&self, r: &Raster, c: Coord) -> Option<Coord> {
         match self {
             Self::LonLat => r.transformer().from_lonlat(c),
             Self::Own { to_grid, .. } => to_grid.vertex(c),
@@ -1123,13 +1141,7 @@ fn means_under(
     let mut n = 0usize;
     for (k, e) in boxes.iter().enumerate() {
         let earlier = index.as_ref().filter(|ix| ix.any_candidate(e, |j| j < k && boxes[j].intersects(e)));
-        // A pole inside the zone's box, in a system other than the raster's: the outline bounds
-        // nothing there (on a Web Mercator raster it lands south of the cells near the pole).
-        let (cols, rows) = match zone {
-            ZoneIn::Own { to_zone, .. } if to_zone.poles().iter().any(|p| e.contains(*p)) => (0..r.width, 0..r.height),
-            ZoneIn::Own { .. } => zone_window(r, e, true, |c| zone.grid(r, c)),
-            ZoneIn::LonLat => zone_window(r, e, false, |c| zone.grid(r, c)),
-        };
+        let (cols, rows) = zone.window(r, e);
         each_rows((r.height - (rows.end - rows.start)) as usize)?;
         for row in rows {
             each_rows(1)?;
@@ -1239,6 +1251,19 @@ fn zone_window(r: &Raster, e: &Extent, interior: bool, to_grid: impl Fn(Coord) -
 /// under its polygons left out. Each polygon's rows count toward the run's progress, and a
 /// cancelled run stops (#1291).
 pub fn class_means(r: &Raster, bands: &[usize], polygons: &[(String, Vec<Vec<Coord>>)]) -> Result<Vec<(String, Vec<f64>, usize)>, String> {
+    class_means_in(r, Crs::LonLat, bands, polygons)
+}
+
+/// [`class_means`] of training polygons whose rings are in `from`: longitude/latitude, or the
+/// system their layer holds its coordinates in, a cell's centre tested there ([`ZoneIn`]: none of
+/// it converted when that is the raster's own).
+pub fn class_means_in(
+    r: &Raster,
+    from: Crs,
+    bands: &[usize],
+    polygons: &[(String, Vec<Vec<Coord>>)],
+) -> Result<Vec<(String, Vec<f64>, usize)>, String> {
+    let zone = ZoneIn::new(r, from)?;
     crate::control::begin(polygons.len().saturating_mul(r.height as usize));
     let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
     for (key, rings) in polygons {
@@ -1247,7 +1272,7 @@ pub fn class_means(r: &Raster, bands: &[usize], polygons: &[(String, Vec<Vec<Coo
             crate::control::advance(rows);
             Ok(())
         };
-        let Some((m, n)) = means_under(r, &ZoneIn::LonLat, bands, &[rings.as_slice()], counted)? else { continue };
+        let Some((m, n)) = means_under(r, &zone, bands, &[rings.as_slice()], counted)? else { continue };
         match classes.iter_mut().find(|c| c.0 == *key) {
             Some(c) => {
                 let total = c.2 + n;
@@ -1401,6 +1426,12 @@ pub fn transform_polygon_to_lonlat(rings: &[Vec<Coord>], tr: Option<&Transformer
     }
 
     Ok(out_rings)
+}
+
+/// The polygon parts of a (multi-)polygon feature, checked and taken apart into rings, in the
+/// system they are in: [`transform_feature_polygons_to_lonlat`] with no transformer.
+pub fn validated_polygon_parts(polys: &[Vec<Vec<Coord>>]) -> Result<Vec<Vec<Vec<Coord>>>, PolygonTransformError> {
+    transform_feature_polygons_to_lonlat(polys, None)
 }
 
 /// Transforms and validates all polygon parts of a (multi-)polygon feature to WGS 84 lon/lat coordinates.
@@ -3134,14 +3165,14 @@ mod tests {
 
         // Multipart features
         let multi_valid = vec![vec![ext.clone(), hole1.clone()], vec![sq(20.0, 20.0, 30.0, 30.0)]];
-        let multi_res = transform_feature_polygons_to_lonlat(&multi_valid, None).unwrap();
+        let multi_res = validated_polygon_parts(&multi_valid).unwrap();
         assert_eq!(multi_res.len(), 2);
         assert_eq!(multi_res[0].len(), 2);
         assert_eq!(multi_res[1].len(), 1);
 
         // Multipart with failing part
         let multi_bad = vec![vec![ext.clone()], vec![vec![Coord::new(1.0, 1.0)]]];
-        assert!(transform_feature_polygons_to_lonlat(&multi_bad, None).is_err());
+        assert!(validated_polygon_parts(&multi_bad).is_err());
     }
 
     #[test]

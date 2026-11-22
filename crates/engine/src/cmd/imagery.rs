@@ -503,7 +503,7 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     for row in rows {
         let Some(feature) = ds.features.get(row) else { continue };
         let parts = match &feature.geometry {
-            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, None).ok(),
+            Some(Geometry::Polygon(polys)) => rasterops::validated_polygon_parts(polys).ok(),
             _ => None,
         };
         let Some(parts) = parts else {
@@ -566,16 +566,21 @@ fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
     if shapes.is_empty() {
         return Err(format!("{ln} has no polygons with a value to burn"));
     }
-    // By default, the system the layer holds its coordinates in (else the one it was read in) and
+    // By default, the projected system the layer holds its coordinates in (else the one it was read in) and
     // the polygons' bounds.
     let held_bounds = shapes.iter().flat_map(|s| s.parts.iter().flatten().flatten()).fold(Extent::EMPTY, |mut e, c| {
         e.expand(*c);
         e
     });
-    let crs = if held == Crs::LonLat { ds.crs.unwrap_or(Crs::LonLat) } else { held };
+    // A projected system the layer holds it in: a geographic or geocentric one (an ECEF layer) has
+    // no plane for a grid, so it takes the one the layer was read in. Web Mercator and the world
+    // projections are planes a grid is laid on, unlike the analysis plane `works_in` excludes them
+    // from.
+    let projected = held != Crs::LonLat && !held.is_geographic() && !held.is_geocentric();
+    let crs = if projected { held } else { ds.crs.unwrap_or(Crs::LonLat) };
     let mut unsized_by = 0usize;
     let grid = grid_param(s, p, crs, |crs| {
-        if crs == held && held != Crs::LonLat {
+        if crs == held && projected {
             return Ok(([held_bounds.min_x, held_bounds.min_y, held_bounds.max_x, held_bounds.max_y], None));
         }
         // Otherwise the bounds of the polygons' box in longitude/latitude, as before. A place the
@@ -1182,8 +1187,8 @@ pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows
             let key = ds.value(row, fi).to_string();
             polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
         }
-        // Mean of each class's training pixels.
-        let classes = rasterops::class_means(&r, &bands, &polygons).map_err(explain)?;
+        // Mean of each class's training pixels, tested in the system the polygons are held in.
+        let classes = rasterops::class_means_in(&r, ds.coord_crs(), &bands, &polygons).map_err(explain)?;
         if classes.len() < 2 {
             return Err(explain("the training polygons need at least two classes with pixels under them".into()));
         }
@@ -1296,7 +1301,7 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
             for &row in &rows {
                 let Some(f) = l.dataset.features.get(row) else { continue };
                 match &f.geometry {
-                    Some(Geometry::Polygon(polys)) => match rasterops::transform_feature_polygons_to_lonlat(polys, None) {
+                    Some(Geometry::Polygon(polys)) => match rasterops::validated_polygon_parts(polys) {
                         Ok(transformed) => {
                             polygons.extend(transformed);
                         }
