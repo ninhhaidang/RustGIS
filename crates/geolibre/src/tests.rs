@@ -622,6 +622,94 @@ fn prepare_and_finish_without_a_runner() {
     assert!(matches!(empty.output, Output::Layers(ref l) if l.is_empty()) && !empty.messages.is_empty());
 }
 
+/// A 2 × 2 GeoTIFF of one `UInt32` band (UTM 23S, 2 m pixels) holding `px`, as GeoLibre's colour
+/// tools write a packed composite: with GDAL's no-data tag when `nodata` is given, and turned by a
+/// transformation matrix when `rotated`.
+fn u32_tiff(px: [u32; 4], nodata: Option<&str>, rotated: bool) -> Vec<u8> {
+    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::tags::Tag;
+    let mut out = std::io::Cursor::new(Vec::new());
+    let mut enc = TiffEncoder::new(&mut out).unwrap();
+    let mut img = enc.new_image::<colortype::Gray32>(2, 2).unwrap();
+    if rotated {
+        let m = [2.0, 0.5, 0.0, 700_000.0, 0.5, -2.0, 0.0, 7_700_000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        img.encoder().write_tag(Tag::Unknown(34264), &m[..]).unwrap();
+    } else {
+        img.encoder().write_tag(Tag::ModelPixelScaleTag, &[2.0, 2.0, 0.0][..]).unwrap();
+        img.encoder().write_tag(Tag::ModelTiepointTag, &[0.0, 0.0, 0.0, 700_000.0, 7_700_000.0, 0.0][..]).unwrap();
+    }
+    img.encoder().write_tag(Tag::GeoKeyDirectoryTag, &[1u16, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32723][..]).unwrap();
+    if let Some(d) = nodata {
+        img.encoder().write_tag(Tag::Unknown(42113), d).unwrap();
+    }
+    img.write_data(&px).unwrap();
+    out.into_inner()
+}
+
+/// Panchromatic Sharpening's default output, one `UInt32` band of packed colour `0xAABBGGRR`,
+/// comes back as red, green, blue and alpha byte bands, exact: held as one band of 32-bit floats,
+/// its red byte was lost and it drew grey (#2594). A band of IDs or counts stays as written.
+#[test]
+fn packed_colour_outputs_come_back_as_rgb_bands() {
+    let job = Job {
+        tool: "panchromatic_sharpening".into(),
+        name: "Panchromatic Sharpening".into(),
+        files: Vec::new(),
+        args: Vec::new(),
+        outputs: vec![("output.tif".into(), "Sharpened".into())],
+        crs: Crs::from_epsg(32723).unwrap(),
+        notes: Vec::new(),
+    };
+    let returned = |tiff: &[u8]| {
+        let r = finish(&job, &[("output.tif".into(), tiff.to_vec())], &[], None);
+        let Output::Layers(mut layers) = r.output else { panic!("layers") };
+        let Some(OutputLayer::Raster { bytes, file_name, .. }) = layers.pop() else { panic!("a raster: {layers:?}") };
+        (bytes, file_name, r.messages)
+    };
+    let (bytes, file_name, messages) = returned(&u32_tiff([0xFF0A_141E, 0xFF00_0001, 0, 0xFFFF_FFFF], None, false));
+    let rgba = rustgis_data::raster::read_bytes(&file_name, &bytes).unwrap();
+    assert_eq!((rgba.band_count(), rgba.data_type.as_str(), &rgba.color), (4, "UInt8", &ColorHint::Rgb { alpha: true }));
+    let px = |i: usize| rgba.bands.iter().map(|b| b.data[i]).collect::<Vec<f32>>();
+    assert_eq!(px(0), [30.0, 20.0, 10.0, 255.0], "red is 0x1E, not 0");
+    assert_eq!(px(1), [1.0, 0.0, 0.0, 255.0]);
+    assert_eq!(px(2), [0.0; 4], "alpha 0 is see-through");
+    assert_eq!(px(3), [255.0; 4]);
+    assert_eq!((rgba.crs, rgba.transform.origin_x, rgba.transform.pixel_width), (Crs::Epsg(32723), 700_000.0, 2.0));
+    assert!(messages.iter().any(|m| m.starts_with("Sharpened: its one band of packed colours") && m.contains("split")), "{messages:?}");
+    // IDs under 2^24 (alpha 0 everywhere), and values whose top byte is neither 0 nor 255, aren't
+    // colours: kept as written, and nothing is said. 0xFEFFFFFF reads as 0xFF000000 in `f32`.
+    for ids in [[1, 2, 3, 0x00FF_FFFF], [0xFF00_0000, 0x8000_0000, 1, 2], [0xFF00_0000, 0xFEFF_FFFF, 1, 2]] {
+        let tiff = u32_tiff(ids, None, false);
+        let (bytes, _, messages) = returned(&tiff);
+        assert_eq!(bytes, tiff, "{ids:x?}");
+        assert!(messages.is_empty(), "{messages:?}");
+    }
+    // The no-data value, compared exactly, is see-through; 0xFFFFFFFE, which reads as the same
+    // `f32` as the no-data 0xFFFFFFFF, is an opaque colour. A band of no-data alone isn't colour.
+    let (bytes, file_name, _) = returned(&u32_tiff([0xFFFF_FFFE, 0xFFFF_FFFF, 0, 0], Some("4294967295"), false));
+    let rgba = rustgis_data::raster::read_bytes(&file_name, &bytes).unwrap();
+    let px = |i: usize| rgba.bands.iter().map(|b| b.data[i]).collect::<Vec<f32>>();
+    assert_eq!((rgba.band_count(), px(0), px(1)[3]), (4, vec![254.0, 255.0, 255.0, 255.0], 0.0));
+    let blank = u32_tiff([0xFFFF_FFFF; 4], Some("4294967295"), false);
+    assert_eq!(returned(&blank).0, blank);
+    // A rotated file is read resampled north up, so its packed pixels aren't split onto that
+    // grid: kept as written, and said.
+    let turned = u32_tiff([0xFF0A_141E; 4], None, true);
+    let (bytes, _, messages) = returned(&turned);
+    assert_eq!(bytes, turned);
+    assert!(messages.iter().any(|m| m.contains("couldn't be split") && m.contains("rotated or skewed")), "{messages:?}");
+    // A file with no GeoTIFF tags has only a stand-in place: never written out as coordinates.
+    let tagless = {
+        let mut out = std::io::Cursor::new(Vec::new());
+        let mut enc = tiff::encoder::TiffEncoder::new(&mut out).unwrap();
+        enc.write_image::<tiff::encoder::colortype::Gray32>(2, 2, &[0xFF0A_141E; 4]).unwrap();
+        out.into_inner()
+    };
+    let (bytes, _, messages) = returned(&tagless);
+    assert_eq!(bytes, tagless, "kept as written");
+    assert!(messages.iter().any(|m| m.contains("couldn't be split") && m.contains("no coordinates")), "{messages:?}");
+}
+
 /// Options left at the manifest's defaults aren't passed, so the runner uses its own defaults as
 /// when it runs alone (#237: an explicit `flat_increment` of 0.0001 stopped flow on flats).
 #[test]

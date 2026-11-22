@@ -22,3 +22,7 @@ sha2 = { workspace = true }
 flate2 = "1"
 tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+# Writing the UInt32 GeoTIFFs of packed colour GeoLibre's tools return.
+tiff = { workspace = true }

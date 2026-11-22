@@ -867,7 +867,10 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
     let ext = Path::new(file_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "tif" | "tiff" | "asc" => match rustgis_data::raster::read_bytes(file_name, bytes) {
-            Ok(_) => Some(OutputLayer::Raster { name: layer_name.to_string(), file_name: file_name.to_string(), bytes: bytes.to_vec() }),
+            Ok(grey) => {
+                let bytes = if ext == "asc" { bytes.to_vec() } else { colours_split(&grey, bytes, layer_name, messages) };
+                Some(OutputLayer::Raster { name: layer_name.to_string(), file_name: file_name.to_string(), bytes })
+            }
             Err(e) => {
                 messages.push(format!("{layer_name}: {e}"));
                 None
@@ -927,6 +930,31 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
         _ => {
             messages.push(format!("{layer_name}: wrote a .{ext} file, which RustGIS can't open as a layer"));
             None
+        }
+    }
+}
+
+/// A GeoTIFF output's bytes for its layer: one of packed colour (a single `UInt32` band of
+/// `0xAABBGGRR`, as Panchromatic Sharpening writes by default) rewritten as red, green, blue and
+/// alpha byte bands before anything holds it as `f32`, which drops the red byte (#2594), and said;
+/// any other as the tool wrote it. `grey` is the file as read.
+fn colours_split(grey: &rustgis_data::raster::Raster, bytes: &[u8], layer_name: &str, messages: &mut Vec<String>) -> Vec<u8> {
+    use rustgis_data::raster::geotiff;
+    match geotiff::unpack_rgba(grey, bytes).and_then(|r| r.map(|r| geotiff::write_all(&r)).transpose()) {
+        Ok(Some(rgba)) => {
+            messages.push(format!(
+                "{layer_name}: its one band of packed colours (alpha, blue, green and red bytes) was split into red, green and blue bands, see-through where alpha is 0 or the pixel is no-data"
+            ));
+            // What reading the tool's file left out, which the rewritten file no longer shows.
+            messages.extend(grey.lost.iter().map(|l| format!("{layer_name}: {l}")));
+            rgba
+        }
+        Ok(None) => bytes.to_vec(),
+        Err(e) => {
+            messages.push(format!(
+                "{layer_name}: its one band of packed colours couldn't be split into red, green and blue bands ({e}): it is kept as one band of 32-bit floats, which lose the red byte"
+            ));
+            bytes.to_vec()
         }
     }
 }

@@ -1525,6 +1525,10 @@ list syntax, and check the tool's own help for what a weight field left blank me
   a file not open as a layer can be added too: type its path below the list and press Enter.
 - Raster outputs are kept inside the project, so they save and reopen with it. Table outputs
   become standalone tables; text reports appear in the tool's messages.
+- A raster output of packed colour (one 32-bit band of alpha, blue, green and red bytes, as
+  **Panchromatic Sharpening** writes by default) becomes a colour layer of red, green, blue and
+  alpha byte bands, exactly, with alpha 0 see-through; the messages say so. A 32-bit band with a
+  top byte other than 0 or 255, or none at 255 (IDs, counts), stays one band.
 - LiDAR and other inputs RustGIS doesn't open as layers take a file path, read like Add Data
   reads one. Outputs are written to a fresh scratch folder and loaded from there.
 - **Output Name** names the new layer, as on the built-in tools; left empty, the layer takes the
