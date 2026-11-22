@@ -350,7 +350,9 @@ jobs:
 
   ios-build:
     name: iOS app
-    runs-on: macos-latest
+    # App Store Connect requires the iOS 27 SDK from April 2027 (ITMS-90725); macos-latest's
+    # newest Xcode is 26.x, the xcode-27 image has Xcode 27. Back to macos-latest once it does.
+    runs-on: xcode-27
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -411,7 +413,7 @@ jobs:
     name: Sign the iOS app
     if: github.event_name != 'pull_request'
     needs: ios-build
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 30
     environment: mobile-release
     steps:
@@ -529,7 +531,7 @@ jobs:
     name: Upload the iOS app to TestFlight
     if: github.event_name == 'release' || inputs.testflight
     needs: [ios-build, ios-sign]
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 30
     environment: mobile-release
     steps:
