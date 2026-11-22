@@ -2,6 +2,7 @@
 //! it) translated onto a feature layer just added from its service (#2080).
 use serde_json::Value;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::symbology::{ClassMethod, Dash, LineStroke, MAX_PICTURE_BYTES, MAX_STROKE_WIDTH, Marker, OTHER_FILL, Picture, normalize_label};
@@ -20,10 +21,11 @@ const PICTURE_FILL: Rgba = Rgba::rgb(0x80, 0x80, 0x80);
 /// What of a service's symbology was drawn differently or left out, each with how many symbols it
 /// came up for, in the order first met.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Notes(Vec<(&'static str, usize)>);
+pub struct Notes(Vec<(Cow<'static, str>, usize)>);
 
 impl Notes {
-    fn add(&mut self, text: &'static str) {
+    fn add(&mut self, text: impl Into<Cow<'static, str>>) {
+        let text = text.into();
         match self.0.iter_mut().find(|(t, _)| *t == text) {
             Some((_, n)) => *n = n.saturating_add(1),
             None => self.0.push((text, 1)),
@@ -36,57 +38,61 @@ impl Notes {
 
     /// The notes as one sentence's list: `"hatched fills, drawn solid (3 symbols); …"`.
     pub fn text(&self) -> String {
-        self.0.iter().map(|(t, n)| if *n > 1 { format!("{t} ({n} symbols)") } else { (*t).to_string() }).collect::<Vec<_>>().join("; ")
+        self.0.iter().map(|(t, n)| if *n > 1 { format!("{t} ({n} symbols)") } else { t.to_string() }).collect::<Vec<_>>().join("; ")
     }
 }
 
 /// Picture markers' images (`imageData`) as a service gives them, each checked and kept once,
 /// however many classes show it.
 struct Pictures<'r> {
-    /// Whether an image decodes as a picture marker's must (a PNG or JPEG): the check
-    /// `layer.marker` makes, which is the renderer's, so that what draws here draws there.
-    readable: &'r dyn Fn(&str) -> bool,
+    /// Whether an image is one a picture marker draws, or why not after "whose image"
+    /// (`render::MarkerRefusal::whose`): the check `layer.marker` makes, which is the renderer's,
+    /// so that what draws here draws there.
+    readable: &'r dyn Fn(&str) -> Result<(), &'static str>,
     /// Each image met, with its picture or why it isn't drawn.
-    met: HashMap<String, Result<Picture, &'static str>>,
+    met: HashMap<String, Result<Picture, Cow<'static, str>>>,
 }
 
 impl Pictures<'_> {
     /// A picture marker's image as a picture, or the note saying why it is drawn as a circle.
-    fn of(&mut self, s: &Value) -> Result<Picture, &'static str> {
+    fn of(&mut self, s: &Value) -> Result<Picture, Cow<'static, str>> {
         let Some(b64) = s.get("imageData").and_then(Value::as_str).map(str::trim).filter(|b| !b.is_empty()) else {
             // RustGIS doesn't fetch a marker's image from its `url`.
             return Err(if s.get("url").and_then(Value::as_str).is_some_and(|u| !u.trim().is_empty()) {
-                "picture markers whose image is only at a URL, drawn as circles"
+                "picture markers whose image is only at a URL, drawn as circles".into()
             } else {
-                "picture markers with no image, drawn as circles"
+                "picture markers with no image, drawn as circles".into()
             });
         };
         // Looked up first, so that classes sharing an image don't each copy it.
         if let Some(met) = self.met.get(b64) {
-            return *met;
+            return met.clone();
         }
-        *self.met.entry(b64.to_owned()).or_insert_with(|| {
-            // Too long to keep is said before decoding it. What is decoded is bounded by the
-            // description's own cap (`DESCRIPTION_MAX`, 4 MiB), as `layer.marker` decodes one.
-            if b64.len() > MAX_PICTURE_BYTES {
-                return Err("picture markers past 2 MiB of base64, drawn as circles");
-            }
-            if !(self.readable)(b64) {
-                return Err("picture markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles");
-            }
-            // Past the images a run keeps (from a crafted service), it isn't kept.
-            Some(Picture::new(b64)).filter(|p| !p.is_default()).ok_or("picture markers past the images RustGIS keeps, drawn as circles")
-        })
+        self.met
+            .entry(b64.to_owned())
+            .or_insert_with(|| {
+                // Too long to keep is said before decoding it. What is decoded is bounded by the
+                // description's own cap (`DESCRIPTION_MAX`, 4 MiB), as `layer.marker` decodes one.
+                if b64.len() > MAX_PICTURE_BYTES {
+                    return Err("picture markers past 2 MiB of base64, drawn as circles".into());
+                }
+                (self.readable)(b64).map_err(|why| format!("picture markers {why}, drawn as circles"))?;
+                // Past the images a run keeps (from a crafted service), it isn't kept.
+                Some(Picture::new(b64))
+                    .filter(|p| !p.is_default())
+                    .ok_or("picture markers past the images RustGIS keeps, drawn as circles".into())
+            })
+            .clone()
     }
 }
 
 /// Gives `layer`, a feature layer just added from an ArcGIS service, the symbology its
 /// description's `drawingInfo` sets: its renderer, when RustGIS draws its kind (a simple one, by
 /// unique values of a field or by class breaks), and its transparency. A picture marker draws its
-/// image when `readable` (the renderer's check) says it decodes. What can't be drawn as the
-/// service draws it is noted, its labels too; a renderer RustGIS doesn't read leaves the layer's
-/// own. Anything but an object changes nothing.
-pub fn apply(layer: &mut Layer, drawing_info: &Value, readable: &dyn Fn(&str) -> bool, notes: &mut Notes) {
+/// image when `readable` (the renderer's check) takes it, else says why after "whose image".
+/// What can't be drawn as the service draws it is noted, its labels too; a renderer RustGIS
+/// doesn't read leaves the layer's own. Anything but an object changes nothing.
+pub fn apply(layer: &mut Layer, drawing_info: &Value, readable: &dyn Fn(&str) -> Result<(), &'static str>, notes: &mut Notes) {
     if !drawing_info.is_object() || layer.is_raster() {
         return;
     }
@@ -653,8 +659,8 @@ mod tests {
     }
 
     /// The renderer's check stood in for (`map` doesn't decode images): a PNG's base64 begins so.
-    fn png(b64: &str) -> bool {
-        b64.starts_with("iVBORw0KGgo")
+    fn png(b64: &str) -> Result<(), &'static str> {
+        if b64.starts_with("iVBORw0KGgo") { Ok(()) } else { Err("whose image isn't a PNG or JPEG RustGIS reads") }
     }
 
     fn styled(g: GeometryType, info: Value) -> (Layer, Notes) {

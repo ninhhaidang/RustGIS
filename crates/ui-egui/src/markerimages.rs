@@ -60,9 +60,9 @@ pub(crate) fn image(ctx: &egui::Context, m: Marker) -> Option<Image> {
     if let Some(kept) = ctx.data_mut(|d| d.get_temp_mut_or_default::<Kept>(id).0.get(&pic).cloned()) {
         return kept;
     }
-    // Decoded again at this size, not scaled from the map's 700-pixel copy in render's marker
-    // cache, which in one step would alias; once a run for an icon. Loaded outside `data_mut`:
-    // the context's data is locked inside it.
+    // Scaled by averaging from the copy render decodes once for the run (so it doesn't alias, and
+    // the image isn't decoded again); once a run for an icon. Loaded outside `data_mut`: the
+    // context's data is locked inside it.
     let image = rustgis_engine::render::picture_marker_image(pic, SIDE).map(|(pm, aspect)| {
         let pixels = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
         Image { texture: ctx.load_texture("picture-marker", pixels, TextureOptions::LINEAR), aspect }

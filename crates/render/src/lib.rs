@@ -596,20 +596,36 @@ pub fn picture_size(b64: &str) -> Option<(u32, u32)> {
     picture::size(b64)
 }
 
-/// Whether a base64 PNG or JPEG image decodes, as a picture marker's must.
-pub fn picture_marker_readable(b64: &str) -> bool {
-    picture::readable(b64)
+pub use picture::{MARKER_PIXELS, MARKER_PIXELS_SIDE, MarkerRefusal, RUN_MARKER_BYTES, RUN_MARKER_PIXELS};
+
+/// Base64 `b64` as a picture marker's image (one kept already, or one before it is set): its
+/// height for its width when it draws (a PNG or JPEG within [`MARKER_PIXELS`] and what the run has
+/// left of [`RUN_MARKER_PIXELS`] and [`RUN_MARKER_BYTES`], that decodes), or why it would be drawn
+/// as a circle. Decoded once for the run, where drawing it finds it.
+pub fn picture_marker_check(b64: &str) -> Result<f32, MarkerRefusal> {
+    picture::check(b64)
 }
 
-/// Whether picture marker `p` (one a file gives) decodes, so it draws rather than a circle;
-/// decoded into this thread's cache of markers, where drawing on it finds it.
+/// [`picture_marker_check`] for picture marker `p` (one a file gives).
+pub fn picture_marker_kept_check(p: rustgis_map::Picture) -> Result<f32, MarkerRefusal> {
+    picture::marker_drawn(p)
+}
+
+/// Why kept picture marker `p` can't be given again, by command or by a symbol editor: a refusal
+/// for the image itself. `None` where it draws, or is drawn as a circle only until a restart (past
+/// what the run decodes), and is kept as it is.
+pub fn picture_marker_kept_refusal(p: rustgis_map::Picture) -> Option<MarkerRefusal> {
+    picture::marker_kept_refusal(p)
+}
+
+/// Whether picture marker `p` draws rather than a circle ([`picture_marker_kept_check`]).
 pub fn picture_marker_draws(p: rustgis_map::Picture) -> bool {
-    picture::marker_aspect(p).is_some()
+    picture_marker_kept_check(p).is_ok()
 }
 
 /// Picture marker `p`'s image at most `side` pixels per side (a preview's), and its height for its
-/// width from before it was scaled down; `None` where the map draws a circle. Decoded on every
-/// call: the caller keeps it.
+/// width from before it was scaled down; `None` where the map draws a circle. Scaled from the
+/// run's decoded copy on every call: the caller keeps it.
 pub fn picture_marker_image(p: rustgis_map::Picture, side: u32) -> Option<(Pixmap, f32)> {
     picture::marker_image(p, side)
 }

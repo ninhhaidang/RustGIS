@@ -75,15 +75,26 @@ impl MarkerImage {
         // The size first, so a file too large isn't decoded.
         let b64 = (bytes.len() <= crate::MARKER_FILE_MAX_BYTES).then(|| base64::engine::general_purpose::STANDARD.encode(bytes));
         let refused = match &b64 {
-            None => Some(marker_file_too_large()),
-            Some(b64) if !rustgis_engine::render::picture_marker_readable(b64) => {
-                Some(tl!("This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side"))
+            None => Some(marker_file_too_large().to_string()),
+            Some(b64) => {
+                use rustgis_engine::render::MarkerRefusal;
+                // One phrase per refusal, whole, for translation.
+                rustgis_engine::render::picture_marker_check(b64).err().map(|why| match why {
+                    MarkerRefusal::NotAnImage => tl!("This image can't be a marker: it isn't a readable PNG or JPEG").to_string(),
+                    MarkerRefusal::TooManyPixels => crate::i18n::fmt(
+                        "This image can't be a marker: it has more pixels than {side} × {side}; make it smaller",
+                        &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
+                    ),
+                    MarkerRefusal::PastRunPixels => tl!(
+                        "This image can't be a marker: RustGIS has decoded as many marker images as it does until it restarts; restart it to use another"
+                    )
+                    .to_string(),
+                })
             }
-            Some(_) => None,
         };
         if let Some(e) = refused {
-            app.session.notify(e, true);
-            return Err(e.to_string());
+            app.session.notify(e.clone(), true);
+            return Err(e);
         }
         // A layer that left the map while the file came, or a mark no longer in the list (it
         // can't be, from the editor), runs nothing.
@@ -179,7 +190,7 @@ mod tests {
     }
 
     /// The notice for a file that isn't a readable PNG or JPEG the marker can take.
-    const UNREADABLE: &str = "This image can't be a marker: it isn't a readable PNG or JPEG of at most 20,000 px per side";
+    const UNREADABLE: &str = "This image can't be a marker: it isn't a readable PNG or JPEG";
 
     /// «Image…» makes the file the marker of a point symbol, of one mark in a stack of strokes
     /// (the others as they were) and of a dot fill, on the layer it was clicked for even when
@@ -232,8 +243,20 @@ mod tests {
         big.resize(crate::MARKER_FILE_MAX_BYTES + 1, 0);
         let large = dir.path().join("large.png");
         std::fs::write(&large, &big).unwrap();
+        // Small in bytes, past the pixels a marker takes.
+        let mut wide = Vec::new();
+        image::GrayImage::from_pixel(2049, 2048, image::Luma([90]))
+            .write_to(&mut std::io::Cursor::new(&mut wide), image::ImageFormat::Png)
+            .unwrap();
+        let many = dir.path().join("many.png");
+        std::fs::write(&many, &wide).unwrap();
         let steps = app.session.undo_depth();
-        let refusals = [(&gif, UNREADABLE), (&broken, UNREADABLE), (&large, "This image is too large for a marker: at most about 1.5 MiB")];
+        let refusals = [
+            (&gif, UNREADABLE),
+            (&broken, UNREADABLE),
+            (&large, "This image is too large for a marker: at most about 1.5 MiB"),
+            (&many, "This image can't be a marker: it has more pixels than 2048 × 2048; make it smaller"),
+        ];
         for (file, said) in refusals {
             pick_file(&mut app, file, MarkerImage::symbol(cities));
             assert_eq!(layer(&app, "Cities").renderer.base_symbol(), before);

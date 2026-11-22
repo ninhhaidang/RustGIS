@@ -2359,6 +2359,67 @@ fn gif_base64() -> String {
     base64::engine::general_purpose::STANDARD.encode(&gif)
 }
 
+/// A PNG of a few kilobytes, one pixel wider than a marker's image takes (2048 × 2048).
+fn too_many_pixels_png() -> Vec<u8> {
+    let mut png = Vec::new();
+    image::GrayImage::from_pixel(2049, 2048, image::Luma([90]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    png
+}
+
+/// An image marker past the pixels a marker's image takes is said with why, apart from one that
+/// isn't an image, and drawn as a circle.
+#[test]
+fn an_image_marker_past_its_pixels_is_said_with_why() {
+    use base64::Engine;
+    let many = too_many_pixels_png();
+    let picture = rustgis_map::Picture::new(&base64::engine::general_purpose::STANDARD.encode(&many));
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    s.map_mut().layer_mut(id).unwrap().renderer.map_symbols(|sym| sym.marker = rustgis_map::Marker::Picture(picture));
+    let said: Vec<String> = crate::project::picture_notices([s.map().layer(id).unwrap()], []).iter().map(|n| n.english()).collect();
+    assert_eq!(said, ["Image markers in \"Cities\" have more pixels than 2048 × 2048 and are drawn as circles"]);
+    assert!(!rustgis_render::picture_marker_draws(picture));
+}
+
+/// A saved image marker whose image declares more pixels than a marker's takes opens said, with
+/// why, and drawn as a circle; its image kept for saving.
+#[test]
+fn a_large_picture_marker_fixture_opens_said_as_a_circle() {
+    let text = include_str!("../../../schema/fixtures/picture_markers_large.rgis");
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("project.openText", &json!({"text": text})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(
+        said.iter().any(|n| n == "Image markers in \"Schools\" have more pixels than 2048 × 2048 and are drawn as circles"),
+        "{said:?}"
+    );
+    let rustgis_map::Renderer::Single(symbol) = &s.project.styles[0].renderer else { panic!("a single symbol") };
+    let rustgis_map::Marker::Picture(picture) = symbol.marker else { panic!("an image marker") };
+    assert!(picture.base64().starts_with("iVBORw0KGgo") && !rustgis_render::picture_marker_draws(picture));
+}
+
+/// An image marker past what the run decodes is said with both of the run's caps, and as no
+/// other refusal (the renderer's check stood in for, the process's budget left alone).
+#[test]
+fn an_image_marker_past_the_runs_budget_is_said_with_its_caps() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let picture = rustgis_map::Picture::new(&base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"\x89PNG"));
+    s.map_mut().layer_mut(id).unwrap().renderer.map_symbols(|sym| sym.marker = rustgis_map::Marker::Picture(picture));
+    let spent = |_| Some(rustgis_render::MarkerRefusal::PastRunPixels);
+    let said: Vec<String> =
+        crate::project::picture_notices_by([s.map().layer(id).unwrap()], [], &spent).iter().map(|n| n.english()).collect();
+    assert_eq!(
+        said,
+        [
+            "Image markers in \"Cities\" are past what RustGIS decodes of marker images until it restarts (256 megapixels, 128 MiB) and are drawn as circles"
+        ]
+    );
+}
+
 /// A saved image marker that is a GIF (which the desktop's decoder reads and the web's doesn't)
 /// opens said and drawn as a circle on every platform, its image kept for saving.
 #[test]
@@ -2387,6 +2448,12 @@ fn an_image_is_a_marker_kept_in_the_project_file_that_an_older_reader_refuses() 
         .unwrap();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
     let depth = s.undo_depth();
+    // One past the pixels a marker's image takes is refused, saying so, and changes nothing.
+    let many = too_many_pixels_png();
+    let e =
+        s.run("layer.marker", &json!({"layer": "Cities", "image": base64::engine::general_purpose::STANDARD.encode(&many)})).unwrap_err();
+    assert!(e.to_string().ends_with("this one has more pixels than 2048 × 2048"), "{e}");
+    assert_eq!((marker(&s), s.undo_depth()), (Marker::Circle, depth));
     s.run("layer.marker", &json!({"layer": "Cities", "image": format!(" {b64}\n"), "size": 20})).unwrap();
     assert_eq!(marker(&s), Marker::Picture(Picture::new(&b64)));
     assert_eq!(s.undo_depth(), depth + 1);
@@ -3326,6 +3393,8 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
     let mut big = std::fs::read(dir.join("pins/pin.png")).unwrap();
     big.resize(1600 << 10, 0);
     std::fs::write(dir.join("pins/big.png"), big).unwrap();
+    // A few kilobytes, past the pixels a marker's image takes.
+    std::fs::write(dir.join("pins/many.png"), too_many_pixels_png()).unwrap();
     let qml = |file: &str| {
         format!(
             r#"<qgis version="4.2.3"><renderer-v2 type="singleSymbol"><symbols><symbol type="marker" name="0" alpha="1">
@@ -3349,6 +3418,7 @@ fn qgis_raster_image_markers_read_their_files_from_the_style_folder() {
         ("pins/pin.gif", "raster image markers whose image isn't a PNG or JPEG RustGIS reads, drawn as circles"),
         ("pins/gone.png", "raster image markers whose image file doesn't open, drawn as circles"),
         ("pins/big.png", "raster image markers whose image is past 2 MiB of base64, drawn as circles"),
+        ("pins/many.png", "raster image markers whose image has more pixels than 2048 × 2048, drawn as circles"),
     ] {
         let path = dir.join("pins.qml");
         std::fs::write(&path, qml(file)).unwrap();

@@ -5841,11 +5841,13 @@ pub(crate) fn stroke_image(layer: u32, class: Option<&ClassRef>, strokes: &[Line
 }
 
 /// A marker as an editor sends it back: an image that can't be drawn (one a file gave that wasn't
-/// kept, or that doesn't decode) becomes the circle it is drawn as, which the command takes where
-/// it refuses the image. Whether it was replaced.
+/// kept, that doesn't decode or that has too many pixels) becomes the circle it is drawn as, which
+/// the command takes where it refuses the image. One drawn as a circle only for what the run has
+/// spent is sent as it is, to draw after a restart. Whether it was replaced.
 pub(crate) fn drawn_marker(m: Marker) -> (Marker, bool) {
+    let lost = |p| rustgis_engine::render::picture_marker_kept_refusal(p).is_some();
     match m {
-        Marker::Picture(p) if !rustgis_engine::render::picture_marker_draws(p) => (Marker::Circle, true),
+        Marker::Picture(p) if lost(p) => (Marker::Circle, true),
         m => (m, false),
     }
 }
@@ -7816,6 +7818,19 @@ pub(crate) fn layout_menu(app: &mut RustGisApp, ui: &mut Ui, n: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An editor sends back an image that draws as it is, and one refused for itself (not an
+    /// image) as the circle it is drawn as, counted. The rule is render's
+    /// `picture_marker_kept_refusal`, whose tests cover one refused only until a restart.
+    #[test]
+    fn an_editor_sends_an_image_that_cant_draw_as_its_circle() {
+        let png =
+            "iVBORw0KGgoAAAANSUhEUgAAABgAAAAMCAYAAAB4MH11AAAAIElEQVR4nGO4ICPznxQsE3OBJMwwasGoBaMWjFpAGAMALk9r//PjorkAAAAASUVORK5CYII=";
+        let fine = Marker::Picture(rustgis_engine::map::Picture::new(png));
+        assert_eq!(drawn_marker(fine), (fine, false));
+        let broken = Marker::Picture(rustgis_engine::map::Picture::new("bm90IGFuIGltYWdl"));
+        assert_eq!(drawn_marker(broken), (Marker::Circle, true));
+    }
 
     /// A point layer given an image by `layer.marker` shows it in its patch (the Layers row and the
     /// symbol editor's swatch), and a stroke's image marker shows on the stroke editor's line, not

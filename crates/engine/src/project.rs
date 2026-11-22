@@ -1938,24 +1938,57 @@ fn empty_map() -> &'static Map {
 pub const MAX_ITEMS: usize = 1000;
 
 /// What a read made of the image markers of `layers` and saved `styles` (by name): those not
-/// kept, which saving loses, and those that aren't a PNG or JPEG image that decodes (each image
-/// decoded once); both are drawn as circles.
+/// kept, which saving loses, and those the renderer draws as circles, by why (not a PNG or JPEG
+/// that decodes, past `render::MARKER_PIXELS`, or past what the run has left of
+/// `render::RUN_MARKER_PIXELS`; each image checked once); both are drawn as circles. Checking
+/// decodes each new image, on the UI thread: at most what the run decodes, once.
 pub(crate) fn picture_notices<'a>(
     layers: impl IntoIterator<Item = &'a rustgis_map::Layer>,
     styles: impl IntoIterator<Item = (&'a str, &'a rustgis_map::Renderer)>,
 ) -> Vec<NoticeText> {
+    picture_notices_by(layers, styles, &|p| rustgis_render::picture_marker_kept_check(p).err())
+}
+
+/// [`picture_notices`], each kept image's refusal given by `check` (the renderer's; a test's own,
+/// to say what a run past its budget says without spending the process's).
+pub(crate) fn picture_notices_by<'a>(
+    layers: impl IntoIterator<Item = &'a rustgis_map::Layer>,
+    styles: impl IntoIterator<Item = (&'a str, &'a rustgis_map::Renderer)>,
+    check: &dyn Fn(rustgis_map::Picture) -> Option<rustgis_render::MarkerRefusal>,
+) -> Vec<NoticeText> {
     use rustgis_map::Picture;
     use rustgis_map::symbology::{MAX_PICTURE_BYTES, MAX_PICTURES, MAX_PICTURES_BYTES};
+    use rustgis_render::MarkerRefusal;
     let seen = std::cell::RefCell::new(std::collections::HashMap::new());
-    let unreadable =
-        |p: Picture| !p.is_default() && !*seen.borrow_mut().entry(p).or_insert_with(|| rustgis_render::picture_marker_draws(p));
-    let (mut dropped, mut bad) = (Vec::new(), Vec::new());
+    let refused = |p: Picture| {
+        if p.is_default() {
+            return None;
+        }
+        *seen.borrow_mut().entry(p).or_insert_with(|| check(p))
+    };
+    // The names with an image refused so, by each refusal in `WHY`, in the order their notices go.
+    const WHY: [MarkerRefusal; 3] = [MarkerRefusal::NotAnImage, MarkerRefusal::TooManyPixels, MarkerRefusal::PastRunPixels];
+    let (mut dropped, mut bad) = (Vec::new(), [Vec::new(), Vec::new(), Vec::new()]);
     let mut note = |name: &'a str, any: &dyn Fn(&dyn Fn(Picture) -> bool) -> bool| {
         if any(&Picture::is_dropped) {
             dropped.push(name);
         }
-        if any(&unreadable) {
-            bad.push(name);
+        // One walk of the symbols (answering no to see them all), noting each refusal met.
+        let met = std::cell::Cell::new([false; 3]);
+        any(&|p| {
+            if let Some(why) = refused(p)
+                && let Some(i) = WHY.iter().position(|w| *w == why)
+            {
+                let mut seen = met.get();
+                seen[i] = true;
+                met.set(seen);
+            }
+            false
+        });
+        for (names, met) in bad.iter_mut().zip(met.get()) {
+            if met {
+                names.push(name);
+            }
         }
     };
     for l in layers {
@@ -1976,10 +2009,27 @@ pub(crate) fn picture_notices<'a>(
             ],
         ));
     }
-    if !bad.is_empty() {
+    let [not_images, too_large, past_run] = &bad;
+    if !not_images.is_empty() {
         notices.push(NoticeText::format(
             "Image markers in {names} aren't PNG or JPEG images and are drawn as circles",
-            [("names", picture_names(&bad))],
+            [("names", picture_names(not_images))],
+        ));
+    }
+    if !too_large.is_empty() {
+        notices.push(NoticeText::format(
+            "Image markers in {names} have more pixels than {side} × {side} and are drawn as circles",
+            [("names", picture_names(too_large)), ("side", rustgis_render::MARKER_PIXELS_SIDE.to_string().into())],
+        ));
+    }
+    if !past_run.is_empty() {
+        notices.push(NoticeText::format(
+            "Image markers in {names} are past what RustGIS decodes of marker images until it restarts ({mpx} megapixels, {mib} MiB) and are drawn as circles",
+            [
+                ("names", picture_names(past_run)),
+                ("mpx", (rustgis_render::RUN_MARKER_PIXELS / 1_000_000).to_string().into()),
+                ("mib", (rustgis_render::RUN_MARKER_BYTES >> 20).to_string().into()),
+            ],
         ));
     }
     notices

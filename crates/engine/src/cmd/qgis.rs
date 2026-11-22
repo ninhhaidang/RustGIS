@@ -81,13 +81,14 @@ fn marker_images() -> impl FnMut(&str) -> Result<(String, f32), &'static str> {
 /// within what a picture marker keeps (`symbology::MAX_PICTURE_BYTES` of base64, 2 MiB), checked
 /// as `layer.marker` checks an image; with its height over its width. Its base64's length is added
 /// to `read`, or for a file that doesn't read (past the limit, or failing part way) what was read
-/// of it, so the import's bound overshoots by one file at most. Checking it decodes it, at most
-/// 20,000 pixels a side within 512 MiB, as `layer.marker` does.
+/// of it, so the import's bound overshoots by one file at most. Checking it decodes it, within
+/// `render::MARKER_PIXELS` and what the run has left of `render::RUN_MARKER_PIXELS`, as
+/// `layer.marker` does.
 fn marker_image(source: &str, read: &mut usize) -> Result<(String, f32), &'static str> {
     use base64::Engine;
     use rustgis_map::symbology::MAX_PICTURE_BYTES as MARKER_PICTURE_BYTES;
     const TOO_LARGE: &str = "whose image is past 2 MiB of base64";
-    const NOT_AN_IMAGE: &str = "whose image isn't a PNG or JPEG RustGIS reads";
+    const NOT_AN_IMAGE: &str = rustgis_render::MarkerRefusal::NotAnImage.whose();
     let b64 = match source.strip_prefix("base64:") {
         // Past the limit, refused before it is copied, and charged as a file past it is.
         Some(b64) if b64.trim().len() > MARKER_PICTURE_BYTES => {
@@ -119,15 +120,9 @@ fn marker_image(source: &str, read: &mut usize) -> Result<(String, f32), &'stati
     if b64.len() > MARKER_PICTURE_BYTES {
         return Err(TOO_LARGE);
     }
-    // As `layer.marker` checks one: one kept already decodes into the drawing's cache.
-    let readable = match rustgis_map::Picture::kept(&b64) {
-        Some(kept) => rustgis_render::picture_marker_draws(kept),
-        None => rustgis_render::picture_marker_readable(&b64),
-    };
-    match rustgis_render::picture_size(&b64) {
-        Some((w, h)) if readable && w > 0 && h > 0 => Ok((b64, h as f32 / w as f32)),
-        _ => Err(NOT_AN_IMAGE),
-    }
+    // As `layer.marker` checks one, decoded once for the run, where drawing it finds it.
+    let aspect = rustgis_render::picture_marker_check(&b64).map_err(rustgis_render::MarkerRefusal::whose)?;
+    Ok((b64, aspect))
 }
 
 /// The most bytes of a QGIS file read (a `.qgz` can carry data files beside its project).

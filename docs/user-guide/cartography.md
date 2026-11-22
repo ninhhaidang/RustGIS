@@ -96,8 +96,15 @@ layer.marker={"layer":"Peaks","char":"▲","font":"DejaVu Sans","size":12}
 
 A marker can also be an **image**: a PNG or JPEG, picked with **Image…** at the end of **Shape**
 (choose it again for another image), or given by command as base64 (at most 2 MiB of base64 text,
-an image of about 1.5 MiB). Other formats, such as GIF, aren't taken: a file in another format,
-one too large, or one that doesn't decode is said in a notice and leaves the marker as it was.
+an image of about 1.5 MiB) and of at most 2048 × 2048 pixels (by area: a 4096 × 1024 strip is
+taken). Other formats, such as GIF, aren't taken: a file in another format, one too large, or one
+that doesn't decode is said in a notice and leaves the marker as it was. Each image is decoded
+once until RustGIS restarts, and kept decoded, at most 700 pixels a side: in all at most
+256 megapixels of different marker images and 128 MiB once decoded (as many images as it keeps,
+at 177 × 177 each), so that a crafted file can't hold it for minutes; past it a new image is
+refused, or drawn as a circle, with a notice saying so, until RustGIS is restarted. A vector
+export keeps a compressed copy of each image it draws, at most about as much again (some 256 MiB
+in all), which counts too and leaves less for new images.
 Its size is its width, and it is as tall as its proportions make it, as QGIS draws a raster image
 marker; the symbol's fill and outline don't show. It turns with **Rotation**, is ringed when
 selected, and is kept in the project file. A project that has one opens only in a RustGIS that
@@ -348,11 +355,12 @@ line** turns each mark with the line's direction; the **Angle** turns it further
 take the stroke's colour, its width as a hash mark's line (or a marker's outline, by command), and
 its offset to either side. Stack them with line strokes: a casing, a core and ticks across it. A
 marker can also be an image, with **Image…** under **Shape** or by command (`"image"`, a PNG or
-JPEG as base64 of at most 2 MiB): as wide as its **Size** and as tall as its proportions make
-it, turned with the line, the stroke's colour and outline left out; selected, each is framed. An
-image a file gave that can't be drawn
-(too large to keep, or one that doesn't decode) shows as a circle; changing the strokes in the
-pane makes it the circle, and says so. By command, `"markers"` on a stroke:
+JPEG as base64 of at most 2 MiB and 2048 × 2048 pixels): as wide as its **Size** and as tall as
+its proportions make it, turned with the line, the stroke's colour and outline left out; selected,
+each is framed. An image a file gave that can't be drawn (too large to keep, one that doesn't
+decode or that has too many pixels) shows as a circle; changing the strokes in the pane makes it
+the circle, and says so. One past what RustGIS decodes until it restarts shows as a circle and is
+kept as it is. By command, `"markers"` on a stroke:
 
 ```text
 layer.lineStrokes={"layer":"Railways","strokes":[{"color":"#333333","width":1.5},{"color":"#333333","width":1,"markers":{"mark":"hash","size":6,"interval":10}}]}

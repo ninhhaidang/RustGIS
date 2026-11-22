@@ -424,7 +424,8 @@ near as it can, or left out, and said: the import's notes list, layer by layer, 
 approximated (vector tile styles, text matched ignoring letter case, a memory layer's fields of kinds RustGIS hasn't as text, gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
 raster image markers whose image RustGIS can't use as circles (one at a web address, which it
 doesn't fetch, or kept inside a `.qgz`; a file that doesn't open or isn't a PNG or JPEG; one past
-2 MiB of base64 or the images it keeps), those of a fixed aspect ratio in their image's own,
+2 MiB of base64, 2048 × 2048 pixels, the images it keeps or the pixels or memory of marker images it decodes
+until it restarts), those of a fixed aspect ratio in their image's own,
 see-through ones opaque and those anchored off their centre along lines centred,
 dashed polygon outlines solid, label halos with sharp corners drawn round and blended ones drawn
 over the map, label backgrounds of other shapes drawn as rectangles, label distances from lines

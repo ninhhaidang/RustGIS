@@ -347,12 +347,12 @@ pub fn commands() -> Vec<C> {
         C::new("layer.lineStrokes", "Line Strokes", "Style › Drawing", line_strokes).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_lines_or_points)
             .params(
-                r##"{"layer"?, "strokes": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the renderer's line colour), "width"?: points|null (null: the renderer's width), "offset"?: points (positive: right of the line's direction, negative: left), "cap"?: "round"|"flat"|"square", "join"?: "round"|"miter"|"bevel", "level"?: 0..255|null (with layer.strokeLevels: the level it draws at; null: its place in the stack), "dash"?: [points, …]|null (dash, gap, … in turn, at most 8; null: solid), "markers"?: {"mark"?: "circle"|"square"|"triangle"|"diamond"|"star"|"character"|"image"|"hash" (a mark across the line), "char"?: text (a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "image"?: text (a PNG or JPEG image as base64 of at most 2 MiB, as the marker instead of a shape: as wide as its size, as tall as its proportions make it; the stroke's colour and the outline don't show), "size"?: points (a marker's size, a hash mark's length; default 4), "at"?: "interval"|"vertices"|"innerVertices"|"first"|"last"|"middle"|"segmentMiddles" or a list of them (default "interval"), "interval"?: points (default 12), "offsetAlong"?: points (from the start, back from the end, on from the middle), "rotate"?: bool (turned with the line; default true), "averageAngle"?: points (the stretch of line a marker at an interval turns with; 0: its segment), "angle"?: degrees clockwise (a hash mark at 0 crosses the line square), "outline"?: "#RRGGBB"|"#RRGGBBAA" (the markers' outline, as wide as the stroke)}|null (markers or hash marks along the line in the stroke's colour, instead of a line; cap, join and dash don't apply)}] (drawn bottom first; [] goes back to the single stroke, or for a class to the layer's strokes; on a point layer they are its marks: each stroke's markers drawn at the point in place of the symbol's, "offsetAlong" shifting a mark right and "offset" down, both turned with its "angle", and "rotate" turning it by layer.markerRotation's field), "value"?: text|number (a Unique Values class's own strokes), "index"?: number (a Graduated Colors class's, 0 = the lowest), "other"?: true (Unique Values' <all other values>)}"##,
+                r##"{"layer"?, "strokes": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the renderer's line colour), "width"?: points|null (null: the renderer's width), "offset"?: points (positive: right of the line's direction, negative: left), "cap"?: "round"|"flat"|"square", "join"?: "round"|"miter"|"bevel", "level"?: 0..255|null (with layer.strokeLevels: the level it draws at; null: its place in the stack), "dash"?: [points, …]|null (dash, gap, … in turn, at most 8; null: solid), "markers"?: {"mark"?: "circle"|"square"|"triangle"|"diamond"|"star"|"character"|"image"|"hash" (a mark across the line), "char"?: text (a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "image"?: text (a PNG or JPEG image as base64 of at most 2 MiB and 2048 × 2048 pixels, as the marker instead of a shape: as wide as its size, as tall as its proportions make it; the stroke's colour and the outline don't show), "size"?: points (a marker's size, a hash mark's length; default 4), "at"?: "interval"|"vertices"|"innerVertices"|"first"|"last"|"middle"|"segmentMiddles" or a list of them (default "interval"), "interval"?: points (default 12), "offsetAlong"?: points (from the start, back from the end, on from the middle), "rotate"?: bool (turned with the line; default true), "averageAngle"?: points (the stretch of line a marker at an interval turns with; 0: its segment), "angle"?: degrees clockwise (a hash mark at 0 crosses the line square), "outline"?: "#RRGGBB"|"#RRGGBBAA" (the markers' outline, as wide as the stroke)}|null (markers or hash marks along the line in the stroke's colour, instead of a line; cap, join and dash don't apply)}] (drawn bottom first; [] goes back to the single stroke, or for a class to the layer's strokes; on a point layer they are its marks: each stroke's markers drawn at the point in place of the symbol's, "offsetAlong" shifting a mark right and "offset" down, both turned with its "angle", and "rotate" turning it by layer.markerRotation's field), "value"?: text|number (a Unique Values class's own strokes), "index"?: number (a Graduated Colors class's, 0 = the lowest), "other"?: true (Unique Values' <all other values>)}"##,
             ),
         C::new("layer.fillLayers", "Fill Layers", "Style › Drawing", fill_layers).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_polygon_features)
             .params(
-                r##"{"layer"?, "value"?|"index"?|"other"?: a class of Unique Values (its value, or other: true) or Graduated Colors (its index) to set its own fills (none: the layer's), "fills": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the feature's fill colour, so the fills follow the classes), "pattern"?: "solid" (default)|"hatch" (parallel lines)|"dots" (markers on a grid)|"gradient" (from color to color2 across the feature)|"shapeburst" (from color at the edge to color2 inside), "angle"?: degrees anticlockwise from east (hatch), "spacing"?: points between lines (hatch, 1 to 500; default 8) or points across and down between markers, a number or [across, down] (dots), "width"?: a hatch line's width in points (0 to 50; default 1), "offset"?: points across the lines (hatch) or [across, down] (dots), "marker"?: "circle"|"square"|"triangle"|"diamond"|"star"|"image" (dots), "char"?: text (dots: a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "image"?: text (dots: a PNG or JPEG image as base64 of at most 2 MiB, as the marker instead of a shape: as wide as its size, as tall as its proportions make it; the colour and the outline don't show), "size"?: a marker's size in points (default 3), "outline"?: a marker's outline colour or null, "outlineWidth"?: points, "displacement"?: [across, down] points every other row and column are shifted by (dots), "color2"?: "#RRGGBB"|"#RRGGBBAA" (gradient, shapeburst: the second colour; default white), "stops"?: [[0..1, "#RRGGBB"|"#RRGGBBAA"], …] (gradient, shapeburst: colours between the two, at most 16), "discrete"?: bool (each colour held until the next stop), "shape"?: "linear" (default)|"radial"|"conical" (gradient), "from"?: [across, down]|"centroid" (gradient: where color is, 0..1 in the feature's box; default [0.5, 0], the top middle), "to"?: [across, down]|"centroid" (where color2 is; default [0.5, 1]), "spread"?: "pad" (default)|"reflect"|"repeat" (gradient: past its points), "angle"?: degrees anticlockwise (gradient: turned round its box's middle), "inView"?: bool (gradient: from and to in the map view's box, not the feature's), "distance"?: points|null (shapeburst: how deep it shades; null or none: to the point deepest inside), "blur"?: 0..17 (shapeburst: pixels), "ignoreRings"?: bool (shapeburst: holes' edges left out)}] (bottom first, at most 8; [] for the symbol's single fill; the outline is drawn over them)}"##,
+                r##"{"layer"?, "value"?|"index"?|"other"?: a class of Unique Values (its value, or other: true) or Graduated Colors (its index) to set its own fills (none: the layer's), "fills": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the feature's fill colour, so the fills follow the classes), "pattern"?: "solid" (default)|"hatch" (parallel lines)|"dots" (markers on a grid)|"gradient" (from color to color2 across the feature)|"shapeburst" (from color at the edge to color2 inside), "angle"?: degrees anticlockwise from east (hatch), "spacing"?: points between lines (hatch, 1 to 500; default 8) or points across and down between markers, a number or [across, down] (dots), "width"?: a hatch line's width in points (0 to 50; default 1), "offset"?: points across the lines (hatch) or [across, down] (dots), "marker"?: "circle"|"square"|"triangle"|"diamond"|"star"|"image" (dots), "char"?: text (dots: a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "image"?: text (dots: a PNG or JPEG image as base64 of at most 2 MiB and 2048 × 2048 pixels, as the marker instead of a shape: as wide as its size, as tall as its proportions make it; the colour and the outline don't show), "size"?: a marker's size in points (default 3), "outline"?: a marker's outline colour or null, "outlineWidth"?: points, "displacement"?: [across, down] points every other row and column are shifted by (dots), "color2"?: "#RRGGBB"|"#RRGGBBAA" (gradient, shapeburst: the second colour; default white), "stops"?: [[0..1, "#RRGGBB"|"#RRGGBBAA"], …] (gradient, shapeburst: colours between the two, at most 16), "discrete"?: bool (each colour held until the next stop), "shape"?: "linear" (default)|"radial"|"conical" (gradient), "from"?: [across, down]|"centroid" (gradient: where color is, 0..1 in the feature's box; default [0.5, 0], the top middle), "to"?: [across, down]|"centroid" (where color2 is; default [0.5, 1]), "spread"?: "pad" (default)|"reflect"|"repeat" (gradient: past its points), "angle"?: degrees anticlockwise (gradient: turned round its box's middle), "inView"?: bool (gradient: from and to in the map view's box, not the feature's), "distance"?: points|null (shapeburst: how deep it shades; null or none: to the point deepest inside), "blur"?: 0..17 (shapeburst: pixels), "ignoreRings"?: bool (shapeburst: holes' edges left out)}] (bottom first, at most 8; [] for the symbol's single fill; the outline is drawn over them)}"##,
             ),
         C::new("layer.markerRotation", "Marker Rotation", "Style › Drawing", |s, p| {
             let field = match p.get("field") {
@@ -415,7 +415,11 @@ pub fn commands() -> Vec<C> {
             let id = s.layer_id(p)?;
             s.map().layer(id).ok_or("no such layer")?;
             // Decoded here, on the UI thread, as any command runs: at most 2 MiB of base64, whose
-            // declared size is checked before the decoder, capped in memory, runs.
+            // declared pixels are checked before the decoder runs (`render::MARKER_PIXELS` each,
+            // some 80 ms; `render::RUN_MARKER_PIXELS` in all until RustGIS restarts, some 5 s, the
+            // most any number of calls can take). A call refused after the check sets none of its
+            // images on the layer, but their decoding stays charged, and the decoded copies kept:
+            // it took the time it stands for.
             let mut new = Vec::new();
             let mut image = picture(p, &mut new)?;
             keep_pictures(image.iter_mut(), new)?;
@@ -444,7 +448,7 @@ pub fn commands() -> Vec<C> {
             })
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
-        .params(r#"{"layer"?, "shape"?: "circle"|"square"|"triangle"|"diamond"|"star", "char"?: text (a character of a font as the marker, its first; sized by the font's em), "font"?: text (the installed family the character is drawn from; "" or one not installed: the label font), "image"?: text (a PNG or JPEG image as base64 of at most 2 MiB, as the marker: as wide as the size, as tall as its proportions make it; its fill and outline don't show), "size"?: number}"#),
+        .params(r#"{"layer"?, "shape"?: "circle"|"square"|"triangle"|"diamond"|"star", "char"?: text (a character of a font as the marker, its first; sized by the font's em), "font"?: text (the installed family the character is drawn from; "" or one not installed: the label font), "image"?: text (a PNG or JPEG image as base64 of at most 2 MiB and 2048 × 2048 pixels, as the marker: as wide as the size, as tall as its proportions make it; its fill and outline don't show), "size"?: number}"#),
         C::new("layer.transparency", "Transparency", "Style › Effects", |s, p| {
             let t = f(p, "value").ok_or("value (0–100) is required")?.clamp(0.0, 100.0) as f32;
             with(s, p, |l| l.transparency = t)
@@ -1656,11 +1660,12 @@ fn not_empty(image: Option<&Value>) -> Result<(), String> {
 }
 
 /// An `image` (`layer.marker`'s, a line marker's, a dot fill's): a PNG or JPEG image as base64,
-/// which must decode. One kept already is returned; a new one is only checked, its base64 put in
-/// `new` and an empty picture returned in its place, for [`keep_pictures`] to keep once the whole
-/// call is checked: a call refused for a later stroke or fill keeps none of its images.
+/// which must decode. One kept already is returned where it draws; a new one is only checked, its
+/// base64 put in `new` and an empty picture returned in its place, for [`keep_pictures`] to keep
+/// once the whole call is checked: a call refused for a later stroke or fill keeps none of its
+/// images.
 fn picture<'a>(p: &'a Value, new: &mut Vec<&'a str>) -> Result<Option<Picture>, String> {
-    const WHAT: &str = "image is a PNG or JPEG image as base64";
+    const WHAT: &str = "image is a PNG or JPEG image as base64, of at most 2048 × 2048 pixels";
     let b64 = match p.get("image") {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(b64)) => b64.trim(),
@@ -1669,14 +1674,20 @@ fn picture<'a>(p: &'a Value, new: &mut Vec<&'a str>) -> Result<Option<Picture>, 
     if b64.len() > rustgis_map::symbology::MAX_PICTURE_BYTES {
         return Err(format!("image is at most {} MiB of base64", rustgis_map::symbology::MAX_PICTURE_BYTES >> 20));
     }
-    // One given again (the editor sends a stroke's or a fill's image with every change, a slider
-    // every frame) is found where it's kept, and decoded once into the drawing's cache.
+    // Checking decodes an image once for the run: one given again (the editor sends a stroke's or
+    // a fill's image with every change, a slider every frame) is found decoded. One met earlier in
+    // the call was checked then.
+    let refused = |why: rustgis_render::MarkerRefusal| format!("{WHAT}: this one {}", why.what());
     if let Some(kept) = Picture::kept(b64) {
-        return if rustgis_render::picture_marker_draws(kept) { Ok(Some(kept)) } else { Err(WHAT.into()) };
+        // One refused only for what the run has spent is kept as it is, drawn as a circle until a
+        // restart, so an edit that sends it again (a script's) isn't refused for it.
+        return match rustgis_render::picture_marker_kept_refusal(kept) {
+            Some(why) => Err(refused(why)),
+            None => Ok(Some(kept)),
+        };
     }
-    // One met earlier in the call was checked then: an image decodes once per call.
-    if !new.contains(&b64) && !rustgis_render::picture_marker_readable(b64) {
-        return Err(WHAT.into());
+    if !new.contains(&b64) {
+        rustgis_render::picture_marker_check(b64).map_err(refused)?;
     }
     new.push(b64);
     Ok(Some(Picture::default()))
