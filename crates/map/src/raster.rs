@@ -309,12 +309,17 @@ impl RasterLayer {
 
     /// A raster from a file's bytes, kept in the project.
     pub fn from_bytes(raster: Raster, file_name: impl Into<String>, bytes: Vec<u8>) -> RasterLayer {
+        Self::from_shared(raster, file_name, Arc::new(bytes))
+    }
+
+    /// Keeps the original shared allocation used to decode an uploaded raster.
+    pub fn from_shared(raster: Raster, file_name: impl Into<String>, bytes: Arc<Vec<u8>>) -> RasterLayer {
         let style = RasterStyle::default_for(&raster);
         RasterLayer {
             path: None,
             in_place: false,
             file_name: Some(file_name.into()),
-            embedded: Some(Arc::new(bytes)),
+            embedded: Some(bytes),
             subdataset: None,
             crs: None,
             time_zarr: None,
@@ -543,7 +548,7 @@ impl RasterLayer {
                             _ => "The raster could not be downloaded.".to_string(),
                         }))
                         .and_then(|bytes| {
-                            rustgis_data::raster::read_bytes_page(&name, &bytes, page.as_deref(), placement.is_none())
+                            rustgis_data::raster::read_shared_page(&name, Arc::new(bytes), page.as_deref(), placement.is_none())
                                 .and_then(|r| placed(r, placement))
                                 .map(Arc::new)
                                 .map_err(|e| e.to_string())
@@ -556,9 +561,9 @@ impl RasterLayer {
         }
         // A scan goes back where it was laid (a GeoTIFF opened `as` a scan is one again).
         let r = if let Some(bytes) = &self.embedded {
-            rustgis_data::raster::read_bytes_page(
+            rustgis_data::raster::read_shared_page(
                 self.file_name.as_deref().unwrap_or("raster.tif"),
-                bytes,
+                bytes.clone(),
                 self.subdataset.as_deref(),
                 self.placement.is_none(),
             )

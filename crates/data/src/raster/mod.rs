@@ -1842,6 +1842,17 @@ pub fn read_bytes_page(file_name: &str, bytes: &[u8], page: Option<&str>, place:
     }
 }
 
+/// Reads an owned upload or embedded raster without copying PDF bytes for the decoder.
+/// Other formats borrow the same buffer, as [`read_bytes_page`] does.
+pub fn read_shared_page(file_name: &str, bytes: std::sync::Arc<Vec<u8>>, page: Option<&str>, place: bool) -> Result<Raster> {
+    #[cfg(feature = "pdf")]
+    if is_pdf_name(file_name) {
+        let name = Path::new(file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
+        return pdf::read_shared(name, bytes, page, place);
+    }
+    read_bytes_page(file_name, &bytes, page, place)
+}
+
 /// Reads a raster from a file's name and bytes (a browser upload); a PDF's first page.
 pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<Raster> {
     if is_pdf_name(file_name) {

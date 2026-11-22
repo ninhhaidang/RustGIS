@@ -309,25 +309,27 @@ fn window_turn(left: &std::sync::atomic::AtomicBool) -> Option<std::sync::MutexG
     }
 }
 
-/// Reads a downloaded PDF's page or GRIB file ([`read_download_page`]) on the calling thread, with
+/// Reads a downloaded PDF's page or GRIB file ([`read_download_shared_page`]) on the calling thread, with
 /// `left` as its Cancel: the reader's progress checks look at it there, between messages and
 /// before each band is laid out, so a GRIB file's read stops once the message or band under way
 /// is done (one message's decode, of at most `max_samples` values, isn't stopped) and gives up
 /// its turn. A bug is said, not left to end the
 /// thread (no command's catch reaches it).
 ///
-/// [`read_download_page`]: rustgis_engine::cmd::raster::read_download_page
+/// [`read_download_shared_page`]: rustgis_engine::cmd::raster::read_download_shared_page
 #[cfg(not(target_arch = "wasm32"))]
 fn read_download(
     name: &str,
-    bytes: &[u8],
+    bytes: &std::sync::Arc<Vec<u8>>,
     page: Option<&str>,
     place: bool,
     left: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<rustgis_engine::data::raster::Raster, String> {
     let _probe = rustgis_engine::data::progress::install(Some(std::sync::Arc::new(syncmark::Stop(left.clone()))));
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_engine::cmd::raster::read_download_page(name, bytes, page, place)))
-        .unwrap_or_else(|_| Err(tl!("Reading the download failed unexpectedly").to_string()))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rustgis_engine::cmd::raster::read_download_shared_page(name, bytes.clone(), page, place)
+    }))
+    .unwrap_or_else(|_| Err(tl!("Reading the download failed unexpectedly").to_string()))
 }
 
 /// A shell's overrides of the Settings › Start-up preferences for one launch.
@@ -6207,7 +6209,7 @@ impl RustGisApp {
     }
 
     /// Draws a downloaded PDF's page, or reads a downloaded GRIB file, on a thread
-    /// ([`rustgis_engine::cmd::raster::read_download_page`]),
+    /// ([`rustgis_engine::cmd::raster::read_download_shared_page`]),
     /// to be added with its bytes once drawn ([`UiState::page_reads`]). `page`: its file name, page
     /// and whether it is placed ([`download_page`]). Drawn one at a time with the windows' reads;
     /// past [`MAX_WINDOW_READS`] under way, or where the OS gives no thread, it waits in
@@ -7969,6 +7971,7 @@ mod record_tests {
         let mut bytes = b"GRIB\0\0\0\x02".to_vec();
         bytes.extend(1000u64.to_be_bytes());
         bytes.resize(64, 0);
+        let bytes = std::sync::Arc::new(bytes);
         let left = std::sync::Arc::new(AtomicBool::new(false));
         let read = crate::read_download("t.grb", &bytes, None, true, &left).unwrap_err();
         assert!(!read.contains("cancel"), "{read}");

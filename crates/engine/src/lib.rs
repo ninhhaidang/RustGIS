@@ -1648,7 +1648,7 @@ impl Session {
     }
 
     /// Hands over a PDF download's bytes with its page drawn off the frame
-    /// ([`cmd::raster::read_download_page`]), for `layer.addDownload {"id"}` as
+    /// ([`cmd::raster::read_download_shared_page`]), for `layer.addDownload {"id"}` as
     /// [`Session::download_landed`] does.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn download_landed_page(&mut self, id: u64, bytes: Vec<u8>, page: rustgis_data::raster::Raster) -> bool {

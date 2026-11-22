@@ -631,6 +631,12 @@ pub fn read_download_page(name: &str, bytes: &[u8], page: Option<&str>, place: b
     raster::read_bytes_page(name, bytes, page, place).map_err(|e| format!("{name}: {e}"))
 }
 
+/// Reads a download whose retry/landing state already shares its bytes, without copying a PDF.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_download_shared_page(name: &str, bytes: std::sync::Arc<Vec<u8>>, page: Option<&str>, place: bool) -> Result<Raster, String> {
+    raster::read_shared_page(name, bytes, page, place).map_err(|e| format!("{name}: {e}"))
+}
+
 /// The raster at `path` (a PDF's `page`), read whole; for a `scan`, as the file holds it, without
 /// the world file beside it (#2075).
 pub(crate) fn read_raster_as(path: &str, page: Option<&str>, scan: bool) -> Result<Raster, String> {
@@ -745,7 +751,7 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
 }
 
 /// [`add_named_bytes`], with a PDF's page drawn already off the frame (a download's,
-/// [`read_download_page`]) instead of here.
+/// [`read_download_shared_page`]) instead of here.
 pub(crate) fn add_named_bytes_read(
     s: &mut Session,
     p: &Value,
@@ -769,18 +775,19 @@ pub(crate) fn add_named_bytes_read(
         return Err(JPEG2000_WEB_LIMITATION.into());
     }
     if raster::is_raster_name(&name) {
+        let bytes = std::sync::Arc::new(bytes);
         // A PDF's page, kept so the project reads the same page from its copy again.
         let page = pdf_page(&name, p)?;
         let mut r = match drawn {
             Some(r) => r,
-            None => raster::read_bytes_page(&name, &bytes, page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
+            None => raster::read_shared_page(&name, bytes.clone(), page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
         };
         r.lost.extend(raster::elevation_ignores(&name, ps(p, "layer"), ps(p, "crs")));
         if scan {
             r = r.into_scan().map_err(|e| format!("{name}: {e}"))?;
         }
         let title = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| r.name.clone());
-        let mut rl = RasterLayer::from_bytes(r, name, bytes);
+        let mut rl = RasterLayer::from_shared(r, name, bytes);
         rl.subdataset = page;
         return add_raster_after(s, &title, rl, zoom);
     }

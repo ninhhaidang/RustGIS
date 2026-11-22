@@ -49807,7 +49807,8 @@ fn a_pdf_is_added_back_as_a_raster() {
         // An address without a file name: a PDF by its contents.
         let (sniffed, ..) = crate::cmd::raster::download_page("https://example.org/download?id=42", &asked, &bytes).unwrap();
         assert!(rustgis_data::raster::is_pdf_name(&sniffed), "{sniffed}");
-        let drawn = crate::cmd::raster::read_download_page(&name, &bytes, page.as_deref(), place).unwrap();
+        let drawn =
+            crate::cmd::raster::read_download_shared_page(&name, std::sync::Arc::new(bytes.clone()), page.as_deref(), place).unwrap();
         let id = s.download_started();
         assert!(s.download_landed_page(id, bytes, drawn));
         let r = s.run("layer.addDownload", &json!({"id": id, "url": url, "layer": "2"})).unwrap();

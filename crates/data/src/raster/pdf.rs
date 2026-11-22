@@ -9,9 +9,9 @@ use std::path::Path;
 
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::util::TransformExt;
-use hayro::hayro_syntax::Pdf;
 use hayro::hayro_syntax::object::{Array, Dict, Name, String as PdfString};
 use hayro::hayro_syntax::page::Page;
+use hayro::hayro_syntax::{Pdf, PdfData};
 use hayro::kurbo::{Affine, Point};
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
@@ -55,13 +55,19 @@ pub fn read_file(path: &Path, page: Option<&str>, place: bool) -> Result<Raster>
 /// queue's does). A download's page the app draws on a thread of its own is given up by the app
 /// instead, before its turn, or dropped once drawn.
 pub fn read_bytes(name: &str, bytes: Vec<u8>, page: Option<&str>, place: bool) -> Result<Raster> {
-    read_limited(name, bytes, page, place, max_samples())
+    read_limited(name, bytes.into(), page, place, max_samples())
+}
+
+/// Reads a PDF while sharing its original bytes with an embedded layer or download.
+/// The decoder retains the same allocation for the duration of rendering, then releases it.
+pub fn read_shared(name: &str, bytes: std::sync::Arc<Vec<u8>>, page: Option<&str>, place: bool) -> Result<Raster> {
+    read_limited(name, bytes.into(), page, place, max_samples())
 }
 
 /// [`read_bytes`], drawing the page in at most `max` samples (the tests' small limit exercises the
 /// reduction).
-fn read_limited(name: &str, bytes: Vec<u8>, page: Option<&str>, place: bool, max: usize) -> Result<Raster> {
-    if bytes.len() as u64 > MAX_BYTES {
+fn read_limited(name: &str, bytes: PdfData, page: Option<&str>, place: bool, max: usize) -> Result<Raster> {
+    if bytes.as_ref().len() as u64 > MAX_BYTES {
         return Err(DataError::Format(format!("the PDF is larger than {} MB, too large to open", MAX_BYTES >> 20)));
     }
     crate::progress::check()?;
@@ -546,7 +552,7 @@ mod tests {
             let _ = read_bytes("cut", whole[..cut].to_vec(), None, true);
         }
         // A page ten million points on a side is drawn within the limit, and says so.
-        let r = read_limited("huge", tiny_pdf("0 0 10000000 10000000", ""), None, true, 30_000).unwrap();
+        let r = read_limited("huge", tiny_pdf("0 0 10000000 10000000", "").into(), None, true, 30_000).unwrap();
         assert!(r.width * r.height * 3 <= 30_000 && r.width >= 1, "{} × {}", r.width, r.height);
         assert!(r.lost[0].contains("dots an inch, not 150"), "{:?}", r.lost);
         // A page box of no area: drawn at a size the renderer gives it, or refused, never a panic.
