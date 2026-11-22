@@ -815,6 +815,44 @@ pub(crate) struct ToolAhead {
 pub(crate) enum RanAhead {
     Tool(Box<ToolAhead>),
     Table(Box<super::edit::ScriptTableEdit>),
+    Read(ScriptRead),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// A read-only command's prepared result, replayed by its ordinary admitted handler.
+pub(crate) struct ScriptRead {
+    command: &'static str,
+    params: Value,
+    value: Box<dyn std::any::Any + Send>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Keeps a typed worker result in prefix order for the live command's authorized replay.
+pub(crate) fn record_read<T: Send + 'static>(s: &mut Session, command: &'static str, params: &Value, value: T) {
+    if let Some(Ahead::Recording(ran)) = &mut s.tools_ahead {
+        ran.push(RanAhead::Read(ScriptRead { command, params: params.clone(), value: Box::new(value) }));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// A replayed read must consume its recorded result, never recompute after a mismatch.
+/// Past the recorded prefix, return no result so the caller's normal execution guard applies.
+pub(crate) fn take_read<T: 'static>(s: &mut Session, command: &str, params: &Value) -> Result<Option<T>, String> {
+    let Some(Ahead::Taking(ran, _)) = &mut s.tools_ahead else { return Ok(None) };
+    let mismatch = || "the script's prepared read changed: run the script again".to_string();
+    let Some(next) = ran.pop_front() else { return Ok(None) };
+    let RanAhead::Read(next) = next else { return Err(mismatch()) };
+    if next.command != command || next.params != *params {
+        return Err(mismatch());
+    }
+    next.value.downcast::<T>().map(|value| Some(*value)).map_err(|_| mismatch())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Whether this typed replay created the worker's layer identity. Callers must still compare
+/// map, row storage and metadata with the live output; this never authorizes an existing layer.
+pub(super) fn replay_created_layer(s: &Session, map: u64, layer: u32, instance: u64) -> bool {
+    matches!(&s.tools_ahead, Some(Ahead::Taking(_, created)) if created.contains(&(map, layer, instance)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -822,7 +860,7 @@ pub(crate) enum RanAhead {
 /// here.
 pub(crate) enum Ahead {
     Recording(Vec<RanAhead>),
-    Taking(std::collections::VecDeque<RanAhead>),
+    Taking(std::collections::VecDeque<RanAhead>, std::collections::HashSet<(u64, u32, u64)>),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -866,8 +904,15 @@ pub(crate) enum FilesAhead {
 /// its batches read, in order.
 pub(crate) struct RanAheads {
     tools: Vec<RanAhead>,
+    /// Worker-created (map, layer id, instance) identities; live replay creates fresh Layers
+    /// over their verified recorded rows. Existing layers never receive this exception.
+    created_layers: std::collections::HashSet<(u64, u32, u64)>,
     files: Vec<FileAhead>,
     zones: Vec<super::imagery::ZoneMeans>,
+    // The copy's initial project can outlive history while queued or waiting to replay.
+    pub(crate) retained: Option<crate::undo_memory::ReadRows>,
+    /// Selection effects and inner reads keep the parent admission through live replay.
+    pub(crate) selection_admission: Option<(u64, std::sync::Arc<std::sync::atomic::AtomicU64>)>,
     grids: Vec<crate::image_grid::Prepared>,
 }
 
@@ -877,7 +922,12 @@ pub(crate) struct RanAheads {
 /// files read ahead the same way. Restored on every path, a panic included (raised again), so no
 /// later run takes them.
 pub(crate) fn taking<T>(s: &mut Session, ran: RanAheads, run: impl FnOnce(&mut Session) -> T) -> T {
-    s.tools_ahead = Some(Ahead::Taking(ran.tools.into()));
+    let _retained = ran.retained;
+    let previous_admission = s.selection_admission.clone();
+    if ran.selection_admission.is_some() {
+        s.selection_admission = ran.selection_admission;
+    }
+    s.tools_ahead = Some(Ahead::Taking(ran.tools.into(), ran.created_layers));
     s.files_ahead = Some(FilesAhead::Taking(ran.files.into()));
     s.grids_ahead = Some(crate::image_grid::Ahead::taking(ran.grids));
     s.zones_ahead = Some(super::imagery::ZonesAhead::Taking(ran.zones.into()));
@@ -885,6 +935,7 @@ pub(crate) fn taking<T>(s: &mut Session, ran: RanAheads, run: impl FnOnce(&mut S
     s.tools_ahead = None;
     s.files_ahead = None;
     s.zones_ahead = None;
+    s.selection_admission = previous_admission;
     s.grids_ahead = None;
     r.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
@@ -896,6 +947,13 @@ pub(crate) fn ran_ahead(s: &mut Session) -> RanAheads {
         Some(Ahead::Recording(ran)) => ran,
         _ => Vec::new(),
     };
+    // Outputs were captured when installed, before a following step could remove them.
+    // Their worker identities must survive until live replay reaches those steps too.
+    let created_layers = tools
+        .iter()
+        .filter_map(|ran| if let RanAhead::Tool(tool) = ran { Some(tool) } else { None })
+        .flat_map(|tool| tool.grid_outputs.iter().map(|layer| (tool.read.map.instance_id(), layer.id, layer.instance_id())))
+        .collect();
     let files = match s.files_ahead.take() {
         Some(FilesAhead::Recording(read)) => read,
         _ => Vec::new(),
@@ -908,7 +966,7 @@ pub(crate) fn ran_ahead(s: &mut Session) -> RanAheads {
         Some(crate::image_grid::Ahead::Recording(read)) => read,
         _ => Vec::new(),
     };
-    RanAheads { tools, files, zones, grids }
+    RanAheads { tools, created_layers, files, zones, grids, retained: None, selection_admission: s.selection_admission.clone() }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -936,7 +994,7 @@ fn read_batch_file(s: &mut Session, path: &std::path::Path) -> Result<(Dataset, 
 /// The next tool run ahead, if it is this one on the same inputs: its result, the streamed rows
 /// it read whole and how long it took. Any other drops the rest, which came after it.
 fn take_ahead(s: &mut Session, pin: &crate::policy::ToolPin, params: &Value) -> Option<Box<ToolAhead>> {
-    let Some(Ahead::Taking(ran)) = &mut s.tools_ahead else {
+    let Some(Ahead::Taking(ran, _)) = &mut s.tools_ahead else {
         crate::image_grid::invalidate_script_grids(s);
         return None;
     };

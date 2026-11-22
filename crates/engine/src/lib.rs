@@ -836,6 +836,16 @@ pub struct Session {
     pub registry: Registry,
     /// Bumped on every change so views can cache.
     pub revision: u64,
+    /// The latest external selection admission, including changes on other layers. Mutations
+    /// conservatively record intent too; an older replay cannot advance it past newer intent.
+    pub(crate) selection_intent: u64,
+    /// External selection intent and Similar requests share one admission sequence.
+    pub(crate) selection_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// A prepared script/model's admission and its inner Similar request sequence.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) selection_admission: Option<(u64, std::sync::Arc<std::sync::atomic::AtomicU64>)>,
+    /// The last Similar request that applied selection here, independently of external intent.
+    pub(crate) similar_selected: (u64, u64),
     /// Bumped each time another project replaces this one (new, open, sample, template), however
     /// the command came (the app, an agent, a script): the interface drops what it kept for the
     /// old one.
@@ -1330,6 +1340,16 @@ pub(crate) fn edits_features(id: &str) -> bool {
 }
 
 impl Session {
+    /// Attributes replayed selection effects to their initiating script/model. Ordinary
+    /// synchronous actions take a fresh admission, so later user intent wins over queued work.
+    pub(crate) fn selection_epoch(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((epoch, _)) = &self.selection_admission {
+            return *epoch;
+        }
+        self.selection_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed).wrapping_add(1)
+    }
+
     /// Marks this thread as the desktop window owner for column statistics and shape fitting. Adapters with a
     /// window use the prepared read queue; headless adapters leave this disabled.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1337,6 +1357,8 @@ impl Session {
         self.statistics_window_thread = enabled.then(|| std::thread::current().id());
     }
 
+    /// Starts an independent session with fresh runtime selection intent and request order.
+    /// Prepared script copies explicitly share request order with their originating session.
     pub fn new(mut project: Project) -> Self {
         // The engine's tests never add Shapefile indexes to the user's cache (#1230).
         #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1376,6 +1398,11 @@ impl Session {
             layout_arrangements: serde_json::Map::new(),
             registry: Registry { commands: cmd::all() },
             revision: 1,
+            selection_intent: 0,
+            selection_sequence: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            selection_admission: None,
+            similar_selected: (0, 0),
             opened: 0,
             exchange: None,
             tool: Tool::Explore,

@@ -2954,6 +2954,8 @@ impl RustGisApp {
         self.map.deleting = None;
         // A spectral profile's points were read on the old project's rasters.
         self.workflow.spectral.clear();
+        crate::analysispane::forget_similar(&mut self.workflow);
+        (self.workflow.result, self.workflow.error) = (None, None);
         self.retire_cog_probes();
         if let Some(steps) = self.ws.recording.take() {
             self.session.notify(
@@ -3031,6 +3033,9 @@ impl RustGisApp {
             // Counting a column goes over every row: the Statistics window shows the landed answer.
             if id == "table.statistics" {
                 return readjob::run_then(self, "table.statistics", params, Some(table::statistics_landed));
+            }
+            if id == "data.similar" {
+                return readjob::run(self, "data.similar", params);
             }
             if id == "layer.sizeBy" {
                 return readjob::run(self, "layer.sizeBy", params);
@@ -3180,6 +3185,8 @@ impl RustGisApp {
             self.map.deleting = None;
             // Nor are a spectral profile's points read on a namesake raster of the new one.
             self.workflow.spectral.clear();
+            crate::analysispane::forget_similar(&mut self.workflow);
+            (self.workflow.result, self.workflow.error) = (None, None);
             // A recording's steps name the old project's layers: it ends here, and says so.
             if let Some(steps) = self.ws.recording.take() {
                 let n = steps.len().to_string();
@@ -3738,9 +3745,14 @@ impl RustGisApp {
                 self.workflow.pick = None;
                 match section.and_then(|s| analysispane::SECTIONS.iter().find(|x| x.0 == s)) {
                     Some((id, _)) => {
+                        // Opening the same Similar section preserves its pending/completed result,
+                        // including when the pane was hidden while the worker finished.
+                        if *id != "similar" || self.workflow.section != *id {
+                            analysispane::forget_similar(&mut self.workflow);
+                            self.workflow.result = None;
+                            self.workflow.error = None;
+                        }
                         self.workflow.section = id;
-                        self.workflow.result = None;
-                        self.workflow.error = None;
                         self.ui.open_right(RightPane::Workflows);
                     }
                     None => toggle_right(&mut self.ui, RightPane::Workflows),
@@ -8930,6 +8942,26 @@ mod download_service_tests {
 #[cfg(test)]
 mod peer_output_tests {
     use super::*;
+
+    /// Completed rankings belong to the replaced project, through User and peer entry points.
+    #[test]
+    fn project_replacement_clears_similar_output() {
+        for peer in [false, true] {
+            let mut app = RustGisApp::new(Session::new(Project::default()));
+            app.workflow.section = "similar";
+            app.workflow.result = Some(json!({"similar":[{"row":1,"distance":0.5}]}));
+            app.workflow.error = Some("old project error".into());
+            assert!(app.open_peer_text("invalid project").is_err());
+            assert!(app.workflow.result.is_some() && app.workflow.error.is_some(), "a refused replacement keeps current output");
+            if peer {
+                let (text, _) = Project::default().saved_text(None).unwrap();
+                app.open_peer_text(&text).unwrap();
+            } else {
+                app.run("project.new", json!({})).unwrap();
+            }
+            assert!(app.workflow.result.is_none() && app.workflow.error.is_none(), "a replacement cannot show old row indices");
+        }
+    }
 
     /// Drives the actual receiving wrapper, including the UI state a direct Session call misses.
     #[test]

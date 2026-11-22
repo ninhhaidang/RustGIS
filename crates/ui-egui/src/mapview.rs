@@ -4431,7 +4431,7 @@ fn select_shown(app: &mut RustGisApp) {
     if let Some((id, row)) = found {
         rustgis_engine::cmd::select::set(&mut app.session, id, vec![row], rustgis_engine::cmd::select::Mode::New);
     } else {
-        app.session.map_mut().clear_selection();
+        rustgis_engine::cmd::select::clear(&mut app.session);
     }
     app.session.revision = app.session.revision.wrapping_add(1);
 }
@@ -5416,6 +5416,58 @@ mod tests {
             pp.info["results"].as_array().unwrap().iter().map(|r| r["tileLayer"].as_str().or(r["layer"].as_str()).unwrap()).collect();
         assert_eq!((shown, pp.index), (vec!["Over", "Countries"], 0));
         assert!(app.session.map().layer_by_name("Countries").unwrap().selection.is_empty());
+    }
+
+    /// Browsing to a service result clears vector selection without an Undo step. A Similar
+    /// read prepared before that actual pop-up gesture must not replace the user's clear.
+    #[test]
+    fn popup_clear_preserves_selection_intent_against_pending_similar() {
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::analysis::control::Control;
+        use rustgis_engine::cmd::reads::{read_ahead, read_land};
+        use rustgis_engine::data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
+        let mut s = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        let mut data = Dataset::new("values", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for n in [0, 2, 10] {
+            data.push(Some(Geometry::Point(Coord::new(n as f64, 0.0))), vec![Cell::Int(n)]);
+        }
+        let id = rustgis_engine::cmd::layer::add_dataset(&mut s, data);
+        let fid = s.map().layer(id).unwrap().dataset.features[0].id;
+        let url = "https://wms.example.org/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=over&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image%2Fpng";
+        s.run("map.addTiles", &json!({"url":url,"name":"Remote","overlay":true})).unwrap();
+        s.run("select.rows", &json!({"layer":id,"rows":[0]})).unwrap();
+        let pending = read_ahead(&mut s, "data.similar", &json!({"layer":id,"row":0,"fields":["n"],"count":1})).unwrap();
+        let depth = s.undo_depth();
+        let first = json!({"layerId":id,"fid":fid,"layer":"values","attributes":{"name":"Reference"}});
+        let mut info = first.clone();
+        info["results"] = json!([first,{"tileLayer":"Remote","attributes":{"name":"Remote feature"}}]);
+        let pp = Popup::new(info, Coord::new(0.0, 0.0), s.project.active_map, s.opened);
+        let mut app = RustGisApp::new(s);
+        app.map.popup = Some(pp);
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                let rect = ui.max_rect();
+                popup(app, ui, rect);
+            },
+            app,
+        );
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "›").click();
+        h.run();
+        assert_eq!(h.state().map.popup.as_ref().unwrap().index, 1);
+        assert!(h.state().session.map().layer(id).unwrap().selection.is_empty());
+        assert_eq!(h.state().session.undo_depth(), depth, "pop-up browsing creates no Undo step");
+        let mark = h.state().session.notice_mark();
+        let answer = read_land(&mut h.state_mut().session, pending.run(&Control::stoppable()).unwrap()).unwrap();
+        assert_eq!(answer["similar"][0]["row"], 1);
+        assert!(h.state().session.map().layer(id).unwrap().selection.is_empty(), "the pending read must preserve the pop-up clear");
+        assert!(h.state().session.notices_since(mark).iter().any(|n| n.text.contains("without replacing the current selection")));
     }
 
     /// A WMS layer's answer comes in the drawing order (#808): drawn over Countries, its feature

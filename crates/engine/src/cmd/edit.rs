@@ -1324,7 +1324,7 @@ pub(crate) fn script_table(
     use super::gp::{Ahead, RanAhead};
     if prepared {
         let next = match &mut s.tools_ahead {
-            Some(Ahead::Taking(ran)) => ran.pop_front(),
+            Some(Ahead::Taking(ran, _)) => ran.pop_front(),
             _ => None,
         };
         let Some(RanAhead::Table(next)) = next else {

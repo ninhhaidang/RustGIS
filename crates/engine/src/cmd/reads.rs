@@ -287,8 +287,9 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
         "raster.imageGrid" => ("Read Original Image Grid", crate::image_grid::ahead(s, params), None),
         "edit.previewShapeConversion" => ("Preview Shape Conversion", crate::shape_conversion::ahead(s, params), None),
         "table.statistics" => ("Column Statistics", super::table_stats::stats_ahead(s, params), None),
+        "data.similar" => ("Find Similar", super::similar::ahead(s, params), None),
         "layer.sizeBy" => ("Size by Field", super::layer::size_by_ahead(s, params), None),
-        _ => return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service listings, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics and Size by Field prepare background work".into()),
+        _ => return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service listings, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics, Similar and Size by Field prepare background work".into()),
     };
     let name = work.as_ref().map_or(name, |work| work.name);
     let table = super::edit::table_edit_in_background(spec.id)
@@ -338,6 +339,12 @@ pub(crate) fn take<T: 'static>(s: &mut Session, key: &str) -> Option<T> {
     }
     let read = s.read_ahead.take()?;
     read.value.downcast::<T>().ok().map(|v| *v)
+}
+
+/// Borrows prepared metadata during its admitted command, without consuming the value.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn peek<'a, T: 'static>(s: &'a Session, key: &str) -> Option<&'a T> {
+    s.read_ahead.as_ref().filter(|r| r.key == key)?.value.downcast_ref()
 }
 
 /// What `read` prepared, when it is a `T`, for a test to look at before it lands.

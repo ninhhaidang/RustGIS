@@ -2284,50 +2284,49 @@ fn topology_rules(s: &mut Session, p: &Json) -> CmdResult {
     Ok(Json::Array(rules))
 }
 
-/// One topology rule as `topology.validate` checks it: the layer's rows shown (their data shared,
-/// not copied) and, for a rule against another layer, that layer's.
+/// One topology rule's immutable input: raw shared row storage and only the metadata needed
+/// by the worker. Capturing or comparing it never evaluates a query or converts coordinates.
 struct TopologyInput {
     rule: TopologyRule,
     layer: String,
-    /// The layer as it holds its coordinates, and its covering layer: rows shared with the map's,
-    /// so a check read ahead is known to have read what the rules read now. Each is converted to
-    /// longitude/latitude, where the rules are checked, as the check runs.
     data: rustgis_data::Dataset,
-    rows: Vec<usize>,
+    query: Option<String>,
     by: Option<rustgis_data::Dataset>,
 }
 
-/// The rules as the map has them now, each with what it reads; a rule whose layer is gone is left
-/// out, as it always was.
+/// Captures the rules and their raw inputs; a rule whose layer is gone is left out, as before.
+/// Primary rows use Query, ignoring selection; covering rows use All. Row traversal, query
+/// evaluation and longitude/latitude conversion belong to [`check_topology`], not this capture.
 fn topology_checks(s: &Session) -> Vec<TopologyInput> {
     let mut inputs = Vec::new();
     for rule in s.map().editing.topology.clone() {
         let Some(l) = s.map().layer_by_name(rule.layer()) else { continue };
-        let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
-        // A covering layer that is gone leaves the rule with nothing to check (its layer's
-        // latitudes are still checked).
+        // A covering layer that is gone leaves the rule with nothing to check (its primary
+        // latitudes are still checked). Its whole resident dataset supplies coverage,
+        // independently of selection, definition query, display filters and time window.
         let by = match &rule {
             TopologyRule::MustBeCoveredBy { by, .. } => s.map().layer_by_name(by).map(|b| b.dataset.clone()),
             _ => None,
         };
-        inputs.push(TopologyInput { rule, layer: l.name.clone(), data: l.dataset.clone(), rows, by });
+        inputs.push(TopologyInput { rule, layer: l.name.clone(), data: l.dataset.clone(), query: l.definition_query.clone(), by });
     }
     inputs
 }
 
-/// Whether two layers' data are the same: the same system they hold coordinates in (a relabel
-/// keeps the rows), the same rows (shared, not compared one by one), fields and geometry type.
+/// Whether two raw inputs have the same shared rows, schema, geometry kind and coordinate
+/// system. No row traversal or coordinate conversion is needed on the window thread.
 fn same_data(a: &rustgis_data::Dataset, b: &rustgis_data::Dataset) -> bool {
-    a.coord_crs() == b.coord_crs() && a.features.shares(&b.features) && a.fields == b.fields && a.geometry_type == b.geometry_type
+    a.features.shares(&b.features) && a.fields == b.fields && a.geometry_type == b.geometry_type && a.coord_crs() == b.coord_crs()
 }
 
-/// Whether `was` (what a check read on another thread) is what the rules read now.
+/// Whether the captured rules and metadata still match. A changed query is stale even when it
+/// would happen to match the same rows, so landing never needs to evaluate it again.
 fn same_topology(was: &[TopologyInput], now: &[TopologyInput]) -> bool {
     was.len() == now.len()
         && was.iter().zip(now).all(|(a, b)| {
             a.rule == b.rule
                 && a.layer == b.layer
-                && a.rows == b.rows
+                && a.query == b.query
                 && same_data(&a.data, &b.data)
                 && match (&a.by, &b.by) {
                     (Some(x), Some(y)) => same_data(x, y),
@@ -2337,44 +2336,97 @@ fn same_topology(was: &[TopologyInput], now: &[TopologyInput]) -> bool {
         })
 }
 
-/// Checks each rule, in order, a result for each (a cancelled run is an error): a layer with a
-/// latitude out of range is an error, as it always was. Each check looks at Cancel between features
-/// and counts its progress, except the gaps check's union of every polygon, one step; in a run that
-/// can be cancelled it takes no work limit (see `rustgis_analysis::topology`).
-fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<Vec<rustgis_analysis::topology::Checked>, String> {
+/// Fully materialized worker output. Applying it moves the issue vector; the window thread
+/// never visits every feature error. Query diagnostics follow captured rule order.
+struct TopologyChecked {
+    errors: Vec<crate::TopologyIssue>,
+    incomplete: Vec<String>,
+    skipped: Vec<String>,
+    query_errors: Vec<Option<String>>,
+}
+
+/// Checks each rule and its query on the worker, with Cancel between rows/rules and counted
+/// query progress. Each rule's row indices and converted data are released before the next.
+/// One row's expression evaluation or coordinate conversion, the initial full-row copy for a
+/// projected dataset, each complete latitude-validation pass and a gaps check's polygon union
+/// are indivisible library steps, checked around them; geometric checks otherwise look between
+/// features.
+/// A cancellable run takes no work limit (see `rustgis_analysis::topology`).
+fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<TopologyChecked, String> {
     use rustgis_analysis::topology as t;
-    let mut found = Vec::with_capacity(inputs.len());
+    let cancelled = || "the topology check was cancelled".to_string();
+    let mut errors = Vec::new();
+    let mut incomplete = Vec::new();
+    let mut skipped = Vec::new();
+    let mut query_errors = Vec::with_capacity(inputs.len());
     for i in inputs {
-        // A cancelled run stops between rules too (a gaps rule's union doesn't look), as an error,
-        // so no result short of its rules is ever taken.
-        rustgis_data::progress::check().map_err(|_| "the topology check was cancelled".to_string())?;
-        // In longitude/latitude, a copy only of a layer held in another system; refused, naming
-        // the layer, rather than checked on coordinates of another system.
-        // A cancel while converting is the check's cancel, said as the rules' is.
+        rustgis_data::progress::check().map_err(|_| cancelled())?;
+        let (query, error) = match rustgis_data::rows::Query::compile(i.query.as_deref(), &i.data) {
+            Ok(query) => (Some(query), None),
+            Err(error) => (None, Some(error)),
+        };
+        let mut rows = Vec::new();
+        let env = rustgis_data::query::Env::default();
+        rustgis_data::progress::begin(i.data.features.len());
+        for row in 0..i.data.features.len() {
+            rustgis_data::progress::step(1).map_err(|_| cancelled())?;
+            if query.as_ref().is_none_or(|q| q.matches(&i.data, row, &env)) {
+                rows.push(row);
+            }
+        }
+        // Preserve the existing coordinate boundary and error precedence. A primary failure
+        // wins over a covering-layer failure; neither can run on coordinates of another system.
+        rustgis_data::progress::check().map_err(|_| cancelled())?;
         let named = |e: String| {
             if matches!(rustgis_data::DataError::of_conversion(e.clone()), rustgis_data::DataError::Cancelled) {
-                "the topology check was cancelled".to_string()
+                cancelled()
             } else {
                 format!("{}: {e}", i.layer)
             }
         };
         let data = i.data.in_lonlat().map_err(named)?;
         let by = i.by.as_ref().map(|b| b.in_lonlat().map_err(named)).transpose()?;
-        rustgis_analysis::validate_latitudes(&data, i.rows.iter().copied())?;
-        found.push(match (&i.rule, &by) {
-            (TopologyRule::MustNotOverlap { .. }, _) => t::overlaps(&data, &i.rows),
-            (TopologyRule::MustNotHaveGaps { .. }, _) => t::gaps(&data, &i.rows),
-            (TopologyRule::MustNotSelfIntersect { .. }, _) => t::self_intersections(&data, &i.rows),
-            (TopologyRule::MustNotHaveDangles { .. }, _) => t::dangles(&data, &i.rows, tol),
+        rustgis_data::progress::check().map_err(|_| cancelled())?;
+        rustgis_analysis::validate_latitudes(&data, rows.iter().copied())?;
+        rustgis_data::progress::check().map_err(|_| cancelled())?;
+        let checked = match (&i.rule, &by) {
+            (TopologyRule::MustNotOverlap { .. }, _) => t::overlaps(&data, &rows),
+            (TopologyRule::MustNotHaveGaps { .. }, _) => t::gaps(&data, &rows),
+            (TopologyRule::MustNotSelfIntersect { .. }, _) => t::self_intersections(&data, &rows),
+            (TopologyRule::MustNotHaveDangles { .. }, _) => t::dangles(&data, &rows, tol),
             (TopologyRule::MustBeCoveredBy { .. }, Some(by)) => {
                 rustgis_analysis::validate_latitudes(by, 0..by.features.len())?;
-                t::not_covered(&data, &i.rows, by)
+                rustgis_data::progress::check().map_err(|_| cancelled())?;
+                t::not_covered(&data, &rows, by)
             }
             // Its covering layer is gone: nothing checked, nothing said, as it always was.
             (TopologyRule::MustBeCoveredBy { .. }, None) => t::Checked { errors: Vec::new(), complete: true, skipped: 0 },
-        });
+        };
+        rustgis_data::progress::check().map_err(|_| cancelled())?;
+        if !checked.complete || checked.skipped > 0 {
+            incomplete.push(i.rule.label().to_string());
+        }
+        if checked.skipped > 0 {
+            // The features left out are the covering layer's.
+            let of = match &i.rule {
+                TopologyRule::MustBeCoveredBy { by, .. } => by.as_str(),
+                _ => i.layer.as_str(),
+            };
+            skipped.push(format!("{} on '{}': {} feature(s) of '{}'", i.rule.label(), i.layer, checked.skipped, of));
+        }
+        for issue in checked.errors {
+            rustgis_data::progress::check().map_err(|_| cancelled())?;
+            errors.push(crate::TopologyIssue {
+                rule: i.rule.label().to_string(),
+                layer: i.layer.clone(),
+                rows: issue.rows,
+                lon: issue.at.x,
+                lat: issue.at.y,
+            });
+        }
+        query_errors.push(error);
     }
-    Ok(found)
+    Ok(TopologyChecked { errors, incomplete, skipped, query_errors })
 }
 
 /// The tolerance `topology.validate` checks dangles with, in metres.
@@ -2387,12 +2439,24 @@ const TOPOLOGY_AHEAD: &str = "topology.validate";
 
 /// A topology check made on a thread of its own ([`topology_ahead`]), with what it read.
 struct TopologyAhead {
+    opened: u64,
+    map: u64,
     inputs: Vec<TopologyInput>,
     tol: f64,
-    /// The datum grids there were when it was made ([`rustgis_data::raster::crs::grid_generation`]):
-    /// a grid that arrives meanwhile changes how a layer held in another system converts.
+    /// Datum grids captured at admission; a newly available grid changes conversion results.
     grids: u64,
-    found: Result<Vec<rustgis_analysis::topology::Checked>, String>,
+    found: Result<TopologyChecked, String>,
+    _retained: crate::undo_memory::ReadRows,
+}
+
+/// Queue lifetime accounting shares the same allocation identities as live rows and Undo.
+fn retain_topology(s: &Session, inputs: &[TopologyInput]) -> crate::undo_memory::ReadRows {
+    let rows = inputs
+        .iter()
+        .flat_map(|input| std::iter::once(&input.data).chain(input.by.as_ref()))
+        .map(|data| data.features.allocation_key())
+        .collect();
+    s.undo_memory.readers().retain(rows)
 }
 
 /// The check `topology.validate` makes before it runs in the desktop app (#1291, #1562): every
@@ -2400,13 +2464,15 @@ struct TopologyAhead {
 /// as it lands when the rules and their layers are still the ones checked.
 pub(crate) fn topology_ahead(s: &Session, p: &Json) -> Option<super::reads::ReadWork> {
     let (inputs, tol) = (topology_checks(s), topology_tolerance(p));
+    let (opened, map) = (s.opened, s.map().instance_id());
     if inputs.is_empty() {
         return None;
     }
+    let retained = retain_topology(s, &inputs);
     let grids = rustgis_data::raster::crs::grid_generation();
     Some(super::reads::ahead("Error Inspector", TOPOLOGY_AHEAD.to_string(), move || {
         let found = check_topology(&inputs, tol);
-        TopologyAhead { inputs, tol, grids, found }
+        TopologyAhead { opened, map, inputs, tol, grids, found, _retained: retained }
     }))
 }
 
@@ -2416,22 +2482,61 @@ pub(crate) fn topology_ahead(s: &Session, p: &Json) -> Option<super::reads::Read
 /// when a rule or a layer changed meanwhile it says so and keeps the errors it had, rather than
 /// check again here, which would hold the window. The assistant, tasks, scripts and the
 /// command line call commands one at a time on the session and use each answer before the next,
-/// so they check where they ask, with the work limit of a run that can't be cancelled.
+/// so they check where they ask, with the work limit of a run that can't be cancelled. A registered
+/// window owner refuses an unprepared nonempty check instead of computing it inline.
 fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     let tol = topology_tolerance(p);
     let inputs = topology_checks(s);
-    let found = match super::reads::take::<TopologyAhead>(s, TOPOLOGY_AHEAD) {
+    let grids = rustgis_data::raster::crs::grid_generation();
+    let ahead = super::reads::take::<TopologyAhead>(s, TOPOLOGY_AHEAD);
+    #[cfg(not(target_arch = "wasm32"))]
+    let ahead = match ahead {
+        Some(ahead) => Some(ahead),
+        None => super::gp::take_read::<TopologyAhead>(s, TOPOLOGY_AHEAD, p)?,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if ahead.is_none() && !inputs.is_empty() && s.statistics_window_thread == Some(std::thread::current().id()) {
+        return Err(
+            "Topology validation needs the desktop background read queue; run Error Inspector or a direct MCP topology.validate request"
+                .into(),
+        );
+    }
+    let found = match ahead {
         Some(ahead)
-            if ahead.tol == tol && ahead.grids == rustgis_data::raster::crs::grid_generation() && same_topology(&ahead.inputs, &inputs) =>
+            if ahead.opened == s.opened
+                && ahead.map == s.map().instance_id()
+                && ahead.tol == tol
+                && ahead.grids == grids
+                && same_topology(&ahead.inputs, &inputs) =>
         {
-            ahead.found?
+            ahead.found
         }
         // Checking again here would hold the window: the check made on its thread is dropped.
-        Some(_) => {
-            return Err("the topology rules, their layers or the datum grids changed while they were checked: validate again".into());
-        }
-        None => check_topology(&inputs, tol)?,
+        Some(_) => return Err("the topology rules, their layers or the datum grids changed while they were checked: validate again".into()),
+        None => check_topology(&inputs, tol),
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(s.tools_ahead, Some(super::gp::Ahead::Recording(_))) {
+        // No replayable prefix command reads the Error Inspector's issue list. Retain it once
+        // for live delivery, rather than cloning a potentially large vector into the copy.
+        let answer = found
+            .as_ref()
+            .map(|checked| {
+                let first: Vec<Json> = checked
+                    .errors
+                    .iter()
+                    .take(1000)
+                    .map(|e| json!({"rule": e.rule, "layer": e.layer, "rows": e.rows, "lon": e.lon, "lat": e.lat}))
+                    .collect();
+                json!({"errors": checked.errors.len(), "first": first, "incomplete": checked.incomplete})
+            })
+            .map_err(Clone::clone);
+        let retained = retain_topology(s, &inputs);
+        let recorded = TopologyAhead { opened: s.opened, map: s.map().instance_id(), inputs, tol, grids, found, _retained: retained };
+        super::gp::record_read(s, TOPOLOGY_AHEAD, p, recorded);
+        return answer;
+    }
+    let TopologyChecked { errors, incomplete, skipped, query_errors } = found?;
     // Rules whose layer, or covering layer, isn't on the map are checked for nothing: said.
     let unchecked: Vec<String> = s
         .map()
@@ -2447,33 +2552,6 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
             unchecked.len(),
             unchecked.join(", ")
         ));
-    }
-    let mut errors = Vec::new();
-    // Rules whose check stopped early (an error or work limit), or measured some part more coarsely
-    // than it's meant to (a line winding round a pole many times): their counts may be off.
-    let mut incomplete = Vec::new();
-    // Polygons a check had to leave out, by rule.
-    let mut skipped = Vec::new();
-    for (i, found) in inputs.iter().zip(found) {
-        let rule = &i.rule;
-        if !found.complete || found.skipped > 0 {
-            incomplete.push(rule.label().to_string());
-        }
-        if found.skipped > 0 {
-            // The features left out are the covering layer's.
-            let of = match rule {
-                TopologyRule::MustBeCoveredBy { by, .. } => by.as_str(),
-                _ => i.layer.as_str(),
-            };
-            skipped.push(format!("{} on '{}': {} feature(s) of '{}'", rule.label(), i.layer, found.skipped, of));
-        }
-        errors.extend(found.errors.into_iter().map(|e| crate::TopologyIssue {
-            rule: rule.label().to_string(),
-            layer: i.layer.clone(),
-            rows: e.rows,
-            lon: e.at.x,
-            lat: e.at.y,
-        }));
     }
     if !incomplete.is_empty() {
         s.warn(format!(
@@ -2492,6 +2570,32 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     let out: Vec<Json> =
         errors.iter().take(1000).map(|e| json!({"rule": e.rule, "layer": e.layer, "rows": e.rows, "lon": e.lon, "lat": e.lat})).collect();
     s.topology_errors = errors;
+    // Count layers once even when several rules read the same unreadable query. Bound
+    // NoticeText::list nesting independently of the number of rules or layers.
+    use crate::notice_text::NoticeText;
+    let mut seen = std::collections::HashSet::new();
+    let mut details = Vec::new();
+    for (input, error) in inputs.iter().zip(&query_errors) {
+        if let Some(error) = error
+            && seen.insert(&input.layer)
+            && details.len() < 5
+        {
+            details.push(NoticeText::format("{layer}: {error}", [("layer", input.layer.clone().into()), ("error", error.clone().into())]));
+        }
+    }
+    if !seen.is_empty() {
+        let more = seen.len() - details.len();
+        let mut layers = NoticeText::list(details);
+        if more > 0 {
+            layers = NoticeText::format("{layers}; {count} more layers", [("layers", layers), ("count", more.to_string().into())]);
+        }
+        let key = if seen.len() == 1 {
+            "{count} layer with an unreadable definition query; reading without that query: {layers}"
+        } else {
+            "{count} layers with unreadable definition queries; reading without those queries: {layers}"
+        };
+        s.notify_text(NoticeText::format(key, [("count", seen.len().to_string().into()), ("layers", layers)]), false);
+    }
     Ok(json!({"errors": n, "first": out, "incomplete": incomplete}))
 }
 
@@ -2626,7 +2730,7 @@ mod tests {
             let (ahead, now) = (topology_checks(&s), topology_checks(&s));
             assert!(same_topology(&ahead, &now), "{crs:?}");
             let found = check_topology(&ahead, 1.0).unwrap();
-            errors.push(found[0].errors.len());
+            errors.push(found.errors.len());
         }
         assert_eq!(errors[0], errors[1]);
         assert!(errors[0] > 0, "the overlap is found");

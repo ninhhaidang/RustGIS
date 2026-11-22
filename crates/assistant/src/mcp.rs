@@ -165,6 +165,8 @@ impl ArchiveBatch {
                             "map.reloadTiles"
                                 | "map.repairTiles"
                                 | "table.statistics"
+                                | "data.similar"
+                                | "topology.validate"
                                 | "edit.previewShapeConversion"
                                 | "raster.imageGrid"
                                 | "layer.sizeBy"

@@ -39,7 +39,7 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"layer"?, "rows": [number], "mode"?}"#),
         C::new("select.clear", "Clear", "Home › Selection", |s, _| {
-            s.map_mut().clear_selection();
+            clear(s);
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_selection),
@@ -128,8 +128,26 @@ fn area_mode(p: &Value) -> Result<Mode, String> {
     }
 }
 
+/// Records an external clear without a command/Undo step, as pop-up browsing requires.
+pub fn clear(s: &mut Session) {
+    s.map_mut().clear_selection();
+    s.selection_intent = s.selection_intent.max(s.selection_epoch());
+}
+
 /// Applies a selection to one layer (New clears the others too, like desktop GIS).
 pub fn set(s: &mut Session, id: u32, rows: Vec<usize>, m: Mode) {
+    s.selection_intent = s.selection_intent.max(s.selection_epoch());
+    apply(s, id, rows, m);
+}
+
+/// A queued Similar result must not invalidate the selection intent of later queued requests.
+/// External selection commands still advance the generation through `set`.
+pub(super) fn set_similar_result(s: &mut Session, id: u32, rows: Vec<usize>) {
+    apply(s, id, rows, Mode::New);
+}
+
+/// Applies either external intent or a validated result with the same row bounds and modes.
+fn apply(s: &mut Session, id: u32, rows: Vec<usize>, m: Mode) {
     if m == Mode::New {
         s.map_mut().clear_selection();
     }

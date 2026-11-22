@@ -54,6 +54,7 @@ pub mod service;
 pub mod service_added;
 pub mod share;
 pub mod sharing;
+mod similar;
 pub mod sources;
 pub mod sql;
 pub mod stac;

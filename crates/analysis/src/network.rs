@@ -800,29 +800,105 @@ pub fn profile_fields(ds: &Dataset) -> Vec<FieldProfile> {
         .collect()
 }
 
+/// Ranked rows and the count of other resident rows lacking a finite value in at least one
+/// compared field. Per-field standardization still uses every finite value in that field.
+#[derive(Debug)]
+pub struct Similarity {
+    pub matches: Vec<(usize, f64)>,
+    pub skipped: usize,
+}
+
 /// Rows ranked by how close their numeric attributes are to a row's (z-scored Euclidean
-/// distance over `fields`), nearest first, excluding the row itself.
-pub fn similar(ds: &Dataset, row: usize, fields: &[usize], n: usize) -> Vec<(usize, f64)> {
-    let stats: Vec<(f64, f64)> = fields
-        .iter()
-        .map(|fi| {
-            let vals: Vec<f64> = (0..ds.features.len()).filter_map(|r| ds.value(r, *fi).as_f64()).filter(|v| v.is_finite()).collect();
-            let m = vals.iter().sum::<f64>() / vals.len().max(1) as f64;
-            let sd = (vals.iter().map(|v| (v - m).powi(2)).sum::<f64>() / vals.len().max(1) as f64).sqrt();
-            (m, if sd > 0.0 { sd } else { 1.0 })
-        })
-        .collect();
-    let vec_of = |r: usize| -> Option<Vec<f64>> {
-        fields.iter().zip(&stats).map(|(fi, (m, sd))| ds.value(r, *fi).as_f64().filter(|v| v.is_finite()).map(|v| (v - m) / sd)).collect()
+/// distance over `fields`), nearest first, excluding the row itself. Counts progress and checks
+/// Cancel between rows and within wide vectors. The stable library sort is one indivisible step,
+/// checked immediately before and after; equal-distance rows keep their original order.
+/// Non-finite standardization statistics are refused before ranking any candidates.
+pub fn similar(ds: &Dataset, row: usize, fields: &[usize], n: usize) -> Result<Similarity, String> {
+    use crate::control;
+    control::begin(ds.features.len().saturating_mul(fields.len().saturating_mul(3).saturating_add(1)));
+    let mut stats = Vec::with_capacity(fields.len());
+    for fi in fields {
+        let mut vals = Vec::new();
+        for r in 0..ds.features.len() {
+            control::check()?;
+            control::advance(1);
+            if let Some(v) = ds.value(r, *fi).as_f64().filter(|v| v.is_finite()) {
+                vals.push(v);
+            }
+        }
+        // Result's sum delegates to the same f64 reduction as the original iterator sum;
+        // cancellation changes neither its order nor its identity value.
+        let m = vals
+            .iter()
+            .map(|v| {
+                control::check()?;
+                control::advance(1);
+                Ok(*v)
+            })
+            .sum::<Result<f64, control::Cancelled>>()?
+            / vals.len().max(1) as f64;
+        let sd = (vals
+            .iter()
+            .map(|v| {
+                control::check()?;
+                control::advance(1);
+                Ok((v - m).powi(2))
+            })
+            .sum::<Result<f64, control::Cancelled>>()?
+            / vals.len().max(1) as f64)
+            .sqrt();
+        if !m.is_finite() || !sd.is_finite() {
+            return Err("a compared field's values are too large to standardize (its mean or spread overflows)".into());
+        }
+        stats.push((m, if sd > 0.0 { sd } else { 1.0 }));
+    }
+    let mut vector_pace = control::Pace::default();
+    let mut vec_of = |r: usize| -> Result<Option<Vec<f64>>, control::Cancelled> {
+        fields
+            .iter()
+            .zip(&stats)
+            .map(|(fi, (m, sd))| {
+                if vector_pace.stop(1) {
+                    return Err(control::Cancelled);
+                }
+                Ok(ds.value(r, *fi).as_f64().filter(|v| v.is_finite()).map(|v| (v - m) / sd))
+            })
+            .collect()
     };
-    let Some(target) = vec_of(row) else { return Vec::new() };
-    let mut out: Vec<(usize, f64)> = (0..ds.features.len())
-        .filter(|r| *r != row)
-        .filter_map(|r| vec_of(r).map(|v| (r, v.iter().zip(&target).map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt())))
-        .collect();
+    let Some(target) = vec_of(row)? else {
+        return Err("the reference row needs a finite numeric value in every compared field".into());
+    };
+    let mut distance_pace = control::Pace::default();
+    let mut out = Vec::new();
+    let mut skipped = 0;
+    for r in 0..ds.features.len() {
+        control::check()?;
+        control::advance(1);
+        if r != row {
+            let Some(v) = vec_of(r)? else {
+                skipped += 1;
+                continue;
+            };
+            let distance = v
+                .iter()
+                .zip(&target)
+                .map(|(a, b)| {
+                    if distance_pace.stop(1) {
+                        return Err(control::Cancelled);
+                    }
+                    Ok((a - b).powi(2))
+                })
+                .sum::<Result<f64, control::Cancelled>>()?
+                .sqrt();
+            out.push((r, distance));
+        }
+    }
+    control::check()?;
     out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    control::check()?;
     out.truncate(n);
-    out
+    control::finish();
+    Ok(Similarity { matches: out, skipped })
 }
 
 fn radius_scale(at: Coord) -> f64 {
@@ -1533,8 +1609,8 @@ mod tests {
         assert_eq!(random_points(&poly, &[0], 25, 7), pts, "reproducible");
         let p = profile_fields(&ds);
         assert_eq!((p[0].min, p[0].max, p[0].distinct), (Some(1.0), Some(5.0), 2));
-        let sim = similar(&ds, 0, &[0], 2);
-        assert_eq!(sim[0].0, 1);
+        let sim = similar(&ds, 0, &[0], 2).unwrap();
+        assert_eq!(sim.matches[0].0, 1);
         let near = within(&ds, &rows, Coord::new(0.5, 0.001), 500.0);
         assert_eq!(near.first().map(|x| x.0), Some(0));
     }

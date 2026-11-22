@@ -253,6 +253,53 @@ pub fn rows_in(ds: &Dataset, field: &str, window: (f64, f64)) -> Vec<bool> {
     keep(dated(ds, field).as_deref(), ds.features.len(), window)
 }
 
+/// A window tested only on requested rows. It borrows the dataset and stores no per-row cache.
+pub struct CandidateWindow<'a> {
+    data: &'a Dataset,
+    field_kind: Option<(usize, time::Kind)>,
+    window: (f64, f64),
+}
+
+impl CandidateWindow<'_> {
+    /// Whether this row is in the window. Missing fields or undetected dates keep every valid
+    /// row, as [`rows_in`] does; a missing date in a detected field excludes its row.
+    pub fn keeps(&self, row: usize) -> rustgis_data::Result<bool> {
+        rustgis_data::progress::check()?;
+        if row >= self.data.features.len() {
+            return Ok(false);
+        }
+        let Some((field, kind)) = self.field_kind else { return Ok(true) };
+        let (from, to) = self.window;
+        Ok(time::instant(self.data.value(row, field), kind).is_some_and(|t| if from == to { t == from } else { t >= from && t < to }))
+    }
+}
+
+/// Detects the same date kind as [`rows_in`], with Cancel checks even when empty values make
+/// its 500-value sample span the whole layer. Only requested candidates are then converted to
+/// dates, avoiding the full timestamp and visibility vectors of a binding's display cache.
+pub fn candidate_window<'a>(data: &'a Dataset, field: &str, window: (f64, f64)) -> rustgis_data::Result<CandidateWindow<'a>> {
+    rustgis_data::progress::check()?;
+    let mut field_kind = None;
+    if let Some(fi) = data.field_index(field) {
+        let mut error = None;
+        let kind = time::detect(
+            (0..data.features.len()).map_while(|row| match rustgis_data::progress::check() {
+                Ok(()) => Some(data.value(row, fi)),
+                Err(e) => {
+                    error = Some(e);
+                    None
+                }
+            }),
+            500,
+        );
+        if let Some(e) = error {
+            return Err(e);
+        }
+        field_kind = kind.map(|(kind, _)| (fi, kind));
+    }
+    Ok(CandidateWindow { data, field_kind, window })
+}
+
 /// Each row's moment in `field`, or `None` when the field is gone (renamed, deleted) or holds no
 /// dates.
 fn dated(ds: &Dataset, field: &str) -> Option<Vec<Option<f64>>> {
@@ -345,4 +392,74 @@ pub fn time_fields(ds: &Dataset) -> Vec<(String, f64)> {
         .collect();
     out.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.total_cmp(&a.1)).then(b.3.cmp(&a.3)));
     out.into_iter().map(|(n, s, ..)| (n, s)).collect()
+}
+
+#[cfg(test)]
+mod candidate_window_tests {
+    use super::*;
+    use rustgis_data::{DataError, Field, FieldType, GeometryType, Value, progress};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn dates(values: Vec<Value>) -> Dataset {
+        let mut ds = Dataset::new("dates", GeometryType::Point, vec![Field::new("date", FieldType::Text)]);
+        for value in values {
+            ds.push(None, vec![value]);
+        }
+        ds
+    }
+
+    #[test]
+    fn candidate_windows_match_display_windows_without_full_caches() {
+        let sets = [
+            vec![Value::Text("2020-01-01".into()), Value::Text("2021-01-01".into()), Value::Null, Value::Text("bad".into())],
+            vec![Value::Int(2020), Value::Int(2021), Value::Null, Value::Int(42)],
+            vec![Value::Float(1_577_836_800_000.0), Value::Float(1_609_459_200_000.0), Value::Null],
+            vec![Value::Float(1_577_836_800.0), Value::Float(1_609_459_200.0), Value::Null],
+            vec![Value::Null, Value::Text("".into()), Value::Text("bad".into())],
+        ];
+        let start = time::parse_text("2020-01-01").unwrap();
+        let end = time::parse_text("2021-01-01").unwrap();
+        for values in sets {
+            let ds = dates(values);
+            for field in ["date", "missing"] {
+                for window in [(start, end), (start, start), (f64::NEG_INFINITY, end)] {
+                    let expected = rows_in(&ds, field, window);
+                    let candidates = candidate_window(&ds, field, window).unwrap();
+                    for row in (0..ds.features.len()).rev() {
+                        assert_eq!(candidates.keeps(row).unwrap(), expected[row]);
+                    }
+                    assert!(!candidates.keeps(ds.features.len()).unwrap());
+                }
+            }
+        }
+        // The 500-value sample skips empty cells, so a late date still determines the kind.
+        let mut sparse = dates(vec![Value::Null; 600]);
+        sparse.push(None, vec![Value::Text("2020-01-01".into())]);
+        let candidates = candidate_window(&sparse, "date", (start, end)).unwrap();
+        assert!(!candidates.keeps(0).unwrap());
+        assert!(candidates.keeps(600).unwrap());
+    }
+
+    /// Cancels after a known number of checks, including checks during an all-empty sample.
+    struct CancelAfter(AtomicUsize);
+
+    impl progress::Probe for CancelAfter {
+        fn cancelled(&self) -> bool {
+            self.0.fetch_sub(1, Ordering::Relaxed) <= 1
+        }
+        fn begin(&self, _: u64) {}
+        fn advance(&self, _: u64) {}
+    }
+
+    #[test]
+    fn candidate_windows_cancel_during_detection_and_matching() {
+        let sparse = dates(vec![Value::Null; 600]);
+        {
+            let _guard = progress::install(Some(Arc::new(CancelAfter(AtomicUsize::new(300)))));
+            assert!(matches!(candidate_window(&sparse, "date", (0.0, 1.0)), Err(DataError::Cancelled)));
+        }
+        let candidates = candidate_window(&sparse, "date", (0.0, 1.0)).unwrap();
+        let _guard = progress::install(Some(Arc::new(CancelAfter(AtomicUsize::new(1)))));
+        assert!(matches!(candidates.keeps(0), Err(DataError::Cancelled)));
+    }
 }

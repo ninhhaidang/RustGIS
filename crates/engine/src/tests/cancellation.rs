@@ -206,6 +206,17 @@ pub(super) fn long_commands(boundaries: bool) {
     s.run("layout.export", &json!({"path": out("page.pdf"), "dpi": 36, "allPages": false})).unwrap();
     exercise(&s, "layer.addData", &json!({"path": out("page.pdf")}), Kind::Read, &dir.0, boundaries);
     exercise(&s, "table.statistics", &json!({"layer": "Cities", "field": "pop_max"}), Kind::Read, &dir.0, boundaries);
+    exercise(&s, "data.similar", &json!({"layer": "Cities", "row": 0, "fields": ["pop_max"], "count": 2}), Kind::Read, &dir.0, boundaries);
+    // The topology worker evaluates the primary query before its geometric check.
+    {
+        let id = s.map().layer_by_name("Cities").unwrap().id;
+        let query = s.map_mut().layer_mut(id).unwrap().definition_query.replace("pop_max >= 0".into());
+        let rules = s.map().editing.topology.clone();
+        s.run("topology.rules", &json!({"add":{"rule":"mustNotSelfIntersect","layer":"Cities"}})).unwrap();
+        exercise(&s, "topology.validate", &json!({}), Kind::Read, &dir.0, boundaries);
+        s.map_mut().layer_mut(id).unwrap().definition_query = query;
+        s.map_mut().editing.topology = rules;
+    }
     // A Zarr point series is read on a thread of its own by the Time Series pane (#2282). It isn't
     // one of the queues above (it has no read-ahead), so it is run here: a local store, swept at
     // each of its checks in the boundary mode. It changes nothing in the project.

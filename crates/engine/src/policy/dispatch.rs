@@ -123,7 +123,7 @@ impl Session {
         }
         let CallKind::Command { id, params } = &call.kind else {
             return Err(
-                "only standalone archive, column-statistics, shape-conversion, image-grid or size-by-field commands can prepare a scoped read".into()
+                "only standalone archive, column-statistics, similarity, topology, shape-conversion, image-grid or size-by-field commands can prepare a scoped read".into()
             );
         };
         if !matches!(
@@ -131,12 +131,14 @@ impl Session {
             "map.reloadTiles"
                 | "map.repairTiles"
                 | "table.statistics"
+                | "data.similar"
+                | "topology.validate"
                 | "edit.previewShapeConversion"
                 | "raster.imageGrid"
                 | "layer.sizeBy"
         ) {
             return Err(
-                "only standalone archive, column-statistics, shape-conversion, image-grid or size-by-field commands can prepare a scoped read".into()
+                "only standalone archive, column-statistics, similarity, topology, shape-conversion, image-grid or size-by-field commands can prepare a scoped read".into()
             );
         }
         let capture = |s: &mut Session| s.capture_read(id, params);
@@ -168,12 +170,13 @@ impl Session {
                 | "service.add"
                 | "source.syncState"
                 | "table.statistics"
+                | "data.similar"
                 | "raster.imageGrid"
                 | "edit.previewShapeConversion"
                 | "layer.sizeBy"
         ) && crate::cmd::edit::table_edit_in_background(command).is_none()
         {
-            return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics and Size by Field prepare background work".into());
+            return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology, Source File State, Read Original Image Grid, Preview Shape Conversion, Column Statistics, Similar and Size by Field prepare background work".into());
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
         // Scoped previews retain the raw invocation that was approved. Their admitted owner
@@ -186,6 +189,7 @@ impl Session {
                 | "labels.convert"
                 | "source.syncState"
                 | "table.statistics"
+                | "data.similar"
                 | "raster.imageGrid"
                 | "edit.previewShapeConversion"
                 | "layer.sizeBy"
@@ -952,6 +956,13 @@ impl Session {
                 if let Some(error) = self.url_completion_refusal(spec.id, &params)? {
                     return Err(error);
                 }
+                // The outer replay's mutation is part of its original admission, just like
+                // the inner commands. Read this metadata before the handler consumes it.
+                #[cfg(not(target_arch = "wasm32"))]
+                let selection_epoch = crate::cmd::reads::peek::<crate::cmd::gp::RanAheads>(self, spec.id)
+                    .and_then(|ran| ran.selection_admission.as_ref().map(|a| a.0));
+                #[cfg(target_arch = "wasm32")]
+                let selection_epoch = None;
                 let run = |s: &mut Session| {
                     s.with_node(node, |s| {
                         let editor = s.trust_editor(spec.id, &params);
@@ -984,6 +995,14 @@ impl Session {
                     Txn::Shared => self.shared_step(&spec, run),
                 };
                 self.url_completion_landed(spec.id, &params, &result);
+                if result.is_ok() && (spec.mutates || spec.effects.contains(crate::policy::Effect::History)) && spec.id != "data.similar" {
+                    // Edits and history moves can replace selections without select::set. History
+                    // commands are non-mutating to avoid an extra Undo snapshot, but still express
+                    // later selection intent. Pending reads must preserve it, on any layer.
+                    // Similar's own result is derived output, not a new external selection intent.
+                    let epoch = selection_epoch.unwrap_or_else(|| self.selection_epoch());
+                    self.selection_intent = self.selection_intent.max(epoch);
+                }
                 result
             }
         }

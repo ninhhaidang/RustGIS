@@ -1,4 +1,4 @@
-//! Budget for feature allocations retained by undo and redo snapshots.
+//! Budget for feature allocations retained by live data, Undo/Redo and queued readers.
 use crate::{Project, Step, notice_text::NoticeText};
 use rustgis_data::{Coord, Feature, Features, Geometry, Value};
 use std::{
@@ -14,6 +14,33 @@ type Key = Weak<Vec<Feature>>;
 
 /// The allocation identities in a snapshot. The project keeps the corresponding rows alive.
 pub(crate) type Allocations = Vec<Key>;
+
+/// Weak registrations let the budget count a queued reader without keeping its rows alive.
+#[derive(Clone, Default)]
+pub(crate) struct Readers(Arc<Mutex<Vec<Weak<Allocations>>>>);
+
+/// Kept beside a reader's strong row snapshots, through queueing, execution and replay.
+#[derive(Clone)]
+pub(crate) struct ReadRows {
+    _allocations: Arc<Allocations>,
+}
+
+impl Readers {
+    /// Records identities only; preparing a reader never visits feature contents.
+    pub(crate) fn retain(&self, allocations: Allocations) -> ReadRows {
+        let allocations = Arc::new(allocations);
+        let mut readers = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        readers.retain(|reader| reader.strong_count() > 0);
+        readers.push(Arc::downgrade(&allocations));
+        ReadRows { _allocations: allocations }
+    }
+
+    fn allocations(&self) -> Allocations {
+        let mut readers = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        readers.retain(|reader| reader.strong_count() > 0);
+        readers.iter().filter_map(Weak::upgrade).flat_map(|rows| rows.as_ref().clone()).collect()
+    }
+}
 
 pub(crate) struct Budget {
     pub(crate) limit: usize,
@@ -37,6 +64,7 @@ pub(crate) struct Budget {
     // Keeping the weak key prevents address reuse while its estimate is cached, without keeping
     // the rows themselves alive. Copy-on-write gives changed rows a different key.
     estimates: HashMap<usize, (Key, usize)>,
+    readers: Readers,
 }
 
 impl Default for Budget {
@@ -52,13 +80,16 @@ impl Default for Budget {
             // Unit tests here don't depend on what else runs; they set it where they test it.
             free: if cfg!(test) { || None } else { rustgis_data::memory::available },
             estimates: HashMap::new(),
+            readers: Readers::default(),
         }
     }
 }
 
 impl Budget {
     pub(crate) fn clear(&mut self) {
-        self.estimates.clear();
+        let retained: HashSet<_> = self.readers.allocations().iter().map(|key| key.as_ptr() as usize).collect();
+        // Clearing history must not discard the cached measurement of reader-only old rows.
+        self.estimates.retain(|id, (key, _)| retained.contains(id) && key.strong_count() > 0);
         self.said = false;
         self.room_said = false;
     }
@@ -67,6 +98,7 @@ impl Budget {
     /// highest-priority owner, so the estimate falls only once its last snapshot is evicted.
     pub(crate) fn trim(&mut self, live: &Project, undo: &mut Vec<Step>, redo: &mut Vec<Step>) -> Option<NoticeText> {
         let mut seen: HashSet<_> = rows(live).map(|features| features.allocation_key().as_ptr() as usize).collect();
+        seen.extend(self.readers.allocations().iter().map(|key| key.as_ptr() as usize));
         let mut used = 0usize;
         let undo_protected = usize::from(!undo.is_empty());
         let mut account = |step: &Step| {
@@ -99,8 +131,8 @@ impl Budget {
     }
 
     /// What the session holds (#2431 fix 3): the rows of the open project and those only Undo and
-    /// Redo keep, each allocation counted once however many snapshots share it, and the pixels
-    /// and embedded files of their rasters likewise. Rows are estimated as for the budget, from a
+    /// Redo or queued readers keep, each allocation counted once however many snapshots share it,
+    /// and the pixels and embedded files of their rasters likewise. Rows are estimated as for the budget, from a
     /// cache, so this visits allocations, not rows.
     pub(crate) fn held(&mut self, live: &Project, undo: &[Step], redo: &[Step]) -> u64 {
         let mut seen = HashSet::new();
@@ -108,6 +140,7 @@ impl Budget {
         for step in undo.iter().chain(redo) {
             bytes = bytes.saturating_add(self.private_bytes(&step.8, &mut seen));
         }
+        bytes = bytes.saturating_add(self.private_bytes(&self.readers.allocations(), &mut seen));
         let projects = std::iter::once(live).chain(undo.iter().chain(redo).map(|step| &step.0));
         (bytes as u64).saturating_add(raster_bytes(projects))
     }
@@ -191,6 +224,17 @@ impl Budget {
     pub(crate) fn reserve(&self, bytes: u64) -> Reservation {
         self.in_flight.fetch_add(bytes, Ordering::Relaxed);
         Reservation { in_flight: Arc::clone(&self.in_flight), bytes, _held: rustgis_data::memory::Holding::of(bytes) }
+    }
+
+    /// Shared with script workers, so their retained inputs stay in the initiating budget.
+    pub(crate) fn readers(&self) -> Readers {
+        self.readers.clone()
+    }
+
+    /// Joins the initiating session's registry without charging a shared copy independently.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn use_readers(&mut self, readers: Readers) {
+        self.readers = readers;
     }
 
     /// The estimated size of `features`' rows: what the first write to them copies while a
@@ -533,6 +577,52 @@ mod tests {
         // Unknown memory (the browser) checks nothing.
         session.undo_memory.memory = None;
         edit(&mut session, "c");
+        assert_eq!(value(&session), &Value::Text("c".into()));
+    }
+
+    #[test]
+    fn queued_readers_keep_one_cached_allocation_after_history_is_cleared() {
+        let mut session = session(4096);
+        session.undo_memory.memory = None;
+        let first = session.map().layer_by_name("rows").unwrap().dataset.clone();
+        let second = first.clone();
+        let key = first.features.allocation_key();
+        let size = session.undo_memory.rows_bytes(&first.features);
+        let readers = session.undo_memory.readers();
+        let one = readers.retain(vec![key.clone()]);
+        let two = readers.retain(vec![key.clone(), key.clone()]);
+        assert_eq!(session.undo_memory.held(&session.project, &[], &[]), size, "live and duplicate readers share rows");
+        edit(&mut session, &"b".repeat(4096));
+        session.clear_history();
+        let live = session.map().layer_by_name("rows").unwrap().dataset.features.clone();
+        let live_size = session.undo_memory.rows_bytes(&live);
+        assert!(session.undo_memory.estimates.contains_key(&(key.as_ptr() as usize)), "reader-only size stays cached");
+        assert_eq!(session.undo_memory.held(&session.project, &[], &[]), size + live_size);
+        drop((one, first));
+        assert_eq!(session.undo_memory.held(&session.project, &[], &[]), size + live_size, "another reader still owns the old rows");
+        drop((two, second));
+        assert_eq!(session.undo_memory.held(&session.project, &[], &[]), live_size);
+    }
+
+    #[test]
+    fn queued_reader_rows_cannot_be_evicted_to_admit_an_edit() {
+        let mut session = session(4096);
+        session.undo_memory.memory = None;
+        let snapshot = session.map().layer_by_name("rows").unwrap().dataset.clone();
+        let retained = session.undo_memory.readers().retain(vec![snapshot.features.allocation_key()]);
+        edit(&mut session, &"b".repeat(4096));
+        session.clear_history();
+        let live = session.map().layer_by_name("rows").unwrap().dataset.features.clone();
+        let size = session.undo_memory.rows_bytes(&live);
+        // Room for current rows and their copy, but not the old rows the reader still needs.
+        session.undo_memory.memory = Some(((2 * size + 64) * 4).div_ceil(3) + 4);
+        let p = json!({"layer":"rows", "row":0, "field":"text", "value":"c"});
+        let error = session.run("edit.setValue", &p).unwrap_err();
+        assert!(error.contains("not enough memory to edit rows"), "{error}");
+        assert_eq!(value(&session), &Value::Text("b".repeat(4096)));
+        assert_eq!(session.undo_depth(), 0);
+        drop((retained, snapshot, live));
+        session.run("edit.setValue", &p).unwrap();
         assert_eq!(value(&session), &Value::Text("c".into()));
     }
 
