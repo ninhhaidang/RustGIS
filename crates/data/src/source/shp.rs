@@ -184,8 +184,8 @@ impl ShpSource {
         if reproject.is_lonlat() && extent.beyond_lonlat() {
             notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into());
         }
-        let (names, not_utf8) = read_names(&dbf, table.columns.len(), &encoding.decoder(), encoding.is_utf8())?;
-        notes.extend(crate::dbf::not_utf8_names_note(&not_utf8));
+        let (names, not_utf8) = read_names(&dbf, table.columns.len(), &encoding)?;
+        notes.extend(crate::dbf::not_utf8_names_note(&not_utf8, encoding.name()));
         let fields = table.columns.iter().zip(names).map(|(c, n)| Field::new(n, c.out)).collect();
         let mut info = SourceInfo {
             name: name.to_string(),
@@ -219,6 +219,11 @@ impl FeatureSource for ShpSource {
         self.reproject.crs()
     }
 
+    /// The code page its text is read in.
+    fn text_encoding(&self) -> &'static str {
+        self.encoding.name()
+    }
+
     /// Samples indexed records, falling back to geometry matches when the native view is refused.
     /// The fallback counts records and checks Cancel before reading each one.
     fn read(&self, req: &Request) -> Result<Batch> {
@@ -240,7 +245,6 @@ impl FeatureSource for ShpSource {
         let mut features = Vec::new();
         let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
         let mut deleted = 0usize;
-        let utf8 = self.encoding.is_utf8();
         // An extent the file's system couldn't bound (#1925) has no boxes for the index to sample
         // by: every record is visited, tested, and the matches sampled as they come.
         let late = req.extent.is_some() && bounds.is_none();
@@ -304,7 +308,7 @@ impl FeatureSource for ShpSource {
                 if late && !sample.wants() {
                     return Ok(());
                 }
-                self.table.values(&row, &encoding, &mut unread_dates, &mut null_text, utf8.then_some(&mut not_utf8))
+                self.table.values(&row, &encoding, &self.encoding, &mut unread_dates, &mut null_text, &mut not_utf8)
             } else {
                 if late && !sample.wants() {
                     return Ok(());
@@ -365,7 +369,6 @@ impl FeatureSource for ShpSource {
         let mut row = vec![0u8; self.table.row_len];
         let (mut skipped, mut unread_dates, mut null_text, mut boxed_off, mut not_utf8) = (0, Vec::new(), Vec::new(), 0u64, Vec::new());
         let mut deleted = 0usize;
-        let utf8 = self.encoding.is_utf8();
         // The same directory, ordering, extent rules and read-only scan fallback as sampled
         // reads, with no interaction row cap. The index visits records without materializing
         // their directory or the complete feature collection in memory.
@@ -422,7 +425,7 @@ impl FeatureSource for ShpSource {
                     deleted += 1;
                     return Ok(());
                 }
-                self.table.values(&row, &encoding, &mut unread_dates, &mut null_text, utf8.then_some(&mut not_utf8))
+                self.table.values(&row, &encoding, &self.encoding, &mut unread_dates, &mut null_text, &mut not_utf8)
             } else {
                 vec![Value::Null; self.table.columns.len()]
             };
@@ -707,15 +710,16 @@ fn read_table(path: &Path) -> Result<Table> {
 impl Table {
     /// A row's values (after its deletion flag), counting in `unread_dates` the dates that
     /// aren't ones ([`Batch::unread_dates`]), in `null_text` the text `<Null>` read as null
-    /// ([`Batch::null_text`]) and in `not_utf8`, given when the table is read as UTF-8, the text
-    /// that isn't UTF-8 ([`Batch::not_utf8`]).
+    /// ([`Batch::null_text`]) and in `not_utf8` the text that isn't valid in `declared`, the
+    /// encoding `decoder` reads ([`Batch::not_utf8`]).
     fn values(
         &self,
         row: &[u8],
-        encoding: &dyn shapefile::dbase::Encoding,
+        decoder: &dyn shapefile::dbase::Encoding,
+        declared: &crate::dbf::DbfEncoding,
         unread_dates: &mut Vec<usize>,
         null_text: &mut Vec<usize>,
-        mut not_utf8: Option<&mut Vec<usize>>,
+        not_utf8: &mut Vec<usize>,
     ) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.columns.len());
         for (k, c) in self.columns.iter().enumerate() {
@@ -732,17 +736,14 @@ impl Table {
                     })
                     .map_or(Value::Null, Value::Date)
             } else {
-                let v = value(c, b, encoding);
+                let v = value(c, b, decoder);
                 if c.ty == b'C' && matches!(&v, Value::Text(t) if Value::is_null_marker(t)) {
                     super::null_text_at(null_text, k);
                     Value::Null
                 } else {
                     // Counted on the bytes: U+FFFD in the text read can also be what the file holds.
-                    if let Some(counts) = &mut not_utf8
-                        && matches!(v, Value::Text(_))
-                        && std::str::from_utf8(padded(b)).is_err()
-                    {
-                        super::not_utf8_at(counts, k);
+                    if matches!(v, Value::Text(_)) && declared.malformed(padded(b)) {
+                        super::not_utf8_at(not_utf8, k);
                     }
                     v
                 }
@@ -752,10 +753,10 @@ impl Table {
     }
 }
 
-/// The `.dbf`'s column names, in order (read again: the layout above keeps only offsets), and,
-/// when they are read as UTF-8 (`utf8`), the columns (from 1) whose names aren't UTF-8
-/// ([`crate::dbf::not_utf8_names_note`]).
-fn read_names(path: &Path, n: usize, encoding: &dyn shapefile::dbase::Encoding, utf8: bool) -> Result<(Vec<String>, Vec<usize>)> {
+/// The `.dbf`'s column names, in order (read again: the layout above keeps only offsets), and the
+/// columns (from 1) whose names aren't valid in its `encoding` ([`crate::dbf::not_utf8_names_note`]).
+fn read_names(path: &Path, n: usize, encoding: &crate::dbf::DbfEncoding) -> Result<(Vec<String>, Vec<usize>)> {
+    let decoder = encoding.decoder();
     let mut f = BufReader::new(crate::provenance::open(path)?);
     f.seek(SeekFrom::Start(32))?;
     let mut out = Vec::with_capacity(n);
@@ -766,10 +767,10 @@ fn read_names(path: &Path, n: usize, encoding: &dyn shapefile::dbase::Encoding, 
         let name = d.get(..11).unwrap_or(&[]);
         let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
         let name = name.get(..end).unwrap_or(&[]);
-        if utf8 && std::str::from_utf8(name).is_err() {
+        if encoding.malformed(name) {
             not_utf8.push(out.len() + 1);
         }
-        out.push(encoding.decode(name).unwrap_or_else(|_| String::from_utf8_lossy(name)).trim().to_string());
+        out.push(shapefile::dbase::Encoding::decode(&decoder, name).unwrap_or_else(|_| String::from_utf8_lossy(name)).trim().to_string());
     }
     Ok((out, not_utf8))
 }

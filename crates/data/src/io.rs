@@ -3526,12 +3526,14 @@ struct DbfRead {
     fields: Vec<Field>,
     decimals: Vec<u8>,
     report: ReadReport,
-    /// For each field, its text values that aren't UTF-8 in a table read as UTF-8
+    /// For each field, its text values that aren't valid in the table's encoding
     /// ([`crate::dbf::not_utf8`]).
     not_utf8: Vec<usize>,
     /// The records marked deleted, by position, ascending: the reader gives them as any other
     /// ([`crate::dbf::take_deleted`]), and they are left out by position.
     deleted: Vec<usize>,
+    /// The name of that encoding ([`crate::dbf::DbfEncoding::name`]), for the notice.
+    encoding: &'static str,
 }
 
 /// Opens dBASE attributes with the Shapefile reader's code-page and date/number handling.
@@ -3541,8 +3543,8 @@ fn dbf_reader(mut bytes: Vec<u8>, cpg: Option<&[u8]>, name: &str) -> Result<DbfR
     let mut encoding_notes = Vec::new();
     let encoding = crate::dbf::encoding(cpg, bytes.get(29).copied().unwrap_or(0), &mut encoding_notes);
     // Counted before a date column is marked a character one below: its values aren't text.
-    let (names, not_utf8) = if encoding.is_utf8() { crate::dbf::not_utf8(&bytes) } else { (Vec::new(), Vec::new()) };
-    encoding_notes.extend(crate::dbf::not_utf8_names_note(&names));
+    let (names, not_utf8) = crate::dbf::not_utf8(&bytes, &encoding);
+    encoding_notes.extend(crate::dbf::not_utf8_names_note(&names, encoding.name()));
     let deleted = crate::dbf::take_deleted(&mut bytes);
     crate::dbf::readable_header_date(&mut bytes);
     let date_columns = crate::dbf::dates_as_text(&mut bytes);
@@ -3573,7 +3575,8 @@ fn dbf_reader(mut bytes: Vec<u8>, cpg: Option<&[u8]>, name: &str) -> Result<DbfR
         })
         .collect();
     let fields = order.into_iter().map(|(n, t)| Field::new(n, t)).collect();
-    Ok(DbfRead { reader: dbf, fields, decimals, report: ReadReport { messages: encoding_notes, ..Default::default() }, not_utf8, deleted })
+    let report = ReadReport { messages: encoding_notes, ..Default::default() };
+    Ok(DbfRead { reader: dbf, fields, decimals, report, not_utf8, deleted, encoding: encoding.name() })
 }
 
 /// Reads a geometry-free dBASE table, checking cancellation and counting progress per record.
@@ -3581,9 +3584,9 @@ fn dbf_reader(mut bytes: Vec<u8>, cpg: Option<&[u8]>, name: &str) -> Result<DbfR
 /// same budget as delimited tables; archive members share the remaining allowance.
 /// The bounded file read and header decoding finish before cancellation can be observed.
 fn read_dbf(bytes: Vec<u8>, cpg: Option<&[u8]>, name: &str, budget: &mut usize) -> Result<(Dataset, ReadReport)> {
-    let DbfRead { mut reader, fields, decimals, mut report, not_utf8, deleted } = dbf_reader(bytes, cpg, name)?;
+    let DbfRead { mut reader, fields, decimals, mut report, not_utf8, deleted, encoding } = dbf_reader(bytes, cpg, name)?;
     let mut ds = Dataset::new(name, GeometryType::None, fields);
-    let mut counts = DbfCounts::new(ds.fields.len(), not_utf8);
+    let mut counts = DbfCounts::new(ds.fields.len(), not_utf8, encoding);
     let allowance = *budget;
     let mut left = allowance;
     crate::progress::begin(reader.header().num_records as usize);
@@ -3700,24 +3703,26 @@ fn dbf_attrs(record: &shapefile::dbase::Record, fields: &[Field], counts: &mut D
 
 /// Values a `.dbf` read changed, counted for each field by its position: dates that weren't
 /// ones, numbers that weren't finite, and text `<Null>`, all read as null; and text that wasn't
-/// UTF-8 in a table read as UTF-8, counted before the read ([`crate::dbf::not_utf8`]).
+/// valid in the table's encoding, counted before the read ([`crate::dbf::not_utf8`]).
 struct DbfCounts {
     unread_dates: Vec<usize>,
     nonfinite: Vec<usize>,
     null_text: Vec<usize>,
     not_utf8: Vec<usize>,
+    /// The name of the encoding `not_utf8` is of.
+    encoding: &'static str,
 }
 
 impl DbfCounts {
-    fn new(fields: usize, not_utf8: Vec<usize>) -> Self {
-        DbfCounts { unread_dates: vec![0; fields], nonfinite: vec![0; fields], null_text: Vec::new(), not_utf8 }
+    fn new(fields: usize, not_utf8: Vec<usize>, encoding: &'static str) -> Self {
+        DbfCounts { unread_dates: vec![0; fields], nonfinite: vec![0; fields], null_text: Vec::new(), not_utf8, encoding }
     }
 }
 
 /// Reports date, numeric and `<Null>` cells read as null, and text that isn't UTF-8, identically
 /// for tables and Shapefiles.
 fn dbf_notices(ds: &Dataset, report: &mut ReadReport, counts: &DbfCounts) {
-    let DbfCounts { unread_dates, nonfinite, null_text, not_utf8 } = counts;
+    let DbfCounts { unread_dates, nonfinite, null_text, not_utf8, encoding } = counts;
     let name = &ds.name;
     report.unread_dates = crate::source::unread_dates_note(&ds.fields, unread_dates);
     report.messages.extend(report.unread_dates.iter().map(|n| format!("{name}: {n}")));
@@ -3731,7 +3736,7 @@ fn dbf_notices(ds: &Dataset, report: &mut ReadReport, counts: &DbfCounts) {
         report.messages.push(format!("{name}: {what} read as empty, in {}", named_fields(&ds.fields, nonfinite)));
     }
     report.messages.extend(crate::source::null_text_note(&ds.fields, null_text).map(|n| format!("{name}: {n}")));
-    report.messages.extend(crate::source::not_utf8_note(&ds.fields, not_utf8).map(|n| format!("{name}: {n}")));
+    report.messages.extend(crate::source::not_utf8_note(&ds.fields, not_utf8, encoding).map(|n| format!("{name}: {n}")));
 }
 
 /// The files of a Shapefile, read into memory.
@@ -3749,7 +3754,8 @@ pub(crate) fn read_shapefile_parts(parts: ShapefileParts, name: &str, crs: Optio
     use shapefile::Shape;
     use std::io::Cursor;
     let fmt = |e: shapefile::Error| DataError::Format(format!("Shapefile: {e}"));
-    let DbfRead { reader: mut dbf, fields, decimals, mut report, not_utf8, deleted } = dbf_reader(parts.dbf, parts.cpg.as_deref(), name)?;
+    let DbfRead { reader: mut dbf, fields, decimals, mut report, not_utf8, deleted, encoding } =
+        dbf_reader(parts.dbf, parts.cpg.as_deref(), name)?;
     let mut shapes = match parts.shx {
         Some(shx) => shapefile::ShapeReader::with_shx(Cursor::new(parts.shp), Cursor::new(shx)),
         None => shapefile::ShapeReader::new(Cursor::new(parts.shp)),
@@ -3770,7 +3776,7 @@ pub(crate) fn read_shapefile_parts(parts: ShapefileParts, name: &str, crs: Optio
     // The box of the converted places in longitude/latitude, for the notice of a `.prj` that
     // doesn't match the coordinates.
     let mut lonlat_extent = rustgis_geom::Extent::EMPTY;
-    let mut counts = DbfCounts::new(ds.fields.len(), not_utf8);
+    let mut counts = DbfCounts::new(ds.fields.len(), not_utf8, encoding);
     let mut source_kind = GeometryType::None;
     let pt = |x: f64, y: f64| Coord::new(x, y);
     // Paired by position: a record marked deleted is read as any other, and left out with its shape.

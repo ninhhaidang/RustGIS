@@ -68,20 +68,40 @@ fn named_parts(field: &[u8], text: &[u8], ldid: u8, cpg: Option<&[u8]>, rows: us
 /// Why text was read as UTF-8, as the notes of text that isn't UTF-8 end.
 const NO_OTHER_ENCODING: &str = "no .cpg file names another encoding RustGIS reads (a .cpg file containing 950 names Big5)";
 
-/// What a read of `places` says of `values` text values of its field `field` that aren't UTF-8.
-fn not_utf8_note(values: usize, field: &str) -> String {
-    let what = match values {
-        1 => "1 text value isn't valid UTF-8 and was".to_string(),
-        n => format!("{n} text values aren't valid UTF-8 and were"),
-    };
-    format!("places: {what} read with U+FFFD in place of the bytes that can't be read, in '{field}'; {NO_OTHER_ENCODING}")
+/// The end of a notice of text that isn't valid in `encoding`: UTF-8 is read when no `.cpg` names
+/// another, so it says that; another encoding was declared, so it names it.
+fn cause(encoding: &str) -> String {
+    match encoding {
+        "UTF-8" => NO_OTHER_ENCODING.to_string(),
+        other => format!("the .cpg or the .dbf's language driver declares {other}"),
+    }
 }
 
-/// What opening a `.dbf` says of its one field name that isn't UTF-8, the first column.
-fn name_not_utf8_note() -> String {
+/// What a read of `places` says of `values` text values of its field `field` that aren't valid in `encoding`.
+fn invalid_note(values: usize, field: &str, encoding: &str) -> String {
+    let what = match values {
+        1 => format!("1 text value isn't valid {encoding} and was"),
+        n => format!("{n} text values aren't valid {encoding} and were"),
+    };
+    format!("places: {what} read with U+FFFD in place of the bytes that can't be read, in '{field}'; {}", cause(encoding))
+}
+
+/// What opening a `.dbf` says of its one field name that isn't valid in `encoding`, the first column.
+fn invalid_name_note(encoding: &str) -> String {
     format!(
-        "Shapefile: 1 field name isn't valid UTF-8 and was read with U+FFFD in place of the bytes that can't be read, in field 1; {NO_OTHER_ENCODING}"
+        "Shapefile: 1 field name isn't valid {encoding} and was read with U+FFFD in place of the bytes that can't be read, in field 1; {}",
+        cause(encoding)
     )
+}
+
+/// [`invalid_note`] for text read as UTF-8.
+fn not_utf8_note(values: usize, field: &str) -> String {
+    invalid_note(values, field, "UTF-8")
+}
+
+/// [`invalid_name_note`] for a name read as UTF-8.
+fn name_not_utf8_note() -> String {
+    invalid_name_note("UTF-8")
 }
 
 /// Three points with two text fields: `name`, holding `first`, `second` and `Tainan` as these
@@ -707,14 +727,50 @@ fn esri_57_remains_windows_1252_rather_than_iso_8859_1() {
     check_ldid_readers(0x57, b"\x80\x96\x9f", "€–Ÿ", None, &[]);
 }
 
-/// Malformed bytes in a declared multibyte code page are replaced with no notice yet (#2614).
+/// Malformed bytes in a declared code page are replaced, and said: how many values, which fields,
+/// and the code page the file declares (#2614).
 #[test]
-fn malformed_multibyte_fields_replace_bytes_without_dropping_records() {
-    // Known gap (#2614): these four code pages' malformed bytes are replaced with no notice yet, so
-    // the empty notes below pin that behaviour rather than endorse it.
-    for (ldid, text) in [(0x13, b"X\x82".as_slice()), (0x4D, b"X\x81"), (0x4E, b"X\x81"), (0x4F, b"X\xa4")] {
-        check_ldid_readers(ldid, text, "X�", None, &[]);
+fn malformed_multibyte_fields_replace_bytes_and_say_so() {
+    for (ldid, encoding, text) in
+        [(0x13, "Shift_JIS", b"X\x82".as_slice()), (0x4D, "GBK", b"X\x81"), (0x4E, "EUC-KR", b"X\x81"), (0x4F, "Big5", b"X\xa4")]
+    {
+        let said = [invalid_name_note(encoding), invalid_note(3, "X\u{FFFD}", encoding)];
+        check_ldid_readers(ldid, text, "X\u{FFFD}", None, &[&said[0], &said[1]]);
+    }
+    // A `.cpg` names the page too, over a language driver that names another.
+    for (cpg, encoding, text) in [(b"932".as_slice(), "Shift_JIS", b"X\x82".as_slice()), (b"950", "Big5", b"X\xa4")] {
+        let said = [invalid_name_note(encoding), invalid_note(3, "X\u{FFFD}", encoding)];
+        check_ldid_readers(0x03, text, "X\u{FFFD}", Some(cpg), &[&said[0], &said[1]]);
     }
     // Read as UTF-8, the name and the values with a byte replaced are counted.
     check_ldid_readers(0xF0, b"X\xff", "X�", None, &[&name_not_utf8_note(), &not_utf8_note(3, "X�")]);
+}
+
+/// Valid text in the same pages, a value that fills its field and ends in a lead byte, and a value
+/// with one bad byte among good characters: counted per value, only where it is malformed.
+#[test]
+fn malformed_values_are_counted_per_value_and_clean_text_says_nothing() {
+    // Shift_JIS: "東京" (valid) in one row, a lead byte alone in the others.
+    let files = two_field_parts(b"\x93\x8c\x8b\x9e", b"Y\x82", 0x13, None);
+    let (ds, report) = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap().remove(0);
+    assert_eq!(names(&ds), [Value::Text("東京".into()), Value::Text("Y\u{FFFD}".into()), Value::Text("Tainan".into())]);
+    assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+    // A value that fills its 32 bytes and ends in a lead byte is one malformed value.
+    let mut full = vec![b'A'; 31];
+    full.push(0x82);
+    let files = parts(&full, 0x13, None);
+    let (_, report) = io::read_zip("places.zip", &rustgis_data::zip::write(&files).unwrap()).unwrap().remove(0);
+    assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+    // The same through a standalone `.dbf` and a read in place.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let (_, report) = io::read_path(&dir.path().join("places.dbf")).unwrap();
+        assert_eq!(report.messages, [invalid_note(1, "name", "Shift_JIS")]);
+        let src = open_shp(&dir.path().join("places.shp"), "places").unwrap();
+        assert_eq!(rustgis_data::source::materialize(&src).unwrap().1.messages, [invalid_note(1, "name", "Shift_JIS")]);
+    }
 }

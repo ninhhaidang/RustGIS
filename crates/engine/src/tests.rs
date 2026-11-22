@@ -1750,20 +1750,33 @@ fn a_streamed_shapefile_says_text_that_isnt_utf8_once_and_in_its_exports() {
     let dir = Dir(std::env::temp_dir().join(format!("rustgis-streamed-not-utf8-{}-{nanos}", std::process::id())));
     std::fs::create_dir_all(&dir.0).unwrap();
     // What the notice must carry: the count, the field and the replacement, not its wording.
-    let says = |t: &str| ["1 text value", "'NAME'", "U+FFFD", ".cpg"].iter().all(|k| t.contains(k));
-    // 臺北101 in Big5, and as many bytes of ASCII.
-    for (name, second, said) in [("big5", &b"\xbb\x4f\xa5\x5f101"[..], true), ("clean", &b"Tainan1"[..], false)] {
+    // `encoding` is what the text was read in, and the end of the note says why: no `.cpg` named
+    // another encoding for UTF-8, or that the file declares the code page.
+    let says = |t: &str, encoding: &str| {
+        let why = if encoding == "UTF-8" { "no .cpg file names another encoding".to_string() } else { format!("declares {encoding}") };
+        ["1 text value", "'NAME'", "U+FFFD", ".cpg", &format!("isn't valid {encoding}"), &why].iter().all(|k| t.contains(k))
+    };
+    // 臺北101 in Big5, and as many bytes of ASCII. The last value is named Big5 by its language
+    // driver (0x4F) and ends in a lead byte; the one before it is valid Big5 and says nothing.
+    let cases: [(&str, &[u8], u8, Option<&str>); 4] = [
+        ("big5", b"\xbb\x4f\xa5\x5f101", 0, Some("UTF-8")),
+        ("clean", b"Tainan1", 0, None),
+        ("declared", b"Taipei\xa4", 0x4F, Some("Big5")),
+        ("validbig5", b"\xbb\x4f\xa5\x5f101", 0x4F, None),
+    ];
+    for (name, second, ldid, encoding) in cases {
+        let said = encoding.is_some();
         let mut ds = Dataset::new(name, GeometryType::Point, vec![Field::new("NAME", FieldType::Text)]);
         for (i, text) in ["Taipei", "AAAAAAA"].into_iter().enumerate() {
             ds.push(Some(Geometry::Point(rustgis_geom::Coord::new(i as f64, 1.0))), vec![V::Text(text.into())]);
         }
         let shp = dir.0.join(format!("{name}.shp"));
         rustgis_data::io::write_path(&ds, &shp).unwrap();
-        // No encoding named: no `.cpg`, and no language driver in the `.dbf`.
+        // No `.cpg`; the language driver in the `.dbf` names the encoding, or none (0).
         std::fs::remove_file(shp.with_extension("cpg")).unwrap();
         let dbf = shp.with_extension("dbf");
         let mut table = std::fs::read(&dbf).unwrap();
-        table[29] = 0;
+        table[29] = ldid;
         let at = table.windows(7).position(|w| w == b"AAAAAAA").unwrap();
         table[at..at + 7].copy_from_slice(second);
         std::fs::write(&dbf, table).unwrap();
@@ -1772,7 +1785,7 @@ fn a_streamed_shapefile_says_text_that_isnt_utf8_once_and_in_its_exports() {
         let id = added["layer"].as_u64().unwrap() as u32;
         assert!(s.map().layer(id).unwrap().is_streamed(), "{name} is read in place");
         let not_utf8 = |s: &Session, mark| -> Vec<String> {
-            s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("valid UTF-8")).collect()
+            s.notices_since(mark).iter().map(|n| n.text.clone()).filter(|t| t.contains("valid UTF-8") || t.contains("valid Big5")).collect()
         };
         let mark = s.notice_mark();
         let view = rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0);
@@ -1787,8 +1800,9 @@ fn a_streamed_shapefile_says_text_that_isnt_utf8_once_and_in_its_exports() {
         assert!(!s.map().layer(id).unwrap().dataset.features.is_empty(), "{name}: the second read lands");
         let notes = not_utf8(&s, mark);
         assert_eq!(notes.len(), usize::from(said), "{name}: view reads: {notes:?}");
-        if said {
-            assert!(notes[0].starts_with("big5: ") && notes[0].contains("Load All Features") && says(&notes[0]), "{}", notes[0]);
+        if let Some(encoding) = encoding {
+            let note = &notes[0];
+            assert!(note.starts_with(&format!("{name}: ")) && note.contains("Load All Features") && says(note, encoding), "{note}");
         }
         // An export a chunk at a time, and a Data Interop conversion of the source, say it.
         s.map_mut().layer_mut(id).unwrap().dataset.features.clear();
@@ -1800,8 +1814,8 @@ fn a_streamed_shapefile_says_text_that_isnt_utf8_once_and_in_its_exports() {
             s.run(command, &params).unwrap();
             let notes = not_utf8(&s, mark);
             assert_eq!(notes.len(), usize::from(said), "{name} {command}: {:?}", s.notices_since(mark));
-            if said {
-                assert!(notes[0].contains("big5: ") && says(&notes[0]), "{}", notes[0]);
+            if let Some(encoding) = encoding {
+                assert!(notes[0].contains(&format!("{name}: ")) && says(&notes[0], encoding), "{command}: {}", notes[0]);
             }
         }
     }

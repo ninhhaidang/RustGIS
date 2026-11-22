@@ -27,13 +27,24 @@ impl DbfEncoding {
         }
     }
 
-    /// Whether text is read as UTF-8, whose decoder puts U+FFFD in place of bytes that aren't
-    /// UTF-8 without a word: the read counts them itself ([`not_utf8`]).
-    pub(crate) fn is_utf8(&self) -> bool {
+    /// Whether `text` holds bytes this encoding can't read. Its decoder puts U+FFFD in place of
+    /// them without a word, so the read counts them itself ([`not_utf8`]). It asks the decoder
+    /// `dbase` calls, so a count is of the values that were replaced. A DOS page gives every
+    /// byte a character, so nothing is.
+    pub(crate) fn malformed(&self, text: &[u8]) -> bool {
         match self {
-            Self::Standard(encoding) => *encoding == rs::UTF_8,
+            Self::Standard(encoding) if *encoding != rs::UTF_8 => !text.is_ascii() && encoding.decode(text).2,
+            Self::Standard(_) | Self::Utf8 => std::str::from_utf8(text).is_err(),
             Self::Oem(_) => false,
-            Self::Utf8 => true,
+        }
+    }
+
+    /// The name of the encoding, for the notices of text it can't read.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Standard(encoding) => encoding.name(),
+            Self::Oem(_) => "a DOS code page",
+            Self::Utf8 => "UTF-8",
         }
     }
 
@@ -175,31 +186,38 @@ fn page_name(page: u16) -> Option<&'static str> {
 /// code page RustGIS can't decode.
 pub(crate) const NO_OTHER_ENCODING: &str = "no .cpg file names another encoding RustGIS reads (a .cpg file containing 950 names Big5)";
 
-/// What opening a `.dbf` read as UTF-8 says of its field names that aren't UTF-8 ([`not_utf8`]),
+/// The end of each note of text that isn't valid in `encoding`: for UTF-8, why the text was read as
+/// it ([`NO_OTHER_ENCODING`]); for another, that the file declares it.
+pub(crate) fn cause(encoding: &str) -> String {
+    if encoding == "UTF-8" { NO_OTHER_ENCODING.to_string() } else { format!("the .cpg or the .dbf's language driver declares {encoding}") }
+}
+
+/// What opening a `.dbf` says of its field names that aren't valid in its `encoding` ([`not_utf8`]),
 /// naming the first five by their column (from 1). `None` when there are none.
-pub(crate) fn not_utf8_names_note(columns: &[usize]) -> Option<String> {
+pub(crate) fn not_utf8_names_note(columns: &[usize], encoding: &str) -> Option<String> {
     let (what, label) = match columns.len() {
         0 => return None,
-        1 => ("1 field name isn't valid UTF-8 and was".to_string(), "field"),
-        n => (format!("{n} field names aren't valid UTF-8 and were"), "fields"),
+        1 => (format!("1 field name isn't valid {encoding} and was"), "field"),
+        n => (format!("{n} field names aren't valid {encoding} and were"), "fields"),
     };
     let named: Vec<String> = columns.iter().take(5).map(usize::to_string).collect();
     let more = if columns.len() > 5 { format!(" and {} more", columns.len() - 5) } else { String::new() };
     Some(format!(
-        "Shapefile: {what} read with U+FFFD in place of the bytes that can't be read, in {label} {}{more}; {NO_OTHER_ENCODING}",
-        named.join(", ")
+        "Shapefile: {what} read with U+FFFD in place of the bytes that can't be read, in {label} {}{more}; {}",
+        named.join(", "),
+        cause(encoding)
     ))
 }
 
-/// What a `.dbf` read as UTF-8 holds that isn't UTF-8: which of its field names (by column, from 1),
-/// and for each column by its position how many of its text values. `dbase` reads them with U+FFFD
-/// in place of those bytes and doesn't say so. They are counted on the bytes, since U+FFFD in the
-/// text read can also be what the file holds. The values are the ones `dbase` decodes as text: a
+/// What a `.dbf` holds that isn't valid in its `encoding`: which of its field names (by column, from
+/// 1), and for each column by its position how many of its text values. `dbase` reads them with
+/// U+FFFD in place of those bytes and doesn't say so. They are counted on the bytes, since U+FFFD in
+/// the text read can also be what the file holds. The values are the ones `dbase` decodes as text: a
 /// character (`C`) column's, up to a NUL, in the rows the header counts that aren't marked deleted
 /// (a row the read then leaves out as unreadable is counted too). It doesn't look at Cancel: it is
 /// one pass over a file that is read whole, so of at most [`crate::io::max_bytes`].
-pub(crate) fn not_utf8(dbf: &[u8]) -> (Vec<usize>, Vec<usize>) {
-    let lossy = |text: &[u8]| std::str::from_utf8(text.split(|b| *b == 0).next().unwrap_or(&[])).is_err();
+pub(crate) fn not_utf8(dbf: &[u8], encoding: &DbfEncoding) -> (Vec<usize>, Vec<usize>) {
+    let lossy = |text: &[u8]| encoding.malformed(text.split(|b| *b == 0).next().unwrap_or(&[]));
     let header_len = usize::from(u16::from_le_bytes([dbf.get(8).copied().unwrap_or(0), dbf.get(9).copied().unwrap_or(0)]));
     let rows = dbf.get(4..8).and_then(|b| <[u8; 4]>::try_from(b).ok()).map_or(0, |b| u32::from_le_bytes(b) as usize);
     let mut names = Vec::new();
@@ -572,13 +590,36 @@ mod tests {
         assert_eq!(notes, ["Shapefile: unsupported .dbf code page 0xFF; using UTF-8"]);
     }
 
-    /// Text is read as UTF-8, so counted when it isn't, with no encoding named, with UTF-8 named
-    /// and with a code page that can't be decoded; a code page that is decoded isn't UTF-8.
+    /// Text is read as UTF-8 unless another encoding is named, with none named, with UTF-8 named
+    /// and with a code page that can't be decoded; a code page that is decoded is named by it.
     #[test]
     fn utf8_is_what_text_is_read_as_unless_another_encoding_is_named() {
-        let read = |cpg: Option<&[u8]>, ldid| encoding(cpg, ldid, &mut Vec::new()).is_utf8();
-        assert!(read(None, 0) && read(None, 0xF0) && read(Some(b"UTF-8"), 0x03) && read(Some(b"65001"), 0) && read(None, 0x6C));
-        assert!(!read(Some(b"950"), 0) && !read(None, 0x4F) && !read(None, 0x01) && !read(Some(b"1252"), 0xF0));
+        let read = |cpg: Option<&[u8]>, ldid| encoding(cpg, ldid, &mut Vec::new()).name();
+        for (cpg, ldid) in [(None, 0), (None, 0xF0), (Some(b"UTF-8".as_slice()), 0x03), (Some(b"65001".as_slice()), 0), (None, 0x6C)] {
+            assert_eq!(read(cpg, ldid), "UTF-8");
+        }
+        assert_eq!(read(Some(b"950"), 0), "Big5");
+        assert_eq!(read(None, 0x4F), "Big5");
+        assert_eq!(read(None, 0x13), "Shift_JIS");
+        assert_eq!(read(None, 0x4D), "GBK");
+        assert_eq!(read(None, 0x4E), "EUC-KR");
+        assert_eq!(read(Some(b"1252"), 0xF0), "windows-1252");
+        assert_eq!(read(None, 0x01), "a DOS code page");
+    }
+
+    /// Bytes an encoding can't read are told by its own decoder: a lead byte with nothing after it,
+    /// or before a byte that can't follow it, in the multibyte pages; ASCII and whole characters
+    /// aren't. A DOS page gives every byte a character.
+    #[test]
+    fn bytes_that_cant_be_read_are_those_the_declared_decoder_replaces() {
+        let page = |cpg: &[u8]| encoding(Some(cpg), 0, &mut Vec::new());
+        let (sjis, big5, utf8) = (page(b"932"), page(b"950"), page(b"UTF-8"));
+        assert!(sjis.malformed(b"X\x82") && sjis.malformed(b"\x82 ") && sjis.malformed(b"\xff"));
+        assert!(!sjis.malformed(b"\x93\x8c\x8b\x9e") && !sjis.malformed(b"plain") && !sjis.malformed(b""));
+        assert!(big5.malformed(b"X\xa4") && !big5.malformed(b"\xa4\x40"));
+        // The same bytes are valid in one page and not in another.
+        assert!(utf8.malformed(b"\x93\x8c") && !sjis.malformed(b"\x93\x8c"));
+        assert!(!page(b"437").malformed(b"\xff") && !page(b"1252").malformed(b"\xff"));
     }
 
     /// A `.dbf` of these columns (name, type, width) and rows (the deletion flag, then the values).
@@ -613,29 +654,36 @@ mod tests {
             b" a\0\xe9\xe9          \xc3\xa9 ",
         ];
         let mut dbf = table(columns, rows);
-        assert_eq!(not_utf8(&dbf), (vec![1], vec![1, 0, 0, 1]));
+        assert_eq!(not_utf8(&dbf, &DbfEncoding::Utf8), (vec![1], vec![1, 0, 0, 1]));
         // A row past the header's count isn't read.
         dbf.extend_from_slice(b" \xe9t\xe9 20260305 1\xe9bc");
-        assert_eq!(not_utf8(&dbf), (vec![1], vec![1, 0, 0, 1]));
+        assert_eq!(not_utf8(&dbf, &DbfEncoding::Utf8), (vec![1], vec![1, 0, 0, 1]));
         // A file cut short counts the rows that are whole, and one without a header nothing.
         let cut = dbf.len() - 2 * 18 - 1;
-        assert_eq!(not_utf8(&dbf[..cut]), (vec![1], vec![1, 0, 0, 1]));
-        assert_eq!(not_utf8(&dbf[..cut - 18]), (vec![1], vec![1, 0, 0, 0]));
-        assert_eq!(not_utf8(&dbf[..40]), (Vec::new(), Vec::new()));
-        assert_eq!(not_utf8(&[]), (Vec::new(), Vec::new()));
+        assert_eq!(not_utf8(&dbf[..cut], &DbfEncoding::Utf8), (vec![1], vec![1, 0, 0, 1]));
+        assert_eq!(not_utf8(&dbf[..cut - 18], &DbfEncoding::Utf8), (vec![1], vec![1, 0, 0, 0]));
+        assert_eq!(not_utf8(&dbf[..40], &DbfEncoding::Utf8), (Vec::new(), Vec::new()));
+        assert_eq!(not_utf8(&[], &DbfEncoding::Utf8), (Vec::new(), Vec::new()));
     }
 
     #[test]
     fn field_names_that_arent_utf8_are_said_with_their_columns() {
-        assert_eq!(not_utf8_names_note(&[]), None);
-        let one = not_utf8_names_note(&[3]).unwrap();
+        assert_eq!(not_utf8_names_note(&[], "UTF-8"), None);
+        let one = not_utf8_names_note(&[3], "UTF-8").unwrap();
         assert!(one.starts_with("Shapefile: 1 field name isn't valid UTF-8 and was read with U+FFFD"), "{one}");
         assert!(one.contains("in field 3;"), "{one}");
-        let two = not_utf8_names_note(&[3, 7]).unwrap();
+        let two = not_utf8_names_note(&[3, 7], "UTF-8").unwrap();
         assert!(two.starts_with("Shapefile: 2 field names aren't valid UTF-8 and were read with U+FFFD"), "{two}");
         assert!(two.contains("in fields 3, 7;"), "{two}");
         assert!(two.ends_with(NO_OTHER_ENCODING), "{two}");
-        let many = not_utf8_names_note(&[1, 2, 3, 4, 5, 6, 7]).unwrap();
+        let many = not_utf8_names_note(&[1, 2, 3, 4, 5, 6, 7], "UTF-8").unwrap();
         assert!(many.contains("in fields 1, 2, 3, 4, 5 and 2 more;"), "{many}");
+        // A declared code page is named, as what the file declares.
+        assert_eq!(
+            not_utf8_names_note(&[1], "Big5").as_deref(),
+            Some(
+                "Shapefile: 1 field name isn't valid Big5 and was read with U+FFFD in place of the bytes that can't be read, in field 1; the .cpg or the .dbf's language driver declares Big5"
+            )
+        );
     }
 }

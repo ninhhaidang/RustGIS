@@ -159,6 +159,10 @@ pub struct SourceLayer {
     /// Text values a view read found weren't UTF-8 ([`Batch::not_utf8`]), likewise.
     #[serde(skip)]
     not_utf8: Tally,
+    /// The encoding `not_utf8` counts were read in, taken when they were kept: the source may be
+    /// opened again before they are said.
+    #[serde(skip)]
+    not_utf8_in: Option<&'static str>,
     #[serde(skip)]
     not_utf8_said: bool,
     /// What else view reads lost or assumed ([`Batch::notes`]), until said by
@@ -885,6 +889,12 @@ impl SourceLayer {
     /// [`SourceLayer::take_not_utf8`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
     pub fn saw_not_utf8(&mut self, window: &Extent, counts: &[usize]) {
         if !self.not_utf8_said {
+            let encoding = self.handle.as_ref().map_or("UTF-8", |h| h.text_encoding());
+            // Counts of another encoding are of another opening's text: they aren't added to these.
+            if self.not_utf8_in != Some(encoding) {
+                self.not_utf8 = Tally::default();
+            }
+            self.not_utf8_in = Some(encoding);
             self.not_utf8.saw(window, counts);
         }
     }
@@ -899,7 +909,7 @@ impl SourceLayer {
         let fields = self.info().map(|i| i.fields.clone())?;
         let counts = std::mem::take(&mut self.not_utf8).total()?;
         self.not_utf8_said = true;
-        rustgis_data::source::not_utf8_note(&fields, &counts)
+        rustgis_data::source::not_utf8_note(&fields, &counts, self.not_utf8_in.take().unwrap_or("UTF-8"))
     }
 
     /// Keeps what view reads said they lost or assumed ([`Batch::notes`]) until
@@ -1704,6 +1714,7 @@ impl SourceLayer {
         self.null_text = Tally::default();
         self.null_text_said = false;
         self.not_utf8 = Tally::default();
+        self.not_utf8_in = None;
         self.not_utf8_said = false;
         self.forget_read_notes();
         self.reset();
@@ -2035,6 +2046,7 @@ impl SourceLayer {
             null_text: _,
             null_text_said: _,
             not_utf8: _,
+            not_utf8_in: _,
             not_utf8_said: _,
             read_notes: _,
             read_note_kinds: _,

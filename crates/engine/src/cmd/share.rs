@@ -733,7 +733,10 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
                 rustgis_data::source::null_text_note(&layer.fields, &e.null_text)
                     .map(|n| format!("{path}: {}: {n} (empty in the export)", layer.name)),
             );
-            dates.extend(rustgis_data::source::not_utf8_note(&layer.fields, &e.not_utf8).map(|n| format!("{path}: {}: {n}", layer.name)));
+            dates.extend(
+                rustgis_data::source::not_utf8_note(&layer.fields, &e.not_utf8, e.not_utf8_in)
+                    .map(|n| format!("{path}: {}: {n}", layer.name)),
+            );
             dates.extend(rustgis_data::io::utc_dates_note(&layer.fields, &e.utc_dates, path));
             dates.extend(rustgis_data::io::fine_dates_note(&layer.fields, &e.fine_dates, path));
             if ext == "fgb" {

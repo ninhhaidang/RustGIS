@@ -258,8 +258,9 @@ pub struct Batch {
     /// What else the read lost or assumed, one note per kind with its count (values that don't fit
     /// their field, rings without area): said as they are.
     pub notes: Vec<String>,
-    /// Text values of a Shapefile read as UTF-8 that aren't UTF-8, so hold U+FFFD in place of
-    /// those bytes, counted for each field by its position. Said by [`not_utf8_note`].
+    /// Text values of a Shapefile that aren't valid in the encoding they were read in
+    /// ([`FeatureSource::text_encoding`]), so hold U+FFFD in place of those bytes, counted for each
+    /// field by its position. Said by [`not_utf8_note`].
     pub not_utf8: Vec<usize>,
 }
 
@@ -274,7 +275,7 @@ pub(crate) fn null_text_at(counts: &mut Vec<usize>, k: usize) {
     unread_dates_by(counts, k, 1);
 }
 
-/// Counts one more text value that isn't UTF-8 in the field at `k` ([`Batch::not_utf8`]).
+/// Counts one more text value that isn't valid in its encoding in the field at `k` ([`Batch::not_utf8`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn not_utf8_at(counts: &mut Vec<usize>, k: usize) {
     unread_dates_by(counts, k, 1);
@@ -336,23 +337,23 @@ pub fn null_text_note(fields: &[crate::Field], counts: &[usize]) -> Option<Strin
     Some(format!("{what} read as empty, in {}", crate::io::named_fields(fields, counts)))
 }
 
-/// What a read says of a `.dbf`'s text values read as UTF-8 that aren't UTF-8
-/// ([`Batch::not_utf8`]): how many, in which fields (the first five named), and why they were read
-/// as UTF-8. `None` when there were none.
-pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize]) -> Option<String> {
+/// What a read says of a `.dbf`'s text values that aren't valid in the `encoding` they were read in
+/// ([`Batch::not_utf8`], [`FeatureSource::text_encoding`]): how many, in which fields (the first five
+/// named), and why they were read in it. `None` when there were none.
+pub fn not_utf8_note(fields: &[crate::Field], counts: &[usize], encoding: &str) -> Option<String> {
     let total: usize = counts.iter().sum();
     if total == 0 {
         return None;
     }
     let what = if total == 1 {
-        "1 text value isn't valid UTF-8 and was".to_string()
+        format!("1 text value isn't valid {encoding} and was")
     } else {
-        format!("{total} text values aren't valid UTF-8 and were")
+        format!("{total} text values aren't valid {encoding} and were")
     };
     Some(format!(
         "{what} read with U+FFFD in place of the bytes that can't be read, in {}; {}",
         crate::io::named_fields(fields, counts),
-        crate::dbf::NO_OTHER_ENCODING
+        crate::dbf::cause(encoding)
     ))
 }
 
@@ -408,6 +409,11 @@ pub trait FeatureSource: Send + Sync {
     /// extent is in longitude/latitude whatever this is.
     fn coord_crs(&self) -> crate::raster::Crs {
         crate::raster::Crs::LonLat
+    }
+    /// The encoding the source's text values are read in, for the notice of those that aren't
+    /// valid in it ([`not_utf8_note`]).
+    fn text_encoding(&self) -> &'static str {
+        "UTF-8"
     }
     /// Whether features were left out of every read because the coordinate system the source
     /// declares can't place them, so that defining its projection again can't bring them back.
@@ -670,6 +676,10 @@ impl FeatureSource for Fetching {
         self.0.lost_to_crs()
     }
 
+    fn text_encoding(&self) -> &'static str {
+        self.0.text_encoding()
+    }
+
     fn skipped_at_open(&self) -> usize {
         self.0.skipped_at_open()
     }
@@ -721,7 +731,7 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
         losses: Vec::new(),
     };
     let null_text = null_text_note(&info.fields, &null_text);
-    let not_utf8 = not_utf8_note(&info.fields, &not_utf8);
+    let not_utf8 = not_utf8_note(&info.fields, &not_utf8, src.text_encoding());
     report.messages.extend(
         unread_dates.into_iter().chain(rounded).chain(null_text).chain(notes).chain(not_utf8).map(|n| format!("{}: {n}", info.name)),
     );

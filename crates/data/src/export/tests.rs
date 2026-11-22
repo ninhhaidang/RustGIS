@@ -241,6 +241,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     rounded_dates: Vec::new(),
                     null_text: Vec::new(),
                     not_utf8: Vec::new(),
+                    not_utf8_in: "UTF-8",
                     utc_dates,
                     fine_dates: if ext == "gpkg" { crate::io::fine_dates(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     written_values: if ext == "fgb" { crate::io::written_values(whole.features.iter(), &whole.fields) } else { Vec::new() },

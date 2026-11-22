@@ -2143,7 +2143,10 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                     .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
             );
             notes.extend(result.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", ds.name)));
-            notes.extend(rustgis_data::source::not_utf8_note(&ds.fields, &result.not_utf8).map(|n| format!("{path}: {}: {n}", ds.name)));
+            notes.extend(
+                rustgis_data::source::not_utf8_note(&ds.fields, &result.not_utf8, result.not_utf8_in)
+                    .map(|n| format!("{path}: {}: {n}", ds.name)),
+            );
             (notes, result.null_numbers, result.query)
         } else {
             let (mut ds, unreadable) = if layer.is_streamed() {

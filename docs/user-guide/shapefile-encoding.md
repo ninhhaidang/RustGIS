@@ -63,6 +63,12 @@ Whenever text is read as UTF-8 (the markers in this section, unknown markers, `0
 UTF-8 `.cpg`), a notice counts the text values whose bytes aren't valid UTF-8 and names their
 fields, and another counts such field names. A file whose text is all valid UTF-8 gives neither.
 
+Text read in a code page that is decoded here (932 Shift_JIS, 936 GBK, 949 EUC-KR, 950 Big5, the
+Windows pages and the rest) is counted the same way when its bytes aren't valid in that page: the
+notices say how many values and field names, in which fields, and that the `.cpg` or the `.dbf`'s
+language driver declares it. The DOS pages (437, 850, 852, 861, 865) give every byte a
+character, so nothing in them is replaced.
+
 The existing transitive `yore` 1.4.0 package has CP737, CP857, CP860 and CP863 decoders,
 but RustGIS's current `dbase` adapter does not expose them. Making these available would
 require decoder integration and a coordinated direct dependency declaration; their presence
@@ -87,5 +93,6 @@ tables or system programs are needed for the supported decoders above.
 independently of RustGIS's mapping. Its matrix covers every marker above, names and values,
 ZIP and loose-file imports, a genuinely sampled streamed read, a complete read, and ordered
 chunk traversal. It also checks `.cpg` precedence, fallback diagnostics, the notices for text
-that isn't valid UTF-8, and malformed multibyte text without discarding records. Test files are
+that isn't valid UTF-8, and malformed multibyte text (counted and said, in names and values, with the
+declared code page named) without discarding records. Test files are
 generated locally; the tests do not download data or call external converters.
