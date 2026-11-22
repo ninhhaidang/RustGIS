@@ -4577,6 +4577,12 @@ pub struct CsvLosses {
 impl CsvLosses {
     /// The losses of `features` in a layer of type `gt`; a streamed export adds up its chunks'.
     pub fn of(features: &[crate::Feature], gt: GeometryType, fields: &[Field]) -> Result<Self> {
+        Self::of_placed(features, gt, fields, &|c| Some(c))
+    }
+
+    /// As [`CsvLosses::of`], for features whose points are written where `place` puts them (in
+    /// another system): only the points are converted, not the features.
+    fn of_placed(features: &[crate::Feature], gt: GeometryType, fields: &[Field], place: &dyn Fn(Coord) -> Option<Coord>) -> Result<Self> {
         let mut out = Self { points: gt == GeometryType::Point, guarded: vec![0; fields.len()], ..Self::default() };
         for feature in features {
             crate::progress::check()?;
@@ -4585,7 +4591,7 @@ impl CsvLosses {
             }
             let geometry = feature.geometry.as_ref();
             let point = if out.points { geometry.and_then(Geometry::label_point) } else { None };
-            if out.points && !point.is_some_and(usable_degree_point) {
+            if out.points && !point.and_then(place).is_some_and(usable_degree_point) {
                 out.unusable_points += 1;
             }
             let Some(g) = geometry else { continue };
@@ -4651,8 +4657,15 @@ impl CsvLosses {
             let [x, y] = csv_projected_names(fields);
             let target: String = target.chars().map(dbf_notice_char).collect();
             return (x != "x" && x != "easting" || y != "y" && y != "northing").then(|| {
+                // The names that moved the columns: each axis's two, when both are taken.
+                let names: Vec<String> = [(x != "x" && x != "easting", ["x", "easting"]), (y != "y" && y != "northing", ["y", "northing"])]
+                    .into_iter()
+                    .filter(|(moved, _)| *moved)
+                    .flat_map(|(_, names)| names.map(|n| format!("'{n}'")))
+                    .collect();
                 format!(
-                    "{target}: the fields have the names 'x', 'y', 'easting' and 'northing', so the coordinates are in columns '{}' and '{}'; pick those columns when adding the file back",
+                    "{target}: the fields have the names {}, so the coordinates are in columns '{}' and '{}'; pick those columns when adding the file back",
+                    names.join(" and ").replacen(" and ", ", ", names.len().saturating_sub(2)),
                     dbf_notice_name(&x),
                     dbf_notice_name(&y)
                 )
@@ -4982,15 +4995,18 @@ pub fn export_losses_notes(ds: &Dataset, ext: &str, name_field: Option<usize>, t
 pub fn export_losses_notes_in(ds: &Dataset, ext: &str, name_field: Option<usize>, target: &str, crs: Crs) -> Result<Vec<String>> {
     let mut notes = match ext {
         "csv" => {
-            // Of the coordinates the file is written in: longitude/latitude, or another system's.
-            let ds = if crs == Crs::LonLat {
-                ds.in_lonlat().map_err(DataError::of_conversion)?
-            } else if crs == ds.coord_crs() {
-                std::borrow::Cow::Borrowed(ds)
+            // Of the coordinates the file is written in: longitude/latitude, or another
+            // geographic system's, whose points alone are converted to be checked (no copy of the
+            // layer); a projected system's aren't degrees, so aren't checked as such.
+            let losses = if crs == Crs::LonLat {
+                let ds = ds.in_lonlat().map_err(DataError::of_conversion)?;
+                CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?
+            } else if crs.is_geographic() && crs != ds.coord_crs() {
+                let to = ds.coord_crs().to(crs).map_err(DataError::Format)?;
+                CsvLosses::of_placed(&ds.features, ds.geometry_type, &ds.fields, &|c| to.point(c))?
             } else {
-                std::borrow::Cow::Owned(project(ds, crs)?)
+                CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?
             };
-            let losses = CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?;
             let mut notes = losses.notes(&ds.fields, target);
             notes.extend(losses.coordinates_note_in(&ds.fields, target, crs));
             notes

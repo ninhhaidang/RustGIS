@@ -722,10 +722,10 @@ coordinates for degrees. A layer made in RustGIS defaults to WGS 84.
 another, such as `{"layer": "Parcels", "path": "parcels.gpkg", "crs": "EPSG:4647"}`. GeoJSON, KML
 and GPX are always written in WGS 84. CSV is written in WGS 84 (`longitude` and `latitude`) unless
 a `"crs"` is given: a point layer's coordinates are then written in that system, in `longitude`
-and `latitude` columns for a geographic one, and for a projected one in `x` and `y`, or `easting`
-and `northing` when fields have the names `x` or `y`, or `x_1` and `y_1` when fields have all
-four. A notice says which system it is, since a CSV file can't; give the same system when adding
-the file back.
+and `latitude` columns for a geographic one, and for a projected one in an x and a y column. Each
+takes the first name no field has: `x`, then `easting`, then `x_1`, `x_2` and so on, and `y`, then
+`northing`, then `y_1` and so on. A notice says which system it is, since a CSV file can't; give
+the same system when adding the file back.
 
 RustGIS keeps x and y only. When a source has Z or M values (heights or measures), adding it says
 they were dropped, and exporting or converting the layer (or exporting a standalone table that

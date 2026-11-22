@@ -3239,7 +3239,20 @@ fn a_csv_export_takes_x_and_y_in_a_system_asked_for() {
     }
     assert!(crate::io::to_csv_in(&every, lv95).unwrap().starts_with("x_1,y_1,"));
     let notes = crate::io::export_losses_notes_in(&every, "csv", None, "xy.csv", lv95).unwrap();
-    assert!(notes.iter().any(|n| n.contains("'x_1' and 'y_1'")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("'x', 'easting', 'y' and 'northing'") && n.contains("'x_1' and 'y_1'")), "{notes:?}");
+    // Each axis on its own: 'x' and 'easting' taken move only the x column, and only those two
+    // names are said.
+    let mut one =
+        Dataset::new("one", GeometryType::Point, vec![Field::new("x", FieldType::Integer), Field::new("easting", FieldType::Integer)]);
+    one.push(Some(Geometry::Point(Coord::new(2_600_000.0, 1_200_000.0))), vec![Value::Int(1), Value::Int(2)]);
+    one.crs = Some(lv95);
+    one.held_in = lv95;
+    assert!(crate::io::to_csv_in(&one, lv95).unwrap().starts_with("x_1,y,x,easting\n"));
+    let notes = crate::io::export_losses_notes_in(&one, "csv", None, "one.csv", lv95).unwrap();
+    assert!(
+        notes.iter().any(|n| n.contains("the names 'x' and 'easting', so") && n.contains("'x_1' and 'y'") && !n.contains("northing")),
+        "{notes:?}"
+    );
     // Into a geographic system other than WGS 84: longitude and latitude columns, and no note
     // of unusable positions, which are counted on the coordinates written.
     // Fields named x and y are a pair reading could take instead, which a note names when rows

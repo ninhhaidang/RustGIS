@@ -62,11 +62,20 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
         let (synced, path, dataset, instance, name) =
             (synced.clone(), path.to_string(), l.dataset.clone(), l.instance_id(), l.name.clone());
         Ok(Box::new(move || {
-            // Both kinds of digest, before anything is written: the record the publish makes may
-            // keep the other kind (an older release's record kept no native one), and Cancel must
-            // not leave a written file without its record.
-            let (lonlat_rows, native_rows) = rustgis_data::sync::digests(&dataset).map_err(|e| e.to_string())?;
-            let of_kind = |native: bool| if native { native_rows } else { Some(lonlat_rows) };
+            // The digests the record needs, before anything is written, so Cancel can't leave a
+            // written file without its record. A layer held in its own system is hashed as held
+            // (no conversion), and in longitude/latitude too only when its record is of that kind
+            // (an older release's kept no native one), in the same pass. A record of a kind not
+            // hashed here (a held layer read back in longitude/latitude) differs, so the layer
+            // takes what was read back: refreshed, never out of step.
+            let err = |e: rustgis_data::DataError| e.to_string();
+            let (lonlat_rows, native_rows) = if synced.native.is_none() || dataset.coord_crs() == rustgis_data::raster::Crs::LonLat {
+                let (rows, native) = rustgis_data::sync::digests(&dataset).map_err(err)?;
+                (Some(rows), native)
+            } else {
+                (None, Some(rustgis_data::sync::native_digest(&dataset).map_err(err)?))
+            };
+            let of_kind = |native: bool| if native { native_rows } else { lonlat_rows };
             let rows = of_kind(synced.native.is_some());
             let features = dataset.features.len();
             if rows == Some(synced.digest()) {

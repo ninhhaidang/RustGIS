@@ -713,11 +713,15 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
         return Err(format!("{path}: {e}"));
     }
     let parquet = matches!(ext.as_str(), "parquet" | "geoparquet");
+    // Whether a CSV has coordinate columns: a streamed layer that declares no type takes its
+    // first geometry's, which the chunks written say.
+    let mut csv_points = ds.geometry_type == rustgis_data::GeometryType::Point;
     let (written, left_out, skipped, table, unfit, null_numbers, moved, format_notes, dates) = match &chunks {
         Some((src, layer)) => {
             let (e, table) = rustgis_data::export::write_source_filtered(src.as_ref(), layer, Path::new(&path), crs, &gpkg, query)
                 .map_err(|e| e.to_string())?;
             query_report = e.query;
+            csv_points |= e.csv.points;
             // Counted as the chunks were written, as the layer holds none of them.
             let unfit = rustgis_data::source::parquet::unfit_note(&layer.fields, &e.unfit, path);
             let moved = rustgis_data::web_mercator_moved_note(path, &layer.name, e.beyond_web_mercator);
@@ -774,7 +778,8 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     if asked.is_none() {
         notes.extend(rustgis_data::io::default_export_note(ds, path));
     }
-    notes.extend(rustgis_data::io::csv_system_note(path, ds.geometry_type, crs));
+    let csv_type = if csv_points { rustgis_data::GeometryType::Point } else { ds.geometry_type };
+    notes.extend(rustgis_data::io::csv_system_note(path, csv_type, crs));
     notes.extend(moved);
     // A Shapefile (`.shp`, or zipped to `.zip`) cuts field names to dBase's.
     let shapefile = matches!(ext.as_str(), "shp" | "zip");
