@@ -2025,7 +2025,9 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     if rustgis_data::raster::is_raster_name(path) {
         let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty());
         let page = super::raster::pdf_page(path, p)?;
-        return super::raster::add_path(s, path, name, page.as_deref(), scan);
+        // An SRTM tile or DTED file has no subdataset or coordinate system to choose: said.
+        let ignored = rustgis_data::raster::elevation_ignores(path, ps(p, "layer"), ps(p, "crs"));
+        return super::raster::add_path(s, path, name, page.as_deref(), scan, ignored);
     }
     // A Zarr store's folder: its first variable, or the one "layer" names.
     #[cfg(not(target_arch = "wasm32"))]

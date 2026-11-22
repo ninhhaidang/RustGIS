@@ -37,7 +37,7 @@ pub fn commands() -> Vec<C> {
             .inputs(crate::cmd::Inputs::single_layer).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view()
             .params(r#"{"layer"?:name|id}"#),
         C::new("layer.addDataBytes", "Add Data (from file contents)", "Home › Add", add_bytes::<MAX_UPLOAD_BYTES>).roles(&[]).effects(crate::policy::Effects::NONE)
-            .params(r#"{"fileName": "name.tif|.tiff|.asc|.grb|.grib|.grb2|.grib2 (GRIB)|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k|.dxf|.pdf (JPEG 2000: desktop, through GDAL; PDF: desktop, command line and Python)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name, or a PDF's page number (the first when left out or blank)", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData)}"#),
+            .params(r#"{"fileName": "name.tif|.tiff|.asc|.grb|.grib|.grb2|.grib2 (GRIB)|.hgt|.dt0|.dt1|.dt2|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k|.dxf|.pdf (JPEG 2000: desktop, through GDAL; PDF: desktop, command line and Python)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name, or a PDF's page number (the first when left out or blank)", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData)}"#),
         C::new("raster.symbology", "Symbology", "Style › Rendering", symbology).when(need_raster).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer"?, "type": "stretch"|"rgb"|"classify"|"unique"|"colormap"|"shadedRelief", "band"?: 1.., "ramp"?, "invert"?: bool, "classes"?: 1..32, "method"?, "azimuth"?, "altitude"?, "zFactor"?, "shadow"?: 0..1 (shadedRelief: how dark the shadows the terrain casts are; left out, kept; 0 casts none), "sky"?: 0..1 (shadedRelief: how much the share of the sky each cell sees dims its ambient light; left out, kept; 0 leaves it whole), "fill"?: 0..1 (shadedRelief: a fill light from the side opposite the sun that lightens the slopes turned toward it; left out, kept; 0 has none), "ambient"?: 0..1|null (shadedRelief: the share of the colour a slope turned fully from the sun keeps; left out, kept; null, the default: 0.25, or 0.5 balanced), "balanced"?: bool (shadedRelief: flat ground keeps the ramp's colour and slopes facing the sun brighten, up to 1.3; left out, kept; false, the default, lights as before), "rock"?: {"from"?: 0..90, "to"?: 0..90, "color"?: #RRGGBB} | false (shadedRelief: steep slopes tinted toward a rock colour before the light, from the ground's own slope in degrees, without the Z factor: the ramp below from, the colour above to, blended between; left out, kept; an object's missing keys keep the current rock's, or 25, 40 and #B2ACA4; false or null removes it), "grey"?: bool (shadedRelief without its colour ramp)}"#,
         ),
@@ -564,12 +564,14 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
     }
 }
 
-/// Opens a raster file by path.
-pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, page: Option<&str>, scan: bool) -> CmdResult {
+/// Opens a raster file by path; `ignored` is said with what reading it lost (options given that
+/// don't apply to it).
+pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, page: Option<&str>, scan: bool, ignored: Option<String>) -> CmdResult {
     let mut r = match super::reads::take(s, &read_key(path, page, scan)) {
         Some(r) => r,
         None => read_raster_as(path, page, scan),
     }?;
+    r.lost.extend(ignored);
     if scan {
         r = r.into_scan().map_err(|e| format!("{path}: {e}"))?;
     }
@@ -771,6 +773,7 @@ pub(crate) fn add_named_bytes_read(
             Some(r) => r,
             None => raster::read_bytes_page(&name, &bytes, page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
         };
+        r.lost.extend(raster::elevation_ignores(&name, ps(p, "layer"), ps(p, "crs")));
         if scan {
             r = r.into_scan().map_err(|e| format!("{name}: {e}"))?;
         }

@@ -226,13 +226,16 @@ impl RasterLayer {
         self.validate_replacement(&r, path)?;
         let mut style = self.style.clone();
         style.repair(&r);
+        // An SRTM tile or DTED file takes no subdataset or coordinate system: the ones the layer
+        // had were said to be ignored as it was read, and aren't kept.
+        let elevation = rustgis_data::raster::is_elevation_name(path);
         Ok(RasterLayer {
             path: Some(path.into()),
             in_place: false,
             file_name: None,
             embedded: None,
-            subdataset: sub.map(String::from),
-            crs: self.crs.clone(),
+            subdataset: sub.filter(|_| !elevation).map(String::from),
+            crs: self.crs.clone().filter(|_| !elevation),
             time_zarr: None,
             placement: self.placement,
             style,
@@ -567,6 +570,7 @@ impl RasterLayer {
         };
         match r {
             Ok(r) => {
+                self.forget_ignored_options();
                 self.style.repair(&r);
                 self.data = Some(Arc::new(r));
                 self.pixels_said = false;
@@ -1171,6 +1175,17 @@ impl RasterLayer {
             r.lost.push("it has no coordinates now, though it had them when added: it is drawn at a stand-in place".into());
         }
         Ok(r)
+    }
+
+    /// Drops the subdataset and coordinate system of an SRTM tile or DTED file read from its path
+    /// (a project saved when these files went through GDAL kept them): reading it said they are
+    /// ignored, once, and the project saved again leaves them out, so the next open doesn't say it
+    /// again.
+    fn forget_ignored_options(&mut self) {
+        if self.embedded.is_none() && self.path.as_deref().is_some_and(rustgis_data::raster::is_elevation_name) {
+            self.subdataset = None;
+            self.crs = None;
+        }
     }
 }
 

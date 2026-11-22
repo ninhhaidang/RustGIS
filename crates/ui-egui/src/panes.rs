@@ -2862,6 +2862,8 @@ fn folder_browser(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                         "rgislayout",
                     ]
                     .iter()
+                    // SRTM height tiles and DTED.
+                    .chain(rustgis_engine::data::raster::ELEVATION_EXTENSIONS.iter())
                     .any(|x| n.to_lowercase().ends_with(&format!(".{x}"))))
         })
         .collect();

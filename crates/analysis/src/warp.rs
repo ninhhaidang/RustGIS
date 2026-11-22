@@ -222,9 +222,11 @@ impl Sampler<'_> {
 pub fn warp(r: &Raster, fit: &Fit, o: &Options) -> Result<Raster, String> {
     let re = Reproject::new(o.points_crs, o.crs)?;
     let (w, h) = (f64::from(r.width), f64::from(r.height));
-    // An overview's pixels are bigger than the full image's, which the fit is in.
-    let (sx, sy) = r.overview.map_or((1.0, 1.0), |(fw, fh)| (f64::from(fw) / w, f64::from(fh) / h));
-    let place = |c: f64, row: f64| fit.to_map(c * sx, row * sy).and_then(|(x, y)| re.forward(x, y));
+    // An overview's pixels are bigger than the full image's, which the fit is in; a grid of
+    // posts read at a step also starts before the file's corner (each cell centered on its post).
+    let (sx, sy) = r.file_pixels();
+    let (ox, oy) = r.file_origin();
+    let place = |c: f64, row: f64| fit.to_map(c * sx + ox, row * sy + oy).and_then(|(x, y)| re.forward(x, y));
 
     let [min_x, min_y, max_x, max_y] = footprint(w, h, &place).ok_or("the image's edge can't be placed in the output coordinate system")?;
     if o.crs.is_geographic() && max_x - min_x > 180.0 {
@@ -275,7 +277,7 @@ pub fn warp(r: &Raster, fit: &Fit, o: &Options) -> Result<Raster, String> {
     let source = |x: f64, y: f64| -> Option<(f64, f64)> {
         let (px, py) = re.back(x, y)?;
         let (c, row) = fit.to_pixel(px, py)?;
-        let (c, row) = (c / sx, row / sy);
+        let (c, row) = ((c - ox) / sx, (row - oy) / sy);
         (c.is_finite() && row.is_finite()).then_some((c, row))
     };
     sampled(None, r, &g, canvas, o.resampling, &source, o.name.clone())
@@ -1204,6 +1206,62 @@ mod tests {
         let hole: Vec<(i64, i64)> = (4..8).flat_map(|row| (4..8).map(move |c| (c, row))).collect();
         assert_eq!(empty, hole);
         assert!(out.bands[0].data.iter().all(|v| *v == 10.0 || *v == -9999.0));
+    }
+
+    #[test]
+    fn a_picture_read_at_a_step_is_warped_by_the_step_exactly() {
+        // A 61-pixel-wide file read at every second pixel: 31 cells, each exactly two of the
+        // file's pixels from the corner (61 isn't a multiple of 2, so 61/31 ≈ 1.968 would put
+        // the far cells about one cell off). The fit is in the file's pixels; each cell holds
+        // the file column it was read from.
+        let (w, h) = (31u32, 4u32);
+        let data: Vec<f32> = (0..w * h).map(|i| 2.0 * (i % w) as f32).collect();
+        let r = scan(w, h, vec![data], ColorHint::Gray, "Float32").read_at_step(2, (61, 7));
+        assert_eq!(r.file_pixels(), (2.0, 2.0));
+        let map = |c: f64, rw: f64| (500_000.0 + 10.0 * c, 4_000_000.0 - 10.0 * rw);
+        let fit = georef::fit(Kind::Affine, &gcps(61.0, 7.0, map)).unwrap();
+        let out = warp(&r, &fit, &opts(Some(5.0), Resampling::Nearest)).unwrap();
+        let mut checked = 0;
+        for col in 0..i64::from(out.width) {
+            let p = out.transform.to_world(col as f64 + 0.5, 1.5);
+            let Some((c, _)) = fit.to_pixel(p.x, p.y) else { continue };
+            // Away from the cells' edges, where nearest could go either way.
+            if !(0.2..61.8).contains(&c) || (c % 2.0 - 1.0).abs() < 0.2 || c % 2.0 < 0.2 {
+                continue;
+            }
+            let v = out.value(0, col, 1).unwrap();
+            assert_eq!(f64::from(v), 2.0 * (c / 2.0).floor(), "file column {c}");
+            checked += 1;
+        }
+        assert!(checked > 40, "{checked}");
+    }
+
+    #[test]
+    fn an_elevation_grid_read_at_a_step_is_warped_with_each_cell_on_its_post() {
+        // A 61-post-wide SRTM or DTED grid read at every fourth post: 16 cells, each centered on
+        // the post it was read from (file position 4k + 0.5), not starting at it, which put every
+        // height 1.5 file pixels off. Each cell holds the file column it was read from.
+        let (w, h) = (16u32, 4u32);
+        let data: Vec<f32> = (0..w * h).map(|i| 4.0 * (i % w) as f32).collect();
+        let r = scan(w, h, vec![data], ColorHint::Gray, "Float32").posts_read_at_step(4, (61, 13));
+        assert_eq!(r.file_origin(), (-1.5, -1.5));
+        let map = |c: f64, rw: f64| (500_000.0 + 10.0 * c, 4_000_000.0 - 10.0 * rw);
+        let fit = georef::fit(Kind::Affine, &gcps(61.0, 13.0, map)).unwrap();
+        let out = warp(&r, &fit, &opts(Some(5.0), Resampling::Nearest)).unwrap();
+        let mut checked = 0;
+        for col in 0..i64::from(out.width) {
+            let p = out.transform.to_world(col as f64 + 0.5, 5.5);
+            let Some((c, _)) = fit.to_pixel(p.x, p.y) else { continue };
+            // The nearest post kept, away from the cells' edges (halfway between two of them).
+            let k = (c - 0.5) / 4.0;
+            if !(0.0..60.5).contains(&c) || (k - k.floor() - 0.5).abs() < 0.05 {
+                continue;
+            }
+            let v = out.value(0, col, 5).unwrap();
+            assert_eq!(f64::from(v), 4.0 * k.round(), "file column {c}");
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     #[test]

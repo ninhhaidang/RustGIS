@@ -1,5 +1,5 @@
 //! GDAL, optionally, for rasters: formats the built-in readers don't know (JPEG 2000, ERDAS
-//! Imagine, SRTM HGT, DTED, NetCDF, HDF, ENVI, SAGA…) read through GDAL's `gdal_translate` when it
+//! Imagine, NetCDF, HDF, ENVI, SAGA…) read through GDAL's `gdal_translate` when it
 //! is installed.
 //!
 //! A file (or one of its subdatasets, such as a NetCDF variable) is converted once into a
@@ -16,8 +16,8 @@ use crate::{DataError, Result};
 /// Raster file types read through GDAL. (Not `.vrt`, which can point GDAL at any file on the
 /// machine, nor `.xyz`, more often a point cloud than a grid.)
 pub const EXTENSIONS: &[&str] = &[
-    "jp2", "j2k", "img", "hgt", "dem", "dt0", "dt1", "dt2", "nc", "nc4", "hdf", "hdf5", "h5", "he5", "bil", "bsq", "bip", "envi", "grd",
-    "rst", "sdat", "kea", "ers", "ntf", "nitf", "ecw", "sid", "gsb", "bt", "rsw",
+    "jp2", "j2k", "img", "dem", "nc", "nc4", "hdf", "hdf5", "h5", "he5", "bil", "bsq", "bip", "envi", "grd", "rst", "sdat", "kea", "ers",
+    "ntf", "nitf", "ecw", "sid", "gsb", "bt", "rsw",
 ];
 
 /// Most subdatasets listed from one file.
@@ -39,10 +39,8 @@ fn drivers(src: &Path) -> Result<&'static [&'static str]> {
         "jp2" | "j2k" => &["JP2OpenJPEG", "JP2KAK", "JP2ECW", "JP2MrSID"],
         // ERDAS Imagine, or raw cells with an ENVI or EHdr `.hdr` header beside them.
         "img" => &["HFA", "ENVI", "EHdr"],
-        "hgt" => &["SRTMHGT"],
         // A USGS DEM, or a GTOPO30 tile.
         "dem" => &["USGSDEM", "EHdr"],
-        "dt0" | "dt1" | "dt2" => &["DTED"],
         // NetCDF-4 is HDF5, and either driver may be the one built.
         "nc" | "nc4" | "hdf5" | "h5" | "he5" => &["netCDF", "HDF5", "HDF5Image"],
         "hdf" => &["HDF4", "HDF4Image", "HDF5", "HDF5Image"],
@@ -633,7 +631,9 @@ mod tests {
 
     #[test]
     fn names() {
-        assert!(is_gdal_raster_name("/d/N45E006.HGT"));
+        assert!(is_gdal_raster_name("/d/G.IMG"));
+        // SRTM tiles and DTED are read natively (`raster::hgt`, `raster::dted`).
+        assert!(!is_gdal_raster_name("/d/N45E006.HGT") && !is_gdal_raster_name("n45.dt1"));
         assert!(is_gdal_raster_name("air.nc"));
         assert!(!is_gdal_raster_name("a.tif") && !is_gdal_raster_name("a.vrt"));
         assert_eq!(short_name("NETCDF:\"/d/air.nc\":air"), "air");
@@ -845,7 +845,7 @@ mod tests {
         assert!(e.contains("not recognized"), "{e}");
     }
 
-    /// Runs only where GDAL is installed: a NetCDF file's variables, an HGT tile.
+    /// Runs only where GDAL is installed: a NetCDF file's variables.
     #[test]
     fn raster_conversion_provenance_excludes_cache_files_when_gdal_is_installed() {
         let Some(translate) = program("gdal_translate") else { return };

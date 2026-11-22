@@ -372,11 +372,20 @@ mod tests {
         image::GrayImage::from_pixel(101, 3, image::Luma([9]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let r = super::super::read_scan_limited("p", std::io::Cursor::new(png), 300).unwrap();
+        let r = super::super::read_scan_limited("p", std::io::Cursor::new(png.clone()), 300).unwrap();
         assert_eq!((r.width, r.height, r.step, r.overview), (51, 2, 2, Some((101, 3))));
         let wf = WorldFile::parse("1\n0\n0\n-1\n0.5\n9.5\n").unwrap();
         let r = r.placed_by_world_file(&wf, crate::raster::Crs::LonLat).map_err(|(_, e)| e).unwrap();
         assert_eq!((r.transform.origin_x, r.transform.origin_y, r.transform.pixel_width, r.transform.pixel_height), (0.0, 10.0, 2.0, -2.0));
+        assert_eq!((r.step, r.overview, r.file_pixels()), (2, Some((101, 3)), (2.0, 2.0)));
+        // Turned a quarter, it is resampled north up at the reduced size: 2 × 51 cells, each two of
+        // the file's pixels. The size said is the whole file's turned, 3 × 101, and a later warp
+        // still scales its cells by exactly 2 (not 101/51).
+        let r = super::super::read_scan_limited("p", std::io::Cursor::new(png), 300).unwrap();
+        let wf = WorldFile::parse("0\n-1\n-1\n0\n11.5\n49.5\n").unwrap();
+        let r = r.placed_by_world_file(&wf, crate::raster::Crs::LonLat).map_err(|(_, e)| e).unwrap();
+        assert_eq!((r.width, r.height, r.step, r.overview), (2, 51, 2, Some((3, 101))));
+        assert_eq!(r.file_pixels(), (2.0, 2.0));
     }
 
     #[test]

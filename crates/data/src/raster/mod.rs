@@ -12,12 +12,14 @@ pub mod cogwrite;
 pub mod crs;
 pub mod crs_search;
 mod decoded;
+pub mod dted;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_revision;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;
 pub mod geotiff;
 pub mod grib;
+pub mod hgt;
 mod image_grid;
 mod lerc;
 mod lzw;
@@ -98,10 +100,67 @@ pub const SAMPLES_CEILING: usize = 1_000_000_000;
 pub fn max_samples() -> usize {
     crate::memory::planned(SAMPLES_FLOOR, SAMPLES_CEILING, 8)
 }
+
+// Shared by the elevation readers ([`hgt`], [`dted`]) and pictures read at a step.
+
+/// The transform of a grid of posts (samples on grid lines) whose south-west post is at
+/// (`west`, `south`), `cols` × `rows` of them `dx` and `dy` degrees apart, read every `step`-th
+/// post from the north-west one: each post kept becomes a cell centered on it, `step` posts wide,
+/// so the grid's edges lie half a cell beyond the outer posts kept. (At `step` 1, half a post's
+/// spacing beyond the outer posts.)
+fn post_transform(west: f64, south: f64, rows: usize, dx: f64, dy: f64, step: usize) -> GeoTransform {
+    let north = south + (rows.saturating_sub(1)) as f64 * dy;
+    let k = step.max(1) as f64;
+    let (cell_x, cell_y) = (dx * k, dy * k);
+    GeoTransform { origin_x: west - cell_x / 2.0, origin_y: north + cell_y / 2.0, pixel_width: cell_x, pixel_height: -cell_y }
+}
+
+/// The step at which a `w` × `h` grid fits in `max` samples: 1, or the smallest power of two
+/// whose every-`step`-th sample does ([`read_scan`] reduces pictures with it too). `None`
+/// when none does, up to a step of 2^20.
+fn step_within(w: usize, h: usize, max: usize) -> Option<usize> {
+    let mut k = 1usize;
+    while w.div_ceil(k).saturating_mul(h.div_ceil(k)) > max {
+        k = k.checked_mul(2)?;
+        if k > 1 << 20 {
+            return None;
+        }
+    }
+    Some(k)
+}
+
+/// What a tile says of its heights' vertical reference, once a layer (a raster's `lost`): the
+/// layer's coordinate system is horizontal only, so this is where it is said.
+fn vertical_note(surface: &str) -> String {
+    format!(
+        "heights are meters above {surface}, not the WGS 84 ellipsoid; the layer's coordinate system doesn't carry a vertical datum, so compare it with ellipsoidal heights (GPS, many lidar files) only after a geoid correction"
+    )
+}
+
+/// What reading a grid's no-data posts says: `None` when there are none.
+fn void_note(voids: u64, total: u64, value: i16) -> Option<String> {
+    match voids {
+        0 => None,
+        1 => Some(format!("1 of its {total} heights is a void ({value}), read as no data")),
+        n => Some(format!("{n} of its {total} heights are voids ({value}), read as no data")),
+    }
+}
+
 /// Largest ASCII grid file read (1 GiB).
 pub const MAX_ASCII_BYTES: u64 = 1 << 30;
-/// File extensions read as rasters.
-pub const READ_EXTENSIONS: &[&str] = &["tif", "tiff", "asc", "png", "jpg", "jpeg", "grb", "grib", "grb2", "grib2"];
+/// File extensions read as rasters. SRTM height tiles (`.hgt`) and DTED (`.dt0`–`.dt2`) are
+/// read natively ([`hgt`], [`dted`]), on the desktop and in the browser: the last four are
+/// [`ELEVATION_EXTENSIONS`] (a test holds them to it).
+pub const READ_EXTENSIONS: &[&str] =
+    &["tif", "tiff", "asc", "png", "jpg", "jpeg", "grb", "grib", "grb2", "grib2", "hgt", "dt0", "dt1", "dt2"];
+/// The extensions of the elevation files read natively: SRTM height tiles and DTED levels 0–2.
+pub const ELEVATION_EXTENSIONS: [&str; 4] = ["hgt", "dt0", "dt1", "dt2"];
+
+/// Whether a file name is an SRTM height tile's or a DTED file's ([`ELEVATION_EXTENSIONS`]).
+pub fn is_elevation_name(name: &str) -> bool {
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    ELEVATION_EXTENSIONS.contains(&ext.as_str())
+}
 
 /// Whether a file name is a raster this module reads: a PDF's page too (refused with
 /// [`PDF_ELSEWHERE`] where [`PDF_PAGES`] is false).
@@ -660,6 +719,10 @@ pub struct Raster {
     /// corner (a picture too large to read whole): each then spans exactly `step` of its pixels,
     /// where an overview's span its size over the file's. 1 otherwise.
     pub(crate) step: u32,
+    /// With `step`, whether each pixel read is centered on the file pixel it was read from (a
+    /// grid of posts, SRTM and DTED: [`post_transform`]) rather than starting at it, as a
+    /// picture's does.
+    pub(crate) posts: bool,
     /// `false` for a scan (a TIFF with no GeoTIFF tags, a PNG, a JPEG): `transform` is then only
     /// a stand-in until the picture is placed or georeferenced, and says nothing about the ground.
     pub georeferenced: bool,
@@ -857,6 +920,7 @@ impl Raster {
             source_file: None,
             overview: None,
             step: 1,
+            posts: false,
             georeferenced: true,
             lost: Vec::new(),
             rounded: Vec::new(),
@@ -1036,13 +1100,43 @@ impl Raster {
     }
 
     /// How many of the file's pixels one pixel read spans, across and down: exactly `step` for
-    /// every `step`-th pixel, an overview's size over the file's, else 1.
-    fn file_pixels(&self) -> (f64, f64) {
+    /// every `step`-th pixel, an overview's size over the file's, else 1. (`overview` stays the
+    /// file's own size, which `step` needn't divide, so a reader at a step goes by `step`.)
+    pub fn file_pixels(&self) -> (f64, f64) {
         if self.step > 1 {
             return (f64::from(self.step), f64::from(self.step));
         }
         let (full_w, full_h) = self.overview.unwrap_or((self.width, self.height));
         (f64::from(full_w) / f64::from(self.width.max(1)), f64::from(full_h) / f64::from(self.height.max(1)))
+    }
+
+    /// Where this raster's top-left corner lies in the file's pixels: the origin of
+    /// [`Raster::file_pixels`]. A grid of posts read at a step centers each cell on its post, so
+    /// the corner is `(step - 1) / 2` file pixels before the first post's own; otherwise 0.
+    pub fn file_origin(&self) -> (f64, f64) {
+        if self.posts && self.step > 1 {
+            let o = -(f64::from(self.step) - 1.0) / 2.0;
+            return (o, o);
+        }
+        (0.0, 0.0)
+    }
+
+    /// For other crates' tests: [`Raster::read_at_step`] of a grid of posts, as the SRTM and
+    /// DTED readers mark one.
+    #[doc(hidden)]
+    pub fn posts_read_at_step(self, step: u32, full: (u32, u32)) -> Raster {
+        let mut r = self.read_at_step(step, full);
+        r.posts = true;
+        r
+    }
+
+    /// For other crates' tests: this raster as if read at every `step`-th pixel of a file of
+    /// `full` pixels, as the readers mark one read within the memory budget.
+    #[doc(hidden)]
+    pub fn read_at_step(mut self, step: u32, full: (u32, u32)) -> Raster {
+        self.step = step.max(1);
+        self.overview = Some(full);
+        self
     }
 
     /// A scan placed by its world file, in `crs`: georeferenced. The world file speaks of the
@@ -1083,16 +1177,21 @@ impl Raster {
                 old.stats = new.stats.clone();
                 *new = old;
             }
-            // A picture read at a reduced size still says so, as a turned GeoTIFF does: of the
-            // turned grid at the file's resolution, so the two sizes said are alike.
-            let full = |n: u32, s: f64| (f64::from(n) * s).round().clamp(1.0, f64::from(u32::MAX)) as u32;
-            r.overview = self.overview.map(|_| (full(ow, sx), full(oh, sy)));
+            // A picture read at a reduced size still says so, as a turned GeoTIFF does, with the
+            // size the whole file has turned at its own resolution (its corners turned, over a
+            // cell of its pixels' area, as `north_up` sizes a grid).
+            let [_, xc, xr, _, yc, yr] = wf.affine();
+            let file_cell = (xc * yr - xr * yc).abs().sqrt();
+            r.overview = self.overview.map(|(fw, fh)| turned_size([xc, xr, yc, yr], fw, fh));
+            // Each turned cell is exactly `step` of the file's pixels across, unless the turned
+            // grid had to be made coarser to fit; then the sizes' ratio is the scale.
+            let exact = (r.transform.pixel_width.abs() / (f64::from(self.step) * file_cell) - 1.0).abs() < 1e-9;
+            r.step = if exact { self.step } else { 1 };
             (r.source, r.lost, r.copyright) = (self.source, self.lost, self.copyright);
             (r.rounded, r.rounded_some) = (self.rounded, self.rounded_some);
             r
         };
         r.georeferenced = true;
-        r.step = 1;
         Ok(r)
     }
 
@@ -1255,6 +1354,19 @@ fn read_path_placing(path: &Path, world: bool) -> Result<Raster> {
         "grb" | "grib" | "grb2" | "grib2" => {
             grib::read_with_nodata(std::io::BufReader::new(crate::provenance::open(path)?), &name, sidecar_nodata)?
         }
+        // Elevation, streamed a row or record at a time once its name and size are checked, so the
+        // file's bytes are never held whole: an SRTM tile's size says its grid, and a DTED file is
+        // no larger than its largest cell when checked (bytes past its last column are counted).
+        e if ELEVATION_EXTENSIONS.contains(&e) => {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let source = std::io::BufReader::new(crate::provenance::open(path)?);
+            if ext == "hgt" {
+                let checked = hgt::check(file_name, meta.len())?;
+                hgt::read_checked_from(file_name, checked, source)?
+            } else {
+                dted::read_file(file_name, meta.len(), source)?
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         _ if gdal::is_gdal_raster_name(&path.to_string_lossy()) => {
             // Converted once to a GeoTIFF in the cache; the layer still names this file.
@@ -1390,8 +1502,30 @@ fn read_path_with_placing(path: &Path, subdataset: Option<&str>, crs: Option<&st
     if (subdataset.is_some() || crs.is_some()) && gdal::is_gdal_raster_name(&path.to_string_lossy()) {
         return read_converted(path, &gdal::convert(path, subdataset, crs)?);
     }
-    let _ = (subdataset, crs);
-    read_path_placing(path, world)
+    let ignored = elevation_ignores(&path.to_string_lossy(), subdataset, crs);
+    let mut r = read_path_placing(path, world)?;
+    r.lost.extend(ignored);
+    Ok(r)
+}
+
+/// What reading an SRTM tile or DTED file (`name`) with a subdataset (`"layer"`) or a coordinate
+/// system (`"crs"`) says: they hold one band and give their own coordinates, so neither applies,
+/// and the file is read without them. A command may give them, and so may a project saved when
+/// these files went through GDAL. `None` for other files, or when neither is given.
+pub fn elevation_ignores(name: &str, subdataset: Option<&str>, crs: Option<&str>) -> Option<String> {
+    if !is_elevation_name(name) {
+        return None;
+    }
+    // A DTED file naming a datum other than WGS 84 says so as it is read (`dted::read`).
+    const PLACE: &str = "give their own coordinates, read as WGS 84 longitude/latitude (a DTED file naming another datum says so)";
+    const BAND: &str = "hold one band of heights, with no layers to choose from";
+    let given = |v: Option<&str>| v.is_some_and(|v| !v.trim().is_empty());
+    Some(match (given(subdataset), given(crs)) {
+        (true, true) => format!("the \"layer\" and \"crs\" given are ignored: SRTM and DTED files {BAND}, and {PLACE}"),
+        (true, false) => format!("the \"layer\" given is ignored: SRTM and DTED files {BAND}"),
+        (false, true) => format!("the \"crs\" given is ignored: SRTM and DTED files {PLACE}"),
+        (false, false) => return None,
+    })
 }
 
 /// Reads the GeoTIFF GDAL converted `path` to, named and sourced as `path` (and its subdataset).
@@ -1505,13 +1639,9 @@ fn read_scan_limited<R: std::io::BufRead + std::io::Seek>(name: &str, mut source
     };
     let (w, h) = (img.width(), img.height());
     let ch = usize::from(img.color().channel_count());
-    let mut k = 1u32;
-    while (w.div_ceil(k) as usize).saturating_mul(h.div_ceil(k) as usize).saturating_mul(ch) > max {
-        k = k.saturating_mul(2);
-        if k > 1 << 20 {
-            return Err(too_large());
-        }
-    }
+    // The step a picture is read at to fit the budget, shared by its channels: a × ch > max
+    // exactly when a > ⌊max / ch⌋.
+    let k = step_within(w as usize, h as usize, max / ch.max(1)).and_then(|k| u32::try_from(k).ok()).ok_or_else(too_large)?;
     let (bands, color, data_type) = match &img {
         D::ImageLuma8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Gray, "UInt8"),
         D::ImageLumaA8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::GrayAlpha, "UInt8"),
@@ -1585,6 +1715,20 @@ fn rotate(r: &Raster, degrees: f64) -> Result<Raster> {
     }
     let transform = GeoTransform { origin_x: cx + min_x, origin_y: cy + max_y, pixel_width: px, pixel_height: -py };
     Raster::new(r.name.clone(), ow, oh, bands, transform, r.crs, None, r.color.clone(), r.data_type.clone())
+}
+
+/// The size, in cells of a pixel's area, of the north-up box around `w`×`h` pixels placed by
+/// `[x per column, x per row, y per column, y per row]`, as [`north_up`] sizes its grid.
+fn turned_size([xc, xr, yc, yr]: [f64; 4], w: u32, h: u32) -> (u32, u32) {
+    let cell = (xc * yr - xr * yc).abs().sqrt();
+    let (fw, fh) = (f64::from(w), f64::from(h));
+    let span = |a: f64, b: f64| (0.0f64).max(a).max(b).max(a + b) - (0.0f64).min(a).min(b).min(a + b);
+    // A thousandth of a cell of slack, so a size that is whole on paper isn't rounded up by noise.
+    let n = |len: f64| ((len / cell) - 1e-3).ceil().clamp(1.0, f64::from(u32::MAX)) as u32;
+    if !cell.is_normal() {
+        return (w.max(1), h.max(1));
+    }
+    (n(span(fw * xc, fh * xr)), n(span(fw * yc, fh * yr)))
 }
 
 /// A `w`×`h` image placed by a rotated or skewed `affine` (GDAL's order: x, x per column, x per
@@ -1715,6 +1859,9 @@ pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<Raster> {
             ascii::read(text, &name, None)
         }
         "grb" | "grib" | "grb2" | "grib2" => grib::read_bytes(bytes, &name),
+        // An upload keeps its file name, which places an SRTM tile.
+        "hgt" => hgt::read(file_name, bytes),
+        e if ELEVATION_EXTENSIONS.contains(&e) => dted::read(file_name, bytes),
         other => Err(DataError::Unsupported(format!(".{other}"))),
     }
 }
@@ -1888,6 +2035,16 @@ fn extent_of(transform: &GeoTransform, transformer: &Transformer, width: u32, he
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn elevation_files_are_raster_names() {
+        for ext in ELEVATION_EXTENSIONS {
+            assert!(READ_EXTENSIONS.contains(&ext), "{ext}");
+            assert!(is_raster_name(&format!("/d/N37W122.{}", ext.to_uppercase())), "{ext}");
+            assert!(is_elevation_name(&format!("x.{ext}")), "{ext}");
+        }
+        assert!(!is_elevation_name("x.tif") && !is_elevation_name("hgt") && !is_elevation_name(""));
+    }
 
     /// A large band's statistics, counted on any number of threads, are those of one pass on
     /// one thread (#1252) to the bit: the sums in the band's order, the counts, range, histogram
@@ -2545,6 +2702,18 @@ pub(crate) mod tests {
 mod scan_tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn a_turned_size_is_the_grid_north_up_makes() {
+        let (w, h) = (40u32, 17u32);
+        let band = vec![1.0f32; (w * h) as usize];
+        for degrees in [0.0f64, 30.0, 90.0, 135.0, 200.0, 271.0] {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            let (xc, xr, yc, yr) = (2.5 * cos, 2.5 * sin, 2.5 * sin, -2.5 * cos);
+            let (_, ow, oh, _) = north_up(&[band.as_slice()], w, h, [100.0, xc, xr, 50.0, yc, yr], usize::MAX).unwrap();
+            assert_eq!(turned_size([xc, xr, yc, yr], w, h), (ow, oh), "{degrees}°");
+        }
+    }
 
     fn tiff(tags: &[(u16, &[f64])]) -> Vec<u8> {
         use tiff::encoder::{TiffEncoder, colortype};

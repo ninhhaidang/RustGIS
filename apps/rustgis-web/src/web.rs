@@ -61,6 +61,7 @@ const DATA_EXTS: &[&str] = &[
     "grib",
     "grb2",
     "grib2",
+    // SRTM height tiles and DTED are added below (`ELEVATION_EXTENSIONS`).
 ];
 const CANVAS_ID: &str = "rustgis_canvas";
 const LOADING_ID: &str = "rustgis_loading";
@@ -1373,7 +1374,10 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             } else if purpose == "picture" || marker.is_some() {
                 rfd::AsyncFileDialog::new().add_filter(rustgis_ui_egui::tl!("Pictures"), &["png", "jpg", "jpeg"])
             } else {
-                rfd::AsyncFileDialog::new().add_filter("Vector and raster data", DATA_EXTS)
+                rfd::AsyncFileDialog::new().add_filter(
+                    "Vector and raster data",
+                    &[DATA_EXTS, &rustgis_ui_egui::rustgis_engine::data::raster::ELEVATION_EXTENSIONS[..]].concat(),
+                )
             };
             // Data may come several files at once (photos gather in one layer).
             let many = matches!(purpose, "data" | "shapefile");

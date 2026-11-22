@@ -29,11 +29,12 @@ DEFAULT_URL = "https://web.rustgis.app/"
 #: each change, and some setups cap a message near 10 MB, so this stays small.
 EMBED_LIMIT = 2 << 20
 
-# The extensions `layer.addDataBytes` reads from a file's contents.
+# The extensions `layer.addDataBytes` reads from a file's contents. (Not `.hgt` or `.dt2`, never
+# under EMBED_LIMIT; a `.dt1` cell is under it from 50° of latitude, where its spacing widens.)
 _EMBEDDABLE = {
-    ".tif", ".tiff", ".asc", ".geojson", ".json", ".csv", ".tsv", ".txt", ".zip", ".kml", ".kmz",
-    ".gpx", ".parquet", ".geoparquet", ".fgb", ".gpkg", ".mbtiles", ".xlsx", ".xls", ".ods",
-    ".grb", ".grib", ".grb2", ".grib2",
+    ".tif", ".tiff", ".asc", ".dt0", ".dt1", ".geojson", ".json", ".csv", ".tsv", ".txt", ".zip",
+    ".kml", ".kmz", ".gpx", ".parquet", ".geoparquet", ".fgb", ".gpkg", ".mbtiles", ".xlsx",
+    ".xls", ".ods", ".grb", ".grib", ".grb2", ".grib2",
 }
 
 #: The page script that frames the app: an anywidget module, also run by the Qt host page.
