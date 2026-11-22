@@ -14676,6 +14676,67 @@ fn a_publications_colorbar_title_stays_in_the_legends_box() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A layout frame centred on a pole keeps that centre through `layout.import` and
+/// `layout.update`, and says nothing on a polar map, where it's drawn there; on Web Mercator,
+/// which can't show a pole, it says the frame is drawn at 85° (#2684).
+#[test]
+fn a_layout_frame_centred_on_a_pole_is_kept_and_said_where_it_cant_be_shown() {
+    use rustgis_map::layout::ElementKind;
+    // The issue's layout: one round frame on the South Pole.
+    let layout = r#"{"name":"Polo","width":150,"height":150,"elements":[{"id":1,"name":"Mapa","x":5,"y":5,"w":140,"h":140,"visible":true,
+ "kind":{"MapFrame":{"map":"Mapa","center":{"x":0.0,"y":-90.0},"scale":60000000.0,"shape":"Circle",
+ "grid":{"step":10.0,"color":[0,0,0,255],"labels":false,"kind":"graticule","short":false},"extent_of":null}}}],
+ "series":null,"next_id":2}"#;
+    for (projection, said) in [(Some("EPSG:3031"), false), (None, true)] {
+        let mut s = Session::new(Project::default());
+        s.run("map.new", &json!({"name": "Mapa"})).unwrap();
+        if let Some(p) = projection {
+            s.run("map.projection", &json!({"type": p})).unwrap();
+        }
+        let center = |s: &Session| match s.project.layouts.last().map(|l| &l.elements[0].kind) {
+            Some(ElementKind::MapFrame { center, .. }) => center.y,
+            _ => panic!("no frame"),
+        };
+        let told = |s: &Session, mark| {
+            s.notices_since(mark).iter().filter(|n| n.text.contains("can't show") && n.text.contains("'Mapa' at latitude -85")).count() == 1
+        };
+        let mark = s.notice_mark();
+        s.run("layout.import", &json!({"text": layout})).unwrap();
+        assert_eq!(center(&s), -90.0, "{projection:?}: imported");
+        assert_eq!(told(&s, mark), said, "{projection:?}: {:?}", s.notices_since(mark));
+        // Moved away, then back onto the pole by its properties: each command says only its own.
+        let mark = s.notice_mark();
+        s.run("layout.update", &json!({"element": 1, "center": [0, -60]})).unwrap();
+        assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("can't show")), "{:?}", s.notices_since(mark));
+        let mark = s.notice_mark();
+        s.run("layout.update", &json!({"element": 1, "center": [0, -90]})).unwrap();
+        assert_eq!(center(&s), -90.0, "{projection:?}: updated");
+        assert_eq!(told(&s, mark), said, "{projection:?}: {:?}", s.notices_since(mark));
+        // A longitude past ±180° isn't a centre the projection can't show.
+        let mark = s.notice_mark();
+        s.run("layout.update", &json!({"element": 1, "center": [300, -60]})).unwrap();
+        assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("can't show")), "{:?}", s.notices_since(mark));
+    }
+    // Two pole frames in one layout on Web Mercator: one notice, counting both.
+    let mut s = Session::new(Project::default());
+    s.run("map.new", &json!({"name": "Mapa"})).unwrap();
+    let mut two: Value = serde_json::from_str(layout).unwrap();
+    let mut second = two["elements"][0].clone();
+    second["id"] = json!(2);
+    second["name"] = json!("Norte");
+    second["kind"]["MapFrame"]["center"]["y"] = json!(90.0);
+    two["elements"].as_array_mut().unwrap().push(second);
+    two["next_id"] = json!(3);
+    let mark = s.notice_mark();
+    s.run("layout.import", &json!({"text": two.to_string()})).unwrap();
+    let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("can't show")).map(|n| n.text.clone()).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("2 map frame(s)") && said[0].contains("'Mapa' at latitude -85") && said[0].contains("'Norte' at latitude 85"),
+        "{said:?}"
+    );
+}
+
 /// Series page labels and dynamic text share the row-number fallback for null and blank names.
 #[test]
 fn map_series_empty_names_use_row_numbers() {
