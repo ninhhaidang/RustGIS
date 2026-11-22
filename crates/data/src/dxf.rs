@@ -330,8 +330,16 @@ impl Xf {
         Xf([[1.0, 0.0, 0.0, t[0]], [0.0, 1.0, 0.0, t[1]], [0.0, 0.0, 1.0, t[2]]])
     }
 
+    /// Quadrantal angles have exact axes; tiny trigonometric residuals would invent Z variation
+    /// when an insert tilts the rotated plane. Other angles retain their original calculation.
     fn rotate_z(degrees: f64) -> Xf {
-        let (s, c) = degrees.to_radians().sin_cos();
+        let (s, c) = match degrees.rem_euclid(360.0) {
+            0.0 => (0.0, 1.0),
+            90.0 => (1.0, 0.0),
+            180.0 => (0.0, -1.0),
+            270.0 => (-1.0, 0.0),
+            _ => degrees.to_radians().sin_cos(),
+        };
         Xf([[c, -s, 0.0, 0.0], [s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
     }
 
@@ -344,11 +352,25 @@ impl Xf {
 #[derive(Clone, Debug)]
 enum Shape {
     Point(P3),
-    Line(Vec<P3>),
+    /// `constant_z` records a construction proof, not a comparison of rounded samples.
+    Line {
+        points: Vec<P3>,
+        constant_z: bool,
+    },
     Polygon(Vec<P3>),
-    /// A hatch's boundary paths: rings, holes found by nesting.
-    Rings(Vec<Vec<P3>>),
+    /// A hatch's boundary paths or polyface faces. The flag proves constant source height.
+    Rings {
+        rings: Vec<Vec<P3>>,
+        constant_z: bool,
+    },
     Insert(Insert),
+}
+
+impl Shape {
+    /// A line without a sampled-curve construction proof; compare its heights exactly.
+    fn line(points: Vec<P3>) -> Self {
+        Self::Line { points, constant_z: false }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -591,7 +613,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
     let ocs = Xf::ocs(g.extrusion());
     Some(match kind {
         "POINT" => Shape::Point(g.pt(10)?),
-        "LINE" => Shape::Line(vec![g.pt(10)?, g.pt(11)?]),
+        "LINE" => Shape::line(vec![g.pt(10)?, g.pt(11)?]),
         "LWPOLYLINE" => {
             let z = g.f(38).unwrap_or(0.0);
             let mut vs: Vec<(P3, f64)> = Vec::new();
@@ -613,7 +635,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             }
             let closed = g.i(70).unwrap_or(0) & 1 == 1;
             let pts: Vec<P3> = bulged(&vs, closed).into_iter().map(|p| ocs.apply(p)).collect();
-            Shape::Line(pts)
+            Shape::line(pts)
         }
         "POLYLINE" => {
             let flags = g.i(70).unwrap_or(0);
@@ -645,16 +667,16 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
                 })
                 .collect();
             let pts = bulged(&vs, flags & 1 == 1);
-            Shape::Line(if three_d { pts } else { pts.into_iter().map(|p| ocs.apply(p)).collect() })
+            Shape::line(if three_d { pts } else { pts.into_iter().map(|p| ocs.apply(p)).collect() })
         }
         "CIRCLE" => {
             let (c, r) = (g.pt(10)?, g.f(40)?);
-            Shape::Line(arc([c[0], c[1]], r, 0.0, TAU, c[2]).into_iter().map(|p| ocs.apply(p)).collect())
+            Shape::line(arc([c[0], c[1]], r, 0.0, TAU, c[2]).into_iter().map(|p| ocs.apply(p)).collect())
         }
         "ARC" => {
             let (c, r) = (g.pt(10)?, g.f(40)?);
             let (s, e) = (g.f(50).unwrap_or(0.0), g.f(51).unwrap_or(360.0));
-            Shape::Line(
+            Shape::line(
                 arc([c[0], c[1]], r, s.rem_euclid(360.0).to_radians(), sweep(s, e, 360.0).to_radians(), c[2])
                     .into_iter()
                     .map(|p| ocs.apply(p))
@@ -668,7 +690,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             let s = g.f(41).unwrap_or(0.0).rem_euclid(TAU);
             let e = s + sweep(s, g.f(42).unwrap_or(TAU).rem_euclid(TAU), TAU);
             let n = (((e - s) / TAU) * CIRCLE).ceil().clamp(2.0, CIRCLE) as usize;
-            Shape::Line(
+            Shape::line(
                 (0..=n)
                     .map(|k| {
                         let t = s + (e - s) * k as f64 / n as f64;
@@ -704,9 +726,9 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             fit.retain(|p| p[1].is_finite());
             let samples = (ctrl.len() * 8).clamp(16, 4000);
             match spline(degree, &knots, &ctrl, &weights, samples) {
-                Some(pts) => Shape::Line(pts),
-                None if fit.len() >= 2 => Shape::Line(fit),
-                None if ctrl.len() >= 2 => Shape::Line(ctrl),
+                Some(points) => Shape::Line { points, constant_z: ctrl.first().is_some_and(|first| ctrl.iter().all(|p| p[2] == first[2])) },
+                None if fit.len() >= 2 => Shape::line(fit),
+                None if ctrl.len() >= 2 => Shape::line(ctrl),
                 None => return None,
             }
         }
@@ -723,7 +745,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
                     pts.push([x, y, 0.0]);
                 }
             }
-            Shape::Line(pts)
+            Shape::line(pts)
         }
         "TEXT" | "ATTRIB" | "ATTDEF" => {
             // The second alignment point when the text is justified, else the first.
@@ -755,9 +777,10 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             ring.push(a);
             Shape::Polygon(ring)
         }
-        "HATCH" => {
-            hatch(g).map(|rings| Shape::Rings(rings.into_iter().map(|r| r.into_iter().map(|p| ocs.apply(p)).collect()).collect()))?
-        }
+        "HATCH" => Shape::Rings {
+            rings: hatch(g)?.into_iter().map(|r| r.into_iter().map(|p| ocs.apply(p)).collect()).collect(),
+            constant_z: ocs.0[2][0] == 0.0 && ocs.0[2][1] == 0.0,
+        },
         "INSERT" => Shape::Insert(Insert {
             block: g.s(2)?.trim().to_string(),
             at: g.pt(10).unwrap_or([0.0; 3]),
@@ -807,7 +830,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             {
                 pts.push(f);
             }
-            Shape::Line(pts)
+            Shape::line(pts)
         }
         _ => return None,
     })
@@ -845,7 +868,7 @@ fn dimension(g: &G) -> (Vec<Shape>, Option<String>) {
         Some(t) if !t.is_empty() && t != "<>" => plain_text(&t.replace("<>", &measure(length))),
         _ => measure(length),
     };
-    let mut shapes = vec![Shape::Line(vec![a, b]), Shape::Line(vec![p13, a]), Shape::Line(vec![p14, b])];
+    let mut shapes = vec![Shape::line(vec![a, b]), Shape::line(vec![p13, a]), Shape::line(vec![p14, b])];
     if let Some(t) = g.pt(11) {
         shapes.push(Shape::Point(t));
     }
@@ -884,7 +907,7 @@ fn polyface(vertices: &[Record]) -> Option<Shape> {
             }
         }
     }
-    (!faces.is_empty()).then_some(Shape::Rings(faces))
+    (!faces.is_empty()).then_some(Shape::Rings { rings: faces, constant_z: false })
 }
 
 /// A cursor over a record's groups, read in order (HATCH boundary paths).
@@ -1228,13 +1251,15 @@ fn finite(ps: &[P3]) -> bool {
 }
 
 /// Whether retained, placed vertices have heights the single elevation attribute cannot hold.
-/// Compare after all object/block transforms: a placement may flatten previously varying Z.
-fn has_varying_z<'a>(mut points: impl Iterator<Item = &'a P3>, first: Option<P3>, placement_z: f64) -> bool {
+/// Compare computed heights exactly after entity and block transforms, which may flatten source Z.
+/// Tilted entity axes or rotated/nested block placements can introduce sub-resolution roundoff;
+/// report those computed differences conservatively. A tolerance can hide exact source-height loss.
+/// Only a construction and placement proof rules out sampled variation without such a tolerance.
+fn has_varying_z<'a>(mut points: impl Iterator<Item = &'a P3>, first: Option<P3>, constant_z: bool) -> bool {
     let Some(first) = first else { return false };
-    // Equal source heights can round differently during spline evaluation. Include the placement's
-    // Z offset so cancellation cannot collapse the comparison scale near zero.
-    let scale = first[2].abs().max(placement_z.abs());
-    points.any(|p| (p[2] - first[2]).abs() > (64.0 * f64::EPSILON) * p[2].abs().max(scale))
+    // Only a source construction and placement proof can dismiss sampled roundoff. A numeric
+    // tolerance could instead hide real, exactly representable height differences.
+    !constant_z && points.any(|p| p[2] != first[2])
 }
 
 /// Draws entities through `xf` (a block's placement), into `out`.
@@ -1375,8 +1400,8 @@ fn emit(
         // inserted many times can't fill the memory.
         let n = match &e.shape {
             Shape::Point(_) => 1,
-            Shape::Line(ps) | Shape::Polygon(ps) => ps.len(),
-            Shape::Rings(rs) => rs.iter().map(Vec::len).sum(),
+            Shape::Line { points: ps, .. } | Shape::Polygon(ps) => ps.len(),
+            Shape::Rings { rings: rs, .. } => rs.iter().map(Vec::len).sum(),
             Shape::Insert(_) => 0,
         };
         if out.vertices.saturating_add(n) > MAX_TOTAL_VERTICES {
@@ -1384,20 +1409,21 @@ fn emit(
             return Ok(());
         }
         out.vertices += n;
+        let preserves_z = xf.0[2][0] == 0.0 && xf.0[2][1] == 0.0;
         let tr = |ps: &[P3]| -> Vec<P3> { ps.iter().map(|p| xf.apply(*p)).collect() };
         let (geometry, first, target, varying_z) = match &e.shape {
             Shape::Point(p) => {
                 let p = xf.apply(*p);
                 (finite(&[p]).then(|| Geometry::Point(xy(p))), Some(p), 0, false)
             }
-            Shape::Line(ps) => {
+            Shape::Line { points: ps, constant_z } => {
                 let ps = tr(ps);
                 let ok = ps.len() >= 2 && finite(&ps);
                 (
                     ok.then(|| Geometry::Line(vec![ps.iter().map(|p| xy(*p)).collect()])),
                     ps.first().copied(),
                     1,
-                    has_varying_z(ps.iter(), ps.first().copied(), xf.0[2][3]),
+                    has_varying_z(ps.iter(), ps.first().copied(), *constant_z && preserves_z),
                 )
             }
             Shape::Polygon(ps) => {
@@ -1407,10 +1433,10 @@ fn emit(
                     ok.then(|| Geometry::Polygon(vec![vec![ps.iter().map(|p| xy(*p)).collect()]])),
                     ps.first().copied(),
                     2,
-                    has_varying_z(ps.iter(), ps.first().copied(), xf.0[2][3]),
+                    has_varying_z(ps.iter(), ps.first().copied(), false),
                 )
             }
-            Shape::Rings(rings) => {
+            Shape::Rings { rings, constant_z } => {
                 let rings: Vec<Vec<P3>> = rings.iter().map(|r| tr(r)).filter(|r| finite(r)).collect();
                 let first = rings.first().and_then(|r| r.first()).copied();
                 let g = if e.kind == "POLYLINE" {
@@ -1427,7 +1453,7 @@ fn emit(
                 let kept = rings.iter().filter(|r| {
                     r.len() >= 4 || (e.kind != "POLYLINE" && r.len() == 3 && r.first().map(|p| xy(*p)) != r.last().map(|p| xy(*p)))
                 });
-                let varying = has_varying_z(kept.flatten(), first, xf.0[2][3]);
+                let varying = has_varying_z(kept.flatten(), first, *constant_z && preserves_z);
                 (g, first, 2, varying)
             }
             Shape::Insert(_) => continue,
@@ -2506,9 +2532,12 @@ mod tests {
     /// Rational spline noise stays quiet even when a block's offsets cancel its height.
     #[test]
     fn constant_spline_height_stays_quiet() {
-        for (height, changed, base, offset, elevation) in
-            [("0.1", "0.1000000001", "0", "0", 0.1), ("500.1", "500.1000000001", "500", "-0.1", 0.0)]
-        {
+        for (height, changed, base, offset, elevation, tilted) in [
+            ("0.1", "0.1000000001", "0", "0", 0.1, false),
+            ("500.1", "500.1000000001", "500", "-0.1", 0.0, false),
+            ("1125899906842624", "1125899906842625", "0", "-1125899906842624", 0.0, false),
+            ("0.1", "0.1000000001", "0", "0", 0.0, true),
+        ] {
             for varying in [false, true] {
                 let end = if varying { changed } else { height };
                 let bytes = dxf(&[
@@ -2554,6 +2583,9 @@ mod tests {
                     (10, "0"),
                     (20, "0"),
                     (30, offset),
+                    (210, if tilted { "1" } else { "0" }),
+                    (220, "0"),
+                    (230, if tilted { "0" } else { "1" }),
                     (0, "ENDSEC"),
                     (0, "EOF"),
                 ]);
@@ -2562,15 +2594,188 @@ mod tests {
                 let (ds, report) = &layers[0];
                 assert_eq!(ds.features.len(), 1);
                 assert_eq!(ds.value(0, 8), &Value::Float(elevation));
-                assert_eq!(ds.zm_dropped, varying, "height={height}, offset={offset}: {:?}", report.messages);
+                assert_eq!(ds.zm_dropped, varying || tilted, "height={height}, offset={offset}: {:?}", report.messages);
                 assert_eq!(report.skipped, 0);
-                let expected =
-                    if varying { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
+                let expected = if varying || tilted {
+                    vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"]
+                } else {
+                    vec![]
+                };
                 assert_eq!(report.messages, expected);
                 let Some(Geometry::Line(parts)) = &ds.features[0].geometry else { panic!("spline line") };
-                assert_eq!(parts[0].first(), Some(&Coord::new(0.0, 0.0)));
-                assert_eq!(parts[0].last(), Some(&Coord::new(3.0, 0.0)));
+                let (start_xy, end_xy) = if tilted {
+                    (Coord::new(0.1, 0.0), Coord::new(end.parse().unwrap(), 3.0))
+                } else {
+                    (Coord::new(0.0, 0.0), Coord::new(3.0, 0.0))
+                };
+                assert_eq!(parts[0].first(), Some(&start_xy));
+                assert_eq!(parts[0].last(), Some(&end_xy));
             }
+        }
+    }
+
+    /// HATCH spline edges also sample a proven constant source height.
+    #[test]
+    fn constant_hatch_spline_height_stays_quiet() {
+        for tilted in [false, true] {
+            let bytes = dxf(&[
+                (0, "SECTION"),
+                (2, "ENTITIES"),
+                (0, "HATCH"),
+                (10, "0"),
+                (20, "0"),
+                (30, "0.1"),
+                (210, if tilted { "1" } else { "0" }),
+                (220, "0"),
+                (230, "1"),
+                (91, "1"),
+                (92, "0"),
+                (93, "1"),
+                (72, "4"),
+                (94, "3"),
+                (73, "1"),
+                (74, "0"),
+                (95, "8"),
+                (96, "4"),
+                (40, "0"),
+                (40, "0"),
+                (40, "0"),
+                (40, "0"),
+                (40, "1"),
+                (40, "1"),
+                (40, "1"),
+                (40, "1"),
+                (10, "0"),
+                (20, "0"),
+                (42, "1"),
+                (10, "1"),
+                (20, "0"),
+                (42, "0.5"),
+                (10, "1"),
+                (20, "1"),
+                (42, "2"),
+                (10, "0"),
+                (20, "0"),
+                (42, "1"),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let layers = read("hatch.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+            assert_eq!(layers.len(), 1);
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.geometry_type, GeometryType::Polygon);
+            assert_eq!(ds.features.len(), 1);
+            if tilted {
+                let Value::Float(z) = ds.value(0, 8) else { panic!("hatch elevation") };
+                assert!((z - 0.1 / 2.0_f64.sqrt()).abs() < 1e-14);
+            } else {
+                assert_eq!(ds.value(0, 8), &Value::Float(0.1));
+            }
+            assert_eq!(ds.zm_dropped, tilted);
+            assert_eq!(report.skipped, 0);
+            let expected = if tilted { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
+            assert_eq!(report.messages, expected);
+        }
+    }
+
+    /// Cardinal block rotations have exact axes; a nearby angle still creates real Z variation.
+    #[test]
+    fn cardinal_insert_rotations_do_not_invent_height_variation() {
+        for (rotation, x, y, end_y, varying) in [
+            ("0", "1", "0", 1.0, false),
+            ("90", "0", "1", -1.0, false),
+            ("180", "1", "0", -1.0, false),
+            ("270", "0", "1", 1.0, false),
+            ("360", "1", "0", 1.0, false),
+            ("89.999999", "0", "1", -1.0, true),
+        ] {
+            let bytes = dxf(&[
+                (0, "SECTION"),
+                (2, "BLOCKS"),
+                (0, "BLOCK"),
+                (2, "B"),
+                (0, "LINE"),
+                (10, "0"),
+                (20, "0"),
+                (30, "0"),
+                (11, x),
+                (21, y),
+                (31, "0"),
+                (0, "ENDBLK"),
+                (0, "ENDSEC"),
+                (0, "SECTION"),
+                (2, "ENTITIES"),
+                (0, "INSERT"),
+                (2, "B"),
+                (10, "0"),
+                (20, "0"),
+                (30, "0"),
+                (50, rotation),
+                (210, "1"),
+                (220, "0"),
+                (230, "0"),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let layers = read("rotated.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+            assert_eq!(layers.len(), 1);
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.features.len(), 1);
+            assert_eq!(ds.value(0, 8), &Value::Float(0.0));
+            assert_eq!(ds.zm_dropped, varying, "rotation={rotation}: {:?}", report.messages);
+            let expected =
+                if varying { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
+            assert_eq!(report.messages, expected);
+            assert_eq!(report.skipped, 0);
+            let Some(Geometry::Line(parts)) = &ds.features[0].geometry else { panic!("rotated line") };
+            assert_eq!(parts[0].first(), Some(&Coord::new(0.0, 0.0)));
+            let end = parts[0].last().unwrap();
+            assert_eq!(end.x, 0.0);
+            if varying {
+                assert!((end.y - end_y).abs() < 1e-12);
+            } else {
+                assert_eq!(end.y, end_y);
+            }
+        }
+    }
+
+    /// Exact height differences survive a large block offset, as they do without placement.
+    #[test]
+    fn exact_line_heights_are_reported_after_large_offsets() {
+        for (start, end, offset) in [("0", "1", "0"), ("1125899906842624", "1125899906842625", "-1125899906842624")] {
+            let bytes = dxf(&[
+                (0, "SECTION"),
+                (2, "BLOCKS"),
+                (0, "BLOCK"),
+                (2, "B"),
+                (0, "LINE"),
+                (10, "0"),
+                (20, "0"),
+                (30, start),
+                (11, "1"),
+                (21, "1"),
+                (31, end),
+                (0, "ENDBLK"),
+                (0, "ENDSEC"),
+                (0, "SECTION"),
+                (2, "ENTITIES"),
+                (0, "INSERT"),
+                (2, "B"),
+                (10, "0"),
+                (20, "0"),
+                (30, offset),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let layers = read("line.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+            assert_eq!(layers.len(), 1);
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.features.len(), 1);
+            assert_eq!(ds.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]])));
+            assert_eq!(ds.value(0, 8), &Value::Float(0.0));
+            assert!(ds.zm_dropped, "start={start}, offset={offset}");
+            assert_eq!(report.skipped, 0);
+            assert_eq!(report.messages, ["1 feature lost varying Z coordinates; only the elevation attribute is kept"]);
         }
     }
 
