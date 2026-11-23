@@ -6,6 +6,7 @@ mod define_projection;
 mod geojson_crs;
 mod geometry_calculator;
 mod kml_duplicate_data;
+mod link_choice;
 mod measurement_units;
 mod move_shared_vertex;
 mod never_silent_reading;

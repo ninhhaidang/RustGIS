@@ -3323,7 +3323,7 @@ pub fn shapefile_for_dbf(path: &Path) -> Option<std::path::PathBuf> {
 
 /// Finds the attributes beside a Shapefile, accepting every ASCII case of `.dbf` in whole
 /// and streamed reads. A missing sidecar keeps the usual lowercase path for the error.
-pub(crate) fn dbf_sidecar(path: &Path) -> std::path::PathBuf {
+pub fn dbf_sidecar(path: &Path) -> std::path::PathBuf {
     ["dbf", "DBF", "Dbf", "dBf", "dbF", "DBf", "DbF", "dBF"]
         .iter()
         .map(|e| path.with_extension(e))

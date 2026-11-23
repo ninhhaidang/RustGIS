@@ -1482,6 +1482,19 @@ map, each feature is placed in longitude/latitude to be compared. Remote files h
 [Data formats](data-formats.md)). Smaller files load
 whole; `layer.addData` with `"stream": true` or `false` overrides the choice.
 
+On the desktop, adding a GeoPackage, GeoParquet, FlatGeobuf, Shapefile or `.geojson` file (with
+**Add Data**, by dropping it on the window or from the Browser pane) asks which: **Copy into the
+project** or **Link to the file**. The size rule above picks the answer already selected, so
+**Add** (or Enter) takes the file as before; a `.geojson` file is taken as the answer shows (one
+past 32 MiB starts at Link, and stays linked even when it holds few features). A linked layer is read in place, and the project keeps
+the file's path (relative to the project's folder when it can, so a folder moved whole keeps it),
+not its features: to edit it or define its projection, choose **Load All Features** first. A file
+too large to read whole can only be linked. A GeoPackage of several tables asks once, at the foot
+of **Choose Layers**. A linked layer shows "(linked)" after its name in Layers, and Package Project
+names the layers it leaves linked to files outside the package. LiDAR is always linked, and a `.json`
+file (which may be a city model) isn't asked about: it is linked or copied by the size rule above,
+as before. Files read whole are copied.
+
 On the desktop, **Load All Features** from the layer's menu in Layers reads its features in the
 background, with **Cancel** in the status bar; the layer stays streamed until they are all read.
 

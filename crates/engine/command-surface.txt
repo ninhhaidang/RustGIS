@@ -186,7 +186,7 @@ info.commands
 info.databaseTables database password?
 info.diagnostics
 info.fileColumns path delimiter? layer? crs?
-info.fileLayers path crs?
+info.fileLayers path crs? link?
 info.infographic layer?
 info.project nameFilter? includeFields?
 job.new name description? assigned? viewExtent?
