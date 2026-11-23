@@ -15,6 +15,7 @@ rustgis-map = { workspace = true }
 tiny-skia = { workspace = true }
 resvg = { workspace = true }
 svgtypes = { workspace = true }
+simplecss = { workspace = true }
 kurbo = { workspace = true }
 bytemuck = { workspace = true }
 lyon = { workspace = true }

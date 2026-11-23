@@ -5431,6 +5431,7 @@ dependencies = [
  "rustgis-map",
  "rustgis-tiles",
  "serde_json",
+ "simplecss",
  "subsetter",
  "svgtypes",
  "tempfile",
