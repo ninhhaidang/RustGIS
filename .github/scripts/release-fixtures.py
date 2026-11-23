@@ -70,17 +70,27 @@ def capture_prefs(desktop, env):
                 text=True,
                 timeout=60,
             ).splitlines()[0]
-            subprocess.run(["xdotool", "windowfocus", "--sync", window, "key", "ctrl+F1"], check=True, timeout=10)
-            deadline = time.monotonic() + 15
+            # The window can be mapped before the app reads input (slow software GL on a runner), so
+            # a key sent too early can be lost or held back. Press again every few seconds until
+            # the saved preference reads "true": the app saves it on every toggle, so a held-back
+            # press that toggles it back to "false" is seen and answered with another press.
+            press = ["xdotool", "windowfocus", "--sync", window, "key", "ctrl+F1"]
+            subprocess.run(press, check=True, timeout=10)
+            deadline = time.monotonic() + 60
+            resend = time.monotonic() + 5
             while time.monotonic() < deadline and app.poll() is None:
+                saved = {}
                 if prefs.exists():
                     data = prefs.read_bytes()
                     try:
                         saved = json.loads(data)
                     except ValueError:  # JSON or UTF-8 caught mid-write: read again on the next pass
-                        saved = {}
-                    if saved.get("ribbon_minimized") == "true":
+                        saved = None
+                    if saved and saved.get("ribbon_minimized") == "true":
                         return data
+                if saved is not None and time.monotonic() >= resend:
+                    subprocess.run(press, check=True, timeout=10)
+                    resend = time.monotonic() + 5
                 time.sleep(0.1)
             raise RuntimeError("The release did not persist the collapsed ribbon after Ctrl+F1")
         finally:
