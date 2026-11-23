@@ -154,6 +154,18 @@ The corpus checks exact geometry, feature ID, field names/types and attributes t
 messages must be exactly the one-feature Z/M drop message for XYZ/XYM and absent for XY.
 Other geometry and attribute losses and network paging are outside these fixtures.
 
+## XML partial-geometry notices
+
+The inline KML/KMZ pairs import with counted notices for unreadable coordinate tuples,
+unreadable polygon holes, polygons without usable outer rings, short line parts and excess
+Point coordinates. The tuple and short-part notices also cover `gx:Track`. GPX reports short
+segments omitted from track lines while retaining their usable points in the track-points
+layer. GeoRSS reports excess Point coordinate pairs; LandXML reports parcels without
+`CoordGeom`. Clean counterparts give none of these notices. Native regressions assert retained
+coordinates and attributes, and the command corpus compares retained data and exact native
+notices through `layer.addData`. Ten logical cases have seventeen rows with the KMZ twins; they do
+not establish completeness for these formats or cover the gaps below.
+
 ## Standalone DBF
 
 The harness independently encodes two dBASE III tables directly from the header and

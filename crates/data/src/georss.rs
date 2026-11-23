@@ -65,12 +65,16 @@ fn bbox(ll: Coord, ur: Coord) -> Option<Geometry> {
 }
 
 /// An item's place, `Ok(None)` when it has none, `Err` when it has one that can't be read.
-/// Unreadable polygon holes are omitted and counted in `lost_holes`.
-fn place(item: &Node, lost_holes: &mut usize) -> std::result::Result<Option<Geometry>, ()> {
+/// Unreadable polygon holes and coordinate pairs past the first in points are counted where omitted.
+fn place(item: &Node, lost_holes: &mut usize, excess_points: &mut usize) -> std::result::Result<Option<Geometry>, ()> {
     let g = |name: &str| item.children().find(|c| c.is_element() && local(c) == name);
     let parse = |n: Node| lat_lons(&text_of(&n)).ok_or(());
+    let mut point = |pts: Vec<Coord>| {
+        *excess_points += pts.len().saturating_sub(1);
+        pts.first().map(|c| Some(Geometry::Point(*c))).ok_or(())
+    };
     if let Some(n) = g("point") {
-        return parse(n)?.first().map(|c| Some(Geometry::Point(*c))).ok_or(());
+        return point(parse(n)?);
     }
     if let Some(n) = g("line") {
         let pts = parse(n)?;
@@ -93,7 +97,7 @@ fn place(item: &Node, lost_holes: &mut usize) -> std::result::Result<Option<Geom
         };
         let pos = |name: &str| gml.descendants().find(|d| d.is_element() && local(d) == name).ok_or(());
         return match local(&gml) {
-            "Point" => parse(pos("pos")?)?.first().map(|c| Some(Geometry::Point(*c))).ok_or(()),
+            "Point" => point(parse(pos("pos")?)?),
             "LineString" => {
                 let pts = parse(pos("posList")?)?;
                 if pts.len() >= 2 { Ok(Some(Geometry::Line(vec![pts]))) } else { Err(()) }
@@ -129,9 +133,7 @@ fn place(item: &Node, lost_holes: &mut usize) -> std::result::Result<Option<Geom
     // W3C Basic Geo: geo:lat and geo:long, on the item or in a geo:Point.
     let holder = g("Point").unwrap_or(*item);
     match (child_text(&holder, "lat"), child_text(&holder, "long").or_else(|| child_text(&holder, "lon"))) {
-        (Some(lat), Some(lon)) => {
-            lat_lons(&format!("{lat} {lon}")).and_then(|v| v.first().copied()).map(|c| Some(Geometry::Point(c))).ok_or(())
-        }
+        (Some(lat), Some(lon)) => point(lat_lons(&format!("{lat} {lon}")).ok_or(())?),
         (None, None) => Ok(None),
         _ => Err(()),
     }
@@ -167,9 +169,10 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         Dataset::new(format!("{name} lines"), GeometryType::Polyline, fields()),
         Dataset::new(format!("{name} polygons"), GeometryType::Polygon, fields()),
     ];
+    let mut excess_points = 0usize;
     let (mut skipped, mut without, mut lost_holes) = (0usize, 0usize, 0usize);
     for item in root.descendants().filter(|n| n.is_element() && matches!(local(n), "item" | "entry")) {
-        match place(&item, &mut lost_holes) {
+        match place(&item, &mut lost_holes, &mut excess_points) {
             Ok(Some(g)) => {
                 let i = match g.kind() {
                     GeometryType::Polyline => 1,
@@ -185,6 +188,10 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         }
     }
     let mut report = ReadReport { skipped, ..ReadReport::default() };
+    if excess_points > 0 {
+        let (pairs, verb) = if excess_points == 1 { ("pair", "was") } else { ("pairs", "were") };
+        report.messages.push(format!("{excess_points} excess GeoRSS Point coordinate {pairs} {verb} left out"));
+    }
     if skipped > 0 {
         report.messages.push(format!("{skipped} items had places that couldn't be read"));
     }
@@ -215,6 +222,25 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml_loss_excess_point_pairs_are_counted() {
+        for place in [
+            "<georss:point>1 2 3 4 5 6</georss:point>",
+            "<georss:where><gml:Point><gml:pos>1 2 3 4 5 6</gml:pos></gml:Point></georss:where>",
+        ] {
+            let xml = format!(
+                r#"<rss xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml"><channel><item><title>kept</title>{place}</item></channel></rss>"#
+            );
+            let layers = read("a.rss", xml.as_bytes()).unwrap();
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Point(Coord::new(2.0, 1.0))));
+            assert_eq!(layers[0].0.value(0, 0), &Value::Text("kept".into()));
+            assert_eq!(layers[0].1.messages, ["2 excess GeoRSS Point coordinate pairs were left out"]);
+            let clean = xml.replace("1 2 3 4 5 6", "1 2");
+            assert!(read("a.rss", clean.as_bytes()).unwrap()[0].1.messages.is_empty());
+        }
+    }
 
     const RSS: &str = r#"<?xml version="1.0"?>
 <rss version="2.0" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#">

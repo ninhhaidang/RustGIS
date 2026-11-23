@@ -80,6 +80,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         return Err(DataError::Format(format!("{file_name}: not a GPX file")));
     }
     let mut skipped = 0usize;
+    let mut short_segments = 0usize;
     let point_fields = |extra: &[(&str, FieldType)]| {
         let mut f: Vec<Field> = extra.iter().map(|(n, t)| Field::new(*n, *t)).collect();
         f.extend(["name", "ele", "time", "desc", "cmt", "sym", "type"].iter().map(|n| Field::new(*n, FieldType::Text)));
@@ -148,6 +149,8 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             count += part.len();
             if part.len() >= 2 {
                 parts.push(part);
+            } else if !part.is_empty() {
+                short_segments += 1;
             }
         }
         if parts.is_empty() {
@@ -187,9 +190,17 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         out.push((ds, report));
     }
     if let Some((_, report)) = out.first_mut() {
+        if short_segments > 0 {
+            let (segment, action) = if short_segments == 1 {
+                ("segment", "was left out of tracks; its point remains in track points")
+            } else {
+                ("segments", "were left out of tracks; their points remain in track points")
+            };
+            report.messages.push(format!("{name}: {short_segments} GPX track {segment} with fewer than two usable points {action}"));
+        }
         report.skipped = skipped;
         if skipped > 0 {
-            report.messages.push(format!("{name}: {skipped} points, routes or tracks without usable coordinates were skipped"));
+            report.messages.push(format!("{name}: {skipped} points, routes or tracks without usable geometry were skipped"));
         }
     }
     if out.is_empty() {
@@ -201,6 +212,26 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml_loss_short_segments_are_counted_but_their_points_remain() {
+        let xml = br#"<gpx><trk><name>kept</name><trkseg><trkpt lat="1" lon="2"/><trkpt lat="3" lon="4"/></trkseg><trkseg><trkpt lat="5" lon="6"/></trkseg><trkseg/></trk></gpx>"#;
+        let layers = read("a.gpx", xml).unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(2.0, 1.0), Coord::new(4.0, 3.0)]])));
+        assert_eq!(layers[0].0.value(0, 0), &Value::Text("kept".into()));
+        assert_eq!(layers[1].0.features.len(), 3);
+        assert_eq!(layers[1].0.features[2].geometry, Some(Geometry::Point(Coord::new(6.0, 5.0))));
+        assert_eq!(layers[1].0.value(2, 1), &Value::Int(2));
+        assert_eq!(
+            layers[0].1.messages,
+            ["a: 1 GPX track segment with fewer than two usable points was left out of tracks; its point remains in track points"]
+        );
+        assert!(layers[1].1.messages.is_empty());
+        let clean =
+            read("a.gpx", br#"<gpx><trk><trkseg><trkpt lat="1" lon="2"/><trkpt lat="3" lon="4"/></trkseg><trkseg/></trk></gpx>"#).unwrap();
+        assert!(clean.iter().all(|(_, r)| r.messages.is_empty()));
+    }
 
     const GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
