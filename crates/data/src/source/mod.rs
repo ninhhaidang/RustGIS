@@ -389,6 +389,12 @@ pub trait FeatureSource: Send + Sync {
     fn finds_all_by_area(&self) -> bool {
         false
     }
+    /// Whether the source is as it was when opened, judged cheaply (its files' sizes and
+    /// modification times), for what was read from it and kept beside it: `Ok(false)` when it
+    /// changed or the source can't say, and the error a read would give when it can't be read.
+    fn same_as_opened(&self) -> Result<bool> {
+        Ok(false)
+    }
     /// Whether a complete bounded traversal for a geographic extent is available. This also
     /// covers readers whose view and whole-export paths still use their existing sample or
     /// whole-read contracts.

@@ -1761,6 +1761,9 @@ impl FeatureSource for Near {
     fn finds_all_by_area(&self) -> bool {
         self.all_by_area
     }
+    fn same_as_opened(&self) -> rustgis_data::Result<bool> {
+        Ok(true)
+    }
     /// Keeps `extent`, then gives the features whose boxes meet it (all of them for `None`), in
     /// file order.
     fn visit_chunks(
@@ -1853,7 +1856,8 @@ fn a_streamed_layer_reads_only_the_view_when_nothing_it_draws_reaches_in() {
         if near {
             let e = drawn.unwrap_or_else(|| panic!("case {n}: the whole source was read"));
             let read = features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| g.extent().intersects(&e))).count();
-            assert!(read * 10 < total, "case {n}, {view:?}: {read} of {total} features read for a view of a few");
+            // A fifth: the view is read a quarter of its size wider on each side, to be kept.
+            assert!(read * 5 < total, "case {n}, {view:?}: {read} of {total} features read for a view of a few");
         } else {
             assert_eq!(drawn, None, "case {n}: a layer reaching in from beyond the view reads everything");
         }
@@ -1897,4 +1901,77 @@ fn a_streamed_layer_reads_only_the_view_when_nothing_it_draws_reaches_in() {
         assert!(got.pixmap.data() == expected.pixmap.data(), "all by area {all_by_area}: the pixels changed");
         assert_eq!(asked.lock().unwrap().last().copied().flatten(), None, "all by area {all_by_area}: reads everything");
     }
+}
+
+/// A streamed layer's view is kept with the geometry drawn from it: the same view again, a short
+/// pan, a zoom in and a restyle draw from it without reading the source, as the layer held in
+/// memory draws; a pan out of it or the source reset reads again (#1065).
+#[test]
+fn a_kept_view_draws_the_frames_inside_it_without_reading_the_source() {
+    use std::sync::{Arc, Mutex};
+    let mut squares = Dataset::new("squares", GeometryType::Polygon, vec![Field::new("name", FieldType::Text)]);
+    for i in 0..40 {
+        for j in 0..40 {
+            let (x, y) = (i as f64 - 20.0, j as f64 - 20.0);
+            let ring =
+                vec![Coord::new(x, y), Coord::new(x + 0.6, y), Coord::new(x + 0.6, y + 0.6), Coord::new(x, y + 0.6), Coord::new(x, y)];
+            squares.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Value::Text(format!("s{i}-{j}"))]);
+        }
+    }
+    let mut base = Map::new("kept");
+    base.basemap = rustgis_map::Basemap::Blank;
+    base.add_dataset(squares.clone());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut actual = base.clone();
+    let mut layer = streamed(&base.layers[0], usize::MAX);
+    let info = layer.source.as_ref().unwrap().info().unwrap().clone();
+    layer.source = Some(SourceLayer::from_path(
+        "kept.shp",
+        None,
+        Box::new(Near { chunks: Chunks { info, ds: squares, size: usize::MAX }, asked: asked.clone(), all_by_area: true }),
+    ));
+    actual.layers[0] = layer;
+    let camera = Camera::new(rustgis_geom::lonlat_to_merc(Coord::new(0.3, 0.3)), 2_000.0);
+    let mut view = View { width: 320.0, height: 240.0, pixels_per_point: 1.0, camera, sky: false };
+    // What drawing `view` reads from the source: the boxes asked for, none for a kept view.
+    let frame = |base: &mut Map, actual: &mut Map, view: &View, what: &str| -> Vec<bool> {
+        let before = asked.lock().unwrap().len();
+        let expected = render(&mut base.clone(), view).unwrap();
+        let Some(RenderOutput::Cpu(got)) = render_with_backend(&mut actual.clone(), view, true, Backend::Cpu) else {
+            panic!("{what}: a complete frame");
+        };
+        assert!(got.pixmap.data() == expected.pixmap.data(), "{what}: the pixels changed");
+        let asked = asked.lock().unwrap();
+        // Each read: whether by area. A whole read is the thinning decision's, made once a
+        // projection and level of detail, or a frame reading everything.
+        asked[before..].iter().map(Option::is_some).collect()
+    };
+    assert_eq!(frame(&mut base, &mut actual, &view, "first"), [false, true], "the first frame reads the view");
+    assert_eq!(frame(&mut base, &mut actual, &view, "again"), [false; 0], "the same view draws from the kept one");
+    view.camera.center.x += view.width * view.camera.res * 0.1;
+    assert_eq!(frame(&mut base, &mut actual, &view, "short pan"), [false; 0], "a short pan draws from the kept view");
+    view.camera.res /= 2.0;
+    assert_eq!(frame(&mut base, &mut actual, &view, "zoom in"), [false], "a zoom in decides its level and draws from the kept view");
+    for map in [&mut base, &mut actual] {
+        map.layers[0].renderer =
+            Renderer::Single(Symbol { fill: Rgba::new(30, 160, 90, 200), ..Symbol::default_for(GeometryType::Polygon, map.layers[0].id) });
+    }
+    assert_eq!(frame(&mut base, &mut actual, &view, "restyle"), [false; 0], "a restyled layer draws from the kept view");
+    view.camera.center.x += view.width * view.camera.res * 3.0;
+    assert_eq!(frame(&mut base, &mut actual, &view, "far pan"), [true], "a pan out of the kept view reads again");
+    // Robinson reads everything (no box), and leaves the Web Mercator view kept.
+    for map in [&mut base, &mut actual] {
+        map.projection = rustgis_map::Projection::Custom("robinson".into());
+    }
+    assert_eq!(frame(&mut base, &mut actual, &view, "robinson"), [false, false], "another projection decides and reads everything");
+    for map in [&mut base, &mut actual] {
+        map.projection = rustgis_map::Projection::default();
+    }
+    assert_eq!(frame(&mut base, &mut actual, &view, "back"), [false; 0], "the Web Mercator view is still kept");
+    actual.layers[0].source.as_mut().unwrap().reset();
+    assert_eq!(frame(&mut base, &mut actual, &view, "reset"), [false, true], "a reset source reads again");
+    // A view of nowhere in the layer, past the grid's east edge, is kept with nothing in it.
+    view.camera.center = rustgis_geom::lonlat_to_merc(Coord::new(30.0, 0.3));
+    assert_eq!(frame(&mut base, &mut actual, &view, "empty"), [true], "an empty view is read");
+    assert_eq!(frame(&mut base, &mut actual, &view, "empty again"), [false; 0], "and kept, with nothing in it");
 }

@@ -888,3 +888,32 @@ fn reads_by_area_find_every_shape_once_a_whole_read_has_seen_the_boxes_hold() {
         assert!(s.finds_all_by_area(), "each point is its own box");
     });
 }
+
+/// A Shapefile says whether it is as it was opened (#1065): yes until it is written again (on Unix
+/// at the same size and time too), and a read's error once it is gone.
+#[test]
+fn a_shapefile_says_whether_it_is_as_it_was_opened() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("pts.shp");
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![]);
+    ds.push(Some(Geometry::Point(Coord::new(1.0, 1.0))), vec![]);
+    write_shapefile(&ds, &path);
+    cache::with_index_dir(tmp.path().join("cache"), || {
+        let s = ShpSource::open_path(&path, "pts").unwrap();
+        assert!(s.same_as_opened().unwrap(), "as opened");
+        // The same size, its time set back: the change time still moves.
+        let dbf = path.with_extension("dbf");
+        let modified = std::fs::metadata(&dbf).unwrap().modified().unwrap();
+        let bytes = std::fs::read(&dbf).unwrap();
+        std::fs::write(&dbf, &bytes).unwrap();
+        std::fs::File::options().write(true).open(&dbf).unwrap().set_modified(modified).unwrap();
+        #[cfg(unix)]
+        assert!(!s.same_as_opened().unwrap(), "written again at the same size and time");
+        let s = ShpSource::open_path(&path, "pts").unwrap();
+        ds.push(Some(Geometry::Point(Coord::new(2.0, 2.0))), vec![]);
+        write_shapefile(&ds, &path);
+        assert!(!s.same_as_opened().unwrap(), "written again");
+        std::fs::remove_file(&path).unwrap();
+        assert!(s.same_as_opened().is_err(), "gone");
+    });
+}

@@ -405,6 +405,11 @@ pub const MAX_SIDE: u32 = 8192;
 /// How far past each side of the view (a fraction of its size) features are still drawn.
 pub const CULL_MARGIN: f64 = 0.05;
 
+/// How far past each side of the view (a fraction of its size) a streamed layer's view is read
+/// when it is kept for the frames after ([`rustgis_map::source::SourceLayer::kept_view`]): a pan
+/// of a fifth of the view still draws from it.
+const KEEP_MARGIN: f64 = 0.25;
+
 /// The share of a streamed layer's extent a view's box covers past which the whole layer is read
 /// in file order rather than through its index ([`covers_most`]).
 const READ_ALL_OVER: f64 = 0.5;
@@ -6437,6 +6442,7 @@ fn render_frame(
             // which fall back to the CPU. And a box over most of the layer reads it all, in file
             // order: asking the index which records nearly all of them are costs more than
             // reading the few left over.
+            let partial = |e: &Extent| !covers_most(e, &source.info().extent);
             let near = (globe.is_none()
                 && !gpu
                 && matches!(flat, rustgis_map::projection::Flat::Mercator)
@@ -6447,24 +6453,97 @@ fn render_frame(
                 && draws_in_view_only(&chunk, !display.paused, shore.is_some()))
             .then(|| lonlat_box(&flat, &ctx.cull))
             .flatten()
-            .filter(|e| !covers_most(e, &source.info().extent));
+            .filter(partial);
             // The source's long loops that only look at Cancel see the frame's stop too.
             let _stop = cancel::current().map(rustgis_data::progress::also_stop_when);
-            let result = visit_within(source.as_ref(), near, &mut |features| {
-                // A frame no longer wanted reads no further (see `cancel`).
-                if cancel::requested() {
-                    return Err(rustgis_data::DataError::Cancelled);
+            // A view read this way is kept with the geometry drawn from it, for the frames of the
+            // views inside it: the same view again, a short pan, a zoom in, a restyle, an export.
+            // It is read a margin wider than it draws, so a short pan still finds it, unless a view
+            // this coarse was too large to keep. It is kept for the projection and the datum grids
+            // the frame drew with, within what the source's share of the map's view memory leaves
+            // beside its interaction rows.
+            let res = view.camera.res;
+            // Only while the source is as it was opened: a file changed since reads again, and
+            // one gone fails as a read of it would.
+            let unchanged = match near.map(|_| source.same_as_opened()) {
+                Some(Err(e)) => {
+                    if let Some(s) = &mut layer.source {
+                        s.error = Some(e.to_string());
+                    }
+                    *failed_source = Some(layer.instance_id());
+                    return None;
                 }
-                chunk.clear_cache();
-                chunk.selection =
-                    features.iter().enumerate().filter_map(|(r, f)| selected_order.contains_key(&f.id).then_some(r)).collect();
-                chunk.dataset.features = features.into();
-                chunk.touch_geometry();
-                draw_chunk(&mut chunk)?;
+                Some(Ok(same)) => same,
+                None => false,
+            };
+            let owner = layer.source.as_ref();
+            let grids = rustgis_data::raster::crs::grid_generation();
+            let kept_key = format!("{key} {grids}");
+            let room = owner.map_or(0, |o| o.budget().saturating_sub(layer.view_cache_bytes()).min(rustgis_map::source::KEPT_VIEW_BYTES));
+            let kept = near.filter(|_| unchanged).and_then(|n| owner?.kept_view(&kept_key, &n, room));
+            let wide = cull_extent(view, KEEP_MARGIN);
+            let keep = (near.is_some()
+                && unchanged
+                && kept.is_none()
+                && within_mercator_lats(&wide)
+                && owner.is_some_and(|o| o.view_worth_keeping(&kept_key, res)))
+            .then(|| lonlat_box(&flat, &wide))
+            .flatten()
+            .filter(partial);
+            let mut keeping: Option<(Vec<rustgis_map::Layer>, usize)> = (keep.is_some() || kept.is_some()).then(|| (Vec::new(), 0));
+            let mut draw_rows = |chunk: &mut rustgis_map::Layer| -> rustgis_data::Result<()> {
+                chunk.selection = chunk
+                    .dataset
+                    .features
+                    .rows()
+                    .enumerate()
+                    .filter_map(|(r, row)| selected_order.contains_key(&row.id()).then_some(r))
+                    .collect();
+                draw_chunk(chunk)?;
+                if let Some((chunks, bytes)) = &mut keeping {
+                    *bytes = bytes.saturating_add(chunk.view_cache_bytes());
+                    if *bytes <= room {
+                        chunks.push(chunk.clone());
+                    } else {
+                        chunks.clear();
+                    }
+                }
                 chunk.clear_cache();
                 chunk.dataset.features = Vec::new().into();
                 Ok(())
-            });
+            };
+            let result = match &kept {
+                Some(kept) => kept.iter().try_for_each(|rows| {
+                    // A frame no longer wanted draws no further (see `cancel`).
+                    if cancel::requested() {
+                        return Err(rustgis_data::DataError::Cancelled);
+                    }
+                    chunk.draw_rows_of(rows);
+                    draw_rows(&mut chunk)
+                }),
+                None => visit_within(source.as_ref(), keep.or(near), &mut |features| {
+                    // A frame no longer wanted reads no further (see `cancel`).
+                    if cancel::requested() {
+                        return Err(rustgis_data::DataError::Cancelled);
+                    }
+                    chunk.clear_cache();
+                    chunk.dataset.features = features.into();
+                    chunk.touch_geometry();
+                    draw_rows(&mut chunk)
+                })
+                .map(|_| ()),
+            };
+            // Kept only when drawn whole, for the datum grids there still are.
+            if let (Ok(()), Some(owner), Some((chunks, bytes))) = (&result, owner, keeping)
+                && rustgis_data::raster::crs::grid_generation() == grids
+            {
+                let fits = bytes <= room;
+                match (keep, &kept) {
+                    (Some(read), _) => owner.keep_view(&kept_key, read, res, fits.then_some((chunks, bytes))),
+                    (None, Some(drawn)) if fits => owner.refresh_kept_view(&kept_key, drawn, chunks, bytes),
+                    _ => {}
+                }
+            }
             // Declined (`pictureless`): no frame, whatever the source made of the stop.
             if declined {
                 return None;

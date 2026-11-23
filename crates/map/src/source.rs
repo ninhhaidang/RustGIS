@@ -19,6 +19,8 @@ use rustgis_geom::Extent;
 use serde::{Deserialize, Serialize};
 
 mod render_lod;
+mod render_view;
+pub use render_view::KEPT_VIEW_BYTES;
 mod window;
 pub(crate) use window::Query;
 
@@ -178,6 +180,9 @@ pub struct SourceLayer {
     /// Whole-source thinning decisions shared by render snapshots, independent of view rows.
     #[serde(skip)]
     render_lod: Arc<Mutex<render_lod::Decisions>>,
+    /// The last view's rows and drawn geometry, shared by render snapshots ([`render_view`]).
+    #[serde(skip)]
+    render_view: Arc<Mutex<render_view::KeptView>>,
     #[serde(skip)]
     pending: Option<Arc<Pending>>,
     /// Projection used for this disposable window's geometry cache.
@@ -1203,6 +1208,44 @@ impl SourceLayer {
         cache.get_or_try_insert(handle, projection, level, calculate)
     }
 
+    /// The chunks a frame drew from the source's last view, with their projected and display
+    /// geometry, when that view was read for a longitude/latitude box holding `near`, drawn for
+    /// `key` (the projection and datum grids, as the renderer names them) and holding at most
+    /// `room` bytes (#1065). They hold rows only: the drawing takes the layer's look from the
+    /// layer, its rows and geometry from them ([`crate::Layer::draw_rows_of`]).
+    pub fn kept_view(&self, key: &str, near: &Extent, room: usize) -> Option<Arc<Vec<crate::Layer>>> {
+        let handle = self.handle.as_ref()?;
+        self.render_view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(handle, key, near, room)
+    }
+
+    /// Whether a frame at resolution `res` (map units a pixel) should read a view wider than it
+    /// draws, to keep it for the frames after: not after a view as coarse or coarser was too large
+    /// to keep.
+    pub fn view_worth_keeping(&self, key: &str, res: f64) -> bool {
+        let Some(handle) = &self.handle else { return false };
+        self.render_view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).worth_keeping(handle, key, res)
+    }
+
+    /// Keeps the chunks a frame at resolution `res` drew from a view read for `read`, with the
+    /// bytes they hold, in place of the last view kept; `None` says they came to more than may be
+    /// kept.
+    pub fn keep_view(&self, key: &str, read: Extent, res: f64, chunks: Option<(Vec<crate::Layer>, usize)>) {
+        let Some(handle) = &self.handle else { return };
+        self.render_view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).put(handle, key, read, res, chunks);
+    }
+
+    /// Lets the kept view go when it holds more than `room` bytes.
+    pub fn trim_kept_view(&self, room: usize) {
+        self.render_view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).trim(room);
+    }
+
+    /// Puts the kept chunks drawn again, with the geometry drawing made of them, in place of
+    /// `drawn`, the ones [`SourceLayer::kept_view`] gave, while those are still what is kept.
+    pub fn refresh_kept_view(&self, key: &str, drawn: &Arc<Vec<crate::Layer>>, chunks: Vec<crate::Layer>, bytes: usize) {
+        let Some(handle) = &self.handle else { return };
+        self.render_view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).refresh(handle, key, drawn, chunks, bytes);
+    }
+
     /// Retained interaction bytes assigned by the map, or the standalone default.
     pub fn budget(&self) -> usize {
         if self.byte_budget == 0 { VIEW_BYTES } else { self.byte_budget }
@@ -1734,6 +1777,7 @@ impl SourceLayer {
     pub fn detach_read(&mut self) {
         self.pending = None;
         self.render_lod = Default::default();
+        self.render_view = Default::default();
     }
 
     /// Whether `other` (a copy of this one) reads the same source the same way: the same file and
@@ -1757,6 +1801,7 @@ impl SourceLayer {
     /// Forgets the window, so the next view reads again (after the source changes).
     pub fn reset(&mut self) {
         self.render_lod = Default::default();
+        self.render_view = Default::default();
         self.reset_window();
     }
 
@@ -2021,6 +2066,7 @@ impl SourceLayer {
             handle: _,
             window: _,
             render_lod: _,
+            render_view: _,
             pending: _,
             projection: _,
             ready_cache: _,
