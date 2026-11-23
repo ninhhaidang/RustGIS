@@ -421,3 +421,69 @@ fn live_tiles_move_with_a_scene_shown_as_a_picture() {
     assert!(shifted > 0, "some steps show the picture shifted and scaled, not drawn again");
     assert!(h.state().session.map().camera.res > start.res * 2.0, "zoomed out");
 }
+
+/// A tilted map zoomed past what its GPU scene holds needs a new scene. Made on the UI thread, it
+/// stopped the window each time (tessellating every layer), so a quick zoom, turn or tilt
+/// stuttered: it is made off the UI thread, the scene on screen following the camera meanwhile,
+/// and the map at rest gets the scene for where it rests.
+#[test]
+fn a_tilted_maps_new_scene_is_made_off_the_ui_thread() {
+    let _serial = one_at_a_time();
+    let Some(mut h) = harness() else { return };
+    h.state_mut().run("map.setPitch", json!({"pitch": 45.0})).expect("tilt");
+    wait_for_frame(&mut h);
+    assert!(h.state().map.moves_on_gpu(), "the tilted sample re-projects on the GPU");
+    let before = h.state().map.full_frame_camera();
+    assert_eq!(before.pitch, h.state().session.map().camera.pitch, "the scene is the tilted view's");
+    let mut left = false;
+    for _ in 0..400 {
+        h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(450.0, 300.0)));
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 0.5),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.step();
+        // Zoomed in past 0.7 of the scene's resolution, the scene no longer fits the view.
+        if h.state().session.map().camera.res < 0.7 * before.res {
+            left = true;
+            break;
+        }
+    }
+    assert!(left, "the wheel zoomed the tilted map in");
+    let cam = h.state().session.map().camera;
+    assert_eq!(h.state().map.full_frame_camera(), before, "the frame that outgrew the scene shows it");
+    assert_eq!(h.state().map.scene_camera(), Some(cam), "the scene on screen follows the camera");
+    assert!(h.state().map.moves_on_gpu());
+    assert!(h.state().map.drawing(), "the scene for the new camera is being made");
+    wait_for_frame(&mut h);
+    let shown = h.state().map.full_frame_camera();
+    assert_eq!((shown.center, shown.res, shown.pitch), (cam.center, cam.res, cam.pitch), "at rest, the scene is the view's");
+    assert!(h.state().map.moves_on_gpu());
+}
+
+/// A tilted map's camera that jumps at rest (a zoom box, a bookmark) moves the scene on screen
+/// while the worker makes the scene for it; one that jumps back before that lands moves it back,
+/// though the frame's camera is then the view's again and nothing is out of date.
+#[test]
+fn a_tilted_scene_follows_a_camera_that_jumps_away_and_back() {
+    let _serial = one_at_a_time();
+    let Some(mut h) = harness() else { return };
+    h.state_mut().run("map.setPitch", json!({"pitch": 45.0})).expect("tilt");
+    wait_for_frame(&mut h);
+    assert!(h.state().map.moves_on_gpu(), "the tilted sample re-projects on the GPU");
+    let a = h.state().session.map().camera;
+    assert_eq!(h.state().map.scene_camera(), Some(a));
+    let b = rustgis_ui_egui::rustgis_engine::map::Camera { res: a.res * 0.4, ..a };
+    h.state_mut().session.map_mut().camera = b;
+    h.step();
+    assert_eq!(h.state().map.full_frame_camera(), a, "the scene for the jump is made off the UI thread");
+    assert_eq!(h.state().map.scene_camera(), Some(b), "meanwhile the scene on screen follows the jump");
+    h.state_mut().session.map_mut().camera = a;
+    h.step();
+    assert_eq!(h.state().map.scene_camera(), Some(a), "back where it was made, the scene is drawn for the view again");
+    wait_for_frame(&mut h);
+    assert_eq!(h.state().map.scene_camera(), Some(a));
+}

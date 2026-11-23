@@ -1162,6 +1162,8 @@ pub(crate) struct SceneBuffers {
     pub has_tiles: bool,
     /// A turned or tilted scene: the camera it was drawn for, its sky and fog.
     pub tilt: Option<SceneTilt>,
+    /// The camera its uniforms are written for (see [`SceneBuffers::set_camera`]).
+    pub shown: std::sync::Mutex<Camera>,
     /// Its live raster tile layers, in order, placed for each frame shown ([`LiveFrame`]).
     pub live: Vec<(String, rustgis_engine::render::rustgis_tiles::Spec, f32)>,
     /// The archive revision of the scene that owns the live layers' attribution.
@@ -1240,22 +1242,39 @@ impl SceneBuffers {
     /// vertices; else it is drawn again.
     pub(crate) fn fits(&self, cam: &Camera) -> bool {
         let pitch = rustgis_engine::map::camera::normalize_pitch(cam.pitch);
-        let precise = gpu_scene::f32_holds(self.reach, cam.res / f64::from(self.ppp.max(0.1)));
-        precise
+        self.follows(cam)
             && match &self.tilt {
-                None => cam.bearing == 0.0 && pitch == 0.0,
+                None => true,
                 Some(t) => {
                     let turn = rustgis_engine::map::camera::normalize_bearing(cam.bearing - t.camera.bearing).abs();
                     let zoom = cam.res / t.camera.res.max(1e-12);
-                    (t.camera.bearing != 0.0) == (cam.bearing != 0.0)
-                    && (t.camera.pitch != 0.0) == (pitch != 0.0)
-                    && turn < 0.5
+                    turn < 0.5
                     && (pitch - t.camera.pitch).abs() < 0.5
                     && (0.7..1.4).contains(&zoom)
                     // Panned less than a quarter of the view: the ground it drew still covers it.
                     && (cam.center.x - t.camera.center.x).hypot(cam.center.y - t.camera.center.y)
                         < 0.25 * self.size[0].min(self.size[1]) * t.camera.res
                 }
+            }
+    }
+
+    /// The camera the scene is drawn for now: the one it was made for, or the last one
+    /// [`SceneBuffers::set_camera`] wrote.
+    pub(crate) fn camera(&self) -> Camera {
+        *self.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether the scene can be drawn for `cam` at all, though past [`SceneBuffers::fits`] it shows
+    /// less than a new one would (ground it left out, detail for another zoom): a turned or
+    /// tilted scene for a view still turned or tilted, a north-up flat one for a north-up flat
+    /// view, with its vertices still precise in f32. It stands in while the scene for `cam` is
+    /// made off the UI thread.
+    pub(crate) fn follows(&self, cam: &Camera) -> bool {
+        let pitch = rustgis_engine::map::camera::normalize_pitch(cam.pitch);
+        gpu_scene::f32_holds(self.reach, cam.res / f64::from(self.ppp.max(0.1)))
+            && match &self.tilt {
+                None => cam.bearing == 0.0 && pitch == 0.0,
+                Some(t) => (t.camera.bearing != 0.0) == (cam.bearing != 0.0) && (t.camera.pitch != 0.0) == (pitch != 0.0),
             }
     }
 }
@@ -1568,6 +1587,7 @@ impl SceneBuffers {
             has_images,
             has_tiles,
             tilt: scene.tilt,
+            shown: std::sync::Mutex::new(camera),
             live,
             tiles_live,
             reach,
@@ -1580,6 +1600,7 @@ impl SceneBuffers {
     /// the queue, so `&self` suffices. Callers check `has_images` first: image runs don't
     /// re-project and need a full re-render.
     pub(crate) fn set_camera(&self, queue: &wgpu::Queue, cam: &Camera) {
+        *self.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = *cam;
         for d in &self.draws {
             let (uniforms, origin, clip) = match d {
                 SceneDraw::Mesh { uniforms, origin, clip, .. }
@@ -1852,6 +1873,7 @@ mod tests {
             has_images: false,
             has_tiles: false,
             tilt: None,
+            shown: std::sync::Mutex::new(Camera::world()),
             live: vec![(layer.name.clone(), render::tile_spec(&layer), 1.0)],
             tiles_live: true,
             reach: 0.0,
