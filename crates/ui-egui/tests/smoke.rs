@@ -3535,6 +3535,8 @@ fn save_project_dialog_needs_downloads() {
 #[test]
 fn map_context_menu_copies_the_clicked_coordinates() {
     let mut h = harness();
+    // In decimal degrees (the default reads in the map's own coordinates).
+    h.state_mut().run("ui.coordinateFormat", json!({"format": "decimal"})).unwrap();
     for _ in 0..4 {
         h.step();
     }
@@ -4134,6 +4136,8 @@ fn plugin_picks_take_a_place_on_the_map() {
     rp::load(rp::Package::from_zip(&rp::testing::pick_package("ui-pick")).unwrap(), "test").unwrap();
     let _unload = Unload("ui-pick");
     let mut h = harness();
+    // The status bar in decimal degrees, as the pane shows the place.
+    h.state_mut().run("ui.coordinateFormat", json!({"format": "decimal"})).unwrap();
     h.state_mut().run("ui.pane.plugin", json!({"id": "ui-pick"})).unwrap();
     h.run_steps(3);
     let place = |h: &egui_kittest::Harness<'_, RustGisApp>, id: &str| h.state().session.plugin_panels["ui-pick"].values[id].clone();

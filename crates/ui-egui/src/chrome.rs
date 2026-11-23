@@ -474,7 +474,7 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 let live = app.map.pointer_lonlat.is_some();
                 let resp = ui.add(
                     egui::Label::new(
-                        egui::RichText::new(format.readout(kept, earth)).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
+                        egui::RichText::new(format.readout(kept, earth, crate::coordreadout::MapSystem::of(app.session.map()).as_ref())).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
                     )
                     .sense(Sense::click()),
                 );

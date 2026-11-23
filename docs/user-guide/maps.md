@@ -315,11 +315,12 @@ and **View In Google Earth** open the place in your browser at about the same zo
 The status bar shows the pointer's coordinates while it is over the map, and keeps the last
 position (dimmed) when it leaves, so you can move to the status bar and click it. It reads `—`
 until the pointer has been over the map, and again after you switch to another map or open another
-project. Click the coordinates to step through four formats; the choice is remembered and also
+project. Click the coordinates to step through five formats; the choice is remembered and also
 sets the right-click menu's first row. The same place in each:
 
 | Format | Example | Notes |
 | --- | --- | --- |
+| Map coordinates | `1703188 mE  6420339 mN` | the default: easting and northing in the map's coordinate system, named beside them in the status bar (here Web Mercator), in its unit (`m`, `ft` for international feet, `ftUS` for US survey feet, no unit for another); whole units at a unit a pixel or more, up to three decimals as you zoom in |
 | Decimal degrees | `15.3000° E  49.8500° N` | four decimal places |
 | DMS | `15°18′00.0″ E  49°51′00.0″ N` | degrees, minutes and seconds |
 | UTM | `33north 521567 5521996` | zone and hemisphere (`33south …` south of the equator), easting and northing in metres, rounded to the metre |
@@ -337,10 +338,17 @@ reference, which has no zone number: a letter for the half (Y for western longit
 eastern ones in the north, A and B in the south, with the 0° and 180° meridians in Z and B),
 the 100 km square and the digits, truncated, `Z AC 77146 62481`. 84° N itself is UPS, 80° S
 itself is UTM. On the map of another body than the Earth the readout shows *No UTM here*
-(or *No MGRS here*) rather than a wrong reference, and degrees still read. Scripts set the format with
-`ui.coordinateFormat={"format":"utm"}` (`decimal`, `dms`, `utm` or `mgrs`); without `format`
-it steps to the next one. A saved format this version doesn't know, say from a newer RustGIS,
-reads as decimal degrees with a notice, and stays saved until you pick a format.
+(or *No MGRS here*) rather than a wrong reference, and degrees still read. Map coordinates read in
+degrees on the globe and on another body's map, since the map's projection is computed on the
+Earth's figure; where the map's projection doesn't reach or folds over (the far side of a polar
+or oblique projection), they read *No map coordinates here*, and the right-click menu's row copies
+latitude and longitude instead. A projection can reach well beyond a national grid's area of use:
+London on a map in LV95 still reads eastings and northings. In map coordinates the right-click
+menu's row copies the system's name after them, `2600173 mE  1200272 mN  EPSG:2056`, so the copy
+says which system it is in. Scripts set the format with `ui.coordinateFormat={"format":"utm"}` (`map`, `decimal`,
+`dms`, `utm` or `mgrs`); without `format` it steps to the next one. A saved format this version
+doesn't know, say from a newer RustGIS, reads in map coordinates with a notice, and stays saved
+until you pick a format.
 
 `map.convertPosition` gives a place in all of these forms at once, without moving the map, for
 scripts, Python and the AI Assistant. It takes the place as `map.goToXY` does: `lon` and `lat`

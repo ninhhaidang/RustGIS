@@ -1,10 +1,10 @@
-//! The status bar's coordinate readout: a click steps decimal → DMS → UTM → MGRS, the choice is
-//! remembered as a preference, and the readout shows the pointer in it.
+//! The status bar's coordinate readout: a click steps map → decimal → DMS → UTM → MGRS, the choice
+//! is remembered as a preference, and the readout shows the pointer in it.
 
 use std::sync::{Arc, Mutex};
 
 use egui_kittest::kittest::Queryable;
-use rustgis_ui_egui::{CoordReadout, RustGisApp, Services};
+use rustgis_ui_egui::{CoordReadout, MapSystem, RustGisApp, Services};
 use serde_json::{Value, json};
 
 fn harness(app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {
@@ -26,15 +26,15 @@ fn the_format_cycles_persists_and_is_restored() {
         save_pref: Some(Box::new(move |k, v| writes.lock().unwrap_or_else(|e| e.into_inner()).push((k.to_string(), v.to_string())))),
         ..Services::default()
     });
-    assert_eq!(app.map.coord_format, CoordReadout::Decimal);
+    assert_eq!(app.map.coord_format, CoordReadout::Map);
     let mut seen = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.run("ui.coordinateFormat", Value::Null).unwrap();
         seen.push(app.map.coord_format.code());
     }
-    assert_eq!(seen, ["dms", "utm", "mgrs", "decimal"]);
+    assert_eq!(seen, ["decimal", "dms", "utm", "mgrs", "map"]);
     let writes: Vec<String> = saved.lock().unwrap().iter().filter(|(k, _)| k == "coordinate_format").map(|(_, v)| v.clone()).collect();
-    assert_eq!(writes, ["dms", "utm", "mgrs", "decimal"]);
+    assert_eq!(writes, ["decimal", "dms", "utm", "mgrs", "map"]);
     app.run("ui.coordinateFormat", json!({"format": "MGRS"})).unwrap();
     assert_eq!(app.map.coord_format, CoordReadout::Mgrs);
     for bad in [json!({"format": "ups"}), json!({"format": 3}), json!({"format": ""})] {
@@ -42,7 +42,9 @@ fn the_format_cycles_persists_and_is_restored() {
         assert_eq!(app.map.coord_format, CoordReadout::Mgrs, "{bad}");
     }
     // A saved choice comes back, with nothing to say.
-    for (pref, want) in [("utm", CoordReadout::Utm), ("mgrs", CoordReadout::Mgrs)] {
+    for (pref, want) in
+        [("utm", CoordReadout::Utm), ("mgrs", CoordReadout::Mgrs), ("decimal", CoordReadout::Decimal), ("map", CoordReadout::Map)]
+    {
         let restored = RustGisApp::with_sample().with_services(Services {
             load_pref: Some(Box::new(move |k| (k == "coordinate_format").then(|| pref.to_string()))),
             ..Services::default()
@@ -67,8 +69,8 @@ fn an_unknown_saved_format_is_said_and_kept_until_the_user_picks_one() {
     });
     let format_writes =
         || saved.lock().unwrap().iter().filter(|(k, _)| k == "coordinate_format").map(|(_, v)| v.clone()).collect::<Vec<_>>();
-    // Read as decimal degrees, and said once.
-    assert_eq!(app.map.coord_format, CoordReadout::Decimal);
+    // Read in the map's coordinates, and said once.
+    assert_eq!(app.map.coord_format, CoordReadout::Map);
     assert_eq!(app.session.notices.iter().filter(|n| n.text.contains("saved coordinate format isn't known")).count(), 1);
     // Frames drawn and another setting saved leave the stored format alone.
     let mut h = harness(app);
@@ -78,11 +80,18 @@ fn an_unknown_saved_format_is_said_and_kept_until_the_user_picks_one() {
     assert!(saved.lock().unwrap().iter().any(|(k, _)| k == "measurement_units"));
     assert!(format_writes().is_empty(), "{:?}", format_writes());
     // A click on the readout is the user's choice: it is saved.
-    let decimal = rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.expect("the pointer is over the map"));
-    h.get_by_label(&decimal).click();
+    let shown = map_readout(&h);
+    h.get_by_label(&shown).click();
     hover_map(&mut h);
-    assert_eq!(h.state().map.coord_format, CoordReadout::Dms);
-    assert_eq!(format_writes(), ["dms"]);
+    assert_eq!(h.state().map.coord_format, CoordReadout::Decimal);
+    assert_eq!(format_writes(), ["decimal"]);
+}
+
+/// The readout in the map's coordinates of where the pointer is.
+fn map_readout(h: &egui_kittest::Harness<'_, RustGisApp>) -> String {
+    let app = h.state();
+    let at = app.map.pointer_lonlat.expect("the pointer is over the map");
+    CoordReadout::Map.readout(Some(at), true, MapSystem::of(app.session.map()).as_ref())
 }
 
 /// Points the mouse at the middle of the window, over the map, for a few frames.
@@ -101,6 +110,13 @@ fn the_status_bar_reads_the_pointer_in_the_chosen_format_and_a_click_switches() 
     hover_map(&mut h);
     let at = h.state().map.pointer_lonlat.expect("the pointer is over the map");
     assert!((at.x - 44.4).abs() < 0.05 && (at.y - 33.3).abs() < 0.05, "{at:?}");
+    // First in the map's own coordinates: Web Mercator's metres, about 4.94 million east.
+    let shown = map_readout(&h);
+    assert!(shown.starts_with("494") && shown.ends_with(" mN"), "{shown}");
+    h.get_by_label(&shown).click();
+    hover_map(&mut h);
+    assert_eq!(h.state().map.coord_format, CoordReadout::Decimal);
+    let at = h.state().map.pointer_lonlat.expect("the pointer is over the map");
     let decimal = rustgis_engine::geom::format_lonlat(at);
     h.get_by_label(&decimal).click();
     hover_map(&mut h);
@@ -119,7 +135,7 @@ fn the_status_bar_reads_the_pointer_in_the_chosen_format_and_a_click_switches() 
     assert!(mgrs.starts_with("38S MB 4"), "{mgrs}");
     h.get_by_label(&mgrs).click();
     hover_map(&mut h);
-    assert_eq!(h.state().map.coord_format, CoordReadout::Decimal);
+    assert_eq!(h.state().map.coord_format, CoordReadout::Map);
     // Where UTM has no zone the readout gives the polar grid, UPS (MGRS without a zone number).
     h.state_mut().run("ui.coordinateFormat", json!({"format": "mgrs"})).unwrap();
     h.state_mut().run("map.goToXY", json!({"lon": 10.0, "lat": 84.5, "scale": 10000})).unwrap();
@@ -138,6 +154,31 @@ fn the_status_bar_reads_the_pointer_in_the_chosen_format_and_a_click_switches() 
     h.state_mut().run("ui.coordinateFormat", json!({"format": "decimal"})).unwrap();
     hover_map(&mut h);
     h.get_by_label(&rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.unwrap()));
+    // There the map's coordinates, which its projection would give on the Earth's figure, read
+    // as degrees.
+    h.state_mut().run("ui.coordinateFormat", json!({"format": "map"})).unwrap();
+    hover_map(&mut h);
+    h.get_by_label(&rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.unwrap()));
+}
+
+/// A map in the Swiss grid (LV95) reads the pointer in its eastings and northings, in metres, as
+/// does the right-click menu's first row; the globe reads degrees.
+#[test]
+fn a_map_in_lv95_reads_eastings_and_northings() {
+    let mut h = harness(RustGisApp::with_sample());
+    h.state_mut().run("map.projection", json!({"type": "EPSG:2056"})).unwrap();
+    h.state_mut().run("map.goToXY", json!({"lon": 7.4386, "lat": 46.9511, "scale": 10000})).unwrap();
+    hover_map(&mut h);
+    let shown = map_readout(&h);
+    let (e, n) = shown.split_once("  ").expect("an easting and a northing");
+    let e: f64 = e.strip_suffix(" mE").and_then(|v| v.parse().ok()).expect("metres east");
+    let n: f64 = n.strip_suffix(" mN").and_then(|v| v.parse().ok()).expect("metres north");
+    assert!((e - 2_600_000.0).abs() < 2_000.0 && (n - 1_200_000.0).abs() < 2_000.0, "{shown}");
+    h.get_by_label(&shown);
+    h.state_mut().run("map.projection", json!({"type": "globe"})).unwrap();
+    h.state_mut().run("map.goToXY", json!({"lon": 7.4386, "lat": 46.9511, "scale": 10000})).unwrap();
+    hover_map(&mut h);
+    h.get_by_label(&rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.expect("the pointer is over the globe")));
 }
 
 /// Moves the mouse onto the status bar, off the map, for a few frames.
@@ -149,6 +190,7 @@ fn hover_status_bar(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
 }
 
 fn readout_at_center(h: &mut egui_kittest::Harness<'_, RustGisApp>) -> String {
+    h.state_mut().run("ui.coordinateFormat", json!({"format": "decimal"})).unwrap();
     h.state_mut().run("map.goToXY", json!({"lon": 44.4, "lat": 33.3, "scale": 10000})).unwrap();
     hover_map(h);
     rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.expect("the pointer is over the map"))

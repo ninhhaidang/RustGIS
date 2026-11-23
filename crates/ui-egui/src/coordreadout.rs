@@ -1,9 +1,10 @@
-//! How the pointer's coordinates read in the status bar and in the map's right-click menu:
-//! decimal degrees, degrees-minutes-seconds, UTM or MGRS. A click on the status bar readout
-//! steps through them in that order (`ui.coordinateFormat`), and the choice is remembered
-//! between sessions as the `coordinate_format` preference.
+//! How the pointer's coordinates read in the status bar and in the map's right-click menu: in the
+//! map's own coordinate system, decimal degrees, degrees-minutes-seconds, UTM or MGRS. A click on
+//! the status bar readout steps through them in that order (`ui.coordinateFormat`), and the choice
+//! is remembered between sessions as the `coordinate_format` preference.
 
 use rustgis_engine::geom::{self, Coord};
+use rustgis_engine::map::projection::Flat;
 
 use crate::i18n;
 
@@ -13,8 +14,11 @@ pub const PREF: &str = "coordinate_format";
 /// A coordinate readout format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CoordReadout {
-    /// `12.3456° E  45.6789° N`
+    /// `2600000 mE  1200000 mN`: the map's own coordinates, as its coordinate system counts them
+    /// (on the globe and another body's map, decimal degrees; see [`MapSystem`]).
     #[default]
+    Map,
+    /// `12.3456° E  45.6789° N`
     Decimal,
     /// `12°20′44.2″ E  45°40′44.0″ N`
     Dms,
@@ -26,11 +30,12 @@ pub enum CoordReadout {
 
 impl CoordReadout {
     /// Every format, in the order a click steps through them.
-    pub const ALL: [CoordReadout; 4] = [CoordReadout::Decimal, CoordReadout::Dms, CoordReadout::Utm, CoordReadout::Mgrs];
+    pub const ALL: [CoordReadout; 5] = [CoordReadout::Map, CoordReadout::Decimal, CoordReadout::Dms, CoordReadout::Utm, CoordReadout::Mgrs];
 
     /// The name commands and the preference use (never translated).
     pub fn code(self) -> &'static str {
         match self {
+            CoordReadout::Map => "map",
             CoordReadout::Decimal => "decimal",
             CoordReadout::Dms => "dms",
             CoordReadout::Utm => "utm",
@@ -44,19 +49,21 @@ impl CoordReadout {
         Self::ALL.into_iter().find(|f| f.code().eq_ignore_ascii_case(code))
     }
 
-    /// The format after this one: decimal → DMS → UTM → MGRS → decimal.
+    /// The format after this one: map → decimal → DMS → UTM → MGRS → map.
     pub fn next(self) -> Self {
         match self {
+            CoordReadout::Map => CoordReadout::Decimal,
             CoordReadout::Decimal => CoordReadout::Dms,
             CoordReadout::Dms => CoordReadout::Utm,
             CoordReadout::Utm => CoordReadout::Mgrs,
-            CoordReadout::Mgrs => CoordReadout::Decimal,
+            CoordReadout::Mgrs => CoordReadout::Map,
         }
     }
 
     /// The format's name, translated in logical order, for filling into [`i18n::fmt`] messages.
     pub fn label(self) -> &'static str {
         match self {
+            CoordReadout::Map => tl_raw!("map coordinates"),
             CoordReadout::Decimal => tl_raw!("decimal degrees"),
             CoordReadout::Dms => tl_raw!("degrees, minutes and seconds"),
             CoordReadout::Utm => tl_raw!("UTM"),
@@ -70,13 +77,18 @@ impl CoordReadout {
     }
 
     /// The place in this format; for UTM and MGRS, UPS in the polar areas (north of 84° N and
-    /// south of 80° S) and `None` on another body's map (`earth` false), and for every format
-    /// `None` for a non-finite place.
-    pub fn format(self, c: Coord, earth: bool) -> Option<String> {
+    /// south of 80° S) and `None` on another body's map (`earth` false); in the map's coordinates
+    /// `None` where its projection doesn't reach, and decimal degrees without a flat Earth map
+    /// (`map` `None`); and for every format `None` for a non-finite place.
+    pub fn format(self, c: Coord, earth: bool, map: Option<&MapSystem>) -> Option<String> {
         if !c.is_finite() || (self.earth_only() && !earth) {
             return None;
         }
         match self {
+            CoordReadout::Map => match map {
+                Some(m) => m.format(c),
+                None => Some(geom::format_lonlat(c)),
+            },
             CoordReadout::Decimal => Some(geom::format_lonlat(c)),
             CoordReadout::Dms => Some(geom::format_dms(c)),
             CoordReadout::Utm => geom::format_utm(c),
@@ -85,13 +97,14 @@ impl CoordReadout {
     }
 
     /// The status bar's readout of the pointer: `—` off the map, and a short statement on another
-    /// body's map, where the Earth's grids name no place, rather than a wrong grid reference. It is
-    /// no wider than a reference, so the status bar keeps its room.
-    pub fn readout(self, c: Option<Coord>, earth: bool) -> String {
+    /// body's map, where the Earth's grids name no place, rather than a wrong grid reference (no
+    /// wider than that reference). Map coordinates can run wider: up to 13 characters for each
+    /// number, with three decimals far from the system's origin.
+    pub fn readout(self, c: Option<Coord>, earth: bool, map: Option<&MapSystem>) -> String {
         match c {
             None => "—".to_string(),
             Some(c) if !c.is_finite() => "—".to_string(),
-            Some(c) => self.format(c, earth).unwrap_or_else(|| i18n::fmt("No {format} here", &[("format", self.label())])),
+            Some(c) => self.format(c, earth, map).unwrap_or_else(|| i18n::fmt("No {format} here", &[("format", self.label())])),
         }
     }
 
@@ -99,9 +112,82 @@ impl CoordReadout {
     /// and MGRS read near the poles.
     pub fn hover(self) -> String {
         i18n::fmt(
-            "Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.",
+            "Coordinates in {format}. Click to switch: map coordinates, decimal degrees, DMS, UTM, MGRS. Map coordinates are in the map's coordinate system, named beside them, and in degrees on the globe and on another body's map. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.",
             &[("format", self.label())],
         )
+    }
+}
+
+/// The name [`MapSystem::name`] gives a projection.
+fn system_name(p: &rustgis_engine::map::Projection) -> String {
+    let label = p.label();
+    if matches!(p, rustgis_engine::map::Projection::WebMercator) || label.starts_with("EPSG:") || label.starts_with("ESRI:") {
+        label
+    } else {
+        p.code()
+    }
+}
+
+/// A flat map of the Earth's own coordinates, as the map format reads them: its projection and
+/// how many of its units a screen pixel spans, which sets the decimals shown.
+pub struct MapSystem {
+    flat: Flat,
+    res: f64,
+    /// The system's name, never translated: see [`MapSystem::name`].
+    name: String,
+}
+
+impl MapSystem {
+    /// The system of a map: `None` on the globe and on another body's map, whose flat projection
+    /// is computed on the Earth's figure and so gives no coordinates of its own body.
+    pub fn of(map: &rustgis_engine::map::Map) -> Option<MapSystem> {
+        (map.body().is_earth() && !map.projection.is_globe()).then(|| MapSystem {
+            flat: Flat::of(&map.projection),
+            res: map.camera.res,
+            name: system_name(&map.projection),
+        })
+    }
+
+    /// A system from its parts (tests).
+    pub fn new(flat: Flat, res: f64, name: &str) -> MapSystem {
+        MapSystem { flat, res, name: name.to_string() }
+    }
+
+    /// The system's name, as it can be given back to `map.projection`: its EPSG or ESRI code
+    /// (`EPSG:2056`), `Web Mercator`, else the map's projection code (`robinson +lon_0=150`,
+    /// `local:7.4386,46.9511`), which, unlike a preset's or a local view's display name, names
+    /// the system exactly.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The place's easting and northing, with as many decimals as a pixel needs (none at a metre
+    /// a pixel or more, up to three) and the unit: `2600000 mE  1200000 mN`, `ftE` and `ftN` in
+    /// international feet, `ftUSE` and `ftUSN` in US survey feet, and `E` and `N` alone in
+    /// another unit. A place on a world copy past the antimeridian reads as the same place within
+    /// ±180°. `None` where the projection doesn't reach (outside the area the map draws it over,
+    /// for LV95 a 60° cap around Bern, well past Switzerland) or folds, as the map draws nothing
+    /// there.
+    fn format(&self, c: Coord) -> Option<String> {
+        let m = self.flat.forward_checked(Coord::new(crate::mapmenu::wrap_lon(c.x), c.y)).filter(|m| m.is_finite())?;
+        let decimals = if self.res.is_finite() && self.res > 0.0 { (-self.res.log10()).ceil().clamp(0.0, 3.0) as usize } else { 0 };
+        let to_meter = match &self.flat {
+            Flat::Mercator => 1.0,
+            Flat::Custom(p) => p.to_meter(),
+        };
+        let unit = if (to_meter - 1.0).abs() < 1e-9 {
+            "m"
+        } else if (to_meter - 0.3048).abs() < 1e-9 {
+            "ft"
+        } else if (to_meter - 1200.0 / 3937.0).abs() < 1e-9 {
+            "ftUS"
+        } else {
+            ""
+        };
+        // Rounded first, then + 0.0: a coordinate that rounds to zero reads 0, not -0.
+        let scale = 10f64.powi(decimals as i32);
+        let shown = |v: f64| (v * scale).round() / scale + 0.0;
+        Some(format!("{:.d$} {unit}E  {:.d$} {unit}N", shown(m.x), shown(m.y), d = decimals))
     }
 }
 
@@ -112,14 +198,14 @@ mod tests {
     #[test]
     fn a_click_steps_through_every_format_and_back() {
         let mut f = CoordReadout::default();
-        assert_eq!(f, CoordReadout::Decimal);
+        assert_eq!(f, CoordReadout::Map);
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             seen.push(f);
             f = f.next();
         }
         assert_eq!(seen, CoordReadout::ALL);
-        assert_eq!(f, CoordReadout::Decimal);
+        assert_eq!(f, CoordReadout::Map);
     }
 
     #[test]
@@ -135,15 +221,15 @@ mod tests {
     #[test]
     fn readouts_in_each_format() {
         let p = Coord::new(44.4, 33.3);
-        assert_eq!(CoordReadout::Decimal.readout(Some(p), true), "44.4000° E  33.3000° N");
-        assert_eq!(CoordReadout::Dms.readout(Some(p), true), "44°24′00.0″ E  33°18′00.0″ N");
-        assert_eq!(CoordReadout::Utm.readout(Some(p), true), "38north 444141 3684706");
-        assert_eq!(CoordReadout::Utm.readout(Some(Coord::new(-58.4, -34.6)), true), "21south 371625 6170423");
-        assert_eq!(CoordReadout::Mgrs.readout(Some(p), true), "38S MB 44140 84706");
+        assert_eq!(CoordReadout::Decimal.readout(Some(p), true, None), "44.4000° E  33.3000° N");
+        assert_eq!(CoordReadout::Dms.readout(Some(p), true, None), "44°24′00.0″ E  33°18′00.0″ N");
+        assert_eq!(CoordReadout::Utm.readout(Some(p), true, None), "38north 444141 3684706");
+        assert_eq!(CoordReadout::Utm.readout(Some(Coord::new(-58.4, -34.6)), true, None), "21south 371625 6170423");
+        assert_eq!(CoordReadout::Mgrs.readout(Some(p), true, None), "38S MB 44140 84706");
         for f in CoordReadout::ALL {
             for earth in [true, false] {
-                assert_eq!(f.readout(None, earth), "—");
-                assert_eq!(f.readout(Some(Coord::new(f64::NAN, 0.0)), earth), "—");
+                assert_eq!(f.readout(None, earth, None), "—");
+                assert_eq!(f.readout(Some(Coord::new(f64::NAN, 0.0)), earth, None), "—");
             }
         }
     }
@@ -152,14 +238,14 @@ mod tests {
     fn polar_places_read_in_ups() {
         let pole = Coord::new(10.0, 86.0);
         // GeographicLib's `GeoConvert -u -l` and `-m` for the same place.
-        assert_eq!(CoordReadout::Utm.readout(Some(pole), true), "north 2077146 1562481");
-        assert_eq!(CoordReadout::Mgrs.readout(Some(pole), true), "Z AC 77146 62481");
+        assert_eq!(CoordReadout::Utm.readout(Some(pole), true, None), "north 2077146 1562481");
+        assert_eq!(CoordReadout::Mgrs.readout(Some(pole), true, None), "Z AC 77146 62481");
         for f in [CoordReadout::Utm, CoordReadout::Mgrs] {
-            assert_eq!(f.format(pole, true).as_deref(), Some(f.readout(Some(pole), true).as_str()));
+            assert_eq!(f.format(pole, true, None).as_deref(), Some(f.readout(Some(pole), true, None).as_str()));
             assert!(f.hover().contains("UPS"));
         }
         // Decimal and DMS read there as anywhere.
-        assert_eq!(CoordReadout::Dms.readout(Some(pole), true), "10°00′00.0″ E  86°00′00.0″ N");
+        assert_eq!(CoordReadout::Dms.readout(Some(pole), true, None), "10°00′00.0″ E  86°00′00.0″ N");
     }
 
     /// On another body's map UTM and MGRS, the Earth's grids, read nothing; degrees still do.
@@ -167,16 +253,71 @@ mod tests {
     fn grids_are_the_earths() {
         let p = Coord::new(44.4, 33.3);
         for f in [CoordReadout::Utm, CoordReadout::Mgrs] {
-            assert_eq!(f.format(p, false), None);
-            let r = f.readout(Some(p), false);
+            assert_eq!(f.format(p, false, None), None);
+            let r = f.readout(Some(p), false, None);
             assert_eq!(r, format!("No {} here", f.label()));
             // No wider than the reference it stands for, in the status bar.
-            assert!(r.chars().count() <= f.readout(Some(p), true).chars().count(), "{r}");
+            assert!(r.chars().count() <= f.readout(Some(p), true, None).chars().count(), "{r}");
             assert!(f.earth_only());
         }
-        for f in [CoordReadout::Decimal, CoordReadout::Dms] {
-            assert_eq!(f.format(p, false), f.format(p, true));
+        for f in [CoordReadout::Map, CoordReadout::Decimal, CoordReadout::Dms] {
+            assert_eq!(f.format(p, false, None), f.format(p, true, None));
             assert!(!f.earth_only());
+        }
+    }
+
+    /// The map's coordinates: Web Mercator's metres, an EPSG system's own units (Swiss LV95's
+    /// metres, a US State Plane system's feet), decimals as a pixel needs them, and degrees
+    /// without a flat Earth map.
+    #[test]
+    fn map_coordinates_read_in_the_maps_system() {
+        let bern = Coord::new(7.4386, 46.9511);
+        let lv95 = MapSystem::new(Flat::of(&rustgis_engine::map::Projection::Custom("EPSG:2056".into())), 2.0, "EPSG:2056");
+        let r = CoordReadout::Map.readout(Some(bern), true, Some(&lv95));
+        let (e, n) = r.split_once("  ").expect("an easting and a northing");
+        let e: f64 = e.strip_suffix(" mE").expect("metres east").parse().expect("a number east");
+        let n: f64 = n.strip_suffix(" mN").expect("metres north").parse().expect("a number north");
+        // Bern's old observatory is the origin of the Swiss grid: E 2600000, N 1200000.
+        assert!((e - 2_600_000.0).abs() < 50.0 && (n - 1_200_000.0).abs() < 50.0, "{r}");
+        assert!(!r.contains('.'), "{r}");
+        // Zoomed in to 5 cm a pixel, two decimals.
+        let close = MapSystem::new(Flat::of(&rustgis_engine::map::Projection::Custom("EPSG:2056".into())), 0.05, "EPSG:2056");
+        let r = CoordReadout::Map.readout(Some(bern), true, Some(&close));
+        let decimals = |part: &str| part.split_once('.').map(|(_, d)| d.trim_end_matches([' ', 'm', 'E', 'N']).len());
+        assert!(r.split("  ").all(|part| decimals(part) == Some(2)), "{r}");
+        // Web Mercator: the origin, and a world copy past the antimeridian.
+        let merc = MapSystem::new(Flat::Mercator, 1000.0, "Web Mercator");
+        assert_eq!(CoordReadout::Map.readout(Some(Coord::new(0.0, 0.0)), true, Some(&merc)), "0 mE  0 mN");
+        assert_eq!(
+            CoordReadout::Map.readout(Some(Coord::new(370.0, 0.0)), true, Some(&merc)),
+            CoordReadout::Map.readout(Some(Coord::new(10.0, 0.0)), true, Some(&merc))
+        );
+        // NAD83 / Texas Central (ftUS), EPSG:2277.
+        let texas = MapSystem::new(Flat::of(&rustgis_engine::map::Projection::Custom("EPSG:2277".into())), 10.0, "EPSG:2277");
+        let r = CoordReadout::Map.readout(Some(Coord::new(-97.74, 30.27)), true, Some(&texas));
+        assert!(r.ends_with(" ftUSN") && r.contains(" ftUSE  "), "{r}");
+        // Outside the system's reach: said, not a wrong number.
+        let far = CoordReadout::Map.readout(Some(Coord::new(-150.0, -60.0)), true, Some(&lv95));
+        assert_eq!(far, "No map coordinates here");
+        // Its projection reaches well past Switzerland: London still has eastings and northings.
+        let london = CoordReadout::Map.readout(Some(Coord::new(-0.1276, 51.5072)), true, Some(&lv95));
+        assert!(london.ends_with(" mN"), "{london}");
+        // The globe and another body's map have no flat Earth system: degrees.
+        assert_eq!(CoordReadout::Map.readout(Some(bern), true, None), geom::format_lonlat(bern));
+        assert!(CoordReadout::Map.hover().contains("map's coordinate system"));
+    }
+
+    /// The copied name gives the system back: a code, never a preset's or a local view's
+    /// display name.
+    #[test]
+    fn the_system_is_named_so_it_can_be_given_back() {
+        use rustgis_engine::map::Projection;
+        assert_eq!(system_name(&Projection::WebMercator), "Web Mercator");
+        assert_eq!(system_name(&Projection::from_code("EPSG:2056").expect("LV95")), "EPSG:2056");
+        for code in ["robinson +lon_0=150", "local:7.4386,46.9511"] {
+            let p = Projection::from_code(code).expect(code);
+            let name = system_name(&p);
+            assert_eq!(Projection::from_code(&name).expect(&name), p, "{name}");
         }
     }
 }

@@ -151,7 +151,7 @@ use serde_json::{Value, json};
 pub use autosave::FolderStore;
 pub use autosave::{Recovery, RecoveryStore};
 pub use chrome::{DoubleClick, TitlebarMetrics};
-pub use coordreadout::CoordReadout;
+pub use coordreadout::{CoordReadout, MapSystem};
 pub use rustgis_assistant;
 pub use rustgis_engine;
 pub use widgets::big_split_menu;
@@ -1926,15 +1926,15 @@ impl RustGisApp {
             .unwrap_or_else(|| "Meters".into());
         self.ui.measurement_imperial =
             self.services.load_pref.as_ref().and_then(|load| load("measurement_units")).as_deref() == Some("imperial");
-        // The pointer's coordinate format; a missing one reads as decimal degrees. One this
-        // version doesn't know (a newer RustGIS may have saved it) is said and read as decimal
-        // degrees too. It stays saved until the user picks a format (`ui.coordinateFormat`).
+        // The pointer's coordinate format; a missing one reads in the map's coordinates. One this
+        // version doesn't know (a newer RustGIS may have saved it) is said and read in the map's
+        // coordinates too. It stays saved until the user picks a format (`ui.coordinateFormat`).
         if let Some(code) = self.services.load_pref.as_ref().and_then(|load| load(coordreadout::PREF)) {
             match CoordReadout::from_code(&code) {
                 Some(format) => self.map.coord_format = format,
                 None => {
                     self.session
-                        .notify(tl!("The saved coordinate format isn't known to this version, so decimal degrees are shown."), false);
+                        .notify(tl!("The saved coordinate format isn't known to this version, so map coordinates are shown."), false);
                 }
             }
         }
@@ -4315,8 +4315,8 @@ impl RustGisApp {
                 let format = match p.get("format") {
                     None | Some(Value::Null) => self.map.coord_format.next(),
                     Some(Value::String(v)) => CoordReadout::from_code(v)
-                        .ok_or_else(|| tl!("The coordinate format must be decimal, dms, utm or mgrs").to_string())?,
-                    _ => return Err(tl!("The coordinate format must be decimal, dms, utm or mgrs").into()),
+                        .ok_or_else(|| tl!("The coordinate format must be map, decimal, dms, utm or mgrs").to_string())?,
+                    _ => return Err(tl!("The coordinate format must be map, decimal, dms, utm or mgrs").into()),
                 };
                 self.map.coord_format = format;
                 self.save_pref(coordreadout::PREF, format.code());

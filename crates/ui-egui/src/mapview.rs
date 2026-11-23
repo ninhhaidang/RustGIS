@@ -443,7 +443,7 @@ impl Default for MapView {
             kept_lonlat: None,
             menu_lonlat: None,
             menu_text: None,
-            coord_format: crate::CoordReadout::Decimal,
+            coord_format: crate::CoordReadout::default(),
             render_ms: 0,
             notices_seen: 0,
             toasts: Vec::new(),
