@@ -6021,14 +6021,15 @@ fn render_frame(
                             };
                             let overrun = size;
                             // Off the line by its class's distance (#1187): above it as the text
-                            // reads, or below; its anchors stay on the line.
+                            // reads, or below; its anchors stay on the line. Trying other places,
+                            // each on both sides (`line_labels::both_sides`).
                             let off = line_labels::off_line(class.line_offset * 1.33 * label_factor, text::block_height(&text, size));
                             let positions = |width| match locked_at {
                                 Some(at) => {
                                     let won = lock.as_ref().and_then(|keys| keys.get(&key)).map_or(0, |won| won.place);
                                     vec![at; (usize::from(won) + 1).min(8)]
                                 }
-                                None => line_labels::positions(line.length(), width, overrun),
+                                None => line_labels::both_sides(line_labels::positions(line.length(), width, overrun), off),
                             };
                             let anchors = |positions: &[f32]| {
                                 // Back-project only while locking is requested, never on ordinary frames or replay.
@@ -6134,7 +6135,7 @@ fn render_frame(
                                 let first = locked_at.or_else(|| fitted.as_ref().and_then(|f| f.first().copied()));
                                 if try_others {
                                     let width = line_labels::curved_len(&advances, gap);
-                                    let positions = fitted.clone().unwrap_or_else(|| positions(width));
+                                    let positions = fitted.clone().map_or_else(|| positions(width), |f| line_labels::both_sides(f, off));
                                     // A saved slot the curve cannot take has no truthful preview either (as for a
                                     // straight line): never draw one at the anchor or the middle.
                                     if lock.as_ref().and_then(|k| k.get(&key)).is_some_and(|won| usize::from(won.place) >= positions.len())
@@ -6142,18 +6143,19 @@ fn render_frame(
                                         continue;
                                     }
                                     line_places = Some(LinePlaces { anchors: anchors(&positions), ..Default::default() });
+                                    let locked = lock.as_ref().and_then(|k| k.get(&key)).map(|won| usize::from(won.place));
                                     let Some((cx, cy)) = line.anchor(first.unwrap_or(line.length() / 2.0)) else { continue };
                                     let angle = line.parallel(width, overrun, first).map(|(_, _, a)| a);
                                     // Off the line as its curves will be (by the line's direction
                                     // where the text can't fit, as a tilted view's preview is).
                                     let (cx, cy) =
                                         angle.or_else(|| line.direction(first.unwrap_or(line.length() / 2.0))).map_or((cx, cy), |a| {
-                                            let (x, y, _) = line_labels::parallel_off((cx, cy, a), off);
+                                            let (x, y, _) =
+                                                line_labels::parallel_off((cx, cy, a), line_labels::side_off(off, locked.unwrap_or(0)));
                                             (x, y)
                                         });
                                     // The preview is also View Unplaced's middle when every curve fails.
                                     places.push((0, cx, cy, angle, Vec::new()));
-                                    let locked = lock.as_ref().and_then(|k| k.get(&key)).map(|won| usize::from(won.place));
                                     curves = Some(label_places::Curves::new(
                                         std::sync::Arc::new(label_places::CurveSpec {
                                             line: line.clone(),
@@ -6220,9 +6222,10 @@ fn render_frame(
                                 // range: if the middle cannot fit, none can. Keep it as place 0
                                 // so a lock's alternative indices do not change.
                                 for (i, at) in along {
-                                    if let Some((x, y, angle)) =
-                                        line.parallel(width, overrun, Some(at)).map(|p| line_labels::parallel_off(p, off))
-                                    {
+                                    if let Some((x, y, angle)) = line.parallel(width, overrun, Some(at)).map(|p| {
+                                        // Another place's side; a repeat's index is no place's.
+                                        line_labels::parallel_off(p, if try_others { line_labels::side_off(off, i) } else { off })
+                                    }) {
                                         if try_others && i > 0 {
                                             line_alternatives.push(LabelPlace { x, y, angle: Some(angle), glyphs: Vec::new() });
                                         } else {

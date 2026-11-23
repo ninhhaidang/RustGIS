@@ -726,7 +726,10 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
 - **Other places along lines**: a Parallel or Curved label whose place at the middle is taken, or
   (curved) where the line bends too sharply, tries up to seven others along the same stretch,
   nearest the middle first, and goes to the first that will do (Labeling pane › Position › Along
-  lines › **Try other places along the line**). If none will, it is left out, as with this off. A
+  lines › **Try other places along the line**). Set off the line (**Distance from the line**), it
+  tries each of the four places nearest the middle on its own side first and then on the other,
+  before moving on, so a name kept above a river goes below it where above is taken or (curved)
+  inside a bend too tight. If none will, it is left out, as with this off. A
   line with a repeat keeps its repeats where they are, so the box is hidden while Repeat is on, and
   the setting does nothing there or at a position off the line. Off by default, for the same reason
   as round points, and Lock keeps the place each label took

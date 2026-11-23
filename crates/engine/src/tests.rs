@@ -8985,6 +8985,33 @@ fn labels_take_other_positions_along_lines() {
     }
 }
 
+/// A line's label trying other places off its line has a place on each side, and a lock names the
+/// side by the place's number (#1187): the other side, or a distance where there was none, locks
+/// the labels again; another distance on the same side keeps the lock, as does any change while
+/// the class tries no other places, or on points.
+#[test]
+fn a_lock_on_a_line_holds_while_its_labels_keep_their_side() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Rivers").unwrap().id;
+    s.run("labels.placement", &json!({"layer": "Rivers", "position": "parallel", "otherPositions": true, "lineOffset": 4})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "otherPositions": true})).unwrap();
+    // Locked, the label on the other side of its line; then `p` run.
+    let held_after = |s: &mut Session, p: Value| {
+        let key = (id, 0, 0, 0);
+        s.map_mut().label_lock = Some(vec![(key, rustgis_map::LockedPlace { place: 1, callout: None })]);
+        s.map_mut().label_lock_line_anchors.insert(key, Default::default());
+        s.run("labels.placement", &p).unwrap();
+        s.map().label_lock.is_some()
+    };
+    assert!(held_after(&mut s, json!({"layer": "Rivers", "lineOffset": 6})), "the same side, farther");
+    assert!(!held_after(&mut s, json!({"layer": "Rivers", "lineOffset": -4})), "the other side");
+    assert!(!held_after(&mut s, json!({"layer": "Rivers", "lineOffset": 0})), "on the line");
+    assert!(!held_after(&mut s, json!({"layer": "Rivers", "lineOffset": 4})), "off it again");
+    assert!(held_after(&mut s, json!({"layer": "Cities", "lineOffset": 4})), "points have no side");
+    s.run("labels.placement", &json!({"layer": "Rivers", "otherPositions": false})).unwrap();
+    assert!(held_after(&mut s, json!({"layer": "Rivers", "lineOffset": -4})), "no other places: no other side");
+}
+
 /// A label class takes an offset with its placement and a background with its text symbol; junk
 /// is refused, numbers kept within their ranges, and each change undoes.
 #[test]

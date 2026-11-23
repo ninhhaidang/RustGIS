@@ -532,6 +532,22 @@ pub(super) fn positions(total: f32, width: f32, overrun: f32) -> Vec<f32> {
     out
 }
 
+/// The places a label off its line tries (#1187): each of the first four of `positions` on its own
+/// side and then on the other ([`side_off`]), so at most eight in all, as on the line. On the line
+/// (`off` 0), `positions` as they are.
+pub(super) fn both_sides(positions: Vec<f32>, off: f32) -> Vec<f32> {
+    if off == 0.0 {
+        return positions;
+    }
+    positions.into_iter().take(4).flat_map(|d| [d, d]).collect()
+}
+
+/// How far off its line place `place` of [`both_sides`] puts a label whose own side is `off`
+/// ([`off_line`]): odd places are on the other side. A lock names the side by the place's number.
+pub(super) fn side_off(off: f32, place: usize) -> f32 {
+    if place % 2 == 1 { -off } else { off }
+}
+
 /// Which way is up for text turned `angle` (radians, clockwise, upright): a unit step in screen
 /// points (y down) from its baseline toward its top.
 fn up(angle: f32) -> (f32, f32) {
@@ -1059,5 +1075,25 @@ mod tests {
         assert!(at.iter().all(|d| (30.0..=line.length() - 30.0).contains(d)), "{at:?}");
         assert_eq!(Line::new(&[(0.0, 0.0), (50.0, 0.0)]).unwrap().straightest(60.0, 4), vec![25.0]);
         assert_eq!(Line::new(&[(0.0, 0.0), (50.0, 0.0)]).unwrap().straightest(f32::NAN, 4), vec![25.0]);
+    }
+
+    /// Off its line, a label tries each of its first four places on its own side and then on the
+    /// other, eight in all; on the line, its places as they are (#1187).
+    #[test]
+    fn off_the_line_each_place_is_tried_on_both_sides() {
+        let eight = positions(1000.0, 40.0, 10.0);
+        assert_eq!(eight.len(), 8);
+        assert_eq!(both_sides(eight.clone(), 0.0), eight, "on the line: unchanged");
+        for off in [6.0, -6.0] {
+            let sides = both_sides(eight.clone(), off);
+            assert_eq!(sides, eight[..4].iter().flat_map(|d| [*d, *d]).collect::<Vec<_>>(), "{off}");
+            let offs: Vec<f32> = (0..sides.len()).map(|i| side_off(off, i)).collect();
+            assert_eq!(offs, [off, -off].repeat(4), "own side first, then the other");
+        }
+        // A short line with only its middle: that place, on both sides.
+        let one = positions(30.0, 40.0, 0.0);
+        assert_eq!(one.len(), 1);
+        assert_eq!(both_sides(one.clone(), 6.0), vec![one[0]; 2]);
+        assert_eq!(side_off(0.0, 1), 0.0, "on the line there is no other side");
     }
 }

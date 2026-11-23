@@ -23,7 +23,8 @@ pub(super) struct CurveSpec {
     /// text when its course is read ([`line_labels::Line::curved`]).
     pub size: f32,
     pub overrun: f32,
-    /// How far off the line, in screen points ([`line_labels::off_line`]).
+    /// How far off the line, in screen points ([`line_labels::off_line`]): place `i` on the
+    /// other side when `i` is odd ([`line_labels::side_off`]).
     pub off: f32,
 }
 
@@ -100,7 +101,7 @@ impl Curves {
                 self.spec.line.parallel(width, self.spec.overrun, Some(*d)).map(|(_, _, a)| a).or_else(|| self.spec.line.direction(*d));
             // Off the line as its curve would be.
             let (x, y) = angle.map_or((x, y), |a| {
-                let (x, y, _) = line_labels::parallel_off((x, y, a), self.spec.off);
+                let (x, y, _) = line_labels::parallel_off((x, y, a), line_labels::side_off(self.spec.off, i));
                 (x, y)
             });
             let mut preview = LabelPlace { x, y, angle, glyphs: Vec::new() };
@@ -116,13 +117,14 @@ impl Curves {
             return None;
         }
         let at = *self.positions.get(i)?;
+        let off = line_labels::side_off(self.spec.off, i);
         #[cfg(test)]
         LAYOUTS.with(|n| n.set(n.get() + 1));
         let curve = |gap| {
             self.spec
                 .line
                 .curved(&self.spec.advances, gap, self.spec.size, self.spec.overrun, Some(at))
-                .and_then(|c| line_labels::curved_off(c, self.spec.off))
+                .and_then(|c| line_labels::curved_off(c, off))
         };
         let ((x, y), turns) = curve(self.spec.gap).or_else(|| self.spec.own_gap.and_then(curve))?;
         // Reuse the preceding rejected place's vector and String capacities. The accepted

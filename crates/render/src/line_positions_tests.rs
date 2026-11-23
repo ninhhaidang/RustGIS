@@ -729,3 +729,154 @@ fn an_unplaced_curved_label_sits_off_its_line() {
     let gap = 4.0 * 1.33 + text::block_height("a river named at great length", on.2) / 2.0;
     assert!((off.0 - on.0).abs() < 0.01 && (on.1 - off.1 - gap).abs() < 0.01, "{on:?} → {off:?}");
 }
+
+/// [`map_with_line`]'s road placed `placement`, `off` points off the line, trying other places.
+fn off_line_map(placement: LabelPlacement, off: f32) -> (Map, u32, View) {
+    let (mut map, id, view) = map_with_line(false);
+    let c = &mut map.layer_mut(id).unwrap().labels.default;
+    c.placement = placement;
+    c.other_positions = true;
+    c.line_offset = off;
+    (map, id, view)
+}
+
+/// A point labelled `text` at `size`, centred `up` screen points above the middle of
+/// [`map_with_line`]'s road (750 m a point, at the equator), whose label takes the place first.
+fn add_blocker(map: &mut Map, up: f32, text: &str, size: f32) {
+    let lat = (f64::from(up) * 750.0 / 6_378_137.0).to_degrees();
+    let mut ds = Dataset::new("blocker", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+    ds.push(Some(Geometry::Point(Coord::new(0.0, lat))), vec![Value::Text(text.into())]);
+    let id = map.add_dataset(ds);
+    let l = map.layer_mut(id).unwrap();
+    l.labels.enabled = true;
+    l.labels.default.field = "name".into();
+    l.labels.default.size = size;
+    l.labels.default.placement = LabelPlacement::Center;
+}
+
+/// Where each label reading `text` is drawn.
+fn labels_at(map: &mut Map, view: &View, text: &str) -> Vec<(f32, f32)> {
+    render(map, view).unwrap().labels.iter().filter(|l| l.text == text).map(|l| (l.x, l.y)).collect()
+}
+
+fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+    (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5
+}
+
+/// Off its line with other places on (#1187): where its own side is taken, the label goes to the
+/// other side at the same place before it moves along the line; where both are taken, along the
+/// line on its own side. Without other places, or with a repeat, it never changes sides.
+#[test]
+fn a_label_off_its_line_tries_the_other_side_before_moving_along() {
+    for placement in [LabelPlacement::Parallel, LabelPlacement::Curved] {
+        let free = |off| {
+            let (mut map, _, view) = off_line_map(placement, off);
+            labels_at(&mut map, &view, "road").first().copied().unwrap_or_else(|| panic!("{placement:?} {off}"))
+        };
+        let (above, below) = (free(10.0), free(-10.0));
+        assert!((above.0 - 200.0).abs() < 0.5 && above.1 < 140.0 && below.1 > 160.0, "{placement:?}: {above:?} {below:?}");
+        let up = 150.0 - above.1;
+        for (off, own, other) in [(10.0, above, below), (-10.0, below, above)] {
+            let (mut map, id, view) = off_line_map(placement, off);
+            add_blocker(&mut map, up.copysign(off), "BLOCKER", 10.0);
+            assert_eq!(labels_at(&mut map, &view, "road"), vec![other], "{placement:?} {off}: the other side, there");
+            let c = &mut map.layer_mut(id).unwrap().labels.default;
+            c.other_positions = false;
+            assert!(labels_at(&mut map, &view, "road").is_empty(), "{placement:?} {off}: no other places, no other side");
+            let c = &mut map.layer_mut(id).unwrap().labels.default;
+            (c.other_positions, c.repeat) = (true, Some(45.0));
+            let repeats = labels_at(&mut map, &view, "road");
+            assert!(!repeats.is_empty(), "{placement:?} {off}");
+            assert!(repeats.iter().all(|r| (r.1 - own.1).abs() < 0.5), "{placement:?} {off}: repeats keep their side: {repeats:?}");
+        }
+        // A blocker across both sides of the middle: along the line, on its own side.
+        let (mut map, _, view) = off_line_map(placement, 10.0);
+        add_blocker(&mut map, 0.0, "I", 60.0);
+        let along = labels_at(&mut map, &view, "road");
+        assert!(along.len() == 1 && (along[0].0 - 200.0).abs() > 1.0 && (along[0].1 - above.1).abs() < 0.5, "{placement:?}: {along:?}");
+    }
+}
+
+/// Inside a bend too tight for it, a curved label off its line goes to the outside of the bend,
+/// at the same place (#1187).
+#[test]
+fn a_curved_label_too_tight_inside_a_bend_goes_outside() {
+    // A hill of radius 200 (its centre below, its top at 200): below the line is inside the bend.
+    let arc: Vec<(f32, f32)> = (0..=40)
+        .map(|i| {
+            let t = (i as f32 / 40.0 - 0.5) * 1.2;
+            (200.0 * t.sin() + 200.0, 400.0 - 200.0 * t.cos())
+        })
+        .collect();
+    let mut c = curved(&arc);
+    let curves = c.curves.as_mut().unwrap();
+    let line = curves.spec.line.clone();
+    let mid = line.length() / 2.0;
+    *curves = label_places::Curves::new(
+        Arc::new(label_places::CurveSpec {
+            line: line.clone(),
+            chars: "riverbed".chars().map(|c| c.to_string()).collect(),
+            advances: vec![10.0; 8],
+            gap: 0.0,
+            own_gap: None,
+            size: 12.0,
+            overrun: 0.0,
+            off: -50.0,
+        }),
+        line_labels::both_sides(vec![mid], -50.0),
+        None,
+    );
+    let template = &mut c.label.clone();
+    assert!(curves.place(0, template).is_none(), "inside, its characters would run together");
+    let outside = curves.place(1, template).expect("outside");
+    let (_, top) = line.anchor(mid).unwrap();
+    assert!(outside.y < top - 49.0, "above the hill: {} vs {top}", outside.y);
+    let p = place_labels(vec![c], Vec::new(), 400.0, 400.0, false);
+    assert_eq!(p.keys[0].1.place, 1);
+}
+
+/// A fitted curved label (`fit: auto`) tries its straightest stretch on the other side before the
+/// next stretch (#1187).
+#[test]
+fn a_fitted_label_tries_the_other_side_of_its_straightest_stretch() {
+    const NAME: &str = "a much longer road name";
+    let fitted = |off| {
+        let (mut map, id, view) = off_line_map(LabelPlacement::Curved, off);
+        let layer = map.layer_mut(id).unwrap();
+        layer.dataset.features[0].attrs[0] = Value::Text(NAME.into());
+        layer.touch_geometry();
+        layer.labels.default.fit = rustgis_map::symbology::LabelFit::Auto;
+        (map, view)
+    };
+    let free = |off| {
+        let (mut map, view) = fitted(off);
+        labels_at(&mut map, &view, NAME)
+    };
+    let (above, below) = (free(10.0), free(-10.0));
+    assert!(above.len() == 1 && below.len() == 1 && (above[0].0 - below[0].0).abs() < 0.01, "one stretch: {above:?} {below:?}");
+    let (mut map, view) = fitted(10.0);
+    add_blocker(&mut map, 150.0 - above[0].1, "BLOCKER", 10.0);
+    assert_eq!(labels_at(&mut map, &view, NAME), below, "the other side of the same stretch");
+}
+
+/// Locked, a label on the other side stays there wherever the map moves, its anchor on the line
+/// (#1187).
+#[test]
+fn a_lock_keeps_a_label_on_the_other_side() {
+    for placement in [LabelPlacement::Parallel, LabelPlacement::Curved] {
+        let (mut map, _, view) = off_line_map(placement, -10.0);
+        let below = labels_at(&mut map, &view, "road")[0];
+        let (mut map, id, view) = off_line_map(placement, 10.0);
+        add_blocker(&mut map, below.1 - 150.0, "BLOCKER", 10.0);
+        map.label_display.locked = true;
+        assert_eq!(labels_at(&mut map, &view, "road"), vec![below], "{placement:?}");
+        let key = map.label_lock.as_ref().unwrap().iter().find(|(k, _)| k.0 == id).copied().unwrap();
+        assert_eq!(key.1.place, 1, "{placement:?}: the middle, on the other side");
+        let anchor = map.label_lock_line_anchors.get(&key.0).copied().unwrap();
+        assert!(anchor.y.abs() < 1e-3 && anchor.x.abs() < 0.01, "{placement:?}: on the line: {anchor:?}");
+        let panned = View { camera: Camera { center: Coord::new(7500.0, 0.0), ..view.camera }, ..view };
+        let next = labels_at(&mut map, &panned, "road");
+        assert!(next.len() == 1 && near(next[0], (below.0 - 10.0, below.1)), "{placement:?}: {next:?}");
+        assert!(map.label_lock.as_ref().unwrap().contains(&key));
+    }
+}

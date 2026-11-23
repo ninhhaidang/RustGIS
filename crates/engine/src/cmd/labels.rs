@@ -707,12 +707,18 @@ pub(crate) fn lock_holds(l: &Layer, b: &Labeling) -> bool {
 /// class's (#1011, #1187), so another position, or trying the others turned on or off, locks the
 /// labels again; with no class trying them a new position keeps the lock, as before. The flag only
 /// counts where it has an effect: kept on a line's class at a position off the line, or with a
-/// repeat, it does nothing ([`tries_other_places`]).
+/// repeat, it does nothing ([`tries_other_places`]). Along a line, off it, each place is tried on
+/// both sides, the label's own first: its number says which, so the other side, or a distance
+/// where there was none, locks the labels again too; another distance on the same side doesn't.
 fn same_places(l: &Layer, b: &Labeling) -> bool {
     let (points, lines) = points_and_lines(l);
     let classes = |labels: &Labeling| {
         let tries = |c: &LabelClass| c.other_positions && tries_other_places(points, lines, c);
-        labels.classes.iter().chain([&labels.default]).map(|c| (c.placement, tries(c), c.repeat.is_some())).collect::<Vec<_>>()
+        // -1 below, 1 above, 0 on the line (-0.0 too).
+        let side = |c: &LabelClass| {
+            if lines && c.placement.along_line() { i8::from(c.line_offset > 0.0) - i8::from(c.line_offset < 0.0) } else { 0 }
+        };
+        labels.classes.iter().chain([&labels.default]).map(|c| (c.placement, tries(c), c.repeat.is_some(), side(c))).collect::<Vec<_>>()
     };
     classes(&l.labels).into_iter().zip(classes(b)).all(|(x, y)| x == y || !(x.1 || y.1))
 }
