@@ -4674,6 +4674,15 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 app.ui.symbology_pending = Some(pending);
             }
         });
+        // Or by an expression's values, as under the field once applied (the same box, so what is
+        // typed here stays in it): classing by it ends the field choice.
+        let id = egui::Id::unique(("unique_expression", crate::labelpane::layer_key(app, &l)));
+        if let Some(text) = expression_box(ui, id, tl!("Expression"), None, &l.dataset, t) {
+            match app.run("layer.symbology", json!({"type": "unique", "expression": text})) {
+                Ok(_) => app.ui.symbology_pending = None,
+                Err(error) => app.session.notify(error, true),
+            }
+        }
         ui.add_space(6.0);
     }
     if l.has_geometry(GeometryType::Polygon) && !l.graphics {
@@ -9066,6 +9075,56 @@ mod tests {
         assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["high", "low"], "the rows the query keeps");
         assert_eq!(h.state().session.undo_depth(), steps + 1);
         assert!(h.query_all_by_role(Role::ComboBox).any(|n| n.value().as_deref() == Some("(expression)")));
+    }
+
+    /// Choosing Unique Values shows its Expression box at once, under the field still to apply
+    /// (#2784): an expression typed there classes by it in one step, and the field choice goes; a
+    /// blank box or one that doesn't read applies nothing and leaves the choice open.
+    #[test]
+    fn unique_values_offer_their_expression_before_a_field_is_applied() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = symbology_retry_harness();
+        let id = layer(h.state(), "retry");
+        let steps = h.state().session.undo_depth();
+        h.get_by_role_and_label(Role::Button, "Unique Values").click();
+        h.run_steps(3);
+        assert!(h.state().ui.symbology_pending.is_some(), "the field still to apply");
+        let enter = |h: &mut egui_kittest::Harness<'static, RustGisApp>, text: &str| {
+            h.get_by_role_and_label(Role::TextInput, "Expression").focus();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            if !text.is_empty() {
+                h.get_by_role_and_label(Role::TextInput, "Expression").type_text(text);
+                h.run();
+            }
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+        };
+        let unique = |h: &egui_kittest::Harness<'static, RustGisApp>| {
+            matches!(h.state().session.map().layer(id).unwrap().renderer, Renderer::Unique { .. })
+        };
+        let open = |h: &egui_kittest::Harness<'static, RustGisApp>| {
+            (unique(h), h.state().session.undo_depth(), h.state().ui.symbology_pending.is_some())
+        };
+        enter(&mut h, "");
+        assert_eq!(open(&h), (false, steps, true), "blank");
+        enter(&mut h, "nosuch + 1");
+        assert!(h.query_by_label_contains("Invalid:").is_some(), "says why");
+        assert_eq!(open(&h), (false, steps, true), "doesn't read");
+        h.get_by_role_and_label(Role::TextInput, "Expression").focus();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        enter(&mut h, "if(c_valid > 15, 'high', 'low')");
+        let Renderer::Unique { expression, .. } = h.state().session.map().layer(id).unwrap().renderer.clone() else { panic!() };
+        assert_eq!(expression.as_deref(), Some("if(c_valid > 15, 'high', 'low')"));
+        assert_eq!((h.state().session.undo_depth(), h.state().ui.symbology_pending.is_some()), (steps + 1, false));
+        assert!(h.query_all_by_role(Role::ComboBox).any(|n| n.value().as_deref() == Some("(expression)")));
+        // Undone, the renderer before comes back, without the field choice.
+        h.state_mut().run("edit.undo", json!(null)).unwrap();
+        h.run_steps(3);
+        assert_eq!(open(&h), (false, steps, false), "undone");
     }
 
     /// A By Expression box (symbols, Unique Values, labels) offers the fields as it's typed (#1240):
