@@ -2093,9 +2093,11 @@ The Imagery tab's groups open their tools in the Workflows pane. The tab belongs
     million cells, or more on a computer with more memory; 32 million in the web app): a grid past
     that is refused before anything is burned. A layer read in place (only the part in view loaded)
     is refused until all its features are loaded. Taken from a raster read from its overview, the
-    grid is the overview's, and a notice says so. The command runs where it is called, with no Cancel
-    yet and no cap on its work: each polygon fills the cells it covers, so many large polygons on a
-    fine grid take time in proportion.
+    grid is the overview's, and a notice says so. Run from Command Search in the desktop app, it
+    runs on a thread of its own, its progress and Cancel in the Workflows pane, as the Analysis
+    workflows that make a raster do, and a GeoTIFF it writes replaces the file only once it is done
+    (Cancel leaves the file as it was). There is no cap on its work: each polygon fills the cells
+    it covers, so many large polygons on a fine grid take time in proportion.
 - **Classification Wizard** (unsupervised k-means) and **Classification Tools** (minimum distance
   from training polygons). Training polygons held in a coordinate system of their own are read as
   they are: a pixel's centre is converted into their system to be tested, straight by the

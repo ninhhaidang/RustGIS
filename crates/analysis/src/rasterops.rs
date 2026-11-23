@@ -1433,7 +1433,8 @@ pub fn transform_polygon_to_lonlat(rings: &[Vec<Coord>], tr: Option<&Transformer
 }
 
 /// The polygon parts of a (multi-)polygon feature, checked and taken apart into rings, in the
-/// system they are in: [`transform_feature_polygons_to_lonlat`] with no transformer.
+/// system they are in: [`transform_feature_polygons_to_lonlat`] with no transformer. It doesn't
+/// look at Cancel: a caller looping over features does, between them.
 pub fn validated_polygon_parts(polys: &[Vec<Vec<Coord>>]) -> Result<Vec<Vec<Vec<Coord>>>, PolygonTransformError> {
     transform_feature_polygons_to_lonlat(polys, None)
 }

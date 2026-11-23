@@ -1173,7 +1173,17 @@ pub fn replace_atomic_with<T, E: From<std::io::Error>>(
 /// [`StagedWrite::commit`] installs them. Dropping the result discards the staged file.
 pub fn stage_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<StagedWrite> {
     use std::io::Write;
-    stage_at(link_target(path)?, |w| w.write_all(bytes)).map(|(staged, ())| staged)
+    stage_at(link_target(path)?, 8 << 10, |w| w.write_all(bytes)).map(|(staged, ())| staged)
+}
+
+/// [`stage_atomic`] for a write that streams: `write` fills the file beside the destination (a
+/// symbolic link's target), which [`StagedWrite::commit`] installs; dropping the result discards it.
+pub fn stage_streamed<T, E: From<std::io::Error>>(
+    path: &Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
+) -> std::result::Result<(StagedWrite, T), E> {
+    // A streamed write (a raster's tiles) goes through a buffer of a megabyte.
+    stage_at(link_target(path)?, 1 << 20, write)
 }
 
 /// Stages and installs a write, retaining the old file on error or cancellation.
@@ -1181,7 +1191,7 @@ fn atomic_write_at<T, E: From<std::io::Error>>(
     path: std::path::PathBuf,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
-    let (staged, value) = stage_at(path, write)?;
+    let (staged, value) = stage_at(path, 8 << 10, write)?;
     staged.commit()?;
     Ok(value)
 }
@@ -1190,6 +1200,7 @@ fn atomic_write_at<T, E: From<std::io::Error>>(
 /// and a directory sync.
 fn stage_at<T, E: From<std::io::Error>>(
     path: std::path::PathBuf,
+    buffer: usize,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<(StagedWrite, T), E> {
     use std::io::Write;
@@ -1215,7 +1226,7 @@ fn stage_at<T, E: From<std::io::Error>>(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let mut out = std::io::BufWriter::new(file);
+    let mut out = std::io::BufWriter::with_capacity(buffer, file);
     let value = write(&mut out)?;
     out.flush()?;
     out.get_ref().sync_all()?;

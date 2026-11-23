@@ -380,6 +380,27 @@ fn background(id: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// Starts a command that makes a raster (`workflows::runs_in_background`) asked for outside the
+/// pane through the app's dispatch (Command Search): on a thread of its own, the Workflows pane
+/// opened to show its progress and Cancel, as from a section; its layer is added when it lands, a
+/// failure then said in the status bar. The answer says it started; one that can't start (another
+/// is under way) is an error.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn start_from_dispatch(app: &mut RustGisApp, command: &'static str, name: &'static str, p: Value) -> Result<Value, String> {
+    // Its result is shown in the section the pane shows as it starts (the first, when it never
+    // opened), as a run from that section's would be.
+    settle_section(app);
+    start(app, command, name, p);
+    match &app.workflow.job {
+        Some(job) if job.name == name && app.workflow.error.is_none() => {
+            // Opened, not toggled: a pane already open stays so; one that didn't start doesn't open it.
+            app.ui.open_right(crate::RightPane::Workflows);
+            Ok(json!({"started": name}))
+        }
+        _ => Err(app.workflow.error.clone().unwrap_or_else(|| crate::i18n::fmt("{tool} didn't start", &[("tool", tl_raw!(name))]))),
+    }
+}
+
 /// Starts `command` on a thread of its own; [`land_job`] applies what it made. One at a time: a
 /// second waits for the first to finish or be cancelled.
 #[cfg(not(target_arch = "wasm32"))]
@@ -467,7 +488,20 @@ pub fn land_job(app: &mut RustGisApp) -> bool {
         return true;
     }
     let Some(job) = app.workflow.job.take() else { return false };
+    // Cancelled once its work was done, before it landed (in the frame between): dropped, so
+    // nothing is added, and a file it wrote beside its destination is removed.
+    let cancelled = || Err(crate::i18n::fmt("{tool} was cancelled", &[("tool", tl_raw!(job.name))]));
     match job.kind {
+        JobKind::Tool { id, slot } if job.control.is_cancelled() => {
+            drop(take(&slot));
+            gp::tool_abandon(&mut app.session, id);
+            show_job(app, job.section, cancelled());
+        }
+        JobKind::Raster { id, slot, .. } if job.control.is_cancelled() => {
+            drop(take(&slot));
+            workflows::raster_abandon(&mut app.session, id);
+            show_job(app, job.section, cancelled());
+        }
         JobKind::Tool { id, slot } => {
             let Some(done) = take(&slot) else { return false };
             let r = gp::tool_complete(&mut app.session, id, done).and_then(|_| app.finish_gp(id));
@@ -631,10 +665,9 @@ fn picked(app: &mut RustGisApp, purpose: &str) -> Option<Vec<rustgis_engine::geo
     if done { app.workflow.pick.take().map(|p| p.points) } else { None }
 }
 
-/// Draws the active workflow form; raster functions share their step parameters with the
-/// Function Editor so Apply and Add Step honor the same choices.
-pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
-    // A section whose extension was turned off while it was open: back to the first.
+/// The section the pane shows: none yet (the pane never opened), or one whose extension was turned
+/// off while it was open, is the first.
+fn settle_section(app: &mut RustGisApp) {
     if app.workflow.section.is_empty() || !section_shown(&app.session, app.workflow.section) {
         // Its map pick ends with it (a pick started elsewhere, with no section open, stays).
         if !app.workflow.section.is_empty() {
@@ -643,6 +676,12 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         forget_similar(&mut app.workflow);
         app.workflow.section = "rasterFunctions";
     }
+}
+
+/// Draws the active workflow form; raster functions share their step parameters with the
+/// Function Editor so Apply and Add Step honor the same choices.
+pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
+    settle_section(app);
     egui::ComboBox::from_id_salt("wf_section")
         .selected_text(tl!(SECTIONS.iter().find(|s| s.0 == app.workflow.section).map_or("", |s| s.1)))
         .width(ui.available_width() - 8.0)
@@ -3025,6 +3064,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A command that makes a raster, asked for through the app's dispatch (Command Search) rather
+    /// than a section, runs on a thread of its own too: Polygons to Raster from a
+    /// text field answers that it started, the pane shows it running, and its layer and class table
+    /// land with it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_raster_command_from_the_dispatch_runs_on_a_thread() {
+        let mut app = RustGisApp::with_sample();
+        // As the app runs, a frame at a time.
+        app.reads_off_frame = true;
+        let (layers, tables) = (app.session.map().layers.len(), app.session.project.tables.len());
+        // One that can't start doesn't open the pane.
+        assert!(app.run("raster.rasterize", json!({"layer": "Countries", "field": "name"})).unwrap_err().contains("cellSize is required"));
+        assert!(!app.ui.right_open.contains(&crate::RightPane::Workflows));
+        let p = json!({"layer": "Countries", "field": "name", "cellSize": 5});
+        let started = app.run("raster.rasterize", p.clone()).unwrap();
+        assert_eq!(started, json!({"started": "Polygons to Raster"}));
+        assert!(app.workflow.job.is_some(), "{:?}", app.workflow.error);
+        assert!(app.ui.right_open.contains(&crate::RightPane::Workflows));
+        // Its result goes to the section the pane shows (the first: it had never opened).
+        assert_eq!(app.workflow.section, "rasterFunctions");
+        assert_eq!(app.workflow.job.as_ref().map(|j| j.section), Some("rasterFunctions"));
+        // A second, while it runs, is refused and says why.
+        let again = app.run("raster.rasterize", p).unwrap_err();
+        assert!(again.contains("is still running"), "{again}");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while land_job(&mut app) {
+            assert!(std::time::Instant::now() < end, "the run never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: polling for the workflow to land, as above
+        }
+        assert!(app.workflow.job.is_none() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        assert!(app.workflow.result.as_ref().is_some_and(|r| r["classTable"].is_string()), "{:?}", app.workflow.result);
+        assert_eq!(app.session.map().layers.len(), layers + 1);
+        assert_eq!(app.session.project.tables.len(), tables + 1);
+    }
+
+    /// A Cancel that comes once the work is done, before the job lands, still holds: nothing is
+    /// added, and the GeoTIFF it wrote beside its destination is removed, the destination left as
+    /// it was.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_cancel_after_the_work_is_done_drops_what_it_made() {
+        let dir = std::env::temp_dir().join(format!("rustgis-late-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("burned.tif");
+        std::fs::write(&path, b"before").unwrap();
+        let mut app = RustGisApp::with_sample();
+        app.reads_off_frame = true;
+        let layers = app.session.map().layers.len();
+        let p = json!({"layer": "Countries", "field": "name", "cellSize": 5, "path": path.to_string_lossy()});
+        app.run("raster.rasterize", p).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !matches!(&app.workflow.job, Some(Job { kind: JobKind::Raster { slot, .. }, .. }) if filled(slot)) {
+            assert!(std::time::Instant::now() < end, "the run never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: polling for the worker to fill its slot
+        }
+        // It made its raster (and wrote its file beside the destination): looked at, not taken.
+        let Some(Job { kind: JobKind::Raster { slot, .. }, control, .. }) = &app.workflow.job else { panic!("no raster job") };
+        assert!(matches!(&*slot.lock().unwrap(), Some(Ok(_))), "the run failed");
+        control.cancel();
+        assert!(!land_job(&mut app));
+        assert!(app.workflow.job.is_none());
+        assert!(app.workflow.error.as_deref().is_some_and(|e| e.contains("was cancelled")), "{:?}", app.workflow.error);
+        assert_eq!(app.session.map().layers.len(), layers);
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "a staged file was left");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Interpolate runs on a thread of its own from the pane (#1291 step 3): the pane goes on while

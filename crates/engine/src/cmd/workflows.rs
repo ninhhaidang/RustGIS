@@ -143,6 +143,18 @@ pub struct Made {
     /// Made on another thread: the command's name and the map it was started on.
     ran: Option<(&'static str, u64)>,
     pub(crate) continuation: Option<crate::policy::Continuation>,
+    /// The file the work wrote, put in its place as the raster is added: a run cancelled or
+    /// abandoned before then leaves the file there as it was.
+    staged: Option<(rustgis_data::io::StagedWrite, Vec<String>)>,
+}
+
+impl Made {
+    /// With `file` to commit as it is added; `said`, what the run had to say, goes with the
+    /// error when it can't be (its `then` doesn't run).
+    pub(crate) fn committing(mut self, file: rustgis_data::io::StagedWrite, said: Vec<String>) -> Made {
+        self.staged = Some((file, said));
+        self
+    }
 }
 
 /// A workflow's work once its inputs are read: it reads nothing more of the session, so it runs on
@@ -170,13 +182,17 @@ pub(crate) fn made_then(raster: Raster, extra: Option<Value>, then: Option<Then>
 
 /// A layer made (styled, say), to be added as `name`.
 pub(crate) fn made_layer(name: String, layer: rustgis_map::RasterLayer, extra: Option<Value>, then: Option<Then>) -> Made {
-    Made { name, layer, extra, then, ran: None, continuation: None, inputs: Vec::new() }
+    Made { name, layer, extra, then, ran: None, continuation: None, inputs: Vec::new(), staged: None }
 }
 
 /// Adds a made raster as a layer: the command's answer is the layer's (its id, size and bands) and
 /// what the command says besides (`extra`), and what it does then.
 pub(crate) fn add_made(s: &mut Session, m: Made) -> CmdResult {
-    let Made { name, layer, extra, then, inputs, .. } = m;
+    let Made { name, layer, extra, then, inputs, staged, .. } = m;
+    if let Some((file, said)) = staged {
+        let path = file.destination().display().to_string();
+        file.commit().map_err(|e| if said.is_empty() { format!("{path}: {e}") } else { format!("{path}: {e} ({})", said.join("; ")) })?;
+    }
     rustgis_data::provenance::record(inputs);
     let mut v = super::raster::add_raster(s, &name, layer)?;
     if let (Some(Value::Object(more)), Some(o)) = (extra, v.as_object_mut()) {
@@ -237,6 +253,7 @@ pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("stac.addBands", "Add STAC Bands", super::stac_bands::bands_work),
     ("stac.addIndex", "Add STAC Index", super::stac_bands::index_work),
     ("raster.process", "Process", super::imagery::process_work),
+    ("raster.rasterize", "Polygons to Raster", super::imagery::rasterize_work),
     ("imagery.mosaic", "Build Mosaic", super::imagery::mosaic_work),
     ("dl.classify", "Deep Learning", super::deeplearning::classify_work),
     ("embeddings.similarity", "Satellite Embedding Similarity", super::embeddings::similarity_work),

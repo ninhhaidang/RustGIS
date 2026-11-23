@@ -477,7 +477,7 @@ raster.measurements clear?
 raster.mosaic inputs name? path?
 raster.process layer operation extent? polygon? selectedOnly? factor? name? ran?
 raster.project layer crs? cellSize? origin? extent? grid? resampling? name? path?
-raster.rasterize layer field? value? nodata? crs? cellSize? origin? extent? grid? name? path?
+raster.rasterize layer field? value? nodata? crs? cellSize? origin? extent? grid? name? path? ran?
 raster.resampling layer? type
 raster.rotation layer? angle
 raster.setDefaultStyle fromLayer? layer? ramp? invert? stretch? low? high? n? resampling? reset?

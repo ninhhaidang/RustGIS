@@ -86,6 +86,7 @@ pub(super) fn long_commands(boundaries: bool) {
         ("raster.index", json!({"layer": dem, "index": "ndvi", "nir": 1, "red": 1})),
         ("raster.process", json!({"layer": dem, "operation": "resample", "factor": 4})),
         ("imagery.mosaic", json!({"name": "Valley"})),
+        ("raster.rasterize", json!({"layer": "Squares", "field": "name", "cellSize": 0.0005, "path": out("burned.tif")})),
         (
             "dl.classify",
             json!({"layer": "scene", "training": "training", "classField": "class", "bands": [1, 2], "epochs": if boundaries { 2 } else { 30 }, "model": "landcover"}),

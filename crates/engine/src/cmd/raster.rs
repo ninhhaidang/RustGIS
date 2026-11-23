@@ -1167,7 +1167,13 @@ pub(super) fn write_geotiff(r: &Raster, bi: usize, cog: bool, path: &str) -> Res
 }
 
 /// Builds the band instruction before combining the note with any caller-supplied path or name.
-fn write_geotiff_with_guidance(r: &Raster, bi: usize, cog: bool, path: &str, band_hint: &str) -> Result<super::exports::Wrote, String> {
+pub(super) fn write_geotiff_with_guidance(
+    r: &Raster,
+    bi: usize,
+    cog: bool,
+    path: &str,
+    band_hint: &str,
+) -> Result<super::exports::Wrote, String> {
     let cog = if cog {
         // Tiles go to the file as they are made: the whole file is never held in memory.
         Some(raster::cogwrite::write_file(r, bi, Path::new(path)).map_err(|e| format!("{path}: {e}"))?)
@@ -1176,6 +1182,29 @@ fn write_geotiff_with_guidance(r: &Raster, bi: usize, cog: bool, path: &str, ban
         rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
         None
     };
+    wrote_geotiff(r, bi, path, cog, band_hint)
+}
+
+/// [`write_geotiff_with_guidance`]'s Cloud Optimized GeoTIFF, written beside `path` and put in
+/// its place when the returned file is committed (as a background run's raster is added).
+pub(super) fn write_cog_staged(
+    r: &Raster,
+    bi: usize,
+    path: &str,
+    band_hint: &str,
+) -> Result<(super::exports::Wrote, rustgis_data::io::StagedWrite), String> {
+    let (cog, staged) = raster::cogwrite::write_staged(r, bi, Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+    Ok((wrote_geotiff(r, bi, path, Some(cog), band_hint)?, staged))
+}
+
+/// What writing `r`'s band `bi` to `path` says.
+fn wrote_geotiff(
+    r: &Raster,
+    bi: usize,
+    path: &str,
+    cog: Option<raster::cogwrite::CogInfo>,
+    band_hint: &str,
+) -> Result<super::exports::Wrote, String> {
     let note = geotiff_note(r, bi, cog.is_some(), band_hint)?;
     let mut v = match r.overview {
         Some((fw, fh)) => json!({"path": path, "width": r.width, "height": r.height, "overviewOf": [fw, fh]}),

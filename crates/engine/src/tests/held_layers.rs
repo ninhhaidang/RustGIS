@@ -2435,6 +2435,75 @@ fn rasterize_sizes_its_grid_by_the_operation_that_burns() {
     assert!((16..=36).contains(&a["cells"].as_u64().unwrap()), "{a}");
 }
 
+/// Rasterize's default grid is the system a layer holds its coordinates in only when that is a
+/// projected one: a layer held in ETRS89 degrees (EPSG:4258), read from a file in UTM 32N, is
+/// burned onto a grid in UTM 32N.
+#[test]
+fn a_layer_held_in_degrees_is_burned_in_the_system_it_was_read_in() {
+    let geographic = Crs::Epsg(4258);
+    let ring: Vec<Coord> =
+        [(11.0, 48.0), (11.01, 48.0), (11.01, 48.01), (11.0, 48.01), (11.0, 48.0)].iter().map(|(x, y)| Coord::new(*x, *y)).collect();
+    let mut s = Session::new(Project::default());
+    add_in(&mut s, "Plot", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![ring.clone()]])], geographic);
+    let id = s.map().layer_by_name("Plot").unwrap().id;
+    s.map_mut().layer_mut(id).unwrap().dataset.crs = Some(UTM);
+    let v = s.run("raster.rasterize", &json!({"layer": "Plot", "cellSize": 10, "name": "Burned"})).unwrap();
+    let r = grid_of(&s, "Burned");
+    assert_eq!(r.crs, UTM);
+    // The grid holds the corners as converted into UTM, within a cell of them.
+    let to = geographic.to(UTM).unwrap();
+    let corners: Vec<Coord> = ring.iter().map(|c| to.point(*c).unwrap()).collect();
+    let mut b = rustgis_geom::Extent::EMPTY;
+    corners.iter().for_each(|c| b.expand(*c));
+    let t = r.transform;
+    let e = rustgis_geom::Extent {
+        min_x: t.origin_x,
+        max_y: t.origin_y,
+        max_x: t.origin_x + t.pixel_width * f64::from(r.width),
+        min_y: t.origin_y + t.pixel_height * f64::from(r.height),
+    };
+    assert!(e.min_x <= b.min_x && e.min_y <= b.min_y && e.max_x >= b.max_x && e.max_y >= b.max_y, "{e:?} {b:?}");
+    assert!(b.min_x - e.min_x < 10.0 && b.min_y - e.min_y < 10.0 && e.max_x - b.max_x < 10.0 && e.max_y - b.max_y < 10.0, "{e:?} {b:?}");
+    // And it burns about the polygon's area in UTM (some 830,000 m²) in 10 m cells.
+    let area = corners.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum::<f64>().abs() / 2.0;
+    let cells = v["cells"].as_f64().unwrap();
+    assert!((cells * 100.0 / area - 1.0).abs() < 0.03, "{cells} cells for {area} m²");
+}
+
+/// An extent layer with a vertex that can't be placed in longitude/latitude sizes the grid
+/// without it, and says so; clean input says nothing.
+#[test]
+fn an_extent_layers_unplaced_vertices_are_said() {
+    let (x0, y0) = (784_000.0, 5_401_300.0);
+    let square: Vec<Coord> =
+        [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0), (0.0, 0.0)].iter().map(|(x, y)| Coord::new(x0 + x, y0 + y)).collect();
+    let far = vec![Coord::new(x0, y0), Coord::new(1e12, 1e12), Coord::new(x0, y0 + 500.0), Coord::new(x0, y0)];
+    let mut s = Session::new(Project::default());
+    add_in(&mut s, "Plot", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![square.clone()]])], UTM);
+    add_in(&mut s, "Clean", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![square]])], UTM);
+    add_in(&mut s, "Odd", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![far]])], UTM);
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    let mark = s.notice_mark();
+    s.run("raster.rasterize", &json!({"layer": "Plot", "cellSize": 0.001, "crs": "EPSG:4326", "extent": "Clean", "name": "A"})).unwrap();
+    assert!(said(&s, mark).iter().all(|n| !n.contains("left out of the grid's extent")), "{:?}", said(&s, mark));
+    let mark = s.notice_mark();
+    s.run("raster.rasterize", &json!({"layer": "Plot", "cellSize": 0.001, "crs": "EPSG:4326", "extent": "Odd", "name": "B"})).unwrap();
+    assert!(
+        said(&s, mark)
+            .iter()
+            .any(|n| n.starts_with("Odd: 1 vertex that can't be placed in longitude/latitude was left out of the grid's extent")),
+        "{:?}",
+        said(&s, mark)
+    );
+    // Only vertices that can't be placed: refused, saying so, not that it has no features.
+    let nowhere = vec![Coord::new(1e12, 1e12), Coord::new(2e12, 1e12), Coord::new(2e12, 2e12), Coord::new(1e12, 1e12)];
+    add_in(&mut s, "Nowhere", GeometryType::Polygon, vec![Geometry::Polygon(vec![vec![nowhere]])], UTM);
+    let e = s
+        .run("raster.rasterize", &json!({"layer": "Plot", "cellSize": 0.001, "crs": "EPSG:4326", "extent": "Nowhere", "name": "C"}))
+        .unwrap_err();
+    assert!(e.contains("Nowhere has no vertex that can be placed in longitude/latitude"), "{e}");
+}
+
 /// Rasterize sizes its default grid in another system by the polygons' box in longitude/latitude,
 /// and says how many vertices it couldn't place there, left out of that box: a polygon held in UTM
 /// with a vertex far beyond any place UTM holds, burned onto a grid in degrees. With an extent

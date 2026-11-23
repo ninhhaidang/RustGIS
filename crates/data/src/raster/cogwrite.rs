@@ -1065,6 +1065,16 @@ pub fn write_file(r: &Raster, band: usize, path: &Path) -> Result<CogInfo> {
     res
 }
 
+/// [`write_file`]'s file, written and synced beside `path` but not yet in its place: the caller
+/// installs it ([`crate::io::StagedWrite::commit`]) once nothing can cancel the result any more,
+/// and dropping it leaves `path` as it was.
+pub fn write_staged(r: &Raster, band: usize, path: &Path) -> Result<(CogInfo, crate::io::StagedWrite)> {
+    let (staged, info) = crate::io::stage_streamed(path, |w| write_to(r, band, Flavour::Auto, w))?;
+    // The last look while it is written: a Cancel that came meanwhile leaves `path` as it was.
+    crate::progress::check()?;
+    Ok((info, staged))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
