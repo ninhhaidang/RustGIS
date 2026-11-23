@@ -892,7 +892,7 @@ impl SqlServerSource {
                 count: None,
                 crs: if srid == 0 { "EPSG:4326".into() } else { format!("EPSG:{srid}") },
                 indexed: false,
-                notes,
+                notes: notes.into(),
                 zm_dropped: false,
             },
             conn,
@@ -909,7 +909,7 @@ impl SqlServerSource {
         if src.info.count != Some(0) {
             src.info.extent = src.measure();
             if src.info.extent.is_empty() {
-                src.info.notes.push("the table's extent couldn't be measured in time: zooming to the layer does nothing".into());
+                src.info.notes.push("the table's extent couldn't be measured in time: zooming to the layer does nothing");
             }
             src.check_zm();
         }
@@ -1398,7 +1398,7 @@ mod tests {
                 count: Some(3),
                 crs: "EPSG:4326".into(),
                 indexed: false,
-                notes: vec![],
+                notes: Default::default(),
                 zm_dropped: false,
             };
             note_zm(&mut info, probe);
@@ -1590,7 +1590,7 @@ mod tests {
         let zm = open(&zm_name);
         let flat = open(&flat_name);
         run(&format!("DROP TABLE dbo.{zm_name}; DROP TABLE dbo.{flat_name}"));
-        assert!(zm.zm_dropped && zm.notes.contains(&crate::zm_note(Some(2))), "{:?}", zm.notes);
+        assert!(zm.zm_dropped && zm.notes.says(&crate::zm_note(Some(2))), "{:?}", zm.notes);
         assert!(!flat.zm_dropped && !flat.notes.iter().any(|n| n.contains("Z or M")), "{:?}", flat.notes);
     }
 }

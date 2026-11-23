@@ -647,17 +647,19 @@ pub fn read_date_notes(file: &str, layer: &str, lost: &rustgis_map::Unreadable) 
 
 /// The complete diagnostics from a whole read made for an export, including metadata losses
 /// discovered by a temporary source opening that the live layer never received.
-pub fn read_notes(file: &str, layer: &str, lost: &rustgis_map::Unreadable) -> Vec<String> {
-    read_date_notes(file, layer, lost).into_iter().chain(lost.messages.iter().map(|n| format!("{file}: {n}"))).collect()
+pub fn read_notes(file: &str, layer: &str, lost: &rustgis_map::Unreadable) -> rustgis_data::loss::Notes {
+    let mut notes: rustgis_data::loss::Notes = read_date_notes(file, layer, lost).into_iter().collect();
+    notes.extend(lost.messages.iter().cloned().map(|n| n.prefixed(file)));
+    notes
 }
 
 /// A counted source Z/M diagnostic replaces only the equivalent generic export warning.
 /// Resident/older layers and custom providers without that diagnostic keep their warning.
-pub fn coalesce_read_zm(notes: &mut Vec<String>, file: &str, ds: &rustgis_data::Dataset, lost: &rustgis_map::Unreadable) {
+pub fn coalesce_read_zm(notes: &mut rustgis_data::loss::Notes, file: &str, ds: &rustgis_data::Dataset, lost: &rustgis_map::Unreadable) {
     if lost.zm_noted
         && let Some(generic) = rustgis_data::zm_export_note([ds], file)
     {
-        notes.retain(|note| note != &generic);
+        notes.retain(|note| note.text != generic);
     }
 }
 
@@ -725,7 +727,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             // Counted as the chunks were written, as the layer holds none of them.
             let unfit = rustgis_data::source::parquet::unfit_note(&layer.fields, &e.unfit, path);
             let moved = rustgis_data::web_mercator_moved_note(path, &layer.name, e.beyond_web_mercator);
-            let mut dates: Vec<String> = rustgis_data::source::unread_dates_note(&layer.fields, &e.unread_dates)
+            let mut dates: rustgis_data::loss::Notes = rustgis_data::source::unread_dates_note(&layer.fields, &e.unread_dates)
                 .map(|n| format!("{path}: {}: {n} (empty in the export)", layer.name))
                 .into_iter()
                 .collect();
@@ -747,7 +749,9 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
                 dates.extend(rustgis_data::io::fgb_empty_dates_note(&layer.fields, &e.written_values, path));
             }
             dates.extend(e.date_messages.iter().map(|n| format!("{path}: {n}")));
-            dates.extend(e.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", layer.name)));
+            dates.extend(
+                e.read_notes.iter().map(|n| n.clone().map_text(|t| format!("{path}: {}: {t} when read for the export", layer.name))),
+            );
             let mut format_notes = e.csv.notes(&ds.fields, path);
             format_notes.extend(e.csv.coordinates_note_in(&ds.fields, path, crs));
             // Text that reading the file back changes: CSV reads a blank cell as null; KML and GPX trim
@@ -773,7 +777,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     // as they're written (`e.beyond_web_mercator`), and its source's extent only serves the
     // out-of-place check. A raster layer's extent is its raster's, which the file doesn't hold.
     let extent = if chunks.is_some() { l.extent() } else { ds.lonlat_extent() };
-    let mut notes = rustgis_data::export_notes([(ds, extent)], path, crs);
+    let mut notes: rustgis_data::loss::Notes = rustgis_data::export_notes([(ds, extent)], path, crs).into();
     coalesce_read_zm(&mut notes, path, ds, &unreadable);
     if asked.is_none() {
         notes.extend(rustgis_data::io::default_export_note(ds, path));
@@ -795,7 +799,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     dbf_notes.extend(rustgis_data::io::dates_as_text_note(&ds.fields, path));
     // FlatGeobuf, KML, GPX and Shapefile hold features with geometry only (a Shapefile, only
     // geometry it can draw, of the layer's kind).
-    let mut said = Vec::new();
+    let mut said = rustgis_data::loss::Notes::new();
     said.extend(rustgis_data::io::left_out_note(path, &ext, left_out));
     said.extend(format_notes);
     if skipped > 0 {

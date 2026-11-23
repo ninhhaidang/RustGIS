@@ -37,9 +37,10 @@ pub fn geojson(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published> 
     // What the read skipped or said can't be rewritten: refused with what it said, rather than
     // taken for rows the layer added, removed or reordered.
     if report.skipped > 0 || !report.messages.is_empty() {
-        let mut said = report.messages.clone();
+        let mut said: Vec<&str> = report.messages.texts().collect();
+        let skipped = format!("{} features couldn't be read", report.skipped);
         if said.is_empty() {
-            said.push(format!("{} features couldn't be read", report.skipped));
+            said.push(&skipped);
         }
         return Err(refused(path, format!("reading it isn't lossless ({}), so a rewrite wouldn't keep the file", said.join("; "))));
     }

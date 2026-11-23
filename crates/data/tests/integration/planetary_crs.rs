@@ -37,8 +37,25 @@ const ANOTHER_BODY: &str = "belongs to another body than the Earth";
 const WGS84: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
 
 /// The notice for an Earth definition read in place of another body's IAU code.
-fn earth_over_iau_notes(messages: &[String]) -> Vec<&String> {
-    messages.iter().filter(|m| m.contains("is another body's, but its definition is the Earth's")).collect()
+/// A reader's notes or a raster's losses, as text.
+trait Said {
+    fn said(&self) -> &str;
+}
+
+impl Said for String {
+    fn said(&self) -> &str {
+        self
+    }
+}
+
+impl Said for rustgis_data::loss::Note {
+    fn said(&self) -> &str {
+        &self.text
+    }
+}
+
+fn earth_over_iau_notes<T: Said>(messages: &[T]) -> Vec<&T> {
+    messages.iter().filter(|m| m.said().contains("is another body's, but its definition is the Earth's")).collect()
 }
 
 /// Olympus Mons and Jezero crater (planetocentric, east positive).
@@ -68,12 +85,12 @@ fn shapefile(dir: &Path, name: &str, native: [(f64, f64); 2], prj: &str) -> Path
     dir.join(format!("{name}.shp"))
 }
 
-fn planetary_notes(messages: &[String]) -> Vec<&String> {
-    messages.iter().filter(|m| m.contains(ANOTHER_BODY)).collect()
+fn planetary_notes<T: Said>(messages: &[T]) -> Vec<&T> {
+    messages.iter().filter(|m| m.said().contains(ANOTHER_BODY)).collect()
 }
 
-fn datum_notes(messages: &[String]) -> Vec<&String> {
-    messages.iter().filter(|m| m.contains("few hundred metres")).collect()
+fn datum_notes<T: Said>(messages: &[T]) -> Vec<&T> {
+    messages.iter().filter(|m| m.said().contains("few hundred metres")).collect()
 }
 
 #[test]
@@ -261,7 +278,9 @@ fn planetographic_systems_without_east_axes_are_refused() {
     let path = shapefile(dir.path(), "earth_west", LONLAT, &west);
     let (ds, report) = io::read_path(&path).unwrap();
     assert_eq!(points(&ds), LONLAT.map(|(x, y)| Coord::new(x, y)).to_vec());
-    let said = |notes: &[String]| notes.iter().filter(|m| m.contains("west or south") && m.contains("read as longitude/latitude")).count();
+    let said = |notes: &[rustgis_data::loss::Note]| {
+        notes.iter().filter(|m| m.contains("west or south") && m.contains("read as longitude/latitude")).count()
+    };
     assert_eq!(said(&report.messages), 1, "{:?}", report.messages);
     assert!(planetary_notes(&report.messages).is_empty(), "{:?}", report.messages);
     let src = source::open_path(&path, None).unwrap();

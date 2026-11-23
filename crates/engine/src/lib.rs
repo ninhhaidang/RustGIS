@@ -2753,7 +2753,7 @@ impl Session {
         // Streamed vector windows land after project opening too. Check each installed read
         // once, keeping the same counted notice channel as retained resident expressions.
         let mut landed = Vec::new();
-        let mut dates = Vec::new();
+        let mut dates: Vec<rustgis_data::loss::Note> = Vec::new();
         let mut not_utf8 = Vec::new();
         let mut source_errors = Vec::new();
         let mut source_error_count = 0;
@@ -2777,22 +2777,22 @@ impl Session {
                 // Values in date fields that weren't dates, once for a layer read in place.
                 let (unread, rounded) = layer.source.as_mut().map(|source| source.take_unread_dates()).unwrap_or_default();
                 if let Some(note) = unread {
-                    dates.push(format!(
+                    dates.push(rustgis_data::loss::Note::plain(format!(
                         "{}: some values in its date fields aren't dates and show as empty (Load All Features counts them all); so far, {note}",
                         layer.name
-                    ));
+                    )));
                 }
                 if let Some(note) = rounded {
-                    dates.push(format!(
+                    dates.push(rustgis_data::loss::Note::plain(format!(
                         "{}: some date-times in it have digits past the microsecond and are rounded (Load All Features counts them all); so far, {note}",
                         layer.name
-                    ));
+                    )));
                 }
                 if let Some(note) = layer.source.as_mut().and_then(|source| source.take_null_text()) {
-                    dates.push(format!(
+                    dates.push(rustgis_data::loss::Note::plain(format!(
                         "{}: some text values written as Null in it show as empty (Load All Features counts them all); so far, {note}",
                         layer.name
-                    ));
+                    )));
                 }
                 if let Some(note) = layer.source.as_mut().and_then(|source| source.take_not_utf8()) {
                     not_utf8.push(notice_text::NoticeText::format(
@@ -2802,7 +2802,7 @@ impl Session {
                 }
                 // What else the map's reads of it lost or assumed, each kind once for its opening.
                 for note in layer.source.as_mut().map(|source| source.take_read_notes()).unwrap_or_default() {
-                    dates.push(format!("{}: {note}", layer.name));
+                    dates.push(note.prefixed(&layer.name));
                 }
                 if layer.source.as_mut().is_some_and(|source| source.take_display_window()) {
                     landed.push(&*layer);
@@ -2813,7 +2813,7 @@ impl Session {
             self.notify(message, false);
         }
         for note in dates {
-            self.notify(note, false);
+            self.say(note);
         }
         for note in not_utf8 {
             self.notify_text(note, false);
@@ -3345,6 +3345,23 @@ impl Session {
     pub(crate) fn notify_text(&mut self, text: notice_text::NoticeText, error: bool) {
         use rustgis_data::diagnostics::Severity;
         self.publish_text(text, if error { Severity::Error } else { Severity::Info }, None);
+    }
+
+    /// Says what a reader, a source, a write or a tool said: a note that reports a loss as that
+    /// loss, with its code ([`Session::notify_loss`]), any other as an ordinary notice.
+    pub fn say(&mut self, note: rustgis_data::loss::Note) {
+        match note.loss {
+            Some(code) => self.notify_loss(code, note.text.into()),
+            None => self.notify(note.text, false),
+        }
+    }
+
+    /// [`Session::say`] for what a committed external write said, which restoring a project
+    /// cannot undo ([`Session::notify_written`]).
+    pub(crate) fn say_written(&mut self, note: rustgis_data::loss::Note) {
+        let mark = self.notice_mark();
+        self.say(note);
+        self.retain_written_notices(mark);
     }
 
     /// Reports loss from an in-memory result, with text for translated interfaces.

@@ -31,7 +31,7 @@ pub(crate) struct Unread {
     rows: usize,
     dates: Option<String>,
     rounded: Option<String>,
-    messages: Vec<String>,
+    messages: rustgis_data::loss::Notes,
 }
 
 impl Whole {
@@ -90,15 +90,17 @@ impl Unread {
             s.notify(format!("{}: {rounded}", self.layer), false);
         }
         for message in &self.messages {
-            s.notify(message.clone(), false);
+            s.say(message.clone());
         }
     }
 
     /// What [`Unread::say`] says, as lines: for a tool's messages.
-    pub(crate) fn lines(&self) -> Vec<String> {
+    pub(crate) fn lines(&self) -> rustgis_data::loss::Notes {
         let rows = (self.rows > 0).then(|| unread_notice(&self.layer, self.rows));
         let dates = [&self.dates, &self.rounded].into_iter().flatten().map(|n| format!("{}: {n}", self.layer));
-        rows.into_iter().chain(dates).chain(self.messages.iter().cloned()).collect()
+        let mut lines: rustgis_data::loss::Notes = rows.into_iter().chain(dates).collect();
+        lines.extend(self.messages.iter().cloned());
+        lines
     }
 
     /// `error`, with the rows left out when there were any: they may be why it failed.
@@ -234,13 +236,13 @@ mod tests {
             "sites".into(),
             Unreadable {
                 dates: Some("1 value isn't a date and was read as empty, in 'day'".into()),
-                messages: vec!["source: conversion left out 2 source features".into()],
+                messages: ["source: conversion left out 2 source features"].into_iter().collect(),
                 ..Default::default()
             },
         );
         let mut session = Session::new(crate::Project::new("notices"));
         unread.say(&mut session);
-        assert_eq!(session.notices.iter().map(|n| &n.text).collect::<Vec<_>>(), unread.lines().iter().collect::<Vec<_>>());
+        assert_eq!(session.notices.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), unread.lines().texts().collect::<Vec<_>>());
         assert_eq!(session.notices.len(), 2);
         assert_eq!(unread.lines().iter().filter(|n| n.contains("conversion left out 2")).count(), 1);
         assert!(Unread::of("clean".into(), Unreadable::default()).lines().is_empty());

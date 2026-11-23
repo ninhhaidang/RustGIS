@@ -434,7 +434,7 @@ fn a_wkt_that_isnt_utf8_is_said() {
     let bytes = answer(&[message(8, &message(5, wkt)), transform(false, 1.0, 0.0, 0.0), feature(&[geometry(&[], &[1, 2])])]);
     let (_, report) = read(&bytes, "t").unwrap();
     assert_eq!(
-        report.messages.first().map(String::as_str),
+        report.messages.first().map(|m| m.as_str()),
         Some("the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD")
     );
     // Unused when a code RustGIS knows names the system: nothing to say.

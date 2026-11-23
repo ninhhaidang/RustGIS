@@ -254,7 +254,7 @@ pub fn commands() -> Vec<C> {
                 super::field::forget_new_areas(s, had);
                 return Err(format!("{path}: {e}"));
             }
-            for note in notes { s.notify(note, false); }
+            for note in notes { s.say(note); }
             // A return written spends its package (only a field project's own identity).
             #[cfg(not(target_arch = "wasm32"))]
             {

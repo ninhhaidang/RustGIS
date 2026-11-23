@@ -594,7 +594,7 @@ mod tests {
     /// them.
     fn zm_said(text: &str) -> (bool, Vec<String>) {
         let (ds, rep) = read("z.topojson", text).unwrap().remove(0);
-        (ds.zm_dropped, rep.messages)
+        (ds.zm_dropped, rep.messages.texts().map(str::to_string).collect())
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
     fn a_height_that_isnt_a_number_is_said() {
         let said = |text: &str| -> Vec<String> {
             let (_, rep) = read("h.topojson", text).unwrap().remove(0);
-            rep.messages.into_iter().filter(|m| m.contains("read without a height")).collect()
+            rep.messages.texts().filter(|m| m.contains("read without a height")).map(str::to_string).collect()
         };
         let lossy = r#"{"type":"Topology","objects":{"o":{"type":"GeometryCollection","geometries":[
 {"type":"Point","coordinates":[1,2,"10"]},{"type":"MultiPoint","coordinates":[[1,2,true],[3,4,5]]},{"type":"LineString","arcs":[0]}]}},
@@ -851,7 +851,7 @@ mod tests {
 {"type":"Point","coordinates":[1,2,3]}]}},"arcs":[[[0,0,9],[1,1,9]]]}"#;
         let (ds, rep) = read("z.topojson", text).unwrap().remove(0);
         assert_eq!(rep.skipped, 0);
-        assert!(ds.zm_dropped && rep.messages.contains(&crate::zm_note(Some(1))), "{:?}", rep.messages);
+        assert!(ds.zm_dropped && rep.messages.says(&crate::zm_note(Some(1))), "{:?}", rep.messages);
     }
 
     #[test]

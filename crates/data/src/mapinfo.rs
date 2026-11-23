@@ -412,7 +412,7 @@ pub fn read(mif: &str, mid: Option<&str>, name: &str) -> Result<(Dataset, ReadRe
         report.messages.push(e);
     }
     if !columns.is_empty() && mid.is_none() {
-        report.messages.push("no .mid file next to the .mif: the attributes are empty".into());
+        report.messages.push("no .mid file next to the .mif: the attributes are empty");
     }
     // The rows, one per object.
     let mut rows: Vec<Vec<String>> = Vec::new();

@@ -197,7 +197,7 @@ pub(in crate::cmd) fn table_work(s: &Session, p: &Value) -> Result<Work, String>
         let written_path = Some(path.clone());
         Ok(Wrote {
             answer,
-            notes,
+            notes: notes.into(),
             diagnostics: Vec::new(),
             refused_notes,
             written_path,

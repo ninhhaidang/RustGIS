@@ -74,14 +74,14 @@ pub(crate) fn package(s: &mut Session, p: &Value) -> Result<(String, Vec<u8>), S
     s.keep_field_floors();
     let (name, bytes, notes) = made?;
     for note in notes {
-        s.notify(note, false);
+        s.say(note);
     }
     Ok((name, bytes))
 }
 
 /// Construction notes describe the delivered package, so callers emit them after delivery.
-pub(crate) fn package_output(s: &mut Session, p: &Value) -> Result<(String, Vec<u8>, Vec<String>), String> {
-    let mut notes = Vec::new();
+pub(crate) fn package_output(s: &mut Session, p: &Value) -> Result<(String, Vec<u8>, rustgis_data::loss::Notes), String> {
+    let mut notes = rustgis_data::loss::Notes::new();
     let (name, bytes) = build_package(s, p, &mut notes)?;
     Ok((name, bytes, notes))
 }
@@ -106,10 +106,10 @@ fn legacy_user(s: &Session) -> Result<(), String> {
 /// `notes`, said once the package has been delivered. Cancel is checked between streamed
 /// chunks, tile archives and the encoding steps. A single archive read or ZIP compression
 /// runs through before the next check.
-fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<(String, Vec<u8>), String> {
+fn build_package(s: &mut Session, p: &Value, notes: &mut rustgis_data::loss::Notes) -> Result<(String, Vec<u8>), String> {
     use rustgis_data::progress;
     progress::check().map_err(|e| e.to_string())?;
-    let mut losses = Vec::new();
+    let mut losses = rustgis_data::loss::Notes::new();
     let mut archive_errors = Vec::new();
     // Each is notified as an error as soon as it is met, and a copy of its text is kept for the
     // recipient's manifest.
@@ -286,7 +286,7 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
         let package = s.project.field_origin.as_ref().map(|o| o.package.clone()).unwrap_or_default();
         match s.project.field_origin.as_ref().filter(|_| package.is_empty()) {
             Some(origin) if origin.generation.is_empty() => losses.push(
-                "The field package goes back as a whole map with no return check: it was made before packages had one, so Bring Back can't tell it from a copy already brought back, and bringing it back may undo or repeat what came home since".into(),
+                "The field package goes back as a whole map with no return check: it was made before packages had one, so Bring Back can't tell it from a copy already brought back, and bringing it back may undo or repeat what came home since",
             ),
             Some(_) => losses.push(WHOLE_MAP.replace("{why}", "the package was made before packages had an identity of their own")),
             None => {}
@@ -317,7 +317,7 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             if !s.project.origin_id.is_empty() {
                 return Err("the field package has an incomplete origin identity; legacy recovery cannot override it".into());
             }
-            notes.push("Legacy field return: its origin is unverified; bring it back only with an explicitly verified legacyArea in the home project".into());
+            notes.push("Legacy field return: its origin is unverified; bring it back only with an explicitly verified legacyArea in the home project");
         }
         s.project.field_origin.clone()
     } else {
@@ -349,11 +349,9 @@ fn build_package(s: &mut Session, p: &Value, notes: &mut Vec<String>) -> Result<
             })?;
         }
         if assigned_identity {
-            notes.push(
-                "Assigned this legacy offline area an origin identity: save the home project before sending the field package".into(),
-            );
+            notes.push("Assigned this legacy offline area an origin identity: save the home project before sending the field package");
         } else if gave_generation {
-            notes.push("Gave this offline area a return check: save the home project before sending the field package".into());
+            notes.push("Gave this offline area a return check: save the home project before sending the field package");
         }
         let home_area = s.project.offline_areas.get(ai).ok_or("the offline area was not found")?;
         Some(crate::project::FieldOrigin {
@@ -574,8 +572,8 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             }
             let mark = s.notice_mark();
             super::exports::say(s, other.into_iter().map(|n| (n.severity, n.text)).collect());
-            for note in notes.into_iter().chain(construction_notes) {
-                s.notify(note, false);
+            for note in notes.into_iter().chain(construction_notes.into_iter().map(rustgis_data::loss::Note::plain)) {
+                s.say(note);
             }
             spend(s, spent);
             s.retain_written_notices(mark);
@@ -584,7 +582,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         });
         Ok(super::exports::Wrote {
             answer: Value::Null,
-            notes: Vec::new(),
+            notes: Default::default(),
             then: Some(then),
             written_path: None,
             diagnostics,
@@ -645,7 +643,7 @@ fn copy_streams(
     map: &mut rustgis_map::Map,
     extent: rustgis_data::Extent,
     mut budget: usize,
-    losses: &mut Vec<String>,
+    losses: &mut rustgis_data::loss::Notes,
 ) -> Result<Vec<u32>, String> {
     let mut copied = Vec::new();
     let mut omitted = Vec::new();
@@ -678,7 +676,7 @@ fn copy_stream(
     layer: &mut rustgis_map::Layer,
     extent: rustgis_data::Extent,
     budget: usize,
-    losses: &mut Vec<String>,
+    losses: &mut rustgis_data::loss::Notes,
 ) -> Result<Option<usize>, String> {
     use rustgis_data::{Feature, progress, source};
     let eligible = layer.source.as_ref().is_some_and(|s| s.linked_file().is_some() || s.embedded.is_some());
@@ -760,7 +758,8 @@ fn copy_stream(
         source::rounded_dates_note(&info.fields, &batch.rounded_dates),
         source::null_text_note(&info.fields, &batch.null_text),
     ];
-    losses.extend(info.notes.iter().chain(&batch.notes).chain(counted.iter().flatten()).map(|note| format!("{}: {note}", layer.name)));
+    losses.extend(info.notes.iter().chain(&batch.notes).cloned().map(|note| note.prefixed(&layer.name)));
+    losses.extend(counted.iter().flatten().map(|note| format!("{}: {note}", layer.name)));
     dataset.crs_incomplete = src.lost_to_crs() || (info.format == "Shapefile" && batch.skipped > 0);
     dataset.features = rows.into();
     if dataset.geometry_type == rustgis_data::GeometryType::None
@@ -780,12 +779,13 @@ fn copy_stream(
 
 /// Only portable, redacted summaries go into the archive. Keep the list within the receiver's
 /// diagnostic limits even when a project has thousands of missing layers.
-fn manifest_bytes(errors: &[String], losses: &[String]) -> Result<Vec<u8>, String> {
+fn manifest_bytes(errors: &[String], losses: &rustgis_data::loss::Notes) -> Result<Vec<u8>, String> {
     let total = errors.len() + losses.len();
     if total == 0 {
         return Ok(Vec::new());
     }
-    let mut notes: Vec<_> = errors.iter().chain(losses).take(MAX_NOTICES).map(|s| Session::redacted(s).into_string()).collect();
+    let mut notes: Vec<_> =
+        errors.iter().map(String::as_str).chain(losses.texts()).take(MAX_NOTICES).map(|s| Session::redacted(s).into_string()).collect();
     // JSON can grow when text has escapes. Drop the tail and count it if the byte limit is hit.
     loop {
         let mut candidate = notes.clone();
@@ -1795,7 +1795,7 @@ mod tests {
         let mark = home.notice_mark();
         let extent = rustgis_data::Extent::new(0.0, 0.0, 2.0, 2.0);
         let mut oversized = home.map().clone();
-        let mut omissions = Vec::new();
+        let mut omissions = rustgis_data::loss::Notes::new();
         assert!(copy_streams(&mut oversized, extent, 0, &mut omissions).unwrap().is_empty());
         assert!(oversized.layer_by_name("Streamed").is_none());
         assert!(omissions.iter().any(|n| n.contains("1 feature(s) in the offline area") && n.contains("budget")), "{omissions:?}");

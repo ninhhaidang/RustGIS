@@ -277,7 +277,7 @@ impl FgbSource {
             crs: reproject.info_crs(),
             // The crate's index search assumes the default node size; other files are scanned.
             indexed: h.index_node_size() == flatgeobuf::packed_r_tree::PackedRTree::DEFAULT_NODE_SIZE && count > 0,
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         info.note_columns(

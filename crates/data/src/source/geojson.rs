@@ -272,7 +272,7 @@ impl GeoJsonSource {
             count: Some((scan.places.len() - failed.len()) as u64),
             crs: reproject.label(),
             indexed: false,
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         // Features the declared system can't convert are left out, and so are their heights.
@@ -426,7 +426,7 @@ impl FeatureSource for GeoJsonSource {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }

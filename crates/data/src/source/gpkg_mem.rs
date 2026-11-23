@@ -222,7 +222,7 @@ impl GpkgMemSource {
             // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
             crs: reproject.info_crs(),
             indexed: false,
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         let mut src = GpkgMemSource { info, db, table, geom_col, field_cols, reproject };
@@ -245,7 +245,7 @@ impl GpkgMemSource {
             match src.peek_zm() {
                 Some(true) => src.info.drop_zm(None),
                 Some(false) => {}
-                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep".into()),
+                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep"),
             }
         }
         Ok(src)
@@ -422,7 +422,7 @@ impl FeatureSource for GpkgMemSource {
             unread_dates,
             rounded_dates,
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }

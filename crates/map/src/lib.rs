@@ -160,7 +160,7 @@ pub struct Unreadable {
     pub rounded: Option<String>,
     /// Other reader diagnostics, already qualified by their source. Date diagnostics stay in
     /// their typed fields above so consumers can describe what an export did to them once.
-    pub messages: Vec<String>,
+    pub messages: rustgis_data::loss::Notes,
     /// `messages` contains the source's Z/M loss diagnostic. An export can keep that more
     /// specific report instead of also emitting its generic already-dropped-Z/M warning.
     pub zm_noted: bool,
@@ -902,11 +902,11 @@ impl Layer {
         if let Some(info) = copy.info() {
             ds.zm_dropped |= info.zm_dropped;
             for note in &info.notes {
-                let message = format!("{}: {note}", info.name);
+                let message = note.clone().prefixed(&info.name);
                 if !report.messages.contains(&message) {
                     report.messages.push(message);
                 }
-                zm_noted |= info.zm_dropped && reader_noted_zm(note);
+                zm_noted |= info.zm_dropped && reader_noted_zm(&note.text);
             }
         }
         ds.name = self.dataset.name.clone();

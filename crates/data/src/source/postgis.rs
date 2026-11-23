@@ -995,7 +995,7 @@ impl PostgisSource {
                 count: None,
                 crs: if srid == 0 { "EPSG:4326".into() } else { format!("EPSG:{srid}") },
                 indexed: false,
-                notes,
+                notes: notes.into(),
                 zm_dropped: false,
             },
             conn,
@@ -1034,7 +1034,7 @@ impl PostgisSource {
         match zm {
             Some(true) => src.info.drop_zm(None),
             Some(false) => {}
-            None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep".into()),
+            None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep"),
         }
         Ok(src)
     }
@@ -1790,7 +1790,7 @@ mod tests {
                 count: None,
                 crs: "EPSG:4326".into(),
                 indexed: false,
-                notes: Vec::new(),
+                notes: Default::default(),
                 zm_dropped: false,
             },
             conn: Arc::new(Conn {

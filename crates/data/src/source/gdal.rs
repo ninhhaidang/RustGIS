@@ -394,7 +394,7 @@ pub fn convert_one(src: &Path, layer: &str, family: Option<Family>, crs: Option<
 #[derive(Debug)]
 pub struct FreshConverted {
     pub path: PathBuf,
-    pub notes: Vec<String>,
+    pub notes: crate::loss::Notes,
     /// A successful read confirmed that this declared layer contains no features.
     pub empty: bool,
     pub zm_dropped: bool,
@@ -483,7 +483,7 @@ fn convert_one_fresh_in(dir: &Path, src: &Path, layer: &str, family: Option<Fami
             }
         }
     }
-    Ok(FreshConverted { path: converted.path, notes: converted.notes, empty: converted.empty, zm_dropped, workspace })
+    Ok(FreshConverted { path: converted.path, notes: converted.notes.into(), empty: converted.empty, zm_dropped, workspace })
 }
 
 /// A counted loss, or an honest diagnostic when a nonempty replacement's source count is unknown.
@@ -1300,7 +1300,7 @@ mod tests {
             std::fs::write(&path, format!("WKT,rank\n\"POINT(2 48)\",{value}\n\"POINT(3 48)\",{value}\n\"POINT(4 48)\",{value}\n"))
                 .unwrap();
             let fresh = convert_one_fresh_in(&cache, &path, "points", Some(Family::Points), Some("EPSG:4326")).unwrap();
-            let overflow: Vec<_> = fresh.notes.iter().filter(|n| n.to_ascii_lowercase().contains("integer overflow")).collect();
+            let overflow: Vec<_> = fresh.notes.iter().filter(|n| n.text.to_ascii_lowercase().contains("integer overflow")).collect();
             if lossy {
                 assert_eq!(overflow.len(), 1, "{:?}", fresh.notes);
                 assert!(overflow[0].ends_with("(3 occurrence(s))"), "{overflow:?}");

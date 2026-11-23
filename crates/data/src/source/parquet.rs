@@ -315,7 +315,7 @@ impl ParquetSource {
             count,
             crs: reproject.label(),
             indexed: covering.is_some(),
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         info.note_columns(
@@ -347,7 +347,7 @@ impl ParquetSource {
             match src.peek_zm() {
                 Some(true) => src.info.drop_zm(None),
                 Some(false) => {}
-                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep".into()),
+                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep"),
             }
         }
         if src.info.geometry_type == GeometryType::None {
@@ -692,7 +692,7 @@ impl FeatureSource for ParquetSource {
             unread_dates,
             rounded_dates,
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }

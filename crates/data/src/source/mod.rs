@@ -173,7 +173,7 @@ pub struct SourceInfo {
     pub indexed: bool,
     /// Things worth telling whoever adds the source (an unknown coordinate system read as
     /// longitude/latitude, tables left out).
-    pub notes: Vec<String>,
+    pub notes: crate::loss::Notes,
     /// The source has Z or M values, which reading drops (see [`Dataset::zm_dropped`]).
     pub zm_dropped: bool,
 }
@@ -257,7 +257,7 @@ pub struct Batch {
     pub null_text: Vec<usize>,
     /// What else the read lost or assumed, one note per kind with its count (values that don't fit
     /// their field, rings without area): said as they are.
-    pub notes: Vec<String>,
+    pub notes: crate::loss::Notes,
     /// Text values of a Shapefile that aren't valid in the encoding they were read in
     /// ([`FeatureSource::text_encoding`]), so hold U+FFFD in place of those bytes, counted for each
     /// field by its position. Said by [`not_utf8_note`].
@@ -723,18 +723,17 @@ fn materialize_within(src: &dyn FeatureSource, budget: u64) -> Result<(Dataset, 
     let unread_dates = unread_dates_note(&info.fields, &unread_dates);
     let mut report = ReadReport {
         skipped: skipped + src.skipped_at_open(),
-        messages: info.notes.iter().map(|n| format!("{}: {n}", info.name)).collect(),
+        messages: info.notes.clone().prefixed(&info.name),
         synced: None,
         unread_dates: unread_dates.clone(),
         rounded_dates: rounded.clone(),
         extrusion: None,
-        losses: Vec::new(),
     };
     let null_text = null_text_note(&info.fields, &null_text);
     let not_utf8 = not_utf8_note(&info.fields, &not_utf8, src.text_encoding());
-    report.messages.extend(
-        unread_dates.into_iter().chain(rounded).chain(null_text).chain(notes).chain(not_utf8).map(|n| format!("{}: {n}", info.name)),
-    );
+    report.messages.extend(unread_dates.into_iter().chain(rounded).chain(null_text).map(|n| format!("{}: {n}", info.name)));
+    report.messages.extend(notes.prefixed(&info.name));
+    report.messages.extend(not_utf8.into_iter().map(|n| format!("{}: {n}", info.name)));
     if ds.geometry_type == GeometryType::None
         && let Some(g) = ds.features.iter().find_map(|f| f.geometry.as_ref())
     {

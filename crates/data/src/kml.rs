@@ -871,7 +871,7 @@ mod tests {
                 ]]]))
             );
             assert!(layers.iter().all(|l| l.dataset.features[0].attrs[0] == Value::Text("kept".into())));
-            let messages: Vec<_> = layers.iter().flat_map(|l| l.report.messages.iter().map(String::as_str)).collect();
+            let messages: Vec<_> = layers.iter().flat_map(|l| l.report.messages.iter().map(|m| m.as_str())).collect();
             assert_eq!(
                 messages,
                 [
@@ -1021,7 +1021,7 @@ mod tests {
         // have none.
         assert!(layers[0].dataset.zm_dropped && layers[1].dataset.zm_dropped && !layers[2].dataset.zm_dropped);
         let said = format!("trip lines: {}", crate::zm_note(Some(1)));
-        assert!(layers[1].report.messages.contains(&said), "{:?}", layers[1].report.messages);
+        assert!(layers[1].report.messages.says(&said), "{:?}", layers[1].report.messages);
         // The ground overlay has no box: it can't be laid out.
         let (overlays, undrawn, over_budget) = ground_overlays("t.kml", DOC.as_bytes()).unwrap();
         assert_eq!((overlays.len(), undrawn, over_budget), (0, 1, 0));

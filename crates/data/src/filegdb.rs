@@ -181,7 +181,7 @@ pub fn read(name: &str, open: &dyn Fn(&str) -> Result<Option<Vec<u8>>>, layer: O
         });
     }
     // A note several layers share is said once.
-    let mut said: Vec<String> = Vec::new();
+    let mut said: Vec<crate::loss::Note> = Vec::new();
     for (_, report) in &mut out.layers {
         report.messages.retain(|m| !said.contains(m));
         said.extend(report.messages.iter().cloned());
@@ -443,7 +443,7 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         ds.drop_zm(&mut report, decoded);
     }
     if patches {
-        report.messages.push("3D multipatches are drawn as their footprints, with their lowest and highest Z in z_min and z_max, and the difference in height".into());
+        report.messages.push("3D multipatches are drawn as their footprints, with their lowest and highest Z in z_min and z_max, and the difference in height");
     }
     if no_footprint > 0 {
         report.messages.push(format!(

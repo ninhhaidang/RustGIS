@@ -196,7 +196,7 @@ pub fn open_now(remote: Arc<Remote>) -> Result<ArcgisSource> {
         count: Some(count),
         crs: held.label(),
         indexed: true,
-        notes: Vec::new(),
+        notes: Default::default(),
         zm_dropped: false,
     };
     if first.as_ref().is_some_and(|p| p.losses.with_zm > 0) {
@@ -206,7 +206,7 @@ pub fn open_now(remote: Arc<Remote>) -> Result<ArcgisSource> {
     // the other sources, and each read says what its own features lost ([`Batch::notes`]).
     info.notes.extend(first.iter().flat_map(|p| p.report.messages.iter().cloned()));
     if !sample {
-        info.notes.push("its queries don't take standardized SQL, so a view holding more features than are drawn shows the first ones by object id rather than a sample of all of them".into());
+        info.notes.push("its queries don't take standardized SQL, so a view holding more features than are drawn shows the first ones by object id rather than a sample of all of them");
     }
     Ok(ArcgisSource { remote, query, info, oid, oid_at, page: std::sync::atomic::AtomicUsize::new(page), sample, held, to_lonlat, out_sr })
 }
@@ -600,7 +600,7 @@ impl ArcgisSource {
         let matched = if complete { features.len() as u64 } else { matched };
         let mut notes = self.notes(losses, view.is_some());
         notes.extend(shortfall(short));
-        Ok(Batch { features, matched, complete, skipped, notes, ..Batch::default() })
+        Ok(Batch { features, matched, complete, skipped, notes: notes.into(), ..Batch::default() })
     }
 
     /// A count's answer, or `None` when it isn't fetched yet (noted as missing).
@@ -824,7 +824,7 @@ impl FeatureSource for ArcgisSource {
             let mut notes = self.notes(losses, view.is_some());
             let short = total.saturating_sub(received);
             notes.extend(shortfall(short));
-            Ok(Batch { matched: visited, complete: short == 0, skipped, notes, ..Batch::default() })
+            Ok(Batch { matched: visited, complete: short == 0, skipped, notes: notes.into(), ..Batch::default() })
         }
     }
 }

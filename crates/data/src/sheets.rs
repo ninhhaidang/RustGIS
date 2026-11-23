@@ -797,7 +797,7 @@ mod tests {
         assert_eq!(ds.features.len(), 2);
         assert_eq!(ds.features.iter().filter(|f| f.geometry.is_none()).count(), 1);
         assert!(
-            report.messages.contains(&"1 value in 'wkt' isn't a date and was read as empty, so its row has no geometry".to_string()),
+            report.messages.says("1 value in 'wkt' isn't a date and was read as empty, so its row has no geometry"),
             "{:?}",
             report.messages
         );

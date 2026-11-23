@@ -1574,7 +1574,7 @@ fn add_selected(app: &mut RustGisApp) {
     match rustgis_engine::cmd::stac_area::selected_geometries(&app.session, &json!({})) {
         Ok((geometries, notes)) => {
             let what = tl!("the selected features").to_string();
-            start_loading(app, what, move || rustgis_engine::cmd::stac_area::merge_loaded(&geometries, notes));
+            start_loading(app, what, move || rustgis_engine::cmd::stac_area::merge_loaded(&geometries, notes.into()));
         }
         Err(e) => app.ui.stac.error = Some(e),
     }
@@ -1626,7 +1626,11 @@ fn land(app: &mut RustGisApp, answer: Result<Loaded, String>) {
     match answer {
         Ok(loaded) => {
             for n in loaded.notices {
-                app.session.warn(n);
+                // An ordinary note warns; a loss says its code too.
+                match n.loss {
+                    Some(_) => app.session.say(n),
+                    None => app.session.warn(n.text),
+                }
             }
             push_part(app, loaded.geometry);
         }
@@ -2904,8 +2908,10 @@ mod tests {
         assert!(app.ui.stac.error.is_some() && app.ui.stac.loading.is_none());
         app.ui.stac.error = None;
         // A mixed answer lands its notices, then its part.
-        let answer =
-            rustgis_engine::cmd::stac_area::merge_loaded(&[rectangle([0.0, 0.0, 1.0, 1.0]), Geometry::Point(at(5.0, 5.0))], Vec::new());
+        let answer = rustgis_engine::cmd::stac_area::merge_loaded(
+            &[rectangle([0.0, 0.0, 1.0, 1.0]), Geometry::Point(at(5.0, 5.0))],
+            Default::default(),
+        );
         let before = app.session.notice_mark();
         land(&mut app, answer);
         assert_eq!(app.ui.stac.parts.len(), 1);

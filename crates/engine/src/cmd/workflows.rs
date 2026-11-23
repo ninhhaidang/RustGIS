@@ -2124,7 +2124,8 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 query,
             )
             .map_err(|e| e.to_string())?;
-            let mut notes = rustgis_data::export_notes([(&ds, layer.extent())], &path, rustgis_data::raster::Crs::LonLat);
+            let mut notes: rustgis_data::loss::Notes =
+                rustgis_data::export_notes([(&ds, layer.extent())], &path, rustgis_data::raster::Crs::LonLat).into();
             if format == "csv" {
                 notes.extend(result.csv.notes(&ds.fields, &path));
                 notes.extend(result.csv.coordinates_note(&ds.fields, &path));
@@ -2145,7 +2146,9 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 rustgis_data::source::null_text_note(&ds.fields, &result.null_text)
                     .map(|n| format!("{path}: {}: {n} (empty in the export)", ds.name)),
             );
-            notes.extend(result.read_notes.iter().map(|n| format!("{path}: {}: {n} when read for the export", ds.name)));
+            notes.extend(
+                result.read_notes.iter().map(|n| n.clone().map_text(|t| format!("{path}: {}: {t} when read for the export", ds.name))),
+            );
             notes.extend(
                 rustgis_data::source::not_utf8_note(&ds.fields, &result.not_utf8, result.not_utf8_in)
                     .map(|n| format!("{path}: {}: {n}", ds.name)),
@@ -2160,7 +2163,8 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             };
             let report = rustgis_data::export::filter_dataset(&mut ds, query).map_err(|e| e.to_string())?;
             rustgis_data::progress::begin(ds.features.len());
-            let (text, mut notes) = converted(&ds, &params)?;
+            let (text, notes) = converted(&ds, &params)?;
+            let mut notes: rustgis_data::loss::Notes = notes.into();
             super::share::coalesce_read_zm(&mut notes, &path, &ds, &unreadable);
             rustgis_data::io::write_atomic(std::path::Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             if unreadable.rows > 0 {

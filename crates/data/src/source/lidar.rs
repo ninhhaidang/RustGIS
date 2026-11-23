@@ -33,7 +33,8 @@ impl LidarSource {
         let Dataset { name, geometry_type, fields, features, crs_incomplete, .. } = ds;
         let extent = features.iter().filter_map(|f| f.geometry.as_ref()).fold(Extent::EMPTY, |e, g| e.union(&g.extent()));
         // The reader's messages start with the layer's name, which the source's notes add.
-        let notes = report.messages.iter().map(|m| m.strip_prefix(&format!("{name}: ")).unwrap_or(m).to_string()).collect();
+        let prefix = format!("{name}: ");
+        let notes = report.messages.into_iter().map(|m| m.map_text(|t| t.strip_prefix(&prefix).map(str::to_string).unwrap_or(t))).collect();
         let info = SourceInfo {
             name,
             format: "LiDAR",
@@ -93,7 +94,7 @@ impl FeatureSource for LidarSource {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }

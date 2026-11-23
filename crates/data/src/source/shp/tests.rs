@@ -668,7 +668,7 @@ fn a_nan_shape_outside_an_area_its_system_cant_bound_is_counted_as_of_the_layer(
         let r = Reproject::from_crs(crs, &mut Vec::new());
         assert!(r.extent_from_lonlat(&view).is_none(), "the view's edge is refused");
         const SAID: &str = "have a coordinate that isn't a number under a bounding box that is one";
-        let said = |notes: &[String]| notes.iter().filter(|n| n.contains(SAID)).cloned().collect::<Vec<_>>();
+        let said = |notes: &[crate::loss::Note]| notes.iter().filter(|n| n.contains(SAID)).map(|n| n.text.clone()).collect::<Vec<_>>();
         let reads = |src: &dyn FeatureSource| {
             let read = src.read(&Request { extent: Some(view), ..Request::all() }).unwrap();
             let mut kept = 0;
@@ -722,7 +722,7 @@ fn a_nan_shape_under_a_finite_box_is_said_when_left_out() {
             p
         };
         const SAID: &str = "have a coordinate that isn't a number under a bounding box that is one";
-        let said = |notes: &[String]| notes.iter().filter(|n| n.contains(SAID)).cloned().collect::<Vec<_>>();
+        let said = |notes: &[crate::loss::Note]| notes.iter().filter(|n| n.contains(SAID)).map(|n| n.text.clone()).collect::<Vec<_>>();
         let chunk_notes = |src: &dyn FeatureSource, extent| {
             let batch = src.visit_chunks(extent, 1 << 20, &mut |_| Ok(())).unwrap();
             (batch.skipped, said(&batch.notes))

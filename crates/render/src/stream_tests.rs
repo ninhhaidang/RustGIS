@@ -27,7 +27,7 @@ impl FeatureSource for Chunks {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }
@@ -84,7 +84,7 @@ fn streamed_kind(layer: &Layer, size: usize, native: bool) -> Layer {
         count: Some(ds.features.len() as u64),
         crs: if native { "EPSG:3857".into() } else { "EPSG:4326".into() },
         indexed: true,
-        notes: Vec::new(),
+        notes: Default::default(),
         zm_dropped: false,
     };
     let mut l = layer.clone();
@@ -111,7 +111,7 @@ fn complete_chunks_preserve_painter_order_filters_transparency_labels_and_select
                 unread_dates: Vec::new(),
                 rounded_dates: Vec::new(),
                 null_text: Vec::new(),
-                notes: Vec::new(),
+                notes: Default::default(),
                 not_utf8: Vec::new(),
             })
         }
@@ -874,7 +874,7 @@ fn pitched_mixed_sources_keep_windows_and_pending_on_the_owner() {
                 unread_dates: Vec::new(),
                 rounded_dates: Vec::new(),
                 null_text: Vec::new(),
-                notes: Vec::new(),
+                notes: Default::default(),
                 not_utf8: Vec::new(),
             })
         }
@@ -1716,7 +1716,7 @@ fn a_stopped_frame_reads_no_further_chunk_and_leaves_its_source_unfailed() {
         count: Some(ds.features.len() as u64),
         crs: "EPSG:4326".into(),
         indexed: true,
-        notes: Vec::new(),
+        notes: Default::default(),
         zm_dropped: false,
     };
     let stop = Arc::new(AtomicBool::new(false));

@@ -76,7 +76,7 @@ pub fn read(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Vec<(Data
         )),
         (None, None) => report
             .messages
-            .push("the file doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are".into()),
+            .push("the file doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are"),
     }
     let mut skipped = 0usize;
     let mut missing_parcels = 0usize;

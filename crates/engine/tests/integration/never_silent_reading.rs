@@ -1211,7 +1211,7 @@ fn xml_losses_keep_data_and_reach_command() {
                 "a.xml" => landxml::read(c.file, bytes, None).unwrap(),
                 other => panic!("unexpected XML fixture {other}"),
             };
-            let messages: Vec<_> = native.iter().flat_map(|(_, r)| r.messages.iter().cloned()).collect();
+            let messages: Vec<String> = native.iter().flat_map(|(_, r)| r.messages.texts().map(str::to_string)).collect();
             let expected = if c.file.ends_with("kml") || c.file.ends_with("kmz") || c.file.ends_with("gpx") {
                 format!("a: {words}")
             } else {

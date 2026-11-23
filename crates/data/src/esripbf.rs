@@ -319,7 +319,7 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
             || esri_wkt_over_code(code, wkt.as_deref()).is_some()
             || !wkt.as_deref().is_some_and(crate::raster::wkt::parses))
     {
-        report.messages.push("the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD".into());
+        report.messages.push("the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD");
     }
     let (crs, to_lonlat) = crate::filegdb::esri_crs(code, wkt.as_deref(), &mut report)?;
     if crs.is_none()

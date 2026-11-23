@@ -107,7 +107,7 @@ fn cut(s: &mut Session, _: &Value) -> CmdResult {
 
 /// The features to paste: GeoJSON text when given, with what its reader says it left out, else
 /// the clipboard.
-fn clip(s: &Session, p: &Value) -> Result<(Dataset, Vec<String>), String> {
+fn clip(s: &Session, p: &Value) -> Result<(Dataset, rustgis_data::loss::Notes), String> {
     match ps(p, "text").map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) if t.len() > MAX_TEXT => Err("the pasted text is too large".into()),
         Some(t) => {
@@ -115,10 +115,10 @@ fn clip(s: &Session, p: &Value) -> Result<(Dataset, Vec<String>), String> {
             // longitude/latitude.
             let (ds, report) =
                 rustgis_data::io::read_geojson(t, "Pasted").map_err(|e| format!("the pasted text isn't GeoJSON features: {e}"))?;
-            let said = report.into_messages().map(|m| format!("Pasted text: {m}")).collect();
+            let said = report.messages.prefixed("Pasted text");
             if ds.features.is_empty() { Err("the pasted text has no features".into()) } else { Ok((ds, said)) }
         }
-        None => s.clipboard.as_ref().map(|c| (c.data.clone(), Vec::new())).ok_or_else(|| "nothing has been copied".to_string()),
+        None => s.clipboard.as_ref().map(|c| (c.data.clone(), Default::default())).ok_or_else(|| "nothing has been copied".to_string()),
     }
 }
 
@@ -236,8 +236,8 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     super::design::apply(s, id, (first..first + n).map(|r| super::design::Change { before: None, row: Some(r) }).collect())?;
     s.map_mut().layers.iter_mut().filter(|o| o.id != id).for_each(|o| o.selection.clear());
     s.notify(format!("Pasted {n} features into {name}"), false);
-    for notice in said.into_iter().chain(notices) {
-        s.notify(notice, false);
+    for notice in said.into_iter().chain(notices.into_iter().map(rustgis_data::loss::Note::plain)) {
+        s.say(notice);
     }
     Ok(json!({"pasted": n, "layer": id}))
 }
@@ -251,7 +251,7 @@ fn paste_special(s: &mut Session, p: &Value) -> CmdResult {
     let n = ds.features.len();
     let id = super::layer::add_dataset(s, ds);
     for m in said {
-        s.notify(m, false);
+        s.say(m);
     }
     Ok(json!({"pasted": n, "layer": id}))
 }

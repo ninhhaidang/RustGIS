@@ -248,7 +248,7 @@ fn read(s: &mut Session, p: &Value) -> Result<(Value, Vec<(ServiceChild, Dataset
         // Empty collections remain visible as children and can acquire geometry on refresh.
         dataset.source = Some(url.to_string());
         for message in report.messages {
-            s.notify(message, false);
+            s.say(message);
         }
         reads.push((
             ServiceChild {

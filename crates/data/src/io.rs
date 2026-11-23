@@ -1771,7 +1771,9 @@ impl Collector {
         if report.skipped > 0 {
             report.messages.push(format!("{} features had unreadable geometry", report.skipped));
         }
-        let declared = declared_crs(root, &mut report.messages)?;
+        let mut said = Vec::new();
+        let declared = declared_crs(root, &mut said)?;
+        report.messages.extend(said);
         let mut unconverted = 0usize;
         // Only features kept count toward the heights dropped.
         let mut zm = 0usize;
@@ -3645,7 +3647,7 @@ fn dbf_reader(mut bytes: Vec<u8>, cpg: Option<&[u8]>, name: &str) -> Result<DbfR
         })
         .collect();
     let fields = order.into_iter().map(|(n, t)| Field::new(n, t)).collect();
-    let report = ReadReport { messages: encoding_notes, ..Default::default() };
+    let report = ReadReport { messages: encoding_notes.into(), ..Default::default() };
     Ok(DbfRead { reader: dbf, fields, decimals, report, not_utf8, deleted, encoding: encoding.name() })
 }
 
@@ -4000,9 +4002,9 @@ pub(crate) fn read_shapefile_parts(parts: ShapefileParts, name: &str, crs: Optio
     let e = if to_lonlat.is_some() { lonlat_extent } else { ds.extent() };
     if e.beyond_lonlat() {
         report.messages.push(if to_lonlat.is_some() {
-            "coordinates are not longitude/latitude once converted from the .prj's coordinate system; the .prj may not match them, and they may draw out of place".into()
+            "coordinates are not longitude/latitude once converted from the .prj's coordinate system; the .prj may not match them, and they may draw out of place"
         } else {
-            "coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into()
+            "coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place"
         });
     }
     if report.skipped > 0 {
@@ -4015,7 +4017,7 @@ pub(crate) fn read_shapefile_parts(parts: ShapefileParts, name: &str, crs: Optio
     }
     ds.crs_incomplete = unconverted > 0;
     if unconverted > 0 && converted == 0 {
-        report.messages.push("no shape could be converted to longitude/latitude: the .prj doesn't seem to match the coordinates".into());
+        report.messages.push("no shape could be converted to longitude/latitude: the .prj doesn't seem to match the coordinates");
     } else if unconverted > 0 {
         report.messages.push(format!("{unconverted} shapes couldn't be converted to longitude/latitude and have no geometry"));
     }
@@ -6462,7 +6464,7 @@ mod tests {
         };
         let (wells, flat) = (shp("wells.shp", true), shp("flat.shp", false));
         let (ds, rep) = read_path(&wells).unwrap();
-        assert!(ds.zm_dropped && rep.messages.contains(&crate::zm_note(Some(1))), "{:?}", rep.messages);
+        assert!(ds.zm_dropped && rep.messages.says(&crate::zm_note(Some(1))), "{:?}", rep.messages);
         assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(1.0, 2.0))));
         let (ds, rep) = read_path(&flat).unwrap();
         assert!(!ds.zm_dropped && !said(&rep));
@@ -8147,7 +8149,7 @@ mod tests {
             }
             shp
         };
-        let said = |m: &[String]| m.iter().any(|m| m.contains("isn't a number"));
+        let said = |m: &[crate::loss::Note]| m.iter().any(|m| m.contains("isn't a number"));
         let bad = write("bad.shp", &[(f64::NAN, 20.0), (11.0, 21.0), (f64::INFINITY, 22.0)]);
         let (ds, rep) = read_path(&bad).unwrap();
         assert_eq!(ds.features.len(), 3, "the features are kept");
@@ -8157,10 +8159,8 @@ mod tests {
         assert_eq!(ds.geometry_type, GeometryType::Point);
         assert_eq!(ds.unsaved_coordinates(), 0);
         assert!(
-            rep.messages.contains(
-                &"bad: 2 shape(s) have a coordinate that isn't a number (NaN or infinite): their features are kept without geometry"
-                    .to_string()
-            ),
+            rep.messages
+                .says("bad: 2 shape(s) have a coordinate that isn't a number (NaN or infinite): their features are kept without geometry"),
             "{:?}",
             rep.messages
         );
@@ -8690,7 +8690,7 @@ mod tests {
         // A long list of skipped members names the first ones and counts the rest.
         let layers = read_zip("x.zip", &crate::zip::write(&mifs(MAX_ZIP_LAYERS + 25)).unwrap()).unwrap();
         let note = &layers[0].1.messages[0];
-        assert!(note.contains("m51.mif") && !note.contains("m52.mif") && note.ends_with("; and 5 more"), "{note}");
+        assert!(note.contains("m51.mif") && !note.contains("m52.mif") && note.ends_with("; and 5 more"), "{note:?}");
     }
 
     /// A Shapefile's loose files picked or dropped together are zipped into one, which reads as a

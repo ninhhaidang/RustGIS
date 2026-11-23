@@ -237,8 +237,10 @@ impl ConversionLoss {
 /// known, and saved-conversion fallbacks once with the layer count and first failure. Ordinary
 /// source notes are not opening conversion diagnostics.
 pub(crate) fn say_conversion_fallbacks(s: &mut Session) {
+    use rustgis_data::loss::LossCode;
     let mut fallback: Option<(usize, String, String)> = None;
-    let mut losses = std::collections::BTreeMap::<(String, String), ConversionLoss>::new();
+    // By provider and kind, and by the loss code the notes carry, which the summary keeps.
+    let mut losses = std::collections::BTreeMap::<(String, String, Option<&'static str>), (ConversionLoss, Option<LossCode>)>::new();
     for l in s.project.maps.iter_mut().flat_map(|m| &mut m.layers) {
         let Some(source) = l.source.as_mut() else { continue };
         if let Some(note) = source.take_conversion_fallback() {
@@ -249,6 +251,8 @@ pub(crate) fn say_conversion_fallbacks(s: &mut Session) {
         }
         let mut seen = std::collections::BTreeSet::new();
         for note in source.take_conversion_notes() {
+            let code = note.loss;
+            let note = note.text;
             // Source layer names and feature counts vary within a loss kind. Count affected
             // layers once each and total leading feature/row counts across those layers.
             let kind = [
@@ -264,9 +268,9 @@ pub(crate) fn say_conversion_fallbacks(s: &mut Session) {
             // An unlisted GDAL warning, without its per-layer occurrence count.
             .unwrap_or_else(|| note.rsplit_once(" (").filter(|(_, tail)| tail.ends_with("occurrence(s))")).map_or(&note, |(base, _)| base));
             let provider = note.split_once(": ").map_or("", |(provider, _)| provider);
-            let key = (provider.to_owned(), kind.to_owned());
+            let key = (provider.to_owned(), kind.to_owned(), code.map(|c| c.spec().id));
             if seen.insert(key.clone()) {
-                losses.entry(key).and_modify(|loss| loss.add(&note)).or_insert_with(|| ConversionLoss::new(&l.name, note));
+                losses.entry(key).and_modify(|(loss, _)| loss.add(&note)).or_insert_with(|| (ConversionLoss::new(&l.name, note), code));
             }
         }
     }
@@ -278,8 +282,8 @@ pub(crate) fn say_conversion_fallbacks(s: &mut Session) {
         };
         s.notify(text, false);
     }
-    for loss in losses.into_values() {
-        s.notify(loss.notice(), false);
+    for (loss, code) in losses.into_values() {
+        s.say(rustgis_data::loss::Note { text: loss.notice(), loss: code });
     }
 }
 

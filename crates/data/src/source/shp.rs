@@ -198,7 +198,7 @@ impl ShpSource {
             // (`SourceInfo::coordinate_system`) as a whole read does.
             crs: reproject.crs.definition_text(),
             indexed: index.indexed(),
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         // PointZ … MultiPointM: the header's type says every shape carries Z or M values.

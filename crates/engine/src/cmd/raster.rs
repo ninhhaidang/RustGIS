@@ -1188,7 +1188,7 @@ fn write_geotiff_with_guidance(r: &Raster, bi: usize, cog: bool, path: &str, ban
         answer: v,
         diagnostics: Vec::new(),
         refused_notes: Vec::new(),
-        notes: vec![format!("Exported {path}{note}")],
+        notes: [format!("Exported {path}{note}")].into_iter().collect(),
         written_path: Some(path.to_string()),
         then: None,
         #[cfg(not(target_arch = "wasm32"))]
@@ -1203,7 +1203,7 @@ pub(super) fn write_and_report(s: &mut Session, r: &Raster, bi: usize, cog: bool
     let wrote =
         write_geotiff_with_guidance(r, bi, cog, path, "export the resulting layer with share.exportRaster and give \"band\" for another")?;
     for note in wrote.notes {
-        s.notify_written(note);
+        s.say_written(note);
     }
     Ok(wrote.answer)
 }

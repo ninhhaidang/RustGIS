@@ -437,7 +437,7 @@ pub fn read_table(conn: &Conn, item: &Item, limit: usize) -> Result<(Dataset, Re
         })
         .collect();
     let unread_dates = crate::source::unread_dates_note(&fields, &unread);
-    let mut report = ReadReport { messages: reading.notes.clone(), unread_dates: unread_dates.clone(), ..Default::default() };
+    let mut report = ReadReport { messages: reading.notes.clone().into(), unread_dates: unread_dates.clone(), ..Default::default() };
     report.messages.extend(unread_dates);
     report.messages.extend(left_out_note(&left_out));
     let count_sql = format!("SELECT COUNT_BIG(*) FROM {} t", reading.from);

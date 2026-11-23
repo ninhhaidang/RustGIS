@@ -272,7 +272,11 @@ fn replace_linked(
         && let Some(note) =
             info.notes.iter().find(|note| note.starts_with("DuckDB: ") && note.ends_with(" rows of another geometry type were left out"))
     {
-        return Err(format!("{path}: the replacement table contains no {}; {note}. The layer was not changed", origin.family.label()));
+        return Err(format!(
+            "{path}: the replacement table contains no {}; {}. The layer was not changed",
+            origin.family.label(),
+            note.text
+        ));
     }
     install(s, prepared)
 }
@@ -347,8 +351,9 @@ fn install(s: &mut Session, prepared: Prepared) -> Result<(), String> {
             let notes = info.notes.clone();
             let moved = s.map_mut().layer_mut(id).ok_or("the layer no longer exists")?.replace_source(*new);
             reset_labels(s, id, moved);
+            let name = s.map().layer(id).map_or_else(|| "Layer".to_string(), |l| l.name.clone());
             for note in notes {
-                s.notify(format!("{}: {note}", s.map().layer(id).map_or("Layer", |l| l.name.as_str())), false);
+                s.say(note.prefixed(&name));
             }
         }
         Candidate::Editable(new) => {
@@ -383,8 +388,9 @@ fn install(s: &mut Session, prepared: Prepared) -> Result<(), String> {
             l.selection.clear();
             l.touch_geometry();
             reset_labels(s, id, moved);
+            let name = s.map().layer(id).map_or_else(|| "Layer".to_string(), |l| l.name.clone());
             for note in notes {
-                s.notify(format!("{}: {note}", s.map().layer(id).map_or("Layer", |l| l.name.as_str())), false);
+                s.say(note.prefixed(&name));
             }
         }
     }

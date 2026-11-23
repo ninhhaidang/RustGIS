@@ -308,7 +308,7 @@ impl GpkgSource {
             // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
             crs: reproject.info_crs(),
             indexed: rtree.is_some(),
-            notes,
+            notes: notes.into(),
             zm_dropped: false,
         };
         let file = Some((path.to_path_buf(), id));
@@ -322,7 +322,7 @@ impl GpkgSource {
             Some((z, m)) if z == 2 || m == 2 => match src.peek_zm() {
                 Some(true) => src.info.drop_zm(None),
                 Some(false) => {}
-                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep".into()),
+                None => src.info.notes.push("couldn't tell whether it has Z or M values, which RustGIS doesn't keep"),
             },
             _ => {}
         }

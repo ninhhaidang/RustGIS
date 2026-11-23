@@ -662,7 +662,7 @@ fn permission_policy_export_worker_keeps_its_initiating_owner() {
     let error = export_land(&mut s, started, wrote).unwrap_err();
     assert!(error.contains("Published ") && error.contains("record wasn't updated"), "{error}");
     for note in notes {
-        assert!(s.notices_since(mark).iter().any(|n| n.text.contains(&note)), "missing {note}: {error}");
+        assert!(s.notices_since(mark).iter().any(|n| n.text.contains(&note.text)), "missing {note:?}: {error}");
     }
     assert_eq!(s.map().layer(id).unwrap().synced, synced, "the revoked finalizer must not update the layer");
     let (disk, _) = rustgis_data::io::read_path(&shp).unwrap();

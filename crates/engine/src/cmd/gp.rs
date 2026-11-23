@@ -1371,27 +1371,32 @@ fn map_inputs<'a>(s: &'a Session, spec: Option<&rustgis_analysis::ToolSpec>, par
 /// whole, and the rows of each layer it runs on. It reads, so a background run does this on its
 /// thread.
 fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, params: &Value) -> Result<MapInputs<'a>, String> {
-    let (full, mut messages) = streamed_inputs(&snap.map, spec, params)?;
-    let losses = Vec::new();
-    #[cfg(not(target_arch = "wasm32"))]
-    let (mut full, mut losses) = (full, losses);
+    let (full, said) = streamed_inputs(&snap.map, spec, params)?;
+    let (mut messages, mut losses) = (Vec::new(), Vec::new());
+    for m in said {
+        match m.loss {
+            Some(code) => losses.push(LossMessage { code, text: m.text }),
+            None => messages.push(m.text),
+        }
+    }
+    let mut full = full;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(spec) = spec.filter(|t| rustgis_analysis::TOOLS.iter().any(|builtin| std::ptr::eq(builtin, *t))) {
         for parameter in spec.params.iter().filter(|p| p.kind == rustgis_analysis::ParamKind::VectorLayers) {
             for name in rustgis_analysis::layer_list(params.get(parameter.name).unwrap_or(&Value::Null))? {
                 if vector_file_input(spec, &snap.map, name) && !full.contains_key(name) {
                     let (dataset, report) = rustgis_data::io::read_path(std::path::Path::new(name)).map_err(|e| format!("{name}: {e}"))?;
-                    messages.extend(report.messages.into_iter().map(|message| format!("{name}: {message}")));
-                    losses.extend(
-                        report.losses.into_iter().map(|loss| LossMessage { code: loss.code, text: format!("{name}: {}", loss.text) }),
-                    );
+                    for message in report.messages.prefixed(name) {
+                        match message.loss {
+                            Some(code) => losses.push(LossMessage { code, text: message.text }),
+                            None => messages.push(message.text),
+                        }
+                    }
                     full.insert(name.to_string(), dataset);
                 }
             }
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    let mut full = full;
     let work = work_inputs(&snap.map, &snap.tables, spec, params, &mut full, &mut messages)?;
     let mut rows = env_inputs(&snap.map, &full, &snap.env, params)?;
     narrow_to_queries(&snap.map, spec, params, &full, &mut rows, &mut messages)?;
@@ -1504,9 +1509,9 @@ fn streamed_inputs(
     map: &rustgis_map::Map,
     spec: Option<&rustgis_analysis::ToolSpec>,
     params: &Value,
-) -> Result<(std::collections::HashMap<String, Dataset>, Vec<String>), String> {
+) -> Result<(std::collections::HashMap<String, Dataset>, rustgis_data::loss::Notes), String> {
     let mut full = std::collections::HashMap::new();
-    let mut said = Vec::new();
+    let mut said = rustgis_data::loss::Notes::new();
     for n in layer_names(spec, params) {
         let key = n.to_ascii_lowercase();
         if full.contains_key(&key) {
@@ -2391,9 +2396,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                 }
                 match read_batch_file(s, path) {
                     Ok((dataset, report)) => {
-                        let messages = report.messages.into_iter().map(|text| (text, None));
-                        let losses = report.losses.into_iter().map(|loss| (loss.text, Some(loss.code)));
-                        for (msg, code) in messages.chain(losses) {
+                        for (msg, code) in report.messages.into_iter().map(|m| (m.text, m.loss)) {
                             item_reader_warnings.push(format!("{target}: {msg}"));
                             reader_warnings.push((target.clone(), msg, code));
                         }

@@ -1835,10 +1835,10 @@ pub(crate) fn add_photos_to(s: &mut Session, name: &str, zoom: Option<bool>, fee
     feed(&mut reader);
     let (ds, report) = reader.finish();
     for m in &report.messages {
-        s.notify(m.clone(), false);
+        s.say(m.clone());
     }
     if ds.features.is_empty() {
-        return Err(report.messages.first().cloned().unwrap_or_else(|| "no photo with a GPS position".into()));
+        return Err(report.messages.first().map(|m| m.text.clone()).unwrap_or_else(|| "no photo with a GPS position".into()));
     }
     // The reader took no more than there is room for; `take` keeps that so if it ever changes.
     let added = ds.features.len().min(room);
@@ -2822,7 +2822,11 @@ fn add_picked(
             })
             .map(|(_, r)| {
                 let mut said = r.report.clone();
-                said.messages.drain(..usize::from(r.dataset.zm_dropped).min(said.messages.len()));
+                // The layer's own Z/M note leads its messages; it is said by that layer. A note
+                // that reports another loss is never taken for it.
+                if r.dataset.zm_dropped && said.messages.first().is_some_and(|n| n.loss.is_none()) {
+                    said.messages.drain(..1);
+                }
                 (r.dataset.source.clone(), said)
             })
             .collect();
@@ -2833,7 +2837,6 @@ fn add_picked(
         for (source, said) in file_wide {
             if let Some(kept) = reads.iter_mut().find(|r| r.dataset.source == source) {
                 kept.report.messages.extend(said.messages);
-                kept.report.losses.extend(said.losses);
                 kept.report.skipped += said.skipped;
             }
         }
@@ -3412,7 +3415,7 @@ fn add_source_read(
             }
             let unique = unique_name(s, &name);
             for n in &info.notes {
-                s.notify(format!("{unique}: {n}"), false);
+                s.say(n.clone().prefixed(&unique));
             }
             let id = s.map_mut().add_streamed(unique.clone(), layer);
             if let Some(l) = s.map_mut().layer_mut(id) {
@@ -3446,11 +3449,10 @@ fn add_source_read(
             // The source names itself by its file (a DuckDB result's cache file); the layer has the
             // name the user knows.
             let shown = s.map().layer(id).map_or_else(|| info.name.clone(), |l| l.name.clone());
+            let prefix = format!("{}: ", info.name);
             for m in report.messages {
-                match m.strip_prefix(&format!("{}: ", info.name)) {
-                    Some(rest) => s.notify(format!("{shown}: {rest}"), false),
-                    None => s.notify(m, false),
-                }
+                // As the layer is named: its name may differ from the source's.
+                s.say(m.map_text(|t| t.strip_prefix(&prefix).map_or_else(|| t.clone(), |rest| format!("{shown}: {rest}"))));
             }
         }
     }
@@ -5732,7 +5734,7 @@ fn add_remote(s: &mut Session, p: &Value, url: &str, src: Box<dyn rustgis_data::
     let layer = rustgis_map::source::SourceLayer::from_path(url.to_string(), None, src);
     let unique = unique_name(s, &name);
     for n in &info.notes {
-        s.notify(format!("{unique}: {n}"), false);
+        s.say(n.clone().prefixed(&unique));
     }
     let id = s.map_mut().add_streamed(unique.clone(), layer);
     if let Some(l) = s.map_mut().layer_mut(id) {
@@ -6885,10 +6887,7 @@ pub(crate) fn add_read(
         ds.name = n.to_string();
     }
     for m in report.messages {
-        s.notify(m, false);
-    }
-    for loss in report.losses {
-        s.notify_loss(loss.code, loss.text.into());
+        s.say(m);
     }
     if ds.geometry_type == GeometryType::None {
         let name = ds.name.clone();

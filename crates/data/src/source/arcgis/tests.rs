@@ -559,7 +559,7 @@ fn a_materialized_layer_says_each_loss_once() {
         let src = open_blocking(&query).unwrap();
         let (ds, report) = crate::source::materialize(&src).unwrap();
         assert_eq!(ds.features.len(), FEATURES as usize);
-        let said: Vec<&String> = report.messages.iter().filter(|m| m.contains(want)).collect();
+        let said: Vec<&crate::loss::Note> = report.messages.iter().filter(|m| m.contains(want)).collect();
         assert_eq!(said.len(), 1, "{host}: {:?}", report.messages);
     }
     let (query, _) = service("live-once-clean.test", 30, true, None);

@@ -70,7 +70,7 @@ fn read_prj(prj: &str, x: f64, y: f64) -> (Option<Coord>, Vec<String>) {
         Some(Geometry::Point(c)) => Some(c),
         _ => None,
     };
-    (at, report.messages)
+    (at, report.messages.texts().map(str::to_string).collect())
 }
 
 /// A 2×2 GeoTIFF whose top-left corner is at `corner`, in a user-defined projection: coordinate

@@ -67,7 +67,7 @@ impl Runs {
             count: Some(ds.features.len() as u64),
             crs: "EPSG:4326".into(),
             indexed: false,
-            notes: Vec::new(),
+            notes: Default::default(),
             zm_dropped: false,
         };
         Runs {
@@ -100,7 +100,7 @@ impl FeatureSource for Runs {
             unread_dates: Vec::new(),
             rounded_dates: Vec::new(),
             null_text: Vec::new(),
-            notes: Vec::new(),
+            notes: Default::default(),
             not_utf8: Vec::new(),
         })
     }
@@ -246,7 +246,7 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                     fine_dates: if ext == "gpkg" { crate::io::fine_dates(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     written_values: if ext == "fgb" { crate::io::written_values(whole.features.iter(), &whole.fields) } else { Vec::new() },
                     date_messages: Vec::new(),
-                    read_notes: Vec::new(),
+                    read_notes: Default::default(),
                 };
                 assert_eq!(streamed, expected, "{what}");
                 let (a, b) = (read_back(&a), read_back(&b));

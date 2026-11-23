@@ -169,11 +169,11 @@ impl Engine {
             if !selected && found.is_streamed() {
                 // Source metadata was reported when this layer opened. A fresh whole read may
                 // discover further notes, which must survive this boundary without replaying those.
-                let opened_notes: Vec<String> = found
+                let opened_notes: Vec<rustgis_engine::data::loss::Note> = found
                     .source
                     .as_ref()
                     .and_then(|source| source.info())
-                    .map(|info| info.notes.iter().map(|note| format!("{}: {note}", info.name)).collect())
+                    .map(|info| info.notes.iter().map(|note| note.clone().prefixed(&info.name)).collect())
                     .unwrap_or_default();
                 let (ds, report) = found.load_all_reported().map_err(|e| format!("{}: {e}", found.name))?;
                 let name = found.name.clone();
@@ -183,7 +183,7 @@ impl Engine {
                     n => session.warn(format!("{name}: {n} rows couldn't be read and were left out")),
                 }
                 for message in report.messages.into_iter().filter(|message| !opened_notes.contains(message)) {
-                    session.notify(message, false);
+                    session.say(message);
                 }
                 if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{name} as GeoJSON")) {
                     session.notify(note, false);

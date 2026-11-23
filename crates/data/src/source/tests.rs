@@ -734,7 +734,7 @@ fn materialize_refuses_oversized_and_incomplete_sources() {
             count: Some(MAX_LIMIT as u64 + 1),
             crs: "EPSG:4326".into(),
             indexed: false,
-            notes: vec![],
+            notes: Default::default(),
             zm_dropped: false,
         },
         batch: None,
@@ -811,7 +811,7 @@ fn geoparquet_planetary_systems_are_said_or_refused() {
     let p = d.join("mars.parquet");
     write_parquet_typed(&p, false, &mars("GeographicCRS", 49900, "east"));
     let src = open_path(&p, None).unwrap();
-    assert_eq!(src.info().notes.iter().filter(|m| body(m)).count(), 1, "{:?}", src.info().notes);
+    assert_eq!(src.info().notes.iter().filter(|m| body(&m.text)).count(), 1, "{:?}", src.info().notes);
     assert!(!src.info().notes.iter().any(|m| m.contains("no EPSG code")), "{:?}", src.info().notes);
     let (ds, _) = materialize(src.as_ref()).unwrap();
     assert_eq!(
@@ -841,7 +841,7 @@ fn geoparquet_planetary_systems_are_said_or_refused() {
     // Earth one.
     write_parquet_typed(&p, false, &no_id(mars("GeographicCRS", 49900, "east")));
     let notes = open_path(&p, None).unwrap().info().notes.clone();
-    let said: Vec<&String> = notes.iter().filter(|m| body(m)).collect();
+    let said: Vec<&crate::loss::Note> = notes.iter().filter(|m| body(&m.text)).collect();
     assert_eq!(said.len(), 1, "{notes:?}");
     assert!(said[0].contains("as only its ellipsoid says") && !said[0].contains("code"), "{said:?}");
     write_parquet_typed(&p, false, r#"["Point"],"crs":{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}"#);
@@ -888,7 +888,7 @@ fn geoparquet_planetary_systems_are_said_or_refused() {
         ] {
             write_parquet_typed(&p, false, &axes(kind, id, &cs));
             let src = open_path(&p, None).unwrap_or_else(|e| panic!("{kind} {cs} {id}: {e}"));
-            assert_eq!(src.info().notes.iter().filter(|m| body(m)).count(), 1, "{kind} {cs} {id}: {:?}", src.info().notes);
+            assert_eq!(src.info().notes.iter().filter(|m| body(&m.text)).count(), 1, "{kind} {cs} {id}: {:?}", src.info().notes);
             let (ds, _) = materialize(src.as_ref()).unwrap();
             assert_eq!(ds.features.len(), points().len());
         }
@@ -897,7 +897,7 @@ fn geoparquet_planetary_systems_are_said_or_refused() {
     for cs in [lonlat(r#""radian""#, r#""radian""#), xyz.to_string()] {
         write_parquet_typed(&p, false, &axes("GeographicCRS", "", &cs).replace("3396190", "6378137"));
         let notes = open_path(&p, None).unwrap().info().notes.clone();
-        assert!(!notes.iter().any(body), "{notes:?}");
+        assert!(!notes.iter().any(|m| body(&m.text)), "{notes:?}");
     }
 }
 
@@ -1198,7 +1198,10 @@ fn custom_srs_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
         .into_iter()
         .map(|src| {
             let batch = src.read(&Request::all()).unwrap();
-            (lonlat_of(src, batch.features.first().and_then(|f| f.geometry.clone())), src.info().notes.clone())
+            (
+                lonlat_of(src, batch.features.first().and_then(|f| f.geometry.clone())),
+                src.info().notes.texts().map(str::to_string).collect(),
+            )
         })
         .collect()
 }
@@ -1421,7 +1424,10 @@ fn fgb_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
         .into_iter()
         .map(|src| {
             let batch = src.read(&Request::all()).unwrap();
-            (lonlat_of(src.as_ref(), batch.features.first().and_then(|f| f.geometry.clone())), src.info().notes.clone())
+            (
+                lonlat_of(src.as_ref(), batch.features.first().and_then(|f| f.geometry.clone())),
+                src.info().notes.texts().map(str::to_string).collect(),
+            )
         })
         .collect()
 }
@@ -2671,7 +2677,7 @@ fn geojson_in_place_rejects_partial_collections_with_a_notice() {
         let (ds, streamed_report) = materialize(&src).unwrap();
         assert_eq!(ds.features, whole.features);
         assert_eq!(streamed_report.skipped, report.skipped);
-        assert_eq!(streamed_report.messages, report.messages.iter().map(|m| format!("x: {m}")).collect::<Vec<_>>());
+        assert_eq!(streamed_report.messages, report.messages.clone().prefixed("x"));
     }
     std::fs::remove_file(p).unwrap();
 }
@@ -2753,7 +2759,7 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
         assert_eq!(inplace.crs_incomplete, whole.crs_incomplete, "{file}");
         assert_eq!(inplace.geometry_type, whole.geometry_type, "{file}");
         assert_eq!(report.skipped, in_report.skipped, "{file}");
-        let strip = |m: &Vec<String>| m.iter().map(|m| m.trim_start_matches("x: ").to_string()).collect::<Vec<_>>();
+        let strip = |m: &crate::loss::Notes| m.iter().map(|m| m.text.trim_start_matches("x: ").to_string()).collect::<Vec<_>>();
         assert_eq!(strip(&report.messages), strip(&in_report.messages), "{file}");
         // The extent a source says is that of the features it reads (those that convert).
         assert_eq!(src.info().extent, whole.lonlat_extent(), "{file}");
@@ -2764,7 +2770,7 @@ fn geojson_paths(file: &str, text: &str) -> (Dataset, Vec<String>, String) {
     let src = geojson::GeoJsonSource::open_with(&p, "x", crate::io::BYTES_FLOOR).unwrap();
     // In longitude/latitude, for the tests to say where its features are: it holds them in its
     // declared system, as the file does.
-    (whole.in_lonlat().unwrap().into_owned(), report.messages, src.info().crs.clone())
+    (whole.in_lonlat().unwrap().into_owned(), report.messages.texts().map(str::to_string).collect(), src.info().crs.clone())
 }
 
 fn in_arnhem(e: &Extent) -> bool {
@@ -3606,7 +3612,7 @@ fn geopackage_flatgeobuf_and_geoparquet_visit_what_a_whole_read_gives() {
 #[test]
 fn declared_z_and_m_are_said_and_counted() {
     let d = tempfile::tempdir().unwrap();
-    let says = |info: &SourceInfo| info.zm_dropped && info.notes.contains(&crate::zm_note(Some(600)));
+    let says = |info: &SourceInfo| info.zm_dropped && info.notes.says(&crate::zm_note(Some(600)));
     let quiet = |info: &SourceInfo| !info.zm_dropped && !info.notes.iter().any(|n| n.contains("Z or M"));
 
     let gpkg = d.path().join("grid.gpkg");
@@ -3619,7 +3625,7 @@ fn declared_z_and_m_are_said_and_counted() {
     assert!(says(&info), "{:?}", info.notes);
     // The web reader doesn't scan for the count, and says so without one.
     let info = mem(&gpkg).info().clone();
-    assert!(info.zm_dropped && info.notes.contains(&crate::zm_note(None)), "{:?}", info.notes);
+    assert!(info.zm_dropped && info.notes.says(&crate::zm_note(None)), "{:?}", info.notes);
 
     let parquet = d.path().join("grid.parquet");
     write_parquet_typed(&parquet, false, r#"["Point"]"#);
@@ -3630,7 +3636,7 @@ fn declared_z_and_m_are_said_and_counted() {
     // Some types with Z, some without: said, without a count.
     write_parquet_typed(&parquet, false, r#"["Point", "Point Z"]"#);
     let info = open_path(&parquet, None).unwrap().info().clone();
-    assert!(info.zm_dropped && info.notes.contains(&crate::zm_note(None)), "{:?}", info.notes);
+    assert!(info.zm_dropped && info.notes.says(&crate::zm_note(None)), "{:?}", info.notes);
 }
 
 /// A GeoParquet whose columns RustGIS has no field type for (a decimal too wide for a 64-bit
@@ -3866,10 +3872,7 @@ fn geopackage_dates_are_written_and_read_as_dates() {
         // The moment is kept, at UTC.
         let utc = vec![day("2026-03-05"), at("2026-03-05T12:30:00Z")];
         assert_eq!(read, [utc, rows[1].to_vec(), null.clone(), null.clone(), null.clone(), vec![day("2026-01-01"), Value::Null]]);
-        assert!(
-            report.messages.contains(&"permits: 2 values aren't dates and were read as empty, in 'issued', 'seen'".to_string()),
-            "{report:?}"
-        );
+        assert!(report.messages.says("permits: 2 values aren't dates and were read as empty, in 'issued', 'seen'"), "{report:?}");
     }
     // The export says the text it wrote in a date field that isn't a date, and a date-time with a
     // time in one, which reads back empty too.

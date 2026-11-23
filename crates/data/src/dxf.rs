@@ -1636,9 +1636,9 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         report.messages.push(why);
     }
     if opts.crs.is_none() {
-        report.messages.push(
-            "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are".into(),
-        );
+        report
+            .messages
+            .push("a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are");
     }
     if out.capped {
         report.messages.push(format!("the drawing makes more than {MAX_FEATURES} features: the rest are left out"));
@@ -2056,7 +2056,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let layers = read("a.dxf", text.as_bytes(), &Options { crs: Some(Crs::from_epsg(4269).unwrap()), ..Options::default() }).unwrap();
-        let messages: Vec<&str> = layers.iter().flat_map(|(_, report)| &report.messages).map(String::as_str).collect();
+        let messages: Vec<&str> = layers.iter().flat_map(|(_, report)| &report.messages).map(|m| m.as_str()).collect();
         assert_eq!(messages.len(), 1);
         assert!(messages[0].starts_with("1 features couldn't be converted from "));
         assert!(!messages[0].contains("without Y"));
@@ -2461,7 +2461,14 @@ mod tests {
                         e.max_y,
                         kinds.join(" "),
                         t.elapsed(),
-                        layers[0].1.messages.iter().filter(|m| !m.contains("coordinate system")).cloned().collect::<Vec<_>>().join(" | ")
+                        layers[0]
+                            .1
+                            .messages
+                            .iter()
+                            .filter(|m| !m.contains("coordinate system"))
+                            .map(|m| m.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
                     );
                 }
                 Err(e) => println!("{name}\tERR\t{e}"),
@@ -2918,7 +2925,7 @@ mod tests {
             );
         }
         let notes: Vec<&str> =
-            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("POLYLINE")).map(String::as_str).collect();
+            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("POLYLINE")).map(|m| m.as_str()).collect();
         assert_eq!(notes, ["4 unreadable POLYLINE vertices were left out of their lines"]);
         let no_blocks = read("placed.dxf", text.as_bytes(), &Options { blocks: false, ..opts }).unwrap();
         assert_eq!(no_blocks.len(), 1);
@@ -2980,7 +2987,7 @@ mod tests {
             assert_eq!(lines.value(i, 8), &Value::Float(z));
         }
         let notes: Vec<&str> =
-            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("varying Z")).map(String::as_str).collect();
+            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("varying Z")).map(|m| m.as_str()).collect();
         assert_eq!(notes, ["2 features lost varying Z coordinates; only the elevation attribute is kept"]);
         let no_blocks = read("placed.dxf", text.as_bytes(), &Options { blocks: false, ..opts }).unwrap();
         assert_eq!(no_blocks.len(), 1);
@@ -3299,7 +3306,7 @@ mod tests {
         assert_eq!(layers.iter().map(|(ds, _)| ds.features.len()).sum::<usize>(), 1);
         assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Point(Coord::new(0.0, 0.0))));
         assert!(layers.iter().all(|(ds, r)| !ds.zm_dropped && r.messages.iter().all(|m| !m.contains("varying Z"))));
-        let messages: Vec<&str> = layers.iter().flat_map(|(_, r)| &r.messages).map(String::as_str).collect();
+        let messages: Vec<&str> = layers.iter().flat_map(|(_, r)| &r.messages).map(|m| m.as_str()).collect();
         assert_eq!(messages.len(), 1);
         assert!(messages[0].starts_with("1 features couldn't be converted from "), "{messages:?}");
     }

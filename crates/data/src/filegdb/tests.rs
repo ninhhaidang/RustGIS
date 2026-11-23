@@ -690,14 +690,18 @@ fn planetary_systems_are_said_or_refused() {
     let mut report = ReadReport::default();
     let (crs, t) = esri_crs(None, Some(gcs), &mut report).unwrap();
     assert!(crs.is_some_and(Crs::is_planetary) && t.is_some());
-    assert_eq!(report.messages.iter().filter(|m| body(m)).count(), 1, "{:?}", report.messages);
+    assert_eq!(report.messages.iter().filter(|m| body(&m.text)).count(), 1, "{:?}", report.messages);
     let e = esri_crs(None, Some(&unread(gcs)), &mut ReadReport::default()).err().unwrap().to_string();
     assert!(e.contains("belongs to another body than the Earth") && e.contains("Unheard_Of"), "{e}");
     let earth = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
     let mut report = ReadReport::default();
     let (crs, t) = esri_crs(None, Some(&unread(earth)), &mut report).unwrap();
     assert!(crs.is_none() && t.is_none());
-    assert!(report.messages.iter().any(|m| m.contains("Unheard_Of")) && !report.messages.iter().any(body), "{:?}", report.messages);
+    assert!(
+        report.messages.iter().any(|m| m.contains("Unheard_Of")) && !report.messages.iter().any(|m| body(&m.text)),
+        "{:?}",
+        report.messages
+    );
 }
 
 /// #1677: an EPSG code is used as a `.prj`'s own `AUTHORITY` is: when the WKT gives no shift to WGS
@@ -820,7 +824,7 @@ fn a_code_gives_way_to_its_wkts_shift_or_body() {
         let mut report = ReadReport::default();
         let (crs, _) = esri_crs(Some(code), Some(mars), &mut report).unwrap();
         assert!(crs.is_some_and(Crs::is_planetary), "{code}: {crs:?}");
-        assert_eq!(report.messages.iter().filter(|m| body(m)).count(), 1, "{code}: {:?}", report.messages);
+        assert_eq!(report.messages.iter().filter(|m| body(&m.text)).count(), 1, "{code}: {:?}", report.messages);
         // A method no one knows (Bonne is read, as PROJ 9.8.1 reads it).
         let unread = format!(
             r#"PROJCS["Unheard_Of",{mars},PROJECTION["Unheard_Of"],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",30.0],UNIT["Meter",1.0]]"#

@@ -824,7 +824,7 @@ impl MysqlSource {
                 count: None,
                 crs: if srid == 0 { "EPSG:4326".into() } else { format!("EPSG:{srid}") },
                 indexed: false,
-                notes,
+                notes: notes.into(),
                 zm_dropped: false,
             },
             conn,
@@ -843,7 +843,7 @@ impl MysqlSource {
         if src.info.count != Some(0) {
             src.info.extent = src.measure();
             if src.info.extent.is_empty() {
-                src.info.notes.push("the table's extent couldn't be measured in time: zooming to the layer does nothing".into());
+                src.info.notes.push("the table's extent couldn't be measured in time: zooming to the layer does nothing");
             }
         }
         Ok(src)

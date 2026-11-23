@@ -76,7 +76,7 @@ pub struct Exported {
     pub date_messages: Vec<String>,
     /// What reading the source lost or assumed besides the counts above
     /// ([`crate::source::Batch::notes`]), said as they are.
-    pub read_notes: Vec<String>,
+    pub read_notes: crate::loss::Notes,
 }
 
 /// The rows a definition query excluded, or why the stored query could not be applied.
@@ -251,7 +251,7 @@ fn write_chunks_as(
     let mut unread_dates = Vec::new();
     let mut rounded_dates = Vec::new();
     let mut null_text = Vec::new();
-    let mut read_notes = Vec::new();
+    let mut read_notes = crate::loss::Notes::new();
     let mut not_utf8 = Vec::new();
     let mut utc_dates = Vec::new();
     let mut fine_dates = Vec::new();

@@ -695,9 +695,8 @@ impl Serialize for Dataset {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReadReport {
     pub skipped: usize,
-    pub messages: Vec<String>,
-    /// Classified losses to publish alongside the ordinary messages.
-    pub losses: Vec<loss::LossMessage>,
+    /// What the read says, each loss with its code ([`loss::Note`]).
+    pub messages: loss::Notes,
     /// The files read and the rows read from them, when the read recorded them
     /// ([`sync::FileSync::around`]): what a layer kept in the project compares with its source
     /// before writing edits back.
@@ -711,13 +710,6 @@ pub struct ReadReport {
     /// The extrusion the reader suggests for the layer (a city model's volumes): applied when the
     /// layer is added, and only then; a reload keeps the layer's own.
     pub extrusion: Option<SuggestedExtrusion>,
-}
-
-impl ReadReport {
-    /// All report messages in their text form for consumers that do not carry loss codes.
-    pub fn into_messages(self) -> impl Iterator<Item = String> {
-        self.messages.into_iter().chain(self.losses.into_iter().map(|loss| loss.text))
-    }
 }
 
 /// An extrusion a reader suggests for a layer of polygons: heights from one field, on a base from

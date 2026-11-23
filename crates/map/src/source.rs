@@ -138,7 +138,7 @@ pub struct SourceLayer {
     conversion_fallback: Option<String>,
     /// Losses from a conversion actually performed while opening, consumed once by its caller.
     #[serde(skip)]
-    conversion_notes_unsaid: Vec<String>,
+    conversion_notes_unsaid: rustgis_data::loss::Notes,
     /// Values in date fields a view read found weren't dates ([`Batch::unread_dates`]), until
     /// said by [`SourceLayer::take_unread_dates`]; once said, later reads aren't counted again.
     /// Kept for each window read ([`Tally`]): a window read again replaces its counts.
@@ -168,7 +168,7 @@ pub struct SourceLayer {
     /// What else view reads lost or assumed ([`Batch::notes`]), until said by
     /// [`SourceLayer::take_read_notes`].
     #[serde(skip)]
-    read_notes: Vec<String>,
+    read_notes: rustgis_data::loss::Notes,
     /// The kinds of note view reads of this opening have given ([`note_kind`]): each is said once,
     /// with the count of the read that first gave it, not again on each redraw.
     #[serde(skip)]
@@ -918,9 +918,14 @@ impl SourceLayer {
     /// their counts ([`note_kind`]: a number starting the note or a clause, before a space); notes
     /// that differ in any other number or word are kinds of their own. Past [`READ_NOTE_KINDS`]
     /// kinds, one last note says there are more.
-    pub fn saw_read_notes(&mut self, notes: &[String]) {
-        for note in notes.iter().filter(|n| !n.trim().is_empty()) {
-            let kind = note_kind(note);
+    pub fn saw_read_notes(&mut self, notes: &[rustgis_data::loss::Note]) {
+        for note in notes.iter().filter(|n| !n.text.trim().is_empty()) {
+            // A kind is its wording without its counts, and its loss code: a coded note isn't
+            // folded into a plain one that reads the same.
+            let kind = match note.loss {
+                Some(code) => format!("{}\u{1f}{}", note_kind(&note.text), code.spec().id),
+                None => note_kind(&note.text),
+            };
             if self.read_note_kinds.contains(&kind) {
                 continue;
             }
@@ -941,7 +946,7 @@ impl SourceLayer {
 
     /// What view reads said they lost or assumed ([`Batch::notes`]) and haven't said yet, each
     /// kind once for the opening ([`SourceLayer::saw_read_notes`]).
-    pub fn take_read_notes(&mut self) -> Vec<String> {
+    pub fn take_read_notes(&mut self) -> rustgis_data::loss::Notes {
         std::mem::take(&mut self.read_notes)
     }
 
@@ -1025,7 +1030,7 @@ impl SourceLayer {
         }
         let mut new =
             SourceLayer { shapefile_crs: self.shapefile_crs, limit: self.limit, byte_budget: self.byte_budget, ..Default::default() };
-        let mut conversion_notes = Vec::new();
+        let mut conversion_notes = rustgis_data::loss::Notes::new();
         let declared_empty;
         let conversion_zm_dropped;
         if let Some(g) = &self.gdal {
@@ -1649,7 +1654,7 @@ impl SourceLayer {
     }
 
     /// Takes diagnostics only from a fresh conversion performed by [`Self::open`].
-    pub fn take_conversion_notes(&mut self) -> Vec<String> {
+    pub fn take_conversion_notes(&mut self) -> rustgis_data::loss::Notes {
         std::mem::take(&mut self.conversion_notes_unsaid)
     }
 
@@ -2121,7 +2126,7 @@ mod tests {
         let handle = rustgis_data::source::open_shared("converted.fgb", bytes.clone(), None).unwrap();
         let mut source = super::SourceLayer::from_bytes("converted.fgb", bytes, None, handle);
         let mut info = source.info().unwrap().clone();
-        info.notes.push("conversion left out 2 source features".into());
+        info.notes.push("conversion left out 2 source features");
         info.zm_dropped = true;
         source.conversion_info = Some(info);
         let mut layer = crate::Layer::new(1, Dataset::new("layer", GeometryType::Point, Vec::new()));
@@ -2245,16 +2250,18 @@ mod tests {
     #[test]
     fn view_read_notes_are_said_once_for_each_kind() {
         let mut source = super::SourceLayer::default();
-        let note = |n: usize| format!("{n} of the shapes read (a sample of the layer, which may hold more) have a NaN");
-        source.saw_read_notes(&[note(3), String::new(), " ".into()]);
+        let note = |n: usize| {
+            rustgis_data::loss::Note::plain(format!("{n} of the shapes read (a sample of the layer, which may hold more) have a NaN"))
+        };
+        source.saw_read_notes(&[note(3), "".into(), " ".into()]);
         source.saw_read_notes(&[note(5)]);
         assert_eq!(source.take_read_notes(), [note(3)]);
         source.saw_read_notes(&[note(12), "7 values cut".into()]);
         assert_eq!(source.take_read_notes(), ["7 values cut"]);
         assert!(source.take_read_notes().is_empty());
         // A source with endless kinds of note says the first ones, then one note that there are more.
-        let many: Vec<String> = (0..2 * super::READ_NOTE_KINDS)
-            .map(|k| format!("kind {}: 1", char::from(b'a' + (k % 26) as u8).to_string().repeat(k / 26 + 1)))
+        let many: Vec<rustgis_data::loss::Note> = (0..2 * super::READ_NOTE_KINDS)
+            .map(|k| format!("kind {}: 1", char::from(b'a' + (k % 26) as u8).to_string().repeat(k / 26 + 1)).into())
             .collect();
         source.saw_read_notes(&many);
         source.saw_read_notes(&many);
@@ -2264,6 +2271,18 @@ mod tests {
         source.forget_read_notes();
         source.saw_read_notes(&[note(4)]);
         assert_eq!(source.take_read_notes(), [note(4)]);
+    }
+
+    /// A note that reports a loss isn't folded into a plain one that reads the same: its code
+    /// is said too, once.
+    #[test]
+    fn a_coded_read_note_is_its_own_kind() {
+        use rustgis_data::loss::{LossCode, Note};
+        let mut source = super::SourceLayer::default();
+        let plain = Note::plain("2 rings left out");
+        let coded = Note::loss(LossCode::DroppedRing, "3 rings left out");
+        source.saw_read_notes(&[plain.clone(), coded.clone(), coded.clone()]);
+        assert_eq!(source.take_read_notes(), [plain, coded]);
     }
 
     /// Only counts make two notes one kind: notes differing in another number stay apart.
@@ -2284,6 +2303,7 @@ mod tests {
             "EPSG:4326: 3 shape(s) left out".into(),
             "EPSG:3857: 3 shape(s) left out".into(),
         ];
+        let notes = notes.map(rustgis_data::loss::Note::plain);
         source.saw_read_notes(&notes);
         let said = source.take_read_notes();
         let expected = [&notes[0], &notes[2], &notes[4], &notes[5], &notes[6], &notes[7], &notes[8], &notes[9]];
@@ -2358,7 +2378,7 @@ mod tests {
     #[test]
     fn opening_conversion_notes_are_runtime_only_and_taken_once() {
         let note = "GDAL: 2 features of another geometry type were left out";
-        let mut source = super::SourceLayer { conversion_notes_unsaid: vec![note.into()], ..Default::default() };
+        let mut source = super::SourceLayer { conversion_notes_unsaid: [note].into_iter().collect(), ..Default::default() };
         let saved = serde_json::to_value(&source).unwrap();
         assert!(saved.get("conversion_notes_unsaid").is_none());
         let mut restored: super::SourceLayer = serde_json::from_value(saved).unwrap();

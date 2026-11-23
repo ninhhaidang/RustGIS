@@ -732,7 +732,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             ));
         }
         if file_srs.is_none() && outside {
-            rep.messages.push("the GML doesn't say its coordinate system (srsName) and its coordinates aren't longitude/latitude".into());
+            rep.messages.push("the GML doesn't say its coordinate system (srsName) and its coordinates aren't longitude/latitude");
         }
         // Said with the layer it happened in, which may be the only one added.
         if kind.lost > 0 {
@@ -1000,7 +1000,7 @@ mod tests {
         let layers = read("p.gml", gml.as_bytes()).unwrap();
         let (ds, rep) = &layers[0];
         assert_eq!((ds.features.len(), rep.skipped), (2, 0));
-        let said: Vec<&String> = rep.messages.iter().filter(|m| m.contains("or surface patch")).collect();
+        let said: Vec<&crate::loss::Note> = rep.messages.iter().filter(|m| m.contains("or surface patch")).collect();
         assert_eq!(said.len(), 1, "{:?}", rep.messages);
         assert!(said[0].contains(": 1 ring or surface patch of a geometry was left out"), "{said:?}");
         assert!(rep.messages.iter().any(|m| m.contains(": 1 part of multi-geometries")), "{:?}", rep.messages);
@@ -1047,7 +1047,7 @@ mod tests {
         let (ds, rep) = &layers[0];
         assert_eq!((ds.features.len(), rep.skipped), (2, 0));
         assert!(matches!(&ds.features[1].geometry, Some(Geometry::Line(l)) if l.len() == 2));
-        let said: Vec<&String> = rep.messages.iter().filter(|m| m.contains("multi-geometries")).collect();
+        let said: Vec<&crate::loss::Note> = rep.messages.iter().filter(|m| m.contains("multi-geometries")).collect();
         assert_eq!(said, ["m: 1 part of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)"]);
     }
 

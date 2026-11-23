@@ -4762,7 +4762,7 @@ impl RustGisApp {
                     // Not handed over (the failure is said): the area made for it goes too.
                     if self.download(&name, bytes) {
                         for note in notes {
-                            self.session.notify(note, false);
+                            self.session.say(note);
                         }
                     } else {
                         rustgis_engine::cmd::field::forget_new_areas(&mut self.session, areas);
@@ -4777,7 +4777,7 @@ impl RustGisApp {
                                 return Err(e.to_string());
                             }
                             for note in notes {
-                                self.session.notify(note, false);
+                                self.session.say(note);
                             }
                             self.session.notify(i18n::fmt("Saved {name}", &[("name", &path)]), false);
                         }
@@ -5255,9 +5255,10 @@ impl RustGisApp {
                 let ext = download_ext;
                 // The features written, read whole, give their own extent, in longitude/latitude
                 // (not a raster's, or the one a streamed layer's source declares).
-                let mut notes = rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs);
+                let mut notes: rustgis_engine::data::loss::Notes =
+                    rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs).into();
                 rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, &ds, &lost);
-                let mut dbf_notes = Vec::new();
+                let mut dbf_notes = rustgis_engine::data::loss::Notes::new();
                 if ext == "zip" {
                     dbf_notes.extend(io::shapefile_names_note(&ds.fields, &name));
                     dbf_notes.extend(io::shapefile_values_notes(&ds, &name));
@@ -5283,8 +5284,12 @@ impl RustGisApp {
                 }
                 if self.download(&name, bytes) {
                     rustgis_engine::cmd::share::notify_export_query(&mut self.session, &name, &layer_name, &query_report);
-                    for note in notes.into_iter().chain(dbf_notes).chain(construction_notes) {
-                        self.session.notify(note, false);
+                    for note in notes
+                        .into_iter()
+                        .chain(dbf_notes)
+                        .chain(construction_notes.into_iter().map(rustgis_engine::data::loss::Note::plain))
+                    {
+                        self.session.say(note);
                     }
                 }
             }

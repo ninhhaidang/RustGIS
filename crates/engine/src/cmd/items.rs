@@ -1699,14 +1699,14 @@ pub const ITEMS: &[(&str, &str, &str)] = &[
 pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>), String> {
     let (name, bytes, notes) = item_output(s, kind, p)?;
     for note in notes {
-        s.notify(note, false);
+        s.say(note);
     }
     Ok((name, bytes))
 }
 
 /// Builds an item and returns construction-loss notes for publication only after delivery.
-pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>, Vec<String>), String> {
-    let mut construction_notes = match kind {
+pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>, rustgis_data::loss::Notes), String> {
+    let mut construction_notes: rustgis_data::loss::Notes = (match kind {
         "map" => {
             let m = saved_map(s, p)?;
             s.constructions.output_notes(m.layers.iter().map(|l| (m.instance_id(), l)))?
@@ -1723,7 +1723,8 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         "mapPackage" | "fieldPackage" => s.constructions.output_notes(s.map().layers.iter().map(|l| (s.map().instance_id(), l)))?,
         "gpPackage" => s.constructions.output_notes(gp_result_layers(s).into_iter().map(|(m, l)| (m.instance_id(), l)))?,
         _ => Vec::new(),
-    };
+    })
+    .into();
     let (name, bytes) = match kind {
         "map" => {
             let map = saved_map(s, p)?;
@@ -1799,14 +1800,14 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
             let id = s.layer_id(p)?;
             let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
             let (text, notes) = obj_text(s, p)?;
-            construction_notes = notes;
+            construction_notes = notes.into();
             (name, text.into_bytes())
         }
         "stl" => {
             let id = s.layer_id(p)?;
             let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
             let (bytes, _, notes) = stl_bytes(s, p)?;
-            construction_notes = notes;
+            construction_notes = notes.into();
             (name, bytes)
         }
         "report" | "reportTemplate" => {
@@ -1837,7 +1838,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         }
         k if super::sharing::KINDS.iter().any(|x| x.0 == k) => {
             let (name, bytes, _, notes) = super::sharing::share_output(s, k, p)?;
-            construction_notes = notes;
+            construction_notes = notes.into();
             super::sharing::note_label_classes(s, k, p);
             super::sharing::note_export(s, k, p, &name);
             (name, bytes)
@@ -1855,7 +1856,7 @@ pub(crate) fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
     let (_, bytes, notes) = item_output(s, kind, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
     for note in notes {
-        s.notify(note, false);
+        s.say(note);
     }
     s.retain_written_notices(written);
     Ok(json!({"path": path, "bytes": bytes.len()}))

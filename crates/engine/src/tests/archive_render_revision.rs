@@ -113,7 +113,7 @@ fn paused_map(path: &std::path::Path, kind: TileKind) -> (Map, render::View, mps
         count: Some(1),
         crs: "EPSG:4326".into(),
         indexed: true,
-        notes: Vec::new(),
+        notes: Default::default(),
         zm_dropped: false,
     };
     let id = map.add_dataset(ds.clone());
