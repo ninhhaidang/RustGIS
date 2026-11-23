@@ -610,3 +610,108 @@ fn a_cancel_while_an_output_is_converted_adds_nothing() {
         assert!(t.map().layer_by_name("Out").is_none(), "look {n} of {looks}");
     }
 }
+
+/// Roads (a line) and Parcels (two named squares) around Bern in longitude/latitude.
+fn bern_roads_and_parcels() -> [rustgis_data::Dataset; 2] {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
+    let mut roads = Dataset::new("Roads", GeometryType::Polyline, vec![]);
+    let line = vec![Coord::new(7.43, 46.94), Coord::new(7.44, 46.945), Coord::new(7.45, 46.95)];
+    roads.push(Some(Geometry::Line(vec![line])), vec![]);
+    let mut parcels = Dataset::new("Parcels", GeometryType::Polygon, vec![Field::new("name", FieldType::Text)]);
+    for (i, x) in [7.43, 7.45].into_iter().enumerate() {
+        let ring = vec![
+            Coord::new(x, 46.94),
+            Coord::new(x + 0.01, 46.94),
+            Coord::new(x + 0.01, 46.95),
+            Coord::new(x, 46.95),
+            Coord::new(x, 46.94),
+        ];
+        parcels.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Cell::Text(format!("p{i}"))]);
+    }
+    [roads, parcels]
+}
+
+/// Shortest Route, Simulation and Convert Labels to Annotation make their layer from another in
+/// longitude/latitude: in a project with a system, it is held in that system, as a tool's output
+/// is; from a layer held in a projected system, in that one, as before.
+#[test]
+fn layers_made_from_another_in_longitude_latitude_take_the_project_system() {
+    let made = |s: &Session, v: &Value| s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap().dataset.clone();
+    let run = |s: &mut Session| {
+        s.run("labels.enable", &json!({"layer": "Parcels", "on": true})).unwrap();
+        let route = s
+            .run("analysis.route", &json!({"layer": "Roads", "from": [7.4301, 46.9401], "to": [7.4499, 46.9499], "snapDistance": 100}))
+            .unwrap();
+        let simulated = s.run("analysis.simulate", &json!({"layer": "Parcels", "count": 3, "seed": 3})).unwrap();
+        let annotation = s.run("labels.convert", &json!({"layer": "Parcels"})).unwrap();
+        [made(s, &route), made(s, &simulated), made(s, &annotation)]
+    };
+    let session = |hold: Option<Crs>| {
+        let mut s = Session::new(Project::default());
+        for mut ds in bern_roads_and_parcels() {
+            if let Some(c) = hold {
+                ds.hold_as(c, Some(c)).unwrap();
+            }
+            s.map_mut().add_dataset(ds);
+        }
+        s
+    };
+    let plain = run(&mut session(None));
+    for ds in &plain {
+        assert_eq!((ds.coord_crs(), ds.crs), (Crs::LonLat, None), "{}: without a project system, as before", ds.name);
+    }
+    let mut s = session(None);
+    s.run("project.coordinateSystem", &json!({"crs": "EPSG:2056"})).unwrap();
+    let swiss = run(&mut s);
+    for (ds, before) in swiss.iter().zip(&plain) {
+        assert_eq!((ds.coord_crs(), ds.crs), (LV95, Some(LV95)), "{}", ds.name);
+        // The same places, converted.
+        let back = ds.in_lonlat().unwrap();
+        assert_eq!(back.features.len(), before.features.len(), "{}", ds.name);
+        for (a, b) in back.features.iter().zip(&before.features) {
+            let (mut pa, mut pb) = (Vec::new(), Vec::new());
+            a.geometry.as_ref().unwrap().for_each_coord(|c| pa.push(c));
+            b.geometry.as_ref().unwrap().for_each_coord(|c| pb.push(c));
+            assert_eq!(pa.len(), pb.len());
+            for (p, q) in pa.iter().zip(&pb) {
+                assert!((p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7, "{}: {p:?} {q:?}", ds.name);
+            }
+        }
+    }
+    // From layers held in UTM, the layers stay in UTM in an LV95 project.
+    let utm = Crs::Epsg(32632);
+    let mut s = session(Some(utm));
+    s.run("project.coordinateSystem", &json!({"crs": "EPSG:2056"})).unwrap();
+    for ds in run(&mut s) {
+        assert_eq!(ds.coord_crs(), utm, "{}", ds.name);
+    }
+}
+
+/// A layer made from another that the project's system can't hold stays in longitude/latitude,
+/// said once with its name; in a geocentric project system it stays there unsaid.
+#[test]
+fn a_layer_made_from_another_the_project_system_cant_hold_stays_in_longitude_latitude() {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
+    let session = |crs: &str| {
+        let mut s = Session::new(Project::default());
+        let mut parcels = Dataset::new("Arctic", GeometryType::Polygon, vec![Field::new("name", FieldType::Text)]);
+        let ring =
+            vec![Coord::new(10.0, 87.0), Coord::new(11.0, 87.0), Coord::new(11.0, 88.0), Coord::new(10.0, 88.0), Coord::new(10.0, 87.0)];
+        parcels.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Cell::Text("north".into())]);
+        s.map_mut().add_dataset(parcels);
+        s.run("project.coordinateSystem", &json!({"crs": crs})).unwrap();
+        s
+    };
+    let mut s = session("EPSG:3857");
+    let out = said(&mut s, "analysis.simulate", &json!({"layer": "Arctic", "count": 2, "seed": 1, "name": "Pts"}));
+    let made = &s.map().layer_by_name("Pts").unwrap().dataset;
+    assert_eq!(made.coord_crs(), Crs::LonLat);
+    let note: Vec<&String> = out.iter().filter(|m| m.contains("kept in longitude/latitude")).collect();
+    assert_eq!(note.len(), 1, "{out:?}");
+    assert!(note[0].starts_with("Pts: kept in longitude/latitude, as it was made, not in the project's EPSG:3857: feature"), "{note:?}");
+    assert_eq!(note[0].matches("Pts").count(), 1, "{note:?}");
+    let mut s = session("EPSG:4978");
+    let out = said(&mut s, "analysis.simulate", &json!({"layer": "Arctic", "count": 2, "seed": 1, "name": "Pts"}));
+    assert_eq!(s.map().layer_by_name("Pts").unwrap().dataset.coord_crs(), Crs::LonLat);
+    assert!(!out.iter().any(|m| m.contains("kept in")), "{out:?}");
+}

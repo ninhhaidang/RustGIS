@@ -766,8 +766,9 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
 - **Convert** (Labeling › Map Labeling, or Layers › right-click › **Convert To Annotation**) turns a
   layer's labels into an annotation layer: one point per label, carrying its
   text in a `TEXT` field, which you can then edit, move or delete like any other features.
-  The annotation layer is held in the labelled layer's system. In a projected system a label's
-  point is found in its own coordinates, where a map in that system draws it; a moved label that
+  The annotation layer is held in the labelled layer's system; for a layer in
+  longitude/latitude, Web Mercator or another system in degrees, in the project's coordinate
+  system when it has one (not a geocentric one). In a projected system a label's point is found in its own coordinates, where a map in that system draws it; a moved label that
   can't be placed there stays at its feature's label point, and the conversion says how many.
   A label along a line becomes an upright point at its line's middle vertex (the end of a line
   of two), which can be some way from where the label was drawn: its angle, curve, repeats and
