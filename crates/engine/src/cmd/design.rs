@@ -267,13 +267,21 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
     {
         return Err(format!("{}: {message}", l.dataset.name));
     }
-    // Calculation rules, in order.
+    // Calculation rules, in order. Those that no longer read, by name, said once the edit is kept.
+    let mut unread: Vec<String> = Vec::new();
+    let layer = l.dataset.name.clone();
     for rule in l.design.rules.iter().filter(|r| r.kind == RuleKind::Calculation) {
         let Some(fi) = l.dataset.field_index(&rule.field) else { continue };
         let ty = l.dataset.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
-        // A rule that no longer reads (its field was removed, or a hand-edited file) is skipped
-        // rather than blocking every edit.
-        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &metadata) else { continue };
+        // A rule that no longer reads (a hand-edited file, one past the length limit from an
+        // earlier version) is skipped rather than blocking every edit, and said.
+        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &metadata) else {
+            // Said only for an edit with rows: one with none (a deletion) computes nothing anyway.
+            if !rows.is_empty() {
+                unread.push(rule.name.clone());
+            }
+            continue;
+        };
         // Counted as Calculate Field counts them.
         // A change set may repeat a row: its losses are counted once.
         let mut losses = super::edit::WriteLosses::once_per_row();
@@ -374,6 +382,16 @@ pub(crate) fn apply_with<B: Borrow<Feature>>(s: &mut Session, id: u32, changes: 
         for (code, notice) in losses.notices(by, &field, ty) {
             s.notify_loss(code, notice);
         }
+    }
+    if !unread.is_empty() {
+        s.notify(
+            format!(
+                "{layer}: {} calculation rule(s) skipped because they no longer read, so their fields weren't computed: {}",
+                unread.len(),
+                unread.join(", ")
+            ),
+            false,
+        );
     }
     Ok(())
 }

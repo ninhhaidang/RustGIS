@@ -1142,15 +1142,29 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     }
     d.contingent.retain(|c| !c.fields.iter().any(|f| f.eq_ignore_ascii_case(&removed)));
     let ds = rustgis_data::Dataset::new(l.dataset.name.clone(), l.dataset.geometry_type, l.dataset.fields.clone());
-    let before = d.rules.len();
+    // The rules that no longer read without the field are removed, by name, and said below.
+    let mut dropped: Vec<String> = Vec::new();
     d.rules.retain(|r| {
-        !r.field.eq_ignore_ascii_case(&removed)
+        let reads = !r.field.eq_ignore_ascii_case(&removed)
             && match r.kind {
                 rustgis_map::design::RuleKind::Calculation => Calculation::parse(&r.expression, &ds).is_ok(),
                 rustgis_map::design::RuleKind::Constraint => rustgis_data::query::parse_fields(&r.expression, &ds).is_ok(),
-            }
+            };
+        if !reads {
+            dropped.push(r.name.clone());
+        }
+        reads
     });
-    let removed_rules = before - d.rules.len();
+    let removed_rules = dropped.len();
+    let rules_note = (!dropped.is_empty()).then(|| {
+        dropped.sort();
+        format!(
+            "{}: deleting field {removed} removed {} attribute rule(s) that used it or no longer read: {}",
+            l.dataset.name,
+            removed_rules,
+            dropped.join(", ")
+        )
+    });
     // Nor its diagram: the field's slice or bar goes, the range of sums a scaled size grows over is
     // measured again without it, and a diagram left with no field goes too. Said once.
     let mut diagram_note = None;
@@ -1262,6 +1276,9 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
                 format!("Block: its water's depths came from the deleted field {removed}, so its walls show no water")
             }
         };
+        s.notify(note, false);
+    }
+    if let Some(note) = rules_note {
         s.notify(note, false);
     }
     Ok(json!({"rulesRemoved": removed_rules}))
@@ -1585,6 +1602,11 @@ pub(crate) enum Calculation {
 impl Calculation {
     /// Parses `expr`; when neither reads it, the error is the expression language's.
     pub(crate) fn parse(expr: &str, ds: &rustgis_data::Dataset) -> Result<Calculation, String> {
+        // The language's length limit holds for the earlier calculator too, which both routes to it
+        // below would otherwise skip: a rule or Calculate Field reads no longer text than a query.
+        if expr.chars().count() > rustgis_data::query::MAX_LEN {
+            return Err("the expression is too long".into());
+        }
         // A field named like a literal was read as the field (`null + 1`), so what the earlier
         // calculator reads with such a field keeps its meaning (quoted text needn't).
         // A date field in arithmetic, which the language refuses, isn't the earlier calculator's
@@ -1970,5 +1992,21 @@ mod tests {
         // Text that doesn't read the field means what it does elsewhere.
         assert_eq!(v("'it''s'"), Value::Text("it's".into()));
         assert_eq!(v("'a' || 'b'"), Value::Text("ab".into()));
+    }
+
+    /// A calculation past the expression language's length limit is refused, however the earlier
+    /// calculator would read it: as quoted text, or with a field named like a literal (#2783).
+    #[test]
+    fn a_calculation_longer_than_the_limit_is_refused() {
+        use rustgis_data::query::MAX_LEN;
+        let mut ds = Dataset::new("t", GeometryType::None, vec![Field::new("null", FieldType::Integer)]);
+        ds.push(None, vec![Value::Int(4)]);
+        // Counted in characters, as the language counts them: `é` is two bytes.
+        for (prefix, at) in [("", "quoted"), ("null + ", "joined to a field named null")] {
+            let expr = |chars: usize| format!("{prefix}'{}'", "é".repeat(chars - prefix.len() - 2));
+            assert!(Calculation::parse(&expr(MAX_LEN), &ds).is_ok(), "{at}, at the limit");
+            let refused = Calculation::parse(&expr(MAX_LEN + 1), &ds).err();
+            assert_eq!(refused.as_deref(), Some("the expression is too long"), "{at}, one past it");
+        }
     }
 }
