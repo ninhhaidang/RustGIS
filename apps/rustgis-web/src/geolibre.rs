@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 // runner (~25 MB) is too large to ship with the app, so the pinned version and HTTPS are the
 // safeguards: the same trust as installing the npm package.
 #[wasm_bindgen(inline_js = r#"
-const BASE = "https://cdn.jsdelivr.net/npm/geolibre-wasm@1.8.0";
+const BASE = "https://cdn.jsdelivr.net/npm/geolibre-wasm@1.8.3";
 let loaded = null;
 let ready = null;
 async function tools(still = () => true) {

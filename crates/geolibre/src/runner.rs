@@ -16,7 +16,7 @@ use serde_json::Value;
 /// `apps/rustgis-web/src/geolibre.rs`): move both forward together, with the user guide's link
 /// (`docs/user-guide/analysis.md`), by a pull request, after checking the new runner against
 /// [`SUPPORTED_FROM`]..[`SUPPORTED_BEFORE`].
-pub const RELEASE: &str = "1.8.0";
+pub const RELEASE: &str = "1.8.3";
 
 /// The oldest runner version RustGIS works with: the first 1.x release, which already answers
 /// `version`, `manifests` and `<tool> --k=v` as RustGIS asks them.

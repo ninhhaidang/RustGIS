@@ -1453,7 +1453,7 @@ The suite is an optional download, so RustGIS itself stays small: the **GeoLibre
 single `geolibre` program (about 20 MB to download). In the Tools pane, click
 **Install Whitebox and GeoLibre tools** under *Whitebox and GeoLibre tools*: RustGIS downloads the runner for your
 platform from the geolibre-rust release it was built and tested with
-([1.8.0](https://github.com/opengeos/geolibre-rust/releases/tag/v1.8.0), the same runner the browser
+([1.8.3](https://github.com/opengeos/geolibre-rust/releases/tag/v1.8.3), the same runner the browser
 uses), checks it against its published SHA-256 checksum (which catches a corrupted download; the
 release itself is trusted as when you download it by hand), checks that it starts and reports a
 version RustGIS works with, and only then installs it in its data folder
@@ -1468,6 +1468,16 @@ it installed and removes the `geolibre` folder only if it is empty. Other files 
 you located yourself, and one on your `PATH` are left alone; RustGIS looks for a runner again.
 You can install the tools again at any time. In the browser,
 **Remove** unloads the tools and stops loading them when RustGIS starts.
+
+An existing desktop runner is kept when RustGIS updates. To update a runner installed by RustGIS
+in place, run `gp.installGeolibre` from the command line in the updated RustGIS build. It downloads
+and checks the replacement before changing the installed program, so a download or verification
+failure leaves the installed runner in place. Restart the desktop app afterwards to reload its
+tools. For a runner you located yourself, download the new release and use **Locate…**.
+
+Runner 1.8.3 corrects the OSGB36 datum conversion that offset stream vectors from their raster.
+Rerun **Raster Streams to Vector** to create a corrected layer, then remove the old offset layer
+after checking the result. Save the project or export the corrected layer as needed.
 
 **In your language.** The tools' names, descriptions, parameters and toolboxes come in English.
 GeoLibre translates them into some twenty languages, in
