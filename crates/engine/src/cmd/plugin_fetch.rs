@@ -595,11 +595,12 @@ impl UrlWaits {
         let slot: Arc<Mutex<Option<Result<Vec<u8>, String>>>> = Arc::default();
         let land = slot.clone();
         let url = asked["url"].as_str().unwrap_or("").to_string();
-        crate::render::rustgis_tiles::cache::download_within(
+        let read = url.clone();
+        crate::render::rustgis_tiles::cache::download_within_with_origin(
             &url,
             MAX_DOCUMENT,
             DOCUMENT_TIMEOUT,
-            Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+            Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(document_read(&read, r))),
         );
         self.reading.push((n, url, slot));
     }
@@ -660,6 +661,21 @@ impl UrlWaits {
             .collect();
         self.owners.retain(|n, _| retained.contains(n));
     }
+}
+
+/// The bytes of a service's document read off the frame from `url`. One that came from the
+/// internet, wherever its name pointed, is recorded so ([`cache::restrict_to_public`]): the
+/// command, run again, reads the documents it links to and adds the layers it lists only from
+/// there, as it does for a document it fetches itself.
+///
+/// [`cache::restrict_to_public`]: crate::render::rustgis_tiles::cache::restrict_to_public
+pub(crate) fn document_read(url: &str, read: Result<crate::render::rustgis_tiles::cache::Fetched, String>) -> Result<Vec<u8>, String> {
+    read.map(|fetched| {
+        if fetched.origin.reach() == address::Reach::Public {
+            crate::render::rustgis_tiles::cache::restrict_to_public(url);
+        }
+        fetched.bytes
+    })
 }
 
 /// A download request without its number: what a command asked for.

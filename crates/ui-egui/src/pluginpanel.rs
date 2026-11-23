@@ -2187,7 +2187,8 @@ mod tests {
         assert_eq!(taken.len(), 1);
         let id = app.session.download_started_for(&taken[0]).unwrap();
         let landed = crate::serviceui::Landed { id, url: url.to_string(), params: taken[0].params().clone(), origin: None };
-        crate::serviceui::go_on(&mut app, landed, 0, rustgis_engine::data::ogc::Step::Failed("its second page failed".into()));
+        let local = rustgis_engine::render::rustgis_tiles::address::Reach::Local;
+        crate::serviceui::go_on(&mut app, landed, 0, local, rustgis_engine::data::ogc::Step::Failed("its second page failed".into()));
         let ran = app.session.poll_plugin_retries();
         assert_eq!(ran.len(), 1, "{ran:?}");
         assert!(ran[0].1.as_ref().is_err_and(|e| e.contains("its second page failed")), "{ran:?}");

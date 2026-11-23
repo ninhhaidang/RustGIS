@@ -76,7 +76,7 @@ fn listing(app: &mut RustGisApp, url: &str, kind: &'static str) -> Look {
     let state = &mut app.ui.web_services;
     let doc = state.docs.entry(url.to_string()).or_insert_with(|| {
         let caps = rustgis_engine::data::ogc::capabilities_url(url, Some(kind));
-        Doc::Waiting(crate::fetch_into(&caps))
+        Doc::Waiting(crate::fetch_document_into(&caps))
     });
     if let Doc::Waiting(slot) = doc {
         let landed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();

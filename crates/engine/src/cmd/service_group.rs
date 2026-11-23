@@ -99,14 +99,16 @@ fn record_connection(s: &mut Session, layer: u32, request: &Value, anonymous: bo
 }
 
 fn plan(s: &mut Session, p: &Value) -> CmdResult {
-    let mut out = if p.get("sourceOnly").and_then(Value::as_bool) == Some(true) { request(s, p)? } else { listing(s, p)? };
+    let mut out = if p.get("sourceOnly").and_then(Value::as_bool) == Some(true) { request(s, p)? } else { listing(s, p)?.0 };
     if !s.policy_user() {
         crate::sources::redact_url_fields(&mut out);
     }
     Ok(out)
 }
 
-fn listing(s: &mut Session, p: &Value) -> CmdResult {
+/// The service's collections to import, and for each whether the document listing it was read
+/// from the internet (its features are then fetched only from there).
+fn listing(s: &mut Session, p: &Value) -> Result<(Value, Vec<bool>), String> {
     let q = request(s, p)?;
     let mut found = capabilities(s, &q)?;
     super::notify_withheld(s, found.service.withheld_addresses);
@@ -167,6 +169,7 @@ fn listing(s: &mut Session, p: &Value) -> CmdResult {
         offered = pos.and_then(|i| offered.into_iter().nth(i)).into_iter().collect();
     }
     let (selected, sources): (Vec<_>, Vec<_>) = offered.into_iter().unzip();
+    let public = sources.iter().map(|source| source.public).collect();
     if found.next.is_none() && child.is_some() && selected.is_empty() {
         return Err("the collection is no longer advertised by this service".into());
     }
@@ -186,21 +189,21 @@ fn listing(s: &mut Session, p: &Value) -> CmdResult {
     } else if let Some(connection) = q.get("connection").filter(|v| !v.is_null()) {
         out["request"]["connection"] = connection.clone();
     }
-    Ok(out)
+    Ok((out, public))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn download(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
-    super::download_features(s, name, url, max)
+fn download(s: &mut Session, name: &str, url: &str, max: usize, public: bool) -> Result<Vec<u8>, String> {
+    super::download_features(s, name, url, max, public)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn download(_: &mut Session, _: &str, _: &str, _: usize) -> Result<Vec<u8>, String> {
+fn download(_: &mut Session, _: &str, _: &str, _: usize, _: bool) -> Result<Vec<u8>, String> {
     Err("the browser must supply downloaded feature responses".into())
 }
 
 fn read(s: &mut Session, p: &Value) -> Result<(Value, Vec<(ServiceChild, Dataset, bool)>), String> {
-    let listing = listing(s, p)?;
+    let (listing, public) = listing(s, p)?;
     if listing.get("next").is_some() {
         return Err("complete service discovery before importing or refreshing".into());
     }
@@ -211,7 +214,9 @@ fn read(s: &mut Session, p: &Value) -> Result<(Value, Vec<(ServiceChild, Dataset
     }
     let mut bytes_read = 0usize;
     let mut reads = Vec::new();
-    for layer in layers {
+    // `listing` returns one reach per layer it lists (`service_json` writes one entry per layer),
+    // so the two never differ in length.
+    for (layer, public) in layers.iter().zip(public) {
         let name = ps(layer, "title").unwrap_or("Collection");
         let url = layer.get("offer").and_then(|o| ps(o, "url")).ok_or("missing features address")?;
         let bytes = match responses {
@@ -226,7 +231,7 @@ fn read(s: &mut Session, p: &Value) -> Result<(Value, Vec<(ServiceChild, Dataset
                 }
                 text.as_bytes().to_vec()
             }
-            None => download(s, name, url, MAX_GROUP_BYTES.saturating_sub(bytes_read))?,
+            None => download(s, name, url, MAX_GROUP_BYTES.saturating_sub(bytes_read), public)?,
         };
         bytes_read = bytes_read.saturating_add(bytes.len());
         if bytes_read > MAX_GROUP_BYTES {

@@ -25822,13 +25822,13 @@ fn arcgis_description_leaves_the_features_their_budget() {
     let server = Server::new(vec![Route::new(&format!("{layer}/query"), &answer), Route::new(layer, &arcgis_layer(2, false))]);
     let url = format!("{}{layer}/query?where=1%3D1&outFields=*&f=geojson", server.base);
     let mut s = Session::new(Project::default());
-    let bytes = crate::cmd::service::download_features(&mut s, "Zoning", &url, answer.len()).unwrap();
+    let bytes = crate::cmd::service::download_features(&mut s, "Zoning", &url, answer.len(), false).unwrap();
     let read: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(read["features"].as_array().map(Vec::len), Some(2));
     let asked: Vec<_> = server.requests().iter().map(|r| r.path.trim_start_matches(layer).to_string()).collect();
     assert_eq!(asked, ["", "/query"]);
     // A byte less and the features don't fit.
-    assert!(crate::cmd::service::download_features(&mut s, "Zoning", &url, answer.len() - 1).is_err());
+    assert!(crate::cmd::service::download_features(&mut s, "Zoning", &url, answer.len() - 1, false).is_err());
 }
 
 /// An ArcGIS layer's description larger than its cap is given up on: the layer's query is
@@ -25845,7 +25845,7 @@ fn arcgis_description_past_its_cap_leaves_the_query_as_it_is() {
     let url = format!("{}{layer}/query?where=1%3D1&outFields=*&f=geojson", server.base);
     let mut s = Session::new(Project::default());
     let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
-    let bytes = crate::cmd::service::download_features(&mut s, "Zoning", &url, max).unwrap();
+    let bytes = crate::cmd::service::download_features(&mut s, "Zoning", &url, max, false).unwrap();
     let read: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(read["features"].as_array().map(Vec::len), Some(2));
     let asked: Vec<_> = server
