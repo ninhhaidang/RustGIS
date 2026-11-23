@@ -7020,7 +7020,8 @@ pub(crate) fn source_details(ui: &mut Ui, l: &Layer, t: &Tokens) {
     egui::Grid::new("details").num_columns(2).striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
         let rows = [
             ("Geometry", tl!(l.geometry_type().label()).to_string()),
-            ("Features", l.dataset.features.len().to_string()),
+            // A layer read in place has its source's total, "?" when the source doesn't say.
+            ("Features", l.feature_count().map_or_else(|| "?".to_string(), |n| n.to_string())),
             ("Fields", l.dataset.fields.len().to_string()),
             ("Selected", l.selection.len().to_string()),
             ("Symbology", tl!(l.renderer.kind_label()).to_string()),

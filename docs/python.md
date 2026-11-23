@@ -341,7 +341,10 @@ to choose coordinate columns.
 Every format the app reads works here: GeoJSON, CSV, Shapefile, GeoPackage, GeoParquet,
 FlatGeobuf, KML/KMZ, GPX, GeoTIFF and the rest of [Supported Data
 Formats](user-guide/data-formats.md). A layer read in place (a large file, a database table)
-keeps only the features of the last view in memory; `to_geojson` and `to_geopandas` read all of
+keeps only the features of the last view in memory (`Layer.count` is its source's total when the source says it,
+the planner's estimate for a large PostGIS table, and otherwise the number
+loaded now, which may be only part of the layer; for a feature layer `s.layers()` gives `features`,
+the source's total or `None`, and `loaded`, what is in memory; a raster's entry has neither); `to_geojson` and `to_geopandas` read all of
 its features from the source each time they're called (unless asked for the selected features
 only), as Load All Features does, and rows that can't be read are left out and said in
 `s.notices()`. `to_file` can be cheaper for a large layer: to GeoJSON, CSV,

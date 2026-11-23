@@ -636,6 +636,16 @@ impl Layer {
         self.source.is_some()
     }
 
+    /// How many features the layer has: a layer read in place has its source's total (`None` when
+    /// the source doesn't say, or isn't open yet), any other the features it holds. A definition
+    /// query doesn't change it.
+    pub fn feature_count(&self) -> Option<u64> {
+        match &self.source {
+            Some(src) => src.info().and_then(|i| i.count),
+            None => Some(self.dataset.features.len() as u64),
+        }
+    }
+
     /// Keeps a streamed layer's features up with the view (longitude/latitude): takes a finished
     /// read, and starts one when the view has moved beyond what was read. With `block`, reads in
     /// place and waits (for exports). Returns whether a read is still running.
@@ -4446,6 +4456,41 @@ mod tests {
         // Budget exhaustion falls back to the original, fully projected geometry.
         let full = flat.project(chunk.dataset.features[0].geometry.as_ref().unwrap());
         assert_eq!(chunk.thinned_in(&flat, "mercator", 1e6), &[Some(full)]);
+    }
+
+    /// #2678: a layer read in place counts its source's features, not the view's: whatever the
+    /// source says (even `u64::MAX`), `None` when it doesn't; any other layer counts what it holds.
+    #[test]
+    fn a_layer_read_in_place_counts_its_source() {
+        struct Says(rustgis_data::source::SourceInfo);
+        impl rustgis_data::source::FeatureSource for Says {
+            fn info(&self) -> &rustgis_data::source::SourceInfo {
+                &self.0
+            }
+            fn read(&self, _: &rustgis_data::source::Request) -> rustgis_data::Result<rustgis_data::source::Batch> {
+                Ok(rustgis_data::source::Batch::default())
+            }
+        }
+        let mut ds = Dataset::new("sites", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        ds.push(Some(Geometry::Point(Coord::new(1.0, 1.0))), vec![Value::Int(1)]);
+        let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&ds).unwrap());
+        let info = rustgis_data::source::open_shared("sites.fgb", bytes, None).unwrap().info().clone();
+        for count in [Some(101_082), Some(u64::MAX), Some(0), None] {
+            let src = source::SourceLayer::from_path(
+                "sites.fgb",
+                None,
+                Box::new(Says(rustgis_data::source::SourceInfo { count, ..info.clone() })),
+            );
+            let l = Layer::new_streamed(1, src);
+            assert!(l.dataset.features.is_empty());
+            assert_eq!(l.feature_count(), count);
+        }
+        // Not open yet: nothing to say.
+        assert_eq!(Layer::new_streamed(1, source::SourceLayer::default()).feature_count(), None);
+        let mut held = Layer::new(2, ds);
+        assert_eq!(held.feature_count(), Some(1));
+        held.definition_query = Some("n > 5".into());
+        assert_eq!(held.feature_count(), Some(1), "a definition query doesn't change the size");
     }
 
     /// #1456: a view holding more features than it reads keeps its limit of the definition

@@ -250,7 +250,11 @@ zoom in for more detail. The project keeps the address and reads it the same way
 A FlatGeobuf without an
 index, a GeoParquet without a covering column, or a server that doesn't answer range requests
 means the file is downloaded whole instead, as is any file added
-with `"whole": true`; Load All Features and the geoprocessing tools fetch the whole file on the
+with `"whole": true`. A download of more than 100,000 features is then read in place from the
+downloaded copy like a large local file, so `"whole"` saves the range requests, not memory.
+`info.project` gives such a layer's `features` as the source's total (null when the source doesn't
+say, as for a FlatGeobuf whose header says 0; an estimate for a large PostGIS table) and `loaded` as
+the features held now. Load All Features and the geoprocessing tools fetch the whole file on the
 desktop, while in the web app they need the file downloaded first.
 
 On desktop, `layer.addUrl` waits for downloads, up to a minute; the From URL… dialog (`ui.addUrl`)

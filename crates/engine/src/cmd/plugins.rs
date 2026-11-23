@@ -450,7 +450,8 @@ fn layers_of(s: &Session) -> Value {
             .map(|l| {
                 json!({
                     "id": l.id, "name": l.name, "raster": l.is_raster(), "visible": l.visible,
-                    "geometry": format!("{:?}", l.dataset.geometry_type), "features": l.dataset.features.len(),
+                    "geometry": format!("{:?}", l.dataset.geometry_type), "features": l.feature_count(),
+                    "loaded": l.dataset.features.len(), "streamed": l.is_streamed(),
                     "selected": l.selection.len(), "active": Some(l.id) == active,
                     "extent": super::project::bbox(l.extent()), "transparency": super::project::percent(l.transparency),
                     "crs": layer_crs(l).map(crs_name),
@@ -1147,7 +1148,7 @@ const RESTYLE_EVERY: web_time::Duration = web_time::Duration::from_secs(1);
 pub(crate) struct Seen {
     view: u64,
     /// Their list and order, which is active, names, visibility, opacity, symbology, fields and
-    /// features, and the web tile layers.
+    /// features (a layer read in place: its source's count too), and the web tile layers.
     layers: u64,
     selection: u64,
     /// Bumped when another project replaces the open one ([`Session::opened`]).
@@ -1204,6 +1205,8 @@ fn seen(s: &mut Session, view: &Value) -> Seen {
         (styled, s.active_layer).hash(h);
         for l in &map.layers {
             (l.id, &l.name, l.visible, l.transparency.to_bits(), l.geometry_rev, l.dataset.features.len()).hash(h);
+            // A layer read in place is counted by its source, which can come in before any view is read.
+            l.feature_count().hash(h);
             // Which rows these are: an edit writes new ones and undo puts the old ones back, so it
             // changes even where undo brings `geometry_rev` back to the edit's number.
             (l.dataset.features.allocation_key().as_ptr() as usize).hash(h);
@@ -1406,6 +1409,44 @@ mod tests {
         let _ = bridge.call("test.quietMap", &json!({}));
         assert!(bridge.s.declaration_broken.as_deref().is_some_and(|e| e.contains("test.quietMap")));
         rustgis_plugins::unload("eng-declared");
+    }
+
+    /// A layer read in place whose source's count changes (a source that opens after the layer is
+    /// added, before any view is read) is a layer change, though the features held are the same.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_changed_source_count_is_a_layer_change() {
+        use rustgis_data::source::{Batch, FeatureSource, Request, SourceInfo};
+        struct Says(SourceInfo);
+        impl FeatureSource for Says {
+            fn info(&self) -> &SourceInfo {
+                &self.0
+            }
+            fn read(&self, _: &Request) -> rustgis_data::Result<Batch> {
+                Ok(Batch::default())
+            }
+        }
+        let mut ds = rustgis_data::Dataset::new("pts", rustgis_data::GeometryType::Point, vec![]);
+        ds.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(1.0, 2.0))), vec![]);
+        let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&ds).unwrap());
+        let info = rustgis_data::source::open_shared("pts.fgb", bytes, None).unwrap().info().clone();
+        let layer = |count| {
+            let says = Says(SourceInfo { count, ..info.clone() });
+            rustgis_map::source::SourceLayer::from_path("pts.fgb", None, Box::new(says))
+        };
+        let mut s = Session::new(crate::Project::default());
+        let id = s.map_mut().add_streamed("pts".to_string(), layer(None));
+        let view = view_of(&s);
+        let unknown = seen(&mut s, &view);
+        if let Some(l) = s.map_mut().layer_mut(id) {
+            l.source = Some(layer(Some(300)));
+        }
+        let counted = seen(&mut s, &view);
+        assert_ne!(unknown.layers, counted.layers, "the count came in, nothing loaded changed");
+        if let Some(l) = s.map_mut().layer_mut(id) {
+            l.source = Some(layer(Some(301)));
+        }
+        assert_ne!(counted.layers, seen(&mut s, &view).layers);
     }
 
     /// A command that only left a download for the front end changed nothing, and a later one

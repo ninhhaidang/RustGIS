@@ -828,6 +828,30 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::MultilineTextInput, "Where").is_some());
     }
 
+    /// #2678: the Source tab gives a layer read in place its source's feature count, not the
+    /// view's (none is read here).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_source_tab_counts_a_layer_read_in_place_by_its_source() {
+        use rustgis_engine::data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as V, raster::Crs, source::gpkg};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places.gpkg");
+        let mut data = Dataset::new("places", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        for i in 0..7 {
+            data.push(Some(Geometry::Point(Coord::new(f64::from(i), 20.0))), vec![V::Text("a".into())]);
+        }
+        gpkg::write_in(&data, &path, Crs::LonLat).unwrap();
+        let mut app = RustGisApp::with_sample();
+        app.run("layer.addData", json!({"path": &path, "stream": true, "name": "Places"})).unwrap();
+        let places = layer_id(&app, "Places");
+        app.session.run("layer.select", &json!({"layer": places})).unwrap();
+        assert!(app.session.map().layer(places).is_some_and(|l| l.is_streamed() && l.dataset.features.is_empty()));
+        let mut h = harness(app);
+        h.run();
+        open_tab(&mut h, "Source");
+        assert!(h.query_by_label("7").is_some(), "the Features row doesn't say 7");
+    }
+
     /// A raster layer of 2 × 2 cells, added to the map; its id.
     fn add_raster(app: &mut RustGisApp) -> u32 {
         use rustgis_engine::data::raster::{ColorHint, Crs, GeoTransform, Raster};

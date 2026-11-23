@@ -1027,7 +1027,7 @@ fn item_help(session: &rustgis_engine::Session, of: &Of, item: &str) -> Option<(
                 "{type} · {n} features · {fields} fields",
                 &[
                     ("type", tl_raw!(l.geometry_type().label())),
-                    ("n", &l.dataset.features.len().to_string()),
+                    ("n", &l.feature_count().map_or_else(|| "?".to_string(), |n| n.to_string())),
                     ("fields", &l.dataset.fields.len().to_string()),
                 ],
             );

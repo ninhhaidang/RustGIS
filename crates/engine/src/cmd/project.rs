@@ -1044,6 +1044,8 @@ pub(crate) fn bbox(e: rustgis_geom::Extent) -> Value {
 /// Everything about the open project in one call (the AI Assistant's and MCP's `list_layers`).
 /// Layers are in table-of-contents order, top first. `nameFilter` keeps the layers and tables
 /// whose name holds it (ignoring case); `includeFields: false` leaves out their fields.
+/// A feature layer's `features` is its size: for a layer read in place (`streamed`) its source's
+/// total, `null` when the source doesn't say or isn't open; `loaded` is what is in memory now.
 /// Project inventory; additive element addresses leave existing map-frame summaries intact.
 fn info(s: &mut Session, p: &Value) -> CmdResult {
     let filter = ps(p, "nameFilter").map(|f| f.trim().to_lowercase()).filter(|f| !f.is_empty());
@@ -1074,8 +1076,8 @@ fn info(s: &mut Session, p: &Value) -> CmdResult {
                     "missing": rl.data.is_none(),
                 }),
                 None => json!({
-                    "id": l.id, "name": l.name, "type": l.geometry_type().label(), "features": l.dataset.features.len(),
-                    "visible": l.visible, "renderer": l.renderer.kind_label(), "selected": l.selection.len(),
+                    "id": l.id, "name": l.name, "type": l.geometry_type().label(), "features": l.feature_count(),
+                    "loaded": l.dataset.features.len(), "streamed": l.is_streamed(), "visible": l.visible, "renderer": l.renderer.kind_label(), "selected": l.selection.len(),
                     "definitionQuery": l.definition_query.as_deref().filter(|q| !q.trim().is_empty()),
                     // The text expression it labels by while that reads, as the map draws, else its field.
                     "labels": l.labels.enabled.then(|| {

@@ -4751,6 +4751,23 @@ fn list_layers_includes_web_tile_layers() {
     assert!(ctx.contains("characters in all)\" (index ") && ctx.contains("raster, overlay, over \"Cities\", hidden)"), "{ctx}");
 }
 
+/// The map summary gives a layer read in place its source's total, not the view's (#2678).
+#[test]
+fn the_map_summary_counts_a_layer_read_in_place_by_its_source() {
+    let dir = std::env::temp_dir().join(format!("rustgis-assistant-count-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pts.geojson");
+    let features: Vec<Value> =
+        (0..7).map(|i| json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [i, 0]}, "properties": {}})).collect();
+    std::fs::write(&path, json!({"type": "FeatureCollection", "features": features}).to_string()).unwrap();
+    let mut s = Session::new(Project::default());
+    let r = s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true, "name": "pts"})).unwrap();
+    assert_eq!(r["streamed"], true, "{r}");
+    let ctx = tools::context(&s);
+    assert!(ctx.contains("\"pts\"") && ctx.contains("7 features, read in place"), "{ctx}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Callback completion and a forged UI project-download request disclose their file reach.
 #[test]
 fn geolibre_download_callbacks_require_import_approval() {

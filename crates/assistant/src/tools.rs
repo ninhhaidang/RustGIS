@@ -1395,7 +1395,12 @@ pub fn context(s: &Session) -> String {
         let mut line = if l.is_raster() {
             format!("\n- \"{}\" (id {}, raster", l.name, l.id)
         } else {
-            format!("\n- \"{}\" (id {}, {}, {} features", l.name, l.id, l.geometry_type().label(), l.dataset.features.len())
+            let size = match (l.feature_count(), l.is_streamed()) {
+                (Some(n), false) => format!("{n} features"),
+                (Some(n), true) => format!("{n} features, read in place"),
+                (None, _) => "an unknown number of features, read in place".to_string(),
+            };
+            format!("\n- \"{}\" (id {}, {}, {size}", l.name, l.id, l.geometry_type().label())
         };
         if !l.visible {
             line.push_str(", hidden");
