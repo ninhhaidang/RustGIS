@@ -1,4 +1,4 @@
-//! The status bar's coordinate readout: a click steps map → decimal → DMS → UTM → MGRS, the choice
+//! The status bar's coordinate readout: a click steps map → decimal → DMS → UTM → MGRS → layer, the choice
 //! is remembered as a preference, and the readout shows the pointer in it.
 
 use std::sync::{Arc, Mutex};
@@ -28,13 +28,13 @@ fn the_format_cycles_persists_and_is_restored() {
     });
     assert_eq!(app.map.coord_format, CoordReadout::Map);
     let mut seen = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..6 {
         app.run("ui.coordinateFormat", Value::Null).unwrap();
         seen.push(app.map.coord_format.code());
     }
-    assert_eq!(seen, ["decimal", "dms", "utm", "mgrs", "map"]);
+    assert_eq!(seen, ["decimal", "dms", "utm", "mgrs", "layer", "map"]);
     let writes: Vec<String> = saved.lock().unwrap().iter().filter(|(k, _)| k == "coordinate_format").map(|(_, v)| v.clone()).collect();
-    assert_eq!(writes, ["decimal", "dms", "utm", "mgrs", "map"]);
+    assert_eq!(writes, ["decimal", "dms", "utm", "mgrs", "layer", "map"]);
     app.run("ui.coordinateFormat", json!({"format": "MGRS"})).unwrap();
     assert_eq!(app.map.coord_format, CoordReadout::Mgrs);
     for bad in [json!({"format": "ups"}), json!({"format": 3}), json!({"format": ""})] {
@@ -42,9 +42,13 @@ fn the_format_cycles_persists_and_is_restored() {
         assert_eq!(app.map.coord_format, CoordReadout::Mgrs, "{bad}");
     }
     // A saved choice comes back, with nothing to say.
-    for (pref, want) in
-        [("utm", CoordReadout::Utm), ("mgrs", CoordReadout::Mgrs), ("decimal", CoordReadout::Decimal), ("map", CoordReadout::Map)]
-    {
+    for (pref, want) in [
+        ("utm", CoordReadout::Utm),
+        ("mgrs", CoordReadout::Mgrs),
+        ("decimal", CoordReadout::Decimal),
+        ("map", CoordReadout::Map),
+        ("layer", CoordReadout::Layer),
+    ] {
         let restored = RustGisApp::with_sample().with_services(Services {
             load_pref: Some(Box::new(move |k| (k == "coordinate_format").then(|| pref.to_string()))),
             ..Services::default()
@@ -134,6 +138,17 @@ fn the_status_bar_reads_the_pointer_in_the_chosen_format_and_a_click_switches() 
     let mgrs = rustgis_engine::geom::format_mgrs(h.state().map.pointer_lonlat.unwrap()).unwrap();
     assert!(mgrs.starts_with("38S MB 4"), "{mgrs}");
     h.get_by_label(&mgrs).click();
+    hover_map(&mut h);
+    assert_eq!(h.state().map.coord_format, CoordReadout::Layer);
+    // The sample's layers are in longitude and latitude: layer coordinates read in degrees.
+    let at = h.state().map.pointer_lonlat.unwrap();
+    let layer = CoordReadout::Layer.readout(
+        Some(at),
+        true,
+        CoordReadout::Layer.system(h.state().session.map(), h.state().session.active_layer).as_ref(),
+    );
+    assert_eq!(layer, rustgis_engine::geom::format_lonlat(at));
+    h.get_by_label(&layer).click();
     hover_map(&mut h);
     assert_eq!(h.state().map.coord_format, CoordReadout::Map);
     // Where UTM has no zone the readout gives the polar grid, UPS (MGRS without a zone number).
@@ -256,4 +271,67 @@ fn the_position_is_dropped_on_another_map_or_project() {
     h.step();
     assert!(h.query_by_label(&decimal).is_none());
     h.get_by_label("—");
+}
+
+/// Layer coordinates read in the projected system the active layer was read in, in its unit, as
+/// `cs2cs` gives them; in degrees for a layer in degrees, with no layer active and on another
+/// body's map; and say so where the system doesn't reach.
+#[test]
+fn layer_coordinates_read_in_the_active_layers_system() {
+    use rustgis_engine::data::{Dataset, GeometryType, raster::Crs};
+    let mut app = RustGisApp::with_sample();
+    fn add_to(app: &mut RustGisApp, crs: Option<Crs>) -> u32 {
+        let mut ds = Dataset::new("held", GeometryType::Point, Vec::new());
+        ds.crs = crs;
+        app.session.map_mut().add_dataset(ds)
+    }
+    let (laea, texas, merc, lonlat, nad27) = (
+        add_to(&mut app, Some(Crs::from_epsg(3035).unwrap())),
+        add_to(&mut app, Some(Crs::from_epsg(2277).unwrap())),
+        add_to(&mut app, Some(Crs::WebMercator)),
+        add_to(&mut app, None),
+        add_to(&mut app, Some(Crs::from_epsg(4267).unwrap())),
+    );
+    let read = |app: &RustGisApp, id: Option<u32>, at: rustgis_engine::geom::Coord| {
+        CoordReadout::Layer.readout(
+            Some(at),
+            app.session.map().body().is_earth(),
+            CoordReadout::Layer.system(app.session.map(), id).as_ref(),
+        )
+    };
+    let number =
+        |part: &str, suffix: &str| -> f64 { part.trim().strip_suffix(suffix).unwrap_or_else(|| panic!("{part}")).parse().unwrap() };
+    // ETRS89 / LAEA Europe: `echo "49.85 15.3" | cs2cs EPSG:4326 EPSG:3035` gives N 2984581.1, E 4701839.1.
+    let p = rustgis_engine::geom::Coord::new(15.3, 49.85);
+    let r = read(&app, Some(laea), p);
+    let (e, n) = r.split_once("  ").unwrap();
+    assert!((number(e, " mE") - 4_701_839.1).abs() < 1.0 && (number(n, " mN") - 2_984_581.1).abs() < 1.0, "{r}");
+    assert_eq!(CoordReadout::Layer.system(app.session.map(), Some(laea)).unwrap().name(), "EPSG:3035");
+    // Texas Central in US survey feet.
+    let r = read(&app, Some(texas), rustgis_engine::geom::Coord::new(-97.74, 30.27));
+    assert!(r.contains(" ftUSE  ") && r.ends_with(" ftUSN"), "{r}");
+    // Web Mercator in its metres.
+    let r = read(&app, Some(merc), rustgis_engine::geom::Coord::new(0.0, 0.0));
+    assert_eq!(r, "0 mE  0 mN");
+    assert_eq!(CoordReadout::Layer.system(app.session.map(), Some(merc)).unwrap().name(), "Web Mercator");
+    // In degrees: a layer in longitude/latitude, one in another datum's degrees, none active.
+    for id in [Some(lonlat), Some(nad27), None] {
+        assert!(CoordReadout::Layer.system(app.session.map(), id).is_none(), "{id:?}");
+        assert_eq!(read(&app, id, p), rustgis_engine::geom::format_lonlat(p), "{id:?}");
+    }
+    // A westing and southing (South Africa's Lo29, `+axis=wsu`) would be mislabelled as an
+    // easting and northing: degrees instead.
+    let lo29 = Crs::parse("+proj=tmerc +lat_0=0 +lon_0=29 +k=1 +x_0=0 +y_0=0 +axis=wsu +ellps=WGS84 +units=m +no_defs").unwrap();
+    assert_ne!(lo29.axis_directions(), [(1.0, 0.0), (0.0, 1.0)]);
+    let lo29 = add_to(&mut app, Some(lo29));
+    assert!(CoordReadout::Layer.system(app.session.map(), Some(lo29)).is_none());
+    assert_eq!(
+        read(&app, Some(lo29), rustgis_engine::geom::Coord::new(29.0, -26.0)),
+        rustgis_engine::geom::format_lonlat(rustgis_engine::geom::Coord::new(29.0, -26.0))
+    );
+    // The hover names the format.
+    assert!(CoordReadout::Layer.hover().contains("active layer"));
+    // On another body's map, degrees.
+    app.run("map.body", json!({"name": "mars", "basemap": false})).unwrap();
+    assert!(CoordReadout::Layer.system(app.session.map(), Some(laea)).is_none());
 }

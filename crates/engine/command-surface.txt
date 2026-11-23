@@ -312,7 +312,7 @@ map.body name? basemap?
 map.camera lon? lat? scale?
 map.clipping mode distance?
 map.colorVision mode
-map.convertPosition lon x lat y position? digits?
+map.convertPosition lon x lat y crs? position? digits?
 map.displayType mode
 map.drawingMode mode
 map.duplicate map? name?
@@ -323,7 +323,7 @@ map.exportOrbit path frames? turn? width? height? dpi? speed?
 map.extent
 map.findPlace query provider? url? limit? go?
 map.goToLink url
-map.goToXY lon x lat y position? scale? bearing? pitch?
+map.goToXY lon x lat y crs? position? scale? bearing? pitch?
 map.graticule on? type? crs? onTop? color?
 map.import path text data
 map.link

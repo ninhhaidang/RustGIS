@@ -47,6 +47,13 @@ pub struct Dialogs {
     pub a: String,
     pub b: String,
     pub c: String,
+    /// Go To XY: the system its X and Y are in: empty for degrees, `map` for the map's own, or a
+    /// layer's name for the system it was read in.
+    pub xy_system: String,
+    /// Go To XY: the system `xy_system` named when its X and Y were filled ([`xy_key`]): the
+    /// map's projection, or a layer's, changing under the same entry makes them numbers in another
+    /// system.
+    pub xy_named: String,
     pub d: String,
     pub e: String,
     /// Add From Database: load the PostgreSQL table whole, to be edited and saved back.
@@ -229,9 +236,9 @@ impl Dialogs {
             "goToXY" => {
                 // The map's center, the longitude within ±180 even when the view has been panned
                 // past the antimeridian.
-                let c = s.map().center_lonlat();
-                self.a = format!("{:.4}", crate::mapmenu::wrap_lon(c.x));
-                self.b = format!("{:.4}", c.y);
+                // In degrees, as every dialog opens afresh, the boxes' system noted.
+                [self.a, self.b] = center_in(s.map(), "").unwrap_or_default();
+                self.xy_named = xy_key(s.map(), "");
             }
             "bookmark" => self.text = rustgis_engine::cmd::navigate::new_bookmark_name(s.map()),
             "camera" => {
@@ -434,29 +441,83 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
             "selectByAttributes" => close = select_by_attributes(app, ui, &t),
             "goToXY" => {
                 // UTM and MGRS are the Earth's grids, so another body's map offers degrees alone.
-                // A grid reference, once typed, is where Go goes: the degree boxes gray out.
+                // A grid reference, once typed, is where Go goes: the X and Y boxes gray out.
                 let earth = app.session.map().body().is_earth();
                 let by_grid = earth && !app.dialogs.text.trim().is_empty();
+                let (systems, left_out) = xy_systems(app.session.map());
+                // A system gone (its layer removed or renamed) leaves degrees, and the boxes empty:
+                // their numbers were in that system, not degrees.
+                if !systems.iter().any(|(id, _)| *id == app.dialogs.xy_system) {
+                    if !app.dialogs.xy_system.is_empty() {
+                        app.dialogs.a.clear();
+                        app.dialogs.b.clear();
+                    }
+                    app.dialogs.xy_system.clear();
+                    app.dialogs.xy_named = xy_key(app.session.map(), "");
+                }
+                // The same entry naming another system now (the map's projection changed, or a
+                // layer's system was defined): the boxes take the center in it, or are emptied.
+                let named = xy_key(app.session.map(), &app.dialogs.xy_system);
+                if named != app.dialogs.xy_named {
+                    [app.dialogs.a, app.dialogs.b] = center_in(app.session.map(), &app.dialogs.xy_system).unwrap_or_default();
+                    app.dialogs.xy_named = named;
+                }
+                let degrees = app.dialogs.xy_system.is_empty();
                 egui::Grid::new("xy").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-                    let input_label = ui.label(tl!("Longitude (X)"));
-                    ui.add_enabled(
-                        !by_grid,
-                        egui::TextEdit::singleline(&mut app.dialogs.a).hint_text("-74.006 · 74°0′22″W").desired_width(300.0),
-                    )
-                    .labelled_by(input_label.id);
+                    if systems.len() > 1 {
+                        let input_label = ui.label(tl!("Coordinates in"));
+                        let shown = systems.iter().find(|(id, _)| *id == app.dialogs.xy_system).map(|(_, l)| l.clone()).unwrap_or_default();
+                        let mut picked = None;
+                        egui::ComboBox::from_id_salt("xy_system")
+                            .selected_text(shown)
+                            .width(300.0)
+                            .show_ui(ui, |ui| {
+                                for (id, label) in &systems {
+                                    if ui.selectable_label(*id == app.dialogs.xy_system, label).clicked() {
+                                        picked = Some(id.clone());
+                                    }
+                                }
+                                // Said, not dropped quietly: the systems past the first ones listed.
+                                if left_out > 0 {
+                                    let n = left_out.to_string();
+                                    ui.label(
+                                        egui::RichText::new(crate::i18n::fmt(
+                                            "{n} more systems of layers not listed; map.goToXY takes any by its layer's name",
+                                            &[("n", &n)],
+                                        ))
+                                        .color(t.text_dim),
+                                    );
+                                }
+                            })
+                            .response
+                            .labelled_by(input_label.id);
+                        if let Some(id) = picked.filter(|id| *id != app.dialogs.xy_system) {
+                            // The boxes show the map's center in the system picked; empty when it
+                            // has none there, so numbers in the old system aren't read in the new.
+                            [app.dialogs.a, app.dialogs.b] = center_in(app.session.map(), &id).unwrap_or_default();
+                            app.dialogs.xy_named = xy_key(app.session.map(), &id);
+                            app.dialogs.xy_system = id;
+                        }
+                        ui.end_row();
+                    }
+                    let (x, y, x_hint, y_hint) = if degrees {
+                        (tl!("Longitude (X)"), tl!("Latitude (Y)"), "-74.006 · 74°0′22″W", "40.7128 · 40°42′46″N")
+                    } else {
+                        (tl!("Easting (X)"), tl!("Northing (Y)"), "2600000", "1200000")
+                    };
+                    let input_label = ui.label(x);
+                    ui.add_enabled(!by_grid, egui::TextEdit::singleline(&mut app.dialogs.a).hint_text(x_hint).desired_width(300.0))
+                        .labelled_by(input_label.id);
                     ui.end_row();
-                    let input_label = ui.label(tl!("Latitude (Y)"));
-                    ui.add_enabled(
-                        !by_grid,
-                        egui::TextEdit::singleline(&mut app.dialogs.b).hint_text("40.7128 · 40°42′46″N").desired_width(300.0),
-                    )
-                    .labelled_by(input_label.id);
+                    let input_label = ui.label(y);
+                    ui.add_enabled(!by_grid, egui::TextEdit::singleline(&mut app.dialogs.b).hint_text(y_hint).desired_width(300.0))
+                        .labelled_by(input_label.id);
                     ui.end_row();
                     if earth {
-                        let input_label = ui.label(tl!("Or grid reference"));
+                        let input_label = ui.label(tl!("Or position"));
                         ui.add(
                             egui::TextEdit::singleline(&mut app.dialogs.text)
-                                .hint_text("18TWL8395907350 · 18north 583959 4507351")
+                                .hint_text("18TWL8395907350 · 2600000 mE 1200000 mN EPSG:2056")
                                 .desired_width(300.0),
                         )
                         .labelled_by(input_label.id);
@@ -468,18 +529,24 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
                 // Below the boxes, wrapped to the dialog's width rather than widening it.
-                let hint = if earth {
-                    tl!("Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.")
-                } else {
-                    tl!("Degrees as decimals or degrees, minutes and seconds.")
+                let hint = match (earth, degrees) {
+                    (true, true) => tl!(
+                        "Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference, or an easting and northing with their system as the map's right-click menu copies them, in place of both."
+                    ),
+                    (true, false) => tl!(
+                        "The easting and northing in the system chosen; or a UTM or MGRS reference, or an easting and northing with their system, in place of both."
+                    ),
+                    (false, _) => tl!("Degrees as decimals or degrees, minutes and seconds."),
                 };
                 ui.label(egui::RichText::new(hint).weak());
                 close = buttons(app, ui, "Go", |app| {
                     let grid = app.dialogs.text.trim();
                     let mut p = if app.session.map().body().is_earth() && !grid.is_empty() {
                         json!({"position": grid})
-                    } else {
+                    } else if app.dialogs.xy_system.is_empty() {
                         json!({"lon": app.dialogs.a.trim(), "lat": app.dialogs.b.trim()})
+                    } else {
+                        json!({"x": app.dialogs.a.trim(), "y": app.dialogs.b.trim(), "crs": app.dialogs.xy_system})
                     };
                     // The command refuses a scale it can't use: commas go only where they group
                     // thousands (50,000), so a decimal comma (1,5) is refused, not read as 15.
@@ -1060,6 +1127,88 @@ pub fn open_dxf(app: &mut RustGisApp, name: &str, source: DxfSource) -> Result<V
 /// Opens Import DXF for a drawing on disk (a drop, Add Data, the Browser pane, `ui.addFile`).
 pub fn open_dxf_path(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
     open_dxf(app, path, DxfSource::Path(path.to_string()))
+}
+
+/// The systems Go To XY offers, as (what `map.goToXY` takes as `crs`, its label): degrees; on a
+/// flat map of the Earth, the map's own; and each layer read in a projected system, by name (at
+/// most [`XY_LAYER_SYSTEMS`], the first of each system). Also how many more systems the layers
+/// have that the list leaves out, for the list to say.
+fn xy_systems(map: &rustgis_engine::map::Map) -> (Vec<(String, String)>, usize) {
+    let mut v = vec![(String::new(), tl!("Degrees (longitude, latitude)").to_string())];
+    if map.body().is_earth() && !map.projection.is_globe() {
+        v.push(("map".into(), crate::i18n::fmt("The map's system ({system})", &[("system", &map.projection.label())])));
+        let (mut seen, mut left_out) = (Vec::new(), Vec::new());
+        for l in &map.layers {
+            // A layer named `map` would be taken for the map's own system, and one whose name another
+            // layer has first would be taken for that one.
+            // By the name as `map.goToXY` reads it, trimmed (a layer named " map " is the map's).
+            let found_by_name = map.layer_by_name(l.name.trim()).is_some_and(|f| f.id == l.id);
+            // Only a system of the Earth counted east, then north: X and Y are an easting and a
+            // northing, and another body's projection names no place on the Earth's map.
+            let Some(crs) = rustgis_engine::cmd::navigate::layer_coordinates_system(l).filter(|c| {
+                !c.is_geographic()
+                    && !c.is_planetary()
+                    && c.axis_directions() == [(1.0, 0.0), (0.0, 1.0)]
+                    && !l.name.trim().eq_ignore_ascii_case("map")
+                    && found_by_name
+            }) else {
+                continue;
+            };
+            if seen.contains(&crs) || left_out.contains(&crs) {
+                continue;
+            }
+            if seen.len() >= XY_LAYER_SYSTEMS {
+                left_out.push(crs);
+                continue;
+            }
+            seen.push(crs);
+            v.push((
+                l.name.clone(),
+                crate::i18n::fmt("Layer {layer} ({system})", &[("layer", &l.name), ("system", &short(&crs.definition_text()))]),
+            ));
+        }
+        return (v, left_out.len());
+    }
+    (v, 0)
+}
+
+/// The most layers' systems Go To XY's list offers, so a project of many doesn't make it a long
+/// scroll; the others are said under it, and still taken by a layer's name in `map.goToXY`.
+const XY_LAYER_SYSTEMS: usize = 20;
+
+/// The system a Go To XY entry (`id`, as [`xy_systems`] lists it) names now: degrees, the map's
+/// projection, or the system a layer was read in, by its definition (not the list's wording,
+/// which a change of language rewrites).
+fn xy_key(map: &rustgis_engine::map::Map, id: &str) -> String {
+    match id {
+        "" => String::new(),
+        "map" => format!("map {}", map.projection.code()),
+        layer => map
+            .layer_by_name(layer.trim())
+            .and_then(rustgis_engine::cmd::navigate::layer_coordinates_system)
+            .map(|c| format!("layer {}", c.definition_text()))
+            .unwrap_or_default(),
+    }
+}
+
+/// `text` cut to 60 characters, with an ellipsis when cut (a PROJ definition in a list).
+fn short(text: &str) -> String {
+    if text.chars().nth(60).is_some() { format!("{}…", text.chars().take(59).collect::<String>()) } else { text.to_string() }
+}
+
+/// The map's center in a Go To XY system (see [`xy_systems`]), as the X and Y boxes show it: degrees
+/// to four decimals, else to two.
+fn center_in(map: &rustgis_engine::map::Map, system: &str) -> Option<[String; 2]> {
+    let c = map.center_lonlat();
+    let c = rustgis_engine::geom::Coord::new(crate::mapmenu::wrap_lon(c.x), c.y);
+    let at = match system {
+        "" => return Some([format!("{:.4}", c.x), format!("{:.4}", c.y)]),
+        "map" => map.flat().forward(c)?,
+        layer => {
+            rustgis_engine::cmd::navigate::layer_coordinates_system(map.layer_by_name(layer.trim())?)?.transformer().ok()?.from_lonlat(c)?
+        }
+    };
+    at.is_finite().then(|| [format!("{:.2}", at.x), format!("{:.2}", at.y)])
 }
 
 /// The current map's coordinate system, as a DXF import can be given it: Web Mercator and the
@@ -3687,6 +3836,47 @@ mod tests {
         h.get_by_role_and_label(Role::Button, "Apply").click();
         h.run_steps(4);
         assert_eq!(h.state().session.map().projection.code(), "EPSG:2056");
+    }
+
+    /// Go To XY with the map's own system picked: when the map's projection changes while the
+    /// dialog is open, X and Y take the center in the new system, never the old numbers read in
+    /// it; numbers typed stay as they are frame after frame.
+    #[test]
+    fn go_to_xy_follows_the_maps_system_changing_under_it() {
+        let mut app = RustGisApp::with_sample();
+        app.run("map.projection", json!({"type": "EPSG:2056"})).unwrap();
+        app.run("map.goToXY", json!({"lon": 7.44, "lat": 46.95})).unwrap();
+        app.dialogs.open("goToXY", &app.session).unwrap();
+        app.dialogs.xy_system = "map".into();
+        let frame = |app: RustGisApp| {
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(1400.0, 1000.0))
+                .with_max_steps(8)
+                .with_context_setup(|ctx| crate::theme::install_fonts(ctx, &[], None))
+                .build_ui_state(
+                    |ui, app: &mut RustGisApp| {
+                        let ctx = ui.ctx().clone();
+                        app.logic(&ctx);
+                        app.ui(ui);
+                    },
+                    app,
+                );
+            h.run_steps(2);
+            h.into_state()
+        };
+        let mut app = frame(app);
+        let lv95 = center_in(app.session.map(), "map").unwrap();
+        assert_eq!([app.dialogs.a.clone(), app.dialogs.b.clone()], lv95, "the center in LV95");
+        assert!(app.dialogs.a.parse::<f64>().unwrap() > 2_000_000.0, "{}", app.dialogs.a);
+        app.run("map.projection", json!({"type": "mercator"})).unwrap();
+        let mut app = frame(app);
+        let mercator = center_in(app.session.map(), "map").unwrap();
+        assert_eq!([app.dialogs.a.clone(), app.dialogs.b.clone()], mercator, "the center in Web Mercator, not LV95's numbers");
+        assert_eq!(app.dialogs.xy_system, "map");
+        // Numbers typed stay.
+        app.dialogs.a = "830000".into();
+        let app = frame(app);
+        assert_eq!(app.dialogs.a, "830000");
     }
 
     /// In the app, Escape in a coordinate system box closes its list, not the dialog, and the

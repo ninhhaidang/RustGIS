@@ -839,7 +839,13 @@ impl Crs {
     /// semi-major axis isn't the Earth's ([`super::planetary`]). Its longitude/latitude are read as
     /// they are, on the Earth.
     pub fn is_planetary(self) -> bool {
-        self.custom_def().and_then(|d| super::planetary::proj4_axes(&d.proj4)).is_some_and(|(a, _)| super::planetary::off_earth(a))
+        self.planetary_semi_major().is_some()
+    }
+
+    /// The semi-major axis, in metres, of another body's system ([`Crs::is_planetary`]), which
+    /// tells the bodies apart; `None` for the Earth's.
+    pub fn planetary_semi_major(self) -> Option<f64> {
+        self.custom_def().and_then(|d| super::planetary::proj4_axes(&d.proj4)).map(|(a, _)| a).filter(|a| super::planetary::off_earth(*a))
     }
 
     /// A transformer between this system and WGS 84 longitude/latitude, built once a run per

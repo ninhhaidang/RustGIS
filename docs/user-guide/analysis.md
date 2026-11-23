@@ -1990,8 +1990,23 @@ The Imagery tab's groups open their tools in the Workflows pane. The tab belongs
   images are in another geographic system (NAD83, say), the run says so. A geographic `crs` other
   than EPSG:4326 is refused.
 - **Georeference** places a raster from control points (column, row, longitude, latitude) or
-  stretches it over the map view. Those only shift and scale a north-up grid, as RustGIS's
-  geotransform has no rotation. With `transform` (`raster.georeference`) the points are fitted by any
+  stretches it over the map view (**Fit To Map View**, `"extent": "view"`). Those only shift and
+  scale a north-up grid, as RustGIS's geotransform has no rotation. Fitted to the view, the raster
+  is placed in the map's own system on a flat map of the Earth (Web Mercator's EPSG:3857, the map's
+  EPSG or ESRI code, or a preset's definition), so it fills the view as drawn; on the globe and
+  another body's map, over the longitude and latitude box the view shows. A turned or tilted map
+  is refused (Reset North first), as is a Web Mercator view wider than the world or across the
+  antimeridian; a view of a world copy past it is fitted to the same place within ±180°. Control
+  points without `transform` are longitude and latitude, and `pointsCrs` or `crs` with them is
+  refused. An `extent` of four
+  numbers is in degrees, or in `crs` when given (`{"extent": [2599000, 1199000, 2601000, 1201000],
+  "crs": "EPSG:2056"}`), and the raster is placed in that system; an entry that isn't a number is
+  refused, not passed over. An extent goes without control points, `transform` and `pointsCrs`:
+  any of them beside it is refused, as none would be used. So are `name`, `path`, `cellSize` and
+  `resampling` without `transform`, as only a warp makes a new raster; without one the layer itself
+  is placed. The `extent` it answers is in longitude/latitude, whatever system the raster is
+  placed in.
+  With `transform` (`raster.georeference`) the points are fitted by any
   of the Control Point Fit transforms and the raster is warped onto a new north-up grid covering the
   warped image: `{"layer": "scan", "transform": "spline", "points": [[column, row, x, y], …],
   "pointsCrs": "EPSG:4326", "crs": 32613, "resampling": "bilinear", "cellSize": 5, "name": "warped",

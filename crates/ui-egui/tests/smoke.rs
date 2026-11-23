@@ -4998,6 +4998,61 @@ fn by_coordinates_reads_x_y_and_a_grid_reference() {
     assert!((c.y - 40.7128).abs() < 1e-3 && (c.x + 74.006).abs() < 1e-3, "{c:?}");
 }
 
+/// On a projected map By Coordinates offers the map's own system: picked, the boxes show the map's
+/// center as an easting and a northing, and Go goes to the easting and northing typed. A position
+/// written as the right-click menu copies it, with its system, goes there too.
+#[test]
+fn by_coordinates_takes_an_easting_and_northing_in_the_maps_system() {
+    let mut h = harness();
+    h.state_mut().run("map.projection", json!({"type": "EPSG:2056"})).unwrap();
+    h.state_mut().run("map.goToXY", json!({"lon": 8.54, "lat": 47.37, "scale": 50_000})).unwrap();
+    h.state_mut().run("ui.dialog", json!({"name": "goToXY"})).unwrap();
+    h.step();
+    assert_eq!(h.state().dialogs.xy_system, "", "degrees first");
+    h.step();
+    h.get_by_label("Coordinates in").click();
+    h.step();
+    h.step();
+    h.get_by_label("The map's system (EPSG:2056)").click();
+    h.step();
+    assert_eq!(h.state().dialogs.xy_system, "map");
+    // Zürich, about E 2683000, N 1247000.
+    let (e, n): (f64, f64) = (h.state().dialogs.a.parse().unwrap(), h.state().dialogs.b.parse().unwrap());
+    assert!((e - 2_683_000.0).abs() < 2_000.0 && (n - 1_247_000.0).abs() < 2_000.0, "{e} {n}");
+    h.step();
+    h.get_by_label("Easting (X)");
+    h.state_mut().dialogs.a = "2600000".into();
+    h.state_mut().dialogs.b = "1200000".into();
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    assert_eq!(h.state().dialogs.open, None, "{:?}", h.state().dialogs.error);
+    let c = h.state().session.map().center_lonlat();
+    assert!((c.x - 7.4386).abs() < 2e-3 && (c.y - 46.9511).abs() < 2e-3, "Bern: {c:?}");
+    // The menu's copy, pasted into the position box.
+    h.state_mut().run("map.goToXY", json!({"lon": 8.54, "lat": 47.37})).unwrap();
+    h.state_mut().run("ui.dialog", json!({"name": "goToXY"})).unwrap();
+    h.step();
+    h.state_mut().dialogs.text = "2600000 mE  1200000 mN  EPSG:2056".into();
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    assert_eq!(h.state().dialogs.open, None, "{:?}", h.state().dialogs.error);
+    let c = h.state().session.map().center_lonlat();
+    assert!((c.x - 7.4386).abs() < 2e-3 && (c.y - 46.9511).abs() < 2e-3, "Bern: {c:?}");
+    // The system picked gone (the map turned to the globe, with no flat system of its own): back
+    // to degrees with the boxes empty, so its easting and northing aren't sent as degrees.
+    h.state_mut().run("ui.dialog", json!({"name": "goToXY"})).unwrap();
+    h.step();
+    h.state_mut().dialogs.xy_system = "map".into();
+    h.state_mut().dialogs.a = "2600000".into();
+    h.state_mut().dialogs.b = "1200000".into();
+    h.state_mut().run("map.projection", json!({"type": "globe"})).unwrap();
+    h.step();
+    let d = &h.state().dialogs;
+    assert_eq!((d.xy_system.as_str(), d.a.as_str(), d.b.as_str()), ("", "", ""));
+}
+
 /// Panned past the antimeridian, By Coordinates still opens on a longitude within ±180, so Go on
 /// the text it wrote goes there.
 #[test]

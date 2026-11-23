@@ -47,7 +47,7 @@ fn first() -> String {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("raster.georeference", "Georeference", "Imagery › Alignment", georeference).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"layer": raster, "points"?: [[column, row, lon, lat], …] (two or more; with "transform": [column, row, x, y, on?]), "extent"?: [minLon, minLat, maxLon, maxLat], "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (fits the points and warps the raster onto a north-up grid covering the warped image; without it the points and extent only shift and scale the grid), "pointsCrs"?: EPSG code or "EPSG:n" of the points' x and y (default 4326), "crs"?: the output's (default pointsCrs), "resampling"?: "nearest"|"bilinear"|"cubic" (default bilinear), "cellSize"?: output units (default about the source pixel's size on the ground), "name"?: new layer for the result (default replaces the layer's raster), "path"?: "*.tif" (also writes the warp as a cloud-optimised GeoTIFF)}"#,
+            r#"{"layer": raster, "points"?: [[column, row, lon, lat], …] (two or more; with "transform": [column, row, x, y, on?]), "extent"?: [minX, minY, maxX, maxY] in degrees, or in crs when given, | "view" (the map view, in the map's own system on a flat map of the Earth, so the raster fills the view as drawn); not with transform, "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (fits the points and warps the raster onto a north-up grid covering the warped image; without it the points and extent only shift and scale the grid), "pointsCrs"?: EPSG code or "EPSG:n" of the points' x and y (default 4326; with transform only, not with an extent), "crs"?: the output's (default pointsCrs); with an extent of four numbers, their system and the result's, "resampling"?: "nearest"|"bilinear"|"cubic" (default bilinear), "cellSize"?: output units (default about the source pixel's size on the ground), "name"?: new layer for the result (default replaces the layer's raster), "path"?: "*.tif" (also writes the warp as a cloud-optimised GeoTIFF); resampling, cellSize, name and path with transform only}"#,
         ),
         C::new("raster.project", "Project Raster", "Analyze › Raster", project_raster).inputs(project_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (default about the layer's pixel there), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the layer's footprint), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "resampling"?: "nearest" (default) | "bilinear" | "cubic" | "average" (the mean of the pixels whose centres fall in a cell) | "mode" (their most frequent value, the least of those tied), "name"?: new layer (default "<layer> projected"), "path"?: GeoTIFF to write it to}"#,
@@ -250,17 +250,61 @@ fn rebuild(r: &Raster, transform: GeoTransform, crs: Crs, bands: Vec<Vec<f32>>) 
 fn georeference(s: &mut Session, p: &Value) -> CmdResult {
     let layer = ps(p, "layer").ok_or("layer is required")?.to_string();
     let r = raster(s, p)?;
-    if p.get("transform").is_some() {
+    if p.get("transform").is_some_and(|v| !v.is_null()) {
+        // A transform fits control points: an extent given beside it would be passed over.
+        if p.get("extent").is_some_and(|e| !e.is_null()) {
+            return Err("give either a transform with control points or an extent, not both".into());
+        }
         return warp_to_fit(s, p, &layer, &r);
     }
-    let gt = if let Some(e) = p.get("extent").and_then(Value::as_array) {
-        let n: Vec<f64> = e.iter().filter_map(Value::as_f64).collect();
-        let [x0, y0, x1, y1] = n.as_slice() else { return Err("extent is [minLon, minLat, maxLon, maxLat]".into()) };
-        if !(x0 < x1 && y0 < y1) {
-            return Err("extent is [minLon, minLat, maxLon, maxLat]".into());
+    // An extent is placed in crs (or the map's system for "view"): pointsCrs, the control
+    // points' system, would be passed over.
+    if p.get("extent").is_some_and(|e| !e.is_null()) && crs_param_read(p, "pointsCrs")?.0.is_some() {
+        return Err("pointsCrs goes with control points and a transform, not with an extent (one of four numbers takes crs)".into());
+    }
+    let mut crs = Crs::LonLat;
+    let extent = match p.get("extent") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(v)) if v == "view" => {
+            if crs_param_read(p, "crs")?.0.is_some() {
+                return Err("crs goes with an extent of four numbers; \"view\" is in the map's own system".into());
+            }
+            let (e, view_crs) = view_in_map_system(s)?;
+            crs = view_crs;
+            Some([e.min_x, e.min_y, e.max_x, e.max_y])
         }
-        GeoTransform { origin_x: *x0, origin_y: *y1, pixel_width: (x1 - x0) / r.width as f64, pixel_height: -(y1 - y0) / r.height as f64 }
+        Some(Value::Array(e)) => {
+            // Exactly four numbers: an entry that isn't one is refused, not passed over.
+            let n: Vec<f64> = e.iter().map_while(|v| v.as_f64().filter(|v| v.is_finite())).collect();
+            let given = crs_param(s, p, "crs")?;
+            let ([x0, y0, x1, y1], 4) = (n.as_slice(), e.len()) else {
+                return Err("extent is [minX, minY, maxX, maxY] (degrees, or in crs)".into());
+            };
+            crs = given.unwrap_or(Crs::LonLat);
+            Some([*x0, *y0, *x1, *y1])
+        }
+        Some(_) => return Err("extent is [minX, minY, maxX, maxY] (degrees, or in crs) or \"view\"".into()),
+    };
+    // An extent places the raster on its own: control points beside it would be passed over.
+    if extent.is_some() && p.get("points").is_some_and(|v| !v.is_null()) {
+        return Err("give either an extent or control points, not both".into());
+    }
+    // Without a transform the raster is placed where it is, its pixels kept: what only a warp
+    // uses (a new layer or file for its result, a cell size, a resampling) would be passed over,
+    // and the layer placed in place of a new one. Refused before anything is copied.
+    if let Some(key) = ["name", "path", "cellSize", "resampling"].into_iter().find(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+        return Err(format!("{key} goes with a transform, which warps the raster into a new grid; without one the layer itself is placed"));
+    }
+    let gt = if let Some([x0, y0, x1, y1]) = extent {
+        if !(x0 < x1 && y0 < y1) {
+            return Err("extent is [minX, minY, maxX, maxY]: each min below its max".into());
+        }
+        GeoTransform { origin_x: x0, origin_y: y1, pixel_width: (x1 - x0) / r.width as f64, pixel_height: -(y1 - y0) / r.height as f64 }
     } else {
+        // Without a transform the points are degrees, placed as such.
+        if crs_param_read(p, "crs")?.0.is_some() || crs_param_read(p, "pointsCrs")?.0.is_some() {
+            return Err("control points without a transform are longitude and latitude: give transform to use pointsCrs and crs".into());
+        }
         let pts: Vec<[f64; 4]> = p
             .get("points")
             .and_then(Value::as_array)
@@ -300,13 +344,60 @@ fn georeference(s: &mut Session, p: &Value) -> CmdResult {
         }
         GeoTransform { origin_x: bx, origin_y: by, pixel_width: ax, pixel_height: ay }
     };
-    let mut out = rebuild(&r, gt, Crs::LonLat, copied(&r)?)?;
+    let mut out = rebuild(&r, gt, crs, copied(&r)?)?;
     // The same pixels, so the same values rounded when the file was read.
     out.rounded = r.rounded.clone();
     out.rounded_some = r.rounded_some.clone();
     let e = out.extent();
     let v = replace(s, &layer, out)?;
     Ok(json!({"layer": v["layer"], "extent": [e.min_x, e.min_y, e.max_x, e.max_y]}))
+}
+
+/// The map view's rectangle and the system it is in, for fitting a raster to it: on a flat map of
+/// the Earth, the view in the map's own units and system (Web Mercator's EPSG:3857, the map's EPSG
+/// or ESRI code, or the definition of a preset or local view), so the raster fills the view as
+/// drawn; on the globe and another body's map, the longitude and latitude box the view shows.
+fn view_in_map_system(s: &Session) -> Result<(rustgis_geom::Extent, Crs), String> {
+    let m = s.map();
+    let (w, h) = s.view_size;
+    // A turned or tilted view isn't a north-up rectangle a raster's grid can fill.
+    if m.camera.bearing != 0.0 || m.camera.pitch != 0.0 {
+        return Err("the map is turned or tilted: face north and look straight down (Reset North) to fit a raster to the view".into());
+    }
+    let flat_earth = m.body().is_earth() && !m.projection.is_globe();
+    if flat_earth {
+        let e = m.camera.extent(w, h);
+        let crs = match &m.projection {
+            rustgis_map::Projection::Custom(code) => match rustgis_map::projection::Projector::new(code)?.crs() {
+                Some(c) => c,
+                None => Crs::parse(&rustgis_map::projection::lookup(code)?.0)?,
+            },
+            _ => Crs::WebMercator,
+        };
+        if [e.min_x, e.min_y, e.max_x, e.max_y].iter().any(|v| !v.is_finite()) || e.is_empty() {
+            return Err("the map view shows no area to fit to".into());
+        }
+        // A world copy past the antimeridian is the same place within the world's ±180°; a view
+        // wider than the world has no single place.
+        if matches!(m.projection, rustgis_map::Projection::WebMercator) {
+            let world = 2.0 * std::f64::consts::PI * rustgis_geom::MERCATOR_R;
+            if e.width() > world || e.height() > world {
+                return Err("the map view is wider than the world: zoom in to fit a raster to it".into());
+            }
+            let shift = ((e.min_x + world / 2.0) / world).floor() * world;
+            let shift = if e.max_x - shift > world / 2.0 + 1e-6 { shift + world } else { shift };
+            if e.min_x - shift < -world / 2.0 - 1e-6 {
+                return Err("the map view crosses the antimeridian: pan it to one side to fit a raster to it".into());
+            }
+            return Ok((rustgis_geom::Extent::new(e.min_x - shift, e.min_y, e.max_x - shift, e.max_y), crs));
+        }
+        return Ok((e, crs));
+    }
+    let e = super::workspace::view_extent_of(m, (w, h));
+    if e.is_empty() {
+        return Err("the map view shows no part of the map to fit to".into());
+    }
+    Ok((e, Crs::LonLat))
 }
 
 /// A coordinate system given as an EPSG code or any text [`Crs::parse`] reads.

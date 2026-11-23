@@ -58,11 +58,12 @@ fn lat_lon(c: Coord) -> String {
 /// to latitude and longitude (and the row's hover text says why). Map coordinates are the map's
 /// own system's (`map`), followed by its name so the copy says which system they are in
 /// (`2600173 mE  1200272 mN  EPSG:2056`); without one (the globe, another body) they are latitude
-/// and longitude, and where the system doesn't reach they fall back to them.
+/// and longitude, and where the system doesn't reach they fall back to them. Layer coordinates are
+/// the active layer's projected system's alike (latitude and longitude without one).
 fn coordinate_row(c: Coord, f: CoordReadout, earth: bool, map: Option<&MapSystem>) -> (String, bool) {
     match (f, map) {
-        (CoordReadout::Decimal, _) | (CoordReadout::Map, None) => (lat_lon(c), false),
-        (CoordReadout::Map, Some(m)) => match f.format(c, earth, map) {
+        (CoordReadout::Decimal, _) | (CoordReadout::Map | CoordReadout::Layer, None) => (lat_lon(c), false),
+        (CoordReadout::Map | CoordReadout::Layer, Some(m)) => match f.format(c, earth, map) {
             Some(text) => (format!("{text}  {}", m.name()), false),
             None => (lat_lon(c), true),
         },
@@ -132,10 +133,13 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui, c: Coord) {
     crate::shapeconvert::menu(app, ui);
     let format = app.map.coord_format;
     let earth = app.session.map().body().is_earth();
-    let system = MapSystem::of(app.session.map());
+    let system = format.system(app.session.map(), app.session.active_layer);
     let (coords, fell_back) = coordinate_row(c, format, earth, system.as_ref());
     let hover = if fell_back && format == CoordReadout::Map {
         tl!("Copy coordinates to the clipboard. The map's coordinate system doesn't reach here, so latitude and longitude are copied")
+            .to_string()
+    } else if fell_back && format == CoordReadout::Layer {
+        tl!("Copy coordinates to the clipboard. The active layer's coordinate system doesn't reach here, so latitude and longitude are copied")
             .to_string()
     } else if fell_back && !earth {
         i18n::fmt(
@@ -341,5 +345,26 @@ mod tests {
         assert!(bern.starts_with("2599") && bern.ends_with(" mN  EPSG:2056"), "{bern}");
         let far = Coord::new(-150.0, -60.0);
         assert_eq!(coordinate_row(far, CoordReadout::Map, true, Some(&lv95)), ("-60.000000, -150.000000".into(), true));
+    }
+
+    /// Layer coordinates copy the active layer's projected system's easting and northing with its
+    /// code, as Go To XY reads them back, and latitude and longitude without such a layer.
+    #[test]
+    fn the_layer_row_copies_the_layers_system_by_its_code() {
+        use rustgis_engine::data::{Dataset, GeometryType, raster::Crs};
+        let mut s = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        let mut ds = Dataset::new("laea", GeometryType::Point, Vec::new());
+        ds.crs = Some(Crs::from_epsg(3035).unwrap());
+        let id = s.map_mut().add_dataset(ds);
+        let p = Coord::new(15.3, 49.85);
+        let laea = CoordReadout::Layer.system(s.map(), Some(id));
+        let (row, fell_back) = coordinate_row(p, CoordReadout::Layer, true, laea.as_ref());
+        assert!(!fell_back && row.ends_with(" mN  EPSG:3035"), "{row}");
+        // The copy is a position Go To XY reads, at the same place.
+        s.run("map.goToXY", &serde_json::json!({"position": row})).unwrap();
+        let c = s.map().center_lonlat();
+        assert!((c.x - 15.3).abs() < 1e-4 && (c.y - 49.85).abs() < 1e-4, "{row}: {c:?}");
+        // No layer active: latitude and longitude.
+        assert_eq!(coordinate_row(p, CoordReadout::Layer, true, CoordReadout::Layer.system(s.map(), None).as_ref()), (lat_lon(p), false));
     }
 }

@@ -17,7 +17,7 @@ pub fn commands() -> Vec<C> {
     vec![
         // Not a view command: going to a feature selects it.
         C::new("map.search", "Search", "Map", search_cmd).inputs(search_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
-            r#"{"query": "a latitude and longitude (40.7, -74.0; 40°42'N 74°0'W), a UTM position (33U 412345 5523456; 33 north 412345 5523456) or an MGRS reference (33UVP1234523456; 33U VP 12345 23456), north of 84° N or south of 80° S UPS (north 2077146 1562481) or polar MGRS (Z AC 77146 62481; ZAC7714662481), a layer, a bookmark or a value in a layer's table. Polar text that may be a name or a code (BAG123456) lists table hits first and answers coordinateMayBeText", "limit"?: 1–50, "go"?: true (the first hit) | index}"#,
+            r#"{"query": "a latitude and longitude (40.7, -74.0; 40°42'N 74°0'W), a UTM position (33U 412345 5523456; 33 north 412345 5523456) or an MGRS reference (33UVP1234523456; 33U VP 12345 23456), north of 84° N or south of 80° S UPS (north 2077146 1562481) or polar MGRS (Z AC 77146 62481; ZAC7714662481), an easting and northing with their system as the map's right-click menu copies them (2600000 mE 1200000 mN EPSG:2056; answers positionError when that names no place), a layer, a bookmark or a value in a layer's table. Polar text that may be a name or a code (BAG123456) lists table hits first and answers coordinateMayBeText", "limit"?: 1–50, "go"?: true (the first hit) | index}"#,
         ),
     ]
 }
@@ -136,6 +136,11 @@ pub struct Results {
     /// that doesn't hold its northing, square letters the zone doesn't use, `S` that may mean
     /// south); `None` when it isn't written as one, or reads.
     pub grid_error: Option<GridError>,
+    /// Why the query, written as an easting and a northing with their system (as the map's
+    /// right-click menu copies them), names no place: a unit the system doesn't count in, a
+    /// system of the Earth on another body's map, a place outside the system. `None` when it isn't
+    /// written so, or reads.
+    pub position_error: Option<String>,
     /// Whether the coordinate among the hits was read from text that may as well be a name or a
     /// code: a polar (UPS) reference, which starts with a letter (`BAG123456`), unless it is
     /// plainly a place ([`plainly_polar_place`]). The search box still
@@ -167,9 +172,21 @@ fn search_map(map: &rustgis_map::Map, query: &str, limit: usize) -> Results {
     // place comes after their hits, so a feature named so is found first.
     let mut plainly_coordinate = false;
     let mut polar_place = None;
-    if let Some(c) = parse_lat_lon(&q) {
+    // Read once: it may name a system whose conversion is made then, and the search box asks as
+    // you type.
+    let lat_lon = parse_lat_lon(&q);
+    let in_system = if lat_lon.is_none() { super::navigate::read_system_position(map, &q) } else { None };
+    if let Some(c) = lat_lon {
         out.hits.push(Hit::Coordinate { lon: c.x, lat: c.y });
         plainly_coordinate = q.chars().any(|c| matches!(c, '.' | '°' | 'º' | '\'' | '′' | '"' | '″') || c.is_alphabetic());
+    } else if let Some(Ok(c)) = in_system {
+        // An easting and a northing in a named system, as the map's right-click menu copies them
+        // (`2600000 mE  1200000 mN  EPSG:2056`). Plainly one when the system is a code; a name
+        // (`12 34 robinson`) may be a feature's too, so the tables are searched as well.
+        out.hits.push(Hit::Coordinate { lon: c.x, lat: c.y });
+        plainly_coordinate = q.contains(':');
+    } else if let Some(Err(e)) = in_system {
+        out.position_error = Some(e);
     } else if map.body().is_earth() {
         match read_grid_reference(&q) {
             Ok(c) if letter_led(&q) && !plainly_polar_place(&q) => polar_place = Some(c),
@@ -368,10 +385,11 @@ fn search_request(map: &rustgis_map::Map, p: &Value) -> Result<(Results, Option<
         ),
     };
     if let Some(i) = pick {
-        r.hits.get(i).ok_or_else(|| match (r.hits.is_empty(), r.grid_error) {
-            (true, Some(e)) => format!("nothing matches '{query}': as a grid reference, {e}"),
-            (true, None) => format!("nothing matches '{query}'"),
-            (false, _) => format!("no hit {i}"),
+        r.hits.get(i).ok_or_else(|| match (r.hits.is_empty(), r.grid_error, &r.position_error) {
+            (true, Some(e), _) => format!("nothing matches '{query}': as a grid reference, {e}"),
+            (true, None, Some(e)) => format!("nothing matches '{query}': as a position, {e}"),
+            (true, None, None) => format!("nothing matches '{query}'"),
+            (false, ..) => format!("no hit {i}"),
         })?;
     }
     Ok((r, pick))
@@ -404,6 +422,9 @@ fn search_cmd(s: &mut Session, p: &Value) -> CmdResult {
     let mut out = json!({"hits": r.hits.iter().map(Hit::to_json).collect::<Vec<_>>(), "partial": r.partial});
     if let Some(e) = r.grid_error {
         out["gridError"] = json!(e.to_string());
+    }
+    if let Some(e) = &r.position_error {
+        out["positionError"] = json!(e);
     }
     if r.coordinate_may_be_text {
         // The coordinate hit came from polar grid text that may as well be a name or a code.

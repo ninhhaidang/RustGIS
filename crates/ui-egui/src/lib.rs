@@ -4315,8 +4315,8 @@ impl RustGisApp {
                 let format = match p.get("format") {
                     None | Some(Value::Null) => self.map.coord_format.next(),
                     Some(Value::String(v)) => CoordReadout::from_code(v)
-                        .ok_or_else(|| tl!("The coordinate format must be map, decimal, dms, utm or mgrs").to_string())?,
-                    _ => return Err(tl!("The coordinate format must be map, decimal, dms, utm or mgrs").into()),
+                        .ok_or_else(|| tl!("The coordinate format must be map, layer, decimal, dms, utm or mgrs").to_string())?,
+                    _ => return Err(tl!("The coordinate format must be map, layer, decimal, dms, utm or mgrs").into()),
                 };
                 self.map.coord_format = format;
                 self.save_pref(coordreadout::PREF, format.code());

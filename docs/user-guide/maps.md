@@ -14,9 +14,28 @@ Europe, Africa, Americas and East Asia), and **Locate**: **By Coordinates…** p
 (X) and latitude (Y), each in decimal degrees or degrees, minutes and seconds (`-74.006` or
 `74°0'22"W`; `40.7128` or `40°42'46"N`; an N or S in the longitude is refused, not swapped), or on
 the Earth's map to a UTM or MGRS grid reference in place of both (`18north 583959 4507351`,
-`18TWL8395907350`). `map.goToXY` takes the same: `lon` and `lat` as numbers or text, or a
-`position` read as the search box reads it, latitude first; two bare numbers there are said back
-as the latitude and longitude they were read as. A reference that names no place says why; an
+`18TWL8395907350`). On a flat map of the Earth, **Coordinates in** also offers the map's own
+system and each layer's projected system: X and Y are then an easting and a northing there,
+starting at the map's center. The position box (and the search box) also reads an easting and a
+northing followed by their system, as the right-click menu copies them in map coordinates
+(`2600000 mE  1200000 mN  EPSG:2056`, `2600000 1200000 EPSG:2056`; the system as a code, `Web
+Mercator`, a projection preset, or `map` for the map's own). A system in degrees is refused there,
+as degrees go without a system, latitude first, and so are numbers that read as degrees typed
+before a projected system with no unit written (`46.95 7.44 EPSG:2056`); with a unit written
+after each number they are the system's. A layer in a projection of the Earth names
+no place on another body's map, nor does another body's projection on the Earth's map (or on a
+third body's: Mars's on the Moon's), and the dialog doesn't offer one. X and Y are an easting and a
+northing: a system counted west or south, or northing first, is refused (and not offered in the
+dialog), and a raster layer gives the system its pixels are in (one with no
+pixels loaded, still opening or unreadable, is refused). A unit written (`m`, `ft`, `ftUS`)
+must be the system's: feet in a system of metres are refused, not read as metres; the search
+box then says why, and `map.search` returns the reason as `positionError`. On another body's map, a
+system named by a code is the Earth's and is refused. `map.goToXY` takes the same: `lon` and `lat` as numbers or
+text, or `x` and `y` with `crs` (`"map"`, a layer's name for the system it was read in, or a
+code such as `EPSG:2056`; a layer named like a code means the layer), or a `position` read as the search box reads it, latitude first; two
+bare numbers there are said back as the latitude and longitude they were read as. A place a
+system's formulas don't reach (one that doesn't project back to the same easting and northing)
+is refused. A reference that names no place says why; an
 MGRS reference coarser than a meter (`18TWL`) goes to the center of its square and says so.
 **By Place or Address…** finds a place or address with a geocoder.
 **New Bookmark…**
@@ -317,7 +336,7 @@ and **View In Google Earth** open the place in your browser at about the same zo
 The status bar shows the pointer's coordinates while it is over the map, and keeps the last
 position (dimmed) when it leaves, so you can move to the status bar and click it. It reads `—`
 until the pointer has been over the map, and again after you switch to another map or open another
-project. Click the coordinates to step through five formats; the choice is remembered and also
+project. Click the coordinates to step through six formats; the choice is remembered and also
 sets the right-click menu's first row. The same place in each:
 
 | Format | Example | Notes |
@@ -327,6 +346,7 @@ sets the right-click menu's first row. The same place in each:
 | DMS | `15°18′00.0″ E  49°51′00.0″ N` | degrees, minutes and seconds |
 | UTM | `33north 521567 5521996` | zone and hemisphere (`33south …` south of the equator), easting and northing in metres, rounded to the metre |
 | MGRS | `33U WR 21566 21996` | zone (two digits: `04Q FJ …`) and band, the 100 km square, easting and northing within it, truncated to the metre |
+| Layer coordinates | `4701839 mE  2984581 mN` | easting and northing in the projected coordinate system the active layer was read in (here ETRS89 / LAEA Europe, EPSG:3035), named beside them, in its unit, as map coordinates are; in decimal degrees for a layer in degrees, on another body's map, with no layer active, or in a system whose axes aren't east, then north (a westing and southing, such as South Africa's Lo grids) |
 
 UTM states the hemisphere, as GeographicLib's `GeoConvert -u -l` writes it, not the latitude band:
 in plain UTM a letter after the zone is commonly read as the hemisphere, so `38S` (band S, 32° N
@@ -347,7 +367,10 @@ or oblique projection), they read *No map coordinates here*, and the right-click
 latitude and longitude instead. A projection can reach well beyond a national grid's area of use:
 London on a map in LV95 still reads eastings and northings. In map coordinates the right-click
 menu's row copies the system's name after them, `2600173 mE  1200272 mN  EPSG:2056`, so the copy
-says which system it is in. Scripts set the format with `ui.coordinateFormat={"format":"utm"}` (`map`, `decimal`,
+says which system it is in; in layer coordinates, the layer's system's code (`… EPSG:3035`), so the copy
+pastes back into **Go To XY**'s position box and the search box (a system with no EPSG code is named
+by its name, which they don't read). Where the layer's system doesn't reach, the row copies latitude
+and longitude. Scripts set the format with `ui.coordinateFormat={"format":"utm"}` (`map`, `layer`, `decimal`,
 `dms`, `utm` or `mgrs`); without `format` it steps to the next one. A saved format this version
 doesn't know, say from a newer RustGIS, reads in map coordinates with a notice, and stays saved
 until you pick a format.

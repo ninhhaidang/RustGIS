@@ -42,10 +42,10 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"extent": [minLon, minLat, maxLon, maxLat]}"#),
         C::new("map.goToXY", "By Coordinates…", "Home › Navigate › Locate", go_to_xy).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
-            .params(r#"{"lon" | "x": degrees (-74.006, or text such as 74°0′22″W), "lat" | "y": degrees (40.7128, or text such as 40°42′46″N), "position"?: text in place of lon and lat, as the search box reads it, latitude first (40.7128, -74.006; 18north 583959 4507351; 18TWL8395907350), "scale"?: number, "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85)}"#),
+            .params(r#"{"lon" | "x": degrees (-74.006, or text such as 74°0′22″W), or with crs the easting in that system, "lat" | "y": degrees (40.7128, or text such as 40°42′46″N), or with crs the northing, "crs"?: the system x and y are in: "map" (the map's own, as the status bar reads it), an EPSG or ESRI code or other system text (EPSG:2056), or a layer's name (the system it was read in); default degrees, "position"?: text in place of lon and lat, as the search box reads it, latitude first (40.7128, -74.006; 18north 583959 4507351; 18TWL8395907350; 2600000 mE 1200000 mN EPSG:2056, as the map's right-click menu copies it), "scale"?: number, "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85)}"#),
         C::new("map.convertPosition", "Convert Position", "Home › Navigate › Locate", convert_position).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
-            .params(r#"{"lon" | "x": degrees (-74.006, or text such as 74°0′22″W), "lat" | "y": degrees (40.7128, or text such as 40°42′46″N), "position"?: text in place of lon and lat, as the search box reads it, latitude first (40.7128, -74.006; 18north 583959 4507351; 18TWL8395907350; Z AC 77146 62481), "digits"?: MGRS digits per axis, 0 (100 km) to 5 (1 m, the default)}"#),
+            .params(r#"{"lon" | "x": degrees (-74.006, or text such as 74°0′22″W), or with crs the easting in that system, "lat" | "y": degrees (40.7128, or text such as 40°42′46″N), or with crs the northing, "crs"?: the system x and y are in: "map" (the map's own), an EPSG or ESRI code or other system text (EPSG:2056), or a layer's name (the system it was read in); default degrees, "position"?: text in place of lon and lat, as the search box reads it, latitude first (40.7128, -74.006; 18north 583959 4507351; 18TWL8395907350; Z AC 77146 62481; 2600000 mE 1200000 mN EPSG:2056), "digits"?: MGRS digits per axis, 0 (100 km) to 5 (1 m, the default)}"#),
         C::new("map.goToLink", "Go To Map Link", "Home › Navigate", go_to_link).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"url": a map link ending in #zoom/lat/lon[/bearing[/pitch]] (as MapLibre writes them; also #map=…), or just zoom/lat/lon[/bearing[/pitch]]}"#),
@@ -373,6 +373,9 @@ pub(crate) fn read_position(map: &Map, text: &str) -> Result<(Coord, PositionRea
             && digits.chars().filter(|&c| c == '.').count() <= 1
     };
     let words: Vec<&str> = text.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()).collect();
+    if let Some(read) = read_system_position(map, text) {
+        return read.map(|c| (c, PositionRead::AsWritten));
+    }
     if words.len() == 2 && words.iter().all(plain) {
         return Err("latitude must be within ±90 and longitude within ±180".into());
     }
@@ -395,6 +398,305 @@ pub(crate) fn read_position(map: &Map, text: &str) -> Result<(Coord, PositionRea
         Err(rustgis_geom::GridError::Syntax) => Err(format!("{degrees}, UTM (18north 583959 4507351) or MGRS (18TWL8395907350)")),
         Err(e) => Err(format!("no place at this grid reference: {e}")),
     }
+}
+
+/// A coordinate system a place's coordinates are given in, ready to give the place's longitude and
+/// latitude.
+pub(crate) enum System {
+    /// A map's own (a flat projection, as the map draws it).
+    Flat(rustgis_map::projection::Flat),
+    /// A system as data names it.
+    Data(rustgis_data::raster::Transformer),
+}
+
+impl System {
+    /// The system data names `crs`: Web Mercator as the map draws it, whose unit is the metre
+    /// (its conversion gives no parameters to read one from), else by its conversion.
+    fn of_crs(crs: rustgis_data::raster::Crs) -> Result<System, String> {
+        if crs == rustgis_data::raster::Crs::WebMercator {
+            return Ok(System::Flat(rustgis_map::projection::Flat::Mercator));
+        }
+        if let Some(e) = axes_refused(crs) {
+            return Err(e);
+        }
+        crs.transformer().map(System::Data)
+    }
+
+    /// The unit it counts in as the readout writes it: `m`, `ft` (international) or `ftUS`; `None`
+    /// for another (degrees, a rarer foot).
+    pub(crate) fn unit(&self) -> Option<&'static str> {
+        let to_meter = match self {
+            System::Flat(rustgis_map::projection::Flat::Mercator) => 1.0,
+            System::Flat(rustgis_map::projection::Flat::Custom(p)) => p.to_meter(),
+            System::Data(t) => {
+                // Degrees aren't a length.
+                let p = t.params()?;
+                if p.method == "longlat" || p.method == "latlong" {
+                    return None;
+                }
+                p.to_meter
+            }
+        };
+        [("m", 1.0), ("ft", 0.3048), ("ftUS", 1200.0 / 3937.0)].into_iter().find(|(_, k)| (to_meter - k).abs() < 1e-9).map(|(u, _)| u)
+    }
+
+    /// Whether it counts in degrees (a geographic system): a map's own never does.
+    fn is_geographic(&self) -> bool {
+        matches!(self, System::Data(t) if t.is_geographic())
+    }
+
+    /// The longitude and latitude of `at`, a place in this system; `None` where it names none:
+    /// where the inverse gives no place, or one that doesn't map back to `at` (to a centimetre, or
+    /// a millionth of the coordinate's size, up to two of its units) because the system's formulas don't reach so far.
+    pub(crate) fn to_lonlat(&self, at: Coord) -> Option<Coord> {
+        if !at.is_finite() {
+            return None;
+        }
+        let (c, back) = match self {
+            System::Flat(f) => {
+                let c = f.inverse(at)?;
+                (c, f.forward_checked(c))
+            }
+            System::Data(t) => {
+                let c = t.to_lonlat(at)?;
+                (c, t.from_lonlat(c))
+            }
+        };
+        let back = back?;
+        // To a hundredth of the system's unit (a centimetre in metres), or a millionth of the
+        // coordinate's size up to two units (2 m, 2 ft): an inverse that
+        // iterates (Robinson's, to about 1.5e-5°, some 1.6 m) comes back that close; a place past
+        // the formulas' reach doesn't.
+        let close = |a: f64, b: f64| (a - b).abs() <= 0.01_f64.max((a.abs() * 1e-6).min(2.0));
+        (c.is_finite() && (-180.0..=180.0).contains(&c.x) && (-90.0..=90.0).contains(&c.y) && close(back.x, at.x) && close(back.y, at.y))
+            .then_some(c)
+    }
+}
+
+/// Why a system X and Y can't be given in: they are an easting and a northing, and one counted
+/// west or south, or northing first (Lo29's westing and southing), would take them mirrored or
+/// swapped, so it is refused, as the readout refuses to write in one. `None` for one counted east,
+/// then north, and for degrees (their own branch reads them).
+fn axes_refused(crs: rustgis_data::raster::Crs) -> Option<String> {
+    let axes = crs.axis_directions();
+    (!crs.is_geographic() && axes != [(1.0, 0.0), (0.0, 1.0)]).then(|| {
+        // The direction's larger component names it (`signum` of 0 is 1, so it can't).
+        let name = |(x, y): (f64, f64)| match (x.abs() >= y.abs(), x > 0.0, y > 0.0) {
+            (true, true, _) => "an easting",
+            (true, false, _) => "a westing",
+            (false, _, true) => "a northing",
+            (false, _, false) => "a southing",
+        };
+        format!(
+            "{} counts {}, then {}, not an easting, then a northing: give the place in degrees, or in a system counted east, then north",
+            crs.label(),
+            name(axes[0]),
+            name(axes[1])
+        )
+    })
+}
+
+/// The system a layer's coordinates are given in, as Go To XY reads them: a raster's, its
+/// pixels' (also one only assumed, as its pixels are placed in it); a layer of features', the one
+/// it was read in. `None` for a layer of features that names none (longitude and latitude), and
+/// for a raster with no pixels loaded, whose system is unknown ([`system_of`] refuses it, so check
+/// that before taking `None` for degrees). Not
+/// [`super::project::layer_system`], which leaves assumed systems out as the project's own.
+pub fn layer_coordinates_system(l: &rustgis_map::Layer) -> Option<rustgis_data::raster::Crs> {
+    match &l.raster {
+        Some(r) => r.data.as_ref().map(|d| d.crs),
+        None => l.dataset.crs,
+    }
+}
+
+/// The system `name` gives: `map`, the map's own (the flat projection it draws in, not the globe
+/// or another body's map); a layer of the map by that name, the system it was read in (longitude
+/// and latitude for one that names none); else a code or other text a map's projection or data's
+/// system takes (`EPSG:2056`, `Web Mercator`, `robinson +lon_0=150`, a PROJ string), which names
+/// an Earth system, so none on another body's map (as [`read_system_position`] refuses it).
+pub(crate) fn system_of(map: &Map, name: &str) -> Result<System, String> {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case("map") {
+        if !map.body().is_earth() || map.projection.is_globe() {
+            return Err("the map has no flat system of its own here (the globe, or another body's map): give degrees".into());
+        }
+        return Ok(System::Flat(map.flat()));
+    }
+    // A layer's name first, so a layer named as a system (`Albers`, `2056`) means the layer.
+    if let Some(l) = map.layer_by_name(name) {
+        // A raster with no pixels (still being read, or its file couldn't be) names no system: its
+        // system is unknown, not longitude and latitude.
+        if l.raster.as_ref().is_some_and(|r| r.data.is_none()) {
+            return Err(format!("layer '{name}' has no pixels loaded, so its system is unknown: wait until it has opened, or reload it"));
+        }
+        // A feature layer that names no system holds longitude and latitude.
+        let crs = layer_coordinates_system(l).unwrap_or(rustgis_data::raster::Crs::LonLat);
+        // A projection of the Earth names no place on another body's map, as its code doesn't;
+        // degrees are that map's own, and another body's projection is its own.
+        if !map.body().is_earth() && !crs.is_geographic() && !crs.is_planetary() {
+            return Err(format!("layer '{name}' is in {}, a system of the Earth, and names no place on this map", crs.label()));
+        }
+        // Nor does another body's projection on the Earth's map: its inverse gives that body's
+        // degrees, not the Earth's. (Its degrees are read as they are, as data reads them.)
+        if map.body().is_earth() && !crs.is_geographic() && crs.is_planetary() {
+            return Err(format!("layer '{name}' is in {}, a system of another body, and names no place on the Earth's map", crs.label()));
+        }
+        // Nor one body's projection on another's: Mars's inverse gives no place on the Moon.
+        if let Some(body) = other_body(map, crs.planetary_semi_major()).filter(|_| !crs.is_geographic()) {
+            return Err(format!("layer '{name}' is in {}, a system of {body}, and names no place on this map", crs.label()));
+        }
+        return System::of_crs(crs).map_err(|e| format!("layer '{name}': {e}"));
+    }
+    if let Some(named) = named_system(name) {
+        let (system, semi_major) = named?;
+        let planetary = semi_major.is_some();
+        // An Earth system names no place on another body's map; that body's own does. Another
+        // body's projection names none on the Earth's.
+        if !map.body().is_earth() && !planetary {
+            return Err(format!("{name} is a system of the Earth and names no place on this map"));
+        }
+        if map.body().is_earth() && planetary && !system.is_geographic() {
+            return Err(format!("{name} is a system of another body and names no place on the Earth's map"));
+        }
+        if let Some(body) = other_body(map, semi_major).filter(|_| !system.is_geographic()) {
+            return Err(format!("{name} is a system of {body} and names no place on this map"));
+        }
+        return Ok(system);
+    }
+    Err(format!("'{name}' is neither \"map\", a coordinate system (EPSG:2056), nor a layer's name"))
+}
+
+/// The body, said for a notice, that a system of another body than the Earth's
+/// (`semi_major`, [`rustgis_data::raster::Crs::planetary_semi_major`]) is of, when the map is of
+/// yet another body: their semi-major axes differ by more than a percent (the nearest pair of
+/// bodies a map takes, Titan and Ganymede, differ by 2%). `None` on the Earth's map, for the
+/// Earth's systems, and for the map's own body's.
+fn other_body(map: &Map, semi_major: Option<f64>) -> Option<String> {
+    let body = map.body();
+    let a = semi_major.filter(|_| !body.is_earth())?;
+    if (a - body.a).abs() <= body.a * 0.01 {
+        return None;
+    }
+    let named = rustgis_geom::body::BODIES.iter().find(|b| !b.is_earth() && (a - b.a).abs() <= b.a * 0.01);
+    Some(named.map_or_else(|| format!("another body (a radius of {:.0} km)", a / 1000.0), |b| b.name.to_string()))
+}
+
+/// A system named by a map projection's code (as the readout's copy names it) or by text data's
+/// systems take, and whether it is another body's than the Earth's (a planetary PROJ string or
+/// code); `None` for text that names neither, an error for one named but refused (counted
+/// otherwise than east, then north). The globe names no flat system.
+fn named_system(name: &str) -> Option<Result<(System, Option<f64>), String>> {
+    // `map` is the map's own ([`system_of`]), not Web Mercator, which `Projection::from_code`
+    // takes it for.
+    if name.trim().eq_ignore_ascii_case("map") {
+        return None;
+    }
+    // A code a map projection takes is read as the map draws it, but counted as data names it:
+    // its axes and its body are the system's.
+    let crs = rustgis_data::raster::Crs::parse(name).ok();
+    match Projection::from_code(name) {
+        Ok(Projection::Globe) => None,
+        Ok(p) => Some(match crs.and_then(axes_refused) {
+            Some(e) => Err(e),
+            None => Ok((System::Flat(rustgis_map::projection::Flat::of(&p)), crs.and_then(|c| c.planetary_semi_major()))),
+        }),
+        Err(_) => {
+            let c = crs?;
+            Some(System::of_crs(c).map(|s| (s, c.planetary_semi_major())))
+        }
+    }
+}
+
+/// A place written in a named system, as the map's right-click menu copies one: an easting and a
+/// northing, each with an optional unit and axis letter (`2600000 mE`, `1200000 mN`; `ftE`,
+/// `ftUSN`, a bare `E`), then the system (`EPSG:2056`, `Web Mercator`). `None` for text not
+/// written so; an error for a system that names no flat Earth system here, or a place it names
+/// none at.
+pub(crate) fn read_system_position(map: &Map, text: &str) -> Option<Result<Coord, String>> {
+    let mut rest = text.trim();
+    let mut numbers = [0.0; 2];
+    let mut units: Vec<&str> = Vec::new();
+    for (i, axis) in ['E', 'N'].into_iter().enumerate() {
+        numbers[i] = next_word(&mut rest)?.parse::<f64>().ok().filter(|v| v.is_finite())?;
+        // An optional unit and axis letter.
+        let mut after = rest;
+        let word = next_word(&mut after).unwrap_or("");
+        if let Some(unit) =
+            ["ftUS", "ft", "m", ""].into_iter().find(|u| word.strip_prefix(u).is_some_and(|l| l.len() == 1 && l.starts_with(axis)))
+        {
+            rest = after;
+            if !unit.is_empty() {
+                units.push(unit);
+            }
+        }
+    }
+    let system = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace()).trim();
+    // Only a system's name: a letter, so a third number (a height) isn't taken for one; and no
+    // WKT, which typed text would otherwise add to the table of systems files read.
+    if !system.chars().next().is_some_and(char::is_alphabetic) || system.contains('[') {
+        return None;
+    }
+    let (found, semi_major) = if system.eq_ignore_ascii_case("map") {
+        match system_of(map, "map") {
+            Ok(s) => (s, None),
+            Err(e) => return Some(Err(e)),
+        }
+    } else {
+        match named_system(system)? {
+            Ok(found) => found,
+            Err(e) => return Some(Err(e)),
+        }
+    };
+    // An Earth system names no place on another body's map; that body's own does. Another
+    // body's projection names none on the Earth's.
+    let planetary = semi_major.is_some();
+    if !map.body().is_earth() && !planetary {
+        return Some(Err(format!("{system} is a system of the Earth and names no place on this map")));
+    }
+    if map.body().is_earth() && planetary && !found.is_geographic() {
+        return Some(Err(format!("{system} is a system of another body and names no place on the Earth's map")));
+    }
+    if let Some(body) = other_body(map, semi_major).filter(|_| !found.is_geographic()) {
+        return Some(Err(format!("{system} is a system of {body} and names no place on this map")));
+    }
+    // Degrees are written latitude first, as a position without a system reads them, while this
+    // form takes an easting first: the order would be a guess, so a system in degrees is refused.
+    if found.is_geographic() {
+        return Some(Err(format!(
+            "{system} counts in degrees: give the position without a system, latitude then longitude (or with N, S, E and W)"
+        )));
+    }
+    // A unit written must be the system's: feet aren't read as metres.
+    if let Some(unit) = units.iter().find(|u| Some(**u) != found.unit()) {
+        let theirs = found.unit().unwrap_or("another unit");
+        return Some(Err(format!("{system} counts in {theirs}, not {unit}")));
+    }
+    let at = Coord::new(numbers[0], numbers[1]);
+    // Two numbers that read as a latitude and a longitude before `map` are degrees typed with the
+    // map's name, not metres a few steps from the map's origin: said, not taken for metres.
+    // Two numbers that read as a latitude and a longitude before a projected system (`map`, or
+    // a code) are degrees typed with its name, not a place a few steps from its origin: said, not
+    // taken for its units. Only numbers without a unit: `50 mE 30 mN map` says it is metres.
+    let degrees = at.x.abs() <= 180.0 && at.y.abs() <= 180.0 && (at.x.abs() <= 90.0 || at.y.abs() <= 90.0);
+    if degrees && units.is_empty() {
+        // With a unit it counts in, how to say these are its units after all.
+        let hint =
+            found.unit().map(|u| format!(", or write its unit after each number ({} {u}E  {} {u}N)", at.x, at.y)).unwrap_or_default();
+        return Some(Err(format!(
+            "{} {} {system} reads as degrees, not as a place in {system}: give degrees without a system, latitude then longitude{hint}",
+            at.x, at.y
+        )));
+    }
+    Some(found.to_lonlat(at).ok_or_else(|| format!("{} {} names no place in {system}", at.x, at.y)))
+}
+
+/// The next word of `rest` (words are parted by spaces and commas), moving past it.
+fn next_word<'a>(rest: &mut &'a str) -> Option<&'a str> {
+    let t = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+    let end = t.find(|c: char| c == ',' || c.is_whitespace()).unwrap_or(t.len());
+    let (w, r) = t.split_at(end);
+    *rest = r;
+    (!w.is_empty()).then_some(w)
 }
 
 /// What reading a typed position assumed.
@@ -554,9 +856,17 @@ fn typed_place(map: &Map, p: &Value, moving: bool) -> Result<(Coord, Option<crat
         Some(_) => return Err("position must be text, such as \"40.7128, -74.006\" or \"18TWL8395907350\"".into()),
     };
     let given = |k: &str| !matches!(p.get(k), None | Some(Value::Null));
+    let crs = match p.get("crs") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) if !t.trim().is_empty() => Some(t.trim()),
+        Some(_) => return Err("crs must be \"map\", a coordinate system such as \"EPSG:2056\", or a layer's name".into()),
+    };
     let (lon, lat, notice) = if let Some(text) = position {
         if ["lon", "lat", "x", "y"].iter().any(|k| given(k)) {
             return Err("give a position or lon and lat, not both".into());
+        }
+        if crs.is_some() {
+            return Err("crs goes with x and y; a position names its own system (2600000 mE 1200000 mN EPSG:2056)".into());
         }
         let (c, read) = read_position(map, text)?;
         let reference = || text.trim().to_string().into();
@@ -578,6 +888,24 @@ fn typed_place(map: &Map, p: &Value, moving: bool) -> Result<(Coord, Option<crat
             }
         };
         (c.x, c.y, said)
+    } else if let Some(crs) = crs {
+        // Numbers in the named system: an easting and a northing, or whatever it counts.
+        let axis = |keys: [&str; 2]| -> Result<f64, String> {
+            let key = keys.iter().find(|k| given(k)).ok_or_else(|| format!("{} is required (or a position)", keys[1]))?;
+            match p.get(*key) {
+                Some(Value::String(t)) => t.trim().parse::<f64>().ok(),
+                _ => f(p, key),
+            }
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("{key} must be a number in {crs}"))
+        };
+        // Both names of one axis: one would be passed over.
+        if ["lon", "x"].iter().all(|k| given(k)) || ["lat", "y"].iter().all(|k| given(k)) {
+            return Err("give x and y, or lon and lat, not both".into());
+        }
+        let at = Coord::new(axis(["lon", "x"])?, axis(["lat", "y"])?);
+        let c = system_of(map, crs)?.to_lonlat(at).ok_or_else(|| format!("{} {} names no place in {crs}", at.x, at.y))?;
+        (c.x, c.y, None)
     } else {
         // A number, or text in degrees or degrees, minutes and seconds (`74°0′22″W`).
         let axis = |keys: [&str; 2], latitude: bool| -> Result<f64, String> {

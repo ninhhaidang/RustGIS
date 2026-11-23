@@ -291,8 +291,12 @@ fn list_area(app: &mut RustGisApp, ui: &Ui, frame_r: Rect, list: &[Row], t: &Tok
                     // A grid reference that names no place says why (the band, the square letters, S
                     // that may mean south), also while places can still be searched for it.
                     let grid = st.results.grid_error.filter(|_| st.query == st.searched && st.results.hits.is_empty());
+                    // So does an easting and northing with their system that names none (#2032 C2f-8).
+                    let position = st.results.position_error.as_ref().filter(|_| st.query == st.searched && st.results.hits.is_empty());
                     if let Some(e) = grid {
                         note(ui, &grid_error_text(e), t.text_dim);
+                    } else if let Some(e) = position {
+                        note(ui, &crate::i18n::fmt_raw("No place at this position: {reason}", &[("reason", e.as_str())]), t.text_dim);
                     } else if none {
                         note(ui, tl_raw!("Nothing found"), t.text_dim);
                     }

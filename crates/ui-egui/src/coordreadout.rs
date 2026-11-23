@@ -1,5 +1,6 @@
 //! How the pointer's coordinates read in the status bar and in the map's right-click menu: in the
-//! map's own coordinate system, decimal degrees, degrees-minutes-seconds, UTM or MGRS. A click on
+//! map's own coordinate system, decimal degrees, degrees-minutes-seconds, UTM, MGRS or the active
+//! layer's coordinate system. A click on
 //! the status bar readout steps through them in that order (`ui.coordinateFormat`), and the choice
 //! is remembered between sessions as the `coordinate_format` preference.
 
@@ -18,6 +19,10 @@ pub enum CoordReadout {
     /// (on the globe and another body's map, decimal degrees; see [`MapSystem`]).
     #[default]
     Map,
+    /// `2600000 mE  1200000 mN`: the active layer's coordinates, in the projected system it was
+    /// read in (decimal degrees for a layer in degrees, or with no layer active; see
+    /// [`MapSystem::of_layer`]).
+    Layer,
     /// `12.3456° E  45.6789° N`
     Decimal,
     /// `12°20′44.2″ E  45°40′44.0″ N`
@@ -30,12 +35,14 @@ pub enum CoordReadout {
 
 impl CoordReadout {
     /// Every format, in the order a click steps through them.
-    pub const ALL: [CoordReadout; 5] = [CoordReadout::Map, CoordReadout::Decimal, CoordReadout::Dms, CoordReadout::Utm, CoordReadout::Mgrs];
+    pub const ALL: [CoordReadout; 6] =
+        [CoordReadout::Map, CoordReadout::Decimal, CoordReadout::Dms, CoordReadout::Utm, CoordReadout::Mgrs, CoordReadout::Layer];
 
     /// The name commands and the preference use (never translated).
     pub fn code(self) -> &'static str {
         match self {
             CoordReadout::Map => "map",
+            CoordReadout::Layer => "layer",
             CoordReadout::Decimal => "decimal",
             CoordReadout::Dms => "dms",
             CoordReadout::Utm => "utm",
@@ -49,14 +56,15 @@ impl CoordReadout {
         Self::ALL.into_iter().find(|f| f.code().eq_ignore_ascii_case(code))
     }
 
-    /// The format after this one: map → decimal → DMS → UTM → MGRS → map.
+    /// The format after this one: map → decimal → DMS → UTM → MGRS → layer → map.
     pub fn next(self) -> Self {
         match self {
             CoordReadout::Map => CoordReadout::Decimal,
+            CoordReadout::Layer => CoordReadout::Map,
             CoordReadout::Decimal => CoordReadout::Dms,
             CoordReadout::Dms => CoordReadout::Utm,
             CoordReadout::Utm => CoordReadout::Mgrs,
-            CoordReadout::Mgrs => CoordReadout::Map,
+            CoordReadout::Mgrs => CoordReadout::Layer,
         }
     }
 
@@ -64,6 +72,7 @@ impl CoordReadout {
     pub fn label(self) -> &'static str {
         match self {
             CoordReadout::Map => tl_raw!("map coordinates"),
+            CoordReadout::Layer => tl_raw!("layer coordinates"),
             CoordReadout::Decimal => tl_raw!("decimal degrees"),
             CoordReadout::Dms => tl_raw!("degrees, minutes and seconds"),
             CoordReadout::Utm => tl_raw!("UTM"),
@@ -76,16 +85,27 @@ impl CoordReadout {
         matches!(self, CoordReadout::Utm | CoordReadout::Mgrs)
     }
 
+    /// The system the map and layer formats read in: the map's own ([`MapSystem::of`]) or the
+    /// active layer's ([`MapSystem::of_layer`]); `None` for the other formats.
+    pub fn system(self, map: &rustgis_engine::map::Map, active: Option<u32>) -> Option<MapSystem> {
+        match self {
+            CoordReadout::Map => MapSystem::of(map),
+            CoordReadout::Layer => MapSystem::of_layer(map, active),
+            _ => None,
+        }
+    }
+
     /// The place in this format; for UTM and MGRS, UPS in the polar areas (north of 84° N and
-    /// south of 80° S) and `None` on another body's map (`earth` false); in the map's coordinates
-    /// `None` where its projection doesn't reach, and decimal degrees without a flat Earth map
-    /// (`map` `None`); and for every format `None` for a non-finite place.
+    /// south of 80° S) and `None` on another body's map (`earth` false); in the map's or the
+    /// layer's coordinates (`map`, [`CoordReadout::system`]) `None` where the system doesn't
+    /// reach, and decimal degrees without one (`map` `None`); and for every format `None` for a
+    /// non-finite place.
     pub fn format(self, c: Coord, earth: bool, map: Option<&MapSystem>) -> Option<String> {
         if !c.is_finite() || (self.earth_only() && !earth) {
             return None;
         }
         match self {
-            CoordReadout::Map => match map {
+            CoordReadout::Map | CoordReadout::Layer => match map {
                 Some(m) => m.format(c),
                 None => Some(geom::format_lonlat(c)),
             },
@@ -112,7 +132,7 @@ impl CoordReadout {
     /// and MGRS read near the poles.
     pub fn hover(self) -> String {
         i18n::fmt(
-            "Coordinates in {format}. Click to switch: map coordinates, decimal degrees, DMS, UTM, MGRS. Map coordinates are in the map's coordinate system, named beside them, and in degrees on the globe and on another body's map. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.",
+            "Coordinates in {format}. Click to switch: map coordinates, decimal degrees, DMS, UTM, MGRS, layer coordinates. Map coordinates are in the map's coordinate system, named beside them, and in degrees on the globe and on another body's map. Layer coordinates are in the projected coordinate system the active layer was read in, named beside them, and in degrees for a layer in degrees, with no layer active and on another body's map. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.",
             &[("format", self.label())],
         )
     }
@@ -128,10 +148,33 @@ fn system_name(p: &rustgis_engine::map::Projection) -> String {
     }
 }
 
-/// A flat map of the Earth's own coordinates, as the map format reads them: its projection and
-/// how many of its units a screen pixel spans, which sets the decimals shown.
+/// The conversion of a layer's system, kept from the last frame that asked for the same system:
+/// a system read from a file without a code (WKT) is otherwise built again each frame.
+fn layer_conversion(crs: rustgis_engine::data::raster::Crs) -> Option<rustgis_engine::data::raster::Transformer> {
+    static LAST: std::sync::Mutex<Option<(rustgis_engine::data::raster::Crs, rustgis_engine::data::raster::Transformer)>> =
+        std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(t) = last.as_ref().filter(|(kept, _)| *kept == crs).map(|(_, t)| t.clone()) {
+        return Some(t);
+    }
+    let t = crs.transformer().ok()?;
+    *last = Some((crs, t.clone()));
+    Some(t)
+}
+
+/// How a system gives a place's coordinates from its longitude and latitude.
+enum Plane {
+    /// A map's flat projection, as the map draws it (Web Mercator's too, for a layer in it).
+    Flat(Flat),
+    /// A layer's projected system, by its conversion, with the metres in one of its units.
+    Data(rustgis_engine::data::raster::Transformer, f64),
+}
+
+/// A flat system of the Earth's own coordinates, the map's or a layer's, as the map and layer
+/// formats read them: its projection and how many of its units a screen pixel spans, which sets
+/// the decimals shown.
 pub struct MapSystem {
-    flat: Flat,
+    plane: Plane,
     res: f64,
     /// The system's name, never translated: see [`MapSystem::name`].
     name: String,
@@ -142,15 +185,48 @@ impl MapSystem {
     /// is computed on the Earth's figure and so gives no coordinates of its own body.
     pub fn of(map: &rustgis_engine::map::Map) -> Option<MapSystem> {
         (map.body().is_earth() && !map.projection.is_globe()).then(|| MapSystem {
-            flat: Flat::of(&map.projection),
+            plane: Plane::Flat(Flat::of(&map.projection)),
             res: map.camera.res,
             name: system_name(&map.projection),
         })
     }
 
+    /// The projected system the layer `active` was read in (a feature layer's, a raster's): `None`
+    /// with no such layer, for one in degrees (longitude and latitude in any datum, which read as
+    /// decimal degrees), on another body's map, for a system whose conversion can't be made or
+    /// gives no unit, and for one whose axes aren't east, then north (a westing and southing,
+    /// `+axis=wsu`, or a northing first), which an easting and northing would mislabel. A pixel
+    /// spans the map's ground resolution, in the system's units. The conversion is kept for the
+    /// next frame while the layer's system stays the same.
+    pub fn of_layer(map: &rustgis_engine::map::Map, active: Option<u32>) -> Option<MapSystem> {
+        use rustgis_engine::data::raster::Crs;
+        if !map.body().is_earth() {
+            return None;
+        }
+        let l = map.layer(active?)?;
+        // A raster's system is its pixels', as Go To XY reads it.
+        let crs = rustgis_engine::cmd::navigate::layer_coordinates_system(l)?;
+        if crs.is_geographic() || crs.is_geocentric() || crs.is_planetary() {
+            return None;
+        }
+        let ground = map.ground_res();
+        let (plane, to_meter) = if crs == Crs::WebMercator {
+            (Plane::Flat(Flat::Mercator), 1.0)
+        } else {
+            let t = layer_conversion(crs)?;
+            if t.axis_directions() != [(1.0, 0.0), (0.0, 1.0)] {
+                return None;
+            }
+            let to_meter = t.params().map(|p| p.to_meter).filter(|m| m.is_finite() && *m > 0.0)?;
+            (Plane::Data(t, to_meter), to_meter)
+        };
+        let name = if crs == Crs::WebMercator { "Web Mercator".to_string() } else { crs.label() };
+        Some(MapSystem { plane, res: ground / to_meter, name })
+    }
+
     /// A system from its parts (tests).
     pub fn new(flat: Flat, res: f64, name: &str) -> MapSystem {
-        MapSystem { flat, res, name: name.to_string() }
+        MapSystem { plane: Plane::Flat(flat), res, name: name.to_string() }
     }
 
     /// The system's name, as it can be given back to `map.projection`: its EPSG or ESRI code
@@ -169,11 +245,17 @@ impl MapSystem {
     /// for LV95 a 60° cap around Bern, well past Switzerland) or folds, as the map draws nothing
     /// there.
     fn format(&self, c: Coord) -> Option<String> {
-        let m = self.flat.forward_checked(Coord::new(crate::mapmenu::wrap_lon(c.x), c.y)).filter(|m| m.is_finite())?;
+        let c = Coord::new(crate::mapmenu::wrap_lon(c.x), c.y);
+        let m = match &self.plane {
+            Plane::Flat(f) => f.forward_checked(c),
+            Plane::Data(t, _) => t.from_lonlat(c),
+        }
+        .filter(|m| m.is_finite())?;
         let decimals = if self.res.is_finite() && self.res > 0.0 { (-self.res.log10()).ceil().clamp(0.0, 3.0) as usize } else { 0 };
-        let to_meter = match &self.flat {
-            Flat::Mercator => 1.0,
-            Flat::Custom(p) => p.to_meter(),
+        let to_meter = match &self.plane {
+            Plane::Flat(Flat::Mercator) => 1.0,
+            Plane::Flat(Flat::Custom(p)) => p.to_meter(),
+            Plane::Data(_, to_meter) => *to_meter,
         };
         let unit = if (to_meter - 1.0).abs() < 1e-9 {
             "m"
@@ -200,7 +282,7 @@ mod tests {
         let mut f = CoordReadout::default();
         assert_eq!(f, CoordReadout::Map);
         let mut seen = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..CoordReadout::ALL.len() {
             seen.push(f);
             f = f.next();
         }

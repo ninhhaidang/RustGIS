@@ -1189,17 +1189,9 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     .small()
                     .weak(),
             );
+            // In the map's own system on a flat map, so the raster fills the view as drawn.
             if ui.button(tl!("Fit To Map View")).clicked() {
-                let m = app.session.map();
-                let (w, h) = app.session.view_size;
-                let e = m.camera.extent(w, h);
-                let (a, b) = (
-                    m.to_lonlat(rustgis_engine::geom::Coord::new(e.min_x, e.min_y)),
-                    m.to_lonlat(rustgis_engine::geom::Coord::new(e.max_x, e.max_y)),
-                );
-                if let (Some(a), Some(b)) = (a, b) {
-                    run(app, "raster.georeference", json!({"layer": app.workflow.layer, "extent": [a.x, a.y, b.x, b.y]}));
-                }
+                run(app, "raster.georeference", json!({"layer": app.workflow.layer, "extent": "view"}));
             }
             ui.add(
                 egui::TextEdit::multiline(&mut app.workflow.text)

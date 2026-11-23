@@ -472,9 +472,17 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 // dimmed then, to tell it from a live one.
                 let kept = app.map.kept_pointer_lonlat(app.session.map().instance_id(), app.session.opened);
                 let live = app.map.pointer_lonlat.is_some();
+                // Layer coordinates name their system, the active layer's, which the map's beside
+                // them isn't.
+                let system = format.system(app.session.map(), app.session.active_layer);
+                let mut text = format.readout(kept, earth, system.as_ref());
+                // Named only beside a position: with none yet, the dash stands alone.
+                if let Some(s) = system.as_ref().filter(|_| format == crate::CoordReadout::Layer && kept.is_some()) {
+                    text = format!("{text}  {}", s.name());
+                }
                 let resp = ui.add(
                     egui::Label::new(
-                        egui::RichText::new(format.readout(kept, earth, crate::coordreadout::MapSystem::of(app.session.map()).as_ref())).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
+                        egui::RichText::new(text).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
                     )
                     .sense(Sense::click()),
                 );
