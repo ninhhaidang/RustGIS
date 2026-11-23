@@ -401,28 +401,28 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.osm.pbf",
             include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
             include_bytes!("../../testdata/reading-losses/hole-missing-member.osm.pbf"),
-            Silent("the hole whose member way the file does not hold is left out"),
+            Imported("1 OSM relation member way was omitted because it is unavailable"),
         ),
         case(
             "OSM PBF: a missing inner node",
             "a.osm.pbf",
             include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
             include_bytes!("../../testdata/reading-losses/hole-missing-node.osm.pbf"),
-            Silent("the hole whose member way refers to a missing node is left out"),
+            Imported("1 OSM relation ring was omitted because its node coordinates are unavailable"),
         ),
         case(
             "OSM PBF: an unclosed inner ring",
             "a.osm.pbf",
             include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
             include_bytes!("../../testdata/reading-losses/hole-unclosed.osm.pbf"),
-            Silent("the inner member way that does not close is left out"),
+            Imported("1 OSM relation member way was omitted because it does not join into a closed ring of at least four coordinates"),
         ),
         case(
             "OSM PBF: an inner ring outside its outer",
             "a.osm.pbf",
             include_bytes!("../../testdata/reading-losses/hole-clean.osm.pbf"),
             include_bytes!("../../testdata/reading-losses/hole-outside.osm.pbf"),
-            Silent("the inner ring outside every outer ring is left out"),
+            Imported("1 OSM inner ring was omitted because no containing outer ring was found"),
         ),
         // GML.
         case(
@@ -591,20 +591,26 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         out.push(c);
     };
     mapinfo("MapInfo: an unreadable object", "Point 0 0\nPoint 1 1\n", "Point 0 0\nPoint 1 x\n", "1\n2\n", Said("couldn't be read"));
-    mapinfo("MapInfo: an arc", "Point 0 0\n", "Arc 0 0 2 2 0 90\n", "1\n", Silent("an arc or text object is kept without its geometry"));
+    mapinfo(
+        "MapInfo: an arc",
+        "Point 0 0\n",
+        "Arc 0 0 2 2 0 90\n",
+        "1\n",
+        Imported("1 MapInfo arc object was kept as a row without geometry"),
+    );
     mapinfo(
         "MapInfo: a line part of one point",
         "Pline Multiple 2\n2\n0 0\n1 1\n2\n5 5\n6 6\n",
         "Pline Multiple 2\n2\n0 0\n1 1\n1\n5 5\n",
         "1\n",
-        Silent("the part is left out of the line"),
+        Imported("1 MapInfo line part with fewer than two coordinates was omitted"),
     );
     mapinfo(
         "MapInfo: a ring of two points",
         "Region 2\n4\n0 0\n4 0\n4 4\n0 0\n4\n1 1\n2 1\n2 2\n1 1\n",
         "Region 2\n4\n0 0\n4 0\n4 4\n0 0\n2\n1 1\n2 2\n",
         "1\n",
-        Silent("the ring is left out of the polygon"),
+        Imported("1 MapInfo polygon ring with fewer than four coordinates after closure was omitted"),
     );
     // The archive path must report the same losses as the loose KML reader. Derive both
     // fixtures from each KML row so a new loss cannot be tested in only one container.

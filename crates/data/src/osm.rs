@@ -190,7 +190,8 @@ fn zigzag(v: u64) -> i64 {
     ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
 
-/// The most values a packed field holds: writers put about 8,000 entities in a block, and a way
+/// The most values in one decoded list (the complete logical field for Relation arrays).
+/// Writers put about 8,000 entities in a block, and a way
 /// has at most 2,000 nodes, so this is far past real files and keeps a hostile block of one-byte
 /// varints from growing a vector to its whole 32 MiB.
 const MAX_PACKED: usize = 1 << 20;
@@ -206,6 +207,33 @@ fn packed(b: &[u8]) -> Result<Vec<u64>> {
         out.push(v);
     }
     Ok(out)
+}
+
+/// Appends one occurrence of a repeated relation field, bounded over the complete logical array.
+/// Protobuf permits packed and unpacked occurrences to interleave; no intermediate value list is built.
+fn append_repeated(out: &mut Vec<u64>, value: Wire<'_>) -> Result<()> {
+    crate::progress::check()?;
+    let mut push = |v| -> Result<()> {
+        if out.len() >= MAX_PACKED {
+            return Err(DataError::Format(format!("an OSM PBF block holds a list of more than {MAX_PACKED} values")));
+        }
+        if out.len().is_multiple_of(1024) {
+            crate::progress::check()?;
+        }
+        out.push(v);
+        Ok(())
+    };
+    match value {
+        Wire::Varint(v) => push(v),
+        Wire::Bytes(b) => {
+            let mut p = Pb::new(b);
+            while p.i < b.len() {
+                push(p.varint().ok_or_else(|| bad("a packed relation value"))?)?;
+            }
+            Ok(())
+        }
+        Wire::Other => Ok(()),
+    }
 }
 
 /// Delta-coded signed values of a packed field, summed.
@@ -251,6 +279,8 @@ struct Osm {
     /// (id, members (type, id, role), tags).
     relations: Vec<(i64, Vec<(u64, i64, String)>, Tags)>,
     capped: bool,
+    /// Members omitted at the per-relation limit; wide enough for all bounded relations.
+    omitted_members: u64,
 }
 
 /// Degrees from OSM's fixed point (1e-7°), and back.
@@ -258,6 +288,7 @@ fn to_fixed(nano: i64) -> i32 {
     (nano / 100).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+/// Decodes a primitive block within its object/member limits and counts source members past the cap.
 fn block(osm: &mut Osm, data: &[u8]) -> Result<()> {
     let mut strings: Vec<String> = Vec::new();
     let mut groups: Vec<&[u8]> = Vec::new();
@@ -387,19 +418,38 @@ fn block(osm: &mut Osm, data: &[u8]) -> Result<()> {
                     while let Some((rf, rv)) = r.next()? {
                         match (rf, rv) {
                             (1, Wire::Varint(x)) => id = x as i64,
-                            (2, Wire::Bytes(b)) => k = packed(b)?,
-                            (3, Wire::Bytes(b)) => vv = packed(b)?,
-                            (8, Wire::Bytes(b)) => roles = packed(b)?,
-                            (9, Wire::Bytes(b)) => mems = deltas(b)?,
-                            (10, Wire::Bytes(b)) => types = packed(b)?,
+                            (2, value) => append_repeated(&mut k, value)?,
+                            (3, value) => append_repeated(&mut vv, value)?,
+                            (8, value) => append_repeated(&mut roles, value)?,
+                            (9, value) => append_repeated(&mut mems, value)?,
+                            (10, value) => append_repeated(&mut types, value)?,
                             _ => {}
                         }
                     }
+                    // Member IDs are delta-coded across all field occurrences, not each payload.
+                    let mut previous = 0i64;
+                    let mems: Vec<i64> = mems
+                        .into_iter()
+                        .map(|v| {
+                            previous = previous.wrapping_add(zigzag(v));
+                            previous
+                        })
+                        .collect();
                     let t = tags(&strings, &k, &vv);
                     // Only the relations drawn are kept.
                     if osm.relations.len() >= MAX_RELATIONS {
                         osm.capped = true;
                     } else if matches!(tag(&t, "type"), Some("multipolygon" | "boundary")) {
+                        if roles.len() != mems.len() || types.len() != mems.len() {
+                            return Err(DataError::Format(format!(
+                                "OSM relation {id} has mismatched member arrays (IDs: {}, roles: {}, types: {})",
+                                mems.len(),
+                                roles.len(),
+                                types.len()
+                            )));
+                        }
+                        let omitted = mems.len().saturating_sub(MAX_MEMBERS) as u64;
+                        osm.omitted_members = osm.omitted_members.saturating_add(omitted);
                         let members = mems
                             .into_iter()
                             .zip(types)
@@ -497,8 +547,8 @@ fn blocks(bytes: &[u8]) -> Result<Osm> {
     Ok(osm)
 }
 
-/// Joins ways (as node-id lists) into closed rings by their ends.
-fn join_rings(ways: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
+/// Joins ways (as node-id lists) by their ends, counting the member ways in discarded chains.
+fn join_rings(ways: Vec<Vec<i64>>, unclosed: &mut usize) -> Vec<Vec<i64>> {
     // The ways by their end nodes, so each join is a lookup. A way taken stays listed until a
     // lookup passes it, which drops it: each entry is passed once.
     let mut ends: HashMap<i64, Vec<usize>> = HashMap::new();
@@ -514,6 +564,7 @@ fn join_rings(ways: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
     let mut rings = Vec::new();
     for start in 0..ways.len() {
         let Some(mut cur) = ways.get_mut(start).and_then(Option::take) else { continue };
+        let mut member_ways = 1;
         let mut guard = 0;
         while cur.first() != cur.last() && guard < MAX_MEMBERS {
             guard += 1;
@@ -522,6 +573,7 @@ fn join_rings(ways: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
             let free = list.iter().position(|&k| ways.get(k).is_some_and(Option::is_some)).unwrap_or(list.len());
             list.drain(..free);
             let Some(mut next) = list.first().and_then(|&k| ways.get_mut(k)).and_then(Option::take) else { break };
+            member_ways += 1;
             if next.first() != Some(&end) {
                 next.reverse();
             }
@@ -529,6 +581,8 @@ fn join_rings(ways: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
         }
         if cur.len() >= 4 && cur.first() == cur.last() {
             rings.push(cur);
+        } else {
+            *unclosed += member_ways;
         }
     }
     rings
@@ -587,6 +641,10 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     let mut lines = Dataset::new(format!("{stem} lines"), GeometryType::Polyline, fields.clone());
     let mut polys = Dataset::new(format!("{stem} multipolygons"), GeometryType::Polygon, fields);
     let mut missing = 0usize;
+    let (mut missing_members, mut missing_rings, mut unclosed, mut outside, mut containment_limited) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut unsupported_members = 0u64;
+    let mut short_ways = 0usize;
+    let mut no_closed_outer = 0usize;
     // Ways in a multipolygon are drawn as its parts, not again on their own when their tags are
     // the relation's (as old-style multipolygons repeat them): only a way saying more is a
     // feature of its own.
@@ -617,6 +675,8 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             polys.push_next(Some(Geometry::Polygon(vec![vec![pts]])), attrs(*id, t));
         } else if pts.len() >= 2 {
             lines.push_next(Some(Geometry::Line(vec![pts])), attrs(*id, t));
+        } else {
+            short_ways += 1;
         }
     }
     // Multipolygon and boundary relations: outer and inner member ways joined into rings.
@@ -624,30 +684,58 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         crate::progress::check()?;
         let mut outer_ways = Vec::new();
         let mut inner_ways = Vec::new();
+        let (mut relation_missing_members, mut relation_missing_rings, mut relation_unclosed) = (0usize, 0usize, 0usize);
+        let mut relation_subrelations = 0usize;
+        let mut unavailable_outer = false;
         // Places the member ways store themselves (LocationsOnWays), by node id.
         let mut local: HashMap<i64, Coord> = HashMap::new();
         for (ty, m, role) in members {
+            if *ty == 2 {
+                relation_subrelations += 1;
+                continue;
+            }
             if *ty != 1 {
                 continue;
             }
-            let Some(w) = way_refs.get(m).and_then(|k| osm.ways.get(*k)) else { continue };
+            let Some(w) = way_refs.get(m).and_then(|k| osm.ways.get(*k)) else {
+                relation_missing_members += 1;
+                unavailable_outer |= role != "inner";
+                continue;
+            };
             if let Some(places) = &w.3 {
                 local.extend(w.1.iter().copied().zip(places.iter().copied()));
             }
             if role == "inner" { inner_ways.push(w.1.clone()) } else { outer_ways.push(w.1.clone()) }
         }
-        let to_coords = |rings: Vec<Vec<i64>>| -> Vec<Vec<Coord>> {
+        let mut to_coords = |rings: Vec<Vec<i64>>| -> Vec<Vec<Coord>> {
             rings
                 .iter()
-                .filter_map(|r| r.iter().map(|n| local.get(n).copied().or_else(|| node(*n))).collect::<Option<Vec<Coord>>>())
+                .filter_map(|r| {
+                    let coords = r.iter().map(|n| local.get(n).copied().or_else(|| node(*n))).collect::<Option<Vec<Coord>>>();
+                    if coords.is_none() {
+                        relation_missing_rings += 1;
+                    }
+                    coords
+                })
                 .collect()
         };
-        let outers = to_coords(join_rings(outer_ways));
-        let inners = to_coords(join_rings(inner_ways));
+        let outer_rings = join_rings(outer_ways, &mut relation_unclosed);
+        // Closed outer rings with no usable coordinates refer to unavailable nodes.
+        unavailable_outer |= !outer_rings.is_empty();
+        let outers = to_coords(outer_rings);
+        let inners = to_coords(join_rings(inner_ways, &mut relation_unclosed));
         if outers.is_empty() {
-            missing += 1;
+            if unavailable_outer {
+                missing += 1;
+            } else {
+                no_closed_outer += 1;
+            }
             continue;
         }
+        unsupported_members = unsupported_members.saturating_add(relation_subrelations as u64);
+        missing_members = missing_members.saturating_add(relation_missing_members as u64);
+        missing_rings = missing_rings.saturating_add(relation_missing_rings as u64);
+        unclosed = unclosed.saturating_add(relation_unclosed as u64);
         // Each inner ring goes to the outer ring holding it: a box test first, so most pairs cost
         // nothing, and at most MAX_MEMBERS full tests per relation.
         let boxes: Vec<[f64; 4]> = outers.iter().map(|o| bbox(o)).collect();
@@ -655,19 +743,41 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         let mut budget = MAX_MEMBERS;
         for inner in inners {
             let p = inner.first().copied().unwrap_or_default();
+            let mut untested_candidate = false;
             let host = (0..parts.len()).find(|&k| {
-                boxes.get(k).is_some_and(|b| p.x >= b[0] && p.y >= b[1] && p.x <= b[2] && p.y <= b[3]) && budget > 0 && {
-                    budget -= 1;
-                    parts.get(k).and_then(|poly| poly.first()).is_some_and(|o| inside(p, o))
+                if !boxes.get(k).is_some_and(|b| p.x >= b[0] && p.y >= b[1] && p.x <= b[2] && p.y <= b[3]) {
+                    return false;
                 }
+                if budget == 0 {
+                    untested_candidate = true;
+                    return false;
+                }
+                budget -= 1;
+                parts.get(k).and_then(|poly| poly.first()).is_some_and(|o| inside(p, o))
             });
             if let Some(poly) = host.and_then(|k| parts.get_mut(k)) {
                 poly.push(inner);
+            } else if untested_candidate {
+                containment_limited += 1;
+            } else {
+                outside += 1;
             }
         }
         polys.push_next(Some(Geometry::Polygon(parts)), attrs(*id, t));
     }
-    let mut report = ReadReport { skipped: missing, ..ReadReport::default() };
+    let mut report = ReadReport { skipped: missing + short_ways + no_closed_outer, ..ReadReport::default() };
+    if osm.omitted_members > 0 {
+        let members = if osm.omitted_members == 1 { "relation member" } else { "relation members" };
+        report.messages.push(format!("{} {members} left out at the per-relation limit of {MAX_MEMBERS}", osm.omitted_members));
+    }
+    if short_ways > 0 {
+        let subject = if short_ways == 1 { "tagged way left out because it has" } else { "tagged ways left out because they have" };
+        report.messages.push(format!("{short_ways} {subject} fewer than two nodes"));
+    }
+    if no_closed_outer > 0 {
+        let subject = if no_closed_outer == 1 { "relation left out because it has" } else { "relations left out because they have" };
+        report.messages.push(format!("{no_closed_outer} {subject} no usable closed outer ring"));
+    }
     if osm.capped {
         report
             .messages
@@ -675,6 +785,42 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     }
     if missing > 0 {
         report.messages.push(format!("{missing} ways or relations refer to nodes or ways the file doesn't hold"));
+    }
+    for (count, one, many) in [
+        (
+            unsupported_members,
+            "OSM sub-relation member was omitted because nested relations are not supported",
+            "OSM sub-relation members were omitted because nested relations are not supported",
+        ),
+        (
+            missing_members,
+            "OSM relation member way was omitted because it is unavailable",
+            "OSM relation member ways were omitted because they are unavailable",
+        ),
+        (
+            missing_rings,
+            "OSM relation ring was omitted because its node coordinates are unavailable",
+            "OSM relation rings were omitted because their node coordinates are unavailable",
+        ),
+        (
+            unclosed,
+            "OSM relation member way was omitted because it does not join into a closed ring of at least four coordinates",
+            "OSM relation member ways were omitted because they do not join into closed rings of at least four coordinates",
+        ),
+        (
+            outside,
+            "OSM inner ring was omitted because no containing outer ring was found",
+            "OSM inner rings were omitted because no containing outer ring was found",
+        ),
+    ] {
+        if count > 0 {
+            let subject = if count == 1 { one } else { many };
+            report.messages.push(format!("{count} {subject}"));
+        }
+    }
+    if containment_limited > 0 {
+        let subject = if containment_limited == 1 { "inner ring was" } else { "inner rings were" };
+        report.messages.push(format!("{containment_limited} OSM {subject} omitted after the containment-test limit of {MAX_MEMBERS}"));
     }
     // The notices are the file's: said once, with the first layer.
     let mut out: Vec<(Dataset, ReadReport)> =
@@ -755,6 +901,11 @@ pub(crate) mod tests {
     /// building (`destroyed:building`), and a multipolygon with a hole made of two outer
     /// half-rings and an inner ring.
     pub(crate) fn sample() -> Vec<u8> {
+        sample_with_missing_outer(false)
+    }
+
+    /// A missing outer leaves the relation out entirely, rather than partially importing it.
+    fn sample_with_missing_outer(missing_outer: bool) -> Vec<u8> {
         let mut out = Vec::new();
         let mut header = Vec::new();
         field_bytes(4, b"OsmSchema-V0.6", &mut header);
@@ -821,8 +972,10 @@ pub(crate) mod tests {
         field_bytes(3, &way(100, &[1, 2, 3], &[s("highway")], &[s("residential")]), &mut group);
         field_bytes(3, &way(101, &[4, 5, 6, 7, 4], &[s("building")], &[s("yes")]), &mut group);
         field_bytes(3, &way(106, &[4, 5, 6, 7, 4], &[s("destroyed:building")], &[s("yes")]), &mut group);
-        field_bytes(3, &way(102, &[8, 9, 10], &[], &[]), &mut group);
-        field_bytes(3, &way(103, &[10, 11, 8], &[], &[]), &mut group);
+        if !missing_outer {
+            field_bytes(3, &way(102, &[8, 9, 10], &[], &[]), &mut group);
+            field_bytes(3, &way(103, &[10, 11, 8], &[], &[]), &mut group);
+        }
         // Tagged as its relation is (old-style): drawn as its part only.
         field_bytes(3, &way(104, &[8, 12, 13, 8], &[s("landuse")], &[s("forest")]), &mut group);
         // A way whose nodes the file doesn't hold, with their places on the way (LocationsOnWays).
@@ -843,6 +996,320 @@ pub(crate) mod tests {
         field_bytes(2, &group, &mut block);
         blob("OSMData", &block, true, &mut out);
         out
+    }
+
+    /// Native PBF builder for finite omission cases: a tagged point survives every bad way or
+    /// relation, so successful imports must report the omitted data. All referenced nodes are present.
+    fn finite_omission_file(ways: &[(u64, &[i64], bool)], members: Option<&[(i64, u64, u64)]>) -> Vec<u8> {
+        if let Some(members) = members {
+            let roles: Vec<_> = members.iter().map(|m| m.2).collect();
+            let ids: Vec<_> = members.iter().map(|m| m.0).collect();
+            let types: Vec<_> = members.iter().map(|m| m.1).collect();
+            finite_member_arrays_file(ways, &[(200, &roles, &ids, &types)])
+        } else {
+            finite_member_arrays_file(ways, &[])
+        }
+    }
+
+    /// Explicit parallel member arrays allow malformed input and actual nested relations in tests.
+    fn finite_member_arrays_file(ways: &[(u64, &[i64], bool)], relations: &[(u64, &[u64], &[i64], &[u64])]) -> Vec<u8> {
+        finite_member_fields_file(ways, relations, field_bytes)
+    }
+
+    /// Relation scalar fields can use packed, split or unpacked wire encodings of the same values.
+    fn finite_member_fields_file(
+        ways: &[(u64, &[i64], bool)],
+        relations: &[(u64, &[u64], &[i64], &[u64])],
+        encode: impl Fn(u64, &[u8], &mut Vec<u8>),
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut header = Vec::new();
+        field_bytes(4, b"OsmSchema-V0.6", &mut header);
+        blob("OSMHeader", &header, false, &mut out);
+        let mut st = Vec::new();
+        for s in ["", "name", "marker", "highway", "service", "type", "multipolygon", "outer", "inner"] {
+            field_bytes(1, s.as_bytes(), &mut st);
+        }
+        let mut group = Vec::new();
+        for (id, x, y) in [
+            (1, 0, 0),
+            (2, 40_000_000, 0),
+            (3, 40_000_000, 40_000_000),
+            (4, 0, 40_000_000),
+            (5, 30_000_000, 30_000_000),
+            (6, 35_000_000, 30_000_000),
+            (7, 30_000_000, 35_000_000),
+        ] {
+            let mut n = Vec::new();
+            field_varint(1, zz(id), &mut n);
+            field_varint(8, zz(y), &mut n);
+            field_varint(9, zz(x), &mut n);
+            if id == 1 {
+                field_bytes(2, &packed_of(&[1]), &mut n);
+                field_bytes(3, &packed_of(&[2]), &mut n);
+            }
+            field_bytes(1, &n, &mut group);
+        }
+        for (id, refs, tagged) in ways {
+            let mut w = Vec::new();
+            field_varint(1, *id, &mut w);
+            field_bytes(8, &delta(refs), &mut w);
+            if *tagged {
+                field_bytes(2, &packed_of(&[3]), &mut w);
+                field_bytes(3, &packed_of(&[4]), &mut w);
+            }
+            field_bytes(3, &w, &mut group);
+        }
+        for (id, roles, ids, types) in relations {
+            let mut r = Vec::new();
+            field_varint(1, *id, &mut r);
+            encode(2, &packed_of(&[5]), &mut r);
+            encode(3, &packed_of(&[6]), &mut r);
+            encode(8, &packed_of(roles), &mut r);
+            encode(9, &delta(ids), &mut r);
+            encode(10, &packed_of(types), &mut r);
+            field_bytes(4, &r, &mut group);
+        }
+        let mut block = Vec::new();
+        field_bytes(1, &st, &mut block);
+        field_bytes(2, &group, &mut block);
+        blob("OSMData", &block, false, &mut out);
+        out
+    }
+
+    /// Split member fields preserve delta continuity; tag arrays also concatenate across occurrences.
+    #[test]
+    fn relation_members_split_fields_keep_geometry_and_tags() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[1, 2, 3, 4, 1], false), (101, &[5, 6, 7, 5], false)];
+        let file = |mode| {
+            finite_member_fields_file(ways, &[(200, &[7, 8], &[100, 101], &[1, 1])], |field, bytes, out| {
+                let mut bytes = bytes.to_vec();
+                if field == 2 {
+                    bytes.extend(packed_of(&[1]));
+                }
+                if field == 3 {
+                    bytes.extend(packed_of(&[2]));
+                }
+                if mode == 0 || (mode == 1 && field != 8) {
+                    field_bytes(field, &bytes, out);
+                    return;
+                }
+                let mut values = Pb::new(&bytes);
+                let mut index = 0;
+                while let Some(value) = values.varint() {
+                    if mode == 3 || (mode == 4 && index % 2 == 1) {
+                        field_varint(field, value, out);
+                    } else {
+                        field_bytes(field, &packed_of(&[value]), out);
+                    }
+                    index += 1;
+                }
+            })
+        };
+        let clean = read("split.pbf", &file(0)).unwrap();
+        assert_eq!(clean.len(), 2);
+        assert!(clean.iter().all(|(_, report)| report.messages.is_empty() && report.skipped == 0));
+        let Some(Geometry::Polygon(parts)) = &clean[1].0.features[0].geometry else { panic!("polygon") };
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 2);
+        assert_eq!(clean[1].0.features[0].attrs[1], Value::Text("marker".into()));
+        for mode in 1..=4 {
+            let decoded = read("split.pbf", &file(mode)).unwrap();
+            assert_eq!(decoded.len(), clean.len());
+            for ((actual, report), (expected, _)) in decoded.iter().zip(&clean) {
+                assert_eq!(actual.fields, expected.fields);
+                assert_eq!(actual.features.iter().collect::<Vec<_>>(), expected.features.iter().collect::<Vec<_>>());
+                assert_eq!(actual.held_in, expected.held_in);
+                assert!(report.messages.is_empty());
+                assert_eq!(report.skipped, 0);
+            }
+        }
+    }
+
+    /// Splitting a logical member array cannot evade the existing packed-value allocation bound.
+    #[test]
+    fn relation_members_split_fields_share_the_value_limit() {
+        let file = finite_member_fields_file(&[], &[(200, &[7], &[100], &[1])], |field, bytes, out| {
+            if field == 8 {
+                field_bytes(field, &vec![0; MAX_PACKED], out);
+                field_varint(field, 0, out);
+            } else {
+                field_bytes(field, bytes, out);
+            }
+        });
+        let err = read("split.pbf", &file).err().map(|e| e.to_string()).unwrap_or_default();
+        assert_eq!(err, format!("an OSM PBF block holds a list of more than {MAX_PACKED} values"));
+    }
+
+    /// Unsupported sub-relations are counted only for parents whose direct ways produce geometry.
+    #[test]
+    fn relation_members_nested_geometry_is_reported() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[1, 2, 3, 4, 1], false), (101, &[5, 6, 7, 5], false)];
+        let clean =
+            read("nested.pbf", &finite_member_arrays_file(ways, &[(200, &[7, 0], &[100, 1], &[1, 0]), (201, &[7], &[101], &[1])])).unwrap();
+        assert_eq!(clean.len(), 2);
+        assert_eq!(clean[1].0.features.len(), 2);
+        assert!(clean.iter().all(|(_, r)| r.messages.is_empty()));
+        let lossy = read(
+            "nested.pbf",
+            &finite_member_arrays_file(ways, &[(200, &[7, 0, 8], &[100, 1, 201], &[1, 0, 2]), (201, &[7], &[101], &[1])]),
+        )
+        .unwrap();
+        assert_eq!(lossy[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
+        assert_eq!(lossy[0].1.skipped, 0);
+        assert_eq!(lossy[0].1.messages, ["1 OSM sub-relation member was omitted because nested relations are not supported"]);
+        assert!(lossy[1].1.messages.is_empty());
+        let omitted =
+            read("nested.pbf", &finite_member_arrays_file(ways, &[(200, &[8], &[201], &[2]), (201, &[7], &[101], &[1])])).unwrap();
+        assert_eq!(omitted[0].1.skipped, 1);
+        assert_eq!(omitted[0].1.messages, ["1 relation left out because it has no usable closed outer ring"]);
+    }
+
+    /// Parallel member arrays must agree; valid geometry must not hide an unmatched tail.
+    #[test]
+    fn relation_members_mismatched_arrays_are_refused() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[1, 2, 3, 4, 1], false), (101, &[5, 6, 7, 5], false)];
+        let clean = read("arrays.pbf", &finite_member_arrays_file(ways, &[(200, &[7, 8], &[100, 101], &[1, 1])])).unwrap();
+        assert_eq!(clean[1].0.features.len(), 1);
+        assert!(clean.iter().all(|(_, r)| r.messages.is_empty()));
+        for (roles, ids, types) in
+            [(&[7][..], &[100, 101][..], &[1, 1][..]), (&[7, 8][..], &[100, 101][..], &[1][..]), (&[7, 8][..], &[100][..], &[1][..])]
+        {
+            let err = read("arrays.pbf", &finite_member_arrays_file(ways, &[(200, roles, ids, types)]))
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert_eq!(
+                err,
+                format!(
+                    "OSM relation 200 has mismatched member arrays (IDs: {}, roles: {}, types: {})",
+                    ids.len(),
+                    roles.len(),
+                    types.len()
+                )
+            );
+        }
+    }
+
+    /// Each hole needs two box-overlapping outer tests; the extra hole exceeds the real budget.
+    #[test]
+    fn containment_limit_has_its_own_omission_notice() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[1, 2, 4, 1], false), (101, &[1, 2, 3, 4, 1], false), (102, &[5, 6, 7, 5], false)];
+        let mut members = vec![(100, 1, 7), (101, 1, 7)];
+        members.extend(std::iter::repeat_n((102, 1, 8), MAX_MEMBERS / 2));
+        let clean = read("budget.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
+        assert_eq!(clean.len(), 2);
+        assert_eq!(clean[0].1.skipped, 0);
+        assert!(clean.iter().all(|(_, report)| report.messages.is_empty()));
+        let Some(Geometry::Polygon(parts)) = &clean[1].0.features[0].geometry else { panic!("relation") };
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].len(), 1);
+        assert_eq!(parts[1].len(), MAX_MEMBERS / 2 + 1);
+        assert_eq!(parts[1][1], vec![Coord::new(3., 3.), Coord::new(3.5, 3.), Coord::new(3., 3.5), Coord::new(3., 3.)]);
+        members.push((102, 1, 8));
+        let lossy = read("budget.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
+        assert_eq!(lossy[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
+        assert_eq!(lossy[0].1.skipped, 0);
+        assert_eq!(lossy[0].1.messages, ["1 OSM inner ring was omitted after the containment-test limit of 100000"]);
+        assert!(lossy[1].1.messages.is_empty());
+    }
+
+    #[test]
+    fn finite_omission_member_cap_counts_actual_tail() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[1, 2, 3, 4, 1], false), (101, &[1, 2, 3, 1], false)];
+        // Non-way members in the prefix are intentional: they must not be called unavailable.
+        let mut members = vec![(1, 0, 0); MAX_MEMBERS];
+        members[0] = (100, 1, 7);
+        let clean = read("finite.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
+        assert!(clean[0].1.messages.is_empty());
+        assert_eq!(clean[0].1.skipped, 0);
+        members.push((101, 1, 8));
+        let layers = read("finite.pbf", &finite_omission_file(ways, Some(&members))).unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[1].0.features.iter().collect::<Vec<_>>(), clean[1].0.features.iter().collect::<Vec<_>>());
+        assert_eq!(layers[0].1.skipped, 0, "a member is not a whole skipped feature");
+        assert_eq!(layers[0].1.messages, ["1 relation member left out at the per-relation limit of 100000"]);
+        assert!(layers[1].1.messages.is_empty());
+    }
+
+    #[test]
+    fn finite_omission_short_tagged_standalone_ways() {
+        let ways: &[(u64, &[i64], bool)] = &[(100, &[], true), (101, &[1], true), (102, &[1], false), (103, &[1, 2], true)];
+        let layers = read("finite.pbf", &finite_omission_file(ways, None)).unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[1].0.features.len(), 1);
+        assert_eq!(layers[1].0.features[0].attrs[0], Value::Int(103));
+        assert_eq!(layers[0].1.skipped, 2);
+        assert_eq!(layers[0].1.messages, ["2 tagged ways left out because they have fewer than two nodes"]);
+    }
+
+    #[test]
+    fn finite_omission_whole_relation_reason_matches_source() {
+        for (refs, members, reason) in [
+            (&[1, 2, 3][..], vec![(100, 1, 7)], "1 relation left out because it has no usable closed outer ring"),
+            (&[1][..], vec![(100, 1, 7)], "1 relation left out because it has no usable closed outer ring"),
+            (&[1, 2, 3, 1][..], vec![(100, 1, 8)], "1 relation left out because it has no usable closed outer ring"),
+            (&[][..], vec![], "1 relation left out because it has no usable closed outer ring"),
+            (&[1, 2, 3, 1][..], vec![(999, 1, 7)], "1 ways or relations refer to nodes or ways the file doesn't hold"),
+            (&[1, 2, 999, 1][..], vec![(100, 1, 7)], "1 ways or relations refer to nodes or ways the file doesn't hold"),
+        ] {
+            let layers = read("finite.pbf", &finite_omission_file(&[(100, refs, false)], Some(&members))).unwrap();
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0].0.features.len(), 1);
+            assert_eq!(layers[0].1.skipped, 1);
+            assert_eq!(layers[0].1.messages, [reason], "refs={refs:?}, members={members:?}");
+        }
+    }
+
+    /// A discarded relation is counted once; its missing members aren't losses of kept geometry.
+    #[test]
+    fn omitted_relations_are_not_reported_as_partial_losses() {
+        let layers = read("missing-outer.pbf", &sample_with_missing_outer(true)).unwrap();
+        assert_eq!(layers.iter().map(|(ds, _)| ds.features.len()).collect::<Vec<_>>(), [1, 2, 2]);
+        assert_eq!(layers[0].1.skipped, 1);
+        assert_eq!(layers[0].1.messages, ["1 ways or relations refer to nodes or ways the file doesn't hold"]);
+        assert!(layers.iter().skip(1).all(|(_, report)| report.skipped == 0 && report.messages.is_empty()));
+    }
+
+    /// Pinned PBF files keep relation 50 and its outer ring when one hole cannot be read.
+    #[test]
+    fn omitted_relation_geometry_is_said() {
+        let clean = include_bytes!("../../engine/testdata/reading-losses/hole-clean.osm.pbf");
+        let cases: &[(&[u8], &str)] = &[
+            (
+                include_bytes!("../../engine/testdata/reading-losses/hole-missing-member.osm.pbf"),
+                "1 OSM relation member way was omitted because it is unavailable",
+            ),
+            (
+                include_bytes!("../../engine/testdata/reading-losses/hole-missing-node.osm.pbf"),
+                "1 OSM relation ring was omitted because its node coordinates are unavailable",
+            ),
+            (
+                include_bytes!("../../engine/testdata/reading-losses/hole-unclosed.osm.pbf"),
+                "1 OSM relation member way was omitted because it does not join into a closed ring of at least four coordinates",
+            ),
+            (
+                include_bytes!("../../engine/testdata/reading-losses/hole-outside.osm.pbf"),
+                "1 OSM inner ring was omitted because no containing outer ring was found",
+            ),
+        ];
+        let kept = |bytes: &[u8], rings| {
+            let layers = read("holes.osm.pbf", bytes).unwrap();
+            assert_eq!(layers.len(), 1);
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.features.len(), 1);
+            assert_eq!(ds.features[0].attrs[0], Value::Int(50));
+            let Some(Geometry::Polygon(parts)) = &ds.features[0].geometry else { panic!() };
+            assert_eq!(parts.len(), 1);
+            assert_eq!(parts[0].len(), rings);
+            assert_eq!(parts[0][0], vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(0.0, 10.0), Coord::new(0.0, 0.0)]);
+            assert_eq!(report.skipped, 0, "no feature was skipped");
+            report.messages.clone()
+        };
+        assert!(kept(clean, 2).is_empty());
+        for (bytes, message) in cases {
+            assert_eq!(kept(bytes, 1), [*message]);
+        }
     }
 
     #[test]
@@ -906,14 +1373,22 @@ pub(crate) mod tests {
     #[test]
     fn rings_join_by_their_ends() {
         // Two rings from pieces in any order and direction, and a piece that closes nothing.
-        let rings = join_rings(vec![vec![3, 4, 1], vec![10, 11], vec![1, 2], vec![20, 21, 22, 20], vec![3, 2]]);
+        let mut omitted = 0;
+        let rings = join_rings(vec![vec![3, 4, 1], vec![10, 11], vec![1, 2], vec![20, 21, 22, 20], vec![3, 2]], &mut omitted);
+        assert_eq!(omitted, 1);
         assert_eq!(rings.len(), 2, "{rings:?}");
         assert!(rings.iter().any(|r| r.len() == 5 && r.first() == r.last() && [1, 2, 3, 4].iter().all(|n| r.contains(n))), "{rings:?}");
+        // Count source ways, independently of how their incomplete chains are visited.
+        for pieces in [vec![vec![2, 3], vec![1, 2], vec![3, 4]], vec![vec![3, 4], vec![2, 3], vec![1, 2]]] {
+            let mut omitted = 0;
+            assert!(join_rings(pieces, &mut omitted).is_empty());
+            assert_eq!(omitted, 3);
+        }
         // A long chain joins in linear time.
         let n = 50_000i64;
         let mut chain: Vec<Vec<i64>> = (0..n).map(|i| vec![i, (i + 1) % n]).collect();
         chain.reverse();
-        let rings = join_rings(chain);
+        let rings = join_rings(chain, &mut 0);
         assert_eq!(rings.len(), 1);
         assert_eq!(rings[0].len(), n as usize + 1);
     }

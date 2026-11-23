@@ -2222,10 +2222,10 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
                 super::say_crs_note(s, crs);
             }
             let (full, reads) = read?;
-            // Whole for a city model only (its first layer says what the file does), not for the
-            // other files read ahead too.
+            // City models and OSM keep the file-wide report on their first layer. A feature-service
+            // PBF has only one layer, so this flag does not transfer any report for it.
             #[cfg(not(target_arch = "wasm32"))]
-            let whole = is_city_model_path(path);
+            let whole = is_city_model_path(path) || path.to_ascii_lowercase().ends_with(".pbf");
             #[cfg(target_arch = "wasm32")]
             let whole = !path.to_ascii_lowercase().ends_with(".zip");
             return add_picked(s, p, &full, reads, whole, Vec::new(), None);
@@ -2788,12 +2788,12 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
     if dxf {
         return add_reads(s, p, file_name, reads, overlays, zoom);
     }
-    let whole = rustgis_data::io::is_city_model(file_name, bytes);
+    let whole = rustgis_data::io::is_city_model(file_name, bytes) || rustgis_data::osm::looks_like_osm_pbf(bytes);
     add_picked(s, p, file_name, reads, whole, overlays, zoom)
 }
 
-/// Adds the layers a file gave, or the one `"layer"` picks. `whole` is for a city model, whose
-/// first layer holds what the file as a whole says.
+/// Adds the layers a file gave, or the one `"layer"` picks. `whole` carries the first layer's
+/// file-wide report for city models and OSM; OSM has no layer-local height message to remove.
 fn add_picked(
     s: &mut Session,
     p: &Value,
@@ -2809,8 +2809,8 @@ fn add_picked(
         // By its full name or its last word ("tracks" for "walk tracks").
         let pick = |n: &str| n.eq_ignore_ascii_case(want) || n.rsplit(' ').next().is_some_and(|w| w.eq_ignore_ascii_case(want));
         // A city model's first layer holds what the file as a whole says, after its own one
-        // notice: that its heights were dropped (it has no other). In a zip, a model is the one
-        // member that gives several layers, and it says so for its own layers only.
+        // notice: that its heights were dropped (it has no other). OSM has no such height notice.
+        // In a zip, a model is the one member that gives several layers, and it says so for its own layers only.
         let same = |a: &rustgis_data::io::LayerRead, b: &rustgis_data::io::LayerRead| a.dataset.source == b.dataset.source;
         let file_wide: Vec<(Option<String>, rustgis_data::ReadReport)> = reads
             .iter()
@@ -7832,6 +7832,68 @@ mod tests {
         let inputs = capture.inputs();
         assert_eq!(inputs.len(), 1);
         assert!(inputs[0].sha256.is_none(), "a whole-file read was captured");
+    }
+
+    /// File-wide OSM omissions survive selecting polygons, inline, uploaded or read ahead.
+    #[test]
+    fn named_osm_layers_keep_omission_notices() {
+        use base64::Engine;
+        use rustgis_data::GeometryType;
+        struct Dir(std::path::PathBuf);
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Dir(std::env::temp_dir().join(format!("rustgis-osm-picked-notices-{}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join("named.osm.pbf");
+        for (bytes, lossy) in [
+            (&include_bytes!("../../testdata/reading-losses/hole-clean-with-point.osm.pbf")[..], false),
+            (&include_bytes!("../../testdata/reading-losses/hole-missing-member-with-point.osm.pbf")[..], true),
+        ] {
+            let native = rustgis_data::osm::read("named.osm.pbf", bytes).unwrap();
+            assert_eq!(native.len(), 2);
+            let expected = &native[1].0;
+            assert_eq!(expected.geometry_type, GeometryType::Polygon);
+            std::fs::write(&path, bytes).unwrap();
+            for picked in [false, true] {
+                for route in ["ahead", "path", "bytes"] {
+                    let mut s = Session::new(crate::Project::default());
+                    let mark = s.notice_mark();
+                    let mut params = if route == "bytes" {
+                        json!({"fileName": "named.osm.pbf", "data": base64::engine::general_purpose::STANDARD.encode(bytes)})
+                    } else {
+                        json!({"path": path})
+                    };
+                    if picked {
+                        params["layer"] = json!(expected.name);
+                    }
+                    match route {
+                        "ahead" => {
+                            let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &params).unwrap();
+                            assert!(ahead.reads());
+                            let read = ahead.run(&rustgis_analysis::control::Control::new()).unwrap();
+                            crate::cmd::reads::read_land(&mut s, read).unwrap();
+                        }
+                        "path" => {
+                            s.run("layer.addData", &params).unwrap();
+                        }
+                        _ => {
+                            s.run("layer.addDataBytes", &params).unwrap();
+                        }
+                    }
+                    assert_eq!(s.map().layers.len(), if picked { 1 } else { 2 });
+                    let actual = &s.map().layers.iter().find(|l| l.dataset.geometry_type == GeometryType::Polygon).unwrap().dataset;
+                    assert_eq!(actual.fields, expected.fields);
+                    assert_eq!(actual.features.iter().collect::<Vec<_>>(), expected.features.iter().collect::<Vec<_>>());
+                    let said: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+                    let expected_notice =
+                        if lossy { vec!["1 OSM relation member way was omitted because it is unavailable"] } else { vec![] };
+                    assert_eq!(said, expected_notice, "route={route}, picked={picked}");
+                }
+            }
+        }
     }
 
     /// Overlays left out for their pictures' size are said, with the budget; none, nothing said.

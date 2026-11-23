@@ -21,9 +21,17 @@ Each lossy file changes just one thing:
 | `hole-unclosed.osm.pbf` | Way 20 references [4,5,6], without its closing node. |
 | `hole-outside.osm.pbf` | Move nodes 4–6 to (21,21), (22,21), (21,22). |
 
-The native reader currently produces one polygon with two rings for the clean file and one
-ring for each lossy file, without a loss notice. The command corpus records these existing
-bugs as `Silent`; this contribution does not fix the reader or certify other OSM loss kinds.
+The native reader produces one polygon with two rings for the clean file and one ring for
+each lossy file. Each lossy file reports its omitted member way, ring with missing nodes,
+unclosed ring chain or inner ring without an outer host. Native tests check the retained
+outer geometry and exact counted notices; the command corpus requires successful imports
+and delivery of these notices. Other OSM loss kinds are not certified by these fixtures.
+
+The `hole-clean-with-point` and `hole-missing-member-with-point` variants add node 7 at
+(0,0), tagged `name=Marker`; their string tables append `name` and `Marker`. They produce
+points and polygons layers. The file-wide report is on the points layer, so the command
+regression selects only polygons and checks that the same notice arrives exactly once
+through local files, uploads and desktop read-ahead. Together the two files are 474 bytes.
 
 | File | SHA-256 |
 |---|---|
@@ -32,3 +40,5 @@ bugs as `Silent`; this contribution does not fix the reader or certify other OSM
 | `hole-missing-node.osm.pbf` | `9c1c5e4d483415809e47e1a5c5f1fb1d682e83c98c1351355c78e2fbadebef77` |
 | `hole-unclosed.osm.pbf` | `057ac714164461be6ce76960563d7786a40436a57518d26561584bf3480c8cd3` |
 | `hole-outside.osm.pbf` | `2b0a1150e2dce48cddcf7533c27a336f054d0f23fbdf26b773bb746c375754dc` |
+| `hole-clean-with-point.osm.pbf` | `6c2f3ee7c3196ad5a1b6dd1a8ab62fa52225bf277a6ae0e9122501a25860a314` |
+| `hole-missing-member-with-point.osm.pbf` | `d09f119445cd7c21fc39477d5fc40918f714debdb5968b3a0712799d0cb29e97` |

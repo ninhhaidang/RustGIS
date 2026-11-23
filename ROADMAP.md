@@ -69,11 +69,9 @@ The shared pieces the everyday workflow stands on.
 ### Correct results
 A result is right, or RustGIS says what it lost or assumed
 ([AGENTS.md](AGENTS.md#never-silent)).
-- Known silent losses: DuckDB queries (`ST_Force2D`) drop Z without a notice; the OSM reader leaves out rings that don't close, rings and member ways with
-  nodes or ways the file doesn't hold, and inner rings outside every outer one; DXF polyface faces with missing vertices and unreadable supplied Z outside 3D POLYLINE vertices; and the text
-  readers' losses listed as `Silent` in `crates/engine/tests/integration/never_silent_reading.rs`, among them
-  unreadable coordinates, holes and parts in MapInfo,
-  and attribute fields/values in XLSB short-cell workbooks (the original SheetJS 0.18.5 clean
+- Known silent losses: DXF polyface faces with missing vertices and unreadable supplied Z outside 3D POLYLINE vertices; and the text
+  reader loss listed as `Silent` in `crates/engine/tests/integration/never_silent_reading.rs`:
+  attribute fields/values in XLSB short-cell workbooks (the original SheetJS 0.18.5 clean
   workbook retains its point but no attributes, without a notice). A fix makes
   its case `Said` or `Imported` _(open)_.
 - Lossy sample files in `never_silent_reading.rs` for the readers it doesn't cover yet:
