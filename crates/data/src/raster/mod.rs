@@ -2204,7 +2204,13 @@ pub(crate) mod tests {
                 let cog = geotiff::read(std::io::Cursor::new(cogwrite::write(&r, 0).unwrap()), "cog").unwrap();
                 assert_eq!((back.data_type.as_str(), cog.data_type.as_str()), ("Float32", "Float32"));
             }
-            assert_eq!(back.bands.iter().map(stats).collect::<Vec<_>>(), r.bands.iter().map(stats).collect::<Vec<_>>(), "{data_type}");
+            // The alpha band's top is its type's opaque value: a 16-bit one, written as floats, is
+            // opaque at 1 (its pixels are divided by 65535).
+            let mut same: Vec<_> = r.bands.iter().map(stats).collect();
+            if let Some(a) = same.get_mut(3).filter(|_| data_type == "UInt16") {
+                a.2 = 1.0;
+            }
+            assert_eq!(back.bands.iter().map(stats).collect::<Vec<_>>(), same, "{data_type}");
         }
         // As the map draws it: an alpha under half a 256th of opaque is see-through (16 bits: 100
         // of 65535), one above it isn't (200).

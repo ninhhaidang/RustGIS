@@ -1587,17 +1587,24 @@ and the MCP server see it too. A GeoTIFF read in place that is added before its 
 (the desktop app, the browser) answers `"reading": true`, sized by its header when that is in, and
 with `null` for its size and bands until then.
 `share.exportRaster` writes an untiled GeoTIFF, in strips of rows, with an 8-bit grey band (a
-hillshade, say) as bytes and another single band as 32-bit floats; with `"cog": true` it writes a
-cloud-optimised one: 512-pixel tiles, overviews (each half the size of the last, down to one tile),
-and every directory ahead of the tiles, so a reader fetches the header once and then only the tiles
-it needs. Both compress with Deflate after a predictor: the floating-point one for decimal values,
-differences along the row for whole numbers, none for classes. Overviews are averaged, except for a
-single band of classes (a palette raster's, a band with class names, or a band written as 8- or
-16-bit whole numbers with a few distinct values), whose overviews take a pixel so that no class is
-invented; colour and grey-with-alpha files are always averaged. A palette keeps its colour table,
-though not the table's transparency, which a TIFF colour table can't hold (GDAL drops it too).
-Either file is classic TIFF when it would fit in 4 GiB even uncompressed and BigTIFF when it might
-not.
+hillshade, say) as bytes and another single band as 32-bit floats (so is an RGBA raster with a NaN
+colour that isn't see-through); with `"cog": true` it writes a cloud-optimised one: 512-pixel
+tiles, overviews (each half the size of the last, down to one tile), and every directory ahead of
+the tiles, so a reader fetches the header once and then only the tiles it needs. A cloud-optimised
+file makes that RGBA raster's NaN cell see-through instead. An integer raster's alpha written as
+floats is scaled to 0–1 (1 is opaque), so each pixel keeps how see-through it was. In a GeoTIFF a
+cell with no value stays without one; if a scaled alpha would equal the no-data value (a no-data
+value of 1, say), the no-data cells are written as NaN and the tag is `nan`. A cloud-optimised file
+writes the raster's own no-data value as its tag when the samples can hold it (a palette raster uses
+an unused index; NaN for a float raster without one that has cells with no value), and with an alpha
+band no tag, making those cells see-through. Both compress with Deflate after a predictor: the
+floating-point one for decimal values, differences along the row for whole numbers, none for
+classes. Overviews are averaged, except for a single band of classes (a palette raster's, a band
+with class names, or a band written as 8- or 16-bit whole numbers with a few distinct values), whose
+overviews take a pixel so that no class is invented; colour and grey-with-alpha files are always
+averaged. A palette keeps its colour table, though not the table's transparency, which a TIFF colour
+table can't hold (GDAL drops it too). Either file is classic TIFF when it would fit in 4 GiB even
+uncompressed and BigTIFF when it might not.
 Exported to a file, a cloud-optimised one is written tile by tile, never held whole in memory (the
 browser builds it in memory to download it).
 GeoTIFFs may be regular or cloud-optimised: grey, RGB(A), palette (coloured by the file's colour
