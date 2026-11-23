@@ -262,6 +262,14 @@ fn connections(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, list: &[Connection
                     }
                     ui.close();
                 }
+                // An Esri enterprise geodatabase is a SQL Server connection, entered as ArcGIS
+                // Pro asks for it or from its .sde file.
+                if kind == "sqlserver" && ui.button(tl!("Enterprise Geodatabase…")).clicked() {
+                    if let Err(e) = app.run("ui.connection", json!({"kind": "sqlserver", "form": true})) {
+                        app.session.notify(e, true);
+                    }
+                    ui.close();
+                }
             }
         });
         if ui.small_button("⟳").on_hover_text(tl!("Refresh every connection's lists")).clicked() {

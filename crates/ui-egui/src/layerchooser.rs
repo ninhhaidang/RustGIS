@@ -53,6 +53,10 @@ pub fn add_file(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
     if command != "layer.addData" {
         return app.run_by_user(command, json!({"path": path}));
     }
+    // An ArcGIS Pro database connection file opens the geodatabase connection form, filled from it.
+    if path.trim().to_ascii_lowercase().ends_with(".sde") {
+        return app.run("ui.connection", json!({"kind": "sqlserver", "form": true, "sdeFile": path}));
+    }
     // A drawing asks for its coordinate system and whether its blocks are drawn first.
     if rustgis_engine::data::dxf::is_dxf_name(path) {
         return crate::dialogs::open_dxf_path(app, path);
@@ -203,6 +207,19 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
 mod tests {
     use super::*;
     use rustgis_engine::{Project, Session};
+
+    /// A `.sde` file dropped or added opens the geodatabase form filled from it, and adds no layer.
+    #[test]
+    fn a_sde_file_added_opens_the_geodatabase_form() {
+        let path = format!("{}/../data/testdata/sde/sqlserver-os.sde", env!("CARGO_MANIFEST_DIR"));
+        let mut app = crate::RustGisApp::with_sample();
+        let layers = app.session.project.maps.first().map_or(0, |m| m.layers.len());
+        add_file(&mut app, &path).unwrap();
+        assert_eq!(app.dialogs.open, Some("newConnection"));
+        assert!(app.ui.connection.form);
+        assert_eq!(app.ui.connection.server, "gisdb.example.invalid");
+        assert_eq!(app.session.project.maps.first().map_or(0, |m| m.layers.len()), layers);
+    }
 
     /// The app drawn for a test, past its first frames (which install the fonts).
     fn harness(app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {

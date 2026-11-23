@@ -45,7 +45,7 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("info.databaseTables", "List Database Tables", "Home › Add › Add Data › Database", database_tables).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files))
             .view()
-            .params(r#"{"database": "as layer.addDatabase", "password"?: string} → {count, layers: [labels of the tables with a geometry column], and for an Esri enterprise geodatabase on SQL Server: tables: [labels of its registered tables without one], items: [{label, item: "featureClass"|"table"|"other", schema, name, column?, kind?, dataset, alias, versioning: "none"|"traditional"|"branch", display}], geodatabase: {owner, release, note? (when its catalog or its list of spatial columns was cut short)}}"#),
+            .params(r#"{"database": "as layer.addDatabase", "password"?: string} → {count, layers: [labels of the tables with a geometry column], and for an Esri enterprise geodatabase on SQL Server: tables: [labels of its registered tables without one], items: [{label, item: "featureClass"|"table"|"other", schema, name, column?, kind?, dataset, alias, versioning: "none"|"traditional"|"branch", display, geometry?: "points"|"lines"|"polygons"|null (a featureClass's; other items have none)}], geodatabase: {owner, release, note? (when its catalog or its list of spatial columns was cut short)}}"#),
         C::new("layer.defineProjection", "Define Projection", "Layers", define_projection).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(r#"{"layer"?: name|id, "crs": "EPSG:… or WKT; reinterpret native coordinates, without rewriting the source file"}"#),

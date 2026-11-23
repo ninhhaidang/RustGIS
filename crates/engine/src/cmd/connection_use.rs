@@ -198,6 +198,7 @@ pub(in crate::cmd) fn geodatabase_rows(listing: rustgis_data::source::sqlserver:
         rows.push(json!({
             "label": label, "schema": schema, "name": name, "column": column, "kind": kind,
             "item": "featureClass", "dataset": item.dataset, "alias": item.alias, "versioning": item.versioning,
+            "geometry": item.family.map(|f| f.label()),
             "display": item.alias.as_deref().unwrap_or_else(|| item.short_name()),
         }));
     }

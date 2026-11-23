@@ -4593,6 +4593,19 @@ impl RustGisApp {
                 } else {
                     connectionui::open_new(self, p.get("kind").and_then(Value::as_str).unwrap_or("service"))?;
                 }
+                // An enterprise geodatabase: SQL Server's form (server, sign-in, database), filled
+                // with what is given, or from a .sde file. A file that is refused says why in the
+                // form, which stays open to enter the connection by hand.
+                if p.get("form").and_then(Value::as_bool) == Some(true) && self.ui.connection.kind == "sqlserver" {
+                    let text = |key: &str| p.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+                    if let Err(e) = connectionui::use_form(&mut self.ui.connection, text("server"), text("database")) {
+                        self.dialogs.error = Some(e);
+                    } else if let Some(file) = text("sdeFile")
+                        && let Err(e) = connectionui::fill_from_sde(self, file)
+                    {
+                        self.dialogs.error = Some(e);
+                    }
+                }
                 if p.get("test").and_then(Value::as_bool) == Some(true) {
                     connectionui::start_test(self);
                 }

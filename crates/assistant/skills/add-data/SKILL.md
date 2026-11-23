@@ -27,7 +27,8 @@ and its limits are listed in `user-guide/data-formats.md`.
   A SQL Server database that is an Esri enterprise geodatabase (SDE) is read-only. For it
   `info.databaseTables` returns `items`, each with `item` (`featureClass`, `table` or `other`),
   `dataset` (its feature dataset, if any), `alias`, `versioning` (`none`, `traditional` or
-  `branch`) and `display` (what to call it); `dataset`, `alias` and `versioning` are `null` for
+  `branch`), `display` (what to call it) and a feature class's `geometry` (`points`, `lines`,
+  `polygons` or `null`); `dataset`, `alias` and `versioning` are `null` for
   `other`. Add a feature class with `layer.addDatabase`
   `{"database": D, "layer": L}`, where L is its name, its schema-qualified name or Pro's
   database-qualified name; a registered

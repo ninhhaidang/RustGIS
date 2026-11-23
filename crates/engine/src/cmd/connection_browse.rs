@@ -475,16 +475,22 @@ fn is_geodatabase(rows: &[Value]) -> bool {
 fn geodatabase_tree(rows: &[Value], address: &str, node: Option<&str>) -> Found {
     let text = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let item = |r: &Value| r.get("item").and_then(Value::as_str).unwrap_or("").to_string();
+    // A row says what it is and, for a feature class, its kind of geometry (the tree's icon).
     let child = |r: &Value, name: String, detail: String| {
         let label = text(r, "label");
-        json!({
+        let mut out = json!({
             "key": label,
             "name": name,
             "what": "table",
+            "item": item(r),
             "detail": detail,
             "add": {"command": "layer.addDatabase", "params": {"database": address, "layer": label}},
             "options": true,
-        })
+        });
+        if let Some(geometry) = r.get("geometry").and_then(Value::as_str) {
+            out["geometry"] = json!(geometry);
+        }
+        out
     };
     let shown = |r: &Value| match text(r, "display") {
         d if d.is_empty() => text(r, "name"),
@@ -1287,9 +1293,9 @@ mod tests {
     fn geodatabase_rows() -> Vec<Value> {
         vec![
             json!({"label": "sde.Mains", "schema": "sde", "name": "Mains", "column": "Shape", "kind": "MultiLineString", "item": "featureClass",
-                   "dataset": "Water", "alias": "Water mains", "versioning": "traditional", "display": "Water mains"}),
+                   "geometry": "lines", "dataset": "Water", "alias": "Water mains", "versioning": "traditional", "display": "Water mains"}),
             json!({"label": "sde.Valves", "schema": "sde", "name": "Valves", "column": "Shape", "kind": "Point", "item": "featureClass",
-                   "dataset": null, "alias": null, "versioning": "none", "display": "Valves"}),
+                   "geometry": "points", "dataset": null, "alias": null, "versioning": "none", "display": "Valves"}),
             json!({"label": "sde.Readings", "schema": "sde", "name": "Readings", "item": "table", "dataset": null, "alias": null, "display": "Readings"}),
             json!({"label": "dbo.Parcels", "schema": "dbo", "name": "Parcels", "column": "geom", "kind": "MultiPolygon", "item": "other"}),
         ]
@@ -1313,12 +1319,16 @@ mod tests {
         assert_eq!(node, format!("dataset:{}", super::URL_SAFE_NO_PAD.encode("Water")));
         let valves = &root.children[1];
         assert_eq!(valves["what"], "table");
+        // What it is and its kind of geometry, for the tree's icon.
+        assert_eq!((valves["item"].as_str(), valves["geometry"].as_str()), (Some("featureClass"), Some("points")));
         assert_eq!(valves["detail"], "feature class");
         assert_eq!(valves["add"]["command"], "layer.addDatabase");
         assert_eq!(valves["add"]["params"]["layer"], "sde.Valves");
         assert_eq!(valves["add"]["params"]["database"], "mssql://gis-db/utility");
         let tables = root.children[2]["children"].as_array().unwrap();
         assert_eq!(tables[0]["name"], "Readings");
+        assert_eq!(tables[0]["item"], "table");
+        assert!(tables[0].get("geometry").is_none());
         assert_eq!(tables[0]["detail"], "table");
         assert_eq!(tables[0]["add"]["params"]["layer"], "sde.Readings");
         let other = root.children[3]["children"].as_array().unwrap();
@@ -1333,6 +1343,7 @@ mod tests {
         let water = super::geodatabase_tree(&rows, "mssql://gis-db/utility", Some(&dataset));
         assert_eq!(names(&water), ["Water mains"]);
         assert!(water.children[0]["detail"].as_str().unwrap().contains("traditional"));
+        assert_eq!(water.children[0]["geometry"], "lines");
         assert_eq!(water.children[0]["add"]["params"]["layer"], "sde.Mains");
         assert!(super::geodatabase_tree(&rows, "mssql://gis-db/utility", Some("Elsewhere")).children.is_empty());
     }
@@ -1446,6 +1457,13 @@ mod tests {
             cut: false,
         };
         let rows = super::super::connection_use::geodatabase_rows(listing);
+        // A class's kind of geometry is its definition's; one that doesn't say has none.
+        let valves = rows.iter().find(|r| r["name"] == "VALVES").unwrap();
+        assert!(valves["geometry"].is_null());
+        let mut lines = item("Mains", ItemKind::FeatureClass);
+        lines.family = Some(rustgis_data::source::Family::Lines);
+        let listing = GdbListing { datasets: Vec::new(), classes: vec![(lines, None)], tables: Vec::new(), other: Vec::new(), cut: false };
+        assert_eq!(super::super::connection_use::geodatabase_rows(listing)[0]["geometry"], "lines");
         let orphans = rows.iter().find(|r| r["name"] == "ORPHANS").unwrap();
         assert!(orphans["column"].is_null() && orphans["kind"].is_null());
         assert_eq!(orphans["label"], "sde.ORPHANS");

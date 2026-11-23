@@ -528,6 +528,12 @@ fn home_tab(app: &mut RustGisApp, ui: &mut Ui) {
                             continue;
                         }
                         menu_item(ui, app, "", label, "ui.connection", json!({"kind": kind}));
+                        // An Esri enterprise geodatabase is a SQL Server connection, entered as
+                        // ArcGIS Pro asks for it or from its .sde file.
+                        if kind == "sqlserver" {
+                            let form = json!({"kind": "sqlserver", "form": true});
+                            menu_item(ui, app, "", "Enterprise Geodatabase…", "ui.connection", form);
+                        }
                     }
                 });
                 menu_item(ui, app, "graphics_layer", "Graphics Layer", "graphics.newLayer", Value::Null);

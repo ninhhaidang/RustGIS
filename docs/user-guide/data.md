@@ -755,6 +755,38 @@ or a table is opened. A database without them browses and reads exactly as descr
 SQL Server geodatabases are read; PostgreSQL and Oracle ones are not, yet. Geodatabase layers and
 tables are read-only, versioned or not: nothing is edited or written back.
 
+**New Connection ▾ › Enterprise Geodatabase…** in the [Data Sources](#data-sources) pane (or
+**Home › Add › Add Data › New Connection › Enterprise Geodatabase…**) opens the connection dialog
+as a form with what ArcGIS Pro's own dialog asks for:
+
+- **Platform**: SQL Server.
+- **Server**: `gis-db`, `gis-db\utility` for a named instance, or `gis-db,1433` for a port.
+- **Sign in**: **Database user** (with **User** and **Password**) or **Windows**.
+- **Remember on this computer** keeps the password in the operating system's password store, as
+  for any [named connection](#named-connections).
+- **Database**.
+- **Trust the server's certificate**: tick it when connecting fails with "the server's certificate
+  isn't from an authority this computer trusts". SQL Server's own self-signed certificate does
+  that; Pro and SQL Server Management Studio connect to it with their **Trust server certificate**
+  option, and this is the same choice (`trust-server-certificate=true` in the address). Tick it
+  only for your organisation's server.
+- **Name** (`Geodatabase on <server>` when left blank) and **Group**.
+
+**Enter an address instead** swaps the form for the `mssql://…` address box, and **Use the form
+instead** swaps back, with the address taken apart into the form: a saved SQL Server connection
+opens in the address box, and **Use the form instead** shows it in the form. The address's other
+options (`encrypt=strict`, `ca=…`) stay in it and show in the form's **Options** row, which
+takes no password (type it in **Password**), instance (type it in **Server**) or certificate
+choice (tick the box). An address with a password or key in it stays in the address box, which
+says why, and so does one that isn't `mssql://`. **Database user** with no user can't be saved:
+no user is Windows sign-in.
+
+**From .sde file…** fills the form from a connection file saved by ArcGIS Pro, through
+`connection.readSde` below, and names the connection after the file unless a name was typed.
+Nothing is saved until **Save**, and the file's password is never read: type it in the form. A
+`.sde` file dropped on the window, or added with **Add Data**, opens the same form filled from
+it. A file for another platform leaves the form as it was and says why.
+
 `connection.readSde` reads a connection file saved by ArcGIS Pro and answers with its server,
 database, user, sign-in method and version, and the `mssql://` address they make, which
 `connection.new` takes. The server comes with its instance or port when the file gives them.
@@ -765,9 +797,9 @@ another platform is refused with its platform named.
 rustgis-cli run --cmd 'connection.readSde={"path":"utility.sde"}'
 ```
 
-A saved connection's **Test** result names the geodatabase's release. When the account can't
-read the geodatabase's catalog, the result says why, and the database browses as plain SQL
-Server, with a note.
+A saved connection's **Test** result names the geodatabase's release ("Enterprise geodatabase
+11.3.0, 40 tables with geometry"). When the account can't read the geodatabase's catalog, the
+result says why, and the database browses as plain SQL Server, with a note.
 
 The connection's tree shows what ArcGIS Pro shows, and none of the geodatabase's machinery:
 
@@ -800,9 +832,11 @@ column (`Mains:SHAPE`).
 
 `info.databaseTables` lists a geodatabase's tables as `items`: each has `item` (`featureClass`,
 `table` or `other`), `dataset`, `alias`, `versioning` (`none`, `traditional` or `branch`) and
-`display`, the name the tree shows; an `other` table, which the geodatabase doesn't register, has
-`dataset`, `alias` and `versioning` as `null` and its name with its schema as `display`. A database
-with 10,000 spatial columns or more has only the first 10,000 read, and the listing says so. `connection.browse` lists the tree level by level.
+`display`, the name the tree shows, and a feature class's `geometry` (`points`, `lines` or
+`polygons`, from its definition, else `null`); an `other` table, which the geodatabase doesn't
+register, has `dataset`, `alias` and `versioning` as `null` and its name with its schema as
+`display`. A database with 10,000 spatial columns or more has only the first 10,000 read, and the
+listing says so. `connection.browse` lists the tree level by level.
 
 **Versions.** A feature class shows the current rows of the **Default** version. When a `.sde`
 file names any other version, `connection.readSde` says so in a notice naming it: the layers
