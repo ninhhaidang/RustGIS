@@ -4939,6 +4939,12 @@ struct FieldText {
     /// Text with spaces around it in a KML or GPX name, which reading trims whatever its
     /// extended data column's type.
     name_padded: usize,
+    /// dBase text with a NUL in what the file keeps: reading keeps only the text before it, and
+    /// reads it as null when that is blank (#2415).
+    nul: usize,
+    /// CSV text starting with an apostrophe before a formula's first character (`'=x`), which
+    /// reading takes for the formula guard and drops ([`unguard`], #2415).
+    apostrophe: usize,
     /// Blank text, read as null.
     blank: usize,
     /// Text `<Null>` ([`Value::is_null_marker`]), which CSV and dBase read as null.
@@ -5057,14 +5063,28 @@ impl TextLosses {
                     }
                 }
                 let Value::Text(s) = v else { continue };
-                let trimmed = s.trim();
                 // A value is counted once, however many copies of it are written (a KML name
                 // field's extended data, a GPX multipoint's waypoints): by its first copy, the
                 // name, whose loss is never less than the extended data's.
                 if let Some(read) = reads.first() {
+                    // dBase keeps only the text before a NUL in the 254 bytes a Character column
+                    // keeps: counted apart, and what's kept then loses its trailing spaces as
+                    // other text does; a blank one, read as null, the NUL's notice says (#2415).
+                    let mut s = s.as_str();
+                    if *read == TextRead::Dbf
+                        && let Some(at) = s.bytes().take(254).position(|b| b == 0)
+                    {
+                        loss.nul += 1;
+                        s = s.get(..at).unwrap_or_default();
+                        if s.trim_end_matches(' ').is_empty() {
+                            continue;
+                        }
+                    }
+                    let trimmed = s.trim();
                     let count = match read {
                         TextRead::Cell if s.is_empty() => &mut loss.blank,
                         TextRead::Cell | TextRead::Dbf if Value::is_null_marker(s) => &mut loss.markers,
+                        TextRead::Cell if s.strip_prefix('\'').is_some_and(|rest| rest.starts_with(FORMULA_START)) => &mut loss.apostrophe,
                         TextRead::Cell if trimmed.is_empty() => &mut loss.blank_in_numbers,
                         // A Character column; text cut to 254 bytes is said as cut.
                         TextRead::Dbf if s.len() <= 254 && s.trim_end_matches(' ').is_empty() => &mut loss.blank,
@@ -5116,6 +5136,24 @@ impl TextLosses {
             };
             notes.push(format!("{target}: {what} back as empty (null), in {}", named_fields(fields, &blank)));
         }
+        let nul = counts(&|t| t.nul);
+        let n: usize = nul.iter().sum();
+        if n > 0 {
+            let what = if n == 1 { "1 text value holds".to_string() } else { format!("{n} text values hold") };
+            notes.push(format!(
+                "{target}: {what} a NUL character, and reading the file back keeps only the text before it, read as empty (null) when that is blank, in {}",
+                named_fields(fields, &nul)
+            ));
+        }
+        let apostrophe = counts(&|t| t.apostrophe);
+        let n: usize = apostrophe.iter().sum();
+        if n > 0 {
+            let what = if n == 1 { "1 text value starts".to_string() } else { format!("{n} text values start") };
+            notes.push(format!(
+                "{target}: {what} with an apostrophe before =, +, -, @, a tab or a line break, which reading the file back takes for the formula guard and drops, in {}",
+                named_fields(fields, &apostrophe)
+            ));
+        }
         if self.unread > 0 {
             let what = if self.unread == 1 { "1 feature is".to_string() } else { format!("{} features are", self.unread) };
             notes.push(format!(
@@ -5144,6 +5182,8 @@ impl std::ops::AddAssign for TextLosses {
         for (a, b) in self.layers.iter_mut().zip(other.layers).flat_map(|(a, b)| a.iter_mut().zip(b)) {
             a.padded += b.padded;
             a.name_padded += b.name_padded;
+            a.nul += b.nul;
+            a.apostrophe += b.apostrophe;
             a.blank += b.blank;
             a.markers += b.markers;
             a.blank_in_numbers += b.blank_in_numbers;
@@ -5192,12 +5232,43 @@ pub fn export_losses_notes_in(ds: &Dataset, ext: &str, name_field: Option<usize>
             notes.extend(losses.coordinates_note_in(&ds.fields, target, crs));
             notes
         }
-        "kml" | "kmz" => kml_empty_fields_note(ds, target)?.into_iter().collect(),
+        "kml" | "kmz" => kml_empty_fields_note(ds, target)?.into_iter().chain(kml_blank_names_note(ds, target)?).collect(),
         "gpx" => gpx_notes(ds, name_field, target),
         _ => Vec::new(),
     };
     notes.extend(TextLosses::of(&ds.features, &ds.fields, ds.geometry_type, ext, name_field).notes(&ds.fields, target));
     Ok(notes)
+}
+
+/// KML fields whose name is blank once trimmed, with values in the placemarks written: each is
+/// written as `<Data name="">`, which reading drops, so the column and its values are gone
+/// (#2415). A field with no value written is said by [`kml_empty_fields_note`].
+fn kml_blank_names_note(ds: &Dataset, target: &str) -> Result<Option<String>> {
+    let blank: Vec<usize> = ds.fields.iter().enumerate().filter(|(_, f)| f.name.trim().is_empty()).map(|(k, _)| k).collect();
+    if blank.is_empty() {
+        return Ok(None);
+    }
+    // One pass over the placemarks written, looking at Cancel as [`kml_empty_fields_note`] does.
+    let mut with_value = vec![false; blank.len()];
+    let mut values = 0usize;
+    for f in ds.features.iter().filter(|f| f.geometry.is_some()) {
+        crate::progress::check()?;
+        for (has, k) in with_value.iter_mut().zip(&blank) {
+            if f.attrs.get(*k).is_some_and(|v| !v.is_null()) {
+                *has = true;
+                values += 1;
+            }
+        }
+    }
+    let with_values = with_value.iter().filter(|has| **has).count();
+    Ok((values > 0).then(|| {
+        let target: String = target.chars().map(dbf_notice_char).collect();
+        let fields = if with_values == 1 { "1 field".to_string() } else { format!("{with_values} fields") };
+        let written = if values == 1 { "1 value".to_string() } else { format!("{values} values") };
+        format!(
+            "{target}: {fields} with a blank name, and {written} in them, won't read back: reading KML drops extended data without a name"
+        )
+    }))
 }
 
 /// KML writes ExtendedData only for non-null values of placemarks it writes. Report every
@@ -7448,6 +7519,74 @@ mod tests {
         assert!(text_notes(&clean, "shp").is_empty());
     }
 
+    /// Shapefile text with a NUL in it is said: reading the `.dbf` back keeps only the text before
+    /// it, and reads a value starting with one as null (#2415).
+    #[test]
+    fn shapefile_says_text_cut_at_a_nul() {
+        // The text before a NUL loses its trailing spaces as other text does ('ab '), and blank
+        // text before one (' ') reads as null, which the NUL's notice says.
+        let ds = text_layer(&["a", "b"], &[&[Some("ab\0cd"), Some("kept")], &[Some("\0x"), None], &[Some("ab \0cd"), Some(" \0y")]]);
+        assert_eq!(
+            text_notes(&ds, "shp"),
+            [
+                "t: 1 text value ends with spaces, which reading the file back drops, in 'a'",
+                "t: 4 text values hold a NUL character, and reading the file back keeps only the text before it, read as empty (null) when that is blank, in 'a', 'b'",
+            ]
+        );
+        // What the note says is what reading the file back does.
+        let (bytes, _) = write_bytes(&ds, "zip").unwrap();
+        let back = read_bytes("t.zip", &bytes).unwrap().0;
+        let column = |k: usize| back.features.iter().take(3).map(|f| f.attrs[k].clone()).collect::<Vec<_>>();
+        assert_eq!(column(0), [Value::Text("ab".into()), Value::Null, Value::Text("ab".into())]);
+        assert_eq!(column(1), [Value::Text("kept".into()), Value::Null, Value::Null]);
+        let clean = text_layer(&["a"], &[&[Some("abcd")], &[None]]);
+        assert!(text_notes(&clean, "shp").is_empty());
+    }
+
+    /// CSV text starting with an apostrophe before a formula's first character is said: reading
+    /// the file back takes the apostrophe for the formula guard and drops it (#2415). Text the
+    /// writer guards (`=y`) reads back as it was, and says nothing.
+    #[test]
+    fn csv_says_an_apostrophe_reading_takes_for_the_guard() {
+        let ds = text_layer(&["note", "code"], &[&[Some("'=x"), Some("a")], &[Some("'kept"), Some("'-5")], &[Some("=y"), Some("b")]]);
+        let said = "t: 2 text values start with an apostrophe before =, +, -, @, a tab or a line break, which reading the file back takes for the formula guard and drops, in 'note', 'code'";
+        assert_eq!(text_notes(&ds, "csv"), [said]);
+        assert_eq!(text_notes(&ds, "wkt"), [said]);
+        // What the note says is what reading the file back does.
+        let (bytes, _) = write_bytes(&ds, "csv").unwrap();
+        let back = read_bytes("t.csv", &bytes).unwrap().0;
+        let column = |n: &str| {
+            let i = back.field_index(n).unwrap();
+            back.features.iter().take(3).map(|f| f.attrs[i].to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(column("note"), ["=x", "'kept", "=y"]);
+        assert_eq!(column("code"), ["a", "-5", "b"]);
+        let clean = text_layer(&["note"], &[&[Some("'kept")], &[Some("=y")], &[Some("it's")]]);
+        assert!(text_notes(&clean, "csv").is_empty());
+    }
+
+    /// A KML field whose name is blank is said with its values: it's written as
+    /// `<Data name="">`, which reading drops, column and values (#2415). One without a value is
+    /// said by the note on fields with no values, not by this one.
+    #[test]
+    fn kml_says_fields_with_a_blank_name() {
+        let ds = text_layer(&["name", "", " ", "\t"], &[&[Some("a"), Some("x"), Some("y"), None], &[Some("b"), Some("z"), None, None]]);
+        let notes = export_losses_notes(&ds, "kml", name_field(&ds), "t").unwrap();
+        let blank: Vec<&String> = notes.iter().filter(|n| n.contains("blank name")).collect();
+        assert_eq!(
+            blank,
+            ["t: 2 fields with a blank name, and 3 values in them, won't read back: reading KML drops extended data without a name"],
+            "{notes:?}"
+        );
+        // What the note says is what reading the file back does.
+        let (bytes, _) = write_bytes(&ds, "kml").unwrap();
+        let back = &crate::kml::read("t.kml", &bytes).unwrap()[0].dataset;
+        assert!(back.fields.iter().all(|f| !f.name.trim().is_empty()), "{:?}", back.fields);
+        let clean = text_layer(&["name", "note", " "], &[&[Some("a"), Some("x"), None]]);
+        let notes = export_losses_notes(&clean, "kml", name_field(&clean), "t").unwrap();
+        assert!(!notes.iter().any(|n| n.contains("blank name")), "{notes:?}");
+    }
+
     #[test]
     fn kml_says_trimmed_and_blank_text() {
         let ds = text_layer(
@@ -7733,6 +7872,22 @@ mod tests {
             assert_eq!(sum, whole, "chunks of {size}");
         }
         assert_eq!(whole.notes(&wide.fields, "t"), Vec::<String>::new());
+        // The NUL and apostrophe counts add up too (#2415).
+        for (ext, layer, said) in [
+            ("csv", text_layer(&["note"], &[&[Some("'=x")], &[Some("y")], &[Some("'+z")]]), "2 text values start with an apostrophe"),
+            ("shp", text_layer(&["note"], &[&[Some("a\0b")], &[Some("y")], &[Some("ab \0c")]]), "2 text values hold a NUL"),
+        ] {
+            let whole = TextLosses::of(&layer.features, &layer.fields, layer.geometry_type, ext, None);
+            for size in 1..=layer.features.len() {
+                let mut sum = TextLosses::default();
+                for chunk in layer.features.chunks(size) {
+                    sum += TextLosses::of(chunk, &layer.fields, layer.geometry_type, ext, None);
+                }
+                assert_eq!(sum, whole, "{ext}: chunks of {size}");
+            }
+            let notes = whole.notes(&layer.fields, "t");
+            assert!(notes.iter().any(|n| n.contains(said)), "{ext}: {notes:?}");
+        }
     }
 
     /// GPX names fields with values before fields of nulls, so a field that lost data isn't
