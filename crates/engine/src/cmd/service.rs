@@ -502,15 +502,21 @@ fn vet(mut svc: Service, caps: &str) -> Service {
     svc
 }
 
-/// A service's GeoJSON answer made ready to read: latitude-first coordinates turned round, judged
-/// against the layer's longitude/latitude `bounds` from its capabilities (see
-/// [`fix_axes`](rustgis_data::ogc::fix_axes); none: left as they come), and a cut-off answer
-/// pointed out.
-pub fn features_answer(s: &mut Session, name: &str, bytes: Vec<u8>, bounds: Option<[f64; 4]>) -> Vec<u8> {
+/// A service's GeoJSON answer to `url` made ready to read: in the projected system `url` asks it
+/// in, named and east first, else latitude-first coordinates turned round, judged against the
+/// layer's longitude/latitude `bounds` from its capabilities (see
+/// [`place_answer`](rustgis_data::ogc::place_answer); none: left as they come), and a cut-off
+/// answer and a system assumed pointed out.
+pub fn features_answer(s: &mut Session, name: &str, url: &str, bytes: Vec<u8>, bounds: Option<[f64; 4]>) -> Vec<u8> {
     if let Some(note) = rustgis_data::ogc::partial_note(&bytes) {
         s.notify(format!("{name}: {note}"), false);
     }
-    rustgis_data::ogc::fix_axes(&bytes, bounds).unwrap_or(bytes)
+    let (bytes, assumed) = rustgis_data::ogc::place_answer(bytes, url, bounds);
+    // Once per kind with a count over the command (a service group reads many answers).
+    if let Some(assumed) = assumed {
+        s.notify_counted(None, assumed.template(), 1);
+    }
+    bytes
 }
 
 /// The layers an add's result `r` names (`layer`, `layers`) marked as read from the service
@@ -609,13 +615,48 @@ pub(crate) fn add_service_layer(
     zoom: Option<bool>,
     file: impl FnOnce(&[u8]) -> Result<String, String>,
 ) -> CmdResult {
-    let (downloaded, drawing) = download_layer_with(s, name, url, cache::MAX_DOWNLOAD, true, |url, max, timeout, ceiling| {
-        let ceiling = if public { ceiling.min(Reach::Public) } else { ceiling };
-        cache::download_blocking_with_origin_within(url, max, timeout, &[], ceiling)
-    })?;
+    let fetch = |s: &mut Session, url: &str| {
+        download_layer_with(s, name, url, cache::MAX_DOWNLOAD, true, |url, max, timeout, ceiling| {
+            let ceiling = if public { ceiling.min(Reach::Public) } else { ceiling };
+            cache::download_blocking_with_origin_within(url, max, timeout, &[], ceiling)
+        })
+    };
+    let first = fetch(s, url);
+    // A WFS type asked in its own system that the server refuses (an error, or an exception
+    // report where features were expected) is asked once more in EPSG:4326, as before RustGIS
+    // asked types in their own system, and that is said.
+    let refused = |r: &Result<(Downloaded, Drawing), String>| match r {
+        Err(_) => true,
+        // An OWS or WFS 1.0 exception report (not GML, which a server ignoring the JSON output
+        // format would send).
+        Ok((Downloaded::Bytes(b), _)) => {
+            let head = String::from_utf8_lossy(&b[..b.len().min(1024)]);
+            head.trim_start().starts_with('<') && head.contains("ExceptionReport")
+        }
+        Ok(_) => false,
+    };
+    let fallback = rustgis_data::ogc::wfs_lonlat_fallback(url).filter(|_| refused(&first));
+    let (url, (downloaded, drawing)) = match fallback {
+        Some(lonlat) => {
+            let why = match &first {
+                Err(e) => e.chars().take(200).collect::<String>(),
+                Ok(_) => "it answered with an exception report".into(),
+            };
+            // Failing too, both are said.
+            let second = fetch(s, &lonlat).map_err(|e| format!("{e} (asked in its own system first: {why})"))?;
+            let asked = rustgis_data::ogc::asked_system(url).map(|c| c.label()).unwrap_or_default();
+            s.notify(
+                format!("{name}: the server refused its own system ({asked}: {why}); its features were asked for in EPSG:4326 instead"),
+                false,
+            );
+            (lonlat, second)
+        }
+        None => (url.to_string(), first?),
+    };
+    let url = url.as_str();
     let r = match downloaded {
         Downloaded::Bytes(bytes) => {
-            let bytes = features_answer(s, name, bytes, bounds);
+            let bytes = features_answer(s, name, url, bytes, bounds);
             let file = file(&bytes)?;
             super::raster::add_named_bytes(s, p, file, bytes, zoom)?
         }

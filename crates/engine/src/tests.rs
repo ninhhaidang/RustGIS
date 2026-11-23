@@ -12,6 +12,9 @@ mod held_databases;
 #[path = "tests/scene_losses.rs"]
 mod scene_losses;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "tests/services_own.rs"]
+mod services_own;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/sources_own.rs"]
 mod sources_own;
 

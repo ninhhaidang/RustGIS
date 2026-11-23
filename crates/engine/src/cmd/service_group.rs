@@ -239,7 +239,7 @@ fn read(s: &mut Session, p: &Value) -> Result<(Value, Vec<(ServiceChild, Dataset
         }
         // The collection's bounds, from the listing: none read leaves the axes as they come.
         let bounds = super::bounds_of(layer.get("bbox")).ok().flatten();
-        let bytes = super::features_answer(s, name, bytes, bounds);
+        let bytes = super::features_answer(s, name, url, bytes, bounds);
         let text = std::str::from_utf8(&bytes).map_err(|e| format!("{name}: {e}"))?;
         let (mut dataset, report) = rustgis_data::io::read_geojson(text, name).map_err(|e| format!("{name}: {e}"))?;
         if dataset.features.is_empty() && !feature_collection(text) {

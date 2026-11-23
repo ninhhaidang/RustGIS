@@ -13,7 +13,7 @@
 //!   before them, as Esri writes them and as [`crate::filegdb`] reads them. A ring with no area is
 //!   left out, and said.
 //! - The coordinate system is the answer's (`latestWkid`, `wkid`, else its WKT), read as
-//!   [`crate::filegdb`] reads one; geometry is turned to longitude/latitude.
+//!   [`crate::filegdb`] reads one; geometry is held in it when RustGIS converts it.
 //! - Fields: integers, object ids and dates are integers, dates in milliseconds since 1970 (UTC),
 //!   as the same query gives them as GeoJSON; single and double precision numbers are doubles;
 //!   strings, GUIDs, XML, date-only, time-only and offset timestamps are text, as the service
@@ -123,6 +123,9 @@ pub struct Page {
 pub struct Losses {
     /// Features with a geometry, in an answer naming no coordinate system.
     pub no_crs: bool,
+    /// Features with a geometry, in an answer naming one RustGIS can't use, by a code or a WKT
+    /// (read as longitude/latitude, and said in the report).
+    pub unread_code: bool,
     /// Values that don't fit their field's type.
     pub unreadable: usize,
     /// Values, field names or aliases that aren't valid UTF-8.
@@ -139,6 +142,7 @@ impl Losses {
     /// Adds another page's.
     pub fn add(&mut self, other: &Losses) {
         self.no_crs |= other.no_crs;
+        self.unread_code |= other.unread_code;
         self.unreadable = self.unreadable.saturating_add(other.unreadable);
         self.not_utf8 = self.not_utf8.saturating_add(other.not_utf8);
         self.flat_rings = self.flat_rings.saturating_add(other.flat_rings);
@@ -321,12 +325,21 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     {
         report.messages.push("the coordinate system's WKT isn't valid UTF-8; the bytes that can't be read are replaced with U+FFFD");
     }
+    let said_before = report.messages.len();
     let (crs, to_lonlat) = crate::filegdb::esri_crs(code, wkt.as_deref(), &mut report)?;
+    // A WKT that couldn't be read (or converted) is read as longitude/latitude, and said so;
+    // a geographic one gives no system and says nothing.
+    let mut unread_code = crs.is_none()
+        && report
+            .messages
+            .get(said_before..)
+            .is_some_and(|m| m.iter().any(|m| m.ends_with("; coordinates are read as longitude/latitude")));
     if crs.is_none()
         && wkt.is_none()
         && let Some(code) = code
         && crate::filegdb::crs_of_code(code) != Some(crate::raster::Crs::LonLat)
     {
+        unread_code = true;
         report.messages.push(format!("coordinate system {code} can't be used; coordinates are read as longitude/latitude"));
     }
 
@@ -372,6 +385,7 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     let losses = Losses {
         // Assumed, so said: an answer that names no coordinate system.
         no_crs: any_geometry && code.is_none() && wkt.is_none(),
+        unread_code: any_geometry && unread_code,
         unreadable: tally.unreadable,
         not_utf8: tally.not_utf8,
         flat_rings: tally.flat_rings,

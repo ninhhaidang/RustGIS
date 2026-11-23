@@ -6777,7 +6777,7 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
     // paging.
     let bytes = if service {
         let label = ps(p, "name").map(str::to_string).unwrap_or_else(|| crate::sources::address_in_message(&url));
-        super::service::features_answer(s, &label, bytes, bounds)
+        super::service::features_answer(s, &label, &url, bytes, bounds)
     } else {
         bytes
     };

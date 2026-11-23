@@ -1774,6 +1774,8 @@ fn wfs(url: &str, root: &Node) -> Service {
         note_past_read_limit(&mut service, left, "feature types", limit);
         note_copied_addresses(&mut service, per_layer, limit);
     }
+    // Types whose own systems RustGIS doesn't read, and the first of those systems.
+    let mut unread: (usize, Option<String>) = (0, None);
     for ft in children(&list, "FeatureType").take(limit) {
         let Some(name) = child_text(&ft, "Name") else { continue };
         let title = child_text(&ft, "Title").unwrap_or_else(|| name.clone());
@@ -1797,7 +1799,25 @@ fn wfs(url: &str, root: &Node) -> Service {
         let crs84 = ft.children().any(|c| {
             c.is_element() && matches!(local(&c), "DefaultCRS" | "OtherCRS" | "DefaultSRS" | "OtherSRS" | "SRS") && is_crs84(&text_of(&c))
         });
-        let srs = if crs84 { "urn:ogc:def:crs:OGC:1.3:CRS84" } else { "EPSG:4326" };
+        // The type's own system first, when it is a projected one RustGIS reads (#2032): asked
+        // as `EPSG:<code>`, east first at the servers tried, and its answer judged against the
+        // type's bounds (`place_answer`). A system RustGIS doesn't read is asked as above, and said.
+        let default =
+            ft.children().find(|c| c.is_element() && matches!(local(c), "DefaultCRS" | "DefaultSRS" | "SRS")).map(|c| text_of(&c));
+        // By its canonical code: an alias (`EPSG:102100`) is asked as the system's own (3857), as
+        // ArcGIS's `outSR` is.
+        let own = default.as_deref().and_then(projected_system).map(|(_, crs)| format!("EPSG:{}", crs.epsg()));
+        // Said too: a projected one RustGIS reads but by a name it can't ask a server in (an
+        // `ESRI:` code, a WKT); a geographic one is asked as longitude/latitude anyway.
+        if own.is_none()
+            && let Some(d) = default.as_deref().map(str::trim)
+            && !is_crs84(d)
+            && unread_default(d)
+        {
+            unread.0 += 1;
+            unread.1.get_or_insert_with(|| d.to_string());
+        }
+        let srs = own.as_deref().unwrap_or(if crs84 { "urn:ogc:def:crs:OGC:1.3:CRS84" } else { "EPSG:4326" });
         // WFS 2.0 names the type and the count differently.
         let query = if version.starts_with('2') {
             format!(
@@ -1826,8 +1846,22 @@ fn wfs(url: &str, root: &Node) -> Service {
             legends: Vec::new(),
         });
     }
+    if let (n, Some(first)) = unread {
+        let which = if n == 1 { "1 feature type is".to_string() } else { format!("{n} feature types are") };
+        service.notes.push(format!(
+            "{which} asked for in longitude/latitude, converted by the server: RustGIS can't ask for {} own system ({}{})",
+            if n == 1 { "its" } else { "their" },
+            if n == 1 { "" } else { "the first: " },
+            clip_code(&first)
+        ));
+    }
     cut_listing(&mut service);
     service
+}
+
+/// A system's code as a note shows it: at most 80 characters.
+fn clip_code(code: &str) -> String {
+    if code.chars().count() <= 80 { code.to_string() } else { format!("{}…", code.chars().take(80).collect::<String>()) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2330,7 +2364,15 @@ fn arcgis_extent(e: &serde_json::Value) -> Option<[f64; 4]> {
             let (e, n) = merc_to_lonlat(x1, y1);
             lonlat_box(w.max(-180.0), s.max(-85.06), e.min(180.0), n.min(85.06))
         }
-        _ => None,
+        // Another system RustGIS reads: its box converted, its edges followed.
+        _ => {
+            let crs = crate::filegdb::crs_of_code(u32::try_from(wkid).ok()?)?;
+            let b = crs.to(crate::raster::Crs::LonLat).ok()?.extent(&rustgis_geom::Extent { min_x: x0, min_y: y0, max_x: x1, max_y: y1 });
+            if b.is_empty() {
+                return None;
+            }
+            lonlat_box(b.min_x.max(-180.0), b.min_y.max(-90.0), b.max_x.min(180.0), b.max_y.min(90.0))
+        }
     }
 }
 
@@ -2370,6 +2412,31 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
     // Feature layers (FeatureServer, and a MapServer's layers): queried as GeoJSON, so only from a
     // service that allows queries: "Query", or "Data" on a MapServer (a cached basemap's
     // capabilities are often just "Map,Tilemap").
+    // The service's own system, when it is a projected one RustGIS reads (#2032): its layers are
+    // asked in it, by its EPSG code (3857 for 102100), else in longitude/latitude.
+    let wkids: Vec<u32> = [
+        "/spatialReference/latestWkid",
+        "/spatialReference/wkid",
+        "/fullExtent/spatialReference/latestWkid",
+        "/fullExtent/spatialReference/wkid",
+    ]
+    .iter()
+    .filter_map(|k| v.pointer(k).and_then(|w| w.as_u64()).and_then(|w| u32::try_from(w).ok()))
+    .filter(|w| *w != 0)
+    .collect();
+    let own = wkids.iter().find_map(|&w| crate::filegdb::crs_of_code(w));
+    let out_sr = own.and_then(own_system).map_or(4326, |c| u32::from(c.epsg()));
+    // Said when its features are asked in 4326 though its system is projected (a code RustGIS
+    // doesn't read, one without an EPSG code to ask by, or projected WKT only).
+    let asked_own = own.and_then(own_system).is_some() || own.is_some_and(|c| c == crate::raster::Crs::LonLat || c.is_geographic());
+    let unread_system = wkids.first().map(u32::to_string).or_else(|| {
+        // A system given only as WKT has no code to ask for it by.
+        let wkt = ["/spatialReference/wkt", "/fullExtent/spatialReference/wkt"].iter().find_map(|k| v.pointer(k)?.as_str())?;
+        // A geographic one is asked as longitude/latitude anyway. Told by its keyword, not parsed:
+        // the service's text would be kept in the process's table of systems defined by files.
+        (!geographic_text(wkt)).then(|| "WKT only".to_string())
+    });
+    let unread_system = unread_system.filter(|_| !asked_own);
     let features = |service: &mut Service| {
         let queries = v
             .get("capabilities")
@@ -2381,13 +2448,14 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
             }
             return;
         }
+        let mut listed = false;
         for l in v.get("layers").and_then(|l| l.as_array()).into_iter().flatten().take(MAX_LISTED_LAYERS) {
             let (Some(id), Some(name)) = (l.get("id").and_then(|i| i.as_i64()), l.get("name").and_then(|n| n.as_str())) else { continue };
             // Group layers have sub-layers and no features of their own.
             if l.get("subLayerIds").is_some_and(|s| s.as_array().is_some_and(|a| !a.is_empty())) {
                 continue;
             }
-            let url = format!("{b}/{id}/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson");
+            let url = format!("{b}/{id}/query?where=1%3D1&outFields=*&returnGeometry=true&outSR={out_sr}&f=geojson");
             service.layers.push(ServiceLayer {
                 zooms: None,
                 name: id.to_string(),
@@ -2399,6 +2467,12 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
                 feature_info: None,
                 legends: Vec::new(),
             });
+            listed = true;
+        }
+        if let (true, Some(wkid)) = (listed, unread_system) {
+            service.notes.push(format!(
+                "its layers' features are asked for in longitude/latitude, converted by the server: RustGIS can't ask for its coordinate system ({wkid})"
+            ));
         }
     };
     if lower.ends_with("/featureserver") {
@@ -3446,6 +3520,9 @@ pub struct Pages {
     phase: Phase,
     /// The protocol buffer pages read, as one layer, and what reading them said.
     decoded: Option<(crate::Dataset, crate::ReadReport, crate::esripbf::Losses)>,
+    /// What the joined pages with positions say of their system ([`placed_as`]); `None` until a
+    /// page has positions.
+    placed_as: Option<PlacedAs>,
     /// The memory those pages take, in bytes, and the most they may ([`max_decoded_bytes`]).
     decoded_bytes: usize,
     decoded_budget: usize,
@@ -3621,6 +3698,7 @@ fn start(url: &str, max: usize, pbf: bool) -> Step {
         from: url.to_string(),
         phase,
         decoded: None,
+        placed_as: None,
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
@@ -3689,6 +3767,7 @@ fn read_first(url: &str, first: Vec<u8>, max: usize, paging: Option<ArcgisPaging
         from: url.to_string(),
         phase,
         decoded: None,
+        placed_as: None,
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
@@ -4086,22 +4165,34 @@ impl Pages {
         // page's other messages, about its fields and system, once each.
         let report = page.report;
         match &mut self.decoded {
-            None => self.decoded = Some((page.dataset, report, page.losses)),
+            None => {
+                self.placed_as = placed_as(&page.dataset, &page.losses, asked_system(&self.url).is_some());
+                self.decoded = Some((page.dataset, report, page.losses));
+            }
             Some((ds, joined, losses)) => {
                 // By name and type: the first page's aliases are kept.
                 let same = |a: &crate::Field, b: &crate::Field| a.name == b.name && a.ty == b.ty;
                 if ds.fields.len() != page.dataset.fields.len() || !ds.fields.iter().zip(&page.dataset.fields).all(|(a, b)| same(a, b)) {
                     return self.stop(format!("the page after feature {read} has other fields than the first; the rest aren't read"));
                 }
-                // Each page's positions are in its own system, and its geometries of its own type;
-                // a page that doesn't say one is joined.
-                let other_crs = ds.crs.is_some() && page.dataset.crs.is_some() && ds.crs != page.dataset.crs;
+                // Each page's positions are read as it says: the pages joined say the same of their
+                // system (`placed_as`), or their positions would be taken for another's. A page
+                // without positions says nothing, and until a page has some, the joined pages take
+                // the system of the next.
+                let page_as = placed_as(&page.dataset, &page.losses, asked_system(&self.url).is_some());
+                let other_crs = matches!((&self.placed_as, &page_as), (Some(joined), Some(this)) if joined != this);
                 let none = crate::GeometryType::None;
                 let other_type =
                     ds.geometry_type != none && page.dataset.geometry_type != none && ds.geometry_type != page.dataset.geometry_type;
                 if other_crs || other_type {
                     let what = if other_crs { "coordinate system" } else { "geometry type" };
                     return self.stop(format!("the page after feature {read} has another {what} than the first; the rest aren't read"));
+                }
+                // Joined: the first page with positions gives the system.
+                if self.placed_as.is_none() && page_as.is_some() {
+                    ds.crs = page.dataset.crs;
+                    ds.held_in = page.dataset.held_in;
+                    self.placed_as = page_as;
                 }
                 // A page without features may not say its geometry type.
                 if ds.geometry_type == none {
@@ -4221,7 +4312,36 @@ impl Pages {
         } else {
             note
         };
-        if let Some((ds, mut report, losses)) = self.decoded.take() {
+        if let Some((mut ds, mut report, mut losses)) = self.decoded.take() {
+            // Pages naming no system, asked for in a projected one: held in it as they came (as
+            // a GeoJSON answer naming none is), and said so, not read as longitude/latitude;
+            // unless their positions are in degrees (a server that didn't convert), read so.
+            // In degrees as each page joined was judged (`placed_as`), not by the pages' extent
+            // together: pages in degrees in different axis orders stay in degrees.
+            let degrees = self.placed_as.is_some_and(|p| p.degrees);
+            // Only when no page named one: a system a page named is kept.
+            if (losses.no_crs || losses.unread_code)
+                && ds.crs.is_none()
+                && let Some(asked) = asked_system(&self.url)
+                && !degrees
+            {
+                ds.held_in = asked;
+                ds.crs = Some(asked);
+                let asked = asked.label();
+                if std::mem::take(&mut losses.no_crs) {
+                    report
+                        .messages
+                        .push(format!("the answer names no coordinate system; coordinates are read in {asked}, the system asked for"));
+                }
+                // One it names that RustGIS can't use (a code, a WKT): read as asked too (as a
+                // GeoJSON answer's is), and its message says so.
+                for mut note in std::mem::replace(&mut report.messages, crate::loss::Notes::new()) {
+                    if let Some(said) = note.text.strip_suffix("; coordinates are read as longitude/latitude") {
+                        note.text = format!("{said}; coordinates are read in {asked}, the system asked for");
+                    }
+                    report.messages.push(note);
+                }
+            }
             report.messages.extend(losses.messages());
             return Step::Decoded(Box::new(ds), report, note);
         }
@@ -4275,17 +4395,36 @@ fn fits(extent: [f64; 4], bounds: [f64; 4]) -> bool {
 /// without keeping them: `[min x, min y, max x, max y]`, or `None` for an answer that isn't JSON
 /// or has no position.
 fn positions_extent(bytes: &[u8]) -> Option<[f64; 4]> {
+    scan_answer(bytes)?.0
+}
+
+/// What [`scan_answer`] keeps of an answer's outermost object: its `crs` member and its `type`.
+#[derive(Default)]
+struct Top {
+    crs: Option<serde_json::Value>,
+    kind: Option<String>,
+}
+
+/// A GeoJSON answer read through once without keeping its features: the extent of its positions
+/// (as [`positions_extent`] gives it), and its own `crs` member and `type`, when it has them;
+/// `None` for an answer that isn't JSON.
+fn scan_answer(bytes: &[u8]) -> Option<(Option<[f64; 4]>, Top)> {
     use serde::de::DeserializeSeed;
     let mut extent = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut top = Top::default();
     let mut de = serde_json::Deserializer::from_slice(bytes);
-    Members { extent: &mut extent, depth: 0 }.deserialize(&mut de).ok()?;
-    (extent[0] <= extent[2] && extent[1] <= extent[3]).then_some(extent)
+    Members { extent: &mut extent, top: &mut top, depth: 0 }.deserialize(&mut de).ok()?;
+    // Text after the value: not JSON, left for the reader to refuse.
+    de.end().ok()?;
+    Some(((extent[0] <= extent[2] && extent[1] <= extent[3]).then_some(extent), top))
 }
 
 /// A GeoJSON object (or an array of them) whose `features`, `geometry`, `geometries` and
-/// `coordinates` are walked for [`positions_extent`]; its other members are skipped.
+/// `coordinates` are walked for [`scan_answer`], and the outermost object's `crs` and `type` kept;
+/// its other members are skipped.
 struct Members<'a> {
     extent: &'a mut [f64; 4],
+    top: &'a mut Top,
     depth: usize,
 }
 
@@ -4308,7 +4447,14 @@ impl<'de> serde::de::Visitor<'de> for Members<'_> {
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "features" | "geometry" | "geometries" if self.depth < 16 => {
-                    map.next_value_seed(Members { extent: &mut *self.extent, depth: self.depth + 1 })?;
+                    map.next_value_seed(Members { extent: &mut *self.extent, top: &mut *self.top, depth: self.depth + 1 })?;
+                }
+                "crs" if self.depth == 0 => {
+                    self.top.crs = Some(map.next_value()?);
+                }
+                "type" if self.depth == 0 => {
+                    let kind: serde_json::Value = map.next_value()?;
+                    self.top.kind = kind.as_str().map(str::to_string);
                 }
                 "coordinates" => {
                     map.next_value_seed(Positions { extent: &mut *self.extent, depth: 0 })?;
@@ -4326,7 +4472,7 @@ impl<'de> serde::de::Visitor<'de> for Members<'_> {
             while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
             return Ok(());
         }
-        while seq.next_element_seed(Members { extent: &mut *self.extent, depth: self.depth + 1 })?.is_some() {}
+        while seq.next_element_seed(Members { extent: &mut *self.extent, top: &mut *self.top, depth: self.depth + 1 })?.is_some() {}
         Ok(())
     }
 
@@ -4476,15 +4622,24 @@ fn swap_geometry(g: &mut serde_json::Value, depth: usize) {
 /// answer that fits both ways (or neither), it can't tell, and nothing is turned.
 pub fn fix_axes(bytes: &[u8], bounds: Option<[f64; 4]>) -> Option<Vec<u8>> {
     let bounds = bounds?;
-    let [x0, y0, x1, y1] = positions_extent(bytes)?;
-    if fits([x0, y0, x1, y1], bounds) || !fits([y0, x0, y1, x1], bounds) {
+    if !latitude_first(positions_extent(bytes), Some(bounds)) {
         return None;
     }
-    let mut v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     // A GeoJSON answer is one object; anything else (a list of features) is left as it came.
-    let o = v.as_object_mut()?;
-    o.remove("crs");
-    o.remove("bbox");
+    rewritten(bytes, None, true)
+}
+
+/// Whether positions whose extent is `extent` are latitude first, as [`fix_axes`] judges them
+/// against the layer's longitude/latitude `bounds`: they miss them, and fit them turned round.
+fn latitude_first(extent: Option<[f64; 4]>, bounds: Option<[f64; 4]>) -> bool {
+    let (Some(bounds), Some([x0, y0, x1, y1])) = (bounds, extent) else { return false };
+    !fits([x0, y0, x1, y1], bounds) && fits([y0, x0, y1, x1], bounds)
+}
+
+/// A GeoJSON answer `v` (one object) with its positions turned round and its boxes dropped;
+/// `None` for anything else, left as it is.
+fn turn_axes(v: &mut serde_json::Value) -> Option<()> {
+    v.as_object_mut()?.remove("bbox");
     match v.get("type").and_then(|t| t.as_str()) {
         Some("FeatureCollection") => {
             for f in v.get_mut("features").and_then(|f| f.as_array_mut()).into_iter().flatten() {
@@ -4501,9 +4656,445 @@ pub fn fix_axes(bytes: &[u8], bounds: Option<[f64; 4]>) -> Option<Vec<u8>> {
                 swap_geometry(g, 0);
             }
         }
-        _ => swap_geometry(&mut v, 0),
+        _ => swap_geometry(v, 0),
     }
-    serde_json::to_vec(&v).ok()
+    Some(())
+}
+
+/// A projected system a service's features may be asked for in: one RustGIS reads, not in
+/// degrees, with an EPSG code to name it by (Web Mercator's is 3857).
+fn own_system(crs: crate::raster::Crs) -> Option<crate::raster::Crs> {
+    (crs != crate::raster::Crs::LonLat && !crs.is_geographic() && crs.epsg() != 0).then_some(crs)
+}
+
+/// The projected system a service names by `code` (`EPSG:2056`, `urn:ogc:def:crs:EPSG::2056`,
+/// `http://www.opengis.net/def/crs/EPSG/0/2056`, or GeoServer's WFS 1.1
+/// `urn:x-ogc:def:crs:EPSG:2056`), with the EPSG number as written, when [`own_system`] takes it.
+fn projected_system(code: &str) -> Option<(u32, crate::raster::Crs)> {
+    let code = code.trim();
+    let x_ogc = code
+        .get(..23)
+        .filter(|p| p.eq_ignore_ascii_case("urn:x-ogc:def:crs:EPSG:"))
+        .and_then(|_| code.get(23..))
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .map(|n| format!("EPSG:{n}"));
+    let code = x_ogc.as_deref().unwrap_or(code);
+    if is_crs84(code) || !crate::io::is_epsg_or_crs84_name(code) {
+        return None;
+    }
+    let n = code.rsplit([':', '/']).next()?.parse().ok()?;
+    Some((n, own_system(crate::raster::Crs::parse(code).ok()?)?))
+}
+
+/// The projected system an [`Offer::Features`] address asks its answer in: a WFS GetFeature's
+/// `SRSNAME`, or an ArcGIS layer query's `outSR` (a number). `None` for longitude/latitude, a
+/// system RustGIS doesn't read and any other address: the answer is then read in the system its
+/// own `crs` member names (longitude/latitude without one), latitude-first positions turned round
+/// as [`fix_axes`] judges them.
+pub fn asked_system(url: &str) -> Option<crate::raster::Crs> {
+    let is = |key: &str, value: &str| query_value(url, key).is_some_and(|v| v.eq_ignore_ascii_case(value));
+    if is("service", "wfs") && is("request", "getfeature") {
+        let srs = query_value(url, "srsname")?.replace("%3A", ":").replace("%3a", ":").replace("%2F", "/").replace("%2f", "/");
+        projected_system(&srs).map(|(_, crs)| crs)
+    } else if is_arcgis_query(url) {
+        own_system(crate::filegdb::crs_of_code(query_value(url, "outSR")?.trim().parse().ok()?)?)
+    } else {
+        None
+    }
+}
+
+/// Where a service's positions are, judged against its layer's bounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Placed {
+    /// In the system asked for, east first.
+    Asked,
+    /// In the system asked for, north first.
+    Turned,
+    /// In longitude/latitude: the server didn't answer in the system asked for.
+    LonLat,
+    /// It can't tell (no bounds, no positions, or they fit neither): in the system the answer
+    /// names when RustGIS reads it, else as asked (and said, see [`place_answer`]).
+    Unknown,
+}
+
+/// The longitude/latitude `bounds` (west, south, east, north), widened by [`margin`], as a box in
+/// `crs`: its edges' places there, sixteen along each; `None` when one has no place in it.
+fn bounds_in(bounds: [f64; 4], crs: crate::raster::Crs) -> Option<[f64; 4]> {
+    let [w, s, e, n] = bounds;
+    let (mx, my) = (margin(w, e), margin(s, n));
+    // Web Mercator has no place for the poles: a world layer's box is taken to its edge.
+    let pole = if crs == crate::raster::Crs::WebMercator { MERCATOR_EDGE } else { 90.0 };
+    let (w, e, s, n) = ((w - mx).max(-180.0), (e + mx).min(180.0), (s - my).max(-pole), (n + my).min(pole));
+    let t = crs.transformer().ok()?;
+    let mut out = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    const STEPS: usize = 16;
+    for i in 0..=STEPS {
+        let f = i as f64 / STEPS as f64;
+        let (x, y) = (w + (e - w) * f, s + (n - s) * f);
+        for (lon, lat) in [(x, s), (x, n), (w, y), (e, y)] {
+            let c = t.from_lonlat(rustgis_geom::Coord::new(lon, lat)).filter(|c| c.x.is_finite() && c.y.is_finite())?;
+            out = [out[0].min(c.x), out[1].min(c.y), out[2].max(c.x), out[3].max(c.y)];
+        }
+    }
+    Some(out)
+}
+
+/// The latitude Web Mercator ends at, north and south (its square's edge).
+const MERCATOR_EDGE: f64 = 85.051_128_779_806_59;
+
+/// Whether the extent lies within the box.
+fn inside(extent: [f64; 4], b: [f64; 4]) -> bool {
+    extent[0] >= b[0] && extent[1] >= b[1] && extent[2] <= b[2] && extent[3] <= b[3]
+}
+
+/// What a page with positions says of its system: the one it names (`None`: none, or one by a
+/// code RustGIS can't use, both read in the system asked for when it is projected), and, naming
+/// none, whether its positions are in degrees (when a projected system was asked for). `None` for
+/// a page without positions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlacedAs {
+    named: Option<crate::raster::Crs>,
+    degrees: bool,
+    /// In degrees only north first: pages joined must agree, as they aren't turned round.
+    turned: bool,
+}
+
+fn placed_as(ds: &crate::Dataset, losses: &crate::esripbf::Losses, projected_asked: bool) -> Option<PlacedAs> {
+    if !ds.features.iter().any(|f| f.geometry.is_some()) {
+        return None;
+    }
+    // Only where a projected system was asked for does it matter whether positions naming none
+    // are in degrees: otherwise they are read as longitude/latitude, as one naming WGS 84 is, so
+    // those pages join, as on main; one naming another system doesn't.
+    if !projected_asked {
+        let named = if losses.no_crs || losses.unread_code { None } else { ds.crs.filter(|c| *c != crate::raster::Crs::LonLat) };
+        return Some(PlacedAs { named, degrees: true, turned: false });
+    }
+    if losses.no_crs || losses.unread_code {
+        let e = ds.extent();
+        let as_is = !e.is_empty() && in_degrees([e.min_x, e.min_y, e.max_x, e.max_y]);
+        let turned = !e.is_empty() && !as_is && in_degrees([e.min_y, e.min_x, e.max_y, e.max_x]);
+        return Some(PlacedAs { named: None, degrees: as_is || turned, turned });
+    }
+    Some(PlacedAs { named: Some(ds.crs.unwrap_or(crate::raster::Crs::LonLat)), degrees: false, turned: false })
+}
+
+/// Whether a feature type's default system `d` (trimmed, not CRS84), not asked for in its own
+/// system, is to be said: a projected one RustGIS can't ask a server for (a code it doesn't read,
+/// an `ESRI:` code, PROJ or WKT text). A geographic one is asked as longitude/latitude anyway, and
+/// a blank one says nothing. Only a name by code is parsed: a WKT or PROJ text from the server
+/// would be kept in the process's table of systems defined by files.
+fn unread_default(d: &str) -> bool {
+    if crate::io::is_epsg_or_crs84_name(d) {
+        return crate::raster::Crs::parse(d).map_or(true, |c| c != crate::raster::Crs::LonLat && !c.is_geographic());
+    }
+    if let Some(n) = d.get(..5).filter(|p| p.eq_ignore_ascii_case("ESRI:")).and_then(|_| d[5..].trim().parse::<u32>().ok()) {
+        // As an ArcGIS service's code.
+        return crate::filegdb::crs_of_code(n).is_none_or(|c| c != crate::raster::Crs::LonLat && !c.is_geographic());
+    }
+    !d.is_empty() && !geographic_text(d)
+}
+
+/// A WFS GetFeature address asking for its features in a projected system ([`asked_system`]),
+/// asked in `EPSG:4326` instead, as before RustGIS asked a type in its own system: for a server
+/// that refuses the system it lists. `None` for any other address.
+pub fn wfs_lonlat_fallback(url: &str) -> Option<String> {
+    let is = |key: &str, value: &str| query_value(url, key).is_some_and(|v| v.eq_ignore_ascii_case(value));
+    (is("service", "wfs") && is("request", "getfeature") && asked_system(url).is_some())
+        .then(|| with_query_value(url, "SRSNAME", "EPSG:4326"))
+}
+
+/// Whether a system given as text (WKT, or a PROJ string) is a geographic one, told by its
+/// keyword without parsing it: a server's text isn't kept in the process's table of systems
+/// defined by files.
+fn geographic_text(text: &str) -> bool {
+    let t = text.trim_start().to_ascii_uppercase();
+    ["GEOGCS", "GEOGCRS", "GEODCRS", "GEOGRAPHICCRS"].iter().any(|k| t.starts_with(k) && t[k.len()..].trim_start().starts_with('['))
+        || ["+PROJ=LONGLAT", "+PROJ=LATLONG", "+PROJ=LONLAT", "+PROJ=LATLON"].iter().any(|k| t.split_whitespace().any(|w| w == *k))
+}
+
+/// Whether an extent lies within degrees' range, longitude first.
+fn in_degrees(e: [f64; 4]) -> bool {
+    e[0] >= -180.0 && e[2] <= 180.0 && e[1] >= -90.0 && e[3] <= 90.0
+}
+
+/// Where an answer's positions (their `extent`) are. Positions within degrees' range are in
+/// longitude/latitude, with or without bounds: a server that didn't answer in the system asked
+/// for (a world layer's box in Web Mercator would hold them too). Projected data whose x lies
+/// within ±180 and y within ±90 is taken for longitude/latitude too.
+fn placed(extent: Option<[f64; 4]>, bounds: Option<[f64; 4]>, crs: crate::raster::Crs) -> Placed {
+    let Some([x0, y0, x1, y1]) = extent else { return Placed::Unknown };
+    let turned = [y0, x0, y1, x1];
+    if in_degrees([x0, y0, x1, y1]) || in_degrees(turned) {
+        return Placed::LonLat;
+    }
+    let Some(bounds) = bounds else { return Placed::Unknown };
+    match bounds_in(bounds, crs) {
+        Some(b) if inside([x0, y0, x1, y1], b) => return Placed::Asked,
+        Some(b) if inside(turned, b) => return Placed::Turned,
+        _ => {}
+    }
+    if fits([x0, y0, x1, y1], bounds) || fits(turned, bounds) { Placed::LonLat } else { Placed::Unknown }
+}
+
+/// What an answer's own `crs` member says, against the system asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Named {
+    /// No member.
+    Absent,
+    /// The system asked for.
+    Asked,
+    /// Longitude/latitude.
+    LonLat,
+    /// Another system RustGIS reads: the answer is read in it.
+    Other,
+    /// One RustGIS doesn't read (as `EPSG:999999`, or an `ESRI:` code).
+    Unread,
+}
+
+fn named(member: Option<&serde_json::Value>, crs: crate::raster::Crs) -> Named {
+    // (A `null` member is replaced, not put after: the reader would take the last one.)
+    let Some(member) = member else { return Named::Absent };
+    let Some(name) =
+        member.pointer("/properties/name").and_then(|n| n.as_str()).filter(|_| member.get("type").and_then(|t| t.as_str()) == Some("name"))
+    else {
+        return Named::Unread;
+    };
+    if is_crs84(name) {
+        return Named::LonLat;
+    }
+    if !crate::io::is_epsg_or_crs84_name(name) {
+        return Named::Unread;
+    }
+    match crate::raster::Crs::parse(name) {
+        Ok(crate::raster::Crs::LonLat) => Named::LonLat,
+        Ok(c) if c == crs => Named::Asked,
+        Ok(_) => Named::Other,
+        Err(_) => Named::Unread,
+    }
+}
+
+/// The `crs` member naming `crs` as the GeoJSON reader takes it.
+fn crs_member(crs: crate::raster::Crs) -> serde_json::Value {
+    serde_json::json!({"type": "name", "properties": {"name": format!("urn:ogc:def:crs:EPSG::{}", crs.epsg())}})
+}
+
+/// What [`place_answer`] assumed of an answer, to be said, once per kind with a count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Assumed {
+    /// It named no system, and its positions couldn't be checked against the layer's bounds: read
+    /// in the system asked for.
+    Unnamed,
+    /// It named a system RustGIS doesn't read (or `null`): read in the system asked for.
+    Unread,
+    /// It named a system other than longitude/latitude over positions in degrees: read in
+    /// longitude/latitude.
+    InDegrees,
+    /// It named longitude/latitude over positions in the system asked for: read in it.
+    InAsked,
+    /// It named longitude/latitude over positions out of degrees' range: read as named.
+    NotDegrees,
+    /// It named no system, and its positions are in degrees though a projected system was asked
+    /// for (a server that didn't convert): read in longitude/latitude.
+    DegreesUnnamed,
+}
+
+impl Assumed {
+    /// Its notice, `{n}` the number of answers.
+    pub fn template(self) -> &'static str {
+        match self {
+            Assumed::Unnamed => {
+                "{n} service answer(s) named no coordinate system and couldn't be checked against their layer's bounds: read in the system they were asked for"
+            }
+            Assumed::Unread => {
+                "{n} service answer(s) named a coordinate system RustGIS doesn't read: read in the system they were asked for"
+            }
+            Assumed::InDegrees => {
+                "{n} service answer(s) named a coordinate system other than longitude/latitude, but their positions are in degrees: read in longitude/latitude"
+            }
+            Assumed::InAsked => {
+                "{n} service answer(s) named longitude/latitude, but their positions lie in the system they were asked for: read in it"
+            }
+            Assumed::NotDegrees => {
+                "{n} service answer(s) named longitude/latitude, but their positions aren't in degrees' range: read as named"
+            }
+            Assumed::DegreesUnnamed => {
+                "{n} service answer(s) named no coordinate system, and their positions are in degrees though another system was asked for: read in longitude/latitude"
+            }
+        }
+    }
+}
+
+/// A service's GeoJSON answer to `url` made ready to read: in the projected system `url` asks it
+/// in ([`asked_system`]), with a `crs` member naming that system (as a server may leave it out,
+/// or name it by a code RustGIS doesn't read) and its positions east first; else as
+/// [`fix_axes`] turns it; as it came when there is nothing to change.
+///
+/// The data decide. Positions within degrees' range are longitude/latitude (a server that didn't
+/// answer in the system asked for), read as such. Others are judged against the layer's
+/// longitude/latitude `bounds` from the capabilities in the asked system: positions north first
+/// are turned round (as a server may write them for a system EPSG defines north first). An answer
+/// naming another system RustGIS reads is read in it; with no bounds, or positions that fit none
+/// of them, it is read as it names itself, else as asked.
+///
+/// What it assumed is given back to be said: a system named that RustGIS doesn't read, or none
+/// where the positions can't be checked, read as asked; a system named against what the positions
+/// show. Positions turned round because the layer's bounds show them north first aren't said:
+/// the bounds decide it, as they do for [`fix_axes`].
+///
+/// It runs to its end once called, with no Cancel check or progress count: one pass over the
+/// downloaded answer, two when it is written again ([`rewritten`]).
+///
+/// The common case, an answer in the system asked for that names it or none, takes no copy: a
+/// member is added at its end, in place. Turning positions round, or replacing a member, reads
+/// the whole answer, as [`fix_axes`] does.
+pub fn place_answer(bytes: Vec<u8>, url: &str, bounds: Option<[f64; 4]>) -> (Vec<u8>, Option<Assumed>) {
+    let Some(crs) = asked_system(url) else { return (fix_axes(&bytes, bounds).unwrap_or(bytes), None) };
+    let Some((extent, top)) = scan_answer(&bytes) else { return (bytes, None) };
+    let named = named(top.crs.as_ref(), crs);
+    // Named in another system RustGIS reads: read in it, unless its positions are in degrees
+    // (judged without the bounds, which are for the system asked for).
+    let at = placed(extent, if named == Named::Other { None } else { bounds }, crs);
+    // The reader takes a `crs` member from a collection only: a lone feature or geometry in the
+    // system asked for is put in one (`rewritten`).
+    // (An object with no `type` isn't GeoJSON: named in place as before, for the reader to refuse.)
+    let collection = top.kind.as_deref().is_none_or(|k| k == "FeatureCollection");
+    let as_asked = |bytes: Vec<u8>, turn: bool| rewritten(&bytes, Some(crs_member(crs)), turn).unwrap_or(bytes);
+    // Turned round when latitude first: as `fix_axes` judges it, from the extent read already, or
+    // when only that order lies within degrees' range.
+    let lonlat = |bytes: Vec<u8>, drop_member: bool| {
+        let only_turned = extent.is_some_and(|[x0, y0, x1, y1]| !in_degrees([x0, y0, x1, y1]) && in_degrees([y0, x0, y1, x1]));
+        // Turned by the bounds only into degrees' range.
+        let turn = only_turned || (latitude_first(extent, bounds) && extent.is_some_and(|[x0, y0, x1, y1]| in_degrees([y0, x0, y1, x1])));
+        if turn || drop_member { rewritten(&bytes, None, turn).unwrap_or(bytes) } else { bytes }
+    };
+    match (at, named) {
+        (Placed::LonLat, Named::LonLat) => (lonlat(bytes, false), None),
+        // Asked in a projected system, answered in degrees naming none: read so, and said.
+        (Placed::LonLat, Named::Absent) => (lonlat(bytes, false), Some(Assumed::DegreesUnnamed)),
+        // Read as it names itself; positions out of degrees' range are said (none: nothing to say).
+        (Placed::Unknown, Named::LonLat) => (lonlat(bytes, false), extent.map(|_| Assumed::NotDegrees)),
+        // Named as asked, by a code RustGIS doesn't read, or as another system, but in degrees:
+        // read as such, without the member.
+        (Placed::LonLat, _) => (lonlat(bytes, true), Some(Assumed::InDegrees)),
+        // Read in the system it names: a lone feature or geometry is put in a collection keeping
+        // its member, which the reader takes it from.
+        (_, Named::Other) => (if collection { bytes } else { rewritten(&bytes, top.crs.clone(), false).unwrap_or(bytes) }, None),
+        (Placed::Asked | Placed::Unknown, Named::Asked) => (if collection { bytes } else { as_asked(bytes, false) }, None),
+        (Placed::Asked | Placed::Unknown, Named::Absent) => {
+            let bytes = if collection { with_member(bytes, &crs_member(crs)) } else { as_asked(bytes, false) };
+            // An answer with no positions (an empty page) has nothing to place, nor to say.
+            (bytes, (at == Placed::Unknown && extent.is_some()).then_some(Assumed::Unnamed))
+        }
+        // (An empty page has nothing to place, nor to say.)
+        (_, Named::Unread) => (as_asked(bytes, at == Placed::Turned), extent.map(|_| Assumed::Unread)),
+        (_, Named::LonLat) => (as_asked(bytes, at == Placed::Turned), extent.map(|_| Assumed::InAsked)),
+        (Placed::Turned, Named::Asked | Named::Absent) => (as_asked(bytes, true), None),
+    }
+}
+
+/// A GeoJSON answer written again with its `crs` member set to `member` (or removed), its
+/// positions turned round when `turn`; `None` when it isn't one object. Given a member, a lone
+/// feature or geometry is put in a collection, which the reader takes a `crs` from.
+///
+/// Without turning, only the outermost object's members are read, each kept as its text, so the
+/// peak is about twice the answer (it and the text written). Turning reads it whole, as
+/// [`fix_axes`] does: some sixteen times the answer, measured on a 94 MB collection of polygons.
+/// Either way it runs to its end with no Cancel check, as the answer's reading after it does.
+fn rewritten(bytes: &[u8], member: Option<serde_json::Value>, turn: bool) -> Option<Vec<u8>> {
+    if turn {
+        let mut v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        v.as_object_mut()?.remove("crs");
+        turn_axes(&mut v)?;
+        let v = match member {
+            None => v,
+            Some(m) => match v.get("type").and_then(|t| t.as_str()) {
+                Some("FeatureCollection") => {
+                    v.as_object_mut()?.insert("crs".into(), m);
+                    v
+                }
+                Some("Feature") => serde_json::json!({"type": "FeatureCollection", "crs": m, "features": [v]}),
+                Some(_) => {
+                    serde_json::json!({"type": "FeatureCollection", "crs": m, "features": [{"type": "Feature", "geometry": v, "properties": {}}]})
+                }
+                None => return None,
+            },
+        };
+        return serde_json::to_vec(&v).ok();
+    }
+    use serde_json::value::RawValue;
+    let top: std::collections::BTreeMap<String, &RawValue> = serde_json::from_slice(bytes).ok()?;
+    let kind: Option<String> = top.get("type").and_then(|t| serde_json::from_str(t.get()).ok());
+    // The object's members as written, but its `crs`.
+    let object = |out: &mut Vec<u8>| -> Option<()> {
+        out.push(b'{');
+        for (i, (k, v)) in top.iter().filter(|(k, _)| k.as_str() != "crs").enumerate() {
+            if i > 0 {
+                out.push(b',');
+            }
+            serde_json::to_writer(&mut *out, k).ok()?;
+            out.push(b':');
+            out.extend_from_slice(v.get().as_bytes());
+        }
+        out.push(b'}');
+        Some(())
+    };
+    let mut out = Vec::with_capacity(bytes.len() + 160);
+    match member {
+        None => object(&mut out)?,
+        Some(m) => {
+            let m = serde_json::to_string(&m).ok()?;
+            match kind.as_deref() {
+                Some("FeatureCollection") => {
+                    object(&mut out)?;
+                    out.pop();
+                    if top.keys().any(|k| k != "crs") {
+                        out.push(b',');
+                    }
+                    out.extend_from_slice(b"\"crs\":");
+                    out.extend_from_slice(m.as_bytes());
+                    out.push(b'}');
+                }
+                Some(k) => {
+                    out.extend_from_slice(b"{\"type\":\"FeatureCollection\",\"crs\":");
+                    out.extend_from_slice(m.as_bytes());
+                    out.extend_from_slice(b",\"features\":[");
+                    if k == "Feature" {
+                        object(&mut out)?;
+                    } else {
+                        out.extend_from_slice(b"{\"type\":\"Feature\",\"geometry\":");
+                        object(&mut out)?;
+                        out.extend_from_slice(b",\"properties\":{}}");
+                    }
+                    out.extend_from_slice(b"]}");
+                }
+                None => return None,
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A GeoJSON object's text with the member `crs` added at its end, in place, without reading
+/// the rest (it may be large); text that isn't one object (or has a member of that name, which
+/// [`place_answer`] has looked for) comes back unchanged.
+fn with_member(mut bytes: Vec<u8>, crs: &serde_json::Value) -> Vec<u8> {
+    let Some(first) = bytes.iter().position(|b| !b.is_ascii_whitespace()) else { return bytes };
+    let Some(last) = bytes.iter().rposition(|b| !b.is_ascii_whitespace()) else { return bytes };
+    if last <= first || bytes.get(first) != Some(&b'{') || bytes.get(last) != Some(&b'}') {
+        return bytes;
+    }
+    let Ok(member) = serde_json::to_string(crs) else { return bytes };
+    let empty = bytes.get(first + 1..last).is_some_and(|inner| inner.iter().all(u8::is_ascii_whitespace));
+    bytes.truncate(last);
+    bytes.reserve_exact(member.len() + 8);
+    if !empty {
+        bytes.push(b',');
+    }
+    bytes.extend_from_slice(b"\"crs\":");
+    bytes.extend_from_slice(member.as_bytes());
+    bytes.push(b'}');
+    bytes
 }
 
 #[cfg(test)]
@@ -4699,8 +5290,41 @@ mod tests {
         assert_eq!(s.kind, "ArcGIS FeatureServer");
         assert_eq!(s.layers.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Parcels", "Roads"]);
         assert!(
-            matches!(&s.layers[0].offer, Offer::Features { url } if url == "https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson")
+            matches!(&s.layers[0].offer, Offer::Features { url } if url == "https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=3857&f=geojson")
         );
+        assert!(!s.notes.iter().any(|n| n.contains("coordinate system")), "{:?}", s.notes);
+        // A full extent in another system RustGIS reads is its bounds, converted (Bern in LV95).
+        let lv95 = fs.replace(
+            r#""fullExtent": {"xmin": -1000000, "ymin": 0, "xmax": 1000000, "ymax": 1000000, "spatialReference": {"wkid": 102100, "latestWkid": 3857}}"#,
+            r#""fullExtent": {"xmin": 2550000, "ymin": 1150000, "xmax": 2650000, "ymax": 1250000, "spatialReference": {"wkid": 2056}}"#,
+        );
+        assert_ne!(lv95, fs);
+        let bern = parse("https://x.org/arcgis/rest/services/A/FeatureServer", lv95.as_bytes()).unwrap();
+        let [w, so, e, n] = bern.layers[0].bbox.unwrap();
+        assert!(w < 7.44 && e > 7.44 && so < 46.95 && n > 46.95 && e - w < 2.0 && n - so < 1.5, "{:?}", bern.layers[0].bbox);
+        // In longitude/latitude, or a system RustGIS doesn't read (said): asked in EPSG:4326.
+        // A system given only as WKT has no code to ask for it by: said too.
+        for (sr, note) in [
+            (r#"{"wkid": 4326}"#, None),
+            (r#"{"wkid": 999999}"#, Some("999999")),
+            // An ESRI code RustGIS reads, with no EPSG code to ask a server by.
+            (r#"{"wkid": 102033}"#, Some("102033")),
+            (r#"{"wkt": "PROJCS[\"Local\"]"}"#, Some("WKT only")),
+            (r#"{"wkid": 0, "wkt": "PROJCS[\"Local\"]"}"#, Some("WKT only")),
+            (
+                r#"{"wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]"}"#,
+                None,
+            ),
+        ] {
+            let other = fs.replace(r#"{"wkid": 102100, "latestWkid": 3857}"#, sr);
+            let s = parse("https://x.org/arcgis/rest/services/A/FeatureServer", other.as_bytes()).unwrap();
+            assert!(matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("&outSR=4326&")), "{sr}: {:?}", s.layers[0].offer);
+            let said: Vec<&String> = s.notes.iter().filter(|n| n.contains("RustGIS can't ask for its coordinate system")).collect();
+            match note {
+                Some(code) => assert!(said.len() == 1 && said[0].ends_with(&format!("({code})")), "{sr}: {:?}", s.notes),
+                None => assert!(said.is_empty(), "{sr}: {:?}", s.notes),
+            }
+        }
         let b = s.layers[0].bbox.unwrap();
         assert!((b[0] + 8.983).abs() < 0.01 && b[1].abs() < 1e-9, "{b:?}");
         let tiled = r#"{"currentVersion": 10.9, "mapName": "World", "singleFusedMapCache": true,
@@ -4978,11 +5602,76 @@ mod tests {
             "{:?}",
             s.layers[0].offer
         );
-        // WFS 2.0 offering CRS84: asked for it, longitude first by definition.
+        // WFS 2.0 whose type is in a projected system RustGIS reads: asked in it (#2032).
         let v20 = r#"<WFS_Capabilities version="2.0.0"><FeatureTypeList><FeatureType><Name>a</Name><DefaultCRS>urn:ogc:def:crs:EPSG::25832</DefaultCRS><OtherCRS>urn:ogc:def:crs:OGC:1.3:CRS84</OtherCRS></FeatureType></FeatureTypeList></WFS_Capabilities>"#;
         let s = parse("https://x.org/wfs", v20.as_bytes()).unwrap();
         assert!(
-            matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("VERSION=2.0.0") && url.contains("TYPENAMES=a") && url.contains("SRSNAME=urn:ogc:def:crs:OGC:1.3:CRS84&COUNT=")),
+            matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("VERSION=2.0.0") && url.contains("TYPENAMES=a") && url.contains("SRSNAME=EPSG:25832&COUNT=")),
+            "{:?}",
+            s.layers[0].offer
+        );
+        assert!(s.notes.is_empty(), "{:?}", s.notes);
+        // Offering CRS84, in a geographic system or one RustGIS doesn't read: asked in CRS84,
+        // longitude first by definition, as before; the one it doesn't read is said.
+        for (default, note) in
+            // An ESRI code RustGIS reads, but no server is asked by: said too.
+            [
+                ("urn:ogc:def:crs:EPSG::4258", false),
+                ("urn:ogc:def:crs:EPSG::999999", true),
+                ("urn:ogc:def:crs:OGC:1.3:CRS84", false),
+                ("ESRI:102033", true),
+                // A geographic ESRI code, and a blank default: nothing to say.
+                ("ESRI:4269", false),
+                ("", false),
+            ]
+        {
+            let caps = v20.replace("urn:ogc:def:crs:EPSG::25832", default);
+            let s = parse("https://x.org/wfs", caps.as_bytes()).unwrap();
+            assert!(
+                matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("SRSNAME=urn:ogc:def:crs:OGC:1.3:CRS84&COUNT=")),
+                "{default}: {:?}",
+                s.layers[0].offer
+            );
+            assert_eq!(s.notes.len(), usize::from(note), "{default}: {:?}", s.notes);
+        }
+        let caps = v20.replace("urn:ogc:def:crs:EPSG::25832", "urn:ogc:def:crs:EPSG::999999");
+        let s = parse("https://x.org/wfs", caps.as_bytes()).unwrap();
+        assert_eq!(
+            s.notes,
+            [
+                "1 feature type is asked for in longitude/latitude, converted by the server: RustGIS can't ask for its own system (urn:ogc:def:crs:EPSG::999999)"
+            ]
+        );
+        // An alias of Web Mercator: asked by its own code, as ArcGIS's `outSR` is.
+        let caps = v20.replace("urn:ogc:def:crs:EPSG::25832", "urn:ogc:def:crs:EPSG::102100");
+        let s = parse("https://x.org/wfs", caps.as_bytes()).unwrap();
+        assert!(matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("SRSNAME=EPSG:3857&")), "{:?}", s.layers[0].offer);
+        // A default given as PROJ text isn't parsed (a server's text isn't kept as a system): a
+        // projected one is said, a geographic one, told by its keyword, isn't.
+        let caps = v20.replace("urn:ogc:def:crs:EPSG::25832", "+proj=utm +zone=32 +datum=WGS84 +no_defs");
+        let s = parse("https://x.org/wfs", caps.as_bytes()).unwrap();
+        assert!(s.notes.iter().any(|n| n.contains("can't ask for its own system (+proj=utm")), "{:?}", s.notes);
+        let caps = v20.replace("urn:ogc:def:crs:EPSG::25832", "+proj=longlat +datum=WGS84 +no_defs");
+        let s = parse("https://x.org/wfs", caps.as_bytes()).unwrap();
+        assert!(s.notes.is_empty(), "{:?}", s.notes);
+        assert!(
+            geographic_text(" GEOGCS [\"x\"]")
+                && geographic_text("geogcrs[\"x\"]")
+                && !geographic_text("PROJCS[\"x\"]")
+                && !geographic_text("G")
+        );
+        // The fallback for a server that refuses the system it lists: asked in EPSG:4326, the rest
+        // of the address kept; none for an address already in longitude/latitude.
+        let own = "https://x.org/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=t&SRSNAME=EPSG:2056&COUNT=10";
+        assert_eq!(
+            wfs_lonlat_fallback(own).as_deref(),
+            Some("https://x.org/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=t&COUNT=10&SRSNAME=EPSG:4326")
+        );
+        assert_eq!(wfs_lonlat_fallback(&own.replace("EPSG:2056", "EPSG:4326")), None);
+        // WFS 1.0 in a projected system: asked in it too.
+        let s = parse("https://old.example.org/wfs", v10.replace("<SRS>EPSG:4326", "<SRS>EPSG:2056").as_bytes()).unwrap();
+        assert!(
+            matches!(&s.layers[0].offer, Offer::Features { url } if url.contains("SRSNAME=EPSG:2056&MAXFEATURES=")),
             "{:?}",
             s.layers[0].offer
         );
@@ -5056,6 +5745,406 @@ mod tests {
         // Positions under arrays nested deeper than a GeoJSON answer goes aren't read.
         let deep = format!("{}{{\"type\":\"Point\",\"coordinates\":[53.55,9.99]}}{}", "[".repeat(20), "]".repeat(20));
         assert!(fix_axes(deep.as_bytes(), hamburg).is_none());
+    }
+
+    /// A WFS or ArcGIS answer asked in a projected system is read in it (#2032): named when it
+    /// isn't, turned round when written north first, and read as longitude/latitude when the
+    /// server answered in it anyway; an answer naming another system is left to it. Judged
+    /// against the type's longitude/latitude bounds.
+    #[test]
+    fn answers_asked_in_their_own_system_are_read_in_it() {
+        let wfs = "https://x.org/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=a&OUTPUTFORMAT=application%2Fjson&SRSNAME=EPSG:2056&COUNT=50000";
+        let lv95 = crate::raster::Crs::from_epsg(2056).unwrap();
+        assert_eq!(asked_system(wfs), Some(lv95));
+        assert_eq!(asked_system(&wfs.replace("EPSG:2056", "urn%3Aogc%3Adef%3Acrs%3AEPSG%3A%3A2056")), Some(lv95));
+        assert_eq!(asked_system(&wfs.replace("EPSG:2056", "urn:x-ogc:def:crs:EPSG:2056")), Some(lv95));
+        assert_eq!(projected_system("urn:x-ogc:def:crs:EPSG:2056"), Some((2056, lv95)));
+        let arcgis =
+            "https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=2056&f=geojson";
+        assert_eq!(asked_system(arcgis), Some(lv95));
+        let mercator = arcgis.replace("outSR=2056", "outSR=3857");
+        assert_eq!(asked_system(&arcgis.replace("outSR=2056", "outSR=102100")), Some(crate::raster::Crs::WebMercator));
+        for lonlat in [
+            wfs.replace("EPSG:2056", "EPSG:4326"),
+            wfs.replace("EPSG:2056", "urn:ogc:def:crs:OGC:1.3:CRS84"),
+            wfs.replace("EPSG:2056", "EPSG:4258"),
+            arcgis.replace("outSR=2056", "outSR=4326"),
+        ] {
+            assert_eq!(asked_system(&lonlat), None, "{lonlat}");
+        }
+        let bern = Some([7.0, 46.5, 8.0, 47.2]);
+        let collection = |member: &str, x: f64, y: f64| {
+            format!(
+                r#"{{"type":"FeatureCollection",{member}"features":[{{"type":"Feature","properties":{{"n":1}},"geometry":{{"type":"Point","coordinates":[{x},{y}]}}}}]}}"#
+            )
+        };
+        let place = |text: &str, url: &str, bounds| place_answer(text.as_bytes().to_vec(), url, bounds).0;
+        let note = |text: &str, url: &str, bounds| place_answer(text.as_bytes().to_vec(), url, bounds).1;
+        let read = |bytes: &[u8]| {
+            let (ds, _) = crate::io::read_geojson(std::str::from_utf8(bytes).unwrap(), "a").unwrap();
+            let Some(crate::Geometry::Point(c)) = ds.features.iter().next().unwrap().geometry.clone() else { panic!() };
+            (ds.coord_crs(), c.x, c.y)
+        };
+        let member = |name: &str| format!(r#""crs":{{"type":"name","properties":{{"name":"{name}"}}}},"#);
+        // No member: named, positions as they are, with or without bounds; without bounds to
+        // check them against, that is said.
+        let plain = collection("", 2_600_000.0, 1_200_000.0);
+        for bounds in [bern, None] {
+            let placed = place(&plain, wfs, bounds);
+            assert_eq!(read(&placed), (lv95, 2_600_000.0, 1_200_000.0));
+            assert_eq!(place(&plain, arcgis, bounds), placed);
+        }
+        assert_eq!(note(&plain, wfs, bern), None);
+        // An empty page has nothing to say.
+        let empty_page = r#"{"type":"FeatureCollection","features":[]}"#;
+        assert_eq!(note(empty_page, wfs, None), None);
+        assert_eq!(note(empty_page, wfs, bern), None);
+        assert_eq!(note(&plain, wfs, None), Some(Assumed::Unnamed));
+        // A lone feature, or a bare geometry, in the system asked for: put in a collection, which
+        // the reader takes the system from.
+        let feature = r#"{"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[2600000,1200000]}}"#;
+        let point = r#"{"type":"Point","coordinates":[2600000,1200000]}"#;
+        for (lone, member) in
+            [(feature, ""), (point, ""), (feature, r#","crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:EPSG::2056"}}"#)]
+        {
+            let text = format!("{}{member}}}", &lone[..lone.len() - 1]);
+            assert_eq!(read(&place(&text, wfs, bern)), (lv95, 2_600_000.0, 1_200_000.0), "{text}");
+        }
+        // Named as asked: as it came.
+        let named = collection(&member("urn:ogc:def:crs:EPSG::2056"), 2_600_000.0, 1_200_000.0);
+        assert_eq!(place(&named, wfs, bern), named.as_bytes());
+        // North first: turned round and named.
+        let turned = collection(&member("urn:ogc:def:crs:EPSG::2056"), 1_200_000.0, 2_600_000.0);
+        assert_eq!(read(&place(&turned, wfs, bern)), (lv95, 2_600_000.0, 1_200_000.0));
+        // Named by a code RustGIS doesn't read, or `null`: named as asked.
+        for odd in [member("EPSG:999999"), r#""crs":null,"#.to_string()] {
+            let text = collection(&odd, 2_600_000.0, 1_200_000.0);
+            assert_eq!(read(&place(&text, wfs, bern)), (lv95, 2_600_000.0, 1_200_000.0), "{odd}");
+            assert_eq!(read(&place(&text, wfs, None)), (lv95, 2_600_000.0, 1_200_000.0), "{odd}");
+            // Said.
+            for bounds in [bern, None] {
+                assert_eq!(note(&text, wfs, bounds), Some(Assumed::Unread), "{odd}");
+            }
+        }
+        // Named as asked, in its bounds: nothing to say.
+        assert_eq!(note(&named, wfs, bern), None);
+        // Named longitude/latitude, but in the bounds in the system asked for: read in it, and said.
+        let lonlat_named = collection(&member("urn:ogc:def:crs:OGC:1.3:CRS84"), 2_600_000.0, 1_200_000.0);
+        assert_eq!(read(&place(&lonlat_named, wfs, bern)), (lv95, 2_600_000.0, 1_200_000.0));
+        assert_eq!(note(&lonlat_named, wfs, bern), Some(Assumed::InAsked));
+        // North first too: turned round, and said.
+        let lonlat_turned = collection(&member("urn:ogc:def:crs:OGC:1.3:CRS84"), 1_200_000.0, 2_600_000.0);
+        assert_eq!(read(&place(&lonlat_turned, wfs, bern)), (lv95, 2_600_000.0, 1_200_000.0));
+        assert_eq!(note(&lonlat_turned, wfs, bern), Some(Assumed::InAsked));
+        // In longitude/latitude after all, with or without bounds: read so, without a member
+        // saying otherwise, and turned round when latitude first.
+        let lonlat = crate::raster::Crs::LonLat;
+        for bounds in [bern, None] {
+            let answer = collection("", 7.44, 46.95);
+            assert_eq!(place(&answer, wfs, bounds), answer.as_bytes());
+            // Naming none, though a projected system was asked for: said.
+            assert_eq!(note(&answer, wfs, bounds), Some(Assumed::DegreesUnnamed));
+            for name in ["EPSG:2056", "EPSG:4326", "urn:ogc:def:crs:OGC:1.3:CRS84"] {
+                let named = collection(&member(name), 7.44, 46.95);
+                assert_eq!(read(&place(&named, wfs, bounds)), (lonlat, 7.44, 46.95), "{name} {bounds:?}");
+                // A member naming the asked system over degrees is said; one naming degrees isn't.
+                assert_eq!(note(&named, wfs, bounds).is_some(), name == "EPSG:2056", "{name} {bounds:?}");
+            }
+        }
+        let misnamed = collection(&member("EPSG:2056"), 46.95, 7.44);
+        assert_eq!(read(&place(&misnamed, wfs, bern)), (lonlat, 7.44, 46.95));
+        assert_eq!(read(&place(&collection("", 46.95, 7.44), wfs, bern)), (lonlat, 7.44, 46.95));
+        // A world layer in Web Mercator answered in longitude/latitude: its box there holds the
+        // degrees too, which are still read as such.
+        let world = Some([-180.0, -60.0, 180.0, 75.0]);
+        assert_eq!(read(&place(&collection("", 7.44, 46.95), &mercator, world)), (lonlat, 7.44, 46.95));
+        let bern_3857 = collection("", 828_000.0, 5_934_000.0);
+        assert_eq!(read(&place(&bern_3857, &mercator, world)), (crate::raster::Crs::WebMercator, 828_000.0, 5_934_000.0));
+        // A layer reaching the North Pole: its box is taken to Web Mercator's edge, so north-first
+        // positions are still turned round. (A whole world's box in Web Mercator holds positions
+        // either way round, and can't tell.)
+        let poles = Some([5.0, 45.0, 11.0, 90.0]);
+        assert_eq!(read(&place(&bern_3857, &mercator, poles)), (crate::raster::Crs::WebMercator, 828_000.0, 5_934_000.0));
+        let north_first = collection("", 5_934_000.0, 828_000.0);
+        assert_eq!(read(&place(&north_first, &mercator, poles)), (crate::raster::Crs::WebMercator, 828_000.0, 5_934_000.0));
+        // Named in another system RustGIS reads: read in it.
+        let other = collection(&member("EPSG:21781"), 600_000.0, 200_000.0);
+        assert_eq!(place(&other, wfs, bern), other.as_bytes());
+        assert_eq!(note(&other, wfs, bern), None);
+        // A lone feature naming it: put in a collection keeping its member.
+        let lone_other = r#"{"type":"Feature","crs":{"type":"name","properties":{"name":"EPSG:21781"}},"properties":{},"geometry":{"type":"Point","coordinates":[600000,200000]}}"#;
+        assert_eq!(read(&place(lone_other, wfs, bern)), (crate::raster::Crs::from_epsg(21781).unwrap(), 600_000.0, 200_000.0));
+        // Latitude first in degrees, with no bounds to judge by: only that order is in range, so
+        // it is turned round.
+        assert_eq!(read(&place(&collection("", 46.95, 120.0), wfs, None)), (lonlat, 120.0, 46.95));
+        // Bounds don't turn positions out of degrees' range (stale bounds a margin away).
+        assert_eq!(read(&place(&collection("", 100.0, 45.0), wfs, Some([40.0, -90.0, 50.0, 90.0]))), (lonlat, 100.0, 45.0));
+        // Unless its positions are in degrees: read so, and said.
+        let other_degrees = collection(&member("EPSG:21781"), 7.44, 46.95);
+        assert_eq!(read(&place(&other_degrees, wfs, bern)), (lonlat, 7.44, 46.95));
+        assert_eq!(note(&other_degrees, wfs, bern), Some(Assumed::InDegrees));
+        // Asked in longitude/latitude: as `fix_axes` has it.
+        let asked_lonlat = wfs.replace("EPSG:2056", "EPSG:4326");
+        let lat_first = collection("", 46.95, 7.44);
+        assert_eq!(Some(place(&lat_first, &asked_lonlat, bern)), fix_axes(lat_first.as_bytes(), bern));
+        // An empty object, surrounding whitespace, and text that isn't an object.
+        let empty = place(" {} \n", wfs, None);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&empty).unwrap()["crs"]["properties"]["name"], "urn:ogc:def:crs:EPSG::2056");
+        let spaced = place(&format!("\n {plain} \n"), wfs, None);
+        assert_eq!(read(&spaced), (lv95, 2_600_000.0, 1_200_000.0));
+        assert_eq!(place("[]", wfs, None), b"[]");
+        assert_eq!(place("not json", wfs, bern), b"not json");
+        // Text after the object: left as it came, for the reader to refuse.
+        let trailing = format!("{plain} x");
+        assert_eq!(place(&trailing, wfs, None), trailing.as_bytes());
+        // An area asked over a type asked in its own system: the box stays in longitude/latitude,
+        // latitude first as its name fixes.
+        let wfs11 = wfs.replace("VERSION=2.0.0", "VERSION=1.1.0");
+        assert_eq!(
+            features_in_area(&wfs11, [7.0, 46.5, 8.0, 47.2]).unwrap(),
+            format!("{wfs11}&BBOX=46.5,7,47.2,8,urn:ogc:def:crs:EPSG::4326")
+        );
+    }
+
+    /// Protocol-buffer pages naming no system, asked for in a projected one (`outSR`), are held in
+    /// it as they came, and that is said, not read as longitude/latitude.
+    #[test]
+    fn pbf_pages_naming_no_system_are_held_in_the_system_asked_for() {
+        use crate::esripbf::tests::encode::{answer, feature, geometry, transform};
+        let query =
+            "https://x.org/arcgis/rest/services/P/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=2056&f=geojson";
+        let layer = br#"{"objectIdField": "OBJECTID", "maxRecordCount": 1000, "supportedQueryFormats": "JSON, geoJSON, PBF",
+            "advancedQueryCapabilities": {"supportsPagination": true}}"#;
+        let page = answer(&[transform(false, 1.0, 0.0, 0.0), feature(&[geometry(&[], &[2_600_000, 1_200_000])])]);
+        let mut step = begin_with_pbf(query, 100);
+        let (ds, report) = loop {
+            match step {
+                Step::Fetch(pages) => {
+                    let a = if pages.next_url().contains("/query") { page.clone() } else { layer.to_vec() };
+                    step = (*pages).land(Ok(a));
+                }
+                Step::Decoded(ds, report, _) => break (*ds, report),
+                other => panic!("{other:?}"),
+            }
+        };
+        let lv95 = crate::raster::Crs::from_epsg(2056).unwrap();
+        assert_eq!((ds.coord_crs(), ds.crs), (lv95, Some(lv95)));
+        let Some(crate::Geometry::Point(c)) = ds.features.iter().next().unwrap().geometry.clone() else { panic!() };
+        assert_eq!((c.x, c.y), (2_600_000.0, 1_200_000.0));
+        assert!(report.messages.iter().any(|m| m.contains("read in EPSG:2056, the system asked for")), "{:?}", report.messages);
+        assert!(!report.messages.iter().any(|m| m.contains("as longitude/latitude")), "{:?}", report.messages);
+        // Pages of which some name a system and others none: the join stops at the first that
+        // differs, either way round, so no page's positions are taken for another system's.
+        use crate::esripbf::tests::encode::{field, message, number, uint};
+        let paged = br#"{"objectIdField": "OBJECTID", "maxRecordCount": 1, "supportedQueryFormats": "JSON, geoJSON, PBF",
+            "advancedQueryCapabilities": {"supportsPagination": true}}"#;
+        let one = |id: u64, named: bool, more: bool| {
+            let mut parts = vec![number(7, 0)];
+            if named {
+                parts.push(message(8, &number(1, 21781)));
+            }
+            parts.extend([transform(false, 1.0, 0.0, 0.0), field("OBJECTID", 6)]);
+            if more {
+                parts.push(number(9, 1));
+            }
+            parts.push(feature(&[uint(id), geometry(&[], &[600_000, 200_000])]));
+            answer(&parts)
+        };
+        for first_named in [false, true] {
+            let mut step = begin_with_pbf(query, 100);
+            let (ds, note) = loop {
+                match step {
+                    Step::Fetch(pages) => {
+                        let url = pages.next_url().to_string();
+                        let a = if !url.contains("/query") {
+                            paged.to_vec()
+                        } else if url.contains("resultOffset=1") {
+                            one(2, !first_named, false)
+                        } else {
+                            one(1, first_named, true)
+                        };
+                        step = (*pages).land(Ok(a));
+                    }
+                    Step::Decoded(ds, _, note) => break (*ds, note),
+                    other => panic!("{other:?}"),
+                }
+            };
+            assert_eq!(ds.features.len(), 1, "first named: {first_named}");
+            assert!(note.as_deref().is_some_and(|n| n.contains("another coordinate system")), "{note:?}");
+            let expected = if first_named { crate::raster::Crs::from_epsg(21781).unwrap() } else { lv95 };
+            assert_eq!(ds.coord_crs(), expected, "first named: {first_named}");
+        }
+        // A first page whose feature has no geometry, naming a system: the next, with positions
+        // and naming none, isn't read in it (it is held in the system asked for, as a page naming
+        // none is).
+        let empty_named = || {
+            answer(&[
+                number(7, 0),
+                message(8, &number(1, 21781)),
+                transform(false, 1.0, 0.0, 0.0),
+                field("OBJECTID", 6),
+                number(9, 1),
+                feature(&[uint(1)]),
+            ])
+        };
+        let mut step = begin_with_pbf(query, 100);
+        let ds = loop {
+            match step {
+                Step::Fetch(pages) => {
+                    let url = pages.next_url().to_string();
+                    let a = if !url.contains("/query") {
+                        paged.to_vec()
+                    } else if !url.contains("resultOffset=1") {
+                        empty_named()
+                    } else {
+                        one(2, false, false)
+                    };
+                    step = (*pages).land(Ok(a));
+                }
+                Step::Decoded(ds, _, _) => break *ds,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!((ds.features.len(), ds.coord_crs()), (2, lv95));
+        // Two pages with positions: one naming WGS 84, one LV03; and two naming none, one in
+        // degrees, one not. Each pair stops after its first page, as read alone.
+        let page_at = |id: u64, code: Option<u64>, x: i64, y: i64, more: bool| {
+            let mut parts = vec![number(7, 0)];
+            if let Some(code) = code {
+                parts.push(message(8, &number(1, code)));
+            }
+            parts.extend([transform(false, 0.01, 0.0, 0.0), field("OBJECTID", 6)]);
+            if more {
+                parts.push(number(9, 1));
+            }
+            parts.push(feature(&[uint(id), geometry(&[], &[x, y])]));
+            answer(&parts)
+        };
+        let lonlat = crate::raster::Crs::LonLat;
+        for (first, second, expected) in [
+            ((Some(4326), 744, 4695), (Some(21781), 60_000_000, 20_000_000), lonlat),
+            ((None, 744, 4695), (None, 260_000_000, 120_000_000), lonlat),
+            ((None, 260_000_000, 120_000_000), (None, 744, 4695), lv95),
+        ] {
+            let mut step = begin_with_pbf(query, 100);
+            let (ds, note) = loop {
+                match step {
+                    Step::Fetch(pages) => {
+                        let url = pages.next_url().to_string();
+                        let a = if !url.contains("/query") {
+                            paged.to_vec()
+                        } else if url.contains("resultOffset=1") {
+                            page_at(2, second.0, second.1, second.2, false)
+                        } else {
+                            page_at(1, first.0, first.1, first.2, true)
+                        };
+                        step = (*pages).land(Ok(a));
+                    }
+                    Step::Decoded(ds, _, note) => break (*ds, note),
+                    other => panic!("{other:?}"),
+                }
+            };
+            assert_eq!((ds.features.len(), ds.coord_crs()), (1, expected), "{first:?} {second:?}");
+            assert!(note.as_deref().is_some_and(|n| n.contains("another coordinate system")), "{note:?}");
+        }
+        // Pages read as each would be alone: two in degrees in different axis orders, asked in
+        // LV95, don't join; and, asked in WGS 84, a page naming WGS 84 and one naming none join,
+        // as on main.
+        let read_two = |q: &str, first: (Option<u64>, i64, i64), second: (Option<u64>, i64, i64)| {
+            let mut step = begin_with_pbf(q, 100);
+            loop {
+                match step {
+                    Step::Fetch(pages) => {
+                        let url = pages.next_url().to_string();
+                        let a = if !url.contains("/query") {
+                            paged.to_vec()
+                        } else if url.contains("resultOffset=1") {
+                            page_at(2, second.0, second.1, second.2, false)
+                        } else {
+                            page_at(1, first.0, first.1, first.2, true)
+                        };
+                        step = (*pages).land(Ok(a));
+                    }
+                    Step::Decoded(ds, _, note) => break (*ds, note),
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        // In degrees in different axis orders: stopped at the second, as pages aren't turned
+        // round, the first kept as it came.
+        let (ds, note) = read_two(query, (None, 12_000, 4_500), (None, 4_500, 12_000));
+        assert_eq!((ds.features.len(), ds.coord_crs()), (1, lonlat), "{note:?}");
+        assert!(note.as_deref().is_some_and(|n| n.contains("another coordinate system")), "{note:?}");
+        let Some(crate::Geometry::Point(c)) = ds.features.iter().next().unwrap().geometry.clone() else { panic!() };
+        assert_eq!((c.x, c.y), (120.0, 45.0));
+        let wgs84 = query.replace("outSR=2056", "outSR=4326");
+        let (ds, note) = read_two(&wgs84, (Some(4326), 744, 4695), (None, 750, 4700));
+        assert_eq!((ds.features.len(), ds.coord_crs()), (2, lonlat), "{note:?}");
+        // A page naming a code RustGIS can't use, asked in LV95: held in it, and said so.
+        let mut step = begin_with_pbf(query, 100);
+        let (ds, report) = loop {
+            match step {
+                Step::Fetch(pages) => {
+                    let a = if pages.next_url().contains("/query") {
+                        page_at(1, Some(999_999), 260_000_000, 120_000_000, false)
+                    } else {
+                        layer.to_vec()
+                    };
+                    step = (*pages).land(Ok(a));
+                }
+                Step::Decoded(ds, report, _) => break (*ds, report),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(ds.coord_crs(), lv95);
+        assert!(
+            report
+                .messages
+                .iter()
+                .any(|m| m == "coordinate system 999999 can't be used; coordinates are read in EPSG:2056, the system asked for"),
+            "{:?}",
+            report.messages
+        );
+        // Likewise one whose WKT can't be read.
+        let bad_wkt = answer(&[
+            number(7, 0),
+            message(8, &message(5, b"PROJCS[\"broken\"")),
+            transform(false, 0.01, 0.0, 0.0),
+            field("OBJECTID", 6),
+            feature(&[uint(1), geometry(&[], &[260_000_000, 120_000_000])]),
+        ]);
+        let mut step = begin_with_pbf(query, 100);
+        let (ds, report) = loop {
+            match step {
+                Step::Fetch(pages) => {
+                    let a = if pages.next_url().contains("/query") { bad_wkt.clone() } else { layer.to_vec() };
+                    step = (*pages).land(Ok(a));
+                }
+                Step::Decoded(ds, report, _) => break (*ds, report),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(ds.coord_crs(), lv95, "{:?}", report.messages);
+        assert!(
+            report.messages.iter().any(|m| m.ends_with("; coordinates are read in EPSG:2056, the system asked for")),
+            "{:?}",
+            report.messages
+        );
+        // Positions in degrees all the same (a server that didn't convert): read so, as before.
+        let degrees = answer(&[transform(false, 0.01, 0.0, 0.0), feature(&[geometry(&[], &[744, 4695])])]);
+        let mut step = begin_with_pbf(query, 100);
+        let (ds, report) = loop {
+            match step {
+                Step::Fetch(pages) => {
+                    let a = if pages.next_url().contains("/query") { degrees.clone() } else { layer.to_vec() };
+                    step = (*pages).land(Ok(a));
+                }
+                Step::Decoded(ds, report, _) => break (*ds, report),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!((ds.coord_crs(), ds.crs), (crate::raster::Crs::LonLat, None));
+        assert!(report.messages.iter().any(|m| m.contains("read as longitude/latitude")), "{:?}", report.messages);
     }
 
     /// An OGC API collection's extent is its longitude/latitude bounds only in CRS84 (named, or
@@ -5693,6 +6782,7 @@ mod tests {
             from: String::new(),
             phase: Phase::Offsets { size: 2, order: None, start: None, first: None, pbf: true, smaller: 0, fallback_size: 2 },
             decoded: None,
+            placed_as: None,
             decoded_bytes: 0,
             decoded_budget: max_decoded_bytes(),
             pbf_failed: None,

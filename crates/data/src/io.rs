@@ -1468,7 +1468,7 @@ fn legacy_crs(decl: &Json) -> std::result::Result<Option<(Crs, crate::raster::Tr
 /// `http(s)://www.opengis.net/def/crs/EPSG/<version>/N`, or CRS84 as `CRS84`, `OGC:CRS84`,
 /// `urn:ogc:def:crs:OGC:<version, maybe empty>:CRS84` or
 /// `http(s)://www.opengis.net/def/crs/OGC/<version>/CRS84` (any case, whitespace around).
-fn is_epsg_or_crs84_name(name: &str) -> bool {
+pub(crate) fn is_epsg_or_crs84_name(name: &str) -> bool {
     let up = name.trim().to_ascii_uppercase();
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let version = |s: &str| s.bytes().all(|b| b.is_ascii_digit() || b == b'.');
