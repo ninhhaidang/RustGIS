@@ -33,7 +33,8 @@ pub fn units(property: &str) -> &'static [(&'static str, &'static str)] {
 }
 
 /// Runs `edit.calculateGeometry`: fills `field` (new or existing numeric) of the chosen features
-/// with `property` in `unit`, as one undo step; on any error nothing changes.
+/// with `property` in `unit`, as one undo step; on any error nothing changes. A feature with a
+/// place that can't be given in longitude/latitude gets an empty value, and a notice counts them.
 pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
     let l = s.map().layer(id).ok_or("no layer")?;
@@ -83,8 +84,13 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     if rows.is_empty() {
         return Err("no features to calculate".into());
     }
+    // Read in longitude/latitude, where a ring through both poles is ambiguous; one with a place
+    // that can't be given there is left empty below, and said, not refused.
     if property == "area"
-        && let Some(message) = l.dataset.ambiguous_area_message(rows.iter().filter_map(|&r| l.dataset.features.get(r)?.geometry.as_ref()))
+        && let Ok(to) = l.dataset.lonlat_conversion()
+        && let Some(message) = rustgis_data::ambiguous_area_message(
+            rows.iter().filter_map(|&r| rustgis_data::Dataset::converted_to_lonlat(&to, l.dataset.features.get(r)?.geometry.as_ref()?)),
+        )
     {
         return Err(format!("{}: {message}", l.dataset.name));
     }
@@ -95,6 +101,8 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     };
     let mut values = Vec::with_capacity(rows.len());
     let mut nulls = 0;
+    // Those left empty as a place of theirs can't be given in longitude/latitude.
+    let mut unplaced = 0usize;
     // Made at the first feature with a geometry, once for the layer.
     let mut conversion = None;
     for row in &rows {
@@ -109,7 +117,12 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
                 Some(to) => &*to,
                 slot @ None => slot.insert(l.dataset.lonlat_conversion().map_err(|e| format!("feature {}: {e}", f.id))?),
             };
-            let g = rustgis_data::Dataset::geometry_to_lonlat_by(to, g).map_err(|e| format!("feature {}: {e}", f.id))?;
+            let Some(g) = rustgis_data::Dataset::converted_to_lonlat(to, g) else {
+                unplaced += 1;
+                nulls += 1;
+                values.push((*row, Value::Null));
+                continue;
+            };
             let g = g.as_ref();
             // Lengths and areas use longitude differences, so a shape drawn or buffered across the
             // antimeridian may run past ±180°; a coordinate has to be a real longitude.
@@ -169,5 +182,11 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
         changes.push(crate::cmd::design::Change { before: Some(before), row: Some(row) });
     }
     crate::cmd::design::apply(s, id, changes)?;
-    Ok(json!({"rows": rows.len(), "nulls": nulls, "field": field}))
+    if unplaced > 0 {
+        let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+        s.warn(format!(
+            "{name}: {unplaced} feature(s) have a place that can't be given in longitude/latitude, so their {property} is left empty in {field}"
+        ));
+    }
+    Ok(json!({"rows": rows.len(), "nulls": nulls, "unplaced": unplaced, "field": field}))
 }

@@ -11,7 +11,9 @@ field from an expression; **Calculate Geometry** (in the attribute table's toolb
 existing numeric field with each feature's area, perimeter, length or X/Y coordinate, in the units
 you choose, for all features or the selected ones. Length and perimeter include feet and miles;
 area includes square feet (`ft2`), acres (`ac`) and square miles (`mi2`). An unrecognized
-`edit.calculateGeometry` unit is refused with the valid unit keys for the chosen property.
+`edit.calculateGeometry` unit is refused with the valid unit keys for the chosen property. A feature
+with a place that can't be given in longitude/latitude (one far past where its layer's own system
+reaches) is left empty, and a notice counts them.
 Every edit is one undo step. Areas, perimeters and lengths measure on the WGS 84 ellipsoid, the same measure as the network tools and the Measure panel (Spatial Join still
 measures on the sphere). A ring with a full-turn edge, -180° to 180° along a parallel that the
 ring reaches down one meridian and leaves back up the other (a globe-wide band, or a cap closed

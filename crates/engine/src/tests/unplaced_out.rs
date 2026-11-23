@@ -94,10 +94,12 @@ fn what_leaves_the_session_takes_a_feature_it_cant_place_without_that_geometry_a
     }
 }
 
-/// A streamed source held in UTM 31N whose second line reaches 1e9 m east, read a chunk at a time.
+/// A streamed source held in `crs` (UTM 31N unless said) whose second line reaches 1e9 m east,
+/// read a chunk at a time.
 struct Far {
     info: rustgis_data::source::SourceInfo,
     features: Vec<rustgis_data::Feature>,
+    crs: Option<rustgis_data::raster::Crs>,
 }
 
 impl rustgis_data::source::FeatureSource for Far {
@@ -105,7 +107,7 @@ impl rustgis_data::source::FeatureSource for Far {
         &self.info
     }
     fn coord_crs(&self) -> rustgis_data::raster::Crs {
-        rustgis_data::raster::Crs::from_epsg(32631).unwrap()
+        self.crs.unwrap_or_else(|| rustgis_data::raster::Crs::from_epsg(32631).unwrap())
     }
     fn read(&self, _: &rustgis_data::source::Request) -> rustgis_data::Result<rustgis_data::source::Batch> {
         Ok(rustgis_data::source::Batch { features: self.features.clone(), matched: 2, complete: true, ..Default::default() })
@@ -157,7 +159,7 @@ fn a_streamed_conversion_writes_a_feature_it_cant_place_without_its_geometry_and
         zm_dropped: false,
     };
     let mut s = Session::new(crate::Project::default());
-    let src = rustgis_map::source::SourceLayer::from_path("far.test", None, Box::new(Far { info, features }));
+    let src = rustgis_map::source::SourceLayer::from_path("far.test", None, Box::new(Far { info, features, crs: None }));
     s.map_mut().add_streamed("lines", src);
     for format in ["geojson", "csv"] {
         let path = d.0.join(format!("lines.{format}")).display().to_string();
@@ -211,4 +213,62 @@ fn kml_counts_a_feature_it_cant_place_as_left_out_and_a_3d_model_is_placed_by_wh
     let (alone, beside) = (obj(false), obj(true));
     assert!(!alone.is_empty());
     assert_eq!(alone, beside);
+}
+
+/// A tool updating a streamed layer in place keeps a feature with no place in longitude/latitude:
+/// a run in the source's own system (UTM) writes the whole source back in it, that feature's
+/// geometry as stored; a run in longitude/latitude (a source in Robinson, a world projection) is
+/// refused, as the map holds only the layer's window, where that feature's stored geometry may
+/// not be. With every place converting, both run.
+#[test]
+fn an_update_of_a_streamed_layer_keeps_a_feature_it_cant_place() {
+    use rustgis_data::{Field, FieldType, Geometry, GeometryType, Value, raster::Crs};
+    let line = |a: (f64, f64), b: (f64, f64)| {
+        Some(Geometry::Line(vec![vec![rustgis_geom::Coord::new(a.0, a.1), rustgis_geom::Coord::new(b.0, b.1)]]))
+    };
+    let utm = Crs::from_epsg(32631).unwrap();
+    let robinson = Crs::parse("+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs").unwrap();
+    for (crs, far) in [(utm, false), (utm, true), (robinson, false), (robinson, true)] {
+        let far_line = line((451_500.0, 5_411_500.0), (1e12, 1e12));
+        let mut features = vec![rustgis_data::Feature {
+            id: 1,
+            geometry: line((451_000.0, 5_411_000.0), (452_000.0, 5_412_000.0)),
+            attrs: vec![Value::Text("paris".into())],
+        }];
+        if far {
+            features.push(rustgis_data::Feature { id: 2, geometry: far_line.clone(), attrs: vec![Value::Text("far".into())] });
+        }
+        let info = rustgis_data::source::SourceInfo {
+            name: "lines".into(),
+            format: "test",
+            geometry_type: GeometryType::Polyline,
+            fields: vec![Field::new("name", FieldType::Text)],
+            extent: rustgis_geom::Extent::new(2.3, 48.8, 2.4, 48.9),
+            count: Some(features.len() as u64),
+            crs: crs.label(),
+            indexed: false,
+            notes: Default::default(),
+            zm_dropped: false,
+        };
+        let mut s = Session::new(crate::Project::default());
+        let src = rustgis_map::source::SourceLayer::from_path("far.test", None, Box::new(Far { info, features, crs: Some(crs) }));
+        s.map_mut().add_streamed("lines", src);
+        let r = s.run("gp.run", &json!({"tool": "calculateGeometry", "params": {"input": "lines"}}));
+        let what = format!("{} far={far}", crs.label());
+        if far && crs == robinson {
+            let e = r.unwrap_err();
+            assert!(e.contains("Load All Features") && e.contains("can't be given in longitude/latitude"), "{what}: {e}");
+            assert!(s.map().layer_by_name("lines").unwrap().is_streamed(), "{what}: left as it was");
+            continue;
+        }
+        r.unwrap_or_else(|e| panic!("{what}: {e}"));
+        let ds = &s.map().layer_by_name("lines").unwrap().dataset;
+        if crs == utm {
+            assert_eq!(ds.coord_crs(), utm, "{what}: held in the source's own system");
+        }
+        if far {
+            let kept = ds.features.iter().find(|f| f.id == 2).unwrap();
+            assert_eq!(kept.geometry, far_line, "{what}: its geometry as stored");
+        }
+    }
 }

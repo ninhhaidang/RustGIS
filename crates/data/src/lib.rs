@@ -1182,9 +1182,16 @@ impl Dataset {
     /// `results`, a dataset in longitude/latitude made from this one (a tool's update of it), in
     /// its own coordinates: as it is while they are longitude/latitude; otherwise each geometry
     /// written back as an edit is ([`Dataset::edit_from_lonlat`]), its stored places kept as
-    /// stored. Every stored place is read, but only those the results read as are held, so what is
-    /// held is as large as the results, not the layer. Refused, naming the first feature, when one
-    /// of its places can't be held in its system.
+    /// stored. Every stored place of `self` is read (for a streamed layer, its window: a place
+    /// outside it is converted back, exact to the conversion's round trip, not kept as stored),
+    /// but only those the results read as are held, so what is held is as large as the results,
+    /// not the layer. Refused, naming the first feature, when one
+    /// of its places can't be held in its system. A feature of the results without geometry whose
+    /// stored one has a place that can't be given in longitude/latitude, so it was read without it
+    /// ([`Dataset::in_lonlat_leaving_out`]), is left as stored, a field the results add empty:
+    /// every result field of it is taken from the stored feature (or empty), which assumes the
+    /// update's fields are worked out from geometry, as Calculate Geometry Attributes' are, the
+    /// only in-place update today. A tool updating attributes alone would need its own values kept.
     pub fn results_from_lonlat(&self, mut results: Dataset) -> std::result::Result<Dataset, String> {
         // Exact through WGS 84 both ways, as the results were read (`in_lonlat`), whatever map
         // the layer is shown on.
@@ -1201,13 +1208,45 @@ impl Dataset {
                 Self::hold_places_by(&read, g, None, &mut held);
             }
         }
+        // The stored features of the results without geometry whose stored geometry has a place
+        // that can't be given in longitude/latitude, by id: only those are converted again. The
+        // ids of the results without geometry, sorted (8 bytes each, at most the results' count;
+        // nothing when every result has geometry), and of the unplaced among them.
+        let mut bare: Vec<u64> = results.features.rows().filter(|r| r.geometry().is_none()).map(|r| r.id()).collect();
+        bare.sort_unstable();
+        let mut unplaced = std::collections::HashMap::new();
+        if !bare.is_empty() {
+            for (i, f) in self.features.iter().enumerate() {
+                stop_when_asked(i)?;
+                if bare.binary_search(&f.id).is_ok()
+                    && let Some(g) = &f.geometry
+                    && convert_keeping_missing(&read, g, &HeldPlaces::default()).is_none()
+                {
+                    unplaced.insert(f.id, f);
+                }
+            }
+        }
         // Before the rows are copied out of what shares them.
         stop_when_asked(0)?;
         for (i, f) in results.features.iter_mut().enumerate() {
             stop_when_asked(i)?;
-            if let Some(g) = f.geometry.take() {
-                f.geometry =
-                    Some(Self::edit_from_lonlat_by(&write, g, &held).map_err(|e| format!("{}: feature {}: {e}", self.name, f.id))?);
+            match f.geometry.take() {
+                Some(g) => {
+                    f.geometry =
+                        Some(Self::edit_from_lonlat_by(&write, g, &held).map_err(|e| format!("{}: feature {}: {e}", self.name, f.id))?);
+                }
+                // Read without its geometry: left as it was, what the results add to it empty, as
+                // nothing was worked out from a geometry it wasn't given.
+                None => {
+                    if let Some(stored) = unplaced.get(&f.id) {
+                        f.geometry.clone_from(&stored.geometry);
+                        for (k, field) in results.fields.iter().enumerate() {
+                            if let Some(a) = f.attrs.get_mut(k) {
+                                *a = self.field_index(&field.name).and_then(|j| stored.attrs.get(j)).cloned().unwrap_or(Value::Null);
+                            }
+                        }
+                    }
+                }
             }
         }
         results.held_in = self.held_in;

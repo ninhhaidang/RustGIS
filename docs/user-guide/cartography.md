@@ -783,7 +783,9 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   The annotation layer is held in the labelled layer's system; for a layer in
   longitude/latitude, Web Mercator or another system in degrees, in the project's coordinate
   system when it has one (not a geocentric one). In a projected system a label's point is found in its own coordinates, where a map in that system draws it; a moved label that
-  can't be placed there stays at its feature's label point, and the conversion says how many.
+  can't be placed there stays at its feature's label point, and the conversion says how many. In
+  longitude/latitude, a feature with a place that can't be given there, which the map doesn't draw
+  either, gets no annotation, and the conversion says how many.
   A label along a line becomes an upright point at its line's middle vertex (the end of a line
   of two), which can be some way from where the label was drawn: its angle, curve, repeats and
   distance from the line are left out, and the conversion says how many, and how many of them

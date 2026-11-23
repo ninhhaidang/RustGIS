@@ -1822,12 +1822,14 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
         rustgis_map::rows::Rows::Subset(rows) => rows,
     };
     // The network in longitude/latitude, as `from` and `to` are, whatever system the layer holds
-    // its coordinates in: converted only when its graph is built, which is kept for the layer's
-    // rows, so routes over a held network reuse it as they do over one in longitude/latitude.
+    // its coordinates in: each line given there as its graph is built, which is kept for the
+    // layer's rows, so routes over a held network reuse it as they do over one in
+    // longitude/latitude. A line with a place that can't be given there is left out of it, its
+    // segments counted with those with invalid coordinates, rather than the route refused.
     let system = (l.dataset.coord_crs(), l.dataset.crs);
     let r = network::shortest_route_held(
         &l.dataset,
-        || l.dataset.in_lonlat(),
+        || Ok(std::borrow::Cow::Borrowed(&l.dataset)),
         &rows,
         point(p, "from")?,
         point(p, "to")?,
@@ -1968,7 +1970,17 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
     // system, as the polygons are.
     let system = (l.dataset.coord_crs(), l.dataset.crs);
     let own = rustgis_analysis::works_in(system.0);
-    let polygons = if own { std::borrow::Cow::Borrowed(&l.dataset) } else { l.dataset.in_lonlat()? };
+    // A polygon with a place that can't be given in longitude/latitude gets no points, and is
+    // said, rather than the run refused.
+    let polygons = if own { std::borrow::Cow::Borrowed(&l.dataset) } else { l.dataset.in_lonlat_leaving_out()?.0 };
+    let unplaced = rows
+        .iter()
+        .filter(|&&r| {
+            l.dataset.features.row(r).is_some_and(|f| f.geometry().is_some())
+                && polygons.features.row(r).is_some_and(|f| f.geometry().is_none())
+        })
+        .count();
+    let source = l.name.clone();
     let seed = f(p, "seed").map_or(42, |v| v.max(0.0) as u64);
     let pts: Vec<(usize, Coord)> = match ps(p, "field") {
         Some(fname) => {
@@ -2007,6 +2019,12 @@ fn simulate(s: &mut Session, p: &Value) -> CmdResult {
     }
     if let Some(notice) = query_notice {
         s.notify_text(notice, false);
+    }
+    if unplaced > 0 {
+        s.warn(format!(
+            "{}: {unplaced} polygon(s) of {source} have a place that can't be given in longitude/latitude, so no points are simulated in them",
+            ds.name
+        ));
     }
     let nid = super::layer::add_dataset(s, ds);
     Ok(json!({"layer": nid, "points": n}))

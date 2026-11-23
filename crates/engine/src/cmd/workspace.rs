@@ -219,19 +219,24 @@ pub fn commands() -> Vec<C> {
             r#"{"layer": elevation raster, "samples"?: number (default 200), "points": [[lon, lat], [lon, lat]] (the line crossed), "at"?: 0..1 along it, "width"?: metres}"#,
         ),
         C::new("profile.alongLine", "Profile Along a Line", "View › Profile Viewing", |s, p| {
-            let lines = selected_lines(s, p, false)?;
+            let (lines, _) = selected_lines(s, p, false)?;
             let first = lines.into_iter().next().ok_or("no line")?;
             profile(s, p, &first)
         }).inputs(profile_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"layer": elevation raster, "samples"?: number (default 200), "lines": line layer, "row"?: number (the first selected when omitted)}"#),
         C::new("profile.alongSelected", "Profile Along Selected Lines", "View › Profile Viewing", |s, p| {
-            let lines = selected_lines(s, p, true)?;
+            let (lines, unplaced) = selected_lines(s, p, true)?;
             // The lines past the first 50 get no profile, and that is said (#1896).
             if lines.len() > MAX_PROFILED_LINES {
                 s.notify(format!("Profile Along Selected Lines: the first {MAX_PROFILED_LINES} of the {} lines are profiled", lines.len()), false);
             }
             let out: Vec<Value> = lines.iter().take(MAX_PROFILED_LINES).map(|l| profile(s, p, l)).collect::<Result<_, _>>()?;
+            if unplaced > 0 {
+                s.warn(format!(
+                    "Profile Along Selected Lines: {unplaced} line(s) have a place that can't be given in longitude/latitude, so they get no profile"
+                ));
+            }
             Ok(Value::Array(out))
         }).inputs(profile_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
@@ -554,7 +559,9 @@ fn profile(s: &Session, p: &Value, path: &[Coord]) -> CmdResult {
     Ok(json!({"length": prof.last().map_or(0.0, |x| x.0), "min": lo, "max": hi, "gain": gain, "loss": loss, "samples": rows}))
 }
 
-fn selected_lines(s: &Session, p: &Value, all: bool) -> Result<Vec<Vec<Coord>>, String> {
+/// The chosen lines of the line layer `lines` names, in longitude/latitude, and how many of them
+/// were left out as a place of theirs can't be given there. Refused when none is left.
+fn selected_lines(s: &Session, p: &Value, all: bool) -> Result<(Vec<Vec<Coord>>, usize), String> {
     let n = profile_lines(p)?;
     let l =
         s.map().layer_by_name(n).filter(|l| l.geometry_type() == GeometryType::Polyline).ok_or_else(|| format!("no line layer '{n}'"))?;
@@ -566,19 +573,26 @@ fn selected_lines(s: &Session, p: &Value, all: bool) -> Result<Vec<Vec<Coord>>, 
     };
     // Sampled in longitude/latitude, whatever system the layer holds its coordinates in.
     let mut out: Vec<Vec<Coord>> = Vec::new();
+    let mut unplaced = 0usize;
     let to = l.dataset.lonlat_conversion().map_err(|e| format!("{n}: {e}"))?;
     for f in rows.iter().filter_map(|r| l.dataset.features.row(*r)) {
         let Some(g) = f.geometry().filter(|g| matches!(g, Geometry::Line(_))) else { continue };
-        if let Geometry::Line(parts) =
-            &*rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{n}: feature {}: {e}", f.id()))?
-        {
+        let Some(g) = rustgis_data::Dataset::converted_to_lonlat(&to, g) else {
+            unplaced += 1;
+            continue;
+        };
+        if let Geometry::Line(parts) = &*g {
             let v: Vec<Coord> = parts.iter().flatten().copied().collect();
             if v.len() >= 2 {
                 out.push(v);
             }
         }
     }
-    if out.is_empty() { Err("no usable lines".into()) } else { Ok(out) }
+    match (out.is_empty(), unplaced) {
+        (true, 0) => Err("no usable lines".into()),
+        (true, u) => Err(format!("no usable lines: {u} have a place that can't be given in longitude/latitude")),
+        (false, _) => Ok((out, unplaced)),
+    }
 }
 
 /// Every keyframe-to-keyframe move rendered as PNG frames in a zip.

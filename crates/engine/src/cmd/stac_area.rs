@@ -49,13 +49,17 @@ fn read_geometries(path: &str) -> Result<(Vec<Geometry>, rustgis_data::loss::Not
         return Err(format!("{path} has more than {} features: simplify it or use a bounding box", area::MAX_FEATURES));
     }
     let mut messages = report.messages.prefixed(path);
-    // The search area is in longitude/latitude; a file in another system is read in its own.
-    let ds = ds.in_lonlat().map_err(|e| format!("{path}: {e}"))?;
+    // The search area is in longitude/latitude; a file in another system is read in its own, a
+    // feature with a place that can't be given in longitude/latitude left out, and said.
+    let had: usize = ds.features.rows().filter(|r| r.geometry().is_some()).count();
+    let (ds, unplaced) = ds.in_lonlat_leaving_out().map_err(|e| format!("{path}: {e}"))?;
     let geometries: Vec<Geometry> = ds.features.iter().filter_map(|f| f.geometry.clone()).collect();
-    if geometries.len() < ds.features.len() {
+    if had < ds.features.len() {
+        messages.push(format!("{path}: {} feature(s) have no geometry and are left out of the search area", ds.features.len() - had));
+    }
+    if unplaced > 0 {
         messages.push(format!(
-            "{path}: {} feature(s) have no geometry and are left out of the search area",
-            ds.features.len() - geometries.len()
+            "{path}: {unplaced} feature(s) have a place that can't be given in longitude/latitude and are left out of the search area"
         ));
     }
     Ok((geometries, messages))
@@ -164,20 +168,29 @@ fn selected(s: &Session, p: &Value) -> Result<(Vec<Geometry>, Vec<String>), Stri
         return Err(format!("more than {} features are selected: select fewer or use a bounding box", area::MAX_FEATURES));
     }
     // In longitude/latitude, as a search area is, whatever system the layer holds them in.
-    let mut geometries: Vec<Geometry> = Vec::new();
+    // One with a place that can't be given there is left out, and said.
+    let (mut geometries, mut unplaced): (Vec<Geometry>, usize) = (Vec::new(), 0);
     let to = layer.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", layer.name))?;
     for f in layer.selection.iter().filter_map(|row| layer.dataset.features.row(*row)) {
         if let Some(g) = f.geometry() {
-            let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", layer.name, f.id()))?;
-            geometries.push(g.into_owned());
+            match rustgis_data::Dataset::converted_to_lonlat(&to, g) {
+                Some(g) => geometries.push(g.into_owned()),
+                None => unplaced += 1,
+            }
         }
     }
     let mut notes = Vec::new();
-    if geometries.len() < layer.selection.len() {
+    if geometries.len() + unplaced < layer.selection.len() {
         notes.push(format!(
             "{}: {} selected feature(s) have no geometry and are left out of the search area",
             layer.name,
-            layer.selection.len() - geometries.len()
+            layer.selection.len() - geometries.len() - unplaced
+        ));
+    }
+    if unplaced > 0 {
+        notes.push(format!(
+            "{}: {unplaced} selected feature(s) have a place that can't be given in longitude/latitude and are left out of the search area",
+            layer.name
         ));
     }
     Ok((geometries, notes))

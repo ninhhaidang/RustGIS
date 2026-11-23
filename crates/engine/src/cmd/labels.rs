@@ -990,6 +990,8 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     // said.
     let astray = std::cell::Cell::new(0usize);
     let unplaced = std::cell::Cell::new(0usize);
+    // Features left without annotation, a place of theirs having none in longitude/latitude.
+    let mut unplaced_features = 0usize;
     // `None` for one left at its feature's label point, which isn't moved there any more.
     let put_at = |[x, y]: [f64; 2]| -> Option<Coord> {
         let c = Coord::new(x, y);
@@ -1017,34 +1019,40 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
             },
         }
     };
+    // A class's label text for a row, and whether it was cut: `None` when it gives none (no
+    // expression or field, an expression with no value, a null field), so no label is made.
+    let text_of = |i: usize, row: usize| -> Option<(String, bool)> {
+        match by_text(i).and_then(|e| e.text_cut(&l.dataset, row)) {
+            Some(Some((t, was_cut))) => Some((t, was_cut)),
+            Some(None) => None,
+            None => {
+                let fi = fields.get(i).copied().flatten()?;
+                let v = l.dataset.value(row, fi);
+                (!v.is_null()).then(|| (v.to_string(), false))
+            }
+        }
+    };
     for (row, ft) in l.dataset.features.rows().enumerate() {
         if rows.get(row) != Some(&true) {
             continue;
         }
         // In the system the annotation layer is made in (above).
         let Some(g) = ft.geometry() else { continue };
+        // One with a place that can't be given in longitude/latitude, which the map doesn't
+        // draw either, becomes no annotation, and is said.
         let g = if own {
             std::borrow::Cow::Borrowed(g)
+        } else if let Some(g) = rustgis_data::Dataset::converted_to_lonlat(&to, g) {
+            g
         } else {
-            rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?
+            // Counted only when it has a label to convert: a visible class giving it text.
+            unplaced_features += usize::from(matcher.classes_of(&l.dataset, row).any(|(i, c)| c.visible && text_of(i, row).is_some()));
+            continue;
         };
         let Some(at) = g.label_point() else { continue };
         for (i, class) in matcher.classes_of(&l.dataset, row).filter(|(_, c)| c.visible) {
-            let text = match by_text(i).and_then(|e| e.text_cut(&l.dataset, row)) {
-                Some(Some((t, was_cut))) => {
-                    cut += usize::from(was_cut);
-                    t
-                }
-                Some(None) => continue,
-                None => {
-                    let Some(fi) = fields.get(i).copied().flatten() else { continue };
-                    let v = l.dataset.value(row, fi);
-                    if v.is_null() {
-                        continue;
-                    }
-                    v.to_string()
-                }
-            };
+            let Some((text, was_cut)) = text_of(i, row) else { continue };
+            cut += usize::from(was_cut);
             let mut attrs = vec![Attr::Text(text)];
             if classes {
                 attrs.push(Attr::Text(class.name.clone()));
@@ -1081,9 +1089,20 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         }
     }
     if ds.features.is_empty() {
+        if unplaced_features > 0 {
+            return Err(format!(
+                "the layer has no labels to convert: {unplaced_features} feature(s) have a place that can't be given in longitude/latitude"
+            ));
+        }
         return Err("the layer has no labels to convert".into());
     }
     let n = ds.features.len();
+    let unplaced_features_note = (unplaced_features > 0).then(|| {
+        NoticeText::format(
+            "{name}: {n} feature(s) of {layer} have a place that can't be given in longitude/latitude, so their labels aren't converted",
+            [("name", ds.name.clone().into()), ("n", unplaced_features.to_string().into()), ("layer", l.name.clone().into())],
+        )
+    });
     let flattened_note = (flattened > 0).then(|| {
         NoticeText::format(
             "{name}: {n} label(s) along lines made upright points at their lines' middle vertex, no longer laid along the line",
@@ -1167,7 +1186,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(note) = cut_note {
         s.notify(note, false);
     }
-    for note in [flattened_note, repeated_note, astray_note, unplaced_note].into_iter().flatten() {
+    for note in [flattened_note, repeated_note, astray_note, unplaced_note, unplaced_features_note].into_iter().flatten() {
         s.notify_text(note, false);
     }
     if let Some((_, unread)) = &whole {

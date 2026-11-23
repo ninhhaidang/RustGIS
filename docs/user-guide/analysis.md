@@ -197,7 +197,14 @@ world projection (World Mercator, Plate Carrée, Robinson, Equal Earth and the l
 the antimeridian as a seam and the poles as lines, is worked on in longitude/latitude, as Web
 Mercator is. If another input has a place that system can't hold, the tool works in
 longitude/latitude instead, and its message says so. A layer in longitude/latitude, Web Mercator or
-another geographic system is worked on in longitude/latitude, as before. In a projected system a
+another geographic system is worked on in longitude/latitude, as before. There, a feature with a place
+that can't be given in longitude/latitude (one far past where its layer's own system reaches) is read
+without its geometry, and the tool's message says how many of each layer were; a tool that updates
+its input in place, as Calculate Geometry Attributes does, leaves that feature's geometry as it was.
+A layer read in place from its file (streamed) holds only the part the map shows: an update of it
+worked in longitude/latitude that read such a feature without its geometry is refused until you
+Load All Features, since that feature's stored geometry may not be in that part.
+In a projected system a
 tool works in, distances in metres (Buffer's, Simplify's tolerance, Points Along Lines' spacing,
 Near's, and the search distances of Select Layer By Location and Spatial Join) are measured flat
 there, in its unit, as distances in a projected system are: a kilometre is 1000 of its metres, or
@@ -1611,7 +1618,7 @@ click them on the map:
 | Geostatistical Wizard | An IDW surface from feature values, using 12 nearest neighbours by default |
 | Network Analysis | The shortest (or cheapest, by a cost field) route over a line layer |
 | Neighborhood Explorer | What lies within a distance of a point, with sums of numeric fields |
-| Simulation | Random points in polygons (a fixed number, or from a field × rate), spread in the layer's own coordinates when it is held in a projected system, else in longitude/latitude (then held in the project's coordinate system when it has one, other than a geocentric one) |
+| Simulation | Random points in polygons (a fixed number, or from a field × rate), spread in the layer's own coordinates when it is held in a projected system, else in longitude/latitude (then held in the project's coordinate system when it has one, other than a geocentric one; a polygon with a place that can't be given in longitude/latitude gets no points, and a notice counts them) |
 | Data Engineering | Counts, nulls, distinct values, min, max and mean of every field |
 | Exploratory Analysis | Histograms and correlations of numeric fields |
 | Embeddings | The features most like the selected one, by their numeric attributes |
