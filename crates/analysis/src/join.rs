@@ -10,9 +10,7 @@
 //! they are found there and measured straight, in the system's unit times its length.
 
 use rustgis_data::{Coord, Dataset, FieldType, Geometry, Value};
-use rustgis_geom::{
-    Aeqd, Extent, WGS84_MIN_RADIUS_M, geodesic_interpolate, wgs84_distance_m, wgs84_length_m, wgs84_ring_perimeter_area_m2,
-};
+use rustgis_geom::{Aeqd, Extent, WGS84_MIN_RADIUS_M, geodesic_interpolate, wgs84_distance_m, wgs84_ring_perimeter_area_m2, wgs84_step_m};
 use serde_json::Value as Json;
 
 /// Whether a coordinate is a place on the Earth in lon/lat: finite, with a latitude of ±90° at most
@@ -245,10 +243,20 @@ pub fn area_m2(g: &Geometry) -> f64 {
         .sum()
 }
 
-/// The ground length (metres) of a lon/lat line geometry on the WGS 84 ellipsoid.
+/// The ground length (metres) of a lon/lat line geometry on the WGS 84 ellipsoid, each step
+/// measured with [`wgs84_step_m`]: within a millionth of
+/// [`wgs84_length_m`](rustgis_geom::wgs84_length_m), without a geodesic solve for each of a dense
+/// line's many short steps.
 pub fn length_m(g: &Geometry) -> f64 {
     let Geometry::Line(parts) = g else { return 0.0 };
-    parts.iter().map(|p| wgs84_length_m(p)).sum()
+    parts
+        .iter()
+        .flat_map(|p| p.windows(2))
+        .map(|w| match w {
+            [a, b] => wgs84_step_m(*a, *b),
+            _ => 0.0,
+        })
+        .sum()
 }
 
 /// How the values of a join field's matches become one value in a one-to-one join.
@@ -496,7 +504,7 @@ pub fn parse_merge(join: &Dataset, v: Option<&Json>) -> Result<Vec<Merge>, Strin
 mod tests {
     use super::*;
 
-    use rustgis_geom::haversine_m;
+    use rustgis_geom::{haversine_m, wgs84_length_m};
 
     /// The ground distance from `p` to a line, by sampling each edge finely along its great circle.
     /// Only the samples within 1.2% of the nearest on the sphere are measured on the ellipsoid,
@@ -576,6 +584,18 @@ mod tests {
         assert!(geodesic_length_m(&near_pole) < geodesic_length_m(&near_equator) * 0.996);
         let mut road = Dataset::new("t", GeometryType::Polyline, vec![]);
         road.push(Some(Geometry::Line(vec![vec![Coord::new(0.5, -1.0), Coord::new(0.5, 63.0)]])), vec![]);
+        assert_eq!(joined(road, zones(60.995)), north);
+
+        // A dense road, its steps short enough to be measured without a solve: the same zone wins,
+        // and each overlap's length is within a millionth of the solve's.
+        let dense: Vec<Coord> = (0..=6_400).map(|i| Coord::new(0.5, -1.0 + f64::from(i) * 0.01)).collect();
+        for part in [&dense[100..=200], &dense[6_100..=6_199]] {
+            let exact = wgs84_length_m(part);
+            let stepped = length_m(&Geometry::Line(vec![part.to_vec()]));
+            assert!((stepped / exact - 1.0).abs() < 1e-6, "{stepped} m, {exact} m on the ellipsoid");
+        }
+        let mut road = Dataset::new("t", GeometryType::Polyline, vec![]);
+        road.push(Some(Geometry::Line(vec![dense])), vec![]);
         assert_eq!(joined(road, zones(60.995)), north);
     }
 
