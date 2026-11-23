@@ -310,6 +310,26 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
         out.fields.push(Field::new(name, ty));
     }
     let mut reached = HashSet::new();
+    // Made in longitude/latitude, on the graph; each line held as the network is, in the system
+    // the run works in, as it is added (the output is never made twice).
+    let to_own = Crs::LonLat.to(ds.coord_crs())?;
+    let held = |lines: Vec<Vec<Coord>>| -> Result<Vec<Vec<Coord>>, String> {
+        if to_own.is_identity() {
+            return Ok(lines);
+        }
+        lines
+            .into_iter()
+            .map(|part| {
+                part.into_iter()
+                    .map(|c| {
+                        to_own.point(c).filter(|c| c.is_finite()).ok_or_else(|| {
+                            format!("{TOOL}: a place it reached can't be held in {}, the system of '{}'", ds.coord_crs().label(), ds.name)
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
+    };
     for ((row, band, facility), lines) in parts {
         crate::control::check()?;
         let Some(f) = ds.features.get(row) else { continue };
@@ -318,11 +338,9 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
         let fid = facilities.get(facility).map_or(Value::Null, |(id, _)| Value::Int(id.cast_signed()));
         let from = if band == 0 { 0.0 } else { breaks.get(band - 1).copied().unwrap_or(0.0) };
         attrs.extend([fid, Value::Float(from), Value::Float(breaks.get(band).copied().unwrap_or(0.0))]);
-        out.push(Some(Geometry::Line(lines)), attrs);
+        out.push(Some(Geometry::Line(held(lines)?)), attrs);
     }
-    // Made in longitude/latitude, on the graph; held as the network is, in the system the run
-    // works in.
-    out.hold_in(ds.coord_crs())?;
+    out.held_in = ds.coord_crs();
     out.crs = ds.crs;
     let units = if s(p, "units").is_empty() { "Kilometers" } else { s(p, "units") };
     let mut messages = vec![format!(

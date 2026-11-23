@@ -156,6 +156,15 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   Primary rows follow the layer's definition query, independently of selection, time windows
   and display filters. For **must be covered by**, every resident row of the covering layer
   supplies the reference coverage; its map filters do not narrow that reference set.
+  A layer held in a projected system is checked in its own coordinates, as the analysis tools
+  work in it. The dangle tolerance (`toleranceM`, 1 m by default) is measured flat there in its
+  unit, an overlap or gap counts from a square metre of it, and a covering layer is converted
+  into it, with a notice when its long edges, taken straight there, run more than a metre from
+  where a check in longitude/latitude takes them. A rule whose covering layer that system can't
+  hold is checked in longitude/latitude instead, and says so. A layer in Web Mercator, another
+  world projection or a geographic system is checked in longitude/latitude, its dangle tolerance
+  on the ground. An error at a place that can't be given in longitude/latitude, where the Error
+  Inspector would zoom, refuses the check, naming the layer and feature.
   On the desktop the check runs in the background, so the map stays in use: the status bar
   shows **Error Inspector** with its progress and **Cancel**, and a check that can be cancelled
   takes any amount of work (a gaps rule first joins all its polygons in one step, which

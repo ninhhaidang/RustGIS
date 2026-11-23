@@ -74,6 +74,18 @@ impl Drop for PlaneInstalled {
     }
 }
 
+/// The plane of work on geometry held in `crs`: the analysis plane for longitude/latitude, a
+/// projected system's own coordinates otherwise, with its unit and axes
+/// ([`rustgis_data::raster::Crs::unit_and_axes`]). For a system [`crate::works_in`] takes.
+pub fn run_plane_for(crs: rustgis_data::raster::Crs) -> RunPlane {
+    if crs == rustgis_data::raster::Crs::LonLat {
+        RunPlane { plane: Plane::Analysis, unit_m: 1.0, axes: EAST_NORTH }
+    } else {
+        let (unit_m, axes) = crs.unit_and_axes();
+        RunPlane { plane: Plane::Own, unit_m, axes }
+    }
+}
+
 /// Makes `run` the plane of the work on this thread until the guard is dropped.
 pub fn install(run: RunPlane) -> PlaneInstalled {
     PlaneInstalled(PLANE.with(|p| p.replace(run)))

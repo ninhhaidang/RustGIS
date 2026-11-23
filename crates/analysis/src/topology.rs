@@ -1,13 +1,17 @@
 //! Editing geometry: merging features, and topology checks (overlaps, gaps, self-intersections,
-//! dangles, coverage). Computed in the analysis plane ([`rustgis_geom::lonlat_to_plane`]).
+//! dangles, coverage). Computed in the plane of the run ([`crate::convert::plane`]): the analysis
+//! plane ([`rustgis_geom::lonlat_to_plane`]) for longitude/latitude, with the poles where they are
+//! in it; a projected system's own coordinates as they are, with no poles, the tolerance and the
+//! least area taken in its unit (#2032 C2e-5).
 
 use geo::{Area, BooleanOps, BoundingRect, Contains, Intersects, Orient, orient::Direction};
 use rustgis_data::{Dataset, Geometry};
 use rustgis_geom::{Coord, Extent, MAX_LAT, WGS84_POLAR_RADIUS_M, lonlat_to_plane, plane_to_lonlat};
 
-use crate::convert::{from_multipolygon, to_multipolygon};
+use crate::convert::{Plane, from_multipolygon, from_plane, own_length, own_unit_m, plane, to_multipolygon, to_plane};
 
-/// A topology problem: the rows involved and where it is (longitude/latitude).
+/// A topology problem: the rows involved and where it is, in the coordinates the layer was given
+/// in (longitude/latitude, or a projected system's own in a run there).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TopologyError {
     pub rows: Vec<usize>,
@@ -122,7 +126,13 @@ fn polygons(ds: &Dataset, rows: &[usize]) -> Vec<(usize, geo::MultiPolygon<f64>,
 
 fn centre(mp: &geo::MultiPolygon<f64>) -> Coord {
     use geo::InteriorPoint;
-    mp.interior_point().map(|p| plane_to_lonlat(Coord::new(p.x(), p.y()))).unwrap_or_default()
+    mp.interior_point().map(|p| from_plane(Coord::new(p.x(), p.y()))).unwrap_or_default()
+}
+
+/// The least area an overlap or gap has to be one, in the plane's units: a square metre (shared
+/// edges leave slivers of floating-point area), in a projected system's own unit there.
+fn least_area() -> f64 {
+    own_unit_m().map_or(1.0, |u| 1.0 / (u * u))
 }
 
 fn rects_touch(a: &geo::Rect<f64>, b: &geo::Rect<f64>) -> bool {
@@ -155,7 +165,7 @@ pub fn overlaps(ds: &Dataset, rows: &[usize]) -> Checked {
             }
             let inter = a.intersection(b);
             // Shared edges leave slivers of floating-point area; a square metre is a real overlap.
-            if inter.unsigned_area() > 1.0 {
+            if inter.unsigned_area() > least_area() {
                 out.push(TopologyError { rows: vec![*ra, *rb], at: centre(&inter) });
                 if out.len() >= MAX_ERRORS {
                     return Checked::partial(out);
@@ -176,7 +186,7 @@ pub fn gaps(ds: &Dataset, rows: &[usize]) -> Checked {
     for poly in &u.0 {
         for hole in poly.interiors() {
             let mp = geo::MultiPolygon::new(vec![geo::Polygon::new(hole.clone(), vec![])]);
-            if mp.unsigned_area() > 1.0 {
+            if mp.unsigned_area() > least_area() {
                 out.push(TopologyError { rows: Vec::new(), at: centre(&mp) });
                 if out.len() >= MAX_ERRORS {
                     return Checked::partial(out);
@@ -257,7 +267,7 @@ pub fn self_intersections(ds: &Dataset, rows: &[usize]) -> Checked {
             _ => Vec::new(),
         };
         for (p, closed) in paths {
-            let m: Vec<Coord> = p.iter().map(|c| lonlat_to_plane(*c)).collect();
+            let m: Vec<Coord> = p.iter().map(|c| to_plane(*c)).collect();
             let found = match self_crossing(&m, closed) {
                 Ok(c) => c,
                 // Stopped by Cancel, not by the limit: nothing to list (the run is dropped).
@@ -268,7 +278,7 @@ pub fn self_intersections(ds: &Dataset, rows: &[usize]) -> Checked {
                 }
             };
             if let Some(c) = found {
-                out.push(TopologyError { rows: vec![*r], at: plane_to_lonlat(c) });
+                out.push(TopologyError { rows: vec![*r], at: from_plane(c) });
                 break;
             }
         }
@@ -281,18 +291,20 @@ pub fn self_intersections(ds: &Dataset, rows: &[usize]) -> Checked {
 
 /// Line ends that touch no other line (within `tol_m` metres). Line parts are indexed on a grid,
 /// so each end is measured only against parts near it; an end beyond 85.05° in a frame about its
-/// pole (`PolarEnds`).
+/// pole (`PolarEnds`). In a projected system's own plane, the tolerance is measured flat there, in
+/// its unit ([`own_length`]), as the run's other distances are.
 pub fn dangles(ds: &Dataset, rows: &[usize], tol_m: f64) -> Checked {
     let lines: Vec<(usize, Vec<Vec<Coord>>)> = rows
         .iter()
         .filter_map(|r| match ds.features.get(*r)?.geometry.as_ref()? {
-            Geometry::Line(parts) => Some((*r, parts.iter().map(|p| p.iter().map(|c| lonlat_to_plane(*c)).collect()).collect())),
+            Geometry::Line(parts) => Some((*r, parts.iter().map(|p| p.iter().map(|c| to_plane(*c)).collect()).collect())),
             _ => None,
         })
         .collect();
+    let own_tol = own_length(tol_m);
     // Within ±85.05°, tolerance in the plane's meters grows with latitude; index with the largest
     // it can be there.
-    let max_tol = tol_m / MAX_LAT.to_radians().cos();
+    let max_tol = own_tol.unwrap_or(tol_m / MAX_LAT.to_radians().cos());
     let mut ext = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for c in lines.iter().flat_map(|(_, ps)| ps.iter().flatten()) {
         ext = (ext.0.min(c.x), ext.1.min(c.y), ext.2.max(c.x), ext.3.max(c.y));
@@ -345,16 +357,15 @@ pub fn dangles(ds: &Dataset, rows: &[usize], tol_m: f64) -> Checked {
             }
             for (end, at_start) in [(part.first(), true), (part.last(), false)] {
                 let Some(end) = end else { continue };
-                let at = plane_to_lonlat(*end);
-                let lat = at.y;
-                let touches = if lat.abs() > MAX_LAT {
+                let at = from_plane(*end);
+                let touches = if plane() == Plane::Analysis && at.y.abs() > MAX_LAT {
                     let polar = polar.get_or_insert_with(|| PolarEnds::new(&lines, &grid, cells));
                     match polar.meets((li, pi, at_start), (*end, at), tol_m, &mut work) {
                         Ok(touches) => touches,
                         Err(WorkLimit) => return Checked::partial(out),
                     }
                 } else {
-                    let tol = tol_m / lat.to_radians().cos().max(0.01);
+                    let tol = own_tol.unwrap_or_else(|| tol_m / at.y.to_radians().cos().max(0.01));
                     let near = grid.get(&cells.key(end.x, end.y)).map(Vec::as_slice).unwrap_or(&[]);
                     // The end's own part counts too, past the stretch next to the end (a line
                     // curling back onto itself, like a 6, doesn't dangle there).
@@ -1087,7 +1098,7 @@ pub fn not_covered(ds: &Dataset, rows: &[usize], by: &Dataset) -> Checked {
             _ => continue,
         };
         for c in pts {
-            let m = lonlat_to_plane(c);
+            let m = to_plane(c);
             let p = geo::Point::new(m.x, m.y);
             let surrounded = match crate::convert::reaches_poles(c.y, c.y) {
                 (true, _) => holds_north.get_or_insert_with(|| surrounds_pole(parts(), true)).0,
@@ -1113,6 +1124,26 @@ pub fn not_covered(ds: &Dataset, rows: &[usize], by: &Dataset) -> Checked {
 mod tests {
     use super::*;
     use rustgis_data::GeometryType;
+
+    /// In a projected system's own plane, the dangle tolerance is measured flat there in its unit:
+    /// in feet, an end 2 ft (0.61 m) from another line touches it within a metre, not within half
+    /// of one; there are no poles to measure about (#2032 C2e-5).
+    #[test]
+    fn a_dangle_tolerance_is_in_the_systems_own_unit() {
+        use crate::convert::{EAST_NORTH, RunPlane, install};
+        let _feet = install(RunPlane { plane: Plane::Own, unit_m: 0.3048, axes: EAST_NORTH });
+        let c = Coord::new;
+        let mut ds = Dataset::new("lines", GeometryType::Polyline, vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![c(0.0, 0.0), c(100.0, 0.0)]])), vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![c(102.0, 0.0), c(102.0, 100.0)]])), vec![]);
+        let ends = |tol_m: f64| dangles(&ds, &[0, 1], tol_m).errors.iter().map(|e| (e.rows.clone(), e.at)).collect::<Vec<_>>();
+        // Both lines' far ends dangle; the near ones touch within a metre.
+        assert_eq!(ends(1.0), [(vec![0], c(0.0, 0.0)), (vec![1], c(102.0, 100.0))]);
+        assert_eq!(ends(0.5).len(), 4);
+        // Places are given as the layer holds them, even past what a latitude can be.
+        ds.push(Some(Geometry::Line(vec![vec![c(0.0, 1e7), c(1.0, 1e7)]])), vec![]);
+        assert!(dangles(&ds, &[2], 1.0).errors.iter().all(|e| e.at.y == 1e7));
+    }
 
     #[test]
     fn holes_are_taken_from_an_outline_in_one_pass() {

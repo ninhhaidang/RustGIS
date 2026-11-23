@@ -777,14 +777,7 @@ pub fn run(id: &str, inputs: &dyn Inputs, params: &Value) -> Result<ToolResult, 
 /// plane for longitude/latitude, a projected system's own coordinates otherwise
 /// ([`convert::Plane::Own`]).
 fn in_plane<T>(inputs: &dyn Inputs, work: impl FnOnce() -> T) -> T {
-    let crs = inputs.work_crs();
-    let run = if crs == rustgis_data::raster::Crs::LonLat {
-        convert::RunPlane { plane: convert::Plane::Analysis, unit_m: 1.0, axes: convert::EAST_NORTH }
-    } else {
-        let (unit_m, axes) = crs.unit_and_axes();
-        convert::RunPlane { plane: convert::Plane::Own, unit_m, axes }
-    };
-    let _plane = convert::install(run);
+    let _plane = convert::install(convert::run_plane_for(inputs.work_crs()));
     work()
 }
 
