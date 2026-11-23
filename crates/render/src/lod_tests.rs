@@ -239,3 +239,32 @@ fn lod_landcover_whole_frame_benchmark() {
         assert!(first.pixmap.data().as_chunks::<4>().0.iter().any(|p| p != background), "benchmark must contain rendered polygons");
     }
 }
+
+/// The land cover held in UTM zone 37S, drawn on a map in that system: plain drawing takes display
+/// copies simplified from its own rows, with no full copy of the layer on the map, and draws what
+/// the full geometry draws.
+#[test]
+fn lod_display_of_a_layer_held_in_the_maps_system() {
+    let utm = rustgis_data::raster::Crs::Epsg(32737);
+    let mut map = landcover(84);
+    // Drawn on Web Mercator first, with labels, which need the projected copy.
+    map.layers[0].dataset.hold_in(utm).unwrap();
+    map.layers[0].labels.enabled = true;
+    let e = map.layers[0].extent();
+    let mercator =
+        View { width: 420.0, height: 320.0, pixels_per_point: 1.0, sky: false, camera: Camera::new(lonlat_to_merc(e.center()), 100.0) };
+    render(&mut map, &mercator).unwrap();
+    assert!(!map.layers[0].projected_cache().is_empty());
+    map.layers[0].labels.enabled = false;
+    map.set_projection(rustgis_map::Projection::Custom("EPSG:32737".into()));
+    let mut full = unthinned(&map);
+    let e = map.layers[0].dataset.extent();
+    let view =
+        View { width: 420.0, height: 320.0, pixels_per_point: 1.0, sky: false, camera: Camera::new(e.center(), e.width() / 420.0 * 1.2) };
+    let expected = render(&mut full, &view).unwrap();
+    let got = render(&mut map, &view).unwrap();
+    assert!(map.layers[0].projected_cache().is_empty(), "plain drawing keeps no copy of the layer, nor Web Mercator's");
+    assert!(map.layers[0].display_cache().is_some());
+    let (mean, _) = difference(&expected.pixmap, &got.pixmap);
+    assert!(mean < 3.0, "mean channel difference {mean}");
+}

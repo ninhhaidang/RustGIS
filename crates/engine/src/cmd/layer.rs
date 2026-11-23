@@ -139,11 +139,9 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "to": position (0 = top; past the end, the bottom). Several keep their order, the topmost landing at "to" as one layer would, and go only to the top or the bottom (one in a group, to its group's): with 4 layers and 2 of them, 2 or more is the bottom, 1 is refused}"#),
         C::new("layer.zoomTo", "Zoom To Layer", "Layers", |s, p| {
             let ids = layer_ids(s, p)?;
-            let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.shown_extent()));
-            if e.is_empty() {
+            if s.zoom_to_layers(&ids, rustgis_map::ExtentOf::Shown).is_none() {
                 return Err(if ids.len() > 1 { "the layers have no features" } else { "the layer has no features" }.into());
             }
-            s.zoom_to(&e);
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; zooms to all of them)}"#)
         .view()
@@ -3457,10 +3455,7 @@ fn add_source_read(
         }
     }
     if zoom.unwrap_or(empty_before) {
-        let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.extent()));
-        if !e.is_empty() {
-            s.zoom_to(&e);
-        }
+        s.zoom_to_layers(&ids, rustgis_map::ExtentOf::All);
     }
     if let Some(note) = attribute_note {
         s.notify(format!("{label}: {note}"), false);
@@ -4259,10 +4254,7 @@ fn add_live(s: &mut Session, p: &Value, db: &rustgis_data::source::duckdb::Datab
         return Err(with_left(error, &said));
     }
     if empty_before {
-        let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.extent()));
-        if !e.is_empty() {
-            s.zoom_to(&e);
-        }
+        s.zoom_to_layers(&ids, rustgis_map::ExtentOf::All);
     }
     // Empty tables (common in a PostGIS database: its TIGER geocoder's) are left out quietly.
     if empty > 0 {
@@ -4475,10 +4467,7 @@ pub(crate) fn add_converted(s: &mut Session, p: &Value, label: &str, original: &
         s.notify(rustgis_data::source::gdal::in_lonlat_notes(&names), false);
     }
     if empty_before {
-        let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.extent()));
-        if !e.is_empty() {
-            s.zoom_to(&e);
-        }
+        s.zoom_to_layers(&ids, rustgis_map::ExtentOf::All);
     }
     if ids.is_empty() {
         return Err(format!("{label}: none of its layers could be added"));
@@ -6839,17 +6828,16 @@ fn added_download(s: &mut Session, p: &Value, mut r: Value, mark_source: bool, u
 /// whether the view framed them (not when none had an extent, or the map's projection doesn't
 /// reach it).
 fn zoom_to_added(s: &mut Session, r: &Value) -> bool {
-    let ids = r.get("layers").and_then(Value::as_array).into_iter().flatten().chain(r.get("layer"));
-    let e = ids
+    let ids: Vec<u32> = r
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(r.get("layer"))
         .filter_map(Value::as_u64)
         .filter_map(|i| u32::try_from(i).ok())
-        .filter_map(|id| s.map().layer(id).map(|l| l.extent()))
-        .filter(|e| !e.is_empty())
-        .fold(rustgis_geom::Extent::EMPTY, |a, e| a.union(&e));
-    if e.is_empty() {
-        return false;
-    }
-    s.zoom_to(&e)
+        .collect();
+    s.zoom_to_layers(&ids, rustgis_map::ExtentOf::All).unwrap_or(false)
 }
 
 pub(crate) fn add_data_text(s: &mut Session, p: &Value) -> CmdResult {
@@ -6907,10 +6895,8 @@ pub(crate) fn add_read(
             stand(l, &x);
         }
     }
-    if zoom.unwrap_or(empty_before)
-        && let Some(e) = s.map().layer(id).map(|l| l.extent())
-    {
-        s.zoom_to(&e);
+    if zoom.unwrap_or(empty_before) {
+        s.zoom_to_layers(&[id], rustgis_map::ExtentOf::All);
     }
     Ok(json!({"layer": id, "features": n}))
 }

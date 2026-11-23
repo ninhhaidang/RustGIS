@@ -1,6 +1,6 @@
 //! Times a large line layer held in longitude/latitude against the same layer held in UTM 32N
 //! (#2032 C2): holding it, converting it back for a tool, the first frame, a change of
-//! projection, panning and zooming:
+//! projection, panning and zooming, and drawing on a map in UTM 32N:
 //! `cargo run --release -p rustgis-engine --example held_bench -- [vertices, default 1000000]`.
 use rustgis_data::raster::Crs;
 use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
@@ -32,7 +32,7 @@ fn ms(t: Instant) -> f64 {
 fn main() -> Result<(), String> {
     let vertices: usize = std::env::args().nth(1).and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
     println!("{vertices} vertices; times in ms");
-    println!("{:<34}{:>12}{:>12}", "", "lon/lat", "UTM 32N");
+    println!("{:<34}{:>12}{:>12}", "layer held in", "lon/lat", "UTM 32N");
     let mut rows: Vec<(&str, [f64; 2])> = Vec::new();
     let mut put = |what: &'static str, i: usize, v: f64| match rows.iter_mut().find(|r| r.0 == what) {
         Some(r) => r.1[i] = v,
@@ -75,6 +75,16 @@ fn main() -> Result<(), String> {
         let camera = s.map().camera;
         put("first frame after projection change", i, frame(&mut s, camera)?);
         put("next frame (EPSG:3035)", i, frame(&mut s, camera)?);
+        // On a map in UTM 32N, the held layer's own system: drawn as it is.
+        s.run("map.projection", &json!({"type": "epsg:32632"}))?;
+        s.run("layer.zoomTo", &json!({"layer": "lines"}))?;
+        let mut camera = s.map().camera;
+        put("first frame (on a UTM 32N map)", i, frame(&mut s, camera)?);
+        put("next frame (on a UTM 32N map)", i, frame(&mut s, camera)?);
+        camera.res /= 4.0;
+        put("zoom in 4x (on a UTM 32N map)", i, frame(&mut s, camera)?);
+        // What the map keeps for drawing it there, beside its rows (MB, not ms).
+        put("drawing copies, MB (UTM 32N map)", i, s.map().layers[0].view_cache_bytes() as f64 / 1e6);
     }
     for (what, [a, b]) in rows {
         println!("{what:<34}{a:>12.1}{b:>12.1}");

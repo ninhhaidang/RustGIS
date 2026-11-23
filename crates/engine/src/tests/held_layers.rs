@@ -158,6 +158,71 @@ fn a_held_layer_has_the_same_extent_and_zoom() {
     assert!((a.x - b.x).abs() < 5.0 && (a.y - b.y).abs() < 5.0, "{a:?} vs {b:?}");
 }
 
+/// On a map in a layer's own system, Zoom To Layer, Zoom To Selection and Full Extent frame its
+/// features as they are held, in map coordinates, with nothing converted: the view is centred on
+/// the middle of their own box exactly (through longitude/latitude it is the centre of the drawn
+/// box of their longitude/latitude box, metres away on UTM's turned grid).
+#[test]
+fn zooming_on_a_map_in_the_layers_system_frames_its_own_box() {
+    let mut s = session(UTM);
+    s.view_size = (800.0, 600.0);
+    s.run("map.projection", &json!({"type": "EPSG:32632"})).unwrap();
+    let own = |s: &Session, rows: &[usize]| {
+        let ds = &s.map().layer_by_name("Parcels").unwrap().dataset;
+        rows.iter().filter_map(|r| ds.features[*r].geometry.as_ref()).fold(rustgis_geom::Extent::EMPTY, |e, g| e.union(&g.extent()))
+    };
+    let centred = |s: &Session, e: &rustgis_geom::Extent, what: &str| {
+        let c = s.map().camera.center;
+        assert!((c.x - e.center().x).abs() < 1e-6 && (c.y - e.center().y).abs() < 1e-6, "{what}: {c:?} vs {:?}", e.center());
+    };
+    s.run("layer.zoomTo", &json!({"layer": "Parcels"})).unwrap();
+    centred(&s, &own(&s, &(0..9).collect::<Vec<_>>()), "layer");
+    // The road runs at a slant: the drawn box of its longitude/latitude box is turned against
+    // UTM's grid and larger than its own, so the way through longitude/latitude centres elsewhere.
+    s.run("layer.zoomTo", &json!({"layer": "Roads"})).unwrap();
+    let road = s.map().layer_by_name("Roads").unwrap();
+    let road_own = road.dataset.extent();
+    centred(&s, &road_own, "road");
+    let via = s.map().flat().extent(&road.extent()).center();
+    assert!((via.x - road_own.center().x).hypot(via.y - road_own.center().y) > 1.0, "{via:?} vs {:?}", road_own.center());
+    s.run("select.rows", &json!({"layer": "Parcels", "rows": [0, 4]})).unwrap();
+    s.run("select.zoomTo", &json!({})).unwrap();
+    centred(&s, &own(&s, &[0, 4]), "selection");
+    // Full Extent: Wells, Roads and Parcels together, all held in UTM.
+    s.run("map.zoomFull", &json!({})).unwrap();
+    let full = ["Wells", "Roads", "Parcels"]
+        .iter()
+        .fold(rustgis_geom::Extent::EMPTY, |e, name| e.union(&s.map().layer_by_name(name).unwrap().dataset.extent()));
+    centred(&s, &full, "full extent");
+}
+
+/// A layer in the map's system with nothing to frame doesn't make another layer, which the map
+/// can't show, look empty: zooming to both says the map can't show it, as zooming to that layer
+/// alone does.
+#[test]
+fn zooming_to_an_empty_layer_in_the_maps_system_and_one_beyond_the_map_says_so() {
+    let mut s = Session::new(Project::default());
+    s.view_size = (800.0, 600.0);
+    let mut empty = Dataset::new("Empty", GeometryType::Point, vec![]);
+    empty.held_in = UTM;
+    s.map_mut().add_dataset(empty);
+    let mut far = Dataset::new("Far", GeometryType::Point, vec![]);
+    far.push(Some(Geometry::Point(Coord::new(50.0, 48.8))), vec![]);
+    s.map_mut().add_dataset(far);
+    s.run("map.projection", &json!({"type": "EPSG:32632"})).unwrap();
+    let alone = s.run("layer.zoomTo", &json!({"layer": "Far"}));
+    let mark = s.notice_mark();
+    let both = s.run("layer.zoomTo", &json!({"layer": ["Empty", "Far"]}));
+    assert_eq!(both.is_ok(), alone.is_ok(), "{both:?} vs {alone:?}");
+    if let Err(e) = &both {
+        assert!(!e.contains("no features"), "{e}");
+    }
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    // 50°E is some 3,000 km east of UTM 32N's central meridian, beyond what the map shows.
+    assert!(s.map().flat().forward_checked(Coord::new(50.0, 48.8)).is_none());
+    assert!(said.iter().any(|t| t == crate::BEYOND_PROJECTION), "{said:?}");
+}
+
 /// Selecting by a box, a point, a radius and a polygon picks the same features.
 #[test]
 fn a_held_layer_is_selected_alike() {

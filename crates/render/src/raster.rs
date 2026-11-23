@@ -6,7 +6,7 @@
 //! and well under a pixel off for projected ones. Values are then sampled (nearest or bilinear),
 //! optionally re-stretched from the pixels in view (DRA), and coloured.
 
-use rustgis_data::raster::{BandStats, ColorHint, Raster};
+use rustgis_data::raster::{BandStats, ColorHint, Raster, Reprojection};
 use rustgis_geom::{Coord, Extent, extent_to_merc, lonlat_to_merc};
 use rustgis_map::Globe;
 use rustgis_map::projection::Flat;
@@ -28,7 +28,7 @@ pub(crate) enum Place<'a> {
     Flat(&'a Flat, &'a str),
 }
 
-fn source(r: &Raster, view: &View, place: Place, k: f64, dx: f64, dy: f64) -> Option<(f64, f64)> {
+fn source(r: &Raster, view: &View, place: Place, direct: Option<&Reprojection>, k: f64, dx: f64, dy: f64) -> Option<(f64, f64)> {
     let ppp = view.pixels_per_point / k;
     let (sx, sy) = (dx / ppp, dy / ppp);
     let n = match place {
@@ -36,16 +36,34 @@ fn source(r: &Raster, view: &View, place: Place, k: f64, dx: f64, dy: f64) -> Op
         Place::Flat(Flat::Mercator, _) => r.transformer().from_merc(view.camera.to_map(sx, sy, view.width, view.height))?,
         Place::Flat(flat, key) => {
             let m = view.camera.to_map(sx, sy, view.width, view.height);
+            let map = flat.direct_system();
             // A raster already in the map's coordinate system needs no reprojection.
-            if key.strip_prefix("EPSG:").and_then(|c| c.parse::<u16>().ok()) == Some(r.crs.epsg()) {
+            if map == Some(r.crs) || key.strip_prefix("EPSG:").and_then(|c| c.parse::<u16>().ok()) == Some(r.crs.epsg()) {
                 m
             } else {
-                r.transformer().from_lonlat(flat.inverse(m)?)?
+                // Through longitude/latitude, where the map shows the place; on a map in a
+                // coordinate system, then by the direct operation between the two (the datum
+                // transformation PROJ picks for the pair), as a held layer's features are drawn.
+                let via = r.transformer().from_lonlat(flat.inverse(m)?)?;
+                direct.map_or(via, |to| to.point_near(m, via))
             }
         }
     };
     let (c, row) = r.transform.to_pixel(n);
     (c.is_finite() && row.is_finite()).then_some((c, row))
+}
+
+/// The direct operation from the map's system to the raster's, on a flat map in a coordinate
+/// system ([`Flat::direct_system`]) other than the raster's: each map place is looked up in the
+/// raster by it where it lands near the place through WGS 84 ([`Reprojection::point_near`]), as a
+/// held layer's features are drawn. Built once a draw, on the drawing's own thread (which says the
+/// grids it uses, and fetches the operation again for grids that arrive), and shared by the
+/// threads that sample it; `None` elsewhere, or for a pair with no operation between them, which
+/// is sampled through WGS 84 as before.
+fn direct_of(r: &Raster, place: Place) -> Option<Reprojection> {
+    let Place::Flat(flat, _) = place else { return None };
+    let map = flat.direct_system().filter(|m| *m != r.crs)?;
+    map.to(r.crs).ok()
 }
 
 /// A whole geographic turn has exactly this many columns. Compare the grid's span rather
@@ -334,7 +352,9 @@ fn in_view(r: &Raster, view: &View, place: Place, width: u32, height: u32, full_
     let k = if view.pixels_per_point >= 1.5 && !full_res { view.pixels_per_point } else { 1.0 };
     let (vw, vh) = (f64::from(width) / k, f64::from(height) / k);
     let n = WINDOW_GRID;
-    let at = |i: usize, j: usize| source(r, view, place, k, vw * i as f64 / (n - 1) as f64, vh * j as f64 / (n - 1) as f64);
+    let direct = direct_of(r, place);
+    let at =
+        |i: usize, j: usize| source(r, view, place, direct.as_ref(), k, vw * i as f64 / (n - 1) as f64, vh * j as f64 / (n - 1) as f64);
     let grid: Vec<Option<(f64, f64)>> = (0..n * n).map(|p| at(p % n, p / n)).collect();
     let (mut c0, mut c1, mut r0, mut r1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     let (rw, rh) = (f64::from(r.width), f64::from(r.height));
@@ -402,6 +422,7 @@ fn draw_with(
     // for full resolution, as exports are): a quarter of the work at 2×.
     let k = if view.pixels_per_point >= 1.5 && !full_res { view.pixels_per_point } else { 1.0 };
     let (w, h) = ((pm.width() as f64 / k).ceil(), (pm.height() as f64 / k).ceil());
+    let direct = direct_of(r, place);
     let ppp = view.pixels_per_point / k;
     // The raster's bounds on screen, clipped to the view.
     let ((ax, ay), (bx, by)) = match place {
@@ -435,7 +456,14 @@ fn draw_with(
             (view.to_screen(Coord::new(e.min_x, e.max_y)), view.to_screen(Coord::new(e.max_x, e.min_y)))
         }
         Place::Flat(flat, _) => {
-            let e = flat.extent(&r.extent());
+            // Its place through WGS 84, and by the direct operation where it is drawn by one: a
+            // pixel on the edge is drawn wherever either puts it.
+            let mut e = flat.extent(&r.extent());
+            if let Some(to) = direct.as_ref().and_then(|_| r.crs.to(flat.direct_system()?).ok()) {
+                let t = r.transform;
+                let own = Extent::from_points(t.to_world(0.0, 0.0), t.to_world(f64::from(r.width), f64::from(r.height)));
+                e = e.union(&to.extent(&own));
+            }
             if e.is_empty() {
                 return;
             }
@@ -474,7 +502,7 @@ fn draw_with(
     each_chunk(grid_threads, grid.chunks_mut(grid_rows * gw).enumerate(), |(i, chunk)| {
         for (j, cell) in chunk.iter_mut().enumerate() {
             let (gx, gy) = (j % gw, i * grid_rows + j / gw);
-            *cell = source(r, view, place, k, (x0 + gx * STEP) as f64, (y0 + gy * STEP) as f64);
+            *cell = source(r, view, place, direct.as_ref(), k, (x0 + gx * STEP) as f64, (y0 + gy * STEP) as f64);
         }
     });
 
@@ -516,6 +544,7 @@ fn draw_with(
         r,
         view,
         place,
+        direct: direct.as_ref(),
         k,
         rotated: rotated.then_some((centre, sin, cos)),
         x0,
@@ -713,6 +742,8 @@ struct Pass1<'a> {
     r: &'a Raster,
     view: &'a View,
     place: Place<'a>,
+    /// The direct operation from the map's system to the raster's ([`direct_of`]).
+    direct: Option<&'a Reprojection>,
     k: f64,
     /// A rotated raster's centre on screen and the sine and cosine of its back-rotation.
     rotated: Option<((f64, f64), f64, f64)>,
@@ -796,7 +827,15 @@ impl Pass1<'_> {
                     // Back-rotate the screen pixel about the centre, then find its source exactly.
                     Some((centre, sin, cos)) => {
                         let (ddx, ddy) = (px as f64 + 0.5 - centre.0, py as f64 + 0.5 - centre.1);
-                        source(r, self.view, self.place, self.k, centre.0 + ddx * cos - ddy * sin, centre.1 + ddx * sin + ddy * cos)
+                        source(
+                            r,
+                            self.view,
+                            self.place,
+                            self.direct,
+                            self.k,
+                            centre.0 + ddx * cos - ddy * sin,
+                            centre.1 + ddx * sin + ddy * cos,
+                        )
                     }
                     None => {
                         let u = dx as f64 + 0.5;
@@ -806,7 +845,7 @@ impl Pass1<'_> {
                             (Some(a), Some(b)) if (a.0 - b.0).abs() <= self.seam => Some((lerp(a.0, b.0, fx), lerp(a.1, b.1, fx))),
                             // Near the edge of the projection's valid area, or across a seam:
                             // transform this pixel exactly.
-                            _ => source(r, self.view, self.place, self.k, px as f64 + 0.5, py as f64 + 0.5),
+                            _ => source(r, self.view, self.place, self.direct, self.k, px as f64 + 0.5, py as f64 + 0.5),
                         }
                     }
                 };
@@ -1633,6 +1672,27 @@ mod tests {
         // 100°W is column 26 (260°), lighter than column 8 (80°E); 5°W is the last column, 5°E the first.
         assert!(at(-100.0).1 > at(80.0).1, "{:?} vs {:?}", at(-100.0), at(80.0));
         assert!(at(-5.0).1 > at(-100.0).1 && at(5.0).1 < at(80.0).1, "{:?} {:?}", at(-5.0), at(5.0));
+    }
+
+    /// A raster in Gauss-Krüger zone 3 on DHDN (EPSG:31467) on a map in ETRS89 UTM 32N
+    /// (EPSG:25832): each map place is looked up in the raster by the direct operation between the
+    /// two, as a held layer's features are drawn, not through WGS 84 (0.37 m off there). PROJ 9.9.0:
+    ///   echo "513223.740371 5403015.206314" | cs2cs -f %.6f EPSG:25832 EPSG:31467
+    ///     ->  5404737.597295 3513304.512454   ("DHDN to ETRS89 (2)", northing first)
+    #[test]
+    fn a_raster_on_a_datum_pair_is_drawn_by_the_direct_operation() {
+        let gt = GeoTransform { origin_x: 3_513_000.0, origin_y: 5_405_000.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r = Raster::new("gk", 1000, 1000, vec![vec![1.0; 1_000_000]], gt, Crs::Epsg(31467), None, ColorHint::Gray, "Float32").unwrap();
+        let flat = Flat::of(&rustgis_map::Projection::Custom("EPSG:25832".into()));
+        let camera = Camera { center: Coord::new(513_223.740371, 5_403_015.206314), res: 1.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 2.0, height: 2.0, pixels_per_point: 1.0, camera, sky: false };
+        let place = Place::Flat(&flat, "EPSG:25832");
+        let (c, row) = source(&r, &view, place, direct_of(&r, place).as_ref(), 1.0, 1.0, 1.0).unwrap();
+        let (x, y) = (3_513_000.0 + c, 5_405_000.0 - row);
+        assert!((x - 3_513_304.512454).abs() < 1e-3 && (y - 5_404_737.597295).abs() < 1e-3, "{x} {y}");
+        // The way through WGS 84 lands elsewhere.
+        let via = r.transformer().from_lonlat(flat.inverse(camera.center).unwrap()).unwrap();
+        assert!((via.x - x).hypot(via.y - y) > 0.1, "{via:?}");
     }
 
     /// A lon/lat grid on a map centred on the Pacific: across 180°, where the source longitude

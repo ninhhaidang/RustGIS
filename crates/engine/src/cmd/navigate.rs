@@ -317,9 +317,10 @@ pub(crate) fn follow_renamed_map(s: &mut Session, old: &str, new: &str) {
 }
 
 fn zoom_full(s: &mut Session, _: &Value) -> CmdResult {
-    let e = s.map().shown_extent();
-    let e = if e.is_empty() { Extent::new(-170.0, -58.0, 180.0, 78.0) } else { e };
-    s.zoom_to(&e);
+    let ids = s.shown_layer_ids();
+    if s.zoom_to_layers(&ids, rustgis_map::ExtentOf::Shown).is_none() {
+        s.zoom_to(&Extent::new(-170.0, -58.0, 180.0, 78.0));
+    }
     Ok(Value::Null)
 }
 

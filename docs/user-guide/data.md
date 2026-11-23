@@ -196,11 +196,14 @@ status bar. Remote
 FlatGeobuf date/time columns stay ISO text with a notice so opening them can keep reading by
 range without downloading every feature.
 
-Vector geometry is stored as WGS 84 longitude/latitude. Data in another supported coordinate
-system is converted as it is read; Shapefiles use their `.prj`, and formats such as GeoPackage,
-GeoParquet and FlatGeobuf carry their coordinate system in the file. Rasters keep their own
-coordinate system and are reprojected as they draw. The map uses Web Mercator by default, but
-**View › Projection** can change it; see [Maps](maps.md).
+A layer keeps its file's own coordinates and coordinate system; Shapefiles use their `.prj`, and
+formats such as GeoPackage, GeoParquet and FlatGeobuf carry their coordinate system in the file.
+Rasters keep theirs too. The map uses Web Mercator by default, but **View › Projection** can
+change it; see [Maps](maps.md). On a map in a coordinate system, a layer or raster in that system
+is drawn as it is, and one in another system by the transformation PROJ picks between the two
+(between two datums, the one for that pair, not one through WGS 84). There, Zoom To Layer, Zoom To
+Selection and Full Extent frame a layer in the map's system by its own coordinates, and its
+simplified drawing at small scales is made from them, with nothing converted.
 
 Coordinate systems are read and transformed as PROJ 9.9.0 does, through terrio-crs. A few EPSG
 and ESRI codes PROJ 9.9.0 dropped or can't compute (EPSG:3752 and 22700, ESRI:10820 and 65162)

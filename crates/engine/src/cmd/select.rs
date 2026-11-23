@@ -59,11 +59,10 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .when(need_layer),
         C::new("select.zoomTo", "Zoom To Selection", "Home › Selection", |s, _| {
-            let e = s.map().selection_extent();
-            if e.is_empty() {
+            let ids: Vec<u32> = s.map().layers.iter().filter(|l| !l.selection.is_empty()).map(|l| l.id).collect();
+            if s.zoom_to_layers(&ids, rustgis_map::ExtentOf::Selected).is_none() {
                 return Err("nothing with a shape is selected".into());
             }
-            s.zoom_to(&e);
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()

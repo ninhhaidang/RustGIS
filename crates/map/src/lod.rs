@@ -90,11 +90,23 @@ pub fn project_thinned(g: &Geometry, flat: &crate::projection::Flat, tol: f64) -
     simplify_mapped(g, tol, Some(&|c: Coord| flat.forward_checked(c).unwrap_or(Coord::new(f64::NAN, f64::NAN))))
 }
 
-/// Builds a Mercator display level without ever constructing the full projected geometry.
-/// Original extents are transformed separately so thinning cannot change culling or splats.
-/// Both the geometry and its extent table fit in the optional display-cache budget.
+/// Where a display level's rows are on the map ([`display`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rows {
+    /// In longitude/latitude, on a Web Mercator map: projected as they are simplified.
+    LonLat,
+    /// In the map's own coordinates (a layer held in the system the map is drawn in): simplified
+    /// as they are, with nothing converted.
+    MapUnits,
+}
+
+/// Builds a display level without ever constructing the full projected geometry: from rows in
+/// longitude/latitude on a Web Mercator map, or from rows already in the map's coordinates
+/// ([`Rows`]). Original extents are transformed separately so thinning cannot change culling or
+/// splats. Both the geometry and its extent table fit in the optional display-cache budget.
 pub(crate) fn display(
     features: &[rustgis_data::Feature],
+    rows: Rows,
     revision: u64,
     level: i32,
     budget: usize,
@@ -107,18 +119,20 @@ pub(crate) fn display(
         return None;
     }
     let extent_bytes = features.len().checked_mul(std::mem::size_of::<rustgis_geom::Extent>())?;
-    let geometries = project_budgeted(features, level, budget.checked_sub(extent_bytes)?)?;
+    let budget = budget.checked_sub(extent_bytes)?;
+    let geometries = project_budgeted(features, rows, level, budget)?;
     let all: usize = features.iter().filter_map(|f| f.geometry.as_ref()).map(vertices).sum();
     let kept: usize = geometries.iter().flatten().map(vertices).sum();
     if !whole_layer_eligible && kept as f64 > all as f64 * (1.0 - MIN_SAVING) {
         return None;
     }
-    // Mercator is monotone in both axes; two opposite corners bound every source vertex.
+    // Mercator is monotone in both axes; two opposite corners bound every source vertex. Rows in
+    // map coordinates already have their extents there.
     let extents = features
         .iter()
         .map(|f| {
             let e = f.geometry.as_ref().map_or(rustgis_geom::Extent::EMPTY, Geometry::extent);
-            if e.is_empty() {
+            if e.is_empty() || rows == Rows::MapUnits {
                 e
             } else {
                 rustgis_geom::Extent::from_points(
@@ -132,11 +146,21 @@ pub(crate) fn display(
     Some(Display { revision, level, whole_layer_eligible, geometries, extents, bytes })
 }
 
-/// Builds only Mercator display geometry within `budget`. Callers apply their own eligibility
-/// and saving rules; exact consumers already have extents and need no second extent table.
-pub(crate) fn project_budgeted(features: &[rustgis_data::Feature], level: i32, budget: usize) -> Option<Vec<Option<Geometry>>> {
+/// Builds only display geometry within `budget`: Mercator from rows in longitude/latitude, the
+/// rows simplified as they are when they are in the map's coordinates ([`Rows`]). Callers apply
+/// their own eligibility and saving rules; exact consumers already have extents and need no second
+/// extent table.
+pub(crate) fn project_budgeted(features: &[rustgis_data::Feature], rows: Rows, level: i32, budget: usize) -> Option<Vec<Option<Geometry>>> {
     let tol = tolerance(level);
-    map_budgeted(features, budget, |f| f.geometry.as_ref(), |g| project_thinned(g, &crate::projection::Flat::Mercator, tol))
+    map_budgeted(
+        features,
+        budget,
+        |f| f.geometry.as_ref(),
+        |g| match rows {
+            Rows::LonLat => project_thinned(g, &crate::projection::Flat::Mercator, tol),
+            Rows::MapUnits => simplify(g, tol),
+        },
+    )
 }
 
 /// Heap allocation held by a geometry's vectors (the enum itself is in its containing array).
