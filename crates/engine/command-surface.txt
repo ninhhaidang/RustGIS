@@ -1,0 +1,603 @@
+analysis.interpolate layer field crs? cellSize? power? neighbors? name? ran?
+analysis.lineOfSight layer from to band? observerHeight? targetHeight? name?
+analysis.neighborhood lon lat radius layers? select?
+analysis.route layer from to costField? snapDistance? name?
+analysis.simulate layer count? seed? field? rate? name?
+analysis.suitability criteria name? ran?
+analysis.viewshed layer lon lat band? height? radius? heights? name? ran?
+animation.add seconds?
+animation.export path fps? width? height?
+animation.remove index? all?
+arcgis.cancelSignIn
+arcgis.signIn portal? clientId? port?
+arcgis.signOut portal?
+arcgis.status
+arcgis.token url token
+bookmark.add name? description? map?
+bookmark.describe name description map?
+bookmark.go name map? pan?
+bookmark.import path? text? data?
+bookmark.move name to map?
+bookmark.remove name map?
+bookmark.rename name newName map?
+bookmark.save path
+bookmark.update name map?
+boundaries.add country level? name? text?
+boundaries.countries
+cache.auto on?
+cache.cancel
+cache.empty
+cache.emptyIndexes
+cache.fill
+catalog.search url query? bbox? start? text? connection?
+connection.browse id node? probe? answer? documents?
+connection.cancelToken id
+connection.duplicate id name?
+connection.edit id name? group? address? options? auth? user? keyName? kind?
+connection.forgetLogin id
+connection.forgetPassword id
+connection.forgetSavedKeys id
+connection.generateToken id tokenEndpoint password remember?
+connection.list kind? group?
+connection.login id password? apiKey? token? expiresAt? allowInsecure? accessKeyId? secretAccessKey? sessionToken? remember?
+connection.logout id
+connection.new kind address? name? group? options? auth? arcgis user? keyName?
+connection.readSde path? data?
+connection.remove id
+connection.resolveS3 source id
+connection.test id? kind? name? group? address? options? auth? user? keyName? password? apiKey? allowInsecure? accessKeyId? secretAccessKey? sessionToken? probe? answer?
+connection.tokenStatus id
+copernicus.login username password totp? remember?
+copernicus.logout
+copernicus.status
+cube.catalog theme? bbox? query?
+cube.open id bbox? start? end? maxCloud? range? name?
+cube.reduce cube? layers? layer? path? url? collection variable? index? crs? asset? mask? bbox? maxCloud? cellSize? resampling? band? dates? stat order? above? classes? by? start? end? months? minValid? name?
+cube.trend cube? layers? layer? collection url? asset? mask? bbox? maxCloud? cellSize? resampling? band? dates? start? end? months? test? seasons? alpha? minValid? per? name? ran?
+data.archive layer? on?
+data.archiveHistory layer?
+data.archiveRestore layer? time
+data.attributeRule layer? name kind field? expression remove?
+data.contingentValues layer? name fields combos remove?
+data.convert layer? format path? nameField?
+data.domain layer? field coded? min? max? clear? force?
+data.explore layer? fields? bins?
+data.profile layer?
+data.relate name origin originKey destination destinationKey remove?
+data.related name? select?
+data.similar layer? row? fields? count? select?
+data.subtypes layer? field subtypes symbolize? clear?
+dl.classify layer model? training? classField? bands? hidden? epochs? name? ran?
+dl.import path? data?
+dl.package model? path
+dl.remove model
+dl.train layer training classField bands? hidden? epochs? model?
+earthdata.collections keyword? shortName? cloudHosted? limit? page? answer?
+earthdata.granules collection? shortName? bbox? view? start? end? limit? page? footprints? name? answer?
+earthdata.login token remember?
+earthdata.logout
+earthdata.status
+edit.addBox layer? box attributes? template?
+edit.addCircle layer? circle attributes? template?
+edit.addFeature layer? table? geometry attributes? template?
+edit.addField layer? table? name type
+edit.applyShapeConversion preview confirm
+edit.boxInfo layer? row
+edit.calculateField layer? table? field expression
+edit.calculateGeometry layer? field create overwrite property unit epsg? scope
+edit.circleInfo layer? row
+edit.convertField layer? table? field type format? pivotYear?
+edit.copy
+edit.cut
+edit.cutPolygon line
+edit.delete
+edit.deleteBox layer? row featureId?
+edit.deleteCircle layer? row featureId?
+edit.deleteField layer? table? field
+edit.elevation mode z? units? surface?
+edit.enable on?
+edit.explode
+edit.flip
+edit.groundToGrid on? scale? rotation?
+edit.merge
+edit.move dx dy units?
+edit.moveSharedVertex layer? row part? ring? index lon lat
+edit.paste layer? text?
+edit.pasteSpecial name? text?
+edit.previewShapeConversion layer? row featureId? kind request? image? frame?
+edit.redo
+edit.reshape line
+edit.rotate angle
+edit.scale factor
+edit.setGeometry layer? row geometry
+edit.setValue layer? table? row field value
+edit.settings showVertices?
+edit.snap lon lat
+edit.snapping on? tolerancePx? vertex? edge? end?
+edit.split lon lat
+edit.status
+edit.template layer? name defaults? description? remove?
+edit.tools
+edit.trace from to layer? row? tolerancePx?
+edit.traverse layer? start units? legs
+edit.undo
+edit.updateBox layer? row featureId? box
+edit.updateCircle layer? row featureId? circle
+edit.vertex layer? row action part? ring? index lon? lat?
+embeddings.add dataset url? year? bands? stretch? dimension? bbox? name? ran?
+embeddings.addCube dataset bbox? start? end? bands? stretch? name? found? complete?
+embeddings.change dataset from? to? bbox? cellSize? name? ran?
+embeddings.datasets
+embeddings.search dataset year? bbox? footprints?
+embeddings.similarity dataset point? points? year? bbox? cellSize? name? ran?
+extension.disable id
+extension.enable id enabled?
+extension.list
+fieldsOfTheWorld.add year? draw? minScore?
+gp.batch tool inputs? folder? param? batch_param? outputPattern? output_pattern? params?
+gp.bufferPoint lon lat distance units? name?
+gp.clearHistory
+gp.env extent? crs? cellSize?
+gp.fileDelivered id error?
+gp.finish id
+gp.gallery kind
+gp.geolibre
+gp.historyCode run as?
+gp.historyScript
+gp.importGeolibreLanguage path
+gp.installGeolibre
+gp.installGeolibreLanguage locale
+gp.package path
+gp.run tool params
+gp.setGeolibre path?
+gp.spatialJoin target join match? distance? units? distanceField? operation? keepAll? merge? prefix? output?
+gp.threads threads?
+gp.tools
+gp.uninstallGeolibre
+gp.uninstallGeolibreLanguage locale
+gp.zonalStats raster polygons bands? stats? prefix? output?
+gpkg.addLayer path table? limit? name?
+gpkg.discardEdits layer?
+gpkg.pendingEdits layer?
+gpkg.saveEdits layer?
+graphics.add shape points layer? text? fill? outline? width? size? fontSize? bold? italic? align? letterSpacing? image? path?
+graphics.edit layer row points? text? fontSize? bold? italic? align? letterSpacing? fill? outline? width? size?
+graphics.keepTool on?
+graphics.newLayer name?
+graphics.style fill? outline? width? size? fontSize? bold? italic? align? letterSpacing? text?
+group.add name? parent? layers?
+group.expand group on?
+group.indent group
+group.move group to
+group.outdent group
+group.remove group
+group.scaleRange group min? max?
+group.set group name? visible? transparency?
+group.setParent group parent before?
+group.ungroup group
+identify lon lat tolerancePx? mode?
+identify.featureInfo layer lon? lat? text? url? capabilities? request?
+imagery.hostedImagery layer path minZoom? maxZoom?
+imagery.mesh layer path? step?
+imagery.mosaic name ran?
+imagery.workspace kind name? images crs? cellSize? method?
+imagery.workspaceOptions name crs? cellSize? method?
+info.commands
+info.databaseTables database password?
+info.diagnostics
+info.fileColumns path delimiter? layer? crs?
+info.fileLayers path crs?
+info.infographic layer?
+info.project nameFilter? includeFields?
+job.new name description? assigned? viewExtent?
+job.remove job
+job.update job status? assigned? description?
+labels.by layer? class? text? size? color? angle?
+labels.class.add layer? name where? from?
+labels.class.clear layer?
+labels.class.move layer? class to
+labels.class.remove layer? class
+labels.class.rename layer? class name
+labels.class.update layer? class? where? visible?
+labels.convert layer? name?
+labels.distanceRange layer? class? closest? farthest? clear?
+labels.enable layer? on?
+labels.field layer? class? field
+labels.fonts search?
+labels.lock on?
+labels.move layer? class? feature to
+labels.pause on?
+labels.placement layer? class? position? to? side? offset? repeat? lineOffset? otherPositions? fit? abbreviations? showAll? callout? guide?
+labels.resetMoved layer? class? all?
+labels.scaleRange layer? class? min? max? clear?
+labels.style layer? class? size? color? halo? haloColor? haloWidth? spacing? stretch? bold? italic? font? background? wrapChar? wrapLength? lineAlign?
+labels.viewUnplaced on?
+layer.addData path name? layer? paperSpace? blocks? stream? as? crs? x? y? wkt? delimiter?
+layer.addDataBytes fileName data zoom? layer? name? x? y? wkt? crs? delimiter? paperSpace? blocks? stream? as?
+layer.addDataText fileName text name? x? y? wkt? crs? delimiter? layer? paperSpace? blocks?
+layer.addDatabase database password? layer? crs? name? stream?
+layer.addDownload id url name? layer? zoom? x? y? wkt? crs? delimiter? paperSpace? blocks? stream? as? service? bounds? coverage? drawingInfo? geolibreProject? geolibreLayer? geolibreZarr? connection? anonymous? request? window?
+layer.addEncodedPolyline polyline precision? name?
+layer.addLayerFile path? text? data?
+layer.addPhotos paths? folder? name?
+layer.addSample name
+layer.addSql sql name? database? password? crs? stream? ran?
+layer.addUrl url bytes? format? name? layer? zoom? x? y? wkt? crs? delimiter? paperSpace? blocks? stream? as? whole? cog? bbox? cellSize? cube? start? end? unit? interval? dates? connection? service? bounds? from? fromDocument? anonymous? request?
+layer.addZarr path url variable? index? cells? bbox? crs? name? time? start? end? ran? summary?
+layer.aggregation layer? shape size?
+layer.blend layer? mode
+layer.classStyle layer? value? index? other? color? outline? label?
+layer.clearDiagram layer?
+layer.color layer? color
+layer.copy layer? group?
+layer.copyPath layer?
+layer.defineProjection layer? crs
+layer.definitionQuery layer? where
+layer.diagram layer? kind fields size? startAngle? labels? background? outline?
+layer.diagramInfo layer?
+layer.displayFilters layer? filters
+layer.expand layer? on?
+layer.extrusion layer? type field? height? factor?
+layer.extrusionBase layer? field? base?
+layer.faces layer? culling? lighting?
+layer.fields layer?
+layer.fillLayers layer? value? index? other? fills
+layer.geocode table? layer? address provider? url? name? places?
+layer.group layer? group before?
+layer.indent layer?
+layer.invertRamp layer?
+layer.lightShadow layer? lighting? shadows?
+layer.lineStrokes layer? strokes value? index? other?
+layer.loadAll layer?
+layer.marker layer? shape? char? font? image? size?
+layer.markerRotation layer? field counterclockwise?
+layer.mask layer? mask
+layer.move layer? to
+layer.moveDown layer?
+layer.moveUp layer?
+layer.noFill layer?
+layer.outdent layer?
+layer.outline layer? color? width?
+layer.paste map? group? to?
+layer.priority layer? value
+layer.ramp layer? ramp
+layer.referenceScale layer? scale
+layer.reloadData layer? discardEdits?
+layer.remove layer?
+layer.rename layer? name
+layer.repairSource layer? path table?
+layer.restoreFill layer?
+layer.save layer? path
+layer.scaleRange layer? min? max?
+layer.select layer? mode?
+layer.selectable layer? on?
+layer.sizeBy layer? field? min? max? minSize? maxSize? scaling?
+layer.strokeLevels layer? on
+layer.swipe layer? position? off?
+layer.symbolBy layer? size? fill? stroke? strokeWidth? angle?
+layer.symbology layer? type field? expression? classes? method? breaks? ramp?
+layer.template template name?
+layer.transparency layer? value
+layer.visibility layer? visible?
+layer.zoomTo layer?
+layout.activate name layout
+layout.addElement layout? kind frame? of? text? size? color? bold? italic? align? letterSpacing? rotation? wrap? font? fallback? title? allClasses? hideOther? showNoData? exclude? columns? textSize? orientation? ticks? tickSide? reverse? fill? width? radius? dash? dir? head? angle? length? image? path? layer? field? label? group? statistic? order? bars? other? stack? values? decimals? barColor? classes? labelAlign? rows? step? type? crs? short? mgrs? labels? style? tickLength? format? hemisphere? edges? labelOrientation? labelSize? off? outline? units? divisions? x? y? w? h? background?
+layout.addFrame layout? shape? points? map? x? y? w? h?
+layout.arrange layout? element to
+layout.arrangement favourite? save? arrangement? remove?
+layout.close
+layout.duplicate name? layout? newName?
+layout.duplicateElement layout? element dx? dy?
+layout.export layout? path dpi? allPages? georeference? pdf?
+layout.frameZoom layout? element? frame? to? layer?
+layout.guides layout? x? y? clear?
+layout.import path? text?
+layout.new name? page? orientation? width? height? template?
+layout.page layout? page? orientation? width? height? decimal?
+layout.publication profile? extent? name? title? subtitle? sources? reference? note? author? headings? locator? decimal? colorbar? veil? contextInLegend? northArrow? legendBox? style? accent? arrangement? coverage?
+layout.remove name? layout?
+layout.removeElement layout? element
+layout.rename name? layout? newName
+layout.save layout? path
+layout.series layout? layer nameField? frame? margin? off?
+layout.seriesPage layout? page
+layout.seriesRefresh layout?
+layout.update layout? element x? y? w? h? name? visible? locked? text? size? color? bold? italic? align? letterSpacing? rotation? wrap? font? fallback? title? allClasses? hideOther? showNoData? exclude? labels? columns? textSize? orientation? ticks? tickSide? reverse? style? fill? outline? radius? width? dash? dir? head? angle? length? units? divisions? map? scale? center? bearing? pitch? grid? extentIndicator? border? layer? field? label? group? statistic? order? bars? other? stack? values? decimals? barColor? classes? labelAlign? rows? background?
+locator.find locator? text limit? zoom?
+map.activate name
+map.addTiles url kind? name? bounds? attribution? minZoom? maxZoom? tileSize? singleImage? tms? subdomains? layers? styleLayers? opacity? blend? overlay? top? replace? id? view? start? end? unit? interval? dates? legend? connection?
+map.basemap name keepTiles? color?
+map.bodies
+map.body name? basemap?
+map.camera lon? lat? scale?
+map.clipping mode distance?
+map.colorVision mode
+map.convertPosition lon x lat y position? digits?
+map.displayType mode
+map.drawingMode mode
+map.duplicate map? name?
+map.effects sunTime? weather? vignette? edges? stars? tiltShift? grain? brightness? contrast? saturation? sepia? reset?
+map.expandTiles name? index? id? on?
+map.exportBlock path texture?
+map.exportOrbit path frames? turn? width? height? dpi? speed?
+map.extent
+map.findPlace query provider? url? limit? go?
+map.goToLink url
+map.goToXY lon x lat y position? scale? bearing? pitch?
+map.graticule on? type? crs? onTop? color?
+map.import path text data
+map.link
+map.navigation mode
+map.navigator on?
+map.new name?
+map.nextExtent
+map.package path mobile? tolerance?
+map.popupMode mode
+map.prevExtent
+map.projection type? lon_0? lat_1? lat_2?
+map.projections
+map.reloadTiles name index id
+map.reloadWebLayers
+map.remove name
+map.removeTiles name? index? id?
+map.rename name map?
+map.repairTiles name? index? id? path
+map.resetNorth
+map.route from to via? mode? avoid? imperial? language? url? addLayer? zoom? answer? route?
+map.save path map?
+map.search query limit? go?
+map.selectTiles name? index? id?
+map.setBearing bearing by
+map.setPitch pitch by
+map.setScale scale
+map.setTiles name? index? id? visible? opacity? blend? move? to? rename? bands? range? dequantize? legend? hiddenLayers? singleImage? tileSize?
+map.terrain layer? tiles? encoding? exaggeration? block? water? off?
+map.thumbnail create? image? path? clear?
+map.tiles
+map.viewMode mode
+map.walk forward? right? up?
+map.zoomFull
+map.zoomIn
+map.zoomOut
+map.zoomToExtent extent
+map.zoomToTiles name? index? id?
+map.zoomWorld
+model.export name? graph? path?
+model.import path? text? data?
+model.new name? graph? steps? fromHistory? imported?
+model.remove name
+model.run name? graph?
+model.save name graph rename? imported?
+model.validate name? graph?
+nationalMap.add service name?
+nationalMap.services
+nldi.basin comid? lon? lat? name? answer?
+nldi.comid lon lat
+nldi.flowline lon lat direction? name? answer? snapped?
+nldi.navigate comid? lon? lat? mode? distance? source? name? answer?
+nldi.sources comid? lon? lat? mode? answer?
+notebook.activate notebook
+notebook.addCell notebook? kind? source? at?
+notebook.editCell notebook? cell source
+notebook.new name?
+notebook.open path? text? data?
+notebook.remove notebook?
+notebook.removeCell notebook? cell
+notebook.run notebook? cell?
+notebook.save notebook? path
+offline.bringBack path? data? legacyArea?
+offline.conflicts name
+offline.dismissConflicts name conflicts? state?
+offline.download name? extent?
+offline.keepRows
+offline.open name
+offline.package path name? extent? legacyReturn?
+offline.remove name
+offline.sync name
+osm.download bbox? view? preset? tags? url? name? answer?
+overture.add theme type? release? bbox? tiles? files?
+pg.addLayer table where? limit? name? crs?
+pg.connect connection? host? port? database? user? password? sslmode?
+pg.discardEdits layer?
+pg.disconnect
+pg.pendingEdits layer?
+pg.saveEdits layer?
+pg.status
+pg.tables schema?
+plugin.enable id enabled?
+plugin.install path
+plugin.installFromRegistry id url?
+plugin.list
+plugin.panel id values? refresh?
+plugin.prepare id
+plugin.registry url?
+plugin.uninstall id
+portal.add url use? variable? index? layer? name? portal?
+portal.files dataset portal? url?
+portal.search query? portal? url? org? type? dataset? bbox? view? limit?
+presentation.activate presentation
+presentation.blankPage presentation? title? text? background? at?
+presentation.export presentation? path dpi?
+presentation.imagePage presentation? path? image? data? title? caption? at?
+presentation.import path? text? data?
+presentation.mapPage presentation? map? lon? lat? widthM? title? at?
+presentation.new name? title?
+presentation.remove presentation?
+presentation.removePage presentation? page
+presentation.save presentation? path
+presentation.updatePage presentation? page title? text? caption? notes? seconds? background? moveTo?
+presentation.videoPage presentation? source poster? posterImage? title? caption? at?
+profile.alongLine layer samples? lines row?
+profile.alongSelected layer samples? lines
+profile.autoComplete layer samples? points
+profile.create layer points samples?
+profile.crossSection layer samples? points at? width?
+project.addFolder path
+project.clearLog
+project.connections
+project.coordinateSystem crs? fromFirstLayer?
+project.exportLog path format?
+project.fromTemplate path? text? data? name?
+project.importGeolibre path? url? text? data? dir?
+project.importQgis path? text? data? dir?
+project.log since? until? command? failed? limit?
+project.logCommands on?
+project.new name?
+project.newTemplate path name?
+project.open path
+project.openText text fileName? package?
+project.package path
+project.removeFolder path
+project.rename name
+project.sample
+project.save path?
+project.saveAs path
+project.saveTemplate path name?
+project.thumbnail create? image? path? clear?
+ramp.add path? text? data? file? format? name? kind?
+ramp.remove name
+ramp.save path
+raster.bands layer? red? green? blue? preset?
+raster.change before after band? method? name? ran?
+raster.classify layer classes? bands? name? ran?
+raster.classifySupervised layer training classField bands? name? ran?
+raster.dra layer? on?
+raster.editPixels layer polygon value? band?
+raster.enhance layer? brightness? contrast? gamma?
+raster.function layer function units? band? expression? ranges? value? keep? nir? red? azimuth? altitude? zFactor? target? name? ran?
+raster.functionChain layer steps name? ran?
+raster.gcpFit points transform? compare? leaveOneOut?
+raster.georeference layer points? extent? transform? pointsCrs? crs? resampling? cellSize? name? path?
+raster.imageGrid layer?
+raster.index layer index red? green? blue? nir? swir? name? ran?
+raster.info layer?
+raster.mask layer? values? min? max? inside? clear?
+raster.measure layer? kind points base?
+raster.measurements clear?
+raster.mosaic inputs name? path?
+raster.process layer operation extent? polygon? selectedOnly? factor? name? ran?
+raster.project layer crs? cellSize? origin? extent? grid? resampling? name? path?
+raster.rasterize layer field? value? nodata? crs? cellSize? origin? extent? grid? name? path?
+raster.resampling layer? type
+raster.rotation layer? angle
+raster.setDefaultStyle fromLayer? layer? ramp? invert? stretch? low? high? n? resampling? reset?
+raster.spectral layer lon? lat? points? zone?
+raster.stretch layer? type low? high? n? min? max? like?
+raster.symbology layer? type band? ramp? invert? classes? method? azimuth? altitude? zFactor? shadow? sky? fill? ambient? balanced? rock? grey?
+raster.zarrInfo path url bbox? variable?
+report.activate report
+report.attachments report? field
+report.autofill report?
+report.chart report? category value?
+report.dynamicPicture report? field
+report.existingTemplate report? layout? path? text? data? end?
+report.export report? path dpi?
+report.field report? field remove?
+report.group report? field remove?
+report.new layer? name? title? fields? where? selectedOnly? groups? sort? descending? page? orientation?
+report.newTemplate report? name? page? orientation? template? end?
+report.open path? text? data? layer?
+report.relatedReport report? related
+report.remove report?
+report.removeSection report? index
+report.save report? path
+report.saveTemplate report? path
+report.statistics report? field kind? remove?
+report.subreport report? relationship fields?
+report.supplementalPage report? title? text? end?
+report.update report? name? title? layer? where? selectedOnly? sort? descending? page? orientation? width? height?
+s3.connect name? endpoint? region? buckets? accessKeyId? secretAccessKey? sessionToken? profile? anonymous? environment?
+s3.connections
+s3.disconnect name
+s3.list url? bucket? prefix? connection? limit?
+script.run script
+select.all layer?
+select.atPoint lon lat tolerancePx? mode?
+select.byAttributes layer? where mode?
+select.byPolygon points mode?
+select.byRadius lon lat radius mode?
+select.byRect minLon minLat maxLon maxLat mode?
+select.clear
+select.layerFromSelection layer?
+select.rows layer? rows mode?
+select.switch layer?
+select.zoomTo
+service.add url type? layer name? time? text? documents? source_url? describe? tiles? bbox? full where? connection?
+service.coverage url type? layer text? documents? source_url? describe? bbox? connection? anonymous?
+service.group group? layer? name? expanded? visible? remove?
+service.groupPlan url? type? name? group? layer? sourceOnly? text? documents? connection? anonymous?
+service.import url type? name? text? documents? responses? connection? anonymous?
+service.layers url type? text? documents? connection? filter?
+service.refresh group? layer? text? documents? responses? connection? anonymous?
+share.dataStore name? path? remove?
+share.export3d layer? path heightField? height? zScale?
+share.exportLayer layer? path crs? mode? tableName?
+share.exportMap path width? height? dpi? fit? cog?
+share.exportRaster layer? path band? cog? tiles? bbox? zoom?
+share.exportTable table path mode? tableName? sort? limit?
+share.geodataService map? path?
+share.jobs
+share.linkChart relationship? path?
+share.locator layer? fields? path?
+share.replaceWebLayer item? layer?
+share.saveWebLinkChart item? relationship?
+share.saveWebMap item? map?
+share.saveWebScene item? map?
+share.upload path store?
+share.webLayer layer? path?
+share.webMap map? path?
+share.webScene map? path?
+share.webStyle layer? path?
+share.webTool model? path?
+source.publish layer?
+source.syncState layer?
+sourcecoop.list account product path? token?
+sourcecoop.products account?
+sources.favourite kind address name? extra? on?
+sources.list
+sources.remove list kind address
+sources.save kind address name? extra?
+sql.query sql database? password? limit?
+sql.schema database password?
+stac.addAsset item url asset? name? connection?
+stac.addBands item combination? red? green? blue? bbox? cellSize? name? ran?
+stac.addCube url? collection asset bbox? start end maxCloud? range? name? attribution? connection?
+stac.addFootprints footprints name?
+stac.addIndex item index bbox? cellSize? name? ran?
+stac.area path? layer? buffer? unit?
+stac.collections url? connection?
+stac.search url? collections? bbox? intersects? layer? buffer? unit? datetime? limit? maxCloud? sortby? phase? properties? footprints? connection?
+style.add path? text? data?
+style.apply layer? name
+style.import path? text? data?
+style.importQgis layer? path? text? data?
+style.new layer? name?
+style.remove name
+style.save path
+table.close
+table.open layer?
+table.remove table
+table.statistics layer? field index selected?
+task.addStep task? title instructions? command params?
+task.editStep task? step title? instructions?
+task.import path? text? data?
+task.moveStep task? step to
+task.new name? description? steps? fromHistory? imported?
+task.remove task
+task.removeStep task? step
+task.run task? step?
+task.save task? path
+time.bind layer? field? start? end? unit? interval? show?
+time.export path width? height? speed? from? to?
+time.fields layer?
+time.goTo date step
+time.info
+time.set start? end? date? unit? interval? dates? show? before? after? cumulative? speed? loop? format? off?
+time.step by? wrap?
+time.unbind layer?
+tool.set tool
+topology.rules add? remove? clear?
+topology.validate toleranceM?
+view.linkViews on?
+zarr.reduce layer? path url variable? index? stat above? start? end? months? minValid? name? crs?
+zarr.series lon lat layer? path url variable? index? start? end? crs?

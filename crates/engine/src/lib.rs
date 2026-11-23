@@ -43,6 +43,7 @@ pub mod schema;
 pub mod service_logins;
 pub mod service_tokens;
 pub mod sources;
+pub mod surface;
 #[cfg(test)]
 mod tests;
 mod undo_memory;

@@ -158,6 +158,10 @@ whose two sides are the same tokens; prefer completion or progress signals, and 
 (`wgs84_distance_m`, `wgs84_length_m`, `wgs84_step_m`, `wgs84_ring_perimeter_area_m2`), and a call kept on
 the sphere, for another body or a comparison it can't change, says why in its
 `#[expect(clippy::disallowed_methods, reason = "…")]`.
+The engine test `command_surface_matches_the_snapshot` fails on any difference between the registered
+commands and `crates/engine/command-surface.txt` (each command id with its parameter keys and optional
+marks, not the help text): a pull request that adds, removes or renames a command or a parameter runs
+`cargo xtask commands` and commits the file. A removal or rename is a coordinate-first change.
 `cargo xtask memory` (in CI on Linux) fails when a command line workflow's peak memory grows past
 its limit in `xtask/memory-limits.txt`; a change that lowers one commits the lower limit with it.
 `cargo xtask rows` (also in CI) fails when code outside `rustgis-data` uses a layer's rows directly

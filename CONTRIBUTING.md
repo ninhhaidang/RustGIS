@@ -44,7 +44,8 @@ something on the roadmap (or not on it) interests you, propose it and open a pul
   - changes the data model (`Feature`, `Coord`, `Renderer`);
   - adds a dependency or a crate;
   - changes the `.rgis` project format, or an existing command's id or parameters (the CLI,
-    Python, MCP and saved scripts call commands by id);
+    Python, MCP and saved scripts call commands by id; `crates/engine/command-surface.txt` lists
+    them, and a test fails until a pull request that changes one commits the new file);
   - changes the plugin interface;
   - falls under _Exploratory_ in the roadmap.
 

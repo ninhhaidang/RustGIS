@@ -110,8 +110,6 @@ features build on.
   already are refused, [#1364](https://github.com/opengeos/RustGIS/pull/1364)); packages
   (`.rgispkg`) that hold everything or say what stayed linked; projects written to disk as they
   save, not built in memory first.
-- A snapshot test of command ids and parameters, so a removal is always deliberate (the project
-  file's JSON Schema, its fixtures and the files past releases saved are checked today).
 - A compressed encoding of today's project JSON, read one release before it is written.
   _Coordinate first_: an issue is needed.
 - A system for the data a project refers to: named connections, copies that remember their

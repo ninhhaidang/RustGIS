@@ -1,4 +1,4 @@
-//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
+//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
 //!
 //! - `layers`: enforces the crate layering (nothing below L6 may depend on egui/eframe/rfd).
 //! - `memory [--cli <path>] [--update]`: the command line's peak memory on generated data, per
@@ -6,6 +6,9 @@
 //!   (Linux; see `memory.rs`).
 //! - `rows [--update] [--list]`: direct uses of a layer's rows outside `rustgis-data`, which
 //!   may not rise above the count in `xtask/row-uses.txt` (see `rows.rs`).
+//! - `commands`: writes the snapshot of command ids and parameters
+//!   (`crates/engine/command-surface.txt`) from the registry; an engine test fails when the
+//!   committed file and the registry disagree.
 //! - `test-hygiene`: timer waits in tests need same-line reasons; ignored tests need reasons.
 //! - `ci`: test hygiene, fmt, clippy -D warnings, tests, layering, direct row uses and the
 //!   project schema check.
@@ -202,6 +205,13 @@ fn schema(check: bool) -> Result<(), String> {
     cargo(&args)
 }
 
+/// Writes the command surface snapshot from the registry (`crates/engine/command-surface.txt`).
+/// The engine's `command_surface_matches_the_snapshot` test, which `cargo xtask ci` runs, is the
+/// check.
+fn commands() -> Result<(), String> {
+    cargo(&["run", "-q", "--locked", "-p", "rustgis-engine", "--example", "command_surface"])
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
@@ -209,6 +219,7 @@ fn main() -> ExitCode {
         "test-hygiene" => test_hygiene::run(&root()),
         "rows" => rows::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "memory" => memory::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
+        "commands" => commands(),
         "ci" => ci(),
         "changed" => changed::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "notices" => {
@@ -234,7 +245,7 @@ fn main() -> ExitCode {
             Some(other) => Err(format!("unknown argument {other}: usage: cargo xtask schema [--check]")),
         },
         "web-pwa" => web_pwa(std::env::args().nth(2)),
-        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
+        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
