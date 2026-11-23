@@ -40,8 +40,8 @@ Opening or creating a project clears undo history; saving does not.
 
 This version already reads format 2, a newer `.rgis` format
 ([#1853](https://github.com/opengeos/RustGIS/issues/1853)), when the file needs nothing this
-version lacks, and saves it in the format it writes today. A project, package, template, map or
-layer file that needs something this version can't read (what it lists under `requires`) is
+version lacks, and saves it in the format it writes today. A project, package, template, map,
+layer or layout file that needs something this version can't read (what it lists under `requires`) is
 refused, naming what it needs, rather than opened without it; one of a newer format still asks
 you to update RustGIS.
 

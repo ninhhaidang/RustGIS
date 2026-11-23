@@ -4930,8 +4930,8 @@ impl RustGisApp {
                 let li = self.session.active_layout.ok_or("open a layout first")?;
                 let l = self.session.project.layouts.get(li).cloned().ok_or("open a layout first")?;
                 if self.services.download.is_some() {
-                    let text = serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?;
-                    self.download(&format!("{}.rgislayout", l.name), text.into_bytes());
+                    let bytes = rustgis_engine::project::layout_file_bytes(&l)?;
+                    self.download(&format!("{}.rgislayout", l.name), bytes);
                 } else if let Some(path) = dialogs::pick_save(&format!("{}.rgislayout", l.name), &["rgislayout"], tl!("RustGIS layout")) {
                     return self.run("layout.save", json!({"layout": li, "path": path}));
                 }
@@ -9574,6 +9574,32 @@ mod download_service_tests {
         assert!(!app.download("archive.pmtiles", vec![1, 2, 3]));
         assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("browser rejected download")));
         assert!(!app.session.notices.iter().any(|n| n.text.contains("Download offered")));
+    }
+
+    /// The browser's Save Layout File downloads what `layout.save` writes, its header included, so
+    /// an older RustGIS refuses what the layout uses that it can't keep (#2277).
+    #[test]
+    fn layout_download_is_the_saved_layout_file() {
+        let file = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let downloaded = file.clone();
+        let mut app = RustGisApp::with_sample().with_services(Services {
+            download: Some(Box::new(move |_, bytes| {
+                *downloaded.lock().unwrap() = bytes;
+                Ok(())
+            })),
+            ..Default::default()
+        });
+        app.run("layout.new", json!({"page": "a4", "template": "map"})).unwrap();
+        app.run("layout.addElement", json!({"kind": "text", "text": "A", "background": {}})).unwrap();
+        app.run("ui.saveLayout", serde_json::Value::Null).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("saved.rgislayout");
+        app.run("layout.save", json!({"path": path.display().to_string()})).unwrap();
+        let downloaded = file.lock().unwrap().clone();
+        assert_eq!(downloaded, std::fs::read(&path).unwrap());
+        let header: serde_json::Value = serde_json::from_slice(&downloaded).unwrap();
+        assert_eq!(header["format"], json!(rustgis_engine::project::FORMAT));
+        assert_eq!(header["requires"], json!(["layout-element-background"]));
     }
 
     /// The web download encodes the filtered rows and reports the count once the bytes are accepted.

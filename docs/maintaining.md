@@ -106,7 +106,7 @@ The `released_projects_and_preferences_still_open` test discovers
 the files by version and checks that the current reader still opens them correctly. Record a skip
 in the fixtures' README and in the test's `SKIPS` when a release has no such file format.
 
-New project saves and map/layer exports write format 2. Their `requires` header names only
+New project saves, map/layer exports and layout files write format 2. Their `requires` header names only
 features present in the saved payload: `terrain-block`, `terrain-block-shape` (a block
 diagram cut to a circle or to polygons), `terrain-block-polygon` (one cut to polygons),
 `terrain-water`,
@@ -147,9 +147,10 @@ Projects with a background on a layout element, or a saved task step, script, no
 cell or history entry that gives one (`layout.addElement` or `layout.update` with a
 `background` other than `null`), require `layout-element-background`, so an older reader
 refuses them instead of opening the layout and saving it again, or running the command,
-without the background. Layout files (`.rgislayout`) carry no format header yet and are not
-covered. `layout.import` already reads one, ahead of the release that writes it: it refuses a
-newer format or an unknown `requires` entry by name (#2277).
+without the background. Layout files (`.rgislayout`) carry a header of their own, as map files
+do, and require what their elements use, as the project does;
+`layout.import` refuses a newer format or an unknown `requires` entry by name, and reads a file
+without a header as a legacy layout (#2277).
 
 Projects, map files and layer files with a window of a Zarr variable that follows the time slider
 (`layer.addZarr` with `"time": true` and `"cells"` or `"bbox"`) require `zarr-window`, so an older
@@ -167,15 +168,14 @@ grey and saving them again without it. Saved `layout.addElement` and `layout.upd
 that set one need nothing: an older reader refuses `color` on those elements, so the command
 fails there instead of losing the ink. A saved `layout.import` whose `text` gives an element an
 ink requires `layout-element-ink`, and one whose `text` gives an element a background requires
-`layout-element-background`, since an older reader would read that layout without them. Layout
-files are not covered, as for backgrounds (#2277).
+`layout-element-background`, since an older reader would read that layout without them.
 
 Projects with a layout text that wraps to its box (`wrap` on a text element) require
 `layout-element-wrap`, so an older reader refuses them instead of drawing the text on its own
 line breaks and saving it again without the option. Saved `layout.addElement` and `layout.update`
 commands with `"wrap": true` require it too, since an older reader warns that it ignores the key
 and adds the text unwrapped; `"wrap": false` needs nothing. A saved `layout.import` whose `text`
-has a wrapped text requires it as well. Layout files are not covered, as for backgrounds (#2277).
+has a wrapped text requires it as well.
 
 Projects with a layout chart grouped by a field, or with a statistic, an order or a number of bars
 other than the defaults, or with an Other bar (`group`, `statistic`, `order`, `bars`, `other` on a
@@ -185,7 +185,7 @@ grouped or not: one kept while a chart is ungrouped would be lost too. Saved `la
 and `layout.update` commands that set one of them require it too, and so does a `layout.update`
 that gives a chart's `label` (`""` too), which an older reader's update doesn't take; giving the
 defaults, or `"group": ""`, needs nothing. A saved `layout.import` whose `text` has such a chart
-requires it as well. Layout files are not covered, as for backgrounds (#2277).
+requires it as well.
 
 Projects with a layout chart drawn as columns, with its values or their decimals, its own title
 or none, a bar colour or labels against its bars (`orientation`, `values`, `decimals`, `title`,
@@ -196,14 +196,14 @@ that set one of them require it too. A saved `layout.update` requires it for `va
 `decimals`, `barColor` and `labelAlign` only: its `title` and `orientation` may be a legend's or
 a colorbar's, which the command alone doesn't tell, and the project the update ran on requires it
 for its chart anyway. Giving the defaults needs nothing. A saved `layout.import` whose `text` has
-such a chart requires it as well. Layout files are not covered, as for backgrounds (#2277).
+such a chart requires it as well.
 
 Projects with a layout chart coloured by its layer's classes (`classes` on a chart element)
 require `layout-chart-classes`, so an older reader refuses them instead of drawing every bar in
 the chart's bar colour and saving it again without. Saved `layout.addElement` commands for a
 chart and `layout.update` commands that set `"classes": true` require it too (only a chart takes
 the key); `false` needs nothing. A saved `layout.import` whose `text` has such a chart requires it
-as well. Layout files are not covered, as for backgrounds (#2277).
+as well.
 
 Projects with a layout chart stacked by a second field (`stack` on a chart element) require
 `layout-chart-stack`, so an older reader refuses them instead of drawing each bar whole and
@@ -211,8 +211,7 @@ saving it again without the field. It is required whenever the field is stored, 
 chart doesn't draw it stacked (ungrouped, or not summing or counting, which commands refuse or
 let go). Saved `layout.addElement` commands for a chart and `layout.update` commands that set a
 `stack` field require it too (only a chart takes the key); `""` needs nothing. A saved
-`layout.import` whose `text` has such a chart requires it as well. Layout files are not covered,
-as for backgrounds (#2277).
+`layout.import` whose `text` has such a chart requires it as well.
 
 Projects with a map frame whose border isn't the default dark grey 0.8 pt line (`border_color`,
 `border_width` on a map frame, a width of 0 drawing none) require `layout-frame-border`, so an
@@ -220,7 +219,6 @@ older reader refuses them instead of drawing the default border and saving the f
 without its own (#2557). A saved `layout.update` that gives a frame a `border` object requires it
 too, since an older reader warns that it ignores the key; `"border": null` only gives the default
 back and needs nothing. A saved `layout.import` whose `text` has such a frame requires it as well.
-Layout files are not covered, as for backgrounds (#2277).
 
 Projects with a legend, a scale bar or a grid whose text isn't its default size (`text_size` on
 a legend, 9 points by default, or on a scale bar, 8; `label_size` on a frame's grid, 8) require
@@ -230,7 +228,7 @@ a scale bar `textSize`, or a grid `labelSize`, of another size requires it too, 
 `layout.update` with `"grid": {"labelSize": …}` of another size; `null` or the default need
 nothing. A saved `layout.update` isn't told which element it changes, so any `textSize` but
 `null` requires it there. A saved `layout.import` whose `text` has such an element requires it
-as well. Layout files are not covered, as for backgrounds (#2277).
+as well.
 
 Projects, map files and layer files with a layer or table held in a coordinate system of its own
 (`Dataset::held_in`: a file's system, kept since #2580) save its features in that system, exactly,

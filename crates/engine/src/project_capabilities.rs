@@ -79,36 +79,10 @@ impl Project {
             required.push("table-export-order");
         }
         // Saved layouts as well as saved commands: an older reader keeps neither.
-        if !required.contains(&"layout-element-background")
-            && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.background.is_some()))
-        {
-            required.push("layout-element-background");
-        }
-        if !required.contains(&"layout-element-ink") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.ink().is_some())) {
-            required.push("layout-element-ink");
-        }
-        if !required.contains(&"layout-element-wrap") && self.layouts.iter().any(|l| l.elements.iter().any(wraps)) {
-            required.push("layout-element-wrap");
-        }
-        if !required.contains(&"layout-chart-data") && self.layouts.iter().any(|l| l.elements.iter().any(charts_data)) {
-            required.push("layout-chart-data");
-        }
-        if !required.contains(&"layout-chart-look") && self.layouts.iter().any(|l| l.elements.iter().any(charts_look)) {
-            required.push("layout-chart-look");
-        }
-        if !required.contains(&"layout-chart-classes") && self.layouts.iter().any(|l| l.elements.iter().any(charts_classes)) {
-            required.push("layout-chart-classes");
-        }
-        if !required.contains(&"layout-chart-stack") && self.layouts.iter().any(|l| l.elements.iter().any(charts_stack)) {
-            required.push("layout-chart-stack");
-        }
-        if !required.contains(&"layout-frame-border") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.has_custom_border()))
-        {
-            required.push("layout-frame-border");
-        }
-        if !required.contains(&"layout-text-size") && self.layouts.iter().any(|l| l.elements.iter().any(|e| e.kind.has_custom_text_size()))
-        {
-            required.push("layout-text-size");
+        for name in layout_capabilities(&self.layouts) {
+            if !required.contains(&name) {
+                required.push(name);
+            }
         }
         // A coordinate system whose PROJ definition, which an older reader reads, doesn't place
         // points as its WKT does (angles in grads, a datum transformation the definition can't
@@ -396,7 +370,7 @@ fn command_uses_chart_stack(id: &str, params: &Value) -> bool {
 
 /// Whether a `layout.import` carries its layout as `"text"` with an element `uses`: an older
 /// reader reads it without the keys it doesn't know. One read from a `"path"` is a layout file,
-/// which carries no format header yet (#2277). Every save asks, so a text with none of the
+/// whose own header requires what it uses (#2277). Every save asks, so a text with none of the
 /// feature's `keys` (a saved layout writes them only when set) isn't read through, unless it has a
 /// backslash: JSON may spell a key with escapes (`"\u0063olor"`). It is read once, whatever its
 /// keys.
@@ -659,6 +633,34 @@ pub(crate) fn map_file_bytes(map: &Map) -> Result<Vec<u8>, String> {
         requires.push("crs-wkt");
     }
     serde_json::to_vec(&Item { format: FORMAT, requires, value: map }).map_err(|e| e.to_string())
+}
+
+/// A layout file has its own header, as a map file has: what its elements use, as the project
+/// holding it requires for them (#2277). Indented, as layout files have always been written. No
+/// `crs-wkt`: a layout holds no coordinate system, only a measured grid's as text.
+pub fn layout_file_bytes(layout: &rustgis_map::layout::Layout) -> Result<Vec<u8>, String> {
+    let requires = layout_capabilities(std::slice::from_ref(layout));
+    serde_json::to_vec_pretty(&Item { format: FORMAT, requires, value: layout }).map_err(|e| e.to_string())
+}
+
+/// What the elements of `layouts` use that an older reader would draw without and save again
+/// without: the project requires it for its layouts, and a layout file for its own.
+fn layout_capabilities(layouts: &[rustgis_map::layout::Layout]) -> Vec<&'static str> {
+    let elements = || layouts.iter().flat_map(|l| &l.elements);
+    [
+        (elements().any(|e| e.background.is_some()), "layout-element-background"),
+        (elements().any(|e| e.kind.ink().is_some()), "layout-element-ink"),
+        (elements().any(wraps), "layout-element-wrap"),
+        (elements().any(charts_data), "layout-chart-data"),
+        (elements().any(charts_look), "layout-chart-look"),
+        (elements().any(charts_classes), "layout-chart-classes"),
+        (elements().any(charts_stack), "layout-chart-stack"),
+        (elements().any(|e| e.kind.has_custom_border()), "layout-frame-border"),
+        (elements().any(|e| e.kind.has_custom_text_size()), "layout-text-size"),
+    ]
+    .into_iter()
+    .filter_map(|(used, name)| used.then_some(name))
+    .collect()
 }
 
 /// A layer file keeps the same renderer capabilities as the layer saved inside a project.
