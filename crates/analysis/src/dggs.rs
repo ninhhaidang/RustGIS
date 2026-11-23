@@ -34,7 +34,7 @@ pub const MAX_RESOLUTION: i32 = 30;
 /// How far over [`MAX_CELLS`] an area's [`estimate`] may go before it's refused without being
 /// covered: the estimate is rough, and the exact count still applies after.
 const ESTIMATE_MARGIN: f64 = 2.0;
-/// The most cells a run's coverings test, and rows they cross, before keeping those in the area
+/// The most cells a run's coverings test, and rows an edge crosses past its own band, before keeping those in the area
 /// (S2's descent, the hexagon grid's rows), over all its polygons ([`Work`]): past it the run is
 /// refused, as one over the cap. S2's coarser cells on the way down are paced, not counted: there
 /// are a third as many of them as of the cells tested.
@@ -922,7 +922,10 @@ impl<'a> Grid<'a> {
             let (a, b) = (w[0], w[1]);
             let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
             let (j0, j1) = (((lo - size) / row_h).ceil() as i64, ((hi + size) / row_h).floor() as i64);
-            work.spend(u64::try_from(j1 - j0 + 1).unwrap_or(0), 4, res)?;
+            // An edge's band touches two rows, or more for an edge taller than two thirds of a
+            // row: two per edge are linear in the outline, as reading it is, so only the rows
+            // past them count.
+            work.spend(u64::try_from(j1 - j0 - 1).unwrap_or(0), 4, res)?;
             for j in j0..=j1 {
                 let (b0, b1) = (j as f64 * row_h - size, j as f64 * row_h + size);
                 let at = |y: f64| a.x + (y.clamp(lo, hi) - a.y) / (b.y - a.y) * (b.x - a.x);
@@ -957,13 +960,15 @@ impl<'a> Grid<'a> {
         }
         let Some(polygon) = geo_polygon(&rings) else { return Ok(()) };
         let prepared = PreparedGeometry::from(polygon);
+        // Each test locates the cell against the whole outline, so it's paced by its vertices.
+        let per_test = rings.iter().map(Vec::len).fold(64usize, usize::saturating_add);
         let fits = |v: i64| i32::try_from(v).is_ok();
         for (j, q0, q1) in rows {
             for q in q0..=q1 {
                 if !fits(q) || !fits(j) {
                     return Err(reach());
                 }
-                work.spend(1, 64, res)?;
+                work.spend(1, per_test, res)?;
                 let keep = if center {
                     let c = self.hex.centre(q, j);
                     prepared.relate(&geo::Point::new(c.x, c.y)).is_intersects()
@@ -987,7 +992,7 @@ fn overlaps(m: &geo::relate::IntersectionMatrix) -> bool {
 }
 
 /// What a run's coverings look at, over all its polygons: the cells tested (S2's and the hexagon
-/// grid's) and the rows crossed, capped at [`MAX_WORK`] so many polygons that each stay under
+/// grid's) and the rows an edge crosses past its own band, capped at [`MAX_WORK`] so many polygons that each stay under
 /// the cap don't add up to hours; and its pace, so Cancel stops it soon.
 #[derive(Default)]
 struct Work {
@@ -1192,7 +1197,8 @@ fn aggregate_in(inp: &dyn Inputs, p: &Json, system: System) -> Result<ToolResult
     control::begin(rows.len());
     for (i, r) in rows.into_iter().enumerate() {
         control::reached(i);
-        if pace.stop(16) {
+        // One unit per feature: its points are charged below, so a point layer keeps its pace.
+        if pace.stop(1) {
             return Err(control::Cancelled.into());
         }
         let Some(f) = ds.features.get(r) else { continue };
@@ -1204,6 +1210,10 @@ fn aggregate_in(inp: &dyn Inputs, p: &Json, system: System) -> Result<ToolResult
         let v = field.and_then(|i| ds.value(r, i).as_f64()).filter(|v| v.is_finite());
         let mut credited: HashSet<u64> = HashSet::new();
         for c in pts {
+            // A multipoint's points can be many: Cancel is looked at between them too.
+            if pace.stop(16) {
+                return Err(control::Cancelled.into());
+            }
             if !c.is_finite() || c.y.abs() > 90.0 || c.x.abs() > 360.0 {
                 outside += 1;
                 continue;
@@ -1507,6 +1517,17 @@ mod tests {
         multi.push(Some(Geometry::MultiPoint(vec![Coord::new(-55.72, -12.55), Coord::new(-55.7201, -12.5501)])), vec![Value::Float(5.0)]);
         let d = layer(aggregate(&One(multi, None), &serde_json::json!({"input": "pts", "resolution": 12, "field": "v"})).unwrap());
         assert_eq!((d.value(0, 3).as_f64(), d.value(0, 5).as_f64(), d.value(0, 6).as_f64()), (Some(3.0), Some(6.0), Some(3.0)));
+        // Cancel is looked at between a multipoint's points, not only between features.
+        let looks = |n: usize| {
+            let mut d = points(&[]);
+            d.push(Some(Geometry::MultiPoint(vec![Coord::new(-55.72, -12.55); n])), vec![Value::Float(1.0)]);
+            let cancel = control::Control::cancelled_at_look(u64::MAX);
+            let json = serde_json::json!({"system": "H3", "input": "pts", "resolution": 5});
+            crate::run_under("Aggregate", &cancel, || aggregate(&One(d, None), &json)).unwrap();
+            cancel.looked()
+        };
+        // Three paces' worth of points: three looks within the feature, where none was before.
+        assert!(looks(3 * control::PACE_WORK / 16) >= looks(1) + 2);
         for bad in [
             serde_json::json!({"input": "nope"}),
             serde_json::json!({"input": "pts", "field": "nope"}),
@@ -1721,6 +1742,57 @@ mod tests {
             let cells = layer(grid(&One(d, None), &p).unwrap_or_else(|e| panic!("{system}: {e}"))).features.len() as u64;
             assert!(cells > 0 && cells < MAX_CELLS / 4, "{system}: {cells}");
         }
+    }
+
+    /// A detailed outline isn't refused as work: an edge's own band of rows is linear in the
+    /// input, as reading it is, so only the rows an edge crosses past it count.
+    #[test]
+    fn a_detailed_outline_is_within_the_work_limit() {
+        let n = MAX_WORK as usize + 10_000;
+        let ring: Vec<Coord> = (0..=n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * 2.0 * PI;
+                Coord::new(10.0 * a.cos(), 10.0 * a.sin())
+            })
+            .collect();
+        let mut d = Dataset::new("pts", GeometryType::Polygon, vec![]);
+        d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        let p = serde_json::json!({"system": "Hexagon", "resolution": 2, "area": "Input Layer", "input": "pts"});
+        assert!(!layer(grid(&One(d, None), &p).unwrap()).features.is_empty());
+        // Each cell's test grows with the outline, so Cancel is looked at by its vertices too.
+        let looks = |n: usize| {
+            let ring: Vec<Coord> = (0..=n)
+                .map(|i| {
+                    let a = i as f64 / n as f64 * 2.0 * PI;
+                    Coord::new(10.0 * a.cos(), 10.0 * a.sin())
+                })
+                .collect();
+            let mut d = Dataset::new("pts", GeometryType::Polygon, vec![]);
+            d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+            let p = serde_json::json!({"system": "Hexagon", "resolution": 5, "area": "Input Layer", "input": "pts"});
+            let cancel = control::Control::cancelled_at_look(u64::MAX);
+            crate::run_under("Grid", &cancel, || grid(&One(d, None), &p)).unwrap();
+            cancel.looked()
+        };
+        assert!(looks(100_000) >= looks(1_000) + 2);
+    }
+
+    /// A zigzag outline whose edges each cross many rows is still held to the work limit, with
+    /// few candidate cells: 10,000 edges across about 100 rows, 50 hexagons wide.
+    #[test]
+    fn a_zigzag_outline_is_held_to_the_work_limit() {
+        let res = 14;
+        let side = System::Hexagon.mean_area_m2(res).sqrt() / 111_320.0;
+        let (teeth, w, h) = (5_000, 50.0 * side, 100.0 * side);
+        let mut ring: Vec<Coord> = (0..=2 * teeth)
+            .map(|i| Coord::new(-74.0 + i as f64 / (2 * teeth) as f64 * w, 1.0 + if i % 2 == 0 { 0.0 } else { h }))
+            .collect();
+        ring.extend([Coord::new(-74.0 + w, 1.0 - side), Coord::new(-74.0, 1.0 - side), Coord::new(-74.0, 1.0)]);
+        let mut d = Dataset::new("pts", GeometryType::Polygon, vec![]);
+        d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        let p = serde_json::json!({"system": "Hexagon", "resolution": res, "area": "Input Layer", "input": "pts"});
+        let e = grid(&One(d, None), &p).unwrap_err();
+        assert!(e.contains(&format!("looking at more than {MAX_WORK} cells")), "{e}");
     }
 
     /// The world in each system, counted against the system's own count, and the cap.

@@ -1224,7 +1224,8 @@ instead.
 
 - **Generate Tessellation** makes the cells at a resolution over the map's extent, an input
   layer's polygons (or the extent of its points and lines), or the whole world. **Cells:
-  Overlapping** covers the area without gaps; **Center** keeps the cells whose centre is inside.
+  Overlapping** covers the area without gaps (H3, by its own rule, also keeps a cell that only
+  touches the area's outline); **Center** keeps the cells whose centre is inside.
 - **Aggregate Points to Grid** counts a point layer's points (its selection, when there is one) by
   the cell holding them, and keeps only the cells that hold any. It adds `count` and
   `density_per_km2` (by that cell's area, since H3, S2 and hexagon cells differ in size), and a
