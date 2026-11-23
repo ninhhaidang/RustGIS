@@ -741,17 +741,43 @@ fn add_bytes<const LIMIT: usize>(s: &mut Session, p: &Value) -> CmdResult {
     add_named_bytes(s, p, name, bytes, b(p, "zoom"))
 }
 
+/// The system a WCS coverage was asked for in, for an answer that doesn't say its own:
+/// `"coverageCrs"` (`service.coverage`'s, `EPSG:<code>`), else the one its GetCoverage address
+/// `url` names ([`coverage_request_system`](rustgis_data::ogc::coverage_request_system)).
+pub(crate) fn coverage_system(p: &Value, url: &str) -> Option<rustgis_data::raster::Crs> {
+    // Only `EPSG:<code>`: `Crs::parse` takes WKT and PROJ text too, and keeps a system for them.
+    let given = ps(p, "coverageCrs")
+        .and_then(|c| c.strip_prefix("EPSG:")?.parse::<u32>().ok())
+        .and_then(rustgis_data::raster::Crs::from_epsg)
+        .filter(|c| !c.is_geographic());
+    given.or_else(|| rustgis_data::ogc::coverage_request_system(url))
+}
+
 /// Adds a file's contents (an upload, a download) as its name's extension says. A PDF's page is
 /// drawn here, on the caller's thread, unless it was drawn already ([`add_named_bytes_read`]): the
 /// desktop app's downloads land with theirs drawn off the frame ([`download_page`]) and its file
 /// drops are read by path on the read queue, so a caller here is the command line, Python or a
 /// script, with no window to hold.
 pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: Vec<u8>, zoom: Option<bool>) -> CmdResult {
-    add_named_bytes_read(s, p, name, bytes, zoom, None)
+    add_named_bytes_read(s, p, name, bytes, zoom, None, None)
+}
+
+/// [`add_named_bytes`] of a WCS coverage's answer asked for in `asked`, its own system: a GeoTIFF
+/// that doesn't say its system is read in it (#2032).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn add_coverage_bytes(
+    s: &mut Session,
+    p: &Value,
+    name: String,
+    bytes: Vec<u8>,
+    asked: Option<rustgis_data::raster::Crs>,
+) -> CmdResult {
+    add_named_bytes_read(s, p, name, bytes, None, None, asked)
 }
 
 /// [`add_named_bytes`], with a PDF's page drawn already off the frame (a download's,
-/// [`read_download_shared_page`]) instead of here.
+/// [`read_download_shared_page`]) instead of here, and a WCS coverage's own system it was asked
+/// for in (`asked`, for an answer that doesn't say it).
 pub(crate) fn add_named_bytes_read(
     s: &mut Session,
     p: &Value,
@@ -759,6 +785,7 @@ pub(crate) fn add_named_bytes_read(
     bytes: Vec<u8>,
     zoom: Option<bool>,
     drawn: Option<Raster>,
+    asked: Option<rustgis_data::raster::Crs>,
 ) -> CmdResult {
     // A geotagged photo (an upload, a drop): a point in the photo layer, so several uploads
     // gather in one.
@@ -780,7 +807,16 @@ pub(crate) fn add_named_bytes_read(
         let page = pdf_page(&name, p)?;
         let mut r = match drawn {
             Some(r) => r,
-            None => raster::read_shared_page(&name, bytes.clone(), page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
+            // A WCS coverage asked for in its own system (#2032): an answer that doesn't say its
+            // system is read in that one; one that says it is read as any GeoTIFF.
+            None => match asked.filter(|_| !scan && [".tif", ".tiff"].iter().any(|x| name.to_ascii_lowercase().ends_with(x))) {
+                Some(asked) => {
+                    let stem = std::path::Path::new(&name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
+                    rustgis_data::raster::geotiff::read_asked_in(std::io::Cursor::new(bytes.as_slice()), stem, asked)
+                        .map_err(|e| format!("{name}: {e}"))?
+                }
+                None => raster::read_shared_page(&name, bytes.clone(), page.as_deref(), !scan).map_err(|e| format!("{name}: {e}"))?,
+            },
         };
         r.lost.extend(raster::elevation_ignores(&name, ps(p, "layer"), ps(p, "crs")));
         if scan {

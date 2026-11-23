@@ -38,7 +38,7 @@ pub fn commands() -> Vec<C> {
             r#"{"url": "as service.layers", "type"?, "layer": "the layer's name (service.layers lists them)", "name"?: text, "time"?: "a time-enabled WMS or WMTS layer: by default (or \"slider\", true) it follows the time slider, turned on with the layer's times when it is off; or one of its dates (2024-06-01), or \"default\" (false): its service's default", "text"?: "the capabilities document, when already fetched", "documents"?: "additional fetched documents, as service.layers", "source_url"?: "the listed layer's source_url", "describe"?: "a WCS coverage's DescribeCoverage document, when already fetched", "tiles"?: "an OGC API layer's tile template, when already read from its tileset (the app's)", "bbox"?: [west, south, east, north] | "view" | "full": a WCS coverage's area (the view by default); for a WFS, OGC API or ArcGIS feature layer, only the features that cross it (the whole layer, "full", by default), "where"?: "an ArcGIS feature layer's SQL where clause (1=1 when absent); combined with bbox and kept by every page; rejected clauses give an error", "connection"?: "the id of the saved web-service connection it comes from (connection.browse gives it): the layer records it, and is read with its login"}"#,
         ),
         C::new("service.coverage", "WCS Coverage Request", "Home › Add", coverage).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
-            r#"{"url": "a WCS address", "type"?: "wcs", "layer": "the coverage's name", "text"?: "the capabilities document, when already fetched", "documents"?: "additional fetched documents, as service.layers", "source_url"?: "the listed coverage's source_url", "describe"?: "its DescribeCoverage answer, when already fetched", "bbox"?: [west, south, east, north] | "view" (the default) | "full", "connection"?: "the saved web-service connection id whose login the request uses", "anonymous"?: boolean (never use a saved login for the coverage or its description)} → the GetCoverage address of a GeoTIFF (layer.addUrl adds it)"#,
+            r#"{"url": "a WCS address", "type"?: "wcs", "layer": "the coverage's name", "text"?: "the capabilities document, when already fetched", "documents"?: "additional fetched documents, as service.layers", "source_url"?: "the listed coverage's source_url", "describe"?: "its DescribeCoverage answer, when already fetched", "bbox"?: [west, south, east, north] | "view" (the default) | "full", "connection"?: "the saved web-service connection id whose login the request uses", "anonymous"?: boolean (never use a saved login for the coverage or its description)} → the GetCoverage address of a GeoTIFF (layer.addUrl adds it), its area in longitude/latitude, and "coverageCrs": the coverage's own system when it is asked in it (as layer.addUrl takes it, for an answer that doesn't say its system)"#,
         ),
         C::new("catalog.search", "Search Catalogue", "Home › Add", catalog_search).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"url": "a catalogue's CSW address", "query"?: "words anywhere in the records", "bbox"?: [west, south, east, north] | "view" (none by default), "start"?: "the first record's position (a page's next)", "text"?: "the GetRecords answer, when already fetched", "connection"?: "as service.layers"} → records with their service and download links (service.add or layer.addUrl add them)"#,
@@ -1535,7 +1535,7 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
         )),
         Offer::Coverage(c) => {
             let anonymous = capability_crossed || crosses_origin(source, &c.endpoint) || s.web_logins.is_anonymous();
-            let (get, _, _) = match ps(p, "describe") {
+            let (get, _, _, asked) = match ps(p, "describe") {
                 // A plugin's command: its description read off the frame, as its documents are.
                 None if leaving => {
                     let c = coverage_for(c, anonymous);
@@ -1548,14 +1548,14 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                     let info = rustgis_data::ogc::parse_describe(&c, &bytes)?;
                     // Recorded by the read if it came from the internet, as in `coverage_request`.
                     let public = public || cache::ceiling_for(&described) == Reach::Public;
-                    let (get, area) = coverage_request_from(s, p, &c, &info, public)?;
-                    (get, area, described)
+                    let (get, area, asked) = coverage_request_from(s, p, &c, &info, public)?;
+                    (get, area, described, asked)
                 }
                 _ => coverage_request(s, p, c, anonymous, public)?,
             };
             #[cfg(target_arch = "wasm32")]
             {
-                let _ = get;
+                let _ = (get, asked);
                 Err(crate::sources::message_with_address(
                     &url,
                     "in the web app, Home › Add › Add Data › From Service downloads the coverage",
@@ -1563,17 +1563,20 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // The system it is asked in, when its own: an answer that doesn't say it is read in it.
+                let asked_code = asked.map(|c| c.code());
                 crate::service_logins::anonymously(s, anonymous, |s| {
                     if leaving {
                         // (Whole: a coverage's address may end in .tif, and it is read as a raster.)
-                        return super::layer::add_url(
-                            s,
-                            &json!({"url": get, "name": name, "coverage": true, "whole": true, "fromDocument": public}),
-                        );
+                        let mut q = json!({"url": get, "name": name, "coverage": true, "whole": true, "fromDocument": public});
+                        if let Some(code) = &asked_code {
+                            q["coverageCrs"] = json!(code);
+                        }
+                        return super::layer::add_url(s, &q);
                     }
                     let bytes = crate::render::rustgis_tiles::cache::download_blocking(&get).map_err(|e| format!("{name}: {e}"))?;
                     coverage_check(&name, &bytes)?;
-                    let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes, None)?;
+                    let r = super::raster::add_coverage_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes, asked)?;
                     mark_service_source(s, &r, &get);
                     Ok(r)
                 })
@@ -1696,7 +1699,14 @@ fn coverage_area(s: &Session, p: &Value, info: &rustgis_data::ogc::CoverageInfo,
 /// fetched (waiting for it).
 /// With `public` (a coverage a document read from the internet lists), its description and its
 /// GetCoverage address are fetched only from the internet, here or by the app.
-fn coverage_request(s: &Session, p: &Value, c: &Coverage, anonymous: bool, public: bool) -> Result<(String, [f64; 4], String), String> {
+/// The system it asks the coverage in comes with it when that is the coverage's own.
+fn coverage_request(
+    s: &Session,
+    p: &Value,
+    c: &Coverage,
+    anonymous: bool,
+    public: bool,
+) -> Result<(String, [f64; 4], String, Option<rustgis_data::raster::Crs>), String> {
     let c = coverage_for(c, anonymous);
     let c = c.as_ref();
     let describe = describe_address(c);
@@ -1710,8 +1720,8 @@ fn coverage_request(s: &Session, p: &Value, c: &Coverage, anonymous: bool, publi
     // A description read from the internet (here, or by the app, which records it) holds the
     // GetCoverage request built from it there too, however the endpoint's name resolves then.
     let public = public || cache::ceiling_for(&describe) == Reach::Public;
-    let (get, area) = coverage_request_from(s, p, c, &info, public)?;
-    Ok((get, area, describe))
+    let (get, area, asked) = coverage_request_from(s, p, c, &info, public)?;
+    Ok((get, area, describe, asked))
 }
 
 /// A coverage as it is asked for: with no saved login when `anonymous`.
@@ -1737,14 +1747,15 @@ fn coverage_request_from(
     c: &Coverage,
     info: &rustgis_data::ogc::CoverageInfo,
     public: bool,
-) -> Result<(String, [f64; 4]), String> {
+) -> Result<(String, [f64; 4], Option<rustgis_data::raster::Crs>), String> {
     let area = coverage_area(s, p, info, &c.id)?;
-    let get = crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &rustgis_data::ogc::get_coverage_url(c, info, area));
+    let (get, asked) = rustgis_data::ogc::get_coverage(c, info, area);
+    let get = crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &get);
     crate::render::rustgis_tiles::address::check(&get, Some(&c.endpoint))?;
     if public {
         cache::restrict_to_public(&get);
     }
-    Ok((get, area))
+    Ok((get, area, asked))
 }
 
 /// Reads a coverage's description, recording one that came from the internet
@@ -1795,8 +1806,13 @@ fn coverage(s: &mut Session, p: &Value) -> CmdResult {
         || crosses_origin(&source.address, &c.endpoint)
         || s.web_logins.is_anonymous()
         || p.get("anonymous").and_then(Value::as_bool) == Some(true);
-    let (get, area, describe) = coverage_request(s, p, c, anonymous, source.public)?;
+    let (get, area, describe, asked) = coverage_request(s, p, c, anonymous, source.public)?;
     let mut out = json!({"url": get, "name": layer.title, "bbox": area, "describe": describe});
+    // The system the request asks the coverage in, when its own: given to the add as
+    // `coverageCrs`, for an answer that doesn't say it.
+    if let Some(crs) = asked {
+        out["coverageCrs"] = json!(crs.code());
+    }
     if anonymous {
         out["anonymous"] = json!(true);
     }

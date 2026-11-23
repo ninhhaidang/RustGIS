@@ -5891,6 +5891,11 @@ impl RustGisApp {
                     q[k] = json!(true);
                 }
             }
+            // A coverage's own system it was asked for in (`service.coverage`'s "crs"), for an
+            // answer that doesn't say it.
+            if let Some(crs) = p.get("coverageCrs").filter(|v| v.is_string()) {
+                q["coverageCrs"] = crs.clone();
+            }
             if let Some(from_document) = p.get("fromDocument").and_then(Value::as_bool) {
                 q["fromDocument"] = json!(from_document);
             }
@@ -6576,6 +6581,10 @@ impl RustGisApp {
                         let connection = params.as_object_mut().and_then(|p| p.remove("connection"));
                         let get = c.get("url").and_then(Value::as_str).unwrap_or("").to_string();
                         let mut p = json!({"url": get, "name": title, "coverage": true});
+                        // The system it was asked in, for an answer that doesn't say it.
+                        if let Some(crs) = c.get("coverageCrs").and_then(Value::as_str) {
+                            p["coverageCrs"] = json!(crs);
+                        }
                         // Its service's document came from the internet: so does the coverage.
                         if cache::ceiling_for(&get) == Reach::Public {
                             p["fromDocument"] = json!(true);
@@ -7875,6 +7884,22 @@ mod record_tests {
             assert_eq!(omitted, usize::from(succeeded), "{outcome}: {notices:?}");
             assert_eq!(notices.iter().filter(|n| n.error).count(), usize::from(!succeeded), "{outcome}: {notices:?}");
         }
+    }
+
+    /// A WCS coverage's download keeps the system it was asked for in (`coverageCrs`, from
+    /// `service.coverage`), for `layer.addDownload` to read an answer that doesn't say its own in
+    /// it (#2032); a value that isn't text isn't passed on.
+    #[test]
+    fn a_coverage_download_keeps_the_system_it_was_asked_in() {
+        let _turn = crate::fetching::turn();
+        rustgis_engine::render::rustgis_tiles::cache::set_fetcher(|_, _| {});
+        let mut app = RustGisApp::with_sample();
+        let url = "https://wcs.invalid/wcs?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=dem";
+        app.run("ui.addUrl", json!({"url": url, "name": "Terrain", "coverage": true, "coverageCrs": "EPSG:2056"})).unwrap();
+        app.run("ui.addUrl", json!({"url": url, "name": "Other", "coverage": true, "coverageCrs": 2056})).unwrap();
+        let kept: Vec<serde_json::Value> = app.ui.downloads.iter().map(|d| d.params["coverageCrs"].clone()).collect();
+        assert_eq!(kept, [json!("EPSG:2056"), serde_json::Value::Null]);
+        assert!(app.ui.downloads.iter().all(|d| d.params["coverage"] == true));
     }
 
     /// A window read off the frame is a step all the same: the command that reads it, with its box,

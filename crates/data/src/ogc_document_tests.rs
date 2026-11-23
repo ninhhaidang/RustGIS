@@ -16,7 +16,7 @@ fn requests(service: &Service) -> Vec<String> {
         Offer::Features { url } => vec![url.clone()],
         Offer::Coverage(c) => vec![
             describe_coverage_url(c),
-            get_coverage_url(c, &CoverageInfo { format: "image/tiff".into(), axes: None, bbox: None }, [1.0, 2.0, 3.0, 4.0]),
+            get_coverage_url(c, &CoverageInfo { format: "image/tiff".into(), axes: None, bbox: None, native: None }, [1.0, 2.0, 3.0, 4.0]),
         ],
         other => panic!("unexpected offer: {other:?}"),
     };
@@ -146,7 +146,11 @@ fn oversized_same_origin_document_targets_fail_closed() {
             Offer::Features { url } => vec![url.clone()],
             Offer::Coverage(c) => vec![
                 describe_coverage_url(c),
-                get_coverage_url(c, &CoverageInfo { format: "image/tiff".into(), axes: None, bbox: None }, [1.0, 2.0, 3.0, 4.0]),
+                get_coverage_url(
+                    c,
+                    &CoverageInfo { format: "image/tiff".into(), axes: None, bbox: None, native: None },
+                    [1.0, 2.0, 3.0, 4.0],
+                ),
             ],
             other => panic!("unexpected offer: {other:?}"),
         };

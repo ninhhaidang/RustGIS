@@ -1324,7 +1324,14 @@ pub fn read<R: Read + Seek>(r: R, name: &str) -> Result<Raster> {
 
 /// [`read`], with the no-data value a sidecar gives (see [`read_limited_with_nodata`]).
 pub(super) fn read_with_nodata<R: Read + Seek>(r: R, name: &str, sidecar_nodata: Option<f64>) -> Result<Raster> {
-    read_limited_with_nodata(reader(r).map_err(err)?, name, max_samples(), None, sidecar_nodata)
+    read_limited_with_nodata(reader(r).map_err(err)?, name, max_samples(), None, sidecar_nodata, None)
+}
+
+/// [`read`] of a file asked for in `asked` (a WCS coverage requested in its own system, #2032):
+/// a file that doesn't say its coordinate system, and whose coordinates aren't degrees, is read in
+/// `asked`, and said. One that names a system is read in it, as [`read`] reads it.
+pub fn read_asked_in<R: Read + Seek>(r: R, name: &str, asked: Crs) -> Result<Raster> {
+    read_limited_with_nodata(reader(r).map_err(err)?, name, max_samples(), None, None, Some(asked))
 }
 
 /// A single-band `UInt32` GeoTIFF of packed colour, each pixel `0xAABBGGRR` (alpha, blue, green
@@ -1470,7 +1477,7 @@ fn read_file_with_revision(
     };
     let decoded = reader(std::io::BufReader::new(file))
         .map_err(err)
-        .and_then(|r| read_limited_with_nodata(r, name, max_samples(), Some(&open), sidecar_nodata));
+        .and_then(|r| read_limited_with_nodata(r, name, max_samples(), Some(&open), sidecar_nodata, None));
     // A file cut short while it is read fails to decode: the revision says whether that was a
     // change to wait out (Cancel is said as itself).
     if let Ok(original) = &revision
@@ -1491,7 +1498,7 @@ fn read_file_with_revision(
 /// [`read`], holding at most `max` samples (the tests' small limit exercises the overviews), with
 /// `open` making more readers of the same file for decoding it on several threads.
 pub(super) fn read_limited(r: Reader<'_>, name: &str, max: usize, open: Option<Opener<'_>>) -> Result<Raster> {
-    read_limited_with_nodata(r, name, max, open, None)
+    read_limited_with_nodata(r, name, max, open, None, None)
 }
 
 /// [`read_limited`], with the no-data value a sidecar gives (`.aux.xml`, applied after reading by
@@ -1502,6 +1509,7 @@ pub(super) fn read_limited_with_nodata(
     max: usize,
     open: Option<Opener<'_>>,
     sidecar_nodata: Option<f64>,
+    asked: Option<Crs>,
 ) -> Result<Raster> {
     // The full image says whether it is read as a palette image, whichever image is read, as a
     // COG window has it: a grey full image's stray colour table colours nothing, nor do palette
@@ -1834,7 +1842,10 @@ pub(super) fn read_limited_with_nodata(
             {
                 return Err(DataError::Format(e.clone()));
             }
-            if geo.geographic_model || degrees {
+            if let Some(asked) = asked.filter(|_| geo.custom_error.is_none() && !geo.geographic_model && !degrees) {
+                assumed = Some(format!("it doesn't say its coordinate system: read in {}, the system it was asked for in", asked.label()));
+                asked
+            } else if geo.geographic_model || degrees {
                 assumed = Some(match &geo.custom_error {
                     // The file's own projection couldn't be read, but its coordinates fit in degrees:
                     // why is said, not dropped.
@@ -2663,6 +2674,24 @@ mod tests {
         }
         img.write_data(&[1u8, 2, 3, 4]).unwrap_or_else(|e| panic!("{e}"));
         out.into_inner()
+    }
+
+    /// A file asked for in a system (a WCS coverage, #2032) that doesn't say its own is read in it
+    /// when its coordinates aren't degrees, and says so; one that names its system, or whose
+    /// coordinates are degrees, is read as [`read`] reads it.
+    #[test]
+    fn a_file_without_its_system_is_read_in_the_one_asked_for() {
+        let lv95 = Crs::from_epsg(2056).unwrap();
+        let metres = placed_tiff((2_600_000.0, 1_200_100.0), 10.0, None);
+        assert!(read(std::io::Cursor::new(metres.clone()), "g").is_err());
+        let r = read_asked_in(std::io::Cursor::new(metres), "g", lv95).unwrap();
+        assert_eq!((r.crs, r.transform.origin_x), (lv95, 2_600_000.0));
+        assert!(r.crs_assumed && r.lost.iter().any(|l| l.contains("read in EPSG:2056, the system it was asked for in")), "{:?}", r.lost);
+        let named = placed_tiff((600_000.0, 5_200_000.0), 10.0, Some(&[1, 1, 0, 1, 3072, 0, 1, 25832]));
+        let r = read_asked_in(std::io::Cursor::new(named), "g", lv95).unwrap();
+        assert_eq!((r.crs, r.crs_assumed), (Crs::from_epsg(25832).unwrap(), false));
+        let degrees = placed_tiff((7.4, 47.0), 0.01, None);
+        assert_eq!(read_asked_in(std::io::Cursor::new(degrees), "g", lv95).unwrap().crs, Crs::LonLat);
     }
 
     /// A grid whose file gives no usable coordinate system but whose coordinates fit in degrees is

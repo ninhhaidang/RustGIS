@@ -335,7 +335,7 @@ Scripts use `service.import {"url":"…","name":"My OGC Layer"}` and
 | WFS 1.1 / 2.0 | Feature types | Their features downloaded as GeoJSON, following next links. Without a next link, WFS 1.x reads only the first response (requested limit: 50,000) and gives an incomplete-read notice when the server's reported `totalFeatures` exceeds the features read or, without a total, when the requested limit is reached. A server may cap this response below the requested limit. WFS 2.0 verifies the hits total and uses offset requests when needed, up to 100,000 features or more on a computer with more memory; unknown totals, repeated offset pages, repeated feature ids across offset pages (ignored, and counted), possible overlap between pages of rows without ids, and interrupted reads produce a notice |
 | OGC API Features | Collections | Their items downloaded as GeoJSON, following the service's `next` pages up to 100,000 features, or more on a computer with more memory (see Environments in the analysis guide; a command such as `service.add` waits a minute at most) |
 | OGC API Tiles | Collections' map and vector tiles; a landing page's dataset map tiles | A tile layer in WebMercatorQuad, from the tile template the tileset advertises (its `item` link; `…/tiles/WebMercatorQuad/{z}/{y}/{x}`, the usual path, when that can't be read), keeping the tiles link's query (a token), map tiles in the server's image format, vector tiles drawn layer by layer in colours of their own |
-| WCS 1.0 / 2.0 (a 1.1 service is asked in 1.0) | Coverages, with their bounds | A raster: GetCoverage of the map's view within the coverage's bounds (or its whole extent: `"bbox": "full"`), as a GeoTIFF in EPSG:4326, at most 2048 pixels on a side |
+| WCS 1.0 / 2.0 (a 1.1 service is asked in 1.0) | Coverages, with their bounds | A raster: GetCoverage of the map's view within the coverage's bounds (or its whole extent: `"bbox": "full"`), as a GeoTIFF in the coverage's own projected system when RustGIS reads it, else in EPSG:4326, at most 2048 pixels on a side |
 | ArcGIS REST | FeatureServer and MapServer layers; a MapServer's map; an ImageServer; a VectorTileServer | Layers queried as GeoJSON, or in protocol buffers (`f=pbf`, smaller and quicker to read) when the layer's description lists them and names its record limit (the description read first, or given up on after 15 seconds; a first protocol buffer page that can't be fetched or read has the layer read in GeoJSON, with a notice saying why), page by page past the server's record limit (`resultOffset`) up to 100,000 features or more on a computer with more memory (in protocol buffers, also no more than a quarter of the computer's memory once read, from 512 MB, the web app's limit, up to 3 GB; a later page past it ends the read with a notice, and the first page is always kept, within the reader's own limits for a page) (a command such as `service.add` waits a minute at most for the features), where the layer supports paging (ArcGIS Server 10.3 and later; otherwise up to the record limit); a layer comes in drawn as its description's `drawingInfo` says when its renderer is a simple one (fill, line and marker symbols, dashes), by the unique values of one field (as Unique Values, with the service's labels and its default symbol for the rest) or by class breaks (as Graduated Colors with the service's bounds and labels), others keeping RustGIS's symbol with a notice; a picture marker draws its image at its width, its height following the image's own proportion (without a width, its height is taken as its width, with a notice), and one whose image isn't in its description, or isn't a PNG or JPEG of at most 2 MiB of base64 and 2048 × 2048 pixels that RustGIS can decode (within the pixels and memory of marker images it decodes until it restarts), is a circle, grey or, among classes, in a ramp's colours, with a notice; and with its transparency whatever its renderer (a description that can't be read, or a query asking for its own `resultOffset` or `resultRecordCount`, which skips it, keeps RustGIS's symbol with a notice saying why); a map as its tile cache when it is Web Mercator's pyramid, else exported images; an ImageServer as exported images; a VectorTileServer as its MapLibre style |
 
 A long list stops at its first 2,000 layers, and a note says how many the service has. An OGC
@@ -390,8 +390,21 @@ still apply, and Cancel stops the read.
 
 A coverage is read once, for the view when it was added (its DescribeCoverage first, for its axes,
 format and bounds; `service.coverage` gives the GetCoverage address alone). Moving the map doesn't
-ask for it again: add it again for another area. The server reprojects it to EPSG:4326 (WCS 2.0
-through its CRS extension); one that can't answers with an error, which is shown.
+ask for it again: add it again for another area. A coverage whose own system is a projected
+system RustGIS reads is asked for in it: the area's box there, within the coverage's envelope,
+and no conversion by the server, so it is resampled once, by the map. Its own system is WCS 2.0's
+envelope's, whose axis labels are needed (`E N` or `N E` say the order; otherwise EPSG's order of
+the system's axes does, as `X` and `Y` mean either), or WCS 1.0's native CRS with an envelope of
+the spatial domain in it, when the server lists it among the systems it takes in requests and
+answers (or lists none). Its longitude/latitude bounds then come from that envelope, so
+`"bbox": "full"` works for it too; a coverage across the antimeridian has none, and the view is
+asked for unclipped. Otherwise (a geographic system, or one RustGIS doesn't read)
+the server reprojects it to EPSG:4326 (WCS 2.0 through its CRS extension); one that can't answers
+with an error, which is shown. The request names the system it asks in (WCS 2.0's `OUTPUTCRS`,
+WCS 1.0's `CRS`). A GeoTIFF answer that doesn't name its system is read in that one, with a
+notice, unless its coordinates are degrees or it declares a geographic model: then it is read as
+longitude/latitude, with a notice. Without a system asked for, one whose coordinates aren't
+degrees and that declares no geographic model is refused.
 
 A feature type whose own system (its default one) is a projected system RustGIS reads is asked
 for in it, as `EPSG:<code>`, and the layer is held in it, without a conversion by the server or
