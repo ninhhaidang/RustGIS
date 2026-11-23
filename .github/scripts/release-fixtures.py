@@ -74,7 +74,10 @@ def capture_prefs(desktop, env):
             # a key sent too early can be lost or held back. Press again every few seconds until
             # the saved preference reads "true": the app saves it on every toggle, so a held-back
             # press that toggles it back to "false" is seen and answered with another press.
-            press = ["xdotool", "windowfocus", "--sync", window, "key", "ctrl+F1"]
+            # F1 goes by its keycode (67 in Xvfb's evdev keymap). Asked for the keysym, Ubuntu's
+            # xdotool 3.20160805 picks the Ctrl+Alt level of that key and sends Ctrl+Alt with no
+            # F1 press, which the app never sees as Ctrl+F1.
+            press = ["xdotool", "windowfocus", "--sync", window, "key", "ctrl+67"]
             subprocess.run(press, check=True, timeout=10)
             deadline = time.monotonic() + 60
             resend = time.monotonic() + 5
