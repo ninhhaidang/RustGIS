@@ -49,6 +49,30 @@ impl Drop for Installed {
     }
 }
 
+/// Makes the run on this thread stop also once `stop` is set, its progress counted as before,
+/// until the guard is dropped: for a caller with a stop of its own (a map frame no longer
+/// wanted), so that a reader's long loops that only look at Cancel see it too.
+pub fn also_stop_when(stop: Arc<std::sync::atomic::AtomicBool>) -> Installed {
+    struct Either(Option<Arc<dyn Probe>>, Arc<std::sync::atomic::AtomicBool>);
+    impl Probe for Either {
+        fn cancelled(&self) -> bool {
+            self.1.load(std::sync::atomic::Ordering::Relaxed) || self.0.as_ref().is_some_and(|p| p.cancelled())
+        }
+        fn begin(&self, total: u64) {
+            if let Some(p) = &self.0 {
+                p.begin(total);
+            }
+        }
+        fn advance(&self, n: u64) {
+            if let Some(p) = &self.0 {
+                p.advance(n);
+            }
+        }
+    }
+    let before = CURRENT.with(|c| c.borrow().clone());
+    install(Some(Arc::new(Either(before, stop))))
+}
+
 /// Starts counting a step of `total` items for the progress.
 pub fn begin(total: usize) {
     CURRENT.with(|c| {
@@ -158,5 +182,18 @@ pub(crate) mod tests {
         }
         assert!(check().is_ok());
         assert!(step(1).is_ok(), "the guard put back no probe");
+        // A stop of the caller's own stops the run too, and the progress still reaches the probe.
+        let p = Arc::new(Counted::default());
+        let _g = install(Some(p.clone()));
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let _also = also_stop_when(stop.clone());
+            begin(4);
+            step(1).unwrap();
+            stop.store(true, Ordering::Relaxed);
+            assert!(matches!(check(), Err(DataError::Cancelled)));
+        }
+        assert_eq!((p.done.load(Ordering::Relaxed), p.total.load(Ordering::Relaxed)), (1, 4));
+        assert!(check().is_ok(), "the caller's stop is gone with its guard");
     }
 }

@@ -382,6 +382,13 @@ pub trait FeatureSource: Send + Sync {
     fn visits_chunks(&self) -> bool {
         self.streams_chunks()
     }
+    /// Whether a read by area ([`FeatureSource::visit_chunks`] with an extent) gives every
+    /// feature of a whole read whose shape meets the area: false where some can't be placed by
+    /// area (a Shapefile's records without a usable box, left out of reads by area), and for a
+    /// source that doesn't say.
+    fn finds_all_by_area(&self) -> bool {
+        false
+    }
     /// Whether a complete bounded traversal for a geographic extent is available. This also
     /// covers readers whose view and whole-export paths still use their existing sample or
     /// whole-read contracts.
