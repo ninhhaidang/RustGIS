@@ -3504,7 +3504,7 @@ const ASPRS: [(i64, [u8; 3]); 13] = [
 /// sample of its points.
 fn lidar_renderer(src: &dyn rustgis_data::source::FeatureSource, seed: u32) -> Option<Renderer> {
     let info = src.info();
-    let sample = src.read(&rustgis_data::source::Request { extent: None, limit: 100_000 }).ok()?;
+    let sample = src.read(&rustgis_data::source::Request { extent: None, limit: 100_000, own: None }).ok()?;
     let mut ds = rustgis_data::Dataset::new(info.name.clone(), GeometryType::Point, info.fields.clone());
     ds.features = sample.features.into();
     let mut base = rustgis_map::Symbol::default_for(GeometryType::Point, seed);

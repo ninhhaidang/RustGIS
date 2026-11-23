@@ -1672,7 +1672,7 @@ mod tests {
         let dropped = |f: Family| zm.parts.iter().find(|p| p.family == f).map(|p| (p.count, p.zm_dropped));
         assert_eq!((dropped(Family::Points), dropped(Family::Lines)), (Some((3, 2)), Some((1, 1))));
         let line_source = open(&lines.path);
-        let line_batch = line_source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        let line_batch = line_source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
         assert_eq!(line_batch.features.len(), 1);
         assert_eq!(line_batch.features[0].geometry.as_ref().unwrap().kind(), crate::GeometryType::Polyline);
         assert_eq!(line_batch.features[0].geometry.as_ref().unwrap().extent(), rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0));
@@ -1683,10 +1683,12 @@ mod tests {
         assert_eq!(info.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["id", "name", "day", "seen"]);
         assert_eq!(info.fields[2].ty, crate::FieldType::Date);
         assert_eq!(info.fields[3].ty, crate::FieldType::DateTime);
-        let b = pts.read(&crate::source::Request { extent: Some(rustgis_geom::Extent::new(10.5, 20.5, 12.0, 22.0)), limit: 10 }).unwrap();
+        let b = pts
+            .read(&crate::source::Request { extent: Some(rustgis_geom::Extent::new(10.5, 20.5, 12.0, 22.0)), limit: 10, own: None })
+            .unwrap();
         assert_eq!(b.features.len(), 1, "the extent query reads the covering");
         assert_eq!(b.features[0].geometry.as_ref().unwrap().extent(), rustgis_geom::Extent::new(11.0, 21.0, 11.0, 21.0));
-        let all_points = pts.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        let all_points = pts.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
         assert_eq!(all_points.features.len(), 2);
         assert!(all_points.features.iter().all(|f| f.geometry.as_ref().unwrap().kind() == crate::GeometryType::Point));
         let days: Vec<String> = all_points.features.iter().map(|f| f.attrs[2].to_string()).collect();
@@ -1697,7 +1699,7 @@ mod tests {
         let sql = "SELECT 1 AS id, DATE 'infinity' AS d, TIMESTAMP 'infinity' AS t, TIMESTAMP_S '-infinity' AS s, \
             TIMESTAMP_MS 'infinity' AS ms, TIMESTAMPTZ 'infinity' AS tz, ST_Point(1, 2) AS geom";
         let out = run_in(&cache, &Query { sql, ..Query::default() }, false).unwrap();
-        let infinite = open(&out.parts[0].path).read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        let infinite = open(&out.parts[0].path).read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
         assert_eq!(infinite.features.len(), 1);
         assert_eq!(infinite.unread_dates, [0, 1, 1, 1, 1, 1]);
         // A nanosecond timestamp is a timestamp, rounded to the microsecond and counted.
@@ -1709,7 +1711,7 @@ mod tests {
             nanos.info().fields.iter().map(|f| f.ty).collect::<Vec<_>>(),
             [crate::FieldType::Integer, crate::FieldType::DateTime, crate::FieldType::DateTime]
         );
-        let batch = nanos.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        let batch = nanos.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
         assert!(batch.unread_dates.is_empty());
         assert_eq!(batch.rounded_dates, [0, 1]);
         assert_eq!(batch.features[0].attrs[1].to_string(), "2026-03-05T12:34:56.123457");
@@ -1723,7 +1725,7 @@ mod tests {
         // placed where it is in longitude/latitude…
         let first = |path: &Path| {
             let source = open(path);
-            let batch = source.read(&crate::source::Request { extent: None, limit: 1 }).unwrap();
+            let batch = source.read(&crate::source::Request { extent: None, limit: 1, own: None }).unwrap();
             let Some(crate::Geometry::Point(c)) = batch.features.into_iter().next().unwrap().geometry else { panic!() };
             (source.coord_crs(), c, source.info().extent)
         };

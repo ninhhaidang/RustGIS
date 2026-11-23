@@ -631,12 +631,12 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
             // A read failure is not an empty dataset. Never install a corrupt or partially readable
             // conversion as a successful replacement.
             let source = super::open_path(&tmp, None)?;
-            Ok::<_, DataError>(!source.read(&super::Request { extent: None, limit: 1 })?.features.is_empty())
+            Ok::<_, DataError>(!source.read(&super::Request { extent: None, limit: 1, own: None })?.features.is_empty())
         } else {
             Ok(tmp.exists()
                 && super::open_path(&tmp, None)
                     .ok()
-                    .is_some_and(|s| s.read(&super::Request { extent: None, limit: 1 }).is_ok_and(|b| !b.features.is_empty())))
+                    .is_some_and(|s| s.read(&super::Request { extent: None, limit: 1, own: None }).is_ok_and(|b| !b.features.is_empty())))
         }
     })?;
     // The entry is replaced in an order that never leaves it naming a missing file: the new state
@@ -922,7 +922,7 @@ mod tests {
         };
         let first = |path: &Path| {
             let source = super::super::open_path(path, None).unwrap();
-            let batch = source.read(&super::super::Request { extent: None, limit: 1 }).unwrap();
+            let batch = source.read(&super::super::Request { extent: None, limit: 1, own: None }).unwrap();
             let Some(crate::Geometry::Point(c)) = batch.features.into_iter().next().unwrap().geometry else { panic!() };
             (source.coord_crs(), c)
         };
@@ -1130,7 +1130,7 @@ mod tests {
         for (path, workspace) in [(&again[0].path, None), (&fresh.path, Some(fresh.workspace.clone()))] {
             let source = super::super::fgb::FgbSource::open_converted_path(path, "mixed", &kml, workspace).unwrap();
             let captured = crate::provenance::Capture::start();
-            source.read(&super::super::Request { extent: None, limit: 1 }).unwrap();
+            source.read(&super::super::Request { extent: None, limit: 1, own: None }).unwrap();
             source.visit_chunks(None, 1024, &mut |_| Ok(())).unwrap();
             assert_eq!(captured.inputs().iter().map(|i| &i.path).collect::<Vec<_>>(), vec![&kml.display().to_string()]);
         }
@@ -1168,7 +1168,7 @@ mod tests {
                 let (converted, notes) = convert_in(&dir.path().join("cache"), &path, None, None).unwrap();
                 assert_eq!(converted.len(), 1);
                 let source = super::super::open_path(&converted[0].path, None).unwrap();
-                let batch = source.read(&super::super::Request { extent: None, limit: 10 }).unwrap();
+                let batch = source.read(&super::super::Request { extent: None, limit: 10, own: None }).unwrap();
                 assert_eq!(batch.features.len(), 1);
                 assert_eq!(batch.skipped, 0, "GDAL dropped the feature before RustGIS read it");
                 if lossy {
@@ -1271,7 +1271,7 @@ mod tests {
             assert_eq!(fresh.notes.iter().any(|n| n.contains("Z or M coordinates on 1 source feature")), lossy);
             assert_eq!(fresh.zm_dropped, lossy);
             let source = crate::source::open_path(&fresh.path, None).unwrap();
-            let batch = source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+            let batch = source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
             assert_eq!(batch.features[0].geometry.as_ref().unwrap().extent().center().x, if lossy { 2.0 } else { 8.0 });
         }
         // A layer of points with Z, two of its three features with only XY: the one with Z is
@@ -1308,7 +1308,7 @@ mod tests {
                 assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
             }
             let source = crate::source::open_path(&fresh.path, None).unwrap();
-            let batch = source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+            let batch = source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
             assert_eq!(batch.features.len(), 3);
             assert_eq!(batch.skipped, 0, "diagnostic occurrences are not skipped-feature counts");
             assert!(batch.features.iter().all(|f| f.geometry.as_ref().unwrap().kind() == GeometryType::Point));
@@ -1348,7 +1348,7 @@ mod tests {
                 assert!(fresh.notes.is_empty(), "single-family input has no conversion losses: {:?}", fresh.notes);
             }
             let source = crate::source::open_path(&fresh.path, None).unwrap();
-            let batch = source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+            let batch = source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
             assert_eq!(batch.features.len(), 1);
             assert_eq!(batch.features[0].geometry.as_ref().unwrap().kind(), GeometryType::Point);
         }
@@ -1445,7 +1445,7 @@ mod tests {
             }
             assert_eq!(fresh.zm_dropped, lossy);
             let source = crate::source::open_path(&fresh.path, None).unwrap();
-            let batch = source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+            let batch = source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
             assert_eq!(batch.features.len(), 2);
             assert!(batch.features.iter().all(|f| f.geometry.as_ref().unwrap().kind() == GeometryType::Point));
         }

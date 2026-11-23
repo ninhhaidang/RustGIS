@@ -1244,7 +1244,7 @@ mod tests {
             assert_eq!(saved.changes.deleted, 0, "trigger-only deletion is not a submitted deletion");
             let source = GpkgSource::open(&path, Some("roads")).unwrap();
             for (x, expected) in [(30.5, vec![2]), (60.5, vec![7]), (4.5, vec![])] {
-                let batch = source.read(&Request { extent: Some(Extent::new(x, 1.0, x + 0.1, 4.0)), limit: 100 }).unwrap();
+                let batch = source.read(&Request { extent: Some(Extent::new(x, 1.0, x + 0.1, 4.0)), limit: 100, own: None }).unwrap();
                 assert_eq!(batch.features.iter().map(|f| f.id).collect::<Vec<_>>(), expected, "indexed={indexed}");
             }
             let bounds: (f64, f64, f64, f64) = conn

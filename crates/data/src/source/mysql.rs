@@ -893,7 +893,7 @@ impl MysqlSource {
     /// The table's extent in longitude/latitude, from an evenly spread sample of its rows (all of
     /// them for a table that isn't large).
     fn measure(&self) -> Extent {
-        let Ok(b) = self.read_within(&Request { extent: None, limit: EXTENT_SAMPLE }, Some(PROBE_TIMEOUT)) else {
+        let Ok(b) = self.read_within(&Request { extent: None, limit: EXTENT_SAMPLE, own: None }, Some(PROBE_TIMEOUT)) else {
             return Extent::EMPTY;
         };
         // Read in the table's own system: each placed in longitude/latitude, vertex by vertex.
@@ -1314,10 +1314,10 @@ mod tests {
     #[test]
     fn refused_database_view_is_not_a_whole_table_sample() {
         let r = Reproject::from_crs(crate::raster::Crs::from_epsg(32617).unwrap(), &mut Vec::new());
-        let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10 };
+        let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
         let all = Extent::new(-84.0, 0.0, -78.0, 25.0);
         assert!(native_window(&req, all, &r).unwrap_err().to_string().contains("can't be bounded"));
-        let clean = Request { extent: Some(Extent::new(-84.0, 30.0, -78.0, 40.0)), limit: 10 };
+        let clean = Request { extent: Some(Extent::new(-84.0, 30.0, -78.0, 40.0)), limit: 10, own: None };
         assert!(native_window(&clean, Extent::EMPTY, &r).unwrap().is_some());
         assert!(native_window(&Request::all(), all, &r).unwrap().is_none());
     }
@@ -1368,12 +1368,12 @@ mod tests {
                 let src = MysqlSource::open(conn.clone(), t.clone(), Some(f), None).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
                 let opened = start.elapsed();
                 let i = src.info();
-                let whole = src.read(&Request { extent: None, limit: 250_000 }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
+                let whole = src.read(&Request { extent: None, limit: 250_000, own: None }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
                 let read = start.elapsed() - opened;
                 let e = i.extent;
                 let q = Extent::new(e.min_x, e.min_y, e.min_x + e.width() / 2.0, e.min_y + e.height() / 2.0);
                 let started = std::time::Instant::now();
-                let part = src.read(&Request { extent: Some(q), limit: 1000 }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
+                let part = src.read(&Request { extent: Some(q), limit: 1000, own: None }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
                 let quarter = started.elapsed();
                 // In the table's own system: compared in longitude/latitude, as the request is.
                 let to = src.coord_crs().to(crate::raster::Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));

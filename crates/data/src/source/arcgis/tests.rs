@@ -246,7 +246,7 @@ fn a_view_is_read_whole_over_several_pages_with_object_ids_as_ids() {
     let src = open_blocking(&query).unwrap();
     assert_eq!((src.info.format, src.info.count, src.info.crs.as_str()), (FORMAT, Some(FEATURES), "EPSG:4326"));
     assert_eq!(src.info.extent, Extent::new(-100.0, 40.0, -99.05, 40.95));
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     let want: Vec<u64> = (3..=6).flat_map(|row| (2..=5).map(move |col| row * 20 + col + 1)).collect();
     assert_eq!(ids(&b), want);
     assert!(b.complete && b.matched == 16);
@@ -256,7 +256,7 @@ fn a_view_is_read_whole_over_several_pages_with_object_ids_as_ids() {
 fn a_view_holding_more_than_the_limit_reads_every_kth_feature_spread_over_it() {
     let (query, _) = service("live-sample.test", 30, true, None);
     let src = open_blocking(&query).unwrap();
-    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 50 }).unwrap();
+    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 50, own: None }).unwrap();
     assert!(!b.complete && b.matched == FEATURES);
     // 400 over 50 is 8: every 8th object id, across the whole grid.
     assert!(b.features.len() == 50 && b.features.iter().all(|f| f.id % 8 == 0), "{:?}", ids(&b));
@@ -271,7 +271,7 @@ fn a_view_holding_more_than_the_limit_reads_every_kth_feature_spread_over_it() {
 fn a_view_read_again_asks_the_service_nothing() {
     let (query, asked) = service("live-again.test", 5, true, None);
     let src: Arc<dyn FeatureSource> = Arc::new(open_blocking(&query).unwrap());
-    let req = Request { extent: Some(small_view()), limit: 1000 };
+    let req = Request { extent: Some(small_view()), limit: 1000, own: None };
     let first = super::super::read_blocking(&src, &req).unwrap();
     let before = asked.count.load(Ordering::Relaxed);
     let again = super::super::read_blocking(&src, &req).unwrap();
@@ -284,10 +284,10 @@ fn a_service_that_cant_sample_gives_its_first_features_and_says_so() {
     let (query, _) = service("live-nosql.test", 30, false, None);
     let src = open_blocking(&query).unwrap();
     assert!(src.info.notes.iter().any(|n| n.contains("standardized SQL")), "{:?}", src.info.notes);
-    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 50 }).unwrap();
+    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 50, own: None }).unwrap();
     assert!(!b.complete && b.matched == FEATURES && !b.features.is_empty() && b.features.len() <= 50);
     // A view within the limit is read whole, whatever its cells hold.
-    let all = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 }).unwrap();
+    let all = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None }).unwrap();
     assert!(all.complete && all.features.len() == FEATURES as usize, "{}", all.features.len());
 }
 
@@ -360,7 +360,7 @@ fn views_anywhere_never_panic_and_ask_for_a_few_cells() {
     ];
     for v in views {
         let before = asked.count.load(Ordering::Relaxed);
-        let b = super::super::read_blocking(&src, &Request { extent: Some(v), limit: 100 });
+        let b = super::super::read_blocking(&src, &Request { extent: Some(v), limit: 100, own: None });
         assert!(b.is_ok(), "{v:?}: {b:?}");
         assert!(asked.count.load(Ordering::Relaxed) - before <= 64, "{v:?}");
     }
@@ -368,12 +368,13 @@ fn views_anywhere_never_panic_and_ask_for_a_few_cells() {
         assert!(cells(&v).len() <= 25, "{v:?}");
     }
     // Outside the world: nothing, said to be all of it.
-    let outside = super::super::read_blocking(&src, &Request { extent: Some(Extent::new(200.0, 0.0, 210.0, 10.0)), limit: 100 }).unwrap();
+    let outside =
+        super::super::read_blocking(&src, &Request { extent: Some(Extent::new(200.0, 0.0, 210.0, 10.0)), limit: 100, own: None }).unwrap();
     assert!(outside.complete && outside.features.is_empty());
     // No view at all: an error, never an empty answer, and nothing asked.
     let before = asked.count.load(Ordering::Relaxed);
     for v in [Extent::new(f64::NAN, 0.0, 1.0, 1.0), Extent::new(0.0, f64::INFINITY, 1.0, 1.0), Extent::new(5.0, 5.0, -5.0, -5.0)] {
-        assert!(super::super::read_blocking(&src, &Request { extent: Some(v), limit: 100 }).is_err(), "{v:?}");
+        assert!(super::super::read_blocking(&src, &Request { extent: Some(v), limit: 100, own: None }).is_err(), "{v:?}");
         let mut visit = |_: Vec<Feature>| Ok(());
         assert!(src.visit_chunks(Some(v), 4 << 10, &mut visit).is_err(), "{v:?}");
     }
@@ -386,12 +387,12 @@ fn what_pages_lose_is_said_by_each_read_and_none_when_nothing_is() {
     let (query, _) = service_with("live-z.test", Opts { z: true, ..Opts::default() });
     let src = open_blocking(&query).unwrap();
     assert!(src.info.zm_dropped && src.info.notes == vec![crate::zm_note(None)], "{:?}", src.info.notes);
-    assert!(read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap().notes.is_empty());
+    assert!(read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap().notes.is_empty());
     // Values each page loses: said by each read, a view's counted in its pages.
     let (query, _) = service_with("live-utf8.test", Opts { bad_text: true, ..Opts::default() });
     let src = open_blocking(&query).unwrap();
     assert!(src.info.notes.is_empty(), "{:?}", src.info.notes);
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     assert!(
         b.notes.len() == 1 && b.notes[0].contains("UTF-8") && b.notes[0].ends_with("counted in the pages read for the view"),
         "{:?}",
@@ -404,7 +405,7 @@ fn what_pages_lose_is_said_by_each_read_and_none_when_nothing_is() {
     let (query, _) = service("live-clean.test", 30, true, None);
     let src = open_blocking(&query).unwrap();
     assert!(src.info.notes.is_empty(), "{:?}", src.info.notes);
-    assert!(read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap().notes.is_empty());
+    assert!(read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap().notes.is_empty());
 }
 
 #[test]
@@ -432,7 +433,7 @@ fn sampling_steps_are_powers_of_two() {
 fn a_query_without_geometry_still_reads_its_views() {
     let (query, _) = service("live-nogeometry.test", 30, true, None);
     let src = open_blocking(&format!("{query}&returnGeometry=false")).unwrap();
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     assert!(b.complete && b.features.len() == 16 && b.features.iter().all(|f| f.geometry.is_some()));
 }
 
@@ -441,7 +442,7 @@ fn empty_pages_naming_no_fields_are_read_as_empty() {
     let (query, _) = service_with("live-emptypages.test", Opts { empty_without_fields: true, ..Opts::default() });
     let src = open_blocking(&query).unwrap();
     // Every 256th: one feature (256) in all, so most cells' sampled pages are empty.
-    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 2 }).unwrap();
+    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 2, own: None }).unwrap();
     assert_eq!(ids(&b), vec![256]);
     assert!(!b.complete);
 }
@@ -450,8 +451,8 @@ fn empty_pages_naming_no_fields_are_read_as_empty() {
 fn a_budgeted_view_stays_within_its_bytes_as_it_is_read_and_spread_over_it() {
     let (query, _) = service("live-budget.test", 30, true, None);
     let src = open_blocking(&query).unwrap();
-    let whole = Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 };
-    let all = read(&src, Request { extent: whole.extent, limit: 1000 }).unwrap();
+    let whole = Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None };
+    let all = read(&src, Request { extent: whole.extent, limit: 1000, own: None }).unwrap();
     let bytes = super::super::memory::features_bytes(&all.features) / 5;
     let shared: Arc<dyn FeatureSource> = Arc::new(open_blocking(&query).unwrap());
     // Fetched first, as the map's reads are, then read within the budget.
@@ -476,7 +477,7 @@ fn a_layer_matching_nothing_opens_and_reads_empty() {
     let src = open_blocking(&query.replace("where=1%3D1", "where=1%3D0")).unwrap();
     // Its geometry from the layer's description, as no feature says it.
     assert_eq!((src.info.count, src.info.geometry_type), (Some(0), crate::GeometryType::Point));
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     assert!(b.complete && b.features.is_empty() && b.matched == 0);
     let mut visited = 0;
     let all = src
@@ -498,14 +499,14 @@ fn a_view_larger_than_the_answers_kept_is_read_in_part_without_running_out_of_ro
         let (query, _) = service_with(host, Opts { page: 30, padded: true, sql, ..Opts::default() });
         let src = open_blocking(&query).unwrap();
         assert!(src.page() < 30 && src.page() * 10_600 < remote::MAX_ANSWER as usize, "{}", src.page());
-        let whole = Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 };
+        let whole = Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None };
         let b = read(&src, whole).unwrap();
         assert!(!b.complete && b.matched == FEATURES && !b.features.is_empty() && b.features.len() < FEATURES as usize, "{host}");
         assert_eq!(b.features.iter().map(|f| f.id).collect::<HashSet<_>>().len(), b.features.len());
         // Read again, it asks for what it read before.
         assert_eq!(ids(&read(&src, whole).unwrap()), ids(&b), "{host}");
         // A view whose answers fit (its cells hold a few of the large features) is read whole.
-        let fits = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+        let fits = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
         assert!(fits.complete && fits.features.len() == 16, "{host}: {}", fits.features.len());
     }
 }
@@ -537,7 +538,7 @@ fn pages_whose_answers_are_too_large_are_asked_for_again_shorter() {
     assert_eq!(src.page(), 30);
     // The whole grid: cells of many features, whose pages of 30 are too large (read by a source
     // of its own, which shortens its own pages).
-    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None }).unwrap();
     assert!(!b.features.is_empty());
     let mut visited = Vec::new();
     src.visit_chunks(None, 64 << 10, &mut |c| {
@@ -594,7 +595,7 @@ fn counts_past_any_layer_never_overflow() {
     let src = open_blocking(&query).unwrap();
     assert_eq!(src.info.count, Some(u64::MAX));
     // An answer, read or refused, whatever it is: never a panic.
-    let _ = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 });
+    let _ = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None });
     let _ = src.visit_chunks(None, 4 << 10, &mut |_| Ok(()));
 }
 
@@ -612,7 +613,7 @@ fn features_counted_but_not_sent_are_said_and_leave_the_read_incomplete() {
     assert!(!all.complete && visited == 390, "{visited}");
     assert!(all.notes.iter().any(|n| n.contains("10 features more than it sent")), "{:?}", all.notes);
     // A view read whole, but for what the service didn't send.
-    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(Extent::new(-101.0, 39.0, -99.0, 41.0)), limit: 1000, own: None }).unwrap();
     assert!(!b.complete && b.features.len() == 390, "{}", b.features.len());
     assert!(b.notes.iter().any(|n| n.contains("more than it sent")), "{:?}", b.notes);
 }
@@ -636,7 +637,7 @@ fn a_layer_matching_nothing_may_answer_with_no_bytes() {
     let (query, _) = service_with("live-nobytes.test", Opts { empty_body: true, ..Opts::default() });
     let src = open_blocking(&query.replace("where=1%3D1", "where=1%3D0")).unwrap();
     assert_eq!(src.info.count, Some(0));
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     assert!(b.complete && b.features.is_empty());
 }
 
@@ -649,7 +650,7 @@ fn a_layer_is_read_in_its_own_system() {
     let src = open_blocking(&query).unwrap();
     assert_eq!((src.coord_crs(), src.info.crs.as_str()), (crate::raster::Crs::WebMercator, "EPSG:3857"));
     let before = asked.count.load(Ordering::Relaxed);
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     let want: Vec<u64> = (3..=6).flat_map(|row| (2..=5).map(move |col| row * 20 + col + 1)).collect();
     assert_eq!(ids(&b), want);
     let pages: Vec<String> = asked.since(before).into_iter().filter(|u| u.contains("resultOffset")).collect();
@@ -678,7 +679,7 @@ fn a_layer_is_read_in_its_own_system() {
         let (query, _) = service_with(host, opts);
         let src = open_blocking(&query).unwrap();
         assert_eq!(src.coord_crs(), crate::raster::Crs::LonLat, "{host}");
-        assert_eq!(ids(&read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap()), want, "{host}");
+        assert_eq!(ids(&read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap()), want, "{host}");
     }
     // A code RustGIS doesn't read: longitude/latitude, as before.
     let description = r#"{"name":"Points","objectIdField":"OBJECTID","maxRecordCount":30,"supportedQueryFormats":"PBF","geometryType":"esriGeometryPoint",
@@ -686,7 +687,7 @@ fn a_layer_is_read_in_its_own_system() {
     let (query, asked) = service("unknown-system.test", 30, true, Some(description));
     let src = open_blocking(&query).unwrap();
     assert_eq!(src.coord_crs(), crate::raster::Crs::LonLat);
-    let b = read(&src, Request { extent: Some(small_view()), limit: 1000 }).unwrap();
+    let b = read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap();
     assert_eq!(ids(&b), want);
     assert!(asked.since(0).iter().filter(|u| u.contains("resultOffset")).all(|u| u.contains("outSR=4326")));
 }

@@ -425,7 +425,8 @@ mod tests {
         let scratch = Dataset::new("Polar", GeometryType::Polygon, vec![]);
         let expr = rustgis_data::query::parse(&query.text, &scratch).unwrap();
         let error =
-            read_filtered(source.as_ref(), &Request { extent: None, limit: 1 }, usize::MAX, scratch, &expr, true, &query.env).unwrap_err();
+            read_filtered(source.as_ref(), &Request { extent: None, limit: 1, own: None }, usize::MAX, scratch, &expr, true, &query.env)
+                .unwrap_err();
         assert!(error.to_string().contains("Polar") && error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
         // Text mentioning $area is ordinary text, not a request to measure the geometry.
         let text = Query { text: "'$area' = '$area'".into(), fields: vec![], env: Default::default() };
@@ -522,7 +523,7 @@ mod tests {
         let source = source();
         let projection = crate::Projection::WebMercator;
         for estimate in [0, 100] {
-            let request = Request { extent: None, limit: 0 };
+            let request = Request { extent: None, limit: 0, own: None };
             let (batch, cache) = read(source.as_ref(), &request, 4096, &projection, estimate).unwrap();
             assert!(batch.features.is_empty());
             assert!(cache.projected.is_empty());
@@ -674,7 +675,7 @@ mod tests {
     #[test]
     fn one_feature_can_use_the_optional_display_reservation() {
         let source = source();
-        let req = Request { extent: None, limit: 1 };
+        let req = Request { extent: None, limit: 1, own: None };
         let projection = crate::Projection::WebMercator;
         let (mut full, cache) = read_mode(source.as_ref(), &req, 1, &projection, 0, true, None, None).unwrap();
         full.features.shrink_to_fit();

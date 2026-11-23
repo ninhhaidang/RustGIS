@@ -145,7 +145,7 @@ fn differences(all: &[rustgis_data::Feature], got: &[u64], q: &Extent, how: &str
 /// What `src` does differently for `q`, besides the limits.
 fn check(src: &dyn FeatureSource, q: &Extent) -> Result<(Vec<String>, usize, usize), String> {
     let all = src.read(&Request::all()).map_err(|e| format!("whole read: {e}"))?;
-    let read = src.read(&Request { extent: Some(*q), limit: MAX_LIMIT }).map_err(|e| format!("read: {e}"))?;
+    let read = src.read(&Request { extent: Some(*q), limit: MAX_LIMIT, own: None }).map_err(|e| format!("read: {e}"))?;
     let mut found = differences(&all.features, &ids(read.features.iter().map(|f| f.id)), q, "read");
     if !read.complete {
         found.push("read was incomplete".into());

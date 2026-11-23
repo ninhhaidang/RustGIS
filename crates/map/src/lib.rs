@@ -640,11 +640,14 @@ impl Layer {
     /// read, and starts one when the view has moved beyond what was read. With `block`, reads in
     /// place and waits (for exports). Returns whether a read is still running.
     pub fn sync_source(&mut self, view: &Extent, block: bool) -> bool {
-        self.sync_source_with(view, block, &rustgis_data::query::Env::default())
+        self.sync_source_with(view, None, block, &rustgis_data::query::Env::default())
     }
 
-    /// Updates the source window, using the page when its definition query depends on it.
-    fn sync_source_with(&mut self, view: &Extent, block: bool, env: &rustgis_data::query::Env) -> bool {
+    /// Updates the source window, using the page when its definition query depends on it. `own`
+    /// is the view in map units with the map's system: taken when the source, once open, is in
+    /// that system and tests its features against a box there
+    /// (`FeatureSource::reads_own_box`).
+    fn sync_source_with(&mut self, view: &Extent, own: Option<&MapView<'_>>, block: bool, env: &rustgis_data::query::Env) -> bool {
         let Some(src) = &mut self.source else { return false };
         if !src.is_open() {
             // Opened once after a project loads; a failure is kept, not retried every frame.
@@ -691,9 +694,9 @@ impl Layer {
         // previous view's features.
         match src.poll(block) {
             source::Polled::Done(window, batch) => {
-                src.saw_unread_dates(&window.extent, &batch.unread_dates, &batch.rounded_dates);
-                src.saw_null_text(&window.extent, &batch.null_text);
-                src.saw_not_utf8(&window.extent, &batch.not_utf8);
+                src.saw_unread_dates(&window, &batch.unread_dates, &batch.rounded_dates);
+                src.saw_null_text(&window, &batch.null_text);
+                src.saw_not_utf8(&window, &batch.not_utf8);
                 src.saw_read_notes(&batch.notes);
                 self.install(batch.features)
             }
@@ -701,13 +704,16 @@ impl Layer {
             source::Polled::Idle | source::Polled::Waiting => {}
         }
         let Some(src) = &mut self.source else { return false };
-        if let Some(e) = src.wanted(view) {
-            src.start(e, block);
+        // Decided now that the source is open: one opened in this very call (an export waiting for
+        // it) reads in map units from its first window.
+        let own = own.filter(|m| src.reads_own_box() && src.coord_crs() == m.system).map(|m| (m.flat, m.view));
+        if let Some(wanted) = src.wanted_in(view, own) {
+            src.start_wanted(wanted, block);
             match src.poll(block) {
                 source::Polled::Done(window, batch) => {
-                    src.saw_unread_dates(&window.extent, &batch.unread_dates, &batch.rounded_dates);
-                    src.saw_null_text(&window.extent, &batch.null_text);
-                    src.saw_not_utf8(&window.extent, &batch.not_utf8);
+                    src.saw_unread_dates(&window, &batch.unread_dates, &batch.rounded_dates);
+                    src.saw_null_text(&window, &batch.null_text);
+                    src.saw_not_utf8(&window, &batch.not_utf8);
                     src.saw_read_notes(&batch.notes);
                     self.install(batch.features)
                 }
@@ -3061,6 +3067,21 @@ impl Map {
 
     /// Syncs drawing windows with the current page for source-side definition queries.
     pub fn sync_sources_with(&mut self, view: &Extent, scale: f64, block: bool, env: &rustgis_data::query::Env) -> bool {
+        self.sync_sources_in(view, None, scale, block, env)
+    }
+
+    /// [`Map::sync_sources_with`], given the view in map units too (`own`, for an upright flat
+    /// view): a layer whose source is in the map's own system ([`Map::own_system`]) reads its
+    /// window in map units, which the source tests its features' own boxes against
+    /// ([`rustgis_data::source::Request::own`]), converting none.
+    pub fn sync_sources_in(
+        &mut self,
+        view: &Extent,
+        own: Option<&Extent>,
+        scale: f64,
+        block: bool,
+        env: &rustgis_data::query::Env,
+    ) -> bool {
         let mut pending = false;
         let held = self.held_by_group(scale);
         // Hidden resident layers share the budget too; toggling visibility cannot multiply it.
@@ -3071,8 +3092,8 @@ impl Map {
                 pending |= raster.poll_reload();
             }
             if let Some(src) = &mut layer.source {
-                // Its features are held in longitude/latitude: a datum grid that arrived since
-                // they were read places them otherwise.
+                // A datum grid that arrived since its features were read places them otherwise in
+                // longitude/latitude, where a read finds them and the map draws them from.
                 let grids = rustgis_data::raster::crs::grid_generation();
                 let new_grids = src.grids.is_some_and(|g| g != grids);
                 src.grids = Some(grids);
@@ -3101,8 +3122,12 @@ impl Map {
                 }
             }
         }
+        let flat = self.flat();
+        // The view in map units with the map's system, for each layer to take once its source is
+        // open and says its own system ([`Layer::sync_source_with`]).
+        let own = own.and_then(|o| Self::own_system_of(&flat, &self.projection).map(|system| MapView { flat: &flat, system, view: *o }));
         for l in self.layers.iter_mut().filter(|l| l.is_streamed() && l.visible && l.in_scale_range(scale) && !held.contains(&l.id)) {
-            pending |= l.sync_source_with(view, block, env);
+            pending |= l.sync_source_with(view, own.as_ref(), block, env);
         }
         // A view kept for its frames fits in what its share leaves beside the rows it holds now,
         // hidden or not: a share shrunk by another streamed layer, or a larger view installed,
@@ -3113,6 +3138,24 @@ impl Map {
             }
         }
         pending
+    }
+
+    /// The system the map's coordinates are in, when geometry there is drawn as it is
+    /// ([`projection::Flat::held`]): Web Mercator's on its map, and the one a map in a projected
+    /// system names ([`projection::Flat::direct_system`]). `None` for the globe and every other
+    /// map.
+    pub fn own_system(&self) -> Option<rustgis_data::raster::Crs> {
+        Self::own_system_of(&self.flat(), &self.projection)
+    }
+
+    fn own_system_of(flat: &projection::Flat, projection: &Projection) -> Option<rustgis_data::raster::Crs> {
+        if projection.is_globe() {
+            return None;
+        }
+        match flat {
+            projection::Flat::Mercator => Some(rustgis_data::raster::Crs::WebMercator),
+            _ => flat.direct_system(),
+        }
     }
 
     /// Adds a raster layer; returns its id.
@@ -3762,6 +3805,14 @@ impl LonLatCopy {
     }
 }
 
+/// A view in map units, with the projection and the system the map's coordinates are in
+/// ([`Map::own_system`]), for a streamed layer in that system to read by
+/// ([`Map::sync_sources_in`]).
+struct MapView<'a> {
+    flat: &'a projection::Flat,
+    system: Crs,
+    view: Extent,
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4454,7 +4505,7 @@ mod tests {
                 page: Some(std::sync::Arc::new(rustgis_data::query::SeriesPage { feature_id: 1, name: number.to_string(), number })),
                 ..Default::default()
             };
-            l.sync_source_with(&view, true, &env);
+            l.sync_source_with(&view, None, true, &env);
             assert_eq!(l.dataset.features.len(), 1);
             assert_eq!(l.dataset.value(0, 0), &Value::Int(number as i64 - 1));
             assert_eq!(l.drawn_rows_with(1e6, &env), [true]);

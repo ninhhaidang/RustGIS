@@ -166,6 +166,9 @@ impl DataError {
 }
 
 #[cfg(test)]
+mod unplaced_out_tests;
+
+#[cfg(test)]
 mod secret_redaction_tests {
     use super::*;
 
@@ -762,6 +765,15 @@ fn layer_list(names: &[&str]) -> String {
     format!("{} layers ({shown}{more})", names.len())
 }
 
+/// What `what` (an export to a file, a copy, a package: "{target}") says of the `n` features of
+/// `layer` it took without their geometry, as a place of each can't be given in
+/// longitude/latitude ([`Dataset::in_lonlat_leaving_out`]). `None` for none.
+pub fn unplaced_note(target: &str, layer: &str, n: usize) -> Option<String> {
+    (n > 0).then(|| {
+        format!("{target}: {n} feature(s) of {layer} have a place that can't be given in longitude/latitude, so their geometry is left out (and the feature, where only features with geometry are kept)")
+    })
+}
+
 /// What an export of `layers` written in `crs` says its geometry lacks, one notice per kind. Each
 /// layer comes with its whole extent in longitude/latitude (for a layer read in place, its
 /// source's). `target` names what was written. The notices:
@@ -1108,6 +1120,29 @@ impl Dataset {
             }
         }
         Ok(Cow::Owned(out))
+    }
+
+    /// [`Dataset::in_lonlat`] for what leaves the session (an export, a copy, a package, a
+    /// published map): a feature with a place that can't be given in longitude/latitude keeps its
+    /// attributes and loses its geometry in the copy, rather than failing; returns how many did
+    /// ([`unplaced_note`]). Refused only when its system can't be converted at all.
+    pub fn in_lonlat_leaving_out(&self) -> std::result::Result<(Cow<'_, Dataset>, usize), String> {
+        let to = self.lonlat_conversion()?;
+        if to.is_identity() {
+            return Ok((Cow::Borrowed(self), 0));
+        }
+        stop_when_asked(0)?;
+        let mut out = self.clone();
+        out.held_in = raster::Crs::LonLat;
+        let mut unplaced = 0usize;
+        for (i, f) in out.features.iter_mut().enumerate() {
+            stop_when_asked(i)?;
+            if let Some(g) = f.geometry.take() {
+                f.geometry = convert_keeping_missing(&to, &g, &HeldPlaces::default());
+                unplaced += usize::from(f.geometry.is_none());
+            }
+        }
+        Ok((Cow::Owned(out), unplaced))
     }
 
     /// The dataset in `crs`, the system a tool works in when it works in its first input's own

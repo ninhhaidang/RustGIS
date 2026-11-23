@@ -219,12 +219,17 @@ impl SourceInfo {
 pub struct Request {
     pub extent: Option<Extent>,
     pub limit: usize,
+    /// The same box in a projected system, when the asker has it there exactly (a map in that
+    /// system gives its view in map units), with `extent` its longitude/latitude bounds. A source
+    /// whose own system ([`FeatureSource::coord_crs`]) it is tests each feature's own box against
+    /// it, converting nothing; any other source reads `extent`, as without it.
+    pub own: Option<(Crs, Extent)>,
 }
 
 impl Request {
     /// Every feature, up to [`MAX_LIMIT`].
     pub fn all() -> Self {
-        Request { extent: None, limit: MAX_LIMIT }
+        Request { extent: None, limit: MAX_LIMIT, own: None }
     }
 }
 
@@ -422,6 +427,15 @@ pub trait FeatureSource: Send + Sync {
     /// extent is in longitude/latitude whatever this is.
     fn coord_crs(&self) -> crate::raster::Crs {
         crate::raster::Crs::LonLat
+    }
+
+    /// Whether a read given its box in the source's own system ([`Request::own`]) tests its
+    /// features against that box (a file read in place, PostGIS), so a map in that system keeps
+    /// its window in map units for it. A source that reads by the longitude/latitude extent
+    /// whatever it is given (another database, a service, a converted copy) says no: its window is
+    /// kept in longitude/latitude, as it reads.
+    fn reads_own_box(&self) -> bool {
+        false
     }
     /// The encoding the source's text values are read in, for the notice of those that aren't
     /// valid in it ([`not_utf8_note`]).
@@ -685,6 +699,10 @@ impl FeatureSource for Fetching {
         self.0.coord_crs()
     }
 
+    fn reads_own_box(&self) -> bool {
+        self.0.reads_own_box()
+    }
+
     fn lost_to_crs(&self) -> bool {
         self.0.lost_to_crs()
     }
@@ -825,7 +843,7 @@ fn read_chunks(src: &dyn FeatureSource, budget: u64) -> Result<Batch> {
 
 /// The geometry type of a source that doesn't declare one, from its first feature.
 pub(crate) fn peek_kind(src: &dyn FeatureSource) -> GeometryType {
-    src.read(&Request { extent: None, limit: 1 })
+    src.read(&Request { extent: None, limit: 1, own: None })
         .ok()
         .and_then(|b| b.features.into_iter().find_map(|f| f.geometry))
         .map(|g| g.kind())
@@ -966,7 +984,7 @@ impl Reproject {
 
     /// A geometry as the file holds it, kept in the source's own coordinates
     /// ([`Reproject::crs`]), with its box in longitude/latitude for a request's extent to test
-    /// ([`Placed::in_request`]); `None` when a coordinate can't be converted to longitude/latitude,
+    /// ([`Reproject::place`]); `None` when a coordinate can't be converted to longitude/latitude,
     /// as a feature that can't be placed is left out. Each coordinate is converted to be checked,
     /// none is kept converted.
     pub(crate) fn read(&self, g: Geometry) -> Option<Placed> {
@@ -981,6 +999,40 @@ impl Reproject {
             None => ok = false,
         });
         ok.then_some(Placed { geometry: g, lonlat })
+    }
+
+    /// A geometry as the file holds it, kept in the source's own coordinates, and whether it is
+    /// within `req`. Given the request's box in those coordinates ([`Request::own`]), its own box
+    /// is tested against it, converting nothing, so a geometry with no place in
+    /// longitude/latitude is kept too (`None` for one with a coordinate that isn't a number).
+    /// Otherwise as [`Reproject::read`]: `None` when a coordinate can't be converted to
+    /// longitude/latitude, and its box there tested against the extent.
+    pub(crate) fn place(&self, g: Geometry, req: &Request) -> Option<Fitted> {
+        if let Some(own) = self.own_box(req) {
+            // A coordinate that isn't a number has no place here either: left out, as `read`
+            // leaves it out, for the reader to count.
+            if !g.is_finite() {
+                return None;
+            }
+            let inside = g.extent().intersects(&own);
+            return Some(Fitted { geometry: g, inside });
+        }
+        let Placed { geometry, lonlat } = self.read(g)?;
+        let inside = req.extent.is_none_or(|e| lonlat.intersects(&e));
+        Some(Fitted { geometry, inside })
+    }
+
+    /// The request's box in the source's own coordinates, when the asker gave it there
+    /// ([`Request::own`]) and they are projected.
+    pub(crate) fn own_box(&self, req: &Request) -> Option<Extent> {
+        req.own.filter(|(crs, _)| self.t.is_some() && *crs == self.crs).map(|(_, e)| e)
+    }
+
+    /// The request's box in the source's own coordinates, for an index to narrow by: the one the
+    /// asker gave there ([`Request::own`]), else its extent converted
+    /// ([`Reproject::extent_from_lonlat`]); `None` for none, or one that can't be bounded there.
+    pub(crate) fn request_box(&self, req: &Request) -> Option<Extent> {
+        self.own_box(req).or_else(|| req.extent.and_then(|e| self.extent_from_lonlat(&e)))
     }
 
     /// A longitude/latitude geometry in the source's coordinates.
@@ -1328,12 +1380,11 @@ pub(crate) struct Placed {
     pub(crate) lonlat: Extent,
 }
 
-impl Placed {
-    /// Whether it is within a request's extent (in longitude/latitude), as [`in_request`] asks
-    /// of a geometry there.
-    pub(crate) fn in_request(&self, req: &Request) -> bool {
-        req.extent.is_none_or(|e| self.lonlat.intersects(&e))
-    }
+/// A geometry a source read for a request, in its own coordinates, and whether it is within the
+/// request ([`Reproject::place`]).
+pub(crate) struct Fitted {
+    pub(crate) geometry: Geometry,
+    pub(crate) inside: bool,
 }
 
 /// Makes ring rustls's process-wide crypto provider. SQL Server's client also builds aws-lc-rs
@@ -1410,6 +1461,8 @@ pub(crate) fn read_ca_roots(label: &str, file: &Path, der: CaDer) -> Result<rust
     Ok(roots)
 }
 
+#[cfg(test)]
+mod own_box_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

@@ -704,6 +704,75 @@ pub(crate) fn project_features(features: &mut [crate::Feature], to: &crate::rast
     project_each(features, to, true)
 }
 
+/// [`project`] for an export: a feature with a place `crs` can't hold keeps its attributes and is
+/// written without its geometry, rather than failing the export; returns how many were
+/// ([`unplaced_export_note`]).
+pub fn project_leaving_out(ds: &Dataset, crs: Crs) -> Result<(Dataset, usize)> {
+    let from = ds.coord_crs();
+    if crs == from {
+        return Ok((ds.clone(), 0));
+    }
+    let mut out = ds.clone();
+    let to = from.to(crs).map_err(DataError::Format)?;
+    crate::progress::begin(out.features.len());
+    let unplaced = project_each_leaving_out(&mut out.features, &to, true)?;
+    out.held_in = crs;
+    Ok((out, unplaced))
+}
+
+/// [`project_each`] for an export: a feature with a place the target can't hold loses its
+/// geometry rather than failing; returns how many did. A coordinate that is missing already (NaN,
+/// infinite) stays missing, as [`crate::Dataset::in_lonlat`] keeps it, and loses nothing.
+pub(crate) fn project_each_leaving_out(features: &mut [crate::Feature], to: &crate::raster::Reprojection, count: bool) -> Result<usize> {
+    let mut unplaced = 0usize;
+    for f in features {
+        if count {
+            crate::progress::step(1)?;
+        } else {
+            crate::progress::check()?;
+        }
+        if let Some(g) = f.geometry.take() {
+            // A coordinate that isn't a number is kept as it is: converting it could give it a
+            // place (Web Mercator takes an infinite latitude to 85.05°).
+            let out = if to.is_identity() {
+                g.clone()
+            } else {
+                g.map_coords(&|c| if c.is_finite() { to.point(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)) } else { c })
+            };
+            if lost_a_place(&g, &out) {
+                unplaced += 1;
+            } else {
+                f.geometry = Some(out);
+            }
+        }
+    }
+    Ok(unplaced)
+}
+
+/// Whether `out`, `g` converted place for place, lost a place: one that was a number in `g` and
+/// isn't in `out`.
+fn lost_a_place(g: &Geometry, out: &Geometry) -> bool {
+    let mut was = Vec::new();
+    g.for_each_coord(|c| was.push(c.is_finite()));
+    let mut k = 0usize;
+    let mut lost = false;
+    out.for_each_coord(|c| {
+        lost |= was.get(k).copied().unwrap_or(true) && !c.is_finite();
+        k += 1;
+    });
+    lost
+}
+
+/// What an export to `target` says of the `n` features of `layer` with a place `crs` can't hold
+/// ([`project_leaving_out`]): their geometry is left out, and in a format that holds only
+/// features with geometry the feature too. `None` for none.
+pub fn unplaced_export_note(target: &str, layer: &str, n: usize, crs: Crs) -> Option<String> {
+    let system = if crs == Crs::LonLat { "WGS 84 (EPSG:4326)".to_string() } else { crs.label() };
+    (n > 0).then(|| {
+        format!("{target}: {n} feature(s) of {layer} have a place that can't be given in {system}, so their geometry is left out (and the feature, in a format that holds only features with geometry)")
+    })
+}
+
 /// [`project_features`] without a step of its own: it counts each feature in the step under way
 /// when `count` is set, and otherwise only stops once the run is cancelled.
 pub(crate) fn project_each(features: &mut [crate::Feature], to: &crate::raster::Reprojection, count: bool) -> Result<()> {
@@ -782,6 +851,8 @@ pub(crate) fn check_projected(ext: &str, crs: Crs) -> Result<()> {
 
 /// As [`write_bytes`], in the coordinate system `crs`: a GeoPackage, Shapefile or FlatGeobuf (see
 /// [`PROJECTED_FORMATS`]) says it; any other format is written only in longitude/latitude.
+/// Refused on a place `crs` can't hold, naming its feature; [`write_bytes_noted`] writes the
+/// feature without its geometry instead, and says so.
 pub fn write_bytes_in(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usize)> {
     let ext = ext.to_ascii_lowercase();
     if crs != Crs::LonLat {
@@ -795,6 +866,26 @@ pub fn write_bytes_in(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usi
         return projected_bytes(ds, &ext, crs);
     }
     projected_bytes(&project(ds, crs)?, &ext, crs)
+}
+
+/// [`write_bytes_in`] for an export (named `name` in its notes): a feature with a place `crs`
+/// can't hold is written without its geometry ([`project_leaving_out`]), and the notes say how
+/// many ([`unplaced_export_note`]).
+pub fn write_bytes_noted(ds: &Dataset, ext: &str, crs: Crs, name: &str) -> Result<(Vec<u8>, usize, Vec<String>)> {
+    let ext = ext.to_ascii_lowercase();
+    if crs != Crs::LonLat {
+        if !holds_a_system(&ext) {
+            return Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())));
+        }
+        check_projected(&ext, crs)?;
+    }
+    if crs == ds.coord_crs() {
+        let (bytes, left_out) = projected_bytes(ds, &ext, crs)?;
+        return Ok((bytes, left_out, Vec::new()));
+    }
+    let (projected, unplaced) = project_leaving_out(ds, crs)?;
+    let (bytes, left_out) = projected_bytes(&projected, &ext, crs)?;
+    Ok((bytes, left_out, unplaced_export_note(name, &ds.name, unplaced, crs).into_iter().collect()))
 }
 
 /// [`write_bytes_in`] for a dataset already in `crs`'s coordinates.
@@ -865,28 +956,46 @@ pub struct GpkgWritten {
 }
 
 /// As [`write_path`], in the coordinate system `crs` (a GeoPackage, Shapefile or FlatGeobuf; see
-/// [`write_bytes_in`]).
+/// [`write_bytes_in`]). Refused on a place `crs` can't hold, naming its feature, as it gives no
+/// notes to say it; [`write_path_to`] writes the feature without its geometry instead, and says so.
 pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
-    write_path_to(ds, path, crs, &GpkgTable::default()).map(|(left_out, _, _)| left_out)
+    write_path_as(ds, path, crs, &GpkgTable::default(), false).map(|(left_out, _, _)| left_out)
 }
 
 /// As [`write_path_in`], a GeoPackage's table placed as `gpkg` says (other formats ignore it):
 /// also returns the table written, and notes to give with the export (a Shapefile's old parts it
-/// couldn't remove once the new ones landed, [`kept_backups_note`]).
+/// couldn't remove once the new ones landed, [`kept_backups_note`]). A feature with a place `crs`
+/// can't hold is written without its geometry, and the notes say how many
+/// ([`unplaced_export_note`]).
 pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> Result<(usize, Option<GpkgWritten>, Vec<String>)> {
+    write_path_as(ds, path, crs, gpkg, true)
+}
+
+/// [`write_path_to`], leaving out a geometry `crs` can't hold (`leaving_out`, said in the notes)
+/// or refusing it ([`write_path_in`]).
+fn write_path_as(
+    ds: &Dataset,
+    path: &Path,
+    crs: Crs,
+    gpkg: &GpkgTable,
+    leaving_out: bool,
+) -> Result<(usize, Option<GpkgWritten>, Vec<String>)> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if crs != Crs::LonLat && PROJECTED_FORMATS.contains(&ext.as_str()) {
         check_projected(&ext, crs)?;
     }
     let projected;
-    // From the system the dataset holds its coordinates in ([`project`]): as they are when that
-    // is `crs`, and when `crs` is one the format can't hold, which is refused below.
+    // From the system the dataset holds its coordinates in ([`project_leaving_out`]): as they are
+    // when that is `crs`, and when `crs` is one the format can't hold, which is refused below. A
+    // feature with a place `crs` can't hold is written without its geometry, and said.
+    let mut unplaced = 0;
     let ds = if crs == ds.coord_crs() || (crs != Crs::LonLat && !holds_a_system(&ext)) {
         ds
     } else {
-        projected = project(ds, crs)?;
+        (projected, unplaced) = if leaving_out { project_leaving_out(ds, crs)? } else { (project(ds, crs)?, 0) };
         &projected
     };
+    let unplaced = unplaced_export_note(&path.display().to_string(), &ds.name, unplaced, crs);
     match ext.as_str() {
         "gpkg" => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -895,7 +1004,7 @@ pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> R
                 // Every feature is written: a layer of several kinds of geometry gets a GEOMETRY
                 // column, and one that declares no type takes its geometry's.
                 let table = crate::source::gpkg::write_table_in(ds, path, crs, gpkg)?;
-                Ok((0, Some(table), Vec::new()))
+                Ok((0, Some(table), unplaced.into_iter().collect()))
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -908,7 +1017,7 @@ pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> R
             let (parts, left_out) = shapefile_parts_in(ds, crs)?;
             let parts: Vec<(std::path::PathBuf, Vec<u8>)> = parts.into_iter().map(|(e, bytes)| (shapefile_part(path, e), bytes)).collect();
             let kept = place_shapefile(path, &stage_shapefile(&parts)?)?;
-            Ok((left_out, None, kept_backups_note(path, &kept).into_iter().collect()))
+            Ok((left_out, None, unplaced.into_iter().chain(kept_backups_note(path, &kept)).collect()))
         }
         _ if crs != Crs::LonLat && !holds_a_system(&ext) => {
             Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())))
@@ -916,7 +1025,7 @@ pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> R
         _ => {
             let (bytes, left_out) = projected_bytes(ds, &ext, crs)?;
             write_atomic(path, &bytes)?;
-            Ok((left_out, None, Vec::new()))
+            Ok((left_out, None, unplaced.into_iter().collect()))
         }
     }
 }
@@ -5063,8 +5172,16 @@ pub fn export_losses_notes_in(ds: &Dataset, ext: &str, name_field: Option<usize>
             // geographic system's, whose points alone are converted to be checked (no copy of the
             // layer); a projected system's aren't degrees, so aren't checked as such.
             let losses = if crs == Crs::LonLat {
-                let ds = ds.in_lonlat().map_err(DataError::of_conversion)?;
-                CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?
+                match ds.in_lonlat() {
+                    Ok(ds) => CsvLosses::of(&ds.features, ds.geometry_type, &ds.fields)?,
+                    // A place that can't be given there (written without its geometry, and said
+                    // by [`unplaced_export_note`]): its points converted one by one, those that
+                    // can't be counted as unusable.
+                    Err(_) => {
+                        let to = ds.lonlat_conversion().map_err(DataError::of_conversion)?;
+                        CsvLosses::of_placed(&ds.features, ds.geometry_type, &ds.fields, &|c| to.point(c))?
+                    }
+                }
             } else if crs.is_geographic() && crs != ds.coord_crs() {
                 let to = ds.coord_crs().to(crs).map_err(DataError::Format)?;
                 CsvLosses::of_placed(&ds.features, ds.geometry_type, &ds.fields, &|c| to.point(c))?

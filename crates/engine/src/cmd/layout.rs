@@ -2089,8 +2089,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                     layer.postgis = None;
                     layer.synced = None;
                     // Sketched in longitude/latitude, whatever system the layer holds its
-                    // coordinates in.
-                    let lonlat = l.dataset.in_lonlat()?;
+                    // coordinates in. A feature with a place that can't be given there isn't
+                    // drawn, which the map says of the layer it draws ([`Layer::unplaced`]).
+                    let (lonlat, _) = l.dataset.in_lonlat_leaving_out()?;
                     layer.dataset.held_in = rustgis_data::raster::Crs::LonLat;
                     layer.dataset.features = lonlat
                         .features
@@ -2135,7 +2136,8 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         sky: false,
     };
     let lonlat = crate::render::view_lonlat(s.map(), &view);
-    let reading = s.map_mut().sync_sources(&lonlat, render_scale, true);
+    let own = crate::render::view_own(s.map(), &view);
+    let reading = s.map_mut().sync_sources_in(&lonlat, own.as_ref(), render_scale, true, &rustgis_data::query::Env::default());
     // Context around the data (neighbouring borders, the states around in one colour), which the
     // placement already sets aside, is left out of the legend too, unless "contextInLegend" (#1379).
     // It is judged again at each other scale the search below draws the map at, as the placement
@@ -2409,7 +2411,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                         sky: false,
                     };
                     let lonlat = crate::render::view_lonlat(s.map(), &view);
-                    let reading = s.map_mut().sync_sources(&lonlat, render_scale, true);
+                    let own = crate::render::view_own(s.map(), &view);
+                    let reading =
+                        s.map_mut().sync_sources_in(&lonlat, own.as_ref(), render_scale, true, &rustgis_data::query::Env::default());
                     let here_context = if tried == asked_scale { context.clone() } else { context_at(s, centred, tried) };
                     let here =
                         if reading || (tried != asked_scale && crate::render::layout::tile_legends_pending(s.map(), render_scale, &[])) {

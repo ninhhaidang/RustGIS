@@ -503,7 +503,8 @@ fn cache_child_fixture() {
         assert!(!source.info().indexed);
         assert!(source.info().notes.iter().any(|n| n.contains("scanning record headers")));
         for limit in [0, 1, 100] {
-            let batch = source.read(&crate::source::Request { extent: Some(crate::Extent::new(0.0, 0.0, 3.0, 3.0)), limit }).unwrap();
+            let batch =
+                source.read(&crate::source::Request { extent: Some(crate::Extent::new(0.0, 0.0, 3.0, 3.0)), limit, own: None }).unwrap();
             assert_eq!(batch.matched, 1);
             assert_eq!(batch.features.len(), limit.min(1));
         }

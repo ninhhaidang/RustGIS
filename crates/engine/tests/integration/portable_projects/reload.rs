@@ -696,7 +696,7 @@ fn reload_reconverts_original_gdal_folder_and_accepts_its_declared_empty_table()
     assert!(loaded(&reopened, id).features.is_empty());
     drop(reopened);
     assert!(restored_workspace.exists(), "an escaped restored reader pins its fresh workspace");
-    let batch = restored_reader.read(&rustgis_engine::data::source::Request { extent: None, limit: 1 }).unwrap();
+    let batch = restored_reader.read(&rustgis_engine::data::source::Request { extent: None, limit: 1, own: None }).unwrap();
     assert!(batch.complete && batch.features.is_empty() && batch.skipped == 0);
     drop(restored_reader);
     assert!(!restored_workspace.exists(), "the last restored reader releases all conversion artifacts");
@@ -806,7 +806,7 @@ fn reload_reconverts_duckdb_table_and_keeps_only_its_original_geometry_branch() 
     assert!(loaded(&reopened, id).features.is_empty());
     drop(reopened);
     assert!(restored_workspace.exists(), "an escaped restored reader pins its fresh workspace");
-    let batch = restored_reader.read(&rustgis_engine::data::source::Request { extent: None, limit: 1 }).unwrap();
+    let batch = restored_reader.read(&rustgis_engine::data::source::Request { extent: None, limit: 1, own: None }).unwrap();
     assert!(batch.complete && batch.features.is_empty() && batch.skipped == 0);
     drop(restored_reader);
     assert!(!restored_workspace.exists(), "the last restored reader releases all conversion artifacts");

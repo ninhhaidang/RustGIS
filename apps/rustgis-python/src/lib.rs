@@ -232,13 +232,20 @@ impl Engine {
                 if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{name} as GeoJSON")) {
                     session.notify(note, false);
                 }
-                // GeoJSON is longitude/latitude, whatever system the source holds its coordinates in.
-                return Ok(rustgis_engine::data::io::to_geojson(&*ds.in_lonlat()?).to_string());
+                // GeoJSON is longitude/latitude, whatever system the source holds its coordinates in;
+                // a feature with a place that can't be given there is in it without its geometry.
+                let (lonlat, unplaced) = ds.in_lonlat_leaving_out()?;
+                if let Some(note) = rustgis_engine::data::unplaced_note(&format!("{name} as GeoJSON"), &ds.name, unplaced) {
+                    session.notify(note, false);
+                }
+                return Ok(rustgis_engine::data::io::to_geojson(&lonlat).to_string());
             }
             if !selected {
-                let text = rustgis_engine::data::io::to_geojson(&*found.dataset.in_lonlat()?).to_string();
+                let (lonlat, unplaced) = found.dataset.in_lonlat_leaving_out()?;
+                let text = rustgis_engine::data::io::to_geojson(&lonlat).to_string();
                 let note = rustgis_engine::data::zm_export_note([&found.dataset], &format!("{} as GeoJSON", found.name));
-                if let Some(note) = note {
+                let unplaced = rustgis_engine::data::unplaced_note(&format!("{} as GeoJSON", found.name), &found.name, unplaced);
+                for note in note.into_iter().chain(unplaced) {
                     session.notify(note, false);
                 }
                 return Ok(text);
@@ -249,16 +256,16 @@ impl Engine {
             // exactly through WGS 84, as the whole layer's GeoJSON is, whatever map it is shown on.
             // A layer whose system can't be converted fails only with a geometry to convert, as
             // it did when each geometry was converted on its own.
+            // A geometry with a place that can't be given there is left out, and counted.
             let to = found.dataset.lonlat_conversion();
+            let mut unplaced = 0usize;
             for r in found.selection.iter().filter_map(|&i| found.dataset.features.row(i)) {
                 let g = match r.geometry() {
                     Some(g) => {
                         let to = to.as_ref().map_err(|e| format!("{}: {e}", found.name))?;
-                        Some(
-                            rustgis_engine::data::Dataset::geometry_to_lonlat_by(to, g)
-                                .map_err(|e| format!("{}: feature {}: {e}", found.name, r.id()))?
-                                .into_owned(),
-                        )
+                        let g = rustgis_engine::data::Dataset::geometry_to_lonlat_by(to, g).ok().map(std::borrow::Cow::into_owned);
+                        unplaced += usize::from(g.is_none());
+                        g
                     }
                     None => None,
                 };
@@ -266,6 +273,9 @@ impl Engine {
             }
             let text = rustgis_engine::data::io::to_geojson(&ds).to_string();
             if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{} as GeoJSON", ds.name)) {
+                session.notify(note, false);
+            }
+            if let Some(note) = rustgis_engine::data::unplaced_note(&format!("{} as GeoJSON", ds.name), &ds.name, unplaced) {
                 session.notify(note, false);
             }
             Ok::<String, String>(text)

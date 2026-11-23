@@ -14,10 +14,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use crate::projection::Flat;
 use rustgis_data::source::{Batch, FeatureSource, Request, SourceInfo};
-use rustgis_geom::Extent;
+use rustgis_geom::{Coord, Extent};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod own_tests;
 mod render_lod;
 mod render_view;
 pub use render_view::KEPT_VIEW_BYTES;
@@ -709,11 +712,15 @@ pub struct Window {
     pub kept: usize,
     /// The read kept the definition query's matches: `matched` counts them.
     pub filtered: bool,
+    /// The same box in map units, when it was read in the map's own system, which is the
+    /// source's ([`SourceLayer::wanted_in`]): a later view is tested against it there.
+    pub own: Option<Extent>,
 }
 
 /// A read in flight.
 struct Pending {
     extent: Extent,
+    own: Option<Extent>,
     result: Mutex<Option<Result<(Batch, window::Cache), String>>>,
     still: Option<rustgis_data::source::remote::Still>,
 }
@@ -778,11 +785,33 @@ pub(crate) fn another_frame() {
 /// How many windows a [`Tally`] keeps apart.
 const WINDOWS_COUNTED: usize = 64;
 
+/// Which read a batch's counts are of ([`SourceLayer::saw_unread_dates`]): its window's
+/// longitude/latitude extent and, for one read in map units, its box there. Two windows in map
+/// units can share a longitude/latitude extent (both read by the view's where the map can't take
+/// their boxes back), so the box tells them apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowKey {
+    extent: Extent,
+    own: Option<Extent>,
+}
+
+impl From<&Extent> for WindowKey {
+    fn from(extent: &Extent) -> Self {
+        WindowKey { extent: *extent, own: None }
+    }
+}
+
+impl From<&Window> for WindowKey {
+    fn from(w: &Window) -> Self {
+        WindowKey { extent: w.extent, own: w.own }
+    }
+}
+
 /// What view reads found, counted for each field by its position, kept for each window read: a
 /// window read again replaces its counts instead of adding to them.
 #[derive(Clone, Default)]
 struct Tally {
-    windows: Vec<(Extent, Vec<usize>)>,
+    windows: Vec<(WindowKey, Vec<usize>)>,
     /// Counts of windows past [`WINDOWS_COUNTED`], added up as they come.
     // ponytail: past 64 windows between two notice passes a window read again adds up as before;
     // keep rows' identity in `Batch` to count exactly.
@@ -790,8 +819,9 @@ struct Tally {
 }
 
 impl Tally {
-    fn saw(&mut self, window: &Extent, counts: &[usize]) {
-        let at = self.windows.iter().position(|(w, _)| w == window);
+    fn saw(&mut self, window: impl Into<WindowKey>, counts: &[usize]) {
+        let window = window.into();
+        let at = self.windows.iter().position(|(w, _)| *w == window);
         if counts.iter().all(|n| *n == 0) {
             if let Some(at) = at {
                 self.windows.remove(at);
@@ -799,7 +829,7 @@ impl Tally {
         } else if let Some((_, kept)) = at.and_then(|at| self.windows.get_mut(at)) {
             *kept = counts.to_vec();
         } else if self.windows.len() < WINDOWS_COUNTED {
-            self.windows.push((*window, counts.to_vec()));
+            self.windows.push((window, counts.to_vec()));
         } else {
             rustgis_data::source::add_unread_dates(&mut self.rest, counts);
         }
@@ -830,7 +860,7 @@ pub enum Polled {
     /// A read is still running.
     Waiting,
     /// A read finished: install its features.
-    Done(Window, Batch),
+    Done(Window, Box<Batch>),
     /// A read failed.
     Failed(String),
 }
@@ -844,10 +874,11 @@ impl SourceLayer {
     /// [`SourceLayer::take_unread_dates`] says it. Once said, later reads aren't counted: they
     /// read the same features again, and the notice says Load All Features counts them all.
     /// Each kind is counted until its own notice is said, so saying one doesn't silence the other.
-    /// `window` is the extent the batch was read for: reading it again replaces its counts, so the
-    /// same rows aren't counted twice. Two different windows that overlap still count the rows
+    /// `window` is what the batch was read for ([`WindowKey`]: its extent, and its box in map
+    /// units): reading it again replaces its counts, so the same rows aren't counted twice. Two different windows that overlap still count the rows
     /// they share twice; the notice says "so far" and Load All Features counts them all.
-    pub fn saw_unread_dates(&mut self, window: &Extent, unread: &[usize], rounded: &[usize]) {
+    pub fn saw_unread_dates(&mut self, window: impl Into<WindowKey>, unread: &[usize], rounded: &[usize]) {
+        let window = window.into();
         if !self.unread_dates_said {
             self.unread_dates.saw(window, unread);
         }
@@ -875,7 +906,7 @@ impl SourceLayer {
 
     /// Keeps what view reads found of text values `<Null>` read as null, until
     /// [`SourceLayer::take_null_text`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
-    pub fn saw_null_text(&mut self, window: &Extent, counts: &[usize]) {
+    pub fn saw_null_text(&mut self, window: impl Into<WindowKey>, counts: &[usize]) {
         if !self.null_text_said {
             self.null_text.saw(window, counts);
         }
@@ -892,7 +923,7 @@ impl SourceLayer {
 
     /// Keeps what view reads found of text values that aren't UTF-8, until
     /// [`SourceLayer::take_not_utf8`] says it, as [`SourceLayer::saw_unread_dates`] does for dates.
-    pub fn saw_not_utf8(&mut self, window: &Extent, counts: &[usize]) {
+    pub fn saw_not_utf8(&mut self, window: impl Into<WindowKey>, counts: &[usize]) {
         if !self.not_utf8_said {
             let encoding = self.handle.as_ref().map_or("UTF-8", |h| h.text_encoding());
             // Counts of another encoding are of another opening's text: they aren't added to these.
@@ -1137,7 +1168,7 @@ impl SourceLayer {
         // Opening a header alone doesn't establish that its payload is readable. Probe the
         // candidate, never the live source, before the caller commits the replacement.
         let handle = new.handle.as_deref().ok_or_else(|| named("the replacement source didn't open"))?;
-        let probe = handle.read(&Request { extent: None, limit: 1 }).map_err(|e| named(&e.to_string()))?;
+        let probe = handle.read(&Request { extent: None, limit: 1, own: None }).map_err(|e| named(&e.to_string()))?;
         if probe.features.is_empty() && probe.skipped > 0 {
             return Err(named(&format!(
                 "no readable features found while checking the replacement ({} rows could not be read)",
@@ -1175,6 +1206,12 @@ impl SourceLayer {
     /// file read in place; longitude/latitude until it is open.
     pub fn coord_crs(&self) -> rustgis_data::raster::Crs {
         self.handle.as_ref().map_or(rustgis_data::raster::Crs::LonLat, |h| h.coord_crs())
+    }
+
+    /// Whether its source tests its features against a box in its own system
+    /// ([`FeatureSource::reads_own_box`]); no until it is open.
+    pub fn reads_own_box(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| h.reads_own_box())
     }
 
     /// A source that can be read whole a chunk at a time, for an export.
@@ -1839,21 +1876,48 @@ impl SourceLayer {
         self.saved_selection.clear();
     }
 
-    /// The extent to read for a view (longitude/latitude), or `None` when the window serves it.
-    pub fn wanted(&self, view: &Extent) -> Option<Extent> {
+    /// The extent to read for a view, or `None` when the window serves it. `own` is the view in
+    /// map units with the map's projection, given when the map is in the source's own system: the
+    /// window is then read and kept in map units too, its longitude/latitude extent the place of
+    /// that box there.
+    pub fn wanted_in(&self, view: &Extent, own: Option<(&Flat, Extent)>) -> Option<Wanted> {
         let v = clamp_world(view);
         if v.is_empty() {
             return None;
         }
-        if let Some(w) = &self.window {
-            let all = self.info().map(|i| i.extent).filter(|e| !e.is_empty());
-            // Everything has been read: nothing more to fetch, wherever the view goes.
-            if w.complete && all.is_some_and(|a| contains(&w.extent, &a)) {
+        let own = own.filter(|(_, o)| !o.is_empty() && [o.min_x, o.min_y, o.max_x, o.max_y].iter().all(|n| n.is_finite()));
+        // A view past the world (zoomed out) reads the world, as in longitude/latitude: clamped to
+        // the world's box in map units, or read in longitude/latitude where the map can't place
+        // the world (a system for an area).
+        let whole = contains(&v, &Extent::WORLD_LONLAT);
+        let own = own.and_then(|(flat, o)| {
+            if !whole {
+                return Some((flat, o));
+            }
+            let world = map_around(flat, &Extent::WORLD_LONLAT)?;
+            let clamped =
+                Extent::new(o.min_x.max(world.min_x), o.min_y.max(world.min_y), o.max_x.min(world.max_x), o.max_y.min(world.max_y));
+            (!clamped.is_empty()).then_some((flat, clamped))
+        });
+        let all = self.info().map(|i| i.extent).filter(|e| !e.is_empty());
+        // A window is reused only by a view of the kind it was read for: one read in
+        // longitude/latitude lacks the features a read in map units also keeps (a place past
+        // where longitude/latitude goes), and one read in map units holds less than its
+        // longitude/latitude extent.
+        if let Some(w) = self.window.as_ref().filter(|w| w.own.is_some() == own.is_some()) {
+            // Everything has been read: nothing more to fetch, wherever the view goes. Only in
+            // longitude/latitude, where the source's extent bounds every feature it reads; in map
+            // units a feature with no place in longitude/latitude lies outside that extent.
+            if w.own.is_none() && w.complete && all.is_some_and(|a| contains(&w.extent, &a)) {
                 return None;
             }
             // The window covers the view, and is complete or not much larger (a view zoomed well
             // inside a sampled window reads again, for the detail the sample left out).
-            if contains(&w.extent, &v) && (w.complete || area(&v) * 6.0 > area(&w.extent)) {
+            let (view, read) = match (own, w.own) {
+                (Some((_, o)), Some(read)) => (o, read),
+                _ => (v, w.extent),
+            };
+            if contains(&read, &view) && (w.complete || area(&view) * 6.0 > area(&read)) {
                 return None;
             }
         }
@@ -1863,15 +1927,34 @@ impl SourceLayer {
         if self.pending.is_some() {
             return None;
         }
-        Some(clamp_world(&v.padded(0.5, 0.0)))
+        let lonlat = clamp_world(&v.padded(0.5, 0.0));
+        // In map units, the read's longitude/latitude extent is the place of its box there. Where
+        // the map can't take that box back (a regional system zoomed far out), it is the view's,
+        // as without one; the window is still kept in map units, so the same view doesn't read
+        // again.
+        if let Some((flat, o)) = own {
+            let padded = o.padded(0.5, 0.0);
+            let extent = lonlat_around(flat, &padded).map(|e| clamp_world(&e)).filter(|e| !e.is_empty()).unwrap_or(lonlat);
+            return Some(Wanted { extent, own: Some(padded) });
+        }
+        Some(Wanted { extent: lonlat, own: None })
     }
 
     /// Starts reading an extent: on a background thread unless `block` (or in the browser).
     pub fn start(&mut self, extent: Extent, block: bool) {
+        self.start_wanted(Wanted { extent, own: None }, block);
+    }
+
+    /// Starts reading what [`SourceLayer::wanted_in`] asked for: on a background thread unless
+    /// `block` (or in the browser). A box in map units goes to the source as one in its own
+    /// system ([`Request::own`]).
+    pub fn start_wanted(&mut self, wanted: Wanted, block: bool) {
+        let Wanted { extent, own } = wanted;
         self.ready_cache = None;
         let Some(h) = self.handle.clone() else { return };
         let most = if h.remote().is_some() { REMOTE_VIEW_LIMIT } else { VIEW_LIMIT };
-        let req = Request { extent: Some(extent), limit: if self.limit == 0 { most } else { self.limit } };
+        let own_box = own.map(|o| (h.coord_crs(), o));
+        let req = Request { extent: Some(extent), limit: if self.limit == 0 { most } else { self.limit }, own: own_box };
         let budget = self.budget();
         let projection = self.projection.clone().unwrap_or(crate::Projection::WebMercator);
         let estimate = self.estimated_row_bytes;
@@ -1879,7 +1962,7 @@ impl SourceLayer {
         let fields = self.window_fields;
         let query = self.query.clone();
         let still = rustgis_data::source::remote::current_still();
-        let pending = Arc::new(Pending { extent, result: Mutex::new(None), still: still.clone() });
+        let pending = Arc::new(Pending { extent, own, result: Mutex::new(None), still: still.clone() });
         let p = pending.clone();
         // A source by its web address: the read runs as its bytes land (on the desktop and in
         // the browser alike), fetching what it needs in rounds.
@@ -1940,7 +2023,7 @@ impl SourceLayer {
                 Err(e) => {
                     self.saved_selection.clear();
                     self.error = Some(format!("couldn't start reading the layer: {e}"));
-                    self.window = Some(Window { extent, complete: true, matched: 0, kept: 0, filtered: false });
+                    self.window = Some(Window { extent, complete: true, matched: 0, kept: 0, filtered: false, own });
                 }
             }
             return;
@@ -1962,10 +2045,11 @@ impl SourceLayer {
                     self.estimated_row_bytes = cache.mean_bytes;
                     let filtered = cache.filtered;
                     self.ready_cache = Some(cache);
-                    let w = Window { extent: p.extent, complete: b.complete, matched: b.matched, kept: b.features.len(), filtered };
+                    let w =
+                        Window { extent: p.extent, complete: b.complete, matched: b.matched, kept: b.features.len(), filtered, own: p.own };
                     self.window = Some(w);
                     self.clear_error();
-                    return Polled::Done(w, b);
+                    return Polled::Done(w, Box::new(b));
                 }
                 Some(Err(e)) => {
                     self.pending = None;
@@ -1973,7 +2057,7 @@ impl SourceLayer {
                     self.saved_selection.clear();
                     self.error = Some(e.clone());
                     // Not read again until the view moves past it.
-                    self.window = Some(Window { extent: p.extent, complete: true, matched: 0, kept: 0, filtered: false });
+                    self.window = Some(Window { extent: p.extent, complete: true, matched: 0, kept: 0, filtered: false, own: p.own });
                     return Polled::Failed(e);
                 }
                 None if block && cfg!(not(target_arch = "wasm32")) && start.elapsed() < web_time::Duration::from_secs(60) => {
@@ -2015,6 +2099,50 @@ fn contains(outer: &Extent, inner: &Extent) -> bool {
         && outer.min_y <= inner.min_y
         && outer.max_x >= inner.max_x
         && outer.max_y >= inner.max_y
+}
+
+/// What a view wants read ([`SourceLayer::wanted_in`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wanted {
+    /// Longitude/latitude.
+    pub extent: Extent,
+    /// The same box in map units, when the map is in the source's own system.
+    pub own: Option<Extent>,
+}
+
+/// Where a box in map units lies in longitude/latitude: its edges taken back, 16 places each,
+/// reaching a pole inside it (a polar system); `None` when the map can't take a place back.
+fn lonlat_around(flat: &Flat, e: &Extent) -> Option<Extent> {
+    let mut out = Extent::EMPTY;
+    const N: usize = 16;
+    for i in 0..=N {
+        let t = i as f64 / N as f64;
+        let (x, y) = (e.min_x + t * e.width(), e.min_y + t * e.height());
+        for c in [Coord::new(x, e.min_y), Coord::new(x, e.max_y), Coord::new(e.min_x, y), Coord::new(e.max_x, y)] {
+            out.expand(flat.inverse(c).filter(|p| p.is_finite())?);
+        }
+    }
+    for pole in [Coord::new(0.0, 90.0), Coord::new(0.0, -90.0)] {
+        if flat.forward(pole).is_some_and(|p| p.is_finite() && e.contains(p)) {
+            out = Extent::new(-180.0, out.min_y.min(pole.y), 180.0, out.max_y.max(pole.y));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Where a longitude/latitude box lies in map units: its edges taken there, 16 places each;
+/// `None` when the map can't place one of them.
+fn map_around(flat: &Flat, e: &Extent) -> Option<Extent> {
+    let mut out = Extent::EMPTY;
+    const N: usize = 16;
+    for i in 0..=N {
+        let t = i as f64 / N as f64;
+        let (x, y) = (e.min_x + t * e.width(), e.min_y + t * e.height());
+        for c in [Coord::new(x, e.min_y), Coord::new(x, e.max_y), Coord::new(e.min_x, y), Coord::new(e.max_x, y)] {
+            out.expand(flat.forward(c).filter(|p| p.is_finite())?);
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn clamp_world(e: &Extent) -> Extent {
@@ -2270,6 +2398,18 @@ mod tests {
         assert_eq!(tally.total(), Some(vec![1]));
         tally.saw(&b, &[0]);
         assert_eq!(tally.total(), None);
+        // Two windows in map units read by the same longitude/latitude extent (where the map can't
+        // take their boxes back) are told apart by their boxes: the second's clean read leaves the
+        // first's counts.
+        let mut apart = Tally::default();
+        let first =
+            super::Window { extent: a, complete: true, matched: 1, kept: 1, filtered: false, own: Some(Extent::new(0.0, 0.0, 1.0, 1.0)) };
+        let second = super::Window { own: Some(Extent::new(5.0, 5.0, 6.0, 6.0)), ..first };
+        apart.saw(&first, &[1]);
+        apart.saw(&second, &[0]);
+        assert_eq!(apart.total(), Some(vec![1]));
+        apart.saw(&first, &[0]);
+        assert_eq!(apart.total(), None);
         let nan = Extent::new(f64::NAN, 0.0, 1.0, 1.0);
         for _ in 0..2 * WINDOWS_COUNTED {
             tally.saw(&nan, &[1]);

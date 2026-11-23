@@ -758,6 +758,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: 
             );
             let mut format_notes = e.csv.notes(&ds.fields, path);
             format_notes.extend(e.csv.coordinates_note_in(&ds.fields, path, crs));
+            format_notes.extend(rustgis_data::io::unplaced_export_note(path, &layer.name, e.unplaced, crs));
             // Text that reading the file back changes: CSV reads a blank cell as null; KML and GPX trim
             // their values.
             format_notes.extend(e.text.notes(&ds.fields, path));

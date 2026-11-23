@@ -398,13 +398,13 @@ fn geopackage_provenance_excludes_temporary_copies() {
     let upload = gpkg::GpkgUpload::new(&bytes).unwrap();
     assert!(upload.unsupported_table_counts().unwrap().is_empty());
     let source = upload.open(None).unwrap();
-    assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+    assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
     assert_eq!(captured.inputs().len(), 1);
     assert_eq!(captured.inputs()[0].path, path.display().to_string());
     assert!(captured.inputs()[0].sha256.is_some());
     drop(captured);
     let captured = crate::provenance::Capture::start();
-    assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+    assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
     let mut count = 0;
     source
         .visit_chunks(None, 1 << 20, &mut |features| {
@@ -425,13 +425,13 @@ fn geopackage_provenance_skips_a_replaced_path() {
     write_gpkg(&path, true);
     let source = open_path(&path, None).unwrap();
     let captured = crate::provenance::Capture::start();
-    source.read(&Request { extent: None, limit: 1 }).unwrap();
+    source.read(&Request { extent: None, limit: 1, own: None }).unwrap();
     assert!(captured.inputs().iter().any(|i| i.path == path.display().to_string()));
     drop(captured);
     std::fs::rename(&path, folder.path().join("retained.gpkg")).unwrap();
     std::fs::write(&path, b"replacement").unwrap();
     let captured = crate::provenance::Capture::start();
-    assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+    assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
     assert!(captured.inputs().is_empty());
 }
 
@@ -450,7 +450,7 @@ fn geopackage_provenance_keeps_a_linked_path() {
     let inputs = |path: &Path| {
         let source = open_path(path, None).unwrap();
         let captured = crate::provenance::Capture::start();
-        assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+        assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
         captured.inputs().into_iter().map(|i| i.path).collect::<Vec<String>>()
     };
     let resolved = std::fs::canonicalize(&target).unwrap();
@@ -482,7 +482,7 @@ fn a_conversion_names_its_original_as_it_was_when_opened() {
     let source = super::fgb::FgbSource::open_converted_path(&converted, "grid", &original, None).unwrap();
     let inputs = || {
         let captured = Capture::start();
-        assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+        assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
         captured.inputs()
     };
     let before = inputs();
@@ -498,7 +498,7 @@ fn a_conversion_names_its_original_as_it_was_when_opened() {
     let source = super::parquet::ParquetSource::open_converted_path(&parquet, "grid", Some(&db), None).unwrap();
     let inputs = || {
         let captured = Capture::start();
-        assert!(!source.read(&Request { extent: None, limit: 1 }).unwrap().features.is_empty());
+        assert!(!source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.is_empty());
         captured.inputs()
     };
     let before: Vec<Fingerprint> = inputs();
@@ -670,13 +670,14 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     assert!((c.x - (-138.0)).abs() < 1e-4 && (c.y - (-44.0)).abs() < 1e-4, "{c:?} in {}", info.format);
     assert_eq!(f.attrs[vi], Value::Int(64));
     // Ids stay put between reads.
-    let near = in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-140.0, -46.0, -130.0, -40.0)), limit: 100 }).unwrap());
+    let near =
+        in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-140.0, -46.0, -130.0, -40.0)), limit: 100, own: None }).unwrap());
     let g = near.features.iter().find(|g| g.attrs.contains(&Value::Text("p3_4".into()))).unwrap();
     assert_eq!(g.id, f.id, "{}", info.format);
 
     // An extent: exactly the points in it.
     let e = Extent::new(-60.0, -10.0, 40.0, 50.0);
-    let got = in_lonlat(src, src.read(&Request { extent: Some(e), limit: 10_000 }).unwrap());
+    let got = in_lonlat(src, src.read(&Request { extent: Some(e), limit: 10_000, own: None }).unwrap());
     assert_eq!(got.features.len(), in_box(&e), "{}", info.format);
     assert!(got.complete);
     assert!(got.features.iter().all(|f| f.geometry.as_ref().is_some_and(|g| e.contains(g.extent().center()))));
@@ -688,7 +689,7 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     }
 
     // A limit: a sample spread over the whole extent, not the first rows.
-    let s = in_lonlat(src, src.read(&Request { extent: None, limit: 60 }).unwrap());
+    let s = in_lonlat(src, src.read(&Request { extent: None, limit: 60, own: None }).unwrap());
     assert!(!s.complete);
     assert!(s.features.len() <= 60 && s.features.len() >= 50, "{} of {}", s.features.len(), info.format);
     let xs: Vec<f64> = s.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.extent().min_x).collect();
@@ -696,7 +697,7 @@ fn check(src: &dyn FeatureSource, expect_indexed: bool) {
     assert!(s.matched >= 600);
 
     // An extent outside the data.
-    let none = in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-179.9, 80.0, -179.0, 84.0)), limit: 100 }).unwrap());
+    let none = in_lonlat(src, src.read(&Request { extent: Some(Extent::new(-179.9, 80.0, -179.0, 84.0)), limit: 100, own: None }).unwrap());
     assert!(none.features.is_empty());
 
     // A whole read into a dataset.
@@ -1711,7 +1712,7 @@ fn hostile_files_are_errors_not_panics() {
         for name in ["x.parquet", "x.fgb", "x.gpkg"] {
             if let Ok(s) = open_bytes(name, bytes.clone(), None) {
                 let _ = s.read(&Request::all());
-                let _ = s.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 3 });
+                let _ = s.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 3, own: None });
             }
         }
     }
@@ -1755,7 +1756,7 @@ fn vector_samples() {
                 e.center().y + e.height() / 8.0,
             );
             let t2 = std::time::Instant::now();
-            let b = match src.read(&Request { extent: Some(view), limit: 200_000 }) {
+            let b = match src.read(&Request { extent: Some(view), limit: 200_000, own: None }) {
                 Ok(b) => b,
                 Err(e) => {
                     println!("{} [{layer}]: {e}", p.display());
@@ -1853,7 +1854,7 @@ fn writes_geopackage_geoparquet_and_shapefile() {
     for ext in ["gpkg", "parquet"] {
         let s = open_path(&d.join(format!("parcels.{ext}")), None).unwrap();
         assert_eq!(s.info().count, Some(3), "{ext}");
-        let b = s.read(&Request { extent: Some(Extent::new(15.0, 15.0, 25.0, 25.0)), limit: 100 }).unwrap();
+        let b = s.read(&Request { extent: Some(Extent::new(15.0, 15.0, 25.0, 25.0)), limit: 100, own: None }).unwrap();
         assert_eq!(b.features.len(), 1, "{ext}");
         if ext == "gpkg" {
             assert_eq!(b.features[0].id, 2);
@@ -1908,7 +1909,7 @@ fn geoparquet_exports_keep_exact_values_and_remote_extent_reads() {
     // Null rows must not consume a sample slot, whether the group is partly or wholly inside.
     for (extent, matched) in [(Extent::new(-90.0, 36.0, -89.0, 37.0), 1), (Extent::new(-180.0, -90.0, 180.0, 90.0), 2)] {
         for limit in [1, 10] {
-            let req = Request { extent: Some(extent), limit };
+            let req = Request { extent: Some(extent), limit, own: None };
             let remote = source.read(&req).unwrap();
             let local_batch = local.read(&req).unwrap();
             assert_eq!(remote.features.len(), matched.min(limit));
@@ -1959,7 +1960,7 @@ fn geoparquet_inferred_covering_nulls_fall_back_to_geometry() {
     let remote = open_driven(url);
     for extent in [Extent::new(-90.0, 36.0, -89.0, 37.0), Extent::new(-180.0, -90.0, 180.0, 90.0)] {
         for limit in [1, 10] {
-            let req = Request { extent: Some(extent), limit };
+            let req = Request { extent: Some(extent), limit, own: None };
             let expected = local.read(&req).unwrap();
             assert_eq!(expected.features.len(), 1);
             assert_eq!((expected.matched, expected.complete, expected.skipped), (1, true, 0));
@@ -2320,7 +2321,7 @@ fn flatgeobuf_and_geoparquet_by_address() {
         let src = open_driven(&url);
         assert_eq!(src.info().count, Some(160_000), "{name}");
         let e = Extent::new(10.0, 10.0, 12.0, 12.0);
-        let req = Request { extent: Some(e), limit: 10_000 };
+        let req = Request { extent: Some(e), limit: 10_000, own: None };
         let got = src.read(&req).unwrap();
         let local = open_bytes(name, bytes, None).unwrap().read(&req).unwrap();
         let ids = |b: &Batch| b.features.iter().map(|f| f.id).collect::<std::collections::BTreeSet<_>>();
@@ -2332,7 +2333,7 @@ fn flatgeobuf_and_geoparquet_by_address() {
         let fetched = sent.load(std::sync::atomic::Ordering::Relaxed);
         assert!(fetched < total / 4, "{name}: fetched {fetched} of {total} bytes");
         // A sample of the whole file, spread over it.
-        let s = src.read(&Request { extent: None, limit: 500 }).unwrap();
+        let s = src.read(&Request { extent: None, limit: 500, own: None }).unwrap();
         assert!(!s.complete && s.features.len() <= 500 && s.features.len() >= 250, "{name}: {}", s.features.len());
     }
 
@@ -2508,10 +2509,11 @@ fn shapefile_in_place_reprojects_from_its_prj() {
     assert!((e.min_x - 2.335).abs() < 1e-6 && (e.min_y - 48.855).abs() < 1e-6, "{e:?}");
     assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
     // A longitude/latitude extent finds it; one beside it doesn't.
-    let near = in_lonlat(src.as_ref(), src.read(&Request { extent: Some(Extent::new(2.0, 48.5, 2.5, 49.0)), limit: 10 }).unwrap());
+    let near =
+        in_lonlat(src.as_ref(), src.read(&Request { extent: Some(Extent::new(2.0, 48.5, 2.5, 49.0)), limit: 10, own: None }).unwrap());
     let c = near.features.first().and_then(|f| f.geometry.as_ref()).and_then(Geometry::label_point).unwrap();
     assert!((c.x - 2.335).abs() < 1e-6 && (c.y - 48.855).abs() < 1e-6, "{c:?}");
-    assert!(src.read(&Request { extent: Some(Extent::new(3.0, 48.5, 3.5, 49.0)), limit: 10 }).unwrap().features.is_empty());
+    assert!(src.read(&Request { extent: Some(Extent::new(3.0, 48.5, 3.5, 49.0)), limit: 10, own: None }).unwrap().features.is_empty());
     // Without the .prj the coordinates are taken as they are, and that's said.
     std::fs::remove_file(p.with_extension("prj")).unwrap();
     let src = open_path(&p, None).unwrap();
@@ -2530,7 +2532,7 @@ fn damaged_shapefiles_are_errors_or_skips_not_panics() {
         let read = || {
             if let Ok(s) = open_path(p, None) {
                 let _ = s.read(&Request::all());
-                let _ = s.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 1 });
+                let _ = s.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 1, own: None });
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -2710,7 +2712,7 @@ fn geojson_in_place_matches_one_read_whole() {
         assert_eq!(inplace.features, whole.features, "{file}");
         assert_eq!(report.messages.len(), whole_report.messages.len(), "{file}: {:?}", report.messages);
         // Extent reads skip features without geometry, and find each by its box.
-        let b = src.read(&Request { extent: Some(Extent::new(0.5, 0.5, 1.5, 2.5)), limit: 100 }).unwrap();
+        let b = src.read(&Request { extent: Some(Extent::new(0.5, 0.5, 1.5, 2.5)), limit: 100, own: None }).unwrap();
         assert!(b.features.iter().all(|f| f.geometry.is_some()), "{file}");
     }
     // Not a FeatureCollection, or not GeoJSON: not read in place.
@@ -2800,7 +2802,7 @@ fn geojson_legacy_crs_is_honoured_by_both_paths() {
     let p = dir().join("geojson-crs").join("rd.geojson");
     for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
-        let at = |e: Extent| src.read(&Request { extent: Some(e), limit: 100 }).unwrap().features.len();
+        let at = |e: Extent| src.read(&Request { extent: Some(e), limit: 100, own: None }).unwrap().features.len();
         assert_eq!(at(Extent::new(5.85, 51.95, 5.86, 51.96)), 1, "the polygon only");
         assert_eq!(at(Extent::new(5.95, 52.02, 5.96, 52.03)), 1, "the polygon only");
         assert_eq!(at(Extent::new(5.8, 51.9, 6.0, 52.1)), 2);
@@ -2990,9 +2992,9 @@ fn geojson_sampling_skips_dropped_features() {
     for in_memory in [crate::io::BYTES_FLOOR, 0] {
         let src = geojson::GeoJsonSource::open_with(&p, "x", in_memory).unwrap();
         assert_eq!(src.info().count, Some(3));
-        let all = src.read(&Request { extent: None, limit: 100 }).unwrap();
+        let all = src.read(&Request { extent: None, limit: 100, own: None }).unwrap();
         assert_eq!((all.features.len(), all.matched, all.skipped, all.complete), (3, 3, 0, true));
-        let some = src.read(&Request { extent: None, limit: 2 }).unwrap();
+        let some = src.read(&Request { extent: None, limit: 2, own: None }).unwrap();
         assert_eq!((some.features.len(), some.matched, some.skipped, some.complete), (2, 3, 0, false));
         assert!(some.features.iter().all(|f| f.geometry.is_some()));
         let ids: Vec<u64> = all.features.iter().map(|f| f.id).collect();
@@ -3332,7 +3334,8 @@ fn nested_columns_and_vectors_by_address() {
     let e = Extent::new(10.0, 10.0, 40.0, 30.0);
     // The rows in the extent, with the nested column as a field.
     let (fields, batch) =
-        query_url_blocking(url, vec!["assets.data.href".into(), "no.such".into()], Request { extent: Some(e), limit: 1000 }).unwrap();
+        query_url_blocking(url, vec!["assets.data.href".into(), "no.such".into()], Request { extent: Some(e), limit: 1000, own: None })
+            .unwrap();
     let k = fields.iter().position(|f| f.name == "assets.data.href").unwrap();
     assert!(!fields.iter().any(|f| f.name == "no.such"));
     assert_eq!(batch.features.len(), in_box(&e));
@@ -3427,7 +3430,7 @@ fn shapefile_complete_chunks_keep_all_rows_order_attributes_and_budget() {
     let empty = shp::ShpSource::open_path(&empty_path, "empty").unwrap();
     assert!(empty.visit_chunks(None, 0, &mut |_| panic!("zero budget must not emit")).is_err());
     let extent = Some(Extent::new(0.02, 0.0, 0.1, 2.0));
-    let expected = source.read(&Request { extent, limit: 1000 }).unwrap();
+    let expected = source.read(&Request { extent, limit: 1000, own: None }).unwrap();
     let mut rows = Vec::new();
     source
         .visit_chunks(extent, 256, &mut |chunk| {
@@ -3474,7 +3477,7 @@ fn geopackage_keeps_rows_without_geometry() {
         let (rows, summary, _) = visit_all(src.as_ref(), None, 1024);
         assert_eq!((rows, summary.matched, summary.skipped), (whole.features, 602, 4), "{format}");
         let world = Extent::new(-180.0, -85.0, 180.0, 85.0);
-        let part = src.read(&Request { extent: Some(world), limit: 10_000 }).unwrap();
+        let part = src.read(&Request { extent: Some(world), limit: 10_000, own: None }).unwrap();
         assert_eq!(part.features.len(), 600, "{format}");
         assert_eq!(visit_all(src.as_ref(), Some(world), 1024).0.len(), 600, "{format}");
     }
@@ -3541,7 +3544,7 @@ fn geopackage_flatgeobuf_and_geoparquet_visit_what_a_whole_read_gives() {
         // Each row alone when none fits the budget.
         assert_eq!(visit_all(src.as_ref(), None, 1).0, whole.features, "{format}");
         // An extent: the features a complete read of it gives (the R-tree's order may differ).
-        let part = src.read(&Request { extent: Some(extent), limit: 10_000 }).unwrap();
+        let part = src.read(&Request { extent: Some(extent), limit: 10_000, own: None }).unwrap();
         assert!(part.complete && part.features.len() == in_box(&extent), "{format}");
         let (rows, summary, _) = visit_all(src.as_ref(), Some(extent), 1024);
         assert!(summary.complete && summary.features.is_empty() && summary.matched == rows.len() as u64, "{format}");
@@ -3561,7 +3564,7 @@ fn geopackage_flatgeobuf_and_geoparquet_visit_what_a_whole_read_gives() {
         assert!(src.visit_chunks(None, 0, &mut |_| panic!("a zero budget must not emit")).is_err(), "{format}");
         // The map's reads of the layer go on while a traversal waits on its visitor.
         src.visit_chunks(None, 256, &mut |_| {
-            assert_eq!(src.read(&Request { extent: None, limit: 1 }).unwrap().features.len(), 1, "{format}");
+            assert_eq!(src.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.len(), 1, "{format}");
             Ok(())
         })
         .unwrap();
@@ -3940,7 +3943,7 @@ fn geopackage_export_adds_and_replaces_tables_and_keeps_the_others() {
     let owners =
         |p: &Path| rusqlite::Connection::open(p).unwrap().query_row("SELECT count(*) FROM owners", [], |r| r.get::<_, i64>(0)).unwrap();
     assert_eq!(owners(&path), 1);
-    let read = |t: &str, extent| open_path(&path, Some(t)).unwrap().read(&Request { extent, limit: 100 }).unwrap().features;
+    let read = |t: &str, extent| open_path(&path, Some(t)).unwrap().read(&Request { extent, limit: 100, own: None }).unwrap().features;
     assert_eq!(read("permits", None).len(), 3);
     // Its spatial index answers an extent query.
     assert_eq!(read("permits", Some(Extent::new(10.5, 19.0, 11.5, 21.0))).len(), 1);
@@ -4482,7 +4485,7 @@ fn parquet_date_units_invalid_values_and_nulls() {
     assert_eq!(batch.features[1].attrs[3].to_string(), "1970-01-01T00:00:00.000001");
     assert!(batch.features[2].attrs.iter().all(Value::is_null));
     let extent = Extent::new(-0.1, -0.1, 0.1, 0.1);
-    let filtered = source.read(&Request { extent: Some(extent), limit: usize::MAX }).unwrap();
+    let filtered = source.read(&Request { extent: Some(extent), limit: usize::MAX, own: None }).unwrap();
     assert_eq!(filtered.features.len(), 1);
     assert!(filtered.unread_dates.is_empty(), "invalid dates in filtered-out rows aren't read losses");
     let filtered = source.visit_chunks(Some(extent), 256, &mut |_| Ok(())).unwrap();
@@ -4564,7 +4567,7 @@ fn a_feature_just_outside_an_extent_is_left_out_of_its_read() {
     let mut ds = Dataset::new("edge", GeometryType::Point, vec![]);
     ds.push(Some(Geometry::Point(Coord::new(0.0, 0.999_999_999))), vec![]);
     let extent = Some(Extent::new(-1.0, 1.0, 1.0, 2.0));
-    let req = Request { extent, limit: 1000 };
+    let req = Request { extent, limit: 1000, own: None };
     let (shp_path, geojson_path) = (d.join("edge.shp"), d.join("edge.geojson"));
     crate::io::write_path(&ds, &shp_path).unwrap();
     crate::io::write_path(&ds, &geojson_path).unwrap();
@@ -4687,12 +4690,12 @@ fn a_view_its_system_cant_bound_reads_what_is_in_view() {
                 // A zero limit cannot give a count for a view requiring a complete geometry scan.
                 let probe = crate::progress::tests::Counted::cancelling_after(0);
                 let _guard = crate::progress::install(Some(probe.clone()));
-                let error = source.read(&Request { extent: Some(view), limit: 0 }).unwrap_err().to_string();
+                let error = source.read(&Request { extent: Some(view), limit: 0, own: None }).unwrap_err().to_string();
                 assert!(error.contains("zero-limit") && error.contains("count"), "{ext}: {error}");
                 assert_eq!(probe.done.load(std::sync::atomic::Ordering::Relaxed), 0, "{ext}");
             }
             for limit in [10, 2201] {
-                let read = in_lonlat(source, source.read(&Request { extent: Some(view), limit }).unwrap());
+                let read = in_lonlat(source, source.read(&Request { extent: Some(view), limit, own: None }).unwrap());
                 assert_eq!(read.matched, 200, "{ext}: count only view matches before sampling");
                 if limit == 10 {
                     // Adaptive sampling keeps between half the limit and the limit.
@@ -4711,7 +4714,7 @@ fn a_view_its_system_cant_bound_reads_what_is_in_view() {
                 // Cancel while scanning, not before the read starts; the view needs a complete scan.
                 let probe = crate::progress::tests::Counted::cancelling_after(3);
                 let _guard = crate::progress::install(Some(probe.clone()));
-                assert!(matches!(source.read(&Request { extent: Some(view), limit: 10 }), Err(DataError::Cancelled)), "{ext}");
+                assert!(matches!(source.read(&Request { extent: Some(view), limit: 10, own: None }), Err(DataError::Cancelled)), "{ext}");
                 assert_eq!(probe.done.load(std::sync::atomic::Ordering::Relaxed), 3, "{ext}");
             }
             if source.visits_chunks() {
@@ -4733,7 +4736,7 @@ fn unbounded_parquet_view_refuses_a_capped_group() {
     ds.push(Some(Geometry::Point(Coord::new(-81.0, 0.0))), vec![Value::Int(1)]);
     write_unbounded_view_fixture(&ds, &p);
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap().with_group_rows(1);
-    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10 };
+    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
     let error = source.read(&req).unwrap_err().to_string();
     assert!(error.contains("more than the 1 read from one"), "{error}");
 }
@@ -4748,12 +4751,12 @@ fn unbounded_parquet_view_refuses_decoded_columns_over_budget() {
     }
     write_unbounded_view_fixture(&ds, &p);
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap().with_scan_bytes(16 << 10);
-    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 1 };
+    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 1, own: None };
     let error = source.read(&req).unwrap_err().to_string();
     assert!(error.contains("decoded-column budget"), "{error}");
     let error = source.visit_chunks(req.extent, 4096, &mut |_| Ok(())).unwrap_err().to_string();
     assert!(error.contains("decoded-column budget"), "{error}");
-    let clean = Request { extent: Some(Extent::new(-84.0, -1.0, -78.0, 1.0)), limit: 1 };
+    let clean = Request { extent: Some(Extent::new(-84.0, -1.0, -78.0, 1.0)), limit: 1, own: None };
     assert_eq!(source.read(&clean).unwrap().features.len(), 1);
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap();
     let batch = source.read(&req).unwrap();
@@ -4771,7 +4774,7 @@ fn unbounded_parquet_scan_accepts_two_thousand_distinct_points() {
     }
     write_projected_parquet_fixture(&ds, &p, 2000, true);
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap();
-    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10 };
+    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
     let batch = source.read(&req).unwrap();
     assert_eq!(batch.matched, 2000);
     assert!((5..=10).contains(&batch.features.len()));
@@ -4825,7 +4828,7 @@ fn unbounded_parquet_view_bounds_aggregate_row_masks() {
         (0..40_000).map(|id| crate::Feature { id, geometry: Some(Geometry::Point(Coord::new(-81.0, 0.0))), attrs: vec![] }).collect();
     write_projected_parquet_fixture(&ds, &p, 100, true);
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap().with_scan_bytes(32 << 10);
-    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10 };
+    let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit: 10, own: None };
     let error = source.read(&req).unwrap_err().to_string();
     assert!(error.contains("row-mask budget"), "{error}");
     let source = parquet::ParquetSource::open_path(&p, "pts").unwrap();

@@ -662,8 +662,9 @@ fn draw_page(
         {
             let view = View { width: fw, height: fh, pixels_per_point: 1.0, camera: cam, sky: false };
             let lonlat = crate::view_lonlat(map, &view);
+            let own = crate::view_own(map, &view);
             let scale = map.ground_res_at(&cam) / rustgis_geom::PIXEL_M;
-            map.sync_sources_with(&lonlat, scale, true, env);
+            map.sync_sources_in(&lonlat, own.as_ref(), scale, true, env);
             let mut failed_source = None;
             let Some(entries) = complete_shown_legends(map, scale, *show_no_data, &mut failed_source, env) else {
                 *source_error = failed_source_error(map, failed_source);

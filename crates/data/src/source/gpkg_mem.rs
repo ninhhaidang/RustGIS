@@ -335,6 +335,10 @@ impl FeatureSource for GpkgMemSource {
         &self.info
     }
 
+    fn reads_own_box(&self) -> bool {
+        true
+    }
+
     /// Its own system, in which it gives its features as the file holds them.
     fn coord_crs(&self) -> crate::raster::Crs {
         self.reproject.crs()
@@ -344,7 +348,7 @@ impl FeatureSource for GpkgMemSource {
     /// Counts scanned records and checks Cancel between them.
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
-        let native = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let native = self.reproject.request_box(req);
         // Preserve ordinary candidate counts; a refused view needs a geometry scan to count.
         if limit == 0 && req.extent.is_some() && native.is_none() {
             return Err(super::unbounded_count());
@@ -394,11 +398,11 @@ impl FeatureSource for GpkgMemSource {
                 if known && !sample.wants() {
                     return ControlFlow::Continue(());
                 }
-                let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else {
+                let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.place(g, req)) else {
                     skipped += 1;
                     return ControlFlow::Continue(());
                 };
-                if !placed.in_request(req) || (!known && !sample.wants()) {
+                if !placed.inside || (!known && !sample.wants()) {
                     return ControlFlow::Continue(());
                 }
                 let geometry = placed.geometry;
@@ -436,7 +440,7 @@ impl FeatureSource for GpkgMemSource {
     /// and a Cancel check between records.
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
-        let req = Request { extent, limit: usize::MAX };
+        let req = Request { extent, limit: usize::MAX, own: None };
         let native = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
         let mut out = Batch { complete: true, ..Batch::default() };
         // The visitor's error, which stops the scan.
@@ -459,11 +463,11 @@ impl FeatureSource for GpkgMemSource {
                         {
                             return ControlFlow::Continue(());
                         }
-                        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else {
+                        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.place(g, &req)) else {
                             out.skipped += 1;
                             return ControlFlow::Continue(());
                         };
-                        if !placed.in_request(&req) {
+                        if !placed.inside {
                             return ControlFlow::Continue(());
                         }
                         Some(placed.geometry)

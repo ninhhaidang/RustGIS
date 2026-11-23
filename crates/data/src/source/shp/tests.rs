@@ -333,7 +333,7 @@ fn shapefile_disk_index_reopens_and_invalidates_without_changing_source() {
         let p = fixture.join("indexed-grid.shp");
         points_shapefile(&p);
         let original = std::fs::read(&p).unwrap();
-        let req = Request { extent: Some(Extent::new(10.0, 10.0, 40.0, 30.0)), limit: 1000 };
+        let req = Request { extent: Some(Extent::new(10.0, 10.0, 40.0, 30.0)), limit: 1000, own: None };
         let src = open_path(&p, None).unwrap();
         let expected = src.read(&req).unwrap();
         let reopened = open_path(&p, None).unwrap();
@@ -371,14 +371,14 @@ fn shapefile_disk_index_keeps_file_order_and_query_boundaries() {
         }
         std::fs::write(&p, bytes).unwrap();
         let src = open_path(&p, None).unwrap();
-        let batch = src.read(&Request { extent: Some(Extent::new(1.0, -1.0, 2.0, 1.0)), limit: 1000 }).unwrap();
+        let batch = src.read(&Request { extent: Some(Extent::new(1.0, -1.0, 2.0, 1.0)), limit: 1000, own: None }).unwrap();
         assert_eq!(batch.matched, 101);
         assert_eq!(batch.features.len(), 101);
         assert!(batch.complete);
         assert!(batch.features.windows(2).all(|p| p[0].id < p[1].id));
         assert_eq!(batch.features.first().unwrap().geometry, Some(Geometry::Point(Coord::new(2.0, 0.0))));
         assert_eq!(batch.features.last().unwrap().geometry, Some(Geometry::Point(Coord::new(1.0, 0.0))));
-        let sample = src.read(&Request { extent: None, limit: 10 }).unwrap();
+        let sample = src.read(&Request { extent: None, limit: 10, own: None }).unwrap();
         assert_eq!(sample.matched, 1000);
         assert_eq!(sample.features.len(), 10);
         assert!(!sample.complete);
@@ -404,7 +404,7 @@ fn shapefile_overview_index_shortcut_does_not_include_null_shapes() {
         std::fs::write(&p, bytes).unwrap();
         let src = open_path(&p, None).unwrap();
         assert_eq!(src.read(&Request::all()).unwrap().features.len(), 2);
-        let view = src.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 100 }).unwrap();
+        let view = src.read(&Request { extent: Some(Extent::new(-10.0, -10.0, 10.0, 10.0)), limit: 100, own: None }).unwrap();
         assert_eq!(view.matched, 1);
         assert_eq!(view.features.len(), 1);
         assert!(view.features.iter().all(|f| f.geometry.is_some()));
@@ -506,7 +506,7 @@ fn disk_queries_match_legacy_scan_sampling_and_edges() {
             for limit in [0, 1, 7, 29, 1000] {
                 let step = crate::source::stride(ids.len() as u64, limit).max(1) as usize;
                 let expected: Vec<_> = ids.iter().copied().step_by(step).take(limit).collect();
-                let batch = src.read(&Request { extent, limit }).unwrap();
+                let batch = src.read(&Request { extent, limit, own: None }).unwrap();
                 assert_eq!(batch.matched, ids.len() as u64);
                 assert_eq!(batch.complete, step == 1);
                 assert_eq!(batch.features.iter().map(|f| f.id).collect::<Vec<_>>(), expected);
@@ -534,7 +534,7 @@ fn shapefile_disk_index_benchmark() {
         let clock = std::time::Instant::now();
         let source = ShpSource::open_path(&path, "benchmark").unwrap();
         let warm = clock.elapsed();
-        let request = Request { extent: Some(Extent::new(-1.0, -1.0, 1.0, 1.0)), limit: 1000 };
+        let request = Request { extent: Some(Extent::new(-1.0, -1.0, 1.0, 1.0)), limit: 1000, own: None };
         let clock = std::time::Instant::now();
         let indexed = source.read(&request).unwrap();
         let query = clock.elapsed();
@@ -564,7 +564,7 @@ fn shapefile_disk_index_complete_chunks_preserve_full_reads_and_file_order() {
         points_shapefile(&path);
         let source = open_path(&path, None).unwrap();
         assert!(source.info().indexed);
-        assert_eq!(source.read(&Request { extent: None, limit: 1 }).unwrap().features.len(), 1);
+        assert_eq!(source.read(&Request { extent: None, limit: 1, own: None }).unwrap().features.len(), 1);
         for extent in [None, Some(Extent::new(10.0, 5.0, 15.0, 10.0)), Some(Extent::EMPTY)] {
             let expected = source.read(&Request { extent, ..Request::all() }).unwrap();
             for budget in [1, 256, 8192] {
@@ -590,7 +590,7 @@ fn shapefile_disk_index_complete_chunks_preserve_full_reads_and_file_order() {
         source
             .visit_chunks(None, 256, &mut |_| {
                 if !reentrant {
-                    assert_eq!(source.read(&Request { extent: None, limit: 1 })?.features.len(), 1);
+                    assert_eq!(source.read(&Request { extent: None, limit: 1, own: None })?.features.len(), 1);
                     reentrant = true;
                 }
                 Ok(())

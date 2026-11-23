@@ -316,6 +316,10 @@ impl FeatureSource for GeoJsonSource {
         &self.info
     }
 
+    fn reads_own_box(&self) -> bool {
+        true
+    }
+
     /// Its own system, in which it gives its features as the file holds them.
     fn coord_crs(&self) -> crate::raster::Crs {
         self.reproject.crs()
@@ -337,7 +341,7 @@ impl FeatureSource for GeoJsonSource {
     /// A changed file invalidates the saved bounds and offsets, even for records the bounds
     /// would skip. A successful visit uses the same file version as the index.
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
-        let req = Request { extent, limit: usize::MAX };
+        let req = Request { extent, limit: usize::MAX, own: None };
         let native = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
         let mut f = BufReader::with_capacity(BUFFER, crate::provenance::open(&self.path)?);
@@ -372,7 +376,7 @@ impl FeatureSource for GeoJsonSource {
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
         // Counted first, then sampled, unless the native box is refused: no list of every match.
-        let extent = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let extent = self.reproject.request_box(req);
         // Preserve ordinary candidate counts; a refused view needs a geometry scan to count.
         if limit == 0 && req.extent.is_some() && extent.is_none() {
             return Err(super::unbounded_count());
@@ -445,17 +449,19 @@ impl GeoJsonSource {
         let place = self.places.get(i as usize).ok_or(())?;
         let json = read_place(f, pos, buf, place).ok_or(())?;
         let geometry = geojson_geometry(&json).map_err(|_| ())?;
-        // Kept as the file holds it, in its own system; its box in longitude/latitude answers the
-        // request.
-        let lonlat = match (self.reproject.transformer(), &geometry) {
-            (Some(t), Some(g)) => Some(lonlat_box(g, t).ok_or(())?),
-            (_, g) => g.as_ref().map(crate::Geometry::extent),
+        // Kept as the file holds it, in its own system; its own box answers a request given in
+        // that system ([`Request::own`]), else its box in longitude/latitude.
+        let own = self.reproject.own_box(req);
+        let placed = match (own, self.reproject.transformer(), &geometry) {
+            (Some(_), _, g) => g.as_ref().map(crate::Geometry::extent),
+            (None, Some(t), Some(g)) => Some(lonlat_box(g, t).ok_or(())?),
+            (None, _, g) => g.as_ref().map(crate::Geometry::extent),
         };
         // One without geometry doesn't match an extent.
-        let outside = match (&lonlat, &req.extent) {
+        let outside = match (&placed, own.or(req.extent)) {
             (_, None) => false,
             (None, Some(_)) => true,
-            (Some(e), Some(r)) => !e.intersects(r),
+            (Some(e), Some(r)) => !e.intersects(&r),
         };
         if outside || !wanted() {
             return Ok(None);

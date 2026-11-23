@@ -412,8 +412,8 @@ impl GpkgSource {
         {
             return Ok(Row::Skip);
         }
-        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.read(g)) else { return Ok(Row::Bad) };
-        if !placed.in_request(req) {
+        let Some(placed) = wkb::decode(body).and_then(|g| self.reproject.place(g, req)) else { return Ok(Row::Bad) };
+        if !placed.inside {
             return Ok(Row::Skip);
         }
         Ok(Row::Feature(Feature { id, geometry: Some(placed.geometry), attrs: attrs() }))
@@ -433,6 +433,10 @@ impl FeatureSource for GpkgSource {
         &self.info
     }
 
+    fn reads_own_box(&self) -> bool {
+        true
+    }
+
     /// Its own system, in which it gives its features as the file holds them.
     fn coord_crs(&self) -> crate::raster::Crs {
         self.reproject.crs()
@@ -450,7 +454,7 @@ impl FeatureSource for GpkgSource {
         let limit = clamp_limit(req.limit);
         let guard = self.conn.lock().map_err(|_| DataError::Format("GeoPackage connection poisoned".into()))?;
         let conn = guard.as_ref().ok_or_else(|| DataError::Format("GeoPackage connection closed".into()))?;
-        let native = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let native = self.reproject.request_box(req);
         // Preserve ordinary candidate counts; a refused view needs a geometry scan to count.
         if limit == 0 && req.extent.is_some() && native.is_none() {
             return Err(super::unbounded_count());
@@ -566,7 +570,7 @@ impl FeatureSource for GpkgSource {
         // An upload's SQLite copy is generated; its bytes were supplied by the caller.
         let conn = if self.temp.is_some() { crate::provenance::without(|| open_db(path)) } else { open_db(path) }?;
         same_file()?;
-        let req = Request { extent, limit: usize::MAX };
+        let req = Request { extent, limit: usize::MAX, own: None };
         let native = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
         let sql = format!("SELECT {} FROM {}", self.select_list(), quote(&self.table));
         let mut st = conn.prepare(&sql).map_err(err)?;

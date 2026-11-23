@@ -354,7 +354,7 @@ impl FgbSource {
     /// counts features and checks Cancel between them.
     fn read_with<R: Read + Seek>(&self, open: &impl Fn() -> Result<R>, req: &Request, scan: bool) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
-        let native = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let native = self.reproject.request_box(req);
         // Preserve ordinary candidate counts; a refused view needs a geometry scan to count.
         if limit == 0 && req.extent.is_some() && native.is_none() {
             return Err(super::unbounded_count());
@@ -398,12 +398,12 @@ impl FgbSource {
             if !late && !sample.wants() {
                 continue;
             }
-            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
+            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.place(g, req));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !geometry.in_request(req) || (late && !sample.wants()) {
+            if !geometry.inside || (late && !sample.wants()) {
                 continue;
             }
             let geometry = geometry.geometry;
@@ -438,7 +438,7 @@ impl FgbSource {
         extent: Option<Extent>,
         chunks: &mut super::chunk_memory::Chunker<'_>,
     ) -> Result<Batch> {
-        let req = Request { extent, limit: usize::MAX };
+        let req = Request { extent, limit: usize::MAX, own: None };
         let reader = open_reader(open()?)?;
         let native = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
         let indexed = native.filter(|_| self.info.indexed);
@@ -464,12 +464,13 @@ impl FgbSource {
             crate::progress::step(1)?;
             n += 1;
             let id = numbers.as_ref().and_then(|v| v.get(usize::try_from(n - 1).unwrap_or(usize::MAX)).copied()).unwrap_or(n);
-            let geometry = f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
+            let geometry =
+                f.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.place(g, &req));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !geometry.in_request(&req) {
+            if !geometry.inside {
                 continue;
             }
             let geometry = geometry.geometry;
@@ -682,7 +683,7 @@ impl FgbSource {
     /// spatial read scans every candidate within the budget, counting features and checking Cancel.
     fn read_remote(&self, f: &Arc<Remote>, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
-        let native = req.extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let native = self.reproject.request_box(req);
         // Preserve ordinary candidate counts; a refused view needs a geometry scan to count.
         if limit == 0 && req.extent.is_some() && native.is_none() {
             return Err(super::unbounded_count());
@@ -777,12 +778,13 @@ impl FgbSource {
                 continue;
             }
             let id = hits.items.get(this).map(|(_, i)| i + 1).unwrap_or(this as u64 + 1);
-            let geometry = feat.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.read(g));
+            let geometry =
+                feat.to_wkb(CoordDimensions::xy()).ok().as_deref().and_then(wkb::decode).and_then(|g| self.reproject.place(g, req));
             let Some(geometry) = geometry else {
                 out.skipped += 1;
                 continue;
             };
-            if !geometry.in_request(req) || (late && !sample.wants()) {
+            if !geometry.inside || (late && !sample.wants()) {
                 continue;
             }
             let geometry = geometry.geometry;
@@ -824,6 +826,10 @@ impl FgbSource {
 impl FeatureSource for FgbSource {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+
+    fn reads_own_box(&self) -> bool {
+        true
     }
 
     /// Its own system, in which it gives its features as the file holds them.

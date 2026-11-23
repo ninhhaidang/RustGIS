@@ -6,7 +6,7 @@
 
 use std::{borrow::Cow, path::Path};
 
-use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, check_projected, project_each, write_atomic_with};
+use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, check_projected, project_each_leaving_out, write_atomic_with};
 use crate::raster::Crs;
 use crate::rows::Query;
 use crate::source::FeatureSource;
@@ -44,6 +44,9 @@ pub struct Exported {
     /// Vertices beyond 85.05° north or south, written at 85.05° by an export in Web Mercator,
     /// where it ends (0 in another system). See [`crate::web_mercator_moved_note`].
     pub beyond_web_mercator: usize,
+    /// Features with a place the export's system can't hold, written without their geometry
+    /// ([`crate::io::unplaced_export_note`]).
+    pub unplaced: usize,
     /// Geometry and text changed by CSV export, counted over all chunks.
     pub csv: crate::io::CsvLosses,
     /// Text a CSV changes when read back, counted over all chunks (none for the other formats).
@@ -245,6 +248,7 @@ fn write_chunks_as(
     let mut filtered = 0usize;
     let mut skipped = 0usize;
     let mut beyond_web_mercator = 0usize;
+    let mut unplaced = 0usize;
     let mut null_numbers = 0usize;
     let mut csv = crate::io::CsvLosses::default();
     let mut text = crate::io::TextLosses::default();
@@ -267,6 +271,7 @@ fn write_chunks_as(
         total = 0;
         filtered = 0;
         beyond_web_mercator = 0;
+        unplaced = 0;
         null_numbers = 0;
         csv = crate::io::CsvLosses::default();
         text = crate::io::TextLosses::default();
@@ -296,8 +301,9 @@ fn write_chunks_as(
                 }
             }
             if let Some(t) = &t {
-                // Counted by the source scan, so only stopped on a cancel here.
-                project_each(&mut chunk, t, false)?;
+                // Counted by the source scan, so only stopped on a cancel here. A feature with a
+                // place the export's system can't hold is written without its geometry, and said.
+                unplaced = unplaced.saturating_add(project_each_leaving_out(&mut chunk, t, false)?);
             }
             total = total.saturating_add(chunk.len());
             null_numbers = null_numbers.saturating_add(numbers_written_as_null(&chunk, &layer.fields, ext));
@@ -369,6 +375,7 @@ fn write_chunks_as(
             null_numbers,
             unfit,
             beyond_web_mercator,
+            unplaced,
             csv,
             text,
             unread_dates,

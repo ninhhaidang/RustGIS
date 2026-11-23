@@ -654,7 +654,7 @@ fn check_ldid_readers(ldid: u8, text: &[u8], expected: &str, cpg: Option<&[u8]>,
         let whole: Vec<String> =
             notes.iter().map(|n| if n.starts_with("places: ") { n.to_string() } else { format!("places: {n}") }).collect();
         assert_eq!(rustgis_data::source::materialize(&src).unwrap().1.messages, whole, "LDID {ldid:02X} whole read in place");
-        for (request, rows, complete) in [(Request { extent: None, limit: 1 }, 1, false), (Request::all(), 3, true)] {
+        for (request, rows, complete) in [(Request { extent: None, limit: 1, own: None }, 1, false), (Request::all(), 3, true)] {
             let batch = src.read(&request).unwrap();
             assert_eq!(batch.matched, 3);
             assert_eq!(batch.complete, complete);

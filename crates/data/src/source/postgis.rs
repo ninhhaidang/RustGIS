@@ -1684,9 +1684,19 @@ fn row_extent(r: &postgres::Row) -> Option<Extent> {
     }
 }
 
+/// The box a read narrows its query by when the request gives it in the table's own system
+/// ([`Request::own`], [`Reproject::own_box`]); `None` otherwise, for the extent to be converted.
+fn own_query_box(reproject: Option<&Reproject>, req: &Request) -> Option<Extent> {
+    reproject.and_then(|r| r.own_box(req))
+}
+
 impl FeatureSource for PostgisSource {
     fn info(&self) -> &SourceInfo {
         &self.info
+    }
+
+    fn reads_own_box(&self) -> bool {
+        true
     }
 
     /// The table's own system when RustGIS converts it itself, else longitude/latitude, which
@@ -1699,7 +1709,13 @@ impl FeatureSource for PostgisSource {
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
         let mut out = Batch::default();
-        let native = req.extent.map(|e| self.lonlat_to_native(&e)).transpose()?;
+        // In the table's own system: the box the request gives there ([`Request::own`]), which
+        // a feature reaching past where longitude/latitude goes meets too, else its extent
+        // converted (refused when it can't be bounded).
+        let native = match own_query_box(self.reproject.as_ref(), req) {
+            Some(own) => Some(own),
+            None => req.extent.map(|e| self.lonlat_to_native(&e)).transpose()?,
+        };
         if limit == 0 {
             return Ok(out);
         }
@@ -1739,14 +1755,15 @@ impl FeatureSource for PostgisSource {
             };
             // The index matched the request's box in the table's coordinates, which holds more
             // than the request when they are projected. Held in its own system, a geometry is
-            // placed in longitude/latitude to be compared, and kept as the table holds it.
+            // compared in the request's box there when it gives one, else placed in
+            // longitude/latitude to be compared, and kept as the table holds it.
             if self.held != Crs::LonLat {
-                let placed = feature.geometry.take().and_then(|g| self.reproject.as_ref().and_then(|r| r.read(g)));
+                let placed = feature.geometry.take().and_then(|g| self.reproject.as_ref().and_then(|r| r.place(g, req)));
                 let Some(placed) = placed else {
                     out.skipped += 1;
                     continue;
                 };
-                if !placed.in_request(req) {
+                if !placed.inside {
                     continue;
                 }
                 feature.geometry = Some(placed.geometry);
@@ -1767,6 +1784,24 @@ impl FeatureSource for PostgisSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read given its box in the table's own system narrows the query by it, not by its
+    /// longitude/latitude extent converted; one in another system, or a table in
+    /// longitude/latitude, goes by the extent as before.
+    #[test]
+    fn a_read_in_the_tables_own_system_queries_by_its_box() {
+        let utm = Crs::from_epsg(32631).unwrap();
+        let own = Extent::new(440_000.0, 5_400_000.0, 470_000.0, 5_420_000.0);
+        let lonlat = Some(Extent::new(2.2, 48.75, 2.5, 48.95));
+        let table = Reproject::from_crs(utm, &mut Vec::new());
+        assert_eq!(own_query_box(Some(&table), &Request { extent: lonlat, limit: 10, own: Some((utm, own)) }), Some(own));
+        let swiss = Crs::from_epsg(2056).unwrap();
+        assert_eq!(own_query_box(Some(&table), &Request { extent: lonlat, limit: 10, own: Some((swiss, own)) }), None);
+        assert_eq!(own_query_box(Some(&table), &Request { extent: lonlat, limit: 10, own: None }), None);
+        let geographic = Reproject::from_crs(Crs::LonLat, &mut Vec::new());
+        assert_eq!(own_query_box(Some(&geographic), &Request { extent: lonlat, limit: 10, own: Some((Crs::LonLat, own)) }), None);
+        assert_eq!(own_query_box(None, &Request { extent: lonlat, limit: 10, own: Some((utm, own)) }), None);
+    }
 
     #[test]
     fn families_of_declared_types() {
@@ -1827,13 +1862,13 @@ mod tests {
         let mut source = source("POINT");
         source.reproject = Some(Reproject::from_crs(Crs::from_epsg(32617).unwrap(), &mut Vec::new()));
         for limit in [0, 10] {
-            let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit };
+            let req = Request { extent: Some(Extent::new(-120.0, -30.0, 10.0, 30.0)), limit, own: None };
             let error = source.read(&req).unwrap_err().to_string();
             assert!(error.contains("can't be bounded in the database"), "{error}");
         }
-        let clean = Request { extent: Some(Extent::new(-84.0, 30.0, -78.0, 40.0)), limit: 0 };
+        let clean = Request { extent: Some(Extent::new(-84.0, 30.0, -78.0, 40.0)), limit: 0, own: None };
         assert!(source.read(&clean).unwrap().features.is_empty());
-        assert!(source.read(&Request { extent: None, limit: 0 }).is_ok());
+        assert!(source.read(&Request { extent: None, limit: 0, own: None }).is_ok());
     }
 
     /// A table in a system RustGIS converts itself is written as the layer holds it, in that
@@ -2182,12 +2217,12 @@ mod tests {
                 };
                 let opened = start.elapsed();
                 let i = src.info();
-                let all = src.read(&Request { extent: None, limit: 250_000 }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
+                let all = src.read(&Request { extent: None, limit: 250_000, own: None }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
                 let read = start.elapsed() - opened;
                 // A view of a quarter of the extent.
                 let e = i.extent;
                 let q = Extent::new(e.min_x, e.min_y, e.min_x + e.width() / 2.0, e.min_y + e.height() / 2.0);
-                let part = src.read(&Request { extent: Some(q), limit: 1000 }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
+                let part = src.read(&Request { extent: Some(q), limit: 1000, own: None }).unwrap_or_else(|e| panic!("{}: {e}", t.label()));
                 // Features come in the table's own system when RustGIS converts it: their boxes
                 // are compared in longitude/latitude, as the request is.
                 let to = src.coord_crs().to(Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));

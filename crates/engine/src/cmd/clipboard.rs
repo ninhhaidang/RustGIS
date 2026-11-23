@@ -75,10 +75,17 @@ fn copy(s: &mut Session) -> CmdResult {
     data.crs_incomplete = l.dataset.crs_incomplete;
     data.features = l.selection.iter().filter_map(|r| l.dataset.features.get(*r).cloned()).collect::<Vec<_>>().into();
     let n = data.features.len();
-    let text = rustgis_data::io::to_geojson(&*data.in_lonlat()?).to_string();
+    // A feature with a place that can't be given in longitude/latitude is in the text without its
+    // geometry, and said; the clipboard keeps it whole, as the layer holds it.
+    let (lonlat, unplaced) = data.in_lonlat_leaving_out()?;
+    let text = rustgis_data::io::to_geojson(&lonlat).to_string();
+    drop(lonlat);
     let layer = l.name.clone();
     s.clipboard = Some(Clipboard { data });
     s.notify(format!("Copied {n} features from {layer}"), false);
+    if let Some(note) = rustgis_data::unplaced_note("Copied text", &layer, unplaced) {
+        s.notify(note, false);
+    }
     Ok(json!({"copied": n, "layer": layer, "text": text}))
 }
 

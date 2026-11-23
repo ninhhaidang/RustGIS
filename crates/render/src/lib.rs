@@ -2127,6 +2127,12 @@ fn blend_over(dst: &mut tiny_skia::PixmapMut, src: &Pixmap, x: i64, y: i64) {
     }
 }
 
+/// What a view shows in map units, for streamed layers in the map's own system to read by
+/// ([`Map::sync_sources_in`]); `None` on the globe.
+pub fn view_own(map: &Map, view: &View) -> Option<Extent> {
+    (!map.projection.is_globe()).then(|| view.camera.extent(view.width, view.height))
+}
+
 /// The longitude/latitude extent a view shows (the whole world on the globe, or when the
 /// projection can't say).
 pub fn view_lonlat(map: &Map, view: &View) -> Extent {
@@ -4150,10 +4156,11 @@ pub fn sync_tilted_view(map: &mut Map, view: &View) -> bool {
 /// running.
 fn sync_tilted(map: &mut Map, view: &View, bands: &[rustgis_map::camera::Band], block: bool, env: &Env) -> bool {
     let lonlat = view_lonlat(map, view);
+    let own = view_own(map, view);
     let mut pending = false;
     for b in bands {
         let scale = map.ground_res_at(&b.camera) / rustgis_geom::PIXEL_M;
-        pending |= map.sync_sources_with(&lonlat, scale, block, env);
+        pending |= map.sync_sources_in(&lonlat, own.as_ref(), scale, block, env);
     }
     pending
 }
@@ -4524,7 +4531,7 @@ fn render_frame(
     let label_env = env.at_scale(Some(label_scale));
     let data_pending = match labels_to {
         Labels::Tilted(..) | Labels::Shared => false,
-        _ => map.sync_sources_with(&view_lonlat(map, view), scale, full_res_rasters, env),
+        _ => map.sync_sources_in(&view_lonlat(map, view), view_own(map, view).as_ref(), scale, full_res_rasters, env),
     };
     let globe = map.projection.is_globe().then(|| Globe::new(&view.camera, view.width, view.height));
     let (flat, key) = (map.flat(), map.projection.code());
