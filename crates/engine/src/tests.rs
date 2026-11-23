@@ -14858,6 +14858,25 @@ fn a_publications_colorbar_title_stays_in_the_legends_box() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A publication's colorbar takes what its title needs, leaving the legend's rows the room they
+/// were sized to over the map, but never less than a colorbar's own height while the box has it:
+/// rows that fill the box are cut and said, not the bar (#2638).
+#[test]
+fn a_publications_colorbar_keeps_its_own_height_beside_rows() {
+    use crate::cmd::layout::colorbar_fit;
+    // Room to spare: what the title needs.
+    assert_eq!(colorbar_fit(30.0, 56.0, 22.0, true), 30.0);
+    // A title past the cap: what the rows leave it.
+    assert_eq!(colorbar_fit(75.0, 56.0, 22.0, true), 34.0);
+    // Rows that fill the box (one 69.85 mm row and the gap): the colorbar keeps its 15 mm.
+    assert_eq!(colorbar_fit(20.0, 56.0, 71.85, true), 15.0);
+    // A box shorter than a colorbar: all of it, and none of a box with no room.
+    assert_eq!(colorbar_fit(20.0, 10.0, 9.0, true), 10.0);
+    assert_eq!(colorbar_fit(20.0, -1.0, 9.0, true), 0.0);
+    // In a side column: what it needs of the box.
+    assert_eq!(colorbar_fit(75.0, 56.0, 22.0, false), 56.0);
+}
+
 /// A layout frame centred on a pole keeps that centre through `layout.import` and
 /// `layout.update`, and says nothing on a polar map, where it's drawn there; on Web Mercator,
 /// which can't show a pole, it says the frame is drawn at 85° (#2684).

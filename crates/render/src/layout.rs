@@ -274,7 +274,8 @@ pub struct TextLoss {
     /// Some of them are left out below its box, among the first 200: a taller box or a smaller
     /// text draws them. For a scale bar, its box is too small for its labels and bar
     /// ([`BarLayout::cramped`]): its bar drawn below it, or its end label past its side or over
-    /// its first label.
+    /// its first label. For a colorbar, also set, with no line counted, when its labels would
+    /// spill out of its box ([`colorbar_plan`]).
     pub below_box: bool,
     /// Some of them come past the 200 lines a text draws, whatever its box: only splitting the
     /// text draws them.
@@ -354,7 +355,10 @@ fn losses(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo, only: Option
                     off_page,
                 });
             }
-            let (s, size, face, align, spacing, rotation, title, broken) = match &e.kind {
+            // A colorbar's labels left out for want of height, said with its title (#2638).
+            let mut labels_cut = false;
+            // `fits`: how many of its lines the element draws, when it decides that itself.
+            let (s, size, face, align, spacing, rotation, title, broken, fits) = match &e.kind {
                 ElementKind::Text { text: t, size, color, bold, italic, align, letter_spacing, font, font_name, rotation, wrap }
                     if color.a() > 0 =>
                 {
@@ -362,25 +366,43 @@ fn losses(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo, only: Option
                     let s = expand(t, layout, info, first);
                     // Its lines as they are drawn: a wrapped text's, broken to its box.
                     let s = if *wrap { wrapped(&s, e.w, *size, style) } else { s };
-                    (s, *size as f32, style.face, *align, *letter_spacing as f32, *rotation as f32, false, *wrap)
+                    (s, *size as f32, style.face, *align, *letter_spacing as f32, *rotation as f32, false, *wrap, None)
                 }
                 // Its title at the size it is drawn at, its legend's text size (#2581).
                 ElementKind::Legend { title, frame, text_size, .. } => {
                     let ElementKind::MapFrame { map, .. } = &layout.element(*frame)?.kind else { return None };
                     map_index(maps, map)?;
                     let size = LEGEND_TITLE_PT * legend_size(*text_size);
-                    (title.clone(), size, text::Face { bold: true, ..Default::default() }, TextAlign::Left, 0.0, 0.0, true, false)
+                    (title.clone(), size, text::Face { bold: true, ..Default::default() }, TextAlign::Left, 0.0, 0.0, true, false, None)
                 }
                 // A colorbar's title in the lines it is drawn in (#2493), when it draws one: its
                 // frame's map has a raster with a colour scale (else it draws a placeholder).
-                ElementKind::Colorbar { frame, layer, title, .. } if !title.is_empty() => {
+                // Its labels, too, when they would spill out of the element (#2638), as the colorbar
+                // lays them out ([`colorbar_plan`]).
+                ElementKind::Colorbar { frame, layer, title, orientation, ticks, tick_side, reverse, .. } => {
                     let ElementKind::MapFrame { map, .. } = &layout.element(*frame)?.kind else { return None };
                     let m = maps.get(map_index(maps, map)?)?;
-                    rustgis_map::layout::colorbar_layer(m, layer.as_deref())
+                    let scale = rustgis_map::layout::colorbar_layer(m, layer.as_deref())
                         .and_then(|l| l.raster.as_ref())
                         .and_then(rustgis_map::layout::color_scale)?;
-                    let s = colorbar_title_lines(title, e.w).join("\n");
-                    (s, COLORBAR_TITLE_PT as f32, colorbar_title_style().face, TextAlign::Left, 0.0, 0.0, false, true)
+                    let bar = Bar {
+                        title,
+                        orientation: *orientation,
+                        ticks: *ticks,
+                        side: *tick_side,
+                        reverse: *reverse,
+                        comma: layout.decimal_comma,
+                        ink: INK,
+                    };
+                    let plan = colorbar_plan(r, &scale, &bar, ppp);
+                    let lines = if title.is_empty() { Vec::new() } else { colorbar_title_lines(title, e.w) };
+                    let fits = plan.title.len();
+                    labels_cut = plan.spilled > 0;
+                    if lines.is_empty() && !labels_cut {
+                        return None;
+                    }
+                    let s = lines.join("\n");
+                    (s, COLORBAR_TITLE_PT as f32, colorbar_title_style().face, TextAlign::Left, 0.0, 0.0, false, true, Some(fits))
                 }
                 _ => return None,
             };
@@ -392,7 +414,10 @@ fn losses(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo, only: Option
             let lines = std::iter::once(s.as_str()).filter(|_| title).chain(s.lines().filter(|_| !title));
             let (mut cut, mut left_out, mut below_box, mut past_limit, mut off_page) = (false, 0, false, false, false);
             for (i, line) in lines.enumerate() {
-                let drawn = i < 200 && (title || cy <= r.bottom() + px);
+                let drawn = match fits {
+                    Some(n) => i < n,
+                    None => i < 200 && (title || cy <= r.bottom() + px),
+                };
                 // A line not drawn is only looked at for a letter, as a wrapped text tells its
                 // ink ([`crate::report::wrap_lines`]): a long text isn't shaped past its box.
                 if !drawn {
@@ -426,7 +451,16 @@ fn losses(layout: &Layout, maps: &[Map], dpi: f64, info: &PageInfo, only: Option
             }
             // A wrapped text ends at the line past the 200 drawn ([`wrapped`]): it may go on.
             let at_least = broken && s.lines().nth(200).is_some();
-            (cut || off_page).then(|| TextLoss { id: e.id, name: e.name.clone(), left_out, at_least, below_box, past_limit, off_page })
+            below_box |= labels_cut;
+            (cut || off_page || labels_cut).then(|| TextLoss {
+                id: e.id,
+                name: e.name.clone(),
+                left_out,
+                at_least,
+                below_box,
+                past_limit,
+                off_page,
+            })
         })
         .collect()
 }
@@ -456,10 +490,15 @@ pub fn clipped_text_notice(layout: &Layout, clipped: &[(u32, String)]) -> Option
         .collect::<Vec<_>>();
     // Scale bars alone: their labels are no text to break (#2581).
     let bars = clipped.iter().all(|(id, _)| matches!(layout.element(*id).map(|e| &e.kind), Some(ElementKind::ScaleBar { .. })));
+    // Colorbars alone: their titles already wrap, and a tick label isn't fixed by a line break
+    // (#2638).
+    let colorbars = clipped.iter().all(|(id, _)| matches!(layout.element(*id).map(|e| &e.kind), Some(ElementKind::Colorbar { .. })));
     let advice = if bars && clipped.len() == 1 {
         "move it inside the page or make its box larger, or reduce its text size"
     } else if bars {
         "move them inside the page or make their boxes larger, or reduce their text size"
+    } else if colorbars {
+        "make the colorbar larger or its title shorter, so its title lines and tick labels fit"
     } else if wraps.contains(&Some(false)) {
         "resize or move the text, reduce its size, add line breaks, or turn on Wrap to the box"
     } else if wraps.iter().all(|w| *w == Some(true)) {
@@ -3703,25 +3742,44 @@ fn tick_labels(lo: f64, hi: f64, n: usize) -> Vec<(f64, String)> {
     values.into_iter().map(|v| (v, format!("{:.*}", decimals, (v * k).round() / k + 0.0))).collect()
 }
 
-/// A colorbar: the bar, ticks and labels along it, and its title above.
-fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
-    let ppp = ppp as f32;
-    let dark = bar.ink;
+/// A colorbar laid out in its element ([`colorbar_plan`]): what [`colorbar`] draws, and what the
+/// page's cut-off check ([`text_losses`]) says of it, from one layout.
+struct ColorbarPlan {
+    /// The title's lines drawn, each with the middle of its line (pixels).
+    title: Vec<(String, f32)>,
+    /// The bar's blocks or samples, low to high, and its rectangle (x, y, width, height).
+    blocks: Vec<Rgba>,
+    rect: (f32, f32, f32, f32),
+    /// The bar runs down the page, and from high to low along it (its start is left or top).
+    vertical: bool,
+    flip: bool,
+    /// The labels drawn: each one's text, its tick's two ends, where it is drawn, and whether
+    /// centred on it (else from its left).
+    labels: Vec<(String, [(f32, f32); 2], (f32, f32), bool)>,
+    /// Labels left out because they would spill out of the element (#2638), not those thinned
+    /// for clearing the one before: a short or narrow element, or one with no room for a bar.
+    spilled: usize,
+}
+
+/// A colorbar in `r` at `ppp` (#2638): its title's lines that fit over the bar's own room
+/// ([`colorbar_title_drawn`]), the bar, leaving room for the labels on their side and for the end
+/// labels to stand past its ends, and each label drawn only if it clears the one before and stays
+/// inside the element.
+fn colorbar_plan(r: Rect, scale: &ColorScale, bar: &Bar, ppp: f32) -> ColorbarPlan {
     let px = 8.0 * 1.33 * ppp;
     let width = |s: &str| text::measure(s, px / 1.33, false);
     let (mut top, bottom) = (r.y(), r.y() + r.height());
+    let mut title = Vec::new();
     if !bar.title.is_empty() {
         let tpx = COLORBAR_TITLE_PT as f32 * 1.33 * ppp;
-        // Wrapped to the element's width (#2493), its lines drawn as a text element's are: while
-        // a line's middle is within a line of the element's bottom, and at most 200. Those left
-        // out are said with the page's cut-off texts ([`text_losses`]).
+        // Wrapped to the element's width (#2493).
         let lines = colorbar_title_lines(bar.title, f64::from(r.width()) / (f64::from(ppp) * PT_PER_MM));
-        let line_y = |i: usize| top + tpx * (0.6 + 1.25 * i as f32);
-        let drawn = lines.iter().take(200).enumerate().take_while(|(i, _)| line_y(*i) <= bottom + tpx).count();
-        for (i, line) in lines.iter().take(drawn).enumerate() {
-            text::text_at(pm, line, r.x(), line_y(i), tpx, dark, true, text::Align::Left, false);
+        let drawn = colorbar_title_drawn(lines.len(), top, bottom - colorbar_bar_room(ppp, bar.orientation), tpx);
+        title = lines.into_iter().take(drawn).enumerate().map(|(i, line)| (line, top + tpx * (0.6 + 1.25 * i as f32))).collect();
+        // A title held back whole takes no room: the bar starts at the element's top.
+        if drawn > 0 {
+            top += tpx * (1.4 + 1.25 * (drawn - 1) as f32);
         }
-        top += tpx * (1.4 + 1.25 * drawn.saturating_sub(1) as f32);
     }
     // Where each block or sample sits along the bar (0 low to 1 high), and the labels with theirs.
     let (blocks, labels): (Vec<Rgba>, Vec<(f32, String)>) = match scale {
@@ -3744,15 +3802,20 @@ fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
             (v.iter().map(|(_, c)| *c).collect(), labels)
         }
     };
-    if blocks.is_empty() || r.width() < 2.0 || bottom - top < 2.0 {
-        return;
+    let vertical = bar.orientation == Orientation::Vertical;
+    let flip = if vertical { !bar.reverse } else { bar.reverse };
+    let mut plan = ColorbarPlan { title, blocks: Vec::new(), rect: (0.0, 0.0, 0.0, 0.0), vertical, flip, labels: Vec::new(), spilled: 0 };
+    if blocks.is_empty() {
+        return plan;
+    }
+    // No room for a bar: none is drawn, nor its labels.
+    if r.width() < 2.0 || bottom - top < 2.0 {
+        plan.spilled = labels.len();
+        return plan;
     }
     let labels: Vec<(f32, String)> = labels.into_iter().map(|(at, s)| (at, decimal(s, bar.comma))).collect();
     let tick = 2.5 * ppp;
     let gap = 1.5 * ppp;
-    let vertical = bar.orientation == Orientation::Vertical;
-    // The bar's rectangle, leaving room for the labels on their side and for the end labels to
-    // stand past the bar's ends.
     let (bx, by, bw, bh) = if vertical {
         let label_w = labels.iter().map(|(_, s)| width(s)).fold(0.0f32, f32::max);
         let bw = (r.width() - label_w - tick - gap).clamp(2.0 * ppp, (r.width() * 0.45).max(2.0 * ppp)).min(r.width());
@@ -3762,7 +3825,7 @@ fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
     } else {
         let ends = labels.first().map(|(_, s)| width(s)).unwrap_or(0.0).max(labels.last().map(|(_, s)| width(s)).unwrap_or(0.0));
         let inset = (ends / 2.0).min(r.width() * 0.25);
-        // Too short for its labels (left out below), the bar fills the element.
+        // Too short for its labels (left out below, and said), the bar fills the element.
         let bh = match bottom - top - px * 1.2 - tick - gap {
             h if h >= 3.0 * ppp => h,
             _ => bottom - top,
@@ -3770,16 +3833,70 @@ fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
         let by = if bar.side == TickSide::Start { bottom - bh } else { top };
         (r.x() + inset, by, (r.width() - 2.0 * inset).max(1.0), bh)
     };
+    plan.blocks = blocks;
+    plan.rect = (bx, by, bw, bh);
     let len = if vertical { bh } else { bw };
-    // Distance along the bar from its start (left or top) for a position from low to high.
-    let flip = if vertical { !bar.reverse } else { bar.reverse };
     let along = |t: f32| if flip { (1.0 - t) * len } else { t * len };
-    let n = blocks.len();
-    for (i, c) in blocks.iter().enumerate() {
+    // A label (and its tick) is left out where it would spill out of a short or narrow element.
+    let inside =
+        |x: f32, y: f32, w: f32, h: f32| x >= r.x() - 1.0 && y >= r.y() - 1.0 && x + w <= r.right() + 1.0 && y + h <= r.bottom() + 1.0;
+    // Labels in order along the bar, each drawn only if it clears the one before.
+    let mut last_end = f32::NEG_INFINITY;
+    let mut ordered: Vec<(f32, String)> = labels.into_iter().map(|(t, s)| (along(t.clamp(0.0, 1.0)), s)).collect();
+    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (d, label) in ordered {
+        let lw = width(&label);
+        let extent = if vertical { px } else { lw };
+        if d - extent / 2.0 < last_end + gap {
+            continue;
+        }
+        let (tick_ends, at, centred, fits) = if vertical {
+            let (y, x0) = (by + d, if bar.side == TickSide::Start { bx } else { bx + bw });
+            let x1 = if bar.side == TickSide::Start { x0 - tick } else { x0 + tick };
+            let lx = if bar.side == TickSide::Start { x1 - gap - lw } else { x1 + gap };
+            ([(x0, y), (x1, y)], (lx, y), false, inside(lx, y - px / 2.0, lw, px))
+        } else {
+            let (x, y0) = (bx + d, if bar.side == TickSide::Start { by } else { by + bh });
+            let y1 = if bar.side == TickSide::Start { y0 - tick } else { y0 + tick };
+            let ly = if bar.side == TickSide::Start { y1 - gap - px * 0.5 } else { y1 + gap + px * 0.5 };
+            ([(x, y0), (x, y1)], (x, ly), true, inside(x - lw / 2.0, ly - px / 2.0, lw, px))
+        };
+        // Only a label drawn takes room: one left out doesn't thin the next.
+        if fits {
+            last_end = d + extent / 2.0;
+            plan.labels.push((label, tick_ends, at, centred));
+        } else {
+            plan.spilled += 1;
+        }
+    }
+    plan
+}
+
+/// A colorbar: the bar, ticks and labels along it, and its title above, as [`colorbar_plan`] lays
+/// them out. Title lines and labels left out are said with the page's cut-off texts
+/// ([`text_losses`]).
+fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
+    let ppp = ppp as f32;
+    let dark = bar.ink;
+    let px = 8.0 * 1.33 * ppp;
+    let plan = colorbar_plan(r, scale, bar, ppp);
+    let tpx = COLORBAR_TITLE_PT as f32 * 1.33 * ppp;
+    for (line, y) in &plan.title {
+        text::text_at(pm, line, r.x(), *y, tpx, dark, true, text::Align::Left, false);
+    }
+    if plan.blocks.is_empty() {
+        return;
+    }
+    let (bx, by, bw, bh) = plan.rect;
+    let len = if plan.vertical { bh } else { bw };
+    let along = |t: f32| if plan.flip { (1.0 - t) * len } else { t * len };
+    let n = plan.blocks.len();
+    for (i, c) in plan.blocks.iter().enumerate() {
         let (a, b) = (along(i as f32 / n as f32), along((i + 1) as f32 / n as f32));
         let (s0, s1) = (a.min(b), a.max(b));
         // A touch longer than its share, so neighbours leave no seam.
-        let rect = if vertical { Rect::from_xywh(bx, by + s0, bw, s1 - s0 + 0.6) } else { Rect::from_xywh(bx + s0, by, s1 - s0 + 0.6, bh) };
+        let rect =
+            if plan.vertical { Rect::from_xywh(bx, by + s0, bw, s1 - s0 + 0.6) } else { Rect::from_xywh(bx + s0, by, s1 - s0 + 0.6, bh) };
         if let Some(rect) = rect.and_then(|q| q.intersect(&Rect::from_xywh(bx, by, bw, bh)?)) {
             pm.fill_rect(rect, &paint(*c, 1.0), Transform::identity(), None);
         }
@@ -3788,41 +3905,12 @@ fn colorbar(pm: &mut Canvas, r: Rect, scale: &ColorScale, bar: &Bar, ppp: f64) {
     if let Some(b) = Rect::from_xywh(bx, by, bw, bh) {
         pm.stroke_path(&PathBuilder::from_rect(b), &paint(dark, 1.0), &line, Transform::identity(), None);
     }
-    // A label (and its tick) is left out where it would spill out of a short or narrow element.
-    let inside =
-        |x: f32, y: f32, w: f32, h: f32| x >= r.x() - 1.0 && y >= r.y() - 1.0 && x + w <= r.right() + 1.0 && y + h <= r.bottom() + 1.0;
-    // Labels in order along the bar, each drawn only if it clears the one before.
-    let mut last_end = f32::NEG_INFINITY;
-    let mut ordered: Vec<(f32, &String)> = labels.iter().map(|(t, s)| (along(t.clamp(0.0, 1.0)), s)).collect();
-    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (d, label) in ordered {
-        let extent = if vertical { px } else { width(label) };
-        if d - extent / 2.0 < last_end + gap {
-            continue;
-        }
-        last_end = d + extent / 2.0;
+    for (label, [(x0, y0), (x1, y1)], (x, y), centred) in &plan.labels {
+        let align = if *centred { text::Align::Center } else { text::Align::Left };
+        text::text_at(pm, label, *x, *y, px, dark, false, align, false);
         let mut pb = PathBuilder::new();
-        if vertical {
-            let (y, x0) = (by + d, if bar.side == TickSide::Start { bx } else { bx + bw });
-            let x1 = if bar.side == TickSide::Start { x0 - tick } else { x0 + tick };
-            pb.move_to(x0, y);
-            pb.line_to(x1, y);
-            let lx = if bar.side == TickSide::Start { x1 - gap - width(label) } else { x1 + gap };
-            if !inside(lx, y - px / 2.0, width(label), px) {
-                continue;
-            }
-            text::text_at(pm, label, lx, y, px, dark, false, text::Align::Left, false);
-        } else {
-            let (x, y0) = (bx + d, if bar.side == TickSide::Start { by } else { by + bh });
-            let y1 = if bar.side == TickSide::Start { y0 - tick } else { y0 + tick };
-            pb.move_to(x, y0);
-            pb.line_to(x, y1);
-            let ly = if bar.side == TickSide::Start { y1 - gap - px * 0.5 } else { y1 + gap + px * 0.5 };
-            if !inside(x - width(label) / 2.0, ly - px / 2.0, width(label), px) {
-                continue;
-            }
-            text::text_at(pm, label, x, ly, px, dark, false, text::Align::Center, false);
-        }
+        pb.move_to(*x0, *y0);
+        pb.line_to(*x1, *y1);
         if let Some(p) = pb.finish() {
             pm.stroke_path(&p, &paint(dark, 1.0), &line, Transform::identity(), None);
         }
@@ -3908,6 +3996,27 @@ pub fn colorbar_title_lines(title: &str, width: f64) -> Vec<String> {
         return vec![title.to_string()];
     }
     wrapped(title, width, COLORBAR_TITLE_PT, colorbar_title_style()).lines().map(str::to_string).collect()
+}
+
+/// How many of a colorbar's `lines` of title it draws in an element from `top` (pixels), its
+/// title at `px` pixels (#2493): each line only when the room it takes ends by `limit`, the
+/// element's bottom less the bar's own room ([`colorbar_bar_room`]), the first too, so the bar
+/// always keeps its labels (#2638); at most 200. The page's cut-off check ([`text_losses`])
+/// counts the lines left out the same way, so a colorbar too short for its title says so.
+fn colorbar_title_drawn(lines: usize, top: f32, limit: f32, px: f32) -> usize {
+    (0..lines.min(200)).take_while(|i| top + px * (1.4 + 1.25 * *i as f32) <= limit).count()
+}
+
+/// The least room a colorbar's bar takes under its title, in pixels at `ppp` (#2638), as
+/// [`colorbar`] lays it out: a horizontal bar 3 pixels thick (at 96 dpi) with its ticks and
+/// 8-point labels under it; a vertical one, whose labels are at its side, two labels' height, so
+/// its end labels, centred on the bar's ends, stay inside the element. A title stops short of it,
+/// so its lines never leave the bar without its labels.
+fn colorbar_bar_room(ppp: f32, orientation: Orientation) -> f32 {
+    match orientation {
+        Orientation::Horizontal => (8.0 * 1.33 * 1.2 + 2.5 + 1.5 + 3.0) * ppp,
+        Orientation::Vertical => 2.0 * 8.0 * 1.33 * ppp,
+    }
 }
 
 /// The distance between two lines of text at `size` points, in mm, as [`text_block`] sets them.
@@ -7518,23 +7627,175 @@ Elaboração: RustGIS",
         assert!(line(10 + pitch + 3), "a second line of title");
     }
 
-    /// A colorbar too short for its title's lines draws those that fit, as a text element does,
-    /// not lines spilling down the page, and the page's cut-off check says the rest are left out;
-    /// one tall enough says nothing (#2493).
+    /// A colorbar's title stops short of the bar's own room, so a long title never leaves the bar
+    /// without its tick labels: the bar ends above them, its labels under it (#2638). Before, the
+    /// title's second line took the room, and the bar filled the element's bottom with no labels.
+    #[test]
+    fn a_colorbars_long_title_leaves_its_bar_room_for_labels() {
+        // A red-to-blue bar, so its pixels are told apart from the grey text.
+        let scale = ColorScale::Ramp { lo: 0.0, hi: 10.0, colors: vec![Rgba::rgb(220, 30, 30), Rgba::rgb(30, 30, 220)] };
+        let title = "Precipitação média mensal JAXA GSMaP (mm/mês), jan–mar 2025";
+        let bar =
+            Bar { title, orientation: Orientation::Horizontal, ticks: 3, side: TickSide::End, reverse: false, comma: false, ink: INK };
+        // 100 × 40 px: room for two lines of title, but then only 8 px of bar, with no labels.
+        let mut c = Canvas::new(300, 200).unwrap();
+        colorbar(&mut c, Rect::from_xywh(10.0, 10.0, 100.0, 40.0).unwrap(), &scale, &bar, 1.0);
+        let px = |x: u32, y: u32| c.pixmap().pixel(x, y);
+        let coloured =
+            |y: u32| (10..110).any(|x| px(x, y).is_some_and(|p| p.alpha() > 200 && p.green() < 90 && p.red().abs_diff(p.blue()) > 60));
+        let dark = |y: u32| (10..110).any(|x| px(x, y).is_some_and(|p| p.alpha() > 128 && p.red() < 120 && p.blue() < 120));
+        assert!((26..36).any(coloured), "the bar under the title");
+        assert!(!(44..50).any(coloured), "the bar ends above its labels, not at the element's bottom");
+        assert!((40..50).any(dark), "its labels under it");
+    }
+
+    /// A vertical colorbar's end labels are centred on its bar's ends, so its title leaves the bar
+    /// two labels' height (#2638): a vertical colorbar 25 px high (6.6 mm at 96 dpi) holds its
+    /// one-line title back and says so, its bar keeping both end labels, and one 12 mm high draws
+    /// the title and says nothing. A vertical colorbar too short for its end labels, or too narrow
+    /// for its labels beside the bar, says so even with no title, and a horizontal one too short
+    /// for its labels under its bar, too.
+    #[test]
+    fn a_colorbars_labels_left_out_are_said() {
+        let map = ramp_map(
+            rustgis_map::raster::RasterRenderer::Stretch { band: 0, ramp: rustgis_map::Ramp::Thermal, invert: false },
+            rustgis_map::raster::Stretch::MinMax,
+        );
+        let info = PageInfo::default();
+        let mm = 25.4 / 96.0;
+        // (orientation, title, width and height in mm, a loss said, title lines left out)
+        for (orientation, title, w, h, said, left_out) in [
+            (Orientation::Vertical, "Elevation (m)", 25.0, 25.0 * mm, true, 1),
+            (Orientation::Vertical, "Elevation (m)", 25.0, 12.0, false, 0),
+            (Orientation::Vertical, "", 25.0, 12.0 * mm, true, 0),
+            (Orientation::Vertical, "", 25.0, 25.0 * mm, false, 0),
+            // Too narrow for its labels beside the bar: they're left out, and said.
+            (Orientation::Vertical, "", 2.0, 25.0, true, 0),
+            (Orientation::Horizontal, "", 25.0, 15.0 * mm, true, 0),
+            (Orientation::Horizontal, "", 25.0, 25.0 * mm, false, 0),
+        ] {
+            let mut l = Layout::new("Page", 120.0, 90.0);
+            let frame = l.add(
+                "Frame",
+                (60.0, 60.0, 50.0, 25.0),
+                serde_json::from_value(serde_json::json!({"MapFrame":{"map":"m", "center":{"x":0,"y":0}, "scale":1000000}})).unwrap(),
+            );
+            let kind = ElementKind::Colorbar {
+                frame,
+                layer: None,
+                title: title.into(),
+                orientation,
+                ticks: 5,
+                tick_side: TickSide::End,
+                reverse: false,
+                color: None,
+            };
+            l.add("Colorbar", (5.0, 5.0, w, h), kind);
+            let losses = text_losses(&l, std::slice::from_ref(&map), 96.0, &info);
+            let case = format!("{orientation:?} {title:?} {w:.1} × {h:.1} mm: {losses:?}");
+            assert_eq!(losses.len() == 1, said, "{case}");
+            if let Some(loss) = losses.first() {
+                assert!(loss.below_box && loss.left_out == left_out, "{case}");
+                // Its own advice, not a text's line breaks.
+                let note = clipped_text_notice(&l, &[(loss.id, loss.name.clone())]).unwrap_or_default();
+                assert!(note.contains("make the colorbar larger"), "{case}: {note}");
+            }
+        }
+        // As drawn: 25 px high, the title held back, both end labels inside the element.
+        let scale = ColorScale::Ramp { lo: 0.0, hi: 10.0, colors: vec![Rgba::rgb(220, 30, 30), Rgba::rgb(30, 30, 220)] };
+        let bar = Bar {
+            title: "Elevation (m)",
+            orientation: Orientation::Vertical,
+            ticks: 2,
+            side: TickSide::End,
+            reverse: false,
+            comma: false,
+            ink: INK,
+        };
+        let mut c = Canvas::new(200, 100).unwrap();
+        colorbar(&mut c, Rect::from_xywh(10.0, 10.0, 100.0, 25.0).unwrap(), &scale, &bar, 1.0);
+        let dark = |x: u32, y: u32| c.pixmap().pixel(x, y).is_some_and(|p| p.alpha() > 128 && p.red() < 120 && p.blue() < 120);
+        // The labels stand to the bar's right, past its ticks: ink near its top end and its bottom.
+        let label_ink = |ys: std::ops::Range<u32>| ys.into_iter().any(|y| (60..110).any(|x| dark(x, y)));
+        assert!(label_ink(10..20), "the top end's label");
+        assert!(label_ink(26..36), "the bottom end's label");
+    }
+
+    /// A label left out for spilling out of a colorbar takes no room, so it doesn't thin the next
+    /// one away unsaid (#2638): on a bar 40 px wide, the end label 1000 spills past its left
+    /// side and is counted, and the middle label 1500, inside, is still drawn.
+    #[test]
+    fn a_colorbars_spilled_label_doesnt_thin_the_next() {
+        let scale = ColorScale::Ramp { lo: 1000.0, hi: 2000.0, colors: vec![Rgba::rgb(220, 30, 30), Rgba::rgb(30, 30, 220)] };
+        let bar =
+            Bar { title: "", orientation: Orientation::Horizontal, ticks: 3, side: TickSide::End, reverse: false, comma: false, ink: INK };
+        let plan = colorbar_plan(Rect::from_xywh(0.0, 0.0, 40.0, 40.0).unwrap(), &scale, &bar, 1.0);
+        let drawn: Vec<&str> = plan.labels.iter().map(|l| l.0.as_str()).collect();
+        assert!(plan.spilled >= 1, "the end label spills: {drawn:?}");
+        assert!(drawn.contains(&"1500"), "the middle label is drawn: {drawn:?}");
+    }
+
+    /// A colorbar too short for a line of title over its bar holds the title back, and the bar
+    /// then starts at the element's top, keeping its labels: a title not drawn takes no room
+    /// (#2638). Before, the bar was pushed down by the room of a line never drawn, and lost them.
+    #[test]
+    fn a_colorbar_whose_title_is_held_back_keeps_its_labels() {
+        let scale = ColorScale::Ramp { lo: 0.0, hi: 10.0, colors: vec![Rgba::rgb(220, 30, 30), Rgba::rgb(30, 30, 220)] };
+        let title = "Precipitação média mensal JAXA GSMaP (mm/mês), jan–mar 2025";
+        let bar =
+            Bar { title, orientation: Orientation::Horizontal, ticks: 3, side: TickSide::End, reverse: false, comma: false, ink: INK };
+        // 100 × 30 px, from y = 10 to 40: a line of title (16.8 px) and the bar's own room
+        // (19.8) don't both fit, so no line is drawn.
+        assert_eq!(
+            colorbar_title_drawn(4, 10.0, 40.0 - colorbar_bar_room(1.0, Orientation::Horizontal), COLORBAR_TITLE_PT as f32 * 1.33),
+            0
+        );
+        let mut c = Canvas::new(300, 200).unwrap();
+        colorbar(&mut c, Rect::from_xywh(10.0, 10.0, 100.0, 30.0).unwrap(), &scale, &bar, 1.0);
+        let px = |x: u32, y: u32| c.pixmap().pixel(x, y);
+        let coloured =
+            |y: u32| (10..110).any(|x| px(x, y).is_some_and(|p| p.alpha() > 200 && p.green() < 90 && p.red().abs_diff(p.blue()) > 60));
+        let dark = |y: u32| (10..110).any(|x| px(x, y).is_some_and(|p| p.alpha() > 128 && p.red() < 120 && p.blue() < 120));
+        assert!((11..15).any(coloured), "the bar at the element's top");
+        assert!(!(35..40).any(coloured), "the bar ends above its labels");
+        assert!((30..40).any(dark), "its labels under it");
+    }
+
+    /// A colorbar's title lines are drawn only where the bar keeps its own room under them, the
+    /// first too, with no slack: the bar never loses its labels to them (#2638). At 12 px a line,
+    /// the first needs 16.8 px and each further one 15 more, over the bar's 19.8.
+    #[test]
+    fn a_colorbars_title_lines_leave_the_bar_its_room() {
+        let (px, room) = (COLORBAR_TITLE_PT as f32 * 1.33, colorbar_bar_room(1.0, Orientation::Horizontal));
+        for (height, lines) in [(20.0, 0), (36.0, 0), (37.0, 1), (51.2, 1), (52.0, 2), (200.0, 5)] {
+            assert_eq!(colorbar_title_drawn(5, 0.0, height - room, px), lines, "{height} px");
+        }
+        // Whatever the height, the lines drawn leave the bar its room.
+        for h in 0..300 {
+            let h = h as f32 * 0.5;
+            let n = colorbar_title_drawn(5, 0.0, h - room, px);
+            assert!(n == 0 || px * (1.4 + 1.25 * (n - 1) as f32) + room <= h, "{h} px: {n} lines");
+        }
+    }
+
+    /// A colorbar too short for its title's lines draws those that fit inside it, not lines past
+    /// its bottom, and the page's cut-off check says the rest are left out; one tall enough says
+    /// nothing (#2493).
     #[test]
     fn a_colorbars_title_lines_past_its_bottom_are_left_out_and_said() {
         let scale = ColorScale::Ramp { lo: 0.0, hi: 10.0, colors: vec![Rgba::rgb(200, 200, 200), Rgba::rgb(230, 230, 230)] };
         let title = "Precipitação média mensal JAXA GSMaP (mm/mês), jan–mar 2025";
         let bar =
             Bar { title, orientation: Orientation::Horizontal, ticks: 3, side: TickSide::End, reverse: false, comma: false, ink: INK };
-        // 100 px wide, four lines or more; 20 px high, two of them centred within a line of its
-        // bottom. A third would be centred at 10 + 12 × (0.6 + 2 × 1.25) = 47.
+        // 100 px wide, four lines or more; 20 px high, no line: the first's room would end at
+        // 10 + 12 × 1.4 = 26.8, leaving the bar less than its own 19.8 (a second would be centred
+        // at 32, within a line of the bottom at 30, as a text element's line may be).
         assert!(colorbar_title_lines(title, 100.0 / PT_PER_MM).len() >= 4);
         let mut c = Canvas::new(300, 200).unwrap();
         colorbar(&mut c, Rect::from_xywh(10.0, 10.0, 100.0, 20.0).unwrap(), &scale, &bar, 1.0);
         let dark = |x: u32, y: u32| c.pixmap().pixel(x, y).is_some_and(|p| p.alpha() > 128 && p.red() < 120);
         let lowest = (0..200).rev().find(|y| (0..300).any(|x| dark(x, *y)));
-        assert!(lowest.is_some_and(|y| y < 45), "ink down to {lowest:?}");
+        assert!(lowest.is_some_and(|y| y <= 30), "ink down to {lowest:?}, past the colorbar's bottom at 30");
         // On a page, in a frame whose map has a raster on a ramp.
         let map = ramp_map(
             rustgis_map::raster::RasterRenderer::Stretch { band: 0, ramp: rustgis_map::Ramp::Thermal, invert: false },
@@ -7560,7 +7821,10 @@ Elaboração: RustGIS",
         let info = PageInfo::default();
         let losses = text_losses(&l, std::slice::from_ref(&map), 96.0, &info);
         assert_eq!(losses.len(), 1, "the short colorbar's title is cut");
-        assert!(losses[0].id == id && losses[0].left_out >= 2 && losses[0].below_box, "{} left out", losses[0].left_out);
+        // 6 mm high: no room for a line of title over the bar's own: every line said.
+        let lines = colorbar_title_lines(title, 25.0).len();
+        assert!(lines >= 3 && losses[0].id == id && losses[0].below_box, "{lines} lines");
+        assert_eq!(losses[0].left_out, lines);
         l.element_mut(id).unwrap().h = 40.0;
         assert!(text_losses(&l, std::slice::from_ref(&map), 96.0, &info).is_empty(), "tall enough for every line");
     }

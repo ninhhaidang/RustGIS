@@ -810,6 +810,17 @@ pub(crate) fn veil_panel(
 /// its labels.
 const COLORBAR_MM: f64 = 15.0;
 
+/// The height a publication gives its colorbar in a legend's box `ih` mm high inside, in mm,
+/// when its title needs `need` (#2493). Over the map it leaves the rows the room they were sized
+/// to (`rows`, with the gap above the colorbar), so a title past the box's cap is cut short
+/// rather than taking them; but never below a colorbar's own height while the box has it, so
+/// the bar isn't lost to rows that fill the box: those are cut and said instead (#2638). In a
+/// side column it takes what it needs of the box.
+pub(crate) fn colorbar_fit(need: f64, ih: f64, rows: f64, over_map: bool) -> f64 {
+    let ih = ih.max(0.0);
+    if over_map { need.min((ih - rows).max(COLORBAR_MM.min(ih))) } else { need.min(ih) }
+}
+
 /// A publication layout's colorbar's height, in mm, `width` mm wide: [`COLORBAR_MM`] and a line's
 /// pitch more for each line its title wraps to past the first (#2493).
 fn colorbar_mm(title: &str, width: f64) -> f64 {
@@ -2232,8 +2243,17 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     };
     let base_w = if sheet { 50.0 * k } else { 40.0 };
     let bar_w = base_w.max(bar.as_deref().map_or(0.0, crate::render::layout::colorbar_title_width_mm).min(title_room));
-    let bar_h = bar.as_deref().map_or(COLORBAR_MM, |title| colorbar_mm(title, bar_w.min(title_room)));
-    let bar_part = if bar.is_some() { bar_h + if ch > 0.0 { 2.0 } else { 0.0 } } else { 0.0 };
+    let bar_measured = bar.as_deref().map_or(COLORBAR_MM, |title| colorbar_mm(title, bar_w.min(title_room)));
+    let bar_gap = if ch > 0.0 { 2.0 } else { 0.0 };
+    // Over the map the box is never placed taller than 60% of the frame, so the title's lines
+    // count only up to that, less the rows of the legend beside them (a colorbar's own height, as
+    // before, at the least): the map isn't moved, veiled or scaled for room the box can't have, and
+    // each candidate's rows keep their height (the fit test and the placement below). The lines past
+    // it are said as cut off.
+    let over_map = column.is_none();
+    let cap = |rows_h: f64| (fh * 0.6 - 2.0 * pad - rows_h - bar_gap).max(COLORBAR_MM);
+    let bar_reserve = |rows_h: f64| if over_map { bar_measured.min(cap(rows_h)) } else { bar_measured };
+    let bar_part = if bar.is_some() { bar_reserve(ch) + bar_gap } else { 0.0 };
     let (content_w, content_h) = (if bar.is_some() { cw.max(bar_w) } else { cw }, ch + bar_part);
     let legend_in_column = column.is_some();
     if content_h > 0.0 && !legend_in_column {
@@ -2267,7 +2287,11 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     // the frame's area in the background (which the export reads anyway); web tiles aren't fetched.
     let coverage = crate::render::layout::frame_coverage(s.map_mut(), center, scale, fw, fh, 384);
     // The legend's whole box, around its rows and the colorbar under them.
-    let whole = |(w, h): (f64, f64)| ((if bar.is_some() { w.max(bar_w) } else { w }) + 2.0 * pad, h + bar_part + 2.0 * pad);
+    // A candidate's colorbar reservation follows its own rows, which its column count sets.
+    let whole = |(w, h): (f64, f64)| {
+        let part = if bar.is_some() { bar_reserve(h) + bar_gap } else { 0.0 };
+        ((if bar.is_some() { w.max(bar_w) } else { w }) + 2.0 * pad, h + part + 2.0 * pad)
+    };
     // The largest rectangle a coverage leaves free inside the graticule's margins, in mm.
     let free_room = |(gw, gh, cells): &(u32, u32, Vec<bool>)| {
         let (gw, gh) = (*gw as usize, *gh as usize);
@@ -2878,13 +2902,18 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         // the colorbar asked for (the rows in more columns): fewer lines leave the rows more room.
         let (ix, iy, iw, ih) = (r.0 + pad, r.1 + pad, lw - 2.0 * pad, lh - 2.0 * pad);
         let bar_need = bar.as_deref().map_or(0.0, |title| colorbar_mm(title, iw));
-        let bar_fit = bar_need.min(ih);
-        let rows_h = (ih - bar_fit - if bar.is_some() { bar_part - bar_h } else { 0.0 }).max(0.0);
+        let bar_fit = colorbar_fit(bar_need, ih, ch + bar_gap, over_map);
+        let rows_h = (ih - bar_fit - if bar.is_some() { bar_gap } else { 0.0 }).max(0.0);
         warnings.extend(legend_fit_warnings(legend_cols, (cw, ch), (iw, rows_h)).into_iter().map(String::from));
+        let short = bar_need > bar_fit + LEGEND_FIT_MM;
         // In a column the colorbar takes the column's width, as its rows do.
-        if let Some(layer) = bar.as_deref().filter(|_| (base_w > iw + LEGEND_FIT_MM && !legend_in_column) || bar_need > ih + LEGEND_FIT_MM)
-        {
-            warnings.push(format!("the legend's box is smaller than the colorbar of '{layer}': it is drawn narrower or shorter"));
+        if let Some(layer) = bar.as_deref().filter(|_| (base_w > iw + LEGEND_FIT_MM && !legend_in_column) || short) {
+            // With no height left in the box the bar is not drawn at all, so the notice says so.
+            if bar_fit > 0.0 {
+                warnings.push(format!("the legend's box is smaller than the colorbar of '{layer}': it is drawn narrower or shorter"));
+            } else {
+                warnings.push(format!("the legend's box has no room for the colorbar of '{layer}': it is left out"));
+            }
         }
         if ch > 0.0 && rows_h >= 1.0 {
             l.add(

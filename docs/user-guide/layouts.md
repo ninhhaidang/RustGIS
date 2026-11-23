@@ -390,8 +390,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   tables. Its properties pick the **Layer** (unless one is picked, the top visible raster with a
   colour scale, not drawn by classes: a legend lists a land cover's classes, and a colorbar
   added over a map with only such rasters draws an empty placeholder and says so), the
-  **Title** (the units, such as `Elevation (m)`; the layer's name to start with; one wider than the colorbar
-  wraps at spaces onto more lines, the bar under them), the
+  **Title** (the units, such as `Elevation (m)`; the layer's name to start with; a title wider than the colorbar
+  wraps at spaces onto more lines, with the bar under them), the
   **Orientation**, which side the **Labels** go on, how many **Ticks** a gradient labels (2 to
   21, the ends included) and **Reverse** (high values first). An RGB raster or a hillshade
   without a tint has no colour scale and shows a placeholder, as does a picked layer that was
