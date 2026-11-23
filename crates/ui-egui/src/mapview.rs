@@ -4675,23 +4675,99 @@ fn navigator(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t
     }
 }
 
+/// Width of the New Map button after the view tabs.
+const NEW_TAB_W: f32 = 22.0;
+
+/// ModelBuilder's view tab, while it is open: its model's name.
+fn model_tab_name(app: &RustGisApp) -> Option<String> {
+    app.mb.open.then(|| if app.mb.name.trim().is_empty() { tl!("Untitled model").to_string() } else { app.mb.name.trim().to_string() })
+}
+
+/// A view tab's width: its name, icon, padding and close button.
+fn view_tab_w(ui: &Ui, name: &str) -> f32 {
+    crate::widgets::text_w(ui, name, regular(12.0)) + 46.0 + TAB_CLOSE_W
+}
+
+/// The next view tab's place in the row, `w` wide, below the strip's top margin.
+fn next_view_tab(ui: &mut Ui, w: f32) -> Rect {
+    let (r, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+    Rect::from_min_max(pos2(r.min.x, r.min.y + 4.0), r.max)
+}
+
 /// View tabs above the map, one per map in the project, like document tabs.
+///
+/// The tabs scroll between arrow buttons when the window is too narrow for them, as the ribbon's
+/// tab strip does ([`crate::ribbon::arrow_scroll_area`]), and the one in view scrolls into sight
+/// when it changes, however it was opened (a click, the Browser, a script, a command), or when the
+/// strip's room or the tabs' widths do. The New Map button stays out of the scrolled part, so it
+/// is always in sight.
 fn view_tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     ui.painter().rect_filled(r, 0.0, t.tab_strip);
     ui.painter().line_segment([pos2(r.min.x, r.max.y - 0.5), pos2(r.max.x, r.max.y - 0.5)], Stroke::new(1.0, t.border));
-    let mut x = r.min.x + 6.0;
+    // The tabs take the strip but the New Map button's room and the gaps around it.
+    let room = (r.width() - 6.0 - 4.0 - NEW_TAB_W - 4.0).max(60.0);
+    let p = &app.session.project;
+    let model = model_tab_name(app);
+    let in_view = if app.mb.shown() { (2, 0) } else { app.session.active_layout.map_or((0, p.active_map), |i| (1, i)) };
+    // Where the tab in view starts in the row, and how wide it is: it moves when a tab before it
+    // changes width, even when the row's total width doesn't (two names swapped across it).
+    let tabs = p.maps.iter().enumerate().map(|(i, m)| ((0, i), &m.name));
+    let tabs = tabs.chain(p.layouts.iter().enumerate().map(|(i, l)| ((1, i), &l.name))).chain(model.iter().map(|n| ((2, 0), n)));
+    let (mut start, mut span) = (0.0, (0.0, 0.0));
+    for (tab, n) in tabs {
+        let w = view_tab_w(ui, n) + 2.0;
+        if tab == in_view {
+            span = (start, w);
+        }
+        start += w;
+    }
+    let key = (in_view, room.round() as i32, span.0.round() as i32, span.1.round() as i32);
+    let follow = crate::ribbon::follow_active(ui, egui::Id::unique("view_tabs_active"), key);
+    let strip = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y), vec2(room, r.height()));
+    let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::left_to_right(egui::Align::Min)));
+    let area = egui::ScrollArea::horizontal().id_salt("view_tabs").max_width(room);
+    let tips = [tl!("Scroll the map tabs left"), tl!("Scroll the map tabs right")];
+    let mut close = None;
+    crate::ribbon::arrow_scroll_area(&mut tabs_ui, t, "view_tabs", area, tips, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+            close = view_tab_row(app, ui, t, follow);
+        });
+    });
+    // Right after the tabs, or at the strip's right edge once they scroll.
+    let x = tabs_ui.min_rect().max.x + 2.0;
+    let pr = Rect::from_min_size(pos2(x + 2.0, r.min.y + 6.0), vec2(NEW_TAB_W, 20.0));
+    let resp = ui.interact(pr, egui::Id::unique("maptab_new"), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("New Map")));
+    if resp.hovered() {
+        ui.painter().rect_filled(pr, CornerRadius::same(4), t.hover);
+    }
+    ui.painter().text(pr.center(), Align2::CENTER_CENTER, "+", regular(15.0), t.text_dim);
+    if resp.on_hover_text(tl!("New Map")).clicked() {
+        let _ = app.run("map.new", Value::Null);
+    }
+    if close.is_some() {
+        app.map.deleting = close;
+    }
+}
+
+/// The view tabs in a row: maps, layouts, then ModelBuilder. The one in view scrolls into sight
+/// while `follow` says so. The map or layout whose close button was clicked, to confirm.
+fn view_tab_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, follow: bool) -> Option<Deletion> {
     let names: Vec<String> = app.session.project.maps.iter().map(|m| m.name.clone()).collect();
     let active = if app.session.active_layout.is_some() || app.mb.shown() { usize::MAX } else { app.session.project.active_map };
     // A tab's close button asks to delete its map or layout.
     let mut close: Option<Deletion> = None;
     for (i, n) in names.iter().enumerate() {
-        let w = crate::widgets::text_w(ui, n, regular(12.0)) + 46.0 + TAB_CLOSE_W;
-        let tr = Rect::from_min_size(pos2(x, r.min.y + 4.0), vec2(w, r.height() - 4.0));
+        let tr = next_view_tab(ui, view_tab_w(ui, n));
         let resp = ui.interact(tr, egui::Id::unique(("maptab", i)), Sense::click());
         // Painted, so named for screen readers (and tests).
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, n));
         let is = i == active;
+        if is && follow {
+            crate::ribbon::scroll_tab_into_view(ui, tr);
+        }
         // A project keeps at least one map (`map.remove` refuses the last).
         let last = names.len() < 2;
         let tip = if last { tl!("A project keeps at least one map") } else { tl!("Delete Map") };
@@ -4728,16 +4804,17 @@ fn view_tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             let _ = app.run("ui.dialog", json!({"name": "renameMap", "target": n}));
         }
         resp.context_menu(|ui| crate::panes::map_menu(app, ui, n));
-        x += w + 2.0;
     }
     // Layouts, after the maps.
     let layouts: Vec<String> = app.session.project.layouts.iter().map(|l| l.name.clone()).collect();
     for (i, n) in layouts.iter().enumerate() {
-        let w = crate::widgets::text_w(ui, n, regular(12.0)) + 46.0 + TAB_CLOSE_W;
-        let tr = Rect::from_min_size(pos2(x, r.min.y + 4.0), vec2(w, r.height() - 4.0));
+        let tr = next_view_tab(ui, view_tab_w(ui, n));
         let resp = ui.interact(tr, egui::Id::unique(("layouttab", i)), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, n));
         let is = app.session.active_layout == Some(i) && !app.mb.shown();
+        if is && follow {
+            crate::ribbon::scroll_tab_into_view(ui, tr);
+        }
         if is {
             ui.painter().rect_filled(tr, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, t.ribbon);
             ui.painter().rect_filled(
@@ -4775,15 +4852,16 @@ fn view_tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             let _ = app.run("ui.dialog", json!({"name": "renameLayout", "target": n}));
         }
         resp.context_menu(|ui| crate::panes::layout_menu(app, ui, n));
-        x += w + 2.0;
     }
     // ModelBuilder, after the layouts.
-    if app.mb.open {
-        let n = if app.mb.name.trim().is_empty() { tl!("Untitled model").to_string() } else { app.mb.name.trim().to_string() };
-        let w = crate::widgets::text_w(ui, &n, regular(12.0)) + 46.0 + TAB_CLOSE_W;
-        let tr = Rect::from_min_size(pos2(x, r.min.y + 4.0), vec2(w, r.height() - 4.0));
+    if let Some(n) = model_tab_name(app) {
+        let tr = next_view_tab(ui, view_tab_w(ui, &n));
         let resp = ui.interact(tr, egui::Id::unique("modeltab"), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &n));
         let is = app.mb.shown();
+        if is && follow {
+            crate::ribbon::scroll_tab_into_view(ui, tr);
+        }
         if is {
             ui.painter().rect_filled(tr, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, t.ribbon);
             ui.painter().rect_filled(
@@ -4814,20 +4892,8 @@ fn view_tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         if resp.clicked() && !is {
             let _ = app.run("ui.modelBuilder", Value::Null);
         }
-        x += w + 2.0;
     }
-    let pr = Rect::from_min_size(pos2(x + 2.0, r.min.y + 6.0), vec2(22.0, 20.0));
-    let resp = ui.interact(pr, egui::Id::unique("maptab_new"), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(pr, CornerRadius::same(4), t.hover);
-    }
-    ui.painter().text(pr.center(), Align2::CENTER_CENTER, "+", regular(15.0), t.text_dim);
-    if resp.on_hover_text(tl!("New Map")).clicked() {
-        let _ = app.run("map.new", Value::Null);
-    }
-    if close.is_some() {
-        app.map.deleting = close;
-    }
+    close
 }
 
 /// A map or a layout, by name, to delete once the user confirms ([`confirm_delete`]).

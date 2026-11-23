@@ -166,6 +166,24 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
 
 const SCROLL_BUTTON_W: f32 = 18.0;
 
+/// Whether a tab strip's active tab scrolls into view on this frame: for a few frames (a pass that
+/// egui discards drops its scroll request) after `key` changes, the key being what puts the active
+/// tab where it is: which tab it is, the strip's room, and the widths that place it. Then the wheel
+/// and the arrows move the strip freely.
+pub(crate) fn follow_active<K: Clone + Default + PartialEq + Send + Sync + 'static>(ui: &Ui, id: egui::Id, key: K) -> bool {
+    let (shown, scrolls): (K, u8) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let scrolls = if shown == key { scrolls } else { 0 };
+    if scrolls < 3 {
+        ui.data_mut(|d| d.insert_temp(id, (key, scrolls + 1)));
+    }
+    scrolls < 3
+}
+
+/// Scrolls the active tab at `r` into view, clear of the arrow buttons.
+pub(crate) fn scroll_tab_into_view(ui: &Ui, r: Rect) {
+    ui.scroll_to_rect_animation(r.expand2(vec2(SCROLL_BUTTON_W, 0.0)), None, egui::style::ScrollAnimation::none());
+}
+
 /// Arrow buttons at the edges of a horizontal scroll area (the ribbon's groups, the tab strip)
 /// whose content is wider than the window: the scroll bar is hidden (it would cover the group
 /// labels and tabs) and the wheel alone is undiscoverable.
@@ -204,12 +222,22 @@ fn scroll_buttons<R>(ui: &mut Ui, t: &Tokens, scroll: &egui::scroll_area::Scroll
 
 /// A horizontal scroll area (`area`, named `name`) without a scroll bar, with [`scroll_buttons`]
 /// at its edges.
-fn arrow_scroll_area<R>(ui: &mut Ui, t: &Tokens, name: &str, area: egui::ScrollArea, tips: [&str; 2], add: impl FnOnce(&mut Ui) -> R) {
+pub(crate) fn arrow_scroll_area<R>(
+    ui: &mut Ui,
+    t: &Tokens,
+    name: &str,
+    area: egui::ScrollArea,
+    tips: [&str; 2],
+    add: impl FnOnce(&mut Ui) -> R,
+) {
     // egui sets a scroll area's offset only as it is built, so a click moves it on the next frame.
     // It is asked for once, on a frame egui keeps: a discarded one doesn't move the area, and asking
     // on every frame would pin the area there against the wheel.
     let key = ui.make_persistent_id(("arrow_scroll_offset", name));
-    let mut area = area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+    // Not animated: an animated scroll-to request (even with no animation) waits as a target until
+    // the next pass, so the next request, computed from the tab where it was still drawn, adds its
+    // distance again and the strip runs past the active tab ([`follow_active`] asks on a few frames).
+    let mut area = area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).animated(false);
     let pending = ui.data(|d| d.get_temp::<f32>(key));
     if let Some(x) = pending {
         area = area.horizontal_scroll_offset(x);
@@ -263,15 +291,8 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         // Tighter tabs when the window is too narrow for the usual padding.
         let text: f32 = tabs.iter().map(|(_, c)| text_w(ui, c, semibold(12.5))).sum();
         let pad = ((room - text) / tabs.len().max(1) as f32).clamp(8.0, 22.0);
-        // The active tab scrolls into view for a few frames (a pass that egui discards drops its
-        // scroll request) after it changes, or the strip's room or tab widths do.
-        let active_id = egui::Id::unique("tab_strip_active");
         let key = (app.ui.tab.clone(), room.round() as i32, text.round() as i32);
-        let (shown, scrolls): ((String, i32, i32), u8) = ui.data(|d| d.get_temp(active_id)).unwrap_or_default();
-        let scrolls = if shown == key { scrolls } else { 0 };
-        if scrolls < 3 {
-            ui.data_mut(|d| d.insert_temp(active_id, (key, scrolls + 1)));
-        }
+        let follow = follow_active(ui, egui::Id::unique("tab_strip_active"), key);
         let area = egui::ScrollArea::horizontal().id_salt("tab_strip").max_width(room);
         let tips = [tl!("Scroll the tabs left"), tl!("Scroll the tabs right")];
         arrow_scroll_area(ui, t, "tab_strip", area, tips, |ui| {
@@ -320,8 +341,8 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     }
                     // A tab that became active (clicked, or opened by a command) scrolls
                     // into view, clear of the arrow buttons.
-                    if active && scrolls < 3 {
-                        ui.scroll_to_rect_animation(r.expand2(vec2(SCROLL_BUTTON_W, 0.0)), None, egui::style::ScrollAnimation::none());
+                    if active && follow {
+                        scroll_tab_into_view(ui, r);
                     }
                 }
             });

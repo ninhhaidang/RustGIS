@@ -1005,6 +1005,196 @@ fn a_tab_strip_wider_than_the_window_scrolls_with_arrow_buttons() {
     assert!(h.query_by_label("Scroll the tabs left").is_none());
 }
 
+fn settle(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
+    for _ in 0..4 {
+        h.step();
+    }
+}
+
+/// A 900-point window with the sample's map, nine more maps and three layouts: more view tabs
+/// than fit above the map. The last one created (a layout) is active.
+fn crowded_view_tabs() -> egui_kittest::Harness<'static, RustGisApp> {
+    let mut h = harness();
+    h.set_size(egui::vec2(900.0, 600.0));
+    for i in 1..=9 {
+        h.state_mut().run("map.new", json!({"name": format!("Tab Map {i}")})).unwrap();
+    }
+    for i in 1..=3 {
+        h.state_mut().run("layout.new", json!({"name": format!("Tab Layout {i}")})).unwrap();
+    }
+    settle(&mut h);
+    h
+}
+
+/// Back to the first map, as a click on its tab does.
+fn activate_world(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
+    h.state_mut().run("layout.close", json!(null)).unwrap();
+    h.state_mut().run("map.activate", json!({"name": "World"})).unwrap();
+    settle(h);
+}
+
+/// The view tab named `name` (the Browser and other panes can show the same name elsewhere):
+/// the node on the strip's row, which the map tabs' scroll arrows span.
+fn view_tab(h: &egui_kittest::Harness<'_, RustGisApp>, name: &str) -> egui::Rect {
+    let arrow = h.query_by_label("Scroll the map tabs right").or_else(|| h.query_by_label("Scroll the map tabs left"));
+    let row = arrow.expect("the strip overflows, so it has an arrow").rect().center().y;
+    h.query_all_by_label(name).map(|n| n.rect()).find(|r| (r.center().y - row).abs() < 8.0).unwrap_or_else(|| panic!("no view tab {name}"))
+}
+
+/// Whether the view tab `name` is wholly in sight: inside the window and clear of the arrows.
+fn view_tab_in_sight(h: &egui_kittest::Harness<'_, RustGisApp>, name: &str) -> bool {
+    let tab = view_tab(h, name);
+    let left = h.query_by_label("Scroll the map tabs left").map_or(0.0, |n| n.rect().right());
+    let right = h.query_by_label("Scroll the map tabs right").map_or(h.ctx.content_rect().right(), |n| n.rect().left());
+    tab.left() >= left - 0.5 && tab.right() <= right + 0.5
+}
+
+/// The name of the map or layout in view.
+fn active_view(h: &egui_kittest::Harness<'_, RustGisApp>) -> String {
+    let s = &h.state().session;
+    s.active_layout.map_or_else(|| s.map().name.clone(), |i| s.project.layouts[i].name.clone())
+}
+
+#[test]
+fn map_and_layout_tabs_wider_than_the_window_scroll_with_arrow_buttons() {
+    let mut h = harness();
+    h.set_size(egui::vec2(900.0, 600.0));
+    settle(&mut h);
+    // The sample's one map fits: no arrows.
+    assert!(h.query_by_label("Scroll the map tabs right").is_none());
+    assert!(h.query_by_label("Scroll the map tabs left").is_none());
+    let mut h = crowded_view_tabs();
+    activate_world(&mut h);
+    // The first tab active: only the right arrow.
+    assert!(h.query_by_label("Scroll the map tabs left").is_none());
+    assert!(view_tab_in_sight(&h, "World"));
+    assert!(!view_tab_in_sight(&h, "Tab Layout 3"));
+    h.get_by_label("Scroll the map tabs right").click();
+    settle(&mut h);
+    let _ = h.get_by_label("Scroll the map tabs left");
+    // A click on an arrow scrolls; it doesn't open the tab under it.
+    assert_eq!(active_view(&h), "World");
+    for _ in 0..20 {
+        let Some(right) = h.query_by_label("Scroll the map tabs right") else { break };
+        right.click();
+        settle(&mut h);
+    }
+    assert!(h.query_by_label("Scroll the map tabs right").is_none());
+    assert!(view_tab_in_sight(&h, "Tab Layout 3"));
+    assert_eq!(active_view(&h), "World");
+    // The New Map button stays in the window, past the last tab.
+    let new_map = view_tab(&h, "New Map");
+    assert!(new_map.right() <= 900.0, "New Map at {new_map:?}");
+    assert!(new_map.left() >= view_tab(&h, "Tab Layout 3").right(), "New Map at {new_map:?}");
+}
+
+#[test]
+fn the_active_view_tab_scrolls_into_view_however_it_is_activated() {
+    let mut h = crowded_view_tabs();
+    // A new layout (the last tab) is active on its creation.
+    assert_eq!(active_view(&h), "Tab Layout 3");
+    assert!(view_tab_in_sight(&h, "Tab Layout 3"));
+    // Activated by a command, as the Browser and scripts do.
+    activate_world(&mut h);
+    assert!(view_tab_in_sight(&h, "World"));
+    h.state_mut().run("map.activate", json!({"name": "Tab Map 9"})).unwrap();
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Map 9"));
+    activate_world(&mut h);
+    h.state_mut().run("layout.activate", json!({"name": "Tab Layout 2"})).unwrap();
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Layout 2"));
+    // ModelBuilder's tab, after the layouts.
+    activate_world(&mut h);
+    h.state_mut().run("ui.modelBuilder", json!(null)).unwrap();
+    settle(&mut h);
+    let model = h.state().mb.name.trim().to_string();
+    assert!(!model.is_empty() && view_tab_in_sight(&h, &model), "ModelBuilder's tab {model:?}");
+    h.state_mut().run("ui.modelBuilder", json!({"close": true})).unwrap();
+    // A new map, and a copy of one, come into view.
+    activate_world(&mut h);
+    h.state_mut().run("map.new", json!({"name": "Tab Map 10"})).unwrap();
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Map 10"));
+    activate_world(&mut h);
+    h.state_mut().run("map.duplicate", json!({"map": "Tab Map 9"})).unwrap();
+    settle(&mut h);
+    let copy = active_view(&h);
+    assert_ne!(copy, "World");
+    assert!(view_tab_in_sight(&h, &copy));
+    // A narrower window keeps the active tab in sight.
+    h.state_mut().run("map.activate", json!({"name": "Tab Map 10"})).unwrap();
+    settle(&mut h);
+    h.set_size(egui::vec2(700.0, 600.0));
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Map 10"));
+    h.set_size(egui::vec2(900.0, 600.0));
+    settle(&mut h);
+    // Renamed to a longer name, the active tab grows and stays in sight.
+    let long = "Tab Map 10 with a much longer name than before";
+    h.state_mut().run("map.rename", json!({"name": long})).unwrap();
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, long));
+}
+
+#[test]
+fn the_active_view_tab_stays_in_sight_when_tabs_before_it_change_width_but_not_the_total() {
+    let mut h = crowded_view_tabs();
+    let long = "Tab Map 9, with a much longer name than the others";
+    h.state_mut().run("map.rename", json!({"map": "Tab Map 9", "name": long})).unwrap();
+    activate_world(&mut h);
+    h.state_mut().run("map.activate", json!({"name": "Tab Map 5"})).unwrap();
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Map 5"));
+    // A script swaps the names of a map before the active one and a map after it, in one go: the
+    // tabs' total width is the same, but the active tab moves right by the difference.
+    for (map, name) in [("Tab Map 1", "Swap"), (long, "Tab Map 1"), ("Swap", long)] {
+        h.state_mut().run("map.rename", json!({"map": map, "name": name})).unwrap();
+    }
+    assert_eq!(h.state().session.map().name, "Tab Map 5");
+    settle(&mut h);
+    assert!(view_tab_in_sight(&h, "Tab Map 5"));
+}
+
+#[test]
+fn view_tabs_lose_their_arrows_when_they_fit_and_the_wheel_moves_them_freely() {
+    let mut h = crowded_view_tabs();
+    activate_world(&mut h);
+    // The wheel scrolls the strip away from the active tab, which doesn't pull it back.
+    let row = view_tab(&h, "World").center().y;
+    for _ in 0..6 {
+        h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(450.0, row)));
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(-200.0, 0.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+            source: egui::MouseWheelSource::Wheel,
+        });
+        h.step();
+    }
+    settle(&mut h);
+    let _ = h.get_by_label("Scroll the map tabs left");
+    assert!(!view_tab_in_sight(&h, "World"));
+    // Deleted until they fit: no arrows.
+    for i in 1..=3 {
+        h.state_mut().run("layout.remove", json!({"name": format!("Tab Layout {i}")})).unwrap();
+    }
+    for i in 1..=9 {
+        h.state_mut().run("map.remove", json!({"name": format!("Tab Map {i}")})).unwrap();
+    }
+    settle(&mut h);
+    assert!(h.query_by_label("Scroll the map tabs right").is_none());
+    assert!(h.query_by_label("Scroll the map tabs left").is_none());
+    // Undone, they overflow again, with the tab in view in sight.
+    for _ in 0..12 {
+        h.state_mut().run("edit.undo", json!(null)).unwrap();
+    }
+    settle(&mut h);
+    assert_eq!(h.state().session.project.maps.len(), 10);
+    assert!(view_tab_in_sight(&h, &active_view(&h)));
+}
+
 #[test]
 fn plugins_install_from_a_file_after_a_prompt() {
     let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
