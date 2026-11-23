@@ -10,6 +10,7 @@ fn curved(line: &[(f32, f32)]) -> Candidate {
     let (x, y) = line.anchor(line.length() / 2.0).unwrap();
     Candidate {
         label: PlacedLabel { x, y, ..label("road", x, None, 0.0) },
+        weight: 5,
         priority: 1.0,
         row: 0,
         key: (1, 0, 0, 0),

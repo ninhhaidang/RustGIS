@@ -320,6 +320,7 @@ fn class(
         repeat,
         line_offset: 0.0,
         show_all: false,
+        weight: crate::symbology::DEFAULT_LABEL_WEIGHT,
         callout: None,
         square_to: None,
         guide: None,

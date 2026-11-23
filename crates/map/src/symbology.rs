@@ -2662,6 +2662,11 @@ pub struct LabelClass {
     /// Every label drawn, over the others where they crowd, rather than some left out.
     #[serde(default, deserialize_with = "de_flag", skip_serializing_if = "std::ops::Not::not")]
     pub show_all: bool,
+    /// Where labels compete for a place, the heavier class's wins, whatever its layer's place
+    /// (within [`LABEL_WEIGHT`], [`DEFAULT_LABEL_WEIGHT`] by default, as QGIS's label priority);
+    /// equal weights keep the layer above and the class listed first ahead.
+    #[serde(default = "default_label_weight", deserialize_with = "de_label_weight", skip_serializing_if = "is_default_label_weight")]
+    pub weight: u8,
     /// Callouts: a label crowded off its spot moves to a free one nearby, a line drawn from its
     /// feature to it at most this long (points, within [`CALLOUT_REACH`]), as QGIS's callouts;
     /// none keeps every label in its spot. Labels along lines aren't moved.
@@ -2986,6 +2991,29 @@ pub fn label_line_offset(v: f64) -> f32 {
 
 fn de_line_offset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
     Ok(lenient::<D, f64>(d)?.map_or(0.0, label_line_offset))
+}
+
+/// A label class's weight where labels compete (#2803): 0 to 10, as QGIS's label priority.
+pub const LABEL_WEIGHT: std::ops::RangeInclusive<f64> = 0.0..=10.0;
+
+/// The weight of a class that sets none, and of every label before weights.
+pub const DEFAULT_LABEL_WEIGHT: u8 = 5;
+
+/// A label's weight: rounded, within [`LABEL_WEIGHT`]; one that isn't a number is the default.
+pub fn label_weight(v: f64) -> u8 {
+    if v.is_finite() { v.round().clamp(*LABEL_WEIGHT.start(), *LABEL_WEIGHT.end()) as u8 } else { DEFAULT_LABEL_WEIGHT }
+}
+
+fn de_label_weight<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    Ok(lenient::<D, f64>(d)?.map_or(DEFAULT_LABEL_WEIGHT, label_weight))
+}
+
+fn default_label_weight() -> u8 {
+    DEFAULT_LABEL_WEIGHT
+}
+
+fn is_default_label_weight(w: &u8) -> bool {
+    *w == DEFAULT_LABEL_WEIGHT
 }
 
 fn is_no_offset(o: &[f32; 2]) -> bool {
@@ -3405,6 +3433,7 @@ impl LabelClass {
             repeat: None,
             line_offset: 0.0,
             show_all: false,
+            weight: DEFAULT_LABEL_WEIGHT,
             callout: None,
             square_to: None,
             guide: None,
@@ -3770,6 +3799,31 @@ mod tests {
         }
         let junk = read(serde_json::json!({"line_offset": "above"}));
         assert_eq!(junk.default.line_offset, 0.0);
+        assert_eq!(junk.default.field, "name");
+    }
+
+    /// A label saved before label weights weighs 5 and saves as before; a weight is kept, held
+    /// to 0–10 and rounded, and one that isn't a number is 5 (#2803).
+    #[test]
+    fn a_label_weight_is_kept_and_old_labels_save_as_before() {
+        let base = serde_json::json!({"enabled": true, "field": "name", "size": 9.0, "color": [0, 0, 0, 255], "halo": true, "bold": false});
+        let read = |extra: serde_json::Value| {
+            let mut v = base.clone();
+            if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            serde_json::from_value::<Labeling>(v).unwrap()
+        };
+        let old = read(serde_json::json!({}));
+        assert_eq!(old.default.weight, DEFAULT_LABEL_WEIGHT);
+        assert!(serde_json::to_value(&old).unwrap().get("weight").is_none(), "5 is left out");
+        for (given, kept) in [(7.0, 7), (0.0, 0), (10.0, 10), (99.0, 10), (-3.0, 0), (6.6, 7)] {
+            let l = read(serde_json::json!({"weight": given}));
+            assert_eq!(l.default.weight, kept, "{given}");
+            assert_eq!(serde_json::from_value::<Labeling>(serde_json::to_value(&l).unwrap()).unwrap(), l);
+        }
+        let junk = read(serde_json::json!({"weight": "high"}));
+        assert_eq!(junk.default.weight, DEFAULT_LABEL_WEIGHT);
         assert_eq!(junk.default.field, "name");
     }
 

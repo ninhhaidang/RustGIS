@@ -162,6 +162,13 @@ Projects, map files and layer files with a label class curved along a guide line
 of placing those labels as without it and saving them again without the guide. A saved
 `labels.placement` command with a guide needs nothing: an older RustGIS refuses the key when it runs.
 
+Projects, map files and layer files with a label class weighing other than 5 (`labels.placement`
+with a `weight`) require `label-weight`, so an older reader refuses them instead of placing their
+labels as without it and saving them again without the weights. So do projects with such a class in
+a saved style, or a saved `labels.placement` step (in a task, a model or a script) with a weight
+other than 5: an older reader would apply the style, or run the step, without the weight, saying
+nothing.
+
 Projects with an ink on a legend, colorbar, table or chart (`color` on those elements) require
 `layout-element-ink`, so an older reader refuses them instead of drawing those elements in dark
 grey and saving them again without it. Saved `layout.addElement` and `layout.update` commands

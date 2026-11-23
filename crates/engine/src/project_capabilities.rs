@@ -60,6 +60,12 @@ impl Project {
         if !required.contains(&"picture-markers") && self.styles.iter().any(|s| s.renderer.has_picture_markers()) {
             required.push("picture-markers");
         }
+        // And its labels' weights (#2803): an older reader would apply the style without them.
+        if !required.contains(&"label-weight")
+            && self.styles.iter().any(|s| s.labels.in_order().any(|c| c.weight != rustgis_map::symbology::DEFAULT_LABEL_WEIGHT))
+        {
+            required.push("label-weight");
+        }
         let commands: Vec<&'static str> =
             COMMAND_CAPABILITIES.iter().filter_map(|&(name, uses)| self.uses_commands(uses).then_some(name)).collect();
         required.extend(commands.into_iter().filter(|name| !required.contains(name)).collect::<Vec<_>>());
@@ -134,7 +140,22 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("layout-frame-border", command_uses_frame_border),
     ("layout-text-size", command_uses_text_size),
     ("dggs-system", command_uses_dggs_system),
+    ("label-weight", command_weighs_labels),
 ];
+
+/// A saved `labels.placement` that gives a class a weight other than 5, read as the command reads
+/// it (#2803): an older reader runs it without the key, saying nothing, so the labels would compete
+/// as before. 5 or null is what an older reader keeps.
+fn command_weighs_labels(id: &str, params: &Value) -> bool {
+    match id {
+        "labels.placement" => params
+            .get("weight")
+            .and_then(crate::cmd::labels::number)
+            .is_some_and(|w| rustgis_map::symbology::label_weight(w) != rustgis_map::symbology::DEFAULT_LABEL_WEIGHT),
+        "script.run" => params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, command_weighs_labels)),
+        _ => false,
+    }
+}
 
 /// A saved `map.graticule` that switches to the MGRS grid, its type read as the command reads it:
 /// an older reader refuses the type, so the command would fail there.
@@ -519,6 +540,12 @@ fn label_guide(layer: &Layer) -> bool {
     layer.labels.in_order().any(|c| c.guide.is_some())
 }
 
+/// Whether a layer's label classes weigh other than the default (#2803): an older reader would
+/// drop the weights, and place and save the labels as without them.
+fn label_weight(layer: &Layer) -> bool {
+    layer.labels.in_order().any(|c| c.weight != rustgis_map::symbology::DEFAULT_LABEL_WEIGHT)
+}
+
 /// The capabilities a layer needs, in [`map_capabilities`]'s order.
 fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
     [
@@ -528,6 +555,7 @@ fn layer_capabilities(layer: &Layer) -> Vec<&'static str> {
         (layer.has_picture_markers(), "picture-markers"),
         (zarr_window(layer), "zarr-window"),
         (label_guide(layer), "label-guide"),
+        (label_weight(layer), "label-weight"),
         (held_natively(&layer.dataset), super::NATIVE_COORDINATES),
     ]
     .into_iter()
@@ -554,12 +582,13 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         mut grid_color,
     ) = (false, false, false, false, false, false, false, false, false, false, false, false, false, false, false);
     let mut polygon = false;
-    let (mut offline_area_id, mut paper, mut native, mut guided) = (false, false, false, false);
+    let (mut offline_area_id, mut paper, mut native, mut guided, mut weighed) = (false, false, false, false, false);
     for map in maps {
         offline_area_id |= map.offline_area_id.is_some();
         // A blank basemap's paper colour (#2532), which an older reader would draw and save white.
         paper |= map.paper.is_some();
         guided |= map.layers.iter().any(label_guide);
+        weighed |= map.layers.iter().any(label_weight);
         // An older reader doesn't know the MGRS graticule (#1042 piece 8): it refuses the
         // project by name rather than failing to read the type.
         mgrs |= map.graticule_type == rustgis_map::graticule::GraticuleType::Mgrs;
@@ -605,6 +634,7 @@ fn map_capabilities<'a>(maps: impl IntoIterator<Item = &'a Map>) -> Vec<&'static
         (pictures, "picture-markers"),
         (zarr, "zarr-window"),
         (guided, "label-guide"),
+        (weighed, "label-weight"),
         (offline_area_id, "offline-map-area-id"),
         (paper, "blank-paper"),
         (native, super::NATIVE_COORDINATES),

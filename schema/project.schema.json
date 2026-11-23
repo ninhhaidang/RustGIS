@@ -1274,6 +1274,7 @@
           "native-coordinates",
           "layout-text-size",
           "label-guide",
+          "label-weight",
           "project-crs",
           "dggs-system"
         ],
@@ -1378,6 +1379,7 @@
     "native-coordinates",
     "layout-text-size",
     "label-guide",
+    "label-weight",
     "project-crs",
     "dggs-system"
   ],

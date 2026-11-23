@@ -640,9 +640,16 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   them where they were found along the line, and the distance grows with the labels at a reference
   scale (`labels.placement={"layer": "Rivers", "lineOffset": 4}`; negative is below, `0` or `null`
   on the line).
-- **Show all labels** (Labeling pane › Position): labels among the view's 20,000 highest-priority
-  candidates are drawn, over the others where
-  they crowd, rather than some left out (`labels.placement={"layer": "Cities", "showAll": true}`).
+- **Show all labels** (Labeling pane › Position): the view's first 20,000 label candidates, by
+  weight, then priority, are drawn, over the others where they crowd, rather than some left out
+  (`labels.placement={"layer": "Cities", "showAll": true}`).
+- **Weight** (Labeling pane › Position): where labels compete for a place, the heavier class's
+  label wins, whatever its layer's place in the list, as QGIS's label priority (0 to 10, 5 to
+  start with). Between equal weights the layer above wins, then the class listed first, then the
+  bigger polygon; labels moved by hand still come before all of them. So the rivers' names can
+  win over the towns' without moving the river layer above them, which would change what draws
+  on top (`labels.placement={"layer": "Rivers", "weight": 8}`; a fraction is rounded and a number
+  past 0 or 10 brought to it, with a notice; `null` is 5).
 - **Callouts** (Labeling pane › Position): a label crowded off its spot moves to the nearest free
   spot nearby, and a line is drawn from its feature to the text, as QGIS's callouts. **at most**
   sets how long the line may be (5 to 500 points, 40 to start with): a label with no free spot
@@ -662,7 +669,8 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   moves and old label locks because replacement data can reuse feature ids, with a counted notice
   and undo restoration. Opening a project, importing a map or styles, or adding a layer file
   reports invalid, duplicate or excess moved-label entries that were ignored, callout lengths that
-  were adjusted, and Show all labels settings that were not true or false. A callout length given
+  were adjusted, label weights that were not a whole number from 0 to 10, and Show all labels
+  settings that were not true or false. A callout length given
   to `labels.placement` outside 5 to 500 points is brought within range with a notice. Clean
   settings give no such notice.
 - **Font**: the labels' font family, any installed on the computer (Labeling pane › Symbol

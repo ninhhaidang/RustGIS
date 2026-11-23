@@ -2644,6 +2644,9 @@ fn numbers_rows(layer: &rustgis_map::Layer) -> bool {
 #[derive(Clone, Debug)]
 struct Candidate {
     label: PlacedLabel,
+    /// Its class's weight (#2803), [`PLACED_FIRST`] for a label moved by hand or fixed: placed
+    /// before any lighter one, whatever its priority.
+    weight: u8,
     priority: f64,
     key: rustgis_map::LabelKey,
     // Ready slots and deferred curve positions are mutually exclusive. Slot 0 is the
@@ -2747,15 +2750,37 @@ impl LabelPlace {
 /// A label with no alternatives.
 impl From<(PlacedLabel, f64, rustgis_map::LabelKey)> for Candidate {
     fn from((label, priority, key): (PlacedLabel, f64, rustgis_map::LabelKey)) -> Candidate {
-        Candidate { label, priority, key, alternatives: Vec::new(), curves: None, line: None, row: usize::MAX }
+        let weight = rustgis_map::symbology::DEFAULT_LABEL_WEIGHT;
+        Candidate { label, weight, priority, key, alternatives: Vec::new(), curves: None, line: None, row: usize::MAX }
     }
+}
+
+/// The weight of a label moved by hand or fixed (a graphic's text): above any class's, so the
+/// others keep off it.
+const PLACED_FIRST: u8 = u8::MAX;
+
+/// A fixed label (a graphic's text) as a tilted view places it: before every other.
+fn fixed_candidate(label: PlacedLabel) -> Candidate {
+    Candidate { weight: PLACED_FIRST, ..(label, f64::MAX, (u32::MAX, u64::MAX, 0, 0)).into() }
+}
+
+/// A tile style's label, placed after every layer's own: the lightest weight, and a priority
+/// below any layer's.
+fn tile_candidate(label: PlacedLabel, priority: f64, i: usize) -> Candidate {
+    Candidate { weight: 0, ..(label, priority - 1e13, (u32::MAX, i as u64, 0, 0)).into() }
+}
+
+/// The order labels are placed in: the heavier first, then the higher priority; a priority of no
+/// number last, not first (`total_cmp` puts NaN above everything).
+fn placed_first(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    let rank = |p: f64| if p.is_nan() { f64::NEG_INFINITY } else { p };
+    b.weight.cmp(&a.weight).then_with(|| rank(b.priority).total_cmp(&rank(a.priority)))
 }
 
 /// Keep exactly the candidates the upstream placement limit can consider, with stable ties.
 fn compact_label_candidates(candidates: &mut Vec<Candidate>) {
     if candidates.len() > 40_000 {
-        let rank = |p: f64| if p.is_nan() { f64::NEG_INFINITY } else { p };
-        candidates.sort_by(|a, b| rank(b.priority).total_cmp(&rank(a.priority)));
+        candidates.sort_by(placed_first);
         candidates.truncate(20_000);
     }
 }
@@ -6329,12 +6354,14 @@ fn render_frame(
                                 .filter(|a| *a != 0.0);
                             places.push((0, lx, ly, turned, Vec::new()));
                         }
-                        // Layers above first, then the classes listed first (#732), then bigger
-                        // polygons: a class (ci ≤ MAX_LABEL_CLASSES, 1e9 each) never outweighs a
-                        // layer (1e12), nor an area (≤ 1e8) a class. A line's repeats come after
-                        // its label at the middle, nearest first (lines have no area). Labels moved
-                        // by hand come before all of them (1e15), so the others keep off them.
-                        let pri = (n_layers - li) as f64 * 1e12 - ci as f64 * 1e9 + area + if moved.is_some() { 1e15 } else { 0.0 };
+                        // Heavier classes first (#2803; labels moved by hand before all of them,
+                        // so the others keep off them), then, among equals, layers above, the
+                        // classes listed first (#732), then bigger polygons: a class
+                        // (ci ≤ MAX_LABEL_CLASSES, 1e9 each) never outweighs a layer (1e12), nor
+                        // an area (≤ 1e8) a class. A line's repeats come after its label at the
+                        // middle, nearest first (lines have no area).
+                        let weight = if moved.is_some() { PLACED_FIRST } else { class.weight };
+                        let pri = (n_layers - li) as f64 * 1e12 - ci as f64 * 1e9 + area;
                         let last = places.len().saturating_sub(1);
                         for (n, (i, mut lx, mut ly, mut angle, mut glyphs)) in places.into_iter().enumerate() {
                             let key = (lid, label_id(row), ci, i);
@@ -6417,6 +6444,7 @@ fn render_frame(
                                         .map(|b| b.scaled(label_factor)),
                                     glyphs,
                                 },
+                                weight,
                                 priority: pri - i as f64,
                                 key,
                                 alternatives,
@@ -6665,10 +6693,10 @@ fn render_frame(
     if let Some(g) = &globe {
         globe_shading(pm.pixels(), g, water, space(view, map), view.pixels_per_point as f32);
     }
-    // Tile labels, after every layer's own.
+    // Tile labels, after every layer's own, the lightest included (#2803).
     if lock.is_none() {
         for (i, (l, pri)) in tile_out.labels.into_iter().enumerate() {
-            label_candidates.push((l, pri - 1e13, (u32::MAX, i as u64, 0, 0)).into());
+            label_candidates.push(tile_candidate(l, pri, i));
         }
     }
     if let Labels::Tilted(to, out) = &mut labels_to {
@@ -6683,7 +6711,7 @@ fn render_frame(
             let (sx, sy) = to.camera.try_to_screen(m, tw, th).filter(|_| near)?;
             (sy as f32 > sky_y).then_some((sx as f32, sy as f32))
         };
-        let fixed = fixed_labels.into_iter().map(|l| Candidate::from((l, f64::MAX, (u32::MAX, u64::MAX, 0, 0))));
+        let fixed = fixed_labels.into_iter().map(fixed_candidate);
         for c in fixed.chain(label_candidates) {
             out.extend(tilt_candidate(c, &at));
         }
@@ -8025,9 +8053,7 @@ fn place_labels_with_previews(
     show_unplaced: bool,
 ) -> Placement {
     let mut cands: Vec<Candidate> = cands.into_iter().map(Into::into).collect();
-    // A priority of no number places last, not first (`total_cmp` puts NaN above everything).
-    let rank = |p: f64| if p.is_nan() { f64::NEG_INFINITY } else { p };
-    cands.sort_by(|a, b| rank(b.priority).total_cmp(&rank(a.priority)));
+    cands.sort_by(placed_first);
     let mut grid = LabelGrid::new(w, h);
     for l in &fixed {
         let (text, icon) = label_boxes(l);
@@ -9156,6 +9182,7 @@ mod tests {
         let blocker = || Candidate::from((label("Blocker", 100.0, None, 0.0), 9.0, (u32::MAX, 0, 0, 0)));
         let taken = |alternatives: Vec<(f32, f32)>| Candidate {
             label: label("Taken", 100.0, None, 0.0),
+            weight: 5,
             priority: 1.0,
             key: (1, 0, 0, 0),
             alternatives: alternatives.into_iter().map(LabelPlace::from).collect(),
@@ -9198,6 +9225,7 @@ mod tests {
         };
         let candidate = Candidate {
             label: base.clone(),
+            weight: 5,
             priority: 1.0,
             key: (1, 0, 0, 0),
             curves: None,
@@ -9235,6 +9263,7 @@ mod tests {
         };
         let c = Candidate {
             label: base,
+            weight: 5,
             priority: 1.0,
             key: (1, 0, 0, 0),
             curves: None,
@@ -9260,6 +9289,7 @@ mod tests {
         let at = |x: f32, y: f32| (y > 100.0).then_some((x + 1000.0, y));
         let offer = |(x, y): (f32, f32), alternatives: Vec<(f32, f32)>| Candidate {
             label: PlacedLabel { x, y, ..label("Paris", 0.0, None, 0.0) },
+            weight: 5,
             priority: 1.0,
             key: (1, 0, 0, 0),
             alternatives: alternatives.into_iter().map(LabelPlace::from).collect(),
@@ -9315,6 +9345,7 @@ mod tests {
                     let alternatives = if others { round.map(|(dx, dy)| LabelPlace::from((x + dx, y + dy))).to_vec() } else { Vec::new() };
                     Candidate {
                         label: l,
+                        weight: 5,
                         priority: -f64::from(i),
                         key: (u32::MAX, i as u64, 0, 0),
                         alternatives,
@@ -10082,6 +10113,95 @@ mod tests {
         // A clause that doesn't read takes no feature.
         capitals(m.layer_mut(id).unwrap(), "gone = 1");
         assert_eq!(sizes(&mut m), both);
+    }
+
+    /// Where labels compete, the heavier class wins whatever its layer's place (#2803); with
+    /// equal weights the layer above wins, as before. A label moved by hand still comes first,
+    /// and Show All still draws every label.
+    #[test]
+    fn a_heavier_label_class_wins_over_the_layer_above() {
+        let mut m = Map::new("Map");
+        let layer = |m: &mut Map, name: &str| {
+            let mut d = Dataset::new(name, GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+            d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text(name.into())]);
+            let id = m.add_dataset(d);
+            let l = m.layer_mut(id).unwrap();
+            l.labels.enabled = true;
+            l.labels.default.field = "name".into();
+            l.labels.default.placement = rustgis_map::LabelPlacement::Center;
+            id
+        };
+        let (a, b) = (layer(&mut m, "Aaaa"), layer(&mut m, "Bbbb"));
+        let camera = Camera { center: lonlat_to_merc(Coord::new(2.35, 48.85)), res: 5000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let shown = |m: &mut Map| {
+            let mut v: Vec<String> = render(m, &view).unwrap().labels.into_iter().map(|l| l.text).collect();
+            v.sort();
+            v
+        };
+        let first = shown(&mut m);
+        assert_eq!(first.len(), 1, "the two labels compete for one place: {first:?}");
+        let (above, below) = if first[0] == "Aaaa" { (a, b) } else { (b, a) };
+        let name = |id: u32| if id == a { "Aaaa".to_string() } else { "Bbbb".to_string() };
+        let weigh = |m: &mut Map, id: u32, w: u8| m.layer_mut(id).unwrap().labels.default.weight = w;
+        for w in [0, 5, 10] {
+            weigh(&mut m, above, w);
+            weigh(&mut m, below, w);
+            assert_eq!(shown(&mut m), first, "equal weights ({w}): the layer above, as before");
+        }
+        weigh(&mut m, above, 5);
+        weigh(&mut m, below, 6);
+        assert_eq!(shown(&mut m), [name(below)], "heavier, the layer below wins");
+        weigh(&mut m, above, 10);
+        weigh(&mut m, below, 0);
+        assert_eq!(shown(&mut m), [name(above)]);
+        // Moved by hand onto the heavy one's place, the lightest still comes first.
+        let fid = m.layer(below).unwrap().dataset.features[0].id;
+        m.layer_mut(below).unwrap().labels.default.moved = vec![rustgis_map::symbology::MovedLabel { id: fid, at: [2.35, 48.85] }];
+        assert_eq!(shown(&mut m), [name(below)], "a label moved by hand comes first");
+        m.layer_mut(below).unwrap().labels.default.moved.clear();
+        // Shown all, the lighter one is drawn too.
+        m.layer_mut(below).unwrap().labels.default.show_all = true;
+        assert_eq!(shown(&mut m).len(), 2, "Show All draws every label whatever its weight");
+    }
+
+    /// A tile style's label still comes after every layer's own, the lightest included (#2803).
+    #[test]
+    fn tile_labels_come_after_the_lightest_layer_label() {
+        let at = |text: &str| label(text, 100.0, None, 0.0);
+        let layer = Candidate { weight: 0, ..(at("Layer"), 1e12, (1, 0, 0, 0)).into() };
+        let placed = place_labels(vec![tile_candidate(at("Tile"), 9.0, 0), layer], Vec::new(), 200.0, 40.0, false);
+        assert_eq!(placed.labels.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["Layer"]);
+    }
+
+    /// A fixed label (a graphic's text), placed with the others in a tilted view, still comes
+    /// first, the heaviest class included (#2803).
+    #[test]
+    fn fixed_labels_come_before_the_heaviest_layer_label() {
+        let at = |text: &str| label(text, 100.0, None, 0.0);
+        let layer = Candidate { weight: 10, ..(at("Layer"), 1e12, (1, 0, 0, 0)).into() };
+        let placed = place_labels(vec![layer, fixed_candidate(at("Fixed"))], Vec::new(), 200.0, 40.0, false);
+        assert_eq!(placed.labels.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["Fixed"]);
+    }
+
+    /// Within a layer, a heavier class wins over the class listed before it (#2803).
+    #[test]
+    fn a_heavier_label_class_wins_over_the_class_listed_first() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris".into())]);
+        let id = m.add_dataset(d);
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        let base = l.labels.default.clone();
+        l.labels.classes = vec![rustgis_map::LabelClass { name: "Big".into(), size: 20.0, ..base }];
+        let camera = Camera { center: lonlat_to_merc(Coord::new(2.35, 48.85)), res: 5000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let sizes = |m: &mut Map| render(m, &view).unwrap().labels.into_iter().map(|l| l.size).collect::<Vec<_>>();
+        let default = m.layer(id).unwrap().labels.default.size;
+        assert_eq!(sizes(&mut m), [20.0], "Big, listed first, takes the place");
+        m.layer_mut(id).unwrap().labels.default.weight = 6;
+        assert_eq!(sizes(&mut m), [default], "Default, heavier, takes it");
     }
 
     /// A class's text, size, colour and angle by expressions, per feature; null text: no label.

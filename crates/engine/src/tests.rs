@@ -9125,6 +9125,117 @@ fn a_lock_on_a_line_holds_while_its_labels_keep_their_side() {
     assert!(held_after(&mut s, json!({"layer": "Rivers", "lineOffset": -4})), "no other places: no other side");
 }
 
+/// A label class takes a weight (#2803): 0 to 10, a number out of range or a fraction held and
+/// said, junk refused, null back to 5. It undoes in one step, keeps a lock, is saved only when it
+/// isn't 5, and then requires `label-weight`, which an older reader refuses rather than drop.
+#[test]
+fn a_label_class_takes_a_weight() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let weights = |s: &Session| {
+        let l = &s.map().layer(id).unwrap().labels;
+        (l.default.weight, l.classes.first().map(|c| c.weight))
+    };
+    let said = |s: &Session, mark| s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+    assert_eq!(weights(&s), (5, None));
+    let mark = s.notice_mark();
+    s.run("labels.placement", &json!({"layer": "Cities", "weight": 8})).unwrap();
+    assert_eq!(weights(&s), (8, None));
+    assert!(said(&s, mark).is_empty(), "{:?}", said(&s, mark));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(weights(&s), (5, None), "undoes");
+    for (given, kept, note) in [
+        (json!(11), 10, "weight 11 adjusted to 10"),
+        (json!(-1), 0, "weight -1 adjusted to 0"),
+        (json!(5.5), 6, "weight 5.5 adjusted to 6"),
+    ] {
+        let mark = s.notice_mark();
+        s.run("labels.placement", &json!({"layer": "Cities", "weight": given})).unwrap();
+        assert_eq!(weights(&s).0, kept, "{given}");
+        let notes = said(&s, mark);
+        assert!(notes.iter().any(|n| n.contains(note)), "{given}: {notes:?}");
+    }
+    for bad in [json!("high"), json!(true), json!([1])] {
+        assert!(s.run("labels.placement", &json!({"layer": "Cities", "weight": bad})).is_err(), "{bad}");
+    }
+    s.run("labels.placement", &json!({"layer": "Cities", "weight": null})).unwrap();
+    assert_eq!(weights(&s), (5, None), "null: back to 5");
+    // The class named, not Default.
+    s.run("labels.class.add", &json!({"layer": "Cities", "name": "Big"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "weight": 9})).unwrap();
+    assert_eq!(weights(&s), (5, Some(9)));
+    // A lock holds: the labels it keeps stay where they are.
+    let key = (id, 0, 0, 0);
+    s.map_mut().label_lock = Some(vec![(key, rustgis_map::LockedPlace { place: 0, callout: None })]);
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "weight": 2})).unwrap();
+    assert!(s.map().label_lock.is_some(), "a weight keeps the lock");
+    // Saved, it requires `label-weight`, and reads back.
+    let saved = serde_json::to_value(&s.project).unwrap();
+    assert_eq!(saved["requires"], json!(["label-weight"]));
+    let read = Project::from_json(&saved.to_string()).unwrap();
+    let layer = read.maps[0].layers.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(layer.labels.classes[0].weight, 2);
+    // Back to 5 everywhere: nothing to require.
+    s.run("labels.placement", &json!({"layer": "Cities", "class": "Big", "weight": 5})).unwrap();
+    assert!(serde_json::to_value(&s.project).unwrap().get("requires").is_none());
+    // The fixture (`label_weight.rgis`) reads back as saved, saying nothing.
+    let mut fixture = Project::from_json(include_str!("../../../schema/fixtures/label_weight.rgis")).unwrap();
+    assert_eq!(fixture.maps[0].layers[0].labels.default.weight, 8);
+    assert!(fixture.take_read_notices(&crate::project::ALL_PARTS).is_empty());
+    assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["label-weight"]));
+    // A weight out of range, a fraction or junk in a file is held, and said once.
+    let mut damaged = serde_json::to_value(&world().project).unwrap();
+    damaged["maps"][0]["layers"][0]["labels"]["weight"] = json!(99);
+    damaged["maps"][0]["layers"][1]["labels"]["weight"] = json!("x");
+    let read = Session::new(Project::from_json(&damaged.to_string()).unwrap());
+    assert_eq!(read.map().layers[0].labels.default.weight, 10);
+    assert_eq!(read.map().layers[1].labels.default.weight, 5);
+    let notes: Vec<_> = read.notices.iter().filter(|n| n.text.contains("label weight")).map(|n| n.text.clone()).collect();
+    assert!(notes.len() == 1 && notes[0].contains("2 label weight(s)"), "{notes:?}");
+}
+
+/// A weight other than 5 saved in a task, a model's step or a script, or in a saved style, also
+/// requires `label-weight`: an older reader would run the step, or apply the style, without the
+/// weight, saying nothing (#2803). A weight of 5 or null needs nothing: that is what an older
+/// reader keeps.
+#[test]
+fn saved_label_weights_are_required_by_name() {
+    let s = world();
+    let with_task = |params: Value| {
+        let mut project = s.project.clone();
+        project.tasks = vec![
+            serde_json::from_value(
+                json!({"name": "Weigh", "steps": [{"title": "Weigh", "command": "labels.placement", "params": params}]}),
+            )
+            .unwrap(),
+        ];
+        serde_json::to_value(&project).unwrap().get("requires").cloned()
+    };
+    for weight in [json!(8), json!(0), json!("8"), json!(5.6)] {
+        assert_eq!(with_task(json!({"layer": "Cities", "position": "above", "weight": weight})), Some(json!(["label-weight"])), "{weight}");
+    }
+    for nothing in [
+        json!({"layer": "Cities", "weight": 5}),
+        json!({"layer": "Cities", "weight": null}),
+        json!({"layer": "Cities", "position": "above"}),
+    ] {
+        assert_eq!(with_task(nothing.clone()), None, "{nothing}");
+    }
+    // In a script, too.
+    let script = json!({"script": "labels.placement {\"layer\": \"Cities\", \"weight\": 9}"});
+    let mut project = s.project.clone();
+    project.tasks = vec![
+        serde_json::from_value(json!({"name": "Script", "steps": [{"title": "Run", "command": "script.run", "params": script}]})).unwrap(),
+    ];
+    assert_eq!(serde_json::to_value(&project).unwrap()["requires"], json!(["label-weight"]));
+    // A saved style keeps the weight its layer had.
+    let mut s = world();
+    s.run("labels.placement", &json!({"layer": "Cities", "weight": 7})).unwrap();
+    s.run("style.new", &json!({"layer": "Cities", "name": "Heavy"})).unwrap();
+    s.run("labels.placement", &json!({"layer": "Cities", "weight": 5})).unwrap();
+    assert_eq!(serde_json::to_value(&s.project).unwrap()["requires"], json!(["label-weight"]));
+}
+
 /// A label class takes an offset with its placement and a background with its text symbol; junk
 /// is refused, numbers kept within their ranges, and each change undoes.
 #[test]
