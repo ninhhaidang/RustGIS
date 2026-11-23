@@ -736,6 +736,14 @@ fn a_held_layer_feeds_other_layers_alike() {
         let (Some(Geometry::Point(p)), Some(Geometry::Point(q))) = (p, q) else { panic!("points") };
         assert!((p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7, "annotation: {p:?} vs {q:?}");
     }
+    // In UTM, the label point is found in the parcels' own coordinates and kept as it is there,
+    // held in UTM, with no round trip through longitude/latitude (#2032 C2e-5).
+    let annotation = &ss[1].map().layer_by_name(&nb).unwrap().dataset;
+    assert_eq!(annotation.coord_crs(), UTM);
+    let parcels = &ss[1].map().layer_by_name("Parcels").unwrap().dataset;
+    let points: Vec<Option<Geometry>> =
+        parcels.features.iter().map(|f| f.geometry.as_ref().and_then(Geometry::label_point).map(Geometry::Point)).collect();
+    assert_eq!(annotation.features.iter().map(|f| f.geometry.clone()).collect::<Vec<_>>(), points);
     // Cells off the wells' box's edges (the held layer's is a hair larger: see the extent above).
     let [a, b] =
         run_both(&mut ss, "analysis.interpolate", &json!({"layer": "Wells", "field": "n", "cellSize": 0.0015, "crs": "EPSG:4326"}));
@@ -754,9 +762,28 @@ fn a_held_layer_feeds_other_layers_alike() {
     let route = json!({"layer": "Roads", "from": [11.4951, 48.6925], "to": [11.5295, 48.7290], "snapDistance": 100});
     let [a, b] = run_both(&mut ss, "analysis.route", &route);
     assert_close(&lonlat(&ss[0], &made(&ss[0], &a)), &lonlat(&ss[1], &made(&ss[1], &b)), "route");
+    // Points simulated in the parcels: spread in each layer's own coordinates (#2032 C2e-5), so
+    // in UTM they are those spread there, held there, each in its parcel.
     let [a, b] = run_both(&mut ss, "analysis.simulate", &json!({"layer": "Parcels", "count": 5, "seed": 3}));
     assert_eq!(a["points"], b["points"]);
-    assert_close(&lonlat(&ss[0], &made(&ss[0], &a)), &lonlat(&ss[1], &made(&ss[1], &b)), "simulation");
+    let parcels = &ss[1].map().layer_by_name("Parcels").unwrap().dataset;
+    let rows: Vec<usize> = (0..parcels.features.len()).collect();
+    let spread = rustgis_analysis::network::random_points(parcels, &rows, 5, 3);
+    let simulated = &ss[1].map().layer(b["layer"].as_u64().unwrap() as u32).unwrap().dataset;
+    assert_eq!(simulated.coord_crs(), UTM);
+    let held: Vec<(i64, Coord)> = simulated
+        .features
+        .iter()
+        .map(|f| match (&f.attrs[0], &f.geometry) {
+            (Cell::Int(r), Some(Geometry::Point(c))) => (*r, *c),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(held, spread.iter().map(|&(r, c)| (r as i64, c)).collect::<Vec<_>>());
+    for (r, c) in held {
+        let Some(Geometry::Polygon(rings)) = &parcels.features[r as usize].geometry else { panic!("a parcel") };
+        assert!(rings.iter().any(|rings| rustgis_data::geometry::polygon_contains(rings, c)), "{c:?} outside parcel {r}");
+    }
 }
 
 /// An offline area's edits sync back alike, also when they come back in longitude/latitude (as a
@@ -2579,4 +2606,71 @@ fn a_point_its_own_system_cant_give_is_said_as_such() {
     let own = format!("1 point(s) that {} can't give in longitude/latitude were left out", UTM.label());
     assert!(said.iter().any(|t| t.contains(&own)), "{said:?}");
     assert!(!said.iter().any(|t| t.contains("beyond what")), "{said:?}");
+}
+
+/// Calculate Geometry gives a held point layer's x and y in its own system's unit, as it holds
+/// them, and a held polygon's area on the ground; Service Area and OD Cost Matrix search a held
+/// network on the ground as one in longitude/latitude (within a millimetre), the service area
+/// held in the network's system, and a second search reuses the graph (#2032 C2e-5).
+#[test]
+fn a_held_layers_points_and_networks_work_in_its_own_system() {
+    let mut ss = both();
+    run_both(&mut ss, "gp.run", &json!({"tool": "calculateGeometry", "params": {"input": "Wells"}}));
+    let wells = &ss[1].map().layer_by_name("Wells").unwrap().dataset;
+    let (fx, fy) = (wells.field_index("point_x").unwrap(), wells.field_index("point_y").unwrap());
+    for (r, held) in held_coords(&ss[1], "Wells").iter().enumerate() {
+        assert_eq!((wells.value(r, fx).as_f64(), wells.value(r, fy).as_f64()), (Some(held[0].x), Some(held[0].y)), "well {r}");
+    }
+    assert!(field_numbers(&ss[0], "Wells", "point_x").iter().all(|x| (11.5..11.53).contains(x)), "degrees in longitude/latitude");
+    let p = json!({"network": "Roads", "facilities": "Wells", "breaks": "0.5, 1", "snapDistance": 2000});
+    let [a, b] = run_both(&mut ss, "gp.run", &json!({"tool": "serviceArea", "params": p}));
+    assert_eq!(a["messages"], b["messages"]);
+    assert_eq!(ss[1].map().layer_by_name("Roads_ServiceArea").unwrap().dataset.coord_crs(), UTM);
+    let [la, lb] = [&ss[0], &ss[1]].map(|s| lonlat(s, "Roads_ServiceArea"));
+    assert_eq!(la.iter().map(shape).collect::<Vec<_>>(), lb.iter().map(shape).collect::<Vec<_>>());
+    for (g, h) in la.iter().zip(&lb) {
+        let (mut p, mut q) = (Vec::new(), Vec::new());
+        g.as_ref().unwrap().for_each_coord(|c| p.push(c));
+        h.as_ref().unwrap().for_each_coord(|c| q.push(c));
+        for (p, q) in p.iter().zip(&q) {
+            assert!(rustgis_geom::wgs84_distance_m(*p, *q) < 1e-3, "{p:?} vs {q:?}");
+        }
+    }
+    let od =
+        json!({"tool": "odCostMatrix", "params": {"network": "Roads", "origins": "Wells", "destinations": "Wells", "snapDistance": 2000}});
+    run_both(&mut ss, "gp.run", &od);
+    let costs = |s: &Session| {
+        let t = &s.project.tables.last().expect("a table").dataset;
+        let f = t.field_index("cost").unwrap();
+        (0..t.features.len()).map(|r| t.value(r, f).as_f64().unwrap()).collect::<Vec<_>>()
+    };
+    assert_numbers_close(&costs(&ss[0]), &costs(&ss[1]), 1e-6, "OD costs (km)");
+}
+
+/// A label moved to a place the layer's own system can't hold (the South Pole, for the NSIDC
+/// north polar stereographic system) becomes annotation at its feature's label point, isn't moved there in the
+/// annotation's labels, and is said; with every label placed, nothing is said (#2032 C2e-5).
+#[test]
+fn a_moved_label_the_layers_system_cant_hold_is_said() {
+    let polar = Crs::Epsg(3413);
+    for (to, said) in [([11.0, -90.0], true), ([11.51, 48.71], false)] {
+        let mut s = session(polar);
+        let l = s.map().layer_by_name("Wells").unwrap();
+        let moved = l.dataset.features[1].id;
+        let label_point = l.dataset.features[1].geometry.clone();
+        s.run("labels.enable", &json!({"layer": "Wells", "on": true})).unwrap();
+        s.run("labels.move", &json!({"layer": "Wells", "feature": moved, "to": to})).unwrap();
+        let mark = s.notice_mark();
+        let made = s.run("labels.convert", &json!({"layer": "Wells"})).unwrap();
+        let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(notices.iter().any(|n| n.contains("can't be placed in")), said, "{to:?}: {notices:?}");
+        let a = s.map().layer(made["layer"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(a.dataset.coord_crs(), polar);
+        if said {
+            assert_eq!(a.dataset.features[1].geometry, label_point, "at its label point");
+            assert!(a.labels.default.moved.is_empty(), "not moved in the annotation");
+        } else {
+            assert_eq!(a.labels.default.moved.len(), 1);
+        }
+    }
 }

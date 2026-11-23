@@ -121,6 +121,10 @@ fn place(inp: &dyn Inputs, p: &Json, key: &str, net: &mut Network<'_>, tool: &st
         Far,
     }
     let (graph, snap_m) = (&net.graph, net.snap_m);
+    // The graph is in longitude/latitude: each point is given there from the system its layer
+    // holds it in (the one the run works in, [`Inputs::work_crs`]); one that can't be has no
+    // usable point.
+    let to = ds.lonlat_conversion()?;
     crate::control::begin(rows.len());
     let got = crate::parallel::try_map(
         &rows,
@@ -137,9 +141,7 @@ fn place(inp: &dyn Inputs, p: &Json, key: &str, net: &mut Network<'_>, tool: &st
                 },
                 _ => return Ok(Got::NoPoint),
             };
-            if !at.is_finite() || at.y.abs() > 90.0 {
-                return Ok(Got::NoPoint);
-            }
+            let Some(at) = to.point(at).filter(|c| c.is_finite() && c.y.abs() <= 90.0) else { return Ok(Got::NoPoint) };
             Ok::<_, String>(graph.place(at, snap_m)?.map_or(Got::Far, |placed| Got::Placed(f.id, placed)))
         },
     )?;
@@ -303,7 +305,6 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
 
     let ds = net.ds;
     let mut out = copy_schema(ds, out_name(p, format!("{}_ServiceArea", ds.name)), GeometryType::Polyline);
-    out.crs = ds.crs;
     for (name, ty) in [("facility_fid", FieldType::Integer), ("from_break", FieldType::Double), ("to_break", FieldType::Double)] {
         let name = unique_field(&out, name);
         out.fields.push(Field::new(name, ty));
@@ -319,6 +320,10 @@ pub(super) fn service_area(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Str
         attrs.extend([fid, Value::Float(from), Value::Float(breaks.get(band).copied().unwrap_or(0.0))]);
         out.push(Some(Geometry::Line(lines)), attrs);
     }
+    // Made in longitude/latitude, on the graph; held as the network is, in the system the run
+    // works in.
+    out.hold_in(ds.coord_crs())?;
+    out.crs = ds.crs;
     let units = if s(p, "units").is_empty() { "Kilometers" } else { s(p, "units") };
     let mut messages = vec![format!(
         "{TOOL}: {} line part(s) reached from {} of {} facilities, in {units}",

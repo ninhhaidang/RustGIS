@@ -586,14 +586,16 @@ impl Bridge<'_> {
         let limit = uint(p, "limit").and_then(|n| usize::try_from(n).ok()).unwrap_or(usize::MAX);
         let rows: Vec<usize> = if b(p, "selected") == Some(true) { l.selection.clone() } else { (0..l.dataset.features.len()).collect() };
         // In longitude/latitude, which a response holds unless `crs` asks for another system,
-        // whatever system the layer holds its coordinates in.
+        // whatever system the layer holds its coordinates in; as the layer holds them when `crs`
+        // asks for that one, exactly, with no conversion there and back (#2032 C2e-5).
+        let own = target.is_some_and(|crs| l.dataset.coord_crs().to(crs).is_ok_and(|to| to.is_identity()));
         let mut features = rustgis_data::Features::default();
         // Made at the first feature with a geometry, once for the layer.
         let mut conversion = None;
         for r in rows.iter().take(limit).filter_map(|&i| l.dataset.features.row(i)) {
             let n = features.len();
             features.push_row(r.to_feature());
-            let Some(g) = r.geometry() else { continue };
+            let Some(g) = r.geometry().filter(|_| !own) else { continue };
             let failed = |e: String| format!("{}: feature {}: {e}", l.name, r.id());
             let to = match &mut conversion {
                 Some(to) => &*to,
@@ -603,8 +605,8 @@ impl Bridge<'_> {
                 features.set_geometry(n, Some(g));
             }
         }
-        // Its geometry is longitude/latitude (above); `crs` stays the layer's, as the system it
-        // was read in, which `export_error` reads.
+        // Its geometry is longitude/latitude, or the layer's own (above); `crs` stays the layer's,
+        // as the system it was read in, which `export_error` reads.
         let mut ds = rustgis_data::Dataset {
             name: l.name.clone(),
             geometry_type: l.dataset.geometry_type,
@@ -615,7 +617,7 @@ impl Bridge<'_> {
             crs_incomplete: false,
             zm_dropped: false,
             windowed: false,
-            held_in: rustgis_data::raster::Crs::LonLat,
+            held_in: if own { l.dataset.coord_crs() } else { rustgis_data::raster::Crs::LonLat },
             shown_in: None,
         };
         let mut member = None;
@@ -643,10 +645,13 @@ impl Bridge<'_> {
                 }
                 let Some(g) = f.geometry.take() else { continue };
                 let mut ok = true;
-                if mercator {
+                // As the layer holds it when that is the system asked for: refused only for a
+                // missing coordinate, as a conversion refuses one.
+                if mercator && !own {
                     g.for_each_coord(|c| ok &= c.y.abs() <= rustgis_geom::MAX_LAT || !c.y.is_finite());
                 }
-                let g = if ok { g.map_coords(&|c| t.from_lonlat(c).unwrap_or(crate::geom::Coord::new(f64::NAN, f64::NAN))) } else { g };
+                let g =
+                    if ok && !own { g.map_coords(&|c| t.from_lonlat(c).unwrap_or(crate::geom::Coord::new(f64::NAN, f64::NAN))) } else { g };
                 g.for_each_coord(|c| ok &= c.is_finite());
                 if !ok {
                     failed += 1;

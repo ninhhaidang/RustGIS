@@ -951,7 +951,8 @@ impl Bounds {
                     None => Box::new(0..dataset.features.len()),
                 };
                 // Each vertex converted as `lonlat_extent_of` does it, Cancel looked at every few
-                // thousand features and vertices.
+                // thousand features and vertices (in longitude/latitude already, a feature's box is
+                // taken whole, so there between features only).
                 let to = dataset.lonlat_conversion()?;
                 let (mut e, mut seen, mut unplaced) = (Extent::EMPTY, 0usize, 0usize);
                 let mut cancelled = None;

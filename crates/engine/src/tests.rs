@@ -18929,7 +18929,7 @@ fn plugin_settings_are_erased_by_uninstalling_the_plugin() {
 fn plugin_host_gives_layer_crs_and_features_in_it() {
     let mut s = world();
     plugin("eng-crs", &["edit"]);
-    // A layer read in UTM 37N: stored in longitude/latitude, with its own system kept.
+    // A layer read in UTM 37N, held there.
     let text = r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:32637"}},
         "features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[500000.0,3320000.0]}}]}"#;
     let (ds, _) = rustgis_data::io::read_geojson(text, "Mine").unwrap();
@@ -18948,11 +18948,13 @@ fn plugin_host_gives_layer_crs_and_features_in_it() {
         deg["features"][0]["geometry"]["coordinates"][1].as_f64().unwrap(),
     );
     assert!((lon - 39.0).abs() < 1e-6 && (lat - 30.0).abs() < 0.1, "{deg}");
-    // "layer": the source's metres, named so host.addLayer reads them back.
+    // "layer": the source's metres, exactly as the layer holds them (no round trip through
+    // longitude/latitude), named so host.addLayer reads them back.
+    assert_eq!(s.map().layer_by_name("Mine").unwrap().dataset.coord_crs().epsg(), 32637);
     for asked in ["layer", "EPSG:32637", " Layer "] {
         let m = forward(&mut s, "eng-crs", "host.features", json!({"layer": "Mine", "crs": asked})).unwrap();
         let c = &m["features"][0]["geometry"]["coordinates"];
-        assert!((c[0].as_f64().unwrap() - 500000.0).abs() < 0.01 && (c[1].as_f64().unwrap() - 3320000.0).abs() < 0.01, "{asked}: {m}");
+        assert_eq!((c[0].as_f64().unwrap(), c[1].as_f64().unwrap()), (500000.0, 3320000.0), "{asked}: {m}");
         assert_eq!(m["crs"]["properties"]["name"], "EPSG:32637");
         assert_eq!(m["features"][0]["row"], 0);
     }

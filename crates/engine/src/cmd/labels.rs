@@ -937,10 +937,16 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         GeometryType::Point,
         out_fields,
     );
-    // Made in longitude/latitude, then held as the labelled layer is (Dataset::hold_as).
+    // Made in the labelled layer's own coordinates when it holds them in a projected system, as
+    // the analysis tools work in it (rustgis_analysis::works_in): a label point found there, as a
+    // map in that system draws it (#2032 C2e-5). Else made in longitude/latitude, then held as the
+    // labelled layer is (Dataset::hold_as).
     let system = (l.dataset.coord_crs(), l.dataset.crs);
+    let own = rustgis_analysis::works_in(system.0);
     let mut moved = Vec::new();
     let to = l.dataset.lonlat_conversion().map_err(|e| format!("{}: {e}", l.name))?;
+    // A moved label's place, kept in longitude/latitude, in the layer's own system.
+    let to_own = if own { Some(rustgis_data::raster::Crs::LonLat.to(system.0).map_err(|e| format!("{}: {e}", l.name))?) } else { None };
     // A moved label is drawn where the map puts its place, by the direct operation into the
     // map's system when there is one (Dataset::shown_through): its annotation is put at the
     // layer's coordinates the map draws there, given in longitude/latitude through WGS 84 as
@@ -949,23 +955,49 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         Some(_) => Some(l.dataset.shown_from_lonlat().map_err(|e| format!("{}: {e}", l.name))?),
         None => None,
     };
-    // Those the map's way doesn't reach are put through WGS 84, and said.
+    // Those the map's way doesn't reach are put through WGS 84, and said; in the layer's own
+    // system, those WGS 84 can't put there either are left at their feature's label point, and
+    // said.
     let astray = std::cell::Cell::new(0usize);
-    let put_at = |[x, y]: [f64; 2]| {
+    let unplaced = std::cell::Cell::new(0usize);
+    // `None` for one left at its feature's label point, which isn't moved there any more.
+    let put_at = |[x, y]: [f64; 2]| -> Option<Coord> {
         let c = Coord::new(x, y);
-        let Some(back) = &shown else { return c };
-        back.point(c).and_then(|own| to.point(own)).filter(|l| l.is_finite()).unwrap_or_else(|| {
-            astray.set(astray.get() + 1);
-            c
-        })
+        let by_map = shown.as_ref().map(|back| back.point(c).filter(|c| c.is_finite()));
+        let Some(to_own) = &to_own else {
+            return Some(match by_map {
+                None => c,
+                Some(own) => own.and_then(|own| to.point(own)).filter(|l| l.is_finite()).unwrap_or_else(|| {
+                    astray.set(astray.get() + 1);
+                    c
+                }),
+            });
+        };
+        match by_map {
+            Some(Some(own)) => Some(own),
+            by_map => match to_own.point(c).filter(|c| c.is_finite()) {
+                Some(own) => {
+                    astray.set(astray.get() + usize::from(by_map.is_some()));
+                    Some(own)
+                }
+                None => {
+                    unplaced.set(unplaced.get() + 1);
+                    None
+                }
+            },
+        }
     };
     for (row, ft) in l.dataset.features.rows().enumerate() {
         if rows.get(row) != Some(&true) {
             continue;
         }
-        // In longitude/latitude, as the annotation layer holds its points and moved labels are.
+        // In the system the annotation layer is made in (above).
         let Some(g) = ft.geometry() else { continue };
-        let g = rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?;
+        let g = if own {
+            std::borrow::Cow::Borrowed(g)
+        } else {
+            rustgis_data::Dataset::geometry_to_lonlat_by(&to, g).map_err(|e| format!("{}: feature {}: {e}", l.name, ft.id()))?
+        };
         let Some(at) = g.label_point() else { continue };
         for (i, class) in matcher.classes_of(&l.dataset, row).filter(|(_, c)| c.visible) {
             let text = match by_text(i).and_then(|e| e.text_cut(&l.dataset, row)) {
@@ -989,8 +1021,13 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
             }
             // A label moved by hand becomes an annotation where it was put, and stays moved there
             // (its class's offset leaves it).
-            let put = class.moved_to(ft.id());
-            let at = put.map_or(at, put_at);
+            // One that can't be placed in the layer's own system stays at its label point, and
+            // isn't moved in the annotation's labels either.
+            let moved_to = class.moved_to(ft.id());
+            let (put, at) = match moved_to.map(|put| (put, put_at(put))) {
+                Some((put, Some(placed))) => (Some(put), placed),
+                Some((_, None)) | None => (None, at),
+            };
             let e = exprs.get(i).and_then(Option::as_ref);
             let number = |v: Option<f32>| v.map_or(Attr::Null, |v| Attr::Float(f64::from(v)));
             if by_size {
@@ -1005,7 +1042,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
                 attrs.push(number(e.filter(|_| turns).and_then(|e| e.angle(&l.dataset, row))));
             }
             ds.push(Some(Geometry::Point(at)), attrs);
-            let flat = put.is_none() && along(class, ft.geometry());
+            let flat = moved_to.is_none() && along(class, ft.geometry());
             flattened += usize::from(flat);
             repeated += usize::from(flat && class.repeat.is_some());
             if let (Some(put), Some(new)) = (put, ds.features.last()) {
@@ -1033,6 +1070,12 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
         NoticeText::format(
             "{name}: {n} moved label(s) the map's own conversion doesn't reach put through WGS 84, which may be some decimetres from where they were drawn",
             [("name", ds.name.clone().into()), ("n", astray.get().to_string().into())],
+        )
+    });
+    let unplaced_note = (unplaced.get() > 0).then(|| {
+        NoticeText::format(
+            "{name}: {n} moved label(s) that can't be placed in {system} became annotation at their feature's label point",
+            [("name", ds.name.clone().into()), ("n", unplaced.get().to_string().into()), ("system", system.0.label().into())],
         )
     });
     let cut_note = (cut > 0).then(|| {
@@ -1074,7 +1117,11 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     }
     let (min_scale, max_scale) = (l.min_scale, l.max_scale);
     // Before the labelled layer changes, so a cancel leaves it as it was.
-    super::workflows::hold_as(s, &mut ds, system)?;
+    if own {
+        (ds.held_in, ds.crs) = system;
+    } else {
+        super::workflows::hold_as(s, &mut ds, system)?;
+    }
     if let Some(src) = s.map_mut().layer_mut(id) {
         src.labels.enabled = false;
     }
@@ -1090,7 +1137,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(note) = cut_note {
         s.notify(note, false);
     }
-    for note in [flattened_note, repeated_note, astray_note].into_iter().flatten() {
+    for note in [flattened_note, repeated_note, astray_note, unplaced_note].into_iter().flatten() {
         s.notify_text(note, false);
     }
     if let Some((_, unread)) = &whole {

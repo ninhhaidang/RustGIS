@@ -139,7 +139,9 @@ name, which stands for the first table of that name. An id given as a number is 
 a name. The Tools pane and Geocode Addresses send the id of the table picked; a tool's run keeps
 the table's name beside it (`input_name`). The **XY Table To Point** tool
 ([Geoprocessing](analysis.md), and a table's right-click menu) makes points of a table already in
-the project, from two fields of coordinates and their coordinate system. In a text field a single comma is the decimal separator
+the project, from two fields of coordinates and their coordinate system. The points keep the table's
+numbers, held in that system, which exports use by default; a row whose numbers have no place in
+longitude/latitude gets no point. In a text field a single comma is the decimal separator
 (`1,234` is 1.234); thousands separators are not read.
 
 **Use a polygon's published interior point.** To place TIGER interior points, run **XY Table

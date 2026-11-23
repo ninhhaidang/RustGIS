@@ -211,7 +211,10 @@ is given; Zonal Statistics and Tabulate Area place their zones on a raster in th
 are. A surface given another projected system, or a raster in one, gets the points or zones
 converted straight into it, by the transformation between the two datums where they differ; a raster
 in longitude/latitude or Web Mercator gets them through WGS 84. Their rasters aren't converted, and
-they don't count bent edges. Area, length and perimeter fields stay on the ellipsoid.
+they don't count bent edges. Area, length and perimeter fields stay on the ellipsoid. Calculate
+Geometry Attributes gives a point's `point_x` and `point_y` in that system's x and y, in its unit,
+as the layer holds them. Service Area and OD Cost Matrix still search the network on the ellipsoid,
+and the service area's lines are held in the network's system.
 
 In the desktop app a tool runs in the background, so the map and the rest of the window stay in
 use. While it runs, the Tools pane shows its name, a **Cancel** button and, for the tools that
@@ -595,7 +598,10 @@ normalized in continuous longitude space, so non-polar regions larger than half 
 keep their full area and small antimeridian crossings stay small. Rings winding around a pole
 use the smaller polar region in either direction; reversing a ring does not select its global
 complement. Edges follow the shortest geodesics between vertices. The output fields remain
-`area_km2`, `perimeter_km` and `length_km`; point coordinates are unchanged.
+`area_km2`, `perimeter_km` and `length_km`; point coordinates are unchanged. A point layer gets
+`point_x` and `point_y`: longitude and latitude, or x and y in the projected system the layer is
+held in (see above). A feature with a place that can't be given in longitude/latitude, or lies
+beyond the poles (a latitude past ±90°), isn't measured, and a notice counts them.
 A ring through both poles can wind beyond one whole surface and bound no single
 region. Calculate Geometry Attributes refuses such input, with the numbers of affected rings
 and features, before changing any fields. The attribute table's Calculate Geometry does the
@@ -1226,7 +1232,8 @@ network, as the Network Analysis workflow's route does: lines join where their v
 line's length is measured on the WGS 84 ellipsoid, and a **Cost Field** multiplies it (a line with
 no number there costs its length, and one costing 0 or less is closed; each is counted in a
 notice). Every line can be travelled both ways. The network's selection is honoured, and the graph
-is reused while the lines don't change, shared with routes.
+is reused while the lines don't change, shared with routes: a network held in a projected system
+is converted to longitude/latitude only to build it, not on every run.
 
 Points are moved onto the nearest line, at most **Snap Distance** metres (1,000 by default). A
 feature farther away, with no point, or with several (a multipoint) is left out and counted in a
@@ -1579,7 +1586,7 @@ click them on the map:
 | Geostatistical Wizard | An IDW surface from feature values, using 12 nearest neighbours by default |
 | Network Analysis | The shortest (or cheapest, by a cost field) route over a line layer |
 | Neighborhood Explorer | What lies within a distance of a point, with sums of numeric fields |
-| Simulation | Random points in polygons (a fixed number, or from a field × rate) |
+| Simulation | Random points in polygons (a fixed number, or from a field × rate), spread in the layer's own coordinates when it is held in a projected system, else in longitude/latitude |
 | Data Engineering | Counts, nulls, distinct values, min, max and mean of every field |
 | Exploratory Analysis | Histograms and correlations of numeric fields |
 | Embeddings | The features most like the selected one, by their numeric attributes |

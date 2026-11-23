@@ -299,6 +299,11 @@ const OWN_SYSTEM_TOOLS: &[&str] = &[
     "kernelDensity",
     "zonalStats",
     "tabulateArea",
+    // A point's x and y in the system's own unit, areas and lengths still on the ground; networks
+    // searched on the ground, kept under the layer as it is held (#2032 C2e-5).
+    "calculateGeometry",
+    "serviceArea",
+    "odCostMatrix",
 ];
 
 impl ToolSpec {

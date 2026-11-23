@@ -4211,10 +4211,21 @@ fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         total += 1;
         let xy = coordinate(ds.value(r, xi)).zip(coordinate(ds.value(r, yi)));
         read += usize::from(xy.is_some());
-        let pt = xy.and_then(|(x, y)| to.to_lonlat(Coord::new(x, y))).filter(|c| c.is_finite() && c.x.abs() <= 180.0 && c.y.abs() <= 90.0);
+        // Kept as the table gives it, held in its system, where it has a place in
+        // longitude/latitude (as a CSV file's points are read); in Web Mercator, one it can hold
+        // there, within 85.05° (as `Dataset::hold_in` takes it).
+        let max_lat = if crs == Crs::WebMercator { rustgis_geom::MAX_LAT } else { 90.0 };
+        let pt = xy
+            .map(|(x, y)| Coord::new(x, y))
+            .filter(|&c| to.to_lonlat(c).is_some_and(|l| l.is_finite() && l.x.abs() <= 180.0 && l.y.abs() <= max_lat));
         placed += usize::from(pt.is_some());
         // A row without a usable position stays in the layer's table, without a point.
         out.push_next(pt.map(Geometry::Point), f.attrs.clone());
+    }
+    // Its points are held in their own system, which exports use by default (#2032 C2e-5).
+    if crs != Crs::LonLat {
+        out.held_in = crs;
+        out.crs = Some(crs);
     }
     if placed == 0 {
         return Err(if read == 0 {
@@ -6018,10 +6029,35 @@ fn merc_area_perimeter(mp: &MultiPolygon<f64>) -> (f64, f64) {
 /// [`ground_area_perimeter`]), `length_km` to a line layer, and `point_x`/`point_y` (a label point)
 /// to any other, updating the layer in place. Polygon measurements and ambiguity counts check
 /// Cancel between features; measuring one feature's rings is an uninterruptible step.
+///
+/// In a layer's own projected system ([`Inputs::work_crs`]) the point's x and y are that system's,
+/// in its unit, as the layer holds them; areas and lengths are still measured on the ground, each
+/// feature given in longitude/latitude for it (#2032 C2e-5). A feature with a place that can't be
+/// given there, or is given beyond the poles, gets no measures, and is counted in a notice.
 fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     use geo::{Geodesic, Length};
     let ds = input(inp, p, "input")?;
     let mut out = ds.clone();
+    // Each geometry in longitude/latitude for its measures: as it is in a run there.
+    let to = ds.lonlat_conversion()?;
+    let unplaced = std::sync::atomic::AtomicUsize::new(0);
+    fn counted<'a>(
+        to: &rustgis_data::raster::Reprojection,
+        g: &'a Geometry,
+        unplaced: &std::sync::atomic::AtomicUsize,
+    ) -> Option<Cow<'a, Geometry>> {
+        // A place given beyond the poles (a latitude past ±90°) has none either; a missing
+        // coordinate is measured as it always was.
+        let g = Dataset::converted_to_lonlat(to, g).filter(|g| {
+            let mut placed = true;
+            g.for_each_coord(|c| placed &= !(c.is_finite() && c.y.abs() > 90.0));
+            placed
+        });
+        if g.is_none() {
+            unplaced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        g
+    }
     match ds.geometry_type {
         GeometryType::Polygon => {
             let fa = out.ensure_field("area_km2", FieldType::Double);
@@ -6035,9 +6071,11 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
                 |_, _, f| {
                     // Validate every winding, including ones without a full-turn edge, in the
                     // cancellable worker pass. An unavailable area needs no further measurement.
-                    let rings = f.geometry.as_ref().map_or(0, Geometry::ambiguous_area_rings);
-                    let measures = if rings == 0 { f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter) } else { (f64::NAN, 0.0) };
-                    Ok::<_, String>((measures, rings))
+                    let Some(g) = f.geometry.as_ref() else { return Ok::<_, String>((Some((0.0, 0.0)), 0)) };
+                    let Some(g) = counted(&to, g, &unplaced) else { return Ok((None, 0)) };
+                    let rings = g.ambiguous_area_rings();
+                    let measures = if rings == 0 { ground_area_perimeter(&g) } else { (f64::NAN, 0.0) };
+                    Ok((Some(measures), rings))
                 },
             )?;
             let (rings, features) = measured.iter().fold((0usize, 0usize), |(rings, features), (_, count)| {
@@ -6049,12 +6087,13 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
                     ds.name
                 ));
             }
-            for (f, ((a, per), _)) in out.features.iter_mut().zip(measured) {
+            // (A feature that can't be given in longitude/latitude has no measures: empty.)
+            for (f, (measures, _)) in out.features.iter_mut().zip(measured) {
                 if let Some(v) = f.attrs.get_mut(fa) {
-                    *v = Value::Float(a / 1e6);
+                    *v = measures.map_or(Value::Null, |(a, _)| Value::Float(a / 1e6));
                 }
                 if let Some(v) = f.attrs.get_mut(fp) {
-                    *v = Value::Float(per / 1e3);
+                    *v = measures.map_or(Value::Null, |(_, per)| Value::Float(per / 1e3));
                 }
             }
         }
@@ -6066,15 +6105,16 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
                 PARALLEL_FEATURES,
                 || (),
                 |_, _, f| {
-                    Ok::<_, String>(match &f.geometry {
-                        Some(Geometry::Line(parts)) => parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum::<f64>(),
+                    let Some(g) = f.geometry.as_ref() else { return Ok::<_, String>(Some(0.0)) };
+                    Ok(counted(&to, g, &unplaced).map(|g| match &*g {
+                        Geometry::Line(parts) => parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum::<f64>(),
                         _ => 0.0,
-                    })
+                    }))
                 },
             )?;
             for (f, len) in out.features.iter_mut().zip(lengths) {
                 if let Some(v) = f.attrs.get_mut(fl) {
-                    *v = Value::Float(len / 1e3);
+                    *v = len.map_or(Value::Null, |len| Value::Float(len / 1e3));
                 }
             }
         }
@@ -6092,11 +6132,16 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
             }
         }
     }
-    Ok(ToolResult {
-        losses: Vec::new(),
-        output: Output::Update { layer: ds.name.clone(), dataset: out },
-        messages: vec![format!("Calculated geometry attributes for {}", ds.name)],
-    })
+    let mut messages = vec![format!("Calculated geometry attributes for {}", ds.name)];
+    let unplaced = unplaced.into_inner();
+    if unplaced > 0 {
+        messages.push(format!(
+            "Calculate Geometry Attributes: {unplaced} feature(s) of {} have a place with no longitude/latitude (beyond the poles, or not convertible from {}), and weren't measured",
+            ds.name,
+            to.source().label()
+        ));
+    }
+    Ok(ToolResult { losses: Vec::new(), output: Output::Update { layer: ds.name.clone(), dataset: out }, messages })
 }
 
 /// The longest separator CONCATENATE joins values with, in bytes: each value adds one, so a long
@@ -10703,7 +10748,13 @@ mod tests {
                 vec![],
             );
             let inputs = Map(HashMap::from([("invalid".into(), ds)]));
-            assert!(crate::run("calculateGeometry", &inputs, &serde_json::json!({"input":"invalid"})).is_ok());
+            let r = crate::run("calculateGeometry", &inputs, &serde_json::json!({"input":"invalid"})).unwrap();
+            // A latitude past 90° has no place: no measures, and a notice; a missing coordinate is
+            // measured as before, and said nothing of.
+            let beyond = bad.is_finite();
+            assert_eq!(r.messages.iter().any(|m| m.contains("weren't measured")), beyond, "{bad:?}: {:?}", r.messages);
+            let out = layer(r);
+            assert_eq!(out.value(0, 0).is_null(), beyond, "{bad:?}");
         }
     }
 
@@ -10724,6 +10775,40 @@ mod tests {
         assert!((out.value(0, length).as_f64().unwrap() - expected).abs() < 1e-6);
         assert_eq!(out.value(1, length).as_f64(), Some(0.0));
         assert_eq!(out.features[0].geometry, ds.features[0].geometry);
+    }
+
+    /// A layer held in a projected system: a polygon is measured on the ground from its places in
+    /// longitude/latitude, as the same polygon held there is, and one with a place that has none
+    /// there gets no measures, said in a notice (#2032 C2e-5).
+    #[test]
+    fn calculate_geometry_measures_a_held_layer_on_the_ground() {
+        let (utm, c) = (Crs::Epsg(32632), Coord::new);
+        let square =
+            |x: f64, y: f64| Geometry::Polygon(vec![vec![vec![c(x, y), c(x + 0.01, y), c(x + 0.01, y + 0.01), c(x, y + 0.01), c(x, y)]]]);
+        let mut lonlat = Dataset::new("parcels", GeometryType::Polygon, vec![]);
+        lonlat.push(Some(square(11.5, 48.7)), vec![]);
+        let mut held = lonlat.clone();
+        held.hold_in(utm).unwrap();
+        // Far beyond any place on Earth in UTM.
+        held.push(Some(Geometry::Polygon(vec![vec![vec![c(1e12, 0.0), c(1e12 + 1.0, 0.0), c(1e12, 1.0), c(1e12, 0.0)]]])), vec![]);
+        let measured = |ds: Dataset| {
+            let r = crate::run(
+                "calculateGeometry",
+                &Map(HashMap::from([("parcels".to_string(), ds)])),
+                &serde_json::json!({"input": "parcels"}),
+            )
+            .unwrap();
+            let messages = r.messages.clone();
+            let out = layer(r);
+            ((0..out.features.len()).map(|i| (out.value(i, 0).clone(), out.value(i, 1).clone())).collect::<Vec<_>>(), messages)
+        };
+        let (expected, said) = measured(lonlat);
+        assert_eq!(said.len(), 1, "{said:?}");
+        let (got, said) = measured(held);
+        let (Value::Float(a), Value::Float(b)) = (&got[0].0, &expected[0].0) else { panic!("{got:?}") };
+        assert!((a - b).abs() < 1e-9 * b, "{a} vs {b}");
+        assert_eq!(got[1], (Value::Null, Value::Null), "not measured");
+        assert!(said.iter().any(|m| m.contains("1 feature(s) of parcels") && m.contains("weren't measured")), "{said:?}");
     }
 
     /// Calculate Geometry stores full-precision values (#513): rounding to 0.01 km² gave every
@@ -12759,13 +12844,31 @@ mod tests {
         assert_eq!(points, [Some((-74.08, 4.6)), Some((-75.5, 6.25)), Some((-76.0, 3.0)), None, None, None, None]);
         assert_eq!(out.value(3, 0), &Value::Text("words".into()), "rows without a point keep their attributes");
 
-        // Another coordinate system, and the output's name.
+        // Another coordinate system, and the output's name: the points are kept as the table
+        // gives them, held in it, 10° east on the equator in longitude/latitude.
         let out = layer(run(serde_json::json!({"input": "metres", "x": "e", "y": "n", "crs": "EPSG:3857", "output": "East"})).unwrap());
         assert_eq!(out.name, "East");
+        assert_eq!((out.coord_crs(), out.crs), (Crs::WebMercator, Some(Crs::WebMercator)));
         match out.features.first().and_then(|f| f.geometry.as_ref()) {
+            Some(Geometry::Point(c)) => assert_eq!((c.x, c.y), (1_113_194.9, 0.0)),
+            g => panic!("{g:?}"),
+        }
+        match out.in_lonlat().unwrap().features.first().and_then(|f| f.geometry.as_ref()) {
             Some(Geometry::Point(c)) => assert!((c.x - 10.0).abs() < 1e-6 && c.y.abs() < 1e-6, "{c:?}"),
             g => panic!("{g:?}"),
         }
+        // Web Mercator holds no place beyond 85.05°: a row there gets no point.
+        let mut polar =
+            Dataset::new("polar", GeometryType::None, vec![Field::new("e", FieldType::Double), Field::new("n", FieldType::Double)]);
+        polar.push(None, vec![Value::Float(0.0), Value::Float(0.0)]);
+        polar.push(None, vec![Value::Float(0.0), Value::Float(3.0e7)]);
+        let m2 = Map(HashMap::from([("polar".to_string(), polar)]));
+        let r = crate::run("xyTableToPoint", &m2, &serde_json::json!({"input": "polar", "x": "e", "y": "n", "crs": "EPSG:3857"})).unwrap();
+        assert!(r.messages.iter().any(|m| m.starts_with("1 of 2 rows")), "{:?}", r.messages);
+        assert!(layer(r).features[1].geometry.is_none());
+        // Points in longitude/latitude are held there, with no system of their own, as before.
+        let lonlat = layer(run(serde_json::json!({"input": "stops", "x": "lon", "y": "lat", "crs": "EPSG:4326"})).unwrap());
+        assert_eq!((lonlat.coord_crs(), lonlat.crs), (Crs::LonLat, None));
 
         // Metres read as longitude/latitude, fields without numbers, and junk parameters.
         let e = run(serde_json::json!({"input": "metres", "x": "e", "y": "n"})).unwrap_err();
