@@ -68,7 +68,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "run_command",
-            description: "Run a RustGIS command by id with JSON parameters (see search_commands for ids and parameters). Project edits are undoable. Source publication and other external file writes cannot be undone. Commands that read or write files, use the network or replace the project ask the user first.",
+            description: "Run a RustGIS command by id with JSON parameters (see search_commands for ids and parameters). Project edits are undoable. Source publication and other external file writes cannot be undone. Commands that read or write files, use the network or replace the project ask the user first. A notice that reports lost data with a loss code is also in the result's losses, as {code, kind, text, action}; for an assumed.* code, ask the user rather than guess.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -101,7 +101,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "run_tool",
-            description: "Run a geoprocessing tool. Its output is added to the map as a new layer, or to the project as a standalone table (for example Summary Statistics), whose name the result gives (use it as the input of a next step; read a table with read_features). One undo step.",
+            description: "Run a geoprocessing tool. Its output is added to the map as a new layer, or to the project as a standalone table (for example Summary Statistics), whose name the result gives (use it as the input of a next step; read a table with read_features). One undo step. As for run_command, a notice that reports lost data with a loss code is also in the result's losses, as {code, kind, text, action}.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -473,7 +473,29 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize, scope: S
     if call.name == "run" {
         return run_script(s, call, tokens, scope, permit);
     }
-    run_with_budget_inner(s, call, tokens, scope, permit).map_err(|e| public_error(&e))
+    run_with_budget_inner(s, call, tokens, scope, permit).map_err(|e| match e {
+        Failure::Plain(e) => public_error(&e),
+        Failure::Clean(e) => e,
+    })
+}
+
+/// A call's failure, which [`run_with_budget`] cleans of login values; a command's failure is
+/// cleaned already, with the codes of its losses added after cleaning ([`error_with_notices`]).
+enum Failure {
+    Plain(String),
+    Clean(String),
+}
+
+impl From<String> for Failure {
+    fn from(e: String) -> Self {
+        Self::Plain(e)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(e: &str) -> Self {
+        Self::Plain(e.into())
+    }
 }
 
 /// Adapter-owned presentation state for one already-admitted archive command. Execution
@@ -481,39 +503,39 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize, scope: S
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct CommandCompletion {
     before: Vec<(String, Vec<u32>)>,
-    mark: u64,
+    said: Said,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl CommandCompletion {
     pub(crate) fn capture(s: &Session) -> Self {
-        Self { before: layer_snap(s), mark: s.notice_mark() }
+        Self { before: layer_snap(s), said: Said::now(s) }
     }
     pub(crate) fn finish(self, s: &mut Session, result: Result<Value, String>) -> Result<String, String> {
         result
-            .map(|value| command_result(s, value, &self.before, self.mark, DEFAULT_OUTPUT_TOKENS))
-            .map_err(|e| public_error(&error_with_notices(e, s, self.mark)))
+            .map(|value| command_result(s, value, &self.before, &self.said, DEFAULT_OUTPUT_TOKENS))
+            .map_err(|e| error_with_notices(e, s, &self.said, DEFAULT_OUTPUT_TOKENS))
     }
 }
 
 /// Retains the initiating scope and one-use permit while assembling ordinary tool results.
-fn run_with_budget_inner(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, permit: Option<Permit>) -> Result<String, String> {
+fn run_with_budget_inner(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, permit: Option<Permit>) -> Result<String, Failure> {
     if matches!(call.name.as_str(), "run_command" | "run_tool") {
         if call.name == "run_command" && str_arg(&call.args, "command").is_some_and(|id| id.starts_with("ui.")) {
             return Err("ui.* commands only open panes and dialogs; the assistant can't use them".into());
         }
         let engine = policy_call(call)?.ok_or("missing executable call")?;
-        let (before, mark) = (layer_snap(s), s.notice_mark());
+        let (before, said) = (layer_snap(s), Said::now(s));
         let result = match permit {
             Some(p) => s.run_permitted(scope, p, &engine),
             None => s.run_scoped(scope, &engine),
         }
-        .map_err(|e| error_with_notices(e, s, mark))?;
-        return Ok(command_result(s, result, &before, mark, tokens));
+        .map_err(|e| Failure::Clean(error_with_notices(e, s, &said, tokens)))?;
+        return Ok(command_result(s, result, &before, &said, tokens));
     }
     if permit.is_some() {
         return Err("this approval is for an executable call".into());
     }
-    s.with_scope(scope, |s| run_read(s, call, tokens))?
+    s.with_scope(scope, |s| run_read(s, call, tokens))?.map_err(Failure::Plain)
 }
 
 fn run_read(s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
@@ -582,12 +604,18 @@ fn public_result(s: &mut Session, value: Value, tokens: usize) -> String {
 
 /// These fields belong to the adapter's response schema; only their values contain data.
 fn public_envelope(s: &mut Session, value: Value, tokens: usize) -> String {
+    let (value, withheld) = public_projection(value);
+    finish_result(s, value, tokens, withheld)
+}
+
+/// [`public_envelope`]'s cleaning, without serializing, so fixed-schema fields can be added after.
+fn public_projection(value: Value) -> (Value, Withheld) {
     let mut withheld = Withheld::default();
     let value = match value {
         Value::Object(o) => Value::Object(o.into_iter().map(|(key, value)| (key, public_addresses(value, 1, &mut withheld))).collect()),
         value => public_addresses(value, 0, &mut withheld),
     };
-    finish_result(s, value, tokens, withheld)
+    (value, withheld)
 }
 
 /// Generated search, tool and project metadata has a fixed schema at every level. Its
@@ -609,15 +637,22 @@ fn public_metadata(value: Value, depth: usize, withheld: &mut Withheld) -> Value
 }
 
 /// Cleans the arbitrary command payload before adding adapter-owned notices/layer metadata.
-fn command_result(s: &mut Session, value: Value, before: &[(String, Vec<u32>)], mark: u64, tokens: usize) -> String {
+fn command_result(s: &mut Session, value: Value, before: &[(String, Vec<u32>)], said: &Said, tokens: usize) -> String {
     let mut withheld = Withheld::default();
     let value = public_addresses(value, 0, &mut withheld);
-    let value = with_notices(with_new_layers(value, s, before), s, mark);
-    finish_result(s, value, tokens, withheld)
+    let value = with_notices(with_new_layers(value, s, before), s, said.mark);
+    // Added after cleaning: its keys and codes are fixed, and its text was cleaned on its own.
+    let losses = losses_since(s, said);
+    finish_with_losses(s, value, losses, tokens, withheld, false)
 }
 
 /// Publishes counted projection losses without sending the completed envelope through a second redactor.
-fn finish_result(s: &mut Session, mut value: Value, tokens: usize, withheld: Withheld) -> String {
+fn finish_result(s: &mut Session, value: Value, tokens: usize, withheld: Withheld) -> String {
+    bounded_json(&with_withheld(s, value, withheld), tokens)
+}
+
+/// `value` with the notices of what cleaning it withheld, also given to the app.
+fn with_withheld(s: &mut Session, mut value: Value, withheld: Withheld) -> Value {
     if withheld.depth > 0 || withheld.keys > 0 {
         let mark = s.notice_mark();
         if withheld.depth > 0 {
@@ -632,7 +667,7 @@ fn finish_result(s: &mut Session, mut value: Value, tokens: usize, withheld: Wit
             value = with_notices(value, s, mark);
         }
     }
-    bounded_json(&value, tokens)
+    value
 }
 
 /// Counts output withheld for depth limits or field names that collide after redaction.
@@ -788,7 +823,7 @@ fn with_new_layers(r: Value, s: &Session, before: &[(String, Vec<u32>)]) -> Valu
 /// call and one undo step, none when its lines only read, moved the view, exported, left a
 /// request or reported they changed nothing. A failing line stops the script and nothing it did
 /// to the project is kept (files it wrote stay). The answer is
-/// `{success, result, lines, layersAdded, notices, error, duration_s}`, where `result` is the
+/// `{success, result, lines, layersAdded, notices, losses, error, duration_s}`, where `result` is the
 /// last command's; a failure is an `Err` holding the same JSON.
 fn run_script(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, permit: Option<Permit>) -> Result<String, String> {
     let a = &call.args;
@@ -799,7 +834,8 @@ fn run_script(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, per
         .filter(|t| !t.trim().is_empty())
         .ok_or("script is required: one `command-id {json}` per line")?;
     let start = web_time::Instant::now();
-    let (before, mark) = (layer_snap(s), s.notice_mark());
+    let (before, said) = (layer_snap(s), Said::now(s));
+    let mark = said.mark;
     let engine = Call::script(script).with_request(&call.id);
     let r = match permit {
         Some(p) => s.run_permitted(scope, p, &engine),
@@ -807,6 +843,7 @@ fn run_script(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, per
     };
     let secs = (start.elapsed().as_secs_f64() * 1000.0).round() / 1000.0;
     let notices: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    let losses = losses_since(s, &said);
     match r {
         Ok(v) => {
             let ran = v.get("ran").and_then(Value::as_array);
@@ -814,17 +851,19 @@ fn run_script(s: &mut Session, call: &ToolCall, tokens: usize, scope: Scope, per
             let added = with_new_layers(json!({}), s, &before).get("layersAdded").cloned().unwrap_or_else(|| json!([]));
             let out = json!({"success": true, "result": last, "lines": ran.map_or(0, Vec::len), "layersAdded": added,
                 "notices": notices, "error": null, "duration_s": secs});
-            Ok(public_envelope(s, out, tokens))
+            let (out, withheld) = public_projection(out);
+            Ok(finish_with_losses(s, out, losses, tokens, withheld, true))
         }
         Err(e) => {
             let e = public_error(&e);
             // Nothing was kept, so no line ran and no layer was added.
             // The notice of the failure is the error redacted: compared as such, it isn't repeated.
             let told = rustgis_engine::data::diagnostics::redact(&e);
-            let said: Vec<&&str> = notices.iter().filter(|t| **t != e && **t != told).collect();
-            let out = json!({"success": false, "result": null, "lines": 0, "layersAdded": [], "notices": said,
+            let kept: Vec<&&str> = notices.iter().filter(|t| **t != e && **t != told).collect();
+            let out = json!({"success": false, "result": null, "lines": 0, "layersAdded": [], "notices": kept,
                 "error": clip(&e, 8000), "duration_s": secs});
-            Err(public_envelope(s, out, tokens))
+            let (out, withheld) = public_projection(out);
+            Err(finish_with_losses(s, out, losses, tokens, withheld, true))
         }
     }
 }
@@ -845,14 +884,253 @@ fn with_notices(r: Value, s: &Session, mark: u64) -> Value {
     }
 }
 
-/// A failed run's error with what the command said before failing (a GDAL layer that couldn't be
-/// converted).
-fn error_with_notices(e: String, s: &Session, mark: u64) -> String {
+/// Where a run's notices start, and the session's loss counts then: what [`losses_since`] reads.
+struct Said {
+    mark: u64,
+    given: Vec<(rustgis_engine::data::loss::LossCode, u64)>,
+}
+
+impl Said {
+    fn now(s: &Session) -> Self {
+        Self { mark: s.notice_mark(), given: s.losses_given().to_vec() }
+    }
+}
+
+/// The notices since `said` that report a classified loss, as `{code, kind, text, action}`: the
+/// code is never translated or renamed, so it can be matched where the text can't. Losses whose
+/// notices the session no longer keeps (past its last 200) come as one entry per code with their
+/// `count`.
+fn losses_since(s: &Session, said: &Said) -> Vec<Value> {
+    let entry = |code: rustgis_engine::data::loss::LossCode, text: String| {
+        let spec = code.spec();
+        json!({"code": spec.id, "kind": spec.kind.id(), "text": text, "action": spec.action})
+    };
+    let kept: Vec<_> = s.notices_since(said.mark).iter().filter_map(|n| Some((n.loss()?, public_text(n.text.clone())))).collect();
+    let mut out: Vec<Value> = s
+        .losses_given()
+        .iter()
+        .filter_map(|&(code, given)| {
+            let was = said.given.iter().find(|(c, _)| *c == code).map_or(0, |(_, n)| *n);
+            let held = kept.iter().filter(|(c, _)| *c == code).count() as u64;
+            let lost = given.saturating_sub(was).saturating_sub(held);
+            (lost > 0).then(|| {
+                let mut e = entry(code, format!("{lost} further {} notice(s) were not kept", code.spec().id));
+                e["count"] = json!(lost);
+                e
+            })
+        })
+        .collect();
+    out.extend(kept.into_iter().map(|(code, text)| entry(code, text)));
+    out
+}
+
+/// [`finish_result`] for `r` with `losses` (or `[]` when `always`), within the output budget.
+/// The list shrinks until it fits beside `r` ([`loss_forms`]): each entry's code and kind, one
+/// entry per code, and at last the codes alone. When none fits beside `r` whole, `r` is cut to
+/// leave room for one entry per code, keeping its `success`, and the list shrinks again if it
+/// must. `lossesTrimmed` says when the list was shortened or, with the tightest budgets, left out.
+fn finish_with_losses(s: &mut Session, r: Value, losses: Vec<Value>, tokens: usize, withheld: Withheld, always: bool) -> String {
+    // What cleaning withheld is said first, so the sizes below are the final ones.
+    let r = with_withheld(s, r, withheld);
+    // A result that isn't an object goes under `result`, so the codes have their key.
+    let o = match r {
+        Value::Object(o) => o,
+        other if losses.is_empty() && !always => return bounded_json(&other, tokens),
+        other => serde_json::Map::from_iter([("result".to_string(), other)]),
+    };
+    if losses.is_empty() && !always {
+        return bounded_json(&Value::Object(o), tokens);
+    }
+    // Read before a wrap below moves them. A result's `error` that is null (`run`'s on success)
+    // isn't a failure.
+    let failed = o.get("error").is_some_and(|e| !e.is_null());
+    let success = o.get("success").cloned();
+    // A result with its own `losses` goes under `result`, as a result that isn't an object does
+    // beside `notices`, so the codes still have their key; its `success` stays beside them.
+    let o = if o.contains_key("losses") {
+        let mut wrapped = serde_json::Map::from_iter([("result".to_string(), Value::Object(o))]);
+        if let Some(success) = &success {
+            wrapped.insert("success".into(), success.clone());
+        }
+        wrapped
+    } else {
+        o
+    };
+    let max = output_bytes(tokens);
+    let forms = loss_forms(&losses);
+    let with = |mut o: serde_json::Map<String, Value>, (list, trimmed): &(Value, bool)| {
+        o.insert("losses".into(), list.clone());
+        if *trimmed {
+            o.insert("lossesTrimmed".into(), json!(true));
+        }
+        Value::Object(o)
+    };
+    // Sized from the parts, so the result is serialized once: its own bytes, then each form's
+    // with its key (and `lossesTrimmed`'s).
+    let base = Value::Object(o.clone()).to_string().len();
+    let size = |(list, trimmed): &(Value, bool)| {
+        base + list.to_string().len() + r#","losses":"#.len() + if *trimmed { r#","lossesTrimmed":true"#.len() } else { 0 }
+    };
+    if let Some(form) = forms.iter().find(|form| size(form) <= max) {
+        return with(o, form).to_string();
+    }
+    // The result cut to leave room for one entry per code.
+    let summary = forms.get(2).or(forms.last()).map_or(0, |(list, _)| list.to_string().len());
+    let text = bounded_json(&Value::Object(o.clone()), max.saturating_sub(summary + 64).div_ceil(4).max(1));
+    let mut cut = match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(cut)) => cut,
+        // A failure's error alone (`error: …`), kept as JSON with as much of it as fits below.
+        Ok(Value::String(preview)) if failed => {
+            serde_json::Map::from_iter([("error".to_string(), json!(preview)), ("truncated".to_string(), json!(true))])
+        }
+        _ if failed => serde_json::Map::from_iter([("error".to_string(), json!(text)), ("truncated".to_string(), json!(true))]),
+        // No room for any of a result that didn't fail: only that it was cut.
+        _ => serde_json::Map::from_iter([("truncated".to_string(), json!(true))]),
+    };
+    if let Some(success) = &success {
+        cut.insert("success".into(), success.clone());
+    }
+    for form in forms.iter().skip(2) {
+        let v = with(cut.clone(), form);
+        let over = v.to_string().len().saturating_sub(max);
+        if over == 0 {
+            return v.to_string();
+        }
+        // Only a failure's error can still give way: cut it by what's over.
+        if let Some(error) = v.get("error").and_then(Value::as_str) {
+            let mut v = v.clone();
+            v["error"] = json!(clip_bytes(error, error.len().saturating_sub(over + 8)));
+            if v.to_string().len() <= max {
+                return v.to_string();
+            }
+        }
+    }
+    // The codes, saying the result (or the failure's error) was cut: then only that both were.
+    let mut said_cut = serde_json::Map::from_iter(success.map(|v| ("success".to_string(), v)));
+    said_cut.insert("truncated".into(), json!(true));
+    for form in forms.iter().skip(2) {
+        let v = with(said_cut.clone(), form);
+        if v.to_string().len() <= max {
+            return v.to_string();
+        }
+    }
+    // With no losses to leave out, only that the result was cut.
+    let trimmed = !losses.is_empty();
+    let mut v = said_cut;
+    if trimmed {
+        v.insert("lossesTrimmed".into(), json!(true));
+    }
+    let v = Value::Object(v).to_string();
+    // The tightest budgets: the markers alone, then the list's name alone; below that (15 bytes)
+    // no marker fits, and nothing a client could misread is said.
+    let both = if trimmed { json!({"truncated": true, "lossesTrimmed": true}) } else { json!({"truncated": true}) }.to_string();
+    let marker = json!({"lossesTrimmed": true}).to_string();
+    let name = json!("lossesTrimmed").to_string();
+    if v.len() <= max {
+        v
+    } else if both.len() <= max {
+        both
+    } else if trimmed && marker.len() <= max {
+        marker
+    } else if trimmed && name.len() <= max {
+        name
+    } else {
+        "{}".to_string()
+    }
+}
+
+/// `losses` in the forms [`finish_with_losses`] tries, longest first, each with whether it is
+/// shortened: whole; each entry's code and kind; one entry per code ([`loss_summary`]); one entry
+/// per code with its count only; the codes alone.
+fn loss_forms(losses: &[Value]) -> Vec<(Value, bool)> {
+    // An entry for losses whose notices weren't kept keeps its count.
+    let compact: Vec<Value> = losses
+        .iter()
+        .map(|l| {
+            let mut e = json!({"code": l["code"], "kind": l["kind"]});
+            if let Some(n) = l.get("count") {
+                e["count"] = n.clone();
+            }
+            e
+        })
+        .collect();
+    let summary = loss_summary(losses).unwrap_or_else(|| json!([]));
+    let counts: Vec<Value> =
+        summary.as_array().map(|a| a.iter().map(|e| json!({"code": e["code"], "count": e["count"]})).collect()).unwrap_or_default();
+    let codes: Vec<Value> = summary.as_array().map(|a| a.iter().map(|e| e["code"].clone()).collect()).unwrap_or_default();
+    // An empty list is never shortened.
+    let shortened = !losses.is_empty();
+    vec![(json!(losses), false), (json!(compact), shortened), (summary, shortened), (json!(counts), shortened), (json!(codes), shortened)]
+}
+
+/// The first `max` bytes of `text`, cut at a character boundary.
+fn clip_bytes(text: &str, max: usize) -> String {
+    let mut end = max.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// A failed command's error, cleaned of login values, with what the command said before failing
+/// (a GDAL layer that couldn't be converted). It can still report losses its rollback can't take
+/// back (a counted omission): their codes follow on a `losses:` line of JSON, added after cleaning
+/// so a login can't rewrite them, and kept whole however long the rest is: the error and notices
+/// are cut to leave it room within 8,000 characters and the output budget. When no form of the
+/// list fits, a `lossesTrimmed: true` line says the codes were left out.
+fn error_with_notices(e: String, s: &Session, said: &Said, tokens: usize) -> String {
     let told = rustgis_engine::data::diagnostics::redact(&e);
-    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| *t != e && *t != told).collect();
-    // Preserve the original 8,000-character diagnostic assembly cap for MCP errors;
-    // the agent additionally applies its serialized output budget.
-    if said.is_empty() { e } else { clip(&format!("{e}\n{}", said.join("\n")), 8000) }
+    let notices: Vec<&str> = s.notices_since(said.mark).iter().map(|n| n.text.as_str()).filter(|t| *t != e && *t != told).collect();
+    let Some(losses) = loss_summary(&losses_since(s, said)) else {
+        // Preserve the original 8,000-character diagnostic assembly cap for MCP errors;
+        // the agent additionally applies its serialized output budget.
+        return public_error(&if notices.is_empty() { e } else { clip(&format!("{e}\n{}", notices.join("\n")), 8000) });
+    };
+    let text = public_error(&if notices.is_empty() { e } else { format!("{e}\n{}", notices.join("\n")) });
+    // Within the 8,000-character cap, and the agent's `{"error": …}` within its output budget,
+    // the error giving way first and then the list ([`loss_forms`]).
+    let fits = |t: &str| t.chars().count() <= 8000 && json!({"error": t}).to_string().len() <= output_bytes(tokens);
+    let raw: Vec<Value> = losses.as_array().cloned().unwrap_or_default();
+    let lines = loss_forms(&raw).into_iter().skip(2).map(|(list, _)| format!("\nlosses: {list}"));
+    // The first line that fits alone, for a budget with no room for any of the error.
+    let mut alone = None;
+    for line in lines.chain(["\nlossesTrimmed: true".to_string()]) {
+        if !fits(&line) {
+            continue;
+        }
+        alone.get_or_insert_with(|| line.trim_start().to_string());
+        if fits(&format!("{text}{line}")) {
+            return format!("{text}{line}");
+        }
+        // The longest start of the error that leaves the line room.
+        let chars: Vec<char> = text.chars().collect();
+        let cut = |keep: usize| format!("{}…{line}", chars.iter().take(keep).collect::<String>());
+        let (mut low, mut high) = (0, chars.len());
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if fits(&cut(mid)) { low = mid } else { high = mid - 1 }
+        }
+        // With room for the mark that the error was cut, as much of it as fits; without, a
+        // shorter line may leave it room.
+        if fits(&cut(low)) {
+            return cut(low);
+        }
+    }
+    alone.unwrap_or_else(|| clip(&text, 8000))
+}
+
+/// The losses as one entry per code, `{code, kind, count, action}`: short enough to keep whole
+/// when the full list can't be. `None` for none.
+fn loss_summary(losses: &[Value]) -> Option<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for l in losses {
+        let n = l.get("count").and_then(Value::as_u64).unwrap_or(1);
+        match out.iter_mut().find(|o| o["code"] == l["code"]) {
+            Some(o) => o["count"] = json!(o["count"].as_u64().unwrap_or(0).saturating_add(n)),
+            None => out.push(json!({"code": l["code"], "kind": l["kind"], "count": n, "action": l["action"]})),
+        }
+    }
+    (!out.is_empty()).then(|| json!(out))
 }
 
 /// How well `words` match `hay` (all lower case): matched words, with whole-id hits counting more.
@@ -1362,6 +1640,178 @@ mod tests {
         let counts: Vec<usize> = notice.split_whitespace().filter_map(|word| word.parse().ok()).collect();
         assert_eq!(counts, [2, MAX_DEPTH], "the notice reports truncated subtrees, not an unbounded count of their contents");
         assert_eq!(s.notices_since(0).len(), 1, "the app also receives one aggregate loss notice");
+    }
+
+    /// A notice that reports lost data comes with its code in `losses`, beside the notice text;
+    /// a run that loses nothing has no `losses`, and a script's answer an empty list.
+    #[test]
+    fn results_give_the_codes_of_the_losses_their_notices_report() {
+        let mut s = Session::new(rustgis_engine::Project::default());
+        // An MCP agent the server lets act without asking (`--yes`).
+        let scope = Scope::agent(rustgis_engine::policy::AgentAccess::Full, true, "loss-codes", None, std::sync::Arc::new(Live::default()));
+        const WMS: &str = r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Title>Test WMS</Title></Service>
+<Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/wms?"/></Get></HTTP></DCPType></GetMap></Request>
+<Layer><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title>
+<Style><Name>default</Name><LegendURL><Format>image/png</Format><OnlineResource xlink:href="LEGEND"/></LegendURL></Style></Layer></Layer></Capability></WMS_Capabilities>"#;
+        // A legend picture whose address is too long to keep is left out, and said with its code.
+        let long = format!("https://maps.example.com/legends/{}.png", "a".repeat(5000));
+        let params = |legend: &str| json!({"url": "https://maps.example.com/wms", "layer": "roads", "text": WMS.replace("LEGEND", legend)});
+        let lossy = params(&long);
+        let clean = params("https://maps.example.com/legends/roads.png");
+        let add = |params: &Value| ToolCall {
+            id: "add".into(),
+            name: "run_command".into(),
+            args: json!({"command": "service.add", "params": params}),
+        };
+        let run = |s: &mut Session, call: &ToolCall| -> Value {
+            serde_json::from_str(&run_with_budget(s, call, DEFAULT_OUTPUT_TOKENS, scope.clone(), None).unwrap()).unwrap()
+        };
+        let out = run(&mut s, &add(&lossy));
+        let [loss] = out["losses"].as_array().map(Vec::as_slice).unwrap_or_default() else { panic!("one loss: {out}") };
+        assert_eq!((&loss["code"], &loss["kind"]), (&json!("dropped.legend"), &json!("dropped")), "{out}");
+        assert_eq!(loss["action"], "Use a service with short HTTP or HTTPS addresses for its legend pictures.");
+        assert!(out["notices"].as_array().unwrap().iter().any(|n| n == &loss["text"]), "the loss is a notice too: {out}");
+        assert!(run(&mut s, &add(&clean)).get("losses").is_none());
+        let line = |params: &Value| format!("service.add {params}");
+        let script = |text: String| ToolCall { id: "script".into(), name: "run".into(), args: json!({"script": text}) };
+        let out = run(&mut s, &script(line(&lossy)));
+        assert_eq!(out["losses"][0]["code"], "dropped.legend", "{out}");
+        assert_eq!(run(&mut s, &script(line(&clean)))["losses"], json!([]));
+        // A failed command still says the loss its rollback can't take back, with its code.
+        let failing = format!("{}\nlayer.addDataText {}", line(&lossy), json!({"fileName": "broken.geojson", "text": "{"}));
+        let command = ToolCall {
+            id: "fail".into(),
+            name: "run_command".into(),
+            args: json!({"command": "script.run", "params": {"script": failing}}),
+        };
+        let error = run_with_budget(&mut s, &command, DEFAULT_OUTPUT_TOKENS, scope.clone(), None).unwrap_err();
+        assert!(error.contains(r#"losses: [{"action":"Use a service"#) && error.contains(r#""code":"dropped.legend""#), "{error}");
+        let error = run_with_budget(&mut s, &script(failing), DEFAULT_OUTPUT_TOKENS, scope.clone(), None).unwrap_err();
+        let failed: Value = serde_json::from_str(&error).unwrap();
+        assert_eq!((&failed["success"], &failed["losses"][0]["code"]), (&json!(false), &json!("dropped.legend")), "{failed}");
+        // A login value that matches a code's words cleans the notice's text, never the code.
+        let id = s
+            .run(
+                "connection.new",
+                &json!({"kind":"wms","address":"https://echo-2371.example.invalid/wms","auth":"header","keyName":"X-Key"}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        s.run("connection.login", &json!({"id": id, "apiKey": "legend"})).unwrap();
+        let out = run(&mut s, &script(line(&lossy)));
+        assert_eq!(out["losses"][0]["code"], "dropped.legend", "{out}");
+        assert!(out["losses"][0].get("code").is_some() && !out["losses"][0]["text"].as_str().unwrap().contains("legend"), "{out}");
+        let error = run_with_budget(&mut s, &command, DEFAULT_OUTPUT_TOKENS, scope.clone(), None).unwrap_err();
+        assert!(error.contains(r#""code":"dropped.legend""#), "a failure's code isn't cleaned either: {error}");
+        // An error too long to keep whole is cut, never the losses after it.
+        let long = format!("{}\nmap.drawingMode {}", line(&lossy), json!({"mode": "x".repeat(9000)}));
+        let command =
+            ToolCall { id: "long".into(), name: "run_command".into(), args: json!({"command": "script.run", "params": {"script": long}}) };
+        let error = run_with_budget(&mut s, &command, DEFAULT_OUTPUT_TOKENS, scope.clone(), None).unwrap_err();
+        let last = error.lines().last().unwrap_or_default();
+        assert!(last.starts_with("losses: [") && last.contains(r#""code":"dropped.legend""#), "{last}");
+        assert!(error.chars().count() <= 8000, "{}", error.chars().count());
+        // Within a small output budget too, counted in the bytes of the agent's `{"error": …}`,
+        // with text of several bytes a character.
+        let wide = format!("{}\nmap.drawingMode {}", line(&lossy), json!({"mode": "界".repeat(3000)}));
+        let command =
+            ToolCall { id: "wide".into(), name: "run_command".into(), args: json!({"command": "script.run", "params": {"script": wide}}) };
+        let error = run_with_budget(&mut s, &command, 200, scope.clone(), None).unwrap_err();
+        assert!(json!({"error": error}).to_string().len() <= output_bytes(200), "{error}");
+        assert!(error.lines().last().unwrap_or_default().contains("dropped.legend"), "{error}");
+        // With no room for even the codes, a line says they were left out.
+        let error = run_with_budget(&mut s, &command, 9, scope.clone(), None).unwrap_err();
+        assert!(error.ends_with("lossesTrimmed: true"), "{error}");
+    }
+
+    /// Losses that don't fit the output budget beside the result keep only their codes, so the
+    /// result stays whole; when even those don't fit, one entry per code is kept and the rest of
+    /// the result is cut to leave it room.
+    #[test]
+    fn losses_beyond_the_output_budget_keep_their_codes() {
+        let small_loss = || json!({"code": "dropped.value", "kind": "dropped", "text": "t", "action": "a"});
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let mut finish = |r: Value, losses: Vec<Value>, always: bool| -> Value {
+            serde_json::from_str(&finish_with_losses(&mut s, r, losses, 200, Withheld::default(), always)).unwrap()
+        };
+        let loss = json!({"code": "dropped.value", "kind": "dropped", "text": "x".repeat(600), "action": "Correct the value."});
+        let out = finish(json!({"notices": ["n"]}), vec![loss.clone(), loss.clone()], false);
+        assert_eq!(out["losses"], json!([{"code": "dropped.value", "kind": "dropped"}, {"code": "dropped.value", "kind": "dropped"}]));
+        assert_eq!((&out["lossesTrimmed"], &out["notices"]), (&json!(true), &json!(["n"])));
+        // An entry for losses whose notices weren't kept keeps its count when shortened.
+        let unkept = json!({"code": "dropped.value", "kind": "dropped", "count": 250, "text": "x".repeat(900), "action": "a"});
+        let out = finish(json!({"notices": ["n"]}), vec![unkept], false);
+        assert_eq!(out["losses"], json!([{"code": "dropped.value", "kind": "dropped", "count": 250}]), "{out}");
+        let small = json!({"code": "dropped.value", "kind": "dropped", "text": "t", "action": "a"});
+        let out = finish(json!({"notices": ["n"]}), vec![small.clone()], false);
+        assert_eq!((&out["losses"], out.get("lossesTrimmed")), (&json!([small]), None));
+        // A result over the budget by itself is cut, keeping its `success` and one entry per code
+        // with its count; a tighter budget keeps the codes alone, and the tightest says only that
+        // they were left out, always as JSON within the budget.
+        let big = json!({"success": true, "notices": ["n"], "result": "y".repeat(5000)});
+        let text = finish_with_losses(&mut s, big.clone(), vec![loss.clone(), loss.clone()], 200, Withheld::default(), false);
+        assert!(text.len() <= output_bytes(200), "{}", text.len());
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(out["losses"], json!([{"code": "dropped.value", "kind": "dropped", "count": 2, "action": "Correct the value."}]));
+        assert_eq!((&out["lossesTrimmed"], &out["truncated"], &out["success"]), (&json!(true), &json!(true), &json!(true)));
+        // `run`'s success, whose `error` is null, is cut the same way.
+        let run_ok = json!({"success": true, "error": null, "notices": ["n"], "result": "y".repeat(5000)});
+        for (tokens, big) in [(32, &big), (16, &big), (32, &run_ok), (16, &run_ok)] {
+            let text = finish_with_losses(&mut s, big.clone(), vec![loss.clone()], tokens, Withheld::default(), false);
+            let out: Value = serde_json::from_str(&text).unwrap();
+            assert!(text.len() <= output_bytes(tokens), "{tokens}: {text}");
+            assert_eq!((&out["lossesTrimmed"], &out["success"]), (&json!(true), &json!(true)), "{tokens}: {text}");
+            // A success cut this far is never said as an error, and always said to be cut: the
+            // codes go first.
+            assert!(out.get("error").is_none(), "{tokens}: {text}");
+            assert_eq!(out["truncated"], json!(true), "{tokens}: {text}");
+            assert_eq!(out["losses"].to_string().contains("dropped.value"), tokens == 32, "{tokens}: {text}");
+        }
+        for tokens in 1..=8 {
+            let text = finish_with_losses(&mut s, big.clone(), vec![loss.clone()], tokens, Withheld::default(), false);
+            assert!(text.len() <= output_bytes(tokens), "{tokens}: {text}");
+        }
+        // A cut result with no losses says it was cut, not that a list was.
+        let text = finish_with_losses(&mut s, run_ok.clone(), vec![], 32, Withheld::default(), true);
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((&out["truncated"], out.get("lossesTrimmed"), &out["losses"]), (&json!(true), None, &json!([])), "{out}");
+        // A failure with its own `losses`, cut, keeps its `success` and says it was cut.
+        let own = json!({"success": false, "error": "e".repeat(5000), "losses": 3});
+        let text = finish_with_losses(&mut s, own, vec![loss.clone()], 200, Withheld::default(), true);
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((&out["success"], &out["truncated"]), (&json!(false), &json!(true)), "{out}");
+        // A failure whose error gives way says so, at every budget.
+        for tokens in 12..=24 {
+            let failed = json!({"success": false, "error": "e".repeat(5000)});
+            let text = finish_with_losses(&mut s, failed, vec![loss.clone()], tokens, Withheld::default(), true);
+            let out: Value = serde_json::from_str(&text).unwrap();
+            assert!(text.len() <= output_bytes(tokens), "{tokens}: {text}");
+            assert_eq!(out["truncated"], json!(true), "{tokens}: {text}");
+        }
+        // A failure's error alone gives way to its losses, as JSON.
+        let failed = json!({"success": false, "error": "e".repeat(5000)});
+        let text = finish_with_losses(&mut s, failed, vec![loss.clone()], 200, Withheld::default(), true);
+        assert!(text.len() <= output_bytes(200), "{}", text.len());
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((&out["success"], &out["losses"][0]["code"]), (&json!(false), &json!("dropped.value")), "{out}");
+        assert!(out["error"].as_str().unwrap().starts_with("error: eee"), "the error as text, not encoded twice: {out}");
+        assert_eq!(out["truncated"], json!(true), "the error is said to be cut: {out}");
+        let mut finish = |r: Value, always: bool| -> Value {
+            serde_json::from_str(&finish_with_losses(&mut s, r, vec![], 200, Withheld::default(), always)).unwrap()
+        };
+        assert_eq!(finish(json!({"notices": ["n"]}), true)["losses"], json!([]));
+        assert!(finish(json!({"notices": ["n"]}), false).get("losses").is_none());
+        // A result that isn't an object, or has its own `losses`, goes under `result`, beside the codes.
+        let out: Value =
+            serde_json::from_str(&finish_with_losses(&mut s, json!([1, 2]), vec![small_loss()], 200, Withheld::default(), false)).unwrap();
+        assert_eq!((&out["result"], &out["losses"][0]["code"]), (&json!([1, 2]), &json!("dropped.value")), "{out}");
+        let own = json!({"losses": 3});
+        let out: Value =
+            serde_json::from_str(&finish_with_losses(&mut s, own.clone(), vec![small_loss()], 200, Withheld::default(), false)).unwrap();
+        assert_eq!((&out["result"], &out["losses"][0]["code"]), (&own, &json!("dropped.value")), "{out}");
     }
 
     #[test]

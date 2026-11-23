@@ -18,7 +18,7 @@ import threading
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.parse import quote
 
-from . import PathLike, RustGISError, Session, _Api
+from . import PathLike, RustGISError, Session, _Api, _warn_losses
 
 #: The web app the widgets show; ``RUSTGIS_WEB_URL`` points them at another build (a local
 #: ``trunk serve``, a self-hosted copy).
@@ -204,8 +204,9 @@ class _Embedded(_Api):
 
     def _push(self) -> None:
         """Sends the session's project to the app, when it changed."""
+        engine = self._session._engine
         try:
-            text, keys, notices = self._session._engine._peer_text()
+            text, keys, notices = engine._peer_text()
             # A new loss may leave the public project text unchanged.
             if text != self._project or notices != self._sent_notices:
                 self._hold([(notice, False) for notice in notices])
@@ -215,10 +216,21 @@ class _Embedded(_Api):
             self._sent_keys = keys
         except RustGISError as e:
             self._hold([(f"couldn't show the project in the app: {e}", True)])
+            # The error is held, not raised: its losses are raised themselves.
+            _warn_losses(engine)
             return
-        if text != self._project:
-            self._project = text
-            self._send_project(text)
+        except BaseException as failure:
+            _warn_losses(engine, failure)
+            raise
+        try:
+            if text != self._project:
+                self._project = text
+                self._send_project(text)
+        except BaseException as failure:
+            _warn_losses(engine, failure)
+            raise
+        # Raised once the app has the project, which a warning filter can turn into an error.
+        _warn_losses(engine)
 
     def _hold(self, notices: List[Tuple[str, bool]]) -> None:
         """Keeps notices for :meth:`notices`.
@@ -245,16 +257,25 @@ class _Embedded(_Api):
                 return
             # Peer input is an import: keep its containment notices and invalidate old trust.
             self._hold(self._session.notices())
+            engine = self._session._engine
             try:
-                self._session._engine._open_peer_text(text)
+                engine._open_peer_text(text)
             except RustGISError as e:
                 self._hold([(f"the app's project couldn't be read: {e}", True)])
+                # The error is held, not raised: its losses are raised themselves.
+                _warn_losses(engine)
                 return
+            except BaseException as failure:
+                # Whatever else stopped it, its losses are raised with it, not by a later call.
+                _warn_losses(engine, failure)
+                raise
             finally:
                 self._hold(self._session.notices())
             # The app's own text, not the session's re-serialised copy: the app then sees its
-            # project and doesn't open it again.
+            # project and doesn't open it again. Recorded before its losses are raised, which a
+            # warning filter can turn into an error.
             self._project = text
+            _warn_losses(engine)
         elif kind == "result" and content.get("ok") is False:
             self._hold([(str(content.get("error", "the command failed")), True)])
 

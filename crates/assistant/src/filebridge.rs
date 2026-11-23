@@ -312,7 +312,7 @@ impl FileBridge {
                 let reply = text.and_then(|r| serde_json::from_str::<Value>(&r).ok()).unwrap_or(Value::Null);
                 result_of(&reply, started.elapsed())
             }
-            Err(e) => json!({"success": false, "result": null, "error": e, "notices": [], "duration_s": 0.0}),
+            Err(e) => json!({"success": false, "result": null, "error": e, "notices": [], "losses": [], "duration_s": 0.0}),
         };
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         if let Some(o) = outcome.as_object_mut() {
@@ -351,7 +351,7 @@ fn read_script(path: &Path) -> Result<String, String> {
 }
 
 /// The result file's JSON from the `run` tool's reply: `{success, result, error, notices,
-/// duration_s}`. A refusal (plain text, not the tool's JSON) is the error.
+/// losses, duration_s}`. A refusal (plain text, not the tool's JSON) is the error.
 fn result_of(reply: &Value, took: Duration) -> Value {
     let text = reply.pointer("/result/content/0/text").and_then(Value::as_str).unwrap_or("");
     let is_error = reply.pointer("/result/isError") == Some(&Value::Bool(true));
@@ -364,7 +364,7 @@ fn result_of(reply: &Value, took: Duration) -> Value {
                 text.to_string()
             };
             json!({"success": !is_error && reply.get("error").is_none() && !text.is_empty(), "result": null, "error": error, "notices": [],
-                "duration_s": (took.as_secs_f64() * 1000.0).round() / 1000.0})
+                "losses": [], "duration_s": (took.as_secs_f64() * 1000.0).round() / 1000.0})
         }
     }
 }

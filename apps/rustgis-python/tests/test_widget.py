@@ -1,6 +1,7 @@
 """The Jupyter widget: its project stays in step with the session both ways."""
 
 import json
+import warnings
 
 import pytest
 
@@ -67,6 +68,45 @@ def test_a_bad_project_from_the_app_is_a_notice_not_a_crash():
     m._on_app(m, {"type": "result", "ok": False, "error": "unknown command"}, [])
     m._on_app(m, "junk", [])
     assert m.notices() == [("unknown command", True)]
+
+
+class _LossOnOpen:
+    """The session's engine, reporting a lost ring whenever the app's project is opened."""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self._pending = []
+
+    def __getattr__(self, name):
+        return getattr(self._engine, name)
+
+    def _open_peer_text(self, text):
+        self._pending = [("dropped", "dropped.ring", "Drawn: 1 ring left out")]
+        return self._engine._open_peer_text(text)
+
+    def _take_losses(self):
+        taken, self._pending = self._pending, []
+        return taken
+
+
+def test_a_loss_from_the_app_is_raised_after_its_project_is_kept():
+    """A loss opening the app's project is raised, under an error filter too, once the widget has
+    kept the project; a project that can't be read raises its losses, not its error."""
+    m = rustgis.Map()
+    other = rustgis.Session()
+    other.add_geojson(POINT, name="Drawn")
+    text = other.project_json()
+    m._session._engine = _LossOnOpen(m._session._engine)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+        with pytest.raises(rustgis.DroppedWarning, match=r"\[dropped\.ring\]"):
+            from_app(m, text)
+        assert m._project == text
+        with pytest.raises(rustgis.DroppedWarning):
+            from_app(m, "not a project")
+    assert any(error for _, error in m.notices())
+    with pytest.warns(rustgis.DroppedWarning):
+        from_app(m, other.project_json().replace("Drawn", "Drawn again"))
 
 
 def test_options_and_local_files(tmp_path):

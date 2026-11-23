@@ -119,6 +119,117 @@ def test_data_files(tmp_path):
     assert s.layers()[0]["features"] == 2
 
 
+def _feed(hole):
+    """A GeoRSS feed of one polygon with this hole."""
+    return (
+        '<?xml version="1.0"?><rss version="2.0" xmlns:georss="http://www.georss.org/georss" '
+        'xmlns:gml="http://www.opengis.net/gml"><channel><title>t</title><item><title>i</title><georss:where>'
+        "<gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>0 0 0 4 4 4 0 0</gml:posList></gml:LinearRing>"
+        f"</gml:exterior><gml:interior><gml:LinearRing><gml:posList>{hole}</gml:posList></gml:LinearRing>"
+        "</gml:interior></gml:Polygon></georss:where></item></channel></rss>"
+    )
+
+
+def test_losses_are_warnings_with_their_code(tmp_path):
+    lossy, clean = tmp_path / "lossy.rss", tmp_path / "clean.rss"
+    lossy.write_text(_feed("1 x"))
+    clean.write_text(_feed("1 1 1 2 2 2 1 1"))
+    s = rustgis.Session()
+    with pytest.warns(rustgis.DroppedWarning, match=r"\[dropped\.ring\]") as seen:
+        s.add_data(lossy)
+    [warning] = [w for w in seen if issubclass(w.category, rustgis.DataLossWarning)]
+    assert (warning.message.code, warning.message.kind) == ("dropped.ring", "dropped")
+    import pickle
+
+    copy = pickle.loads(pickle.dumps(warning.message))
+    assert (type(copy), str(copy), copy.code) == (rustgis.DroppedWarning, str(warning.message), "dropped.ring")
+    assert warning.filename == __file__, "the warning points at the caller's line"
+    text = str(warning.message).removesuffix(" [dropped.ring]")
+    assert (text, False) in s.notices(), "the notice is kept too"
+    # Python's filters decide: an error filter raises it, after the command ran.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+        with pytest.raises(rustgis.DroppedWarning):
+            s.add_data(lossy)
+        assert len(s.layers()) == 2
+        s.add_data(clean)
+    # A command's loss: a fraction written to a whole-number field.
+    s.run("layer.addDataText", fileName="records.csv", text="n\n1\n2\n")
+    s.run("edit.enable", on=True)
+    with pytest.warns(rustgis.ChangedWarning) as seen:
+        s.run("edit.calculateField", table="records", field="n", expression="n + 1.5")
+    assert [w.message.code for w in seen if issubclass(w.category, rustgis.DataLossWarning)] == ["changed.truncated"]
+    s.notices()
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        s.run("edit.calculateField", table="records", field="n", expression="n + 1")
+    assert not [w for w in seen if issubclass(w.category, rustgis.DataLossWarning)]
+
+
+def test_a_loss_is_raised_on_the_call_that_reported_it(tmp_path):
+    import threading
+
+    lossy = tmp_path / "lossy.rss"
+    lossy.write_text(_feed("1 x"))
+    s = rustgis.Session()
+    s._engine.run("layer.addData", json.dumps({"path": str(lossy)}))
+    # Another thread's call on the same session doesn't take this thread's loss.
+    other = []
+    thread = threading.Thread(target=lambda: other.extend(s._engine._take_losses()))
+    thread.start()
+    thread.join()
+    assert other == []
+    assert [code for _, code, _ in s._engine._take_losses()] == ["dropped.ring"]
+
+
+_WMS = (
+    '<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">'
+    "<Service><Title>Test WMS</Title></Service><Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get>"
+    '<OnlineResource xlink:href="https://maps.example.com/wms?"/></Get></HTTP></DCPType></GetMap></Request>'
+    "<Layer><CRS>EPSG:3857</CRS><Layer><Name>roads</Name><Title>Roads</Title><Style><Name>default</Name><LegendURL>"
+    '<Format>image/png</Format><OnlineResource xlink:href="https://maps.example.com/legends/' + "a" * 5000 + '.png"/>'
+    "</LegendURL></Style></Layer></Layer></Capability></WMS_Capabilities>"
+)
+
+
+def test_a_failed_command_keeps_its_error_and_still_says_its_loss():
+    # A legend left out is counted, so it is said even though the script failed after it.
+    add = json.dumps({"url": "https://maps.example.com/wms", "layer": "roads", "text": _WMS})
+    script = f"service.add {add}\nlayer.addDataText {json.dumps({'fileName': 'broken.geojson', 'text': '{'})}"
+    s = rustgis.Session()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+        with pytest.raises(rustgis.RustGISError) as failed:
+            s.run("script.run", script=script)
+    assert any("DroppedWarning" in note and "[dropped.legend]" in note for note in failed.value.__notes__)
+    with pytest.warns(rustgis.DroppedWarning, match=r"\[dropped\.legend\]"):
+        with pytest.raises(rustgis.RustGISError):
+            s.run("script.run", script=script)
+
+
+def test_every_loss_of_a_call_is_said_when_one_is_an_error(tmp_path):
+    lossy = tmp_path / "lossy.rss"
+    lossy.write_text(_feed("1 x"))
+    add = json.dumps({"url": "https://maps.example.com/wms", "layer": "roads", "text": _WMS})
+    script = f"layer.addData {json.dumps({'path': str(lossy)})}\nservice.add {add}"
+    s = rustgis.Session()
+    # The first promoted warning is raised once the others are said, each in a note.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+        with pytest.raises(rustgis.DataLossWarning) as raised:
+            s.run("script.run", script=script)
+    codes = {raised.value.code} | {code for code in ("dropped.ring", "dropped.legend") if any(code in n for n in raised.value.__notes__)}
+    assert codes == {"dropped.ring", "dropped.legend"}
+    # A failed call keeps its own error, with each promoted warning as a note.
+    failing = f"{script}\nlayer.addDataText {json.dumps({'fileName': 'broken.geojson', 'text': '{'})}"
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+        with pytest.raises(rustgis.RustGISError) as failed:
+            s.run("script.run", script=failing)
+    notes = " ".join(failed.value.__notes__)
+    assert "[dropped.legend]" in notes
+
+
 @pytest.mark.parametrize("as_text", [False, True])
 def test_pmtiles_options_survive_a_project_round_trip(as_text):
     """The Python names reach the engine, including JSON-text styles and extensionless URLs."""

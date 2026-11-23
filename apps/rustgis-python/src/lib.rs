@@ -11,6 +11,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use rustgis_engine::data::loss::LossCode;
 use rustgis_engine::{Project, Session};
 use serde_json::Value;
 use std::io::Write;
@@ -84,13 +85,20 @@ struct Engine {
     /// What the session's store reported (the first failure of the keychain, a preferences file
     /// that couldn't be read), waiting to be logged by the call that is running or the next one.
     diagnostics: Arc<Mutex<Vec<String>>>,
+    /// Classified losses not yet raised as warnings, and where collecting them last stopped (the
+    /// notice mark and the session's loss counts). Only locked inside the session's lock.
+    losses: Mutex<Losses>,
 }
 
 impl Engine {
+    /// Runs `operation` on the session, then sets aside the losses it reported for the thread that
+    /// called it, under the same lock, so a call on another thread can't take them.
     fn with_session<T: Send>(&self, py: Python<'_>, operation: impl FnOnce(&mut Session) -> T + Send) -> T {
         with_native(py, || {
             let mut session = self.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            operation(&mut session)
+            let result = operation(&mut session);
+            self.losses.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).collect(&session);
+            result
         })
     }
 
@@ -104,8 +112,43 @@ impl Engine {
     }
 }
 
+/// See [`Engine::losses`].
+struct Losses {
+    /// `(kind, code, text)` for the thread whose call reported it.
+    pending: Vec<(std::thread::ThreadId, (String, String, String))>,
+    mark: u64,
+    given: Vec<(LossCode, u64)>,
+}
+
+impl Losses {
+    /// Sets aside the losses `session` gave since the last call, for the calling thread, while
+    /// their notices are still in its queue (after every call, so before `take_notices` drains
+    /// it). One the queue no longer keeps (past its last 200) is set aside as one entry per code
+    /// that says how many.
+    fn collect(&mut self, session: &Session) {
+        let thread = std::thread::current().id();
+        let kept: Vec<(LossCode, String)> =
+            session.notices_since(self.mark).iter().filter_map(|n| n.loss().map(|code| (code, n.text.clone()))).collect();
+        for &(code, given) in session.losses_given() {
+            let was = self.given.iter().find(|(c, _)| *c == code).map_or(0, |(_, n)| *n);
+            let held = kept.iter().filter(|(c, _)| *c == code).count() as u64;
+            let lost = given.saturating_sub(was).saturating_sub(held);
+            if lost > 0 {
+                let spec = code.spec();
+                let text = format!("{lost} further {} notice(s) were not kept", spec.id);
+                self.pending.push((thread, (spec.kind.id().into(), spec.id.into(), text)));
+            }
+        }
+        self.pending.extend(kept.into_iter().map(|(code, text)| (thread, (code.spec().kind.id().into(), code.spec().id.into(), text))));
+        self.mark = session.notice_mark();
+        self.given = session.losses_given().to_vec();
+    }
+}
+
 #[pymethods]
 impl Engine {
+    /// An empty session; `use_saved_secrets` reads the desktop app's saved connections, and
+    /// asks the system keychain for a secret only when a command needs one.
     #[new]
     #[pyo3(signature = (use_saved_secrets=false))]
     fn new(py: Python<'_>, use_saved_secrets: bool) -> Self {
@@ -121,7 +164,8 @@ impl Engine {
             }
             session
         });
-        let engine = Engine { session: Mutex::new(session), diagnostics };
+        let losses = Losses { pending: Vec::new(), mark: session.notice_mark(), given: session.losses_given().to_vec() };
+        let engine = Engine { session: Mutex::new(session), diagnostics, losses: Mutex::new(losses) };
         engine.flush(py);
         engine
     }
@@ -268,6 +312,22 @@ impl Engine {
         });
         self.flush(py);
         result.map_err(RustGISError::new_err)
+    }
+
+    /// The classified losses this thread's calls reported since it last asked, as
+    /// `(kind, code, text)`, oldest first, which the package raises as warnings; `take_notices`
+    /// still returns them too.
+    fn _take_losses(&self, py: Python<'_>) -> Vec<(String, String, String)> {
+        let thread = std::thread::current().id();
+        let losses = &self.losses;
+        // This thread's own call set them aside under the session's lock and has returned, so
+        // only their own lock is needed: taking them doesn't wait for another session's work.
+        py.detach(|| {
+            let mut losses = losses.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (mine, others) = std::mem::take(&mut losses.pending).into_iter().partition(|(t, _)| *t == thread);
+            losses.pending = others;
+            mine.into_iter().map(|(_, loss)| loss).collect::<Vec<_>>()
+        })
     }
 
     /// The notices commands have given since the last call (a file's warnings, a tool's

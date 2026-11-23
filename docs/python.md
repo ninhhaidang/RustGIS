@@ -212,6 +212,24 @@ s.undo()
 s.redo()
 ```
 
+A notice that says a command lost data, and has a [loss code](cli.md#loss-codes), is also raised
+as a Python warning: `rustgis.DroppedWarning`, `ChangedWarning`, `ApproximatedWarning` or
+`AssumedWarning`, all subclasses of `rustgis.DataLossWarning`. The warning's `code` (such as
+`"dropped.ring"`) and `kind` say which, and its message is the notice's text with the code. The
+notice stays in `s.notices()`. Python's warning filters decide what happens, so a script can turn
+losses into errors and allow the ones it expects:
+
+```python
+import warnings
+
+warnings.filterwarnings("error", category=rustgis.DataLossWarning)
+warnings.filterwarnings("ignore", category=rustgis.DroppedWarning, message=r".*\[dropped\.ring\]")
+s.add_data("storms.rss")                            # raises on any other loss
+```
+
+A warning turned into an error is raised after the command has run, so what it changed is kept.
+Losses that don't have a code yet are only in `s.notices()`.
+
 `run_tool` runs a geoprocessing tool and returns the layer it made (a list when it made several),
 or the tool's own result for one that selects or makes a table. Layers can be given as `Layer`
 objects or by name; tools take layers by name, so of two layers with the same name the upper one
