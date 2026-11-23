@@ -858,6 +858,17 @@ stored in its units. Maps and layers already in the project keep their own syste
 degrees, or one without an EPSG or ESRI code, can't be a map's projection: new maps then stay in
 Web Mercator, and RustGIS says why. A project without one works as before.
 
+Tools follow it too. A tool that works in longitude/latitude (on a layer in degrees, or one that
+always does) gives its new layers in the project's system, converted, and with it as their own, so
+they export in it; one with a place the system can't hold (beyond 85.05° in Web Mercator, say)
+stays in longitude/latitude, and the tool says so. A tool that works in its first layer's own
+projected system keeps its output there. IDW, Kriging, Kernel Density and the Geostatistical Wizard
+make a raster from a layer in degrees, or with no system, in the project's when it is projected,
+and say so (`crs: "EPSG:4326"` still makes it in degrees). An export of a layer with no system of
+its own (one drawn in longitude/latitude, say) is written in the project's system where the format
+can hold one (GeoPackage, Shapefile, FlatGeobuf, GeoParquet), and says so. A geocentric project system holds no map
+coordinates, so outputs and exports stay in longitude/latitude in it.
+
 **While it has none, take it from the first layer added** gives the project the system of the next
 layer added from data (**Home › Add**: a file, a URL, a service, a database; or a map imported, an
 offline map opened, layers pasted) that says what system

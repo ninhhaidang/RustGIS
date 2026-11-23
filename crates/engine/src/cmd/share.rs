@@ -625,9 +625,10 @@ pub(crate) fn layer_work(s: &Session, p: &Value) -> Result<Work, String> {
     let gpkg = gpkg_table(p, &ext)?;
     let compatibility = ps(p, "crs").and_then(|text| asked.and_then(|crs| rustgis_data::raster::wkt::typed_crs_note(text, crs)));
     let (boxes, map) = (s.constructions.clone(), s.map().instance_id());
+    let project = s.project.coordinate_system;
     Ok(Box::new(move || {
         let note = boxes.export_notes(map, &l)?;
-        let mut wrote = write_layer(&l, &path, asked, gpkg)?;
+        let mut wrote = write_layer(&l, &path, asked, project, gpkg)?;
         wrote.notes.extend(note);
         if let Some(note) = compatibility {
             wrote.notes.insert(0, format!("crs: {note}"));
@@ -681,9 +682,9 @@ pub fn gpkg_dates_note(ds: &rustgis_data::Dataset, ext: &str, path: &str) -> Vec
     utc.into_iter().chain(fine).chain(text_in_dates_note(&ds.fields, &text_in_dates(ds.features.iter(), &ds.fields), path)).collect()
 }
 
-/// Writes layer `l` to `path`, in `asked` or the system the format defaults to; a GeoPackage's
-/// table goes where `gpkg` says.
-fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: GpkgTable) -> Result<Wrote, String> {
+/// Writes layer `l` to `path`, in `asked` or the system the format defaults to (the project's,
+/// `project`, for a layer with none of its own); a GeoPackage's table goes where `gpkg` says.
+fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, project: Option<Crs>, gpkg: GpkgTable) -> Result<Wrote, String> {
     let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A layer read in place from the GeoPackage it goes into is read whole first: SQLite can't
     // write a file while the same export is reading it.
@@ -708,8 +709,11 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     let unread = unreadable.rows;
     let ds = chunks.as_ref().map_or(whole.as_ref(), |(_, layer)| layer);
     // GeoJSON, KML, GPX and CSV are longitude/latitude (CSV takes another when asked); the others
-    // keep the layer's own system unless told another.
-    let crs = asked.unwrap_or_else(|| rustgis_data::io::default_export_crs(ds, &ext));
+    // keep the layer's own system unless told another, or take the project's when it has none.
+    let (crs, default_note) = match asked {
+        Some(c) => (c, None),
+        None => rustgis_data::io::default_export_in(ds, path, project),
+    };
     // Another body's layer projected onto another ellipsoid would be wrong data, not a wrong name.
     if let Some(e) = rustgis_data::export_error(ds, crs) {
         return Err(format!("{path}: {e}"));
@@ -779,9 +783,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     let extent = if chunks.is_some() { l.extent() } else { ds.lonlat_extent() };
     let mut notes: rustgis_data::loss::Notes = rustgis_data::export_notes([(ds, extent)], path, crs).into();
     coalesce_read_zm(&mut notes, path, ds, &unreadable);
-    if asked.is_none() {
-        notes.extend(rustgis_data::io::default_export_note(ds, path));
-    }
+    notes.extend(default_note);
     let csv_type = if csv_points { rustgis_data::GeometryType::Point } else { ds.geometry_type };
     notes.extend(rustgis_data::io::csv_system_note(path, csv_type, crs));
     notes.extend(moved);

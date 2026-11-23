@@ -2460,7 +2460,13 @@ fn check_topology(inputs: &[TopologyInput], tol: f64) -> Result<TopologyChecked,
                 Err(e) if matches!(rustgis_data::DataError::of_conversion(e.clone()), rustgis_data::DataError::Cancelled) => {
                     return Err(cancelled());
                 }
-                Err(e) => fell_back.push(format!("{} on '{}' ('{}' in {}: {e})", i.rule.label(), i.layer, i.by_layer, crs.label())),
+                Err(e) => {
+                    // Its error starts with the covering data's own name, which the map's for the
+                    // layer may not be: named once, as the map has it.
+                    let source = i.by.as_ref().map_or("", |b| b.name.as_str());
+                    let rest = e.strip_prefix(&format!("{source}: ")).unwrap_or(&e);
+                    fell_back.push(format!("{} on '{}' ('{}' in {}: {rest})", i.rule.label(), i.layer, i.by_layer, crs.label()));
+                }
             }
         }
         if let (Some((crs, Some(std::borrow::Cow::Owned(converted)))), Some(original)) = (&own, &i.by) {

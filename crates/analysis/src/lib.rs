@@ -199,6 +199,12 @@ pub trait Inputs {
     fn work_crs(&self) -> rustgis_data::raster::Crs {
         rustgis_data::raster::Crs::LonLat
     }
+    /// The project's coordinate system (#2032 C3a), when it has one: the system a grid made from a
+    /// layer in degrees, or with no system, is made in when the run names none
+    /// ([`tools::raster_crs_in`]).
+    fn project_crs(&self) -> Option<rustgis_data::raster::Crs> {
+        None
+    }
     /// A standalone table by its id: an input given as a number, which no name is taken for.
     fn table(&self, _id: u32) -> Option<&Dataset> {
         None

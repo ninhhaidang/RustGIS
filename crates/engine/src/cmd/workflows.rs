@@ -1703,7 +1703,7 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     let given = p.get("crs").is_some_and(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()));
     let (crs, crs_note) = match env.projected {
         Some(g) if !given => (g.crs, None),
-        _ => rustgis_analysis::raster_crs_in(ds, work, p, "Geostatistical Wizard")?,
+        _ => rustgis_analysis::raster_crs_in(ds, work, s.project.coordinate_system, p, "Geostatistical Wizard")?,
     };
     let crs_note = rustgis_analysis::in_its_units(p, crs, crs_note, &Extent::EMPTY, &[], &["cellSize"]);
     let env_extent = env.extent;

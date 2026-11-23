@@ -15,8 +15,9 @@ pub struct Pick {
     pub points: Vec<rustgis_engine::geom::Coord>,
 }
 
-/// A layer's systems: the one it holds its coordinates in, and the one it was read in.
-type LayerSystems = (rustgis_engine::data::raster::Crs, Option<rustgis_engine::data::raster::Crs>);
+/// The systems a layer holds its coordinates in and was read in, and the project's.
+type LayerSystems =
+    (rustgis_engine::data::raster::Crs, Option<rustgis_engine::data::raster::Crs>, Option<rustgis_engine::data::raster::Crs>);
 
 /// The Workflows pane's inputs and results.
 #[derive(Default)]
@@ -73,10 +74,11 @@ pub struct Workflow {
     /// The system the Wizard's surface was last to be made in (its own, else the environment's):
     /// when it changes, the cell size typed for it is cleared.
     pub wizard_system: String,
-    /// The systems the Wizard's layer holds its coordinates in and was read in, and the one its
-    /// surface is made in from them (the held one when projected,
+    /// The systems the Wizard's layer holds its coordinates in and was read in, and the project's,
+    /// and the one its surface is made in from them (the held one when projected,
     /// [`rustgis_engine::analysis::works_in`], else the read-in one,
-    /// [`rustgis_engine::analysis::layer_raster_crs`]), kept so it is worked out once.
+    /// [`rustgis_engine::analysis::layer_raster_crs`], else the project's for a layer in degrees),
+    /// kept so it is worked out once.
     pub layer_system: Option<(LayerSystems, Option<rustgis_engine::data::raster::Crs>)>,
     /// The coordinate system typed for a new ortho or reality workspace; empty: the images'
     /// projected system, else degrees.
@@ -952,16 +954,22 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             combo(ui, "wf_i", "Layer", &mut app.workflow.layer, &points);
             combo(ui, "wf_if", "Field", &mut app.workflow.field, &numeric);
             // Empty: the environment's system, else the projected one the layer holds its
-            // coordinates in, else the one it was read in, else degrees; the hint shows which.
-            let systems = app.session.map().layer_by_name(&app.workflow.layer).map(|l| (l.dataset.coord_crs(), l.dataset.crs));
+            // coordinates in, else the one it was read in, else the project's, else degrees; the
+            // hint shows which.
+            let project = app.session.project.coordinate_system;
+            let systems = app.session.map().layer_by_name(&app.workflow.layer).map(|l| (l.dataset.coord_crs(), l.dataset.crs, project));
             // The run's choice; kept for the layer's systems, so a projection isn't built every
             // frame.
             let layer_crs = match (systems, app.workflow.layer_system) {
                 (Some(c), Some((seen, chosen))) if seen == c => chosen,
-                (Some((held, read_in)), _) => {
+                (Some((held, read_in, project)), _) => {
+                    use rustgis_engine::analysis::layer_raster_crs;
                     let from = if rustgis_engine::analysis::works_in(held) { Some(held) } else { read_in };
-                    let chosen = rustgis_engine::analysis::layer_raster_crs(from).and_then(Result::ok);
-                    app.workflow.layer_system = Some(((held, read_in), chosen));
+                    let chosen = match layer_raster_crs(from) {
+                        Some(c) => c.ok(),
+                        None => layer_raster_crs(project).and_then(Result::ok),
+                    };
+                    app.workflow.layer_system = Some(((held, read_in, project), chosen));
                     chosen
                 }
                 (None, _) => None,

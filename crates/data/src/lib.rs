@@ -502,23 +502,33 @@ impl Dataset {
         let to = self.held_in.to(crs)?;
         if !to.is_identity() {
             let lonlat = self.lonlat_conversion()?;
-            // Before the rows are copied (by the first change), which a cancelled command needn't.
-            stop_when_asked(0)?;
-            let mut features = self.features.clone();
-            for (i, f) in features.iter_mut().enumerate() {
-                stop_when_asked(i)?;
-                if let Some(g) = &f.geometry {
-                    let mut past = false;
-                    if crs == raster::Crs::WebMercator {
-                        g.for_each_coord(|c| past |= c.is_finite() && lonlat.point(c).is_some_and(|l| l.y.abs() > rustgis_geom::MAX_LAT));
-                    }
-                    let held = (!past).then(|| convert_keeping_missing(&to, g, &HeldPlaces::default())).flatten();
-                    f.geometry = Some(
-                        held.ok_or_else(|| format!("{}: feature {} has a place that can't be held in {}", self.name, f.id, crs.label()))?,
-                    );
+            let past = |g: &Geometry| {
+                let mut past = false;
+                if crs == raster::Crs::WebMercator {
+                    g.for_each_coord(|c| past |= c.is_finite() && lonlat.point(c).is_some_and(|l| l.y.abs() > rustgis_geom::MAX_LAT));
                 }
+                past
+            };
+            let held = |g: &Geometry| (!past(g)).then(|| convert_keeping_missing(&to, g, &HeldPlaces::default())).flatten();
+            // Each place is converted once, and what goes in is what was checked (a second pass
+            // could convert otherwise, as grids arriving meanwhile change the operations): the
+            // converted geometries are kept beside the rows, then put in their place, so a refusal
+            // or a Cancel changes nothing. Only geometry is kept twice meanwhile, never the
+            // attributes, and rows no one else holds aren't copied.
+            let mut converted = Vec::with_capacity(self.features.len());
+            for (i, f) in self.features.iter().enumerate() {
+                stop_when_asked(i)?;
+                converted.push(match &f.geometry {
+                    Some(g) => Some(
+                        held(g)
+                            .ok_or_else(|| format!("{}: feature {} has a place that can't be held in {}", self.name, f.id, crs.label()))?,
+                    ),
+                    None => None,
+                });
             }
-            self.features = features;
+            for (f, g) in self.features.iter_mut().zip(converted) {
+                f.geometry = g;
+            }
         }
         self.held_in = crs;
         Ok(())
@@ -1466,6 +1476,42 @@ mod tests {
         polar.push(Some(Geometry::Point(Coord::new(11.5, 89.0))), vec![]);
         assert!(polar.hold_as(raster::Crs::WebMercator, Some(raster::Crs::WebMercator)).is_err());
         assert_eq!((polar.coord_crs(), polar.crs), (raster::Crs::LonLat, None));
+    }
+
+    /// Holding converts the rows where they are, with no copy of rows no one else holds; a Cancel,
+    /// or a place the system can't hold, found among the last rows changes none of them.
+    #[test]
+    fn holding_converts_in_place_and_a_cancel_or_refusal_changes_nothing() {
+        use crate::progress::tests::Counted;
+        let utm = raster::Crs::Epsg(32632);
+        let made = |last_lat: f64| {
+            let mut ds = Dataset::new("made", GeometryType::Point, vec![]);
+            for i in 0..600 {
+                let lat = if i == 599 { last_lat } else { 48.0 };
+                ds.push(Some(Geometry::Point(Coord::new(11.5, lat))), vec![]);
+            }
+            ds
+        };
+        let mut ds = made(48.0);
+        let (held, copied) = rows_copy::with(Box::new(|| {}), || ds.hold_in(utm));
+        held.unwrap();
+        assert!(!copied && ds.coord_crs() == utm, "converted where the rows are");
+        let Some(Geometry::Point(c)) = ds.features[0].geometry else { panic!("no point") };
+        let expected = raster::Crs::LonLat.to(utm).unwrap().point(Coord::new(11.5, 48.0)).unwrap();
+        assert_eq!((c.x.to_bits(), c.y.to_bits()), (expected.x.to_bits(), expected.y.to_bits()));
+        // Cancelled at the third check (row 512), after the first rows were looked at.
+        let mut ds = made(48.0);
+        let before = ds.features.clone();
+        let probe = std::sync::Arc::new(Counted { after_checks: Some(2), ..Default::default() });
+        {
+            let _g = crate::progress::install(Some(probe));
+            assert_eq!(ds.hold_in(utm), Err(DataError::Cancelled.to_string()));
+        }
+        assert!(ds.features.shares(&before) && ds.coord_crs() == raster::Crs::LonLat);
+        let mut polar = made(89.0);
+        let before = polar.features.clone();
+        assert!(polar.hold_in(raster::Crs::WebMercator).unwrap_err().contains("feature 600"));
+        assert!(polar.features.shares(&before) && polar.coord_crs() == raster::Crs::LonLat);
     }
 
     /// A dataset held in another system converts into it, and back, at the same places; one

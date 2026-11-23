@@ -913,7 +913,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent and pixel size; when empty, the projected one the layer is held in, or else was read in, else degrees; EPSG:4326 for degrees.",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent and pixel size; when empty, the projected one the layer is held in, or else was read in, else the project's projected one, else degrees; EPSG:4326 for degrees.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -1079,7 +1079,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent, pixel size and range; when empty, the projected one the layer is held in, or else was read in, else degrees; EPSG:4326 for degrees.",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent, pixel size and range; when empty, the projected one the layer is held in, or else was read in, else the project's projected one, else degrees; EPSG:4326 for degrees.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -1329,7 +1329,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "Projected coordinate system (e.g. EPSG:32618); defaults to the projected system the layer is held in, or else was read in; required when the layer has none or is in degrees.",
+                help: "Projected coordinate system (e.g. EPSG:32618); defaults to the projected system the layer is held in, or else was read in, else the project's projected system; required when none of these is set.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "Output raster layer name." },
         ],
@@ -4858,7 +4858,7 @@ fn idw_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
             }
         });
     }
-    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), p, "IDW Interpolation")?;
+    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), inp.project_crs(), p, "IDW Interpolation")?;
     let (pts, beyond_note) = points_from(inp.work_crs(), crs, pts)?;
     let extent = match s(p, "extent").trim() {
         "" => {
@@ -4951,7 +4951,7 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
             }
         }
     }
-    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), p, "Ordinary Kriging")?;
+    let (crs, crs_note) = raster_crs_in(ds, inp.work_crs(), inp.project_crs(), p, "Ordinary Kriging")?;
     let (raw_pts, beyond_note) = points_from(inp.work_crs(), crs, raw_pts)?;
     // Points at the same place as one, so the kriging matrix isn't singular.
     let pts = merge_coincident(raw_pts)?;
@@ -5153,13 +5153,33 @@ pub fn raster_crs(ds: &Dataset, p: &Json, tool: &str) -> Result<(Crs, Option<Str
 }
 
 /// [`raster_crs`] for a run in `work` ([`Inputs::work_crs`]): a layer held in its own projected
-/// system makes its grid there unless `p` names another.
-pub fn raster_crs_in(ds: &Dataset, work: Crs, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
-    if work == Crs::LonLat {
-        raster_crs_of(ds.crs, "was read in", &ds.name, p, tool)
-    } else {
-        raster_crs_of(Some(work), "is held in", &ds.name, p, tool)
+/// system makes its grid there unless `p` names another; one in degrees, or with no system, makes
+/// it in `project`, the project's system ([`Inputs::project_crs`]), when that is projected.
+pub fn raster_crs_in(ds: &Dataset, work: Crs, project: Option<Crs>, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
+    if work != Crs::LonLat {
+        return raster_crs_of(Some(work), "is held in", &ds.name, p, tool);
     }
+    if let Some(c) = project_raster_crs(ds.crs, project, p) {
+        let note = format!(
+            "{tool}: made in {}, the project's coordinate system, with its units for the extent and sizes, as '{}' {}; set crs to EPSG:4326 to make it in degrees",
+            c.label(),
+            ds.name,
+            if ds.crs.is_some() { "is in degrees" } else { "has no coordinate system" },
+        );
+        return Ok((c, Some(note)));
+    }
+    raster_crs_of(ds.crs, "was read in", &ds.name, p, tool)
+}
+
+/// The project's system (`project`) for a grid made from a layer read in `layer_crs` when the run
+/// names none (`p`'s `crs`): only for a layer in degrees or with no system, and only a projected
+/// system this version can project to.
+fn project_raster_crs(layer_crs: Option<Crs>, project: Option<Crs>, p: &Json) -> Option<Crs> {
+    let unnamed = p.get("crs").is_none_or(|v| v.is_null() || v.as_str().is_some_and(|t| t.trim().is_empty()));
+    if !unnamed || layer_raster_crs(layer_crs).is_some() {
+        return None;
+    }
+    layer_raster_crs(project)?.ok()
 }
 
 /// [`raster_crs`] for a layer named `name` that `how` ("was read in", "is held in") `layer_crs`.
@@ -5457,6 +5477,9 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     let layer_crs = if inp.work_crs() == Crs::LonLat { ds.crs } else { Some(inp.work_crs()) };
     let (crs, crs_note) = if !crs_text.is_empty() {
         crs_with_compatibility_note(crs_text)?
+    } else if let Some(c) = project_raster_crs(layer_crs, inp.project_crs(), p) {
+        let how = if layer_crs.is_some() { "is in degrees" } else { "has no coordinate system" };
+        (c, Some(format!("made in {}, the project's coordinate system, as '{}' {how}", c.label(), ds.name)))
     } else if let Some(c) = layer_crs {
         (c, None)
     } else {
