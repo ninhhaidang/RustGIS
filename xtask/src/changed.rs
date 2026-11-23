@@ -228,7 +228,7 @@ pub(crate) fn compile_time_reads(root: &Path, packages: &[Package]) -> Result<BT
 }
 
 /// The output of `git args` in `root`.
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git").args(args).current_dir(root).output().map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
         return Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
@@ -266,8 +266,8 @@ fn base(root: &Path, asked: Option<&str>) -> Result<(String, String, usize), Str
     best.ok_or_else(|| "no base: name one, as in `cargo xtask changed upstream/main`".into())
 }
 
-/// The workspace's packages, from `cargo metadata`.
-fn packages(root: &Path) -> Result<Vec<Package>, String> {
+/// The workspace's packages with their dependencies, as `cargo metadata` gives them.
+pub(crate) fn metadata(root: &Path) -> Result<Value, String> {
     let out = Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
         .current_dir(root)
@@ -276,7 +276,12 @@ fn packages(root: &Path) -> Result<Vec<Package>, String> {
     if !out.status.success() {
         return Err(format!("cargo metadata failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    let meta: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))
+}
+
+/// The workspace's packages, from `cargo metadata`.
+fn packages(root: &Path) -> Result<Vec<Package>, String> {
+    let meta = metadata(root)?;
     let workspace = PathBuf::from(meta["workspace_root"].as_str().unwrap_or_default());
     let mut list = Vec::new();
     for p in meta["packages"].as_array().into_iter().flatten() {
@@ -332,7 +337,8 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
         }
         Selection::NoPackages => {
             println!("changed: only non-code files changed; no Rust packages need checking");
-            Ok(())
+            // ATTRIBUTION.md is one of them: dropping a row must not pass here.
+            super::attribution::run(root)
         }
         Selection::All(_) if list => {
             println!("all");
@@ -367,6 +373,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
                 .and_then(|_| super::cargo(&clippy))
                 .and_then(|_| super::cargo(&test))
                 .and_then(|_| super::layers())
+                .and_then(|_| super::attribution::run(root))
                 // Counted across the workspace: a change anywhere can add a direct use.
                 .and_then(|_| super::rows::run(root, &[]))
                 // The project schema is generated from types in rustgis-engine and below, so any

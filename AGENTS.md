@@ -118,7 +118,9 @@ measures.
   catalogs in `crates/ui-egui/src/i18n/*.tsv`: a missing entry shows in English, and the
   maintainer translates them before each release (format in `docs/i18n.md`). Command ids, data
   and the CLI are never translated.
-- **Layering** is enforced by `cargo xtask layers`: nothing below L6 depends on egui/eframe/rfd.
+- **Layering** is enforced by `cargo xtask layers`: nothing below L6 depends on egui/eframe/rfd, a crate
+  depends only on lower layers (`[target.…]` dependencies count, dev- and build-dependencies don't), and a
+  new crate under `crates/` gets its layer in `LAYERS` (`xtask/src/main.rs`).
 - **The expression language has one vocabulary**: a new function, variable or keyword goes in
   the catalogs in `crates/data/src/query.rs` (`Func::spec`, `VARS`, `Kw`), which the parser
   reads, and in `docs/user-guide/expressions.md`; the `query` tests fail when the guide misses
@@ -139,7 +141,8 @@ the pull request which of these it reaches and why the rest don't apply:
 
 ## Assets
 - No third-party vendor icons, images, styles, fonts, help text or code. Icons are drawn in
-  code (`icons.rs`). Every asset file has a row in `ATTRIBUTION.md`.
+  code (`icons.rs`). Every asset file has a row in `ATTRIBUTION.md`; `cargo xtask attribution` (in CI) fails an image or
+  font file that no row names, by path, directory or pattern.
 - Never copy or translate code from GPL, LGPL or other copyleft projects (such as GRASS, QGIS or
   GEOS) into RustGIS, by hand or with an AI tool. Implementing a published algorithm is fine: cite
   the paper or standard. Name in the pull request any project whose code you followed (see
@@ -175,8 +178,8 @@ removes a limit against its base (a new memory scenario is fine). A maintainer a
 raise by commenting on the pull request with the line the failure prints for it, on a line of its
 own (`<!-- ratchet-raise-approved: xtask/row-uses.txt count=790 -->`), then re-runs the job.
 While you work, `cargo xtask changed` runs the same checks on only the packages your branch changes
-and those that depend on them (and `test-hygiene` on the whole workspace, and formatting, `layers` and
-`rows` when packages are checked), or everything when a
+and those that depend on them (and `test-hygiene` on the whole workspace, and formatting, `layers`,
+`attribution` and `rows` when packages are checked; `attribution` also when only non-code files change), or everything when a
 changed file such as `Cargo.lock` is outside every package and nothing includes it.
 A new dependency must have a licence `deny.toml` allows (CI runs `cargo deny check licenses`); after
 changing dependencies, run `cargo xtask notices` to refresh the `THIRD-PARTY-LICENSES.txt` files the

@@ -366,6 +366,9 @@ jobs:
       # (reuses the xtask already built above, #2289).
       - name: Test hygiene
         run: cargo run --locked -q -p xtask -- test-hygiene
+      # Every image and font file has a row in ATTRIBUTION.md.
+      - name: Attribution rows
+        run: cargo run --locked -q -p xtask -- attribution
 
   plan:
     name: Platforms

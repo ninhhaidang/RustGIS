@@ -1,6 +1,8 @@
-//! `cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
+//! `cargo xtask ci | changed [--list] [base] | layers | attribution | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>`
 //!
-//! - `layers`: enforces the crate layering (nothing below L6 may depend on egui/eframe/rfd).
+//! - `layers`: enforces the crate layering (nothing below L6 may depend on egui/eframe/rfd, a
+//!   crate may only depend on lower layers, and every crate under `crates/` has a layer).
+//! - `attribution`: every image and font file has a row in `ATTRIBUTION.md` (see `attribution.rs`).
 //! - `memory [--cli <path>] [--update]`: the command line's peak memory on generated data, per
 //!   workflow and as a multiple of loading alone, checked against `xtask/memory-limits.txt`
 //!   (Linux; see `memory.rs`).
@@ -21,12 +23,14 @@
 //! - `web-pwa <dir>`: writes the web app's service worker into a `trunk build` output directory
 //!   (`dist/web`) from the template `apps/rustgis-web/sw.js`, listing the built files to cache.
 
+mod attribution;
 mod changed;
 mod memory;
 mod notices;
 mod rows;
 mod test_hygiene;
 
+use serde_json::Value;
 use std::process::{Command, ExitCode};
 
 const LAYERS: &[(&str, u8)] = &[
@@ -50,14 +54,58 @@ fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
 
+/// `cargo xtask layers`: the layering of the crates under `crates/`, read from `cargo metadata`.
 fn layers() -> Result<(), String> {
+    let errs = layer_errors(&crate_deps(&changed::metadata(&root())?));
+    if errs.is_empty() {
+        println!("layers: ok");
+        Ok(())
+    } else {
+        Err(errs.join("\n"))
+    }
+}
+
+/// Each package under `crates/` as (its directory name, the packages it depends on). A dependency
+/// counts whatever its target (`[target.'cfg(…)'.dependencies]`) and whether or not it is optional.
+/// Dev- and build-dependencies don't: neither is in what the crate ships, and AGENTS.md's rule
+/// ("nothing below L6 depends on egui/eframe/rfd") doesn't clearly cover them.
+fn crate_deps(meta: &Value) -> Vec<(String, Vec<String>)> {
+    let workspace = std::path::Path::new(meta["workspace_root"].as_str().unwrap_or_default());
+    let mut out = Vec::new();
+    for package in meta["packages"].as_array().into_iter().flatten() {
+        let manifest = std::path::Path::new(package["manifest_path"].as_str().unwrap_or_default());
+        let dir = manifest.parent().and_then(|d| d.strip_prefix(workspace).ok()).and_then(|d| d.strip_prefix("crates").ok());
+        // A package nested below a crate's directory is kept, with its path: it has no layer.
+        let Some(dir) = dir.and_then(|d| d.to_str()).filter(|d| !d.is_empty()) else { continue };
+        let deps = package["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["kind"].is_null())
+            .filter_map(|d| d["name"].as_str().map(str::to_string))
+            .collect();
+        out.push((dir.replace('\\', "/"), deps));
+    }
+    out
+}
+
+/// What is wrong with the layering of `crates`: a crate with no layer in [`LAYERS`] (a new crate
+/// must be given one), a layer for a crate that isn't there, a UI crate below L6, and a crate that
+/// depends on one at or above its own layer.
+fn layer_errors(crates: &[(String, Vec<String>)]) -> Vec<String> {
     let mut errs = Vec::new();
+    for (dir, _) in crates {
+        if !LAYERS.iter().any(|(k, _)| k == dir) {
+            errs.push(format!("crates/{dir} has no layer: add it to LAYERS in xtask/src/main.rs"));
+        }
+    }
     for (krate, level) in LAYERS {
-        let text = std::fs::read_to_string(root().join("crates").join(krate).join("Cargo.toml")).map_err(|e| e.to_string())?;
-        let deps = text.split("[dependencies]").nth(1).unwrap_or("").split("\n[").next().unwrap_or("");
-        for line in deps.lines() {
-            let name = line.split(['=', ' ']).next().unwrap_or("").trim();
-            if *level < 6 && UI_ONLY.contains(&name) {
+        let Some((_, deps)) = crates.iter().find(|(dir, _)| dir == krate) else {
+            errs.push(format!("LAYERS has {krate}, but there is no crates/{krate}: take it out of xtask/src/main.rs"));
+            continue;
+        };
+        for name in deps {
+            if *level < 6 && UI_ONLY.contains(&name.as_str()) {
                 errs.push(format!("{krate} (L{level}) depends on UI crate {name}"));
             }
             if let Some(dep) = name.strip_prefix("rustgis-")
@@ -68,12 +116,7 @@ fn layers() -> Result<(), String> {
             }
         }
     }
-    if errs.is_empty() {
-        println!("layers: ok");
-        Ok(())
-    } else {
-        Err(errs.join("\n"))
-    }
+    errs
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
@@ -82,14 +125,15 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
 }
 
-/// `cargo xtask ci`: test hygiene, fmt, clippy with warnings as errors, tests, layering, direct row
-/// uses and the project schema check, on the whole workspace.
+/// `cargo xtask ci`: test hygiene, fmt, clippy with warnings as errors, tests, layering, attribution
+/// rows, direct row uses and the project schema check, on the whole workspace.
 fn ci() -> Result<(), String> {
     test_hygiene::run(&root())?;
     cargo(&["fmt", "--all", "--check"])
         .and_then(|_| cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
         .and_then(|_| cargo(&["test", "--workspace", "-q"]))
         .and_then(|_| layers())
+        .and_then(|_| attribution::run(&root()))
         .and_then(|_| rows::run(&root(), &[]))
         .and_then(|_| schema(true))
 }
@@ -216,6 +260,7 @@ fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let r = match task.as_str() {
         "layers" => layers(),
+        "attribution" => attribution::run(&root()),
         "test-hygiene" => test_hygiene::run(&root()),
         "rows" => rows::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         "memory" => memory::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
@@ -245,7 +290,7 @@ fn main() -> ExitCode {
             Some(other) => Err(format!("unknown argument {other}: usage: cargo xtask schema [--check]")),
         },
         "web-pwa" => web_pwa(std::env::args().nth(2)),
-        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
+        _ => Err("usage: cargo xtask ci | changed [--list] [base] | layers | attribution | memory [--cli <path>] [--update] | rows [--update] [--list] | commands | test-hygiene | notices [--check] | schema [--check] | web-pwa <dir>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -312,5 +357,82 @@ mod tests {
         std::fs::remove_file(dir.join("index.html")).unwrap();
         assert!(web_shell(&dir, "sw").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dependency as (name, kind, target), as `cargo metadata` gives them.
+    type Dep<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+
+    /// A `cargo metadata` document with one package under `crates/` for each (directory, dependencies),
+    /// a dependency being (name, kind, target).
+    fn metadata(crates: &[(&str, &[Dep])]) -> Value {
+        let packages: Vec<Value> = crates
+            .iter()
+            .map(|(dir, deps)| {
+                let deps: Vec<Value> = deps.iter().map(|(name, kind, target)| serde_json::json!({"name": name, "kind": kind, "target": target})).collect();
+                serde_json::json!({"name": format!("rustgis-{dir}"), "manifest_path": format!("/w/crates/{dir}/Cargo.toml"), "dependencies": deps})
+            })
+            .collect();
+        serde_json::json!({"workspace_root": "/w", "packages": packages})
+    }
+
+    /// Every crate in [`LAYERS`], with no dependencies, plus these changes.
+    fn all_crates(changes: &[(&str, &[Dep])]) -> Value {
+        let mut crates: Vec<(&str, &[Dep])> = LAYERS.iter().map(|(k, _)| (*k, &[][..])).collect();
+        for (dir, deps) in changes {
+            crates.retain(|(k, _)| k != dir);
+            crates.push((dir, deps));
+        }
+        metadata(&crates)
+    }
+
+    #[test]
+    fn layers_accepts_the_layering_as_it_is() {
+        let ok = all_crates(&[("engine", &[("rustgis-data", None, None), ("serde", None, None)]), ("ui-egui", &[("egui", None, None)])]);
+        assert_eq!(layer_errors(&crate_deps(&ok)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn layers_reads_dependencies_that_are_only_for_some_targets() {
+        let plain = all_crates(&[("engine", &[("rfd", None, None)])]);
+        let targeted = all_crates(&[("engine", &[("rfd", None, Some("cfg(not(target_arch = \"wasm32\"))"))])]);
+        for meta in [plain, targeted] {
+            assert_eq!(layer_errors(&crate_deps(&meta)), vec!["engine (L4) depends on UI crate rfd".to_string()]);
+        }
+        let upward = all_crates(&[("data", &[("rustgis-engine", None, Some("cfg(windows)"))])]);
+        assert_eq!(layer_errors(&crate_deps(&upward)), vec!["data (L1) depends on engine (L4)".to_string()]);
+    }
+
+    #[test]
+    fn layers_leaves_dev_and_build_dependencies_out() {
+        let meta = all_crates(&[("geom", &[("egui_kittest", Some("dev"), None), ("rustgis-engine", Some("build"), None)])]);
+        assert_eq!(layer_errors(&crate_deps(&meta)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn layers_refuses_a_crate_without_a_layer_and_a_layer_without_a_crate() {
+        let mut crates: Vec<(&str, &[Dep])> = LAYERS.iter().filter(|(k, _)| *k != "keychain").map(|(k, _)| (*k, &[][..])).collect();
+        crates.push(("newcomer", &[]));
+        let errs = layer_errors(&crate_deps(&metadata(&crates)));
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert!(errs.iter().any(|e| e.starts_with("crates/newcomer has no layer")));
+        assert!(errs.iter().any(|e| e.starts_with("LAYERS has keychain, but there is no crates/keychain")));
+    }
+
+    #[test]
+    fn layers_sees_a_package_nested_below_a_crate() {
+        let mut crates: Vec<(&str, &[Dep])> = LAYERS.iter().map(|(k, _)| (*k, &[][..])).collect();
+        crates.push(("data/inner", &[]));
+        assert_eq!(
+            layer_errors(&crate_deps(&metadata(&crates))),
+            vec!["crates/data/inner has no layer: add it to LAYERS in xtask/src/main.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn layers_ignores_packages_outside_crates() {
+        let mut meta = all_crates(&[]);
+        let app = serde_json::json!({"name": "rustgis", "manifest_path": "/w/apps/rustgis/Cargo.toml", "dependencies": [{"name": "egui", "kind": null, "target": null}]});
+        meta["packages"].as_array_mut().unwrap().push(app);
+        assert_eq!(layer_errors(&crate_deps(&meta)), Vec::<String>::new());
     }
 }
