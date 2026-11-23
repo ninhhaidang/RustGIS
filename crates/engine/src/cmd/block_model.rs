@@ -39,13 +39,27 @@ impl Mesh {
         self.tris.extend(if facing { [a, b, c] } else { [a, c, b] });
     }
 
-    /// A quad of four new positions, all with normal `n`, wound to face along it.
-    fn quad(&mut self, corners: [[f32; 3]; 4], n: [f32; 3]) {
+    /// A quad of four new positions, all with normal `n`, wound to face along it, with texture
+    /// coordinates `uv` when it has some.
+    fn quad(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], uv: Option<[[f32; 2]; 4]>) {
         let i = self.pos.len() as u32;
         self.pos.extend(corners);
         self.normal.extend([n; 4]);
+        self.uv.extend(uv.into_iter().flatten());
         self.tri_facing([i, i + 1, i + 2], n);
         self.tri_facing([i, i + 2, i + 3], n);
+    }
+
+    /// `others` added to this mesh, their triangles re-indexed.
+    fn join(mut self, others: impl IntoIterator<Item = Mesh>) -> Mesh {
+        for m in others {
+            let at = self.pos.len() as u32;
+            self.pos.extend(m.pos);
+            self.normal.extend(m.normal);
+            self.uv.extend(m.uv);
+            self.tris.extend(m.tris.iter().map(|t| t + at));
+        }
+        self
     }
 }
 
@@ -80,7 +94,6 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
     let Some(b) = t.block.as_ref() else {
         return Err("the map's terrain has no block diagram: set one with map.terrain's \"block\"".into());
     };
-    let walls_layer = b.walls_layer.is_some();
     let round = !b.shape.is_box();
     let (cut, kind) = if matches!(b.shape, rustgis_map::view::BlockShape::Polygon { .. }) {
         ("cut to polygons", "blocks cut to polygons")
@@ -104,6 +117,25 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             let (bw, bh) = (x1 - x0, y1 - y0);
             let res = bw.max(bh) / texture.round();
             let (tw, th) = ((bw / res).round().max(1.0), (bh / res).round().max(1.0));
+            let k = ground.per_unit(Coord::new((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+            // The walls a polygon layer colours (#1914), each side a picture of its classes and
+            // patterns at the ground texture's pixel size; plain walls keep their colour.
+            let mut flat = rustgis_render::flat_walls(&map, &ground, &block, res, k, model.tops);
+            let Model { ground: ground_mesh, walls, base, grid: (nx, ny), missing, pending, .. } = model;
+            // The pictures are let go once encoded, before the ground's texture is drawn.
+            let (walls, sides) = match flat.pictures.take() {
+                Some(pictures) => {
+                    let pngs = pictures.iter().map(|p| p.encode_png().map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+                    (walls.into(), pngs)
+                }
+                None => {
+                    let [first, rest @ ..] = walls;
+                    let mut plain = first.join(rest);
+                    plain.uv.clear();
+                    (vec![plain], Vec::new())
+                }
+            };
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
             map.view.terrain = None;
             let fx = &mut map.view.effects;
             (fx.weather, fx.sun_time, fx.vignette, fx.tilt_shift, fx.grain) = (rustgis_map::view::Weather::None, None, false, false, false);
@@ -112,7 +144,6 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             let placed = rustgis_render::render_placed(&mut map, &view)?;
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
             let png = placed.pixmap.encode_png().map_err(|e| e.to_string())?;
-            let k = ground.per_unit(Coord::new((x0 + x1) / 2.0, (y0 + y1) / 2.0));
             let sw = rustgis_geom::merc_to_lonlat(Coord::new(x0, y0));
             let extras = json!({
                 "origin": [sw.x, sw.y],
@@ -121,26 +152,41 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
                 "metresPerMercatorUnit": k,
                 "credits": placed.credits,
             });
-            let bytes = gltf(&model.meshes, &png, block.walls, glb, extras)?;
+            let bytes = gltf([&ground_mesh, &base], &walls, &png, &sides, block.walls, glb, extras)?;
             rustgis_data::progress::check().map_err(|e| e.to_string())?;
             rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             let warn = rustgis_data::diagnostics::Severity::Warning;
             for gap in &placed.gaps {
                 notes.push((warn, format!("{path}: the texture: {gap}")));
             }
-            if model.missing > 0 {
+            for gap in &flat.gaps {
+                notes.push((warn, format!("{path}: the walls' texture: {gap}")));
+            }
+            if flat.squeeze < 1.0 {
                 notes.push((
                     warn,
-                    format!("{path}: {} point(s) of the ground have no height and stand at 0, as the map draws them", model.missing),
+                    format!(
+                        "{path}: the walls are too tall for their textures at this size, so their pictures are squeezed up and down to {:.0}% and their patterns flatter than on the map: give a smaller texture",
+                        flat.squeeze * 100.0
+                    ),
                 ));
             }
-            if model.pending {
+            if flat.water > 0 {
+                notes.push((
+                    warn,
+                    format!("{path}: {} stretch(es) of the walls run through water, whose section the map draws on them but the model leaves out", flat.water),
+                ));
+            }
+            if missing > 0 {
+                notes.push((
+                    warn,
+                    format!("{path}: {} point(s) of the ground have no height and stand at 0, as the map draws them", missing),
+                ));
+            }
+            if pending {
                 notes.push((warn, format!("{path}: elevation tiles were still on their way, so part of the ground is coarser or at 0: export again once the map has drawn them")));
             }
             let info = rustgis_data::diagnostics::Severity::Info;
-            if walls_layer {
-                notes.push((info, format!("{path}: the walls are their plain colour: walls coloured by a layer aren't in the model yet")));
-            }
             if round {
                 notes.push((
                     warn,
@@ -148,8 +194,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
                 ));
             }
             notes.push((info, format!("{path}: the ground with the map as its texture, the walls and the base; the view's sky, fog, light and shadows are left to the 3D viewer")));
-            let triangles: usize = model.meshes.iter().map(|m| m.tris.len() / 3).sum();
-            let (nx, ny) = model.grid;
+            let triangles: usize = [&ground_mesh, &base].into_iter().chain(&walls).map(|m| m.tris.len() / 3).sum();
             Ok(json!({"path": path, "bytes": bytes.len(), "texture": [tw as u32, th as u32], "grid": [nx, ny], "triangles": triangles}))
         })();
         if written.is_err() {
@@ -159,9 +204,13 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
     }))
 }
 
-/// The model's meshes (ground, walls, base), the ground's grid, and what it is short of.
+/// The model's meshes (ground, each side's walls, base), each side's highest ground (metres,
+/// exaggerated), the ground's grid, and what it is short of.
 struct Model {
-    meshes: [Mesh; 3],
+    ground: Mesh,
+    walls: [Mesh; 4],
+    base: Mesh,
+    tops: [f64; 4],
     grid: (usize, usize),
     missing: usize,
     pending: bool,
@@ -209,8 +258,8 @@ fn read_ground(map: &rustgis_map::Map, texture: f64) -> Result<(Ground, terrain:
 /// The ground over the block's box on the settled view's grid (#2017, #2084), metres east, up
 /// and south of the box's south-west corner (scaled as at its centre), texture coordinates from
 /// its north-west corner, its cells as a picture `texture` pixels on the longer side lays them
-/// out; the walls along its four sides from the ground's edge down to the base;
-/// the base.
+/// out; the walls along its four sides from the ground's edge down to the base, a mesh a side
+/// with texture coordinates on its picture (`rustgis_render::flat_walls`); the base.
 fn build(ground: &Ground, b: &terrain::Block, texture: f64) -> Model {
     let (bw, bh) = (b.x1 - b.x0, b.y1 - b.y0);
     let k = ground.per_unit(Coord::new((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0));
@@ -253,25 +302,44 @@ fn build(ground: &Ground, b: &terrain::Block, texture: f64) -> Model {
             g.tris.extend([a, c, bb, bb, c, c + 1]);
         }
     }
-    // The walls: each side's ground edge, west to east and north to south, down to the base.
+    // The walls: each side's ground edge down to the base, in `terrain::Block::side`'s order
+    // (south, east, north, west), each from its first end to its last as seen from outside, as
+    // `rustgis_render::flat_walls` draws its picture: u along it, v from its highest ground (0)
+    // down to the base (1).
     let base = b.base as f32;
-    let mut w = Mesh::default();
     let sides: [(Vec<usize>, [f32; 3]); 4] = [
-        ((0..cols).collect(), [0.0, 0.0, -1.0]),
         ((0..cols).map(|i| ny * cols + i).collect(), [0.0, 0.0, 1.0]),
+        ((0..rows).rev().map(|j| j * cols + nx).collect(), [1.0, 0.0, 0.0]),
+        ((0..cols).rev().collect(), [0.0, 0.0, -1.0]),
         ((0..rows).map(|j| j * cols).collect(), [-1.0, 0.0, 0.0]),
-        ((0..rows).map(|j| j * cols + nx).collect(), [1.0, 0.0, 0.0]),
     ];
-    for (edge, n) in &sides {
-        for pair in edge.windows(2) {
+    let mut tops = [f64::from(base); 4];
+    let walls = std::array::from_fn(|s| {
+        let (edge, n) = &sides[s];
+        let top = edge.iter().map(|&i| g.pos[i][1]).fold(base, f32::max);
+        tops[s] = f64::from(top);
+        let v = |y: f32| if top > base { (top - y) / (top - base) } else { 0.0 };
+        let last = (edge.len() - 1).max(1) as f32;
+        let mut w = Mesh::default();
+        for (i, pair) in edge.windows(2).enumerate() {
             let (t0, t1) = (g.pos[pair[0]], g.pos[pair[1]]);
-            w.quad([t0, t1, [t1[0], base, t1[2]], [t0[0], base, t0[2]]], *n);
+            let (u0, u1) = (i as f32 / last, (i + 1) as f32 / last);
+            let uv = [[u0, v(t0[1])], [u1, v(t1[1])], [u1, 1.0], [u0, 1.0]];
+            w.quad([t0, t1, [t1[0], base, t1[2]], [t0[0], base, t0[2]]], *n, Some(uv));
         }
-    }
+        w
+    });
     let (wx, wz) = ((bw * k) as f32, (-bh * k) as f32);
     let mut floor = Mesh::default();
-    floor.quad([[0.0, base, 0.0], [wx, base, 0.0], [wx, base, wz], [0.0, base, wz]], [0.0, -1.0, 0.0]);
-    Model { meshes: [g, w, floor], grid: (nx, ny), missing, pending: false }
+    floor.quad([[0.0, base, 0.0], [wx, base, 0.0], [wx, base, wz], [0.0, base, wz]], [0.0, -1.0, 0.0], None);
+    Model { ground: g, walls, base: floor, tops, grid: (nx, ny), missing, pending: false }
+}
+
+/// A material's unlit-looking PBR settings (no metal, fully rough) with `look`'s colour or texture.
+fn pbr(mut look: Value) -> Value {
+    look["metallicFactor"] = json!(0.0);
+    look["roughnessFactor"] = json!(1.0);
+    look
 }
 
 /// An sRGB channel (0–255) as the linear value glTF's colour factors take.
@@ -280,9 +348,22 @@ fn linear(c: u8) -> f64 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-/// The model's glTF 2.0: meshes Ground (textured with `png`), Walls and Base (both `walls`), one
-/// node each; binary glTF when `glb`, otherwise the JSON with its buffer as a data URI.
-fn gltf(meshes: &[Mesh; 3], png: &[u8], walls: rustgis_map::Rgba, glb: bool, extras: Value) -> Result<Vec<u8>, String> {
+/// The side names of [`build`]'s walls, in their order, for their materials.
+const SIDES: [&str; 4] = ["South", "East", "North", "West"];
+
+/// The model's glTF 2.0: meshes Ground (`ground`, textured with `png`), Walls and Base (`base`, in
+/// the walls' `colour`), one node each; binary glTF when `glb`, otherwise the JSON with its buffer
+/// as a data URI. The walls are one primitive in `colour`, or, with a picture of each of the
+/// `walls` in `sides` (PNG), a primitive a side textured with it.
+fn gltf(
+    [ground, base]: [&Mesh; 2],
+    walls: &[Mesh],
+    png: &[u8],
+    sides: &[Vec<u8>],
+    colour: rustgis_map::Rgba,
+    glb: bool,
+    extras: Value,
+) -> Result<Vec<u8>, String> {
     let mut buf: Vec<u8> = Vec::new();
     let (mut views, mut accessors) = (Vec::<Value>::new(), Vec::<Value>::new());
     let mut view = |buf: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
@@ -298,8 +379,8 @@ fn gltf(meshes: &[Mesh; 3], png: &[u8], walls: rustgis_map::Rgba, glb: bool, ext
         views.len() - 1
     };
     let floats = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
-    let mut out = Vec::new();
-    for (i, m) in meshes.iter().enumerate() {
+    // A mesh as a primitive in `material`.
+    let mut primitive = |buf: &mut Vec<u8>, m: &Mesh, material: usize| {
         let flat: Vec<f32> = m.pos.iter().flatten().copied().collect();
         let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
         for p in &m.pos {
@@ -307,31 +388,49 @@ fn gltf(meshes: &[Mesh; 3], png: &[u8], walls: rustgis_map::Rgba, glb: bool, ext
                 (mn[c], mx[c]) = (mn[c].min(p[c]), mx[c].max(p[c]));
             }
         }
-        let pv = view(&mut buf, &floats(&flat), Some(34962));
+        let pv = view(buf, &floats(&flat), Some(34962));
         accessors.push(json!({"bufferView": pv, "componentType": 5126, "count": m.pos.len(), "type": "VEC3", "min": mn, "max": mx}));
         let mut attributes = json!({"POSITION": accessors.len() - 1});
         let normals: Vec<f32> = m.normal.iter().flatten().copied().collect();
-        let nv = view(&mut buf, &floats(&normals), Some(34962));
+        let nv = view(buf, &floats(&normals), Some(34962));
         accessors.push(json!({"bufferView": nv, "componentType": 5126, "count": m.normal.len(), "type": "VEC3"}));
         attributes["NORMAL"] = json!(accessors.len() - 1);
         if !m.uv.is_empty() {
             let uv: Vec<f32> = m.uv.iter().flatten().copied().collect();
-            let uvv = view(&mut buf, &floats(&uv), Some(34962));
+            let uvv = view(buf, &floats(&uv), Some(34962));
             accessors.push(json!({"bufferView": uvv, "componentType": 5126, "count": m.uv.len(), "type": "VEC2"}));
             attributes["TEXCOORD_0"] = json!(accessors.len() - 1);
         }
         let idx: Vec<u8> = m.tris.iter().flat_map(|x| x.to_le_bytes()).collect();
-        let iv = view(&mut buf, &idx, Some(34963));
+        let iv = view(buf, &idx, Some(34963));
         accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": m.tris.len(), "type": "SCALAR"}));
-        out.push(
-            json!({"primitives": [{"attributes": attributes, "indices": accessors.len() - 1, "material": usize::from(i > 0), "mode": 4}]}),
-        );
+        json!({"attributes": attributes, "indices": accessors.len() - 1, "material": material, "mode": 4})
+    };
+    // Materials 0 the map, 1 the walls' colour, 2 on each side's picture (textures 1 on).
+    let textured = sides.len() == walls.len();
+    let ground_prim = primitive(&mut buf, ground, 0);
+    let wall_prims: Vec<Value> = walls.iter().enumerate().map(|(i, m)| primitive(&mut buf, m, if textured { 2 + i } else { 1 })).collect();
+    let out = [
+        json!({"name": "Ground", "primitives": [ground_prim]}),
+        json!({"name": "Walls", "primitives": wall_prims}),
+        json!({"name": "Base", "primitives": [primitive(&mut buf, base, 1)]}),
+    ];
+    let images: Vec<Value> = std::iter::once(png)
+        .chain(sides.iter().map(Vec::as_slice))
+        .map(|p| json!({"bufferView": view(&mut buf, p, None), "mimeType": "image/png"}))
+        .collect();
+    let factor = [linear(colour.r()), linear(colour.g()), linear(colour.b()), 1.0];
+    let mut materials = vec![
+        json!({"name": "Map", "pbrMetallicRoughness": pbr(json!({"baseColorTexture": {"index": 0}}))}),
+        json!({"name": "Walls", "pbrMetallicRoughness": pbr(json!({"baseColorFactor": factor}))}),
+    ];
+    if textured {
+        for (i, side) in SIDES.iter().enumerate().take(sides.len()) {
+            materials
+                .push(json!({"name": format!("Walls {side}"), "pbrMetallicRoughness": pbr(json!({"baseColorTexture": {"index": 1 + i}}))}));
+        }
     }
-    let image = view(&mut buf, png, None);
-    for (m, name) in out.iter_mut().zip(["Ground", "Walls", "Base"]) {
-        m["name"] = json!(name);
-    }
-    let colour = [linear(walls.r()), linear(walls.g()), linear(walls.b()), 1.0];
+    let textures: Vec<Value> = (0..images.len()).map(|i| json!({"sampler": 0, "source": i})).collect();
     let mut buffer = json!({"byteLength": buf.len()});
     if !glb {
         buffer["uri"] = json!(format!("data:application/octet-stream;base64,{}", base64::engine::general_purpose::STANDARD.encode(&buf)));
@@ -342,13 +441,10 @@ fn gltf(meshes: &[Mesh; 3], png: &[u8], walls: rustgis_map::Rgba, glb: bool, ext
         "scenes": [{"name": "Block", "nodes": [0, 1, 2]}],
         "nodes": [{"name": "Ground", "mesh": 0}, {"name": "Walls", "mesh": 1}, {"name": "Base", "mesh": 2}],
         "meshes": out,
-        "materials": [
-            {"name": "Map", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0}},
-            {"name": "Walls", "pbrMetallicRoughness": {"baseColorFactor": colour, "metallicFactor": 0.0, "roughnessFactor": 1.0}},
-        ],
-        "textures": [{"sampler": 0, "source": 0}],
+        "materials": materials,
+        "textures": textures,
         "samplers": [{"magFilter": 9729, "minFilter": 9729, "wrapS": 33071, "wrapT": 33071}],
-        "images": [{"bufferView": image, "mimeType": "image/png"}],
+        "images": images,
         "accessors": accessors,
         "bufferViews": views,
         "buffers": [buffer],

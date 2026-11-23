@@ -245,12 +245,14 @@ model has three meshes: **Ground**, the ground inside the block's box on the gri
 lays it on, with the map drawn top down over the box as its texture (its layers, symbology and
 labels, without the scale bar or the credits, at `"texture"` pixels on the box's longer side,
 default 4096, 256 to 8192); **Walls**, the box's four sides from the ground's edge down to the
-base, in the walls' colour; and **Base**, flat at the block's base. The texture holds no light:
+base, in the walls' colour, or, when a polygon layer colours them (`"walls": {"layer": …}`), each
+side with a picture of the classes, hatches and contacts the map shows on it, unlit and at the
+ground texture's pixel size; and **Base**, flat at the block's base. The texture holds no light:
 the 3D viewer lights the model, so a hillshade layer shown on the map is the one light baked in.
 Units are metres east (x), up (y) and south (z) of the box's south-west corner, scaled as at the
 box's centre, with heights above sea level times the exaggeration; the file's `extras` give the
-corner's longitude and latitude. The view's sky, fog and shadows aren't in the model, and walls
-coloured by a polygon layer come in their plain colour for now (said). In the desktop app it
+corner's longitude and latitude. The view's sky, fog and shadows aren't in the model, nor the
+water's section on the walls (said). In the desktop app it
 runs in the background, with the export and **Cancel** in the status bar (elevation tiles are
 waited for, up to a minute); from a script or the command line it runs to its end before it
 answers:

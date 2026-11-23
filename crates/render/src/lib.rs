@@ -381,6 +381,7 @@ pub mod sample_data {
 
 use std::sync::OnceLock;
 
+pub use block::{FlatWalls, flat_walls};
 pub(crate) use canvas::Canvas;
 use rustgis_data::query::Env;
 use rustgis_data::{Dataset, Geometry, GeometryType};
