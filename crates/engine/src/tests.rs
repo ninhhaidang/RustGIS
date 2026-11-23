@@ -11984,11 +11984,14 @@ fn piaui_publication(s: &mut Session, profile: &str) -> Result<Value, String> {
     )
 }
 
-/// The scale Piauí fits `frame` at within the graticule's label strips (9 mm beside its sides, 6 mm
-/// along its top and bottom).
+/// The scale Piauí fits `frame` at within the graticule's label strips (on A4, 9 mm beside its
+/// sides and 6 mm along its top and bottom; on a sheet, scaled with its short side, #2581).
 fn piaui_fits(s: &Session, frame: &rustgis_map::layout::Element) -> f64 {
     let extent = rustgis_geom::Extent::new(-46.8, -11.6, -38.5, -2.2);
-    rustgis_map::layout::fit_scale(s.map(), &extent, frame.w - 18.0, frame.h - 12.0).unwrap().1
+    let l = s.project.layouts.last().unwrap();
+    let sheet = crate::cmd::layout::PUBLICATION_PROFILES.iter().any(|p| p.sheet && (p.width, p.height) == (l.width, l.height));
+    let k = if sheet { l.width.min(l.height) / 210.0 } else { 1.0 };
+    rustgis_map::layout::fit_scale(s.map(), &extent, frame.w - 18.0 * k, frame.h - 12.0 * k).unwrap().1
 }
 
 /// `layout.publication` (#682): every profile builds a layout that fits its page, the map frame
@@ -12067,8 +12070,8 @@ fn publication_layouts_fit_their_pages() {
         // A round scale, two significant figures, at which the extent still fits.
         let unit = 10f64.powf(scale.log10().floor() - 1.0);
         assert!(((scale / unit) - (scale / unit).round()).abs() < 1e-6, "{profile}: 1:{scale}");
-        // Fitted within the graticule's label strips (9 mm beside the frame's sides, 6 mm along its
-        // top and bottom), so the labels cover none of the extent.
+        // Fitted within the graticule's label strips (on A4, 9 mm beside the frame's sides and 6 mm
+        // along its top and bottom; scaled with the sheet), so the labels cover none of the extent.
         let fits = piaui_fits(&s, frame);
         assert!(fits <= *scale && *scale < fits * 1.1, "{profile}: 1:{scale} for 1:{fits}: {}", r["warnings"]);
         assert_eq!(grid.step, 2.0, "{profile}: Piauí's 9.4° take a 2° graticule");
@@ -12572,11 +12575,74 @@ fn publication_layouts_take_a_style() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// On an A5 portrait sheet, Piauí's legend has no room beside the area at the scale that fits it:
-/// the map is drawn at a smaller one, at most half, what runs on past the extent veiled for the
-/// surrounds, and both are said; every element stays on the page (#2309).
+/// A publication sheet's legend, scale bar and graticule labels follow its short side as its
+/// title does (#2581, part 3): 9, 8 and 8 points on A4, four times that on A0; a figure keeps
+/// them. A sheet off A4 is saved as needing `layout-text-size`, kept as it is when read again,
+/// and its sized surrounds hold their text, also after the frame's scale changes.
 #[test]
-fn a_publication_on_a5_portrait_keeps_its_legend_at_a_smaller_scale() {
+fn a_publication_sheets_surround_texts_follow_its_short_side() {
+    use rustgis_map::layout::{ElementKind, GRID_LABEL_PT, LEGEND_TEXT_PT, SCALE_BAR_TEXT_PT};
+    let mut s = world();
+    let cases: [(&str, Option<&str>, f64); 8] = [
+        ("a4-portrait", None, 1.0),
+        ("a4-landscape", None, 1.0),
+        ("figure-1col", None, 1.0),
+        ("thesis-half", None, 1.0),
+        ("letter-portrait", None, 215.9 / 210.0),
+        ("a5-portrait", None, 148.0 / 210.0),
+        ("a0-portrait", None, 841.0 / 210.0),
+        ("a0-portrait", Some("panel"), 841.0 / 210.0),
+    ];
+    for (profile, style, k) in cases {
+        let mut p = json!({"profile": profile, "extent": [-46.8, -11.6, -38.5, -2.2], "author": ""});
+        if let Some(style) = style {
+            p["style"] = json!(style);
+        }
+        let r = s.run("layout.publication", &p).unwrap_or_else(|e| panic!("{profile}: {e}"));
+        let case = format!("{profile} {style:?}");
+        assert!(!r["warnings"].to_string().contains("more than fits"), "{case}: {r}");
+        let l = s.project.layouts.last().unwrap().clone();
+        let kind = |name: &str| &l.elements.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("{case}: no {name}")).kind;
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let ElementKind::Legend { text_size, .. } = kind("Legend") else { panic!("{case}: legend") };
+        assert!(near(*text_size, LEGEND_TEXT_PT * k), "{case}: a {text_size} pt legend");
+        let ElementKind::ScaleBar { text_size, .. } = kind("Scale Bar") else { panic!("{case}: scale bar") };
+        assert!(near(*text_size, SCALE_BAR_TEXT_PT * k), "{case}: a {text_size} pt scale bar");
+        let ElementKind::MapFrame { grid: Some(g), .. } = kind("Map Frame") else { panic!("{case}: grid") };
+        assert!(near(g.label_size, GRID_LABEL_PT * k), "{case}: {} pt grid labels", g.label_size);
+        // Saved: an A4 sheet or a figure needs nothing new; another sheet needs its text sizes
+        // read, and comes back with them.
+        let mut alone = Project::default();
+        alone.maps = s.project.maps.clone();
+        alone.layouts = vec![l.clone()];
+        let saved = serde_json::to_value(&alone).unwrap();
+        let sized = saved["requires"].as_array().is_some_and(|r| r.contains(&json!("layout-text-size")));
+        assert_eq!(sized, k != 1.0, "{case}: {}", saved["requires"]);
+        assert_eq!(Project::from_json(&saved.to_string()).unwrap().layouts, alone.layouts, "{case}");
+        // Its legend's rows and its scale bar's labels fit their boxes, as measured for them.
+        let info = rustgis_render::layout::PageInfo { page: 1, pages: 1, page_name: String::new() };
+        let lost = rustgis_render::layout::text_losses(&l, &s.project.maps, 96.0, &info);
+        assert!(!lost.iter().any(|t| t.name == "Legend" || t.name == "Scale Bar"), "{case}: {lost:?}");
+    }
+    // The A0 sheet's frame zoomed out: its scale bar's box is measured again for its labels.
+    let frame = s.project.layouts.last().unwrap().elements.iter().find(|e| e.name == "Map Frame").unwrap().clone();
+    let ElementKind::MapFrame { scale, .. } = frame.kind else { panic!("no map frame") };
+    s.run("layout.update", &json!({"element": frame.id, "scale": scale * 3.0})).unwrap();
+    let info = rustgis_render::layout::PageInfo { page: 1, pages: 1, page_name: String::new() };
+    let l = s.project.layouts.last().unwrap();
+    let lost = rustgis_render::layout::text_losses(l, &s.project.maps, 96.0, &info);
+    assert!(!lost.iter().any(|t| t.name == "Scale Bar"), "{lost:?}");
+    let bar = l.elements.iter().find(|e| e.name == "Scale Bar").unwrap();
+    let ElementKind::ScaleBar { text_size, .. } = &bar.kind else { panic!("no scale bar") };
+    assert!((text_size - SCALE_BAR_TEXT_PT * 841.0 / 210.0).abs() < 1e-9, "the bar keeps its size: {text_size}");
+}
+
+/// On an A5 portrait sheet, Piauí's legend, set at the sheet's smaller size (#2581), finds room
+/// beside the area at the scale that fits it: the map is moved within its frame rather than drawn
+/// at a smaller scale and veiled, as it was with A4's sizes (#2309); every element stays on the
+/// page.
+#[test]
+fn a_publication_on_a5_portrait_keeps_its_legend_at_the_scale_that_fits() {
     let mut s = world();
     let r = piaui_publication(&mut s, "a5-portrait").unwrap();
     let l = s.project.layouts.last().unwrap();
@@ -12587,10 +12653,9 @@ fn a_publication_on_a5_portrait_keeps_its_legend_at_a_smaller_scale() {
     let frame = l.elements.iter().find(|e| e.kind.code() == "mapFrame").unwrap();
     let fits = piaui_fits(&s, frame);
     let scale = r["scale"].as_f64().unwrap();
-    assert!(fits <= scale && scale <= fits * 2.0, "1:{scale} for 1:{fits}");
-    assert_eq!(r["veiled"], true, "{r}");
-    let said = r["warnings"].to_string();
-    assert!(said.contains("to leave the legend room") && said.contains("veiled"), "{said}");
+    assert!(fits <= scale && scale < fits * 1.1, "1:{scale} for 1:{fits}");
+    assert_eq!(r["veiled"], false, "{r}");
+    assert!(!r["warnings"].to_string().contains("veiled"), "{r}");
 }
 
 /// Every page size `layout.new` offers has a publication sheet, portrait and landscape, of its
@@ -12609,6 +12674,15 @@ fn publication_sheets_follow_the_page_sizes() {
         assert_eq!(landscape.label, format!("{label} landscape sheet"));
     }
     assert_eq!(PUBLICATION_PROFILES.iter().filter(|p| p.sheet).count(), 2 * pages.len());
+    // Each sheet's surrounds, A4's sizes scaled by its short side, take a size a text size can
+    // have, so none is brought into range when the project is read again (#2581).
+    let range = rustgis_map::layout::LAYOUT_TEXT_SIZE;
+    for (id, _, w, h) in pages {
+        let k = w.min(*h) / 210.0;
+        for pt in [rustgis_map::layout::LEGEND_TEXT_PT, rustgis_map::layout::SCALE_BAR_TEXT_PT, rustgis_map::layout::GRID_LABEL_PT] {
+            assert!(range.contains(&(pt * k)), "{id}: {} pt", pt * k);
+        }
+    }
 }
 
 /// A publication layout's locator (#682, part 2): on a sheet, by default, a globe (a new map of

@@ -25,7 +25,9 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     under them. When the legend sits at the right of the map (its right edge in the frame's
     right tenth), starting between 45 % and 70 % of the frame's width, the right column starts
     where the legend does, unless its texts would then need a taller box. Text sizes follow the
-    sheet's short side: an A3's are 1.41 times an A4's, an A0's four times. Given its size alone
+    sheet's short side: an A3's are 1.41 times an A4's, an A0's four times. So do the legend's
+    text size, the scale bar's and the graticule's (9, 8 and 8 points on A4) and the strips the
+    graticule's labels take inside the frame. Given its size alone
     (`"a4"`, the default, or any other: `"letter"`, `"a0"`…), a sheet is turned to
     portrait or landscape, whichever the map comes out larger on: the area's extent east to west
     against north to south, on the map's projection, with the room the style leaves the map. The

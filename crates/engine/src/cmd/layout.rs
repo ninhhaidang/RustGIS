@@ -427,8 +427,9 @@ const FIGURE_PT: f64 = 7.0;
 /// The graticule steps a publication layout picks from, in degrees.
 const GRID_STEPS: &[f64] = &[0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0];
 
-/// The strips a frame's graticule labels take inside its edges, in mm: beside the left and right
-/// edges (a latitude such as `10°S` across), and along the top and bottom ones.
+/// The strips a frame's graticule labels take inside its edges on an A4 sheet, in mm: beside the
+/// left and right edges (a latitude such as `10°S` across), and along the top and bottom ones. A
+/// sheet scales them with its labels, by its short side (#2581).
 const LABEL_ROOM_SIDE: f64 = 9.0;
 const LABEL_ROOM_END: f64 = 6.0;
 
@@ -1202,7 +1203,7 @@ fn landscape_suits(aspect: f64, short: f64, long: f64, style: Style) -> bool {
         let texts = if style == Style::Panel { 50.0 } else { 100.0 } * k;
         let (iw, ih) = (w - 30.0 * k, h - texts);
         let fw = if matches!(style, Style::Panel | Style::Editorial | Style::Modular) { 0.68 * iw } else { iw };
-        let (fw, fh) = (fw - 2.0 * LABEL_ROOM_SIDE, ih - 2.0 * LABEL_ROOM_END);
+        let (fw, fh) = (fw - 2.0 * LABEL_ROOM_SIDE * k, ih - 2.0 * LABEL_ROOM_END * k);
         fw.min(fh / aspect.max(1e-6))
     };
     map_w(long, short) > 1.03 * map_w(short, long)
@@ -1357,6 +1358,11 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     // A sheet's sizes follow its short side (A4's 210 mm is 1); a figure keeps its texts at their
     // printed size, whatever its width.
     let k = if sheet { page_w.min(page_h) / 210.0 } else { 1.0 };
+    // So do its legend's rows, its scale bar's and graticule's labels and the strips those take
+    // inside the frame (#2581): A4's sizes times k, within the 4 to 100 points a text size takes
+    // on every sheet size (k from 0.70 on A5 to 4.0 on A0).
+    let (legend_pt, bar_pt, grid_pt) = (rustgis_map::layout::LEGEND_TEXT_PT * k, SCALE_BAR_TEXT_PT * k, GRID_LABEL_PT * k);
+    let (room_side, room_end) = (LABEL_ROOM_SIDE * k, LABEL_ROOM_END * k);
     // The sources and the reference that have something in them, each its heading in `head_pt` and
     // lines in `body_pt`, `tw` wide. Each one's elements keep their names (`Sources`, `Reference`)
     // whatever its heading reads, the heading filled and wrapped like the rest.
@@ -1859,7 +1865,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             target = (sheet && matches!(style, Style::Panel | Style::Editorial))
                 .then(|| aspect(s, &extent))
                 .flatten()
-                .map(|a| (((lw - 2.0 * LABEL_ROOM_SIDE).max(1.0) * a + 2.0 * LABEL_ROOM_END) * 1.15).max(40.0 * k))
+                .map(|a| (((lw - 2.0 * room_side).max(1.0) * a + 2.0 * room_end) * 1.15).max(40.0 * k))
                 // Only a frame clearly too tall is cut.
                 .filter(|n| *n < 0.97 * lh);
         }
@@ -1882,8 +1888,8 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     // The extent fits within the graticule's label strips (drawn inside the frame along its
     // labelled edges), on both sides so it stays centred, and its labels cover none of it.
     let edges = GridEdges { top: sheet, bottom: true, left: true, right: sheet };
-    let strip_w = if edges.left || edges.right { 2.0 * LABEL_ROOM_SIDE } else { 0.0 };
-    let strip_h = if edges.top || edges.bottom { 2.0 * LABEL_ROOM_END } else { 0.0 };
+    let strip_w = if edges.left || edges.right { 2.0 * room_side } else { 0.0 };
+    let strip_h = if edges.top || edges.bottom { 2.0 * room_end } else { 0.0 };
     if fw - strip_w < fw / 2.0 || fh - strip_h < fh / 2.0 {
         warnings.push("the frame is too small to keep its graticule's labels off the map's edges: they may cover them".into());
     }
@@ -1907,7 +1913,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         fit_scale(s.map(), &extent, inner_w, inner_h).ok_or("the extent can't be drawn on the map's projection")?
     };
     let scale = round_scale(scale);
-    let grid = Grid { step, edges, ..Grid::default() };
+    let grid = Grid { step, edges, label_size: grid_pt, ..Grid::default() };
     // A name given past the limit is refused, as layout.new refuses it, not cut (#2639).
     let given = super::within("name", "a layout's name", ps(p, "name").unwrap_or("Publication").trim(), super::MAX_NAME)?;
     let (name, name_cut) = unique_name(s, "New Publication Layout", "the name given", &given);
@@ -1950,9 +1956,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         e + if !labelled {
             0.0
         } else if side {
-            LABEL_ROOM_SIDE
+            room_side
         } else {
-            LABEL_ROOM_END
+            room_end
         }
     };
     let (left, right, top, bottom) = (room(edges.left, true), room(edges.right, true), room(edges.top, false), room(edges.bottom, false));
@@ -2127,7 +2133,14 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         if context_in_legend { Vec::new() } else { legend_context(s.map(), center, scale, (fw, fh)) }
     };
     let mut context = context_at(s, center, scale);
-    let mut sizes = crate::render::layout::legend_sizes_mm(s.map_mut(), render_scale, false, false, (&context, &Default::default()));
+    let mut sizes = crate::render::layout::legend_sizes_with_no_data_mm(
+        s.map_mut(),
+        render_scale,
+        false,
+        false,
+        (false, legend_pt),
+        (&context, &Default::default()),
+    );
     let (mut cw, mut ch) = match sizes {
         Some(sizes) => sizes[0],
         None => {
@@ -2153,8 +2166,12 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     // would draw, which sets its length and divisions. The box is the narrowest that draws that same
     // bar: the renderer gives a bar at most 85 % of its box, so the box is at least the bar's length
     // over 0.85.
-    let bar_kind = match ElementKind::scale_bar(frame) {
-        ElementKind::ScaleBar { units, divisions, text_size, .. } => Some((units, divisions, text_size)),
+    let mut scale_bar = ElementKind::scale_bar(frame);
+    if let ElementKind::ScaleBar { text_size, .. } = &mut scale_bar {
+        *text_size = bar_pt;
+    }
+    let bar_kind = match &scale_bar {
+        ElementKind::ScaleBar { units, divisions, text_size, .. } => Some((*units, *divisions, *text_size)),
         _ => None,
     };
     let scale_box = |ground_per_pt: f64, scale: f64| {
@@ -2379,11 +2396,12 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                         } else {
                             // A legend that can't be measured there (a source that can't be read
                             // through) leaves that scale untried too, which is said.
-                            let measured = crate::render::layout::legend_sizes_mm(
+                            let measured = crate::render::layout::legend_sizes_with_no_data_mm(
                                 s.map_mut(),
                                 render_scale,
                                 false,
                                 false,
+                                (false, legend_pt),
                                 (&here_context, &Default::default()),
                             );
                             if measured.is_none() {
@@ -2471,11 +2489,12 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                             *here
                         } else {
                             let at_there = crate::render::layout::frame_render_scale(s.map(), there, tried);
-                            let measured = crate::render::layout::legend_sizes_mm(
+                            let measured = crate::render::layout::legend_sizes_with_no_data_mm(
                                 s.map_mut(),
                                 at_there,
                                 false,
                                 false,
+                                (false, legend_pt),
                                 (&own_context, &Default::default()),
                             );
                             // A legend that can't be measured there leaves that move untried, which is
@@ -2881,7 +2900,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                     columns: legend_cols,
                     labels: Default::default(),
                     color: None,
-                    text_size: rustgis_map::layout::LEGEND_TEXT_PT,
+                    text_size: legend_pt,
                 },
             );
         }
@@ -2905,7 +2924,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     if let Some((sx, sy, w, h)) = spot_of(Surround::Scale) {
         placed.push(("scale bar", (sx, sy, w, h)));
         l.add("Scale Box", (sx, sy, w, sh + nh), surround_box(paper));
-        l.add("Scale Bar", (sx, sy, w, sh), ElementKind::scale_bar(frame));
+        l.add("Scale Bar", (sx, sy, w, sh), scale_bar);
         l.add("Scale", (sx, sy + sh, w, nh), pub_text("{scale}".into(), small_pt, ink, false, TextAlign::Center));
     }
     // What placing couldn't avoid: a surround over the map's drawing while a clearly freer corner
