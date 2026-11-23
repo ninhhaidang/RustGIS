@@ -1,4 +1,5 @@
 //! Committed files and their losses remain visible after a workflow rolls its project back.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell};
 use serde_json::{Value, json};

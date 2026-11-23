@@ -4494,6 +4494,7 @@ pub fn map_index(maps: &[rustgis_map::Map], name: &str) -> Option<usize> {
     maps.iter().position(|map| map.name.eq_ignore_ascii_case(name))
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

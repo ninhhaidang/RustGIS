@@ -214,10 +214,19 @@ fn run_uv(uv: &Path, args: &[&std::ffi::OsStr], progress: &mut dyn FnMut(&str)) 
     let mut child = c.spawn().map_err(|e| format!("couldn't start uv ({e})"))?;
     // Standard output is drained on a thread, so a full pipe can't stall uv.
     let out = child.stdout.take().map(|o| {
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name("rustgis-uv-output".into()).spawn(move || {
             let _ = std::io::copy(&mut BufReader::new(o), &mut std::io::sink());
         })
     });
+    // No thread to drain it with: uv is stopped rather than left to stall on a full pipe.
+    let out = match out.transpose() {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("couldn't run uv: the system refused a thread to read its output on ({e})"));
+        }
+    };
     let mut last = std::collections::VecDeque::new();
     if let Some(err) = child.stderr.take() {
         for line in BufReader::new(err).lines().map_while(Result::ok) {

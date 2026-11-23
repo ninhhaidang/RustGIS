@@ -1,4 +1,5 @@
 //! Real archive reads across the relay's approval, worker and completion boundaries.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use super::*;
 use rustgis_engine::{

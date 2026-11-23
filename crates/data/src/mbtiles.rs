@@ -527,6 +527,7 @@ mod file {
         })
     }
 
+    #[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
     #[cfg(test)]
     mod reload_tests {
         use super::*;

@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use super::*;
 
 // The sessions are shared by the process's tests: each test uses its own hosts.

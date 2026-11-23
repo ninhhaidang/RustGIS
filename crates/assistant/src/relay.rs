@@ -1648,6 +1648,7 @@ impl Revocation for GrantLive {
 #[path = "relay/archive_tests.rs"]
 mod archive_tests;
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     /// Only prompt requests read the skill folders (on the app's thread); a batch with one does.

@@ -2,13 +2,22 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 
+# A call that keeps one of these says why with `#[expect(clippy::disallowed_methods, reason = "…")]`.
+#
 # The Earth measures on the WGS 84 ellipsoid (`wgs84_distance_m`, `wgs84_length_m`,
-# `wgs84_ring_perimeter_area_m2`), as the Measure tool does (#939, #2568). These measure on a sphere:
-# a call says why with `#[expect(clippy::disallowed_methods, reason = "…")]`, for another body
-# (scaled by `Body`) or a comparison the sphere can't change.
+# `wgs84_ring_perimeter_area_m2`), as the Measure tool does (#939, #2568). The `rustgis_geom` ones
+# measure on a sphere: they stay for another body (scaled by `Body`) or a comparison the sphere
+# can't change.
+#
+# A thread count follows the user's setting (`rustgis_data::threads`), and a thread the system
+# refuses costs speed or ends one job with an error, never the app: `std::thread::spawn` panics
+# then, so use `std::thread::Builder` and handle its error (AGENTS.md › Use the threads).
 disallowed-methods = [
     { path = "rustgis_geom::haversine_m", reason = "the sphere; the Earth measures with `wgs84_distance_m`" },
     { path = "rustgis_geom::geodesic_length_m", reason = "the sphere; the Earth measures with `wgs84_length_m`" },
     { path = "rustgis_geom::geodesic_ring_perimeter_m", reason = "the sphere; the Earth measures with `wgs84_ring_perimeter_area_m2`" },
     { path = "rustgis_geom::geodesic_ring_area_m2", reason = "the sphere; the Earth measures with `wgs84_ring_perimeter_area_m2`" },
+    { path = "std::thread::available_parallelism", reason = "the thread count comes from `rustgis_data::threads`, which follows the user's setting" },
+    { path = "std::thread::spawn", reason = "it panics when the system refuses a thread: use `std::thread::Builder::spawn` and handle the error" },
+    { path = "std::thread::Scope::spawn", reason = "it panics when the system refuses a thread: use `std::thread::Builder::spawn_scoped` and handle the error" },
 ]

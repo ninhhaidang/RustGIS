@@ -58,6 +58,7 @@ thread_local! {
     pub(crate) static DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -580,6 +580,7 @@ pub fn remove(locale: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

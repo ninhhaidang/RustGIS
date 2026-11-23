@@ -802,6 +802,7 @@ pub fn recent(days: i64) -> (String, String) {
     (date_of(now - days * 86_400), date_of(now))
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,5 @@
 //! Runs frames of the whole UI (no GPU) through every tab, pane, dialog and theme.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use egui_kittest::kittest::Queryable;
 use rustgis_ui_egui::RustGisApp;

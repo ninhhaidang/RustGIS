@@ -1,5 +1,6 @@
 //! Linux's platform verifier reads SSL_CERT_FILE and SSL_CERT_DIR. Each case gets its own process
 //! and ephemeral PKI, never a change to the machine's root store or the suite's process environment.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 #[path = "../../../../tests/support/ogc.rs"]
 mod ogc;

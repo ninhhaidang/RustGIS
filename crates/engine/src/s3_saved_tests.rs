@@ -3,6 +3,7 @@
 //!
 //! Each test uses names, buckets and a server of its own: the S3 login registry is shared by
 //! every test of the process.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};

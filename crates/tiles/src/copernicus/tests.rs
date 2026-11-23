@@ -1,6 +1,7 @@
 //! Tested against a fake Keycloak on this computer: no request leaves it, and no real account
 //! or password is used.
 #![cfg(not(target_arch = "wasm32"))]
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use super::*;
 use std::io::{Read, Write};

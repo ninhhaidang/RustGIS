@@ -59,7 +59,10 @@ Work that splits into independent parts runs on several threads where practical:
 - in `analysis`, the shared helpers (`parallel::for_each_row`, `try_map`, `try_map_on`);
   everywhere, the thread count from `rustgis_data::threads` (it follows the user's setting), never
   `available_parallelism` or a fixed number, and scratch memory within `memory::thread_scratch`;
-- a thread the OS refuses costs speed, not the run (`Builder::spawn_scoped`).
+- a thread the OS refuses costs speed, not the run (`Builder::spawn_scoped`), and a job's thread
+  it refuses ends that job with an error (`Builder::spawn`; `work_off_frame` in `ui-egui`).
+  `clippy.toml` refuses `available_parallelism`, and `std::thread::spawn` and `Scope::spawn`, which
+  panic then; an exception says why in its `#[expect(clippy::disallowed_methods, reason = "…")]`.
 
 ## Size for real data
 Real data dwarfs the sample project: a parcel layer of half a million rows and a hundred fields

@@ -158,92 +158,108 @@ impl Run {
             pid,
             _grant: grant,
         };
+        // A thread the system refuses returns the refusal; dropping `run` stops the program.
+        let refused = |e: std::io::Error| {
+            crate::i18n::fmt(
+                "{agent}: the system refused a thread to talk to it on ({error})",
+                &[("agent", spec.label), ("error", &e.to_string())],
+            )
+        };
         let (events, session, writer_ctx) = (run.events.clone(), run.session.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let Some(mut pipe) = stdin else { return };
-            for line in lines {
-                if pipe.write_all(line.as_bytes()).and_then(|()| pipe.write_all(b"\n")).and_then(|()| pipe.flush()).is_err() {
-                    let new = session.lock().map(|mut s| s.exited(false, crate::tl!("Agent input pipe closed."))).unwrap_or_default();
-                    if let Ok(mut events) = events.lock() {
-                        events.extend(new);
+        std::thread::Builder::new()
+            .name("rustgis-agent-input".into())
+            .spawn(move || {
+                let Some(mut pipe) = stdin else { return };
+                for line in lines {
+                    if pipe.write_all(line.as_bytes()).and_then(|()| pipe.write_all(b"\n")).and_then(|()| pipe.flush()).is_err() {
+                        let new = session.lock().map(|mut s| s.exited(false, crate::tl!("Agent input pipe closed."))).unwrap_or_default();
+                        if let Ok(mut events) = events.lock() {
+                            events.extend(new);
+                        }
+                        writer_ctx.request_repaint();
+                        break;
                     }
-                    writer_ctx.request_repaint();
-                    break;
                 }
-            }
-        });
+            })
+            .map_err(refused)?;
         send(&run.stdin, &init)?;
         // Its last bytes of errors, decoded once it ends (a character split across reads stays whole).
         let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
         if let Some(mut stderr) = stderr {
             let errors = errors.clone();
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 1024];
-                while let Ok(n) = stderr.read(&mut buf) {
-                    let Some(piece) = buf.get(..n).filter(|p| !p.is_empty()) else { break };
-                    if let Ok(mut e) = errors.lock() {
-                        e.extend_from_slice(piece);
-                        let over = e.len().saturating_sub(MAX_STDERR);
-                        if over > 0 {
-                            // Cut at the start of a character, not inside one.
-                            let cut = (over..e.len()).find(|i| e.get(*i).is_some_and(|b| b & 0xC0 != 0x80)).unwrap_or(e.len());
-                            e.drain(..cut);
+            std::thread::Builder::new()
+                .name("rustgis-agent-errors".into())
+                .spawn(move || {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = stderr.read(&mut buf) {
+                        let Some(piece) = buf.get(..n).filter(|p| !p.is_empty()) else { break };
+                        if let Ok(mut e) = errors.lock() {
+                            e.extend_from_slice(piece);
+                            let over = e.len().saturating_sub(MAX_STDERR);
+                            if over > 0 {
+                                // Cut at the start of a character, not inside one.
+                                let cut = (over..e.len()).find(|i| e.get(*i).is_some_and(|b| b & 0xC0 != 0x80)).unwrap_or(e.len());
+                                e.drain(..cut);
+                            }
                         }
                     }
-                }
-            });
+                })
+                .map_err(refused)?;
         }
         let (events, session, stdin, child) = (run.events.clone(), run.session.clone(), run.stdin.clone(), run.child.clone());
-        std::thread::spawn(move || {
-            let push = |new: Vec<acp::Event>| {
-                if !new.is_empty() {
-                    if let Ok(mut e) = events.lock() {
-                        e.extend(new);
-                    }
-                    ctx.request_repaint();
-                }
-            };
-            if let Some(stdout) = stdout {
-                // Its lines, each at most the relay's limit: an oversized or unreadable one is
-                // skipped, not buffered whole.
-                let mut reader = BufReader::new(stdout);
-                'reading: loop {
-                    let line = match read_message_max(&mut reader, MAX_LINE, Oversize::Skip) {
-                        Ok(Some(line)) => line,
-                        Ok(None) | Err(FramingError::Io(_)) => break,
-                        Err(_) => continue,
-                    };
-                    let new = match session.lock() {
-                        Ok(mut s) => {
-                            let (out, new) = s.line(&line);
-                            // Queue writes under the state lock: auto-off cannot overtake a
-                            // prompt that passed readiness, nor can that prompt follow cancel.
-                            for l in out {
-                                if let Err(why) = send(&stdin, &l) {
-                                    push(s.exited(false, &why));
-                                    break 'reading;
-                                }
-                            }
-                            new
+        std::thread::Builder::new()
+            .name("rustgis-agent-output".into())
+            .spawn(move || {
+                let push = |new: Vec<acp::Event>| {
+                    if !new.is_empty() {
+                        if let Ok(mut e) = events.lock() {
+                            e.extend(new);
                         }
-                        Err(_) => break,
-                    };
-                    push(new);
+                        ctx.request_repaint();
+                    }
+                };
+                if let Some(stdout) = stdout {
+                    // Its lines, each at most the relay's limit: an oversized or unreadable one is
+                    // skipped, not buffered whole.
+                    let mut reader = BufReader::new(stdout);
+                    'reading: loop {
+                        let line = match read_message_max(&mut reader, MAX_LINE, Oversize::Skip) {
+                            Ok(Some(line)) => line,
+                            Ok(None) | Err(FramingError::Io(_)) => break,
+                            Err(_) => continue,
+                        };
+                        let new = match session.lock() {
+                            Ok(mut s) => {
+                                let (out, new) = s.line(&line);
+                                // Queue writes under the state lock: auto-off cannot overtake a
+                                // prompt that passed readiness, nor can that prompt follow cancel.
+                                for l in out {
+                                    if let Err(why) = send(&stdin, &l) {
+                                        push(s.exited(false, &why));
+                                        break 'reading;
+                                    }
+                                }
+                                new
+                            }
+                            Err(_) => break,
+                        };
+                        push(new);
+                    }
                 }
-            }
-            // Its output ended: wait for it to exit without holding the lock (Stop must not wait).
-            let ok = loop {
-                let status = child.lock().ok().and_then(|mut c| c.as_mut().map(child_status));
-                match status {
-                    Some(Ok(Some(ok))) => break ok,
-                    Some(Ok(None)) => std::thread::sleep(Duration::from_millis(50)),
-                    _ => break false,
-                }
-            };
-            let why = errors.lock().map(|e| String::from_utf8_lossy(&e).into_owned()).unwrap_or_default();
-            let new = session.lock().map(|mut s| s.exited(ok, &why)).unwrap_or_default();
-            push(new);
-        });
+                // Its output ended: wait for it to exit without holding the lock (Stop must not wait).
+                let ok = loop {
+                    let status = child.lock().ok().and_then(|mut c| c.as_mut().map(child_status));
+                    match status {
+                        Some(Ok(Some(ok))) => break ok,
+                        Some(Ok(None)) => std::thread::sleep(Duration::from_millis(50)),
+                        _ => break false,
+                    }
+                };
+                let why = errors.lock().map(|e| String::from_utf8_lossy(&e).into_owned()).unwrap_or_default();
+                let new = session.lock().map(|mut s| s.exited(ok, &why)).unwrap_or_default();
+                push(new);
+            })
+            .map_err(refused)?;
         Ok(run)
     }
 

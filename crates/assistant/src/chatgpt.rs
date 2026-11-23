@@ -1535,12 +1535,15 @@ mod native {
         let outcome: Outcome = Arc::default();
         let cancel = Arc::new(Mutex::new(false));
         let (out, stop) = (outcome.clone(), cancel.clone());
-        std::thread::spawn(move || {
-            let result = serve(&listener, &stop, &p);
-            if let Ok(mut o) = out.lock() {
-                *o = Some(result);
-            }
-        });
+        std::thread::Builder::new()
+            .name("rustgis-chatgpt-login".into())
+            .spawn(move || {
+                let result = serve(&listener, &stop, &p);
+                if let Ok(mut o) = out.lock() {
+                    *o = Some(result);
+                }
+            })
+            .map_err(|e| Error::from(format!("the system refused a thread to wait for the sign-in on ({e})")))?;
         Ok(Login { url, browser_url, port, outcome, cancel })
     }
 
@@ -1653,9 +1656,12 @@ mod native {
     ) -> Result<T, Error> {
         check_attempt(cancel, deadline)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let _ = tx.send(work());
-        });
+        std::thread::Builder::new()
+            .name("rustgis-chatgpt-request".into())
+            .spawn(move || {
+                let _ = tx.send(work());
+            })
+            .map_err(|e| Error::from(format!("the system refused a thread for the sign-in request ({e})")))?;
         loop {
             check_attempt(cancel, deadline)?;
             match rx.recv_timeout(Duration::from_millis(25)) {
@@ -1773,6 +1779,7 @@ mod native {
         )
     }
 
+    #[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
     #[cfg(test)]
     mod tests {
         use super::*;

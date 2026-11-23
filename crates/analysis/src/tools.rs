@@ -8573,6 +8573,7 @@ fn feature_envelope_to_polygon(inp: &dyn Inputs, p: &Json) -> Result<ToolResult,
     geometry::convert(inp, p, geometry::Conversion::FeatureEnvelopeToPolygon)
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     #[test]

@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use crate::{data, map, render};
 use data::source::{Batch, FeatureSource, Request, SourceInfo};
 use data::{Dataset, Feature, Geometry, GeometryType};

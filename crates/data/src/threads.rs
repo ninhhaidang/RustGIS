@@ -26,7 +26,9 @@ pub fn cores() -> usize {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+        #[expect(clippy::disallowed_methods, reason = "the one place that reads the cores, which the thread count follows")]
+        let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+        cores
     }
     #[cfg(target_arch = "wasm32")]
     {

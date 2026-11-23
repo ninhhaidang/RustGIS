@@ -1,4 +1,5 @@
 //! Drive the real Define Projection dialog and its async import handoff.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use egui_kittest::kittest::Queryable;
 use rustgis_engine::{
     Project, Session,

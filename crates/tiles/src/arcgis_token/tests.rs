@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use super::*;
 
 const FUTURE: i64 = 4_102_444_800_000; // 2100-01-01

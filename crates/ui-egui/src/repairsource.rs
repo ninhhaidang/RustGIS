@@ -95,8 +95,8 @@ impl Form {
         let slot = crate::Slot::default();
         let (out, ctx) = (slot.clone(), ctx.clone());
         self.error = None;
-        self.listing = Some((path.clone(), slot));
-        std::thread::spawn(move || {
+        self.listing = Some((path.clone(), slot.clone()));
+        crate::work_off_frame("rustgis-list-datasets", &slot, move || {
             let mut session = Session::new(rustgis_engine::Project::default());
             let result = session.run("info.fileLayers", &json!({"path": path.trim()}));
             *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);

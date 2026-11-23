@@ -97,7 +97,22 @@ fn token(_s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"server": root, "sessions": status()["sessions"]}))
 }
 
-fn sign_out(_s: &mut Session, p: &Value) -> CmdResult {
+/// Says how many sign-out revocations went unsent, the system having refused a thread to send
+/// them on: the portal accepts those tokens until they expire.
+#[cfg(not(target_arch = "wasm32"))]
+fn say_unrevoked(s: &mut Session, sent: Result<(), Vec<arcgis_auth::Revocation>>) {
+    if let Err(unsent) = sent {
+        s.notify(
+            format!(
+                "{} sign-in token(s) weren't revoked at the portal: the system refused a thread to send them on. The portal accepts them until they expire.",
+                unsent.len()
+            ),
+            true,
+        );
+    }
+}
+
+fn sign_out(s: &mut Session, p: &Value) -> CmdResult {
     // Only an absent (or blank) portal means every session: junk is refused, not taken for it.
     if p.get("portal").is_some_and(|v| !v.is_null() && !v.is_string()) {
         return Err("portal is a signed-in portal's address (arcgis.status lists them)".into());
@@ -118,8 +133,30 @@ fn sign_out(_s: &mut Session, p: &Value) -> CmdResult {
         crate::render::rustgis_tiles::cache::sign_out();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    arcgis_auth::revoke_all(revocations);
+    say_unrevoked(s, arcgis_auth::revoke_all(revocations));
     #[cfg(target_arch = "wasm32")]
-    drop(revocations);
+    let _ = (s, revocations);
     Ok(json!({"signedOut": gone, "sessions": status()["sessions"]}))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// Revocations a refused thread left unsent are said once, with their count; sent ones aren't.
+    #[test]
+    fn unsent_revocations_are_said_and_sent_ones_are_not() {
+        let mut s = Session::new(crate::Project::default());
+        let r = || arcgis_auth::Revocation {
+            endpoint: "https://portal.example/sharing/rest/oauth2/revokeToken".into(),
+            body: "token=t".into(),
+        };
+        let mark = s.notice_mark();
+        say_unrevoked(&mut s, Err(vec![r(), r()]));
+        let said = s.notices_since(mark);
+        assert!(said.len() == 1 && said.iter().all(|n| n.error && n.text.starts_with("2 sign-in token(s) weren't revoked")), "{said:?}");
+        let mark = s.notice_mark();
+        say_unrevoked(&mut s, Ok(()));
+        assert!(s.notices_since(mark).is_empty());
+    }
 }

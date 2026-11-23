@@ -133,6 +133,16 @@ fn database_text(a: &str) -> String {
     }
 }
 
+/// A database's table names for completion, or none with a warning saying why they couldn't be
+/// read (an unreadable database, a refused thread). They are read once per database, so it is
+/// said once.
+fn names_or_say(session: &mut rustgis_engine::Session, read: Result<Vec<(String, String)>, String>) -> Vec<(String, String)> {
+    read.unwrap_or_else(|e| {
+        session.warn(crate::i18n::fmt("The database's table names for completion couldn't be read: {reason}", &[("reason", &e)]));
+        Vec::new()
+    })
+}
+
 /// Lands queries, Add to Map runs and name lists that finished.
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let st = &mut app.ui.sql;
@@ -158,7 +168,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         && let Some(r) = take(slot)
     {
         st.names_job = None;
-        st.names = r.unwrap_or_default();
+        st.names = names_or_say(&mut app.session, r);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((sql, db, slot)) = &app.ui.sql.adding
@@ -200,7 +210,7 @@ fn run(app: &mut RustGisApp) {
     let slot: Answer<Value> = Slot::default();
     let land = slot.clone();
     let db2 = db.clone();
-    std::thread::spawn(move || {
+    crate::work_off_frame("rustgis-sql-preview", &slot, move || {
         let r = duckdb::preview(&duckdb::Query { sql: &sql, database: db2.as_ref(), crs: None }, PREVIEW_ROWS)
             .map(|p| rustgis_engine::cmd::sql::preview_json(&p))
             .map_err(|e| e.to_string());
@@ -215,7 +225,7 @@ fn run(app: &mut RustGisApp) {
         st.names_for = db_text;
         let slot: Answer<Vec<(String, String)>> = Slot::default();
         let land = slot.clone();
-        std::thread::spawn(move || {
+        crate::work_off_frame("rustgis-sql-names", &slot, move || {
             *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(duckdb::schema_of(&db).map_err(|e| e.to_string()));
         });
         st.names_job = Some(slot);
@@ -242,7 +252,7 @@ fn add_to_map(app: &mut RustGisApp) {
     let slot: Answer<duckdb::Output> = Slot::default();
     let land = slot.clone();
     let sql2 = sql.clone();
-    std::thread::spawn(move || {
+    crate::work_off_frame("rustgis-sql-run", &slot, move || {
         let r = duckdb::run(&duckdb::Query { sql: &sql2, database: db.as_ref(), crs: None }).map_err(|e| e.to_string());
         *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     });
@@ -490,6 +500,20 @@ fn history(app: &mut RustGisApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Names that couldn't be read are said once, and none are kept; names read say nothing.
+    #[test]
+    fn names_that_cant_be_read_are_said_and_names_read_are_not() {
+        let mut s = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        let mark = s.notice_mark();
+        assert!(names_or_say(&mut s, Err("no threads left".into())).is_empty());
+        let said = s.notices_since(mark);
+        assert!(said.len() == 1 && said.iter().all(|n| n.text.contains("couldn't be read: no threads left")), "{said:?}");
+        let mark = s.notice_mark();
+        let names = names_or_say(&mut s, Ok(vec![("main".to_string(), "parcels".to_string())]));
+        assert_eq!(names, vec![("main".to_string(), "parcels".to_string())]);
+        assert!(s.notices_since(mark).is_empty());
+    }
 
     #[test]
     fn secrets_stay_out_of_the_history() {

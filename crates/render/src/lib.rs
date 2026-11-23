@@ -8476,6 +8476,7 @@ pub(crate) fn draw_attribution(pm: &mut Canvas, attribution: &[String], ppp: f32
     text::draw(pm, &label, ppp);
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
 

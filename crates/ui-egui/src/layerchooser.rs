@@ -64,7 +64,7 @@ pub fn add_file(app: &mut RustGisApp, path: &str) -> Result<Value, String> {
     let slot: crate::Slot<Result<Value, String>> = crate::Slot::default();
     let out = slot.clone();
     let listed = path.to_string();
-    std::thread::spawn(move || {
+    crate::work_off_frame("rustgis-list-layers", &slot, move || {
         let mut session = rustgis_engine::Session::new(rustgis_engine::Project::default());
         let result = session.run("info.fileLayers", &json!({"path": listed}));
         *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);

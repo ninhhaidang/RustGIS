@@ -1,4 +1,5 @@
 //! Public dispatch, frozen consent and owned late work share the engine's permission outcome.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use super::*;
 use crate::policy::{Call, Effects, Outcome, Pending, Revocation, Scope};
 use std::sync::{

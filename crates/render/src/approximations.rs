@@ -272,6 +272,7 @@ pub(crate) fn ground_without_height(text: String) {
     note("\0block ground".to_string(), text);
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

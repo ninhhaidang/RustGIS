@@ -106,9 +106,9 @@ pub(crate) enum Line {
 /// Reads the program's output lines on a thread, so waiting for one can time out. A few lines
 /// at most wait to be handled: a program printing faster than RustGIS reads is made to wait
 /// rather than filling memory.
-fn lines(out: impl Read + Send + 'static, wake: Option<crate::session::Wake>) -> Receiver<Line> {
+fn lines(out: impl Read + Send + 'static, wake: Option<crate::session::Wake>) -> std::io::Result<Receiver<Line>> {
     let (tx, rx) = sync_channel(2);
-    std::thread::spawn(move || {
+    std::thread::Builder::new().name("rustgis-plugin-output".into()).spawn(move || {
         let mut r = BufReader::new(out);
         loop {
             let mut buf = Vec::new();
@@ -132,8 +132,8 @@ fn lines(out: impl Read + Send + 'static, wake: Option<crate::session::Wake>) ->
                 }
             }
         }
-    });
-    rx
+    })?;
+    Ok(rx)
 }
 
 /// The last lines of the program's error output, for the log and for an error message.
@@ -154,10 +154,10 @@ const KEPT_ERROR_LINES: usize = 20;
 /// Keeps the program's error output as it comes; `wake` is called as each line arrives (a
 /// session's, so it is logged while the app is idle). Read, never joined: a process the program
 /// started can hold the pipe open after the program itself has exited.
-pub(crate) fn errors(err: impl Read + Send + 'static, wake: Option<crate::session::Wake>) -> Kept {
+pub(crate) fn errors(err: impl Read + Send + 'static, wake: Option<crate::session::Wake>) -> std::io::Result<Kept> {
     let kept = Kept::default();
     let k = kept.clone();
-    std::thread::spawn(move || {
+    std::thread::Builder::new().name("rustgis-plugin-errors".into()).spawn(move || {
         let mut r = BufReader::new(err);
         loop {
             // Bounded: endless output without a line end is read in pieces.
@@ -181,8 +181,8 @@ pub(crate) fn errors(err: impl Read + Send + 'static, wake: Option<crate::sessio
             drop(k);
             wake.as_ref().inspect(|w| w());
         }
-    });
-    kept
+    })?;
+    Ok(kept)
 }
 
 /// Stops the program, and what it started, if it hasn't exited on its own within `grace`.
@@ -326,12 +326,12 @@ impl Writer {
 }
 
 /// `wake` is called when the program, behind in reading, catches up below [`HOLD_EVENTS_AT`].
-fn writer(mut stdin: impl Write + Send + 'static, wake: Option<crate::session::Wake>) -> Writer {
+fn writer(mut stdin: impl Write + Send + 'static, wake: Option<crate::session::Wake>) -> std::io::Result<Writer> {
     let (tx, rx) = channel::<Vec<u8>>();
     let backlog = Arc::new(AtomicUsize::new(0));
     let bytes = Arc::new(AtomicUsize::new(0));
     let (left, left_bytes) = (backlog.clone(), bytes.clone());
-    std::thread::spawn(move || {
+    std::thread::Builder::new().name("rustgis-plugin-input".into()).spawn(move || {
         for mut line in rx {
             let n = line.len();
             line.push(b'\n');
@@ -343,8 +343,8 @@ fn writer(mut stdin: impl Write + Send + 'static, wake: Option<crate::session::W
                 wake.as_ref().inspect(|w| w());
             }
         }
-    });
-    Writer { tx, backlog, bytes }
+    })?;
+    Ok(Writer { tx, backlog, bytes })
 }
 
 /// A program started, with its input, its output lines and its error output.
@@ -374,7 +374,16 @@ pub(crate) fn spawn(spec: &Spec, wake: Option<crate::session::Wake>) -> Result<S
         finish(&mut child, Duration::ZERO);
         return Err("couldn't connect to it".into());
     };
-    Ok(Started { child, errs: errors(stderr, wake.clone()), rx: lines(stdout, wake.clone()), stdin: writer(stdin, wake) })
+    // No thread to talk to it on: it is stopped, as when its pipes can't be connected.
+    let threads = errors(stderr, wake.clone()).and_then(|errs| Ok((errs, lines(stdout, wake.clone())?, writer(stdin, wake)?)));
+    match threads {
+        Ok((errs, rx, stdin)) => Ok(Started { child, errs, rx, stdin }),
+        Err(e) => {
+            // Its process group too: a wrapper that has exited may have left workers holding a pipe.
+            let _ = end(&mut child, Duration::ZERO);
+            Err(format!("couldn't talk to it: the system refused a thread ({e})"))
+        }
+    }
 }
 
 /// Runs one call: starts the program, sends `request`, answers its host requests through

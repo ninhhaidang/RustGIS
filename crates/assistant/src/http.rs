@@ -116,6 +116,7 @@ fn transport_error(e: &ureq::Error, url: &str) -> Error {
     Error::transport(kind, format!("couldn't reach {message}"))
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     use super::*;

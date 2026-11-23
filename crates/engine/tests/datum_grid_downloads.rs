@@ -8,6 +8,7 @@
 //! US feet) to EPSG:4326 at (2000000, 500000): without grids (-99.00033704176887,
 //! 29.208750090065326); with `us_noaa_conus.tif` and `us_noaa_ethpgn.tif`
 //! (-99.00031395482138, 29.208749002954207).
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use rustgis_data::Coord;
 use rustgis_data::raster::{Crs, crs};

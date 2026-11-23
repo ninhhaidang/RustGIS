@@ -2516,6 +2516,57 @@ mod native {
     use crate::address::{Origin, Reach};
     use crate::failure::{Failure, Reason};
 
+    /// Runs `work` on a thread of its own, handing it `done`. When the system refuses a thread,
+    /// `done` hears `refused` (given why) instead, so the caller is answered either way.
+    fn answer_on_own_thread<T: 'static>(
+        done: Box<dyn FnOnce(T) + Send>,
+        refused: impl FnOnce(String) -> T,
+        work: impl FnOnce(Box<dyn FnOnce(T) + Send>) + Send + 'static,
+    ) {
+        let spawn = |work| std::thread::Builder::new().name("rustgis-request".into()).spawn(work).map(drop);
+        answer_on_own_thread_with(spawn, done, refused, work);
+    }
+
+    /// [`answer_on_own_thread`], its thread started by `spawn`, which a test can make refuse.
+    fn answer_on_own_thread_with<T: 'static>(
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+        done: Box<dyn FnOnce(T) + Send>,
+        refused: impl FnOnce(String) -> T,
+        work: impl FnOnce(Box<dyn FnOnce(T) + Send>) + Send + 'static,
+    ) {
+        let held = std::sync::Arc::new(Mutex::new(Some(done)));
+        let given = held.clone();
+        let spawned = spawn(Box::new(move || {
+            let done = given.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(done) = done {
+                work(done);
+            }
+        }));
+        if let Err(e) = spawned {
+            let done = held.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(done) = done {
+                done(refused(format!("the system refused a thread for the request ({e})")));
+            }
+        }
+    }
+
+    /// A thread the system refuses for a request answers its `done` with the refusal, the request
+    /// unsent.
+    #[cfg(test)]
+    #[test]
+    fn a_refused_thread_answers_the_request_with_the_refusal() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let heard: std::sync::Arc<Mutex<Option<Result<(), String>>>> = std::sync::Arc::default();
+        let (h, sent) = (heard.clone(), std::sync::Arc::new(AtomicBool::new(false)));
+        let s = sent.clone();
+        let done: Box<dyn FnOnce(Result<(), String>) + Send> = Box::new(move |r| *h.lock().unwrap() = Some(r));
+        let refuse = |_| Err(std::io::Error::other("no threads left"));
+        answer_on_own_thread_with(refuse, done, Err, move |_| s.store(true, Ordering::Relaxed));
+        let heard = heard.lock().unwrap().take();
+        assert!(heard.is_some_and(|r| r.is_err_and(|e| e.contains("no threads left"))));
+        assert!(!sent.load(Ordering::Relaxed));
+    }
+
     /// Fetches under way at once, over all servers: two servers at their cap.
     const WORKERS: usize = 2 * PER_HOST;
     /// Fetches under way at once from one server.
@@ -3030,7 +3081,12 @@ mod native {
         }
         let capture = Capture::current();
         let still = super::current_still();
-        std::thread::spawn(move || {
+        // Refused a thread: the file is read without asking, as past the limit.
+        let refused = |_| {
+            HEADS.fetch_sub(1, Relaxed);
+            Ok(super::Head::default())
+        };
+        answer_on_own_thread(done, refused, move |done| {
             super::with_optional_still(still, || {
                 let _scope = capture.enter();
                 let r = super::check_current()
@@ -3141,7 +3197,7 @@ mod native {
     pub(super) fn post_fetched(url: String, body: String, ceiling: Reach, done: FetchedDone) {
         let capture = Capture::current();
         let still = super::current_still();
-        std::thread::spawn(move || {
+        answer_on_own_thread(done, Err, move |done| {
             super::with_optional_still(still, || {
                 let _scope = capture.enter();
                 let timeout = std::time::Duration::from_secs(60);
@@ -3234,17 +3290,21 @@ mod native {
         let capture = Capture::current();
         let still = super::current_still();
         let progress = super::current_progress();
-        std::thread::spawn(move || {
-            super::with_optional_still(still, || {
-                super::with_progress(progress, || {
-                    let _scope = capture.enter();
-                    let r = super::check_current()
-                        .map_err(Failure::from)
-                        .and_then(|_| get_fetched_omitting(&download_agent(timeout), &url, omit));
-                    done(r);
+        answer_on_own_thread(
+            done,
+            |why| Err(Failure::from(why)),
+            move |done| {
+                super::with_optional_still(still, || {
+                    super::with_progress(progress, || {
+                        let _scope = capture.enter();
+                        let r = super::check_current()
+                            .map_err(Failure::from)
+                            .and_then(|_| get_fetched_omitting(&download_agent(timeout), &url, omit));
+                        done(r);
+                    })
                 })
-            })
-        });
+            },
+        );
     }
 
     /// Like [`download_fetched_within`], connecting only to internet addresses ([`public_agent`]).
@@ -3262,20 +3322,24 @@ mod native {
         let capture = Capture::current();
         let still = super::current_still();
         let progress = super::current_progress();
-        std::thread::spawn(move || {
-            super::with_optional_still(still, || {
-                super::with_progress(progress, || {
-                    let _scope = capture.enter();
-                    let r = super::check_current().map_err(Failure::from).and_then(|_| {
-                        fetch_answer(&public_agent(timeout), &url, Reach::Public, true, omit).map(|mut f| {
-                            f.origin = f.origin.narrow_reach(Reach::Public);
-                            f
-                        })
-                    });
-                    done(r);
+        answer_on_own_thread(
+            done,
+            |why| Err(Failure::from(why)),
+            move |done| {
+                super::with_optional_still(still, || {
+                    super::with_progress(progress, || {
+                        let _scope = capture.enter();
+                        let r = super::check_current().map_err(Failure::from).and_then(|_| {
+                            fetch_answer(&public_agent(timeout), &url, Reach::Public, true, omit).map(|mut f| {
+                                f.origin = f.origin.narrow_reach(Reach::Public);
+                                f
+                            })
+                        });
+                        done(r);
+                    })
                 })
-            })
-        });
+            },
+        );
     }
 
     /// Dispatches each queued read through the pool matching its inherited IP ceiling.
@@ -3794,6 +3858,7 @@ mod native {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(test)]
 mod tests {
     #[test]

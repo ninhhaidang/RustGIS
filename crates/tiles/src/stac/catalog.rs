@@ -550,24 +550,33 @@ pub fn walk_blocking(root: &str, filter: Filter, limit: usize) -> Walk {
         if urls.is_empty() {
             break;
         }
+        let read = |u: String, public: bool| {
+            let ceiling = if public { crate::address::Reach::Public } else { crate::address::Reach::Local };
+            let r = crate::cache::download_blocking_with_origin_within(
+                &u,
+                crate::cache::MAX_DOWNLOAD,
+                std::time::Duration::from_secs(60),
+                &[],
+                ceiling,
+            );
+            (u, r)
+        };
         let answers: Vec<(String, Result<crate::cache::Fetched, String>)> = std::thread::scope(|s| {
             let handles: Vec<_> = urls
                 .into_iter()
                 .map(|(u, public)| {
-                    s.spawn(move || {
-                        let ceiling = if public { crate::address::Reach::Public } else { crate::address::Reach::Local };
-                        let r = crate::cache::download_blocking_with_origin_within(
-                            &u,
-                            crate::cache::MAX_DOWNLOAD,
-                            std::time::Duration::from_secs(60),
-                            &[],
-                            ceiling,
-                        );
-                        (u, r)
-                    })
+                    let again = (u.clone(), public);
+                    std::thread::Builder::new().spawn_scoped(s, move || read(u, public)).map_err(|_| again)
                 })
                 .collect();
-            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+            handles
+                .into_iter()
+                .filter_map(|h| match h {
+                    Ok(h) => h.join().ok(),
+                    // A thread the system refuses costs speed: its document is read here.
+                    Err((u, public)) => Some(read(u, public)),
+                })
+                .collect()
         });
         for (u, r) in answers {
             w.land_fetched(&u, r);

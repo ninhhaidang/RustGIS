@@ -119,10 +119,16 @@ fn read_all(urls: &[String], fetch: Fetch<'_>) -> Vec<Result<Vec<u8>, String>> {
                 .iter()
                 .map(|u| {
                     let still = still.clone();
-                    s.spawn(move || crate::cache::with_optional_still(still, || fetch(u)))
+                    std::thread::Builder::new()
+                        .spawn_scoped(s, move || crate::cache::with_optional_still(still, || fetch(u)))
+                        .map_err(|_| u)
                 })
                 .collect();
-            out.extend(handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("the read failed".to_string()))));
+            out.extend(handles.into_iter().map(|h| match h {
+                Ok(h) => h.join().unwrap_or_else(|_| Err("the read failed".to_string())),
+                // A thread the system refuses costs speed: its document is read here, in this context.
+                Err(u) => fetch(u),
+            }));
         });
     }
     out

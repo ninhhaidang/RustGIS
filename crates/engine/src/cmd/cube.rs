@@ -870,13 +870,17 @@ fn read_each<T: Send>(
     // in their order (`in_order`): several readers place them as they are read, and one slow read
     // lets the others run ahead of it.
     let readers = if cfg!(target_arch = "wasm32") || in_order { 1 } else { cube.readers().clamp(1, 16).min(steps.len().max(1)) };
-    if readers == 1 {
+    let in_turn = |place: &mut dyn FnMut(usize, T) -> Result<(), String>| -> Result<(), String> {
         for (k, &i) in steps.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
             place(k, read(i)?)?;
         }
+        Ok(())
+    };
+    if readers == 1 {
+        in_turn(place)?;
     } else {
         // Several dates read at once, placed here as they come; a few wait at most, so the
         // slices held stay a handful. An error (or Cancel) drops the receiver, which stops the
@@ -890,11 +894,12 @@ fn read_each<T: Send>(
             let still = crate::render::rustgis_tiles::cache::current_still();
             std::thread::scope(|scope| -> Result<(), String> {
                 let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Result<T, String>)>(readers);
+                let mut started = 0;
                 for _ in 0..readers {
                     let (tx, next) = (tx.clone(), &next);
                     let capture = &capture;
                     let still = still.clone();
-                    scope.spawn(move || {
+                    let reader = std::thread::Builder::new().spawn_scoped(scope, move || {
                         crate::render::rustgis_tiles::cache::with_optional_still(still, || {
                             let _diagnostic_scope = capture.enter();
                             loop {
@@ -906,8 +911,13 @@ fn read_each<T: Send>(
                             }
                         })
                     });
+                    started += usize::from(reader.is_ok());
                 }
                 drop(tx);
+                // A thread the system refuses costs speed: with none, the dates are read here, in turn.
+                if started == 0 {
+                    return in_turn(&mut *place);
+                }
                 for (k, read) in rx {
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".into());
@@ -1125,15 +1135,24 @@ fn run_telling<T: Send>(
     let total = total.max(1);
     let capture = rustgis_data::diagnostics::Capture::current();
     let still = crate::render::rustgis_tiles::cache::current_still();
+    // Taken by the worker, or here when the system refuses it a thread.
+    let held = std::sync::Mutex::new(Some(work));
+    let take = || held.lock().unwrap_or_else(|e| e.into_inner()).take();
     std::thread::scope(|scope| {
         let (sent, ended) = channel();
         let (c, d) = (&cancel, &done);
-        let worker = scope.spawn(move || {
+        let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
             crate::render::rustgis_tiles::cache::with_optional_still(still, || {
                 let _diagnostic_scope = capture.enter();
-                let _ = sent.send(work(c, d));
+                if let Some(work) = take() {
+                    let _ = sent.send(work(c, d));
+                }
             })
         });
+        // A thread the system refuses costs the progress told, not the run: it runs here.
+        let Ok(worker) = worker else {
+            return take().map_or_else(|| Err(format!("{what} failed unexpectedly")), |work| work(c, d));
+        };
         let mut told = usize::MAX;
         // Waited for, not polled, so a short run returns as soon as it ends.
         let r = loop {

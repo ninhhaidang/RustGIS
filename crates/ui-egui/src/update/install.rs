@@ -230,7 +230,7 @@ pub(crate) struct Saved {
 pub(crate) fn start(installer: Asset, sums: Asset, progress: Progress, ctx: egui::Context) -> Slot<Result<Saved, String>> {
     let slot: Slot<Result<Saved, String>> = Slot::default();
     let out = slot.clone();
-    std::thread::spawn(move || {
+    crate::work_off_frame("rustgis-update-download", &slot, move || {
         let r = download(&installer, &sums, &progress, &ctx);
         if let Ok(mut s) = out.lock() {
             *s = Some(r);

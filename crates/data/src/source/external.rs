@@ -180,7 +180,7 @@ fn run(
         }
     }
     let drain = |p: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
+        std::thread::Builder::new().spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut p) = p {
                 let _ = p.read_to_end(&mut buf);
@@ -190,6 +190,15 @@ fn run(
     };
     let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
     let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    // No thread to read its output with: the program is stopped, as without one to write with.
+    let (out, err) = match (out, err) {
+        (Ok(out), Ok(err)) => (out, err),
+        (Err(e), _) | (_, Err(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
     let start = std::time::Instant::now();
     let status = loop {
         if let Some((dir, max)) = workspace
@@ -486,6 +495,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
     fn timeout_returns_while_a_grandchild_holds_the_pipes() {
         use std::time::{Duration, Instant};
         for budgeted in [false, true] {

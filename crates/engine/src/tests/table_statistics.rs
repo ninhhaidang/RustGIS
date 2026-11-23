@@ -1,4 +1,5 @@
 //! `table.statistics`: a column's numbers, without an output table or an undo step.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use super::*;
 use rustgis_data::{Dataset, Date, Field, FieldType, Geometry, Value as V};
 

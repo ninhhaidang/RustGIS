@@ -1,4 +1,5 @@
 //! Service logins belong to a session/connection, never an origin-global request context.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use super::*;
 use crate::{render::rustgis_tiles::logins, service_logins as web};
 use rustgis_data::secrets::{MemorySecrets, Secret, SecretError, SecretStore};

@@ -197,6 +197,7 @@ fn answered(app: &mut RustGisApp, r: Result<Value, String>) {
     };
 }
 
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

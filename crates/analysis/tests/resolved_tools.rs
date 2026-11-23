@@ -1,4 +1,5 @@
 //! A delayed run must keep its original tool schema and runner after a suite reload.
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

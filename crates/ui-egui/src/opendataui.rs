@@ -820,6 +820,7 @@ fn catalog_picker(ui: &mut egui::Ui, st: &mut State, sets: &'static [Set], w: f3
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 mod tests {
     use super::*;
     use serde_json::Value;

@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "a thread the system refuses fails the test, as it should")]
 use serde_json::{Value, json};
 
 use crate::manifest::{Manifest, version_cmp};
@@ -1738,7 +1739,7 @@ fn poll_until(plugin: &str, host: &mut Recorder, done: impl Fn(&crate::session::
 #[test]
 fn error_output_past_what_is_kept_is_counted() {
     let text: String = (0..25).map(|i| format!("line {i}\n")).collect();
-    let kept = crate::process::errors(std::io::Cursor::new(text.into_bytes()), None);
+    let kept = crate::process::errors(std::io::Cursor::new(text.into_bytes()), None).unwrap();
     let t0 = std::time::Instant::now();
     while kept.lock().unwrap().dropped < 5 && t0.elapsed() < std::time::Duration::from_secs(10) {
         std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the stderr reader
