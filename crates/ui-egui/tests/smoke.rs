@@ -1332,12 +1332,25 @@ fn browse_lists_thousands_of_plugins_quickly() {
     h.state_mut().plugins.open = false;
 }
 
-/// Switching to a CJK language keeps drawing the previous one for the frame its fonts are
-/// installed in (`set_fonts` takes effect a frame late), so no frame shows missing-glyph boxes.
+/// A pending CJK font download keeps the previous readable language; switching to a covered
+/// alphabetic language remains immediate.
 #[test]
 fn language_switch_waits_for_its_font() {
+    if std::env::var_os("RUSTGIS_LANGUAGE_SWITCH_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "language_switch_waits_for_its_font", "--nocapture"])
+            .env("RUSTGIS_LANGUAGE_SWITCH_TEST", "1")
+            .env("RUSTGIS_BUILTIN_FONTS", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
     let mut h = harness();
-    // A machine without a CJK face draws Chinese as boxes, whenever it switches.
+    // Keep downloads deterministic: a host with no installed CJK face stays pending.
+    h.state_mut().services.fetch_font = Some(Box::new(|_| {}));
     h.ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
     h.state_mut().run("ui.language", json!({"code": "en"})).unwrap();
     for _ in 0..4 {
@@ -1349,7 +1362,7 @@ fn language_switch_waits_for_its_font() {
     h.step();
     assert_eq!(h.state().lang().code(), "en", "fonts installed this frame aren't active yet");
     h.step();
-    assert_eq!(h.state().lang().code(), "zh");
+    assert_eq!(h.state().lang().code(), "en", "a deterministic pending download keeps readable English");
     // Back to an alphabetic language: nothing to wait for.
     h.state_mut().run("ui.language", json!({"code": "de"})).unwrap();
     h.step();

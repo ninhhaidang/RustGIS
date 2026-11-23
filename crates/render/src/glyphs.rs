@@ -25,19 +25,29 @@ pub(crate) struct CharShape {
 /// `g`'s outline (see the module), read once and kept; `None` for a character with no outline
 /// (a space) in its family and in the label font.
 pub(crate) fn shape(g: Glyph) -> Option<Arc<CharShape>> {
-    static KEPT: OnceLock<Mutex<HashMap<Glyph, Option<Arc<CharShape>>>>> = OnceLock::new();
+    type Shapes = HashMap<Glyph, Option<Arc<CharShape>>>;
+    static KEPT: OnceLock<Mutex<(u32, Shapes)>> = OnceLock::new();
     let kept = KEPT.get_or_init(Default::default);
-    if let Some(s) = kept.lock().ok()?.get(&g) {
-        return s.clone();
+    let generation = crate::fonts::font_generation();
+    {
+        let mut cache = kept.lock().ok()?;
+        if cache.0 != generation {
+            cache.0 = generation;
+            cache.1.clear();
+        }
+        if let Some(s) = cache.1.get(&g) {
+            return s.clone();
+        }
     }
     let (s, settled) = read(g);
     // Not kept while the installed families are still being indexed: drawn in the label font for
     // now, in its own family once they are.
     if settled
         && let Ok(mut kept) = kept.lock()
-        && kept.len() < MAX_KEPT
+        && kept.0 == generation
+        && kept.1.len() < MAX_KEPT
     {
-        kept.insert(g, s.clone());
+        kept.1.insert(g, s.clone());
     }
     s
 }
@@ -50,7 +60,7 @@ fn read(g: Glyph) -> (Option<Arc<CharShape>>, bool) {
         let id = f.glyph_id(g.ch);
         (id.0 != 0).then(|| outline(f, id)).flatten()
     };
-    let s = named.and_then(from).or_else(|| crate::text::label_font().and_then(from));
+    let s = named.and_then(from).or_else(|| crate::text::marker_fallback(g.ch).and_then(|(f, id)| outline(f, id)));
     (s.map(Arc::new), settled)
 }
 
@@ -103,6 +113,17 @@ fn outline(f: &ab_glyph::FontRef<'static>, id: ab_glyph::GlyphId) -> Option<Char
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_measurement_does_not_report_output_loss() {
+        let _ = crate::approximations::take();
+        for c in ['\u{10fffd}', ' ', '\u{200b}'] {
+            for _ in 0..2 {
+                let _ = crate::marker_reach(rustgis_map::Marker::Char(Glyph::new(c, "")));
+            }
+        }
+        assert!(crate::approximations::take().is_empty());
+    }
 
     #[test]
     fn a_character_is_centred_on_its_advance_with_its_baseline_below_the_point() {

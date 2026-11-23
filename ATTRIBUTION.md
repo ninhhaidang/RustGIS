@@ -29,6 +29,7 @@ of use.
 | QGIS screenshot (`qgis-world-atlas.webp` in [rustgis-assets](https://github.com/opengeos/rustgis-assets/tree/main/images)), on the [RustGIS and QGIS](docs/comparison/qgis.md) page | Taken by the RustGIS project: [QGIS](https://qgis.org) 4.2 showing the Natural Earth sample data above | QGIS is GPL-2.0-or-later; the data is public domain |
 | QGIS test corpus (`crates/map/testdata/qgis/generated/`: styles, projects and their sample data) | Dominik Strebel ([@pick2510](https://github.com/pick2510)) for the RustGIS project: written by [QGIS](https://qgis.org) 4.2.3 through its API, from `generate.py` there; the raster image marker styles and their two images (`marker.png`, `marker.jpg`) added the same way by the RustGIS project; the data is made up | Apache-2.0 |
 | CFF test font (`crates/render/testdata/test-cff.otf`), read only by the PDF font tests | The RustGIS project: generated for this test with [fontTools](https://github.com/fonttools/fonttools) by the script in `crates/render/testdata/README.md`; its glyphs are made up | Apache-2.0 |
+| Script-only and fallback test fonts (`crates/render/testdata/test-script-only.otf`, `crates/render/testdata/test-fallback.otf`, `crates/render/testdata/test-latin-catalog.otf`) | The RustGIS project: original square outlines and script cmap variants ([generation](crates/render/testdata/README.md)) | Apache-2.0 |
 | JAXA Earth catalog test copy (`crates/tiles/tests/data/jaxa_catalog.v2.md`), read only by tests | JAXA: the [JAXA Earth API](https://data.earth.jaxa.jp/) dataset catalog ([catalog.v2.md](https://data.earth.jaxa.jp/app/mcp/catalog.v2.md)), copied on 2026-11-08 | JAXA's [terms of use](https://earth.jaxa.jp/en/data/policy/): free to use and redistribute, with credit to JAXA |
 | CityGML test mesh (`crates/data/tests/data/rocking-chair.gml`), read only by tests | 97 faces of the rocking chair in OGC's CityGML 3.0 sample `Building_LOD3-EPSG25832.gml` ([CityGML-3.0Encodings](https://github.com/opengeospatial/CityGML-3.0Encodings/blob/master/Moved_to_CITYGML-3.0Encoding_CityGML/Examples/Examples-from-CityGML-2.0/building/CityGMLv3/Building_LOD3-EPSG25832.gml)), copyright (c) 2013 3DXScape, copied on 2026-11-12 and rewritten as a CityGML 2.0 object, coordinates unchanged | MIT |
 | Datum grid test files (`crates/data/tests/data/grids/us_noaa_conus.tif`, `us_noaa_ethpgn.tif`), read only by the datum grid tests | NOAA's NADCON and HARN grids as converted by [PROJ-data](https://github.com/OSGeo/PROJ-data) (`us_noaa`), copied unchanged from [cdn.proj.org](https://cdn.proj.org) | Public domain |
@@ -96,7 +97,8 @@ THIRD-PARTY-LICENSES.txt too: the reader of ArcGIS feature-service answers as pr
 Icons are original vector drawings in code (`crates/ui-egui/src/icons.rs`). Fonts are not
 bundled: the interface uses an installed system sans-serif when one is found, otherwise the
 Ubuntu Light face that ships inside `epaint_default_fonts` (Ubuntu Font Licence 1.0). For an
-interface language in a script those faces lack, the web app downloads one from
+interface language those faces cannot draw, the app downloads a fallback from
 [rustgis-assets](https://github.com/opengeos/rustgis-assets/tree/main/fonts), where each font's
 licence is kept beside it: Noto Sans SC, TC, JP or KR for Simplified Chinese, Traditional Chinese,
-Japanese or Korean, and Vazirmatn for Arabic script (both SIL Open Font License 1.1).
+Japanese or Korean; Noto Sans for extended Latin, Noto Sans Bengali, Noto Sans Lao; and
+Vazirmatn for Arabic script (all SIL Open Font License 1.1).

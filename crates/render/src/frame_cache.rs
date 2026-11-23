@@ -222,6 +222,7 @@ impl Kept {
         let sprites = std::iter::once(&self.checkpoint.sprites)
             .chain(alone.map(|a| &a.sprites))
             .flat_map(|s| s.values().flatten())
+            .map(|sprite| &sprite.pixmap)
             .filter(|p| seen.insert(std::sync::Arc::as_ptr(p) as usize))
             .map(|p| size(p))
             .sum::<u64>();

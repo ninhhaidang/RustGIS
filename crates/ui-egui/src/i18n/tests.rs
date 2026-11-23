@@ -365,6 +365,7 @@ fn context_lookup_fallback_macros_and_formatted_values() {
         script: Script::Alphabetic,
         source: "Open\tDefault\nverb\tOpen\tÖffnen\nstate\tOpen\tOffen\ncount\t{n} open\t{n} offen\nrtl\tOpen\tباز RustGIS\n",
         catalog: OnceLock::new(),
+        letters: OnceLock::new(),
         visual: OnceLock::new(),
     };
     let lang = Lang(&INFO);
@@ -384,4 +385,16 @@ fn context_lookup_fallback_macros_and_formatted_values() {
     });
     set_current(previous);
     result.unwrap();
+}
+
+/// Script marks, punctuation and numerals are required even when they are not alphabetic.
+#[test]
+fn catalog_coverage_keeps_script_marks_punctuation_and_numerals() {
+    for (code, marks) in [("bn", "়্।০"), ("lo", "່້໊໋໌ໍ"), ("fa", "ًِٔ،؛؟۰")] {
+        let lang = Lang::from_code(code).unwrap();
+        for mark in marks.chars() {
+            assert!(lang.0.source.contains(mark), "{code}: fixture mark is not in this catalog");
+            assert!(lang.letters().contains(&mark), "{code}: omitted U+{:04X}", u32::from(mark));
+        }
+    }
 }

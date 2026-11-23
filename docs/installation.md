@@ -321,7 +321,9 @@ GeoLibre programs aren't in the image. To build it yourself:
 
 RustGIS uses an installed sans-serif when it finds one (Segoe UI, San Francisco, Arial, Inter,
 Noto Sans, Open Sans or DejaVu Sans) and falls back to a built-in face. Set
-`RUSTGIS_BUILTIN_FONTS=1` to always use the built-in face.
+`RUSTGIS_BUILTIN_FONTS=1` to use the built-in face and skip installed script, CJK and symbol
+fallbacks too; interactive apps can still download fallback fonts, while headless callers
+with this override cannot use installed or cached script fallbacks.
 
 ## Settings, data and cache folders
 
@@ -331,12 +333,12 @@ The desktop app and the command line keep their files in three folders:
 | --- | --- | --- | --- | --- |
 | Settings | preferences (`prefs.json`), the crash log, AI Assistant sign-ins and skills | `%APPDATA%\RustGIS` | `~/Library/Application Support/RustGIS` | `$XDG_CONFIG_HOME/rustgis` (`~/.config/rustgis`) |
 | Data | installed plugins and what they remember (`plugins/settings/`), the GeoLibre runner and recovery copies of unsaved work | `%LOCALAPPDATA%\RustGIS` | `~/Library/Application Support/RustGIS` | `$XDG_DATA_HOME/rustgis` (`~/.local/share/rustgis`) |
-| Cache | GDAL and DuckDB conversions | `%LOCALAPPDATA%\RustGIS\cache` | `~/Library/Caches/RustGIS` | `$XDG_CACHE_HOME/rustgis` (`~/.cache/rustgis`) |
+| Cache | GDAL and DuckDB conversions, downloaded fallback fonts (`fonts/`) | `%LOCALAPPDATA%\RustGIS\cache` | `~/Library/Caches/RustGIS` | `$XDG_CACHE_HOME/rustgis` (`~/.cache/rustgis`) |
 
 Set `RUSTGIS_CONFIG_DIR`, `RUSTGIS_APP_DATA_DIR` or `RUSTGIS_CACHE_DIR` to use another folder
 instead, for a portable install on a USB drive, for example. The folder is used as is, and RustGIS
-keeps the same files in it (`plugins/`, `geolibre/` and `recovery/` in the data folder, `gdal/` and `duckdb/`
-in the cache folder). `RUSTGIS_PLUGINS_DIR`, `RUSTGIS_GDAL_CACHE` and `RUSTGIS_DUCKDB_CACHE` name
+keeps the same files in it (`plugins/`, `geolibre/` and `recovery/` in the data folder, `gdal/`, `duckdb/`
+and `fonts/` in the cache folder). `RUSTGIS_PLUGINS_DIR`, `RUSTGIS_GDAL_CACHE` and `RUSTGIS_DUCKDB_CACHE` name
 the plugins folder and the GDAL and DuckDB caches themselves, ahead of these.
 
 ## If RustGIS closes unexpectedly

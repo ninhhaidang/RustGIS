@@ -751,7 +751,8 @@ pub fn run<P: Phone + 'static>(
     eframe::run_native(
         "RustGIS",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            app.enable_native_font_downloads(&cc.egui_ctx);
             Ok(Box::new(App {
                 app,
                 poll: None,

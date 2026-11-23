@@ -10,6 +10,9 @@ const CANDIDATES: &[(&str, &str)] = &[
     ("C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\seguisb.ttf"),
     ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/SFNS.ttf"),
     ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    ("/system/fonts/Roboto-Regular.ttf", "/system/fonts/Roboto-Medium.ttf"),
+    ("/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/RobotoStatic-Medium.ttf"),
+    ("/system/fonts/NotoSans-Regular.ttf", "/system/fonts/NotoSans-Bold.ttf"),
     ("/usr/share/fonts/TTF/Inter-Regular.ttf", "/usr/share/fonts/TTF/Inter-SemiBold.ttf"),
     ("/usr/share/fonts/inter/Inter-Regular.ttf", "/usr/share/fonts/inter/Inter-SemiBold.ttf"),
     ("/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-SemiBold.ttf"),
@@ -21,8 +24,9 @@ const CANDIDATES: &[(&str, &str)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
 ];
 
-/// Largest font file accepted (32 MiB).
-const MAX_FONT: u64 = 32 << 20;
+/// Largest regular/script font or downloaded font (32 MiB). Installed CJK collections
+/// have a separate 128 MiB budget; downloads use the smaller bound on every platform.
+pub const MAX_FONT_BYTES: usize = 32 << 20;
 
 pub struct UiFonts {
     pub regular: Vec<u8>,
@@ -31,12 +35,21 @@ pub struct UiFonts {
     pub source: String,
 }
 
-fn read(path: &str) -> Option<Vec<u8>> {
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > MAX_FONT {
+/// Reads a regular font within its budget, including a file that grows after metadata is read.
+fn read_bounded(path: impl AsRef<std::path::Path>, limit: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > limit {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+fn read(path: &str) -> Option<Vec<u8>> {
+    let bytes = read_bounded(path, MAX_FONT_BYTES as u64)?;
     ab_glyph::FontRef::try_from_slice(&bytes).ok()?;
     Some(bytes)
 }
@@ -254,7 +267,7 @@ pub fn serif_available() -> bool {
 }
 
 /// Regional CJK glyph styles (the same code point is drawn differently by region).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CjkRegion {
     SimplifiedChinese,
     /// Taiwan's standard glyph forms (Traditional Chinese).
@@ -376,11 +389,7 @@ fn cjk_named_candidates(region: CjkRegion) -> Vec<(String, &'static str)> {
 
 /// A CJK font file's bytes. CJK collections are large; accept up to 128 MiB.
 fn read_cjk(path: &str) -> Option<Vec<u8>> {
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > 128 << 20 {
-        return None;
-    }
-    std::fs::read(path).ok()
+    read_bounded(path, 128 << 20)
 }
 
 /// The regular face of `family` in a font file or collection: the face whose family name is
@@ -401,6 +410,9 @@ fn regular_face(bytes: &[u8], family: &str) -> Option<u32> {
 /// when nothing suitable is installed. Traditional Chinese falls back to the Simplified face,
 /// which has the Traditional characters in mainland China's glyph forms.
 pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
+    if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_some() {
+        return None;
+    }
     static FOUND: [OnceLock<Option<(Vec<u8>, u32)>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let slot = match region {
         CjkRegion::SimplifiedChinese => &FOUND[0],
@@ -411,13 +423,15 @@ pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
     let found = slot.get_or_init(|| {
         let indexed =
             cjk_paths(region).iter().find_map(|(path, index)| read_cjk(path).filter(|b| draws_cjk(b, *index, region)).map(|b| (b, *index)));
-        indexed.or_else(|| {
-            cjk_named_candidates(region).iter().find_map(|(path, family)| {
-                let bytes = read_cjk(path)?;
-                let index = regular_face(&bytes, family).filter(|i| draws_cjk(&bytes, *i, region))?;
-                Some((bytes, index))
+        indexed
+            .or_else(|| {
+                cjk_named_candidates(region).iter().find_map(|(path, family)| {
+                    let bytes = read_cjk(path)?;
+                    let index = regular_face(&bytes, family).filter(|i| draws_cjk(&bytes, *i, region))?;
+                    Some((bytes, index))
+                })
             })
-        })
+            .or_else(|| cached_script_font(ScriptFont::Cjk(region)))
     });
     match (found, region) {
         (None, CjkRegion::TraditionalChinese) => cjk_font(CjkRegion::SimplifiedChinese),
@@ -609,8 +623,10 @@ pub fn cjk_font_url(region: CjkRegion) -> &'static str {
 }
 
 /// A script the interface fonts may lack, and that an interface language needs a face for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScriptFont {
+    /// Extended Latin, including Azerbaijani and Vietnamese letters absent from the bundled face.
+    Latin,
     Cjk(CjkRegion),
     /// Arabic script (Persian). The face has Latin letters too: egui shapes each run of one face
     /// on its own, so a line of Persian with a Latin word in it reads in order only when one face
@@ -624,6 +640,9 @@ pub enum ScriptFont {
 }
 
 const BENGALI_CANDIDATES: &[&str] = &[
+    "/system/fonts/NotoSansBengali-VF.ttf",
+    "/system/fonts/NotoSansBengali-Regular.ttf",
+    "/system/fonts/NotoSansBengaliUI-Regular.ttf",
     "C:\\Windows\\Fonts\\siyamrupali.ttf",
     "C:\\Windows\\Fonts\\Nirmala.ttf",
     "/System/Library/Fonts/Supplemental/NotoSansBengali-Regular.ttf",
@@ -633,9 +652,20 @@ const BENGALI_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/google-noto/NotoSansBengali-Regular.ttf",
 ];
 
-fn covers_bengali(bytes: &[u8]) -> bool {
+/// Bengali fallback faces need Bengali outlines; Latin comes from the preceding UI font.
+fn covers_bengali_at(bytes: &[u8], index: u32) -> bool {
+    outlines(bytes, index, &['\u{0985}', '\u{09be}'])
+}
+
+/// A cmap entry alone is insufficient: some phone fonts expose glyph ids but no readable outlines.
+fn outlines(bytes: &[u8], index: u32, chars: &[char]) -> bool {
     use ab_glyph::Font;
-    ab_glyph::FontRef::try_from_slice(bytes).is_ok_and(|f| ['\u{0985}', '\u{09be}', 'A', 'z'].iter().all(|c| f.glyph_id(*c).0 != 0))
+    ab_glyph::FontRef::try_from_slice_and_index(bytes, index).is_ok_and(|f| {
+        chars.iter().all(|c| {
+            let id = f.glyph_id(*c);
+            id.0 != 0 && f.outline(id).is_some()
+        })
+    })
 }
 
 /// Installed faces with both Arabic and Latin letters (checked by [`covers_arabic`]).
@@ -655,6 +685,8 @@ const ARABIC_CANDIDATES: &[&str] = &[
 /// Installed faces with Lao letters (checked by [`covers_lao`]).
 const LAO_CANDIDATES: &[&str] = &[
     // Windows 10/11 (Leelawadee UI; plain Leelawadee has Thai only).
+    "/system/fonts/NotoSansLao-Regular.ttf",
+    "/system/fonts/NotoSansLaoUI-Regular.ttf",
     "C:\\Windows\\Fonts\\LeelawUI.ttf",
     "C:\\Windows\\Fonts\\DokChamp.ttf",
     "/System/Library/Fonts/Supplemental/Lao Sangam MN.ttf",
@@ -674,35 +706,68 @@ const LAO_CANDIDATES: &[&str] = &[
 
 /// Whether a face draws Persian letters (farsi yeh, gaf) and Latin ones.
 fn covers_arabic(bytes: &[u8], index: u32) -> bool {
-    use ab_glyph::Font;
-    ab_glyph::FontRef::try_from_slice_and_index(bytes, index)
-        .is_ok_and(|f| ['\u{6CC}', '\u{6AF}', 'A', 'z'].iter().all(|c| f.glyph_id(*c).0 != 0))
+    outlines(bytes, index, &['\u{6CC}', '\u{6AF}', 'A', 'z'])
 }
 
-/// Whether a face draws Lao letters (ko, kho, the vowel sign aa and a tone mark). Latin letters
-/// aren't required: the face falls back after the interface face, which draws them.
+/// Whether a face has readable Lao outlines (letters, a vowel and a tone mark).
 fn covers_lao(bytes: &[u8], index: u32) -> bool {
-    use ab_glyph::Font;
-    ab_glyph::FontRef::try_from_slice_and_index(bytes, index)
-        .is_ok_and(|f| ['\u{0E81}', '\u{0E82}', '\u{0EB2}', '\u{0EC8}'].iter().all(|c| f.glyph_id(*c).0 != 0))
+    outlines(bytes, index, &['\u{0E81}', '\u{0E82}', '\u{0EB2}', '\u{0EC8}'])
+}
+
+/// The existing script candidates in every Apple font folder (iOS uses subfolders), and
+/// Android system candidates in manufacturer folders too. Keep the listed paths first.
+fn script_paths(candidates: &[&str]) -> Vec<String> {
+    let mut paths: Vec<String> = candidates.iter().map(|p| (*p).to_string()).collect();
+    for path in candidates {
+        if let Some(file) = path.strip_prefix("/System/Library/Fonts/Supplemental/").or_else(|| path.strip_prefix("/System/Library/Fonts/"))
+        {
+            paths.extend(in_apple_dirs(&[(file, ())]).map(|(p, _)| p));
+        } else if let Some(file) = path.strip_prefix("/system/fonts/") {
+            paths.extend(ANDROID_FONT_DIRS.iter().map(|dir| format!("{dir}/{file}")));
+        }
+    }
+    paths
+}
+
+/// Reads only bounded files, then finds a face with real outlines for the script. A collection
+/// may have its usable face after index zero; an unsupported outline format must be skipped.
+fn find_script(candidates: &[&str], covers: fn(&[u8], u32) -> bool) -> Option<(Vec<u8>, u32)> {
+    script_paths(candidates).iter().find_map(|path| {
+        let bytes = read_bounded(path, MAX_FONT_BYTES as u64)?;
+        let count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1).min(256);
+        let index = (0..count).find(|i| covers(&bytes, *i))?;
+        Some((bytes, index))
+    })
 }
 
 /// An installed face for `script` (bytes and face index), found once. `None` on the web or when
 /// nothing suitable is installed.
 pub fn script_font(script: ScriptFont) -> Option<&'static (Vec<u8>, u32)> {
+    if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_some() {
+        return None;
+    }
     match script {
+        ScriptFont::Latin => {
+            static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
+            FOUND
+                .get_or_init(|| {
+                    let paths: Vec<&str> = CANDIDATES.iter().map(|(regular, _)| *regular).collect();
+                    find_script(&paths, |b, i| outlines(b, i, &['ə', 'ệ'])).or_else(|| cached_script_font(script))
+                })
+                .as_ref()
+        }
         ScriptFont::Cjk(region) => cjk_font(region),
         ScriptFont::Arabic => {
             static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
-            FOUND.get_or_init(|| ARABIC_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_arabic(b, 0)).map(|b| (b, 0)))).as_ref()
+            FOUND.get_or_init(|| find_script(ARABIC_CANDIDATES, covers_arabic).or_else(|| cached_script_font(script))).as_ref()
         }
         ScriptFont::Bengali => {
             static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
-            FOUND.get_or_init(|| BENGALI_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_bengali(b)).map(|b| (b, 0)))).as_ref()
+            FOUND.get_or_init(|| find_script(BENGALI_CANDIDATES, covers_bengali_at).or_else(|| cached_script_font(script))).as_ref()
         }
         ScriptFont::Lao => {
             static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
-            FOUND.get_or_init(|| LAO_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_lao(b, 0)).map(|b| (b, 0)))).as_ref()
+            FOUND.get_or_init(|| find_script(LAO_CANDIDATES, covers_lao).or_else(|| cached_script_font(script))).as_ref()
         }
     }
 }
@@ -710,6 +775,8 @@ pub fn script_font(script: ScriptFont) -> Option<&'static (Vec<u8>, u32)> {
 /// Installed faces with the symbols the interface marks things with (checked by
 /// [`covers_symbols`]): the interface faces lack some, Segoe UI the check mark among them.
 const SYMBOL_CANDIDATES: &[&str] = &[
+    "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+    "/system/fonts/NotoSansSymbols2-Regular.ttf",
     "C:\\Windows\\Fonts\\seguisym.ttf",
     "/System/Library/Fonts/Apple Symbols.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
@@ -722,31 +789,207 @@ const SYMBOL_CANDIDATES: &[&str] = &[
 
 /// Whether a face draws the check and cross marks.
 fn covers_symbols(bytes: &[u8], index: u32) -> bool {
-    use ab_glyph::Font;
-    ab_glyph::FontRef::try_from_slice_and_index(bytes, index).is_ok_and(|f| ['\u{2713}', '\u{2717}'].iter().all(|c| f.glyph_id(*c).0 != 0))
+    outlines(bytes, index, &['\u{2713}', '\u{2717}'])
 }
 
 /// An installed face for symbols the interface faces may lack (bytes and face index), found
 /// once. `None` on the web or when nothing suitable is installed.
 pub fn symbol_font() -> Option<&'static (Vec<u8>, u32)> {
+    if std::env::var_os("RUSTGIS_BUILTIN_FONTS").is_some() {
+        return None;
+    }
     static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
-    FOUND.get_or_init(|| SYMBOL_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_symbols(b, 0)).map(|b| (b, 0)))).as_ref()
+    FOUND.get_or_init(|| find_script(SYMBOL_CANDIDATES, covers_symbols)).as_ref()
 }
 
-/// Where the web app downloads a verified face for `script` from. Bengali and Lao have no verified
-/// hosted asset yet, so they are discovered only among installed desktop fonts.
-pub fn script_font_url(script: ScriptFont) -> Option<&'static str> {
-    match script {
-        ScriptFont::Cjk(region) => Some(cjk_font_url(region)),
-        ScriptFont::Arabic => Some("https://assets.rustgis.app/fonts/Vazirmatn-Regular.ttf"),
-        // No verified Bengali asset is hosted by RustGIS; don't guess a URL.
-        ScriptFont::Bengali | ScriptFont::Lao => None,
+/// Native headless callers use the same verified cache as the GUI; a CLI/Python process need
+/// not have a UI inbox to reuse a font downloaded by an earlier run. No network I/O occurs here.
+fn cached_script_font(script: ScriptFont) -> Option<(Vec<u8>, u32)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let file = script_font_url(script)?.rsplit('/').next()?;
+        let path = rustgis_data::dirs::cache_dir()?.join("fonts").join(file);
+        let bytes = read_bounded(path, MAX_FONT_BYTES as u64)?;
+        draws_script(&bytes, 0, script).then_some((bytes, 0))
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = script;
+        None
+    }
+}
+
+/// Supported fallback scripts, shared by URL matching, demand loading and renderer fallback.
+impl ScriptFont {
+    pub const ALL: [Self; 8] = [
+        Self::Latin,
+        Self::Arabic,
+        Self::Bengali,
+        Self::Lao,
+        Self::Cjk(CjkRegion::SimplifiedChinese),
+        Self::Cjk(CjkRegion::TraditionalChinese),
+        Self::Cjk(CjkRegion::Japanese),
+        Self::Cjk(CjkRegion::Korean),
+    ];
+
+    /// The fallback for a missing character in one of the supported interface scripts.
+    pub fn of(c: char) -> Option<Self> {
+        match CjkScript::of(c) {
+            Some(CjkScript::Han) => Some(Self::Cjk(CjkRegion::SimplifiedChinese)),
+            Some(CjkScript::Kana) => Some(Self::Cjk(CjkRegion::Japanese)),
+            Some(CjkScript::Hangul) => Some(Self::Cjk(CjkRegion::Korean)),
+            None => match c {
+                '\u{0600}'..='\u{06ff}'
+                | '\u{0750}'..='\u{077f}'
+                | '\u{08a0}'..='\u{08ff}'
+                | '\u{fb50}'..='\u{fdff}'
+                | '\u{fe70}'..='\u{feff}' => Some(Self::Arabic),
+                '\u{0964}'..='\u{0965}' | '\u{0980}'..='\u{09ff}' => Some(Self::Bengali),
+                '\u{0e80}'..='\u{0eff}' => Some(Self::Lao),
+                '\u{00a0}'..='\u{02ff}' | '\u{0300}'..='\u{036f}' | '\u{1e00}'..='\u{1eff}' => Some(Self::Latin),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// A hosted fallback for a supported script. Assets are verified before these URLs are shipped.
+pub fn script_font_url(script: ScriptFont) -> Option<&'static str> {
+    Some(match script {
+        ScriptFont::Cjk(region) => cjk_font_url(region),
+        ScriptFont::Arabic => "https://assets.rustgis.app/fonts/Vazirmatn-Regular.ttf",
+        ScriptFont::Latin => "https://assets.rustgis.app/fonts/NotoSans-VF.ttf",
+        ScriptFont::Bengali => "https://assets.rustgis.app/fonts/NotoSansBengali-VF.ttf",
+        ScriptFont::Lao => "https://assets.rustgis.app/fonts/NotoSansLao-VF.ttf",
+    })
+}
+
+/// Parsing a font is not proof of usable script coverage: reject wrong-script and outline-less
+/// downloads before they can replace a working fallback or activate a translated interface.
+pub fn draws_script(bytes: &[u8], index: u32, script: ScriptFont) -> bool {
+    match script {
+        ScriptFont::Cjk(region) => draws_cjk(bytes, index, region),
+        ScriptFont::Arabic => covers_arabic(bytes, index),
+        ScriptFont::Bengali => covers_bengali_at(bytes, index),
+        ScriptFont::Lao => covers_lao(bytes, index),
+        ScriptFont::Latin => outlines(bytes, index, &['ə', 'ệ']),
+    }
+}
+
+/// Cmap coverage for a caller's required characters. Callers check script outlines separately.
+/// Used for catalog validation without depending on the UI's language registry in this crate.
+pub fn has_characters(bytes: &[u8], index: u32, chars: impl IntoIterator<Item = char>) -> bool {
+    use ab_glyph::Font;
+    ab_glyph::FontRef::try_from_slice_and_index(bytes, index).is_ok_and(|f| chars.into_iter().all(|c| f.glyph_id(c).0 != 0))
+}
+
+static DOWNLOADED_SCRIPTS: [OnceLock<(Vec<u8>, u32)>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+
+/// Each non-CJK script owns one shared downloaded face for the lifetime of the process.
+fn script_slot(script: ScriptFont) -> Option<&'static OnceLock<(Vec<u8>, u32)>> {
+    let slot = match script {
+        ScriptFont::Latin => 0,
+        ScriptFont::Arabic => 1,
+        ScriptFont::Bengali => 2,
+        ScriptFont::Lao => 3,
+        ScriptFont::Cjk(_) => return None,
+    };
+    DOWNLOADED_SCRIPTS.get(slot)
+}
+
+/// Keeps one usable downloaded face per script, shared by the UI and every exporter. The bytes
+/// are returned unkept for a bad face. A repeated request shares the existing slot, so no second
+/// full font copy is held.
+pub fn add_downloaded_script_font(script: ScriptFont, bytes: Vec<u8>) -> Result<&'static [u8], Vec<u8>> {
+    if !draws_script(&bytes, 0, script) {
+        return Err(bytes);
+    }
+    if let Some(kept) = downloaded_script_font(script) {
+        return Ok(&kept.0);
+    }
+    if let ScriptFont::Cjk(region) = script {
+        return match add_downloaded_cjk_font(region, bytes) {
+            Ok(kept) => Ok(kept),
+            Err(bytes) => match downloaded_cjk_font(region) {
+                Some(kept) => Ok(&kept.0),
+                None => Err(bytes),
+            },
+        };
+    }
+    let Some(slot) = script_slot(script) else { return Err(bytes) };
+    let mut offered = Some(bytes);
+    let kept = slot.get_or_init(|| (offered.take().unwrap_or_default(), 0));
+    if offered.is_none() {
+        FONT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+    Ok(&kept.0)
+}
+
+/// The downloaded face, if any, without triggering disk or network I/O.
+pub fn downloaded_script_font(script: ScriptFont) -> Option<&'static (Vec<u8>, u32)> {
+    match script {
+        ScriptFont::Cjk(region) => downloaded_cjk_font(region),
+        _ => script_slot(script)?.get(),
+    }
+}
+
+/// At most 64 distinct missing characters per supported script; enough to recheck after a face
+/// arrives without retaining arbitrary user strings or an unbounded diagnostic corpus.
+type MissingScripts = std::collections::HashMap<ScriptFont, std::collections::BTreeSet<char>>;
+static MISSING_SCRIPTS: std::sync::Mutex<Option<MissingScripts>> = std::sync::Mutex::new(None);
+
+/// Notes missing supported-script text from the UI, map labels, tile labels or character markers.
+/// Work is bounded by the script registry and 64 distinct characters per script.
+pub fn note_missing_script(c: char) {
+    if crate::text::invisible(c) {
+        return;
+    }
+    note_missing_cjk(c);
+    if let Some(script) = ScriptFont::of(c) {
+        let mut guard = MISSING_SCRIPTS.lock().unwrap_or_else(|e| e.into_inner());
+        let chars = guard.get_or_insert_with(Default::default).entry(script).or_default();
+        if chars.len() < 64 {
+            chars.insert(c);
+        }
+    }
+}
+
+/// Missing characters left pending, for checking whether a newly activated face resolved them.
+pub fn peek_missing_text() -> Vec<(ScriptFont, Vec<char>)> {
+    let guard = MISSING_SCRIPTS.lock().unwrap_or_else(|e| e.into_inner());
+    ScriptFont::ALL
+        .into_iter()
+        .filter_map(|script| guard.as_ref()?.get(&script).map(|chars| (script, chars.iter().copied().collect())))
+        .collect()
+}
+
+/// Takes actual missing characters with their scripts. A caller can recheck these against the
+/// current font stack, so a report from the frame before a font arrived does not start another
+/// download or announce a loss that has already been resolved.
+pub fn take_missing_text() -> Vec<(ScriptFont, Vec<char>)> {
+    let mut guard = MISSING_SCRIPTS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut missing = guard.take().unwrap_or_default();
+    ScriptFont::ALL.into_iter().filter_map(|script| missing.remove(&script).map(|chars| (script, chars.into_iter().collect()))).collect()
+}
+
+/// Takes missing script kinds once for coverage tests that do not need representative characters.
+#[cfg(test)]
+pub(crate) fn take_missing_scripts() -> Vec<ScriptFont> {
+    take_missing_text().into_iter().map(|(script, _)| script).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{bold_thickening, synthetic_bold};
+
+    /// Invisible cluster members must never become font requests or missing-text notices.
+    #[test]
+    fn invisible_characters_do_not_request_script_fonts() {
+        for c in ['\u{00ad}', '\u{feff}'] {
+            super::note_missing_script(c);
+            assert!(!super::peek_missing_text().iter().any(|(_, chars)| chars.contains(&c)));
+        }
+    }
 
     /// The face a CJK character calls for, by its script: ideographs with CJK punctuation,
     /// full-width forms and bopomofo, kana (half-width too), Hangul; other scripts are no CJK.
@@ -789,17 +1032,76 @@ mod tests {
     }
 
     #[test]
-    fn bengali_coverage_requires_bengali_and_latin_glyphs() {
-        assert!(!super::covers_bengali(epaint_default_fonts::UBUNTU_LIGHT));
-        assert!(!super::covers_bengali(b"not a font"));
-        assert_eq!(super::script_font_url(super::ScriptFont::Bengali), None);
+    fn supported_missing_characters_choose_bounded_script_fallbacks() {
+        use super::ScriptFont;
+        for (c, script) in [
+            ('ə', ScriptFont::Latin),
+            ('ệ', ScriptFont::Latin),
+            ('ی', ScriptFont::Arabic),
+            ('অ', ScriptFont::Bengali),
+            ('ກ', ScriptFont::Lao),
+            ('中', ScriptFont::Cjk(super::CjkRegion::SimplifiedChinese)),
+            ('あ', ScriptFont::Cjk(super::CjkRegion::Japanese)),
+            ('한', ScriptFont::Cjk(super::CjkRegion::Korean)),
+        ] {
+            assert_eq!(ScriptFont::of(c), Some(script));
+            assert!(super::script_font_url(script).is_some());
+        }
+        assert_eq!(ScriptFont::of('A'), None);
+        assert_eq!(ScriptFont::of('\u{10ffff}'), None);
+        let face = include_bytes!("../testdata/test-fallback.otf");
+        for script in ScriptFont::ALL {
+            assert!(super::draws_script(face, 0, script), "{script:?}");
+            assert!(!super::draws_script(b"not a font", 0, script));
+            assert!(!super::draws_script(epaint_default_fonts::HACK_REGULAR, 0, script), "{script:?}: unrelated valid font");
+        }
+    }
+
+    /// A valid script face padded beyond the regular-font budget must be skipped before reading.
+    #[test]
+    fn script_candidates_keep_the_regular_font_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("padded-script.otf");
+        std::fs::write(&path, include_bytes!("../testdata/test-script-only.otf")).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(super::MAX_FONT_BYTES as u64 + 1).unwrap();
+        assert!(
+            super::find_script(&[path.to_str().unwrap()], super::covers_bengali_at).is_none(),
+            "oversized script candidate was admitted"
+        );
+    }
+
+    #[test]
+    fn bengali_fallback_does_not_require_latin_glyphs() {
+        assert!(!super::covers_bengali_at(epaint_default_fonts::UBUNTU_LIGHT, 0));
+        assert!(!super::covers_bengali_at(b"not a font", 0));
+        let face = include_bytes!("../testdata/test-script-only.otf");
+        assert!(super::covers_bengali_at(face, 0));
+        assert!(!super::covers_arabic(face, 0), "Persian still requires Latin for mixed-direction runs");
+        assert!(super::script_font_url(super::ScriptFont::Bengali).is_some());
+    }
+
+    /// Candidate expansion follows iOS's subfolders and Android's manufacturer directories,
+    /// not just the desktop paths listed for the same faces.
+    #[test]
+    fn script_faces_follow_mobile_font_folders() {
+        for candidates in [super::BENGALI_CANDIDATES, super::ARABIC_CANDIDATES, super::LAO_CANDIDATES, super::SYMBOL_CANDIDATES] {
+            let paths = super::script_paths(candidates);
+            assert!(paths.iter().any(|p| p.starts_with("/System/Library/Fonts/Core/")), "{candidates:?}");
+        }
+        for (candidates, file) in
+            [(super::BENGALI_CANDIDATES, "NotoSansBengali-VF.ttf"), (super::LAO_CANDIDATES, "NotoSansLao-Regular.ttf")]
+        {
+            let paths = super::script_paths(candidates);
+            assert!(paths.contains(&format!("/system/fonts/{file}")));
+            assert!(paths.contains(&format!("/product/fonts/{file}")));
+        }
     }
 
     #[test]
     fn lao_coverage_requires_lao_glyphs() {
         assert!(!super::covers_lao(epaint_default_fonts::UBUNTU_LIGHT, 0));
         assert!(!super::covers_lao(b"not a font", 0));
-        assert_eq!(super::script_font_url(super::ScriptFont::Lao), None);
+        assert!(super::script_font_url(super::ScriptFont::Lao).is_some());
     }
 
     /// A face is found by its family and Regular style, not by its place in a collection

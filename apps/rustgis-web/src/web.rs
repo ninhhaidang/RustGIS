@@ -1315,21 +1315,20 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         recovery: None,
         fetch_font: Some(Box::new(move |url: &str| {
             let (url, inbox, ctx) = (url.to_string(), font_sink.clone(), font_ctx.clone());
-            let capture = Capture::current();
-            wasm_bindgen_futures::spawn_local(async move {
-                match fetch_bytes(&url, capture, None, &[]).await {
-                    Ok(bytes) => {
-                        inbox.lock().unwrap_or_else(|e| e.into_inner()).push((url, bytes));
-                        ctx.request_repaint();
-                    }
-                    Err(e) => {
-                        log::error!("couldn't load font {url}: {e}");
-                        // Empty bytes tell the app the download failed.
-                        inbox.lock().unwrap_or_else(|e| e.into_inner()).push((url, Vec::new()));
-                        ctx.request_repaint();
-                    }
-                }
-            });
+            let request = url.clone();
+            // Use the bounded internet-only transport, as native fallback fonts do.
+            rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::download_public_limited(
+                &request,
+                rustgis_ui_egui::rustgis_engine::render::fonts::MAX_FONT_BYTES,
+                Box::new(move |answer| {
+                    let bytes = answer.unwrap_or_else(|e| {
+                        log::warn!("couldn't load fallback font: {e}");
+                        Vec::new()
+                    });
+                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push((url, bytes));
+                    ctx.request_repaint();
+                }),
+            );
         })),
         font_inbox: Some(font_inbox),
         open_async: Some(Box::new(move |purpose: &str| {

@@ -740,12 +740,13 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "RustGIS",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            app.enable_native_font_downloads(&cc.egui_ctx);
             // The menu's choices wake the app: egui draws only on events.
             #[cfg(target_os = "macos")]
-            menu::listen(menus.chosen.clone(), _cc.egui_ctx.clone());
+            menu::listen(menus.chosen.clone(), cc.egui_ctx.clone());
             #[cfg(target_os = "macos")]
-            document_inbox.set_context(&_cc.egui_ctx);
+            document_inbox.set_context(&cc.egui_ctx);
             Ok(Box::new(App(
                 app,
                 held,

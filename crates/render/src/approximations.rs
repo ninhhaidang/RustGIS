@@ -27,6 +27,10 @@ thread_local! {
     static LAYER: RefCell<Option<String>> = const { RefCell::new(None) };
     /// How many dashed lines of [`LAYER`] were drawn solid ([`dashes_drawn_solid`]).
     static SOLID_DASHES: Cell<u32> = const { Cell::new(0) };
+    /// Distinct glyphs actually omitted while drawing, not characters merely measured.
+    static MISSING_GLYPHS: RefCell<std::collections::BTreeSet<char>> = const { RefCell::new(std::collections::BTreeSet::new()) };
+    static MORE_GLYPHS: Cell<bool> = const { Cell::new(false) };
+    static MISSING_LABEL_TEXT: Cell<bool> = const { Cell::new(false) };
     /// Whether a selected feature's highlight is being drawn ([`Highlighting`]): its redraws of a
     /// line already drawn aren't counted again.
     static HIGHLIGHTING: Cell<bool> = const { Cell::new(false) };
@@ -109,6 +113,7 @@ pub(crate) fn take() -> Vec<String> {
 /// since the last layer ended are noted first ([`flush_stray_dashes`]), as no later layer call
 /// may come to say them.
 pub(crate) fn keep() -> (Vec<Entry>, usize) {
+    flush_missing_glyphs();
     flush_stray_dashes();
     (SAID.with(|s| std::mem::take(&mut *s.borrow_mut())), TURNED_AWAY.with(|c| c.replace(0)))
 }
@@ -153,6 +158,7 @@ pub(crate) fn restore((kept, n): (Vec<Entry>, usize)) {
 /// Starts drawing the map layer `name` (`None`: between layers): what the layer before it
 /// approximated (see [`dashes_drawn_solid`]) is noted under its name.
 pub(crate) fn layer(name: Option<&str>) {
+    flush_missing_glyphs();
     let solid = SOLID_DASHES.with(|c| c.replace(0));
     LAYER.with(|l| {
         let mut l = l.borrow_mut();
@@ -169,6 +175,24 @@ pub(crate) fn layer(name: Option<&str>) {
             None => *l = None,
         }
     });
+}
+
+/// Attributes nested drawing to its own layer, restoring the caller's layer on exit.
+/// Both transitions flush pending counts before their owning name changes.
+pub(crate) struct NamedLayer(Option<String>);
+
+impl NamedLayer {
+    pub(crate) fn new(name: &str) -> Self {
+        let previous = LAYER.with(|l| l.borrow().clone());
+        layer(Some(name));
+        Self(previous)
+    }
+}
+
+impl Drop for NamedLayer {
+    fn drop(&mut self) {
+        layer(self.0.as_deref());
+    }
 }
 
 /// Notes `n` lines drawn solid outside any layer (a legend's swatch, say). Its key ends where no
@@ -189,9 +213,53 @@ fn flush_stray_dashes() {
     }
 }
 
+/// Counts distinct unavailable glyphs actually omitted from text or replaced by a marker's
+/// fallback shape. Deduplication also prevents halos and repeated painting from inflating counts.
+pub(crate) fn missing_glyphs(chars: impl IntoIterator<Item = char>) {
+    MISSING_GLYPHS.with(|missing| {
+        let mut missing = missing.borrow_mut();
+        for c in chars {
+            if missing.len() < 256 {
+                missing.insert(c);
+            } else if !missing.contains(&c) {
+                MORE_GLYPHS.with(|more| more.set(true));
+            }
+        }
+    });
+}
+
+/// Records that unsupported text was filtered before tile placement, without counting duplicate
+/// copies of the same label from adjacent tiles.
+pub(crate) fn missing_label_line() {
+    MISSING_LABEL_TEXT.with(|c| c.set(true));
+}
+
+/// Carries actual missing-glyph notices through the existing frame/export relay, once per layer.
+fn flush_missing_glyphs() {
+    let missing = MISSING_GLYPHS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let more = MORE_GLYPHS.with(|c| c.replace(false));
+    let lines = MISSING_LABEL_TEXT.with(|c| c.replace(false));
+    if missing.is_empty() {
+        return;
+    }
+    let name = LAYER.with(|l| l.borrow().clone()).unwrap_or_else(|| "Text outside any layer".into());
+    let sample = missing.iter().take(8).map(|c| format!("U+{:04X}", u32::from(*c))).collect::<Vec<_>>().join(", ");
+    let count = if more { format!("at least {}", missing.len()) } else { missing.len().to_string() };
+    let skipped = if lines { "Label text was left out; " } else { "" };
+    note(
+        format!("{name}\0missing-glyphs"),
+        format!(
+            "{name}: {skipped}{count} distinct characters couldn't be drawn because their glyphs aren't available in the current fonts ({sample})."
+        ),
+    );
+}
+
 /// Forgets the layer being drawn and what it approximated so far, unsaid: a frame stopped
 /// part-way (an error, a cancel) leaves it for no one ([`LayerScope`]).
 fn discard() {
+    MISSING_GLYPHS.with(|c| c.borrow_mut().clear());
+    MORE_GLYPHS.with(|c| c.set(false));
+    MISSING_LABEL_TEXT.with(|c| c.set(false));
     SOLID_DASHES.with(|c| c.set(0));
     LAYER.with(|l| *l.borrow_mut() = None);
 }
@@ -431,5 +499,27 @@ mod tests {
             });
         });
         assert!(take_keyed(&[&relay]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod missing_font_tests {
+    use super::*;
+
+    #[test]
+    fn missing_glyph_notices_count_distinct_characters_in_their_layer() {
+        let _ = take();
+        layer(Some("Places"));
+        missing_glyphs(['অ', 'অ', 'ກ']);
+        missing_label_line();
+        layer(None);
+        let notes = take();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("Places: Label text was left out; 2 distinct characters"), "{notes:?}");
+        assert!(notes[0].contains("U+0985") && notes[0].contains("U+0E81"), "{notes:?}");
+        assert!(take().is_empty());
+        layer(Some("Clean"));
+        layer(None);
+        assert!(take().is_empty(), "clean text must not report a loss");
     }
 }

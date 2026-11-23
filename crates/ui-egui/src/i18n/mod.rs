@@ -38,6 +38,8 @@ pub const AUTO: &str = "auto";
 pub enum Script {
     /// Latin, Cyrillic, Greek or Georgian: covered by the interface fonts.
     Alphabetic,
+    /// Latin letters outside the bundled font's coverage.
+    LatinExtended,
     Cjk(CjkFont),
     /// Arabic script (Persian): a face with Arabic and Latin letters, drawn ahead of the
     /// interface font.
@@ -68,6 +70,7 @@ pub struct LangInfo {
     pub script: Script,
     source: &'static str,
     catalog: OnceLock<Catalog>,
+    letters: OnceLock<Vec<char>>,
     /// Catalog values in display form, for a language laid out back to front.
     visual: OnceLock<Catalog>,
 }
@@ -81,6 +84,7 @@ macro_rules! lang {
             script: $script,
             source: include_str!($file),
             catalog: OnceLock::new(),
+            letters: OnceLock::new(),
             visual: OnceLock::new(),
         }
     };
@@ -95,6 +99,7 @@ pub static LANGUAGES: [LangInfo; 22] = [
         script: Script::Alphabetic,
         source: "",
         catalog: OnceLock::new(),
+        letters: OnceLock::new(),
         visual: OnceLock::new(),
     },
     lang!("de", "Deutsch", "German", Script::Alphabetic, "de.tsv"),
@@ -106,9 +111,9 @@ pub static LANGUAGES: [LangInfo; 22] = [
     lang!("pt", "Português", "Portuguese", Script::Alphabetic, "pt.tsv"),
     lang!("ru", "Русский", "Russian", Script::Alphabetic, "ru.tsv"),
     lang!("tr", "Türkçe", "Turkish", Script::Alphabetic, "tr.tsv"),
-    lang!("az", "Azərbaycanca", "Azerbaijani", Script::Alphabetic, "az.tsv"),
+    lang!("az", "Azərbaycanca", "Azerbaijani", Script::LatinExtended, "az.tsv"),
     lang!("id", "Bahasa Indonesia", "Indonesian", Script::Alphabetic, "id.tsv"),
-    lang!("vi", "Tiếng Việt", "Vietnamese", Script::Alphabetic, "vi.tsv"),
+    lang!("vi", "Tiếng Việt", "Vietnamese", Script::LatinExtended, "vi.tsv"),
     lang!("fa", "فارسی", "Persian (Farsi)", Script::Arabic, "fa.tsv"),
     lang!("zh", "简体中文", "Chinese (Simplified)", Script::Cjk(CjkFont::SimplifiedChinese), "zh.tsv"),
     // Taiwan's wording (GIS terms after the National Academy for Educational Research's
@@ -264,6 +269,36 @@ impl Lang {
     pub fn all() -> impl Iterator<Item = Lang> {
         LANGUAGES.iter().map(Lang)
     }
+    /// Catalog letters and combining accents, plus punctuation and numerals in its Arabic,
+    /// Bengali, Lao or CJK script, sorted and deduplicated. Spaces and format controls need no glyphs.
+    /// Checked against the active UI fonts before switching languages; script names alone do
+    /// not describe coverage (Vietnamese and Azerbaijani also need extra Latin letters).
+    pub(crate) fn letters(self) -> &'static [char] {
+        self.0.letters.get_or_init(|| {
+            use rustgis_engine::render::fonts::ScriptFont;
+            let mut letters: Vec<char> = self.0.catalog().values().flat_map(|entries| entries.values()).flat_map(|text| text.chars())
+                .chain(self.name().chars())
+                .filter(|c| !c.is_whitespace() && !c.is_control() && *c != '\u{feff}')
+                .filter(|c| c.is_alphabetic() || matches!(*c,
+                    '\u{0300}'..='\u{036f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe20}'..='\u{fe2f}'
+                    // Supported scripts have combining marks outside the common mark blocks.
+                    | '\u{064b}'..='\u{065f}' | '\u{0670}'
+                    | '\u{0981}'..='\u{0983}' | '\u{09bc}' | '\u{09be}'..='\u{09c4}' | '\u{09c7}'..='\u{09c8}'
+                    | '\u{09cb}'..='\u{09cd}' | '\u{09d7}' | '\u{09e2}'..='\u{09e3}' | '\u{09fe}'
+                    | '\u{0eb1}' | '\u{0eb4}'..='\u{0ebc}' | '\u{0ec8}'..='\u{0ece}'
+                ) || matches!((self.script(), ScriptFont::of(*c)),
+                    (Script::Arabic, Some(ScriptFont::Arabic))
+                    | (Script::Bengali, Some(ScriptFont::Bengali))
+                    | (Script::Lao, Some(ScriptFont::Lao))
+                    | (Script::Cjk(_), Some(ScriptFont::Cjk(_)))
+                ))
+                .collect();
+            letters.sort_unstable();
+            letters.dedup();
+            letters
+        })
+    }
+
     /// Number of translated strings.
     pub fn len(self) -> usize {
         self.0.catalog().values().map(HashMap::len).sum()
