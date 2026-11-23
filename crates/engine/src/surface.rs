@@ -94,7 +94,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let twice: Vec<_> = commands.iter().filter(|c| !seen.insert(c.id)).map(|c| c.id).collect();
         assert!(twice.is_empty(), "registered twice: {twice:?}");
-        let (saved, current) = (include_str!("../command-surface.txt"), text(&commands));
+        // A Windows checkout may turn the file's line endings into CRLF; the snapshot is LF.
+        let saved = include_str!("../command-surface.txt").replace("\r\n", "\n");
+        let current = text(&commands);
+        let saved = saved.as_str();
         let diff = differences(saved, &current);
         // Equal ids and keys but another text: a repeated id, or lines out of order.
         assert!(
