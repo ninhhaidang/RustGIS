@@ -16,6 +16,7 @@ the files, so a release's row and its files are added or kept together.
 | v0.5.0 | `RustGIS-0.5.0-linux-x86_64.tar.gz` | `a14e6bed30059ab8fb1c026c71bdb46891b2b4195e0d0ea39cc1f903b64fa9bf` |
 | v0.6.0 | `RustGIS-0.6.0-linux-x86_64.tar.gz` | `633bea1712c3369ce43aa0d5ffcebe9928ff2dd1068280e9a6a8c31a2c94a972` |
 | v0.7.0 | `RustGIS-0.7.0-linux-x86_64.tar.gz` | `8330b3fa8f1d817818d03d41d4d5653e7c2367954d0ab2262c8d88d36f6b7e98` |
+| v0.8.0 | `RustGIS-0.8.0-linux-x86_64.tar.gz` | `72b1f5b96dadb675a90692f410705f03b17da9719abf4958a40aae8d7148b63a` |
 
 The [generator](../../../../.github/scripts/release-fixtures.py) verifies the
 download against the release's `SHA256SUMS`. It saves the project with that
