@@ -190,7 +190,7 @@ model-builder.md, segmentation.md, obia.md_
   a search box. Missing: reverse geocoding (_Roadmap: analyse_).
 - [ ] **Spatial statistics**: Emerging Hot Spot (Getis-Ord Gi\*), composite score builder.
   Partial: Suitability Modeler (_Roadmap: analyse_ for hot spots).
-- [ ] **H3 and DGGS grids**: H3, A5, DGGRID, DGGAL. Partial: A5 grids (_Roadmap: analyse_ for H3).
+- [ ] **H3 and DGGS grids**: H3, A5, DGGRID, DGGAL. Partial: H3, S2, A5 and anchored hexagon grids (Generate Tessellation, Aggregate Points to Grid; [#2726](https://github.com/opengeos/RustGIS/issues/2726)); DGGRID and DGGAL _Roadmap: analyse_.
 - [ ] ~~AI segmentation and detection~~ (SAM/SamGeo, ONNX/YOLO detection, OBIA with eCognition
   import): left to GeoLibre, which has SAM and ONNX models built in and an OBIA workbench with
   eCognition import. RustGIS has pixel classification.

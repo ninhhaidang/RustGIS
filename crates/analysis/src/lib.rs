@@ -220,6 +220,18 @@ pub trait Inputs {
     fn project(&self, _c: rustgis_geom::Coord) -> Option<rustgis_geom::Coord> {
         None
     }
+    /// A point of the active map's projection plane, in metres, back to longitude/latitude: the
+    /// inverse of [`Inputs::project`], for a tool that lays something out on that plane (the
+    /// anchored hexagon grid). `None` where the projection doesn't reach, or with no flat map.
+    fn unproject(&self, _m: rustgis_geom::Coord) -> Option<rustgis_geom::Coord> {
+        None
+    }
+    /// The meridian where the active map's flat projection wraps from one side to the other, not
+    /// normalised (330 for one centred on 150°E): 180 for Web Mercator, `None` for a projection
+    /// limited to an area of use, or with no flat map.
+    fn map_edge(&self) -> Option<f64> {
+        None
+    }
     /// The longitude/latitude extent the map's view shows, when there is a view.
     fn view_extent(&self) -> Option<rustgis_geom::Extent> {
         None
@@ -537,7 +549,8 @@ pub fn published_tools() -> impl Iterator<Item = &'static ToolSpec> {
 }
 
 /// Resolves only published schemas and captures the same publication's runner and generation.
-/// IDs precede names; builtin display names precede external display names. Missing publication
+/// IDs precede names; builtin display names, then a built-in tool's former name
+/// ([`FORMER_NAMES`]), precede external display names. Missing publication
 /// remains missing until trusted native startup or an explicitly authorized loading action.
 pub fn resolve_published(name: &str) -> Option<ResolvedTool> {
     let builtin = |spec| ResolvedTool { spec, source: None, runner: None, generation: 0 };
@@ -561,8 +574,17 @@ pub fn resolve_published(name: &str) -> Option<ResolvedTool> {
         .find(|r| r.spec.id.eq_ignore_ascii_case(name))
         .copied()
         .or_else(|| TOOLS.iter().find(|t| t.name.eq_ignore_ascii_case(name)).map(builtin))
+        .or_else(|| {
+            let id = FORMER_NAMES.iter().find(|(old, _)| old.eq_ignore_ascii_case(name))?.1;
+            TOOLS.iter().find(|t| t.id == id).map(builtin)
+        })
         .or_else(|| external.into_iter().find(|r| r.spec.name.eq_ignore_ascii_case(name)))
 }
+
+/// Built-in tools' display names before a rename, and the ids they name: a script or notebook
+/// saved with the old name still runs the tool, after the built-in names have had their turn and
+/// before an external tool's name, as when the old name was the built-in's own.
+const FORMER_NAMES: &[(&str, &str)] = &[("A5 Grid", "a5Grid"), ("Aggregate Points to A5", "a5Aggregate")];
 
 /// The runner for external tools; never called (external specs carry the runner's id).
 pub fn external_placeholder(_: &dyn Inputs, _: &Value) -> Result<ToolResult, String> {

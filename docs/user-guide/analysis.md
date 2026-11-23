@@ -425,8 +425,8 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Calculate Geometry Attributes | `calculateGeometry` | Data Management › Features |
 | Simplify | `simplify` | Cartography › Generalization |
 | Tissot's Indicatrix | `tissot` | Cartography › Projections |
-| A5 Grid | `a5Grid` | Analysis › DGGS |
-| Aggregate Points to A5 | `a5Aggregate` | Analysis › DGGS |
+| Generate Tessellation | `a5Grid` | Analysis › DGGS |
+| Aggregate Points to Grid | `a5Aggregate` | Analysis › DGGS |
 | Select Layer By Location | `selectByLocation` | Data Management › Layers and Table Views |
 | Select Layer By Attribute | `selectByAttributes` | Data Management › Layers and Table Views |
 | Summarize Within | `countPoints` | Analysis › Summarize |
@@ -1207,23 +1207,44 @@ gp.run={"tool":"tabulateIntersection","params":{"zones":"parcels","classes":"flo
     They are measured against the WGS 84 ellipsoid. For a world projection the map draws on a sphere (Mollweide, Robinson…), they can be off by a few tenths of a percent.
 - **Making a distortion map:** color the circles by `area_scale` or `max_angle`.
 
-**A5 Grid** and **Aggregate Points to A5** use [A5](https://a5geo.org), a discrete global grid of
-pentagonal cells that all have the same area at a given resolution. A count per cell is therefore
-already a density, and stays comparable between regions, unlike a grid of cells that change size
-with latitude or the map's projection.
+**Generate Tessellation** and **Aggregate Points to Grid** build a discrete global grid, or count
+points by its cells, in one of four grid systems chosen with **System**, so the same place can be
+compared in several grids. System is **A5** unless another is chosen; the tools were A5 Grid and
+Aggregate Points to A5 before they took a system, and keep their ids (`a5Grid`, `a5Aggregate`),
+so a model or script saved before gets A5, as it did. A project, model or web tool that saves a
+run in another system can't be opened in a release before this one, which would make A5 cells
+instead.
 
-- **A5 Grid** makes the cells at a resolution (0–30; each step divides a cell into four: 5 is
-  about 33,000 km², 9 about 130 km², 12 about 2 km²) over the map's extent, an input layer's
-  polygons (or the extent of its points and lines), or the whole world. **Cells: Overlapping**
-  covers the area without gaps; **Center** keeps the cells whose centre is inside. A run makes at
-  most 200,000 cells.
-- **Aggregate Points to A5** counts a point layer's points (its selection, when there is one) by the
-  cell holding them, and keeps only the cells that hold any. It adds `count` and
-  `density_per_km2`, and a numeric field's `_sum` and `_mean`, where a feature's value counts
-  once in each cell (a multipoint's, however many of its points fall there).
-- Both write `a5` (the cell's 64-bit id in hex, as other A5 tools read it: DuckDB, PostgreSQL,
-  Python's `pya5`, R), `resolution` and `area_km2`. A cell across the antimeridian, or round a pole, is
-  split at ±180° into two parts of one polygon, each within −180° to 180°.
+| System | Cells | Resolutions | Id field |
+|---|---|---|---|
+| **A5** (Felix Palmer, [a5geo.org](https://a5geo.org)) | pentagons that all have the same area at a resolution, so a count per cell is already a density | 0–30, each step a quarter: 5 is about 33,000 km², 9 about 130 km², 12 about 2 km² | `a5`, the cell's 64-bit id in hex, as other A5 tools read it (DuckDB, PostgreSQL, Python's `pya5`, R) |
+| **H3** (Uber) | hexagons (and twelve pentagons a resolution), whose areas vary by about two to one | 0–15, each about a seventh of the one before: 5 is about 250 km², 9 about 0.1 km² | `h3`, H3's own hex text (`8966…fff`), as DuckDB, PostgreSQL and Python's `h3` read it |
+| **S2** (Google) | quadrilaterals from the faces of a cube | 0–30, each a quarter: 10 is about 80 km², 14 about 0.3 km² | `s2`, the cell's S2 token |
+| **Hexagon** | flat hexagons on the map's projection | 0–24, each a quarter; a cell at a resolution has an A5 cell's area there on the map's plane | `hex`, its axial coordinates `q,r` |
+
+- **Generate Tessellation** makes the cells at a resolution over the map's extent, an input
+  layer's polygons (or the extent of its points and lines), or the whole world. **Cells:
+  Overlapping** covers the area without gaps; **Center** keeps the cells whose centre is inside.
+- **Aggregate Points to Grid** counts a point layer's points (its selection, when there is one) by
+  the cell holding them, and keeps only the cells that hold any. It adds `count` and
+  `density_per_km2` (by that cell's area, since H3, S2 and hexagon cells differ in size), and a
+  numeric field's `_sum` and `_mean`, where a feature's value counts once in each cell (a
+  multipoint's, however many of its points fall there). In the same system and resolution the two
+  tools give the same ids, so their layers join on the id field.
+- **Every layer** writes the cell's id, `resolution` and `area_km2`, the cell's own area on the
+  ground, measured on the authalic sphere (the one with the WGS 84 ellipsoid's total area), so it
+  differs from the ellipsoid's by under 1%. A cell across the antimeridian, or round a pole, is split at ±180° into two parts of one
+  polygon, each within −180° to 180°.
+- **The hexagon grid** is laid on the active map's projection (Web Mercator when the map is a
+  globe), anchored at that projection's origin rather than at a layer's corner, so a place falls in
+  the same cell whatever layer or extent it's gridded with. Its ids only mean something in that
+  projection, which the `plane` field names. In a projection local to the area (a national or UTM
+  system), every cell has about the same area on the ground; in Web Mercator, cells shrink on the
+  ground away from the equator, and stop at 85.05° north and south: an area past it is cut there,
+  and a point past it left out, each said in the run's message. A cell whose corners the
+  projection can't take back to longitudes and latitudes is left out, and counted too.
+- **Limits:** a run makes at most 200,000 cells, and one whose area would need far more is refused
+  before it's covered, with the count in the message.
 
 ### Network tools
 

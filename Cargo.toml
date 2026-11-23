@@ -46,6 +46,9 @@ geo = "0.33"
 geographiclib-rs = { version = "0.2", default-features = false }
 # A5, the equal-area pentagonal DGGS (opengeos/RustGIS#551)
 a5 = "1"
+# H3 hexagons and S2 cells for Generate Tessellation; both pure Rust and build for wasm32
+h3o = { version = "0.11", features = ["geo"] }
+s2 = { version = "0.2", default-features = false }
 shapefile = { version = "0.9", features = ["encoding_rs", "yore"] }
 encoding_rs = "0.8"
 csv = "1"

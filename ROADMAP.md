@@ -255,7 +255,7 @@ attributes kept.
 - Kriging with a fitted variogram and leave-one-out cross-validation (the variogram is a default
   estimated from the points and extent today, not fitted; `kriging.rs`).
 - Charts linked to the selection: histogram, scatter, bar and box plots of a layer's fields.
-- H3 grids built in, next to the A5 grids _(open)_.
+- ISEA3H (DGGAL) and DGGRID grids, next to Generate Tessellation's H3, S2, A5 and hexagons _(open)_.
 - Reverse geocoding; a DEM downloader so
   viewshed works without a loaded elevation raster _(open)_.
 - Reference results for zonal statistics and the terrain tools, beside the existing analysis

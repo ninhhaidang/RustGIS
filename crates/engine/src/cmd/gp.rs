@@ -1986,6 +1986,16 @@ impl Inputs for MapInputs<'_> {
         let (_, flat, to_meter) = self.flat()?;
         flat.forward(c).map(|m| rustgis_geom::Coord::new(m.x * to_meter, m.y * to_meter))
     }
+    fn unproject(&self, m: rustgis_geom::Coord) -> Option<rustgis_geom::Coord> {
+        let (_, flat, to_meter) = self.flat()?;
+        flat.inverse(rustgis_geom::Coord::new(m.x / to_meter, m.y / to_meter))
+    }
+    fn map_edge(&self) -> Option<f64> {
+        match &self.flat()?.1 {
+            rustgis_map::projection::Flat::Mercator => Some(180.0),
+            rustgis_map::projection::Flat::Custom(p) => p.edge().map(|e| e.lon),
+        }
+    }
     fn view_extent(&self) -> Option<rustgis_geom::Extent> {
         *self.view.get_or_init(|| view_extent(&self.snap))
     }

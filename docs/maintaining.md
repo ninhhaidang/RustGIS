@@ -138,6 +138,10 @@ Omitted units and explicit `km2` require nothing extra; omitted zone fields need
 capability because older tools refuse them.
 The same containers require `tabulate-intersection-empty-zones` when
 `includeEmptyZones` is on, so older readers refuse the file instead of omitting the zero rows.
+The same containers require `dggs-system` when Generate Tessellation or Aggregate Points to Grid
+(`a5Grid`, `a5Aggregate`) is given a `system` other than A5: those were A5's tools, and an older
+reader would make A5 cells, warning only that it ignored the key. A blank `system`, `A5` or none
+needs nothing.
 
 Projects with a background on a layout element, or a saved task step, script, notebook command
 cell or history entry that gives one (`layout.addElement` or `layout.update` with a

@@ -159,6 +159,7 @@ const COMMAND_CAPABILITIES: &[(&str, CommandCheck)] = &[
     ("blank-paper", command_uses_blank_paper),
     ("layout-frame-border", command_uses_frame_border),
     ("layout-text-size", command_uses_text_size),
+    ("dggs-system", command_uses_dggs_system),
 ];
 
 /// A saved `map.graticule` that switches to the MGRS grid, its type read as the command reads it:
@@ -453,16 +454,34 @@ fn command_uses_tabulate_empty_zones(id: &str, params: &Value) -> bool {
 
 /// Tests Tabulate Intersection parameters in executable commands, including nested envelopes.
 fn tabulate_uses(id: &str, params: &Value, uses: fn(&Value) -> bool) -> bool {
-    if crate::cmd::gp::tool_id(id) == Some("tabulateIntersection") {
+    tool_uses(&["tabulateIntersection"], id, params, uses)
+}
+
+/// Generate Tessellation and Aggregate Points to Grid were A5's tools, and keep A5's ids: an
+/// older reader would leave out a `system` other than A5's and make A5 cells, warning only that
+/// it ignored the key. Blank or `A5` needs nothing, by the tools' own rule (`System::is_a5`).
+fn command_uses_dggs_system(id: &str, params: &Value) -> bool {
+    tool_uses(&["a5Grid", "a5Aggregate"], id, params, |p| match p.get("system") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) => !rustgis_analysis::dggs::System::is_a5(s),
+        Some(_) => true,
+    })
+}
+
+/// Whether a saved command runs one of `tools` with parameters `uses` matches: as a tool step,
+/// through `gp.run` or `gp.batch`, or in a script.
+fn tool_uses(tools: &[&str], id: &str, params: &Value, uses: fn(&Value) -> bool) -> bool {
+    let named = |t: Option<&str>| t.is_some_and(|t| tools.contains(&t));
+    if named(crate::cmd::gp::tool_id(id)) {
         return uses(params);
     }
-    let tabulate = params.get("tool").and_then(Value::as_str).and_then(crate::cmd::gp::tool_id) == Some("tabulateIntersection");
+    let tool = named(params.get("tool").and_then(Value::as_str).and_then(crate::cmd::gp::tool_id));
     match id {
-        "gp.run" if tabulate => crate::parameters::params_envelope(params.get("params")).is_ok_and(|p| uses(&p)),
+        "gp.run" if tool => crate::parameters::params_envelope(params.get("params")).is_ok_and(|p| uses(&p)),
         // Batch ignores non-object shared params; older tools refuse unknown binding parameters.
-        "gp.batch" if tabulate => params.get("params").filter(|p| p.is_object()).is_some_and(uses),
+        "gp.batch" if tool => params.get("params").filter(|p| p.is_object()).is_some_and(uses),
         "script.run" => {
-            params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, |id, params| tabulate_uses(id, params, uses)))
+            params.get("script").and_then(Value::as_str).is_some_and(|s| script_uses(s, |id, params| tool_uses(tools, id, params, uses)))
         }
         _ => false,
     }
@@ -746,6 +765,37 @@ mod tests {
         let rustgis_map::Marker::Picture(picture) = symbol.marker else { panic!("an image marker") };
         assert!(picture.base64().starts_with("iVBORw0KGgo") && !picture.is_dropped());
         assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["picture-markers"]));
+    }
+
+    /// A grid system other than A5 on A5's tools requires `dggs-system` wherever a run is saved;
+    /// A5, blank or none needs nothing, as such a run means the same to an older reader.
+    #[test]
+    fn a_grid_system_other_than_a5_is_required() {
+        for (params, needed) in [
+            (json!({"resolution": 5}), false),
+            (json!({"system": "A5"}), false),
+            (json!({"system": " a5 "}), false),
+            (json!({"system": ""}), false),
+            (json!({"system": null}), false),
+            (json!({"system": "H3"}), true),
+            (json!({"system": "Hexagon"}), true),
+            (json!({"system": 5}), true),
+        ] {
+            for tool in ["a5Grid", "a5Aggregate"] {
+                assert_eq!(command_uses_dggs_system(tool, &params), needed, "{tool} {params}");
+                let run = json!({"tool": tool, "params": params});
+                assert_eq!(command_uses_dggs_system("gp.run", &run), needed, "gp.run {params}");
+                assert_eq!(command_uses_dggs_system("gp.batch", &run), needed, "gp.batch {params}");
+                let script = json!({"script": format!("gp.run {run}")});
+                assert_eq!(command_uses_dggs_system("script.run", &script), needed, "script {params}");
+                let steps = vec![ModelStep { tool: tool.into(), params: params.clone() }];
+                assert_eq!(model_capabilities(&steps, None).contains(&"dggs-system"), needed, "model {params}");
+            }
+            assert!(!command_uses_dggs_system("buffer", &params));
+        }
+        let fixture = Project::from_json(include_str!("../../../schema/fixtures/dggs_system.rgis")).unwrap();
+        assert_eq!(fixture.models[0].steps[0].params["system"], "H3");
+        assert_eq!(serde_json::to_value(&fixture).unwrap()["requires"], json!(["dggs-system"]));
     }
 
     /// All replayable project containers require non-default options only when requested.

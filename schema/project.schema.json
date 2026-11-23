@@ -1274,7 +1274,8 @@
           "native-coordinates",
           "layout-text-size",
           "label-guide",
-          "project-crs"
+          "project-crs",
+          "dggs-system"
         ],
         "type": "string"
       },
@@ -1377,7 +1378,8 @@
     "native-coordinates",
     "layout-text-size",
     "label-guide",
-    "project-crs"
+    "project-crs",
+    "dggs-system"
   ],
   "x-rustgis-reads-format": 2,
   "x-rustgis-writes-format": 2

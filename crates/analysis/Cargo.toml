@@ -13,6 +13,8 @@ rustgis-geom = { workspace = true }
 rustgis-data = { workspace = true }
 geo = { workspace = true }
 a5 = { workspace = true }
+h3o = { workspace = true }
+s2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

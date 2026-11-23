@@ -110,6 +110,7 @@ pub const CAPABILITIES: &[&str] = &[
     "layout-text-size",
     "label-guide",
     PROJECT_CRS,
+    "dggs-system",
 ];
 /// An offline area keeping the versions that lost a sync or a Bring Back
 /// (`OfflineArea::conflicts`, #2468): an older reader would save it again without them.

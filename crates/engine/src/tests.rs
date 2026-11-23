@@ -6739,6 +6739,80 @@ fn a5_grids_and_points_by_cell() {
     let total: f64 = (0..by.features.len()).map(|r| by.value(r, i).as_f64().unwrap()).sum();
     assert_eq!(total as usize, cities);
     assert!(s.run("gp.run", &json!({"tool": "a5Grid", "params": {"resolution": 13, "area": "World"}})).is_err());
+    // A script saved with the names the tools had before they took a system still runs them.
+    s.run("gp.run", &json!({"tool": "A5 Grid", "params": {"resolution": 1, "area": "World", "output": "old name"}})).unwrap();
+    assert_eq!(s.map().layer_by_name("old name").unwrap().dataset.fields[0].name, "a5");
+    s.run("gp.run", &json!({"tool": "Aggregate Points to A5", "params": {"input": "Cities", "resolution": 2, "output": "old by cell"}}))
+        .unwrap();
+    assert!(s.map().layer_by_name("old by cell").is_some());
+}
+
+/// Generate Tessellation and Aggregate Points to Grid through `gp.run` in every system, every
+/// city in one cell; the hexagon grid is laid on the map's projection, and on Web Mercator for a
+/// globe, and its layer says which.
+#[test]
+fn tessellations_and_points_by_cell_in_every_system() {
+    let mut s = world();
+    let cities = s.map().layer_by_name("Cities").unwrap().dataset.features.len();
+    let counted = |s: &Session, name: &str| {
+        let by = &s.map().layer_by_name(name).unwrap().dataset;
+        let i = by.field_index("count").unwrap();
+        (0..by.features.len()).map(|r| by.value(r, i).as_f64().unwrap()).sum::<f64>() as usize
+    };
+    for (system, res, key) in [("H3", 1, "h3"), ("S2", 3, "s2"), ("A5", 2, "a5"), ("Hexagon", 2, "hex")] {
+        let out = format!("{system} cells");
+        let r = s
+            .run("gp.run", &json!({"tool": "a5Grid", "params": {"system": system, "resolution": res, "area": "World", "output": out}}))
+            .unwrap();
+        let cells = s.map().layer_by_name(&out).unwrap_or_else(|| panic!("{r}"));
+        assert_eq!(cells.dataset.fields[0].name, key);
+        assert!(cells.dataset.features.len() > 12, "{system}");
+        let by = format!("{system} by cell");
+        s.run("gp.run", &json!({"tool": "a5Aggregate", "params": {"system": system, "input": "Cities", "resolution": res, "output": by}}))
+            .unwrap();
+        assert_eq!(counted(&s, &by), cities, "{system}");
+    }
+    let plane = |s: &Session, name: &str| s.map().layer_by_name(name).unwrap().dataset.value(0, 3).to_string();
+    assert_eq!(plane(&s, "Hexagon cells"), "Web Mercator");
+    // On an equal-area map the hexagons are laid on its plane: no city is near a pole, so every
+    // one is counted, in a cell the projection can draw.
+    s.run("map.projection", &json!({"type": "mollweide"})).unwrap();
+    let r = s
+        .run(
+            "gp.run",
+            &json!({"tool": "a5Aggregate", "params": {"system": "Hexagon", "input": "Cities", "resolution": 6, "output": "moll"}}),
+        )
+        .unwrap();
+    assert!(plane(&s, "moll").contains("ollweide"), "{}", plane(&s, "moll"));
+    assert_eq!(counted(&s, "moll"), cities, "{r}");
+    // The world on it reaches both poles, where its plane loses the longitude.
+    let r = s
+        .run(
+            "gp.run",
+            &json!({"tool": "a5Grid", "params": {"system": "Hexagon", "resolution": 2, "area": "World", "output": "moll world"}}),
+        )
+        .unwrap();
+    assert!(s.map().layer_by_name("moll world").is_some_and(|l| l.dataset.features.len() > 12), "{r}");
+    assert!(!r.to_string().contains("85.05"), "{r}");
+    // On a map centred on the Pacific the world is cut at the map's edge, 30°W: the same grid as
+    // on one centred on Greenwich.
+    let mut world_on = |code: &str, out: &str| {
+        s.run("map.projection", &json!({"type": code})).unwrap();
+        let p = json!({"tool": "a5Grid", "params": {"system": "Hexagon", "resolution": 2, "area": "World", "output": out}});
+        let r = s.run("gp.run", &p).unwrap();
+        let n = s.map().layer_by_name(out).unwrap_or_else(|| panic!("{code}: {r}")).dataset.features.len();
+        assert!(n > 12, "{code}: {r}");
+        n
+    };
+    assert_eq!(world_on("equirectangular", "eqc 0"), world_on("equirectangular +lon_0=150", "eqc 150"));
+    s.run("map.projection", &json!({"type": "globe"})).unwrap();
+    s.run(
+        "gp.run",
+        &json!({"tool": "a5Aggregate", "params": {"system": "Hexagon", "input": "Cities", "resolution": 6, "output": "globe"}}),
+    )
+    .unwrap();
+    assert_eq!(plane(&s, "globe"), "Web Mercator");
+    assert!(s.run("gp.run", &json!({"tool": "a5Grid", "params": {"system": "H3", "resolution": 7, "area": "World"}})).is_err());
 }
 
 #[test]

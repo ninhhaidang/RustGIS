@@ -34,14 +34,25 @@ const NEW: &[ParamSpec] = &[ParamSpec { name: "value", label: "Value", kind: Par
 fn provider() -> Vec<ToolSpec> {
     DISCOVERIES.fetch_add(1, Ordering::SeqCst);
     let reloaded = RELOADED.load(Ordering::Relaxed);
-    vec![ToolSpec {
-        id: "resolved-test-tool",
-        name: rustgis_analysis::TOOLS[0].name,
-        toolbox: "Test",
-        summary: if reloaded { "new" } else { "old" },
-        params: if reloaded { NEW } else { OLD },
-        run: rustgis_analysis::external_placeholder,
-    }]
+    vec![
+        ToolSpec {
+            id: "resolved-test-tool",
+            name: rustgis_analysis::TOOLS[0].name,
+            toolbox: "Test",
+            summary: if reloaded { "new" } else { "old" },
+            params: if reloaded { NEW } else { OLD },
+            run: rustgis_analysis::external_placeholder,
+        },
+        // Named as a built-in tool was before its rename.
+        ToolSpec {
+            id: "former-name-test-tool",
+            name: "A5 Grid",
+            toolbox: "Test",
+            summary: "",
+            params: OLD,
+            run: rustgis_analysis::external_placeholder,
+        },
+    ]
 }
 
 /// Reports which captured schema and defaults actually reached the runner.
@@ -67,6 +78,9 @@ fn resolved_tool_keeps_schema_after_reload_and_honors_cancellation() {
     // Built-in names still win over the external name; ids are considered first.
     let builtin = &rustgis_analysis::TOOLS[0];
     assert_eq!(rustgis_analysis::resolve(builtin.name).unwrap().spec().id, builtin.id);
+    // So does a built-in's former name, as when it was the built-in's own.
+    assert_eq!(rustgis_analysis::resolve("A5 Grid").unwrap().spec().id, "a5Grid");
+    assert_eq!(rustgis_analysis::resolve("former-name-test-tool").unwrap().source(), Some("resolved-test-suite"));
 
     RELOADED.store(true, Ordering::Relaxed);
     rustgis_analysis::reload_external_of("resolved-test-suite");

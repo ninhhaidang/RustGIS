@@ -38,6 +38,9 @@ const SEPARATOR: P = P {
     help: "Put between the values CONCATENATE joins.",
 };
 
+/// Each grid system's resolutions and their sizes, for both grid tools' Resolution.
+const DGGS_RESOLUTIONS: &str = "H3 0–15 (each step about a seventh: 5 is about 250 km², 9 about 0.1 km²); S2 0–30 (a quarter: 10 is about 80 km²); A5 0–30 and Hexagon 0–24 (a quarter: 5 is about 33,000 km², 12 about 2 km²).";
+
 pub static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         id: "polygonToLine",
@@ -592,18 +595,19 @@ pub static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         id: "a5Grid",
-        name: "A5 Grid",
+        name: "Generate Tessellation",
         toolbox: "Analysis › DGGS",
-        summary: "A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.",
+        summary: "Cells of a grid system (H3 hexagons, S2 quadrilaterals, A5 pentagons, or flat hexagons anchored on the map's plane) at a resolution, over the map's extent, a layer or the world, as polygons with their ids.",
         params: &[
             P {
-                name: "resolution",
-                label: "Resolution (0–30)",
-                kind: K::Number,
+                name: "system",
+                label: "System",
+                kind: K::Choice(&crate::dggs::System::NAMES),
                 required: false,
-                default: "5",
-                help: "Each step divides a cell into about four: resolution 5 cells are about 33,000 km², 9 about 130 km², 12 about 2 km².",
+                default: "\"A5\"",
+                help: "H3 (Uber) hexagons, S2 (Google) cells, A5 (Felix Palmer) equal-area pentagons. Hexagon lays flat hexagons on the map's projection (Web Mercator for a globe), anchored at its origin: a place gets the same cell with any layer, in that projection.",
             },
+            P { name: "resolution", label: "Resolution", kind: K::Number, required: false, default: "5", help: DGGS_RESOLUTIONS },
             P {
                 name: "area",
                 label: "Area",
@@ -627,12 +631,20 @@ pub static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         id: "a5Aggregate",
-        name: "Aggregate Points to A5",
+        name: "Aggregate Points to Grid",
         toolbox: "Analysis › DGGS",
-        summary: "Counts a layer's points by the A5 cell holding them (cells of equal area, so the count is a density), with a field's sum and mean.",
+        summary: "Counts a layer's points by the cell of a grid system (H3, S2, A5 or anchored hexagons) holding them, with the density by each cell's area and a field's sum and mean.",
         params: &[
             P { name: "input", label: "Input Points", kind: K::PointLayer, required: true, default: "", help: "" },
-            P { name: "resolution", label: "Resolution (0–30)", kind: K::Number, required: false, default: "9", help: "" },
+            P {
+                name: "system",
+                label: "System",
+                kind: K::Choice(&crate::dggs::System::NAMES),
+                required: false,
+                default: "\"A5\"",
+                help: "The cells of Generate Tessellation's system, with the same ids, so the two layers join.",
+            },
+            P { name: "resolution", label: "Resolution", kind: K::Number, required: false, default: "9", help: DGGS_RESOLUTIONS },
             P {
                 name: "field",
                 label: "Field to Sum and Average",
