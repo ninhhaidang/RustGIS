@@ -607,7 +607,7 @@ pub fn picture_size(b64: &str) -> Option<(u32, u32)> {
     picture::size(b64)
 }
 
-pub use picture::{MARKER_PIXELS, MARKER_PIXELS_SIDE, MarkerRefusal, RUN_MARKER_BYTES, RUN_MARKER_PIXELS};
+pub use picture::{MARKER_PIXELS, MARKER_PIXELS_SIDE, MarkerRefusal, RUN_MARKER_BYTES, RUN_MARKER_PIXELS, SVG_DEPTH, SVG_XML_NODES};
 
 /// Base64 `b64` as a picture marker's image (one kept already, or one before it is set): its
 /// height for its width when it draws (a PNG or JPEG within [`MARKER_PIXELS`], an SVG with as much

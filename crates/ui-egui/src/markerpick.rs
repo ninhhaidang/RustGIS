@@ -91,6 +91,20 @@ impl MarkerImage {
                         "This image can't be a marker: it is an SVG with more to draw than a {side} × {side} image",
                         &[("side", &rustgis_engine::render::MARKER_PIXELS_SIDE.to_string())],
                     ),
+                    // Past the file's own cap above, for completeness.
+                    MarkerRefusal::TooManyBytes => crate::i18n::fmt(
+                        "This image can't be a marker: it is longer than {mib} MiB as base64; make it smaller",
+                        &[("mib", &(rustgis_engine::map::symbology::MAX_PICTURE_BYTES >> 20).to_string())],
+                    ),
+                    MarkerRefusal::SvgTooNested => tl!(
+                        "This image can't be a marker: it is an SVG with more than 40,000 XML nodes or nested deeper than 64 levels"
+                    )
+                    .to_string(),
+                    MarkerRefusal::SvgFontRadius => {
+                        tl!("This image can't be a marker: it is an SVG with a radius in em or ex, whose size RustGIS can't know").to_string()
+                    }
+                    MarkerRefusal::SvgTooSmall => tl!("This image can't be a marker: it is an SVG too small to draw").to_string(),
+                    MarkerRefusal::SvgNotUtf8 => tl!("This image can't be a marker: it is an SVG that isn't UTF-8 text").to_string(),
                     MarkerRefusal::SvgUndrawn => {
                         tl!("This image can't be a marker: it is an SVG with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images").to_string()
                     }

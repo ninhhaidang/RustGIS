@@ -2180,10 +2180,15 @@ pub(crate) fn picture_notices_by<'a>(
         *seen.borrow_mut().entry(p).or_insert_with(|| check(p))
     };
     // The names with an image refused so, by each refusal in `WHY`, in the order their notices go.
-    const WHY: [MarkerRefusal; 5] = [
+    const WHY: [MarkerRefusal; 10] = [
         MarkerRefusal::NotAnImage,
+        MarkerRefusal::TooManyBytes,
         MarkerRefusal::TooManyPixels,
         MarkerRefusal::TooMuchToDraw,
+        MarkerRefusal::SvgTooNested,
+        MarkerRefusal::SvgFontRadius,
+        MarkerRefusal::SvgTooSmall,
+        MarkerRefusal::SvgNotUtf8,
         MarkerRefusal::SvgUndrawn,
         MarkerRefusal::PastRunPixels,
     ];
@@ -2228,11 +2233,17 @@ pub(crate) fn picture_notices_by<'a>(
             ],
         ));
     }
-    let [not_images, too_large, too_much, filtered, past_run] = &bad;
+    let [not_images, too_long, too_large, too_much, too_nested, font_radius, too_small, not_utf8, filtered, past_run] = &bad;
     if !not_images.is_empty() {
         notices.push(NoticeText::format(
             "Image markers in {names} aren't PNG, JPEG or SVG images and are drawn as circles",
             [("names", picture_names(not_images))],
+        ));
+    }
+    if !too_long.is_empty() {
+        notices.push(NoticeText::format(
+            "Image markers in {names} are longer than {mib} MiB as base64 and are drawn as circles",
+            [("names", picture_names(too_long)), ("mib", (MAX_PICTURE_BYTES >> 20).to_string().into())],
         ));
     }
     if !too_large.is_empty() {
@@ -2246,6 +2257,23 @@ pub(crate) fn picture_notices_by<'a>(
             "Image markers in {names} are SVGs with more to draw than a {side} × {side} image and are drawn as circles",
             [("names", picture_names(too_much)), ("side", rustgis_render::MARKER_PIXELS_SIDE.to_string().into())],
         ));
+    }
+    // Each SVG's own cause (#2713), its figures as the renderer's phrase gives them.
+    for (names, what) in [
+        (
+            too_nested,
+            "Image markers in {names} are SVGs with more than 40,000 XML nodes or nested deeper than 64 levels and are drawn as circles",
+        ),
+        (
+            font_radius,
+            "Image markers in {names} are SVGs with a radius in em or ex, whose size RustGIS can't know, and are drawn as circles",
+        ),
+        (too_small, "Image markers in {names} are SVGs too small to draw and are drawn as circles"),
+        (not_utf8, "Image markers in {names} are SVGs that aren't UTF-8 text and are drawn as circles"),
+    ] {
+        if !names.is_empty() {
+            notices.push(NoticeText::format(what, [("names", picture_names(names))]));
+        }
     }
     if !filtered.is_empty() {
         notices.push(NoticeText::format(

@@ -2662,7 +2662,7 @@ fn layer_marker_takes_an_svg_and_refuses_one_it_cant_draw() {
 }
 
 /// An SVG image marker that has too much to draw, or filters, is said with why on reading, apart
-/// from the others (the renderer's check stood in for).
+/// from the others, each cause its own (#2713) (the renderer's check stood in for).
 #[test]
 fn svg_image_markers_that_dont_draw_are_said_with_why() {
     use rustgis_render::MarkerRefusal;
@@ -2682,10 +2682,25 @@ fn svg_image_markers_that_dont_draw_are_said_with_why() {
             MarkerRefusal::SvgUndrawn,
             "Image markers in \"Cities\", \"Rivers\" are SVGs with filters, text, images, animation or links to other files, which RustGIS doesn't draw in marker images, and are drawn as circles",
         ),
+        (MarkerRefusal::TooManyBytes, "Image markers in \"Cities\", \"Rivers\" are longer than 2 MiB as base64 and are drawn as circles"),
+        (
+            MarkerRefusal::SvgTooNested,
+            "Image markers in \"Cities\", \"Rivers\" are SVGs with more than 40,000 XML nodes or nested deeper than 64 levels and are drawn as circles",
+        ),
+        (
+            MarkerRefusal::SvgFontRadius,
+            "Image markers in \"Cities\", \"Rivers\" are SVGs with a radius in em or ex, whose size RustGIS can't know, and are drawn as circles",
+        ),
+        (MarkerRefusal::SvgTooSmall, "Image markers in \"Cities\", \"Rivers\" are SVGs too small to draw and are drawn as circles"),
+        (MarkerRefusal::SvgNotUtf8, "Image markers in \"Cities\", \"Rivers\" are SVGs that aren't UTF-8 text and are drawn as circles"),
     ] {
         let said: Vec<String> = crate::project::picture_notices_by(layers, [], &|_| Some(why)).iter().map(|n| n.english()).collect();
         assert_eq!(said, [notice]);
     }
+    // The caps the notices write out are the renderer's.
+    let (nodes, depth) = (rustgis_render::SVG_XML_NODES, rustgis_render::SVG_DEPTH);
+    assert_eq!((nodes, depth), (40_000, 64), "the SVG notices and the picker's say 40,000 and 64");
+    assert_eq!(rustgis_map::symbology::MAX_PICTURE_BYTES >> 20, 2, "the notice says 2 MiB");
 }
 
 /// Saved image markers that are SVGs open drawn, and one with a filter, which RustGIS doesn't draw,

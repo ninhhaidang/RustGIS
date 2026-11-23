@@ -337,8 +337,8 @@ Each layer keeps its look:
   lines as strokes of markers or hash marks, at their places (intervals, vertices, the ends, the
   middle), turned with the line, their markers' offsets and angles kept; font markers as
   characters of their font, on points and along lines; raster image markers as
-  [image markers](cartography.md#symbology) of their PNG, JPEG or SVG (embedded in the file, or a file
-  of their own, relative to the project's folder or, in a style, to the style's), on points
+  [image markers](cartography.md#symbology) of their PNG, JPEG or SVG (embedded in the file, or a
+  file of their own, relative to the project's folder or, in a style, to the style's), on points
   (anchored where QGIS anchors them) and along lines; a marker symbol of several layers, or one
   shifted, turned or anchored off its centre, as a point's marks; a marker angle taken from a
   field (`"field"` or `- "field"`) as the layer's rotation field; a fill symbol of several layers

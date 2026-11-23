@@ -96,14 +96,14 @@ layer.marker={"layer":"Peaks","char":"▲","font":"DejaVu Sans","size":12}
 
 A marker can also be an **image**: a PNG or JPEG picked with **Image…** at the end of **Shape**
 (choose it again for another image), or a PNG, JPEG or SVG given by command as base64 (at most
-2 MiB of base64 text, an image of about 1.5 MiB) and of at most 2048 × 2048 pixels (by area: a
-4096 × 1024 strip is taken). Other formats, such as GIF, aren't taken: a file in another format,
-one too large, or one that doesn't decode is said in a notice and leaves the marker as it was.
-An SVG is drawn once into an image of its proportions, 256 to 700 pixels on its longer side (more
-where it says it is larger), and kept as a PNG is. Its shapes, gradients, patterns, clip paths
-and masks are drawn. One with filters (a blur, a shadow), text, images or links to other files (a
-`<use>`, a paint or a style sheet from elsewhere) isn't taken, as they aren't drawn; nor is a file
-read. What an SVG costs to draw is what it
+2 MiB of base64 text, an image of about 1.5 MiB). A PNG or JPEG may have at most 2048 × 2048
+pixels (by area: a 4096 × 1024 strip is taken). Other formats, such as GIF, aren't taken: a file
+in another format, one too large, or one that doesn't decode is said in a notice, with why, and
+leaves the marker as it was. An SVG is drawn once into an image of its proportions, 256 pixels on
+its longer side, or as many as it says up to 700, and kept as a PNG is. Its shapes, gradients,
+patterns, clip paths and masks are drawn. One with filters (a blur, a shadow), text, images or
+links to other files (a `<use>`, a paint or a style sheet from elsewhere) isn't taken, as they
+aren't drawn; nor is a file read. What an SVG costs to draw is what it
 paints, not its size: a few kilobytes of dashes finer than a pixel, or of see-through shapes piled
 up, can take minutes. So one with more to draw than a 2048 × 2048 image isn't taken either, nor
 one past 10,000 elements or 200,000 points of its shapes once each `<use>` is counted where it
@@ -111,8 +111,9 @@ repeats, nor one with a marker on a shape inside another marker (drawn on each o
 wherever it is). An arc is counted as the curves it is drawn with, more the larger its radius:
 one of more than 200 curves isn't taken, nor is a circle, an ellipse or a rounded corner whose
 radius is in em or ex, which may come to any size. A radius in % is counted as that share of the
-largest size the SVG gives itself, unless a size inside it is in %, em or ex. Each image is
-decoded once until RustGIS restarts, and kept decoded, at most 700 pixels a side: in all at most
+largest size the SVG gives itself, unless its own width or height is in em or ex, or a size
+inside it is in %, em or ex. Each image is decoded once until RustGIS restarts, and kept
+decoded, at most 700 pixels a side: in all at most
 256 megapixels of different marker images and 128 MiB once decoded (as many images as it keeps,
 at 177 × 177 each), so that a crafted file can't hold it for minutes; past it a new image is
 refused, or drawn as a circle, with a notice saying so, until RustGIS is restarted. A vector
@@ -370,12 +371,13 @@ line** turns each mark with the line's direction; the **Angle** turns it further
 take the stroke's colour, its width as a hash mark's line (or a marker's outline, by command), and
 its offset to either side. Stack them with line strokes: a casing, a core and ticks across it. A
 marker can also be an image, with **Image…** under **Shape** or by command (`"image"`, a PNG, JPEG
-or SVG as base64 of at most 2 MiB and 2048 × 2048 pixels, or as much to draw): as wide as its **Size** and as tall as
-its proportions make it, turned with the line, the stroke's colour and outline left out; selected,
-each is framed. An image a file gave that can't be drawn (too large to keep, one that doesn't
-decode or that has too many pixels) shows as a circle; changing the strokes in the pane makes it
-the circle, and says so. One past what RustGIS decodes until it restarts shows as a circle and is
-kept as it is. By command, `"markers"` on a stroke:
+or SVG as base64 of at most 2 MiB; a PNG or JPEG of at most 2048 × 2048 pixels, an SVG with no
+more to draw than such an image): as wide as its **Size** and as tall as its proportions make it,
+turned with the line, the stroke's colour and outline left out; selected, each is framed. An image
+a file gave that can't be drawn (too large to keep, one that doesn't decode, that has too many
+pixels or that is an SVG RustGIS can't draw) shows as a circle; changing the strokes in the pane
+makes it the circle, and says so. One past what RustGIS decodes until it restarts shows as a
+circle and is kept as it is. By command, `"markers"` on a stroke:
 
 ```text
 layer.lineStrokes={"layer":"Railways","strokes":[{"color":"#333333","width":1.5},{"color":"#333333","width":1,"markers":{"mark":"hash","size":6,"interval":10}}]}

@@ -8,18 +8,19 @@
 //! each arc into cubic curves, more the larger its radius ([`cubics`]): a 24-byte circle of radius
 //! 10³⁸ came to 9.6 million points, and a path's arc whose radius its ends stretch never finished.
 //! So what an SVG comes to is counted before it is read ([`elements`]), and it is taken only when
-//! what it draws is worked out first ([`work`]),
-//! from what the rasterizer does: the pixels each shape covers and the rows its edges cross, each
-//! dash and each segment of a stroke, each layer a group with opacity, a clip or a mask draws
-//! into. A unit is a pixel blended, about 13 ns, the dearest the rasterizer spends on one. The
-//! measured cases all came within ~13 ns a unit; an icon is a few hundred thousand units.
+//! what it draws is worked out first ([`work`]), from what the rasterizer does: the pixels each
+//! shape covers and the rows its edges cross, each dash and each segment of a stroke, each layer a
+//! group with opacity, a clip or a mask draws into. A unit is a pixel blended, about 13 ns, the
+//! dearest the rasterizer spends on one. The measured cases all came within ~13 ns a unit; an icon
+//! is a few hundred thousand units.
 //!
 //! Filters are refused outright: they cost per pixel by kind and parameter (a blur's radius, a
 //! turbulence's octaves, a morphology's, a convolution's), which a marker's icon rarely needs and
 //! a count can't bound without modelling each one. So is text (no fonts are loaded for it) and an
 //! image inside the SVG or one it links to (it would pass the image caps, or read a file): drawn
-//! without them, an icon would lose them unsaid. So is animation (the still image is drawn) and
-//! anything it takes from another file (a `<use>`, a paint or a style sheet): no file is read.
+//! without them, an icon would lose them unsaid. So is animation, which only its first frame would
+//! show, and anything it takes from another file (a `<use>`, a paint or a style sheet): no file
+//! is read.
 
 use resvg::usvg;
 use usvg::roxmltree;
@@ -31,6 +32,11 @@ pub(super) enum Refusal {
     NotSvg,
     /// It has more to draw than the cap given, or more elements than [`ELEMENTS`].
     TooMuch,
+    /// It has more XML nodes than [`XML_NODES`], or nests deeper than [`DEPTH`].
+    TooNested,
+    /// A shape's radius is in em or ex: font sizes, which no font is loaded to give, so it may be
+    /// any size.
+    FontRadius,
     /// It has filters, text, images, animation or links to other files, which aren't drawn (the
     /// module says why).
     Undrawn,
@@ -59,23 +65,23 @@ const ARC_CUBICS: f64 = 200.0;
 const CSS_STEPS: u64 = 1_000_000;
 /// The most XML nodes (elements, text, comments) read before giving up, a bound on reading the
 /// text itself: [`ELEMENTS`] and the text and spaces between them.
-const XML_NODES: u32 = 4 * ELEMENTS as u32;
+pub(super) const XML_NODES: u32 = 4 * ELEMENTS as u32;
 /// The deepest nesting read (usvg's own bound is 1,024): icons nest a few levels, and the walks
 /// here recurse as deep.
-const DEPTH: u32 = 64;
+pub(super) const DEPTH: u32 = 64;
 /// What each element and each segment costs whatever its size, in units.
 const NODE: u64 = 100;
-/// Each `STOPS` of a gradient's stops cost a unit a pixel, past two: tiny-skia then goes through
-/// them all at each pixel (its `gradient` stage), some 0.7 ns a stop (measured: 1,000 stops 695 ns a pixel,
-/// 100 stops 93 ns, 2 stops 21 ns).
-const STOPS: u64 = 16;
+/// What a gradient's stops are divided by to cost units a pixel: past two, tiny-skia goes through
+/// them all at each pixel (its `gradient` stage), some 0.7 ns a stop (measured: 1,000 stops
+/// 695 ns a pixel, 100 stops 93 ns, 2 stops 21 ns), so each stop costs 1/16 of a unit a pixel.
+const STOPS_PER_UNIT: u64 = 16;
 
 /// SVG text `text` read into a tree: within [`XML_NODES`], [`ELEMENTS`], [`POINTS`] and
 /// [`CSS_STEPS`], its root an `<svg>`, with no images resolved and no files read.
 pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
     let xml = roxmltree::ParsingOptions { allow_dtd: true, nodes_limit: XML_NODES, ..Default::default() };
     let doc = roxmltree::Document::parse_with_options(text, xml).map_err(|e| match e {
-        roxmltree::Error::NodesLimitReached => Refusal::TooMuch,
+        roxmltree::Error::NodesLimitReached => Refusal::TooNested,
         _ => Refusal::NotSvg,
     })?;
     if doc.root_element().tag_name().name() != "svg" {
@@ -84,9 +90,13 @@ pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
     if doc.descendants().any(undrawn) {
         return Err(Refusal::Undrawn);
     }
-    if with_sheet(&doc, |sheet| elements(&doc, sheet).is_none() || nested_markers(&doc, sheet)) {
-        return Err(Refusal::TooMuch);
+    if doc.descendants().any(font_radius) {
+        return Err(Refusal::FontRadius);
     }
+    with_sheet(&doc, |sheet| {
+        elements(&doc, sheet)?;
+        if nested_markers(&doc, sheet) { Err(Refusal::TooMuch) } else { Ok(()) }
+    })?;
     let opt = usvg::Options {
         resources_dir: None,
         max_depth: DEPTH,
@@ -97,6 +107,21 @@ pub(super) fn read(text: &str) -> Result<usvg::Tree, Refusal> {
         usvg::Error::ElementsLimitReached => Refusal::TooMuch,
         _ => Refusal::NotSvg,
     })
+}
+
+/// Whether shape `n` has a radius in em or ex other than 0 ([`Refusal::FontRadius`]), of those
+/// usvg reads for it: a circle's `r`, an ellipse's or a rectangle's `rx` and `ry`.
+fn font_radius(n: roxmltree::Node) -> bool {
+    use svgtypes::LengthUnit::{Em, Ex};
+    let radii: &[&str] = match n.tag_name().name() {
+        "circle" => &["r"],
+        "ellipse" | "rect" => &["rx", "ry"],
+        _ => return false,
+    };
+    radii
+        .iter()
+        .filter_map(|a| n.attribute(*a))
+        .any(|v| v.trim().parse::<svgtypes::Length>().is_ok_and(|l| matches!(l.unit, Em | Ex) && l.number != 0.0))
 }
 
 /// Whether `n` is something that isn't drawn: text, an image, animation, or what an SVG takes from
@@ -161,8 +186,8 @@ fn names_marker(n: roxmltree::Node) -> bool {
     })
 }
 
-/// Whether property `name` of `value` sets a marker: a marker property naming one (`url(#id)`), read
-/// as usvg reads it; `none` sets none.
+/// Whether property `name` of `value` sets a marker: a marker property naming one (`url(#id)`),
+/// read as usvg reads it; `none` sets none.
 fn sets_marker(name: &str, value: &str) -> bool {
     is_marker(name) && svgtypes::FuncIRI::from_str(value).is_ok()
 }
@@ -302,11 +327,11 @@ fn elsewhere(v: &str) -> bool {
 }
 
 /// The elements `doc` comes to once each `<use>` is counted as what it repeats and each marker as
-/// often as the vertices it can sit on; `None` past [`ELEMENTS`], its shapes' points ([`points_of`])
-/// counted so past [`POINTS`], nested past [`DEPTH`], matched to its style sheets past
-/// [`CSS_STEPS`] ([`css_steps`]) or where a `<use>` repeats itself (usvg drops those, but counting
-/// it is no use).
-fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Option<u64> {
+/// often as the vertices it can sit on. Refused nested past [`DEPTH`] ([`Refusal::TooNested`]);
+/// past [`ELEMENTS`], its shapes' points ([`points_of`]) counted so past [`POINTS`], matched to its
+/// style sheets past [`CSS_STEPS`] ([`css_steps`]) or where a `<use>` repeats itself (usvg drops
+/// those, but counting it is no use) as too much ([`Refusal::TooMuch`]).
+fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Result<u64, Refusal> {
     // The first element of an id, as usvg takes it: counting another would count what isn't drawn.
     let mut ids = std::collections::HashMap::new();
     for n in doc.descendants() {
@@ -314,8 +339,9 @@ fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Option<
             ids.entry(id).or_insert(n);
         }
     }
-    let mut counter = Counter { ids, seen: std::collections::HashMap::new(), viewport: viewport(doc), sheet, matched: 0 };
-    let all = counter.count(doc.root_element(), 0)?;
+    let mut counter = Counter { ids, seen: std::collections::HashMap::new(), viewport: viewport(doc), sheet, matched: 0, deep: false };
+    let refused = |c: &Counter| if c.deep { Refusal::TooNested } else { Refusal::TooMuch };
+    let all = counter.count(doc.root_element(), 0).ok_or_else(|| refused(&counter))?;
     // A marker sits on the vertices (`marker-mid`) and both ends of the shapes that set it, by
     // attribute or style, or that inherit it from what holds them or from the `<use>` that copies
     // them; a style sheet may set it on any shape. So each marker, its elements and their points,
@@ -323,13 +349,14 @@ fn elements(doc: &roxmltree::Document, sheet: &simplecss::StyleSheet) -> Option<
     let vertices = if sheet_sets_marker(sheet) { all.points } else { all.marked };
     let named = named_markers(doc, sheet);
     let used = |m: &roxmltree::Node| m.has_tag_name("marker") && m.attribute("id").is_some_and(|id| named.contains(id));
-    let (markers, marked) = doc.descendants().filter(used).try_fold((0u64, 0u64), |sum, m| {
-        let c = counter.count(m, 0)?;
-        Some((sum.0.saturating_add(c.elements), sum.1.saturating_add(c.points)))
-    })?;
+    let (mut markers, mut marked) = (0u64, 0u64);
+    for m in doc.descendants().filter(used) {
+        let c = counter.count(m, 0).ok_or_else(|| refused(&counter))?;
+        (markers, marked) = (markers.saturating_add(c.elements), marked.saturating_add(c.points));
+    }
     let total = all.elements.saturating_add(markers.saturating_mul(vertices));
     let points = all.points.saturating_add(marked.saturating_mul(vertices));
-    (total <= ELEMENTS && points <= POINTS).then_some(total)
+    (total <= ELEMENTS && points <= POINTS).then_some(total).ok_or(Refusal::TooMuch)
 }
 
 /// What an element and what's under it come to ([`elements`]).
@@ -358,6 +385,8 @@ struct Counter<'a, 's> {
     sheet: &'s simplecss::StyleSheet<'s>,
     /// The steps the matching here has taken so far, each element once ([`css_steps`]).
     matched: u64,
+    /// Whether a count stopped for nesting past [`DEPTH`] ([`Refusal::TooNested`]).
+    deep: bool,
 }
 
 impl<'a> Counter<'a, '_> {
@@ -367,10 +396,14 @@ impl<'a> Counter<'a, '_> {
     /// deeper.
     fn count(&mut self, n: roxmltree::Node<'a, 'a>, depth: u32) -> Option<Counted> {
         if depth > DEPTH {
+            self.deep = true;
             return None;
         }
         match self.seen.get(&n.id()) {
-            Some(Some(done)) => return (depth + done.height <= DEPTH).then_some(*done),
+            Some(Some(done)) => {
+                self.deep |= depth + done.height > DEPTH;
+                return (depth + done.height <= DEPTH).then_some(*done);
+            }
             Some(None) => return None,
             None => {}
         }
@@ -579,7 +612,7 @@ impl Cost {
     /// that is drawn nowhere). The only place nesting is bounded: every walk down comes here.
     fn group(&mut self, g: &usvg::Group, t: tiny_skia::Transform, onto: Option<tiny_skia::Rect>, depth: u32) -> Result<(), Refusal> {
         if depth > DEPTH {
-            return Err(Refusal::TooMuch);
+            return Err(Refusal::TooNested);
         }
         if !g.filters().is_empty() {
             return Err(Refusal::Undrawn);
@@ -678,7 +711,7 @@ impl Cost {
     fn paint(&mut self, paint: &usvg::Paint, t: tiny_skia::Transform, covered: u64, depth: u32) -> Result<(), Refusal> {
         match paint {
             usvg::Paint::Color(_) => Ok(()),
-            // Past two stops, each of them at each pixel too ([`STOPS`]).
+            // Past two stops, each of them at each pixel too ([`STOPS_PER_UNIT`]).
             usvg::Paint::LinearGradient(g) => self.add(gradient(covered, g.stops().len())),
             usvg::Paint::RadialGradient(g) => self.add(gradient(covered, g.stops().len())),
             usvg::Paint::Pattern(pattern) => {
@@ -694,9 +727,9 @@ impl Cost {
     }
 }
 
-/// What a gradient of `stops` costs computed across `covered` pixels ([`STOPS`]).
+/// What a gradient of `stops` costs computed across `covered` pixels ([`STOPS_PER_UNIT`]).
 fn gradient(covered: u64, stops: usize) -> u64 {
-    let through = if stops > 2 { covered.saturating_mul(stops as u64) / STOPS } else { 0 };
+    let through = if stops > 2 { covered.saturating_mul(stops as u64) / STOPS_PER_UNIT } else { 0 };
     covered.saturating_add(through)
 }
 
@@ -770,7 +803,7 @@ mod tests {
 
     /// [`elements`] of `body`.
     fn element_count(body: &str) -> Option<u64> {
-        roxmltree::Document::parse(&svg(body)).map(|d| with_sheet(&d, |sheet| elements(&d, sheet))).unwrap()
+        roxmltree::Document::parse(&svg(body)).map(|d| with_sheet(&d, |sheet| elements(&d, sheet).ok())).unwrap()
     }
 
     /// What `body` costs drawn 100 × 100 pixels, a pixel a unit of its view.
@@ -925,7 +958,6 @@ mod tests {
             r#"<path d="M0 0A1e30 0.00002 0 1 1 1e30 1e30" stroke="black"/>"#,
             r#"<path d="M0 0A1e300 1e300 0 1 1 1 1"/>"#,
             r#"<circle r="1e30%"/>"#,
-            r#"<rect width="9" height="9" rx="2em"/>"#,
             // Past [`ARC_CUBICS`]: some 220 curves to an arc nearly round (#2713).
             r#"<path d="M0 0A1e13 1e13 0 1 1 1 0" stroke="black"/>"#,
         ] {
@@ -933,6 +965,9 @@ mod tests {
             assert_eq!((counted(body).0, read(&svg(body)).err()), (u64::MAX, Some(Refusal::TooMuch)), "{body}");
             assert!(started.elapsed() < std::time::Duration::from_secs(1), "{body}");
         }
+        // A radius in em or ex, a font's size, is refused as such (#2713).
+        let em = r#"<rect width="9" height="9" rx="2em"/>"#;
+        assert_eq!((counted(em).0, read(&svg(em)).err()), (u64::MAX, Some(Refusal::FontRadius)));
     }
 
     /// What isn't an SVG, or reads past its bounds, is refused while it is read: an entity loop,
@@ -948,9 +983,9 @@ mod tests {
         let started = std::time::Instant::now();
         assert_eq!(read(&laughs.replace("<desc>&g;</desc>", r#"<path d="&g;"/>"#)).err(), Some(Refusal::NotSvg));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
-        assert_eq!(read(&svg(&"<!-- -->".repeat(XML_NODES as usize))).err(), Some(Refusal::TooMuch));
+        assert_eq!(read(&svg(&"<!-- -->".repeat(XML_NODES as usize))).err(), Some(Refusal::TooNested));
         let deep = format!("{}{}", "<g>".repeat(2000), "</g>".repeat(2000));
-        assert_eq!(read(&svg(&deep)).err(), Some(Refusal::TooMuch));
+        assert_eq!(read(&svg(&deep)).err(), Some(Refusal::TooNested));
         // A marker on a shape inside another marker is drawn on each of that marker's vertices
         // too, which isn't counted: refused, by attribute, inherited or from a style sheet.
         let zigzag = "M0 0L1 1L2 0L3 1";
@@ -1171,7 +1206,7 @@ mod tests {
         let doc = roxmltree::Document::parse(&text).unwrap();
         with_sheet(&doc, |sheet| {
             let (ids, seen) = (std::collections::HashMap::new(), std::collections::HashMap::new());
-            let mut counter = Counter { ids, seen, viewport: 100.0, sheet, matched: 0 };
+            let mut counter = Counter { ids, seen, viewport: 100.0, sheet, matched: 0, deep: false };
             assert!(counter.count(doc.root_element(), 0).is_none());
             assert!(counter.matched <= CSS_STEPS + 1, "{} steps", counter.matched);
         });
@@ -1203,7 +1238,7 @@ mod tests {
             let stops = (0..stops).map(|i| format!(r#"<stop offset="{}" stop-color="red"/>"#, i as f32 / stops as f32)).collect::<String>();
             cost(&format!(r#"<linearGradient id="g">{stops}</linearGradient><rect width="100" height="100" fill="url(#g)"/>"#)).unwrap()
         };
-        assert!(painted(1000) - painted(2) >= 10_000 * 1000 / STOPS, "{} {}", painted(1000), painted(2));
+        assert!(painted(1000) - painted(2) >= 10_000 * 1000 / STOPS_PER_UNIT, "{} {}", painted(1000), painted(2));
     }
 
     /// A subtree counted once where it is shallow is counted again where a `<use>` reaches it
@@ -1215,7 +1250,7 @@ mod tests {
         let doc = element_count;
         assert!(doc(&tree).is_some());
         assert_eq!(doc(&format!("{tree}{deep}")), None);
-        assert_eq!(read(&svg(&format!("{tree}{deep}"))).err(), Some(Refusal::TooMuch));
+        assert_eq!(read(&svg(&format!("{tree}{deep}"))).err(), Some(Refusal::TooNested));
     }
 
     /// Geometry at the ends of what a float holds is drawn without panicking, when what it costs
