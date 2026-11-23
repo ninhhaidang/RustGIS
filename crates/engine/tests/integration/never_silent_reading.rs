@@ -147,6 +147,11 @@ fn dxf(entities: &[&str]) -> String {
     words.join("\n") + "\n"
 }
 
+/// The middle vertex alone differs between the clean and lossy POLYLINE pair.
+fn dxf_polyline(middle: &str) -> String {
+    format!("0 POLYLINE 8 0 66 1 70 0 0 VERTEX 8 0 10 0 20 0 0 VERTEX 8 0 {middle} 0 VERTEX 8 0 10 2 20 2 0 SEQEND")
+}
+
 /// A MapInfo MIF file of these objects, with one integer column.
 fn mif(objects: &str) -> String {
     format!("Version 300\nCoordSys Earth Projection 1, 104\nColumns 1\n  id Integer\nData\n{objects}")
@@ -210,8 +215,6 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         let body: String = coords.iter().map(|c| format!("<gx:coord>{c}</gx:coord>")).collect();
         format!(r#"<gx:Track xmlns:gx="http://www.google.com/kml/ext/2.2">{body}</gx:Track>"#)
     };
-    let polyline =
-        |middle: &str| format!("0 POLYLINE 8 0 66 1 70 0 0 VERTEX 8 0 10 0 20 0 0 VERTEX 8 0 {middle} 0 VERTEX 8 0 10 2 20 2 0 SEQEND");
     let parcel = r#"<Parcels><Parcel name="Lot"><CoordGeom><Line><Start>0 0</Start><End>0 10</End></Line><Line><Start>0 10</Start><End>10 10</End></Line><Line><Start>10 10</Start><End>0 0</End></Line></CoordGeom></Parcel></Parcels>"#;
     let cg_points = |second: &str| format!(r#"<CgPoints><CgPoint name="a">0 0</CgPoint><CgPoint name="b">{second}</CgPoint></CgPoints>"#);
 
@@ -471,9 +474,9 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         case(
             "DXF: an unreadable polyline vertex",
             "a.dxf",
-            dxf(&[&polyline("10 1 20 1")]),
-            dxf(&[&polyline("10 1")]),
-            Silent("the vertex is skipped and the line drawn without it"),
+            dxf(&[&dxf_polyline("10 1 20 1")]),
+            dxf(&[&dxf_polyline("10 1")]),
+            Imported("1 unreadable POLYLINE vertex was left out of its line"),
         ),
         // LandXML.
         case(
@@ -809,6 +812,41 @@ fn check_dxf_height(ds: &rustgis_engine::data::Dataset) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A damaged middle vertex leaves both endpoints, the drawing CRS and every attribute intact.
+fn check_dxf_vertex(ds: &rustgis_engine::data::Dataset, lossy: bool) -> std::io::Result<()> {
+    use rustgis_engine::data::raster::Crs;
+    use rustgis_engine::data::{Geometry, Value};
+    use rustgis_engine::geom::Coord;
+    let mut points = vec![Coord::new(0.0, 0.0)];
+    if !lossy {
+        points.push(Coord::new(1.0, 1.0));
+    }
+    points.push(Coord::new(2.0, 2.0));
+    let names: Vec<&str> = ds.fields.iter().map(|f| f.name.as_str()).collect();
+    if names != ["layer", "entity", "color", "linetype", "text", "height", "rotation", "block", "elevation", "paperspace"]
+        || ds.features.len() != 1
+        || ds.held_in != Crs::LonLat
+        || ds.zm_dropped
+        || ds.features[0].geometry != Some(Geometry::Line(vec![points]))
+        || ds.features[0].attrs
+            != [
+                Value::Text("0".into()),
+                Value::Text("POLYLINE".into()),
+                Value::Int(7),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Float(0.0),
+                Value::Bool(false),
+            ]
+    {
+        return Err(std::io::Error::other(format!("DXF vertex fixture retained unexpected data: {ds:?}")));
+    }
+    Ok(())
+}
+
 /// The PBF variants differ only in the discarded dimension; fractional XY and attributes survive.
 fn check_feature_pbf(ds: &rustgis_engine::data::Dataset, lossy: bool) -> std::io::Result<()> {
     use rustgis_engine::data::{Field, FieldType, Geometry, GeometryType, Value};
@@ -955,6 +993,18 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     let mut dxf_messages = vec![
         "a DXF drawing doesn't say its coordinate system (give \"crs\", such as EPSG:2263): coordinates are kept as they are".to_string(),
     ];
+    let dxf_vertex_lossy = file == "a.dxf" && content == dxf(&[&dxf_polyline("10 1")]).as_bytes();
+    let dxf_vertex = dxf_vertex_lossy || (file == "a.dxf" && content == dxf(&[&dxf_polyline("10 1 20 1")]).as_bytes());
+    if dxf_vertex_lossy {
+        dxf_messages.push("1 unreadable POLYLINE vertex was left out of its line".into());
+    }
+    if dxf_vertex {
+        let native = rustgis_engine::data::dxf::read(file, content, &Default::default()).map_err(std::io::Error::other)?;
+        if native.len() != 1 || native[0].1.skipped != 0 || native[0].1.messages != dxf_messages {
+            return Err(std::io::Error::other(format!("DXF vertex native report: {native:?}")));
+        }
+        check_dxf_vertex(&native[0].0, dxf_vertex_lossy)?;
+    }
     if dxf_lossy {
         dxf_messages.push("1 feature lost varying Z coordinates; only the elevation attribute is kept".into());
     }
@@ -1039,6 +1089,16 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         // Require the exact loss count and subject, and no additional notice.
         if notices.iter().map(|n| n.text.clone()).collect::<Vec<_>>() != pbf_messages {
             return Err(std::io::Error::other(format!("feature-service PBF has the wrong command notices: {notices:?}")));
+        }
+    }
+    if dxf_vertex {
+        if s.map().layers.len() != 1 || !s.project.tables.is_empty() {
+            return Err(std::io::Error::other("DXF vertex fixture didn't add exactly one layer"));
+        }
+        check_dxf_vertex(&s.map().layers[0].dataset, dxf_vertex_lossy)?;
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        if said != dxf_messages {
+            return Err(std::io::Error::other(format!("DXF vertex command notices: {said:?}")));
         }
     }
     if dxf_height {

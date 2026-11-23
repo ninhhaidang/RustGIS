@@ -406,6 +406,27 @@ struct Ent {
     /// In paper space (a layout), not the model (group 67).
     paper: bool,
     shape: Shape,
+    loss: PathLoss,
+}
+
+/// Items omitted while recovering an entity; charged only to surviving placements.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PathLoss {
+    unreadable_vertices: u64,
+    capped: u64,
+    missing_y: u64,
+    invalid_z: u64,
+    short_rings: u64,
+}
+
+impl PathLoss {
+    fn add(&mut self, other: Self) {
+        self.unreadable_vertices = self.unreadable_vertices.saturating_add(other.unreadable_vertices);
+        self.capped = self.capped.saturating_add(other.capped);
+        self.missing_y = self.missing_y.saturating_add(other.missing_y);
+        self.invalid_z = self.invalid_z.saturating_add(other.invalid_z);
+        self.short_rings = self.short_rings.saturating_add(other.short_rings);
+    }
 }
 
 /// The entity kinds drawn, by name (the strings features keep).
@@ -443,10 +464,15 @@ fn sweep(s: f64, e: f64, full: f64) -> f64 {
     if d.is_finite() && d > 1e-12 { d } else { full }
 }
 
+/// The sampled segments of an arc, shared by drawing and omitted-coordinate counts.
+fn arc_steps(sweep: f64) -> usize {
+    ((sweep.abs() / TAU) * CIRCLE).ceil().clamp(2.0, CIRCLE) as usize
+}
+
 /// Points of an arc around `c` of radius `r` from angle `a0` sweeping `sweep` (radians), in the
 /// plane z = `z`.
 fn arc(c: [f64; 2], r: f64, a0: f64, sweep: f64, z: f64) -> Vec<P3> {
-    let n = ((sweep.abs() / TAU) * CIRCLE).ceil().clamp(2.0, CIRCLE) as usize;
+    let n = arc_steps(sweep);
     (0..=n)
         .map(|k| {
             let a = a0 + sweep * k as f64 / n as f64;
@@ -455,15 +481,24 @@ fn arc(c: [f64; 2], r: f64, a0: f64, sweep: f64, z: f64) -> Vec<P3> {
         .collect()
 }
 
+/// The sweep of a bulge, or no arc for the reader's straight and degenerate cases.
+fn bulge_sweep(chord: f64, b: f64) -> Option<f64> {
+    if b.abs() < 1e-9 || chord <= 0.0 || !b.is_finite() || b.abs() > 1e6 { None } else { Some(4.0 * b.atan()) }
+}
+
+/// The number of coordinates after a segment's start, without allocating its sampled points.
+fn bulge_steps(p1: P3, p2: P3, b: f64) -> usize {
+    let (dx, dy) = (p2[0] - p1[0], p2[1] - p1[1]);
+    let chord = (dx * dx + dy * dy).sqrt();
+    bulge_sweep(chord, b).map_or(1, arc_steps)
+}
+
 /// The points of a bulged segment after `p1`, up to `p2` (a bulge is the tangent of a quarter of
 /// the arc's angle; positive turns counter-clockwise).
 fn bulge(p1: P3, p2: P3, b: f64) -> Vec<P3> {
     let (dx, dy) = (p2[0] - p1[0], p2[1] - p1[1]);
     let chord = (dx * dx + dy * dy).sqrt();
-    if b.abs() < 1e-9 || chord <= 0.0 || !b.is_finite() || b.abs() > 1e6 {
-        return vec![p2];
-    }
-    let theta = 4.0 * b.atan();
+    let Some(theta) = bulge_sweep(chord, b) else { return vec![p2] };
     let r = chord / (2.0 * (theta / 2.0).sin()).abs();
     let h = (chord / 2.0) * (1.0 - b * b) / (2.0 * b);
     let (ux, uy) = (dx / chord, dy / chord);
@@ -477,22 +512,26 @@ fn bulge(p1: P3, p2: P3, b: f64) -> Vec<P3> {
     pts
 }
 
-/// Vertices with their bulges as a path: each bulged segment drawn as an arc; closed back to the
-/// first vertex when `closed`.
-fn bulged(vs: &[(P3, f64)], closed: bool) -> Vec<P3> {
+/// Vertices with their bulges as a path, closed back to the first vertex when `closed`.
+/// Preserve the existing sampled prefix and count every coordinate in unvisited segments.
+fn bulged(vs: &[(P3, f64)], closed: bool, omitted: &mut u64) -> Option<Vec<P3>> {
     let mut out: Vec<P3> = Vec::new();
-    let Some(first) = vs.first() else { return out };
+    let Some(first) = vs.first() else { return Some(out) };
     out.push(first.0);
     let n = vs.len();
     let segs = if closed { n } else { n.saturating_sub(1) };
     for i in 0..segs {
+        if i % 1024 == 0 {
+            crate::progress::check().ok()?;
+        }
         let (Some(a), Some(b)) = (vs.get(i), vs.get((i + 1) % n)) else { break };
-        out.extend(bulge(a.0, b.0, a.1));
         if out.len() > MAX_VERTICES {
-            break;
+            *omitted += bulge_steps(a.0, b.0, a.1) as u64;
+        } else {
+            out.extend(bulge(a.0, b.0, a.1));
         }
     }
-    out
+    Some(out)
 }
 
 /// A B-spline's points (de Boor), rational when `weights` are given: `samples` along it.
@@ -609,7 +648,8 @@ fn plain_text(s: &str) -> String {
 }
 
 /// Reads one record as an entity (POLYLINE with its VERTEX records). `None` when it can't be read.
-fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
+/// Cancellation also stops the Option-based builders; the caller checks and propagates it.
+fn entity(kind: &'static str, g: &G, vertices: &[Record], loss: &mut PathLoss) -> Option<Shape> {
     let ocs = Xf::ocs(g.extrusion());
     Some(match kind {
         "POINT" => Shape::Point(g.pt(10)?),
@@ -617,12 +657,21 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
         "LWPOLYLINE" => {
             let z = g.f(38).unwrap_or(0.0);
             let mut vs: Vec<(P3, f64)> = Vec::new();
-            for (c, v) in g.p {
+            let mut tail = false;
+            for (index, (c, v)) in g.p.iter().enumerate() {
+                if index % 1024 == 0 {
+                    crate::progress::check().ok()?;
+                }
+                if vs.len() >= MAX_VERTICES && (*c == 10 || tail) {
+                    if *c == 10 {
+                        // Count source vertices at the cap, including ones whose coordinates cannot be read.
+                        loss.capped += 1;
+                        tail = true;
+                    }
+                    continue;
+                }
                 match c {
                     10 => {
-                        if vs.len() >= MAX_VERTICES {
-                            break;
-                        }
                         vs.push(([num(v)?, f64::NAN, z], 0.0));
                     }
                     20 => vs.last_mut()?.0[1] = num(v)?,
@@ -634,7 +683,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
                 return None;
             }
             let closed = g.i(70).unwrap_or(0) & 1 == 1;
-            let pts: Vec<P3> = bulged(&vs, closed).into_iter().map(|p| ocs.apply(p)).collect();
+            let pts: Vec<P3> = bulged(&vs, closed, &mut loss.capped)?.into_iter().map(|p| ocs.apply(p)).collect();
             Shape::line(pts)
         }
         "POLYLINE" => {
@@ -649,24 +698,36 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             let three_d = flags & 8 != 0;
             let z = g.pt(10).map(|p| p[2]).unwrap_or(0.0);
             let curved = flags & 6 != 0;
-            let vs: Vec<(P3, f64)> = vertices
-                .iter()
-                .take(MAX_VERTICES)
-                .filter_map(|v| {
-                    let vg = G { p: &v.groups };
-                    let vf = vg.i(70).unwrap_or(0);
-                    // A smoothed polyline's frame (control) points aren't on the curve.
-                    if curved && vf & 16 != 0 {
-                        return None;
-                    }
-                    let mut p = vg.pt(10)?;
-                    if !three_d {
-                        p[2] = z;
-                    }
-                    Some((p, vg.f(42).unwrap_or(0.0)))
-                })
-                .collect();
-            let pts = bulged(&vs, flags & 1 == 1);
+            let mut vs = Vec::new();
+            for (index, v) in vertices.iter().enumerate() {
+                if index % 1024 == 0 {
+                    crate::progress::check().ok()?;
+                }
+                let vg = G { p: &v.groups };
+                let vf = vg.i(70).unwrap_or(0);
+                // A smoothed polyline's frame (control) points aren't on the curve.
+                if curved && vf & 16 != 0 {
+                    continue;
+                }
+                if index >= MAX_VERTICES {
+                    loss.capped += 1;
+                    continue;
+                }
+                let Some(mut p) = vg.pt(10) else {
+                    loss.unreadable_vertices += 1;
+                    continue;
+                };
+                let invalid_z = three_d && vg.s(30).is_some() && vg.f(30).is_none();
+                if invalid_z {
+                    loss.invalid_z += 1;
+                    continue;
+                }
+                if !three_d {
+                    p[2] = z;
+                }
+                vs.push((p, vg.f(42).unwrap_or(0.0)));
+            }
+            let pts = bulged(&vs, flags & 1 == 1, &mut loss.capped)?;
             Shape::line(if three_d { pts } else { pts.into_iter().map(|p| ocs.apply(p)).collect() })
         }
         "CIRCLE" => {
@@ -722,13 +783,32 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
                 }
                 last = Some(*c);
             }
-            ctrl.retain(|p| p[1].is_finite());
-            fit.retain(|p| p[1].is_finite());
+            let mut missing_ctrl = 0u64;
+            let mut missing_fit = 0u64;
+            ctrl.retain(|p| {
+                let keep = p[1].is_finite();
+                missing_ctrl += u64::from(!keep);
+                keep
+            });
+            fit.retain(|p| {
+                let keep = p[1].is_finite();
+                missing_fit += u64::from(!keep);
+                keep
+            });
             let samples = (ctrl.len() * 8).clamp(16, 4000);
             match spline(degree, &knots, &ctrl, &weights, samples) {
-                Some(points) => Shape::Line { points, constant_z: ctrl.first().is_some_and(|first| ctrl.iter().all(|p| p[2] == first[2])) },
-                None if fit.len() >= 2 => Shape::line(fit),
-                None if ctrl.len() >= 2 => Shape::line(ctrl),
+                Some(points) => {
+                    loss.missing_y += missing_ctrl;
+                    Shape::Line { points, constant_z: ctrl.first().is_some_and(|first| ctrl.iter().all(|p| p[2] == first[2])) }
+                }
+                None if fit.len() >= 2 => {
+                    loss.missing_y += missing_fit;
+                    Shape::line(fit)
+                }
+                None if ctrl.len() >= 2 => {
+                    loss.missing_y += missing_ctrl;
+                    Shape::line(ctrl)
+                }
                 None => return None,
             }
         }
@@ -778,7 +858,7 @@ fn entity(kind: &'static str, g: &G, vertices: &[Record]) -> Option<Shape> {
             Shape::Polygon(ring)
         }
         "HATCH" => Shape::Rings {
-            rings: hatch(g)?.into_iter().map(|r| r.into_iter().map(|p| ocs.apply(p)).collect()).collect(),
+            rings: hatch(g, loss)?.into_iter().map(|r| r.into_iter().map(|p| ocs.apply(p)).collect()).collect(),
             constant_z: ocs.0[2][0] == 0.0 && ocs.0[2][1] == 0.0,
         },
         "INSERT" => Shape::Insert(Insert {
@@ -948,7 +1028,7 @@ impl Cursor<'_, '_> {
 
 /// A HATCH's boundary paths as rings (polyline paths with bulges, or edges: lines, arcs, elliptic
 /// arcs and splines), in its object coordinates at its elevation.
-fn hatch(g: &G) -> Option<Vec<Vec<P3>>> {
+fn hatch(g: &G, loss: &mut PathLoss) -> Option<Vec<Vec<P3>>> {
     let z = g.pt(10).map(|p| p[2]).unwrap_or(0.0);
     let mut cur = Cursor { p: g.p, at: 0 };
     let paths = cur.count(91)?;
@@ -966,7 +1046,7 @@ fn hatch(g: &G) -> Option<Vec<Vec<P3>>> {
                 let b = if has_bulge { peek_bulge(&mut cur) } else { 0.0 };
                 vs.push(([p[0], p[1], z], b));
             }
-            ring = bulged(&vs, true);
+            ring = bulged(&vs, true, &mut loss.capped)?;
         } else {
             let edges = cur.count(93)?;
             for _ in 0..edges {
@@ -1034,6 +1114,8 @@ fn hatch(g: &G) -> Option<Vec<Vec<P3>>> {
         }
         if ring.len() >= 3 {
             rings.push(ring);
+        } else {
+            loss.short_rings += 1;
         }
     }
     (!rings.is_empty()).then_some(rings)
@@ -1153,7 +1235,11 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
                     *d.unread.entry(r.kind.to_string()).or_insert(0) += 1;
                     continue;
                 };
-                let Some(shape) = entity(kind, &g, vertices) else {
+                let mut loss = PathLoss::default();
+                let shape = entity(kind, &g, vertices, &mut loss);
+                // Entity builders use Option for malformed data; cancellation must escape as an error.
+                crate::progress::check()?;
+                let Some(shape) = shape else {
                     d.bad += 1;
                     continue;
                 };
@@ -1177,6 +1263,7 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
                     height: if matches!(kind, "TEXT" | "MTEXT" | "ATTRIB" | "ATTDEF") { g.f(40) } else { None },
                     rotation: if matches!(kind, "TEXT" | "MTEXT" | "ATTRIB" | "ATTDEF") { g.f(50) } else { None },
                     shape,
+                    loss,
                 };
                 match &mut block {
                     Some((_, _, ents)) if section == "BLOCKS" => ents.push(e),
@@ -1209,6 +1296,8 @@ struct Out {
     count: usize,
     /// One flag per emitted feature, by geometry layer; counted only after CRS filtering.
     varying_z: [Vec<bool>; 3],
+    /// Sparse recovery metadata, indexed before CRS filtering in each geometry layer.
+    losses: [Vec<(usize, PathLoss)>; 3],
     capped: bool,
     cut: usize,
     /// Entity placements visited so far ([`MAX_STEPS`]), and whether the budget ran out.
@@ -1344,6 +1433,7 @@ fn emit(
                             rotation: None,
                             paper: e.paper,
                             shape: s.clone(),
+                            loss: PathLoss::default(),
                         })
                         .collect();
                     emit(d, &drawn, xf, from, depth + 1, stack, opts, out)?;
@@ -1411,6 +1501,7 @@ fn emit(
         out.vertices += n;
         let preserves_z = xf.0[2][0] == 0.0 && xf.0[2][1] == 0.0;
         let tr = |ps: &[P3]| -> Vec<P3> { ps.iter().map(|p| xf.apply(*p)).collect() };
+        let mut loss = e.loss;
         let (geometry, first, target, varying_z) = match &e.shape {
             Shape::Point(p) => {
                 let p = xf.apply(*p);
@@ -1439,6 +1530,12 @@ fn emit(
             Shape::Rings { rings, constant_z } => {
                 let rings: Vec<Vec<P3>> = rings.iter().map(|r| tr(r)).filter(|r| finite(r)).collect();
                 let first = rings.first().and_then(|r| r.first()).copied();
+                if e.kind == "HATCH" {
+                    loss.short_rings += rings
+                        .iter()
+                        .filter(|r| r.len() < 4 && (r.len() < 3 || r.first().map(|p| xy(*p)) == r.last().map(|p| xy(*p))))
+                        .count() as u64;
+                }
                 let g = if e.kind == "POLYLINE" {
                     // A polyface mesh: a polygon per face.
                     let polys: Vec<Vec<Vec<Coord>>> =
@@ -1479,6 +1576,11 @@ fn emit(
             1 => &mut out.lines,
             _ => &mut out.polygons,
         };
+        if loss != PathLoss::default()
+            && let Some(losses) = out.losses.get_mut(target)
+        {
+            losses.push((ds.features.len(), loss));
+        }
         ds.push_next(Some(geometry), attrs);
         if let Some(flags) = out.varying_z.get_mut(target) {
             flags.push(varying_z);
@@ -1511,6 +1613,7 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         polygons: Dataset::new(format!("{name} polygons"), GeometryType::Polygon, fields()),
         count: 0,
         varying_z: Default::default(),
+        losses: Default::default(),
         capped: false,
         cut: 0,
         steps: 0,
@@ -1582,7 +1685,8 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
     };
     let mut layers: Vec<(Dataset, ReadReport)> = Vec::new();
     let mut varying_count = 0usize;
-    for (mut ds, flags) in [out.points, out.lines, out.polygons].into_iter().zip(out.varying_z) {
+    let mut recovered = PathLoss::default();
+    for ((mut ds, flags), losses) in [out.points, out.lines, out.polygons].into_iter().zip(out.varying_z).zip(out.losses) {
         if ds.features.is_empty() {
             continue;
         }
@@ -1605,23 +1709,59 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
                     }
                 }
             }
+            for (index, loss) in &losses {
+                if ds.features.get(*index).is_some_and(|f| f.geometry.is_some()) {
+                    recovered.add(*loss);
+                }
+            }
             ds.features.retain(|f| f.geometry.is_some());
             if lost > 0 {
                 rep.messages.push(format!("{lost} features couldn't be converted from {}", c.label()));
             }
         }
         if transformer.is_none() {
+            for (_, loss) in losses {
+                recovered.add(loss);
+            }
             let count = flags.iter().filter(|&&varying| varying).count();
             ds.zm_dropped = count > 0;
             varying_count += count;
         }
         layers.push((ds, rep));
     }
+    if let Some((_, report)) = layers.first_mut() {
+        for (count, single, plural, reason) in [
+            (recovered.capped, "polyline path coordinate was", "polyline path coordinates were", "left out at the per-entity vertex limit"),
+            (recovered.missing_y, "vertex without Y was", "vertices without Y were", "left out of spline paths"),
+            (
+                recovered.invalid_z,
+                "POLYLINE vertex with unreadable supplied Z was",
+                "POLYLINE vertices with unreadable supplied Z were",
+                "left out",
+            ),
+            (recovered.short_rings, "short HATCH boundary ring was", "short HATCH boundary rings were", "left out of polygons"),
+        ] {
+            if count > 0 {
+                let subject = if count == 1 { single } else { plural };
+                report.messages.push(format!("{count} {subject} {reason}"));
+            }
+        }
+    }
     if varying_count > 0
         && let Some((_, report)) = layers.first_mut()
     {
         let subject = if varying_count == 1 { "feature" } else { "features" };
         report.messages.push(format!("{varying_count} {subject} lost varying Z coordinates; only the elevation attribute is kept"));
+    }
+    if recovered.unreadable_vertices > 0
+        && let Some((_, report)) = layers.first_mut()
+    {
+        let (subject, action) = if recovered.unreadable_vertices == 1 {
+            ("vertex", "was left out of its line")
+        } else {
+            ("vertices", "were left out of their lines")
+        };
+        report.messages.push(format!("{} unreadable POLYLINE {subject} {action}", recovered.unreadable_vertices));
     }
     if layers.is_empty() {
         return Err(DataError::Format(match opts.layer {
@@ -1678,6 +1818,248 @@ mod tests {
     /// A DXF from (code, value) pairs.
     fn dxf(pairs: &[(i32, &str)]) -> Vec<u8> {
         pairs.iter().map(|(c, v)| format!("{c:>3}\n{v}\n")).collect::<String>().into_bytes()
+    }
+
+    /// A bulged HATCH boundary preserves its capped prefix and counts the unvisited arc samples.
+    #[test]
+    fn hatch_bulge_tail_is_counted_at_the_vertex_limit() {
+        use std::fmt::Write as _;
+        // Every semicircle contributes 36 sampled coordinates after its starting point.
+        let kept_segments = (MAX_VERTICES - 1).div_ceil(36);
+        let vertices = (kept_segments + 2).div_ceil(2) * 2;
+        let mut text = format!("0\nSECTION\n2\nENTITIES\n0\nHATCH\n91\n1\n92\n2\n72\n1\n73\n1\n93\n{vertices}\n");
+        for i in 0..vertices {
+            writeln!(text, "10\n{}\n20\n0\n42\n1", i % 2).unwrap();
+        }
+        text.push_str("0\nENDSEC\n0\nEOF\n");
+        let layers = read("hatch.dxf", text.as_bytes(), &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].0.features.len(), 1);
+        let Some(Geometry::Polygon(parts)) = &layers[0].0.features[0].geometry else { panic!("HATCH polygon") };
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 1);
+        assert_eq!(parts[0][0].len(), 1 + kept_segments * 36 + kept_segments % 2);
+        assert_eq!(parts[0][0].first(), Some(&Coord::new(0., 0.)));
+        assert_eq!(layers[0].1.skipped, 0);
+        assert_eq!(
+            layers[0].1.messages,
+            [format!("{} polyline path coordinates were left out at the per-entity vertex limit", (vertices - kept_segments) * 36,)]
+        );
+    }
+
+    /// Each witness retains useful geometry; only losses in its chosen representation count.
+    #[test]
+    fn spline_vertices_without_y_are_counted_in_the_path_drawn() {
+        for kind in ["SPLINE", "HELIX"] {
+            for (x, y) in [(10, 20), (11, 21)] {
+                let bytes = dxf(&[
+                    (0, "SECTION"),
+                    (2, "ENTITIES"),
+                    (0, kind),
+                    (71, "3"),
+                    (x, "0"),
+                    (y, "0"),
+                    (x, "1"),
+                    (x, "2"),
+                    (y, "2"),
+                    (0, "ENDSEC"),
+                    (0, "EOF"),
+                ]);
+                let layers = read("a.dxf", &bytes, &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+                assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(0., 0.), Coord::new(2., 2.)]])));
+                assert_eq!(layers[0].1.messages, ["1 vertex without Y was left out of spline paths"]);
+                assert_eq!(layers[0].1.skipped, 0);
+            }
+        }
+    }
+
+    /// Invalid supplied Z is unreadable only on the 3D path; omission still means zero.
+    #[test]
+    fn supplied_invalid_3d_vertex_z_is_omitted_but_optional_z_stays_zero() {
+        for (flags, z, lost) in [("8", Some("bad"), true), ("8", None, false), ("0", Some("bad"), false)] {
+            let mut pairs = vec![(0, "SECTION"), (2, "ENTITIES"), (0, "POLYLINE"), (70, flags), (0, "VERTEX"), (10, "0"), (20, "0")];
+            if let Some(z) = z {
+                pairs.push((30, z));
+            }
+            pairs.extend([
+                (0, "VERTEX"),
+                (10, "1"),
+                (20, "1"),
+                (0, "VERTEX"),
+                (10, "2"),
+                (20, "2"),
+                (0, "SEQEND"),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let layers = read("a.dxf", &dxf(&pairs), &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+            let Some(Geometry::Line(parts)) = &layers[0].0.features[0].geometry else { panic!("line") };
+            assert_eq!(parts[0].len(), if lost { 2 } else { 3 });
+            assert_eq!(layers[0].0.value(0, 8), &Value::Float(0.));
+            assert_eq!(layers[0].1.messages, if lost { vec!["1 POLYLINE vertex with unreadable supplied Z was left out"] } else { vec![] });
+            assert_eq!(layers[0].1.skipped, 0);
+        }
+    }
+
+    /// Both builder-rejected and closed two-point boundaries disappear beside a valid triangle.
+    #[test]
+    fn short_hatch_boundary_rings_are_counted() {
+        for short in [vec!["1"], vec!["2"], vec!["1", "2"]] {
+            let count = short.len();
+            let paths = (count + 1).to_string();
+            let mut p = vec![(0, "SECTION"), (2, "ENTITIES"), (0, "HATCH"), (91, paths.as_str())];
+            for n in std::iter::once("3").chain(short) {
+                p.extend([(92, "2"), (72, "0"), (73, "1"), (93, n), (10, "0"), (20, "0")]);
+                if n != "1" {
+                    p.extend([(10, "2"), (20, "0")]);
+                }
+                if n == "3" {
+                    p.extend([(10, "0"), (20, "2")]);
+                }
+            }
+            p.extend([(0, "ENDSEC"), (0, "EOF")]);
+            let layers = read("a.dxf", &dxf(&p), &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+            assert_eq!(
+                layers[0].0.features[0].geometry,
+                Some(Geometry::Polygon(vec![vec![vec![Coord::new(0., 0.), Coord::new(2., 0.), Coord::new(0., 2.), Coord::new(0., 0.)]]]))
+            );
+            let subject = if count == 1 { "ring was" } else { "rings were" };
+            assert_eq!(layers[0].1.messages, [format!("{count} short HATCH boundary {subject} left out of polygons")]);
+            assert_eq!(layers[0].1.skipped, 0);
+        }
+    }
+
+    /// Counting an expansion tail must still stop after its output prefix has hit the cap.
+    #[test]
+    fn counting_the_bulge_tail_stops_when_cancelled() {
+        let vs = vec![([0., 0., 0.], 0.); MAX_VERTICES + 2048];
+        let probe = std::sync::Arc::new(crate::progress::tests::Counted {
+            after_checks: Some((MAX_VERTICES / 1024 + 1) as u64),
+            ..Default::default()
+        });
+        let _guard = crate::progress::install(Some(probe));
+        let mut omitted = 0;
+        assert!(bulged(&vs, false, &mut omitted).is_none());
+        assert!(omitted > 0, "cancellation reached the counting tail");
+    }
+
+    /// Generate over-limit sources transiently rather than keeping million-vertex fixtures.
+    #[test]
+    fn polyline_vertex_limits_count_omitted_coordinates() {
+        use std::fmt::Write as _;
+        for kind in ["LWPOLYLINE", "POLYLINE"] {
+            for bulge in [false, true] {
+                for unreadable_tail in [false, true] {
+                    let mut text = format!("0\nSECTION\n2\nENTITIES\n0\n{kind}\n");
+                    if kind == "POLYLINE" && unreadable_tail {
+                        text.push_str("70\n10\n");
+                    }
+                    for _ in 0..MAX_VERTICES {
+                        if kind == "POLYLINE" {
+                            text.push_str("0\nVERTEX\n");
+                        }
+                        text.push_str("10\n0\n20\n0\n");
+                    }
+                    let tail: &[&str] = if !unreadable_tail {
+                        &["10\n0\n20\n0\n"]
+                    } else if kind == "POLYLINE" {
+                        &["10\nbad\n20\n0\n", "10\n0\n20\nbad\n", "10\n0\n20\n0\n30\nbad\n"]
+                    } else {
+                        &["10\nbad\n20\n0\n", "10\n0\n20\nbad\n", "10\n0\n"]
+                    };
+                    for vertex in tail {
+                        if kind == "POLYLINE" {
+                            text.push_str("0\nVERTEX\n");
+                        }
+                        text.push_str(vertex);
+                    }
+                    if kind == "POLYLINE" && unreadable_tail {
+                        // A smoothed frame point is not an on-curve vertex, even beyond the limit.
+                        text.push_str("0\nVERTEX\n70\n16\n10\nbad\n");
+                    }
+                    // Distinct endpoints let the first segment expand beyond one vertex.
+                    if bulge {
+                        let start = if kind == "POLYLINE" { "0\nVERTEX\n10\n0\n20\n0\n" } else { "10\n0\n20\n0\n" };
+                        let at = text.find(start).unwrap() + start.len();
+                        text.insert_str(at, "42\n1\n");
+                        let at = at + "42\n1\n".len();
+                        let tail = &text[at..];
+                        let offset = tail.find("10\n0\n").unwrap();
+                        text.replace_range(at + offset..at + offset + 5, "10\n1\n");
+                    }
+                    if kind == "POLYLINE" {
+                        text.push_str("0\nSEQEND\n");
+                    }
+                    writeln!(text, "0\nENDSEC\n0\nEOF").unwrap();
+                    let layers = read("a.dxf", text.as_bytes(), &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+                    let Some(Geometry::Line(parts)) = &layers[0].0.features[0].geometry else { panic!("line") };
+                    let held = parts[0].len();
+                    let total = MAX_VERTICES + tail.len() + if bulge { 35 } else { 0 };
+                    assert_eq!(
+                        layers[0].1.messages,
+                        [format!(
+                            "{} polyline path {} left out at the per-entity vertex limit",
+                            total - held,
+                            if total - held == 1 { "coordinate was" } else { "coordinates were" }
+                        )]
+                    );
+                    assert_eq!(layers[0].1.skipped, 0);
+                }
+            }
+        }
+    }
+
+    /// Unused fit/control arrays, hidden entities and wholly unusable shapes have no partial loss.
+    #[test]
+    fn path_losses_follow_only_the_drawn_representation_and_retained_placements() {
+        let opts = Options { crs: Some(Crs::LonLat), ..Options::default() };
+        // A valid linear spline ignores incomplete fit data. A fit fallback ignores incomplete controls.
+        for body in ["0 SPLINE 71 1 40 0 40 0 40 1 40 1 10 0 20 0 10 2 20 2 11 1", "0 SPLINE 71 3 10 1 11 0 21 0 11 2 21 2"] {
+            let text = format!("0 SECTION 2 ENTITIES {body} 0 ENDSEC 0 EOF").split_whitespace().collect::<Vec<_>>().join("\n");
+            let layers = read("a.dxf", text.as_bytes(), &opts).unwrap();
+            assert!(layers[0].1.messages.is_empty(), "{:?}", layers[0].1.messages);
+            assert_eq!(layers[0].1.skipped, 0);
+        }
+        for body in [
+            "0 SPLINE 71 3 11 0 21 0 11 1",
+            "0 POLYLINE 70 8 0 VERTEX 10 0 20 0 30 bad 0 VERTEX 10 1 20 1 0 SEQEND",
+            "0 HATCH 91 1 92 2 72 0 73 1 93 2 10 0 20 0 10 1 20 1",
+        ] {
+            let text =
+                format!("0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 {body} 0 ENDSEC 0 EOF").split_whitespace().collect::<Vec<_>>().join("\n");
+            let layers = read("a.dxf", text.as_bytes(), &opts).unwrap();
+            assert_eq!(layers.iter().map(|(d, _)| d.features.len()).sum::<usize>(), 1);
+            assert_eq!(layers[0].1.skipped, 1);
+            assert_eq!(
+                layers[0].1.messages,
+                ["1 entities couldn't be read or placed (missing blocks, blocks nested too deep or in a cycle) and were left out"]
+            );
+        }
+        // Losses follow the two surviving block copies; the paper-space and filtered copy stay quiet.
+        let text = "0 SECTION 2 BLOCKS 0 BLOCK 2 B 0 SPLINE 71 3 11 0 21 0 11 1 11 2 21 2 0 ENDBLK 0 ENDSEC
+            0 SECTION 2 ENTITIES 0 INSERT 2 B 8 keep 70 2 44 5 0 INSERT 2 B 8 omit 0 INSERT 2 B 8 keep 67 1 0 ENDSEC 0 EOF"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let layers = read("a.dxf", text.as_bytes(), &Options { layer: Some("keep"), ..opts }).unwrap();
+        assert_eq!(layers[0].0.features.len(), 2);
+        assert_eq!(
+            layers[0].1.messages,
+            [
+                "1 entities of the drawing's layouts (paper space) were left out; add the drawing with \"paperSpace\" to draw them",
+                "2 vertices without Y were left out of spline paths",
+            ]
+        );
+        // A CRS-rejected placement contributes no partial counters.
+        let text = "0 SECTION 2 ENTITIES 0 POINT 10 0 20 0 0 SPLINE 71 3 11 0 21 100 11 1 11 2 21 101 0 ENDSEC 0 EOF"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let layers = read("a.dxf", text.as_bytes(), &Options { crs: Some(Crs::from_epsg(4269).unwrap()), ..Options::default() }).unwrap();
+        let messages: Vec<&str> = layers.iter().flat_map(|(_, report)| &report.messages).map(String::as_str).collect();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].starts_with("1 features couldn't be converted from "));
+        assert!(!messages[0].contains("without Y"));
     }
 
     #[test]
@@ -2490,6 +2872,82 @@ mod tests {
         let e = read("blocks.dxf", &only_block, &Options { blocks: false, ..Options::default() }).unwrap_err().to_string();
         assert!(e.contains("\"blocks\": true"), "{e}");
         assert_eq!(read("blocks.dxf", &only_block, &Options::default()).unwrap()[0].0.features.len(), 1);
+    }
+
+    /// Unused, filtered, paper-space and CRS-rejected copies do not inflate the vertex count.
+    #[test]
+    fn unreadable_vertices_follow_retained_placements() {
+        let polyline = "0 POLYLINE 8 0 70 2 10 0 20 0 30 5
+            0 VERTEX 10 0 20 0 0 VERTEX 10 1 0 VERTEX 10 bad 20 1
+            0 VERTEX 70 16 10 bad 0 VERTEX 10 2 20 2 0 SEQEND";
+        let text = format!(
+            "0 SECTION 2 BLOCKS 0 BLOCK 2 B {polyline} 0 ENDBLK
+            0 BLOCK 2 Unused {polyline} 0 ENDBLK 0 ENDSEC 0 SECTION 2 ENTITIES
+            0 INSERT 8 Keep 2 B 10 10 20 20 70 2 44 4
+            0 INSERT 8 Other 2 B 10 10 20 20
+            0 INSERT 8 Keep 67 1 2 B 10 10 20 20
+            0 INSERT 8 Keep 2 B 10 10 20 100
+            0 POINT 8 Keep 10 0 20 0 0 ENDSEC 0 EOF"
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("\n");
+        let opts = Options { layer: Some("Keep"), crs: Some(Crs::from_epsg(4269).unwrap()), ..Options::default() };
+        let layers = read("placed.dxf", text.as_bytes(), &opts).unwrap();
+        assert_eq!(layers.len(), 2);
+        let lines = &layers[1].0;
+        assert_eq!(lines.features.len(), 2);
+        assert_eq!(lines.held_in, opts.crs.unwrap());
+        assert!(!lines.zm_dropped);
+        for (i, x) in [10.0, 14.0].into_iter().enumerate() {
+            assert_eq!(lines.features[i].geometry, Some(Geometry::Line(vec![vec![Coord::new(x, 20.0), Coord::new(x + 2.0, 22.0)]])));
+            assert_eq!(
+                lines.features[i].attrs,
+                [
+                    Value::Text("Keep".into()),
+                    Value::Text("POLYLINE".into()),
+                    Value::Int(7),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Text("B".into()),
+                    Value::Float(5.0),
+                    Value::Bool(false)
+                ]
+            );
+        }
+        let notes: Vec<&str> =
+            layers.iter().flat_map(|(_, r)| &r.messages).filter(|m| m.contains("POLYLINE")).map(String::as_str).collect();
+        assert_eq!(notes, ["4 unreadable POLYLINE vertices were left out of their lines"]);
+        let no_blocks = read("placed.dxf", text.as_bytes(), &Options { blocks: false, ..opts }).unwrap();
+        assert_eq!(no_blocks.len(), 1);
+        assert!(no_blocks.iter().all(|(_, r)| r.messages.iter().all(|m| !m.contains("POLYLINE"))));
+    }
+
+    /// The coordinate budget counts losses only for the array copies it actually emits.
+    #[test]
+    fn unreadable_vertices_exclude_size_rejected_copies() {
+        let mut text = String::from("0 SECTION 2 BLOCKS 0 BLOCK 2 B 0 POLYLINE 70 0 ");
+        for i in 0..300 {
+            text.push_str(&format!("0 VERTEX 10 {i} 20 0 "));
+        }
+        text.push_str(
+            "0 VERTEX 10 bad 20 0 0 SEQEND 0 ENDBLK 0 ENDSEC
+            0 SECTION 2 ENTITIES 0 INSERT 2 B 10 0 20 0 70 100 71 100 0 ENDSEC 0 EOF",
+        );
+        let text = text.split_whitespace().collect::<Vec<_>>().join("\n");
+        let layers = read("size.dxf", text.as_bytes(), &Options { crs: Some(Crs::LonLat), ..Options::default() }).unwrap();
+        assert_eq!(layers.len(), 1);
+        let kept = layers[0].0.features.len();
+        assert_eq!(kept, MAX_TOTAL_VERTICES / 300);
+        assert_eq!(
+            layers[0].1.messages,
+            [
+                format!("the drawing's features hold more than {MAX_TOTAL_VERTICES} coordinates: the rest are left out"),
+                format!("{kept} unreadable POLYLINE vertices were left out of their lines"),
+            ]
+        );
     }
 
     /// Counts placements after their transforms and filters, leaving constant elevations quiet.
