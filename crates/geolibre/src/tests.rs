@@ -799,3 +799,136 @@ fn a_default_sent_back_as_text_is_left_to_the_runner() {
         ]
     );
 }
+
+/// Longest Flowpath's manifest calls its output a raster, so it is asked for a `.tif`, and the
+/// tool writes GeoJSON lines into it: they come back as a vector layer, not as a GeoTIFF that
+/// fails to read (#2762). A real GeoTIFF named `.tif` is still read as one.
+#[test]
+fn a_vector_written_into_a_tif_comes_back_as_a_vector() {
+    let job = Job {
+        tool: "longest_flowpath".into(),
+        name: "Longest Flowpath".into(),
+        files: Vec::new(),
+        args: Vec::new(),
+        outputs: vec![("output.tif".into(), "Flowpaths".into())],
+        crs: Crs::from_epsg(32632).unwrap(),
+        notes: Vec::new(),
+    };
+    // As GeoLibre writes it, in longitude/latitude (here after a line break).
+    let lines = "\n{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"BASIN\":1,\"LENGTH\":512.5},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[9.002,46.953],[9.002,46.952],[9.003,46.951]]}}]}";
+    let r = finish(&job, &[("output.tif".into(), lines.as_bytes().to_vec())], &[], None);
+    let Output::Layers(layers) = r.output else { panic!("layers") };
+    let Some(OutputLayer::Vector(ds)) = layers.first() else { panic!("a vector: {layers:?} {:?}", r.messages) };
+    assert_eq!((ds.name.as_str(), ds.features.len()), ("Flowpaths", 1));
+    assert!(matches!(ds.features[0].geometry, Some(Geometry::Line(_))), "{:?}", ds.features[0].geometry);
+    assert_eq!(ds.coord_crs(), Crs::LonLat, "not taken for the working system's numbers");
+    assert!(r.messages.is_empty() && r.losses.is_empty(), "a clean output, no notices: {:?} {:?}", r.messages, r.losses);
+    // With a byte-order mark, as some writers start a file.
+    let marked = finish(&job, &[("output.tif".into(), [b"\xEF\xBB\xBF".as_slice(), lines.as_bytes()].concat())], &[], None);
+    assert!(matches!(marked.output, Output::Layers(ref l) if matches!(l.first(), Some(OutputLayer::Vector(_)))), "{:?}", marked.messages);
+    assert!(marked.messages.is_empty() && marked.losses.is_empty(), "a clean output, no notices: {:?}", marked.messages);
+    // What the reader leaves out is said, with the layer it is about: a second feature, after the
+    // first, whose geometry can't be read.
+    let broken =
+        lines.replace("}}]}", "}},{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"LineString\",\"coordinates\":\"x\"}}]}");
+    assert!(broken.ends_with("\"coordinates\":\"x\"}}]}") && broken.matches("\"Feature\"").count() == 2, "{broken}");
+    let r = finish(&job, &[("output.tif".into(), broken.into_bytes())], &[], None);
+    let said =
+        r.messages.iter().chain(r.losses.iter().map(|l| &l.text)).any(|m| m.starts_with("Flowpaths: 1 features had unreadable geometry"));
+    assert!(said, "{:?} {:?}", r.messages, r.losses);
+    // A JSON report written into the `.tif` is shown as one, whole: a `<` in it isn't taken for a
+    // tag, and one with a `type` of its own isn't taken for GeoJSON.
+    for json in [r#"{"basins": 3, "rule": "length < 100", "longest": 512.5}"#, r#"{"type": "Report", "rule": "length < 100"}"#] {
+        let report = finish(&job, &[("output.tif".into(), json.as_bytes().to_vec())], &[], None);
+        assert!(matches!(report.output, Output::Layers(ref l) if l.is_empty()), "{json}");
+        assert_eq!(report.messages, [format!("Flowpaths:\n{json}")]);
+    }
+    // A longer report shows its first 30 lines and says how many more it has.
+    let txt = Job { outputs: vec![("output.txt".into(), "Flowpaths".into())], ..job.clone() };
+    let long: String = (1..=33).map(|i| format!("line {i}\n")).collect();
+    let r = finish(&txt, &[("output.txt".into(), long.into_bytes())], &[], None);
+    assert!(r.messages.first().is_some_and(|m| m.ends_with("line 30")), "{:?}", r.messages);
+    assert_eq!(r.messages.get(1).map(String::as_str), Some("Flowpaths: the report's other 3 non-empty lines aren't shown"));
+    let short = finish(&txt, &[("output.txt".into(), b"line 1\nline 2\n".to_vec())], &[], None);
+    assert_eq!(short.messages, ["Flowpaths:\nline 1\nline 2"]);
+    // A line past 500 characters (a JSON report on one line) is cut, and said.
+    let wide = finish(&txt, &[("output.txt".into(), format!("{}\nshort\n", "x".repeat(600)).into_bytes())], &[], None);
+    assert_eq!(wide.messages.first().map(|m| m.chars().count()), Some("Flowpaths:\n".chars().count() + 500 + "…\nshort".chars().count()));
+    assert_eq!(wide.messages.get(1).map(String::as_str), Some("Flowpaths: lines of the report cut at 500 characters: 1"));
+    // GeoJSON cut short (the tool stopped while writing it) says why it can't be read, not shown as
+    // a report; TopoJSON is taken for a layer too.
+    let cut = finish(&job, &[("output.tif".into(), lines.get(..60).unwrap().as_bytes().to_vec())], &[], None);
+    assert!(matches!(cut.output, Output::Layers(ref l) if l.is_empty()));
+    assert!(
+        cut.messages.iter().all(|m| !m.contains("FeatureCollection")) && cut.messages.iter().any(|m| m.starts_with("Flowpaths: ")),
+        "{:?}",
+        cut.messages
+    );
+    assert!(is_geojson(br#"{"type":"Topology","objects":{}}"#) && !is_geojson(br#"{"type":"Report"}"#) && !is_geojson(b"{}"));
+    // A `type` that isn't text, a list and plain text are reports too; a byte-order mark is skipped.
+    assert!(!is_geojson(br#"{"type": 42, "count": 2}"#) && !is_geojson(b"[1, 2]") && !is_geojson(b"done"));
+    assert!(is_geojson(br#"{"type":"CityJSON","version":"2.0","CityObjects":{}}"#));
+    // Cut short, its own `type` is found after a nested member (a `crs`, or the features of a writer
+    // that sorts its keys) and past brackets in a string, never inside a member.
+    assert!(is_geojson(br#"{"crs":{"type":"name","properties":{"name":"EPSG:2056"}},"type":"FeatureCollection","features":[{"#));
+    assert!(is_geojson(br#"{"features":[{"type":"Feature"}],"name":"Flow [m] {x}","type":"FeatureCollection","bbox":[1,"#));
+    assert!(!is_geojson(br#"{"stats":{"type":"Point"},"note":"a \"type\":\"Point\" in text","n":NaN"#));
+    // The object's own `type`: escapes decoded, a quote in a name not taken for its end, nothing
+    // nested, wherever it comes, also past the first 4 KB and in a document cut short.
+    assert_eq!(own_type(br#"{ "a": {"b": [1, {"c": 2}]}, "s": "x { y", "type" : "Feature" }"#).as_deref(), Some("Feature"));
+    assert_eq!(own_type(br#"{"\u0074ype":"Feature\u0043ollection","features":["#).as_deref(), Some("FeatureCollection"));
+    assert!(is_geojson(br#"{"\u0074ype":"FeatureCollection","features":["#));
+    assert_eq!(own_type(br#"{"a\"type":"Point","n":1}"#), None);
+    assert_eq!(own_type(br#"{"name":"\ud83d\ude00","type":"Point"}"#).as_deref(), Some("Point"));
+    assert_eq!(own_type(br#"{"type":{"type":"Point"}}"#), None);
+    assert_eq!(own_type(br#"{"a":1}, {"type":"Point"}"#), None, "only the first object");
+    let far = format!(r#"{{"crs":{{"name":"{}"}},"type":"FeatureCollection","features":[{{"#, "x".repeat(10_000));
+    assert!(is_geojson(far.as_bytes()));
+    assert_eq!(own_type(br#"{"type":"Fea"#), Some("Fea".into()), "cut inside the value");
+    assert_eq!(own_type(br#"{"\u+074ype":"Point"}"#), None, "four hex digits, no sign");
+    assert_eq!(own_type(br#"{"type":"Line\u0053tring","x":"\ud83d\ude00"}"#).as_deref(), Some("LineString"));
+    assert_eq!(own_type(br#"{"type":"Report","type":"Point"}"#).as_deref(), Some("Report"), "the first counts");
+    // Cut short anywhere, inside an escape or a surrogate pair too: an answer, never a panic.
+    let sample = br#"{"a":"\"\\\/\b\f\n\r\t\u00e9\ud83d\ude00\ud800x\u12","b":[{"c":"]}"}],"\u0074ype":"Feature\u0043ollection"}"#;
+    for end in 0..=sample.len() {
+        let _ = own_type(&sample[..end]);
+    }
+    assert_eq!(own_type(sample).as_deref(), Some("FeatureCollection"));
+    assert!(
+        json_not_tiff(b"\xEF\xBB\xBF{\"type\":\"Feature\"}").is_some_and(is_geojson) && is_geojson(b"{\"type\":\"Feature\",\"geometry\":{")
+    );
+    // A `.json` output that isn't GeoJSON is shown, whatever it holds (as before this change), and a
+    // GeoJSON one with a byte-order mark is read.
+    let json = Job { outputs: vec![("output.json".into(), "Flowpaths".into())], ..job.clone() };
+    for (text, shown) in [
+        (b"[1, 2]".to_vec(), "[1, 2]"),
+        (b"done in 3 s".to_vec(), "done in 3 s"),
+        (b"\xEF\xBB\xBF{\"basins\": 3}".to_vec(), "{\"basins\": 3}"),
+        (br#"{"type": 42, "count": 2}"#.to_vec(), r#"{"type": 42, "count": 2}"#),
+        // JSON Lines and Python's `NaN` don't parse as one object, but name no GeoJSON type.
+        (b"{\"step\": 1}\n{\"step\": 2}".to_vec(), "{\"step\": 1}\n{\"step\": 2}"),
+        (br#"{"mean": NaN}"#.to_vec(), r#"{"mean": NaN}"#),
+        // An object with a `type` of its own: shown, not taken for a feature without a geometry.
+        (br#"{"type":"Report","count":2}"#.to_vec(), r#"{"type":"Report","count":2}"#),
+        // A geometry type named only inside it, in JSON that doesn't parse.
+        (br#"{"mean": NaN, "shape": {"type":"Point"}}"#.to_vec(), r#"{"mean": NaN, "shape": {"type":"Point"}}"#),
+    ] {
+        let r = finish(&json, &[("output.json".into(), text)], &[], None);
+        assert_eq!(r.messages, [format!("Flowpaths:\n{shown}")]);
+    }
+    let tif_typed = finish(&job, &[("output.tif".into(), br#"{"type": 42, "count": 2}"#.to_vec())], &[], None);
+    assert_eq!(
+        tif_typed.messages,
+        [r#"Flowpaths:
+{"type": 42, "count": 2}"#]
+    );
+    let marked = finish(&json, &[("output.json".into(), [b"\xEF\xBB\xBF".as_slice(), lines.as_bytes()].concat())], &[], None);
+    assert!(matches!(marked.output, Output::Layers(ref l) if matches!(l.first(), Some(OutputLayer::Vector(_)))), "{:?}", marked.messages);
+    assert!(marked.messages.is_empty() && marked.losses.is_empty(), "a clean output, no notices: {:?}", marked.messages);
+    // A GeoTIFF stays a raster, and a file that is neither still says why it can't be read.
+    let tiff = finish(&job, &[("output.tif".into(), u32_tiff([1, 2, 3, 4], None, false))], &[], None);
+    assert!(matches!(tiff.output, Output::Layers(ref l) if matches!(l.first(), Some(OutputLayer::Raster { .. }))));
+    let junk = finish(&job, &[("output.tif".into(), b"not a picture".to_vec())], &[], None);
+    assert!(matches!(junk.output, Output::Layers(ref l) if l.is_empty()));
+    assert!(junk.messages.iter().any(|m| m.starts_with("Flowpaths:")), "{:?}", junk.messages);
+}

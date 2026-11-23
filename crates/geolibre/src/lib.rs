@@ -861,10 +861,177 @@ fn looks_projected(ds: &Dataset) -> bool {
     ds.extent().beyond_lonlat()
 }
 
+/// `bytes` without a byte-order mark, when they start as a JSON object (after white space) rather
+/// than with a TIFF's signature (which never starts with `{`).
+fn json_not_tiff(bytes: &[u8]) -> Option<&[u8]> {
+    let json = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
+    (json.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')).then_some(json)
+}
+
+/// A JSON object (after white space; [`json_not_tiff`] has left out a byte-order mark) whose own
+/// `type` ([`own_type`]) is one of GeoJSON's (a feature collection, a feature or a geometry),
+/// TopoJSON's or CityJSON's, which RustGIS reads as layers. Whether the document parses doesn't
+/// matter: GeoJSON cut short while it was written is read, so the reader's error is shown rather
+/// than its text. Anything else is a report: a list, plain text, or an object with no `type`, with
+/// a `type` that isn't text, or with another one.
+fn is_geojson(json: &[u8]) -> bool {
+    const TYPES: [&str; 11] = [
+        "FeatureCollection",
+        "Topology",
+        "CityJSON",
+        "Feature",
+        "Point",
+        "MultiPoint",
+        "LineString",
+        "MultiLineString",
+        "Polygon",
+        "MultiPolygon",
+        "GeometryCollection",
+    ];
+    json.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{') && own_type(json).is_some_and(|t| TYPES.contains(&t.as_str()))
+}
+
+/// The `type` member of the JSON object `json` starts with, when its value is a string: among the
+/// object's own members, wherever it comes (after a `crs`, after the features), not one nested in
+/// them; names and values with their escapes decoded (`"\u0074ype"` is `"type"`). The first `type`
+/// counts, should there be two. One pass, stopping at the `type` or at the object's end, and the
+/// same whether the document is whole or cut short.
+fn own_type(json: &[u8]) -> Option<String> {
+    /// What the last of the object's own tokens was, as far as finding `"type": "…"` goes.
+    #[derive(PartialEq)]
+    enum Last {
+        Other,
+        TypeName,
+        TypeColon,
+    }
+    let (mut depth, mut i, mut last) = (0usize, 0usize, Last::Other);
+    while let Some(&b) = json.get(i) {
+        match b {
+            b'"' => {
+                let (text, next) = json_string(json, i + 1, depth == 1);
+                i = next;
+                if depth == 1 {
+                    if last == Last::TypeColon {
+                        return text;
+                    }
+                    last = if text.as_deref() == Some("type") { Last::TypeName } else { Last::Other };
+                }
+                continue;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                if depth == 2 {
+                    last = Last::Other;
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return None;
+                }
+            }
+            b':' if depth == 1 => last = if last == Last::TypeName { Last::TypeColon } else { Last::Other },
+            _ if b.is_ascii_whitespace() => {}
+            _ if depth == 1 => last = Last::Other,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The JSON string whose text starts at `json[start]` (after its opening quote), its escapes
+/// decoded when `decode` (else `None`, only skipped), and where after its closing quote the
+/// document goes on (its end, when it is cut short inside the string).
+fn json_string(json: &[u8], start: usize, decode: bool) -> (Option<String>, usize) {
+    let mut out = Vec::new();
+    let mut i = start;
+    while let Some(&b) = json.get(i) {
+        match b {
+            b'"' => return (decode.then(|| String::from_utf8_lossy(&out).into_owned()), i + 1),
+            b'\\' => {
+                let Some(&e) = json.get(i + 1) else { break };
+                i += 2;
+                if !decode {
+                    continue;
+                }
+                match e {
+                    b'u' => {
+                        let hex = |at: usize| {
+                            json.get(at..at + 4)
+                                .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+                                .and_then(|h| std::str::from_utf8(h).ok())
+                                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                        };
+                        let Some(mut code) = hex(i) else { continue };
+                        i += 4;
+                        // A pair of surrogates is one character.
+                        if (0xD800..0xDC00).contains(&code)
+                            && json.get(i..i + 2) == Some(b"\\u".as_slice())
+                            && let Some(low) = hex(i + 2).filter(|l| (0xDC00..0xE000).contains(l))
+                        {
+                            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                            i += 6;
+                        }
+                        let c = char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER);
+                        out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+                    }
+                    b'n' => out.push(b'\n'),
+                    b't' => out.push(b'\t'),
+                    b'r' => out.push(b'\r'),
+                    b'b' => out.push(0x08),
+                    b'f' => out.push(0x0C),
+                    other => out.push(other),
+                }
+                continue;
+            }
+            _ => {
+                if decode {
+                    out.push(b);
+                }
+            }
+        }
+        i += 1;
+    }
+    (decode.then(|| String::from_utf8_lossy(&out).into_owned()), json.len())
+}
+
 /// Reads one output file back as a layer, table or message. `dir` is the native working folder,
 /// for formats read with their sidecar files (shapefiles).
-fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<&Path>, messages: &mut Vec<String>) -> Option<OutputLayer> {
-    let ext = Path::new(file_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+fn load(
+    file_name: &str,
+    bytes: &[u8],
+    layer_name: &str,
+    job: &Job,
+    dir: Option<&Path>,
+    messages: &mut Vec<String>,
+    losses: &mut Vec<rustgis_data::loss::LossMessage>,
+) -> Option<OutputLayer> {
+    let mut ext = Path::new(file_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    // A tool whose manifest calls its vector output a raster writes GeoJSON into the `.tif` it is
+    // given (Longest Flowpath, #2762): read by what it holds, GeoJSON as `.json` and another JSON
+    // document (a report) as text. A JSON object is taken without its byte-order mark, which the
+    // JSON reader refuses; whether it is a layer ([`is_geojson`]) is worked out once, in a pass
+    // over its members up to its `type`, and only where it decides something (not for a `.geojson`).
+    let object = if matches!(ext.as_str(), "tif" | "tiff" | "json" | "geojson") { json_not_tiff(bytes) } else { None };
+    let layer = matches!(ext.as_str(), "tif" | "tiff" | "json") && object.is_some_and(is_geojson);
+    let renamed;
+    let (file_name, bytes) = match object {
+        Some(json) if matches!(ext.as_str(), "tif" | "tiff") => {
+            ext = if layer { "json" } else { "txt" }.into();
+            renamed = Path::new(file_name).with_extension(&ext).display().to_string();
+            (renamed.as_str(), json)
+        }
+        // A `.json` object that isn't GeoJSON (the reader would take it for a feature without a
+        // geometry) is shown as a report, as it is from a `.tif`.
+        Some(json) if ext == "json" && !layer => {
+            ext = "txt".into();
+            (file_name, json)
+        }
+        Some(json) => (file_name, json),
+        None if matches!(ext.as_str(), "json" | "geojson") => (file_name, bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes)),
+        None => (file_name, bytes),
+    };
     match ext.as_str() {
         "tif" | "tiff" | "asc" => match rustgis_data::raster::read_bytes(file_name, bytes) {
             Ok(grey) => {
@@ -882,8 +1049,17 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
                 _ => rustgis_data::io::read_bytes(file_name, bytes),
             };
             match read {
-                Ok((mut ds, _)) => {
+                Ok((mut ds, report)) => {
                     ds.name = layer_name.to_string();
+                    // What the reader left out or assumed (features without a geometry it reads, Z
+                    // values, a `crs` it doesn't know) is said, as when the file is added.
+                    for note in report.messages {
+                        let note = note.prefixed(layer_name);
+                        match note.loss {
+                            Some(code) => losses.push(rustgis_data::loss::LossMessage { code, text: note.text }),
+                            None => messages.push(note.text),
+                        }
+                    }
                     // An output that says its system (a .prj, a GeoJSON `crs`) is held in it as
                     // read; one in the working system that doesn't is relabelled to it.
                     if job.crs != Crs::LonLat && ds.coord_crs() == Crs::LonLat && looks_projected(&ds) {
@@ -912,9 +1088,9 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
                     }
                     Some(if ds.features.iter().all(|f| f.geometry.is_none()) { OutputLayer::Table(ds) } else { OutputLayer::Vector(ds) })
                 }
-                // A JSON report rather than GeoJSON: show it.
-                Err(_) if ext == "json" => {
-                    text_message(bytes, layer_name, messages);
+                // A JSON report rather than GeoJSON: show it. GeoJSON that can't be read says why.
+                Err(_) if ext == "json" && !layer => {
+                    text_message(bytes, layer_name, false, messages);
                     None
                 }
                 Err(e) => {
@@ -924,7 +1100,7 @@ fn load(file_name: &str, bytes: &[u8], layer_name: &str, job: &Job, dir: Option<
             }
         }
         "txt" | "html" | "htm" => {
-            text_message(bytes, layer_name, messages);
+            text_message(bytes, layer_name, ext != "txt", messages);
             None
         }
         _ => {
@@ -959,12 +1135,11 @@ fn colours_split(grey: &rustgis_data::raster::Raster, bytes: &[u8], layer_name: 
     }
 }
 
-/// The start of a text or HTML report as a message.
-fn text_message(bytes: &[u8], layer_name: &str, messages: &mut Vec<String>) {
-    let text = String::from_utf8_lossy(bytes);
+/// `html` without its tags.
+fn strip_tags(html: &str) -> String {
     let mut plain = String::new();
     let mut in_tag = false;
-    for c in text.chars() {
+    for c in html.chars() {
         match c {
             '<' => in_tag = true,
             '>' => in_tag = false,
@@ -972,9 +1147,43 @@ fn text_message(bytes: &[u8], layer_name: &str, messages: &mut Vec<String>) {
             _ => {}
         }
     }
-    let lines: Vec<&str> = plain.lines().map(str::trim).filter(|l| !l.is_empty()).take(30).collect();
+    plain
+}
+
+/// The most lines of a report shown.
+const REPORT_LINES: usize = 30;
+/// The most characters of a report's line shown (a JSON report may be one long line).
+const REPORT_LINE_CHARS: usize = 500;
+
+/// The start of a text, JSON or (`html`) HTML report as a message, its tags left out, saying how many
+/// more lines it has.
+fn text_message(bytes: &[u8], layer_name: &str, html: bool, messages: &mut Vec<String>) {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_start_matches('\u{feff}');
+    let plain: std::borrow::Cow<str> = if html { strip_tags(text).into() } else { text.into() };
+    // The first lines kept, the rest only counted, so a large report costs no more than its text.
+    let mut rest = plain.lines().map(str::trim).filter(|l| !l.is_empty());
+    let shown: Vec<&str> = rest.by_ref().take(REPORT_LINES).collect();
+    let more = rest.count();
+    let mut cut = 0;
+    let lines: Vec<String> = shown
+        .iter()
+        .map(|l| match l.char_indices().nth(REPORT_LINE_CHARS) {
+            Some((at, _)) => {
+                cut += 1;
+                format!("{}…", l.get(..at).unwrap_or(l))
+            }
+            None => l.to_string(),
+        })
+        .collect();
     if !lines.is_empty() {
         messages.push(format!("{layer_name}:\n{}", lines.join("\n")));
+    }
+    if more > 0 {
+        messages.push(format!("{layer_name}: the report's other {more} non-empty lines aren't shown"));
+    }
+    if cut > 0 {
+        messages.push(format!("{layer_name}: lines of the report cut at {REPORT_LINE_CHARS} characters: {cut}"));
     }
 }
 
@@ -994,6 +1203,7 @@ pub fn finish(job: &Job, files: &[(String, Vec<u8>)], lines: &[String], dir: Opt
     messages.extend(lines.into_iter().take(40).map(str::to_string));
 
     let mut layers = Vec::new();
+    let mut losses = Vec::new();
     for (file, name) in &job.outputs {
         // A tool may pick its own extension (a shapefile for a vector output).
         let stem = Path::new(file).file_stem();
@@ -1004,7 +1214,7 @@ pub fn finish(job: &Job, files: &[(String, Vec<u8>)], lines: &[String], dir: Opt
             })
         });
         if let Some((f, bytes)) = found
-            && let Some(l) = load(f, bytes, name, job, dir, &mut messages)
+            && let Some(l) = load(f, bytes, name, job, dir, &mut messages, &mut losses)
         {
             layers.push(l);
         }
@@ -1027,7 +1237,7 @@ pub fn finish(job: &Job, files: &[(String, Vec<u8>)], lines: &[String], dir: Opt
     if layers.is_empty() && messages.is_empty() {
         messages.push(format!("{} finished without output", job.name));
     }
-    ToolResult { losses: Vec::new(), output: Output::Layers(layers), messages }
+    ToolResult { losses, output: Output::Layers(layers), messages }
 }
 
 /// Runs a tool to completion: natively through the `geolibre` program; in the browser the
