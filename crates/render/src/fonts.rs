@@ -339,8 +339,24 @@ fn in_apple_dirs<T: Copy>(files: &[(&str, T)]) -> impl Iterator<Item = (String, 
     APPLE_FONT_DIRS.iter().flat_map(move |dir| files.iter().map(move |(file, x)| (format!("{dir}/{file}"), *x)))
 }
 
+/// Android's system and manufacturer font folders. Shared with the family index, so labels
+/// can select the same installed faces as the interface.
+pub(crate) const ANDROID_FONT_DIRS: &[&str] = &["/system/fonts", "/product/fonts", "/system_ext/fonts"];
+
+/// Android's Noto collections use JP, KR, SC, TC, HK face order (AOSP `data/fonts/fonts.xml`).
+/// Older devices can have only Droid Sans Fallback, whose single face covers CJK.
+fn android_cjk_files(region: CjkRegion) -> [(&'static str, u32); 3] {
+    let index = match region {
+        CjkRegion::Japanese => 0,
+        CjkRegion::Korean => 1,
+        CjkRegion::SimplifiedChinese => 2,
+        CjkRegion::TraditionalChinese => 3,
+    };
+    [("NotoSansCJK-Regular.ttc", index), ("NotoSerifCJK-Regular.ttc", index), ("DroidSansFallback.ttf", 0)]
+}
+
 /// Every installed CJK font candidate for `region`, in order of preference: (path, face index).
-/// Windows first, then Apple's (macOS, iOS), then Linux's.
+/// Windows first, then Apple's (macOS, iOS), Linux's and Android's.
 fn cjk_paths(region: CjkRegion) -> Vec<(String, u32)> {
     let listed = cjk_candidates(region);
     let (windows, rest) = listed.split_at(listed.iter().take_while(|(p, _)| p.starts_with("C:\\")).count());
@@ -349,6 +365,7 @@ fn cjk_paths(region: CjkRegion) -> Vec<(String, u32)> {
         .map(|(p, i)| (p.to_string(), *i))
         .chain(in_apple_dirs(apple_cjk_files(region)))
         .chain(rest.iter().map(|(p, i)| (p.to_string(), *i)))
+        .chain(ANDROID_FONT_DIRS.iter().flat_map(|dir| android_cjk_files(region).map(|(file, i)| (format!("{dir}/{file}"), i))))
         .collect()
 }
 
@@ -795,7 +812,7 @@ mod tests {
     }
 
     /// Every CJK region names an Apple face in macOS's font folder and in iOS's (#2153: Korean
-    /// labels drew as boxes on iOS, whose fonts sit in subfolders), and a Windows one; Windows
+    /// labels drew as boxes on iOS, whose fonts sit in subfolders), and Windows and Android ones; Windows
     /// faces are still tried first.
     #[test]
     fn every_cjk_region_names_a_face_on_each_platform() {
@@ -806,7 +823,17 @@ mod tests {
             let in_dir = |dir: &str| paths.iter().any(|p| p.rsplit_once('/').is_some_and(|(d, _)| d == dir));
             assert!(in_dir("/System/Library/Fonts"), "{region:?}: no macOS face");
             assert!(in_dir("/System/Library/Fonts/Core"), "{region:?}: no iOS face");
+            assert!(in_dir("/system/fonts"), "{region:?}: no Android face");
             assert!(paths.first().is_some_and(|p| p.starts_with("C:\\")), "{region:?}: Windows first");
+        }
+        for (region, index) in
+            [(CjkRegion::Japanese, 0), (CjkRegion::Korean, 1), (CjkRegion::SimplifiedChinese, 2), (CjkRegion::TraditionalChinese, 3)]
+        {
+            let paths = cjk_paths(region);
+            for dir in super::ANDROID_FONT_DIRS {
+                assert!(paths.contains(&(format!("{dir}/NotoSansCJK-Regular.ttc"), index)), "{region:?}");
+                assert!(paths.contains(&(format!("{dir}/DroidSansFallback.ttf"), 0)), "{region:?}: legacy face");
+            }
         }
         let korean = cjk_paths(CjkRegion::Korean);
         assert!(korean.iter().any(|(p, i)| p == "/System/Library/Fonts/Core/AppleSDGothicNeo.ttc" && *i == 0));

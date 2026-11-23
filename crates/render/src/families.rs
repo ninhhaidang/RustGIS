@@ -198,6 +198,9 @@ fn font_dirs() -> Vec<PathBuf> {
         // iOS keeps its fonts in subfolders (Core, CoreAddition, ...), which the walk reaches. An
         // app's home is its sandbox container, which holds no fonts, so no home folder is walked.
         dirs.push(PathBuf::from("/System/Library/Fonts"));
+    } else if cfg!(target_os = "android") {
+        // Android's app home has no system fonts; manufacturer faces can live on /product.
+        dirs.extend(crate::fonts::ANDROID_FONT_DIRS.iter().map(PathBuf::from));
     } else {
         dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
         match std::env::var_os("XDG_DATA_HOME") {
