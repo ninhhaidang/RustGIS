@@ -2,6 +2,8 @@
 
 #[path = "portable_projects/common.rs"]
 pub(super) mod common;
+#[path = "portable_projects/packages.rs"]
+mod packages;
 #[path = "portable_projects/reload.rs"]
 mod reload;
 #[path = "portable_projects/reload_tiles.rs"]

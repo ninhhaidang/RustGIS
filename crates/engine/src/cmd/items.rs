@@ -487,6 +487,36 @@ fn embedded_map(m: &Map, budget: &mut u64) -> Map {
     m
 }
 
+/// Most names a package's notice of what it left linked lists; the rest are counted.
+const MAX_LINKED_NAMED: usize = 5;
+
+/// What a package leaves outside it (#2350): the layers of `maps`, once embedded, that are still
+/// read from a local file (a streamed layer, a raster past the budget or whose file is gone) and
+/// their local tile archives. The package holds only their paths, so on another computer it
+/// opens without them. `None` when everything is inside. A note for the caller to say once the
+/// package is delivered: the desktop app builds it before its Save dialog, the browser before its
+/// download.
+fn left_linked<'a>(what: &str, maps: impl IntoIterator<Item = &'a Map>) -> Option<String> {
+    let names: Vec<&str> = maps
+        .into_iter()
+        .flat_map(|m| {
+            let layers = m.layers.iter().filter(|l| l.linked_file().is_some()).map(|l| l.name.as_str());
+            layers.chain(m.tiles.iter().filter(|t| t.archive_file().is_some()).map(|t| t.name.as_str()))
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let mut listed = names[..names.len().min(MAX_LINKED_NAMED)].join(", ");
+    if names.len() > MAX_LINKED_NAMED {
+        listed.push_str(&format!(" and {} more", names.len() - MAX_LINKED_NAMED));
+    }
+    Some(format!(
+        "{what}: {} layer(s) stay linked to files outside the package, so it opens without them on another computer: {listed}",
+        names.len()
+    ))
+}
+
 /// The most maps one `map.import` adds.
 const MAX_IMPORTED_MAPS: usize = 100;
 
@@ -807,13 +837,15 @@ fn template(p: &Project) -> (Project, TemplateLosses) {
 
 /// Packages only completed imports; runtime download reservations cannot be reopened.
 /// Refuses JSON beyond the project or ZIP inflation limit before creating the archive.
-fn package_project(s: &mut Session) -> Result<Vec<u8>, String> {
+fn package_project(s: &mut Session, notes: &mut rustgis_data::loss::Notes) -> Result<Vec<u8>, String> {
     s.project.ensure_imports_complete()?;
     let mut p = s.project.clone();
     let mut budget = MAX_EMBED;
     for m in &mut p.maps {
         *m = embedded_map(m, &mut budget);
     }
+    // Offline areas are maps too, and their copies keep a streamed layer's source and the tiles.
+    let linked = left_linked("Package Project", p.maps.iter().chain(p.offline_areas.iter().map(|a| &a.data)));
     let name = p.name.clone();
     let readme = format!("{} — a RustGIS project package.\nOpen it with RustGIS (Project › Open), or unzip it for {}.rgis.\n", name, name);
     // The package as unzipped, the README with it, within what a zip and a project may hold.
@@ -822,6 +854,7 @@ fn package_project(s: &mut Session) -> Result<Vec<u8>, String> {
     let package_too_large = || format!("the project is too large to package (maximum {} MiB)", limit >> 20);
     let (text, report) = crate::durable::output_owned(p, |p| crate::project::json_within(p, room)?.ok_or_else(package_too_large))?;
     crate::durable::notify(s, &report);
+    notes.extend(linked);
     rustgis_data::zip::write(&[
         (format!("{}.{}", safe(&name), crate::project::EXTENSION), text.into_bytes()),
         ("README.txt".into(), readme.into_bytes()),
@@ -851,7 +884,7 @@ fn mobile_map(mut m: Map) -> Map {
 }
 
 /// A package of the active map; `mobile` drops hidden layers and simplifies geometry.
-fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
+fn package_map(s: &mut Session, mobile: bool, tol: f64, linked: &mut rustgis_data::loss::Notes) -> Result<Vec<u8>, String> {
     let mut m = embedded_map(s.map(), &mut MAX_EMBED.clone());
     if mobile {
         m = mobile_map(m);
@@ -889,6 +922,8 @@ fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, Strin
         }
     }
     crate::project::ensure_map_imports_complete(&m)?;
+    // After mobile_map: a hidden layer it drops isn't in the package.
+    linked.extend(left_linked("Package Map", [&m]));
     let name = m.name.clone();
     // With the map file's header, so an older reader refuses what it can't draw.
     let (bytes, report) = crate::durable::output_owned(m, crate::project::map_file_bytes)?;
@@ -1842,7 +1877,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
             }
             (name, bytes)
         }
-        "projectPackage" => (s.project.name.clone(), package_project(s)?),
+        "projectPackage" => (s.project.name.clone(), package_project(s, &mut construction_notes)?),
         "fieldPackage" => {
             let (name, bytes, notes) = super::field::package_output(s, p)?;
             construction_notes.extend(notes);
@@ -1850,7 +1885,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         }
         "mapPackage" | "mobilePackage" => {
             let tol = f(p, "tolerance").unwrap_or(0.001).clamp(0.0, 1.0);
-            (s.map().name.clone(), package_map(s, kind == "mobilePackage", tol)?)
+            (s.map().name.clone(), package_map(s, kind == "mobilePackage", tol, &mut construction_notes)?)
         }
         "gpPackage" => ("results".to_string(), package_gp(s)?),
         "bookmarks" => (format!("{} bookmarks", s.map().name), super::navigate::bookmarks_file(s.map())?),
