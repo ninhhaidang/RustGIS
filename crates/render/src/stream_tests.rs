@@ -1975,3 +1975,130 @@ fn a_kept_view_draws_the_frames_inside_it_without_reading_the_source() {
     assert_eq!(frame(&mut base, &mut actual, &view, "empty"), [true], "an empty view is read");
     assert_eq!(frame(&mut base, &mut actual, &view, "empty again"), [false; 0], "and kept, with nothing in it");
 }
+
+/// A source that keeps each request a complete read asks, and answers as the one it wraps.
+struct Asked {
+    inner: Box<dyn FeatureSource>,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<Option<Request>>>>,
+}
+
+impl FeatureSource for Asked {
+    fn info(&self) -> &SourceInfo {
+        self.inner.info()
+    }
+    fn read(&self, r: &Request) -> rustgis_data::Result<Batch> {
+        self.inner.read(r)
+    }
+    fn coord_crs(&self) -> rustgis_data::raster::Crs {
+        self.inner.coord_crs()
+    }
+    fn reads_own_box(&self) -> bool {
+        self.inner.reads_own_box()
+    }
+    fn streams_chunks(&self) -> bool {
+        self.inner.streams_chunks()
+    }
+    fn finds_all_by_area(&self) -> bool {
+        self.inner.finds_all_by_area()
+    }
+    fn same_as_opened(&self) -> rustgis_data::Result<bool> {
+        self.inner.same_as_opened()
+    }
+    fn visit_chunks(
+        &self,
+        extent: Option<Extent>,
+        bytes: usize,
+        visit: &mut dyn FnMut(Vec<Feature>) -> rustgis_data::Result<()>,
+    ) -> rustgis_data::Result<Batch> {
+        self.asked.lock().unwrap().push(extent.map(|extent| Request { extent: Some(extent), limit: usize::MAX, own: None }));
+        self.inner.visit_chunks(extent, bytes, visit)
+    }
+    /// Kept as asked, then answered by the wrapped source.
+    fn visit_request_chunks(
+        &self,
+        req: &Request,
+        bytes: usize,
+        visit: &mut dyn FnMut(Vec<Feature>) -> rustgis_data::Result<()>,
+    ) -> rustgis_data::Result<Batch> {
+        self.asked.lock().unwrap().push(Some(*req));
+        self.inner.visit_request_chunks(req, bytes, visit)
+    }
+}
+
+/// A projected Shapefile on a map drawn in its own system reads only the view, by the view's box
+/// in the file's units, and draws what reading the whole file drew (#2788); on a map in another
+/// system it reads everything. A Web Mercator file on Web Mercator does the same.
+#[test]
+fn a_shapefile_on_a_map_in_its_own_system_reads_the_view_in_its_units() {
+    use rustgis_data::raster::Crs;
+    use std::sync::{Arc, Mutex};
+    rustgis_data::source::shp::use_temporary_index_dir();
+    let dir = tempfile::tempdir().unwrap();
+    for (crs, projection, own) in [
+        (Crs::from_epsg(32631).unwrap(), rustgis_map::Projection::Custom("EPSG:32631".into()), true),
+        (Crs::from_epsg(32631).unwrap(), rustgis_map::Projection::default(), false),
+        (Crs::WebMercator, rustgis_map::Projection::default(), true),
+    ] {
+        // Squares 600 m wide, 1 km apart, over 40 km around Paris, in the file's own units.
+        let (x0, y0) = if crs == Crs::WebMercator { (250_000.0, 6_230_000.0) } else { (440_000.0, 5_400_000.0) };
+        let mut ds = Dataset::new("squares", GeometryType::Polygon, vec![Field::new("name", FieldType::Text)]);
+        for i in 0..40 {
+            for j in 0..40 {
+                let (x, y) = (x0 + f64::from(i) * 1000.0, y0 + f64::from(j) * 1000.0);
+                let ring = vec![
+                    Coord::new(x, y),
+                    Coord::new(x + 600.0, y),
+                    Coord::new(x + 600.0, y + 600.0),
+                    Coord::new(x, y + 600.0),
+                    Coord::new(x, y),
+                ];
+                ds.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![Value::Text(format!("s{i}-{j}"))]);
+            }
+        }
+        ds.held_in = crs;
+        let path = dir.path().join(format!("squares-{}.shp", crs.label().replace([':', ' ', '/'], "_")));
+        rustgis_data::io::write_path_in(&ds, &path, crs).unwrap();
+        let mut base = Map::new("own");
+        base.basemap = rustgis_map::Basemap::Blank;
+        base.projection = projection.clone();
+        let opened = rustgis_data::source::shp::ShpSource::open_path(&path, "squares").unwrap();
+        let mut held = ds.clone();
+        held.fields = opened.info().fields.clone();
+        base.add_dataset(held);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let mut actual = base.clone();
+        let mut layer = streamed(&base.layers[0], usize::MAX);
+        layer.source =
+            Some(SourceLayer::from_path(path.to_string_lossy(), None, Box::new(Asked { inner: Box::new(opened), asked: asked.clone() })));
+        actual.layers[0] = layer;
+        // A view of a few squares in the middle of the grid.
+        let middle = if crs == Crs::WebMercator {
+            Coord::new(x0 + 20_300.0, y0 + 20_300.0)
+        } else {
+            rustgis_geom::lonlat_to_merc(Coord::new(2.35, 48.85))
+        };
+        let center = if own && crs != Crs::WebMercator { Coord::new(x0 + 20_300.0, y0 + 20_300.0) } else { middle };
+        let view = View { width: 320.0, height: 240.0, pixels_per_point: 1.0, camera: Camera::new(center, 15.0), sky: false };
+        let what = format!("{} on {projection:?}", crs.label());
+        // The first frame reads the whole file (its stored boxes checked); the ones after only
+        // the view, and draw what it drew.
+        let mut whole = None;
+        for frame in 0..3 {
+            let Some(RenderOutput::Cpu(got)) = render_with_backend(&mut actual.clone(), &view, true, Backend::Cpu) else {
+                panic!("{what}: a complete frame");
+            };
+            let whole = whole.get_or_insert_with(|| got.pixmap.data().to_vec());
+            assert!(got.pixmap.data() == whole.as_slice(), "{what}, frame {frame}: the pixels changed");
+        }
+        let asked = asked.lock().unwrap();
+        let by_box: Vec<&Request> = asked.iter().flatten().collect();
+        if own {
+            let req = by_box.last().unwrap_or_else(|| panic!("{what}: never read by a box"));
+            let (asked_crs, b) = req.own.unwrap_or_else(|| panic!("{what}: read by longitude/latitude"));
+            assert_eq!(asked_crs, crs, "{what}");
+            assert!(b.width() < 10_000.0 && b.intersects(&Extent::new(x0, y0, x0 + 40_000.0, y0 + 40_000.0)), "{what}: {b:?}");
+        } else {
+            assert!(by_box.is_empty(), "{what}: a map in another system reads everything, not {by_box:?}");
+        }
+    }
+}

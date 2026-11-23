@@ -2567,14 +2567,17 @@ fn visit_complete(
     visit_within(source, None, visit)
 }
 
-/// As [`visit_complete`], for the features whose boxes meet `extent` (longitude/latitude), or
-/// every feature for `None`.
+/// As [`visit_complete`], for the features a request gives (those whose boxes meet its extent,
+/// or its box in the source's own system), or every feature for `None`.
 fn visit_within(
     source: &dyn rustgis_data::source::FeatureSource,
-    extent: Option<Extent>,
+    request: Option<rustgis_data::source::Request>,
     visit: &mut dyn FnMut(Vec<rustgis_data::Feature>) -> rustgis_data::Result<()>,
 ) -> rustgis_data::Result<rustgis_data::source::Batch> {
-    let result = source.visit_chunks(extent, COMPLETE_CHUNK_BYTES, visit)?;
+    let result = match request {
+        Some(req) => source.visit_request_chunks(&req, COMPLETE_CHUNK_BYTES, visit)?,
+        None => source.visit_chunks(None, COMPLETE_CHUNK_BYTES, visit)?,
+    };
     if !result.complete {
         return Err(rustgis_data::DataError::Format("source traversal was incomplete".into()));
     }
@@ -6472,31 +6475,59 @@ fn render_frame(
             chunk.clear_cache();
             chunk.dataset.features = Vec::new().into();
             // Only the features near the view are read when nothing the layer draws comes from
-            // beyond them (#1065): those whose boxes meet the cull extent's box in
-            // longitude/latitude. Otherwise every feature: labels, shadows and other effects reach
-            // in from beyond the view. Web Mercator maps longitude and latitude each on its own,
-            // so a feature held in longitude/latitude whose box misses that box is drawn wholly
-            // outside the cull extent, straight edges and all, short of the latitudes it clamps
-            // (a view reaching them reads everything). In another projection, or from another
-            // system, an edge drawn straight between two places can cross the view while the
-            // feature's box misses it, so those read everything. So does a source whose reads by
-            // area leave some features out (a Shapefile's records without a usable box), and a GPU
-            // frame, whose meshes are made a batch at a time: which features share a batch decides
-            // which fall back to the CPU. And a box over most of the layer reads it all, in file
-            // order: asking the index which records nearly all of them are costs more than
-            // reading the few left over.
-            let partial = |e: &Extent| !covers_most(e, &source.info().extent);
-            let near = (globe.is_none()
+            // beyond them (#1065): those whose boxes meet the cull extent. Otherwise every
+            // feature: labels, shadows and other effects reach in from beyond the view. The box
+            // must hold every feature drawn in the cull extent, straight edges and all:
+            // - on a map drawn in the source's own system (a UTM file on a UTM map, a Web Mercator
+            //   file on Web Mercator), the cull extent itself, in the file's units (#2788): the
+            //   map draws its geometry as it is;
+            // - on Web Mercator, for a source in longitude/latitude, the cull extent's box in
+            //   longitude/latitude, short of the latitudes Web Mercator clamps (a view reaching
+            //   them reads everything): Web Mercator maps longitude and latitude each on its own,
+            //   so a feature whose box misses that box is drawn wholly outside the cull extent.
+            // In another projection, or from another system, an edge drawn straight between two
+            // places can cross the view while the feature's box misses it, so those read
+            // everything. So does a source whose reads by area leave some features out (a
+            // Shapefile's records without a usable box), and a GPU frame, whose meshes are made a
+            // batch at a time: which features share a batch decides which fall back to the CPU.
+            // And a box over most of the layer reads it all, in file order: asking the index which
+            // records nearly all of them are costs more than reading the few left over.
+            let crs = source.coord_crs();
+            let view_only = globe.is_none()
                 && !gpu
-                && matches!(flat, rustgis_map::projection::Flat::Mercator)
-                && within_mercator_lats(&ctx.cull)
-                && source.coord_crs() == rustgis_data::raster::Crs::LonLat
                 && source.finds_all_by_area()
                 && matches!(labels_to, Labels::Own | Labels::Turned(_))
-                && draws_in_view_only(&chunk, !display.paused, shore.is_some()))
-            .then(|| lonlat_box(&flat, &ctx.cull))
-            .flatten()
-            .filter(partial);
+                && draws_in_view_only(&chunk, !display.paused, shore.is_some());
+            // On a map drawn in the file's own system.
+            let own_units = globe.is_none()
+                && crs != rustgis_data::raster::Crs::LonLat
+                && source.reads_own_box()
+                && flat.held(crs).is_ok_and(|held| held.is_identity());
+            let own = view_only && own_units;
+            let whole =
+                || rustgis_data::source::Request { extent: None, limit: usize::MAX, own: Some((crs, rustgis_data::source::whole_plane())) };
+            let lonlat = !own && crs == rustgis_data::raster::Crs::LonLat && matches!(flat, rustgis_map::projection::Flat::Mercator);
+            // The box a read of the map extent `e` asks for, in its path's units.
+            let box_of = |e: &Extent| {
+                if own {
+                    Some(*e)
+                } else if lonlat && within_mercator_lats(e) {
+                    lonlat_box(&flat, e)
+                } else {
+                    None
+                }
+            };
+            let partial = |b: &Extent| {
+                let ll = if own { lonlat_box(&flat, b) } else { Some(*b) };
+                ll.is_none_or(|ll| !covers_most(&ll, &source.info().extent))
+            };
+            // A box as a read asks for it.
+            let ask = |b: Extent| rustgis_data::source::Request {
+                extent: if own { lonlat_box(&flat, &b) } else { Some(b) },
+                limit: usize::MAX,
+                own: own.then_some((crs, b)),
+            };
+            let near = view_only.then(|| box_of(&ctx.cull)).flatten().filter(partial);
             // The source's long loops that only look at Cancel see the frame's stop too.
             let _stop = cancel::current().map(rustgis_data::progress::also_stop_when);
             // A view read this way is kept with the geometry drawn from it, for the frames of the
@@ -6521,18 +6552,14 @@ fn render_frame(
             };
             let owner = layer.source.as_ref();
             let grids = rustgis_data::raster::crs::grid_generation();
-            let kept_key = format!("{key} {grids}");
+            let kept_key = format!("{key} {grids} {}", if own { "own" } else { "lonlat" });
             let room = owner.map_or(0, |o| o.budget().saturating_sub(layer.view_cache_bytes()).min(rustgis_map::source::KEPT_VIEW_BYTES));
             let kept = near.filter(|_| unchanged).and_then(|n| owner?.kept_view(&kept_key, &n, room));
             let wide = cull_extent(view, KEEP_MARGIN);
-            let keep = (near.is_some()
-                && unchanged
-                && kept.is_none()
-                && within_mercator_lats(&wide)
-                && owner.is_some_and(|o| o.view_worth_keeping(&kept_key, res)))
-            .then(|| lonlat_box(&flat, &wide))
-            .flatten()
-            .filter(partial);
+            let keep = (near.is_some() && unchanged && kept.is_none() && owner.is_some_and(|o| o.view_worth_keeping(&kept_key, res)))
+                .then(|| box_of(&wide))
+                .flatten()
+                .filter(partial);
             let mut keeping: Option<(Vec<rustgis_map::Layer>, usize)> = (keep.is_some() || kept.is_some()).then(|| (Vec::new(), 0));
             let mut draw_rows = |chunk: &mut rustgis_map::Layer| -> rustgis_data::Result<()> {
                 chunk.selection = chunk
@@ -6564,7 +6591,9 @@ fn render_frame(
                     chunk.draw_rows_of(rows);
                     draw_rows(&mut chunk)
                 }),
-                None => visit_within(source.as_ref(), keep.or(near), &mut |features| {
+                // A read of every feature on a map in the file's own system takes those
+                // longitude/latitude can't place too, as a read of the view there does.
+                None => visit_within(source.as_ref(), keep.or(near).map(ask).or_else(|| own_units.then(whole)), &mut |features| {
                     // A frame no longer wanted reads no further (see `cancel`).
                     if cancel::requested() {
                         return Err(rustgis_data::DataError::Cancelled);
@@ -6974,7 +7003,18 @@ fn layer_masks(
                         let crs = source.coord_crs();
                         let to_lonlat = crs.to(rustgis_data::raster::Crs::LonLat).ok();
                         let held = flat.held(crs).ok();
-                        let result = visit_complete(source.as_ref(), &mut |features| {
+                        // On a map drawn in the file's own system, every shape it draws, those
+                        // longitude/latitude can't place too, as the layer's own read takes them.
+                        let whole = (ctx.globe.is_none()
+                            && crs != rustgis_data::raster::Crs::LonLat
+                            && source.reads_own_box()
+                            && held.as_ref().is_some_and(|h| h.is_identity()))
+                        .then(|| rustgis_data::source::Request {
+                            extent: None,
+                            limit: usize::MAX,
+                            own: Some((crs, rustgis_data::source::whole_plane())),
+                        });
+                        let result = visit_within(source.as_ref(), whole, &mut |features| {
                             for feature in features {
                                 if let Some(g) = feature.geometry {
                                     let g = match (ctx.globe.is_some(), crs == rustgis_data::raster::Crs::LonLat) {

@@ -152,3 +152,18 @@ fn a_coordinate_that_isnt_a_number_is_left_out_in_its_own_system_too() {
     let clean = Geometry::Line(vec![vec![Coord::new(451_500.0, 5_411_500.0), Coord::new(452_000.0, 5_411_500.0)]]);
     assert!(r.place(clean, &req).unwrap().inside);
 }
+
+/// A box over the whole plane holds every shape, one with no place (a polygon of no parts)
+/// included, as a read without a box keeps it (#2788).
+#[test]
+fn the_whole_plane_holds_a_shape_with_no_place() {
+    let utm = Crs::from_epsg(32631).unwrap();
+    let reproject = Reproject::known(Some((utm, utm.transformer().unwrap())));
+    let empty = Geometry::Polygon(Vec::new());
+    let whole = Request { extent: None, limit: usize::MAX, own: Some((utm, whole_plane())) };
+    let none = Request { extent: None, limit: usize::MAX, own: None };
+    let small = Request { extent: None, limit: usize::MAX, own: Some((utm, Extent::new(0.0, 0.0, 1.0, 1.0))) };
+    assert!(reproject.place(empty.clone(), &whole).is_some_and(|f| f.inside), "the whole plane");
+    assert!(reproject.place(empty.clone(), &none).is_some_and(|f| f.inside), "no box");
+    assert!(reproject.place(empty, &small).is_some_and(|f| !f.inside), "a box of somewhere");
+}

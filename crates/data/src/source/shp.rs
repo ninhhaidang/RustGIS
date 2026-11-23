@@ -425,10 +425,20 @@ impl FeatureSource for ShpSource {
     /// Visits located shapes in a spatial request; geometry-less rows belong only to whole reads.
     /// Counts scanned records and checks Cancel before filtering them.
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
+        self.visit_request_chunks(&Request { extent, limit: usize::MAX, own: None }, bytes, visit)
+    }
+    /// As [`FeatureSource::visit_chunks`], narrowed by the request's box in the file's own system
+    /// when it gives one ([`Request::own`]), and each shape's own box tested against it.
+    fn visit_request_chunks(&self, req: &Request, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
         let encoding = self.encoding.decoder();
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
-        let req = Request { extent, limit: usize::MAX, own: None };
-        let extent = extent.and_then(|e| self.reproject.extent_from_lonlat(&e));
+        let req = Request { limit: usize::MAX, ..*req };
+        // The request's box in the file's own system, when it is one (a box in another system
+        // is read as if absent), and whether it is one over the whole plane, which narrows
+        // nothing: every record, those without a box too, as a whole read.
+        let own = self.reproject.own_box(&req);
+        let everywhere = own == Some(super::whole_plane());
+        let extent = self.reproject.request_box(&req).filter(|_| !everywhere);
         if extent.is_some_and(|e| e.is_empty()) {
             return Ok(Batch { complete: true, ..Batch::default() });
         }
@@ -438,7 +448,7 @@ impl FeatureSource for ShpSource {
         // As in `read`, an extent the file's system couldn't bound (#1925) visits every record.
         let late = req.extent.is_some() && bounds.is_none();
         // A whole read looks at whether the stored boxes hold their shapes, once.
-        let checking = req.extent.is_none() && self.boxes.load(Relaxed) == BOXES_UNKNOWN;
+        let checking = req.extent.is_none() && (own.is_none() || everywhere) && self.boxes.load(Relaxed) == BOXES_UNKNOWN;
         let mut missed = false;
         // A record a whole read couldn't read this time had its box left unchecked: the check
         // waits for a read that reads them all.
@@ -497,8 +507,9 @@ impl FeatureSource for ShpSource {
                     return Ok(());
                 }
             };
-            // As in `read`, the shape itself is checked.
-            if geometry.as_ref().map_or(req.extent.is_some(), |g| !g.inside) {
+            // As in `read`, the shape itself is checked; a read by area, its box in the file's
+            // own system included, gives no rows without a shape.
+            if geometry.as_ref().map_or(if own.is_some() { !everywhere } else { req.extent.is_some() }, |g| !g.inside) {
                 return Ok(());
             }
             let geometry = geometry.map(|p| p.geometry);
