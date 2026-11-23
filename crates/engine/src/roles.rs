@@ -468,7 +468,8 @@ pub(crate) fn script(source: &str, depth: usize) -> (Option<String>, Report) {
             }
             Some(Err(_)) if suspicious(&Value::String(line.into())) => {
                 report.withheld = report.withheld.saturating_add(1);
-                let id = line.trim_start().split(char::is_whitespace).next().unwrap_or("");
+                // The id as Run reads it (`id {json}`, `id= {json}` or `id={json}`).
+                let id = crate::split_script_id(line.trim_start()).0;
                 let public_id = identifier(id, &mut report);
                 Some(format!("{} {WITHHELD}{ending}", public_id.as_deref().unwrap_or(id)))
             }

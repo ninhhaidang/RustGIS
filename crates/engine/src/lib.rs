@@ -31,7 +31,7 @@ pub use peer::Peer;
 pub(crate) use roles::{Document, ParamRole, Role};
 mod parameters;
 pub mod project_log;
-pub use parameters::{params_envelope, script_line};
+pub use parameters::{params_envelope, script_line, split_script_id};
 pub use project_log::{LogCopy, log_identifier, log_params};
 pub mod s3_connections;
 pub mod s3_keys;

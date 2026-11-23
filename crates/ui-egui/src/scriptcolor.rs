@@ -58,17 +58,15 @@ pub fn spans(script: &str, unknown: &[String]) -> Vec<Span> {
     out
 }
 
-/// The command id of a script line, as `script_commands` reads it: its first word (to the first
-/// space), less a trailing `=`. So `labels.style= {…}` names `labels.style`, while
-/// `labels.style={…}` names `labels.style={…` as Run does, which no command has. None for a blank
-/// or comment line.
+/// The command id of a script line, as `script_commands` reads it (`split_script_id`): to its
+/// first space or `=`, so `labels.style {…}`, `labels.style= {…}` and `labels.style={…}` all name
+/// `labels.style`. None for a blank or comment line.
 pub fn line_id(line: &str) -> Option<&str> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let id = line.split_once(char::is_whitespace).map_or(line, |(id, _)| id);
-    Some(id.trim_end_matches('='))
+    Some(rustgis_engine::split_script_id(line).0)
 }
 
 fn line_spans(script: &str, range: Range<usize>, unknown: &[String], out: &mut Vec<Span>) {
@@ -91,8 +89,9 @@ fn line_spans(script: &str, range: Range<usize>, unknown: &[String], out: &mut V
         return;
     }
     plain(start..start + lead, out);
-    let word = body.split_once(char::is_whitespace).map_or(body, |(w, _)| w);
-    let id = word.trim_end_matches('=');
+    let id = rustgis_engine::split_script_id(body).0;
+    // The `=` that ends an id is drawn apart; a space ending it stays with the parameters.
+    let word = if body[id.len()..].starts_with('=') { &body[..id.len() + 1] } else { id };
     // Read as `script_commands` reads it: the JSON once, and the engine's own rule for the ids a
     // script refuses.
     let rest = &body[word.len()..];
@@ -474,15 +473,19 @@ mod tests {
         assert!(k.contains(&("-2e3".to_string(), Kind::Num, false)));
     }
 
-    /// The id is the first word as Run reads it (`script_commands`): a trailing `=` is dropped, but
-    /// `id={json}` with no space is one word, which no command has.
+    /// The id is read as Run reads it (`script_commands`): to its first space or `=`, so
+    /// `id= {json}` and `id={json}` (#2794) both name `id`, the `=` drawn apart and the JSON
+    /// coloured; an unknown id is still marked.
     #[test]
-    fn an_id_is_the_first_word_as_run_reads_it() {
-        let k = kinds(r#"labels.style= {"size": 12}"#, &[]);
-        assert_eq!(k[..2], [("labels.style".to_string(), Kind::Id, false), ("=".to_string(), Kind::Punct, false)]);
-        let glued = r#"labels.style={"size": 12}"#;
-        assert_eq!(line_id(glued), Some(r#"labels.style={"size":"#));
-        assert_eq!(kinds(glued, &[r#"labels.style={"size":"#])[0].1, Kind::BadId);
+    fn an_id_is_read_as_run_reads_it() {
+        let parts = [("labels.style".to_string(), Kind::Id, false), ("=".to_string(), Kind::Punct, false)];
+        for line in [r#"labels.style= {"size": 12}"#, r#"labels.style={"size": 12}"#] {
+            let k = kinds(line, &[]);
+            assert_eq!(k[..2], parts, "{line}");
+            assert!(k.contains(&(r#""size""#.to_string(), Kind::Key, false)), "{line}: {k:?}");
+            assert_eq!(line_id(line), Some("labels.style"), "{line}");
+        }
+        assert_eq!(kinds(r#"nosuch.cmd={"a": 1}"#, &["nosuch.cmd"])[0].1, Kind::BadId);
         assert_eq!((line_id("  # x"), line_id(" "), line_id("map.zoomFull")), (None, None, Some("map.zoomFull")));
     }
 
@@ -514,8 +517,8 @@ mod tests {
     fn unknown_ids_are_the_ones_no_command_has() {
         let app = crate::RustGisApp::with_sample();
         let script = "nope.cmd {}\nmap.zoomFull\n# x.y\nnope.cmd\nplugin:none/cmd {}\nlabels.style= {}\nlabels.style={}";
-        // `labels.style={}` is one word, as Run reads it: no command has that id.
-        assert_eq!(super::unknown_ids(&app.session, script), ["labels.style={}", "nope.cmd", "plugin:none/cmd"]);
+        // `labels.style={}` names `labels.style`, as Run reads it (#2794).
+        assert_eq!(super::unknown_ids(&app.session, script), ["nope.cmd", "plugin:none/cmd"]);
     }
 
     /// The Script pane draws its coloured box, and the text in it is the script as typed.

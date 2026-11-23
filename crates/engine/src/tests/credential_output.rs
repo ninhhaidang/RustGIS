@@ -534,6 +534,17 @@ fn durable_future_documents_keep_their_exact_text_unchecked() {
     assert_eq!((report.withheld, report.unchecked), (1, 0));
 }
 
+/// A script line that doesn't read and holds a secret keeps only its command id, read as Run
+/// reads it: a line written `id={…` with no space keeps `id`, not the secret after the `=` (#2794).
+#[test]
+fn a_withheld_script_line_keeps_only_its_command_id() {
+    let secret = "RGSYNTH_glued_20261123";
+    let (clean, report) = crate::roles::script(&format!(r#"layer.rename={{"token":"{secret}""#), 0);
+    let clean = clean.unwrap();
+    assert_eq!(clean, "layer.rename [parameters withheld]");
+    assert_eq!(report.withheld, 1);
+}
+
 #[test]
 fn durable_formatter_errors_unwinds_and_apply_failures_restore_whole_fields() {
     use durable::{Durable, FieldMut, Leaf, Owner, Prepare};

@@ -238,20 +238,16 @@ fn redact_script(script: &str) -> String {
         .take(rustgis_engine::cmd::workflows::MAX_SCRIPT_LINES)
         .map(|line| {
             let line = line.trim();
-            // Display only: a malformed identifier may carry JSON glued after `=`. It must
-            // not be copied as an id; execution still uses the shared parser unchanged.
-            let head = line.split(|c: char| c.is_whitespace() || c == '=').next().unwrap_or(line);
-            let glued = line
-                .get(head.len()..)
-                .and_then(|r| r.strip_prefix('='))
-                .is_some_and(|r| !r.is_empty() && !r.starts_with(char::is_whitespace));
             match rustgis_engine::script_line(line) {
                 None => redact_string(line),
-                Some(Ok((id, params))) if !glued => {
+                Some(Ok((id, params))) => {
                     let id = rustgis_engine::log_identifier(&id);
                     if params.is_null() { id } else { format!("{id} {}", rustgis_engine::log_params(&params).into_log_value()) }
                 }
-                Some(_) => format!("{} [parameters not JSON; withheld]", rustgis_engine::log_identifier(head)),
+                // The id as Run reads it, never the JSON after it (`split_script_id`).
+                Some(Err(_)) => {
+                    format!("{} [parameters not JSON; withheld]", rustgis_engine::log_identifier(rustgis_engine::split_script_id(line).0))
+                }
             }
         })
         .collect::<Vec<_>>()
@@ -362,6 +358,8 @@ mod tests {
         let script = "map.zoomIn= {}\nlayer.addUrl {broken RGSYNTH_bad_20261103\nmap.zoomOut {}";
         let logged = redact_script(script);
         assert!(logged.starts_with("map.zoomIn {}\nlayer.addUrl [parameters not JSON; withheld]\nmap.zoomOut {}"));
+        // A line written `id={json}` runs, so it's logged as one that does (#2794).
+        assert_eq!(redact_script("map.zoomIn={}"), "map.zoomIn {}");
         assert!(!logged.contains("RGSYNTH_"));
         let comments = "# clean comment\n# https://h.invalid/a?token=RGSYNTH_comment_20261106";
         let args = normalized_args("run", &json!({"script": comments}));

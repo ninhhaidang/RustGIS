@@ -1791,7 +1791,7 @@ on a grid of any coordinate system, cell size and extent, and Polygons to Raster
 (`raster.rasterize`) burns polygons onto the same grids; Raster Functions › Resample matches a
 target raster's grid.
 
-The **Script** pane runs commands from text, one per line (`id {json}`); its box grows with the script down to the bottom of the pane,
+The **Script** pane runs commands from text, one per line (`id {json}`, or `id={json}` as on the command line); its box grows with the script down to the bottom of the pane,
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
 in the box runs the script too. Above a run's results, a line tells its number, how long it took
 and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run made again by

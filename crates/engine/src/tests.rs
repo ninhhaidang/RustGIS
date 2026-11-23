@@ -3304,6 +3304,35 @@ fn unique_values_by_expression_keep_their_classes_and_say_scales() {
     assert_eq!(kept.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["overview"]);
 }
 
+/// A script runs a line written `id={json}`, as the command line and the user guide write it
+/// (#2794), and refuses a script inside it written so.
+#[test]
+fn a_script_runs_a_line_with_its_parameters_after_an_equals_sign() {
+    let mut s = numbered_points(&[1]);
+    s.run("script.run", &json!({"script": r#"layer.rename={"layer":"Herds","name":"Cows"}"#})).unwrap();
+    assert!(s.map().layer_by_name("Cows").is_some(), "renamed");
+    let refused = s.run("script.run", &json!({"script": r#"script.run={"script":""}"#})).unwrap_err();
+    assert!(refused.contains("can't run in a script"), "{refused}");
+}
+
+/// A notebook from a file reads a cell's `id={json}` line as a script does (#2794): one that
+/// stays in the session runs, and one that writes a file is still refused.
+#[test]
+fn a_notebook_from_a_file_reads_a_line_with_its_parameters_after_an_equals_sign() {
+    let mut s = numbered_points(&[1]);
+    let png = std::env::temp_dir().join(format!("rustgis-2794-{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&png);
+    let cells = [r#"layer.rename={"layer":"Herds","name":"Cows"}"#.to_string(), format!("share.exportMap={}", json!({"path": png}))];
+    let cells: Vec<Value> = cells.iter().map(|c| json!({"cell_type": "code", "source": c})).collect();
+    let text = json!({"nbformat": 4, "metadata": {"language_info": {"name": "rustgis"}}, "cells": cells}).to_string();
+    s.run("notebook.open", &json!({"text": text})).unwrap();
+    let name = s.project.notebooks.last().unwrap().name.clone();
+    let r = s.run("notebook.run", &json!({"notebook": name})).unwrap();
+    assert_eq!(r["error"], 1, "{r}");
+    assert!(s.map().layer_by_name("Cows").is_some(), "the first cell ran");
+    assert!(!png.exists(), "the second wrote nothing");
+}
+
 /// A calculation rule and Calculate Field refuse quoted text past the expression language's length
 /// limit, as the language refuses any other expression that long (#2783): no rule is kept and no
 /// value changes.

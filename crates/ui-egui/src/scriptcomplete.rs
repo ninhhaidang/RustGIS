@@ -97,14 +97,16 @@ pub fn offer(script: &str, at: usize, ids: &[String]) -> Option<Offer> {
 /// so working an offer out costs no more for a long script.
 pub fn word_at(script: &str, at: usize, asked: bool) -> Option<(usize, String)> {
     let (before, after) = script.split_at(byte_at(script, at)?);
-    // The cursor ends the word: no word character right after it.
-    if after.chars().next().is_some_and(|c| !c.is_whitespace()) {
+    // The cursor ends the word: no word character right after it (a space, or the `=` of
+    // `id={json}`, ends an id).
+    if after.chars().next().is_some_and(|c| !c.is_whitespace() && c != '=') {
         return None;
     }
     let line = before.rsplit('\n').next().unwrap_or_default();
     let word = line.trim_start();
     let fewest = if asked { 0 } else { MIN_TYPED };
-    if word.chars().count() < fewest || word.chars().any(char::is_whitespace) || word.starts_with('#') {
+    // A space or `=` ends a line's id (`split_script_id`): past one, the cursor is in its parameters.
+    if word.chars().count() < fewest || word.chars().any(|c| c.is_whitespace() || c == '=') || word.starts_with('#') {
         return None;
     }
     Some((at - word.chars().count(), word.to_string()))
@@ -1762,12 +1764,16 @@ mod tests {
         assert_eq!((o.start, o.end), (15, 22), "the word, after the indent");
         assert_eq!(items(offer("LABELS.ST", 9, &ids())), ["labels.style"], "case aside");
         assert_eq!(items(offer("plu", 3, &ids())), ["plugin:demo/hello"], "plugins' too");
+        // Before the `=` of `id={json}`, as before the space of `id {json}` (#2794).
+        assert_eq!(items(offer("labels.st={}", 9, &ids())), ["labels.style"]);
+        assert_eq!(items(offer("labels.st {}", 9, &ids())), ["labels.style"]);
     }
 
     #[test]
     fn only_a_lines_first_word_at_the_cursor_is_completed() {
         let none = |s: &str, at: usize| offer(s, at, &ids()).is_none();
         assert!(none("labels.style {\"la", 17), "in the JSON");
+        assert!(none("labels.style={\"la", 17), "in the JSON after an equals sign (#2794)");
         assert!(none("# labels", 8), "in a comment");
         assert!(none("l", 1), "one character");
         assert!(none("labels.st", 4), "the cursor mid-word");
@@ -2687,6 +2693,15 @@ mod tests {
         assert_eq!(o.of, Some(super::Of::CommandKeys("map.goToXY".into())));
     }
 
+    /// Keys are offered in a line written `id={json}` as in `id {json}` (#2794).
+    #[test]
+    fn keys_are_offered_after_an_equals_sign() {
+        let app = crate::RustGisApp::with_sample();
+        let keys = |s: &str| unasked(s, s.chars().count(), &[], &app.session).map(|o| o.items).unwrap_or_default();
+        assert_eq!(keys(r#"map.goToXY={"la"#), keys(r#"map.goToXY {"la"#));
+        assert!(keys(r#"map.goToXY={"la"#).contains(&"lat".to_string()));
+    }
+
     /// The key under the cursor, closed or not, doesn't count as given; the same key given
     /// elsewhere on the line does.
     #[test]
@@ -2755,6 +2770,7 @@ mod tests {
         assert_eq!(at("labels.style "), None, "before the brace");
         assert_eq!(at("# labels.style {"), None, "a comment");
         assert_eq!(at(r#"labels.style {"a": {"b": 1"#), Some((0, "labels.style".into())), "nested");
+        assert_eq!(at(r#"labels.style={"si"#), Some((0, "labels.style".into())), "after an equals sign (#2794)");
         assert!(hint_at("x", 99).is_none(), "a cursor past the text");
     }
 

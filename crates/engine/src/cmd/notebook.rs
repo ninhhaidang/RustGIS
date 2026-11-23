@@ -404,10 +404,11 @@ fn untrusted_line(s: &Session, script: &str) -> Option<usize> {
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
-        let (id, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        // The id as `run_script` reads it (`id {json}`, `id= {json}` or `id={json}`).
+        let (id, rest) = crate::split_script_id(line);
         // Malformed params read as none here; `run_script` rejects that line before it runs.
         let params: Value = serde_json::from_str(rest.trim()).unwrap_or(Value::Null);
-        super::items::touches_files(s, id.trim_end_matches('='), &params).then_some(n + 1)
+        super::items::touches_files(s, id, &params).then_some(n + 1)
     })
 }
 
