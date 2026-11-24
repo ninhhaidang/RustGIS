@@ -255,6 +255,9 @@ pub(crate) fn arrow_scroll_area<R>(
 /// The collapse button at the right of the tab strip.
 const COLLAPSE_W: f32 = 24.0;
 
+/// The space between two tabs of the tab strip.
+const TAB_GAP: f32 = 2.0;
+
 /// The active tool indicator at the right of the tab strip, unless the Explore tool is on: its
 /// label and width.
 fn tool_indicator(app: &RustGisApp, ui: &Ui) -> Option<(String, f32)> {
@@ -288,22 +291,26 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         let tool = tool_indicator(app, ui);
         let tool_w = tool.as_ref().map_or(0.0, |(_, w)| w + ui.spacing().item_spacing.x);
         let room = (ui.available_width() - COLLAPSE_W - 8.0 - tool_w).max(60.0);
-        // Tighter tabs when the window is too narrow for the usual padding.
-        let text: f32 = tabs.iter().map(|(_, c)| text_w(ui, c, semibold(12.5))).sum();
-        let pad = ((room - text) / tabs.len().max(1) as f32).clamp(8.0, 22.0);
+        // Each caption measured once, in semibold (the active tab's face) whichever tab is active, so
+        // the tabs don't move as another is chosen; the tabs take those widths. Tighter tabs when the
+        // window is too narrow for the usual padding, with the spacing between tabs left out of the room.
+        let widths: Vec<f32> = tabs.iter().map(|(_, c)| text_w(ui, c, semibold(12.5))).collect();
+        let text: f32 = widths.iter().sum();
+        let gaps = tabs.len().saturating_sub(1) as f32 * TAB_GAP;
+        let pad = ((room - gaps - text) / tabs.len().max(1) as f32).clamp(8.0, 22.0);
         let key = (app.ui.tab.clone(), room.round() as i32, text.round() as i32);
         let follow = follow_active(ui, egui::Id::unique("tab_strip_active"), key);
         let area = egui::ScrollArea::horizontal().id_salt("tab_strip").max_width(room);
         let tips = [tl!("Scroll the tabs left"), tl!("Scroll the tabs right")];
         arrow_scroll_area(ui, t, "tab_strip", area, tips, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                for (tab, caption) in &tabs {
+                ui.spacing_mut().item_spacing = vec2(TAB_GAP, 0.0);
+                for ((tab, caption), caption_w) in tabs.iter().zip(&widths) {
                     let tab = tab.as_str();
                     let active = app.ui.tab == tab;
                     let font = if active { semibold(12.5) } else { regular(12.5) };
                     let shown = caption.as_str();
-                    let w = text_w(ui, shown, font.clone()) + pad;
+                    let w = caption_w + pad;
                     let (r, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
                     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, shown));
                     let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 3.0), r.max);

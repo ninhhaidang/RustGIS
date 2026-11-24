@@ -1005,6 +1005,44 @@ fn a_tab_strip_wider_than_the_window_scrolls_with_arrow_buttons() {
     assert!(h.query_by_label("Scroll the tabs left").is_none());
 }
 
+#[test]
+fn tabs_tightened_to_fit_fill_the_tab_strip() {
+    // A plugin's tab, added or removed by a test running alongside, would change the tab strip.
+    let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = harness();
+    // With room to spare the tabs take their usual 22-point padding. From them, the window width at
+    // which they need 15 points each: inside 8–22 whatever the system font's widths.
+    h.set_size(egui::vec2(3000.0, 600.0));
+    settle(&mut h);
+    let (start, end, n) = ribbon_tab_row(&h);
+    // With no tool active (no tool indicator), the strip ends 8 points before the collapse button.
+    let strip_end = |h: &egui_kittest::Harness<'_, RustGisApp>| h.get_by_label_contains("Collapse the ribbon").rect().left() - 8.0;
+    let right_margin = 3000.0 - strip_end(&h);
+    let width = end - 7.0 * n as f32 + right_margin;
+    h.set_size(egui::vec2(width, 600.0));
+    // Only the active tab is drawn in semibold: whichever it is, the tabs fill the strip.
+    for tab in ["Home", "Labeling"] {
+        h.state_mut().ui.tab = tab.into();
+        settle(&mut h);
+        let (now_start, end, _) = ribbon_tab_row(&h);
+        assert_eq!(now_start, start, "{tab} active");
+        let strip_end = strip_end(&h);
+        assert!((end - strip_end).abs() < 0.5, "{tab} active: the tabs end at {end}, the strip at {strip_end}");
+        assert!(h.query_by_label("Scroll the tabs right").is_none(), "{tab} active");
+    }
+}
+
+/// The ribbon's tab row: where its first tab starts, where its last ends, and how many buttons it has
+/// (the tabs, and the scroll arrows when they show).
+fn ribbon_tab_row(h: &egui_kittest::Harness<'_, RustGisApp>) -> (f32, f32, usize) {
+    let row = h.get_by_label("Home").rect();
+    let tabs: Vec<egui::Rect> =
+        h.query_all_by_role(egui::accesskit::Role::Button).map(|n| n.rect()).filter(|r| (r.top() - row.top()).abs() < 0.5).collect();
+    let start = tabs.iter().fold(f32::MAX, |start, r| start.min(r.left()));
+    let end = tabs.iter().fold(f32::MIN, |end, r| end.max(r.right()));
+    (start, end, tabs.len())
+}
+
 fn settle(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
     for _ in 0..4 {
         h.step();
