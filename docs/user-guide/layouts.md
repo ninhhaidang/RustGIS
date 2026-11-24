@@ -37,6 +37,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     thesis (160 × 225 or 160 × 110 mm): the map edge to edge with a line of its projection and
     datum under it, at 7 pt. A figure's title and sources belong in its caption, so they are
     left out, and the result says so.
+  - **Step by step**: **Publication Layout Wizard…**, at the end of the same menu, asks for the
+    size (a sheet turned Auto, Portrait or Landscape, or a figure), the style, the texts (title,
+    the active map's name until one is typed; subtitle, note, sources and credit line, or none)
+    and the accent colour, then shows what was picked; **Create** makes the layout as the menu
+    does. A figure goes from its size to the review, as it takes no style, texts or accent. A
+    field left empty is left out (for the credit line, the dated default applies); the title is
+    the exception: empty, it means no title. A layout the command refuses is said, and the wizard
+    stays open.
   - **The map**: the `extent` given (or the view) fitted north-up, without tilt, at a round scale,
     two significant figures, rounded up so it still fits within the strips the graticule's labels
     take inside the frame. A graticule's step follows the extent (2° for a state, 15′ for a city),

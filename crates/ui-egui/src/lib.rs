@@ -86,6 +86,7 @@ mod pluginstart;
 mod pluginsui;
 mod popupmedia;
 mod portalsui;
+mod publicationwizard;
 #[cfg(not(target_arch = "wasm32"))]
 mod readjob;
 #[cfg(not(target_arch = "wasm32"))]
@@ -5807,6 +5808,14 @@ impl RustGisApp {
                     let id = self.session.layer_id(p)?;
                     let form = geometrycalc::Form::new(&self.session, id)?;
                     self.dialogs = dialogs::Dialogs { open: Some("calculateGeometry"), geometry: Some(form), ..Default::default() };
+                    return Ok(Value::Null);
+                }
+                if which == "publicationWizard" {
+                    // Opened again while open, it keeps what was entered.
+                    if self.dialogs.open != Some("publicationWizard") || self.dialogs.publication.is_none() {
+                        let draft = publicationwizard::Draft::new(&self.session);
+                        self.dialogs = dialogs::Dialogs { open: Some("publicationWizard"), publication: Some(draft), ..Default::default() };
+                    }
                     return Ok(Value::Null);
                 }
                 if which == "offlineConflicts" {

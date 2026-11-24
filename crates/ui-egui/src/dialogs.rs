@@ -22,6 +22,8 @@ pub struct Dialogs {
     /// Map-local layer IDs require the dialog to retain its original project and map as well.
     pub projection_map: Option<(u64, usize, String)>,
     pub geometry: Option<crate::geometrycalc::Form>,
+    /// Publication Layout Wizard: what it has asked so far (#2850).
+    pub publication: Option<crate::publicationwizard::Draft>,
     pub repair: Option<crate::repairsource::Form>,
     pub conflicts: Option<crate::conflictsui::Form>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -331,6 +333,10 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     if which == "reloadData" {
         crate::reloaddata::show(app, ctx);
+        return;
+    }
+    if which == "publicationWizard" {
+        crate::publicationwizard::show(app, ctx);
         return;
     }
     if which == "repairSource" {
