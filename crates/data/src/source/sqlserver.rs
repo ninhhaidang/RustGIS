@@ -1407,9 +1407,17 @@ mod tests {
         let none = noted(Ok(Some(Some(0))));
         assert!(!none.zm_dropped && none.notes.is_empty(), "{:?}", none.notes);
         let two = noted(Ok(Some(Some(2))));
-        assert!(two.zm_dropped && two.notes == [crate::zm_note(Some(2))], "{:?}", two.notes);
+        assert!(
+            two.zm_dropped && two.notes == [crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(2)))],
+            "{:?}",
+            two.notes
+        );
         let uncounted = noted(Ok(Some(None)));
-        assert!(uncounted.zm_dropped && uncounted.notes == [crate::zm_note(None)], "{:?}", uncounted.notes);
+        assert!(
+            uncounted.zm_dropped && uncounted.notes == [crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(None))],
+            "{:?}",
+            uncounted.notes
+        );
         let slow = noted(Ok(None));
         assert!(!slow.zm_dropped && slow.notes.len() == 1 && slow.notes[0].contains("within 10 s"), "{:?}", slow.notes);
         let failed = noted(Err(DataError::Format("permission denied".into())));

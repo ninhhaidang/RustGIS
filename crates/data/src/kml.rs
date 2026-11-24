@@ -758,7 +758,10 @@ impl Reader {
             }
             if zm_rows > 0 {
                 ds.zm_dropped = true;
-                report.messages.push(format!("{}: {}", ds.name, crate::zm_note(Some(zm_rows as u64))));
+                report.messages.push(crate::loss::Note::loss(
+                    crate::loss::LossCode::DroppedZm,
+                    format!("{}: {}", ds.name, crate::zm_note(Some(zm_rows as u64))),
+                ));
             }
             let styles = used.into_iter().filter_map(|id| self.styles.get(&id).map(|s| (id, *s))).collect();
             out.push(Layer { dataset: ds, report, styles });

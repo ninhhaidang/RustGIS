@@ -226,11 +226,24 @@ impl Engine {
                     1 => session.warn(format!("{name}: 1 row couldn't be read and was left out")),
                     n => session.warn(format!("{name}: {n} rows couldn't be read and were left out")),
                 }
+                // A Z/M loss this export says from its read; one said only when the layer opened
+                // isn't said here again, so the export's own note says it.
+                let mut read_zm = false;
                 for message in report.messages.into_iter().filter(|message| !opened_notes.contains(message)) {
+                    read_zm |= message.loss == Some(rustgis_engine::data::loss::LossCode::DroppedZm);
                     session.say(message);
                 }
-                if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{name} as GeoJSON")) {
-                    session.notify(note, false);
+                // What GeoJSON, in WGS 84, lacks of it, as an export to GeoJSON says it; a Z/M loss
+                // the read just said isn't said again, as the file writer leaves it
+                // (`share::coalesce_read_zm`).
+                let target = format!("{name} as GeoJSON");
+                let generic = rustgis_engine::data::zm_export_note([&ds], &target).filter(|_| read_zm);
+                for note in
+                    rustgis_engine::data::export_notes([(&ds, ds.lonlat_extent())], &target, rustgis_engine::data::raster::Crs::LonLat)
+                {
+                    if generic.as_ref() != Some(&note) {
+                        session.say(note);
+                    }
                 }
                 // GeoJSON is longitude/latitude, whatever system the source holds its coordinates in;
                 // a feature with a place that can't be given there is in it without its geometry.
@@ -243,9 +256,17 @@ impl Engine {
             if !selected {
                 let (lonlat, unplaced) = found.dataset.in_lonlat_leaving_out()?;
                 let text = rustgis_engine::data::io::to_geojson(&lonlat).to_string();
-                let note = rustgis_engine::data::zm_export_note([&found.dataset], &format!("{} as GeoJSON", found.name));
-                let unplaced = rustgis_engine::data::unplaced_note(&format!("{} as GeoJSON", found.name), &found.name, unplaced);
-                for note in note.into_iter().chain(unplaced) {
+                let target = format!("{} as GeoJSON", found.name);
+                let notes = rustgis_engine::data::export_notes(
+                    [(&found.dataset, found.dataset.lonlat_extent())],
+                    &target,
+                    rustgis_engine::data::raster::Crs::LonLat,
+                );
+                let unplaced = rustgis_engine::data::unplaced_note(&target, &found.name, unplaced);
+                for note in notes {
+                    session.say(note);
+                }
+                if let Some(note) = unplaced {
                     session.notify(note, false);
                 }
                 return Ok(text);
@@ -272,8 +293,13 @@ impl Engine {
                 ds.push(g, r.values().cloned().collect());
             }
             let text = rustgis_engine::data::io::to_geojson(&ds).to_string();
-            if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{} as GeoJSON", ds.name)) {
-                session.notify(note, false);
+            // The selected rows lack what the layer's do: said of the layer, whose system and body
+            // the copy in longitude/latitude no longer holds, at the selected rows' places.
+            let target = format!("{} as GeoJSON", ds.name);
+            for note in
+                rustgis_engine::data::export_notes([(&found.dataset, ds.extent())], &target, rustgis_engine::data::raster::Crs::LonLat)
+            {
+                session.say(note);
             }
             if let Some(note) = rustgis_engine::data::unplaced_note(&format!("{} as GeoJSON", ds.name), &ds.name, unplaced) {
                 session.notify(note, false);

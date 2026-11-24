@@ -182,8 +182,11 @@ fn a_streamed_web_mercator_export_counts_what_it_writes_at_85_degrees() {
         }
     }
     assert_eq!(
-        crate::web_mercator_moved_note("polar.gpkg", "polar", 3).as_deref(),
-        Some("polar.gpkg: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends")
+        crate::web_mercator_moved_note("polar.gpkg", "polar", 3),
+        Some(crate::loss::Note::loss(
+            crate::loss::LossCode::ChangedPosition,
+            "polar.gpkg: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+        ))
     );
     assert_eq!(crate::web_mercator_moved_note("polar.gpkg", "polar", 0), None);
     let _ = std::fs::remove_dir_all(d);

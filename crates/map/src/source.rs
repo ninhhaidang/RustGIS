@@ -1119,7 +1119,10 @@ impl SourceLayer {
                 }
                 let part = out.parts.first().ok_or_else(|| format!("{path}: the table returns no {}", d.family.label()))?;
                 if part.zm_dropped > 0 {
-                    conversion_notes.push(rustgis_data::zm_note(Some(part.zm_dropped)));
+                    conversion_notes.push(rustgis_data::loss::Note::loss(
+                        rustgis_data::loss::LossCode::DroppedZm,
+                        rustgis_data::zm_note(Some(part.zm_dropped)),
+                    ));
                 }
                 declared_empty = part.count == 0;
                 new.path = Some(part.path.display().to_string());

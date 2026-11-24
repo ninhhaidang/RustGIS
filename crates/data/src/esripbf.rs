@@ -151,10 +151,10 @@ impl Losses {
     }
 
     /// What they say, one message per kind (as [`read`] says them).
-    pub fn messages(&self) -> Vec<String> {
-        let mut out = Vec::new();
+    pub fn messages(&self) -> crate::loss::Notes {
+        let mut out = crate::loss::Notes::new();
         if self.no_crs {
-            out.push("the answer names no coordinate system; coordinates are read as longitude/latitude".into());
+            out.push("the answer names no coordinate system; coordinates are read as longitude/latitude");
         }
         if self.unreadable > 0 {
             out.push(format!("{} values don't fit their field's type and are left empty", self.unreadable));
@@ -175,7 +175,7 @@ impl Losses {
             ));
         }
         if self.with_zm > 0 {
-            out.push(crate::zm_note(Some(self.with_zm as u64)));
+            out.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(self.with_zm as u64))));
         }
         out
     }

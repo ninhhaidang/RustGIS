@@ -745,7 +745,10 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         }
         if zm > 0 {
             ds.zm_dropped = true;
-            rep.messages.push(format!("{}: {}", ds.name, crate::zm_note(Some(zm as u64))));
+            rep.messages.push(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedZm,
+                format!("{}: {}", ds.name, crate::zm_note(Some(zm as u64))),
+            ));
         }
         if let Some(n) = crate::source::null_text_note(&ds.fields, &null_text) {
             rep.messages.push(format!("{}: {n}", ds.name));

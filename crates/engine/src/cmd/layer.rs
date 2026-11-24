@@ -2860,10 +2860,11 @@ fn add_picked(
             })
             .map(|(_, r)| {
                 let mut said = r.report.clone();
-                // The layer's own Z/M note leads its messages; it is said by that layer. A note
-                // that reports another loss is never taken for it.
-                if r.dataset.zm_dropped && said.messages.first().is_some_and(|n| n.loss.is_none()) {
-                    said.messages.drain(..1);
+                // The layer's own Z/M note, by its code: that layer says it.
+                if r.dataset.zm_dropped
+                    && let Some(at) = said.messages.iter().position(|n| n.loss == Some(rustgis_data::loss::LossCode::DroppedZm))
+                {
+                    said.messages.drain(at..=at);
                 }
                 (r.dataset.source.clone(), said)
             })
@@ -3618,9 +3619,59 @@ fn add_gdal(s: &mut Session, p: &Value, path: &str) -> CmdResult {
     for f in failed {
         s.notify(format!("{path}: {f}"), true);
     }
+    // What the conversion dropped of the parts' Z or M values, as a fresh conversion says it.
+    let (lost, unknown) = zm_notices(path, &converted);
+    if let Some(text) = lost {
+        s.notify_loss(rustgis_data::loss::LossCode::DroppedZm, text.into());
+    }
+    if let Some(text) = unknown {
+        s.notify(text, false);
+    }
     let original = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
     let parts = gdal_parts(converted, &original, crs);
     add_converted(s, p, path, &original, parts)
+}
+
+/// What GDAL's conversion of `path` says of its parts' Z or M values, once for each kind: the
+/// parts that had some, with their total (a loss), and the parts that couldn't be counted. A part
+/// alone is named in a fresh conversion's words; several are counted and named, the first ten.
+#[cfg(not(target_arch = "wasm32"))]
+fn zm_notices(path: &str, converted: &[rustgis_data::source::gdal::Converted]) -> (Option<String>, Option<String>) {
+    let named = |parts: &[&rustgis_data::source::gdal::Converted]| {
+        let mut names: Vec<String> = parts.iter().take(10).map(|c| format!("'{}'", c.name)).collect();
+        if parts.len() > 10 {
+            names.push(format!("{} more", parts.len() - 10));
+        }
+        names.join(", ")
+    };
+    let lost: Vec<_> = converted.iter().filter(|c| c.zm_dropped > 0).collect();
+    let unknown: Vec<_> = converted.iter().filter(|c| c.zm_dropped == 0 && c.zm_unknown).collect();
+    let lost = match lost.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "{path}: GDAL: '{}' contains Z or M coordinates on {} source feature(s); conversion keeps only XY coordinates",
+            one.name, one.zm_dropped
+        )),
+        many => Some(format!(
+            "{path}: GDAL: {} layers ({}) contain Z or M coordinates on {} source feature(s); conversion keeps only XY coordinates",
+            many.len(),
+            named(many),
+            many.iter().map(|c| c.zm_dropped).fold(0u64, u64::saturating_add)
+        )),
+    };
+    let unknown = match unknown.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "{path}: GDAL: '{}': an unknown number of source feature(s) may have had Z or M coordinates dropped; conversion keeps only XY coordinates",
+            one.name
+        )),
+        many => Some(format!(
+            "{path}: GDAL: {} layers ({}): an unknown number of source feature(s) may have had Z or M coordinates dropped; conversion keeps only XY coordinates",
+            many.len(),
+            named(many)
+        )),
+    };
+    (lost, unknown)
 }
 
 /// GDAL's conversions of the file `original` as the layers to add: the layers in the file's order,
@@ -3638,7 +3689,9 @@ pub(crate) fn gdal_parts(mut converted: Vec<rustgis_data::source::gdal::Converte
             name: c.name,
             unprojected: c.unprojected,
             in_lonlat: c.in_lonlat,
-            zm_dropped: false,
+            // A declared layer whose count failed is taken as having lost them, as a fresh
+            // conversion takes it.
+            zm_dropped: c.zm_dropped > 0 || (c.zm_unknown && c.zm_declared),
             origin: ConvertedOrigin::Gdal(rustgis_map::source::GdalOrigin {
                 path: original.to_string(),
                 layer: c.layer,
@@ -4398,7 +4451,7 @@ pub(crate) fn duckdb_parts(
     // Z and M values are dropped as DuckDB writes the result: one notice for all its parts.
     let zm = out.parts.iter().fold(0u64, |n, p| n.saturating_add(p.zm_dropped));
     if zm > 0 {
-        s.notify(format!("{name}: {}", rustgis_data::zm_note(Some(zm))), false);
+        s.notify_loss(rustgis_data::loss::LossCode::DroppedZm, format!("{name}: {}", rustgis_data::zm_note(Some(zm))).into());
     }
     let mixed = out.parts.len() > 1;
     out.parts.sort_by_key(|p| bottom_first(p.family));
@@ -7827,6 +7880,41 @@ pub(crate) fn external_dataset_selector(command: &str) -> bool {
 mod tests {
     use crate::Session;
     use serde_json::json;
+
+    /// A GDAL conversion's parts say their Z or M values once for each kind: a part alone in a
+    /// fresh conversion's words, several counted together; parts without any say nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_conversion_says_its_parts_z_and_m_once_for_each_kind() {
+        let part = |name: &str, zm_dropped: u64, zm_unknown: bool| rustgis_data::source::gdal::Converted {
+            path: std::path::PathBuf::new(),
+            name: name.into(),
+            layer: "roads".into(),
+            family: None,
+            unprojected: false,
+            in_lonlat: false,
+            zm_dropped,
+            zm_unknown,
+            zm_declared: false,
+        };
+        let (lost, unknown) = super::zm_notices("f.kml", &[part("roads (Point)", 2, false), part("roads (Line)", 3, false)]);
+        assert_eq!(
+            lost.as_deref(),
+            Some(
+                "f.kml: GDAL: 2 layers ('roads (Point)', 'roads (Line)') contain Z or M coordinates on 5 source feature(s); conversion keeps only XY coordinates"
+            )
+        );
+        assert_eq!(unknown, None);
+        let (lost, unknown) =
+            super::zm_notices("f.kml", &[part("a", 1, false), part("b", 0, true), part("c", 0, true), part("d", 0, false)]);
+        assert!(lost.is_some_and(|t| t.starts_with("f.kml: GDAL: 'a' contains Z or M coordinates on 1 source feature(s)")));
+        assert!(unknown.is_some_and(|t| t.starts_with("f.kml: GDAL: 2 layers ('b', 'c'): an unknown number")));
+        assert_eq!(super::zm_notices("f.kml", &[part("d", 0, false)]), (None, None));
+        // A part whose count failed is taken as having lost them when its layer declares them.
+        let declared = rustgis_data::source::gdal::Converted { zm_declared: true, ..part("e", 0, true) };
+        let parts = super::gdal_parts(vec![declared, part("f", 0, true), part("g", 4, false)], "f.kml", None);
+        assert_eq!(parts.iter().map(|p| p.zm_dropped).collect::<Vec<_>>(), [true, false, true]);
+    }
 
     /// A payload can start beyond the sniff budget; only root keys decide the route.
     #[test]

@@ -6623,9 +6623,9 @@ mod tests {
         assert_eq!(
             rep.messages,
             [
-                crate::zm_note(Some(1)).as_str(),
-                "1 rows had geometry that isn't readable WKT",
-                "1 rows have another kind of geometry than the layer's polyline"
+                crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(1))),
+                "1 rows had geometry that isn't readable WKT".into(),
+                "1 rows have another kind of geometry than the layer's polyline".into()
             ]
         );
         // A named WKT column with a given system.
@@ -6674,7 +6674,7 @@ mod tests {
         assert_eq!(
             report.messages,
             [
-                crate::zm_note(Some(1)),
+                crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(1))),
                 "1 WKT value in 'wkt' lost later non-empty geometry-collection members; only the first non-empty member is kept".into()
             ]
         );
@@ -6791,8 +6791,11 @@ mod tests {
         other.name = "wells".into();
         let flat = Dataset::new("roads", GeometryType::Polyline, vec![]);
         assert_eq!(
-            crate::zm_export_note([&ds, &flat, &other], "site.zip").as_deref(),
-            Some("site.zip: its geometry has no Z or M values for 2 layers (pts, wells), which were dropped when they were read")
+            crate::zm_export_note([&ds, &flat, &other], "site.zip"),
+            Some(crate::loss::Note::loss(
+                crate::loss::LossCode::DroppedZm,
+                "site.zip: its geometry has no Z or M values for 2 layers (pts, wells), which were dropped when they were read"
+            ))
         );
         assert_eq!(crate::zm_export_note([&flat], "roads.zip"), None);
 
@@ -6815,6 +6818,7 @@ mod tests {
         assert!(rep.messages.is_empty(), "{:?}", rep.messages);
         assert_eq!(
             crate::export_notes([(&utm, ext(&utm)), (&lonlat, ext(&lonlat))], "out.geojson", Crs::LonLat),
+            // Told by the extent alone: said without a code.
             [
                 "out.geojson: the coordinates of utm aren't longitude/latitude, so they're out of place: define its projection and export again"
             ]
@@ -6833,9 +6837,12 @@ mod tests {
         let saved: Dataset = serde_json::from_value(serde_json::to_value(&parcels).unwrap()).unwrap();
         assert_eq!(
             crate::export_notes([(&saved, ext(&saved))], "parcels.geojson", Crs::LonLat),
-            [format!(
-                "parcels.geojson: the positions of parcels are approximate, possibly a few hundred metres off: its coordinate system ({}) has no shift to WGS 84",
-                nad27.label()
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ApproximatedDatum,
+                format!(
+                    "parcels.geojson: the positions of parcels are approximate, possibly a few hundred metres off: its coordinate system ({}) has no shift to WGS 84",
+                    nad27.label()
+                )
             )]
         );
         // Written back in NAD 27, the positions come back as they were read.
@@ -6847,9 +6854,10 @@ mod tests {
         shifted.crs = Some(Crs::Epsg(26716));
         assert_eq!(
             crate::export_notes([&parcels, &roads, &shifted].map(|ds| (ds, ext(ds))), "map.json", Crs::LonLat),
-            [
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ApproximatedDatum,
                 "map.json: the positions of 2 layers (parcels, roads) are approximate, possibly a few hundred metres off: their coordinate systems have no shift to WGS 84"
-            ]
+            )]
         );
     }
 
@@ -6886,7 +6894,10 @@ mod tests {
         assert_eq!(merc.features[0].geometry, Some(Geometry::Point(lonlat_to_merc(c(10.0, MAX_LAT)))));
         assert_eq!(
             crate::export_notes([(&polar, ext(&polar))], "polar.shp", Crs::WebMercator),
-            ["polar.shp: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"]
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ChangedPosition,
+                "polar.shp: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+            )]
         );
         // In another system, or within 85.05°: nothing.
         for crs in [Crs::LonLat, Crs::Epsg(32631)] {
@@ -6898,13 +6909,17 @@ mod tests {
         let one = layer("one", &[c(0.0, 86.0)]);
         assert_eq!(
             crate::export_notes([(&one, ext(&one))], "one.gpkg", Crs::WebMercator),
-            ["one.gpkg: 1 vertex of one is beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"]
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ChangedPosition,
+                "one.gpkg: 1 vertex of one is beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+            )]
         );
         assert_eq!(
             crate::export_notes([(&polar, ext(&polar)), (&within, ext(&within)), (&one, ext(&one))], "map.gpkg", Crs::WebMercator),
-            [
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ChangedPosition,
                 "map.gpkg: 4 vertices of 2 layers (polar, one) are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
-            ]
+            )]
         );
         // A streamed layer's features are only those in view: its source's extent tells, without
         // a count, and only that it reaches beyond, as a source can declare a wider one than its
@@ -6921,9 +6936,10 @@ mod tests {
         // A layer counted and a window told by its extent: one notice, saying both.
         assert_eq!(
             crate::export_notes([(&polar, ext(&polar)), (&window, Extent::new(-180.0, -90.0, 180.0, 84.0))], "map.gpkg", Crs::WebMercator),
-            [
+            [crate::loss::Note::loss(
+                crate::loss::LossCode::ChangedPosition,
                 "map.gpkg: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°; the extent of tiles reaches beyond 85.05° north or south, and what lies beyond is written at 85.05°, where Web Mercator ends"
-            ]
+            )]
         );
         // A layer without features that isn't a window (a raster layer's, or a streamed layer's
         // written a chunk at a time, whose export counts as it writes) has no extent tell.
@@ -6962,8 +6978,11 @@ mod tests {
             {
                 assert_eq!(
                     crate::export_notes([(ds, ext(ds))], &target, Crs::WebMercator),
-                    [format!(
-                        "{target}: {n} vertices of {name} are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+                    [crate::loss::Note::loss(
+                        crate::loss::LossCode::ChangedPosition,
+                        format!(
+                            "{target}: {n} vertices of {name} are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+                        )
                     )]
                 );
             }

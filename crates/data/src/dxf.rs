@@ -1751,7 +1751,10 @@ pub fn read(file_name: &str, bytes: &[u8], opts: &Options) -> Result<Vec<(Datase
         && let Some((_, report)) = layers.first_mut()
     {
         let subject = if varying_count == 1 { "feature" } else { "features" };
-        report.messages.push(format!("{varying_count} {subject} lost varying Z coordinates; only the elevation attribute is kept"));
+        report.messages.push(crate::loss::Note::loss(
+            crate::loss::LossCode::DroppedZm,
+            format!("{varying_count} {subject} lost varying Z coordinates; only the elevation attribute is kept"),
+        ));
     }
     if recovered.unreadable_vertices > 0
         && let Some((_, report)) = layers.first_mut()
@@ -2650,8 +2653,11 @@ mod tests {
         assert_eq!(l[0].0.features.len(), MAX_TOTAL_VERTICES / 200_000);
         assert!(l[0].0.zm_dropped);
         assert_eq!(
-            l[0].1.messages.iter().filter(|m| m.contains("varying Z")).collect::<Vec<_>>(),
-            [&format!("{} features lost varying Z coordinates; only the elevation attribute is kept", l[0].0.features.len())]
+            l[0].1.messages.iter().filter(|m| m.contains("varying Z")).map(|m| (m.as_str(), m.loss)).collect::<Vec<_>>(),
+            [(
+                &*format!("{} features lost varying Z coordinates; only the elevation attribute is kept", l[0].0.features.len()),
+                Some(crate::loss::LossCode::DroppedZm)
+            )]
         );
         assert!(l[0].1.messages.iter().any(|m| m.contains("coordinates")), "{:?}", l[0].1.messages);
     }
@@ -3066,7 +3072,10 @@ mod tests {
                 } else {
                     vec![]
                 };
-                assert_eq!(report.messages, expected);
+                assert_eq!(report.messages.texts().collect::<Vec<_>>(), expected);
+                assert!(
+                    report.messages.iter().filter(|m| m.contains("varying Z")).all(|m| m.loss == Some(crate::loss::LossCode::DroppedZm))
+                );
                 let Some(Geometry::Line(parts)) = &ds.features[0].geometry else { panic!("spline line") };
                 let (start_xy, end_xy) = if tilted {
                     (Coord::new(0.1, 0.0), Coord::new(end.parse().unwrap(), 3.0))
@@ -3139,7 +3148,8 @@ mod tests {
             assert_eq!(ds.zm_dropped, tilted);
             assert_eq!(report.skipped, 0);
             let expected = if tilted { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
-            assert_eq!(report.messages, expected);
+            assert_eq!(report.messages.texts().collect::<Vec<_>>(), expected);
+            assert!(report.messages.iter().filter(|m| m.contains("varying Z")).all(|m| m.loss == Some(crate::loss::LossCode::DroppedZm)));
         }
     }
 
@@ -3190,7 +3200,8 @@ mod tests {
             assert_eq!(ds.zm_dropped, varying, "rotation={rotation}: {:?}", report.messages);
             let expected =
                 if varying { vec!["1 feature lost varying Z coordinates; only the elevation attribute is kept"] } else { vec![] };
-            assert_eq!(report.messages, expected);
+            assert_eq!(report.messages.texts().collect::<Vec<_>>(), expected);
+            assert!(report.messages.iter().filter(|m| m.contains("varying Z")).all(|m| m.loss == Some(crate::loss::LossCode::DroppedZm)));
             assert_eq!(report.skipped, 0);
             let Some(Geometry::Line(parts)) = &ds.features[0].geometry else { panic!("rotated line") };
             assert_eq!(parts[0].first(), Some(&Coord::new(0.0, 0.0)));
@@ -3240,7 +3251,11 @@ mod tests {
             assert_eq!(ds.value(0, 8), &Value::Float(0.0));
             assert!(ds.zm_dropped, "start={start}, offset={offset}");
             assert_eq!(report.skipped, 0);
-            assert_eq!(report.messages, ["1 feature lost varying Z coordinates; only the elevation attribute is kept"]);
+            assert_eq!(
+                report.messages.texts().collect::<Vec<_>>(),
+                ["1 feature lost varying Z coordinates; only the elevation attribute is kept"]
+            );
+            assert_eq!(report.messages[0].loss, Some(crate::loss::LossCode::DroppedZm));
         }
     }
 
@@ -3289,7 +3304,8 @@ mod tests {
             );
             assert_eq!(report.messages.len(), if end == "9" { 2 } else { 1 });
             if end == "9" {
-                assert_eq!(report.messages[1], "1 feature lost varying Z coordinates; only the elevation attribute is kept");
+                assert_eq!(report.messages[1].as_str(), "1 feature lost varying Z coordinates; only the elevation attribute is kept");
+                assert_eq!(report.messages[1].loss, Some(crate::loss::LossCode::DroppedZm));
             }
         }
     }

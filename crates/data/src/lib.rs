@@ -747,15 +747,14 @@ pub fn zm_note(features: Option<u64>) -> String {
 /// What an export of `layers` says when any lost Z or M values on import, or `None`: one notice,
 /// naming them (the first few) and counting them. `target` names what was written (a file, or the
 /// text returned).
-pub fn zm_export_note<'a>(layers: impl IntoIterator<Item = &'a Dataset>, target: &str) -> Option<String> {
+pub fn zm_export_note<'a>(layers: impl IntoIterator<Item = &'a Dataset>, target: &str) -> Option<loss::Note> {
     let names: Vec<&str> = layers.into_iter().filter(|ds| ds.zm_dropped).map(|ds| ds.name.as_str()).collect();
-    match names.as_slice() {
-        [] => None,
-        [one] => Some(format!("{target}: its geometry has no Z or M values, which were dropped when {one} was read")),
-        _ => {
-            Some(format!("{target}: its geometry has no Z or M values for {}, which were dropped when they were read", layer_list(&names)))
-        }
-    }
+    let text = match names.as_slice() {
+        [] => return None,
+        [one] => format!("{target}: its geometry has no Z or M values, which were dropped when {one} was read"),
+        _ => format!("{target}: its geometry has no Z or M values for {}, which were dropped when they were read", layer_list(&names)),
+    };
+    Some(loss::Note::loss(loss::LossCode::DroppedZm, text))
 }
 
 /// `3 layers (a, b, c)`: the count, and the first five names.
@@ -790,22 +789,23 @@ pub fn export_notes<'a>(
     layers: impl IntoIterator<Item = (&'a Dataset, rustgis_geom::Extent)>,
     target: &str,
     crs: raster::Crs,
-) -> Vec<String> {
+) -> loss::Notes {
+    use loss::{LossCode, Note};
     let layers: Vec<_> = layers.into_iter().collect();
-    let mut notes: Vec<String> = zm_export_note(layers.iter().map(|(ds, _)| *ds), target).into_iter().collect();
+    let mut notes: loss::Notes = zm_export_note(layers.iter().map(|(ds, _)| *ds), target).into_iter().collect();
     let approximate: Vec<&Dataset> =
         layers.iter().map(|(ds, _)| *ds).filter(|ds| ds.crs.is_some_and(|c| c != crs && c.lacks_datum_shift())).collect();
     match approximate.as_slice() {
         [] => {}
-        [one] => notes.push(format!(
+        [one] => notes.push(Note::loss(LossCode::ApproximatedDatum, format!(
             "{target}: the positions of {} are approximate, possibly a few hundred metres off: its coordinate system ({}) has no shift to WGS 84",
             one.name,
             one.crs.map(raster::Crs::label).unwrap_or_default()
-        )),
-        many => notes.push(format!(
+        ))),
+        many => notes.push(Note::loss(LossCode::ApproximatedDatum, format!(
             "{target}: the positions of {} are approximate, possibly a few hundred metres off: their coordinate systems have no shift to WGS 84",
             layer_list(&many.iter().map(|ds| ds.name.as_str()).collect::<Vec<_>>())
-        )),
+        ))),
     }
     // Another body's layers. Written in an Earth system, their longitude/latitude become the
     // Earth's. Written in another body's system, its WKT gives the datum only by the ellipsoid's
@@ -836,38 +836,46 @@ pub fn export_notes<'a>(
     let written = if crs == raster::Crs::LonLat { "WGS 84 (EPSG:4326)".to_string() } else { crs.label() };
     match as_earth.as_slice() {
         [] => {}
-        [one] => notes.push(format!(
-            "{target}: {} is on another body than the Earth ({}), but its longitude/latitude are written as {written}",
-            one.name,
-            one.crs.map(raster::Crs::label).unwrap_or_default()
+        [one] => notes.push(Note::loss(
+            LossCode::ChangedBody,
+            format!(
+                "{target}: {} is on another body than the Earth ({}), but its longitude/latitude are written as {written}",
+                one.name,
+                one.crs.map(raster::Crs::label).unwrap_or_default()
+            ),
         )),
-        many => notes.push(format!(
-            "{target}: {} are on other bodies than the Earth, but their longitude/latitude are written as {written}",
-            layer_list(&many.iter().map(|ds| ds.name.as_str()).collect::<Vec<_>>())
+        many => notes.push(Note::loss(
+            LossCode::ChangedBody,
+            format!(
+                "{target}: {} are on other bodies than the Earth, but their longitude/latitude are written as {written}",
+                layer_list(&many.iter().map(|ds| ds.name.as_str()).collect::<Vec<_>>())
+            ),
         )),
     }
     match in_planetary_system.as_slice() {
         [] => {}
-        [one] => notes.push(format!(
+        [one] => notes.push(Note::loss(LossCode::DroppedCrsName, format!(
             "{target}: the coordinate system of {} ({}) is another body's, and the file gives its datum only by the ellipsoid's axes, without the body's or the datum's name",
             one.name,
             one.crs.map(raster::Crs::label).unwrap_or_default()
-        )),
-        many => notes.push(format!(
+        ))),
+        many => notes.push(Note::loss(LossCode::DroppedCrsName, format!(
             "{target}: the coordinate systems of {} are other bodies', and the file gives their datums only by the ellipsoids' axes, without the bodies' or the datums' names",
             layer_list(&many.iter().map(|ds| ds.name.as_str()).collect::<Vec<_>>())
-        )),
+        ))),
     }
     let names: Vec<&str> = layers.iter().filter(|(_, e)| e.beyond_lonlat()).map(|(ds, _)| ds.name.as_str()).collect();
     match names.as_slice() {
         [] => {}
-        [one] => notes.push(format!(
+        // Told by the extent alone, which also takes in longitudes past ±180° on purpose (a layer
+        // crossing the antimeridian): said, without a code, as it may have lost nothing.
+        [one] => notes.push(Note::plain(format!(
             "{target}: the coordinates of {one} aren't longitude/latitude, so they're out of place: define its projection and export again"
-        )),
-        _ => notes.push(format!(
+        ))),
+        _ => notes.push(Note::plain(format!(
             "{target}: the coordinates of {} aren't longitude/latitude, so they're out of place: define their projection and export again",
             layer_list(&names)
-        )),
+        ))),
     }
     if crs == raster::Crs::WebMercator {
         notes.extend(web_mercator_note(&layers, target));
@@ -887,7 +895,7 @@ pub fn export_notes<'a>(
 /// time comes with no features, and its export counts them as it writes them
 /// ([`export::Exported::beyond_web_mercator`], said by [`web_mercator_moved_note`]). The count is
 /// one pass over the coordinates, without a Cancel point, as the other notices' passes are.
-fn web_mercator_note(layers: &[(&Dataset, rustgis_geom::Extent)], target: &str) -> Option<String> {
+fn web_mercator_note(layers: &[(&Dataset, rustgis_geom::Extent)], target: &str) -> Option<loss::Note> {
     use rustgis_geom::MAX_LAT;
     let shapefile = std::path::Path::new(target)
         .extension()
@@ -930,7 +938,7 @@ fn web_mercator_note(layers: &[(&Dataset, rustgis_geom::Extent)], target: &str) 
 /// `layer` it wrote at 85.05° north or south, where Web Mercator ends, as it counted them
 /// ([`export::Exported::beyond_web_mercator`]): as [`export_notes`] says it of a layer it has
 /// whole. `None` for none.
-pub fn web_mercator_moved_note(target: &str, layer: &str, moved: usize) -> Option<String> {
+pub fn web_mercator_moved_note(target: &str, layer: &str, moved: usize) -> Option<loss::Note> {
     if moved == 0 {
         return None;
     }
@@ -940,7 +948,7 @@ pub fn web_mercator_moved_note(target: &str, layer: &str, moved: usize) -> Optio
 /// The 85.05° notice for the layers `beyond` (each with its count of vertices moved, or `None`
 /// when only its extent tells), or `None` for none. Layers counted and layers told by their
 /// extent are said in one notice, each in its own clause, so neither hides the other.
-fn web_mercator_said(beyond: &[(&str, Option<usize>)], target: &str) -> Option<String> {
+fn web_mercator_said(beyond: &[(&str, Option<usize>)], target: &str) -> Option<loss::Note> {
     let counted: Vec<&str> = beyond.iter().filter(|(_, n)| n.is_some()).map(|(name, _)| *name).collect();
     let total: usize = beyond.iter().filter_map(|(_, n)| *n).sum();
     let extents: Vec<&str> = beyond.iter().filter(|(_, n)| n.is_none()).map(|(name, _)| *name).collect();
@@ -962,7 +970,9 @@ fn web_mercator_said(beyond: &[(&str, Option<usize>)], target: &str) -> Option<S
     if said.is_empty() {
         return None;
     }
-    Some(format!("{target}: {}, where Web Mercator ends", said.join("; ")))
+    let text = format!("{target}: {}, where Web Mercator ends", said.join("; "));
+    // Vertices counted are moved; an extent alone may reach further than the features do.
+    Some(if counted.is_empty() { loss::Note::plain(text) } else { loss::Note::loss(loss::LossCode::ChangedPosition, text) })
 }
 
 /// Why exporting `ds` in `crs` would write other data than the layer's: a layer on another body
@@ -978,7 +988,7 @@ impl Dataset {
     pub(crate) fn drop_zm(&mut self, report: &mut ReadReport, features: usize) {
         if features > 0 {
             self.zm_dropped = true;
-            report.messages.push(zm_note(Some(features as u64)));
+            report.messages.push(loss::Note::loss(loss::LossCode::DroppedZm, zm_note(Some(features as u64))));
         }
     }
 
@@ -1728,9 +1738,9 @@ mod tests {
         }
         ds.hold_in(utm).unwrap();
         assert_eq!(ds.coord_crs(), utm);
-        let note = web_mercator_note(&[(&ds, ds.extent())], "out.gpkg").unwrap_or_default();
-        assert_eq!(note, web_mercator_said(&[("held", Some(1))], "out.gpkg").unwrap_or_default());
-        assert!(!note.is_empty());
+        let note = web_mercator_note(&[(&ds, ds.extent())], "out.gpkg");
+        assert_eq!(note, web_mercator_said(&[("held", Some(1))], "out.gpkg"));
+        assert_eq!(note.and_then(|n| n.loss), Some(loss::LossCode::ChangedPosition));
     }
 
     /// Analysis and measurement read a longitude/latitude dataset as it is: no copy, and the

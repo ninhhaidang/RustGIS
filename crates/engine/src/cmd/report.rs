@@ -1022,7 +1022,7 @@ pub fn pages(s: &Session, i: usize) -> Result<(Doc, Vec<rustgis_render::report::
 pub fn report_bytes(s: &mut Session, i: usize, dpi: f64, pdf: bool) -> Result<(Vec<u8>, usize), String> {
     let name = s.project.reports.get(i).map(|r| r.name.clone()).unwrap_or_default();
     let (bytes, mut copy) = whole_bytes(detached(&s.project), s.path.clone(), i, dpi, pdf);
-    super::exports::say(s, super::exports::copy_notices(&mut copy, &name));
+    super::exports::say_coded(s, super::exports::copy_notices_coded(&mut copy, &name));
     bytes
 }
 
@@ -1047,8 +1047,13 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
         });
         // The layers it lists are read whole; a layout drawn in it draws the others' views, and
         // one whose source fails there is said, as Export Layout says it.
-        let said = super::exports::copy_notices(&mut copy, &path);
-        super::exports::drawn(&copy.project.maps, said, written, path)
+        // What reading the layers lost keeps its code: said with the export's notes.
+        let (coded, said): (Vec<_>, Vec<_>) =
+            super::exports::copy_notices_coded(&mut copy, &path).into_iter().partition(|(_, note)| note.loss.is_some());
+        let said = said.into_iter().map(|(severity, note)| (severity, note.text)).collect();
+        let mut wrote = super::exports::drawn(&copy.project.maps, said, written, path)?;
+        wrote.notes.extend(coded.into_iter().map(|(_, note)| note));
+        Ok(wrote)
     }))
 }
 

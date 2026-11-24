@@ -161,30 +161,9 @@ pub struct Unreadable {
     /// Other reader diagnostics, already qualified by their source. Date diagnostics stay in
     /// their typed fields above so consumers can describe what an export did to them once.
     pub messages: rustgis_data::loss::Notes,
-    /// `messages` contains the source's Z/M loss diagnostic. An export can keep that more
+    /// `messages` contains the source's Z/M loss diagnostic (a note with `dropped.zm`). An export can keep that more
     /// specific report instead of also emitting its generic already-dropped-Z/M warning.
     pub zm_noted: bool,
-}
-
-/// Recognizes only diagnostics produced by the common Z/M formatter and the two positive
-/// GDAL conversion templates. Unknown/custom wording cannot suppress an export warning.
-fn reader_noted_zm(note: &str) -> bool {
-    if note == rustgis_data::zm_note(None) {
-        return true;
-    }
-    if let Some(count) = note.split_once(' ').and_then(|(n, _)| n.parse::<u64>().ok())
-        && count > 0
-        && note == rustgis_data::zm_note(Some(count))
-    {
-        return true;
-    }
-    let Some((_, detail)) = note.strip_prefix("GDAL: '").and_then(|n| n.rsplit_once("' ")) else { return false };
-    ["declares", "contains"].into_iter().any(|verb| {
-        detail
-            .strip_prefix(&format!("{verb} Z or M coordinates on "))
-            .and_then(|n| n.strip_suffix(" source feature(s); conversion keeps only XY coordinates"))
-            .is_some_and(|n| n == "an unknown number of" || n.parse::<u64>().is_ok_and(|count| count > 0 && n == count.to_string()))
-    })
 }
 
 /// A layer: a dataset drawn with a renderer and labels.
@@ -891,30 +870,31 @@ impl Layer {
 
     /// [`Layer::load_all`], with what of the source couldn't be read.
     pub fn load_all_counted(&self) -> Result<(Dataset, Unreadable), String> {
-        let (ds, report, zm_noted) = self.load_all_with_notices()?;
+        let (ds, report) = self.load_all_with_notices()?;
         // materialize also puts the typed date diagnostics in messages. Existing consumers
         // give them their own export wording, so preserve only the other messages here.
         let date_notes: Vec<_> = report.unread_dates.iter().chain(&report.rounded_dates).map(|n| format!(": {n}")).collect();
         let mut seen = std::collections::HashSet::new();
-        let messages = report
+        let messages: rustgis_data::loss::Notes = report
             .messages
             .into_iter()
             .filter(|m| !date_notes.iter().any(|date| m.ends_with(date)))
             .filter(|m| seen.insert(m.clone()))
             .collect();
+        // A Z/M note found by this read too, not only one the source said when it opened.
+        let zm_noted = messages.iter().any(|m| m.loss == Some(rustgis_data::loss::LossCode::DroppedZm));
         Ok((ds, Unreadable { rows: report.skipped, dates: report.unread_dates, rounded: report.rounded_dates, messages, zm_noted }))
     }
 
     /// A whole read with its complete reader report, including messages beyond rows and dates.
     /// Callers decide which opening notices were already shown and which the new read discovered.
     pub fn load_all_reported(&self) -> Result<(Dataset, rustgis_data::ReadReport), String> {
-        self.load_all_with_notices().map(|(ds, report, _)| (ds, report))
+        self.load_all_with_notices()
     }
 
-    fn load_all_with_notices(&self) -> Result<(Dataset, rustgis_data::ReadReport, bool), String> {
-        let Some(copy) = self.open_source()? else { return Ok((self.dataset.clone(), rustgis_data::ReadReport::default(), false)) };
+    fn load_all_with_notices(&self) -> Result<(Dataset, rustgis_data::ReadReport), String> {
+        let Some(copy) = self.open_source()? else { return Ok((self.dataset.clone(), rustgis_data::ReadReport::default())) };
         let (mut ds, mut report) = copy.read_all()?;
-        let mut zm_noted = false;
         if let Some(info) = copy.info() {
             ds.zm_dropped |= info.zm_dropped;
             for note in &info.notes {
@@ -922,7 +902,6 @@ impl Layer {
                 if !report.messages.contains(&message) {
                     report.messages.push(message);
                 }
-                zm_noted |= info.zm_dropped && reader_noted_zm(&note.text);
             }
         }
         ds.name = self.dataset.name.clone();
@@ -942,7 +921,7 @@ impl Layer {
             }
         }
         ds.source = self.dataset.source.clone();
-        Ok((ds, report, zm_noted))
+        Ok((ds, report))
     }
 
     /// A streamed layer's source, to export whole a chunk at a time, with a dataset of no
@@ -3919,27 +3898,6 @@ mod tests {
     use super::*;
     use rustgis_data::{Field, FieldType, Value};
     use rustgis_geom::lonlat_to_merc;
-
-    #[test]
-    fn only_canonical_reader_dimension_notices_can_replace_export_warnings() {
-        for count in [Some(1), Some(25), None] {
-            assert!(reader_noted_zm(&rustgis_data::zm_note(count)));
-        }
-        for detail in
-            ["declares Z or M coordinates on 2", "contains Z or M coordinates on 1", "declares Z or M coordinates on an unknown number of"]
-        {
-            assert!(reader_noted_zm(&format!("GDAL: 'a layer' {detail} source feature(s); conversion keeps only XY coordinates")));
-        }
-        for unknown in [
-            "a custom provider has a Z/M flag",
-            "the source couldn't be checked for Z or M values",
-            "GDAL: 'x' contains Z or M coordinates on perhaps source feature(s); conversion keeps only XY coordinates",
-            "GDAL: 'x' contains Z or M coordinates on 0 source feature(s); conversion keeps only XY coordinates",
-        ] {
-            assert!(!reader_noted_zm(unknown));
-        }
-        assert!(!reader_noted_zm(&rustgis_data::zm_note(Some(0))));
-    }
 
     /// A text field an old project lists for a source's date column becomes a date field, unless
     /// a filter reads it as text and wouldn't as dates: then it stays text and the filter works.

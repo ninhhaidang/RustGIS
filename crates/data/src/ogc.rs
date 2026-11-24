@@ -7032,7 +7032,7 @@ mod tests {
         let Step::Decoded(ds, report, Some(note)) = step else { panic!("{step:?}") };
         assert_eq!(ids(&ds), [0.0, 1.0, 2.0]);
         assert!(note.contains("first 3 features"), "{note}");
-        assert_eq!(report.messages, [crate::zm_note(Some(3))]);
+        assert_eq!(report.messages, [crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(3)))]);
 
         let fresh = || Pages {
             url: query.into(),

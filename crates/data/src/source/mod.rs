@@ -185,7 +185,7 @@ impl SourceInfo {
     pub(crate) fn drop_zm(&mut self, features: Option<u64>) {
         if !self.zm_dropped && features != Some(0) {
             self.zm_dropped = true;
-            self.notes.push(crate::zm_note(features));
+            self.notes.push(crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(features)));
         }
     }
 

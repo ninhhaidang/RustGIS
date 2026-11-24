@@ -1071,14 +1071,16 @@ fn exports_say_what_they_write_instead_of_another_body_s_system() {
     // Earth's datum note.
     let notes = rustgis_data::export_notes([(&layer, extent(&layer))], "out.geojson", Crs::LonLat);
     assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].loss, Some(rustgis_data::loss::LossCode::ChangedBody));
     assert!(
         notes[0].contains("craters") && notes[0].contains("written as WGS 84 (EPSG:4326)") && notes[0].contains(&mars.label()),
         "{notes:?}"
     );
     let notes = rustgis_data::export_notes([&layer, &moon, &earth].map(|ds| (ds, extent(ds))), "map.json", Crs::LonLat);
     assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(notes.iter().any(|n| n.contains("2 layers (craters, moon) are on other bodies")), "{notes:?}");
-    assert!(notes.iter().any(|n| n.contains("parcels") && n.contains("few hundred metres")), "{notes:?}");
+    let coded = |code, words: &str| notes.iter().any(|n| n.loss == Some(code) && n.contains(words));
+    assert!(coded(rustgis_data::loss::LossCode::ChangedBody, "2 layers (craters, moon) are on other bodies"), "{notes:?}");
+    assert!(coded(rustgis_data::loss::LossCode::ApproximatedDatum, "few hundred metres"), "{notes:?}");
     // In its own system (a Shapefile by default): the .prj is the WKT it was read from, the body's
     // name and all, and nothing is said.
     assert_eq!(io::default_export_crs(&layer, "shp"), mars);
@@ -1093,12 +1095,14 @@ fn exports_say_what_they_write_instead_of_another_body_s_system() {
     assert!(rustgis_data::export_notes([(&on_mars, extent(&on_mars))], "out.shp", mars).is_empty());
     let notes = rustgis_data::export_notes([&layer, &moon].map(|ds| (ds, extent(ds))), "out.shp", mars);
     assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].loss, Some(rustgis_data::loss::LossCode::ChangedBody));
     assert!(notes[0].contains("moon is on another body") && notes[0].contains(&format!("written as {}", mars.label())), "{notes:?}");
     // A Mars system known only by a PROJ definition has no name to write: said.
     let by_def = Crs::parse("+proj=longlat +R=3396190 +no_defs").unwrap();
     assert!(by_def.is_planetary());
     let notes = rustgis_data::export_notes([(&layer, extent(&layer))], "out.shp", by_def);
     assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].loss, Some(rustgis_data::loss::LossCode::DroppedCrsName));
     assert!(notes[0].contains("only by the ellipsoid's axes"), "{notes:?}");
     // An Earth layer says nothing of bodies.
     let notes = rustgis_data::export_notes([(&earth, extent(&earth))], "out.geojson", Crs::LonLat);

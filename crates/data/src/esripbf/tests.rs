@@ -163,7 +163,7 @@ fn z_and_m_are_dropped_and_said_even_when_they_are_all_alike() {
     let (ds, report) = read(&bytes, "t").unwrap();
     assert_eq!(ds.features[0].geometry, Some(Geometry::Point(c(4.0, 6.0))));
     assert!(ds.zm_dropped);
-    assert_eq!(report.messages, [crate::zm_note(Some(2))]);
+    assert_eq!(report.messages, [crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(2)))]);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn a_page_read_within_a_limit_counts_what_the_features_kept_lost() {
     ]);
     let page = read_page_within(&bytes, "t", 1).unwrap();
     assert_eq!((page.dataset.features.len(), page.left_out, page.losses.with_zm), (1, 2, 1));
-    assert_eq!(page.losses.messages(), [crate::zm_note(Some(1))]);
+    assert_eq!(page.losses.messages(), [crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(Some(1)))]);
     assert!(page.report.messages.is_empty(), "the losses are said apart: {:?}", page.report.messages);
     // Within a limit it doesn't reach, the whole page.
     let page = read_page_within(&bytes, "t", 3).unwrap();

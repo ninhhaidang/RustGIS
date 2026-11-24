@@ -91,6 +91,12 @@ pub struct Converted {
     /// Its coordinate system is one RustGIS can't read, so GDAL converted it to longitude/latitude
     /// (as every conversion did before layers kept their own system).
     pub in_lonlat: bool,
+    /// Its features whose Z or M values the conversion dropped, as it keeps x and y only.
+    pub zm_dropped: u64,
+    /// Its features couldn't be checked for Z or M values: any it had were dropped.
+    pub zm_unknown: bool,
+    /// Its layer declares Z or M values: one whose count failed most likely lost them.
+    pub zm_declared: bool,
 }
 
 /// A GDAL program (`ogr2ogr`, `ogrinfo`): from `RUSTGIS_GDAL_BIN` (a folder), else on the `PATH`.
@@ -324,12 +330,36 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) ->
                     },
                     layer: l.name.clone(),
                     family,
+                    zm_dropped: 0,
+                    zm_unknown: false,
+                    zm_declared: l.has_zm,
                 }),
                 // A family the layer doesn't have.
                 Ok(None) => {}
                 // A layer (or a family filter the driver can't apply) that fails doesn't stop the
                 // others; the file fails only if nothing converts.
                 Err(e) => errors.push(e),
+            }
+        }
+        // The features of each part that had Z or M values, which the conversion drops (`-dim
+        // XY`), as a fresh conversion counts them: counted once, with the conversion, and kept
+        // beside it, so a cache hit doesn't scan the source again. A count that fails is said
+        // without a code (the layer may hold only x and y) and isn't kept: its cause may pass, and
+        // a query GDAL refuses fails before scanning anything.
+        if l.has_zm || l.family.is_none() {
+            for part in out.iter_mut().skip(before) {
+                // A count read is touched with its conversion, so pruning keeps it as long.
+                let count = kept_zm_count(&part.path).inspect(|_| touch(&part.path.with_extension("zm"))).or_else(|| {
+                    let count = count_zm_features(src, &l, part.family).ok().flatten()?;
+                    // Kept beside the conversion, so a cache hit reads it instead of scanning the
+                    // source again; a write that fails only means it is counted again next time.
+                    let _ = std::fs::write(part.path.with_extension("zm"), format!("{count}\n"));
+                    Some(count)
+                });
+                match count {
+                    Some(n) => part.zm_dropped = n,
+                    None => part.zm_unknown = true,
+                }
             }
         }
         // Count all converted families together: splitting a mixed layer isn't a loss. Read
@@ -463,27 +493,35 @@ fn convert_one_fresh_in(dir: &Path, src: &Path, layer: &str, family: Option<Fami
         Err(error) => converted.notes.push(format!("{}: couldn't check how many features GDAL's conversion kept ({error})", info.name)),
     }
     let mut zm_dropped = false;
+    let mut zm_note = None;
     // A layer declaring Z or M may still hold features with only XY: those that carry them are
     // counted, as for a layer of several types.
     if (info.has_zm || info.family.is_none()) && !converted.empty {
-        match count_zm_features(src, info, family) {
-            Ok(0) => {}
-            Ok(count) => {
+        match count_zm_features(src, info, family).ok().flatten() {
+            Some(0) => {}
+            Some(count) => {
                 zm_dropped = true;
-                converted.notes.push(format!(
-                    "GDAL: '{layer}' contains Z or M coordinates on {count} source feature(s); conversion keeps only XY coordinates"
+                zm_note = Some(crate::loss::Note::loss(
+                    crate::loss::LossCode::DroppedZm,
+                    format!(
+                        "GDAL: '{layer}' contains Z or M coordinates on {count} source feature(s); conversion keeps only XY coordinates"
+                    ),
                 ));
             }
-            Err(_) => {
-                // A layer that declares them had them dropped, though how many is unknown.
+            None => {
+                // A layer that declares them may still hold only x and y: said without a code, as
+                // the count isn't known. Still marked as having lost them when it declares them, so
+                // its exports don't pass over what was most likely dropped.
                 zm_dropped = info.has_zm;
-                converted.notes.push(format!(
+                zm_note = Some(crate::loss::Note::plain(format!(
                     "GDAL: '{layer}': an unknown number of source feature(s) may have had Z or M coordinates dropped; conversion keeps only XY coordinates"
-                ));
+                )));
             }
         }
     }
-    Ok(FreshConverted { path: converted.path, notes: converted.notes.into(), empty: converted.empty, zm_dropped, workspace })
+    let mut notes: crate::loss::Notes = converted.notes.into();
+    notes.extend(zm_note);
+    Ok(FreshConverted { path: converted.path, notes, empty: converted.empty, zm_dropped, workspace })
 }
 
 /// A counted loss, or an honest diagnostic when a nonempty replacement's source count is unknown.
@@ -561,6 +599,10 @@ fn convert_one_in(dir: &Path, src: &Path, layer: &str, request: ConversionReques
         touch(&out);
         touch(&keyfile);
         return Ok(Some(Conversion { path: out, unprojected: was_unprojected, in_lonlat: was_in_lonlat, notes: Vec::new(), empty: false }));
+    }
+    // A count of Z/M features kept for an earlier conversion with this tag isn't this one's.
+    if !fresh {
+        let _ = std::fs::remove_file(dir.join(format!("{tag}.zm")));
     }
     // Unique to this conversion, even with others of the same layer running in this process.
     let tmp = dir.join(format!("{tag}.{}{n:04}.tmp.fgb", std::process::id()));
@@ -783,10 +825,28 @@ fn count_geometry_filter(src: &Path, layer: &str, filter: &str) -> Result<u64> {
         .ok_or_else(|| DataError::Format("GDAL: could not count features of other geometry types".into()))
 }
 
+/// The count of Z/M features kept beside the conversion at `path` ([`convert_in`]), when there is
+/// one: written whole, with its line's end, or not taken. Read no further than a count's length,
+/// so a damaged file costs nothing.
+fn kept_zm_count(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut text = String::new();
+    // The longest a count is (`u64::MAX` and its line's end), and a byte more to tell a longer file.
+    const LONGEST: u64 = 21;
+    std::fs::File::open(path.with_extension("zm")).ok()?.take(LONGEST + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > LONGEST {
+        return None;
+    }
+    text.strip_suffix('\n')?.parse().ok()
+}
+
 /// Generic layers don't declare the dimensions of their features. Count the selected family's
 /// actual Z/M geometries that conversion flattens; SQLite's spatial functions aren't present in every
-/// GDAL build, so the caller reports possible loss if this diagnostic query fails.
-fn count_zm_features(src: &Path, layer: &LayerInfo, family: Option<Family>) -> Result<u64> {
+/// GDAL build, so the caller reports possible loss if this diagnostic query fails. One `ogrinfo`
+/// scan of the source, as long as the conversion's, with no Cancel check inside it. `Ok(None)` when
+/// GDAL refuses the query or its answer can't be read, as it will every time; an error when the
+/// program couldn't run it (missing, timed out), which may not happen again.
+fn count_zm_features(src: &Path, layer: &LayerInfo, family: Option<Family>) -> Result<Option<u64>> {
     let src = std::path::absolute(src).unwrap_or_else(|_| src.to_path_buf());
     let geometry = format!("\"{}\"", layer.geometry_column.replace('"', "\"\""));
     let name = format!("\"{}\"", layer.name.replace('"', "\"\""));
@@ -800,11 +860,11 @@ fn count_zm_features(src: &Path, layer: &LayerInfo, family: Option<Family>) -> R
     c.args(["-json", "-ro", "-features", "-nomd", "-dialect", "SQLite", "-sql", &sql]).arg(&src);
     let out = output(c, CONVERT_TIMEOUT, &format!("GDAL dimension count for {}, layer '{}'", src.display(), layer.name))?;
     if !out.status.success() {
-        return Err(DataError::Format(format!("GDAL: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        return Ok(None);
     }
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| DataError::Format(format!("GDAL: unreadable dimension count ({e})")))?;
-    json.get("layers")
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Ok(None) };
+    Ok(json
+        .get("layers")
         .and_then(|layers| layers.as_array())
         .and_then(|layers| layers.first())
         .and_then(|layer| layer.get("features"))
@@ -812,8 +872,7 @@ fn count_zm_features(src: &Path, layer: &LayerInfo, family: Option<Family>) -> R
         .and_then(|features| features.first())
         .and_then(|feature| feature.get("properties"))
         .and_then(|properties| properties.get("zm_count"))
-        .and_then(|count| count.as_u64())
-        .ok_or_else(|| DataError::Format("GDAL: could not count features with Z or M coordinates".into()))
+        .and_then(|count| count.as_u64()))
 }
 
 /// The longest a conversion may run, and the longest a layer listing may.
@@ -832,7 +891,7 @@ fn ours(name: &str) -> bool {
         rest.strip_suffix(".tmp.layers").is_some_and(|nonce| !nonce.is_empty() && nonce.bytes().all(|b| b.is_ascii_alphanumeric()));
     tag.len() == 16
         && tag.bytes().all(|b| b.is_ascii_hexdigit())
-        && (matches!(rest, "fgb" | "key" | "empty" | "layers") || tmp || listing_tmp)
+        && (matches!(rest, "fgb" | "key" | "empty" | "layers" | "zm") || tmp || listing_tmp)
 }
 
 #[cfg(test)]
@@ -895,7 +954,24 @@ mod tests {
         assert_eq!(version("ogrinfo: command not found"), None);
         // Pruning touches only the cache's own files.
         assert!(ours("0123456789abcdef.fgb") && ours("0123456789abcdef.key") && ours("0123456789abcdef.empty"));
-        assert!(ours("0123456789abcdef.4242.tmp.fgb"));
+        assert!(ours("0123456789abcdef.4242.tmp.fgb") && ours("0123456789abcdef.zm"));
+    }
+
+    /// A kept Z/M count is taken only whole: a count with its line's end, or `unknown`.
+    #[test]
+    fn a_kept_zm_count_is_taken_only_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let fgb = dir.path().join("0123456789abcdef.fgb");
+        let kept = |text: &str| {
+            std::fs::write(fgb.with_extension("zm"), text).unwrap();
+            kept_zm_count(&fgb)
+        };
+        assert_eq!(kept("7\n"), Some(7));
+        assert_eq!(kept(&format!("{}\n", u64::MAX)), Some(u64::MAX));
+        assert_eq!(kept("unknown\n"), None);
+        assert_eq!(kept("7"), None, "cut short");
+        assert_eq!(kept(&format!("{}\n", "0".repeat(30))), None, "longer than any count");
+        assert_eq!(kept("18446744073709551616\n"), None, "past u64");
         assert!(!ours("notes.fgb") && !ours("0123456789abcdef.txt") && !ours("photo.jpg") && !ours("0123456789abcdef.x.tmp.fgb"));
         // The cache key's hash is stable: a cached file is found again by its name, so a changed
         // hash orphans every cache already on disk. FNV-1a (64-bit) of "rustgis".
@@ -1268,8 +1344,32 @@ mod tests {
                 format!(r#"{{"type":"Feature","properties":{{"rank":1}},"geometry":{{"type":"Point","coordinates":{coordinates}}}}}"#);
             std::fs::write(&path, input).unwrap();
             let fresh = convert_one_fresh_in(&dir.join("cache"), &path, "points", None, None).unwrap();
-            assert_eq!(fresh.notes.iter().any(|n| n.contains("Z or M coordinates on 1 source feature")), lossy);
+            assert_eq!(
+                fresh
+                    .notes
+                    .iter()
+                    .any(|n| n.loss == Some(crate::loss::LossCode::DroppedZm) && n.contains("Z or M coordinates on 1 source feature")),
+                lossy
+            );
             assert_eq!(fresh.zm_dropped, lossy);
+            // A first conversion, as Add Data makes it, counts them too.
+            let (parts, _) = convert_in(&dir.join(format!("added-{lossy}")), &path, None, None).unwrap();
+            assert_eq!(parts.iter().map(|p| p.zm_dropped).sum::<u64>(), u64::from(lossy));
+            // A cache hit takes the count kept beside the conversion, without scanning the source.
+            if lossy {
+                for part in &parts {
+                    std::fs::write(part.path.with_extension("zm"), "7\n").unwrap();
+                }
+                let (hit, _) = convert_in(&dir.join(format!("added-{lossy}")), &path, None, None).unwrap();
+                assert_eq!(hit.iter().map(|p| p.zm_dropped).collect::<Vec<_>>(), vec![7; parts.len()]);
+                // A kept count that can't be read is counted again, and kept.
+                for part in &parts {
+                    std::fs::write(part.path.with_extension("zm"), "junk").unwrap();
+                }
+                let (hit, _) = convert_in(&dir.join(format!("added-{lossy}")), &path, None, None).unwrap();
+                assert_eq!(hit.iter().map(|p| p.zm_dropped).sum::<u64>(), 1, "{hit:?}");
+                assert!(parts.iter().all(|p| std::fs::read_to_string(p.path.with_extension("zm")).is_ok_and(|t| t != "junk")));
+            }
             let source = crate::source::open_path(&fresh.path, None).unwrap();
             let batch = source.read(&crate::source::Request { extent: None, limit: 10, own: None }).unwrap();
             assert_eq!(batch.features[0].geometry.as_ref().unwrap().extent().center().x, if lossy { 2.0 } else { 8.0 });
@@ -1461,7 +1561,7 @@ mod tests {
         for (point, expected) in [("POINT M (2 48 100)", 1), ("POINT ZM (2 48 100 200)", 1), ("POINT (2 48)", 0)] {
             std::fs::write(&path, format!("WKT,name\n\"{point}\",point\n\"LINESTRING Z (2 48 100,3 48 100)\",line\n")).unwrap();
             let info = list(&path).unwrap().remove(0);
-            assert_eq!(count_zm_features(&path, &info, Some(Family::Points)).unwrap(), expected);
+            assert_eq!(count_zm_features(&path, &info, Some(Family::Points)).unwrap(), Some(expected));
         }
     }
 }

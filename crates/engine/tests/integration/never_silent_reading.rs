@@ -25,8 +25,8 @@ enum Expect {
     Said(&'static str),
     /// Imports the layer and says the loss in a notice; refusing this valid fixture is a failure.
     Imported(&'static str),
-    /// Imports successfully and identifies the loss with a code.
-    Classified(LossCode),
+    /// Imports successfully and identifies the loss with a code, in a notice holding these words.
+    Classified(LossCode, &'static str),
     /// Loses it without a notice today, still adding a layer: what is lost.
     Silent(&'static str),
 }
@@ -220,7 +220,13 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
 
     let mut out = vec![
         // GeoJSON.
-        case("GeoJSON: a height", "a.geojson", geojson(&[point]), geojson(&[r#"{"type":"Point","coordinates":[1,2,3]}"#]), Said("Z or M")),
+        case(
+            "GeoJSON: a height",
+            "a.geojson",
+            geojson(&[point]),
+            geojson(&[r#"{"type":"Point","coordinates":[1,2,3]}"#]),
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
+        ),
         case(
             "GeoJSON: an unreadable geometry",
             "a.geojson",
@@ -229,7 +235,13 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             Said("unreadable geometry"),
         ),
         // TopoJSON.
-        case("TopoJSON: a height", "a.topojson", topo_line("[[0,0],[1,1]]"), topo_line("[[0,0,5],[1,1,6]]"), Said("Z or M")),
+        case(
+            "TopoJSON: a height",
+            "a.topojson",
+            topo_line("[[0,0],[1,1]]"),
+            topo_line("[[0,0,5],[1,1,6]]"),
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
+        ),
         case(
             "TopoJSON: an arc index the file doesn't hold",
             "a.topojson",
@@ -259,7 +271,13 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "wkt,id\n\"POINT(1 2)\",1\n\"POINT(3\",2\n",
             Said("isn't readable WKT"),
         ),
-        case("CSV: a height in WKT", "a.csv", "wkt,id\n\"POINT(1 2)\",1\n", "wkt,id\n\"POINT Z(1 2 3)\",1\n", Said("Z or M")),
+        case(
+            "CSV: a height in WKT",
+            "a.csv",
+            "wkt,id\n\"POINT(1 2)\",1\n",
+            "wkt,id\n\"POINT Z(1 2 3)\",1\n",
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
+        ),
         case(
             "CSV: an unreadable coordinate",
             "a.csv",
@@ -294,7 +312,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.kml",
             kml(&["<Point><coordinates>1,2</coordinates></Point>"]),
             kml(&["<Point><coordinates>1,2,30</coordinates></Point>"]),
-            Said("Z or M"),
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
         ),
         case(
             "KML: a placemark without geometry",
@@ -432,7 +450,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             gml(
                 r#"<gml:LineString srsName="urn:ogc:def:crs:EPSG::4326"><gml:posList srsDimension="3">48 10 5 49 11 6</gml:posList></gml:LineString>"#,
             ),
-            Said("Z or M"),
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
         ),
         // GeoRSS.
         case(
@@ -447,7 +465,7 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
             "a.rss",
             georss(&[&georss_polygon("1 1 1 2 2 2 1 1")]),
             georss(&[&georss_polygon("1 x")]),
-            Expect::Classified(LossCode::DroppedRing),
+            Expect::Classified(LossCode::DroppedRing, "hole"),
         ),
         case(
             "GeoRSS: a point with more than one pair",
@@ -629,9 +647,15 @@ fn cases(fixture_dir: &std::path::Path) -> Vec<Case> {
         .collect::<Vec<_>>();
     out.extend(kmz);
     out.extend([
-        case("CityJSON: varying line heights", "a.city.json", cityjson(0), cityjson(5), Said("Z or M")),
-        case("CityGML: varying line heights", "a.gml", citygml(0), citygml(5), Said("Z or M")),
-        case("GeoPackage: a height", "a.gpkg", gpkg(fixture_dir, false), gpkg(fixture_dir, true), Said("Z or M")),
+        case("CityJSON: varying line heights", "a.city.json", cityjson(0), cityjson(5), Expect::Classified(LossCode::DroppedZm, "Z or M")),
+        case("CityGML: varying line heights", "a.gml", citygml(0), citygml(5), Expect::Classified(LossCode::DroppedZm, "Z or M")),
+        case(
+            "GeoPackage: a height",
+            "a.gpkg",
+            gpkg(fixture_dir, false),
+            gpkg(fixture_dir, true),
+            Expect::Classified(LossCode::DroppedZm, "Z or M"),
+        ),
         case(
             "FlatGeobuf: a height",
             "a.fgb",
@@ -990,7 +1014,10 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     if feature_pbf {
         let (native, report) = rustgis_engine::data::esripbf::read(content, "a").map_err(std::io::Error::other)?;
         check_feature_pbf(&native, pbf_lossy)?;
-        if report.skipped != 0 || report.messages != pbf_messages {
+        // Coded `dropped.zm`, as the notice the command gives.
+        let coded: Vec<rustgis_engine::data::loss::Note> =
+            pbf_messages.iter().map(|text| rustgis_engine::data::loss::Note::loss(LossCode::DroppedZm, text.clone())).collect();
+        if report.skipped != 0 || report.messages != coded {
             return Err(std::io::Error::other(format!("feature-service PBF has the wrong native report: {report:?}")));
         }
     }
@@ -1016,7 +1043,13 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
     }
     if dxf_height {
         let native = rustgis_engine::data::dxf::read(file, content, &Default::default()).map_err(std::io::Error::other)?;
-        if native.len() != 1 || native[0].1.skipped != 0 || native[0].1.messages != dxf_messages {
+        // The varying heights lost are coded `dropped.zm`; nothing else is.
+        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| m.contains("varying Z").then_some(LossCode::DroppedZm)).collect();
+        if native.len() != 1
+            || native[0].1.skipped != 0
+            || native[0].1.messages.texts().collect::<Vec<_>>() != dxf_messages
+            || native[0].1.messages.iter().map(|m| m.loss).collect::<Vec<_>>() != expected
+        {
             return Err(std::io::Error::other(format!("DXF height native report: {native:?}")));
         }
         check_dxf_height(&native[0].0)?;
@@ -1093,7 +1126,9 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         check_feature_pbf(&s.map().layers[0].dataset, pbf_lossy)?;
         let notices = s.notices_since(mark);
         // Require the exact loss count and subject, and no additional notice.
-        if notices.iter().map(|n| n.text.clone()).collect::<Vec<_>>() != pbf_messages {
+        if notices.iter().map(|n| n.text.clone()).collect::<Vec<_>>() != pbf_messages
+            || notices.iter().any(|n| n.loss() != Some(LossCode::DroppedZm))
+        {
             return Err(std::io::Error::other(format!("feature-service PBF has the wrong command notices: {notices:?}")));
         }
     }
@@ -1113,7 +1148,9 @@ fn read(dir: &std::path::Path, file: &str, content: &[u8], beside: &[(&str, Vec<
         }
         check_dxf_height(&s.map().layers[0].dataset)?;
         let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-        if said != dxf_messages {
+        let codes: Vec<Option<LossCode>> = s.notices_since(mark).iter().map(|n| n.loss()).collect();
+        let expected: Vec<Option<LossCode>> = dxf_messages.iter().map(|m| m.contains("varying Z").then_some(LossCode::DroppedZm)).collect();
+        if said != dxf_messages || codes != expected {
             return Err(std::io::Error::other(format!("DXF height command notices: {said:?}")));
         }
     }
@@ -1157,8 +1194,9 @@ fn a_reading_that_loses_something_says_so() {
             Ok(Err(e)) => (vec![(e, None)], false),
             Ok(Ok((said, added))) => (said.into_iter().filter(|n| !clean.contains(n)).collect(), added),
         };
-        if let Expect::Classified(code) = c.expect {
+        if let Expect::Classified(code, words) = c.expect {
             if !added
+                || new.iter().filter(|(text, loss)| *loss == Some(code) && text.contains(words)).count() != 1
                 || new.iter().filter(|(_, loss)| *loss == Some(code)).count() != 1
                 || clean.iter().any(|(_, loss)| *loss == Some(code))
             {

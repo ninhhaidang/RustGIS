@@ -386,7 +386,11 @@ fn what_pages_lose_is_said_by_each_read_and_none_when_nothing_is() {
     // Z values: said once, by the layer, as other sources say them; not again by its reads.
     let (query, _) = service_with("live-z.test", Opts { z: true, ..Opts::default() });
     let src = open_blocking(&query).unwrap();
-    assert!(src.info.zm_dropped && src.info.notes == vec![crate::zm_note(None)], "{:?}", src.info.notes);
+    assert!(
+        src.info.zm_dropped && src.info.notes == vec![crate::loss::Note::loss(crate::loss::LossCode::DroppedZm, crate::zm_note(None))],
+        "{:?}",
+        src.info.notes
+    );
     assert!(read(&src, Request { extent: Some(small_view()), limit: 1000, own: None }).unwrap().notes.is_empty());
     // Values each page loses: said by each read, a view's counted in its pages.
     let (query, _) = service_with("live-utf8.test", Opts { bad_text: true, ..Opts::default() });

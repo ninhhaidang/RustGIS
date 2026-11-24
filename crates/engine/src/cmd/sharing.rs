@@ -683,10 +683,10 @@ pub(crate) fn note_export(s: &mut Session, kind: &str, p: &Value, target: &str) 
                 )
             })
             .unwrap_or_default(),
-        _ => Vec::new(),
+        _ => Default::default(),
     };
     for note in notes {
-        s.notify(note, false);
+        s.say(note);
     }
 }
 

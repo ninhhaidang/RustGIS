@@ -2900,25 +2900,27 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
 
     #[cfg(not(target_arch = "wasm32"))]
     if !reader_warnings.is_empty() {
-        let mut aggregated: Vec<(&str, Option<LossCode>, Vec<&str>)> = Vec::new();
+        // Each warning with its distinct inputs, and how many reads gave it: an input named twice
+        // is read twice.
+        let mut aggregated: Vec<(&str, Option<LossCode>, Vec<&str>, usize)> = Vec::new();
         for (target, msg, code) in &reader_warnings {
-            if let Some((_, _, inputs)) = aggregated.iter_mut().find(|(m, c, _)| *m == msg.as_str() && c == code) {
+            if let Some((_, _, inputs, reads)) = aggregated.iter_mut().find(|(m, c, _, _)| *m == msg.as_str() && c == code) {
+                *reads += 1;
                 if !inputs.contains(&target.as_str()) {
                     inputs.push(target.as_str());
                 }
             } else {
-                aggregated.push((msg.as_str(), *code, vec![target.as_str()]));
+                aggregated.push((msg.as_str(), *code, vec![target.as_str()], 1));
             }
         }
-        for (msg, code, inputs) in aggregated {
+        for (msg, code, inputs, reads) in aggregated {
             let count = inputs.len();
             let inputs_list = inputs.join(", ");
             let label = if count == 1 { "input" } else { "inputs" };
-            let text = format!("gp.batch: {count} {label} ({inputs_list}): {msg}");
-            if let Some(code) = code {
-                losses.add(code, &text, count);
-            } else {
-                s.notify(text, false);
+            match code {
+                // Its inputs are named in the example, which the batch's loss notice prefixes.
+                Some(code) => losses.add_stated(code, &format!("{count} {label} ({inputs_list}): {msg}"), reads),
+                None => s.notify(format!("gp.batch: {count} {label} ({inputs_list}): {msg}"), false),
             }
         }
     }
@@ -3316,10 +3318,16 @@ struct BatchLoss {
 impl BatchLosses {
     /// Counts every report, even when its text is beyond the sample.
     fn add(&mut self, code: LossCode, text: &str, count: usize) {
+        self.add_stated(code, &batch_message(text, count), count);
+    }
+
+    /// [`BatchLosses::add`] for a message that already says how many it covers (`count`):
+    /// counted, without a repetition count added to it.
+    fn add_stated(&mut self, code: LossCode, text: &str, count: usize) {
         let entry = self.0.entry(code.spec().id).or_insert_with(|| BatchLoss { code, reports: 0, examples: Vec::new(), omitted: 0 });
         entry.reports = entry.reports.saturating_add(count);
         if entry.examples.len() < 3 {
-            entry.examples.push(batch_message(text, count));
+            entry.examples.push(text.to_string());
         } else {
             entry.omitted += 1;
         }
@@ -7368,8 +7376,11 @@ mod batch_tests {
         }
 
         // Notices aggregated into a single notice per warning kind without truncating later files
+        // A Z/M loss has its code, so it is said as one loss notice for the batch.
         let notice = s.notices_since(mark).iter().find(|n| n.text.contains("Z or M")).unwrap();
-        assert!(notice.text.starts_with("gp.batch: 4 inputs ("));
+        assert_eq!(notice.loss(), Some(rustgis_data::loss::LossCode::DroppedZm));
+        assert!(notice.text.starts_with("gp.batch: 4 loss report(s) (4 inputs ("), "{}", notice.text);
+        assert!(!notice.text.contains("(×"), "{}", notice.text);
         assert!(notice.text.contains("file_1.geojson"));
         assert!(notice.text.contains("file_2.geojson"));
         assert!(notice.text.contains("file_3.geojson"));
@@ -7382,6 +7393,12 @@ mod batch_tests {
             assert!(record.ok);
             assert!(record.messages.iter().any(|m| m.contains("Z or M")));
         }
+
+        // An input named twice is read, and its loss counted, twice.
+        let mark = s.notice_mark();
+        s.run("gp.batch", &json!({"tool": "buffer", "inputs": [&files[0], &files[0]], "params": {"distance": 5}})).unwrap();
+        let twice = s.notices_since(mark).iter().find(|n| n.text.contains("Z or M")).unwrap().text.clone();
+        assert!(twice.starts_with("gp.batch: 2 loss report(s) (1 input ("), "{twice}");
 
         let _ = std::fs::remove_dir_all(root);
     }

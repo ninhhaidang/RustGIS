@@ -2187,8 +2187,8 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     let target = ds.name.clone();
     let query_note = super::share::query_export_note(&target, &layer.name, &report);
     drop(ds);
-    for note in notes.into_iter().chain(construction_notes) {
-        s.notify(note, false);
+    for note in notes.into_iter().chain(construction_notes.into_iter().map(rustgis_data::loss::Note::plain)) {
+        s.say(note);
     }
     super::share::notify_null_numbers(s, &target, null_numbers);
     if let Some(note) = query_note {
@@ -2226,7 +2226,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             )
             .map_err(|e| e.to_string())?;
             let mut notes: rustgis_data::loss::Notes =
-                rustgis_data::export_notes([(&ds, layer.extent())], &path, rustgis_data::raster::Crs::LonLat).into();
+                rustgis_data::export_notes([(&ds, layer.extent())], &path, rustgis_data::raster::Crs::LonLat);
             if format == "csv" {
                 notes.extend(result.csv.notes(&ds.fields, &path));
                 notes.extend(result.csv.coordinates_note(&ds.fields, &path));
@@ -2266,7 +2266,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             let report = rustgis_data::export::filter_dataset(&mut ds, query).map_err(|e| e.to_string())?;
             rustgis_data::progress::begin(ds.features.len());
             let (text, notes) = converted(&ds, &params)?;
-            let mut notes: rustgis_data::loss::Notes = notes.into();
+            let mut notes: rustgis_data::loss::Notes = notes;
             super::share::coalesce_read_zm(&mut notes, &path, &ds, &unreadable);
             rustgis_data::io::write_atomic(std::path::Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             if unreadable.rows > 0 {
@@ -2312,7 +2312,7 @@ fn conversion_format(p: &Value) -> Result<&str, String> {
 }
 
 /// Serializes a complete dataset and collects its loss notices for delivery after success.
-fn converted(ds: &Dataset, p: &Value) -> Result<(String, Vec<String>), String> {
+fn converted(ds: &Dataset, p: &Value) -> Result<(String, rustgis_data::loss::Notes), String> {
     let name_field =
         ps(p, "nameField").and_then(|n| ds.field_index(n)).or_else(|| ds.fields.iter().position(|f| f.name.eq_ignore_ascii_case("name")));
     let format = conversion_format(p)?;

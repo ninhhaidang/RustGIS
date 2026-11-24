@@ -5581,7 +5581,7 @@ impl RustGisApp {
                 // The features written, read whole, give their own extent, in longitude/latitude
                 // (not a raster's, or the one a streamed layer's source declares).
                 let mut notes: rustgis_engine::data::loss::Notes =
-                    rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs).into();
+                    rustgis_engine::data::export_notes([(ds.as_ref(), ds.lonlat_extent())], &name, crs);
                 rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, &ds, &lost);
                 notes.extend(unplaced);
                 // Which system it is written in, where that isn't the layer's own, as share.exportLayer says.

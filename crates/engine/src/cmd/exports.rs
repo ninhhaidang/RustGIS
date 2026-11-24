@@ -283,17 +283,39 @@ pub(crate) fn drawn(
 /// to say again where the export lands; past the notices a session keeps, how many earlier ones
 /// there were. `path` names the file in that count.
 pub(crate) fn copy_notices(copy: &mut Session, path: &str) -> Vec<(rustgis_data::diagnostics::Severity, String)> {
+    copy_notices_coded(copy, path).into_iter().map(|(severity, note)| (severity, note.text)).collect()
+}
+
+/// [`copy_notices`] with each notice's loss code, for an export that says them itself
+/// ([`say_coded`]).
+pub(crate) fn copy_notices_coded(copy: &mut Session, path: &str) -> Vec<(rustgis_data::diagnostics::Severity, rustgis_data::loss::Note)> {
     let kept = std::mem::take(&mut copy.notices);
     let earlier = copy.notices_given().saturating_sub(kept.len() as u64);
     let mut said = Vec::new();
     if earlier > 0 {
         said.push((
             rustgis_data::diagnostics::Severity::Warning,
-            format!("{path}: {earlier} earlier notices from drawing it aren't shown"),
+            rustgis_data::loss::Note::plain(format!("{path}: {earlier} earlier notices from drawing it aren't shown")),
         ));
     }
-    said.extend(kept.into_iter().map(|n| (n.severity, n.text)));
+    said.extend(kept.into_iter().map(|n| (n.severity, rustgis_data::loss::Note { loss: n.loss(), text: n.text })));
     said
+}
+
+/// [`say`] for notices with their loss codes: one with a code is said as that loss.
+pub(crate) fn say_coded(s: &mut Session, notices: Vec<(rustgis_data::diagnostics::Severity, rustgis_data::loss::Note)>) {
+    use rustgis_data::diagnostics::Severity;
+    for (severity, note) in notices {
+        if note.loss.is_some() {
+            s.say(note);
+            continue;
+        }
+        match severity {
+            Severity::Error => s.notify(note.text, true),
+            Severity::Warning => s.warn(note.text),
+            Severity::Info => s.notify(note.text, false),
+        }
+    }
 }
 
 /// Says `notices` (what an export said on a copy of the session) in `s`, each as it was said.
