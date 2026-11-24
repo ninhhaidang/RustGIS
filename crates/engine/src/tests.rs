@@ -63,6 +63,9 @@ mod project_crs;
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;
 
+#[path = "tests/task_files.rs"]
+mod task_files;
+
 #[path = "tests/credential_output.rs"]
 mod credential_output;
 

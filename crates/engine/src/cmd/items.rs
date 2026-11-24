@@ -407,6 +407,10 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"task"?: name, "path": "*.rgistask"}"#),
         C::new("task.import", "Import Task", "Analyze › Tasks", |s, p| {
             let text = read_text(p)?;
+            // A newer format, or a capability this release doesn't know, is refused by name rather
+            // than read without what it adds (#2818); before the steps are read, so a newer file is
+            // told to update RustGIS. A file without a header is a legacy task.
+            crate::project::check_format(&text, "task")?;
             let t: Task = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS task: {e}"))?;
             // A task from a file is someone else's: it may not read or write files, or run scripts.
             if let Some((i, st)) = t.steps.iter().enumerate().find(|(_, st)| touches_files(s, &st.command, &st.params)) {

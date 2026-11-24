@@ -1219,8 +1219,10 @@ fn capability_said(name: &str) -> String {
 /// rewrite through RustGIS's types. For a kind whose reader looks at `requires` and reads format 2
 /// (`reads_format_2`: projects and maps): of a format past [`READ_FORMAT`], or requiring anything,
 /// as the typed copy wouldn't keep the list, even of capabilities it knows. For the others (tasks,
-/// presentations, notebooks, models), whose typed copies drop what they don't know: of a format
-/// past [`FORMAT`]. A list (a legacy style file), or text whose `format` isn't a number, isn't one.
+/// presentations, notebooks, models): of a format past [`FORMAT`], which the reader refuses; a
+/// task's and a model's cleaned copy keeps `requires` itself (`roles::task_document`,
+/// `roles::model_document`). A list (a legacy style file), or text whose `format` isn't a number,
+/// isn't one.
 pub(crate) fn kept_as_written(text: &str, reads_format_2: bool) -> bool {
     if text.trim_start().starts_with('[') {
         return false;

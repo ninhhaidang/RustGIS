@@ -385,7 +385,9 @@ fn document(kind: Document, v: &Value, depth: usize, report: &mut Report) -> Opt
     let Some(text) = v.as_str().filter(|s| s.len() as u64 <= crate::project::max_bytes()) else { return invalid(v, report) };
     // One this RustGIS wouldn't read, or would rewrite without what it doesn't know, stays as
     // written. Only project and map readers read format 2 and refuse a document for what it
-    // requires; the others keep format 1's bound and don't look at `requires`.
+    // requires; for the others it is a format past `FORMAT` (also 2 now). A task's and a model's
+    // readers do look at `requires`, so their cleaned copies keep it (`task_document` puts it and
+    // `format` back; `model_document` keeps its envelope).
     if crate::project::kept_as_written(text, matches!(kind, Document::Project | Document::Map)) {
         report.unchecked = report.unchecked.saturating_add(1);
         return None;
@@ -399,7 +401,7 @@ fn document(kind: Document, v: &Value, depth: usize, report: &mut Report) -> Opt
                 text_document::<rustgis_map::Map>(text, depth)
             }
         }
-        Document::Task => text_document::<crate::project::Task>(text, depth),
+        Document::Task => task_document(text, depth),
         Document::Presentation => text_document::<rustgis_map::presentation::Presentation>(text, depth),
         Document::Notebook => crate::cmd::notebook::durable_document(text, depth),
         Document::Model => model_document(text, depth),
@@ -420,6 +422,34 @@ fn text_document<T: DeserializeOwned + Serialize + Durable>(text: &str, depth: u
     durable::output_owned_changed(parsed, depth, |value, changed| {
         if changed { serde_json::to_string(value).map_err(|e| e.to_string()) } else { Ok(text.into()) }
     })
+}
+
+/// A task document is cleaned through the typed task, as it always was (a key the task doesn't
+/// have is not kept), and then `format` and `requires` are put back from the document: `task.import`
+/// reads them (it refuses a newer format and what `requires` lists that this RustGIS doesn't know),
+/// and the typed copy has neither. Neither is a place for a credential, so a document whose header
+/// holds one is withheld whole (`[parameters withheld]`, which no replay reads as a task), as a
+/// document that doesn't read is; dropping only the header would let a replay skip the check.
+fn task_document(text: &str, depth: usize) -> Result<(String, Report), String> {
+    let original: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let header = ["format", "requires"];
+    if header.iter().filter_map(|key| original.get(key)).any(suspicious) {
+        let report = Report { withheld: 1, ..Report::default() };
+        return Ok((WITHHELD.into(), report));
+    }
+    let (clean, report) = text_document::<crate::project::Task>(text, depth)?;
+    if clean == text {
+        return Ok((clean, report));
+    }
+    let mut rewritten: Value = serde_json::from_str(&clean).map_err(|e| e.to_string())?;
+    if let (Some(from), Some(to)) = (original.as_object(), rewritten.as_object_mut()) {
+        for key in header {
+            if let Some(value) = from.get(key) {
+                to.insert(key.into(), value.clone());
+            }
+        }
+    }
+    Ok((rewritten.to_string(), report))
 }
 
 /// Model import has two envelopes; keeps the envelope's other fields and cleans only its model.

@@ -519,8 +519,8 @@ fn durable_future_documents_keep_their_exact_text_unchecked() {
         let kept = clean.map_or(text.clone(), |c| c["text"].as_str().unwrap_or_default().to_string());
         assert_eq!(kept.contains(SECRET), unchecked == 1, "{kept}");
     }
-    // A task document's reader doesn't look at `requires`, so listing one doesn't keep it unchecked;
-    // a future format stays as written because its typed copy could lose new fields.
+    // A task document's reader looks at `requires`, and its cleaned copy keeps the list (so listing one
+    // doesn't keep it unchecked); a future format stays as written because the reader refuses it.
     for (task, unchecked) in [
         (json!({"name": "t", "requires": ["z-values"], "steps": []}), 0),
         (json!({"format": crate::project::READ_FORMAT + 1, "name": "t", "steps": []}), 1),
